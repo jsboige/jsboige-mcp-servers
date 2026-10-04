@@ -103,6 +103,10 @@ export interface ClaudeConfigInfo {
   model?: string;
   env?: Record<string, string>;
   mcpServersCount?: number;
+  /** #2307: NOMs des MCP déclarés (triés, jamais les valeurs de config) —
+   *  seule visibilité d'une machine sans Roo pour compare_config, dont la
+   *  granularité `mcp` ne lit que les sections Roo/Zoo. */
+  mcpServers?: string[];
   skillUsage?: Record<string, { usageCount: number; lastUsedAt: number }>;
   migrationsComplete?: string[];
 }

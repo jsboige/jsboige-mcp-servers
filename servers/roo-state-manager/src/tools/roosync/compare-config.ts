@@ -575,21 +575,31 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       // lu). On ne déclenche ce statut QUE lorsqu'au moins un côté est non-vide,
       // pour préserver le vrai signal "les deux n'ont aucun MCP configuré".
       const preFlightSectionPaths: Record<string, string[]> = {
-        mcp: ['inventory.mcpServers', 'roo.mcpServers', 'mcpServers'],
+        // #2307 : une machine sans Roo/Zoo (mcp_settings.json vide → inventory.mcpServers = [])
+        // peut néanmoins porter sa flotte MCP côté Claude (claudeConfig.mcpServers,
+        // publiée par collectClaudeConfig) — les deux représentations comptent.
+        mcp: ['inventory.mcpServers', 'roo.mcpServers', 'mcpServers', 'inventory.claudeConfig.mcpServers'],
         mode: ['inventory.rooModes', 'roo.modes', 'rooModes'],
         'modes-yaml': ['inventory.rooModes', 'roo.modes', 'rooModes'],
         claude: ['inventory.claudeConfig', 'claudeConfig'],
       };
       const sectionPaths = preFlightSectionPaths[args.granularity];
       if (sectionPaths) {
+        // Taille = MAX sur les représentations : « la section est-elle peuplée
+        // sur ce côté ? » — une représentation vide n'annule pas une autre peuplée
+        // (le premier-objet-gagnant rendait une machine Roo-less indistinguable
+        // d'une collecte dégradée, #2307).
         const resolveSectionSize = (inv: any): number => {
+          let max = 0;
           for (const p of sectionPaths) {
             const segs = p.split('.');
             let cur: any = inv;
             for (const s of segs) cur = cur?.[s];
-            if (cur && typeof cur === 'object') return Object.keys(cur).length;
+            if (cur && typeof cur === 'object') {
+              max = Math.max(max, Object.keys(cur).length);
+            }
           }
-          return 0;
+          return max;
         };
         const sourceSectionSize = resolveSectionSize(sourceInventory);
         const targetSectionSize = resolveSectionSize(targetInventory);

@@ -306,6 +306,43 @@ describe('compare-config', () => {
 			expect(result.differences[0].description).toMatch(/vide côté cible.*peuplée côté source/);
 		});
 
+		test('#2307: machine sans Roo (mcp_settings vide) mais flotte Claude publiée → pas de faux "collecte dégradée"', async () => {
+			// po-204 : Roo désinstallé, `inventory.mcpServers` = [] par construction,
+			// et la flotte MCP réelle vit dans `inventory.claudeConfig.mcpServers`
+			// (publiée par collectClaudeConfig). Le pré-vol ne doit PAS crier à la
+			// collecte dégradée : la section EST peuplée, dans son autre représentation.
+			mockGetInventory.mockImplementation((machineId: string) => {
+				if (machineId === 'po-2024') {
+					return Promise.resolve({
+						inventory: {
+							mcpServers: [],
+							claudeConfig: { mcpServers: ['playwright', 'roo-state-manager', 'searxng'] }
+						}
+					});
+				}
+				return Promise.resolve({
+					inventory: { mcpServers: { 'win-cli': { command: 'node' } } }
+				});
+			});
+			mockCompareGranular.mockResolvedValue({
+				sourceLabel: 'po-2024',
+				targetLabel: 'ai-01',
+				diffs: [],
+				stats: { added: 0, removed: 0, modified: 0, unchanged: 0 }
+			});
+
+			const result = await roosyncCompareConfig({
+				source: 'po-2024',
+				target: 'ai-01',
+				granularity: 'mcp'
+			});
+
+			// Pas de court-circuit : le diff granulaire est bien appelé.
+			expect(mockCompareGranular).toHaveBeenCalled();
+			// Et AUCUN statut `inventory` de collecte dégradée n'est émis.
+			expect(result.differences.filter(d => d.category === 'inventory')).toHaveLength(0);
+		});
+
 		test('#2963: les deux côtés ont 0 MCPs → pas de pre-flight (vrai signal aucun MCP configuré)', async () => {
 			// Both sides legitimately empty — real signal "no MCP configured anywhere".
 			// Pre-flight must not fire (only fires when ONE side is non-empty).
