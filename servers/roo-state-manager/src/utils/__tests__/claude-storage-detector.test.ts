@@ -538,7 +538,12 @@ describe('ClaudeStorageDetector - TDD Suite', () => {
             expect(skProj?.metadata.totalSize).toBe(sizeA + sizeB);     // sum of both files
         });
 
-        it('DEVRAIT fallback sur l\'agrégat si le suffixe de session ne correspond à aucun fichier', async () => {
+        // #2191 (miss path, converting the pre-#1345 pin): this test previously
+        // pinned the fall-through-to-aggregate as "safe" — #1345 then measured
+        // it as the #2734 bug shape on the miss path (a ghost/stale id inherits
+        // the project-wide counts labeled as the missing session, 181 ms for
+        // 4 sessions). The contract is now an honest miss: null.
+        it('DEVRAIT retourner null (miss honnête) si le fichier de session ne correspond à aucun fichier — #2191', async () => {
             await writeSession(sessA, 2, 10);
             await writeSession(sessB, 6, 200);
 
@@ -547,8 +552,91 @@ describe('ClaudeStorageDetector - TDD Suite', () => {
                 `claude-${projectBasename}--deadbeef-0000-0000-0000-000000000000`,
                 testProjectDir,
             );
-            // No matching file → safe fallback to aggregate (never throws / never null).
-            expect(skUnknown?.metadata.messageCount).toBe(8);
+            // Ghost session id → null, NEVER the 8-message project aggregate
+            // re-labeled as the missing session.
+            expect(skUnknown).toBeNull();
+        });
+    });
+
+    // ============================================================
+    // #2191 — honest miss on the per-session miss path.
+    // The #2734 scoping split the taskId on its LAST `--`, which is not a
+    // sound session discriminator: project names may contain `--`
+    // (c--dev-x--worktree) and PROJECT_NAME_PATTERNS accepts bare-uuid
+    // project dirs, so a uuid-shaped suffix proves nothing (the ambiguity
+    // documented in #1345). The sound discriminator is basename(projectPath)
+    // — the exact inverse of the discovery construction
+    // `claude-${basename}--${sessionUuid}` (#937) — because the caller that
+    // resolved the taskId already matched the project directory.
+    // ============================================================
+    describe('#2191 — per-session discriminant = basename(projectPath), miss honnête', () => {
+        const sessA = 'aaaaaaaa-1111-2222-3333-444444444444';
+        const sessB = 'bbbbbbbb-5555-6666-7777-888888888888';
+
+        async function writeSessionFile(basename: string, messageCount: number): Promise<void> {
+            const lines: string[] = [];
+            for (let i = 0; i < messageCount; i++) {
+                const role = i % 2 === 0 ? 'user' : 'assistant';
+                lines.push(JSON.stringify({
+                    type: role,
+                    message: { role, content: `${basename} msg ${i}` },
+                    timestamp: `2024-01-0${(i % 9) + 1}T10:0${i % 10}:00.000Z`,
+                    uuid: `${basename}-${i}`,
+                }));
+            }
+            await fs.writeFile(path.join(testProjectDir, `${basename}.jsonl`), lines.join('\n'));
+        }
+
+        it('taskId d\'un projet PLUS LONG (composite) contre ce répertoire → null, pas l\'agrégat du préfixe', async () => {
+            // findConversationById matches `c--test-project` for the id of the
+            // longer project `c--test-project--extra` (startsWith anchor). The
+            // aggregate fall-through used to return THIS project's data labeled
+            // as that foreign session, and the loop stopped there (first
+            // non-null wins) — the longer project dir was never reached.
+            await writeSessionFile(sessA, 2);
+            await writeSessionFile(sessB, 6);
+
+            const projectBasename = path.basename(testProjectDir); // 'c--test-project'
+            const sk = await ClaudeStorageDetector.analyzeConversation(
+                `claude-${projectBasename}--extra--cccccccc-0000-0000-0000-000000000000`,
+                testProjectDir,
+            );
+            expect(sk).toBeNull();
+        });
+
+        it('taskId d\'un AUTRE projet (non-préfixe) contre ce répertoire → agrégat préservé (contrôle négatif)', async () => {
+            // Cross-wired callers exist (claude-task-extractor iterates every
+            // projectName against a single location.projectPath): for ids that
+            // do not reference THIS project at all, the legacy aggregate
+            // behavior is unchanged — the guard must not over-fire.
+            await writeSessionFile(sessA, 2);
+            await writeSessionFile(sessB, 6);
+
+            const sk = await ClaudeStorageDetector.analyzeConversation(
+                'claude-c--other-project--cccccccc-0000-0000-0000-000000000000',
+                testProjectDir,
+            );
+            expect(sk?.metadata.messageCount).toBe(8);
+        });
+
+        it('nom de fichier session contenant \'--\' → scoping sur le BON fichier (l\'ancien lastIndexOf choisissait le mauvais)', async () => {
+            // Discovery builds taskIds from ANY .jsonl basename, not just
+            // uuids: a file `weird--name.jsonl` yields the session part
+            // `weird--name`. The old lastIndexOf split scoped such an id to
+            // `name.jsonl` (or fell through to the aggregate); the basename
+            // anchor scopes it to the file the id was built from.
+            await writeSessionFile('weird--name', 3);
+            await writeSessionFile('name', 7);
+            await writeSessionFile(sessA, 2);
+
+            const projectBasename = path.basename(testProjectDir);
+            const sk = await ClaudeStorageDetector.analyzeConversation(
+                `claude-${projectBasename}--weird--name`,
+                testProjectDir,
+            );
+            // scoped to weird--name.jsonl (3 messages) — NOT name.jsonl (7)
+            // and NOT the project aggregate (12).
+            expect(sk?.metadata.messageCount).toBe(3);
         });
     });
 
