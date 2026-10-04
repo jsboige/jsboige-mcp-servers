@@ -231,4 +231,96 @@ describe('rebuild-and-restart', () => {
 		expect(result.content[0].text).toContain('Error');
 		expect(result.content[0].text).toContain('File not found');
 	});
+
+	// ============================================================
+	// #2307 (Phase 4, item EBUSY) — même retry borné que
+	// roosync_mcp_management rebuild : sous Windows, l'hôte MCP vivant
+	// tient sqlite3.node chargé pendant le rebuild → EBUSY transitoire.
+	// ============================================================
+	test('retries npm build on EBUSY then succeeds (#2307)', async () => {
+		mockReadFile.mockResolvedValue(JSON.stringify({
+			mcpServers: {
+				'test-mcp': {
+					command: 'node',
+					cwd: '/path/to/mcp',
+					watchPaths: ['/path/to/mcp/build/index.js']
+				}
+			}
+		}));
+
+		vi.useFakeTimers();
+		let call = 0;
+		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+			if (cmd.includes('npm run build')) {
+				call++;
+				if (call === 1) {
+					const err: Error & { code?: string } = new Error(
+						'EBUSY: resource busy or locked, open D:\\mcp\\node_modules\\better-sqlite3\\build\\Release\\better_sqlite3.node'
+					);
+					err.code = 'EBUSY';
+					cb(err, '', '');
+				} else {
+					cb(null, 'build ok', '');
+				}
+			} else {
+				cb(null, '', '');
+			}
+		});
+
+		const { rebuildAndRestart } = await import('../rebuild-and-restart.js');
+		const pending = rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
+		// Resout le backoff de la 1re tentative (2000 ms).
+		await vi.advanceTimersByTimeAsync(2500);
+		const result = await pending;
+
+		expect(result.content[0].text).toContain('successful');
+		const npmBuildCalls = mockExec.mock.calls.filter(c => String(c[0]).includes('npm run build')).length;
+		expect(npmBuildCalls).toBe(2);
+		vi.useRealTimers();
+	});
+
+	test('non-EBUSY build error → no retry (#2307)', async () => {
+		mockReadFile.mockResolvedValue(JSON.stringify({
+			mcpServers: {
+				'test-mcp': {
+					command: 'node',
+					cwd: '/path/to/mcp',
+					watchPaths: ['/path/to/mcp/build/index.js']
+				}
+			}
+		}));
+
+		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+			cb(new Error('TS2304: Cannot find name'), '', 'Error details');
+		});
+
+		const { rebuildAndRestart } = await import('../rebuild-and-restart.js');
+		const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
+
+		expect(result.content[0].text).toContain('Error');
+		const npmBuildCalls = mockExec.mock.calls.filter(c => String(c[0]).includes('npm run build')).length;
+		expect(npmBuildCalls).toBe(1);
+	});
+
+	test('global fallback touches the settings file exactly once (#2307)', async () => {
+		mockReadFile.mockResolvedValue(JSON.stringify({
+			mcpServers: {
+				'test-mcp': {
+					command: 'node',
+					cwd: '/path/to/mcp'
+				}
+			}
+		}));
+
+		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+			cb(null, 'output', '');
+		});
+
+		const { rebuildAndRestart } = await import('../rebuild-and-restart.js');
+		const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
+
+		expect(result.content[0].text).toContain('WARNING');
+		const touchCalls = mockExec.mock.calls.filter(c => String(c[0]).includes('powershell.exe')).length;
+		expect(touchCalls).toBe(1);
+	});
 });

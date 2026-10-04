@@ -5,7 +5,7 @@ import * as fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
-import { getMcpSettingsPath } from './roosync/mcp-management.js';
+import { getMcpSettingsPath, withEBUSYRetry } from './roosync/mcp-management.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -38,7 +38,12 @@ function execWithTimeout(command: string, options: ExecOptions): Promise<string>
 }
 
 async function runNpmBuild(mcpPath: string): Promise<string> {
-    return execWithTimeout('npm run build', { cwd: mcpPath, windowsHide: true, timeout: BUILD_TIMEOUT_MS });
+    // #2307 (Phase 4, item EBUSY) : retry borné partagé avec roosync_mcp_management
+    // rebuild — l'hôte MCP vivant tient sqlite3.node chargé sous Windows, le
+    // remplacement du binaire natif peut échouer en EBUSY de façon transitoire.
+    return withEBUSYRetry(() =>
+        execWithTimeout('npm run build', { cwd: mcpPath, windowsHide: true, timeout: BUILD_TIMEOUT_MS })
+    );
 }
 
 async function touchFile(filePath: string): Promise<string> {
@@ -110,7 +115,9 @@ export const rebuildAndRestart = {
                 touchResult = await touchFile(fileToTouch);
                 touchResult += ` (targeted restart via watchPaths)`;
             } else {
-                touchResult = await touchFile(settingsPath);
+                // #2307 : le fallback global ne touche le fichier de settings
+                // qu'UNE fois — un double touch déclenchait deux redémarrages
+                // globaux consécutifs (ligne dupliquée, mesurée par test).
                 touchResult = await touchFile(settingsPath);
                 touchResult += ` (global restart as fallback)`;
             }
