@@ -107,6 +107,35 @@ describe('isModelFailureStatus (#3962 — prédicat)', () => {
     expect(v.failed).toBe(true);
     if (v.failed) expect(v.reason).toBe('error-artifact');
   });
+
+  // #3962 suivi (dispatch c0355) : normalisation de casse + crochet optionnel —
+  // `[error:`, `Error:` et `error:` sans crochet passaient la porte du préfixe.
+  it('8. variante minuscule crochetée `[error: …]` → error-artifact', () => {
+    const v = isModelFailureStatus(
+      '[error: The model returned an empty response (finish_reason: stop)…]',
+      '# Doctrine opérationnelle\n- item 1',
+    );
+    expect(v.failed).toBe(true);
+    if (v.failed) expect(v.reason).toBe('error-artifact');
+  });
+
+  it('9. sans crochet (`Error:`/`error:`) et casse mélangée (`[ERROR:`) → error-artifact', () => {
+    for (const cand of [
+      'Error: The model returned an empty response…',
+      'error: request timed out after 60000ms',
+      '[ERROR: bad gateway from provider]',
+    ]) {
+      const v = isModelFailureStatus(cand, '# Doctrine opérationnelle\n- item 1');
+      expect(v.failed).toBe(true);
+      if (v.failed) expect(v.reason).toBe('error-artifact');
+    }
+  });
+
+  it('10. ancrage début-de-texte : `error:` cité en MILIEU de statut légitime passe', () => {
+    const legit = '# Statut\n- incident constaté : error: timeout sur la jambe fallback (citation)\n- règle conservée.';
+    const v = isModelFailureStatus(legit, 'x'.repeat(300));
+    expect(v.failed).toBe(false);
+  });
 });
 
 // ============================================================
@@ -212,6 +241,25 @@ describe('#3962 garde du statut de condensation (intégration)', { timeout: 60_0
     const md = await readDashboardFile();
     expect(md).toContain('DOCTRINE-MARKER-3962');
     expect(md).toContain('FALLBACK TRUNCATION');
+  });
+
+  it('(i5) 200 dont le statut est `error:` minuscule SANS crochet → mêmes garanties que i1 (c0355)', async () => {
+    // Artefact LONG (> seuil de rétention) : le garde too-short ne peut PAS
+    // l'attraper — seul le préfixe normalisé (casse + crochet optionnel) peut.
+    const artifact = 'error: The model returned an empty response (finish_reason: stop) — ' +
+      'retry attempt failed. '.repeat(300);
+    mockPrimaryLegs(artifact);
+
+    const result = await fillUntilCondensed();
+
+    expect(result.condenseDiagnostic.some((d: any) => d.outcome === 'fallback-truncated')).toBe(true);
+    expect(result.condenseDiagnostic.some((d: any) => d.outcome === 'condensed')).toBe(false);
+
+    const md = await readDashboardFile();
+    expect(md).toContain('DOCTRINE-MARKER-3962');
+    expect(md).not.toContain('error: The model returned');
+    expect(md).toContain('FALLBACK TRUNCATION');
+    expect(md).not.toContain('CONDENSATION-SUMMARY');
   });
 
   it('(i3) statut légitime au-dessus du seuil de rétention → condensation normale', async () => {

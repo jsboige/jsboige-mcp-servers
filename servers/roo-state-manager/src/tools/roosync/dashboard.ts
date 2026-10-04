@@ -2504,7 +2504,8 @@ export interface LLMCallStats {
   errorCount: number;
   /** Subset of errorCount: attempts that aborted on timeout. */
   timeoutCount: number;
-  /** Truncated last error message (first 240 chars). Only set when final outcome is error/timeout. */
+  /** Truncated last error message (first 240 chars). Set when final outcome is
+   * error/timeout, or `guard-rejected` (#3962 — reason + lengths of the rejected status). */
   lastError?: string;
   /** Final outcome. `guard-rejected` (#3962) : le garde « jamais pire que l'entrée » a rejeté
    * un statut-artefact d'échec transporté en 200 (vide / `[Error:` / trop court). */
@@ -4116,7 +4117,11 @@ export function isModelFailureStatus(
   if (!trimmed) {
     return { failed: true, reason: 'empty' };
   }
-  if (trimmed.startsWith('[Error:')) {
+  // #3962 suivi (dispatch c0355) : normalisation de casse + crochet optionnel —
+  // `[error:` minuscule et `Error:`/`error:` sans crochet passaient la porte.
+  // L'ancre reste le DÉBUT du texte : une erreur citée en milieu de statut
+  // légitime (liste à puces) ne doit pas déclencher (anti-faux-positifs).
+  if (/^\[?error:/i.test(trimmed)) {
     return { failed: true, reason: 'error-artifact' };
   }
   const prev = previousStatus.trim();
