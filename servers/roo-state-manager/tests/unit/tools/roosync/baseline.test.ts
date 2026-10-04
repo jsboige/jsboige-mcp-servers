@@ -120,10 +120,14 @@ describe('roosync_baseline - Schema Validation - Action: restore', () => {
     module = await import('../../../../src/tools/roosync/baseline.js');
   }, 60000); // 60s timeout for module import (Issue #609 - cold cache)
 
+  // #2639 : les sources baseline-v* (tags Git) sont rejetées par le schéma depuis
+  // #4001 (restore-from-tag non supporté #2983 — le contenu baseline vit sur GDrive,
+  // pas dans les tags). Les deux cas ci-dessous passaient au schéma vivant exactement
+  // ce qu'il refuse : réalignés sur un chemin de sauvegarde sync-config.ref.backup.*.
   it('devrait accepter action restore avec source seule', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'restore',
-      source: 'baseline-v2.3.0'
+      source: '.rollback/sync-config.ref.backup.2026-01-29.json'
     });
 
     expect(result.success).toBe(true);
@@ -132,7 +136,7 @@ describe('roosync_baseline - Schema Validation - Action: restore', () => {
   it('devrait accepter action restore avec tous les paramètres', () => {
     const result = module.BaselineArgsSchema.safeParse({
       action: 'restore',
-      source: 'baseline-v2.3.0',
+      source: '.rollback/sync-config.ref.backup.2026-01-29.json',
       targetVersion: '2.3.0',
       createBackup: true,
       updateReason: 'Rollback to stable version',
@@ -149,6 +153,18 @@ describe('roosync_baseline - Schema Validation - Action: restore', () => {
     });
 
     expect(result.success).toBe(true);
+  });
+
+  it('devrait rejeter une source baseline-v* (#2983/#4001 : restore-from-tag non supporté)', () => {
+    const result = module.BaselineArgsSchema.safeParse({
+      action: 'restore',
+      source: 'baseline-v2.3.0'
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0].message).toMatch(/restore-from-tag non supporté/i);
+    }
   });
 });
 

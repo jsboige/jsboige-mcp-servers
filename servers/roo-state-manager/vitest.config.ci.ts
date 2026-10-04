@@ -13,7 +13,7 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 21 test-file entries + 4 tests-directory globs
+ * Exclusion census: 20 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
@@ -184,12 +184,14 @@ export default mergeConfig(unitConfig, defineConfig({
       // update est v3-native, couvert en CI par dashboard-update-v3.test.ts
       // Live LLM endpoint, opt-in via LLM_LIVE_INTEGRATION=1 — 502 repro (#1578)
       'src/tools/roosync/__tests__/dashboard-llm-live.integration.test.ts',
-      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 2/20 fail. Pure schema/
-      //   interface tests — no APPDATA/GDrive dependency whatsoever (entry was
-      //   miscategorised). The two 'action: restore' acceptance cases no longer
-      //   match the live BaselineArgsSchema: this needs the TEST updated, not a
-      //   CI-config change.
-      'tests/unit/tools/roosync/baseline.test.ts',
+      // REACTIVATED 2026-10-05 (#2639, 9th): the two red 'action: restore' cases
+      //   fed the schema exactly what it has refused since #4001 — baseline-v*
+      //   tag sources (restore-from-tag unsupported #2983; baseline content lives
+      //   on GDrive, not in Git tags). Tests realigned on sync-config.ref.backup.*
+      //   paths + one new case asserting the baseline-v* rejection. Pure schema
+      //   tests, no platform dependency — the entry was miscategorised from the
+      //   start (no APPDATA/GDrive reference in the file).
+      // 'tests/unit/tools/roosync/baseline.test.ts',
 
       // ===== CI-excluded: Export baseline (schema mismatch) =====
       // RE-AUDIT 2026-07-02 (po-2025): file `tests/unit/tools/roosync/export-baseline.test.ts`
