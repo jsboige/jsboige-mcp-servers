@@ -255,12 +255,24 @@ function extractClaudeProjectName(taskId: string): string {
  * @param source 'roo' ou 'claude'
  * @param options Options de parsing (maxContentLength pour contrôler la troncature)
  */
-function createConversationGetter(
+export function createConversationGetter(
     source: 'roo' | 'claude',
     options?: { maxContentLength?: number }
 ): (taskId: string) => Promise<ConversationSkeleton | null> {
+    // #2191 — mémo request-scoped : cette closure est créée PAR REQUÊTE par
+    // handleRooSyncSummarize ; NarrativeContextBuilderService re-fetch le même
+    // id 6+ fois par synthèse (mesure c.576 : detect×6 + analyze×6 = re-parse
+    // complet ×6 du même JSONL, 759 ms pour 6,3 Mo). Un Map par closure borne
+    // le coût à UN parse par id PAR REQUÊTE — la fraîcheur inter-requêtes est
+    // inchangée (une nouvelle requête = nouvelle closure = nouveau parse).
+    // Les null (id absent) sont mémoïsés aussi : re-fetcher un miss ne fait que
+    // rejouer le scan qui vient d'échouer.
+    const requestCache = new Map<string, ConversationSkeleton | null>();
     return async (taskId: string) => {
         if (source === 'claude') {
+            if (requestCache.has(taskId)) {
+                return requestCache.get(taskId) ?? null;
+            }
             const allLocations = await ClaudeStorageDetector.detectStorageLocations();
             const projectName = extractClaudeProjectName(taskId);
             const locations = allLocations.filter(loc => loc.projectName === projectName);
@@ -273,9 +285,11 @@ function createConversationGetter(
                     { maxContentLength: options?.maxContentLength }
                 );
                 if (skeleton) {
+                    requestCache.set(taskId, skeleton);
                     return skeleton;
                 }
             }
+            requestCache.set(taskId, null);
             return null;
         } else {
             // Pour Roo (défaut), on utilise le cache Roo existant
