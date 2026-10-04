@@ -37,6 +37,17 @@ import { ConfigValidator } from './baseline/ConfigValidator.js';
 import { getSharedStatePath, ensureStoreSubdir } from '../utils/shared-state-path.js';
 
 /**
+ * Roadmap decision-section dialect (`## <emoji> Décision <id>`), the format
+ * this service writes (#2307). Exported as the single source so
+ * analyze_roosync_problems counts the same sections the writer produces —
+ * two hand-maintained copies here and in the analyzer already drifted once.
+ * Keep the CAPTURING group: String.split() includes captures in its result,
+ * and parseDecisionsFromMarkdown depends on that behavior. `match(/…/g)`
+ * ignores groups, so the same source is safe in both call shapes.
+ */
+export const ROADMAP_DECISION_SECTION_PATTERN = '## (⏳|✅|❌|🎯) Décision ';
+
+/**
  * Service BaselineService - Cœur de l'architecture baseline-driven
  */
 export class BaselineService {
@@ -717,7 +728,7 @@ ${decision.notes ? `### Notes\n${decision.notes}` : ''}
    */
   private parseDecisionsFromMarkdown(content: string): SyncDecision[] {
     const decisions: SyncDecision[] = [];
-    const sections = content.split(/## (⏳|✅|❌|🎯) Décision /).filter(section => section.trim());
+    const sections = content.split(new RegExp(ROADMAP_DECISION_SECTION_PATTERN)).filter(section => section.trim());
 
     for (const section of sections) {
       try {

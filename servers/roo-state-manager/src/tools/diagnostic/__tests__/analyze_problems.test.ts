@@ -311,6 +311,49 @@ describe('analyze_problems', () => {
 			expect(mismatch).toBeDefined();
 			expect(mismatch.severity).toBe('HIGH');
 			expect(mismatch.count).toBe(2); // both emoji sections counted
+			expect(mismatch.description).toContain('faux vert'); // pure-dialect wording
+		});
+
+		test('mixed dialect still flags FORMAT_MISMATCH when DECISION_BLOCK parses (#2307 suites)', async () => {
+			// The old gate `totalDecisions === 0` let a mixed file through: some
+			// blocks parse, so the report looks healthy while the emoji sections
+			// stay invisible to every counter — same blind spot, smaller.
+			const mixedContent = [
+				'<!-- DECISION_BLOCK_START -->',
+				'**ID:** `DEC-001`',
+				'**Statut:** pending',
+				'<!-- DECISION_BLOCK_END -->',
+				'',
+				'## ⏳ Décision decision-1777305081301-0',
+				'**Machine:** target-machine',
+				'**Statut:** pending',
+				'',
+				'## ✅ Décision decision-1777325301570-0',
+				'**Machine:** target-machine',
+				'**Statut:** approved',
+			].join('\n');
+			mockStat.mockResolvedValueOnce({ size: 400 });
+			mockReadFile.mockResolvedValueOnce(mixedContent);
+			const result = await analyzeRooSyncProblems({ roadmapPath: '/test/roadmap.md' });
+			const data = JSON.parse(result.content[0].text);
+			expect(data.success).toBe(true);
+			expect(data.totalDecisions).toBe(1); // the block still parses
+			const mismatch = data.issues.find((i: any) => i.type === 'FORMAT_MISMATCH');
+			expect(mismatch).toBeDefined();
+			expect(mismatch.count).toBe(2); // both emoji sections invisible
+			expect(mismatch.description).toContain('invisibles'); // mixed wording, not the fake-green one
+			expect(mismatch.description).not.toContain('faux vert');
+			expect(mismatch.details.parsedBlocks).toBe(1);
+		});
+
+		test('emoji-section counting uses the exported BaselineService pattern (#2307 suites)', async () => {
+			// One source of truth: the analyzer builds its detector RegExp from
+			// ROADMAP_DECISION_SECTION_PATTERN (exported by the writer), so the two
+			// cannot drift. If BaselineService's dialect changes without this
+			// file's fixtures, this pin fails alongside the mismatch tests above.
+			const { ROADMAP_DECISION_SECTION_PATTERN } = await import('../../../services/BaselineService.js');
+			const detector = new RegExp(ROADMAP_DECISION_SECTION_PATTERN, 'g');
+			expect(emojiDialectContent.match(detector)?.length).toBe(2);
 		});
 
 		test('no FORMAT_MISMATCH when DECISION_BLOCK content parses normally', async () => {
