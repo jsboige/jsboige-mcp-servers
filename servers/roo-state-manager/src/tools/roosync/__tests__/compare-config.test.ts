@@ -306,11 +306,13 @@ describe('compare-config', () => {
 			expect(result.differences[0].description).toMatch(/vide côté cible.*peuplée côté source/);
 		});
 
-		test('#2307: machine sans Roo (mcp_settings vide) mais flotte Claude publiée → pas de faux "collecte dégradée"', async () => {
-			// po-204 : Roo désinstallé, `inventory.mcpServers` = [] par construction,
-			// et la flotte MCP réelle vit dans `inventory.claudeConfig.mcpServers`
-			// (publiée par collectClaudeConfig). Le pré-vol ne doit PAS crier à la
-			// collecte dégradée : la section EST peuplée, dans son autre représentation.
+		test('#2307: machine sans Roo (mcp_settings vide) mais flotte Claude publiée → garde honnête + diagnostic orienté, zéro diff fantôme', async () => {
+			// po-204 → ai-01 : la garde #2963 DOIT se déclencher (le diff `mcp` ne
+			// lit que les sections Roo/Zoo — diff contre une section vide =
+			// « ajouts » fantômes), MAIS le côté vide n'est PAS une collecte
+			// dégradée : sa flotte MCP vit côté Claude (claudeConfig.mcpServers,
+			// publié par #1363). Le diagnostic doit le dire au lieu de crier
+			// « mcp_settings.json non lu » (relevé web2 c.25).
 			mockGetInventory.mockImplementation((machineId: string) => {
 				if (machineId === 'po-2024') {
 					return Promise.resolve({
@@ -327,8 +329,8 @@ describe('compare-config', () => {
 			mockCompareGranular.mockResolvedValue({
 				sourceLabel: 'po-2024',
 				targetLabel: 'ai-01',
-				diffs: [],
-				stats: { added: 0, removed: 0, modified: 0, unchanged: 0 }
+				diffs: [{ type: 'added', path: 'win-cli', description: 'phantom' }],
+				stats: { added: 1, removed: 0, modified: 0, unchanged: 0 }
 			});
 
 			const result = await roosyncCompareConfig({
@@ -337,10 +339,50 @@ describe('compare-config', () => {
 				granularity: 'mcp'
 			});
 
-			// Pas de court-circuit : le diff granulaire est bien appelé.
-			expect(mockCompareGranular).toHaveBeenCalled();
-			// Et AUCUN statut `inventory` de collecte dégradée n'est émis.
-			expect(result.differences.filter(d => d.category === 'inventory')).toHaveLength(0);
+			// La garde court-circuite : le détecteur n'est PAS appelé, aucun
+			// « ajout » fantôme ne sort.
+			expect(mockCompareGranular).not.toHaveBeenCalled();
+			expect(result.differences).toHaveLength(1);
+			// …et le diagnostic distingue Roo-less de collecte dégradée.
+			expect(result.differences[0].description).toMatch(/flotte MCP .* côté Claude/);
+			expect(result.differences[0].description).toMatch(/3 serveurs/);
+		});
+
+		test('#2307 (non mocké, détecteur réel): po-204 → ai-01 — ni warning "collecte dégradée" nu, ni added fantômes', async () => {
+			// Détecteur RÉEL (aucun mock sur compareGranular) : si la garde
+			// laissait passer, le diff Roo [] vs 7 entrées rendrait 7 « added »
+			// fantômes (serveurs que po-204 porte côté Claude).
+			mockGetInventory.mockImplementation((machineId: string) => {
+				if (machineId === 'po-2024') {
+					return Promise.resolve({
+						inventory: {
+							mcpServers: [],
+							claudeConfig: { mcpServers: ['playwright', 'roo-state-manager', 'searxng'] }
+						}
+					});
+				}
+				return Promise.resolve({
+					inventory: { mcpServers: {
+						'win-cli': { command: 'node' }, 'roo-state-manager': { command: 'node' },
+						'playwright': { command: 'node' }, 'sk-agent': { command: 'node' },
+						'searxng': { command: 'node' }, 'markitdown': { command: 'node' },
+						'jupyter': { command: 'node' }
+					}}
+				});
+			});
+
+			const result = await roosyncCompareConfig({
+				source: 'po-2024',
+				target: 'ai-01',
+				granularity: 'mcp'
+			});
+
+			// Le statut d'inventaire orienté est émis…
+			expect(result.differences).toHaveLength(1);
+			expect(result.differences[0].category).toBe('inventory');
+			expect(result.differences[0].description).toMatch(/flotte MCP .* côté Claude/);
+			// …et AUCUN diff roo_config (added fantômes) ne sort.
+			expect(result.differences.filter(d => d.category === 'roo_config')).toHaveLength(0);
 		});
 
 		test('#2963: les deux côtés ont 0 MCPs → pas de pre-flight (vrai signal aucun MCP configuré)', async () => {
