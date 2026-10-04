@@ -9,6 +9,8 @@ export interface SearchFallbackArgs {
   source?: 'roo' | 'claude-code';
   /** #2548: Max results to return (prevents unbounded dumps) */
   max_results?: number;
+  /** #936: Pagination cursor — skip the first N ranked results before capping */
+  offset?: number;
   /**
    * #2548: Whether advanced filters that text mode CANNOT support were requested.
    * The caller must exclude has_errors/start_date/end_date from this flag — those
@@ -193,10 +195,15 @@ export async function searchFallbackTool(
       return new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
     });
 
+    // #936: apply the pagination cursor AFTER ranking, BEFORE the max_results cap,
+    // so page 2 (offset=N) continues the ranked sequence instead of re-serving it.
+    const effectiveOffset = Math.min(Math.max(args.offset || 0, 0), 10000);
+    const offsetResults = effectiveOffset > 0 ? results.slice(effectiveOffset) : results;
+
     // #2548: Cap results to max_results (prevents unbounded context dumps)
     const cappedResults = max_results && max_results > 0
-      ? results.slice(0, Math.min(max_results, 100))
-      : results;
+      ? offsetResults.slice(0, Math.min(max_results, 100))
+      : offsetResults;
 
     // Strip internal _score before returning
     const cleanResults = cappedResults.map(({ _score, ...rest }) => rest);
@@ -222,8 +229,11 @@ export async function searchFallbackTool(
     if (unevaluableForErrors > 0) {
       warnings.push(`${unevaluableForErrors} task(s) could not be evaluated for has_errors (no action sequence loaded in cache) and are excluded from these results — this is not evidence that they carry no errors.`);
     }
-    if (max_results && results.length > max_results) {
-      warnings.push(`Results capped from ${results.length} to ${max_results}.`);
+    if (max_results && offsetResults.length > max_results) {
+      warnings.push(`Results capped from ${offsetResults.length} to ${max_results}.`);
+    }
+    if (effectiveOffset > 0) {
+      appliedFilters.push(`offset=${effectiveOffset}`);
     }
 
     return {

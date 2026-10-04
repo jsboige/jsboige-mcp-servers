@@ -397,6 +397,67 @@ describe('searchFallbackTool', () => {
 			expect(parsed.results[0].taskId).toBe('newer');
 			expect(parsed.results[1].taskId).toBe('older');
 		});
+
+		// ============================================================
+		// #936: offset pagination cursor (applied after ranking)
+		// ============================================================
+
+		test('[#936] offset skips the first N ranked results', async () => {
+			const first = makeSkeleton('rank-1', {
+				metadata: {
+					title: 'Offset pagination first',
+					lastActivity: '2026-01-01T00:00:00Z',
+					createdAt: '2026-01-01T00:00:00Z',
+					mode: 'code-simple',
+					messageCount: 5,
+					actionCount: 2,
+					totalSize: 1024,
+					workspace: '/ws',
+				},
+			} as any);
+			const second = makeSkeleton('rank-2', {
+				metadata: {
+					title: 'Offset pagination second',
+					lastActivity: '2026-01-01T00:00:00Z',
+					createdAt: '2026-01-01T00:00:00Z',
+					mode: 'code-simple',
+					messageCount: 5,
+					actionCount: 2,
+					totalSize: 1024,
+					workspace: '/ws',
+				},
+			} as any);
+
+			const cache = makeCache(first, second);
+
+			const page1 = parseResult(await searchFallbackTool({ query: 'Offset pagination' }, cache));
+			const page2 = parseResult(await searchFallbackTool({ query: 'Offset pagination', offset: 1 }, cache));
+
+			expect(page1.results.map((r: any) => r.taskId)).toEqual(['rank-1', 'rank-2']);
+			// Page 2 continues the ranked sequence instead of re-serving it
+			expect(page2.results.map((r: any) => r.taskId)).toEqual(['rank-2']);
+			expect(page2.metadata.applied_filters).toContain('offset=1');
+		});
+
+		test('[#936] offset larger than result count yields empty results', async () => {
+			const skeleton = makeSkeleton('only-one', {
+				metadata: {
+					title: 'Offset pagination single',
+					lastActivity: '2026-01-01T00:00:00Z',
+					createdAt: '2026-01-01T00:00:00Z',
+					mode: 'code-simple',
+					messageCount: 5,
+					actionCount: 2,
+					totalSize: 1024,
+					workspace: '/ws',
+				},
+			} as any);
+
+			const cache = makeCache(skeleton);
+			const parsed = parseResult(await searchFallbackTool({ query: 'Offset pagination', offset: 10 }, cache));
+
+			expect(parsed.results).toHaveLength(0);
+		});
 	});
 
 	// ============================================================

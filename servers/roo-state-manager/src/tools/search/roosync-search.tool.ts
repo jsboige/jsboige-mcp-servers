@@ -33,6 +33,9 @@ export interface RooSyncSearchArgs {
     /** Nombre max de résultats */
     max_results?: number;
 
+    /** #936: Curseur de pagination — ignorer les N premiers résultats classés (requêtes larges). Clamp [0, 10000]. */
+    offset?: number;
+
     /** Filtre par workspace */
     workspace?: string;
 
@@ -95,6 +98,10 @@ export const roosyncSearchTool: Tool = {
             max_results: {
                 type: 'number',
                 description: 'Max results to return (default: 10, max: 100)'
+            },
+            offset: {
+                type: 'number',
+                description: '#936: Pagination cursor — skip the first N ranked results (broad queries). Clamp [0, 10000].'
             },
             workspace: {
                 type: 'string',
@@ -194,6 +201,8 @@ export async function handleRooSyncSearch(
 
             // #2473: Clamp max_results to [1, 100] to prevent unbounded Qdrant queries
             const clampedMaxResults = Math.min(Math.max(args.max_results || 10, 1), 100);
+            // #936: Pagination cursor for broad queries — clamp to Qdrant's sane bounds
+            const clampedOffset = Math.min(Math.max(args.offset || 0, 0), 10000);
 
             // #249: Try semantic with retry (handled inside search-semantic.tool.ts),
             // then auto-fallback to text search if semantic fails, WITH a warning flag.
@@ -203,6 +212,8 @@ export async function handleRooSyncSearch(
                 search_query: args.search_query,
                 conversation_id: args.conversation_id,
                 max_results: clampedMaxResults,
+                // #936: forward the pagination cursor to the Qdrant search
+                offset: clampedOffset,
                 workspace: effectiveWorkspace,
                 source: args.source,
                 diagnose_index: false,
@@ -243,6 +254,8 @@ export async function handleRooSyncSearch(
                 source: args.source,
                 // #2548: Propagate max_results to prevent unbounded dumps
                 max_results: clampedMaxResults,
+                // #936: propagate the pagination cursor to text mode as well
+                offset: clampedOffset,
                 // #2548 + #2920: flag ONLY the filters text mode cannot evaluate.
                 // has_errors/start_date/end_date are now applied by the fallback, so
                 // including them here would emit a "not applied" warning about filters
@@ -297,6 +310,8 @@ export async function handleRooSyncSearch(
                 source: args.source,
                 // #2548: Propagate max_results
                 max_results: Math.min(Math.max(args.max_results || 10, 1), 100),
+                // #936: propagate the pagination cursor (text mode slices after ranking)
+                offset: Math.min(Math.max(args.offset || 0, 0), 10000),
                 // #2920: see the semantic-fallback site above — only the
                 // non-applicable filters are flagged, the other three are applied.
                 filters_requested: !!(

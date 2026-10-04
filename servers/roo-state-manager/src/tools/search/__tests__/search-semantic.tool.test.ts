@@ -576,6 +576,59 @@ describe('searchTasksByContentTool', () => {
 			expect(timestampFilter.range.gte).toBe('2026-04-07T00:00:00.000Z');
 			expect(timestampFilter.range.lte).toBeUndefined();
 		});
+
+		// ========================================================
+		// #936 — offset pagination cursor
+		// ========================================================
+		test('[#936] pushes offset to Qdrant search options', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{
+					search_query: 'work',
+					offset: 25,
+				} as any,
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			expect(searchCall.offset).toBe(25);
+		});
+
+		test('[#936] omits offset from Qdrant search options when not provided (historical shape)', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{
+					search_query: 'work',
+				} as any,
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			expect(searchCall.offset).toBeUndefined();
+		});
+
+		test('[#936] clamps offset above 10000', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{
+					search_query: 'work',
+					offset: 99999,
+				} as any,
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			expect(searchCall.offset).toBe(10000);
+		});
 	});
 
 	// ============================================================
