@@ -138,7 +138,15 @@ export default mergeConfig(unitConfig, defineConfig({
       //   The 2026-07-26 blanket exclusion was stale — same class as the SMOKEs.
       //   baseline.integration additionally pins SHARED_STATE_PATH to a temp dir
       //   (BaselineService prioritises it over ROOSYNC_SHARED_PATH).
-      //   Verified: 12/12 + 23/23 pass under this config.
+      //   diagnose.integration moved its fixture out of the repo tree to
+      //   mkdtemp(os.tmpdir()) (bb4ab708, review #1355): the old __test-data__
+      //   fixture made the afterEach rmSync fail ENOTEMPTY on the Linux runner
+      //   (run 37199160323).
+      //   Verified from CI, not local: diagnose 23/23 + full roo-state-manager job
+      //   green on ubuntu run 37210199089 (head bb4ab708); local Windows 23/23 same head.
+      //   Known residual (not blocking, review #1355): diagnose.integration logs 6x
+      //   `powershell: not found` on Linux (PSVersion probe via PowerShellExecutor /
+      //   InventoryService) — tests stay green, but the file remains Windows-coupled.
       // 'src/tools/roosync/__tests__/baseline.integration.test.ts',
       // 'src/tools/roosync/__tests__/diagnose.integration.test.ts',
       // STAYS EXCLUDED — measured 2026-10-04 (#2639): 28/28 GREEN, but the file leaves a
