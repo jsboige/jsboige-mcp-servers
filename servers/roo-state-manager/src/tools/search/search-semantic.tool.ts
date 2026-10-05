@@ -98,6 +98,26 @@ const QUERY_EMBEDDING_CACHE_MAX = 100;
 const DIVERSIFY_OVERFETCH = 3;
 const DIVERSIFY_MAX_CHUNKS_PER_TASK = 2;
 
+// #2609 q4 (cross-conversation synthesis): a chunk whose ENTIRE content is a
+// sub-sentence fragment (" est close.", "it sous decide ?") can match query
+// tokens strongly yet never satisfy rubric (a) — a coherent passage. It is
+// de-ranked (×0.85), not removed: for an exact-lookup query a short chunk can
+// still be the right answer, and with nothing better above it the malus does
+// not hide it (same degradé-pas-supprimé contract as the codebase malus family).
+// Rollback / A-B: SEMANTIC_FRAGMENT_MALUS=0 (same convention as SEARCH_CONTEXT_EXPANSION).
+const FRAGMENT_MALUS_MIN_CHARS = 40;
+const FRAGMENT_MALUS_FACTOR = 0.85;
+
+function isFragmentMalusEnabled(): boolean {
+    return process.env.SEMANTIC_FRAGMENT_MALUS !== '0';
+}
+
+function applyFragmentMalus(score: number, content: string): { score: number; applied: boolean } {
+    if (!isFragmentMalusEnabled()) return { score, applied: false };
+    if (content.trim().length >= FRAGMENT_MALUS_MIN_CHARS) return { score, applied: false };
+    return { score: score * FRAGMENT_MALUS_FACTOR, applied: true };
+}
+
 function getCachedQueryEmbedding(query: string): number[] | null {
     const cached = queryEmbeddingCache.get(query);
     if (cached && Date.now() < cached.expiresAt) {
@@ -1096,11 +1116,18 @@ export const searchTasksByContentTool = {
                 : (searchResults as any).result || (searchResults as any).points || [];
 
             // Phase 2: Enriched results with snippets, score interpretation, deduplication
+            let fragmentMalusApplied = 0;
             const results: RawSearchResult[] = rawPoints.map((result: any) => {
                 // #982 FIX: Prefer full content for snippet extraction (content_summary is only 200 chars)
                 const fullContent = String(result.payload?.content || result.payload?.content_summary || '');
                 const content = String(result.payload?.content_summary || result.payload?.content || '');
-                const score = result.score || 0;
+                // #2609 q4: fragment de-rank — one helper feeds ranking AND rendered
+                // score so the two cannot diverge (same contract as the #1180
+                // codebase malus family). Applies to the chunk's full content,
+                // never to the display snippet.
+                const malus = applyFragmentMalus(result.score || 0, fullContent);
+                if (malus.applied) fragmentMalusApplied++;
+                const score = malus.score;
                 // #2609 V3: raw ints for the handle — message_position is a display
                 // string and cannot drive a conversation_browser re-expansion.
                 const messageIndex = typeof result.payload?.message_index === 'number'
@@ -1284,6 +1311,18 @@ export const searchTasksByContentTool = {
                             cap_per_task: DIVERSIFY_MAX_CHUNKS_PER_TASK,
                             truncated_groups: diversifyStats.truncated_groups,
                             chunks_capped: diversifyStats.chunks_capped,
+                        }
+                    } : {}),
+                    // #2609 q4: fragment de-rank observability. Emitted only when the
+                    // malus fired OR is explicitly disabled (rollback visibility) —
+                    // quiet for the common fragment-free query, same convention as
+                    // dedup/diversify/context-expansion above.
+                    ...(fragmentMalusApplied > 0 || process.env.SEMANTIC_FRAGMENT_MALUS === '0' ? {
+                        fragment_malus: {
+                            applied: fragmentMalusApplied,
+                            min_chars: FRAGMENT_MALUS_MIN_CHARS,
+                            factor: FRAGMENT_MALUS_FACTOR,
+                            enabled: process.env.SEMANTIC_FRAGMENT_MALUS !== '0',
                         }
                     } : {}),
                     // #2609 V3 (rubric (c)): context-expansion observability. Emitted

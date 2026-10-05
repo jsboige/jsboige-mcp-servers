@@ -67,3 +67,29 @@ export const CONVERSATION_BROWSER_QUERY: GoldenQuery = {
     sortBy: 'lastActivity',
   },
 };
+
+/**
+ * Golden scenario 4 of Epic #2609 — cross-conversation synthesis.
+ *
+ * "Les arbitrages encore ouverts cette semaine avec leur contexte" graded as:
+ * the response must span ≥2 distinct conversations (unique_tasks), each openable
+ * via a drill_down handle, with when/where metadata — the synthesis scaffold an
+ * agent needs WITHOUT re-opening a grep.
+ *
+ * exclude_tool_results=true is deliberate: it is the best measured lever for
+ * decision-content queries (live 2026-10-05: tool_interaction JSON fragments
+ * occupy 5/7 top slots without it, 0/7 with it).
+ *
+ * @issue Epic #2609 scenario 4 (V1 coverage)
+ */
+export const CROSS_CONVERSATION_QUERY: GoldenQuery = {
+  tool: 'roosync_search',
+  description: 'Cross-conversation synthesis: open arbitrations with context',
+  args: {
+    action: 'semantic',
+    search_query: 'arbitrage user question ouverte décision en attente',
+    workspace: '*',
+    max_results: 8,
+    exclude_tool_results: true,
+  },
+};
