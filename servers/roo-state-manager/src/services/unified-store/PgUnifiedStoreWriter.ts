@@ -750,6 +750,28 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
   }
 
   /**
+   * Stall diagnostics (web2 05/10) — read-only peek at the lock row: holder
+   * payload + server-clock acquired_at, for the lock AGE surfaced at
+   * condensationStalled='lock-held'. Single-shot, no retry loop (same policy
+   * as the acquire): a failed read just omits the age, the stall stays visible.
+   */
+  async readRooSyncDashboardLock(
+    lockKey: string
+  ): Promise<{ holder: unknown; acquiredAt: string } | null> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+    const res = await this.pool.query(
+      `SELECT holder, acquired_at FROM roosync_dashboard_locks WHERE lock_key = $1`,
+      [lockKey]
+    );
+    const row = res.rows?.[0] as { holder?: unknown; acquired_at?: Date | string } | undefined;
+    if (!row || row.acquired_at == null) return null;
+    const acquiredAt =
+      row.acquired_at instanceof Date ? row.acquired_at.toISOString() : String(row.acquired_at);
+    return { holder: row.holder, acquiredAt };
+  }
+
+  /**
    * Targeted archival of explicit journal rows (#3151-D gate — the reconcile
    * archival pass). Single atomic UPDATE, no transaction needed. The
    * `archived_at IS NULL` predicate both makes it idempotent and makes
