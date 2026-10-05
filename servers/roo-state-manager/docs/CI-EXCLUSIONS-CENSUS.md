@@ -1,6 +1,6 @@
 # Recensement des exclusions CI — `vitest.config.ci.ts`
 
-**Dernier audit :** 2026-10-04 (#2639 réactivation)
+**Dernier audit :** 2026-10-05 (#2639 réactivation)
 **Mesure canonique :** `node scripts/count-ci-exclusions.mjs` (script, jamais à la main)
 **Drift-guard :** `tests/unit/ci-exclusion-drift-guard.test.ts` — échoue si le header du config dérive ou si une entrée ghost apparaît
 
@@ -8,16 +8,16 @@
 
 ## Mesures canoniques
 
-| Mesure | Valeur (2026-10-04) | Méthode |
+| Mesure | Valeur (2026-10-05) | Méthode |
 |---|---|---|
-| **Entrées fichiers de test déclarées** | **23** | parse du tableau `exclude` du config |
+| **Entrées fichiers de test déclarées** | **22** | parse du tableau `exclude` du config |
 | **Globs répertoires de tests déclarés** | **4** | idem |
 | Entrées structurelles (node_modules/build/dist/backups) | 9 | idem — hygiène, pas des exclusions de tests |
-| Fichiers effectivement non collectés en CI (vs run local) | **14** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
-| Tests sautés en CI (vs run local) | **328** | idem |
+| Fichiers effectivement non collectés en CI (vs run local) | **13** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
+| Tests sautés en CI (vs run local) | **300** | idem |
 
 **Pourquoi deux nombres.** Le compte *déclaré* ne change que quand on édite le config — c'est lui que le
-drift-guard verrouille et que les docs citent. Le compte *effectif* (14 fichiers / 328 tests) dépend
+drift-guard verrouille et que les docs citent. Le compte *effectif* (13 fichiers / 300 tests) dépend
 aussi des patterns `include` et du contenu des fichiers (ex. `dashboard-llm-live` collecte 0 test sans
 `LLM_LIVE_INTEGRATION=1`) : il dérive sans toucher au config, donc il n'est pas gardé et se mesure à la
 demande via `--collect`. **Contrôle croisé de cette tranche** : 363 − 328 = **35** tests et
@@ -61,11 +61,16 @@ exclu`) et créent elles-mêmes leurs répertoires de fixture (hors arbre du dé
 l'exclusion blanket du 2026-07-26 était périmée, même classe que les SMOKE.
 **Les 6 autres restent exclues, chacune pour une raison MESURÉE** (section dédiée ci-dessous) — la
 catégorie « APPDATA/GDRIVE » ne décrivait correctement **aucune** des trois qui y figuraient →
-**23 entrées**.
+**23 entrées**. **#2639 (2026-10-05, 7e réactivation) :** `decision.integration.test.ts` réactivé —
+le fichier `D` de 0 octet du CWD était un **flux ADS NTFS** : le nom de backup pré-fix conservait le
+`:` du lecteur (`D:_dev_…json` = flux porté par un fichier de base `D`), et le `copyFileSync(…, 'D')`
+du restore copiait ce `D` vide dans le CWD (root-cause #1358 : nom déterministe, restauration pilotée
+par manifeste). Mesuré 28/28 verts sous config CI sur Windows — la plateforme **native** du flux ADS,
+donc le cas défavorable — sans aucun `D` avant ni après → **22 entrées**.
 
 ---
 
-## Les 23 entrées fichiers de test
+## Les 22 entrées fichiers de test
 
 ### POWERSHELL — 6 entrées, toutes effectives (159 tests)
 
@@ -100,16 +105,17 @@ debug permanente retirée — 4/4 vérifiés sous config CI.)*
 
 Plus aucune entrée : les cinq fichiers smoke tournent sous config CI.
 
-### Plateforme (PowerShell) / état-dépendant / schéma périmé — 6 entrées
+### Plateforme (PowerShell) / état-dépendant / schéma périmé — 5 entrées
 
-Ces six entrées **ne dépendent pas de GDrive** : le libellé de section « APPDATA/GDRIVE » ne
+Ces cinq entrées **ne dépendent pas de GDrive** : le libellé de section « APPDATA/GDRIVE » ne
 décrivait correctement **aucune** d'elles. Chacune porte une raison propre, **mesurée le 2026-10-04**
 (#2639, tranche 6) en levant son exclusion et en exécutant le fichier **sous `vitest.config.ci.ts`**
 — la config qui fait autorité (le verdict sous `vitest.config.ts` diffère et ne vaut pas).
+*(`decision.integration.test.ts` quittait cette section le 2026-10-05, 7e réactivation #2639 —
+voir historique.)*
 
 | Entrée | Tests | Raison mesurée (2026-10-04) |
 |---|---|---|
-| `src/tools/roosync/__tests__/decision.integration.test.ts` | 28 — **tous verts**, mais **exclue quand même** | Le fichier laisse un **fichier `D` de 0 octet dans le CWD**. Bissecté sur `should handle complete workflow: approve → apply → rollback` ; transformer `D` en répertoire en fait un **échec dur** (`EISDIR` → `rollbackResult.success === false`, l.607), donc le chemin rollback écrit vraiment dedans. **Site d'écriture non identifié** : `createBackup`/`restoreBackup` ne tournent pas (répertoire `backups/` vide), aucun `split(':')` sur le chemin partagé. Une écriture non identifiée dans un chemin qui tourne aussi en production ne s'allume pas silencieusement en CI — investigation dédiée requise. |
 | `src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts` | 13 — **13 rouges** | Dépendance **plateforme dure** : le tool shell vers `pwsh -NoProfile -ExecutionPolicy Bypass -c "& .../scripts/roosync/generate-mcp-dashboard.ps1"` (`refresh-dashboard.ts` **l.161**). CI = `ubuntu-22.04`. **Seule** entrée dont le label « platform-dependent » était exact. |
 | `src/tools/roosync/__tests__/config.integration.test.ts` | 41 — **1 rouge** | Le cas `apply_profile` « should throw when profile not found » (**l.374-381**) attend un rejet `/profil.*non trouvé/` mais reçoit `'model-configs.json non trouvé localement'` : le tmpdir ne porte **aucune fixture `model-configs.json`**, l'outil échoue une branche plus tôt. Correctif = fixture dans le test. |
 | `src/tools/roosync/__tests__/compare-config.integration.test.ts` | 39 — **3 rouges** | Le bloc « environment variables checking (#495) » filtre les diffs sur la sous-chaîne `manquante`, qui matche **aussi** le libellé de `checkRosterPartitionDrift()` (« manquantes du roster », `compare-config.ts` **l.2010/2031**) — or ce drift dérive de `service.loadDashboard()`, donc de l'**état partagé réel**. Correctif = resserrer le filtre du test (`path.startsWith('env.')` + `severity`). |
@@ -158,7 +164,7 @@ ici) : le label de section a été renommé d'après les raisons **mesurées**, 
 |---|---|---|
 | `src/tools/roosync/__tests__/stress-large-inbox.test.ts` | 10 | seuils de timing dépendants du hardware (16 GB RAM, `--maxWorkers=1`) |
 
-**Total déclaré : 6+0+6+7+1+1+1+1 = 23 · effectif : mesure 2026-10-04 post-#2639 (`--collect`) — 14 fichiers / 328 tests**
+**Total déclaré : 6+0+5+7+1+1+1+1 = 22 · effectif : mesure 2026-10-05 post-#2639 (`--collect`) — 13 fichiers / 300 tests**
 
 ---
 
@@ -190,15 +196,14 @@ Exclusions **sans raison datée** — à re-auditer avant d'en ajouter de nouvel
 
 1. **POWERSHELL (6)** — plateforme légitime (CI = ubuntu), mais rien n'empêcherait un job matrix
    Windows de les exécuter. Candidat « job dédié », pas réactivation simple.
-2. **Plateforme / état-dépendant / schéma périmé (6)** — **mesurées** le 2026-10-04 (#2639, tranche 6),
+2. **Plateforme / état-dépendant / schéma périmé (5)** — **mesurées** le 2026-10-04 (#2639, tranche 6),
    chacune avec son correctif identifié (section dédiée ci-dessus). Aucune n'est un candidat tmpdir :
    `refresh-dashboard` restera Windows-only (→ job matrix, avec les 6 POWERSHELL) ·
-   `decision.integration` est **vert** mais laisse un artefact `D` non tracé dans le CWD
-   (**investigation dédiée** — le site d'écriture n'est pas identifié) ·
    `config.integration` (1 test rouge) demande une fixture `model-configs.json` ·
    `compare-config` (3 tests rouges) un filtre resserré ·
    `tests/unit/tools/roosync/baseline.test.ts` (2 tests rouges) une mise à jour des cas `restore` ·
    `dashboard-llm-live` est un no-op (opt-in `LLM_LIVE_INTEGRATION=1`).
+   (`decision.integration`, 6e de la tranche, a été réactivée le 2026-10-05 — 7e réactivation #2639.)
    **SMOKE est clos** : les 5 fichiers smoke ont été réactivés (2026-10-03/04, #2639), et plus aucune
    entrée de cette catégorie ne dépend réellement de GDrive.
 3. **Inherited no-op (7)** — dont 3 sans raison documentée (parent-child-validation,
