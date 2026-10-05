@@ -459,7 +459,9 @@ describe('searchTasksByContentTool', () => {
 					score: 0.85,
 					payload: {
 						task_id: 'task-1',
-						content: 'Rate limiting implementation',
+						// #2609 q4 : contenu >= 40 chars — ce test cible le groupement
+						// cross-machine, pas le fragment de-rank (voir son describe dédié).
+						content: 'Rate limiting implementation for the coordinator dashboard',
 						task_title: 'Fix rate limiter',
 						workspace: 'ws1',
 						host_os: 'machine-a',
@@ -471,7 +473,7 @@ describe('searchTasksByContentTool', () => {
 					score: 0.70,
 					payload: {
 						task_id: 'task-2',
-						content: 'Another result',
+						content: 'Another substantive result about rate limiting choices',
 						task_title: 'Other task',
 						workspace: 'ws1',
 						host_os: 'machine-b',
@@ -500,12 +502,13 @@ describe('searchTasksByContentTool', () => {
 		test('deduplicates multiple chunks from same task', async () => {
 			mockQdrantClient.search.mockResolvedValue([
 				{
+					// #2609 q4 : contenu >= 40 chars (fragment de-rank, describe dédié)
 					score: 0.9,
-					payload: { task_id: 'task-1', content: 'First chunk', task_title: 'Task', host_os: 'h1' }
+					payload: { task_id: 'task-1', content: 'First chunk of the rate limiting decision passage', task_title: 'Task', host_os: 'h1' }
 				},
 				{
 					score: 0.7,
-					payload: { task_id: 'task-1', content: 'Second chunk', task_title: 'Task', host_os: 'h1' }
+					payload: { task_id: 'task-1', content: 'Second chunk with different substantive content here', task_title: 'Task', host_os: 'h1' }
 				}
 			]);
 
@@ -767,7 +770,7 @@ describe('helper functions (indirect via handler)', () => {
 
 	test('interpretScore: excellent for score >= 0.9', async () => {
 		mockQdrantClient.search.mockResolvedValue([
-			{ score: 0.95, payload: { task_id: 't1', content: 'test', host_os: 'h1' } }
+			{ score: 0.95, payload: { task_id: 't1', content: 'substantive passage content for label mapping', host_os: 'h1' } }
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -783,7 +786,7 @@ describe('helper functions (indirect via handler)', () => {
 
 	test('interpretScore: good for score >= 0.75', async () => {
 		mockQdrantClient.search.mockResolvedValue([
-			{ score: 0.78, payload: { task_id: 't1', content: 'test', host_os: 'h1' } }
+			{ score: 0.78, payload: { task_id: 't1', content: 'substantive passage content for label mapping', host_os: 'h1' } }
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -799,7 +802,7 @@ describe('helper functions (indirect via handler)', () => {
 
 	test('interpretScore: moderate for score >= 0.6', async () => {
 		mockQdrantClient.search.mockResolvedValue([
-			{ score: 0.65, payload: { task_id: 't1', content: 'test', host_os: 'h1' } }
+			{ score: 0.65, payload: { task_id: 't1', content: 'substantive passage content for label mapping', host_os: 'h1' } }
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -815,7 +818,7 @@ describe('helper functions (indirect via handler)', () => {
 
 	test('interpretScore: weak for score >= 0.4', async () => {
 		mockQdrantClient.search.mockResolvedValue([
-			{ score: 0.45, payload: { task_id: 't1', content: 'test', host_os: 'h1' } }
+			{ score: 0.45, payload: { task_id: 't1', content: 'substantive passage content for label mapping', host_os: 'h1' } }
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -852,9 +855,9 @@ describe('helper functions (indirect via handler)', () => {
 		mockQdrantClient.search.mockResolvedValue([
 			// #2766: content DISTINCT per task — identical cross-task content is now
 			// collapsed by dedupGroupedChunksByContent (covered in its own describe block).
-			{ score: 0.6, payload: { task_id: 'task-b', content: 'chunk-b1', host_os: 'h1' } },
-			{ score: 0.9, payload: { task_id: 'task-a', content: 'chunk-a1', host_os: 'h1' } },
-			{ score: 0.7, payload: { task_id: 'task-b', content: 'chunk-b2', host_os: 'h1' } },
+			{ score: 0.6, payload: { task_id: 'task-b', content: 'grouping fixture chunk b1 substantive content', host_os: 'h1' } },
+			{ score: 0.9, payload: { task_id: 'task-a', content: 'grouping fixture chunk a1 substantive content', host_os: 'h1' } },
+			{ score: 0.7, payload: { task_id: 'task-b', content: 'grouping fixture chunk b2 substantive content', host_os: 'h1' } },
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -2446,5 +2449,122 @@ describe('#2609 V3 result quality', () => {
 		);
 
 		expect(mockQdrantClient.scroll).not.toHaveBeenCalled();
+	});
+});
+
+describe('#2609 q4 cross-conversation quality — fragment de-rank', () => {
+	const PASSAGE = 'Arbitrage : option (b) — run apparié, GO budget. Cap 15 dollars, seuil limit_remaining < 60 dollars, triplet avant/après à poster sur le dashboard global.';
+
+	beforeEach(() => {
+		mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+		mockUnifiedStoreReader.isNull.mockReturnValue(true);
+		mockQdrantClient.scroll.mockReset();
+		delete process.env.SEMANTIC_FRAGMENT_MALUS;
+	});
+
+	test('fragment chunk (sub-40-char content) de-ranked below a substantive passage', async () => {
+		// Raw ANN order: the fragment OUTSCORES the passage on token overlap —
+		// exactly the live q4 measurement (\" est close.\" at rank 4, 0.705, above
+		// substantive passages). The malus must flip the task order.
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.83, payload: { task_id: 'task-fragment', content: ' est close.', host_os: 'h1' } },
+			{ score: 0.78, payload: { task_id: 'task-passage', content: PASSAGE, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'arbitrage decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].taskId).toBe('task-passage');
+		expect(parsed.results[1].taskId).toBe('task-fragment');
+		// One helper feeds ranking AND rendered score — no divergence (#1180 contract)
+		expect(parsed.results[1].best_score).toBeCloseTo(0.83 * 0.85, 8);
+		expect(parsed.results[0].best_score).toBe(0.78);
+		expect(parsed.current_machine.fragment_malus).toEqual({
+			applied: 1,
+			min_chars: 40,
+			factor: 0.85,
+			enabled: true
+		});
+	});
+
+	test('chunk at/above the threshold is untouched and observability stays quiet', async () => {
+		// Exactly 40 chars (trimmed) = passage floor, not a fragment
+		const fortyChars = 'x'.repeat(40);
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.8, payload: { task_id: 'task-ok', content: fortyChars, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].best_score).toBe(0.8);
+		expect(parsed.current_machine.fragment_malus).toBeUndefined();
+	});
+
+	test('threshold measured on trimmed content (padding cannot dodge the malus)', async () => {
+		// 10 chars of text + 40 chars of whitespace → still a fragment
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.8, payload: { task_id: 'task-pad', content: ' est close.'.padEnd(50, ' '), host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].best_score).toBeCloseTo(0.8 * 0.85, 8);
+		expect(parsed.current_machine.fragment_malus.applied).toBe(1);
+	});
+
+	test('rollback SEMANTIC_FRAGMENT_MALUS=0 restores raw score and reports disabled', async () => {
+		process.env.SEMANTIC_FRAGMENT_MALUS = '0';
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.83, payload: { task_id: 'task-fragment', content: ' est close.', host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].best_score).toBe(0.83);
+		// Rollback visibility: the block is emitted with enabled=false
+		expect(parsed.current_machine.fragment_malus).toMatchObject({ applied: 0, enabled: false });
+	});
+
+	test('fragment is de-ranked, never hidden — sole hit still returned', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.9, payload: { task_id: 'task-only', content: ' oui.', host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'confirmation' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results).toHaveLength(1);
+		expect(parsed.results[0].best_score).toBeCloseTo(0.9 * 0.85, 8);
+		// Relevance is reinterpreted from the adjusted score (0.765 stays 'good',
+		// but a 0.78 fragment would read 'moderate' — label follows rendered score)
+		expect(parsed.results[0].relevance).toBe('good');
 	});
 });
