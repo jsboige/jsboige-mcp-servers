@@ -355,7 +355,9 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
               for (const [key, value] of Object.entries(mcpConfig.env)) {
                 // #2307 : un nom marquant un secret ne se publie JAMAIS, même sur
                 // un préfixe surveillé — la valeur ne doit pas quitter la machine.
-                if (/(KEY|TOKEN|SECRET|PASSWORD)/i.test(key)) continue;
+                // Liste étendue (dispatch ai-01 05/10) : PASS/PWD/PASSPHRASE/
+                // CREDENTIAL/BEARER/AUTHORIZATION/PRIVATE en plus des 4 d'origine.
+                if (/(KEY|TOKEN|SECRET|PASSWORD|PASS|PWD|PASSPHRASE|CREDENTIAL|BEARER|AUTHORIZATION|PRIVATE)/i.test(key)) continue;
                 if (key.startsWith('ROOSYNC_') || key.startsWith('QDRANT_') ||
                     key.startsWith('OPENAI_') || key.startsWith('EMBEDDING_')) {
                   // Éviter les doublons : si plusieurs MCPs utilisent la même var
