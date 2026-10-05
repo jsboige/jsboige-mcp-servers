@@ -13,7 +13,7 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 20 test-file entries + 4 tests-directory globs
+ * Exclusion census: 19 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
@@ -171,15 +171,19 @@ export default mergeConfig(unitConfig, defineConfig({
       //   (mkdtemp): the in-tree __test-data__ dir reproduced the ENOTEMPTY Linux
       //   cleanup class fixed for diagnose.integration by #1355.
       // 'src/tools/roosync/__tests__/config.integration.test.ts',
-      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 3/39 fail, and NOT for a
-      //   GDrive reason. The #495 env-var block filters on the loose substring
-      //   'manquante', which also matches checkRosterPartitionDrift()'s wording
-      //   ('manquantes du roster' / 'Manquantes du roster', compare-config.ts
-      //   l.2010 and l.2031). That drift is derived from service.loadDashboard()
-      //   — real shared state — so the expected count is machine/state-dependent
-      //   and the file is not tmpdir-isolable as written. Fix = tighten the test
-      //   filter (path.startsWith('env.') + severity).
-      'src/tools/roosync/__tests__/compare-config.integration.test.ts',
+      // REACTIVATED 2026-10-05 (#2639, 10th): the 3 reds shared ONE root cause the
+      //   census had diagnosed wrong. Not a loose-substring count: the #833 roster
+      //   fixture ('remote-machine,test-machine') was written for the era when
+      //   checkRosterPartitionDrift() referenced the DASHBOARD. The check now takes
+      //   the living registry (.machine-registry.json, written into the shared path
+      //   at runtime — here 'test-machine' alone) and falls back to the dashboard
+      //   only if it is missing (compare-config.ts l.1978-1987) -> size mismatch
+      //   2 vs 1 -> CRITICAL, state-dependent. Tightening the filter would NOT have
+      //   fixed it: the drift diff is env.* + CRITICAL, i.e. inside the suggested
+      //   predicate. Fix = align the roster fixture with the registry reference
+      //   (1 line); the drift then emits the INFO 'consistent' signal the tests
+      //   already assert. 39/39 measured under this config.
+      // 'src/tools/roosync/__tests__/compare-config.integration.test.ts',
       // update-dashboard.integration.test.ts removed with its module (#3549) —
       // update est v3-native, couvert en CI par dashboard-update-v3.test.ts
       // Live LLM endpoint, opt-in via LLM_LIVE_INTEGRATION=1 — 502 repro (#1578)

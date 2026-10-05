@@ -10,14 +10,14 @@
 
 | Mesure | Valeur (2026-10-05) | Méthode |
 |---|---|---|
-| **Entrées fichiers de test déclarées** | **20** | parse du tableau `exclude` du config |
+| **Entrées fichiers de test déclarées** | **19** | parse du tableau `exclude` du config |
 | **Globs répertoires de tests déclarés** | **4** | idem |
 | Entrées structurelles (node_modules/build/dist/backups) | 9 | idem — hygiène, pas des exclusions de tests |
-| Fichiers effectivement non collectés en CI (vs run local) | **11** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
-| Tests sautés en CI (vs run local) | **240** | idem |
+| Fichiers effectivement non collectés en CI (vs run local) | **10** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
+| Tests sautés en CI (vs run local) | **201** | idem |
 
 **Pourquoi deux nombres.** Le compte *déclaré* ne change que quand on édite le config — c'est lui que le
-drift-guard verrouille et que les docs citent. Le compte *effectif* (11 fichiers / 240 tests) dépend
+drift-guard verrouille et que les docs citent. Le compte *effectif* (10 fichiers / 201 tests) dépend
 aussi des patterns `include` et du contenu des fichiers (ex. `dashboard-llm-live` collecte 0 test sans
 `LLM_LIVE_INTEGRATION=1`) : il dérive sans toucher au config, donc il n'est pas gardé et se mesure à la
 demande via `--collect`. **Contrôle croisé de cette tranche** : 363 − 328 = **35** tests et
@@ -78,10 +78,21 @@ schéma purs, zéro référence APPDATA/GDrive). Les 2 rouges passaient au sché
 qu'il refuse depuis **#4001** : des sources `baseline-v*` (tags Git), rejetées car restore-from-tag non
 supporté (#2983 — le contenu baseline vit sur GDrive). Tests réalignés sur des chemins
 `sync-config.ref.backup.*` + un nouveau cas **assertant le rejet** `baseline-v*` (21 tests) → **20 entrées**.
+**#2639 (2026-10-05, 10e réactivation) :** `compare-config.integration.test.ts` réactivé — les 3 rouges
+partageaient **une seule cause racine, mal diagnostiquée par la tranche 6**. Ce n'était pas un comptage
+attrapé par la sous-chaîne `manquante` : la fixture roster #833 (`remote-machine,test-machine`) datait de
+l'ère où `checkRosterPartitionDrift()` référençait le **dashboard**. Le check prend désormais le
+**registre vivant** (`.machine-registry.json`, écrit dans le shared path au runtime — ici `test-machine`
+seul) et ne retombe sur le dashboard que s'il manque (`compare-config.ts` l.1978-1987) → mismatch de
+**taille 2 vs 1** → CRITICAL, dépendant de l'état. Resserrer le filtre (`path.startsWith('env.')` +
+`severity`) **n'aurait rien corrigé** : le diff de drift EST `env.*` + CRITICAL, donc *dans* le prédicat
+proposé. Correctif réel = aligner la fixture roster sur la référence registre (1 ligne) ; le drift émet
+alors le signal INFO « consistant » que les tests assertent déjà — rouge d'abord 3/39 puis **39/39**
+mesurés sous config CI → **19 entrées**.
 
 ---
 
-## Les 20 entrées fichiers de test
+## Les 19 entrées fichiers de test
 
 ### POWERSHELL — 6 entrées, toutes effectives (159 tests)
 
@@ -116,19 +127,18 @@ debug permanente retirée — 4/4 vérifiés sous config CI.)*
 
 Plus aucune entrée : les cinq fichiers smoke tournent sous config CI.
 
-### Plateforme (PowerShell) / état-dépendant / schéma périmé — 3 entrées
+### Plateforme (PowerShell) / état-dépendant / schéma périmé — 2 entrées
 
-Ces trois entrées **ne dépendent pas de GDrive** : le libellé de section « APPDATA/GDRIVE » ne
+Ces deux entrées **ne dépendent pas de GDrive** : le libellé de section « APPDATA/GDRIVE » ne
 décrivait correctement **aucune** d'elles. Chacune porte une raison propre, **mesurée le 2026-10-04**
 (#2639, tranche 6) en levant son exclusion et en exécutant le fichier **sous `vitest.config.ci.ts`**
 — la config qui fait autorité (le verdict sous `vitest.config.ts` diffère et ne vaut pas).
-*(`decision.integration`, `config.integration` puis `baseline.test` ont quitté cette section le
-2026-10-05, 7e-9e réactivations #2639 — voir historique.)*
+*(`decision.integration`, `config.integration`, `baseline.test` puis `compare-config.integration` ont
+quitté cette section le 2026-10-05, 7e-10e réactivations #2639 — voir historique.)*
 
 | Entrée | Tests | Raison mesurée (2026-10-04) |
 |---|---|---|
 | `src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts` | 13 — **13 rouges** | Dépendance **plateforme dure** : le tool shell vers `pwsh -NoProfile -ExecutionPolicy Bypass -c "& .../scripts/roosync/generate-mcp-dashboard.ps1"` (`refresh-dashboard.ts` **l.161**). CI = `ubuntu-22.04`. **Seule** entrée dont le label « platform-dependent » était exact. |
-| `src/tools/roosync/__tests__/compare-config.integration.test.ts` | 39 — **3 rouges** | Le bloc « environment variables checking (#495) » filtre les diffs sur la sous-chaîne `manquante`, qui matche **aussi** le libellé de `checkRosterPartitionDrift()` (« manquantes du roster », `compare-config.ts` **l.2010/2031**) — or ce drift dérive de `service.loadDashboard()`, donc de l'**état partagé réel**. Correctif = resserrer le filtre du test (`path.startsWith('env.')` + `severity`). |
 | `src/tools/roosync/__tests__/dashboard-llm-live.integration.test.ts` | 0 (no-op) | Opt-in via `LLM_LIVE_INTEGRATION=1` (repro 502 #1578) — 0 test collecté sans la variable ; exclusion déclarative, **sans effet** sur le delta. |
 
 **Constat transversal.** Les 7 fichiers d'intégration roosync ne référencent **aucun** chemin Windows
@@ -173,7 +183,7 @@ ici) : le label de section a été renommé d'après les raisons **mesurées**, 
 |---|---|---|
 | `src/tools/roosync/__tests__/stress-large-inbox.test.ts` | 10 | seuils de timing dépendants du hardware (16 GB RAM, `--maxWorkers=1`) |
 
-**Total déclaré : 6+0+3+7+1+1+1+1 = 20 · effectif : mesure 2026-10-05 post-#2639 (`--collect`) — 11 fichiers / 240 tests**
+**Total déclaré : 6+0+2+7+1+1+1+1 = 19 · effectif : mesure 2026-10-05 post-#2639 (`--collect`) — 10 fichiers / 201 tests**
 
 ---
 
@@ -211,8 +221,7 @@ Exclusions **sans raison datée** — à re-auditer avant d'en ajouter de nouvel
    `compare-config` (3 tests rouges) un filtre resserré ·
    `dashboard-llm-live` est un no-op (opt-in `LLM_LIVE_INTEGRATION=1`).
    (`decision.integration`, `config.integration` puis `baseline.test` ont été réactivées le
-   2026-10-05 — 7e-9e réactivations #2639 ; la 10e, `compare-config`, attend le merge de #1363
-   comme décidé au dispatch c0100.)
+   2026-10-05 — 7e-10e réactivations #2639.)
    **SMOKE est clos** : les 5 fichiers smoke ont été réactivés (2026-10-03/04, #2639), et plus aucune
    entrée de cette catégorie ne dépend réellement de GDrive.
 3. **Inherited no-op (7)** — dont 3 sans raison documentée (parent-child-validation,
