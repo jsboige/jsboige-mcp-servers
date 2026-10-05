@@ -24,6 +24,8 @@ Transport modes:
     SK_AGENT_HOST env var               -> override default HTTP host (127.0.0.1)
     SK_AGENT_PORT env var               -> override default HTTP port (8100)
     SK_AGENT_API_KEY env var            -> required Bearer token auth in HTTP mode
+    SK_AGENT_USAGE_LOG env var          -> usage telemetry path
+                                           (default %LOCALAPPDATA%/sk-agent/usage.jsonl)
 
 Core tools (9):
     call_agent(prompt, agent?, attachment?, options?, ...)  -- unified agent call
@@ -44,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import functools
 import json
 import logging
 import mimetypes
@@ -55,6 +58,7 @@ import sys
 import time
 import uuid
 from contextlib import AsyncExitStack
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -2509,6 +2513,60 @@ if _transport_mode == "streamable-http":
 
 mcp_server = FastMCP(**_mcp_kwargs)
 
+# ---------------------------------------------------------------------------
+# Usage telemetry
+# ---------------------------------------------------------------------------
+# One JSONL line per tool call -- tool name, outcome, duration, pid.  No prompt
+# or response content is written.  Purpose: answer "is sk-agent usage growing?"
+# with a counter instead of an impression.  Best-effort by design -- a
+# telemetry failure must never break an agent call.  Same record format and
+# env var as the prototype in jsboige/vllm (myia_vllm/mcp/sk_agent.py).
+USAGE_LOG = Path(
+    os.environ.get("SK_AGENT_USAGE_LOG")
+    or Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "sk-agent" / "usage.jsonl"
+)
+
+
+def log_usage(tool: str, ok: bool, started: float, error: str = "") -> None:
+    """Append one usage record.  Swallows every error on purpose."""
+    try:
+        USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "tool": tool,
+            "ok": ok,
+            "dur_s": round(time.monotonic() - started, 2),
+            "pid": os.getpid(),
+        }
+        if error:
+            record["error"] = error[:200]
+        with USAGE_LOG.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def track_usage(fn):
+    """Log one usage record per call of an MCP tool, then return or re-raise.
+
+    ``functools.wraps`` keeps ``__wrapped__``, so FastMCP still derives the
+    tool schema from the original signature.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        started = time.monotonic()
+        try:
+            result = await fn(*args, **kwargs)
+        except Exception as exc:
+            log_usage(fn.__name__, False, started, repr(exc))
+            raise
+        log_usage(fn.__name__, True, started)
+        return result
+
+    return wrapper
+
+
 # Global manager instance
 _manager: SKAgentManager | None = None
 _config: SKAgentConfig | None = None
@@ -2592,6 +2650,7 @@ def _update_tool_descriptions(config: SKAgentConfig):
 
 
 @mcp_server.tool()
+@track_usage
 async def call_agent(
     prompt: str,
     agent: str = "",
@@ -2706,6 +2765,7 @@ async def call_agent(
 
 
 @mcp_server.tool()
+@track_usage
 async def list_agents() -> str:
     """List all configured agents.
 
@@ -2747,6 +2807,7 @@ async def list_agents() -> str:
 
 
 @mcp_server.tool()
+@track_usage
 async def list_tools() -> str:
     """List all MCP plugins and tools available to the local LLM.
 
@@ -2757,6 +2818,7 @@ async def list_tools() -> str:
 
 
 @mcp_server.tool()
+@track_usage
 async def end_conversation(conversation_id: str) -> str:
     """End and clean up a conversation thread.
 
@@ -2774,6 +2836,7 @@ async def end_conversation(conversation_id: str) -> str:
 
 
 @mcp_server.tool()
+@track_usage
 async def review_pr(
     repo: str,
     pr_number: int,
@@ -2912,6 +2975,7 @@ async def review_pr(
 
 
 @mcp_server.tool()
+@track_usage
 async def install_libreoffice(force: bool = False, custom_path: str = "") -> str:
     """Check if LibreOffice is installed and install if needed.
 
@@ -3045,6 +3109,7 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
 
 
 @mcp_server.tool()
+@track_usage
 async def run_conversation(
     prompt: str,
     conversation: str = "",
@@ -3135,6 +3200,7 @@ async def run_conversation(
 
 
 @mcp_server.tool()
+@track_usage
 async def list_conversations() -> str:
     """List available multi-agent conversation presets.
 
@@ -3163,6 +3229,7 @@ async def list_conversations() -> str:
 
 
 @mcp_server.tool()
+@track_usage
 async def diagnostics() -> str:
     """Report sk-agent health status for troubleshooting.
 
