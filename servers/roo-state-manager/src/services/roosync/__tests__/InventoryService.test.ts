@@ -390,6 +390,33 @@ describe('InventoryService', () => {
       expect(inventory.inventory.claudeConfig?.mcpServersCount).toBe(3);
     });
 
+    it('should publish the MCP server NAMES (sorted), not only the count (#2307)', async () => {
+      const claudeJson = {
+        mcpServers: {
+          searxng: {},
+          'roo-state-manager': {},
+          playwright: {},
+        },
+      };
+
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      mockReadJSONByPath({
+        '.claude.json': claudeJson,
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue();
+
+      const inventory = await service.getMachineInventory();
+      const cfg = inventory.inventory.claudeConfig;
+
+      // Les NOMS sont ce qui rend une machine sans Roo visible à
+      // compare_config : sans eux, seul `mcpServersCount` est publié et la
+      // granularité `claude` ne peut pas diff les flottes de serveurs.
+      // Triés : deux machines à flotte identique ne produisent aucun diff.
+      expect(cfg?.mcpServers).toEqual(['playwright', 'roo-state-manager', 'searxng']);
+      // Jamais les valeurs de config (command/env) — noms seuls.
+      expect(typeof cfg?.mcpServers?.[0]).toBe('string');
+    });
+
     it('should collect migrations from ~/.claude.json', async () => {
       const claudeJson = {
         sonnet45MigrationComplete: true,

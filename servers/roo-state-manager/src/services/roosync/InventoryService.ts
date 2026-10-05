@@ -371,9 +371,15 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
           config.env = envVars;
         }
 
-        // Nombre de MCPs configurés
+        // Nombre de MCPs configurés — et leurs NOMS (#2307) : sur une machine
+        // sans Roo/Zoo (mcp_settings.json vide), c'est la seule flotte MCP
+        // visible ; la granularité `claude` de compare_config diffe alors les
+        // listes. Triés : flottes identiques ⇒ aucun diff fantôme. Noms seuls,
+        // jamais command/env.
         if (claudeJson.mcpServers) {
-          config.mcpServersCount = Object.keys(claudeJson.mcpServers).length;
+          const names = Object.keys(claudeJson.mcpServers);
+          config.mcpServersCount = names.length;
+          config.mcpServers = [...names].sort();
         }
 
         // Skills utilisés (pour détecter l'activité)

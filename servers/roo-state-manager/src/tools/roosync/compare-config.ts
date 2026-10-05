@@ -575,6 +575,12 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       // lu). On ne déclenche ce statut QUE lorsqu'au moins un côté est non-vide,
       // pour préserver le vrai signal "les deux n'ont aucun MCP configuré".
       const preFlightSectionPaths: Record<string, string[]> = {
+        // #2307 (review #1363) : la garde doit couvrir EXACTEMENT ce que le diff
+        // de sa granularité lit. Le diff `mcp` lit les sections Roo/Zoo seules
+        // (case 'mcp' ci-dessous) — la garde ne lit donc rien d'autre. La flotte
+        // MCP côté Claude (claudeConfig.mcpServers) est servie par la granularité
+        // `claude` ; ici, elle ne sert qu'à ORIENTER le diagnostic quand la garde
+        // se déclenche (Roo-less ≠ collecte dégradée).
         mcp: ['inventory.mcpServers', 'roo.mcpServers', 'mcpServers'],
         mode: ['inventory.rooModes', 'roo.modes', 'rooModes'],
         'modes-yaml': ['inventory.rooModes', 'roo.modes', 'rooModes'],
@@ -582,19 +588,37 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
       };
       const sectionPaths = preFlightSectionPaths[args.granularity];
       if (sectionPaths) {
+        // Taille = MAX sur les représentations : « la section est-elle peuplée
+        // sur ce côté ? » — une représentation vide n'annule pas une autre peuplée
+        // (les chemins d'une même granularité sont des alias d'une même section).
         const resolveSectionSize = (inv: any): number => {
+          let max = 0;
           for (const p of sectionPaths) {
             const segs = p.split('.');
             let cur: any = inv;
             for (const s of segs) cur = cur?.[s];
-            if (cur && typeof cur === 'object') return Object.keys(cur).length;
+            if (cur && typeof cur === 'object') {
+              max = Math.max(max, Object.keys(cur).length);
+            }
           }
-          return 0;
+          return max;
+        };
+        // #2307 : quand la garde se déclenche pour un côté, dire si sa flotte MCP
+        // vit côté Claude (publiée par collectClaudeConfig) — « sans Roo » est un
+        // état nominal, pas une collecte dégradée (relevé web2 c.25).
+        const claudeFleetNote = (inv: any): string => {
+          if (args.granularity !== 'mcp') return '';
+          const names = (inv as any)?.inventory?.claudeConfig?.mcpServers;
+          const count = Array.isArray(names) ? names.length : 0;
+          return count > 0
+            ? ` NB : la flotte MCP de ce côté vit côté Claude Code (${count} serveurs publiés dans claudeConfig.mcpServers) — pas une collecte dégradée ; diff via la granularité "claude".`
+            : '';
         };
         const sourceSectionSize = resolveSectionSize(sourceInventory);
         const targetSectionSize = resolveSectionSize(targetInventory);
 
         if (sourceSectionSize > 0 && targetSectionSize === 0) {
+          const note = claudeFleetNote(targetInventory);
           return {
             source: sourceMachineId,
             target: targetMachineId,
@@ -603,13 +627,14 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
               category: 'inventory',
               severity: 'WARNING',
               path: sectionPaths.map(p => `target.${p}`).join(' | '),
-              description: `Section "${args.granularity}" vide côté cible (${targetMachineId}) mais peuplée côté source (${sourceSectionSize} entrées). Le diff "suppression de ${sourceSectionSize} éléments" serait un artefact de collecte dégradée, pas un drift réel — très probablement mcp_settings.json / inventory non lu chez la cible. Aucun diff n'est émis tant que la collecte cible n'est pas restaurée.`,
+              description: `Section "${args.granularity}" vide côté cible (${targetMachineId}) mais peuplée côté source (${sourceSectionSize} entrées). Le diff "suppression de ${sourceSectionSize} éléments" serait un artefact de collecte dégradée, pas un drift réel — très probablement mcp_settings.json / inventory non lu chez la cible.${note}`,
               action: `Vérifier que l'inventaire de ${targetMachineId} est à jour (Get-MachineInventory.ps1) et que les sections ${args.granularity} sont bien peuplées avant de relancer la comparaison.`
             }],
             summary: { total: 1, critical: 0, important: 0, warning: 1, info: 0 }
           };
         }
         if (targetSectionSize > 0 && sourceSectionSize === 0) {
+          const note = claudeFleetNote(sourceInventory);
           return {
             source: sourceMachineId,
             target: targetMachineId,
@@ -618,7 +643,7 @@ export async function roosyncCompareConfig(args: CompareConfigArgs): Promise<Com
               category: 'inventory',
               severity: 'WARNING',
               path: sectionPaths.map(p => `source.${p}`).join(' | '),
-              description: `Section "${args.granularity}" vide côté source (${sourceMachineId}) mais peuplée côté cible (${targetSectionSize} entrées). Le diff "ajout de ${targetSectionSize} éléments" serait un artefact de collecte dégradée. Aucun diff n'est émis tant que la collecte source n'est pas restaurée.`,
+              description: `Section "${args.granularity}" vide côté source (${sourceMachineId}) mais peuplée côté cible (${targetSectionSize} entrées). Le diff "ajout de ${targetSectionSize} éléments" serait un artefact de collecte dégradée.${note}`,
               action: `Vérifier que l'inventaire de ${sourceMachineId} est à jour (Get-MachineInventory.ps1) et que les sections ${args.granularity} sont bien peuplées avant de relancer la comparaison.`
             }],
             summary: { total: 1, critical: 0, important: 0, warning: 1, info: 0 }
