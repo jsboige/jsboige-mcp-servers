@@ -725,11 +725,23 @@ describe('InventoryService', () => {
       );
       expect(writeCall).toBeDefined();
       const content = writeCall![1] as string;
-      // L'URL sans userinfo passe intacte
-      expect(content).toContain('https://qdrant.myia.io');
-      // Le userinfo ne quitte jamais la machine ; scheme + host préservés (#3545)
+      // #1372 NIT (ai-01) : le fichier publié est du JSON — le PROUVER plutôt que
+      // le chercher par sous-chaîne. Un masque qui casserait la sérialisation
+      // (guillemets, échappements, retour à la ligne) laisserait un inventaire
+      // illisible pour tous les lecteurs du store partagé, alors que `toContain`
+      // continuerait de passer.
+      const published = JSON.parse(content) as {
+        inventory: { claudeConfig?: { env?: Record<string, string> } };
+      };
+      const env = published.inventory.claudeConfig?.env;
+      expect(env).toBeDefined();
+      // L'URL sans userinfo passe intacte — valeur, pas sous-chaîne
+      expect(env?.QDRANT_URL).toBe('https://qdrant.myia.io');
+      // Le userinfo ne quitte jamais la machine ; scheme + host + port préservés (#3545)
+      expect(env?.ROOSYNC_PG_URL).toBe('postgresql://<redacted>@pg.myia.io:5432/roosync');
+      // La valeur secrète reste absente des OCTETS écrits (le parse ne le prouve pas :
+      // elle pourrait vivre ailleurs dans le JSON)
       expect(content).not.toContain('sup3rs3cret');
-      expect(content).toContain('://<redacted>@pg.myia.io');
     });
 
     it('should create inventories directory if missing', async () => {
