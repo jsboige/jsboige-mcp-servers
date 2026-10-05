@@ -13,7 +13,7 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 21 test-file entries + 4 tests-directory globs
+ * Exclusion census: 18 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
@@ -157,11 +157,18 @@ export default mergeConfig(unitConfig, defineConfig({
       //   appears: measured 28/28 green under this config on Windows — the native ADS
       //   platform, i.e. the worst case — with no `D` before or after.
       // 'src/tools/roosync/__tests__/decision.integration.test.ts',
-      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 13/13 fail. The tool shells out
-      //   to `pwsh -NoProfile -ExecutionPolicy Bypass -c "& ...generate-mcp-dashboard.ps1"`
-      //   (refresh-dashboard.ts l.161) — a hard PowerShell/Windows dependency, and the
-      //   one entry here whose "platform-dependent" label was accurate.
-      'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
+      // REACTIVATED 2026-10-05 (#2639, 11th): the "platform-dependent — hard pwsh
+      //   dependency" label was MEASURABLY WRONG. `pwsh` runs fine; what is missing
+      //   is the PARENT repo's script. findRooExtensionsRoot() (refresh-dashboard.ts
+      //   l.23-46) walks up looking for a `CLAUDE.md`; in a standalone submodule
+      //   checkout (CI) it finds none, falls back to process.cwd(), and aims at
+      //   `servers/roo-state-manager/scripts/roosync/generate-mcp-dashboard.ps1`,
+      //   which does not exist -> 13/13 `Command failed: pwsh`. Dependency class =
+      //   PARENT_REPO, same family as skepticism-protocol. Fix = mock the shell at
+      //   its single boundary (child_process.exec), reproducing the SCRIPT CONTRACT
+      //   (New-Item -Force, mcp-dashboard.md, stdout `Fichier: <path>`) — no pwsh,
+      //   no parent repo. Measured: 13/13 red standalone before, 16/16 green after.
+      // 'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
       // REACTIVATED 2026-10-05 (#2639, 8th): the single red test (apply_profile —
       //   profile not found) now pins InventoryService.getMachineInventory to the
       //   fixture tmpdir and ships a model-configs.json fixture, so the local-source
@@ -171,25 +178,31 @@ export default mergeConfig(unitConfig, defineConfig({
       //   (mkdtemp): the in-tree __test-data__ dir reproduced the ENOTEMPTY Linux
       //   cleanup class fixed for diagnose.integration by #1355.
       // 'src/tools/roosync/__tests__/config.integration.test.ts',
-      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 3/39 fail, and NOT for a
-      //   GDrive reason. The #495 env-var block filters on the loose substring
-      //   'manquante', which also matches checkRosterPartitionDrift()'s wording
-      //   ('manquantes du roster' / 'Manquantes du roster', compare-config.ts
-      //   l.2010 and l.2031). That drift is derived from service.loadDashboard()
-      //   — real shared state — so the expected count is machine/state-dependent
-      //   and the file is not tmpdir-isolable as written. Fix = tighten the test
-      //   filter (path.startsWith('env.') + severity).
-      'src/tools/roosync/__tests__/compare-config.integration.test.ts',
+      // REACTIVATED 2026-10-05 (#2639, 10th): the 3 reds shared ONE root cause the
+      //   census had diagnosed wrong. Not a loose-substring count: the #833 roster
+      //   fixture ('remote-machine,test-machine') was written for the era when
+      //   checkRosterPartitionDrift() referenced the DASHBOARD. The check now takes
+      //   the living registry (.machine-registry.json, written into the shared path
+      //   at runtime — here 'test-machine' alone) and falls back to the dashboard
+      //   only if it is missing (compare-config.ts l.1978-1987) -> size mismatch
+      //   2 vs 1 -> CRITICAL, state-dependent. Tightening the filter would NOT have
+      //   fixed it: the drift diff is env.* + CRITICAL, i.e. inside the suggested
+      //   predicate. Fix = align the roster fixture with the registry reference
+      //   (1 line); the drift then emits the INFO 'consistent' signal the tests
+      //   already assert. 39/39 measured under this config.
+      // 'src/tools/roosync/__tests__/compare-config.integration.test.ts',
       // update-dashboard.integration.test.ts removed with its module (#3549) —
       // update est v3-native, couvert en CI par dashboard-update-v3.test.ts
       // Live LLM endpoint, opt-in via LLM_LIVE_INTEGRATION=1 — 502 repro (#1578)
       'src/tools/roosync/__tests__/dashboard-llm-live.integration.test.ts',
-      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 2/20 fail. Pure schema/
-      //   interface tests — no APPDATA/GDrive dependency whatsoever (entry was
-      //   miscategorised). The two 'action: restore' acceptance cases no longer
-      //   match the live BaselineArgsSchema: this needs the TEST updated, not a
-      //   CI-config change.
-      'tests/unit/tools/roosync/baseline.test.ts',
+      // REACTIVATED 2026-10-05 (#2639, 9th): the two red 'action: restore' cases
+      //   fed the schema exactly what it has refused since #4001 — baseline-v*
+      //   tag sources (restore-from-tag unsupported #2983; baseline content lives
+      //   on GDrive, not in Git tags). Tests realigned on sync-config.ref.backup.*
+      //   paths + one new case asserting the baseline-v* rejection. Pure schema
+      //   tests, no platform dependency — the entry was miscategorised from the
+      //   start (no APPDATA/GDrive reference in the file).
+      // 'tests/unit/tools/roosync/baseline.test.ts',
 
       // ===== CI-excluded: Export baseline (schema mismatch) =====
       // RE-AUDIT 2026-07-02 (po-2025): file `tests/unit/tools/roosync/export-baseline.test.ts`
