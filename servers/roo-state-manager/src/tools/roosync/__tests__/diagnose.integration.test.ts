@@ -11,10 +11,10 @@
  * Type: Intégration (RooSyncService réel, opérations filesystem réelles)
  *
  * @module roosync/diagnose.integration.test
- * @version 1.1.0 (#564 Phase 2, #606 fix)
+ * @version 1.2.0 (#564 Phase 2, #606 fix, #1355 v3 : mkdtemp par test + cleanup best-effort)
  */
 
-import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import { existsSync, rmSync, mkdirSync, writeFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -31,12 +31,19 @@ vi.mock('../../../utils/message-helpers.js', async () => {
 });
 
 // Mock getSharedStatePath pour utiliser un chemin de test
-// #1355 : le fixture vivait dans src/__test-data__/ (dans l'arbre du dépôt) et le rmSync
+// #1355 (v2) : le fixture vivait dans src/__test-data__/ (dans l'arbre du dépôt) et le rmSync
 // de l'afterEach échouait en ENOTEMPTY sur le runner Linux (run 37199160323) quand le
 // chemin reset du service ratissait ses propres fichiers. Isolation hors arbre via
 // mkdtemp(os.tmpdir()), même pattern que baseline.integration.test.ts.
+// #1355 (v3, 2026-10-05) : mkdtemp unique + maxRetries ne suffisait pas — l'init async du
+// singleton recréé par handleResetAction continue d'écrire dans shared-state APRÈS le
+// retour de l'outil (ENOTEMPTY 3× le 05/10 : runs parent 37267650965, 37300463987,
+// 37302190580, toujours reset › clearCache). Politique : un mkdtemp PAR TEST (un résidu
+// ne peut structurellement pas fuiter vers le test suivant) + cleanup best-effort (jamais
+// faire échouer un test sur son nettoyage, même politique que l'afterAll).
 let testSharedStatePath: string;
 let testRootDir: string;
+const testRoots: string[] = [];
 vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
@@ -68,15 +75,12 @@ describe('roosyncDiagnose (integration)', () => {
   const originalSharedPath = process.env.ROOSYNC_SHARED_PATH;
   const originalMachineId = process.env.ROOSYNC_MACHINE_ID;
 
-  beforeAll(() => {
-    // #1355 : racine temporaire hors arbre du dépôt, une par worker (mkdtemp),
-    // réutilisée par tous les tests du fichier ; l'afterEach ne ratisse que le
-    // sous-répertoire shared-state pour préserver l'isolation par test.
-    testRootDir = mkdtempSync(join(tmpdir(), 'diagnose-it-'));
-    testSharedStatePath = join(testRootDir, 'shared-state');
-  });
-
   beforeEach(async () => {
+    // #1355 (v3) : racine temporaire fraîche PAR TEST — l'isolation du test suivant
+    // ne dépend plus du succès du nettoyage du test courant.
+    testRootDir = mkdtempSync(join(tmpdir(), 'diagnose-it-'));
+    testRoots.push(testRootDir);
+    testSharedStatePath = join(testRootDir, 'shared-state');
     // Fix #634: Override env var BEFORE singleton recreation.
     // Without this, loadRooSyncConfig() reads the system env var (GDrive path)
     // and RooSyncService writes ghost files to production GDrive.
@@ -120,20 +124,28 @@ describe('roosyncDiagnose (integration)', () => {
       delete process.env.ROOSYNC_MACHINE_ID;
     }
 
-    // Cleanup : supprimer répertoire test pour isolation
-    // #1355 : maxRetries/retryDelay — le reset du service peut ratisser ses propres
-    // fichiers en concurrence de ce rmSync (ENOTEMPTY observé sur runner Linux).
-    if (existsSync(testSharedStatePath)) {
-      rmSync(testSharedStatePath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    // Cleanup : best-effort — l'init async du singleton peut encore écrire ici après
+    // le retour de l'outil (#1355 v3). Un échec de nettoyage ne fait JAMAIS échouer le
+    // test (même politique que l'afterAll) ; l'isolation est garantie par le mkdtemp
+    // frais du beforeEach, pas par la réussite de ce rmSync.
+    try {
+      if (existsSync(testSharedStatePath)) {
+        rmSync(testSharedStatePath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      }
+    } catch {
+      // nettoyage best-effort — l'afterAll retentera la racine
     }
   });
 
   afterAll(() => {
-    // #1355 : retirer la racine mkdtemp ; ne jamais faire échouer la suite sur
-    // un échec de nettoyage (même politique que baseline.integration.test.ts).
-    if (testRootDir && existsSync(testRootDir)) {
+    // #1355 (v3) : ratisser TOUTES les racines créées par test ; ne jamais faire
+    // échouer la suite sur un échec de nettoyage (même politique que
+    // baseline.integration.test.ts). Les racines résiduelles partent avec /tmp.
+    for (const root of testRoots) {
       try {
-        rmSync(testRootDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        if (existsSync(root)) {
+          rmSync(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        }
       } catch {
         // nettoyage best-effort
       }
