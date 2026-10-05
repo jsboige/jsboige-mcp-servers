@@ -663,6 +663,36 @@ describe('InventoryService', () => {
       expect(writeCall![0].toString()).toContain('test-machine.json');
     });
 
+    it('should mask URL credentials at the publication boundary (saveToSharedState, #2307)', async () => {
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      mockReadJSONByPath({
+        '.claude.json': {
+          mcpServers: {
+            'roo-state-manager': {
+              env: {
+                ROOSYNC_PG_URL: 'postgresql://svc-account:sup3rs3cret@pg.myia.io:5432/roosync',
+                QDRANT_URL: 'https://qdrant.myia.io',
+              },
+            },
+          },
+        },
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue();
+
+      await service.getMachineInventory();
+
+      const writeCall = vi.mocked(fs.writeFile).mock.calls.find(
+        (call) => call[0].toString().includes('inventories')
+      );
+      expect(writeCall).toBeDefined();
+      const content = writeCall![1] as string;
+      // L'URL sans userinfo passe intacte
+      expect(content).toContain('https://qdrant.myia.io');
+      // Le userinfo ne quitte jamais la machine ; scheme + host préservés (#3545)
+      expect(content).not.toContain('sup3rs3cret');
+      expect(content).toContain('://<redacted>@pg.myia.io');
+    });
+
     it('should create inventories directory if missing', async () => {
       // #3459 fail-closed: ensureStoreSubdir skips if the STORE ROOT is absent.
       // Stub the root as present but inventories/ as absent so mkdirSync fires.

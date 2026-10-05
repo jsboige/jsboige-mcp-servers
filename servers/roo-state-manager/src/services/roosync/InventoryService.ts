@@ -8,6 +8,7 @@ import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
 import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
+import { maskSecretTextForPublication } from '../../utils/secret-redaction.js';
 import { getActiveMcpSettingsPath } from '../../utils/extension-paths.js';
 import { findRooExtensionsRoot as findRepoRoot } from '../../utils/repo-root.js';
 
@@ -427,7 +428,11 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
       const filepath = path.join(inventoriesDir, filename);
 
       // Sauvegarder le fichier
-      await fs.writeFile(filepath, JSON.stringify(inventory, null, 2), 'utf-8');
+      // #2307 (dispatch ai-01 05/10) : la publication d'inventaire franchit la
+      // même frontière que dashboard/messages — URI à credentials (#3545 §5.1)
+      // et valeurs connues masquées par le masque CANONIQUE (#3584), jamais une
+      // copie locale. L'URL sans userinfo et le reste du JSON passent intacts.
+      await fs.writeFile(filepath, maskSecretTextForPublication(JSON.stringify(inventory, null, 2)), 'utf-8');
       console.log(`[InventoryService] 💾 Inventaire sauvegardé: ${filepath}`);
 
     } catch (error) {
