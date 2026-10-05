@@ -32,6 +32,10 @@ const mockGetRooSyncDashboard = vi.fn().mockResolvedValue(null);
 const mockGetArchivedIds = vi.fn().mockResolvedValue(null);
 // Review #1244 : isNull pilotable — la vraie factory rend un Null reader sans
 // UNIFIED_STORE_DUAL_WRITE=1 ; le test du reader dédié exige ce comportement.
+// Invariant (#1369, arbitrage NanoClaw 05/10) : value=false ⇔ factory réelle
+// non-Null (UNIFIED_STORE_DUAL_WRITE=1) ; value=true ⇔ Null reader (gate off).
+// Synchroniser avec le gate dans chaque test — un test écrit gate off mais
+// value=false oublié divergerait silencieusement de la factory réelle.
 const mockFactoryIsNull = { value: false };
 
 vi.mock('../reader-factory.js', () => ({
