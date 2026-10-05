@@ -69,6 +69,7 @@ import {
   retireDashboardKeyChecked,
   acquireDashboardSharedLock,
   releaseDashboardSharedLock,
+  readDashboardSharedLock,
 } from '../../services/unified-store/roosync-dashboard-store.js';
 // #3782: journal-level retirement mark (mark, never DELETE — gel des purges)
 import type { DashboardRetirementMark } from '../../services/unified-store/types.js';
@@ -1028,6 +1029,57 @@ function appendLockRowKey(key: string): string {
  */
 export function getCondenseLockPath(key: string): string {
   return path.join(getLockDir(), hashedLockName(key, '.condense.lock'));
+}
+
+/** Human-readable holder identity for stall diagnostics. */
+function summarizeCondenseLockHolder(holder: CondenseLockInfo): string {
+  return `${holder.machineId}:${holder.workspace}#${holder.pid}`;
+}
+
+/** Compact age for the stall suffix — the TTL (~15 min) bounds the scale, so seconds/minutes suffice. */
+function formatCondenseLockAge(ageMs: number): string {
+  if (ageMs < 120000) return `${Math.max(1, Math.round(ageMs / 1000))} s`;
+  return `${Math.round(ageMs / 60000)} min`;
+}
+
+/** Parse a lock payload (file or PG row) — null when it isn't CondenseLockInfo-shaped. */
+function asCondenseLockInfo(holder: unknown): CondenseLockInfo | null {
+  if (holder && typeof holder === 'object' && typeof (holder as CondenseLockInfo).machineId === 'string') {
+    return holder as CondenseLockInfo;
+  }
+  return null;
+}
+
+/**
+ * Stall diagnostics (web2 05/10) — WHO holds the condense lock for `key` and
+ * SINCE WHEN. Called on the rare condensationStalled='lock-held' path: a fresh
+ * age (<2 min) reads as a healthy concurrent condense by another host; an age
+ * approaching CONDENSE_LOCK_TTL_MS says the TTL steal is near. PG layer first
+ * (same order as acquisition, fleet-wide, server clock), machine-local lock
+ * file as fallback. null when neither yields a parseable holder — the stall
+ * stays visible, just without the age qualifier.
+ */
+export async function readCondenseLockHolderInfo(
+  key: string
+): Promise<{ holder: string; ageMs: number } | null> {
+  const pgRow = await readDashboardSharedLock(condenseLockRowKey(key));
+  if (pgRow) {
+    const info = asCondenseLockInfo(pgRow.holder);
+    const ageMs = Date.now() - new Date(pgRow.acquiredAt).getTime();
+    if (info && Number.isFinite(ageMs)) {
+      return { holder: summarizeCondenseLockHolder(info), ageMs };
+    }
+  }
+  try {
+    const raw = await fs.readFile(getCondenseLockPath(key), 'utf8');
+    const info = asCondenseLockInfo(JSON.parse(raw));
+    if (!info) return null;
+    const ageMs = Date.now() - new Date(info.acquiredAt).getTime();
+    if (!Number.isFinite(ageMs)) return null;
+    return { holder: summarizeCondenseLockHolder(info), ageMs };
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -4550,6 +4602,15 @@ export interface DashboardResult {
    */
   condensationStalled?: 'lock-held' | 'unchanged-hash';
   /**
+   * Stall diagnostics (web2 05/10, incident stall 04/10) — identity of the
+   * current condense-lock holder when condensationStalled='lock-held'
+   * (`machine:workspace#pid`). Absent when the stall is 'unchanged-hash',
+   * when the append eventually condensed, or when the lock was unreadable.
+   */
+  condensationStallLockHolder?: string;
+  /** Stall diagnostics — age in ms of the condense lock at stall time (PG clock when the PG layer holds it, else holder.acquiredAt). */
+  condensationStallLockAgeMs?: number;
+  /**
    * #4003 — append-only : la forme NORMALISÉE des tags effectivement persistée
    * (variants casse/crochets pliés, tags vides/unsafe écartés). Absent quand
    * l'appel n'a pas passé de tags, pour garder la forme historique du payload.
@@ -5701,6 +5762,8 @@ async function handleAppend(
   let finalDashboard = updatedDashboard;
   // #3782 — why a REQUIRED condensation didn't run (surface, not just logs).
   let condensationStalled: 'lock-held' | 'unchanged-hash' | undefined;
+  // Stall diagnostics (web2 05/10) — filled only on the lock-held path.
+  let condensationStallLock: { holder: string; ageMs: number } | null = null;
 
   const tWrite = Date.now();
   let writeVerify = await appendDashboardIncremental(key, updatedDashboard, newMessages.length);
@@ -5772,6 +5835,10 @@ async function handleAppend(
         condensed = false;
         archivedCount = 0;
         condensationStalled = 'lock-held';
+        // Stall diagnostics: expose the holder identity and lock AGE — fresh =
+        // healthy concurrent condense, near-TTL = steal horizon. Best-effort:
+        // null keeps the stall visible, just without the qualifier.
+        condensationStallLock = await readCondenseLockHolderInfo(key);
         const skippedDiag = newDiagnostic('post-append');
         skippedDiag.outcome = 'skipped-lock-held';
         condenseDiagnostics.push(skippedDiag);
@@ -6040,8 +6107,13 @@ async function handleAppend(
   // la condensation n'a pas tourné doit le DIRE : le stall 17:06Z→19:02Z du
   // workspace-CoursIA (332 %, appends succès verts) n'était visible que dans
   // les logs locaux des hôtes appendants.
+  const stallLockPhrase = condensationStalled === 'lock-held'
+    ? (condensationStallLock
+        ? `verrou condense détenu depuis ${formatCondenseLockAge(condensationStallLock.ageMs)} par ${condensationStallLock.holder} (vol TTL à ${Math.round(CONDENSE_LOCK_TTL_MS / 1000)} s)`
+        : 'verrou condense détenu par un autre process (âge du verrou indéterminable)')
+    : 'contenu inchangé depuis la dernière passe (#2464)';
   const stallSuffix = condensationStalled && !condensed
-    ? ` — ⚠️ Condensation requise (${Math.round(estimatedSize / 1024)} Ko > seuil ${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)} Ko) mais NON exécutée (${condensationStalled === 'lock-held' ? 'verrou condense détenu par un autre process' : 'contenu inchangé depuis la dernière passe (#2464)'}) — le dashboard reste au-dessus du seuil.`
+    ? ` — ⚠️ Condensation requise (${Math.round(estimatedSize / 1024)} Ko > seuil ${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)} Ko) mais NON exécutée (${stallLockPhrase}) — le dashboard reste au-dessus du seuil.`
     : '';
 
   // #1791: Auto-register heartbeat on dashboard append (fire-and-forget)
@@ -6064,6 +6136,14 @@ async function handleAppend(
     archivedCount: reportedArchivedCount,
     summaryFailed: summaryFailed || undefined,
     condensationStalled: condensationStalled && !condensed ? condensationStalled : undefined,
+    condensationStallLockHolder:
+      condensationStalled === 'lock-held' && !condensed && condensationStallLock
+        ? condensationStallLock.holder
+        : undefined,
+    condensationStallLockAgeMs:
+      condensationStalled === 'lock-held' && !condensed && condensationStallLock
+        ? Math.round(condensationStallLock.ageMs)
+        : undefined,
     crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
     condenseDiagnostic: condenseDiagnostics.length > 0 ? condenseDiagnostics : undefined,
     splitCount: newMessages.length,

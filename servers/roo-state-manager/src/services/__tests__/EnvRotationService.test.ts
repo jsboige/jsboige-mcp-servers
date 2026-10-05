@@ -339,4 +339,150 @@ describe('EnvRotationService', () => {
       expect(mockWriteFile).not.toHaveBeenCalled();
     });
   });
+
+  // ============================================================
+  // Audit trail — #2410 grain 2 (web1, dispatch ai-01 05/10):
+  // ONE [ENV-ROTATION] line per rotation attempt, success AND
+  // failure — never a value.
+  // ============================================================
+  describe('audit trail — one [ENV-ROTATION] line per rotation, incl. failures (#2410)', () => {
+    /** Reads the Nth JSONL line written via appendFile. */
+    function auditLine(call = 0): Record<string, unknown> {
+      expect(mockAppendFile).toHaveBeenCalledTimes(call + 1);
+      const raw = (mockAppendFile.mock.calls[call] as unknown[])[1] as string;
+      return JSON.parse(raw);
+    }
+
+    test('publish success: line carries the [ENV-ROTATION] marker, service+version+machine, key count — and no value', async () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFile.mockResolvedValue('API_KEY=secret-value-xyz\nOTHER=val2\n# comment\n');
+
+      await service.publish({
+        service: 'rsm',
+        envPath: '/x/.env',
+        sharedStatePath: '/s',
+        version: '2',
+        machineId: 'm1',
+      });
+
+      const line = auditLine(0);
+      expect(line.marker).toBe('[ENV-ROTATION]');
+      expect(line.action).toBe('publish');
+      expect(line.service).toBe('rsm');
+      expect(line.version).toBe('2');
+      expect(line.machineId).toBe('m1');
+      expect(line.status).toBe('success');
+      expect(line.keysWritten).toBe(2); // 2 KEY=VALUE lines, comment excluded
+      // Never a value: the serialized line must not leak env content
+      const raw = (mockAppendFile.mock.calls[0] as unknown[])[1] as string;
+      expect(raw).not.toContain('secret-value-xyz');
+      expect(raw).not.toContain('val2');
+    });
+
+    test('publish failure (source .env missing): still exactly one line, status error', async () => {
+      mockExistsSync.mockReturnValue(false); // envPath missing
+
+      await service.publish({
+        service: 'rsm',
+        envPath: '/x/.env',
+        sharedStatePath: '/s',
+        version: '2',
+        machineId: 'm1',
+      });
+
+      const line = auditLine(0);
+      expect(line.marker).toBe('[ENV-ROTATION]');
+      expect(line.action).toBe('publish');
+      expect(line.status).toBe('error');
+      expect(String(line.error)).toMatch(/not found/i);
+    });
+
+    test('apply failure (nothing published): one line, status error', async () => {
+      mockExistsSync.mockReturnValue(false); // envDir missing
+
+      await service.apply({ service: 'rsm', targetEnvPath: '/x/.env', sharedStatePath: '/s' });
+
+      const line = auditLine(0);
+      expect(line.marker).toBe('[ENV-ROTATION]');
+      expect(line.action).toBe('apply');
+      expect(line.service).toBe('rsm');
+      expect(line.status).toBe('error');
+    });
+
+    test('apply decrypt failure (key mismatch): returns status error — not a throw — plus audit line', async () => {
+      const plaintext = Buffer.from('API_KEY=secret\n', 'utf-8');
+      const enc = service.encrypt(plaintext);
+      const wire = service.serializeEncrypted(enc);
+      const metadata = { service: 'rsm', version: '1', timestamp: '2026-01-01T00:00:00.000Z', size: plaintext.length };
+
+      mockExistsSync.mockReturnValue(true);
+      mockReaddir.mockResolvedValue(['1.json'] as never);
+      mockReadFile.mockImplementation(async (p: { toString: () => string }) => {
+        const ps = p.toString();
+        if (ps.endsWith('1.json')) return JSON.stringify(metadata);
+        if (ps.endsWith('1.enc')) return wire;
+        throw new Error('ENOENT');
+      });
+      process.env.ROOSYNC_ENV_KEY = 'y'.repeat(48); // WRONG key → GCM auth failure
+
+      const res = await service.apply({ service: 'rsm', targetEnvPath: '/x/.env', sharedStatePath: '/s' });
+
+      expect(res.status).toBe('error');
+      expect(res.message).toMatch(/decrypt/i);
+      const line = auditLine(0);
+      expect(line.marker).toBe('[ENV-ROTATION]');
+      expect(line.action).toBe('apply');
+      expect(line.status).toBe('error');
+      // The crypto error message must not smuggle plaintext into the journal
+      const raw = (mockAppendFile.mock.calls[0] as unknown[])[1] as string;
+      expect(raw).not.toContain('secret');
+    });
+
+    test('apply failure (decrypted content invalid): one line, status error', async () => {
+      const plaintext = Buffer.from('just prose, not env\n', 'utf-8');
+      const enc = service.encrypt(plaintext);
+      const wire = service.serializeEncrypted(enc);
+      const metadata = { service: 'rsm', version: '1', timestamp: '2026-01-01T00:00:00.000Z', size: plaintext.length };
+
+      mockExistsSync.mockReturnValue(true);
+      mockReaddir.mockResolvedValue(['1.json'] as never);
+      mockReadFile.mockImplementation(async (p: { toString: () => string }) => {
+        const ps = p.toString();
+        if (ps.endsWith('1.json')) return JSON.stringify(metadata);
+        if (ps.endsWith('1.enc')) return wire;
+        throw new Error('ENOENT');
+      });
+
+      await service.apply({ service: 'rsm', targetEnvPath: '/x/.env', sharedStatePath: '/s' });
+
+      const line = auditLine(0);
+      expect(line.status).toBe('error');
+      expect(line.marker).toBe('[ENV-ROTATION]');
+    });
+
+    test('apply success: line carries marker, version, keysWritten', async () => {
+      const plaintext = Buffer.from('API_KEY=secret\nOTHER=val\n', 'utf-8');
+      const enc = service.encrypt(plaintext);
+      const wire = service.serializeEncrypted(enc);
+      const metadata = { service: 'rsm', version: '7', timestamp: '2026-01-01T00:00:00.000Z', size: plaintext.length };
+
+      mockExistsSync.mockReturnValue(true);
+      mockReaddir.mockResolvedValue(['7.json'] as never);
+      mockReadFile.mockImplementation(async (p: { toString: () => string }) => {
+        const ps = p.toString();
+        if (ps.endsWith('7.json')) return JSON.stringify(metadata);
+        if (ps.endsWith('7.enc')) return wire;
+        throw new Error('ENOENT');
+      });
+
+      await service.apply({ service: 'rsm', targetEnvPath: '/x/.env', sharedStatePath: '/s' });
+
+      const line = auditLine(0);
+      expect(line.marker).toBe('[ENV-ROTATION]');
+      expect(line.action).toBe('apply');
+      expect(line.version).toBe('7');
+      expect(line.keysWritten).toBe(2);
+      expect(line.status).toBe('success');
+    });
+  });
 });

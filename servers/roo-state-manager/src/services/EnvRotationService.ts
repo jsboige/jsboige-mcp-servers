@@ -33,6 +33,12 @@ export const ALLOWED_SERVICES = [
 
 export type AllowedService = typeof ALLOWED_SERVICES[number];
 
+/**
+ * Marker carried by every audit line (#2410 — one [ENV-ROTATION] line per
+ * rotation attempt, success and failure alike; never a value).
+ */
+const AUDIT_MARKER = '[ENV-ROTATION]';
+
 export interface EnvPublishOptions {
   service: string;
   envPath: string;
@@ -163,7 +169,9 @@ export class EnvRotationService {
 
   /**
    * Appends an audit log entry to shared state.
-   * Format: one JSON object per line (JSONL).
+   * Format: one JSON object per line (JSONL), stamped with AUDIT_MARKER.
+   * #2410 grain 2: every rotation ATTEMPT writes exactly one line —
+   * success and failure alike — and never contains env values.
    */
   private async writeAuditLog(sharedStatePath: string, entry: {
     action: 'publish' | 'apply';
@@ -177,13 +185,21 @@ export class EnvRotationService {
     const envDir = join(sharedStatePath, 'env');
     ensureStoreSubdir(sharedStatePath, 'env');
     const auditPath = join(envDir, 'audit.jsonl');
-    const line = JSON.stringify({ ...entry, timestamp: new Date().toISOString() }) + '\n';
+    const line = JSON.stringify({ marker: AUDIT_MARKER, ...entry, timestamp: new Date().toISOString() }) + '\n';
     try {
       await fs.appendFile(auditPath, line, 'utf-8');
     } catch (err) {
       // Audit log failure is non-blocking — log warning but don't throw
       this.logger.warn('Failed to write audit log', { error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /**
+   * Counts KEY=VALUE lines in a .env payload (comments excluded).
+   * Shared by publish (keys published) and apply (keysWritten).
+   */
+  private countEnvKeys(envContent: string): number {
+    return envContent.split('\n').filter(l => l.includes('=') && !l.startsWith('#')).length;
   }
 
   async publish(options: EnvPublishOptions): Promise<EnvPublishResult> {
@@ -194,6 +210,14 @@ export class EnvRotationService {
 
     // Read .env file
     if (!existsSync(envPath)) {
+      await this.writeAuditLog(sharedStatePath, {
+        action: 'publish',
+        service,
+        version,
+        machineId,
+        status: 'error',
+        error: `Source .env not found: ${envPath}`,
+      });
       return {
         status: 'error',
         message: `Source .env not found: ${envPath}`,
@@ -206,6 +230,14 @@ export class EnvRotationService {
 
     const envContent = await fs.readFile(envPath, 'utf-8');
     if (envContent.trim().length === 0) {
+      await this.writeAuditLog(sharedStatePath, {
+        action: 'publish',
+        service,
+        version,
+        machineId,
+        status: 'warning',
+        error: `Source .env is empty: ${envPath}`,
+      });
       return {
         status: 'warning',
         message: `Source .env is empty: ${envPath}`,
@@ -268,6 +300,7 @@ export class EnvRotationService {
       version,
       machineId,
       status: 'success',
+      keysWritten: this.countEnvKeys(envContent),
     });
 
     return {
@@ -292,6 +325,12 @@ export class EnvRotationService {
     // Find latest version
     const envDir = join(sharedStatePath, 'env', service);
     if (!existsSync(envDir)) {
+      await this.writeAuditLog(sharedStatePath, {
+        action: 'apply',
+        service,
+        status: 'error',
+        error: `No env published for service: ${service}`,
+      });
       return {
         status: 'error',
         message: `No env published for service: ${service}`,
@@ -305,6 +344,12 @@ export class EnvRotationService {
     const versions = files.filter(f => f.endsWith('.json'));
 
     if (versions.length === 0) {
+      await this.writeAuditLog(sharedStatePath, {
+        action: 'apply',
+        service,
+        status: 'error',
+        error: `No versions found for service: ${service}`,
+      });
       return {
         status: 'error',
         message: `No versions found for service: ${service}`,
@@ -328,6 +373,13 @@ export class EnvRotationService {
     // Read encrypted file
     const encPath = join(envDir, `${latestVersion}.enc`);
     if (!existsSync(encPath)) {
+      await this.writeAuditLog(sharedStatePath, {
+        action: 'apply',
+        service,
+        version: latestVersion,
+        status: 'error',
+        error: `Encrypted file missing for ${service} v${latestVersion}`,
+      });
       return {
         status: 'error',
         message: `Encrypted file missing for ${service} v${latestVersion}`,
@@ -336,15 +388,43 @@ export class EnvRotationService {
       };
     }
 
-    const wire = await fs.readFile(encPath);
-    const { salt, iv, tag, ciphertext } = this.deserializeEncrypted(wire);
-    const plaintext = this.decrypt(ciphertext, iv, tag, salt);
-    const envContent = plaintext.toString('utf-8');
+    // Decrypt — a failure (wrong ROOSYNC_ENV_KEY, corruption) is audited and
+    // returned, not thrown: the caller gets a structured error and the journal
+    // keeps one line per rotation attempt (#2410 grain 2).
+    let envContent: string;
+    try {
+      const wire = await fs.readFile(encPath);
+      const { salt, iv, tag, ciphertext } = this.deserializeEncrypted(wire);
+      const plaintext = this.decrypt(ciphertext, iv, tag, salt);
+      envContent = plaintext.toString('utf-8');
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      await this.writeAuditLog(sharedStatePath, {
+        action: 'apply',
+        service,
+        version: latestVersion,
+        status: 'error',
+        error: `Failed to decrypt ${service} v${latestVersion}: ${errMsg}`,
+      });
+      return {
+        status: 'error',
+        message: `Failed to decrypt ${service} v${latestVersion} — possible ROOSYNC_ENV_KEY mismatch or data corruption (${errMsg})`,
+        service,
+        keysWritten: 0,
+      };
+    }
 
     // Validate decrypted content looks like a .env file (Hermes concern #3)
     // Reject binary/corrupted content that doesn't contain at least one KEY=VALUE line
     const hasValidLine = envContent.split('\n').some(l => /^[A-Za-z_][A-Za-z0-9_]*=/.test(l.trim()));
     if (!hasValidLine) {
+      await this.writeAuditLog(sharedStatePath, {
+        action: 'apply',
+        service,
+        version: latestVersion,
+        status: 'error',
+        error: `Decrypted content does not appear to be a valid .env file (no KEY=VALUE lines found) for ${service} v${latestVersion}`,
+      });
       return {
         status: 'error',
         message: `Decrypted content does not appear to be a valid .env file (no KEY=VALUE lines found). ` +
@@ -355,8 +435,7 @@ export class EnvRotationService {
     }
 
     // Parse and count keys
-    const keys = envContent.split('\n').filter(l => l.includes('=') && !l.startsWith('#'));
-    const keysWritten = keys.length;
+    const keysWritten = this.countEnvKeys(envContent);
 
     if (dryRun) {
       this.logger.info('[DRY RUN] Would apply env', { service, version: latestVersion, keys: keysWritten });

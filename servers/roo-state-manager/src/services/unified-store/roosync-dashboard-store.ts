@@ -564,6 +564,29 @@ export async function releaseDashboardSharedLock(lockKey: string, holderJson: st
 }
 
 /**
+ * Stall diagnostics (web2 05/10) — read-only peek at the PG lock row: holder
+ * payload + server-clock acquired_at, for the lock AGE surfaced at
+ * condensationStalled='lock-held'. null on no-PG/error/timeout: the caller
+ * falls back to the machine-local lock file, and the stall stays visible
+ * without the age qualifier.
+ */
+export async function readDashboardSharedLock(
+  lockKey: string
+): Promise<{ holder: unknown; acquiredAt: string } | null> {
+  try {
+    const timeout = new Promise<null>((resolve) => {
+      setTimeout(() => resolve(null), LOCK_OP_TIMEOUT_MS);
+    });
+    return await Promise.race([
+      getUnifiedStoreWriter().readRooSyncDashboardLock(lockKey),
+      timeout,
+    ]);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * One-time backfill import of a GDrive-parsed dashboard (#3151 Phase C,
  * scripts/backfill-roosync-dashboards.mjs). INSERT-only semantics
  * (`{ backfill: true }` at the writer) so a file snapshot racing a live

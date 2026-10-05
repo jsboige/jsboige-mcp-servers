@@ -263,8 +263,10 @@ conditionnel (12e).)*
 - `tests/unit/services/roosync/FileLockManager.test.ts` — fichier supprimé par #1843 (dead code), exclusion restée
 - `tests/unit/services/roosync/FileLockManager.diagnostic.test.ts` — idem
 
-(Le config legacy `vitest.config.ts` contient encore ces 2 ghosts — hors périmètre du census CI,
-non corrigé ici pour rester chirurgical.)
+(Retirés du config legacy `vitest.config.ts` le 2026-10-05, repli #2639 — `vitest list` avant/après
+identique, exclusion d'un fichier absent = no-op. Le bloc `ci:` mort du même config liste encore
+2 autres ghosts — `PresenceManager.test.ts`, `file-lock-manager-integration.test.ts` — mais ce bloc
+n'est jamais lu par vitest : clés top-level inconnues ignorées, nettoyable dans un grain futur.)
 
 ## Candidats à la réactivation
 

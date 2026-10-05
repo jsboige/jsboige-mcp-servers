@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'fs/promises';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, MentionSchema, detectStatusContradictions, reconcileStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock, getAppendLockPath, getCondenseLockPath } from '../dashboard.js';
+import { roosyncDashboard, MentionSchema, detectStatusContradictions, reconcileStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock, getAppendLockPath, getCondenseLockPath, readCondenseLockHolderInfo } from '../dashboard.js';
 import { resolveMentionTarget } from '@/utils/dashboard-helpers';
 import { resetChatOpenAIClient } from '@/services/openai';
 
@@ -2437,6 +2437,13 @@ describe('#3205 write-side — append lock cross-process', () => {
     expect(result.condensationStalled).toBe('lock-held');
     expect(String(result.message)).toMatch(/Condensation requise/);
     expect(String(result.message)).toMatch(/NON exécutée/);
+    // Stall diagnostics (web2 05/10) — identité du détenteur + âge du verrou
+    // remontés au premier plan (fichier local : PG absent en env de test).
+    expect(result.condensationStallLockHolder).toBe('condenser-machine:other-ws#555555');
+    expect(result.condensationStallLockAgeMs).toBeGreaterThanOrEqual(0);
+    expect(result.condensationStallLockAgeMs).toBeLessThan(60000);
+    expect(String(result.message)).toMatch(/détenu depuis/);
+    expect(String(result.message)).toMatch(/condenser-machine:other-ws#555555/);
     // Le verrou étranger n'a pas été volé ni relâché.
     const raw = await fsp.readFile(getCondenseLockPath('global'), 'utf8');
     expect(JSON.parse(raw).machineId).toBe('condenser-machine');
@@ -2445,6 +2452,23 @@ describe('#3205 write-side — append lock cross-process', () => {
     const small = await roosyncDashboard({ action: 'append', type: 'workspace', workspace: 'stall-small', content: 'petit append' }) as any;
     expect(small.success).toBe(true);
     expect(small.condensationStalled).toBeUndefined();
+  });
+
+  it('readCondenseLockHolderInfo — holder + âge depuis le fichier local ; null si absent/illisible (web2 05/10)', async () => {
+    const KEY = 'stall-lock-age-unit';
+    // Absent → null (le stall resterait visible, sans qualificatif d'âge).
+    expect(await readCondenseLockHolderInfo(KEY)).toBeNull();
+    // Présent et frais → holder lisible + âge cohérent avec acquiredAt.
+    const fresh = { machineId: 'm1', workspace: 'w1', pid: 42, acquiredAt: new Date(Date.now() - 5000).toISOString() };
+    await fsp.writeFile(getCondenseLockPath(KEY), JSON.stringify(fresh), 'utf8');
+    const info = await readCondenseLockHolderInfo(KEY);
+    expect(info).not.toBeNull();
+    expect(info!.holder).toBe('m1:w1#42');
+    expect(info!.ageMs).toBeGreaterThanOrEqual(4900);
+    expect(info!.ageMs).toBeLessThan(60000);
+    // JSON cassé → null (jamais d'âge inventé).
+    await fsp.writeFile(getCondenseLockPath(KEY), '{not-json', 'utf8');
+    expect(await readCondenseLockHolderInfo(KEY)).toBeNull();
   });
 
   it('append sous verrou étranger frais → procède fail-open, message persisté, verrou étranger PAS touché', async () => {
