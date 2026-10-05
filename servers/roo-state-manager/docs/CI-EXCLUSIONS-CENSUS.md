@@ -10,18 +10,20 @@
 
 | Mesure | Valeur (2026-10-05) | Méthode |
 |---|---|---|
-| **Entrées fichiers de test déclarées** | **19** | parse du tableau `exclude` du config |
+| **Entrées fichiers de test déclarées** | **18** | parse du tableau `exclude` du config |
 | **Globs répertoires de tests déclarés** | **4** | idem |
 | Entrées structurelles (node_modules/build/dist/backups) | 9 | idem — hygiène, pas des exclusions de tests |
-| Fichiers effectivement non collectés en CI (vs run local) | **10** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
-| Tests sautés en CI (vs run local) | **201** | idem |
+| Fichiers effectivement non collectés en CI (vs run local) | **9** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
+| Tests sautés en CI (vs run local) | **188** | idem |
 
 **Pourquoi deux nombres.** Le compte *déclaré* ne change que quand on édite le config — c'est lui que le
-drift-guard verrouille et que les docs citent. Le compte *effectif* (10 fichiers / 201 tests) dépend
+drift-guard verrouille et que les docs citent. Le compte *effectif* (9 fichiers / 188 tests) dépend
 aussi des patterns `include` et du contenu des fichiers (ex. `dashboard-llm-live` collecte 0 test sans
 `LLM_LIVE_INTEGRATION=1`) : il dérive sans toucher au config, donc il n'est pas gardé et se mesure à la
-demande via `--collect`. **Contrôle croisé de cette tranche** : 363 − 328 = **35** tests et
-16 − 14 = **2** fichiers, soit exactement les 12 + 23 tests des deux fichiers réactivés.
+demande via `--collect`. **Contrôle croisé (11e réactivation, mesuré)** : 793 − 784 = **9** fichiers et
+la même soustraction côté tests, soit exactement l'entrée `refresh-dashboard` réactivée (13 tests →
+le fichier en porte 16 depuis, dont 3 ajoutés par la réactivation). **Suite CI complète sur la même
+tête** : 784 fichiers / 14 981 tests, **0 échec**.
 
 ## Historique de la dérive (avant #3322)
 
@@ -88,11 +90,25 @@ seul) et ne retombe sur le dashboard que s'il manque (`compare-config.ts` l.1978
 `severity`) **n'aurait rien corrigé** : le diff de drift EST `env.*` + CRITICAL, donc *dans* le prédicat
 proposé. Correctif réel = aligner la fixture roster sur la référence registre (1 ligne) ; le drift émet
 alors le signal INFO « consistant » que les tests assertent déjà — rouge d'abord 3/39 puis **39/39**
-mesurés sous config CI → **19 entrées**.
+mesurés sous config CI → **19 entrées**. **#2639 (2026-10-05, 11e réactivation) :**
+`refresh-dashboard.integration.test.ts` réactivé — deuxième correction de diagnostic consécutive.
+L'entrée était étiquetée « dépendance plateforme dure, shell vers `pwsh` » : **faux**. Mesure en
+clone **standalone** (la condition CI : aucun `CLAUDE.md` ancêtre, donc aucun dépôt parent) :
+**13/13 rouges**, et la commande fautive le dit elle-même —
+`pwsh … "& '<submodule>/servers/roo-state-manager/scripts/roosync/generate-mcp-dashboard.ps1'"`,
+c'est-à-dire `pwsh` **exécuté** sur un **chemin de script inexistant**. Le shell n'est pas le
+problème, l'artefact du **dépôt parent** l'est (`findRooExtensionsRoot()` l.23-46 retombe sur
+`process.cwd()`). Correctif = mocker la **seule** frontière extérieure (`child_process.exec`,
+l.114-119) en reproduisant le **contrat du script** (création de l'outputDir, écriture de
+`mcp-dashboard.md`, stdout `Fichier: <chemin>`) : plus de `pwsh`, plus de dépôt parent. Le fichier
+passe de 13 à **16 tests** (3 ajoutés : construction de la commande, échec du shell emballé, stdout
+sans marqueur) et les métriques sont désormais assertées **exactes** (avant : `expect.any(Number)`),
+ce que la fixture rend possible — mutation `✅`→`❌` dans le prédicat des métriques tuée par
+exactement 1 test. Mesuré : 13/13 rouges standalone avant, **16/16 verts** après → **18 entrées**.
 
 ---
 
-## Les 19 entrées fichiers de test
+## Les 18 entrées fichiers de test
 
 ### POWERSHELL — 6 entrées, toutes effectives (159 tests)
 
@@ -127,19 +143,31 @@ debug permanente retirée — 4/4 vérifiés sous config CI.)*
 
 Plus aucune entrée : les cinq fichiers smoke tournent sous config CI.
 
-### Plateforme (PowerShell) / état-dépendant / schéma périmé — 2 entrées
+### État-dépendant / opt-in — 1 entrée
 
-Ces deux entrées **ne dépendent pas de GDrive** : le libellé de section « APPDATA/GDRIVE » ne
-décrivait correctement **aucune** d'elles. Chacune porte une raison propre, **mesurée le 2026-10-04**
-(#2639, tranche 6) en levant son exclusion et en exécutant le fichier **sous `vitest.config.ci.ts`**
-— la config qui fait autorité (le verdict sous `vitest.config.ts` diffère et ne vaut pas).
-*(`decision.integration`, `config.integration`, `baseline.test` puis `compare-config.integration` ont
-quitté cette section le 2026-10-05, 7e-10e réactivations #2639 — voir historique.)*
+Cette entrée **ne dépend pas de GDrive** : le libellé de section « APPDATA/GDRIVE » ne la décrivait
+pas. Elle porte sa raison propre, **mesurée le 2026-10-04** (#2639, tranche 6) en levant son
+exclusion et en exécutant le fichier **sous `vitest.config.ci.ts`** — la config qui fait autorité
+(le verdict sous `vitest.config.ts` diffère et ne vaut pas).
+*(`decision.integration`, `config.integration`, `baseline.test`, `compare-config.integration` puis
+`refresh-dashboard.integration` ont quitté cette section le 2026-10-05 — 7e-11e réactivations #2639,
+voir historique.)*
 
-| Entrée | Tests | Raison mesurée (2026-10-04) |
+| Entrée | Tests | Raison mesurée |
 |---|---|---|
-| `src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts` | 13 — **13 rouges** | Dépendance **plateforme dure** : le tool shell vers `pwsh -NoProfile -ExecutionPolicy Bypass -c "& .../scripts/roosync/generate-mcp-dashboard.ps1"` (`refresh-dashboard.ts` **l.161**). CI = `ubuntu-22.04`. **Seule** entrée dont le label « platform-dependent » était exact. |
 | `src/tools/roosync/__tests__/dashboard-llm-live.integration.test.ts` | 0 (no-op) | Opt-in via `LLM_LIVE_INTEGRATION=1` (repro 502 #1578) — 0 test collecté sans la variable ; exclusion déclarative, **sans effet** sur le delta. |
+
+**Correction de diagnostic (11e réactivation).** `refresh-dashboard.integration.test.ts` figurait
+ici comme « **plateforme dure** … seule entrée dont le label "platform-dependent" était exact ».
+**C'est faux, et mesuré faux** : `pwsh` n'est pas en cause — il s'exécute (Windows local *et*
+runner ubuntu). Ce qui manque est le **script du dépôt parent**
+(`scripts/roosync/generate-mcp-dashboard.ps1`). `findRooExtensionsRoot()`
+(`refresh-dashboard.ts` l.23-46) remonte l'arbre à la recherche d'un `CLAUDE.md` ; dans un
+checkout **submodule autonome** (la CI) il n'en trouve aucun, retombe sur `process.cwd()`
+(= `servers/roo-state-manager`) et vise donc un script inexistant. Rouge d'abord mesuré en clone
+standalone : **13/13** `Command failed: pwsh …\roo-state-manager\scripts\roosync\generate-mcp-dashboard.ps1`.
+**Classe réelle = PARENT_REPO** (même famille que `skepticism-protocol`), pas plateforme —
+la plateforme est un faux prédicat : un checkout Windows *standalone* échouerait à l'identique.
 
 **Constat transversal.** Les 7 fichiers d'intégration roosync ne référencent **aucun** chemin Windows
 ni GDrive en propre : la catégorie « APPDATA/GDRIVE » héritée du 2026-07-26 décrivait une dépendance
@@ -183,7 +211,7 @@ ici) : le label de section a été renommé d'après les raisons **mesurées**, 
 |---|---|---|
 | `src/tools/roosync/__tests__/stress-large-inbox.test.ts` | 10 | seuils de timing dépendants du hardware (16 GB RAM, `--maxWorkers=1`) |
 
-**Total déclaré : 6+0+2+7+1+1+1+1 = 19 · effectif : mesure 2026-10-05 post-#2639 (`--collect`) — 10 fichiers / 201 tests**
+**Total déclaré : 6+0+1+7+1+1+1+1 = 18 · effectif : mesure 2026-10-05 post-#2639 (`--collect`) — 9 fichiers / 188 tests**
 
 ---
 
@@ -215,13 +243,13 @@ Exclusions **sans raison datée** — à re-auditer avant d'en ajouter de nouvel
 
 1. **POWERSHELL (6)** — plateforme légitime (CI = ubuntu), mais rien n'empêcherait un job matrix
    Windows de les exécuter. Candidat « job dédié », pas réactivation simple.
-2. **Plateforme / état-dépendant / schéma périmé (3)** — **mesurées** le 2026-10-04 (#2639, tranche 6),
-   chacune avec son correctif identifié (section dédiée ci-dessus). Aucune n'est un candidat tmpdir :
-   `refresh-dashboard` restera Windows-only (→ job matrix, avec les 6 POWERSHELL) ·
-   `compare-config` (3 tests rouges) un filtre resserré ·
-   `dashboard-llm-live` est un no-op (opt-in `LLM_LIVE_INTEGRATION=1`).
-   (`decision.integration`, `config.integration` puis `baseline.test` ont été réactivées le
-   2026-10-05 — 7e-10e réactivations #2639.)
+2. **État-dépendant / opt-in (1)** — `dashboard-llm-live` est un no-op (opt-in
+   `LLM_LIVE_INTEGRATION=1`) : exclusion déclarative sans effet sur le delta, ni à réactiver ni à
+   retirer sans décision d'hygiène (cf. § Hygiène).
+   (`decision.integration`, `config.integration`, `baseline.test`, `compare-config.integration` puis
+   `refresh-dashboard.integration` ont été réactivées le 2026-10-05 — 7e-11e réactivations #2639.
+   `refresh-dashboard` était classé « plateforme dure » : **diagnostic corrigé**, cf. section
+   dédiée — sa vraie classe est PARENT_REPO, et le correctif est le mock de la frontière shell.)
    **SMOKE est clos** : les 5 fichiers smoke ont été réactivés (2026-10-03/04, #2639), et plus aucune
    entrée de cette catégorie ne dépend réellement de GDrive.
 3. **Inherited no-op (7)** — dont 3 sans raison documentée (parent-child-validation,

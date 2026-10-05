@@ -13,7 +13,7 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 19 test-file entries + 4 tests-directory globs
+ * Exclusion census: 18 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
@@ -157,11 +157,18 @@ export default mergeConfig(unitConfig, defineConfig({
       //   appears: measured 28/28 green under this config on Windows — the native ADS
       //   platform, i.e. the worst case — with no `D` before or after.
       // 'src/tools/roosync/__tests__/decision.integration.test.ts',
-      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 13/13 fail. The tool shells out
-      //   to `pwsh -NoProfile -ExecutionPolicy Bypass -c "& ...generate-mcp-dashboard.ps1"`
-      //   (refresh-dashboard.ts l.161) — a hard PowerShell/Windows dependency, and the
-      //   one entry here whose "platform-dependent" label was accurate.
-      'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
+      // REACTIVATED 2026-10-05 (#2639, 11th): the "platform-dependent — hard pwsh
+      //   dependency" label was MEASURABLY WRONG. `pwsh` runs fine; what is missing
+      //   is the PARENT repo's script. findRooExtensionsRoot() (refresh-dashboard.ts
+      //   l.23-46) walks up looking for a `CLAUDE.md`; in a standalone submodule
+      //   checkout (CI) it finds none, falls back to process.cwd(), and aims at
+      //   `servers/roo-state-manager/scripts/roosync/generate-mcp-dashboard.ps1`,
+      //   which does not exist -> 13/13 `Command failed: pwsh`. Dependency class =
+      //   PARENT_REPO, same family as skepticism-protocol. Fix = mock the shell at
+      //   its single boundary (child_process.exec), reproducing the SCRIPT CONTRACT
+      //   (New-Item -Force, mcp-dashboard.md, stdout `Fichier: <path>`) — no pwsh,
+      //   no parent repo. Measured: 13/13 red standalone before, 16/16 green after.
+      // 'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
       // REACTIVATED 2026-10-05 (#2639, 8th): the single red test (apply_profile —
       //   profile not found) now pins InventoryService.getMachineInventory to the
       //   fixture tmpdir and ships a model-configs.json fixture, so the local-source
