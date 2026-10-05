@@ -353,6 +353,9 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
             if (mcpConfig.env) {
               // Filtrer seulement les vars "système" (ROOSYNC_*, QDRANT_*, OPENAI_*)
               for (const [key, value] of Object.entries(mcpConfig.env)) {
+                // #2307 : un nom marquant un secret ne se publie JAMAIS, même sur
+                // un préfixe surveillé — la valeur ne doit pas quitter la machine.
+                if (/(KEY|TOKEN|SECRET|PASSWORD)/i.test(key)) continue;
                 if (key.startsWith('ROOSYNC_') || key.startsWith('QDRANT_') ||
                     key.startsWith('OPENAI_') || key.startsWith('EMBEDDING_')) {
                   // Éviter les doublons : si plusieurs MCPs utilisent la même var
