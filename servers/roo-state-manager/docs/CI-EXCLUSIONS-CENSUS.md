@@ -10,23 +10,22 @@
 
 | Mesure | Valeur (2026-10-05) | Méthode |
 |---|---|---|
-| **Entrées fichiers de test déclarées** | **9** | parse du tableau `exclude` du config |
+| **Entrées fichiers de test déclarées** | **8** | parse du tableau `exclude` du config |
 | **Globs répertoires de tests déclarés** | **4** | idem |
 | Entrées structurelles (node_modules/build/dist/backups) | 9 | idem — hygiène, pas des exclusions de tests |
-| Fichiers effectivement non collectés en CI (vs run local) | **8** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
-| Tests sautés en CI (vs run local) | **175** | idem |
+| Fichiers effectivement non collectés en CI (vs run local) | **7** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
+| Tests sautés en CI (vs run local) | **165** | idem |
 
 **Pourquoi deux nombres.** Le compte *déclaré* ne change que quand on édite le config — c'est lui que le
-drift-guard verrouille et que les docs citent. Le compte *effectif* (8 fichiers / 175 tests) dépend
+drift-guard verrouille et que les docs citent. Le compte *effectif* (7 fichiers / 165 tests) dépend
 aussi des patterns `include` et du contenu des fichiers (ex. `dashboard-llm-live` collecte 0 test sans
 `LLM_LIVE_INTEGRATION=1`) : il dérive sans toucher au config, donc il n'est pas gardé et se mesure à la
-demande via `--collect`. **Contrôle croisé (12e réactivation, mesuré)** : 9 − 8 = **1** fichier et
-188 − 175 = **13** tests, soit exactement l'entrée `skepticism-protocol` réactivée — ses 13 tests sont
-désormais **collectés puis skipés** en CI submodule autonome (`describe.skipIf` parent absent) et
-**exécutés** partout où le parent est présent, y compris la CI parent qui checkoute le submod dans
-`mcps/`. **Suite CI complète sur la même tête** : 784 fichiers passés + 4 skipés (788), 14 981 tests
-passés + 45 skipés (15 029 collectés), **0 échec** — le delta vs la tête précédente (+1 fichier skipé,
-+13 tests skipés, +13 collectés) est exactement `skepticism-protocol`.
+demande via `--collect`. **Contrôle croisé (14e réactivation, mesuré)** : 8 − 7 = **1** fichier et
+175 − 165 = **10** tests vs la mesure 13e, soit exactement l'entrée `stress-large-inbox` réactivée —
+le config unit ne l'excluait pas, sa réactivation côté CI la fait collecter des deux côtés : ses 10
+tests passent désormais **exécutés** en CI (plus de skip du tout, contrairement à `skepticism-protocol`
+en 12e qui reste skipée hors parent). `vitest list` : unit=795, ci=788. **Suite CI complète sur la même
+tête** : cf. historique 14e ci-dessous.
 
 ## Historique de la dérive (avant #3322)
 
@@ -139,11 +138,33 @@ c'est la suite exécutée, pas le delta, qui porte la preuve des réactivations.
 ne replie pas les backslashes alors que la prod (`build-skeleton-cache.tool.ts:381-382`) porte exactement
 cette sémantique win32 : test fidèle, non portable. Gate `it.skipIf(process.platform !== 'win32')` posé
 sur **ce cas seul** (mesuré 15/15 en local win32 ; les 5 autres tests du fichier restent actifs en CI ;
-**aucun retour d'exclusion — le compte 9 tient**, l'adjudicateur est le runner ubuntu de cette PR).
+**aucun retour d'exclusion — le compte 9 tient à cette passe**, l'adjudicateur est le runner ubuntu de cette PR).
+**#2639 (2026-10-05, 14e réactivation — grain 4) :**
+`stress-large-inbox.test.ts` réactivé — **seuils proportionnels au matériel** : chaque run
+calibre un micro-benchmark I/O de la même forme de charge que les tests (écriture puis relecture
+de 200 petits JSON en `mkdtemp`, référence 550 ms mesurée sur po-2027) et multiplie les 5 seuils
+de timing par le facteur obtenu, **clampé [1, 5]** (une machine rapide ne gagne pas de seuil
+resserré ; au-delà de 5× plus lent c'est une régression, pas du matériel). La fixture quitte
+l'arbre du dépôt (`src/__test-data__/` → `mkdtemp`) et le cleanup devient best-effort. Mesuré :
+**10/10 verts** sous config CI (5,3 s, facteur 1 en local) — la CI submodule (ubuntu, I/O plus
+lente) exerce le facteur > 1 au premier run → **8 entrées**. **Mesures** : suite CI complète sur la tête — **788 fichiers passés +
+4 skipés (792), 15 006 tests passés + 45 skipés + 3 todo (15 054), 0 échec** (delta vs tête 13e :
++1 fichier, +10 tests — exactement cette réactivation) ; drift-guard 4/4. **Épisode RPC vitest
+(mesuré, qualifié ambient)** : les runs de suite complète sur Windows local rendaient parfois
+« [vitest-worker]: Timeout calling onTaskUpdate » (exit 0/1, tests 100 % verts). Attribution au
+fichier ÉCARTÉE : timeout birpc de 60 s alors que ce fichier ne porte aucun bloc synchrone de
+60 s (max ~2 s) ; des rendements `setImmediate` dans les générateurs (posés, conservés — hygiène)
+n'ont rien changé ; le même timeout est apparu sur la tête 13e SANS ce fichier (2e run A/B) —
+flake RPC vitest-Windows corrélé à la charge (précédents deftai/directive#2546, vitest#8164).
+Adjudicateur : la CI ubuntu (verte à cette échelle en 12e/13e).
+**Note de lecture** : le delta *effectif* (`--collect`) passe de 8 fichiers / 175 tests (13e) à
+**7 fichiers / 165 tests** — le config unit n'excluait pas ce fichier, sa réactivation côté CI le
+fait collecter des deux côtés (contrôle croisé 14e en tête de document) ; le fichier est désormais
+**exécuté** en CI, pas collecté-skipé.
 
 ---
 
-## Les 9 entrées fichiers de test
+## Les 8 entrées fichiers de test
 
 ### POWERSHELL — 6 entrées, toutes effectives (159 tests)
 
@@ -240,13 +261,14 @@ conditionnel (12e).)*
 |---|---|---|
 | `src/tools/search/__tests__/search-live.integration.test.ts` | 6 | requiert Qdrant + service d'embeddings vivants |
 
-### STRESS — 1 entrée, effective (10 tests)
+### STRESS — 0 entrée (réactivée, #2639 14e — grain 4)
 
-| Entrée | Tests | Raison |
-|---|---|---|
-| `src/tools/roosync/__tests__/stress-large-inbox.test.ts` | 10 | seuils de timing dépendants du hardware (16 GB RAM, `--maxWorkers=1`) |
+*(`stress-large-inbox.test.ts` réactivé le 2026-10-05 : seuils de timing **proportionnels au
+matériel** — micro-benchmark de calibration I/O de la même forme de charge (référence 550 ms),
+facteur clampé [1, 5] — plus fixture `mkdtemp` hors arbre et cleanup best-effort. 10/10 verts
+mesurés sous config CI en local ; la CI submodule (ubuntu) exerce le facteur > 1.)*
 
-**Total déclaré : 6+0+1+0+0+0+1+1 = 9 · effectif : mesure 2026-10-05 post-#2639 13e (`--collect`) — 8 fichiers / 175 tests (inchangé, cf. note dans l'historique 13e)**
+**Total déclaré : 6+0+1+0+0+0+1+0 = 8 · effectif : cf. tableau de mesures (rafraîchi à la 14e)**
 
 ---
 

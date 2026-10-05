@@ -4,12 +4,15 @@
  * Tests de performance avec une boîte de réception de 1000+ messages
  *
  * @module roosync/stress-large-inbox.test
- * @version 1.0.0
+ * @version 2.1.0 (#531 ; #2639 grain 4 — fixture hors arbre mkdtemp, seuils
+ *   proportionnels au matériel via micro-benchmark de calibration, cleanup
+ *   best-effort, rendement RPC vitest dans les générateurs de fixtures)
  */
 
-import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, rmSync, mkdirSync, writeFileSync, readdirSync } from 'fs';
+import { describe, test, expect, beforeAll, beforeEach, afterAll, afterEach, vi } from 'vitest';
+import { existsSync, rmSync, mkdirSync, writeFileSync, readdirSync, readFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 
 // Mock getLocalMachineId
 vi.mock('../../../utils/message-helpers.js', async () => {
@@ -22,8 +25,10 @@ vi.mock('../../../utils/message-helpers.js', async () => {
   };
 });
 
-// Mock getSharedStatePath
-const testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-stress');
+// Mock getSharedStatePath — #2639 : fixture hors arbre du dépôt (mkdtemp, même
+// pattern que baseline.integration / #1355), racine posée en beforeAll.
+let testSharedStatePath: string;
+let testRootDir: string;
 vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
@@ -70,20 +75,83 @@ function generateTestMessage(id: number): Message {
 }
 
 /**
+ * Rend la main à l'event loop (#2639 grain 4) : les générateurs de fixtures
+ * écrivent jusqu'à 2000 fichiers ; un setImmediate tous les 100 (~1 ms au
+ * total) laisse le canal RPC vitest respirer sur un fork chargé. NB : le
+ * timeout « [vitest-worker]: Timeout calling onTaskUpdate » observé en suite
+ * complète sur Windows s'est avéré AMBIANT (birpc 60 s ; ce fichier ne porte
+ * aucun bloc synchrone de 60 s — max ~2 s — et le même timeout est apparu
+ * sans ce fichier) — ces rendements sont de l'hygiène, pas un fix.
+ */
+async function yieldToEventLoop(): Promise<void> {
+  await new Promise<void>((resolve) => setImmediate(resolve));
+}
+
+/**
  * Génère N messages dans l'inbox
  */
-function generateLargeInbox(count: number): void {
+async function generateLargeInbox(count: number): Promise<void> {
   const inboxPath = join(testSharedStatePath, 'messages/inbox');
 
   for (let i = 0; i < count; i++) {
     const message = generateTestMessage(i);
     const filePath = join(inboxPath, `${message.id}.json`);
     writeFileSync(filePath, JSON.stringify(message, null, 2), 'utf-8');
+    if (i % 100 === 99) {
+      await yieldToEventLoop();
+    }
+  }
+}
+
+/**
+ * Facteur matériel (#2639 grain 4) : les seuils de timing de ce fichier dépendent
+ * de la vitesse I/O réelle de la machine. Plutôt que des seuils fixes calibrés sur
+ * une machine de dev (rouges sur un runner CI à 2 cœurs), chaque run mesure la
+ * vitesse via un micro-benchmark de la même forme de charge que les tests —
+ * écriture puis relecture de 200 petits JSON dans un mkdtemp — et met les seuils
+ * à l'échelle. CALIBRATION_REFERENCE_MS = 550, mesuré sur po-2027 le 2026-10-05
+ * (3 runs : 483/548/537 ms). Facteur clampé à [1, 5] : une machine plus rapide que
+ * la référence ne gagne pas de seuil resserré (plancher 1) ; au-delà de 5× plus
+ * lent, c'est une régression réelle, pas du matériel.
+ */
+const CALIBRATION_REFERENCE_MS = 550;
+let hardwareFactor = 1;
+
+async function calibrateHardwareFactor(): Promise<number> {
+  const root = mkdtempSync(join(tmpdir(), 'stress-calib-'));
+  try {
+    const dir = join(root, 'messages', 'inbox');
+    mkdirSync(dir, { recursive: true });
+    const start = Date.now();
+    for (let i = 0; i < 200; i++) {
+      const message = generateTestMessage(i);
+      writeFileSync(join(dir, `${message.id}.json`), JSON.stringify(message, null, 2), 'utf-8');
+    }
+    // Rendre la main entre écriture et lecture (RPC vitest — même raison que
+    // yieldToEventLoop ; ~0,1 ms, négligeable devant les ~550 ms mesurées).
+    await yieldToEventLoop();
+    for (const f of readdirSync(dir)) {
+      readFileSync(join(dir, f), 'utf-8');
+    }
+    const measured = Date.now() - start;
+    return Math.min(5, Math.max(1, measured / CALIBRATION_REFERENCE_MS));
+  } finally {
+    try {
+      rmSync(root, { recursive: true, force: true });
+    } catch {
+      // calibration : nettoyage best-effort
+    }
   }
 }
 
 describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
   let messageManager: MessageManager;
+
+  beforeAll(async () => {
+    hardwareFactor = await calibrateHardwareFactor();
+    testRootDir = mkdtempSync(join(tmpdir(), 'stress-inbox-'));
+    testSharedStatePath = join(testRootDir, 'shared-state');
+  });
 
   beforeEach(async () => {
     // Setup : créer répertoire temporaire
@@ -105,9 +173,25 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
   });
 
   afterEach(async () => {
-    // Cleanup
-    if (existsSync(testSharedStatePath)) {
-      rmSync(testSharedStatePath, { recursive: true, force: true });
+    // Cleanup best-effort (#2639) : un échec de nettoyage ne fait jamais échouer
+    // le test — même politique que baseline.integration / #1355 v3.
+    try {
+      if (existsSync(testSharedStatePath)) {
+        rmSync(testSharedStatePath, { recursive: true, force: true });
+      }
+    } catch {
+      // nettoyage best-effort — l'afterAll retentera la racine
+    }
+  });
+
+  afterAll(() => {
+    // #2639 : ratisser la racine mkdtemp, best-effort.
+    try {
+      if (testRootDir && existsSync(testRootDir)) {
+        rmSync(testRootDir, { recursive: true, force: true });
+      }
+    } catch {
+      // nettoyage best-effort
     }
   });
 
@@ -118,7 +202,7 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
   describe('roosync_read performance with large inbox', () => {
     test('reads inbox with 1000 messages within reasonable time', async () => {
       // Generate 1000 messages
-      generateLargeInbox(1000);
+      await generateLargeInbox(1000);
 
       const inboxPath = join(testSharedStatePath, 'messages/inbox');
       const files = readdirSync(inboxPath);
@@ -140,12 +224,13 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
       expect(responseText).toBeDefined();
       expect(responseText.length).toBeGreaterThan(100);
 
-      // Should complete within 5 seconds for 1000 messages
-      expect(duration).toBeLessThan(5000);
+      // Should complete within 5 seconds for 1000 messages, scaled to the
+      // machine's measured I/O speed (#2639 grain 4)
+      expect(duration).toBeLessThan(5000 * hardwareFactor);
     });
 
     test('pagination works correctly with large inbox', async () => {
-      generateLargeInbox(500);
+      await generateLargeInbox(500);
 
       const result = await roosyncRead({
         mode: 'inbox',
@@ -159,7 +244,7 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
     });
 
     test('filtering by unread status with large inbox', async () => {
-      generateLargeInbox(1000);
+      await generateLargeInbox(1000);
 
       const startTime = Date.now();
 
@@ -176,12 +261,12 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
       // So ~800 unread messages
       expect((result.content[0] as any).text).toBeDefined();
 
-      // Should complete within 5 seconds
-      expect(duration).toBeLessThan(5000);
+      // Should complete within 5 seconds, scaled to hardware (#2639 grain 4)
+      expect(duration).toBeLessThan(5000 * hardwareFactor);
     });
 
     test('reading specific message from large inbox is fast', async () => {
-      generateLargeInbox(1000);
+      await generateLargeInbox(1000);
 
       const startTime = Date.now();
 
@@ -195,8 +280,8 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
       expect(result.content).toHaveLength(1);
       expect((result.content[0] as any).text).toContain('msg-stress-00500');
 
-      // Reading single message should be fast (< 1 second)
-      expect(duration).toBeLessThan(1000);
+      // Reading single message should be fast (< 1 second, scaled to hardware #2639)
+      expect(duration).toBeLessThan(1000 * hardwareFactor);
     });
   });
 
@@ -206,7 +291,7 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
 
   describe('mark_read atomicity with large inbox', () => {
     test('mark_read operation is atomic', async () => {
-      generateLargeInbox(100);
+      await generateLargeInbox(100);
 
       // Mark a message as read
       const result = await roosyncSend({
@@ -239,7 +324,7 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
 
   describe('Volumetric edge cases', () => {
     test('handles inbox with 2000 messages', async () => {
-      generateLargeInbox(2000);
+      await generateLargeInbox(2000);
 
       const startTime = Date.now();
 
@@ -258,8 +343,8 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
       // Response should indicate there are messages (exact format may vary)
       expect(responseText.length).toBeGreaterThan(100);
 
-      // Should still be reasonably fast
-      expect(duration).toBeLessThan(10000);
+      // Should still be reasonably fast, scaled to hardware (#2639 grain 4)
+      expect(duration).toBeLessThan(10000 * hardwareFactor);
     });
 
     test('inbox with messages having large bodies', async () => {
@@ -284,6 +369,9 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
           JSON.stringify(message),
           'utf-8'
         );
+        if (i % 100 === 99) {
+          await yieldToEventLoop();
+        }
       }
 
       const startTime = Date.now();
@@ -297,8 +385,8 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
       const duration = Date.now() - startTime;
 
       expect(result.content).toHaveLength(1);
-      // Should handle large bodies without timeout
-      expect(duration).toBeLessThan(5000);
+      // Should handle large bodies without timeout, scaled to hardware (#2639)
+      expect(duration).toBeLessThan(5000 * hardwareFactor);
     });
 
     test('inbox with many tags per message', async () => {
@@ -341,7 +429,7 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
 
   describe('Data consistency under load', () => {
     test('all messages are accounted for in count', async () => {
-      generateLargeInbox(500);
+      await generateLargeInbox(500);
 
       const result = await roosyncRead({
         mode: 'inbox',
@@ -358,7 +446,7 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
     });
 
     test('messages are sorted by timestamp (newest first)', async () => {
-      generateLargeInbox(100);
+      await generateLargeInbox(100);
 
       const result = await roosyncRead({
         mode: 'inbox',
