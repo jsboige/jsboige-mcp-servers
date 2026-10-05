@@ -178,6 +178,12 @@ export interface IUnifiedStoreWriter {
   ): Promise<RooSyncLockAcquireStatus>;
   /** #3782 — release the lock row, only if still owned by this exact holder. */
   releaseRooSyncDashboardLock(lockKey: string, holderJson: string): Promise<void>;
+  /**
+   * Stall diagnostics (web2 05/10) — read-only peek at the lock row: holder
+   * payload + server-clock acquired_at, for the lock AGE surfaced at
+   * condensationStalled='lock-held'. null = no row / no PG half.
+   */
+  readRooSyncDashboardLock(lockKey: string): Promise<{ holder: unknown; acquiredAt: string } | null>;
   /** Health probe (SELECT 1). */
   ping(): Promise<boolean>;
 }
@@ -263,5 +269,11 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   }
 
   async releaseRooSyncDashboardLock(_lockKey: string, _holderJson: string): Promise<void> {}
+
+  async readRooSyncDashboardLock(
+    _lockKey: string
+  ): Promise<{ holder: unknown; acquiredAt: string } | null> {
+    return null;
+  }
   async ping(): Promise<boolean> { return false; }
 }
