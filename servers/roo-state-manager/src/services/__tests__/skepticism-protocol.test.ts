@@ -6,8 +6,17 @@
  * 1. The skepticism-protocol.md file exists and has valid format
  * 2. Key content elements are present in the condensed v3.0.0 format
  *
- * NOTE: These tests read files from the PARENT roo-extensions repo,
- * so they are excluded from CI (vitest.config.ci.ts).
+ * #2639 (12e réactivation, 2026-10-05) : ces tests lisent les fichiers de règles du
+ * repo PARENT roo-extensions (.claude/rules/ + .roo/rules/). Classe PARENT_REPO :
+ * depuis un checkout submodule autonome (CI submodule), le chemin historique
+ * `resolve(__dirname, 7×'..')` clampe à la racine du lecteur -> ENOENT (13/13 rouges,
+ * mesuré). Correctif : détection explicite du parent (remontée à la recherche d'un
+ * répertoire portant à la fois CLAUDE.md et mcps/ — même walk que
+ * findRooExtensionsRoot, refresh-dashboard.ts) puis skip propre quand il est absent :
+ *   - parent présent (dev imbriqué, CI parent qui checkoute le submod dans mcps/) :
+ *     les 13 tests tournent — le garde-fou de format reste actif là où le fichier vit ;
+ *   - parent absent (CI submodule autonome) : skip documenté, jamais un rouge
+ *     d'environnement.
  * The fs module is globally mocked in jest.setup.js, so we must
  * unmock it to read real files.
  */
@@ -22,13 +31,26 @@ vi.unmock('fs/promises');
 // Import fs AFTER unmocking
 import * as fs from 'fs'
 
-// Path to skepticism-protocol.md - resolve from the roo-state-manager root
-// up to the roo-extensions repo root
-const REPO_ROOT = path.resolve(__dirname, '../../../../../../..');
-const CLAUDE_RULES_PATH = path.resolve(REPO_ROOT, '.claude/rules/skepticism-protocol.md');
-const ROO_RULES_PATH = path.resolve(REPO_ROOT, '.roo/rules/21-skepticism-protocol.md');
+// #2639 : détection du parent roo-extensions — répertoire portant à la fois
+// CLAUDE.md et mcps/. S'arrête à la racine du lecteur si aucun ancêtre ne porte
+// les deux (checkout submodule autonome).
+function findParentRepoRoot(startDir: string): string | null {
+  let dir = startDir;
+  for (;;) {
+    if (fs.existsSync(path.join(dir, 'CLAUDE.md')) && fs.existsSync(path.join(dir, 'mcps'))) {
+      return dir;
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
 
-describe('Skepticism Protocol - File Validation', () => {
+const PARENT_ROOT = findParentRepoRoot(__dirname);
+const CLAUDE_RULES_PATH = PARENT_ROOT ? path.join(PARENT_ROOT, '.claude/rules/skepticism-protocol.md') : '';
+const ROO_RULES_PATH = PARENT_ROOT ? path.join(PARENT_ROOT, '.roo/rules/21-skepticism-protocol.md') : '';
+
+describe.skipIf(!PARENT_ROOT)('Skepticism Protocol - File Validation', () => {
   it('skepticism-protocol.md exists in .claude/rules/', () => {
     expect(fs.existsSync(CLAUDE_RULES_PATH)).toBe(true)
   })
@@ -79,7 +101,7 @@ describe('Skepticism Protocol - File Validation', () => {
   })
 })
 
-describe('Skepticism Protocol - Guards Coverage', () => {
+describe.skipIf(!PARENT_ROOT)('Skepticism Protocol - Guards Coverage', () => {
   it('verifies verification levels are defined', () => {
     const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
 
@@ -106,7 +128,7 @@ describe('Skepticism Protocol - Guards Coverage', () => {
   })
 })
 
-describe('Skepticism Protocol - Integration Points', () => {
+describe.skipIf(!PARENT_ROOT)('Skepticism Protocol - Integration Points', () => {
   it('documents anti-propagation rules for coordinateur', () => {
     const content = fs.readFileSync(CLAUDE_RULES_PATH, 'utf-8')
 

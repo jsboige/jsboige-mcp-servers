@@ -13,7 +13,7 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 18 test-file entries + 4 tests-directory globs
+ * Exclusion census: 17 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
@@ -219,9 +219,6 @@ export default mergeConfig(unitConfig, defineConfig({
       // - tests/unit/tools/roosync/debug-other-methods.test.ts (deleted)
       // - tests/unit/tools/roosync/debug-source-import.test.ts (deleted)
       // - tests/unit/tools/storage/get-stats.test.ts (removed tool)
-
-      // ===== CI-excluded: PARENT_REPO (reads files from parent roo-extensions repo) =====
-      'src/services/__tests__/skepticism-protocol.test.ts',
 
       // ===== CI-excluded: LIVE SERVICES (require Qdrant + Embedding service) =====
       'src/tools/search/__tests__/search-live.integration.test.ts',
