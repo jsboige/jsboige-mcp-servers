@@ -346,6 +346,18 @@ export class MessageManager {
   private static readonly COLD_START_SLICE_SIZE = 100;
   /** True while `inboxCache`/`inboxFullCache` hold only the recent slice (#3292). */
   private inboxCachePartial = false;
+  /**
+   * #3292 follow-up (suites de #1360): explicit-id files sort FIRST (not
+   * provably old), so budget truncations sacrifice generated — newest — files
+   * to protect them. That protection inverts into starvation once the
+   * explicit-id population itself fills the read window: every truncation
+   * slot is then consumed by an explicit id and recent generated messages
+   * are the ones dropped. Warn when that population reaches this fraction
+   * of the window, once per instance until the pressure clears (hysteresis —
+   * a rebuild runs every TTL expiry, an unconditional warn would spam).
+   */
+  private static readonly EXPLICIT_ID_STARVATION_RATIO = 0.8;
+  private explicitStarvationWarned = false;
 
   /** Auto-archive daemon timer (#809 — prevents inbox unbounded growth) */
   private autoArchiveTimer: NodeJS.Timeout | null = null;
@@ -629,6 +641,7 @@ export class MessageManager {
     const recent = [...allFiles]
       .sort(compareByEmbeddedRecencyDesc)
       .slice(0, MessageManager.COLD_START_SLICE_SIZE);
+    this.warnOnExplicitIdStarvation(recent, 'cold-start slice');
     const readable = recent.filter(f => !this.isNegativelyCached(f));
     const { items, full } = await this.parseInboxFiles(readable, now + this.rebuildBudgetMs);
 
@@ -641,6 +654,34 @@ export class MessageManager {
     logger.info(`Inbox cold start: recent slice served (${items.length} msgs from ${readable.length}/${allFiles.length} files) — full pool hydrating in background (#3292)`);
 
     return { items, full };
+  }
+
+  /**
+   * #3292 follow-up (suites de #1360): fire ONE warn while the explicit-id
+   * population fills the budget window. Both bounded reads sort explicit-id
+   * files FIRST (not provably old), so past the window every truncation slot
+   * goes to an explicit id and the NEWEST GENERATED messages starve instead —
+   * the protection inverting into its own failure mode. `sortedFiles` must be
+   * in `compareByEmbeddedRecencyDesc` order: the first COLD_START_SLICE_SIZE
+   * entries are exactly what a truncation keeps.
+   *
+   * @private
+   */
+  private warnOnExplicitIdStarvation(sortedFiles: string[], context: string): void {
+    const window = MessageManager.COLD_START_SLICE_SIZE;
+    const explicit = sortedFiles
+      .slice(0, window)
+      .filter(f => !EMBEDDED_TIMESTAMP_RE.test(f)).length;
+    if (explicit >= Math.floor(window * MessageManager.EXPLICIT_ID_STARVATION_RATIO)) {
+      if (!this.explicitStarvationWarned) {
+        this.explicitStarvationWarned = true;
+        logger.warn(
+          `[#3292] Explicit-id population approaching starvation threshold: ${explicit}/${window} of the ${context} read window are explicit ids — generated (recent) messages are now the ones a truncation sacrifices. Consider archiving old explicit-id messages or raising COLD_START_SLICE_SIZE.`,
+        );
+      }
+    } else {
+      this.explicitStarvationWarned = false;
+    }
   }
 
   /**
@@ -684,6 +725,7 @@ export class MessageManager {
     const readableFiles = files
       .filter(f => !this.isNegativelyCached(f))
       .sort(compareByEmbeddedRecencyDesc);
+    this.warnOnExplicitIdStarvation(readableFiles, 'rebuild pass');
     const skippedCount = files.length - readableFiles.length;
 
     logger.info(`Building inbox cache (${readableFiles.length} files${skippedCount ? `, ${skippedCount} skipped (negative cache)` : ''}, concurrency=${MessageManager.READ_CONCURRENCY})`);
@@ -828,7 +870,13 @@ export class MessageManager {
 
   /**
    * Génère un ID unique pour un message
-   * Format: msg-YYYYMMDDHHMMSS-{random}
+   * Format: msg-YYYYMMDDTHHMMSS-{random}
+   *
+   * #3292: le `T` est STRUCTUREL, pas décoratif — `toISOString()` le conserve
+   * en position 9 et c'est lui que `EMBEDDED_TIMESTAMP_RE` (`^msg-\d{8}T\d{6}-`)
+   * ancre : le tri par récence embarquée des lectures bornées ne reconnaît
+   * QUE cette forme exacte. Une docstring sans le `T` (l'ancienne) décrit un
+   * format que le générateur ne produit pas.
    *
    * @returns ID unique du message
    * @private
