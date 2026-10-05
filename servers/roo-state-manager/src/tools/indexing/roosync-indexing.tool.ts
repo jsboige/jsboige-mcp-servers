@@ -2079,6 +2079,21 @@ export async function handleRooSyncIndexing(
                         lines.push(`- ${f}`);
                     }
 
+                    // #2336 D3: persist the fleet report as a stable MD artifact
+                    // next to the snapshots — the tool result is ephemeral, the
+                    // file is the "ONE artifact the user can look at", refreshed
+                    // by each fleet:true call. Write failure degrades to a note
+                    // (the returned report stays authoritative), never an error.
+                    const reportPath = path.join(snapshotsDir, 'trend-report-fleet.md');
+                    let persistNote = `**Persisted artifact:** ${reportPath} — refreshed by each fleet:true call.`;
+                    try {
+                        await fs.writeFile(reportPath, `${lines.join('\n')}\n${persistNote}\n`, 'utf-8');
+                    } catch (persistError: any) {
+                        persistNote = `⚠️ Artifact NOT persisted (${persistError.message}) — report returned, nothing written to disk.`;
+                    }
+                    lines.push(``);
+                    lines.push(persistNote);
+
                     return {
                         isError: false,
                         content: [{
