@@ -84,11 +84,14 @@ describe('roosyncCompareConfig (integration)', () => {
     process.env.NODE_ENV = 'test';
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     process.env.ROOSYNC_SHARED_PATH = testSharedStatePath;
-    // #833 isolation : aligner le roster sur le dashboard de test, sinon le
-    // check de partition drift (#2570) émet un CRITICAL env.ROO_FLEET_ROSTER
-    // selon l'env de la machine hôte (résultats non déterministes). Roster
-    // aligné → le check émet un diff INFO « consistant » (signal positif).
-    process.env.ROO_FLEET_ROSTER = 'remote-machine,test-machine';
+    // #833 isolation, réalignée #2639 (10e réactivation) : le check de partition
+    // drift (#2570) prend désormais le **registre vivant** (`.machine-registry.json`,
+    // écrit dans le shared path au runtime — ici `test-machine` seul) comme
+    // référence, et le dashboard seulement en repli ; l'ancienne fixture
+    // `remote-machine,test-machine` (ère « référence = dashboard ») faisait donc
+    // un mismatch de TAILLE 2 vs 1 → CRITICAL non déterministe. Roster aligné sur
+    // le registre → le check émet un diff INFO « consistant » (signal positif).
+    process.env.ROO_FLEET_ROSTER = 'test-machine';
     // #833 isolation : les 6 vars EMBEDDING_*/QDRANT_* pilotent des diffs
     // `env.*` dans TOUTES les granularités (pas seulement 'full') — les setter
     // à des valeurs de test rend les comptes déterministes. Les tests #495
