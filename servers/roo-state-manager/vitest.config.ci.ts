@@ -13,7 +13,7 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 22 test-file entries + 4 tests-directory globs
+ * Exclusion census: 21 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
@@ -162,12 +162,15 @@ export default mergeConfig(unitConfig, defineConfig({
       //   (refresh-dashboard.ts l.161) — a hard PowerShell/Windows dependency, and the
       //   one entry here whose "platform-dependent" label was accurate.
       'src/tools/roosync/__tests__/refresh-dashboard.integration.test.ts',
-      // STAYS EXCLUDED — measured 2026-10-04 (#2639): 1/41 fails. The apply_profile
-      //   'should throw when profile not found' case asserts on /profil.*non trouvé/
-      //   but receives 'model-configs.json non trouvé localement': the tmpdir holds no
-      //   model-configs.json fixture, so the tool fails one branch earlier. Fix = add
-      //   the fixture to the test, not a CI-config change.
-      'src/tools/roosync/__tests__/config.integration.test.ts',
+      // REACTIVATED 2026-10-05 (#2639, 8th): the single red test (apply_profile —
+      //   profile not found) now pins InventoryService.getMachineInventory to the
+      //   fixture tmpdir and ships a model-configs.json fixture, so the local-source
+      //   branch reaches the profile lookup deterministically — it used to resolve
+      //   through the REAL machine inventory (green by accident on machines that
+      //   happen to have the file). Fixtures also moved out of the repo tree
+      //   (mkdtemp): the in-tree __test-data__ dir reproduced the ENOTEMPTY Linux
+      //   cleanup class fixed for diagnose.integration by #1355.
+      // 'src/tools/roosync/__tests__/config.integration.test.ts',
       // STAYS EXCLUDED — measured 2026-10-04 (#2639): 3/39 fail, and NOT for a
       //   GDrive reason. The #495 env-var block filters on the loose substring
       //   'manquante', which also matches checkRosterPartitionDrift()'s wording

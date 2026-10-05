@@ -15,8 +15,9 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, rmSync, mkdirSync, writeFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
 
 // Mock getLocalMachineId pour contrôler l'identifiant dans les tests
 vi.mock('../../../utils/message-helpers.js', async () => {
@@ -30,7 +31,9 @@ vi.mock('../../../utils/message-helpers.js', async () => {
 });
 
 // Mock getSharedStatePath pour utiliser un chemin de test
-const testSharedStatePath = join(__dirname, '../../../__test-data__/shared-state-config');
+// #2639: racine hors arbre du dépôt (mkdtemp) — l'ancien __test-data__/ in-tree
+// reproduisait la classe ENOTEMPTY du cleanup Linux fixée par #1355 pour diagnose-it
+const testSharedStatePath = mkdtempSync(join(tmpdir(), 'config-it-'));
 vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: () => testSharedStatePath
 }));
@@ -42,6 +45,7 @@ vi.unmock('../../../services/ConfigService.js');
 // Import après les mocks
 import { roosyncConfig } from '../config.js';
 import { RooSyncService } from '../../../services/RooSyncService.js';
+import { InventoryService } from '../../../services/roosync/InventoryService.js';
 
 describe('roosyncConfig (integration)', () => {
   beforeEach(async () => {
@@ -372,12 +376,27 @@ describe('roosyncConfig (integration)', () => {
 
   describe('action: apply_profile', () => {
     test('should throw when profile not found', async () => {
-      // The test profile name doesn't match actual profiles in the system
-      await expect(roosyncConfig({
-        action: 'apply_profile',
-        profileName: 'Nonexistent Profile XYZ',
-        dryRun: true
-      })).rejects.toThrow(/profil.*non trouv|non trouve|not found|profile.*not|ne contient pas/i);
+      // #2639: la branche source-locale résout model-configs.json via InventoryService
+      // (inventaire frais de la machine réelle), PAS via getSharedStatePath mocké —
+      // le test échouait une branche plus tôt ('non trouvé localement') ou lisait
+      // l'état réel selon la machine. On épingle l'inventaire sur le tmpdir et on
+      // fournit une fixture pour atteindre déterministement la branche profil absent.
+      writeFileSync(
+        join(testSharedStatePath, 'roo-config', 'model-configs.json'),
+        JSON.stringify({ profiles: [{ name: 'test-profile', modeOverrides: {}, description: 'fixture #2639' }] })
+      );
+      const inventorySpy = vi
+        .spyOn(InventoryService.prototype, 'getMachineInventory')
+        .mockResolvedValue({ paths: { rooExtensions: testSharedStatePath } } as any);
+      try {
+        await expect(roosyncConfig({
+          action: 'apply_profile',
+          profileName: 'Nonexistent Profile XYZ',
+          dryRun: true
+        })).rejects.toThrow(/profil.*non trouv|non trouve|not found|profile.*not|ne contient pas/i);
+      } finally {
+        inventorySpy.mockRestore();
+      }
     });
 
     test('should reject apply_profile without profileName (Zod validation)', async () => {
