@@ -10,7 +10,7 @@
 
 | Mesure | Valeur (2026-10-05) | Méthode |
 |---|---|---|
-| **Entrées fichiers de test déclarées** | **17** | parse du tableau `exclude` du config |
+| **Entrées fichiers de test déclarées** | **9** | parse du tableau `exclude` du config |
 | **Globs répertoires de tests déclarés** | **4** | idem |
 | Entrées structurelles (node_modules/build/dist/backups) | 9 | idem — hygiène, pas des exclusions de tests |
 | Fichiers effectivement non collectés en CI (vs run local) | **8** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
