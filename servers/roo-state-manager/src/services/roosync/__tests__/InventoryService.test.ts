@@ -345,6 +345,45 @@ describe('InventoryService', () => {
       expect(env?.EMBEDDING_DB_PASSWORD).toBeUndefined();
     });
 
+    it('should also exclude PASS/PWD/PASSPHRASE/CREDENTIAL/BEARER/AUTHORIZATION/PRIVATE names (#2307 v2)', async () => {
+      const claudeJson = {
+        mcpServers: {
+          'roo-state-manager': {
+            env: {
+              ROOSYNC_DB_PASS: 'should-not-publish',
+              QDRANT_PWD: 'should-not-publish',
+              EMBEDDING_PASSPHRASE: 'should-not-publish',
+              OPENAI_CREDENTIAL: 'should-not-publish',
+              ROOSYNC_BEARER: 'should-not-publish',
+              QDRANT_AUTHORIZATION: 'should-not-publish',
+              EMBEDDING_PRIVATE_KEY_PATH: 'should-not-publish',
+              ROOSYNC_SHARED_PATH: 'G:/shared',
+              EMBEDDING_MODEL: 'text-embedding-3',
+            },
+          },
+        },
+      };
+
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      mockReadJSONByPath({
+        '.claude.json': claudeJson,
+      });
+      vi.mocked(fs.writeFile).mockResolvedValue();
+
+      const inventory = await service.getMachineInventory();
+      const env = inventory.inventory.claudeConfig?.env;
+
+      expect(env?.ROOSYNC_SHARED_PATH).toBe('G:/shared');
+      expect(env?.EMBEDDING_MODEL).toBe('text-embedding-3');
+      expect(env?.ROOSYNC_DB_PASS).toBeUndefined();
+      expect(env?.QDRANT_PWD).toBeUndefined();
+      expect(env?.EMBEDDING_PASSPHRASE).toBeUndefined();
+      expect(env?.OPENAI_CREDENTIAL).toBeUndefined();
+      expect(env?.ROOSYNC_BEARER).toBeUndefined();
+      expect(env?.QDRANT_AUTHORIZATION).toBeUndefined();
+      expect(env?.EMBEDDING_PRIVATE_KEY_PATH).toBeUndefined();
+    });
+
     it('should deduplicate env vars across MCP servers', async () => {
       const claudeJson = {
         mcpServers: {
