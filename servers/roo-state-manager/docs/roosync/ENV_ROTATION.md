@@ -106,10 +106,11 @@ Valide sans écrire.
 
 ## Audit
 
-Chaque publish/apply écrit une entrée dans `$SHARED/env/audit.jsonl` :
+Chaque publish/apply écrit **exactement une entrée par tentative** dans `$SHARED/env/audit.jsonl` — succès **et** échec (source manquante, échec de déchiffrement, contenu invalide) — estampillée du marqueur `[ENV-ROTATION]` (#2410). La ligne porte l'action, le service, la version, la machine, le statut et le nombre de clés ; **jamais une valeur d'environnement** :
 
 ```json
-{"action":"publish","service":"rsm","version":"1.0.0","machineId":"myia-ai-01","status":"success","timestamp":"2026-06-11T15:30:00.000Z"}
+{"marker":"[ENV-ROTATION]","action":"publish","service":"rsm","version":"1.0.0","machineId":"myia-ai-01","status":"success","keysWritten":2,"timestamp":"2026-06-11T15:30:00.000Z"}
+{"marker":"[ENV-ROTATION]","action":"apply","service":"rsm","version":"1.0.0","status":"error","error":"Failed to decrypt rsm v1.0.0 — possible ROOSYNC_ENV_KEY mismatch or data corruption","timestamp":"2026-06-11T15:31:00.000Z"}
 ```
 
 ## Fichiers générés
@@ -130,8 +131,9 @@ Chaque publish/apply écrit une entrée dans `$SHARED/env/audit.jsonl` :
 
 ## Tests
 
-33 tests adversariaux couvrant :
+46 tests adversariaux (24 unitaires + 22 coverage) couvrant :
 - Round-trip encrypt/decrypt
+- Une ligne d'audit `[ENV-ROTATION]` par tentative, échecs inclus — sans valeur (#2410)
 - Tampered ciphertext/tag/IV detection (GCM auth)
 - Wrong key rejection
 - Missing/short key rejection
