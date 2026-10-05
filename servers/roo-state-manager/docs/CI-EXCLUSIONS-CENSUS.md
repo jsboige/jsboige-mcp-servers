@@ -10,20 +10,23 @@
 
 | Mesure | Valeur (2026-10-05) | Méthode |
 |---|---|---|
-| **Entrées fichiers de test déclarées** | **18** | parse du tableau `exclude` du config |
+| **Entrées fichiers de test déclarées** | **17** | parse du tableau `exclude` du config |
 | **Globs répertoires de tests déclarés** | **4** | idem |
 | Entrées structurelles (node_modules/build/dist/backups) | 9 | idem — hygiène, pas des exclusions de tests |
-| Fichiers effectivement non collectés en CI (vs run local) | **9** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
-| Tests sautés en CI (vs run local) | **188** | idem |
+| Fichiers effectivement non collectés en CI (vs run local) | **8** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
+| Tests sautés en CI (vs run local) | **175** | idem |
 
 **Pourquoi deux nombres.** Le compte *déclaré* ne change que quand on édite le config — c'est lui que le
-drift-guard verrouille et que les docs citent. Le compte *effectif* (9 fichiers / 188 tests) dépend
+drift-guard verrouille et que les docs citent. Le compte *effectif* (8 fichiers / 175 tests) dépend
 aussi des patterns `include` et du contenu des fichiers (ex. `dashboard-llm-live` collecte 0 test sans
 `LLM_LIVE_INTEGRATION=1`) : il dérive sans toucher au config, donc il n'est pas gardé et se mesure à la
-demande via `--collect`. **Contrôle croisé (11e réactivation, mesuré)** : 793 − 784 = **9** fichiers et
-la même soustraction côté tests, soit exactement l'entrée `refresh-dashboard` réactivée (13 tests →
-le fichier en porte 16 depuis, dont 3 ajoutés par la réactivation). **Suite CI complète sur la même
-tête** : 784 fichiers / 14 981 tests, **0 échec**.
+demande via `--collect`. **Contrôle croisé (12e réactivation, mesuré)** : 9 − 8 = **1** fichier et
+188 − 175 = **13** tests, soit exactement l'entrée `skepticism-protocol` réactivée — ses 13 tests sont
+désormais **collectés puis skipés** en CI submodule autonome (`describe.skipIf` parent absent) et
+**exécutés** partout où le parent est présent, y compris la CI parent qui checkoute le submod dans
+`mcps/`. **Suite CI complète sur la même tête** : 784 fichiers passés + 4 skipés (788), 14 981 tests
+passés + 45 skipés (15 029 collectés), **0 échec** — le delta vs la tête précédente (+1 fichier skipé,
++13 tests skipés, +13 collectés) est exactement `skepticism-protocol`.
 
 ## Historique de la dérive (avant #3322)
 
@@ -105,10 +108,22 @@ passe de 13 à **16 tests** (3 ajoutés : construction de la commande, échec du
 sans marqueur) et les métriques sont désormais assertées **exactes** (avant : `expect.any(Number)`),
 ce que la fixture rend possible — mutation `✅`→`❌` dans le prédicat des métriques tuée par
 exactement 1 test. Mesuré : 13/13 rouges standalone avant, **16/16 verts** après → **18 entrées**.
+**#2639 (2026-10-05, 12e réactivation) :** `skepticism-protocol.test.ts` réactivé — **la dernière
+entrée PARENT_REPO**. Ses 13 tests validaient le format de la règle du parent via
+`resolve(__dirname, 7×'..')` : en checkout submodule autonome, le chemin clampe à la racine du lecteur
+(`D:\.claude\rules\…` mesuré) → ENOENT, **13/13 rouges** (mesuré). Correctif = **détection explicite
+du parent** (remontée jusqu'au répertoire portant à la fois `CLAUDE.md` et `mcps/` — même walk que
+`findRooExtensionsRoot`) + `describe.skipIf` quand il est absent. Choix assumé : pas de fixture (une
+copie vendue dans le submod testerait la copie, pas la règle — tautologie). Les 13 tests **tournent**
+là où les fichiers vivent (dev imbriqué et **CI parent**, qui checkoute le submod dans `mcps/` — le
+garde-fou de format redevient automatique précisément là) et se **skipent proprement** en CI submodule
+autonome, jamais un rouge d'environnement. Mesuré : 13/13 rouges standalone avant ; 13 skipés / 0 échec
+standalone après (config CI) ; **13/13 verts** dans le checkout parent (config locale, même instrument
+que le rouge d'abord) → **17 entrées**, effectif **8 fichiers / 175 tests**.
 
 ---
 
-## Les 18 entrées fichiers de test
+## Les 17 entrées fichiers de test
 
 ### POWERSHELL — 6 entrées, toutes effectives (159 tests)
 
@@ -193,11 +208,14 @@ ici) : le label de section a été renommé d'après les raisons **mesurées**, 
 |---|---|
 | `tests/unit/services/_archives/BaselineService.ci-excluded.test.ts` | 2026-05-14 (#1143) — superseded par la version `src/services/__tests__` |
 
-### PARENT_REPO — 1 entrée, effective (13 tests)
+### PARENT_REPO — 0 entrée (dernière réactivée, #2639 12e)
 
-| Entrée | Tests | Raison |
-|---|---|---|
-| `src/services/__tests__/skepticism-protocol.test.ts` | 13 | lit des fichiers du repo parent roo-extensions — impossible en CI submodule autonome |
+*(`skepticism-protocol.test.ts` réactivé le 2026-10-05 : détection du parent par remontée
+`CLAUDE.md`+`mcps/` + `skipIf` standalone — les 13 tests s'exécutent en dev imbriqué et en **CI
+parent** (le submod y est checkouté dans `mcps/`, donc le parent est présent), se skipent en CI
+submodule autonome. La famille PARENT_REPO n'a plus **aucune** entrée déclarée :
+`refresh-dashboard` l'a quittée par mock de frontière shell (11e), `skepticism-protocol` par skip
+conditionnel (12e).)*
 
 ### LIVE SERVICES — 1 entrée, effective (6 tests)
 
@@ -211,7 +229,7 @@ ici) : le label de section a été renommé d'après les raisons **mesurées**, 
 |---|---|---|
 | `src/tools/roosync/__tests__/stress-large-inbox.test.ts` | 10 | seuils de timing dépendants du hardware (16 GB RAM, `--maxWorkers=1`) |
 
-**Total déclaré : 6+0+1+7+1+1+1+1 = 18 · effectif : mesure 2026-10-05 post-#2639 (`--collect`) — 9 fichiers / 188 tests**
+**Total déclaré : 6+0+1+7+1+0+1+1 = 17 · effectif : mesure 2026-10-05 post-#2639 12e (`--collect`) — 8 fichiers / 175 tests**
 
 ---
 
@@ -246,10 +264,12 @@ Exclusions **sans raison datée** — à re-auditer avant d'en ajouter de nouvel
 2. **État-dépendant / opt-in (1)** — `dashboard-llm-live` est un no-op (opt-in
    `LLM_LIVE_INTEGRATION=1`) : exclusion déclarative sans effet sur le delta, ni à réactiver ni à
    retirer sans décision d'hygiène (cf. § Hygiène).
-   (`decision.integration`, `config.integration`, `baseline.test`, `compare-config.integration` puis
-   `refresh-dashboard.integration` ont été réactivées le 2026-10-05 — 7e-11e réactivations #2639.
-   `refresh-dashboard` était classé « plateforme dure » : **diagnostic corrigé**, cf. section
-   dédiée — sa vraie classe est PARENT_REPO, et le correctif est le mock de la frontière shell.)
+   (`decision.integration`, `config.integration`, `baseline.test`, `compare-config.integration`,
+   `refresh-dashboard.integration` puis `skepticism-protocol` ont été réactivées le 2026-10-05 —
+   7e-12e réactivations #2639. `refresh-dashboard` était classé « plateforme dure » :
+   **diagnostic corrigé**, cf. section dédiée — sa vraie classe est PARENT_REPO, et le correctif est
+   le mock de la frontière shell ; `skepticism-protocol` l'a suivie par skipIf conditionnel — la
+   famille PARENT_REPO est vide.)
    **SMOKE est clos** : les 5 fichiers smoke ont été réactivés (2026-10-03/04, #2639), et plus aucune
    entrée de cette catégorie ne dépend réellement de GDrive.
 3. **Inherited no-op (7)** — dont 3 sans raison documentée (parent-child-validation,
