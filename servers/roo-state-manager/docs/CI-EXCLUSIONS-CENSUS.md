@@ -120,10 +120,24 @@ garde-fou de format redevient automatique précisément là) et se **skipent pro
 autonome, jamais un rouge d'environnement. Mesuré : 13/13 rouges standalone avant ; 13 skipés / 0 échec
 standalone après (config CI) ; **13/13 verts** dans le checkout parent (config locale, même instrument
 que le rouge d'abord) → **17 entrées**, effectif **8 fichiers / 175 tests**.
+**#2639 (2026-10-05, 13e passe — hygiène + 3 réactivations) :** les **8 entrées no-op** retirées du
+config CI (5 doublons du config unit — le merge `mergeConfig` **concatène** les excludes, la
+re-liste n'excluait rien de plus ; 2 fichiers `tests/integration` hors `include` ; 1 doublon du glob
+`**/_archives/**` du config unit). **3 réactivations dans la foulée** (retrait du config unit, le
+vrai locus) : `parent-child-validation` (6 tests), `skeleton-cache-reconstruction` (6) et
+`workspace-filtering-diagnosis` (3) — verdict mesuré sous `vitest.config.ci.ts` : **15/15 verts**,
+l'exclusion datait d'avant les réécritures. `FileLockManager.simple` et `PresenceManager.integration`
+restent exclues **au config unit** (raison #307 proper-lockfile/threads — documentée là) →
+**9 entrées** CI déclarées. **Mesures** : suite CI complète sur la tête — **787 fichiers passés +
+4 skipés (791), 14 996 tests passés + 45 skipés (15 044 collectés), 0 échec** (delta vs tête 12e :
++3 fichiers, +15 tests — exactement les 3 réactivations) ; drift-guard 4/4. **Note de lecture** : le
+delta *effectif* (`--collect`, 8 fichiers / 175 tests) est **inchangé** — les 3 fichiers sont
+désormais collectés **des deux côtés** (ils sortent de l'ensemble exclu, pas du delta unit-vs-CI) ;
+c'est la suite exécutée, pas le delta, qui porte la preuve des réactivations.
 
 ---
 
-## Les 17 entrées fichiers de test
+## Les 9 entrées fichiers de test
 
 ### POWERSHELL — 6 entrées, toutes effectives (159 tests)
 
@@ -190,23 +204,20 @@ ni GDrive en propre : la catégorie « APPDATA/GDRIVE » héritée du 2026-07-26
 caractère périmé de **7 exclusions** (les 5 SMOKE des tranches 3-5 et les 2 intégrations réactivées
 ici) : le label de section a été renommé d'après les raisons **mesurées**, et non conservé par inertie.
 
-### Inherited (doublons du config unit / hors include) — 7 entrées, toutes no-op
+### Inherited (doublons du config unit / hors include) — 0 entrée (13e passe, #2639)
 
-| Entrée | Statut | Raison |
-|---|---|---|
-| `tests/unit/parent-child-validation.test.ts` | no-op (exclue aussi du config unit) | non documentée dans les configs |
-| `tests/unit/skeleton-cache-reconstruction.test.ts` | no-op (unit) | non documentée |
-| `tests/unit/workspace-filtering-diagnosis.test.ts` | no-op (unit) | non documentée |
-| `tests/integration/hierarchy-real-data.test.ts` | no-op (hors `include` des deux configs) | données réelles |
-| `tests/integration/integration.test.ts` | no-op (hors `include`) | — |
-| `tests/unit/services/roosync/FileLockManager.simple.test.ts` | no-op (unit) | #307 proper-lockfile/threads |
-| `tests/unit/services/roosync/PresenceManager.integration.test.ts` | no-op (unit) | #307 |
+*(Les 7 doublons no-op ont été retirés du config CI le 2026-10-05 : le merge **concatène** les
+excludes du config unit, la re-liste n'excluait rien de plus. Les 2 fichiers `tests/integration`
+restent hors `include` (jamais collectés, aucune entrée nécessaire). **3 des 5 fichiers exclues au
+config unit ont été réactivées** — retrait du config unit aussi, verdict 15/15 verts sous config CI
+(voir historique 13e passe). `FileLockManager.simple` et `PresenceManager.integration` restent
+exclues au config unit, raison #307 proper-lockfile/threads documentée à cet endroit.)*
 
-### ARCHIVES — 1 entrée fichier, no-op (couverte par `**/_archives/**` du config unit)
+### ARCHIVES — 0 entrée fichier (13e passe, #2639)
 
-| Entrée | Datée |
-|---|---|
-| `tests/unit/services/_archives/BaselineService.ci-excluded.test.ts` | 2026-05-14 (#1143) — superseded par la version `src/services/__tests__` |
+*(L'entrée `BaselineService.ci-excluded.test.ts` était un doublon du glob `**/_archives/**` du
+config unit — retirée ; le fichier reste couvert par le glob, superseded par la version
+`src/services/__tests__` (#1143).)*
 
 ### PARENT_REPO — 0 entrée (dernière réactivée, #2639 12e)
 
@@ -229,7 +240,7 @@ conditionnel (12e).)*
 |---|---|---|
 | `src/tools/roosync/__tests__/stress-large-inbox.test.ts` | 10 | seuils de timing dépendants du hardware (16 GB RAM, `--maxWorkers=1`) |
 
-**Total déclaré : 6+0+1+7+1+0+1+1 = 17 · effectif : mesure 2026-10-05 post-#2639 12e (`--collect`) — 8 fichiers / 175 tests**
+**Total déclaré : 6+0+1+0+0+0+1+1 = 9 · effectif : mesure 2026-10-05 post-#2639 13e (`--collect`) — 8 fichiers / 175 tests (inchangé, cf. note dans l'historique 13e)**
 
 ---
 
@@ -272,9 +283,10 @@ Exclusions **sans raison datée** — à re-auditer avant d'en ajouter de nouvel
    famille PARENT_REPO est vide.)
    **SMOKE est clos** : les 5 fichiers smoke ont été réactivés (2026-10-03/04, #2639), et plus aucune
    entrée de cette catégorie ne dépend réellement de GDrive.
-3. **Inherited no-op (7)** — dont 3 sans raison documentée (parent-child-validation,
-   skeleton-cache-reconstruction, workspace-filtering-diagnosis) : soit documenter la raison au niveau
-   du config unit, soit rouvrir — en l'état elles sont invisibles pour la CI comme pour le run local.
+3. **Inherited no-op (7)** — **clos le 2026-10-05 (13e passe)** : les 7 doublons retirés du config
+   CI ; les 3 sans raison documentée (parent-child-validation, skeleton-cache-reconstruction,
+   workspace-filtering-diagnosis) ont été **réactivées** (15/15 verts sous config CI), les 2 #307
+   restent exclues au config unit avec leur raison, les 2 `tests/integration` restent hors `include`.
 4. **STRESS (1)** — seuils à re-calibrer ou à rendre proportionnels au hardware.
 
 ## Leçon de méthode (2026-10-04, #2639 tranche 6)

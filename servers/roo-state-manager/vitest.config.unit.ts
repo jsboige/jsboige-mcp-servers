@@ -36,9 +36,9 @@ export default defineConfig({
       '**/_archives/**',
       '**/vitest-migration/backups/**',
       'vitest-migration/backups/**',
-      'tests/unit/parent-child-validation.test.ts',
-      'tests/unit/skeleton-cache-reconstruction.test.ts',
-      'tests/unit/workspace-filtering-diagnosis.test.ts',
+      // #2639 (13e passe, réactivations) : parent-child-validation,
+      // skeleton-cache-reconstruction et workspace-filtering-diagnosis ne sont plus
+      // exclus — verdict mesuré sous vitest.config.ci.ts (voir census 13e passe).
       'tests/unit/services/roosync/FileLockManager.simple.test.ts',
       'tests/unit/services/roosync/PresenceManager.integration.test.ts'
     ],
