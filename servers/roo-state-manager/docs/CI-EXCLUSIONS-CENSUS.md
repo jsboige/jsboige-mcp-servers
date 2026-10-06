@@ -134,6 +134,12 @@ restent exclues **au config unit** (raison #307 proper-lockfile/threads — docu
 delta *effectif* (`--collect`, 8 fichiers / 175 tests) est **inchangé** — les 3 fichiers sont
 désormais collectés **des deux côtés** (ils sortent de l'ensemble exclu, pas du delta unit-vs-CI) ;
 c'est la suite exécutée, pas le delta, qui porte la preuve des réactivations.
+**Post-scriptum CI ubuntu (fix 2026-10-06)** : premier passage du fichier réactivé sur runner Linux →
+1 test rouge (`devrait normaliser correctement les chemins de workspace`) — `path.normalize` sur POSIX
+ne replie pas les backslashes alors que la prod (`build-skeleton-cache.tool.ts:381-382`) porte exactement
+cette sémantique win32 : test fidèle, non portable. Gate `it.skipIf(process.platform !== 'win32')` posé
+sur **ce cas seul** (mesuré 15/15 en local win32 ; les 5 autres tests du fichier restent actifs en CI ;
+**aucun retour d'exclusion — le compte 9 tient**, l'adjudicateur est le runner ubuntu de cette PR).
 
 ---
 
