@@ -8,3 +8,6 @@ venv/
 # Config with API keys (use template instead)
 sk_agent_config.json
 sk_agent_config.json.bak*
+
+# Container usage telemetry (docker-compose.sk-agent.yml bind mount)
+usage/
