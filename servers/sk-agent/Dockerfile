@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY sk_agent.py sk_agent_config.py sk_agent_schemas.py sk_agent_specs.py \
-     sk_conversations.py github_plugin.py \
+     sk_conversations.py sk_context_condensation.py github_plugin.py \
      document_processing.py media_processing.py ./
 
 # Guard: fail the BUILD if this list drifts from the real import graph.
