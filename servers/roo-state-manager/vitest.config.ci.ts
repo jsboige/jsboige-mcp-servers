@@ -13,7 +13,7 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 9 test-file entries + 4 tests-directory globs
+ * Exclusion census: 8 test-file entries + 4 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
@@ -220,9 +220,12 @@ export default mergeConfig(unitConfig, defineConfig({
       // ===== CI-excluded: LIVE SERVICES (require Qdrant + Embedding service) =====
       'src/tools/search/__tests__/search-live.integration.test.ts',
 
-      // ===== CI-excluded: STRESS (hardware-dependent timing thresholds) =====
-      // These tests have timing thresholds that fail on slower machines (16GB RAM, --maxWorkers=1)
-      'src/tools/roosync/__tests__/stress-large-inbox.test.ts',
+      // #2639 (14e réactivation, grain 4) : stress-large-inbox réactivé — les seuils
+      // de timing sont désormais proportionnels au matériel (micro-benchmark de
+      // calibration I/O, facteur clampé entre 1 et 5) et la fixture vit hors arbre
+      // (mkdtemp). NB : pas de crochet fermant dans un commentaire de ce tableau —
+      // le parseur du recensement (count-ci-exclusions.mjs) s'arrête au premier
+      // crochet fermant rencontré.
 
       // ===== EVAL HARNESS (live services — excluded from CI) =====
       'tests/eval-harness/**',
