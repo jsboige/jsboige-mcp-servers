@@ -380,16 +380,18 @@ Vision is **not** served through the hub: it strips `image_url` parts before the
 
 ### vLLM Local Direct (2)
 
+Since 25/09 the fleet medium model is **Swift-1.5-27B** (`ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ`), served on ai-01 as `swift-1.5-27b` and under the historical id `qwen3.6-35b-a3b` (kept so callers do not break). Qwen3.6 35B MoE is retired.
+
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
-| `qwen3.6-35b-a3b` | Qwen3.6 35B MoE | ✅ | ✅ | 262K |
-| `qwen3.6-35b-no-thinking` | Qwen3.6 35B MoE | ❌ | ❌ | 262K |
+| `qwen3.6-35b-a3b` | Swift-1.5-27B (historical id) | ✅ | ✅ | 262K |
+| `qwen3.6-35b-no-thinking` | Swift-1.5-27B, no-thinking | ❌ | ❌ | 262K |
 
 ### OWUI Proxy (1)
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
-| `owui-qwen3.6-35b` | Qwen3.6 35B via OWUI | ✅ | ✅ | 262K |
+| `owui-qwen3.6-35b` | Swift-1.5-27B via OWUI | ✅ | ✅ | 262K |
 
 ### OWUI Custom Models (3)
 
@@ -413,13 +415,13 @@ Purged (dead): `omnicoder-9b` + `owui-omnicoder-9b` (GPU 2 freed 30/04), `owui-g
 | `fast-responder` | glm-5.3-flash | ❌ | ❌ | — | ❌ | Quick answers / triage (hub) |
 | `vision-analyst` | qwen3.6-35b-a3b | ✅ | ✅ | searxng, playwright, markitdown | ❌ | Vision specialist — **local** (hub strips images, #794) |
 | `vision-local` | qwen3.6-35b-a3b | ✅ | ✅ | searxng, playwright, markitdown | ❌ | Local vision+thinking |
-| `vision-local-owui` | owui-qwen3.6-35b | ✅ | ✅ | — | ❌ | OWUI Qwen3.6 vision |
+| `vision-local-owui` | owui-qwen3.6-35b | ✅ | ✅ | — | ❌ | OWUI Swift-1.5-27B vision |
 | `coder` | qwen3.6-35b-no-thinking | ❌ | ❌ | open_terminal, searxng | ❌ | Local coding (vLLM direct) |
 | `coder-local` | owui-qwen3.6-35b | ✅ | ✅ | — | ❌ | Local coding (OWUI proxy) |
 | `fast` | qwen3.6-35b-no-thinking | ❌ | ❌ | — | ❌ | Fastest reliable (local no-thinking) |
 | `fast-local` | qwen3.6-35b-no-thinking | ❌ | ❌ | — | ❌ | Fast local (direct vLLM) |
 | `fast-local-thinking` | qwen3.6-35b-a3b | ✅ | ✅ | — | ❌ | Local with thinking |
-| `qwen-local` | qwen3.6-35b-a3b | ✅ | ✅ | — | ❌ | Direct vLLM Qwen3.6 |
+| `qwen-local` | qwen3.6-35b-a3b | ✅ | ✅ | — | ❌ | Direct vLLM Swift-1.5-27B |
 
 ### Operational Agents (4)
 
