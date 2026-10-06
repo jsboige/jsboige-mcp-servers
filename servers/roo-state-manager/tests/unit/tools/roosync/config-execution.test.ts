@@ -266,6 +266,34 @@ describe('roosync_config - Execution - Action Apply', () => {
     );
   });
 
+  it('devrait appliquer le target schedules en dryRun (#2406 — review CHANGES_REQUESTED)', async () => {
+    // Le schéma (premier commit) acceptait 'schedules' mais parseTargets()
+    // gardait sa propre liste et faisait échouer apply à l'exécution. Ce test
+    // vérifie le chemin complet handler → parseTargets → service.
+    mockGetConfigVersion.mockResolvedValueOnce('2.0.0');
+    mockApplyConfig.mockResolvedValueOnce({
+      success: true,
+      filesApplied: [],
+      backupPath: null,
+      errors: []
+    });
+
+    const { roosyncConfig } = await import('../../../../src/tools/roosync/config.js');
+
+    await roosyncConfig({
+      action: 'apply',
+      targets: ['schedules'],
+      dryRun: true
+    });
+
+    expect(mockApplyConfig).toHaveBeenCalledWith(
+      expect.objectContaining({
+        targets: ['schedules'],
+        dryRun: true
+      })
+    );
+  });
+
   it('devrait appliquer en mode dryRun', async () => {
     mockGetConfigVersion.mockResolvedValueOnce('2.0.0');
     mockApplyConfig.mockResolvedValueOnce({

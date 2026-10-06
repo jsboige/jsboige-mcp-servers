@@ -33,7 +33,7 @@ export const ConfigArgsSchema = z.object({
     (targets) => {
       if (!targets) return true;
       return targets.every(target => {
-        if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'claude-settings' || target === 'modes-yaml' || target === 'schtasks') {
+        if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'claude-settings' || target === 'modes-yaml' || target === 'schtasks' || target === 'schedules') {
           return true;
         }
         if (target.startsWith('mcp:')) {
@@ -54,9 +54,9 @@ export const ConfigArgsSchema = z.object({
       });
     },
     {
-      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings, modes-yaml, schtasks, mcp:<server>, services:<name>, env:<service>"
+      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings, modes-yaml, schtasks, schedules, mcp:<server>, services:<name>, env:<service>"
     }
-  ).describe('Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings (snapshot masqué de ~/.claude/settings.json, #3545), modes-yaml, schtasks, mcp:<server>, services:<name>, env:<service>. Default: ["modes", "mcp"]'),
+  ).describe('Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings (snapshot masqué de ~/.claude/settings.json, #3545), modes-yaml, schtasks, schedules (.roo/schedules.json, #2411 ID-based merge), mcp:<server>, services:<name>, env:<service>. Default: ["modes", "mcp"]'),
 
   // Pour publish (requiert collect préalable OU packagePath)
   packagePath: z.string().optional().describe('Package path from collect. If omitted with publish+targets, does collect+publish atomically'),
@@ -109,7 +109,7 @@ export type ConfigArgs = z.infer<typeof ConfigArgsSchema>;
  * @returns Liste des targets validés
  * @throws ConfigSharingServiceError si un target est invalide
  */
-function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | 'schtasks' | `mcp:${string}` | `services:${string}` | `env:${string}`)[] {
+function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | 'schtasks' | 'schedules' | `mcp:${string}` | `services:${string}` | `env:${string}`)[] {
   if (!targets) return [];
 
   return targets.map(target => {
@@ -151,12 +151,12 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | 'scht
       return target as `env:${string}`;
     }
 
-    if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'claude-settings' || target === 'modes-yaml' || target === 'schtasks') {
+    if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'claude-settings' || target === 'modes-yaml' || target === 'schtasks' || target === 'schedules') {
       return target as any;
     }
 
     throw new ConfigSharingServiceError(
-      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings, modes-yaml, schtasks, mcp:<nomServeur>, services:<nomService>, env:<nomService>`,
+      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings, modes-yaml, schtasks, schedules, mcp:<nomServeur>, services:<nomService>, env:<nomService>`,
       ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
       { target }
     );
