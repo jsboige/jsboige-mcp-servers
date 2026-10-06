@@ -129,6 +129,26 @@ describe('roosync_config - Schema Validation - Action Collect', () => {
     expect(combined.success).toBe(true);
   });
 
+  it('devrait accepter le target schedules (#2411/#2406 — géré service-side, schema débloquant)', async () => {
+    const module = await import('../../../../src/tools/roosync/config.js');
+
+    // Valide: schedules seul — le ConfigSharingService collect/apply ce target
+    // depuis #2411 (merge ID-based dans .roo/schedules.json) ; le schéma le
+    // rejetait jusqu'ici, rendant le pipeline unreachable.
+    const schedules = module.ConfigArgsSchema.safeParse({
+      action: 'collect',
+      targets: ['schedules']
+    });
+    expect(schedules.success).toBe(true);
+
+    // Valide: schedules combiné aux autres targets
+    const combined = module.ConfigArgsSchema.safeParse({
+      action: 'apply',
+      targets: ['modes', 'schedules']
+    });
+    expect(combined.success).toBe(true);
+  });
+
   it('devrait accepter publish atomique avec les nouveaux targets', async () => {
     const module = await import('../../../../src/tools/roosync/config.js');
 
