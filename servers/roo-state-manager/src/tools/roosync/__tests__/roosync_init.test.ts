@@ -8,13 +8,14 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { InitArgsSchema, InitResultSchema, roosyncInit } from '../roosync_init.js';
 
 // Mock all external dependencies
-const { mockGetConfig, mockExistsSync, mockMkdirSync, mockWriteFileSync, mockReadFileSync, mockUnlinkSync, mockReadJSONFileSyncWithoutBOM } = vi.hoisted(() => ({
+const { mockGetConfig, mockExistsSync, mockMkdirSync, mockWriteFileSync, mockReadFileSync, mockUnlinkSync, mockCopyFileSync, mockReadJSONFileSyncWithoutBOM } = vi.hoisted(() => ({
 	mockGetConfig: vi.fn(),
 	mockExistsSync: vi.fn(),
 	mockMkdirSync: vi.fn(),
 	mockWriteFileSync: vi.fn(),
 	mockReadFileSync: vi.fn(),
 	mockUnlinkSync: vi.fn(),
+	mockCopyFileSync: vi.fn(),
 	mockReadJSONFileSyncWithoutBOM: vi.fn()
 }));
 
@@ -41,7 +42,8 @@ vi.mock('fs', async () => {
 		mkdirSync: mockMkdirSync,
 		writeFileSync: mockWriteFileSync,
 		readFileSync: mockReadFileSync,
-		unlinkSync: mockUnlinkSync
+		unlinkSync: mockUnlinkSync,
+		copyFileSync: mockCopyFileSync
 	};
 });
 
@@ -163,6 +165,40 @@ describe('roosync_init', () => {
 
 			expect(result.success).toBe(true);
 			expect(mockWriteFileSync).toHaveBeenCalled();
+		});
+
+		test('#2406 review: force backs up the shared dashboard before overwriting it', async () => {
+			// ms#1392 : avec force:true, sync-dashboard.json (partagé, lu par
+			// BaselineManager) est écrasé par un modèle à une machine — une
+			// sauvegarde .bak horodatée doit précéder l'écrasement.
+			mockExistsSync.mockReturnValue(true);
+			mockReadJSONFileSyncWithoutBOM.mockReturnValue({
+				machines: { 'test-machine': {} }
+			});
+
+			const result = await roosyncInit({ force: true });
+
+			expect(result.success).toBe(true);
+			expect(mockCopyFileSync).toHaveBeenCalledTimes(1);
+			const [src, dest] = mockCopyFileSync.mock.calls[0];
+			expect(src).toContain('sync-dashboard.json');
+			expect(dest).toMatch(/sync-dashboard\.bak-.*\.json/);
+			// L'écrasement suit la sauvegarde, pas l'inverse
+			expect(mockCopyFileSync.mock.invocationCallOrder[0])
+				.toBeLessThan(mockWriteFileSync.mock.invocationCallOrder[0]);
+			expect(result.filesCreated.some(f => f.includes('sauvegarde avant force'))).toBe(true);
+		});
+
+		test('no backup when force is false (dashboard untouched)', async () => {
+			mockExistsSync.mockReturnValue(true);
+			mockReadJSONFileSyncWithoutBOM.mockReturnValue({
+				machines: { 'test-machine': {} },
+				lastUpdate: '2026-01-01'
+			});
+
+			await roosyncInit({});
+
+			expect(mockCopyFileSync).not.toHaveBeenCalled();
 		});
 
 		test('skips roadmap when createRoadmap is false', async () => {

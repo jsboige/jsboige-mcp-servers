@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, copyFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { promisify } from 'util';
@@ -191,6 +191,14 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
     // 2. Créer/vérifier sync-dashboard.json
     const dashboardPath = join(sharedPath, 'sync-dashboard.json');
     if (!existsSync(dashboardPath) || args.force) {
+      // #2406 review (ms#1392) : force:true écrase le dashboard PARTAGÉ (lu par
+      // BaselineManager) avec un modèle à une seule machine — sauvegarde
+      // horodatée AVANT écrasement, point de restauration manuelle.
+      if (args.force && existsSync(dashboardPath)) {
+        const backupPath = dashboardPath.replace(/\.json$/, `.bak-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
+        copyFileSync(dashboardPath, backupPath);
+        filesCreated.push(`${backupPath.split(/[\\/]/).pop()} (sauvegarde avant force)`);
+      }
       const dashboardContent = createInitialDashboard(config.machineId);
       writeFileSync(dashboardPath, dashboardContent, 'utf-8');
       filesCreated.push('sync-dashboard.json');
