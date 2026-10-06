@@ -585,16 +585,18 @@ export function registerCallToolHandler(
               };
               break;
           }
-          // [REMOVED CONS-8 #603] roosync_init — dead code (all machines initialized)
+          // #2406 (audit 02/10, P2) : rebranché — le stub CONS-8 #603 « all machines
+          // initialized » était faux depuis l'arrivée de web2 (28/09) : le RSM ne
+          // peut pas équiper une machine neuve. L'implémentation réelle (dashboard,
+          // enregistrement machine, inventaire PowerShell) n'avait jamais quitté le tree.
           case 'roosync_init': {
-              result = {
-                  content: [{ type: 'text', text: JSON.stringify({
-                      status: 'deprecated',
-                      message: 'roosync_init removed (CONS-8 #603). All machines already initialized. No action needed.',
-                      alternative: 'Use roosync_diagnose(action: "env") for environment checks.'
-                  }) }],
-                  isError: false
-              };
+              try {
+                  const m = await import('./roosync/roosync_init.js');
+                  const roosyncResult = await m.roosyncInit(args as any);
+                  result = { content: [{ type: 'text', text: JSON.stringify(roosyncResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
               break;
           }
           case 'roosync_diagnose': {
