@@ -1,11 +1,15 @@
 /**
  * Tests for roosync_inventory tool
  *
- * Covers: type=machine, type=heartbeat, type=all, type=machines (fused),
- * includeDetails, status filters, error handling
+ * Covers: type=machine, type=heartbeat, type=all, type=machines
+ * (dashboard-derived presence, #2766), includeDetails, status filters,
+ * error handling
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, beforeAll, afterAll } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { inventoryTool, resetLocalInventoryCacheForTest } from '../../../../src/tools/roosync/inventory.js';
 
 // Mock InventoryService
@@ -22,6 +26,7 @@ vi.mock('../../../../src/services/roosync/InventoryService.js', () => ({
 const mockGetUnknownMachines = vi.fn();
 const mockGetIdleMachines = vi.fn();
 const mockGetHeartbeatData = vi.fn();
+const mockGetKnownMachineIds = vi.fn();
 
 const mockHeartbeatService = {
     getState: vi.fn(() => ({
@@ -48,8 +53,31 @@ vi.mock('../../../../src/services/lazy-roosync.js', () => ({
     getRooSyncService: vi.fn(() =>
         Promise.resolve({
             getHeartbeatService: () => mockHeartbeatService,
+            // #2766 : type="machines" lit le registre via getKnownMachineIds()
+            getKnownMachineIds: mockGetKnownMachineIds,
         })
     ),
+}));
+
+// #2766 — présence dashboard-dérivée : mocks du chemin <shared>/dashboards/
+// et du parsing (même pattern que get-status.test.ts ; le parsing regex vit
+// dans sa propre suite, ici on teste la CLASSIFICATION). vi.hoisted : la
+// factory de vi.mock est hoistée AVANT l'init des consts du module.
+const { mockSharedStatePath, mockExtractMachineActivity, mockIsRecentlyActive, mockLookupMachineActivityInArchives } = vi.hoisted(() => ({
+    mockSharedStatePath: vi.fn(),
+    mockExtractMachineActivity: vi.fn(),
+    mockIsRecentlyActive: vi.fn(),
+    mockLookupMachineActivityInArchives: vi.fn(),
+}));
+
+vi.mock('../../../../src/utils/shared-state-path.js', () => ({
+    getSharedStatePath: mockSharedStatePath,
+}));
+
+vi.mock('../../../../src/utils/dashboard-activity.js', () => ({
+    extractMachineActivity: mockExtractMachineActivity,
+    isRecentlyActive: mockIsRecentlyActive,
+    lookupMachineActivityInArchives: mockLookupMachineActivityInArchives,
 }));
 
 describe('roosync_inventory tool', () => {
@@ -64,7 +92,7 @@ describe('roosync_inventory tool', () => {
 
     it('has correct tool metadata', () => {
         expect(inventoryTool.name).toBe('roosync_inventory');
-        expect(inventoryTool.version).toBe('4.1.0');
+        expect(inventoryTool.version).toBe('4.2.0');
     });
 
     describe('type=machine', () => {
@@ -116,74 +144,139 @@ describe('roosync_inventory tool', () => {
         });
     });
 
-    describe('type=machines (fused from roosync_machines)', () => {
-        it('returns unknown machines when status=unknown', async () => {
-            mockGetUnknownMachines.mockReturnValue(['web1', 'po-2024']);
-            const result = await inventoryTool.execute({ type: 'machines', status: 'unknown' }, {});
-            expect(result.success).toBe(true);
-            expect(result.data.unknownMachines).toEqual(['web1', 'po-2024']);
-            expect(result.data.unknownCount).toBe(2);
+    describe('type=machines (dashboard-derived presence, #2766)', () => {
+        // Avant #2766 : ce bloc mockait les getters HeartbeatService dépréciés
+        // (#2318) et encodait des listes PERMANENTMENT VIDES sur un siège sain.
+        // Le contrat migre sur la présence dashboard-dérivée — même source que
+        // type="status" (get-status.ts, utils/dashboard-activity.ts).
+        const REGISTRY = ['myia-ai-01', 'myia-po-2024', 'myia-po-2027', 'workstation-42'];
+        const NOW = new Date().toISOString();
+        const TWO_DAYS_AGO = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
+        let fixtureDir: string;
+
+        beforeAll(() => {
+            // Fixture réelle : l'énumération des dashboards (.md, hors .tmp)
+            // s'exécute pour de vrai — seul le parsing est mocké. Le code lit
+            // <shared>/dashboards/.
+            fixtureDir = mkdtempSync(join(tmpdir(), 'inv-machines-unit-'));
+            mkdirSync(join(fixtureDir, 'dashboards'));
+            writeFileSync(join(fixtureDir, 'dashboards', 'workspace-test.md'), '### [2026-10-06T00:00:00.000Z] myia-po-2024|roo-extensions\ncontent');
+            writeFileSync(join(fixtureDir, 'dashboards', 'global.md'), '### [2026-10-06T00:00:00.000Z] myia-ai-01|global\ncontent');
+            writeFileSync(join(fixtureDir, 'dashboards', 'condense.tmp'), 'transient — must be skipped');
         });
 
-        it('returns idle machines when status=idle', async () => {
-            mockGetIdleMachines.mockReturnValue(['po-2023']);
-            const result = await inventoryTool.execute({ type: 'machines', status: 'idle' }, {});
-            expect(result.success).toBe(true);
-            expect(result.data.idleMachines).toEqual(['po-2023']);
-            expect(result.data.idleCount).toBe(1);
+        afterAll(() => {
+            rmSync(fixtureDir, { recursive: true, force: true });
         });
 
-        it('returns both unknown and idle when status=all (default)', async () => {
-            mockGetUnknownMachines.mockReturnValue(['web1']);
-            mockGetIdleMachines.mockReturnValue(['po-2023']);
+        beforeEach(() => {
+            mockSharedStatePath.mockReturnValue(fixtureDir);
+            mockGetKnownMachineIds.mockReturnValue([...REGISTRY]);
+            mockLookupMachineActivityInArchives.mockReturnValue(new Map());
+            mockExtractMachineActivity.mockReset();
+            mockIsRecentlyActive.mockReset();
+        });
+
+        it('classifies online vs unknown from dashboard activity — a registry machine with no activity lands in unknown', async () => {
+            mockExtractMachineActivity.mockReturnValue(new Map([
+                ['myia-po-2024', NOW],
+                ['myia-ai-01', NOW],
+                // myia-po-2027 : absente des dashboards
+            ]));
+            mockIsRecentlyActive.mockImplementation((lastSeen: string) => lastSeen === NOW);
+
             const result = await inventoryTool.execute({ type: 'machines' }, {});
-            expect(result.data.unknownMachines).toEqual(['web1']);
-            expect(result.data.idleMachines).toEqual(['po-2023']);
-        });
-
-        it('returns detailed data when includeDetails=true', async () => {
-            mockGetUnknownMachines.mockReturnValue(['web1']);
-            mockGetHeartbeatData.mockImplementation((mid: string) => {
-                if (mid === 'web1') return {
-                    machineId: 'web1',
-                    lastHeartbeat: '2026-05-03T20:00:00.000Z',
-                    status: 'unknown',
-                    metadata: { firstSeen: '2026-01-01', lastUpdated: '2026-05-03' },
-                };
-                return null;
-            });
-            const result = await inventoryTool.execute({ type: 'machines', status: 'unknown', includeDetails: true }, {});
-            expect(result.data.unknownMachines).toHaveLength(1);
-            expect(result.data.unknownMachines[0].machineId).toBe('web1');
-            expect(result.data.unknownMachines[0].status).toBe('unknown');
+            expect(result.success).toBe(true);
+            expect(result.data.onlineMachines).toEqual(['myia-ai-01', 'myia-po-2024']);
+            expect(result.data.onlineCount).toBe(2);
+            // Le cœur du fix : unknown NON vide (l'ancien code rendait [] en permanence)
+            expect(result.data.unknownMachines).toEqual(['myia-po-2027']);
             expect(result.data.unknownCount).toBe(1);
+            // L'entrée non-myia du registre est filtrée
+            expect(JSON.stringify(result.data)).not.toContain('workstation-42');
+            expect(result.data.machineLastSeen['myia-po-2027']).toBeNull();
+            expect(result.data.idleMachines).toEqual([]);
+            expect(result.data.idleCount).toBe(0);
+            expect(result.data.crossMachineWarning).toContain('dashboard-derived');
         });
 
-        it('skips machines without heartbeat data in detailed unknown mode', async () => {
-            mockGetUnknownMachines.mockReturnValue(['web1']);
-            mockGetHeartbeatData.mockReturnValue(null);
-            const result = await inventoryTool.execute({ type: 'machines', status: 'unknown', includeDetails: true }, {});
-            expect(result.data.unknownMachines).toHaveLength(0);
+        it('stale dashboard activity (>8h) classifies as unknown with lastSeen preserved', async () => {
+            mockExtractMachineActivity.mockReturnValue(new Map([['myia-po-2027', TWO_DAYS_AGO]]));
+            mockIsRecentlyActive.mockReturnValue(false);
+
+            const result = await inventoryTool.execute({ type: 'machines' }, {});
+            expect(result.data.onlineMachines).toEqual([]);
+            expect(result.data.unknownMachines).toContain('myia-po-2027');
+            // #3160 : lastSeen conservé — c'est le tell de mirror-staleness
+            expect(result.data.machineLastSeen['myia-po-2027']).toBe(TWO_DAYS_AGO);
         });
 
-        it('returns detailed idle machines', async () => {
-            mockGetIdleMachines.mockReturnValue(['po-2023']);
-            mockGetHeartbeatData.mockImplementation((mid: string) => ({
-                machineId: mid,
-                lastHeartbeat: '2026-05-04T00:00:00.000Z',
-                status: 'idle',
-                metadata: { firstSeen: '2026-01-01', lastUpdated: '2026-05-04' },
-            }));
-            const result = await inventoryTool.execute({ type: 'machines', status: 'idle', includeDetails: true }, {});
-            expect(result.data.idleMachines).toHaveLength(1);
-            expect(result.data.idleMachines[0].machineId).toBe('po-2023');
+        it('#3695 — machine archived out of live files recovers lastSeen from archives', async () => {
+            const archivedTs = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString(); // 3h : récent
+            mockExtractMachineActivity.mockReturnValue(new Map([
+                ['myia-po-2024', NOW]
+            ]));
+            mockLookupMachineActivityInArchives.mockReturnValue(new Map([['myia-po-2027', archivedTs]]));
+            mockIsRecentlyActive.mockImplementation((lastSeen: string) => lastSeen === NOW || lastSeen === archivedTs);
+
+            const result = await inventoryTool.execute({ type: 'machines' }, {});
+            expect(result.data.onlineMachines).toEqual(expect.arrayContaining(['myia-po-2024', 'myia-po-2027']));
+            // ai-01 est absente des fichiers courants ET des archives simulées → unknown
+            expect(result.data.unknownMachines).toEqual(['myia-ai-01']);
+            // Le lookup archives n'est demandé QUE pour les machines absentes des fichiers courants
+            expect(mockLookupMachineActivityInArchives).toHaveBeenCalledWith(
+                expect.any(String),
+                ['myia-ai-01', 'myia-po-2027']
+            );
         });
 
-        it('skips null heartbeat data in detailed mode', async () => {
-            mockGetUnknownMachines.mockReturnValue(['unknown']);
-            mockGetHeartbeatData.mockReturnValue(null);
-            const result = await inventoryTool.execute({ type: 'machines', status: 'unknown', includeDetails: true }, {});
-            expect(result.data.unknownMachines).toHaveLength(0);
+        it('status="unknown" gates the unknown list but onlineMachines stays returned', async () => {
+            mockExtractMachineActivity.mockReturnValue(new Map([['myia-po-2024', NOW]]));
+            mockIsRecentlyActive.mockReturnValue(true);
+
+            const result = await inventoryTool.execute({ type: 'machines', status: 'unknown' }, {});
+            expect(result.data.unknownMachines).toEqual(['myia-ai-01', 'myia-po-2027']);
+            expect(result.data.onlineMachines).toEqual(['myia-po-2024']);
+            expect(result.data.onlineCount).toBe(1);
+        });
+
+        it('includeDetails returns {machineId, lastSeen} entries instead of bare ids', async () => {
+            mockExtractMachineActivity.mockReturnValue(new Map([
+                ['myia-po-2024', NOW],
+                ['myia-po-2027', TWO_DAYS_AGO]
+            ]));
+            mockIsRecentlyActive.mockImplementation((lastSeen: string) => lastSeen === NOW);
+
+            const result = await inventoryTool.execute({ type: 'machines', includeDetails: true }, {});
+            expect(result.data.onlineMachines).toEqual([{ machineId: 'myia-po-2024', lastSeen: NOW }]);
+            // ai-01 : aucune activité → unknown avec lastSeen null ; po-2027 : stalée
+            expect(result.data.unknownMachines).toEqual([
+                { machineId: 'myia-ai-01', lastSeen: null },
+                { machineId: 'myia-po-2027', lastSeen: TWO_DAYS_AGO }
+            ]);
+        });
+
+        it('dashboards dir unreadable — registry reported honestly as unknown, lastSeen null', async () => {
+            mockSharedStatePath.mockReturnValue(join(tmpdir(), 'inv-machines-does-not-exist-' + Date.now()));
+            mockExtractMachineActivity.mockReturnValue(new Map());
+
+            const result = await inventoryTool.execute({ type: 'machines' }, {});
+            expect(result.data.onlineMachines).toEqual([]);
+            expect(result.data.unknownMachines).toEqual(['myia-ai-01', 'myia-po-2024', 'myia-po-2027']);
+            expect(result.data.machineLastSeen['myia-ai-01']).toBeNull();
+        });
+
+        it('.tmp dashboards are skipped by the enumeration', async () => {
+            mockExtractMachineActivity.mockImplementation((contents: string[]) => {
+                // Le fichier .tmp ne doit PAS figurer dans les contenus passés au parser
+                expect(contents.some((c: string) => c.includes('transient'))).toBe(false);
+                expect(contents.length).toBe(2);
+                return new Map([['myia-po-2024', NOW]]);
+            });
+            mockIsRecentlyActive.mockReturnValue(true);
+
+            const result = await inventoryTool.execute({ type: 'machines' }, {});
+            expect(result.success).toBe(true);
         });
     });
 

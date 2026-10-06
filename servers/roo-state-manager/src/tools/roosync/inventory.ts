@@ -3,36 +3,43 @@
  *
  * Récupération de l'inventaire machine et/ou de l'état heartbeat.
  *
- * IMPORTANT: Les types "heartbeat", "all" et "machines" retournent des données
- * heartbeat IN-MEMORY qui ne reflètent QUE l'activité du processus MCP local.
+ * IMPORTANT: Les types "heartbeat" et "all" retournent des données heartbeat
+ * IN-MEMORY qui ne reflètent QUE l'activité du processus MCP local.
  * Ils NE DOIVENT PAS être interprétés comme une vérité cross-machine.
- * Pour un snapshot cross-machine fiable, utiliser type="status".
+ * Le type "machines" est dashboard-dérivé (présence flotte, #2766).
+ * Pour un snapshot cross-machine complet, utiliser type="status".
  *
  * @module tools/roosync/inventory
- * @version 4.1.0 (#4004: local TTL cache 30 s + forceRefresh, resetCache warning hors status, codes d'erreur typés propagés)
- * @see #2318, ADR 008 Phase 4, #4004
+ * @version 4.2.0 (#2766: type="machines" routed to dashboard-derived presence — was stuck on deprecated local-self heartbeat getters, permanently empty)
+ * @see #2318, ADR 008 Phase 4, #4004, #2766
  */
 
 import * as os from 'os';
+import { readdirSync, readFileSync } from 'fs';
+import { join } from 'path';
 import { z } from 'zod';
 import { UnifiedToolContract, ToolCategory, ProcessingLevel, ToolResult } from '../../interfaces/UnifiedToolInterface.js';
 import { InventoryService } from '../../services/roosync/InventoryService.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
+import { getSharedStatePath } from '../../utils/shared-state-path.js';
+import { createLogger } from '../../utils/logger.js';
+
+const logger = createLogger('Inventory');
 
 /**
  * Schema de validation pour roosync_inventory
  */
 export const InventoryArgsSchema = z.object({
   type: z.enum(['machine', 'heartbeat', 'all', 'machines', 'status', 'health'])
-    .describe('Type d\'inventaire à récupérer. "machines" = unknown/idle machines. "status" = compact system snapshot. "health" = unified cluster health view with score (#2224)'),
+    .describe('Type d\'inventaire à récupérer. "machines" = fleet machine listing, dashboard-derived presence (#2318/#2766): online + unknown classified from dashboard message timestamps (8h threshold). "status" = compact system snapshot. "health" = unified cluster health view with score (#2224)'),
   machineId: z.string().optional()
     .describe('Identifiant optionnel de la machine (défaut: hostname)'),
   includeHeartbeats: z.boolean().optional()
     .describe('Inclure les données de heartbeat de chaque machine (défaut: true)'),
   // Pour type="machines" (fused from roosync_machines)
   status: z.enum(['unknown', 'idle', 'all']).optional()
-    .describe('Filtrer par statut machines (type="machines")'),
+    .describe('Filter for type="machines": gates the unknown list ("unknown") — idle is vestigial and always empty (dashboard presence has no idle concept, #2318); onlineMachines is always returned'),
   includeDetails: z.boolean().optional()
     .describe('Inclure les détails complets des machines (type="machines") ou stats outil (type="status")'),
   summary: z.boolean().optional()
@@ -171,7 +178,7 @@ export const inventoryTool: UnifiedToolContract = {
   description: 'Récupération de l\'inventaire machine, état heartbeat, ou snapshot système.',
   category: ToolCategory.UTILITY,
   processingLevel: ProcessingLevel.IMMEDIATE,
-  version: '4.1.0',
+  version: '4.2.0',
   inputSchema: InventoryArgsSchema,
   execute: async (input: z.infer<typeof InventoryArgsSchema>, context: any): Promise<ToolResult<any>> => {
     const startTime = Date.now();
@@ -298,53 +305,93 @@ export const inventoryTool: UnifiedToolContract = {
       }
 
       // [FUSION A2 #1863] type="machines" — fused from roosync_machines
-      // #2318: Same caveat as "heartbeat" — LOCAL-SELF ONLY data.
+      // #2766 (audit finding, po-2026 05/10 + po-2024 06/10): this listing was
+      // still built from the deprecated local-self HeartbeatService getters
+      // (#2318) and returned permanently EMPTY lists on a healthy seat — the
+      // fusion was never migrated to dashboard-derived presence. #2318 v5.0.0
+      // made dashboard message timestamps the sole cross-machine truth for
+      // type="status"; this type now uses the same source (reference
+      // implementation: get-status.ts, utils/dashboard-activity.ts).
       if (type === 'machines') {
-        const rooSyncService = await getRooSyncService();
-        const heartbeatService = rooSyncService.getHeartbeatService();
+        const service = await getRooSyncService();
         const machinesStatus = input.status || 'all';
         const wantDetails = input.includeDetails || false;
+        const isKnownMachine = (mid: string) => mid.toLowerCase().startsWith('myia-');
+        const registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
 
-        machinesData = { unknownMachines: [], unknownCount: 0, idleMachines: [], idleCount: 0 };
+        let online: string[] = [];
+        let unknown: string[] = [];
+        const machineLastSeen: Record<string, string | null> = {};
 
-        if (machinesStatus === 'unknown' || machinesStatus === 'all') {
-          const unknownMachines = heartbeatService.getUnknownMachines();
-          if (wantDetails) {
-            const detailed: any[] = [];
-            for (const mid of unknownMachines) {
-              const data = heartbeatService.getHeartbeatData(mid);
-              if (data) {
-                detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, status: data.status, metadata: data.metadata });
+        try {
+          const dashboardsDir = join(getSharedStatePath(), 'dashboards');
+          const dashboardContents: string[] = [];
+          for (const file of readdirSync(dashboardsDir)) {
+            if (file.endsWith('.md') && !file.endsWith('.tmp')) {
+              try {
+                dashboardContents.push(readFileSync(join(dashboardsDir, file), 'utf-8'));
+              } catch {
+                logger.debug(`Dashboard ${file} unreadable — skipped`);
               }
             }
-            machinesData.unknownMachines = detailed;
-            machinesData.unknownCount = detailed.length;
-          } else {
-            machinesData.unknownMachines = unknownMachines;
-            machinesData.unknownCount = unknownMachines.length;
           }
+
+          const { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchives } =
+            await import('../../utils/dashboard-activity.js');
+          const activity = extractMachineActivity(dashboardContents);
+
+          // #3695: machines archived out of the live files by auto-condensation
+          // vanish from the activity map — recover their lastSeen lazily from
+          // archives (same as get-status).
+          const missingFromCurrent = registryMachineIds.filter(mid => !activity.has(mid.toLowerCase()));
+          if (missingFromCurrent.length > 0) {
+            for (const [mid, ts] of lookupMachineActivityInArchives(dashboardsDir, missingFromCurrent)) {
+              const existing = activity.get(mid);
+              if (!existing || ts > existing) activity.set(mid, ts);
+            }
+          }
+
+          // Classify: registry machines with recent dashboard activity are
+          // online; the rest are unknown (absence of signal, not a confirmed
+          // outage — same semantics as the UNKNOWN:<mid> flags, #3160).
+          const seen = new Set<string>();
+          for (const mid of registryMachineIds) {
+            const lastSeen = activity.get(mid.toLowerCase()) ?? null;
+            machineLastSeen[mid] = lastSeen;
+            if (lastSeen !== null && isRecentlyActive(lastSeen)) {
+              online.push(mid);
+              seen.add(mid.toLowerCase());
+            }
+          }
+          unknown = registryMachineIds.filter(mid => !seen.has(mid.toLowerCase()));
+        } catch (err) {
+          // Dashboard presence unavailable (no mirror yet, GDrive offline) —
+          // registry machines are honestly reported as unknown, lastSeen null.
+          unknown = registryMachineIds;
+          for (const mid of registryMachineIds) machineLastSeen[mid] = null;
         }
 
-        if (machinesStatus === 'idle' || machinesStatus === 'all') {
-          const idleMachines = heartbeatService.getIdleMachines();
-          if (wantDetails) {
-            const detailed: any[] = [];
-            for (const mid of idleMachines) {
-              const data = heartbeatService.getHeartbeatData(mid);
-              if (data) {
-                detailed.push({ machineId: data.machineId, lastHeartbeat: data.lastHeartbeat, status: data.status, metadata: data.metadata });
-              }
-            }
-            machinesData.idleMachines = detailed;
-            machinesData.idleCount = detailed.length;
-          } else {
-            machinesData.idleMachines = idleMachines;
-            machinesData.idleCount = idleMachines.length;
-          }
-        }
+        const withLastSeen = (ids: string[]): string[] | { machineId: string; lastSeen: string | null }[] =>
+          wantDetails ? ids.map(mid => ({ machineId: mid, lastSeen: machineLastSeen[mid] ?? null })) : ids;
+
+        machinesData = {
+          // onlineMachines is always returned (new field — the most useful
+          // list; gating it behind status="all" would hide it from callers
+          // that filtered on "unknown" out of old habit).
+          onlineMachines: withLastSeen(online),
+          onlineCount: online.length,
+          unknownMachines: withLastSeen(machinesStatus === 'unknown' || machinesStatus === 'all' ? unknown : []),
+          unknownCount: unknown.length,
+          // Vestigial shape compat: dashboard-derived presence has no idle
+          // concept (#2318) — the field stays, always empty.
+          idleMachines: [] as string[],
+          idleCount: 0,
+          machineLastSeen,
+          retrievedAt
+        };
         if (!summary) {
           Object.assign(result, machinesData);
-          result.crossMachineWarning = 'Machine status reflects LOCAL process activity only. Use type="status" for reliable cross-machine presence. (#2318)';
+          result.crossMachineWarning = 'Machine presence is dashboard-derived (message timestamps, 8h threshold, this observer\'s GDrive mirror). unknown = absence of signal, NOT a confirmed outage. idle* fields are vestigial (#2318) — always empty. For the full system snapshot use type="status".';
         }
       }
       if (summary) {
@@ -377,7 +424,7 @@ export const inventoryTool: UnifiedToolContract = {
         }
 
         if (machinesData) {
-          lines.push(`**Filtered machines:** unknown=${machinesData.unknownCount}, idle=${machinesData.idleCount}`);
+          lines.push(`**Machines (dashboard-derived):** online=${machinesData.onlineCount}, unknown=${machinesData.unknownCount}`);
           lines.push('');
         }
 
