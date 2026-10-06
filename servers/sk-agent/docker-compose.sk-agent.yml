@@ -10,6 +10,9 @@
 # address only when a remote reverse proxy must reach this container.
 # Config: sk_agent_config.json is bind-mounted read-only.
 # After editing config, restart: docker compose -f docker-compose.sk-agent.yml up -d --force-recreate
+# Usage telemetry (#1387): one JSONL line per tool call, no prompt/response
+# content, written to ${SK_AGENT_USAGE_DIR:-./usage}/usage.jsonl on the host
+# (gitignored) so the weekly adoption read-out (roo-extensions#4085) can count it.
 #
 # OWUI integration: This container is also referenced in OWUI's docker-compose-myia.yaml
 # as a sidecar. Both compose files manage the same container. Coordinate via RooSync.
@@ -27,8 +30,10 @@ services:
       - SK_AGENT_API_KEY=${SK_AGENT_API_KEY:?Set SK_AGENT_API_KEY in a gitignored environment file}
       - SK_AGENT_CONFIG=/app/sk_agent_config.json
       - SK_AGENT_HOST=0.0.0.0
+      - SK_AGENT_USAGE_LOG=/app/usage/usage.jsonl
     volumes:
       - ./sk_agent_config.json:/app/sk_agent_config.json:ro
+      - ${SK_AGENT_USAGE_DIR:-./usage}:/app/usage
     extra_hosts:
       - host.docker.internal:host-gateway
     restart: unless-stopped
