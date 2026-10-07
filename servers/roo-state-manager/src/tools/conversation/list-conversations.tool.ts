@@ -60,6 +60,16 @@ interface SkeletonNode {
     /** Optional per-role message counts (when extractable) */
     userMessageCount?: number;
     assistantMessageCount?: number;
+    /**
+     * #4104 — present ONLY when the contentPattern filter is active: excerpt of
+     * WHERE the pattern matched, so every returned row visibly carries the motif
+     * (deep matches in mid-conversation content are otherwise invisible in the
+     * 900/500-char previews).
+     */
+    contentMatch?: {
+        field: string;
+        snippet: string;
+    };
     children: SkeletonNode[];
 }
 
@@ -263,6 +273,11 @@ function toConversationSummary(node: SkeletonNode, _depth = 0): Record<string, u
     if (node.isCompleted) summary.isCompleted = true; // omit when false (default)
     if (node.completionMessage) summary.completionMessage = node.completionMessage;
     if (node.synthesis?.available) summary.synthesis = node.synthesis;
+    // #4104 — contexte de match visible quand le filtre contentPattern a produit
+    // cette liste : l'extrait contient toujours le motif, la réponse est
+    // auto-évidente (un match profond en milieu de conversation y est sinon
+    // invisible — banc #2609 : 10/10 « hors motif »).
+    if (node.contentMatch) summary.contentMatch = node.contentMatch;
 
     // Metadata — keep useful fields, drop noise.
     // Field names preserve backward compat: workspace = full path, totalSize = raw bytes.
@@ -484,7 +499,7 @@ export const listConversationsTool = {
                 },
                 contentPattern: {
                     type: 'string',
-                    description: 'Filtre les tâches contenant ce texte dans leurs messages (recherche insensible à la casse)'
+                    description: '#4104 — Filtre les tâches contenant ce texte (insensible à la casse). Contrat de recherche : title et truncatedInstruction d\'abord (fast path), puis le CONTENU des messages — sequence en mémoire (sessions Claude locales, archives hydratées), lecture bornée de l\'archive (stubs Tier 3), lecture disque de api_conversation_history (tâches Roo locales). Les lignes du tier unified-store PG ne matchent que par leur label à ce niveau (contenu profond non chargé en list) — elles échouent fermé, jamais retournées hors-motif. Quand ce filtre est actif, chaque nœud retourné porte contentMatch {field, snippet} : un extrait CONTENANT le motif, montrant où il a été trouvé.'
                 },
                 startDate: {
                     type: 'string',
@@ -780,8 +795,11 @@ export const listConversationsTool = {
             const matchingTasks: ConversationSkeleton[] = [];
             for (const skeleton of allSkeletons) {
                 try {
-                    const matches = await matchesContentPattern(skeleton, args.contentPattern);
-                    if (matches) {
+                    const match = await matchesContentPattern(skeleton, args.contentPattern);
+                    if (match) {
+                        // #4104 — le contexte du match voyage avec le skeleton
+                        // jusqu'au nœud : la réponse devient auto-évidente.
+                        (skeleton as any)._contentMatch = match;
                         matchingTasks.push(skeleton);
                     }
                 } catch (error) {
@@ -991,6 +1009,8 @@ export const listConversationsTool = {
                 lastAction,
                 isCompleted,
                 completionMessage,
+                // #4104 — contexte de match visible, uniquement quand contentPattern a filtré
+                ...((s as any)._contentMatch ? { contentMatch: (s as any)._contentMatch } : {}),
                 // NOTE: La synthèse sera détectée en Phase 2 (après création de skeletonMap)
                 children: []
             }];
@@ -1128,49 +1148,81 @@ async function hasPendingSubtask(taskId: string): Promise<boolean> {
  *
  * Avant le fix, seules les taches Roo avec api_conversation_history sur disque etaient
  * traversees — les sessions Claude et les archives cross-machine etaient invisibles.
+ *
+ * #4104 — la fonction retourne désormais le CONTEXTE du match ({field, snippet})
+ * plutôt qu'un booléen nu : le filtre matche profond (contrat #1244 inchangé),
+ * mais un match en milieu de conversation est invisible dans les previews
+ * 900/500 chars du SkeletonNode — le consommateur ne pouvait distinguer
+ * « filtre appliqué » de « filtre ignoré » (banc #2609 : 10/10 hors motif).
+ * L'extrait est fenêtré autour de la PREMIÈRE occurrence et contient donc
+ * toujours le motif.
  */
-async function matchesContentPattern(skeleton: ConversationSkeleton, pattern: string): Promise<boolean> {
+interface ContentMatch {
+    /** Where the pattern was found: title | truncatedInstruction | sequence | archive | history */
+    field: string;
+    /** Window around the first occurrence — always contains the pattern. */
+    snippet: string;
+}
+
+/** #4104 — fenêtre autour de la première occurrence, budget borné. */
+function excerptAround(haystack: string, needleLower: string, field: string, budget = 120): ContentMatch {
+    const idx = haystack.toLowerCase().indexOf(needleLower);
+    if (idx < 0) return { field, snippet: haystack.slice(0, budget) }; // défensif — jamais atteint sur un match
+    const start = Math.max(0, idx - 40);
+    const end = Math.min(haystack.length, idx + budget);
+    const prefix = start > 0 ? '…' : '';
+    const suffix = end < haystack.length ? '…' : '';
+    return { field, snippet: prefix + haystack.slice(start, end) + suffix };
+}
+
+async function matchesContentPattern(skeleton: ConversationSkeleton, pattern: string): Promise<ContentMatch | null> {
     const normalizedPattern = pattern.toLowerCase().trim();
-    if (normalizedPattern.length === 0) return true;
+    if (normalizedPattern.length === 0) return { field: 'none', snippet: '' };
 
     // 0. Fast path — check cached fields first (no I/O)
     // #251: Avoids disk reads for the majority of cases where the pattern
     // matches in the title or truncated instruction.
-    const cachedFields = [
-        skeleton.metadata?.title,
-        skeleton.truncatedInstruction,
+    const cachedFields: Array<[string | undefined, string]> = [
+        [skeleton.metadata?.title, 'title'],
+        [skeleton.truncatedInstruction, 'truncatedInstruction'],
     ];
-    for (const field of cachedFields) {
+    for (const [field, name] of cachedFields) {
         if (field && field.toLowerCase().includes(normalizedPattern)) {
-            return true;
+            return excerptAround(field, normalizedPattern, name);
         }
     }
 
     // 1. Sequence deja chargee (Tier 2 Claude / Tier 3 Archive hydratee) — recherche memoire
     const sequence = (skeleton as any).sequence;
     if (Array.isArray(sequence) && sequence.length > 0) {
-        return sequence.some((msg: any) => {
-            if (!msg || msg.role === undefined) return false;
+        for (const msg of sequence) {
+            if (!msg || msg.role === undefined) continue;
             const raw = typeof msg.content === 'string' ? msg.content : '';
-            return raw.toLowerCase().includes(normalizedPattern);
-        });
+            if (raw.toLowerCase().includes(normalizedPattern)) {
+                return excerptAround(raw, normalizedPattern, 'sequence');
+            }
+        }
+        return null;
     }
 
     // 1b. #3661 — Tier 3 STUB (corps non hydrate) : lecture disque bornee.
-    //     On lit l'archive, on matche, on jette le corps — le stub ne mute pas,
+    //     On lit l'archive, on matche, on jette le corps — le stub ne mutate pas,
     //     la recherche ne consomme ni cap ni memoire residente.
     if (skeleton.metadata?.dataSource === 'gdrive-archive' && skeleton.metadata?.archiveFilePath) {
         try {
             const { TaskArchiver } = await import('../../services/task-archiver/index.js');
             const archive = await TaskArchiver.readArchivedTaskFromPath(skeleton.metadata.archiveFilePath);
-            if (!archive) return false;
-            return (archive.messages || []).some(msg => {
+            if (!archive) return null;
+            for (const msg of (archive.messages || [])) {
                 const raw = typeof msg?.content === 'string' ? msg.content : '';
-                return raw.toLowerCase().includes(normalizedPattern);
-            });
+                if (raw.toLowerCase().includes(normalizedPattern)) {
+                    return excerptAround(raw, normalizedPattern, 'archive');
+                }
+            }
+            return null;
         } catch (error) {
             console.warn(`[matchesContentPattern] Error reading archive ${skeleton.taskId}:`, error);
-            return false;
+            return null;
         }
     }
 
@@ -1179,18 +1231,21 @@ async function matchesContentPattern(skeleton: ConversationSkeleton, pattern: st
     if (!skeleton.taskId.startsWith('claude-')) {
         try {
             const apiMessages = await loadApiMessages(skeleton.taskId);
-            return apiMessages.some(msg => {
+            for (const msg of apiMessages) {
                 const textContent = extractTextFromMessage(msg).toLowerCase();
-                return textContent.includes(normalizedPattern);
-            });
+                if (textContent.includes(normalizedPattern)) {
+                    return excerptAround(textContent, normalizedPattern, 'history');
+                }
+            }
+            return null;
         } catch (error) {
             console.warn(`[matchesContentPattern] Error reading Roo task ${skeleton.taskId}:`, error);
-            return false;
+            return null;
         }
     }
 
     // 3. Claude session without cached sequence — pas de fallback fiable
-    return false;
+    return null;
 }
 
 /**
