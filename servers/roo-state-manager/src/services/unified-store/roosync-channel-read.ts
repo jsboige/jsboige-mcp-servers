@@ -24,7 +24,7 @@ import type { Message, MessageListItem } from '../MessageManager.js';
 import type { RooSyncMessageRow } from './types.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
-import { parseMachineWorkspace, matchesRecipient } from '../../utils/message-helpers.js';
+import { parseMachineWorkspace, matchesRecipient, perReaderStatus } from '../../utils/message-helpers.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-channel-read');
@@ -69,6 +69,7 @@ export function mapRowToMessage(row: RooSyncMessageRow): Message {
   if (row.thread_id) message.thread_id = row.thread_id;
   if (row.reply_to) message.reply_to = row.reply_to;
   if (row.read_by.length > 0) message.read_by = row.read_by;
+  if (row.read_by_workspace.length > 0) message.read_by_workspace = row.read_by_workspace;
   if (row.tags.length > 0) message.tags = row.tags;
   if (row.attachment_refs.length > 0) message.attachments = row.attachment_refs;
 
@@ -118,34 +119,26 @@ function filterMailboxRows(
   status: 'unread' | 'read' | 'all' | undefined,
   workspaceId: string | undefined
 ): MessageListItem[] {
-  const readerMachineId = parseMachineWorkspace(machineId).machineId;
   const filtered: MessageListItem[] = [];
 
   for (const row of rows) {
     const to = row.to_workspace ? `${row.to_machine}:${row.to_workspace}` : row.to_machine;
     if (!matchesRecipient(to, machineId, workspaceId)) continue;
 
-    const isBroadcast = row.to_machine === 'all' || row.to_machine === 'All';
+    // Same verdict source as the GDrive path: perReaderStatus (#629 broadcasts
+    // via read_by, #3960 machine-wide via read_by_workspace with the legacy
+    // global-status fallback; null = raw status). Judging these rows by the
+    // raw global status alone re-surfaced every machine-wide message as unread
+    // on CHANNEL_READ_PG seats (read-state divergence, 02/10, #3151).
+    const perReader = perReaderStatus(mapRowToMessage(row), machineId, workspaceId);
 
     if (status && status !== 'all') {
-      if (isBroadcast && row.read_by.length > 0) {
-        const hasRead = row.read_by.includes(readerMachineId);
-        if (status === 'unread' && hasRead) continue;
-        if (status === 'read' && !hasRead) continue;
-      } else {
-        if (row.status !== status) continue;
-      }
+      const effective = perReader ?? row.status;
+      if (effective !== status) continue;
     }
 
     const item = mapRowToListItem(row);
-    if (isBroadcast && row.read_by.length > 0) {
-      filtered.push({
-        ...item,
-        status: row.read_by.includes(readerMachineId) ? 'read' : 'unread',
-      });
-    } else {
-      filtered.push(item);
-    }
+    filtered.push(perReader ? { ...item, status: perReader } : item);
   }
 
   return filtered;
@@ -185,7 +178,6 @@ export async function countChannelInboxFromPg(
 ): Promise<{ total: number; unread: number; read: number } | null> {
   try {
     const rows = await reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId);
-    const readerMachineId = parseMachineWorkspace(machineId).machineId;
     let total = 0;
     let unread = 0;
     let read = 0;
@@ -195,11 +187,13 @@ export async function countChannelInboxFromPg(
       if (!matchesRecipient(to, machineId, workspaceId)) continue;
 
       total++;
-      const isBroadcast = row.to_machine === 'all' || row.to_machine === 'All';
-      const isUnreadForMachine =
-        isBroadcast && row.read_by.length > 0
-          ? !row.read_by.includes(readerMachineId)
-          : row.status === 'unread';
+      // Same verdict source as filterMailboxRows (perReaderStatus — #629
+      // broadcasts, #3960 machine-wide via read_by_workspace, migrations/010):
+      // counting machine-wide rows by the raw global status inflated `unread`
+      // on CHANNEL_READ_PG seats (#3151).
+      const effectiveStatus =
+        perReaderStatus(mapRowToMessage(row), machineId, workspaceId) ?? row.status;
+      const isUnreadForMachine = effectiveStatus === 'unread';
 
       if (isUnreadForMachine) unread++;
       else read++;

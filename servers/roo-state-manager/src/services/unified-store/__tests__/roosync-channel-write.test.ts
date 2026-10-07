@@ -94,6 +94,7 @@ function sampleRow(overrides?: Partial<RooSyncMessageRow>): RooSyncMessageRow {
     created_at: '2026-08-23T10:00:00.000Z',
     reply_to: null,
     read_by: [],
+    read_by_workspace: [],
     options: {},
     ...overrides,
   };
@@ -255,6 +256,25 @@ describe('MessageManager PG-primary write path', () => {
       expect(ok).toBe(true);
       const fields = mockUpdateRooSyncMessage.mock.calls[0][1];
       expect(fields.read_by).toEqual(['myia-ai-01']);
+      expect(fields.status).toBeUndefined();
+    })
+  );
+
+  test(
+    'markAsRead: machine-wide row + workspace reader → read_by_workspace, global status untouched',
+    withPrimaryGate(async () => {
+      // The write half of the #3151 divergence: on a machine-wide row a
+      // workspace reader must NOT flip the global status — that hides the row
+      // from every sibling workspace on the next PG read (#3960). The test
+      // above covers the workspace-less reader, which keeps the global flip.
+      mockGetRooSyncMessageById.mockResolvedValue(sampleRow());
+      const ok = await messageManager.markAsRead(
+        'msg-20260823T100000-aaaaaa',
+        'myia-ai-01:roo-extensions'
+      );
+      expect(ok).toBe(true);
+      const fields = mockUpdateRooSyncMessage.mock.calls[0][1];
+      expect(fields.read_by_workspace).toEqual(['myia-ai-01:roo-extensions']);
       expect(fields.status).toBeUndefined();
     })
   );

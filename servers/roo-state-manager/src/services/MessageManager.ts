@@ -28,6 +28,7 @@ import {
   dualWriteRooSyncAttachmentRefs,
   dualWriteRooSyncMessageRead,
   dualWriteRooSyncMessageBroadcastRead,
+  dualWriteRooSyncMessageWorkspaceRead,
   dualWriteRooSyncMessageArchived,
   dualWriteRooSyncMessageDestroyed,
   dualWriteRooSyncMessageReminderSent,
@@ -1517,9 +1518,22 @@ export class MessageManager {
             return false;
           }
           const isBroadcast = pgMessage.to === 'all' || pgMessage.to === 'All';
+          // Machine-wide targets track per-workspace state (migrations/010,
+          // #3960): a global `status='read'` flip here would hide the row from
+          // the sibling workspaces of the machine on every PG read. A
+          // workspace-less reader cannot be tracked per workspace — it falls
+          // back to the global flip so the message can still clear at all
+          // (same rule as applyReadTracking).
+          const machineWide = isMachineWideTarget(pgMessage.to);
+          const trackedPerWorkspace =
+            machineWide && !!parseMachineWorkspace(readerId ?? '').workspaceId;
           const fields: RooSyncMessageUpdate = isBroadcast
             ? { read_by: pgMessage.read_by ?? [] }
-            : { status: 'read', read_at: new Date().toISOString() };
+            : machineWide
+              ? trackedPerWorkspace
+                ? { read_by_workspace: pgMessage.read_by_workspace ?? [] }
+                : { status: 'read', read_at: new Date().toISOString() }
+              : { status: 'read', read_at: new Date().toISOString() };
           fields.options = mapMessageToRow(pgMessage).options;
           if (await updateRooSyncMessagePrimary(messageId, fields)) {
             this.updateInCache(messageId, pgMessage);
@@ -1570,11 +1584,10 @@ export class MessageManager {
       if (isBroadcast) {
         dualWriteRooSyncMessageBroadcastRead(messageId, message.read_by ?? []).catch(() => {});
       } else if (isMachineWideTarget(message.to)) {
-        // Per-workspace read state has no PG column yet (migrations/005 mirrors
-        // read_by only). Mirroring status=read here would reintroduce, in PG,
-        // exactly the global flip this change removes - so mirror NOTHING and
-        // leave GDrive authoritative for this class. PG channel reads are off.
-        // TODO(#3151): add a read_by_workspace column, then mirror it here.
+        // Per-workspace read state now has its PG column (migrations/010):
+        // mirror the array, never the global status — a global flip would hide
+        // the message from the sibling workspaces of the machine (#3960).
+        dualWriteRooSyncMessageWorkspaceRead(messageId, message.read_by_workspace ?? []).catch(() => {});
       } else {
         dualWriteRooSyncMessageRead(messageId).catch(() => {});
       }

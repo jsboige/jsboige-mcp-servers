@@ -97,6 +97,9 @@ describe('roosync-channel-dual-write (mapping parity)', () => {
       // #3151 Phase B — full-fidelity columns (migrations/005).
       reply_to: 'msg-20260816T000000-aaaaaa',
       read_by: [],
+      // #3960 / migrations/010 — per-workspace read state of machine-wide
+      // targets (the sample message has none).
+      read_by_workspace: [],
       options: {},
     });
   });
@@ -290,6 +293,28 @@ describe('MessageManager hooks (GDrive never blocked by PG)', () => {
 
     expect(existsSync(join(testPath, 'messages/inbox', `${msg.id}.json`))).toBe(true);
     expect(existsSync(join(testPath, 'messages/sent', `${msg.id}.json`))).toBe(true);
+  });
+
+  test('markAsRead on a machine-wide message mirrors read_by_workspace, never the global status', async () => {
+    // Machine-wide target ("myia-ai-01", no workspace): PG must receive the
+    // per-workspace array. Mirroring `status: 'read'` instead would flip the
+    // row globally in PG and hide it from every sibling workspace (#3960) —
+    // the mirror this replaces deliberately wrote NOTHING.
+    const msg = await messageManager.sendMessage(
+      'myia-po-2023:roo-extensions',
+      'myia-ai-01',
+      'Sujet',
+      'Corps'
+    );
+    updateRooSyncMessage.mockClear();
+
+    await messageManager.markAsRead(msg.id, 'myia-ai-01:roo-extensions');
+    await vi.waitFor(() => expect(updateRooSyncMessage).toHaveBeenCalled());
+
+    const [id, fields] = updateRooSyncMessage.mock.calls[0];
+    expect(id).toBe(msg.id);
+    expect(fields.read_by_workspace).toEqual(['myia-ai-01:roo-extensions']);
+    expect(fields.status).toBeUndefined();
   });
 
   test('amendMessage propagates the new body to PG under the same id', async () => {
