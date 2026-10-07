@@ -149,6 +149,10 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
 
   beforeAll(async () => {
     hardwareFactor = await calibrateHardwareFactor();
+    // W1 (#2639) : émettre le facteur via process.stdout.write — global.console
+    // est mocké par tests/setup/jest.setup.js, et sans émission un run CI vert
+    // ne prouve pas que le facteur > 1 a été exercé (le seuil scale-t-il ?).
+    process.stdout.write(`[stress-large-inbox] hardwareFactor=${hardwareFactor.toFixed(3)}\n`);
     testRootDir = mkdtempSync(join(tmpdir(), 'stress-inbox-'));
     testSharedStatePath = join(testRootDir, 'shared-state');
   });

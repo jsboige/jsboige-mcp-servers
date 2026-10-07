@@ -38,21 +38,87 @@ const HEADER_RE = /(\d+)\s+test-file entr(?:y|ies)\s*\+\s*(\d+)\s+tests-director
 const AUDIT_RE = /Last audit:\s*(\d{4}-\d{2}-\d{2})\s*\(#(\d+)\)/;
 
 /**
+ * Extract the body of the `exclude: [...]` array with balanced brackets,
+ * skipping bracket and comment markers inside quoted strings and inside //
+ * comments (W2, #2639: a lazy `\[(.*?)\]` stops at the first `]`, which a glob
+ * character class like `foo[0-9]*.test.ts` would close early; strings and
+ * comments carrying `]` or `//` would do the same).
+ */
+export function extractExcludeBody(src) {
+  const start = src.search(/exclude:\s*\[/);
+  if (start === -1) throw new Error('exclude array not found in vitest.config.ci.ts');
+  const open = src.indexOf('[', start);
+  let depth = 0;
+  let quote = null;
+  for (let i = open; i < src.length; i++) {
+    const ch = src[i];
+    if (quote) {
+      if (ch === '\\') { i++; continue; } // escaped char — skip the next one
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') { quote = ch; continue; }
+    if (ch === '/' && src[i + 1] === '/') {
+      const nl = src.indexOf('\n', i);
+      if (nl === -1) break; // comment runs to EOF — no closing bracket ahead
+      i = nl; // the loop's i++ lands just after the newline
+      continue;
+    }
+    if (ch === '[') depth++;
+    else if (ch === ']') {
+      depth--;
+      if (depth === 0) return src.slice(open + 1, i);
+    }
+  }
+  throw new Error('unbalanced brackets in the exclude array of vitest.config.ci.ts');
+}
+
+/**
+ * Active entries = quoted string literals in the array body, ignoring //
+ * comments — layout-independent (W2, #2639: the previous one-quoted-string-
+ * per-line match silently dropped entries written on a shared line, with a
+ * leading comma, or in double quotes).
+ */
+export function parseExcludeSrc(src) {
+  const body = extractExcludeBody(src);
+  const active = [];
+  let quote = null;
+  let current = '';
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (quote) {
+      if (ch === '\\') {
+        current += ch + (body[++i] ?? '');
+        continue;
+      }
+      if (ch === quote) {
+        active.push(current);
+        current = '';
+        quote = null;
+        continue;
+      }
+      current += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') { quote = ch; continue; }
+    if (ch === '/' && body[i + 1] === '/') {
+      const nl = body.indexOf('\n', i);
+      if (nl === -1) break;
+      i = nl;
+    }
+    // any other non-string, non-comment content (commas, whitespace, spread
+    // operators) is ignored — spread would silently widen the census, which
+    // the balanced-bracket scan surfaces for manual review instead.
+  }
+  return active;
+}
+
+/**
  * Parse the exclude array of vitest.config.ci.ts.
- * Active entries = quoted strings on non-comment lines.
  */
 export function parseCiExclusions(configPath = CONFIG) {
   const src = fs.readFileSync(configPath, 'utf8');
-  const arr = src.match(/exclude:\s*\[([\s\S]*?)\]/);
-  if (!arr) throw new Error('exclude array not found in vitest.config.ci.ts');
-
-  const active = [];
-  for (const line of arr[1].split('\n')) {
-    const t = line.trim();
-    if (t.startsWith('//')) continue;
-    const m = t.match(/^'([^']+)'/);
-    if (m) active.push(m[1]);
-  }
+  const active = parseExcludeSrc(src);
 
   const testFileEntries = active.filter((e) => TEST_FILE_RE.test(e));
   const dirGlobEntries = active.filter(
