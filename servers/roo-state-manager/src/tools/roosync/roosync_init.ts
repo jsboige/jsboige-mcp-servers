@@ -9,7 +9,7 @@
 
 import { z } from 'zod';
 import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
-import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync } from 'fs';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, unlinkSync, copyFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
 import { promisify } from 'util';
@@ -162,6 +162,28 @@ _Fichier généré automatiquement par roosync_init_
 }
 
 /**
+ * #2406 review (ms#1392) : sous force:true, les fichiers PARTAGÉS sont écrasés
+ * (dashboard lu par BaselineManager, config = inventaire de TOUTES les machines,
+ * roadmap) — sauvegarde horodatée AVANT écrasement pour chaque site, point de
+ * restauration manuelle. No-op sans force ou si le fichier n'existe pas.
+ */
+function backupBeforeForce(
+  filePath: string,
+  force: boolean | undefined,
+  filesCreated: string[]
+): void {
+  if (!force || !existsSync(filePath)) {
+    return;
+  }
+  const backupPath = filePath.replace(
+    /(\.[^.]+)$/,
+    `.bak-${new Date().toISOString().replace(/[:.]/g, '-')}$1`
+  );
+  copyFileSync(filePath, backupPath);
+  filesCreated.push(`${backupPath.split(/[\\/]/).pop()} (sauvegarde avant force)`);
+}
+
+/**
  * Outil roosync_init
  * 
  * Initialise l'infrastructure RooSync en créant les fichiers nécessaires
@@ -191,6 +213,7 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
     // 2. Créer/vérifier sync-dashboard.json
     const dashboardPath = join(sharedPath, 'sync-dashboard.json');
     if (!existsSync(dashboardPath) || args.force) {
+      backupBeforeForce(dashboardPath, args.force, filesCreated);
       const dashboardContent = createInitialDashboard(config.machineId);
       writeFileSync(dashboardPath, dashboardContent, 'utf-8');
       filesCreated.push('sync-dashboard.json');
@@ -294,6 +317,10 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
               paths: inventoryData.paths
             };
             
+            // #2406 review (ms#1392) : sous force, syncConfig repart de
+            // { machines: {} } — l'inventaire des AUTRES machines serait perdu.
+            backupBeforeForce(configPath, args.force, filesCreated);
+
             // Sauvegarder sync-config.json
             writeFileSync(configPath, JSON.stringify(syncConfig, null, 2), 'utf-8');
             filesCreated.push('sync-config.json (inventaire intégré)');
@@ -329,6 +356,7 @@ export async function roosyncInit(args: InitArgs): Promise<InitResult> {
     if (args.createRoadmap !== false) {
       const roadmapPath = join(sharedPath, 'sync-roadmap.md');
       if (!existsSync(roadmapPath) || args.force) {
+        backupBeforeForce(roadmapPath, args.force, filesCreated);
         const roadmapContent = createInitialRoadmap(config.machineId);
         writeFileSync(roadmapPath, roadmapContent, 'utf-8');
         filesCreated.push('sync-roadmap.md');

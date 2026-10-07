@@ -36,13 +36,16 @@ const mockMkdirSync = vi.fn();
 const mockWriteFileSync = vi.fn();
 const mockReadFileSync = vi.fn();
 const mockUnlinkSync = vi.fn();
+// #2406 review (ms#1392): backupBeforeForce uses copyFileSync before any force overwrite
+const mockCopyFileSync = vi.fn();
 
 vi.mock('fs', () => ({
   existsSync: (...args: any[]) => mockExistsSync(...args),
   mkdirSync: (...args: any[]) => mockMkdirSync(...args),
   writeFileSync: (...args: any[]) => mockWriteFileSync(...args),
   readFileSync: (...args: any[]) => mockReadFileSync(...args),
-  unlinkSync: (...args: any[]) => mockUnlinkSync(...args)
+  unlinkSync: (...args: any[]) => mockUnlinkSync(...args),
+  copyFileSync: (...args: any[]) => mockCopyFileSync(...args)
 }));
 
 // Mock encoding-helpers (readJSONFileSyncWithoutBOM is used instead of readFileSync for BOM-safe reads)

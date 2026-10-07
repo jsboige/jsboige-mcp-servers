@@ -28,6 +28,14 @@ vi.mock('@modelcontextprotocol/sdk/server/index.js', async () => {
     };
 });
 
+// #2406 P2 : roosync_init est rebranché sur le handler réel — mocké ici pour
+// tester le ROUTING du case registry sans exécuter l'init vrai (I/O disque).
+// vi.hoisted : la factory est hoistée avant l'init des consts du module.
+const { mockRoosyncInit } = vi.hoisted(() => ({ mockRoosyncInit: vi.fn() }));
+vi.mock('../roosync/roosync_init.js', () => ({
+    roosyncInit: mockRoosyncInit
+}));
+
 describe('registry.ts - Tool Registration', () => {
 
     describe('registerListToolsHandler - ListTools Registration', () => {
@@ -1164,15 +1172,8 @@ describe('registry.ts - Tool Registration', () => {
             expect(payload.alternative).toContain('roosync_compare_config');
         });
 
-        it('roosync_init returns deprecated status redirecting to diagnose env', async () => {
-            // Source L557-568
-            const result = await callTool('roosync_init');
-            expect(result.isError).toBe(false);
-            const payload = JSON.parse(result.content[0].text);
-            expect(payload.status).toBe('deprecated');
-            expect(payload.alternative).toContain('roosync_diagnose');
-            expect(payload.alternative).toContain('env');
-        });
+        // #2406 P2 : roosync_init n'est plus un stub deprecated — le test du
+        // contrat réel vit dans le describe dédié ci-dessous.
 
         it('roosync_decision returns deprecated status redirecting to dashboard', async () => {
             // Source L579-590
@@ -1195,8 +1196,9 @@ describe('registry.ts - Tool Registration', () => {
         });
 
         it('every deprecated payload carries a non-empty message + alternative', async () => {
-            // Structural invariant for all 4 CONS-8 #603 dead tools.
-            for (const name of ['roosync_list_diffs', 'roosync_init', 'roosync_decision', 'roosync_claim']) {
+            // Structural invariant for the 3 CONS-8 #603 dead tools
+            // (roosync_init reconnected #2406, removed from the list).
+            for (const name of ['roosync_list_diffs', 'roosync_decision', 'roosync_claim']) {
                 const result = await callTool(name);
                 const payload = JSON.parse(result.content[0].text);
                 expect(payload.status).toBe('deprecated');
@@ -1205,6 +1207,71 @@ describe('registry.ts - Tool Registration', () => {
                 expect(typeof payload.alternative).toBe('string');
                 expect(payload.alternative.length).toBeGreaterThan(0);
             }
+        });
+    });
+
+    describe('#2406 P2: roosync_init routes to the real handler', () => {
+        // Source: registry.ts case 'roosync_init' — rewired from the CONS-8 #603
+        // stub (« all machines already initialized », false since web2 joined
+        // 28/09) to the real roosync_init.js implementation. Sibling pattern of
+        // roosync_compare_config (dynamic import + JSON wrap + isError catch).
+        let mockServer: any;
+
+        beforeEach(() => {
+            if (!process.env.ROOSYNC_SHARED_PATH) {
+                process.env.ROOSYNC_SHARED_PATH = '/tmp/test-shared-state';
+            }
+            mockServer = { setRequestHandler: vi.fn() };
+            registerCallToolHandler(
+                mockServer,
+                {
+                    conversationCache: new Map<string, ConversationSkeleton>(),
+                    qdrantIndexQueue: new Set<string>(),
+                    isQdrantIndexingEnabled: false,
+                    xmlExporterService: {},
+                    exportConfigManager: {}
+                } as any,
+                vi.fn().mockResolvedValue({ content: [] }),
+                vi.fn().mockResolvedValue(true),
+                vi.fn().mockResolvedValue(undefined)
+            );
+            mockRoosyncInit.mockReset();
+        });
+
+        async function callTool(name: string, args: Record<string, unknown> = {}): Promise<any> {
+            const handler = mockServer.setRequestHandler.mock.calls[0][1];
+            return handler({ params: { name, arguments: args } });
+        }
+
+        it('delegates to roosyncInit and wraps its result as JSON text', async () => {
+            mockRoosyncInit.mockResolvedValue({ success: true, dashboard: 'created', machine: 'myia-web2' });
+
+            const result = await callTool('roosync_init', { force: false });
+
+            expect(mockRoosyncInit).toHaveBeenCalledWith({ force: false });
+            expect(result.isError).toBeFalsy();
+            const payload = JSON.parse(result.content[0].text);
+            expect(payload.success).toBe(true);
+            expect(payload.dashboard).toBe('created');
+        });
+
+        it('handler failure surfaces as isError with the message', async () => {
+            mockRoosyncInit.mockRejectedValue(new Error('shared state dir unavailable'));
+
+            const result = await callTool('roosync_init');
+
+            expect(result.isError).toBe(true);
+            expect(result.content[0].text).toContain('shared state dir unavailable');
+        });
+
+        it('no longer answers the deprecated stub payload', async () => {
+            mockRoosyncInit.mockResolvedValue({ success: true });
+
+            const result = await callTool('roosync_init');
+            const payload = JSON.parse(result.content[0].text);
+
+            expect(payload.status).not.toBe('deprecated');
+            expect(JSON.stringify(payload)).not.toContain('All machines already initialized');
         });
     });
 
