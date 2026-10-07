@@ -309,22 +309,21 @@ describe('ContentClassifier', () => {
     // parseToolParameters
     // ====================================================================
     describe('parseToolParameters', () => {
-        it('should parse XML with root tool tag -- regex matches outermost only', () => {
-            // The regex /<tag>(.*?)<\/tag>/g with backreference matches the outermost
-            // <read_file>...</read_file> as a single match. Since read_file is a root tool
-            // tag, it is skipped, and inner tags are consumed. Result: empty object.
+        it('extracts the inner params of a root tool tag (#4106)', () => {
+            // Un appel d'outil enveloppe ses paramètres dans la balise racine. La
+            // racine est déroulée avant parsing, donc les enfants sont extraits
+            // (avant : `{}` — le match le plus externe les avalait et ils étaient perdus).
             const xml = '<read_file><path>/src/index.ts</path><lines>1-50</lines></read_file>';
             const params = classifier.parseToolParameters(xml);
-            // Root tag consumes inner content; inner params not separately matched
-            expect(params).toEqual({});
+            expect(params).toEqual({ path: '/src/index.ts', lines: '1-50' });
         });
 
         it('should skip root tool tags in the result', () => {
             const xml = '<read_file><path>/src/index.ts</path></read_file>';
             const params = classifier.parseToolParameters(xml);
+            // La balise racine n'est jamais un paramètre ; son enfant <path> l'est.
             expect(params).not.toHaveProperty('read_file');
-            // Due to regex behavior, inner <path> is consumed by outer match
-            expect(params).toEqual({});
+            expect(params).toEqual({ path: '/src/index.ts' });
         });
 
         it('should parse non-root tag and include its content', () => {
@@ -340,21 +339,19 @@ describe('ContentClassifier', () => {
             expect(params).toBeNull();
         });
 
-        it('should skip root tag execute_command (inner params consumed)', () => {
-            // execute_command is a root tool tag; the regex matches the whole block
+        it('should extract the inner <command> of execute_command (#4106)', () => {
             const xml = '<execute_command><command>  npm run build  </command></execute_command>';
             const params = classifier.parseToolParameters(xml);
             expect(params).not.toHaveProperty('execute_command');
-            // Inner <command> is consumed by outer match
-            expect(params).toEqual({});
+            // La valeur de commande est trimée.
+            expect(params).toEqual({ command: 'npm run build' });
         });
 
-        it('should skip root tag write_to_file (inner params consumed)', () => {
+        it('should extract the inner params of write_to_file (#4106)', () => {
             const xml = '<write_to_file><path>/out.txt</path><content>hello</content></write_to_file>';
             const params = classifier.parseToolParameters(xml);
             expect(params).not.toHaveProperty('write_to_file');
-            // Inner params consumed by outer match
-            expect(params).toEqual({});
+            expect(params).toEqual({ path: '/out.txt', content: 'hello' });
         });
 
         it('should parse sibling non-root tags at same level', () => {
@@ -407,10 +404,28 @@ describe('ContentClassifier', () => {
             expect(details).toBeDefined();
             expect(details.totalCalls).toBe(1);
             expect(details.toolCalls[0].toolName).toBe('read_file');
-            // Due to regex behavior, root tool tag consumes inner params
-            // Parameters object is non-null (empty {}), so parsedSuccessfully is true
-            expect(details.toolCalls[0].parameters).toBeDefined();
+            // Les paramètres internes sont extraits (#4106) : objet non-null → parsedSuccessfully true.
+            expect(details.toolCalls[0].parameters).toEqual({ path: '/src/index.ts' });
             expect(details.toolCalls[0].parsedSuccessfully).toBe(true);
+        });
+
+        it('extracts nested params of a real-shaped tool call (#4106)', () => {
+            // Forme réelle d'un appel Roo : les paramètres sont les enfants de la
+            // balise racine, sur plusieurs lignes — exactement le cas que le parser
+            // rendait `{}` avant le correctif.
+            const item: ClassifiedContent = {
+                type: 'Assistant',
+                subType: 'ToolCall',
+                content: '<execute_command>\n<command>npm test</command>\n<requires_approval>false</requires_approval>\n</execute_command>',
+                index: 0,
+            };
+            const details = classifier.extractToolCallDetails(item);
+            expect(details.toolCalls[0].toolName).toBe('execute_command');
+            expect(details.toolCalls[0].parameters).toEqual({
+                command: 'npm test',
+                requires_approval: 'false',
+            });
+            expect(details.hasParsingErrors).toBe(false);
         });
 
         it('should extract multiple tool calls', () => {

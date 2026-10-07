@@ -32,6 +32,7 @@ import { MachineInventory as LegacyMachineInventory, BaselineConfig, BaselineFil
 import { BaselineServiceError, BaselineServiceErrorCode } from '../../types/baseline.js';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import { ProfileApplicabilityHelper } from './ProfileApplicabilityHelper.js';
+import { ConfigurationValueExtractor } from './ConfigurationValueExtractor.js';
 
 /**
  * Service pour la gestion des baselines non-nominatives
@@ -608,56 +609,14 @@ export class NonNominativeBaselineService {
   /**
    * Extrait la valeur réelle pour une catégorie
    * Supporte les structures legacy (config.*) et actuelle (inventory.*)
+   *
+   * Logique centralisée dans ConfigurationValueExtractor (#4106) — partagée avec
+   * ConfigComparator. Une catégorie hors ConfigurationCategory échoue
+   * bruyamment (au lieu de rendre `null`, ce qui fabriquait une déviation
+   * fantôme sur toute entrée étrangère).
    */
   private extractActualValue(inventory: MachineInventory, category: ConfigurationCategory): any {
-    switch (category) {
-      case 'roo-core':
-        return {
-          modes: inventory.config?.roo?.modes || inventory.inventory?.rooModes,
-          mcpSettings: inventory.config?.roo?.mcpSettings
-        };
-      case 'roo-advanced':
-        return {
-          userSettings: inventory.config?.roo?.userSettings
-        };
-      case 'hardware-cpu':
-        return inventory.config?.hardware?.cpu || inventory.inventory?.systemInfo;
-      case 'hardware-memory':
-        return inventory.config?.hardware?.memory || inventory.inventory?.systemInfo;
-      case 'software-powershell':
-        return {
-          version: inventory.config?.software?.powershell
-            || inventory.inventory?.systemInfo?.powershellVersion
-            || inventory.inventory?.tools?.powershell?.version
-            || 'Unknown'
-        };
-      case 'software-node':
-        return {
-          version: inventory.config?.software?.node
-            || inventory.inventory?.tools?.node?.version
-            || 'Unknown'
-        };
-      case 'software-python':
-        return {
-          version: inventory.config?.software?.python
-            || inventory.inventory?.tools?.python?.version
-            || 'Unknown'
-        };
-      case 'system-os':
-        return {
-          os: inventory.config?.system?.os
-            || inventory.inventory?.systemInfo?.os
-            || 'Unknown'
-        };
-      case 'system-architecture':
-        return {
-          arch: inventory.config?.system?.architecture
-            || inventory.inventory?.systemInfo?.architecture
-            || 'Unknown'
-        };
-      default:
-        return null;
-    }
+    return ConfigurationValueExtractor.extract(inventory, category);
   }
 
   /**

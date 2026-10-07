@@ -15,6 +15,7 @@ import { RooSyncConfig } from '../../config/roosync-config.js';
 import { RooSyncServiceError } from '../../types/errors.js';
 import { RooSyncDashboard } from '../../utils/roosync-parsers.js';
 import { ConfigurationProfile } from '../../types/non-nominative-baseline.js';
+import { ConfigurationValueExtractor } from './ConfigurationValueExtractor.js';
 
 export class ConfigComparator {
   constructor(
@@ -62,21 +63,10 @@ export class ConfigComparator {
   }
 
   private extractValueForCategory(inventory: any, category: string): any {
-    // Logique d'extraction similaire à NonNominativeBaselineService
-    // Adaptation pour accéder aux propriétés de l'inventaire
-    // TODO: Centraliser cette logique d'extraction
-    switch (category) {
-      case 'roo-core':
-        return {
-          modes: inventory.config?.roo?.modes,
-          mcpSettings: inventory.config?.roo?.mcpSettings
-        };
-      case 'hardware-cpu':
-        return inventory.config?.hardware?.cpu;
-      // Ajouter les autres cas...
-      default:
-        return undefined;
-    }
+    // Logique centralisée dans ConfigurationValueExtractor, partagée avec
+    // NonNominativeBaselineService. Une catégorie hors ConfigurationCategory
+    // échoue bruyamment là-bas au lieu de rendre `undefined` en silence (#4106).
+    return ConfigurationValueExtractor.extract(inventory, category);
   }
 
   /**
