@@ -171,7 +171,11 @@ describe('conversation_browser — golden query eval (action:list)', () => {
     }
     checks.push({
       name: `negative control: unmatched pattern '${controlPattern}' selects 0 conversations`,
-      ok: controlCount === 0,
+      // The `controlError === undefined` term is redundant with the -1 sentinel below, but
+      // it is written out on purpose: a thrown control call must read as FAIL, and a bare
+      // `controlCount === 0` invites the misreading that an exception passes (it does not —
+      // -1 !== 0 — but the intent should not have to be reconstructed by the reader).
+      ok: controlError === undefined && controlCount === 0,
       observed: controlError !== undefined ? `control call threw: ${controlError}` : String(controlCount),
     });
 
