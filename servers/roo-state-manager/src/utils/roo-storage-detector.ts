@@ -34,6 +34,18 @@ import { isZooCode, detectSourceFromPath } from './extension-paths.js';
 
 export class RooStorageDetector {
   private static readonly MAX_CONVERSATION_FILE_SIZE = 10 * 1024 * 1024; // 10MB — prevents OOM on traces >40MB
+
+  /**
+   * #2428 — override explicite de la garde 10 Mo, par liste de task_ids.
+   * ROOSYNC_OVERSIZED_TASK_IDS="id1,id2" : les conversations listées sont lues
+   * malgré leur taille (préchargées au lieu d'être skippées). Parsé à chaque
+   * appel pour rester observable par les tests via process.env.
+   */
+  private static parseOversizedTaskIdOverride(): Set<string> {
+    const raw = process.env.ROOSYNC_OVERSIZED_TASK_IDS;
+    if (!raw) return new Set<string>();
+    return new Set<string>(raw.split(',').map(id => id.trim()).filter(id => id.length > 0));
+  }
   private static readonly COMMON_ROO_PATHS = [
     // Chemins VSCode typiques
     path.join(os.homedir(), '.vscode', 'extensions'),
@@ -527,11 +539,16 @@ export class RooStorageDetector {
         let preloadedUiContent: string | undefined = undefined;
         let preloadedApiContent: string | undefined = undefined;
         const oversizedFiles: string[] = [];
+        // #2428 : liste explicite de task_ids contournant la garde 10 Mo (env ROOSYNC_OVERSIZED_TASK_IDS)
+        const oversizedTaskIdOverride = this.parseOversizedTaskIdOverride().has(taskId);
         if (uiMessagesStats) {
-            if (uiMessagesStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
+            if (uiMessagesStats.size > this.MAX_CONVERSATION_FILE_SIZE && !oversizedTaskIdOverride) {
                 console.warn(`⚠️ [analyzeConversation] ${taskId}: ui_messages.json too large (${(uiMessagesStats.size / 1024 / 1024).toFixed(1)}MB > 10MB), skipping to prevent OOM`);
                 oversizedFiles.push(`ui_messages.json (${(uiMessagesStats.size / 1024 / 1024).toFixed(1)}MB)`);
             } else {
+                if (uiMessagesStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
+                    console.warn(`⚠️ [analyzeConversation] ${taskId}: ui_messages.json ${(uiMessagesStats.size / 1024 / 1024).toFixed(1)}MB > 10MB MAIS task listé dans ROOSYNC_OVERSIZED_TASK_IDS — lecture forcée (#2428)`);
+                }
                 try {
                     let raw = await fs.readFile(uiMessagesPath, 'utf-8');
                     if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
@@ -540,10 +557,13 @@ export class RooStorageDetector {
             }
         }
         if (apiHistoryStats) {
-            if (apiHistoryStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
+            if (apiHistoryStats.size > this.MAX_CONVERSATION_FILE_SIZE && !oversizedTaskIdOverride) {
                 console.warn(`⚠️ [analyzeConversation] ${taskId}: api_conversation_history.json too large (${(apiHistoryStats.size / 1024 / 1024).toFixed(1)}MB > 10MB), skipping to prevent OOM`);
                 oversizedFiles.push(`api_conversation_history.json (${(apiHistoryStats.size / 1024 / 1024).toFixed(1)}MB)`);
             } else {
+                if (apiHistoryStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
+                    console.warn(`⚠️ [analyzeConversation] ${taskId}: api_conversation_history.json ${(apiHistoryStats.size / 1024 / 1024).toFixed(1)}MB > 10MB MAIS task listé dans ROOSYNC_OVERSIZED_TASK_IDS — lecture forcée (#2428)`);
+                }
                 try {
                     let raw = await fs.readFile(apiHistoryPath, 'utf-8');
                     if (raw.charCodeAt(0) === 0xFEFF) raw = raw.slice(1);
