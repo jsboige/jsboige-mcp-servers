@@ -273,15 +273,17 @@ which is the hub→vLLM transport credential and must not leave the hub, and
 never the direct vLLM endpoint on po-2025 (`:5003`), which would hand that key
 to every client and bypass the hub's capture and attribution. `thinking: false`
 is **mandatory** on this entry — measured: at `thinking: true` the 4B burns the
-whole output budget on reasoning and answers nothing; `max_tokens` floor is
-1024 (smaller budgets get eaten by the residual reasoning budget).
+whole output budget on reasoning and answers nothing; `max_tokens` floor is **4096** as measured through the hub
+(2026-10-07): the model reasons regardless of the flag, so 1024 returns nothing
+and 2048 is stochastic — the budget, not the flag, decides whether an answer
+exists.
 
 | Preset | Mission | Tools | Budget |
 |--------|---------|-------|--------|
-| `mini-coder-fix` | corrective missions, mono-file diagnostics, small patches | `open_terminal` | ≥ 2048 — raise per call via `agent_spec.sampling` |
-| `mini-repo-scan` | read-only repo scans: pattern counting, TODO inventories | `open_terminal` (read-only by prompt) | ≥ 1024 (model floor) |
-| `mini-summarizer` | condensing logs, conversations, dumps | none — material pasted | ≥ 1024 (model floor) |
-| `mini-web-research` | single-topic web lookups, doc snippets | `searxng` | ≥ 1024 (model floor) |
+| `mini-coder-fix` | corrective missions, mono-file diagnostics, small patches | `open_terminal` | ≥ 4096 — raise per call via `agent_spec.sampling` |
+| `mini-repo-scan` | read-only repo scans: pattern counting, TODO inventories | `open_terminal` (read-only by prompt) | ≥ 4096 (model floor) |
+| `mini-summarizer` | condensing logs, conversations, dumps | none — material pasted | ≥ 4096 (model floor) |
+| `mini-web-research` | single-topic web lookups, doc snippets | `searxng` | ≥ 4096 (model floor) |
 
 **Code goes in the prompt** — sk-agent attachments only accept office/media
 documents (`.ps1`/`.py` refused); every preset description says it for calling

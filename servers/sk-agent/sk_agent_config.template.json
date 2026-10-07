@@ -61,7 +61,7 @@
     },
 
     {
-      "_comment": "=== Fleet mini model FrogNano-4B (vLLM on po-2025, #4107 volet C) === Fleet route = the claudish hub, whose /v1/models lists the bare id `frognano-4b` (measured 2026-10-07 against http://192.168.0.50:3000/v1/models, 31 ids); e2e verified #4085 c.6019492370: 167 tok/4.3 s. The client credential is the CLUSTER HUB key — the same env var as the glm-* entries above. It is NOT the MINI key: the MINI key (fingerprint 1942B796A812) is the hub->vLLM transport credential and must never leave the hub. Do NOT point base_url at the direct vLLM endpoint on po-2025 (:5003): it would hand the MINI key to every client and bypass the hub's capture and attribution (po-2025 reply, msg-20261007T105820-w2l6ww). thinking=false MANDATORY (measured #4085 c.6022769664: at thinking:true the 4B burns the whole output budget on reasoning and answers nothing, 4096/4096 reasoning -> empty answer; sk_agent injects enable_thinking=false when thinking=false, declared again via extra_body so the profile also holds on the conversation path #2002). max_tokens floor 1024 (#3797 per-model budget override): below ~256 the thinking budget empties the content. No key in the repo: the live key stays in the environment (api_key_env).",
+      "_comment": "=== Fleet mini model FrogNano-4B (vLLM on po-2025, #4107 volet C) === Fleet route = the claudish hub, whose /v1/models lists the bare id `frognano-4b` (measured 2026-10-07 against http://192.168.0.50:3000/v1/models, 31 ids); e2e verified #4085 c.6019492370: 167 tok/4.3 s. The client credential is the CLUSTER HUB key — the same env var as the glm-* entries above. It is NOT the MINI key: the MINI key (fingerprint 1942B796A812) is the hub->vLLM transport credential and must never leave the hub. Do NOT point base_url at the direct vLLM endpoint on po-2025 (:5003): it would hand the MINI key to every client and bypass the hub's capture and attribution (po-2025 reply, msg-20261007T105820-w2l6ww). thinking=false (measured #4085 c.6022769664 behind the same finding: at thinking:true the 4B burns the whole output budget on reasoning and answers nothing, 4096/4096 reasoning -> empty answer; sk_agent injects enable_thinking=false when thinking=false, declared again via extra_body so the profile also holds on the conversation path #2002). max_tokens floor 4096, NOT 1024: measured through the hub on 2026-10-07 the model reasons regardless of the flag (~1200-2500 reasoning tokens per answer), so 1024 never yields content (0/3 runs) and 2048 is stochastic in BOTH arms (with the flag 1 content / 2 empty; without it 3 content / 1 empty — 4 of 7 runs empty overall, and the 3-of-4 vs 1-of-3 gap is not significant at n=3 per arm). The enable_thinking=false below stays declared — it is what sk_agent's thinking:false path sends, it is harmless — but on this route the flag has no measurable effect: the budget is the lever that decides whether an answer exists. No key in the repo: the live key stays in the environment (api_key_env).",
       "id": "frognano-4b",
       "enabled": true,
       "base_url": "http://192.168.0.50:3000/v1",
@@ -70,7 +70,7 @@
       "model_id": "frognano-4b",
       "vision": false,
       "thinking": false,
-      "max_tokens": 1024,
+      "max_tokens": 4096,
       "extra_body": {
         "chat_template_kwargs": {
           "enable_thinking": false
@@ -297,7 +297,7 @@
       "memory": { "enabled": false }
     },
     {
-      "_comment": "=== #4107 mini lane: FrogNano-4B presets (frognano-4b, 32K ctx, thinking off — see model entry) === CODE GOES IN THE PROMPT: sk-agent attachments only accept office/media documents (.ps1/.py and other code files are refused), so every description says it. Budget floors live on the model entry (max_tokens 1024, #3797); mini-coder-fix missions want >= 2048 — calibrate per call via agent_spec.sampling, per-agent sampling is not a config field (#4085).",
+      "_comment": "=== #4107 mini lane: FrogNano-4B presets (frognano-4b, 32K ctx, thinking off — see model entry) === CODE GOES IN THE PROMPT: sk-agent attachments only accept office/media documents (.ps1/.py and other code files are refused), so every description says it. Budget floors live on the model entry (max_tokens 4096 measured, #3797): through the hub the model reasons regardless of the thinking flag, so 1024 returns nothing and 2048 is stochastic — calibrate upward per call via agent_spec.sampling, per-agent sampling is not a config field (#4085).",
       "id": "mini-coder-fix",
       "description": "Cheap corrective coding missions on the fleet mini FrogNano-4B (32K ctx): single-file diagnostics, small patches, error triage — code pasted IN THE PROMPT (attachments refuse code files like .ps1/.py). Callers should raise the budget to >= 2048 tokens via agent_spec.sampling.",
       "model": "frognano-4b",
