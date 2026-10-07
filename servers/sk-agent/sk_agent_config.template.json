@@ -32,6 +32,22 @@
     },
 
     {
+      "_comment": "=== Mini tier (#4107, volet C of #4085) — economy routing: delegate reading and mechanical recomputation with objective criteria to the mini, keep judgement and decisions on the medium (doctrine #63). FrogNano-4B is served from po-2025: direct endpoint :5003, and the hub route frognano@frognano-4b is wired and proven e2e (#4085 c.6019492370); the alias `mini` names the same server. Deployment fixes the exact base_url/model_id pair — the hub address is used here because it is the fleet-stable one, same as the GLM entries. thinking MUST stay false: measured, at thinking:true this 4B burns the whole output budget on reasoning and returns empty (4096/4096 reasoning tokens, #4085 c.6022769664); re-enable per call via sampling_override with a budget >= 4096 only. max_tokens 2048 is the spec's OUTPUT-BUDGET FLOOR (mini-coder-fix >= 2048, the other three >= 1024, and below ~256 the content is measured empty) — it lives HERE and not on the presets because the runtime resolves budgets per-call/agent_spec > model > global sampling (sk_agent.py:1918-1931) and does NOT read a preset's execution.max_tokens, so a per-preset floor would be dead config. The key stays an environment reference: no literal key in this repo.",
+      "id": "frognano-4b",
+      "enabled": true,
+      "base_url": "http://192.168.0.50:3000/v1",
+      "api_key_env": "MINI_API_KEY",
+      "api_key": "YOUR_MINI_KEY_HERE",
+      "model_id": "frognano-4b",
+      "vision": false,
+      "thinking": false,
+      "extra_body": { "chat_template_kwargs": { "enable_thinking": false } },
+      "max_tokens": 2048,
+      "description": "FrogNano-4B (alias `mini`) — fleet mini tier, po-2025, Apache 2.0, 32K context served. RL-trained on corrective missions (Leaf 5-tool format); tool-calling qwen3_coder validated in a real multi-turn loop. Economy routing (#63): send it reading and mechanical recomputation against objective criteria, keep judgement on the medium. enable_thinking=false is declared both as a profile flag and via extra_body so it holds on the conversation path too (#2002).",
+      "context_window": 32768
+    },
+
+    {
       "_comment": "=== vLLM local models (direct endpoint, fleet-hosted on ai-01 — measured N=16 ≈ 760-870 tok/s aggregate, <3% util on 22/09; purged: omnicoder-9b, GPU 2 freed 30/04) === Per-model budget overrides (#3797, ALL optional, absent = current behaviour): \"request_timeout_s\": 600 (OpenAI client budget, default 300; declaring it ALSO raises the coupled call_agent wait_for ceiling to max(caller timeout, request_timeout_s + 30) — use case: notebook-auditor under parallel load bumps into 300 s), \"max_tokens\": 8000 (default output budget; precedence per-call/agent_spec > model > global sampling; use case: a thinking model burning the global 4096 on reasoning before answering), \"extra_body\": {\"chat_template_kwargs\": {\"thinking_budget\": 2048}} (generic vLLM passthrough; model keys override sampling-derived top_k/min_p/repetition_penalty; chat_template_kwargs deep-merged with the enable_thinking injection). Deployment of real values is a separate, per-model decision — none activated here. Timeout chain doc: README 'Timeout chain'.",
       "id": "qwen3.6-35b-a3b",
       "enabled": true,
@@ -551,6 +567,54 @@
       "system_prompt": "You are a local coordination agent on a 7-machine fleet, reading and posting on shared RooSync dashboards. Rules: (1) Every reported fact comes from a tool call made this turn — cite the dashboard read or inbox query behind each line. (2) One tool per step; wait for the result before the next step. (3) Always respond in French; every number carries its source; 'not verified' is a valid answer. (4) Never mark work as done without a verifiable artefact (commit SHA, PR URL); appends are concise and structured. (5) Stay inside the requested scope; asked to mutate anything beyond reading and posting reports, stop and report. Final format: findings (with evidence), then recommendation.",
       "mcps": ["roo_state_manager", "searxng"],
       "capabilities": ["coordination", "web"],
+      "memory": { "enabled": false }
+    },
+
+    {
+      "_comment": "=== Mini presets (#4107, volet C of #4085) — one per mission family of the spec. Every preset: model frognano-4b (no-thinking), code/SOURCE TEXT GOES IN THE PROMPT (sk-agent attachments accept office/media only — .py/.ps1 are refused, #4085 c.6022769664), and the caller-facing description states what may be delegated plus the economy rule (#63: reading/mechanical recomputation to the mini, judgement to the medium). ===",
+      "id": "mini-coder-fix",
+      "description": "Mini tier — corrective missions on a repository: locate the root cause inside a file and propose a minimal diff. DELEGATE HERE: single-file mechanical diagnosis, ~1 file, verifiable by a diff. SAY IT TO THE MINI: paste the code extracts IN THE PROMPT (sk-agent attachments refuse .py/.ps1 — office/media only). Tools: open_terminal (read/search/edit/shell/test). Economy (#63): this is the cheapest tier for mechanical diagnosis; keep architecture judgement and multi-file refactors on the medium. Budget: model default 2048 max_tokens.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a corrective agent on a repository, running in a strict no-thinking mode with a small output budget. Your mission: find the ROOT CAUSE of the defect described in the prompt and propose a MINIMAL diff. Rules: (1) The code to inspect is pasted in the prompt — work from it; if you need more, use the terminal tools to read the repository, one call at a time. (2) State the root cause in one sentence, with the exact file and line. (3) Give the smallest diff that fixes it; change nothing adjacent. (4) Say what you did NOT verify. (5) If the prompt does not carry enough code and the tools cannot reach the repository, STOP and say so — do not invent code. Answer in the language of the prompt.",
+      "mcps": ["open_terminal"],
+      "capabilities": ["shell", "repo_read"],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "mini-repo-scan",
+      "description": "Mini tier — read-only repository analysis: structure, dependencies, risks. DELEGATE HERE: inventory and mechanical mapping of a repository or a subtree, with objective criteria. SAY IT TO THE MINI: paste the extracts IN THE PROMPT (attachments refuse source files). Tools: open_terminal, used read-only by instruction. Economy (#63): the scan is mechanical — delegate it rather than spending medium tokens on enumeration; keep the risk ranking and the decisions on the medium.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a read-only repository analyst with a small output budget and no thinking mode. Mission: map what you are asked to map — structure, dependencies, entry points, risks — and report it as a compact inventory. Rules: (1) Read only; never write, edit or execute a mutating command. (2) Every line of the report cites the file (and line where relevant) it comes from; 'not found' is a valid and expected answer. (3) Group findings by the criteria given in the prompt; if none are given, use structure / dependencies / risks. (4) Do not recommend fixes unless asked. Answer in the language of the prompt.",
+      "mcps": ["open_terminal"],
+      "capabilities": ["shell", "repo_read"],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "mini-summarizer",
+      "description": "Mini tier — summarization of texts and documents, and the flagship token-economy delegation: a big model reads a long document once, then delegates the condensation. DELEGATE HERE: condensation to a fixed, structured shape. Tools: markitdown (documents to Markdown). Economy (#63): the summarization itself is mechanical once the shape is fixed; keep the interpretation of the summary on the medium.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a summarizer with a small output budget and no thinking mode. Condense the material into a short, faithful summary: key facts first, then decisions, then open points. Rules: (1) Never invent content; never drop a decision. (2) Keep names, identifiers, paths and numbers verbatim. (3) If the material is longer than your budget allows, summarize what you read and say explicitly which part you did not reach. (4) Output the structured shape asked for in the prompt. Answer in the language of the material.",
+      "mcps": ["markitdown"],
+      "capabilities": ["document_text", "document_visual"],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "mini-web-research",
+      "description": "Mini tier — web research relay: run the searches and return the raw findings with their sources, without interpretation. DELEGATE HERE: source collection against a precise question. Tools: searxng. Economy (#63): collection is mechanical; the weighing of sources and the conclusion stay on the medium.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a web research relay with a small output budget and no thinking mode. Run the searches the question requires and return the findings with their sources. Rules: (1) One fact per line, each carrying its URL. (2) Report what the sources say, not what you conclude — no synthesis, no recommendation. (3) If the sources contradict each other, report both and say so. (4) If a search returns nothing usable, say so instead of filling the gap. Answer in the language of the question.",
+      "mcps": ["searxng"],
+      "capabilities": ["web"],
+      "memory": { "enabled": false }
+    },
+    {
+      "_comment": "Delegating preset (#4107, volet C of #4085): the Swift medium calls the mini through the self-inclusion plugin. The capability grant must satisfy the #3408 risk gates for an MCP the config declares stateful — memory/repl — plus recursive_agents for the child spawn; max_recursion_depth 2 (top of this file) bounds the chain.",
+      "id": "swift-delegator",
+      "description": "Fleet medium (Swift-1.5-27B) that works by delegation: it keeps the judgement and hands the mechanical sub-tasks to the mini tier through the sk_agent plugin. DELEGATE TO IT: a task whose answer is a decision plus a set of short, tool-backed, verifiable sub-tasks. The child presets are mini-coder-fix, mini-repo-scan, mini-summarizer, mini-web-research — each states in its own description what it accepts and that code goes in the prompt.",
+      "model": "qwen3.6-35b-a3b",
+      "system_prompt": "You are the fleet medium model and you work BY DELEGATION. The mini tier (FrogNano-4B, presets mini-coder-fix, mini-repo-scan, mini-summarizer, mini-web-research) is far cheaper per token; you are the one that decides. Rules: (1) Delegate a sub-task only when it is SHORT (one file, one document, one question), TOOLED (the child has an MCP that can actually answer it) and VERIFIABLE (you can tell a right answer from a wrong one without redoing the work). (2) Pass the child everything it needs in the prompt: the mini cannot see your context, and source code must be pasted in the prompt because attachments refuse source files. (3) Keep for yourself everything that is judgement: architecture, arbitration between contradictory findings, anything the user will act on. (4) Never delegate a task whose result you could not check. (5) When a delegated call fails or returns nothing usable, say so and do the sub-task yourself — a child failure never becomes a silent gap. (6) Report which preset handled which sub-task. Answer in the language of the request.",
+      "mcps": ["sk_agent"],
+      "capabilities": ["recursive_agents", "memory"],
       "memory": { "enabled": false }
     }
   ],

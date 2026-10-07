@@ -1233,3 +1233,230 @@ def test_v2_rejects_duplicate_inline_agent_ids_single_reference():
         f"expected exact phrase 'duplicate inline agent ids' in errors, "
         f"got {errors}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #4107 (volet C of #4085) — mini tier presets + the Swift delegating preset.
+#
+# The template is the deployment source of truth, so what is asserted here is
+# the contract the RUNTIME enforces, read from the same functions the
+# validator uses (``_required_capabilities_for`` +
+# ``RISK_CLASS_REQUIRED_CAPABILITIES``): a preset listing an MCP without
+# granting the capabilities that MCP declares is refused at load time, so a
+# preset added to the template without them would break every machine at
+# deploy — not at review time.
+# ---------------------------------------------------------------------------
+
+MINI_MODEL_ID = "frognano-4b"
+DELEGATING_PRESET_ID = "swift-delegator"
+MEDIUM_MODEL_ID = "qwen3.6-35b-a3b"
+
+#: Preset id -> (mcps it lists, floor of its output budget per #4085
+#: c.6019492370: coder-fix >= 2048, the other three >= 1024).
+MINI_PRESETS: dict[str, tuple[list[str], int]] = {
+    "mini-coder-fix": (["open_terminal"], 2048),
+    "mini-repo-scan": (["open_terminal"], 1024),
+    "mini-summarizer": (["markitdown"], 1024),
+    "mini-web-research": (["searxng"], 1024),
+}
+
+
+def _template_payload() -> dict:
+    import json
+
+    path = Path(__file__).parent / "sk_agent_config.template.json"
+    if not path.exists():
+        pytest.skip("template not present in this checkout")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _validated_template():
+    payload = _template_payload()
+    # Validate a COPY: validation mutates the dict it is given (it folds the
+    # api_key placeholder into api_key_env and drops _comment markers), so
+    # the raw payload returned here stays exactly what is on disk.
+    import copy
+
+    cfg, errors = validate_config_payload(copy.deepcopy(payload))
+    assert cfg is not None, f"template no longer validates: {errors}"
+    assert errors == [], f"template no longer validates: {errors}"
+    return payload, cfg
+
+
+def _preset_by_id(preset_id: str):
+    return _validated_template()[1].get_agent(preset_id)
+
+
+class TestMiniTierTemplate:
+    """The template's mini tier is deployable and self-describing."""
+
+    def test_template_with_mini_tier_validates_cleanly(self):
+        _, cfg = _validated_template()
+        assert cfg.get_model(MINI_MODEL_ID) is not None
+        assert cfg.get_model(MINI_MODEL_ID).enabled is True
+
+    def test_mini_model_is_no_thinking_with_an_env_key_reference(self):
+        import re
+
+        from sk_agent_schemas import _API_KEY_PLACEHOLDER_PATTERN
+
+        payload, cfg = _validated_template()
+        model = cfg.get_model(MINI_MODEL_ID)
+
+        # #4085 c.6022769664: at thinking=true the 4B spends the whole budget
+        # on reasoning and returns empty — the flag is a correctness guard,
+        # not a tuning preference.
+        assert model.capabilities.thinking is False
+        assert (
+            model.extra_body.get("chat_template_kwargs", {}).get(
+                "enable_thinking"
+            )
+            is False
+        ), (
+            "enable_thinking must also be declared via extra_body so the "
+            "profile holds on the conversation path, not only call_agent "
+            "(#2002)"
+        )
+        assert model.capabilities.vision is False
+        assert model.context_window == 32768
+
+        # The key stays an environment reference; the template carries a
+        # placeholder that the schema folds to api_key_env (#3406).
+        assert model.api_key_env == "MINI_API_KEY"
+        raw = next(m for m in payload["models"] if m.get("id") == MINI_MODEL_ID)
+        assert re.compile(_API_KEY_PLACEHOLDER_PATTERN).fullmatch(
+            raw["api_key"]
+        ), (
+            "the mini key must be a placeholder in the template, never a "
+            "literal — the repo is public"
+        )
+
+    def test_mini_budget_floor_lives_on_the_model_entry(self):
+        """The floor binds where the runtime actually reads the budget.
+
+        ``max_tokens`` precedence at runtime is per-call/agent_spec > model >
+        global sampling (sk_agent.py:1918-1931), and a preset's
+        ``execution.max_tokens`` is NOT read on that path (it is consumed
+        only for the memory gate via ``execution.memory_collection``). So the
+        spec's floor is a property of the model the four presets resolve to;
+        a per-preset floor would be dead config, and this test fails if
+        someone moves it there.
+        """
+        from sk_agent_schemas import ExecutionProfile
+
+        model = _validated_template()[1].get_model(MINI_MODEL_ID)
+        default_exec = ExecutionProfile()
+
+        for preset_id, (_, floor) in MINI_PRESETS.items():
+            preset = _preset_by_id(preset_id)
+            assert preset.model == MINI_MODEL_ID
+            assert model.max_tokens >= floor, (
+                f"{preset_id} needs an output budget >= {floor}, but the "
+                f"model entry it resolves to declares {model.max_tokens}"
+            )
+            assert preset.execution.max_tokens == default_exec.max_tokens, (
+                f"{preset_id} carries a per-preset max_tokens "
+                f"({preset.execution.max_tokens}) — the runtime does not read "
+                "it; the floor belongs on the model entry"
+            )
+
+    def test_mini_preset_capabilities_satisfy_the_runtime_gates(self):
+        from sk_agent_schemas import (
+            RISK_CLASS_REQUIRED_CAPABILITIES,
+            _required_capabilities_for,
+        )
+
+        _, cfg = _validated_template()
+        for preset_id, (mcps, _floor) in MINI_PRESETS.items():
+            preset = _preset_by_id(preset_id)
+            assert preset.mcps == mcps
+
+            required = _required_capabilities_for(preset.mcps, cfg.tools)
+            granted = set(preset.capabilities)
+            assert required <= granted, (
+                f"{preset_id} lists {mcps} but does not grant "
+                f"{sorted(required - granted)} that those tools declare"
+            )
+            for mcp in cfg.tools:
+                if mcp.id not in preset.mcps:
+                    continue
+                needed = RISK_CLASS_REQUIRED_CAPABILITIES.get(
+                    mcp.risk_class, frozenset()
+                )
+                if needed:
+                    assert granted & needed, (
+                        f"{preset_id} activates {mcp.id!r} "
+                        f"(risk_class={mcp.risk_class!r}) without any of "
+                        f"{sorted(needed)}"
+                    )
+
+    def test_code_presets_send_the_caller_to_the_prompt(self):
+        """#4085 c.6022769664: attachments refuse .py/.ps1 — the description
+        has to tell the calling agent that code goes in the prompt."""
+        for preset_id in ("mini-coder-fix", "mini-repo-scan"):
+            description = _preset_by_id(preset_id).description
+            assert "PROMPT" in description.upper(), (
+                f"{preset_id} must tell the caller that the code is pasted "
+                "in the prompt (attachments refuse source files)"
+            )
+
+    def test_every_mini_preset_carries_the_economy_rule(self):
+        for preset_id in MINI_PRESETS:
+            description = _preset_by_id(preset_id).description
+            assert "#63" in description, (
+                f"{preset_id} must document the economy routing (#63) so the "
+                "calling agent knows what belongs here"
+            )
+
+
+class TestDelegatingPreset:
+    """The Swift preset that delegates to the mini tier."""
+
+    def test_delegating_preset_is_granted_for_the_stateful_self_plugin(self):
+        from sk_agent_schemas import RISK_CLASS_REQUIRED_CAPABILITIES
+
+        payload, cfg = _validated_template()
+        preset = _preset_by_id(DELEGATING_PRESET_ID)
+
+        assert preset.model == MEDIUM_MODEL_ID, (
+            "the delegator runs on the medium"
+        )
+        assert "sk_agent" in preset.mcps
+        assert "recursive_agents" in preset.capabilities, (
+            "spawning a child sk-agent requires the recursive_agents grant"
+        )
+
+        # The self-inclusion plugin is declared stateful, so the #3408 gate
+        # demands one of memory/repl — a delegating preset without it would
+        # be refused at load time.
+        self_mcp = next(m for m in cfg.tools if m.id == "sk_agent")
+        assert self_mcp.risk_class == "stateful"
+        needed = RISK_CLASS_REQUIRED_CAPABILITIES["stateful"]
+        assert set(preset.capabilities) & needed, (
+            f"the delegating preset must grant one of {sorted(needed)}"
+        )
+
+        # The chain is bounded by the ceiling declared in the same file.
+        assert payload["max_recursion_depth"] == 2
+
+    def test_delegating_instruction_says_what_to_delegate(self):
+        preset = _preset_by_id(DELEGATING_PRESET_ID)
+        prompt = preset.system_prompt.upper()
+        for criterion in ("SHORT", "TOOLED", "VERIFIABLE"):
+            assert criterion in prompt, (
+                "the delegating instruction must tell the model what may be "
+                f"delegated — missing {criterion}"
+            )
+        # A child failure must surface, never become a silent gap (#4107).
+        assert "ITSELF" in prompt or "YOURSELF" in prompt, (
+            "the instruction must say the medium finishes the sub-task when "
+            "the child fails"
+        )
+
+    def test_delegating_preset_names_the_child_presets(self):
+        description = _preset_by_id(DELEGATING_PRESET_ID).description
+        for preset_id in MINI_PRESETS:
+            assert preset_id in description, (
+                f"the delegator's description must name {preset_id} so the "
+                "calling model can discover it"
+            )

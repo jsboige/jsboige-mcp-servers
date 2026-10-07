@@ -665,3 +665,121 @@ class TestOverridesCannotWidenViaModuleForm:
         assert "Recursion ceiling reached" in caplog.text
         assert spy_plugin.constructed == []
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# #4107 (volet C of #4085) — the template's delegating preset is bounded by
+# the SAME ceiling as every other path.
+#
+# The #3409/#3415 tests above drive synthetic configs; these drive the wiring
+# the template actually ships (self-inclusion entry, recursive_agents grant,
+# depth propagation, degraded continuation) so a template change that breaks
+# the delegation chain turns them red — and so that "the guards cover the
+# delegating preset" is measured on the shipped artefact, not asserted.
+# ---------------------------------------------------------------------------
+
+
+def _template_delegator():
+    import json
+
+    path = SERVER_DIR / "sk_agent_config.template.json"
+    if not path.exists():
+        pytest.skip("template not present in this checkout")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    preset = next(
+        a for a in payload["agents"] if a.get("id") == "swift-delegator"
+    )
+    mcp = next(m for m in payload["mcps"] if m.get("id") == "sk_agent")
+    return payload, preset, mcp
+
+
+class TestTemplateDelegatingPresetIsBounded:
+    """The shipped delegating preset obeys the shipped ceiling."""
+
+    def test_template_self_plugin_is_recognized(self):
+        # The ceiling only binds when self-inclusion is RECOGNIZED (#3415),
+        # so the template's own launch form must be recognized by the guard —
+        # as written, and after a deployment substitutes the placeholders.
+        _payload, _preset, mcp = _template_delegator()
+        assert is_self_referential_mcp(mcp["id"], mcp["args"]) is True, (
+            f"template self-inclusion {mcp['args']!r} is not recognized — "
+            "the recursion ceiling would never be consulted"
+        )
+        deployed = [
+            str(a).replace("INSTALLATION_PATH", "C:/srv/sk-agent")
+            for a in mcp["args"]
+        ]
+        assert is_self_referential_mcp(mcp["id"], deployed) is True
+
+    def test_template_delegator_grant_matches_the_ceiling_contract(self):
+        payload, preset, mcp = _template_delegator()
+        assert "sk_agent" in preset["mcps"]
+        assert "recursive_agents" in preset["capabilities"], (
+            "a delegating preset without the recursive_agents grant would be "
+            "refused at load time (#3408)"
+        )
+        assert payload["max_recursion_depth"] == DEFAULT_MAX_RECURSION_DEPTH
+        # The self plugin is declared stateful: the stateful gate must be
+        # satisfied by the same grant list.
+        assert mcp["risk_class"] == "stateful"
+        assert set(preset["capabilities"]) & {"memory", "repl"}
+
+    def test_template_delegation_refused_at_the_ceiling(
+        self, monkeypatch, spy_plugin, caplog
+    ):
+        payload, _preset, mcp = _template_delegator()
+        ceiling = payload["max_recursion_depth"]
+
+        with caplog.at_level(logging.WARNING, logger="sk-agent"):
+            manager = _build_self_inclusion_manager(
+                max_recursion_depth=ceiling, depth=ceiling, monkeypatch=monkeypatch
+            )
+            # Use the template's own args so the recognition path is the
+            # shipped one, not a synthetic "sk_agent.py" token.
+            manager._mcp_configs["sk-agent"].args = list(mcp["args"])
+            result = _run(manager._ensure_mcp_loaded("sk-agent"))
+
+        assert "Recursion ceiling reached" in caplog.text, (
+            "refusal must be attributable to the guard"
+        )
+        assert spy_plugin.constructed == [], (
+            "the guard must refuse BEFORE constructing the child plugin"
+        )
+        assert result is False
+        assert "sk-agent" not in manager._mcp_plugins
+        assert "sk-agent" not in manager._loading_mcps, (
+            "a refused delegation must leave no orphan bookkeeping"
+        )
+
+    def test_child_failure_does_not_break_the_parent(
+        self, monkeypatch, spy_plugin, caplog
+    ):
+        """A failing child surfaces as a degraded parent, never as a crash.
+
+        The caller (medium) must be able to see the failure and carry on —
+        the property the delegating preset's instruction relies on ("when a
+        delegated call fails, say so and do the sub-task yourself").
+        """
+        with caplog.at_level(logging.WARNING, logger="sk-agent"):
+            manager = _build_self_inclusion_manager(
+                max_recursion_depth=2, depth=0, monkeypatch=monkeypatch
+            )
+            sibling = _SelfMcpConfig("mini-web-research", ["-y", "mcp-searxng"])
+            manager._mcp_configs[sibling.id] = sibling
+
+            # The child starts and fails (spy __aenter__ raises): the parent
+            # must absorb it.
+            first = _run(manager._ensure_mcp_loaded("sk-agent"))
+            assert first is False, "a failed child degrades, it does not raise"
+            assert "sk-agent" not in manager._mcp_plugins
+            assert "sk-agent" not in manager._loading_mcps
+
+            # ...and the parent is not wedged: the loader still works.
+            _SpyPlugin.constructed = []
+            second = _run(manager._ensure_mcp_loaded("mini-web-research"))
+
+        assert len(_SpyPlugin.constructed) == 1, (
+            "after a child failure the manager must still load the next "
+            "plugin (no wedged pool)"
+        )
+        assert second is False  # spy failure, not a wedged loader
