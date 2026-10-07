@@ -7,9 +7,11 @@
  * Key assertions:
  * - conversations.length > 0 (evergreen: 'roosync' pattern must match something)
  * - each conversation has non-empty metadata
- * - contentPattern filter is actually applied (all results contain 'roosync')
+ * - contentPattern filter is actually applied, non-vacuously: every result carries a
+ *   `contentMatch {field, snippet}` whose snippet contains the pattern, AND a negative
+ *   control (an unmatched pattern) selects nothing.
  *
- * @issue Epic #2609 V1
+ * @issue Epic #2609 V1 — contentPattern assertions hardened after #4104
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -112,22 +114,65 @@ describe('conversation_browser — golden query eval (action:list)', () => {
         : `${conversations.filter((c) => !c.metadata && !c.id && !c.task_id).length} without metadata`,
     });
 
-    // ---- Check: contentPattern filter is actually applied ----
-    // All returned conversations should contain 'roosync' somewhere in their stringified form.
-    // This validates the filter is not being ignored.
+    // ---- Check: contentPattern filter is actually applied — NON-VACUOUSLY ----
+    // Hardened after #4104. `contentMatch.snippet` echoes the matched text back into the
+    // payload, so the previous check — `JSON.stringify(c).includes(pattern)` — became
+    // vacuously true: it stayed green even when the filter stopped filtering. It is
+    // replaced by per-node positive evidence plus a negative control.
     const pattern = (CONVERSATION_BROWSER_QUERY.args.contentPattern as string).toLowerCase();
-    const allMatchPattern =
-      conversations.length > 0 &&
-      conversations.every((c) => {
-        const str = JSON.stringify(c).toLowerCase();
-        return str.includes(pattern);
-      });
+
+    // (a)+(b) every returned node carries a match context whose snippet contains the
+    // pattern. Before #4104, deep matches were returned WITHOUT any evidence, so this
+    // check fails on that shape — it is a regression test for the very bug it guards.
+    const noMatchContext = conversations.filter((c) => {
+      const cm = c.contentMatch;
+      return (
+        !cm ||
+        typeof cm.field !== 'string' || cm.field.length === 0 ||
+        typeof cm.snippet !== 'string' || !cm.snippet.toLowerCase().includes(pattern)
+      );
+    });
     checks.push({
-      name: `contentPattern '${pattern}' applied (all results contain it)`,
-      ok: allMatchPattern,
-      observed: allMatchPattern
+      name: `every result carries contentMatch {field, snippet} containing '${pattern}'`,
+      ok: conversations.length > 0 && noMatchContext.length === 0,
+      observed: noMatchContext.length === 0
         ? 'yes'
-        : `${conversations.filter((c) => !JSON.stringify(c).toLowerCase().includes(pattern)).length} don't match`,
+        : `${noMatchContext.length}/${conversations.length} without a matching contentMatch`,
+    });
+
+    // (c) negative control: a pattern absent from the corpus must select NOTHING.
+    // (a)+(b) alone would still pass if the tool ignored contentPattern and stamped a
+    // fabricated context on every row; only an unmatched pattern proves the filter
+    // actually excludes. Bounded to limit:1 — one extra local call, no storm risk.
+    const controlPattern = 'zzq-no-such-motif-4104';
+    let controlCount = -1;
+    let controlError: string | undefined;
+    try {
+      const noopRefresh = async () => { /* no-op */ };
+      const controlResult = await handleConversationBrowser(
+        { ...(CONVERSATION_BROWSER_QUERY.args as any), contentPattern: controlPattern, limit: 1 },
+        new Map(),
+        noopRefresh,
+        CACHE_CONFIG.DEFAULT_WORKSPACE,
+        undefined,
+        undefined,
+        undefined
+      );
+      const controlRaw = controlResult.content?.[0];
+      const controlText = (controlRaw && 'text' in controlRaw) ? (controlRaw as { text: string }).text : '';
+      const controlParsed = JSON.parse(controlText);
+      const controlConv: any[] =
+        Array.isArray(controlParsed?.conversations) ? controlParsed.conversations :
+        Array.isArray(controlParsed?.tasks) ? controlParsed.tasks :
+        [];
+      controlCount = controlConv.length;
+    } catch (err: any) {
+      controlError = err?.message ?? String(err);
+    }
+    checks.push({
+      name: `negative control: unmatched pattern '${controlPattern}' selects 0 conversations`,
+      ok: controlCount === 0,
+      observed: controlError !== undefined ? `control call threw: ${controlError}` : String(controlCount),
     });
 
     const allPass = checks.every((c) => c.ok);
@@ -176,7 +221,8 @@ describe('conversation_browser — golden query eval (action:list)', () => {
     }
 
     expect(conversations.length, "Evergreen 'roosync' pattern must match conversations").toBeGreaterThan(0);
-    expect(allMatchPattern, 'contentPattern filter must be applied to all results').toBe(true);
+    expect(noMatchContext.length, 'every result must carry a contentMatch whose snippet contains the pattern').toBe(0);
+    expect(controlCount, `negative control: unmatched pattern '${controlPattern}' must select 0 conversations`).toBe(0);
   });
 });
 
