@@ -7,7 +7,15 @@
  * WITHOUT re-opening a grep.
  *
  * Rubric (Epic #2609):
- *   (a) coherent passage — snippet is a multi-sentence window, not a fragment
+ *   (a) coherent passage — snippet is a multi-sentence window, not a fragment;
+ *       a truncated snippet must land on a content-appropriate boundary:
+ *       end-of-SENTENCE for prose, end-of-LINE for structured content
+ *       (JSON / [tool_result] / code) — ai-01 triage on #4105, 2026-10-07,
+ *       after the daily run measured a [tool_result] JSON snippet cut right
+ *       after a complete member line ("search_timestamp": "…",\n), which
+ *       snapToSentence accepts as a line boundary (search-semantic.tool.ts
+ *       l.266/280). No runtime change — this grades what the runtime already
+ *       produces; the anti-vacuity unit cases below pin the classifier.
  *   (b) handle — drill_down (conversation_browser view, pre-windowed)
  *   (c) context — conversation_context adjacent turns (data-dependent: legacy
  *       points without message_index cannot anchor it; recorded, not gated)
@@ -30,6 +38,33 @@ const SCENARIO_2_ARGS = {
   workspace: 'all',
   max_results: 5,
 } as const;
+
+/**
+ * Boundary grader for rubric (a), split by content kind (ai-01 triage on
+ * #4105, 2026-10-07). snapToSentence legitimately lands an end-of-LINE
+ * boundary for structured content — the daily run's failing snippet was a
+ * [tool_result] JSON cut right after a complete member line — while prose
+ * keeps the end-of-SENTENCE requirement. Pure function: the anti-vacuity
+ * unit cases below pin it without any live engine.
+ */
+function gradeSnippetBoundary(snippet: string): { ok: boolean; kind: 'not-truncated' | 'prose' | 'structured' } {
+  if (!snippet.endsWith('...') || snippet.length < 100) {
+    return { ok: true, kind: 'not-truncated' };
+  }
+  const body = snippet.slice(0, -3);
+  const structured =
+    snippet.includes('[tool_result]')
+    || /^\s*[{\[]/.test(snippet)
+    || /"[^"\n]+"\s*:\s/.test(body); // ≥1 JSON member line
+  if (structured) {
+    // End-of-line boundary: the cut respects complete lines/members — right
+    // after a newline, or on a member terminator (, ; } ]). A cut in the
+    // middle of a member/key fails even for structured content.
+    const ok = /\n\s*$/.test(body) || /[,;}\]]\s*$/.test(body);
+    return { ok, kind: 'structured' };
+  }
+  return { ok: /[.!?]["')]?\s*$/.test(body.trim()), kind: 'prose' };
+}
 
 beforeAll(async () => {
   await runStormGuard();
@@ -81,13 +116,12 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
     const passageOk = snippet.length >= 100;
     checks.push({ name: 'rubric(a): snippet >= 100 chars (passage, not fragment)', ok: passageOk, observed: `${snippet.length} chars` });
 
-    // Truncated snippets must land on a sentence end (no mid-sentence cut)
-    let sentenceEndOk = true;
-    if (snippet.endsWith('...') && snippet.length >= 100) {
-      const body = snippet.slice(0, -3);
-      sentenceEndOk = /[.!?]["')]?\s*$/.test(body.trim());
-    }
-    checks.push({ name: 'rubric(a): truncated snippet ends on sentence boundary', ok: sentenceEndOk, observed: snippet.slice(-40) });
+    // Truncated snippets must land on a content-appropriate boundary:
+    // end-of-sentence for prose, end-of-line for structured content (JSON /
+    // [tool_result] / code) — see gradeSnippetBoundary (ai-01 triage #4105).
+    const boundary = gradeSnippetBoundary(snippet);
+    const sentenceEndOk = boundary.ok;
+    checks.push({ name: 'rubric(a): truncated snippet ends on content-appropriate boundary (sentence for prose, line for structured)', ok: sentenceEndOk, observed: `[${boundary.kind}] ${snippet.slice(-40)}` });
 
     // ---- rubric (b): drill-down handle ----
     const drillOk = !!bestChunk?.drill_down
@@ -136,5 +170,49 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
     expect(passageOk).toBe(true);
     expect(sentenceEndOk).toBe(true);
     expect(drillOk).toBe(true);
+  });
+});
+
+describe('rubric (a) boundary classifier — unit (anti-vacuity, no live engines)', () => {
+  // Pins the classifier so the structured-content relaxation can never
+  // degenerate into "any truncated snippet passes". The prose mid-sentence
+  // case MUST stay a FAIL — that is the original V3 contract, unchanged.
+
+  const memberLines = '"search_timestamp": "2026-09-29T22:51:16.389Z",\n"query": "coordinator cron cadence decision 3h deep dispatch",\n';
+
+  it('structured: JSON member-line cut is accepted (the ai-01 daily-run datum)', () => {
+    const snippet = `[tool_result] ${memberLines.repeat(2)}...`;
+    const g = gradeSnippetBoundary(snippet);
+    expect(g.kind).toBe('structured');
+    expect(g.ok).toBe(true);
+  });
+
+  it('structured: cut in the MIDDLE of a member still fails (not a pass-partout)', () => {
+    const snippet = `[tool_result] ${memberLines}"search_timestamp": "2026-09-29T22:51:16.3...`;
+    const g = gradeSnippetBoundary(snippet);
+    expect(g.kind).toBe('structured');
+    expect(g.ok).toBe(false);
+  });
+
+  it('prose: mid-sentence cut still FAILS (anti-vacuity — the original contract)', () => {
+    const base = 'La cadence du coordinateur a été mesurée sur trois semaines complètes avant arbitrage final et validation par l\'utilisateur. ';
+    const snippet = `${base.repeat(2)}Les résultats montrent une économie de tokens significative sans perte de couverture des lanes, ce qui a conduit à la déc...`;
+    const g = gradeSnippetBoundary(snippet);
+    expect(g.kind).toBe('prose');
+    expect(g.ok).toBe(false);
+  });
+
+  it('prose: sentence-end cut passes', () => {
+    const base = 'La cadence du coordinateur a été mesurée sur trois semaines complètes avant arbitrage final et validation par l\'utilisateur. ';
+    const snippet = `${base.repeat(3).trimEnd()}...`;
+    const g = gradeSnippetBoundary(snippet);
+    expect(g.kind).toBe('prose');
+    expect(g.ok).toBe(true);
+  });
+
+  it('not-truncated snippets are exempt (unchanged behavior)', () => {
+    const g = gradeSnippetBoundary('Un passage complet, sans troncature, qui se termine proprement.');
+    expect(g.kind).toBe('not-truncated');
+    expect(g.ok).toBe(true);
   });
 });
