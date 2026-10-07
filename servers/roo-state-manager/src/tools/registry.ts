@@ -79,7 +79,8 @@ export const TOOL_CAPABILITIES: Record<string, Capability[]> = {
 	roosync_config: ['sharedPath'],
 	roosync_compare_config: ['sharedPath'],
 	roosync_harmonization: ['sharedPath'], // #3545 — campagne d'harmonisation (store partagé)
-	// [REMOVED CONS-8 #603] roosync_list_diffs, roosync_decision, roosync_init — dead tools
+	// [REMOVED CONS-8 #603] roosync_list_diffs, roosync_decision — dead tools
+	// (roosync_init rewired to the real handler #2406, ms#1392 — no longer dead)
 	roosync_diagnose: ['sharedPath'],
 	roosync_baseline: ['sharedPath'],
 	roosync_indexing: ['sharedPath'],
