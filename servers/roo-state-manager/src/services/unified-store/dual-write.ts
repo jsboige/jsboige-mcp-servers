@@ -45,11 +45,18 @@ function isMessageSkeleton(
 
 /**
  * #2957 défaut 1: map a skeleton's `sequence` to the DB `MessageRow[]` shape.
- * Filters out ActionMetadata (tool/command actions are not message rows) and
- * assigns a message-relative contiguous `seq` — stable across re-analysis even
- * when action detection varies (a message's seq does not shift if the number of
- * interleaved actions changes). MessageSkeleton carries no `message_id` nor
- * `tool_calls`, so those are null.
+ * Only messages become rows (ActionMetadata — tool/command actions — do not), with a
+ * message-relative contiguous `seq` — stable across re-analysis even when action
+ * detection varies (a message's seq does not shift if the number of interleaved
+ * actions changes). MessageSkeleton carries no `message_id`, so it is null.
+ *
+ * #2191: an action goes into the `tool_calls` of the message row it follows — the
+ * assistant entry that issued it (Claude Code writes one content block per JSONL
+ * line, so a tool_use line yields its own message immediately followed by its
+ * action, from the same line). Before this, actions were dropped and
+ * `messages.tool_calls` stayed empty on every row (~8.2 M, measured 2026-10-06),
+ * so the reader's `tool_calls @> [{name}]` filter never matched. An action with no
+ * preceding message has no row to live on and is skipped.
  */
 function mapSequenceToMessageRows(
   taskId: string,
@@ -58,7 +65,11 @@ function mapSequenceToMessageRows(
   const rows: MessageRow[] = [];
   let seq = 0;
   for (const item of sequence) {
-    if (!isMessageSkeleton(item)) continue; // skip ActionMetadata (tool/command)
+    if (!isMessageSkeleton(item)) {
+      const last = rows[rows.length - 1];
+      if (last) (last.tool_calls ??= []).push({ ...item });
+      continue;
+    }
     rows.push({
       task_id: taskId,
       message_id: null,

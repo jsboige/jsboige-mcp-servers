@@ -377,17 +377,28 @@ export class ClaudeStorageDetector {
                     });
 
                     // #253: Extract tool_use blocks from assistant message content
+                    // #2191: real Claude Code transcripts carry the Anthropic block shape
+                    // `{type:'tool_use', id, name, input}` at top level — the nested
+                    // `toolUse` form never occurs on disk (measured: 2 508/2 508 tool_use
+                    // blocks of a CoursIA session, 0 with `toolUse`), so no Claude skeleton
+                    // ever held an action. The nested form stays accepted (legacy fixtures).
+                    // Inputs are bounded like message content: a Write/Edit input is a whole
+                    // file, and the skeleton is metadata, not content.
                     if (entry.type === 'assistant' && Array.isArray(entry.message.content)) {
                         for (const block of entry.message.content) {
-                            if (block.type === 'tool_use' && block.toolUse) {
-                                sequence.push({
-                                    type: 'tool',
-                                    name: block.toolUse.name,
-                                    status: 'success',
-                                    parameters: block.toolUse.input,
-                                    timestamp,
-                                });
-                            }
+                            if (block.type !== 'tool_use') continue;
+                            const name = block.name ?? block.toolUse?.name;
+                            if (!name) continue;
+                            sequence.push({
+                                type: 'tool',
+                                name,
+                                status: 'success',
+                                parameters: this.boundToolInput(
+                                    block.input ?? block.toolUse?.input ?? {},
+                                    options.maxContentLength
+                                ),
+                                timestamp,
+                            });
                         }
                     }
                 }
@@ -481,6 +492,29 @@ export class ClaudeStorageDetector {
         }
 
         return text;
+    }
+
+    /**
+     * #2191: bound every string leaf of a tool input with the same head...tail cut as
+     * message content, keeping keys and structure (a tool_calls filter matches on keys).
+     */
+    private static boundToolInput(value: any, maxLength: number): any {
+        if (typeof value === 'string') {
+            if (value.length <= maxLength) return value;
+            const half = Math.floor(maxLength / 2);
+            return `${value.substring(0, half)}...${value.substring(value.length - half)}`;
+        }
+        if (Array.isArray(value)) {
+            return value.map(v => this.boundToolInput(v, maxLength));
+        }
+        if (value && typeof value === 'object') {
+            const bounded: Record<string, any> = {};
+            for (const [k, v] of Object.entries(value)) {
+                bounded[k] = this.boundToolInput(v, maxLength);
+            }
+            return bounded;
+        }
+        return value;
     }
 
     /**
