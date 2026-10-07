@@ -103,6 +103,11 @@ export interface ClaudeContentBlock {
             data: string;
         };
     };
+    /** tool_use, Anthropic shape as written by Claude Code (#2191) */
+    id?: string;
+    name?: string;
+    input?: Record<string, any>;
+    /** Legacy nested tool_use shape — never written by Claude Code, kept for fixtures */
     toolUse?: {
         name: string;
         id: string;

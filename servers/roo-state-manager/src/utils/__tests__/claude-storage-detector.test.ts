@@ -370,6 +370,74 @@ describe('ClaudeStorageDetector - TDD Suite', () => {
             expect(toolActions[0].status).toBe('success');
         });
 
+        // #2191: the shape Claude Code actually writes — one content block per JSONL line,
+        // tool_use with top-level `id`/`name`/`input` (no nested `toolUse`).
+        it('#2191: DEVRAIT extraire une action depuis un tool_use au format réel Claude Code', async () => {
+            const lines = [
+                {
+                    type: 'assistant',
+                    message: { role: 'assistant', content: [{ type: 'text', text: 'Je lis le fichier.' }] },
+                    timestamp: '2024-01-01T10:00:00.000Z',
+                    uuid: 'a-1',
+                },
+                {
+                    type: 'assistant',
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'tool_use', id: 'toolu_01', name: 'Read', input: { file_path: '/x/y.ts' }, caller: { type: 'direct' } }],
+                    },
+                    timestamp: '2024-01-01T10:00:01.000Z',
+                    uuid: 'a-2',
+                },
+                {
+                    type: 'user',
+                    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_01', content: 'contenu' }] },
+                    timestamp: '2024-01-01T10:00:02.000Z',
+                    uuid: 'u-1',
+                },
+            ];
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), lines.map(l => JSON.stringify(l)).join('\n'));
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir);
+            const seq = skeleton!.sequence as any[];
+            // [text msg, tool_use msg (empty content), Read action, tool_result msg]
+            expect(seq.map(s => s.role ?? `action:${s.name}`)).toEqual(['assistant', 'assistant', 'action:Read', 'user']);
+            expect(seq[2]).toMatchObject({ type: 'tool', name: 'Read', status: 'success', parameters: { file_path: '/x/y.ts' } });
+        });
+
+        it('#2191: DEVRAIT borner chaque chaîne d\'un input tool_use comme le contenu des messages', async () => {
+            const big = 'A'.repeat(50) + 'B'.repeat(5000) + 'C'.repeat(50);
+            const line = {
+                type: 'assistant',
+                message: {
+                    role: 'assistant',
+                    content: [{ type: 'tool_use', id: 'toolu_02', name: 'Write', input: { file_path: '/f.ts', content: big, edits: [{ old_string: big }] } }],
+                },
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'a-3',
+            };
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), JSON.stringify(line));
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir, { maxContentLength: 100 });
+            const action = (skeleton!.sequence as any[]).find(s => s.type === 'tool');
+            expect(action.parameters.file_path).toBe('/f.ts'); // short strings untouched
+            expect(action.parameters.content).toBe(`${'A'.repeat(50)}...${'C'.repeat(50)}`);
+            expect(action.parameters.edits[0].old_string).toBe(`${'A'.repeat(50)}...${'C'.repeat(50)}`); // nested too
+        });
+
+        it('#2191: DEVRAIT ignorer un tool_use sans nom', async () => {
+            const line = {
+                type: 'assistant',
+                message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_03', input: {} }] },
+                timestamp: '2024-01-01T10:00:00.000Z',
+                uuid: 'a-4',
+            };
+            await fs.writeFile(path.join(testProjectDir, 'conversation.jsonl'), JSON.stringify(line));
+
+            const skeleton = await ClaudeStorageDetector.analyzeConversation('test-id', testProjectDir);
+            expect((skeleton!.sequence as any[]).filter(s => s.type === 'tool')).toHaveLength(0);
+        });
+
         it('DEVRAIT ignorer les tool_result quand includeToolResults=false (L367)', async () => {
             const entry = {
                 type: 'tool_result',

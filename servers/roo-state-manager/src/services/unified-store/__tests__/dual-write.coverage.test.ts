@@ -520,18 +520,18 @@ describe('dual-write — #2957 défaut 1 message-write', () => {
     } as unknown as ConversationSkeleton;
   }
 
-  test('calls upsertMessages with mapped message rows (ActionMetadata filtered)', async () => {
+  test('calls upsertMessages with mapped message rows (actions folded into the preceding row, #2191)', async () => {
     await dualWriteConversationToStore('task-seq', makeSkeletonWithSequence('task-seq'));
     expect(msgSpy).toHaveBeenCalledTimes(1);
     const rows = msgSpy.mock.calls[0][0];
-    expect(rows).toHaveLength(2); // 2 messages, 2 actions filtered out
+    expect(rows).toHaveLength(2); // 2 messages; the 2 actions are not rows
     expect(rows[0]).toMatchObject({
       task_id: 'task-seq',
       message_id: null,
       seq: 0,
       role: 'user',
       content: 'hello world',
-      tool_calls: null,
+      tool_calls: [{ type: 'tool', name: 'Read', parameters: { path: '/a' }, status: 'success', timestamp: '2026-08-09T10:00:01.000Z' }],
       ts: '2026-08-09T10:00:00.000Z',
     });
     expect(rows[1]).toMatchObject({
@@ -540,9 +540,53 @@ describe('dual-write — #2957 défaut 1 message-write', () => {
       seq: 1, // message-relative contiguous (action at original index 1 does NOT shift this)
       role: 'assistant',
       content: 'I read it',
-      tool_calls: null,
+      tool_calls: [{ type: 'command', name: 'npm', parameters: { cmd: 'test' }, status: 'success', timestamp: '2026-08-09T10:00:03.000Z' }],
       ts: '2026-08-09T10:00:02.000Z',
     });
+  });
+
+  test('#2191: tool_calls match the reader filter shape `@> [{name}]`', async () => {
+    // PgUnifiedStoreReader filters with `tool_calls @> JSON.stringify([{ name }])`:
+    // every stored entry must be an object carrying a top-level `name`.
+    await dualWriteConversationToStore('task-shape', makeSkeletonWithSequence('task-shape'));
+    const rows = msgSpy.mock.calls[0][0];
+    const names = rows.flatMap((r: { tool_calls: Array<{ name: string }> | null }) => (r.tool_calls ?? []).map(c => c.name));
+    expect(names).toEqual(['Read', 'npm']);
+  });
+
+  test('#2191: several actions after one message all land on it; a message with none keeps null', async () => {
+    const skeleton = makeSkeletonWithSequence('task-multi');
+    skeleton.sequence = [
+      { role: 'assistant', content: '', timestamp: '2026-08-09T10:00:00.000Z', isTruncated: false },
+      { type: 'tool', name: 'Bash', parameters: { command: 'ls' }, status: 'success', timestamp: '2026-08-09T10:00:00.000Z' },
+      { type: 'tool', name: 'Grep', parameters: { pattern: 'x' }, status: 'success', timestamp: '2026-08-09T10:00:00.000Z' },
+      { role: 'user', content: '[tool_result] Result: ok', timestamp: '2026-08-09T10:00:01.000Z', isTruncated: false },
+    ] as ConversationSkeleton['sequence'];
+    await dualWriteConversationToStore('task-multi', skeleton);
+    const rows = msgSpy.mock.calls[0][0];
+    expect(rows).toHaveLength(2);
+    expect(rows[0].tool_calls.map((c: { name: string }) => c.name)).toEqual(['Bash', 'Grep']);
+    expect(rows[1].tool_calls).toBeNull();
+  });
+
+  test('#2191: an action before any message has no row and is skipped (seq unchanged)', async () => {
+    const skeleton = makeSkeletonWithSequence('task-lead');
+    skeleton.sequence = [
+      { type: 'tool', name: 'Orphan', parameters: {}, status: 'success', timestamp: '2026-08-09T09:59:59.000Z' },
+      { role: 'user', content: 'hi', timestamp: '2026-08-09T10:00:00.000Z', isTruncated: false },
+    ] as ConversationSkeleton['sequence'];
+    await dualWriteConversationToStore('task-lead', skeleton);
+    const rows = msgSpy.mock.calls[0][0];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ seq: 0, role: 'user', tool_calls: null });
+  });
+
+  test('#2191: the skeleton action objects are copied, not aliased into the row', async () => {
+    const skeleton = makeSkeletonWithSequence('task-alias');
+    await dualWriteConversationToStore('task-alias', skeleton);
+    const rows = msgSpy.mock.calls[0][0];
+    expect(rows[0].tool_calls[0]).not.toBe(skeleton.sequence[1]);
+    expect(rows[0].tool_calls[0]).toEqual(skeleton.sequence[1]);
   });
 
   test('single-point guard: empty sequence → upsertMessages NOT called', async () => {
