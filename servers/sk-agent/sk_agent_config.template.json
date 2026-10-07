@@ -61,13 +61,13 @@
     },
 
     {
-      "_comment": "=== Fleet mini model FrogNano-4B (vLLM on po-2025, #4107 volet C) === Fleet route = hub namespaced id frognano@frognano-4b (routed via the claudish hub, e2e verified #4085 c.6019492370: 167 tok/4.3 s); the direct vLLM endpoint on po-2025 (:5003) serves both frognano-4b and alias mini in /v1/models — machines local to po-2025 may point base_url there instead. thinking=false MANDATORY (measured #4085 c.6022769664: at thinking:true the 4B burns the whole output budget on reasoning and answers nothing, 4096/4096 reasoning -> empty answer; sk_agent injects enable_thinking=false when thinking=false, declared again via extra_body so the profile also holds on the conversation path #2002). max_tokens floor 1024 (#3797 per-model budget override): below ~256 the thinking budget empties the content. No key in the repo: the live key stays in the environment (MINI_API_KEY).",
+      "_comment": "=== Fleet mini model FrogNano-4B (vLLM on po-2025, #4107 volet C) === Fleet route = the claudish hub, whose /v1/models lists the bare id `frognano-4b` (measured 2026-10-07 against http://192.168.0.50:3000/v1/models, 31 ids); e2e verified #4085 c.6019492370: 167 tok/4.3 s. The client credential is the CLUSTER HUB key — the same env var as the glm-* entries above. It is NOT the MINI key: the MINI key (fingerprint 1942B796A812) is the hub->vLLM transport credential and must never leave the hub. Do NOT point base_url at the direct vLLM endpoint on po-2025 (:5003): it would hand the MINI key to every client and bypass the hub's capture and attribution (po-2025 reply, msg-20261007T105820-w2l6ww). thinking=false MANDATORY (measured #4085 c.6022769664: at thinking:true the 4B burns the whole output budget on reasoning and answers nothing, 4096/4096 reasoning -> empty answer; sk_agent injects enable_thinking=false when thinking=false, declared again via extra_body so the profile also holds on the conversation path #2002). max_tokens floor 1024 (#3797 per-model budget override): below ~256 the thinking budget empties the content. No key in the repo: the live key stays in the environment (api_key_env).",
       "id": "frognano-4b",
       "enabled": true,
       "base_url": "http://192.168.0.50:3000/v1",
-      "api_key_env": "MINI_API_KEY",
-      "api_key": "YOUR_MINI_API_KEY_HERE",
-      "model_id": "frognano@frognano-4b",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
+      "model_id": "frognano-4b",
       "vision": false,
       "thinking": false,
       "max_tokens": 1024,

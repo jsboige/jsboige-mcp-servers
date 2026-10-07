@@ -265,9 +265,14 @@ conversation preset would think anyway.
 ## Mini delegation lane (#4107, volet C of #4085)
 
 The fleet mini **FrogNano-4B** (vLLM on po-2025, 32K ctx, Apache 2.0) rides the
-hub as `frognano@frognano-4b` (model id `frognano-4b` in the template; alias
-`mini` served alongside on the direct endpoint). `thinking: false` is
-**mandatory** on this entry — measured: at `thinking: true` the 4B burns the
+hub: `GET http://192.168.0.50:3000/v1/models` lists it under the bare id
+`frognano-4b` (measured 2026-10-07, 31 ids), and that is what the template puts
+in `model_id`. The client credential is the **cluster hub key** — the same
+`api_key_env` as the `glm-*` entries (`ZAI_API_KEY`) — **never** the MINI key,
+which is the hub→vLLM transport credential and must not leave the hub, and
+never the direct vLLM endpoint on po-2025 (`:5003`), which would hand that key
+to every client and bypass the hub's capture and attribution. `thinking: false`
+is **mandatory** on this entry — measured: at `thinking: true` the 4B burns the
 whole output budget on reasoning and answers nothing; `max_tokens` floor is
 1024 (smaller budgets get eaten by the residual reasoning budget).
 
