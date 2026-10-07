@@ -187,9 +187,21 @@ export class ContentClassifier {
      */
     public parseToolParameters(xmlBlock: string): Record<string, any> | null {
         try {
-            // Extraction basique des paramètres pour l'instant
-            // TODO: Implémenter un parsing XML plus sophistiqué si nécessaire
-            const paramMatches = xmlBlock.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)>([\s\S]*?)<\/\1>/g);
+            // Un appel d'outil est une balise racine qui CONTIENT ses paramètres :
+            //   <execute_command><command>npm test</command></execute_command>
+            // La regex de paires ci-dessous ne matche que la paire la PLUS EXTERNE :
+            // appliquée au bloc entier, elle avale les enfants et rend `{}` — les
+            // paramètres étaient perdus. On déroule d'abord la balise racine puis on
+            // parse ses enfants (#4106). Un imbriquement plus profond n'est pas
+            // modélisé : c'est la frontière du « parsing basique », aucun
+            // consommateur n'en a besoin aujourd'hui (ExportRenderer n'affiche que
+            // les paramètres de premier niveau).
+            const rootMatch = xmlBlock.match(
+                /^\s*<([a-zA-Z_][a-zA-Z0-9_\-:]+)(?:\s+[^>]*)?>([\s\S]*)<\/\1>\s*$/
+            );
+            const inner = rootMatch && this.isRootToolTag(rootMatch[1]) ? rootMatch[2] : xmlBlock;
+
+            const paramMatches = inner.match(/<([a-zA-Z_][a-zA-Z0-9_\-:]+)>([\s\S]*?)<\/\1>/g);
 
             if (!paramMatches) {
                 return null;

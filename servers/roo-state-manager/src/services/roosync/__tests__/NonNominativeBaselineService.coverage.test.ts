@@ -312,17 +312,17 @@ describe('NonNominativeBaselineService — extractActualValue categories (privat
     expect(archDev.actualValue).toEqual({ arch: 'arm64' });
   });
 
-  it("returns null for an unknown category (default arm, L658-660)", async () => {
+  it("throws on a category outside ConfigurationCategory (shared extractor, #4106)", async () => {
     const service = new NonNominativeBaselineService('/shared');
-    // Unknown category is always-applicable (helper default L61-63) but extractActualValue → null.
-    // null actual ≠ expected object → deviation recorded.
+    // Unknown category is always-applicable (helper default) but the shared
+    // ConfigurationValueExtractor refuses it: a foreign category is a caller/data
+    // bug, not a `null` actual that would fabricate a phantom deviation.
     const profile = makeProfile('unknown-cat' as any, { whatever: true });
     await service.createBaseline('B', 'D', [profile]);
     const inventory = { machineId: 'm1' } as MachineInventory;
-    const mapping = await service.mapMachineToBaseline('m1', inventory);
-    expect(mapping.deviations).toHaveLength(1);
-    // extractActualValue default arm → null (L659).
-    expect(mapping.deviations[0].actualValue).toBeNull();
+    await expect(service.mapMachineToBaseline('m1', inventory)).rejects.toThrow(
+      /Unknown configuration category/
+    );
   });
 });
 

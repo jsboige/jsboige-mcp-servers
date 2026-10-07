@@ -63,10 +63,22 @@ describe('ConfigComparator', () => {
 			expect(result).toEqual([]);
 		});
 
-		test('returns empty array when category not found in inventory', () => {
-			const profiles = [{ category: 'unknown-category', configuration: {} }];
+		test('skips a known category the inventory carries no data for', () => {
+			// 'hardware-memory' est une ConfigurationCategory valide : l'extraction rend
+			// `undefined` quand l'inventaire n'a ni config.hardware.memory ni
+			// inventory.systemInfo. Une valeur absente est sautée, pas une erreur.
+			const profiles = [{ category: 'hardware-memory', configuration: { total: 32 } }];
 			const result = comparator.compareWithProfiles({}, profiles as any);
 			expect(result).toEqual([]);
+		});
+
+		test('throws on a category outside ConfigurationCategory (#4106)', () => {
+			// Était silencieusement sauté (extractValueForCategory → undefined).
+			// Une catégorie inconnue est un défaut d'appelant/donnée : elle doit échouer.
+			const profiles = [{ category: 'unknown-category', configuration: {} }];
+			expect(() => comparator.compareWithProfiles({}, profiles as any)).toThrow(
+				/Unknown configuration category/
+			);
 		});
 
 		test('returns deviation when roo-core config differs', () => {
@@ -132,14 +144,26 @@ describe('ConfigComparator', () => {
 			};
 			const profiles = [
 				{ category: 'roo-core', configuration: { modes: ['code'], mcpSettings: {} } },
-				{ category: 'hardware-cpu', configuration: 'Intel' },
-				{ category: 'unknown', configuration: 'anything' }
+				{ category: 'hardware-cpu', configuration: 'Intel' }
 			];
 
 			const result = comparator.compareWithProfiles(inventory, profiles as any);
-			// roo-core matches, hardware-cpu deviates, unknown skipped
+			// roo-core matches, hardware-cpu deviates
 			expect(result).toHaveLength(1);
 			expect(result[0].category).toBe('hardware-cpu');
+		});
+
+		test('detects a deviation on a category that returned undefined before #4106', () => {
+			// 'software-node' n'était pas dans le switch de extractValueForCategory →
+			// undefined → le profil était sauté et la vraie divergence restait invisible.
+			const inventory = { config: { software: { node: '20.11.0' } } };
+			const profiles = [{ category: 'software-node', configuration: { version: '18.0.0' } }];
+
+			const result = comparator.compareWithProfiles(inventory, profiles as any);
+			expect(result).toHaveLength(1);
+			expect(result[0].category).toBe('software-node');
+			expect(result[0].actualValue).toEqual({ version: '20.11.0' });
+			expect(result[0].expectedValue).toEqual({ version: '18.0.0' });
 		});
 	});
 
