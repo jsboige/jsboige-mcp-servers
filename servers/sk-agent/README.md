@@ -318,8 +318,7 @@ Each agent has its own collection: `{prefix}-{collection}` (e.g., `sk-agent-anal
 |----------|-------------|---------|
 | `SK_AGENT_CONFIG` | Path to config file | `sk_agent_config.json` |
 | `SK_AGENT_DEPTH` | Current recursion depth (internal) | `0` |
-| `ZAI_API_KEY` | z.ai API key (if using `api_key_env`) | - |
-| `MINI_API_KEY` | Mini tier key for `frognano-4b` (`api_key_env`) | - |
+| `ZAI_API_KEY` | z.ai API key (if using `api_key_env`) — also the **cluster hub client key** the mini lane rides on (`frognano-4b`), like the `glm-*` entries | - |
 | `EMBEDDINGS_API_KEY` | Embeddings endpoint key | - |
 | `OPEN_TERMINAL_URL` | Open Terminal API URL handed to the `open_terminal` MCP. Set it on the **host** launch of sk-agent (e.g. `http://localhost:8000`, the container's published port): the default is a Docker-network hostname that only resolves inside the `sk-agent` container | `http://open-terminal-myia:8000` |
 
@@ -387,9 +386,9 @@ The mini tier is the cheapest budget in the fleet: it takes the reading and the 
 |----|-------|--------|----------|---------|
 | `frognano-4b` | FrogNano-4B (alias `mini`) | ❌ | ❌ | 32K |
 
-`thinking` is **off by correctness, not tuning**: measured, at `thinking: true` this 4B spends the whole output budget on reasoning and returns an empty answer. Re-enable it per call through `sampling_override` with a budget ≥ 4096 only. The `max_tokens: 2048` on the model entry is the spec's output-budget floor (mini-coder-fix ≥ 2048, the others ≥ 1024; below ~256 the content comes back empty) — it lives on the model because the runtime resolves budgets per-call/`agent_spec` > model > global sampling and does not read a preset's `execution.max_tokens`.
+`thinking` is **off by correctness, not tuning**: measured, at `thinking: true` this 4B spends the whole output budget on reasoning and returns an empty answer. Re-enable it per call through `sampling_override` with a budget ≥ 4096 only. On the hub route the flag has no **measurable** effect (2026-10-07) — the budget is the lever that decides whether an answer exists; the flag stays declared because it is harmless and is what the `thinking: false` path sends. The `max_tokens: 4096` on the model entry is the output-budget **floor measured through the hub** on 2026-10-07 — not 1024 (0/3 runs yield content) and not 2048 (stochastic in both arms, 4 of 7 runs empty): the model reasons regardless of the flag, ~1200-2500 reasoning tokens per answer. It lives on the model because the runtime resolves budgets per-call/`agent_spec` > model > global sampling and does not read a preset's `execution.max_tokens`.
 
-Key: `MINI_API_KEY` (`api_key_env`) — the template ships a placeholder only.
+Key: `ZAI_API_KEY` (`api_key_env`) — the **cluster hub client key**, the same env var as the `glm-*` entries; **never** the MINI key, which is the hub→vLLM transport credential and must not leave the hub. The template ships a placeholder only.
 
 ### vLLM Local Direct (2)
 
@@ -486,10 +485,10 @@ Each preset states in its own `description` what the calling agent may hand over
 
 | ID | Tools | What to delegate | Budget floor |
 |----|-------|------------------|--------------|
-| `mini-coder-fix` | open_terminal | Single-file corrective diagnosis; code pasted in the prompt | 2048 |
-| `mini-repo-scan` | open_terminal (read-only by instruction) | Repository inventory: structure, dependencies, risks | 1024 |
-| `mini-summarizer` | markitdown | Faithful condensation to a fixed shape — the flagship token-economy delegation | 1024 |
-| `mini-web-research` | searxng | Source collection against a precise question, no synthesis | 1024 |
+| `mini-coder-fix` | open_terminal | Single-file corrective diagnosis; code pasted in the prompt | 4096 |
+| `mini-repo-scan` | open_terminal (read-only by instruction) | Repository inventory: structure, dependencies, risks | 4096 |
+| `mini-summarizer` | markitdown | Faithful condensation to a fixed shape — the flagship token-economy delegation | 4096 |
+| `mini-web-research` | searxng | Source collection against a precise question, no synthesis | 4096 |
 
 ### Delegating preset (1) — the medium works by delegation
 
@@ -501,7 +500,7 @@ Each preset states in its own `description` what the calling agent may hand over
 
 ### v2.3 (2026-10-07) — mini tier + delegation (#4107, volet C of #4085)
 
-- **New model**: `frognano-4b` (FrogNano-4B, alias `mini`, served from po-2025) — `thinking: false` by correctness (at `thinking: true` the 4B returns an empty answer), 32K context, `max_tokens: 2048` output-budget floor, key through `MINI_API_KEY`
+- **New model**: `frognano-4b` (FrogNano-4B, alias `mini`, served from po-2025) — `thinking: false` by correctness (at `thinking: true` the 4B returns an empty answer), 32K context, `max_tokens: 4096` output-budget floor **measured through the hub** (2026-10-07), key through the cluster hub client key `ZAI_API_KEY` (never the MINI transport key)
 - **4 mini presets**: `mini-coder-fix`, `mini-repo-scan`, `mini-summarizer`, `mini-web-research` — each description states what the caller may delegate, that code goes in the prompt, and the economy rule (#63)
 - **Delegating preset**: `swift-delegator` (fleet medium + the `sk_agent` self-inclusion plugin) — delegates short, tooled, verifiable sub-tasks; a child failure is reported and finished by the medium
 - **Guards**: tests drive the template's own self-inclusion entry through the recursion ceiling (refusal before plugin construction, no orphan bookkeeping) and assert a failing child degrades without wedging the parent

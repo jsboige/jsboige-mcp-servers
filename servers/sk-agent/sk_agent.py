@@ -1845,6 +1845,16 @@ class SKAgentManager:
                 "error": f"call_agent timed out after {effective_timeout}s",
                 "timeout": effective_timeout,
             }
+        except Exception as e:
+            # #4107 guard 3 (volet C of #4085): a failing model call — the mini
+            # endpoint returning 500 mid-delegation — must surface as error
+            # DATA, never propagate out of call_agent. The medium's session
+            # keeps running and reads the failure as a normal tool result,
+            # mirroring the broad catch _handle_image already carries.
+            # Logged: a broad catch must not swallow a bug silently — the
+            # traceback is what separates an endpoint 500 from a KeyError.
+            log.exception("call_agent failed (agent=%s): %s", agent_id, e)
+            return {"error": str(e)}
 
     # -----------------------------------------------------------------------
     # Handler Methods

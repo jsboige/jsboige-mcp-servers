@@ -1251,13 +1251,15 @@ MINI_MODEL_ID = "frognano-4b"
 DELEGATING_PRESET_ID = "swift-delegator"
 MEDIUM_MODEL_ID = "qwen3.6-35b-a3b"
 
-#: Preset id -> (mcps it lists, floor of its output budget per #4085
-#: c.6019492370: coder-fix >= 2048, the other three >= 1024).
+#: Preset id -> (mcps it lists, floor of its output budget). Floor = 4096 for
+#: all four: measured through the hub on 2026-10-07, the model reasons
+#: regardless of the flag, so 1024 never yields content and 2048 is
+#: stochastic — the budget, not the flag, decides whether an answer exists.
 MINI_PRESETS: dict[str, tuple[list[str], int]] = {
-    "mini-coder-fix": (["open_terminal"], 2048),
-    "mini-repo-scan": (["open_terminal"], 1024),
-    "mini-summarizer": (["markitdown"], 1024),
-    "mini-web-research": (["searxng"], 1024),
+    "mini-coder-fix": (["open_terminal"], 4096),
+    "mini-repo-scan": (["open_terminal"], 4096),
+    "mini-summarizer": (["markitdown"], 4096),
+    "mini-web-research": (["searxng"], 4096),
 }
 
 
@@ -1321,8 +1323,10 @@ class TestMiniTierTemplate:
         assert model.context_window == 32768
 
         # The key stays an environment reference; the template carries a
-        # placeholder that the schema folds to api_key_env (#3406).
-        assert model.api_key_env == "MINI_API_KEY"
+        # placeholder that the schema folds to api_key_env (#3406). The mini
+        # rides the cluster hub, so it uses the hub CLIENT key — the same env
+        # var as the glm-* entries — never the MINI transport key.
+        assert model.api_key_env == "ZAI_API_KEY"
         raw = next(m for m in payload["models"] if m.get("id") == MINI_MODEL_ID)
         assert re.compile(_API_KEY_PLACEHOLDER_PATTERN).fullmatch(
             raw["api_key"]

@@ -32,17 +32,17 @@
     },
 
     {
-      "_comment": "=== Mini tier (#4107, volet C of #4085) — economy routing: delegate reading and mechanical recomputation with objective criteria to the mini, keep judgement and decisions on the medium (doctrine #63). FrogNano-4B is served from po-2025: direct endpoint :5003, and the hub route frognano@frognano-4b is wired and proven e2e (#4085 c.6019492370); the alias `mini` names the same server. Deployment fixes the exact base_url/model_id pair — the hub address is used here because it is the fleet-stable one, same as the GLM entries. thinking MUST stay false: measured, at thinking:true this 4B burns the whole output budget on reasoning and returns empty (4096/4096 reasoning tokens, #4085 c.6022769664); re-enable per call via sampling_override with a budget >= 4096 only. max_tokens 2048 is the spec's OUTPUT-BUDGET FLOOR (mini-coder-fix >= 2048, the other three >= 1024, and below ~256 the content is measured empty) — it lives HERE and not on the presets because the runtime resolves budgets per-call/agent_spec > model > global sampling (sk_agent.py:1918-1931) and does NOT read a preset's execution.max_tokens, so a per-preset floor would be dead config. The key stays an environment reference: no literal key in this repo.",
+      "_comment": "=== Mini tier (#4107, volet C of #4085) — economy routing: delegate reading and mechanical recomputation with objective criteria to the mini, keep judgement and decisions on the medium (doctrine #63). FrogNano-4B is served from po-2025; the hub route is the fleet-stable one (same as the GLM entries) and its /v1/models lists the BARE id `frognano-4b` — measured 2026-10-07 against http://192.168.0.50:3000/v1/models (31 ids; the namespaced form frognano@frognano-4b is absent) — proven e2e #4085 c.6019492370. Do NOT point base_url at the direct vLLM endpoint on po-2025 (:5003): it would hand the hub transport key to every client and bypass the hub's capture and attribution. thinking MUST stay false: measured, at thinking:true this 4B burns the whole output budget on reasoning and returns empty (4096/4096 reasoning tokens, #4085 c.6022769664); re-enable per call via sampling_override with a budget >= 4096 only. On this hub route the flag has no measurable effect (measured 2026-10-07) — the budget is the lever that decides whether an answer exists; it stays declared because it is harmless and is what the thinking:false path sends. max_tokens 4096 is the OUTPUT-BUDGET FLOOR measured through the hub on 2026-10-07, NOT 1024 and NOT 2048: the model reasons regardless of the flag (~1200-2500 reasoning tokens per answer), so 1024 never yields content (0/3 runs) and 2048 is stochastic in both arms (4 of 7 runs empty overall). It lives HERE and not on the presets because the runtime resolves budgets per-call/agent_spec > model > global sampling (sk_agent.py:1918-1931) and does NOT read a preset's execution.max_tokens, so a per-preset floor would be dead config. The key is the CLUSTER HUB client key — api_key_env ZAI_API_KEY, the same env var as the glm-* entries — NEVER the MINI key, which is the hub->vLLM transport credential and must not leave the hub. No literal key in this repo.",
       "id": "frognano-4b",
       "enabled": true,
       "base_url": "http://192.168.0.50:3000/v1",
-      "api_key_env": "MINI_API_KEY",
-      "api_key": "YOUR_MINI_KEY_HERE",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
       "model_id": "frognano-4b",
       "vision": false,
       "thinking": false,
       "extra_body": { "chat_template_kwargs": { "enable_thinking": false } },
-      "max_tokens": 2048,
+      "max_tokens": 4096,
       "description": "FrogNano-4B (alias `mini`) — fleet mini tier, po-2025, Apache 2.0, 32K context served. RL-trained on corrective missions (Leaf 5-tool format); tool-calling qwen3_coder validated in a real multi-turn loop. Economy routing (#63): send it reading and mechanical recomputation against objective criteria, keep judgement on the medium. enable_thinking=false is declared both as a profile flag and via extra_body so it holds on the conversation path too (#2002).",
       "context_window": 32768
     },
