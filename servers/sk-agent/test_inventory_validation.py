@@ -79,10 +79,15 @@ def test_template_counts_match_expected_baseline():
     5->6 mcps / 35->37 agents: LOT E (vllm#63) added the roo_state_manager
     coordination broker + the terminal-analyst/coordination-agent showcase
     presets.
+    8->9 models / 37->42 agents (#4107, volet C of #4085): the mini tier —
+    the frognano-4b model (FrogNano-4B on po-2025, alias `mini`, thinking
+    OFF by correctness) plus the four mini presets (mini-coder-fix,
+    mini-repo-scan, mini-summarizer, mini-web-research) and the Swift
+    delegating preset swift-delegator.
     """
     cfg = load_config(str(TEMPLATE_PATH))
-    assert len(cfg.models) == 8, f"models: {len(cfg.models)}"
-    assert len(cfg.agents) == 37, f"agents: {len(cfg.agents)}"
+    assert len(cfg.models) == 9, f"models: {len(cfg.models)}"
+    assert len(cfg.agents) == 42, f"agents: {len(cfg.agents)}"
     assert len(cfg.mcps) == 6, f"mcps: {len(cfg.mcps)}"
     assert len(cfg.conversations) == 11, f"conversations: {len(cfg.conversations)}"
 
@@ -90,7 +95,7 @@ def test_template_counts_match_expected_baseline():
     assert inline_total == 15, f"inline agents: {inline_total}"
 
     enabled = sum(1 for m in cfg.models if m.enabled)
-    assert enabled == 8, f"enabled models: {enabled}"
+    assert enabled == 9, f"enabled models: {enabled}"
 
     mem_agents = sum(1 for a in cfg.agents if a.memory.enabled)
     assert mem_agents == 5, f"memory-enabled agents: {mem_agents}"
@@ -268,15 +273,15 @@ def test_deployment_doc_check_detects_drift():
     good = (
         "# Deployment\n\n"
         "| Metric | Count | Notes |\n|---|---|---|\n"
-        "| **Models** | 8 | notes |\n"
-        "| **Top-level agents** | 37 | notes |\n"
+        "| **Models** | 9 | notes |\n"
+        "| **Top-level agents** | 42 | notes |\n"
         "| **Inline agents** (conversation-scoped) | 15 | notes |\n"
         "| **Memory-enabled agents** | 5 | notes |\n"
         "| **MCP plugins** | 6 | notes |\n"
         "| **Conversations** | 11 | notes |\n"
     )
     bad = good.replace(
-        "| **Top-level agents** | 37 |", "| **Top-level agents** | 13 |"
+        "| **Top-level agents** | 42 |", "| **Top-level agents** | 13 |"
     )
     with tempfile.TemporaryDirectory() as td:
         inv = Path(td) / "AGENT_INVENTORY.md"

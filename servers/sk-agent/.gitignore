@@ -11,3 +11,6 @@ sk_agent_config.json.bak*
 
 # Container usage telemetry (docker-compose.sk-agent.yml bind mount)
 usage/
+
+# Playwright MCP artefacts (profiles/traces written next to the server)
+.playwright-mcp/

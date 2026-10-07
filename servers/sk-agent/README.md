@@ -318,7 +318,7 @@ Each agent has its own collection: `{prefix}-{collection}` (e.g., `sk-agent-anal
 |----------|-------------|---------|
 | `SK_AGENT_CONFIG` | Path to config file | `sk_agent_config.json` |
 | `SK_AGENT_DEPTH` | Current recursion depth (internal) | `0` |
-| `ZAI_API_KEY` | z.ai API key (if using `api_key_env`) | - |
+| `ZAI_API_KEY` | z.ai API key (if using `api_key_env`) — also the **cluster hub client key** the mini lane rides on (`frognano-4b`), like the `glm-*` entries | - |
 | `EMBEDDINGS_API_KEY` | Embeddings endpoint key | - |
 | `OPEN_TERMINAL_URL` | Open Terminal API URL handed to the `open_terminal` MCP. Set it on the **host** launch of sk-agent (e.g. `http://localhost:8000`, the container's published port): the default is a Docker-network hostname that only resolves inside the `sk-agent` container | `http://open-terminal-myia:8000` |
 
@@ -367,7 +367,7 @@ cd mcps/internal/servers/sk-agent
 python -m pytest test_sk_agent.py test_config.py -v
 ```
 
-## Available Models (8)
+## Available Models (9)
 
 ### GLM via fleet hub (2) — claudish `http://192.168.0.50:3000/v1`, key = hub client key (#3574)
 
@@ -377,6 +377,18 @@ python -m pytest test_sk_agent.py test_config.py -v
 | `glm-5.3-flash` | GLM-5.3-Flash | ❌ | ❌ | 131K |
 
 Vision is **not** served through the hub: it strips `image_url` parts before they reach z.ai (VERIFIED, roo-extensions#794) — vision routes local (qwen3.6-35b-a3b) until the claudish passthrough fix.
+
+### Mini tier — FrogNano-4B (1) — economy routing (#4107, volet C of #4085)
+
+The mini tier is the cheapest budget in the fleet: it takes the reading and the mechanical recomputation with objective criteria, while judgement and decisions stay on the medium (doctrine #63). Served from po-2025 (direct `:5003`, hub route `frognano@frognano-4b`), alias `mini`, Apache 2.0, 32K context, tool-calling validated in a real multi-turn loop.
+
+| ID | Model | Vision | Thinking | Context |
+|----|-------|--------|----------|---------|
+| `frognano-4b` | FrogNano-4B (alias `mini`) | ❌ | ❌ | 32K |
+
+`thinking` is **off by correctness, not tuning**: measured, at `thinking: true` this 4B spends the whole output budget on reasoning and returns an empty answer. Re-enable it per call through `sampling_override` with a budget ≥ 4096 only. On the hub route the flag has no **measurable** effect (2026-10-07) — the budget is the lever that decides whether an answer exists; the flag stays declared because it is harmless and is what the `thinking: false` path sends. The `max_tokens: 4096` on the model entry is the output-budget **floor measured through the hub** on 2026-10-07 — not 1024 (0/3 runs yield content) and not 2048 (stochastic in both arms, 4 of 7 runs empty): the model reasons regardless of the flag, ~1200-2500 reasoning tokens per answer. It lives on the model because the runtime resolves budgets per-call/`agent_spec` > model > global sampling and does not read a preset's `execution.max_tokens`.
+
+Key: `ZAI_API_KEY` (`api_key_env`) — the **cluster hub client key**, the same env var as the `glm-*` entries; **never** the MINI key, which is the hub→vLLM transport credential and must not leave the hub. The template ships a placeholder only.
 
 ### vLLM Local Direct (2)
 
@@ -403,7 +415,7 @@ Since 25/09 the fleet medium model is **Swift-1.5-27B** (`ukisai/Swift-1.5-Qwen3
 
 Purged (dead): `omnicoder-9b` + `owui-omnicoder-9b` (GPU 2 freed 30/04), `owui-glm-4.7-flash-*` (local GLM archived), `glm-5.1`/`glm-5`/`glm-4.6v`/`glm-4.7-flash` direct z.ai entries (superseded by glm-5.3/glm-5.3-flash via hub, user mandate 22/09).
 
-## Available Agents (32)
+## Available Agents (42)
 
 ### Core Agents (13)
 
@@ -467,7 +479,32 @@ Purged (dead): `omnicoder-9b` + `owui-omnicoder-9b` (GPU 2 freed 30/04), `owui-g
 | `owui-writer` | owui-redacteur-technique | Technical documentation |
 | `owui-vision` | owui-vision-expert | Vision analysis |
 
+### Mini tier presets (4) — delegate the mechanical work
+
+Each preset states in its own `description` what the calling agent may hand over, and that **source code goes in the prompt** (sk-agent attachments accept office/media only — `.py`/`.ps1` are refused). All four run `frognano-4b` (no-thinking) and carry the economy rule (#63).
+
+| ID | Tools | What to delegate | Budget floor |
+|----|-------|------------------|--------------|
+| `mini-coder-fix` | open_terminal | Single-file corrective diagnosis; code pasted in the prompt | 4096 |
+| `mini-repo-scan` | open_terminal (read-only by instruction) | Repository inventory: structure, dependencies, risks | 4096 |
+| `mini-summarizer` | markitdown | Faithful condensation to a fixed shape — the flagship token-economy delegation | 4096 |
+| `mini-web-research` | searxng | Source collection against a precise question, no synthesis | 4096 |
+
+### Delegating preset (1) — the medium works by delegation
+
+| ID | Model | Tools | Description |
+|----|-------|-------|-------------|
+| `swift-delegator` | qwen3.6-35b-a3b | sk_agent | Fleet medium (Swift-1.5-27B) that keeps the judgement and delegates short, tooled, verifiable sub-tasks to the mini presets through the self-inclusion plugin. A child failure is reported and finished by the medium — never a silent gap. |
+
 ## Changelog
+
+### v2.3 (2026-10-07) — mini tier + delegation (#4107, volet C of #4085)
+
+- **New model**: `frognano-4b` (FrogNano-4B, alias `mini`, served from po-2025) — `thinking: false` by correctness (at `thinking: true` the 4B returns an empty answer), 32K context, `max_tokens: 4096` output-budget floor **measured through the hub** (2026-10-07), key through the cluster hub client key `ZAI_API_KEY` (never the MINI transport key)
+- **4 mini presets**: `mini-coder-fix`, `mini-repo-scan`, `mini-summarizer`, `mini-web-research` — each description states what the caller may delegate, that code goes in the prompt, and the economy rule (#63)
+- **Delegating preset**: `swift-delegator` (fleet medium + the `sk_agent` self-inclusion plugin) — delegates short, tooled, verifiable sub-tasks; a child failure is reported and finished by the medium
+- **Guards**: tests drive the template's own self-inclusion entry through the recursion ceiling (refusal before plugin construction, no orphan bookkeeping) and assert a failing child degrades without wedging the parent
+- 9 models / 42 agents
 
 ### v2.2 (2026-09-23) — user mandate 22/09 (glm-5.3 era)
 
