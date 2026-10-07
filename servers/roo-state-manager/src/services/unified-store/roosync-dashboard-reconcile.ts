@@ -31,6 +31,15 @@
  *     reconcile on another machine converges instead of duplicating;
  *   - insert pass: never overwrites fresher PG content (backfill:true
  *     semantics at the writer).
+ *   - ARCHIVE-SCAN heal (incident po-2025 07/10, « adjoint » message on
+ *     workspace-CoursIA-2): the insert pass's only source is the CURRENT
+ *     file, so a message condensed before its dual-write landed is gone
+ *     from every source it reads — the hole turns permanent. This pass
+ *     scans the key's recent condensation archives (which now emit [msg:]
+ *     ids), inserts ids the whole journal (active ∪ archived) lacks, and
+ *     stamps them archived. Pre-fix archives are id-less and skipped by
+ *     design. Kill-switch: ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN=0;
+ *     lookback: ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS (default 30).
  *   - ARCHIVAL pass (#3151-D gate, 21/09): alive PG rows whose message the
  *     fresh file no longer shows (condensed on a machine whose dual-write
  *     never landed — the 404-line/8-key "family A" debt measured by ai-01
@@ -57,13 +66,14 @@
  * UNIFIED_STORE_PG_URL) — reconciling into a Null writer is pure GDrive IO.
  */
 
-import { readdir, readFile } from 'fs/promises';
+import { readdir, readFile, stat } from 'fs/promises';
 import { join } from 'path';
 import {
   parseDashboardMarkdown,
   extractPersistedMessageIds,
 } from '../../tools/roosync/dashboard-markdown.js';
-import { mapDashboardToRows } from './roosync-dashboard-store.js';
+import { mapDashboardToRows, fetchArchivedDashboardMessageIds } from './roosync-dashboard-store.js';
+import type { Dashboard, IntercomMessage } from '../../tools/roosync/dashboard-schemas.js';
 import type { IUnifiedStoreWriter } from './UnifiedStoreWriter.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
@@ -103,6 +113,16 @@ export interface DashboardReconcileResult {
   errors: number;
   /** file: reason — the operator's re-run list. */
   failures: string[];
+  /** Archive files scanned by the archive-scan heal (lookback-bounded). */
+  archiveFilesScanned: number;
+  /** Archive files skipped — name matches no `{key}-{ISO}.md` shape. */
+  archiveFilesUnmatched: number;
+  /** Id-bearing messages seen across scanned archives. */
+  archiveIdsSeen: number;
+  /** Archive messages skipped — no `[msg: id]` line (pre-fix format), by design. */
+  archiveIdlessSkipped: number;
+  /** Rows inserted AND archived-stamped by the archive-scan heal this pass. */
+  archiveHealed: number;
   durationMs: number;
 }
 
@@ -113,6 +133,11 @@ export interface DashboardReconcileOptions {
   reader?: Pick<IUnifiedStoreReader, 'getRooSyncDashboard'>;
   /** Writer seam for tests. Default getUnifiedStoreWriter(). */
   writer?: Pick<IUnifiedStoreWriter, 'syncRooSyncDashboard' | 'archiveRooSyncDashboardMessages'>;
+  /**
+   * Archived-id fetcher seam for tests. Default fetchArchivedDashboardMessageIds
+   * (fail-open null → treated as "unknown", inserts stay DO NOTHING-safe).
+   */
+  fetchArchivedIds?: (key: string) => Promise<Set<string> | null>;
 }
 
 /** Same gate as the channel reconcile — mirrors writer-factory's arming. */
@@ -160,6 +185,124 @@ export function canonicalKeyOfFork(key: string): string {
   return key.replace(/(\s\(\d+\))+$/, '');
 }
 
+// ─── Archive-scan heal (#3151 Phase C residual, incident po-2025 07/10) ───
+// A message whose append's PG dual-write failed (PG outage, breaker gave up,
+// hard kill mid-handler) leaves the GDrive file but no PG row. If condensation
+// archives it before the next reconcile pass, the insert pass above — whose
+// only source is the CURRENT file — can never see it again: the hole becomes
+// permanent, exactly the measured « adjoint » loss on workspace-CoursIA-2.
+// This pass scans recent condensation archives for the key and inserts ids the
+// whole journal (active ∪ archived) lacks, then stamps them archived — the row
+// lands in PG history where condensation would have put it. Archives written
+// before the [msg:] emission fix are unfingerprintable and skipped by design.
+
+/** Archive-scan kill-switch — '0' restores the pre-heal behavior. */
+export function isArchiveScanEnabled(): boolean {
+  return process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN !== '0';
+}
+
+/** Max age (days) of an archive file this pass will scan. */
+export function archiveScanDays(): number {
+  const v = Number(process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS);
+  return Number.isFinite(v) && v >= 0 ? v : 30;
+}
+
+/** Condensation archive name shape: `{key}-{yyyy-MM-ddTHH-mm-ss}.md`. */
+const ARCHIVE_FILE_RE = /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.md$/;
+
+interface IndexedArchiveFile {
+  name: string;
+  mtimeMs: number;
+}
+
+/**
+ * One readdir of `{dashboardsDir}/archive`, grouped by owning key. Only
+ * non-fork `{key}-{ISO}.md` names within the lookback are indexed — the date
+ * suffix is what separates `workspace-A-{date}` from a distinct key that
+ * merely starts with `workspace-A-`. Missing dir = empty index (a share with
+ * zero archives is healthy), never an error.
+ */
+export async function indexArchiveFiles(
+  dashboardsDir: string,
+  lookbackDays: number,
+  onUnmatched: () => void
+): Promise<Map<string, IndexedArchiveFile[]>> {
+  const index = new Map<string, IndexedArchiveFile[]>();
+  let files: string[];
+  try {
+    files = await readdir(join(dashboardsDir, 'archive'));
+  } catch {
+    return index;
+  }
+  const cutoff = Date.now() - lookbackDays * 86_400_000;
+  for (const name of files) {
+    const m = name.match(ARCHIVE_FILE_RE);
+    if (!m) {
+      onUnmatched();
+      continue;
+    }
+    if (isGdriveConflictCopyFile(name)) continue;
+    const path = join(dashboardsDir, 'archive', name);
+    let mtimeMs = 0;
+    try {
+      mtimeMs = (await stat(path)).mtimeMs;
+    } catch {
+      continue; // DriveFS hiccup — next pass retries
+    }
+    if (mtimeMs < cutoff) continue;
+    const list = index.get(m[1]) ?? [];
+    list.push({ name, mtimeMs });
+    index.set(m[1], list);
+  }
+  return index;
+}
+
+/** An id-bearing message parsed from a condensation archive. */
+export interface ParsedArchiveMessage {
+  id: string;
+  timestamp: string;
+  machineId: string;
+  workspace: string;
+  content: string;
+}
+
+/**
+ * Parse `[msg:]`-bearing messages out of one archive's content. Same header
+ * shape as the live parser and read_archive; blocks without a `[msg: id]`
+ * line (archives written before the emission fix) are counted and skipped —
+ * the id IS the fingerprint, without it a row cannot be healed.
+ */
+export function parseArchiveIdBearingMessages(content: string): {
+  messages: ParsedArchiveMessage[];
+  idless: number;
+} {
+  const messages: ParsedArchiveMessage[] = [];
+  let idless = 0;
+  const normalized = content.replace(/\r\n/g, '\n');
+  const blocks = normalized.split(/(?=^### \[)/m).filter((b) => b.trim());
+  for (const raw of blocks) {
+    const block = raw.replace(/\n---\s*$/, '').trim();
+    const header = block.match(
+      /^### \[([^\]]+)\]\s+([^|\n]+)\|([^\s|]+)\n([\s\S]*)$/
+    );
+    if (!header) continue;
+    const [, timestamp, machineId, workspace, afterHeader] = header;
+    const msg = afterHeader.match(/^\[msg: ([^\]]+)\]\n?([\s\S]*)$/);
+    if (!msg) {
+      idless++;
+      continue;
+    }
+    messages.push({
+      id: msg[1],
+      timestamp,
+      machineId: machineId.trim(),
+      workspace,
+      content: msg[2].replace(/^\n/, '').trim(),
+    });
+  }
+  return { messages, idless };
+}
+
 /** Max parseable timestamp in ms, or null when nothing parses. */
 function maxTimestampMs(values: (string | undefined | null)[]): number | null {
   let max: number | null = null;
@@ -205,6 +348,11 @@ export async function reconcileDashboardsFromGDrive(
     forkFiles: [],
     errors: 0,
     failures: [],
+    archiveFilesScanned: 0,
+    archiveFilesUnmatched: 0,
+    archiveIdsSeen: 0,
+    archiveIdlessSkipped: 0,
+    archiveHealed: 0,
     durationMs: 0,
   };
 
@@ -215,6 +363,7 @@ export async function reconcileDashboardsFromGDrive(
   }
   const reader = options.reader ?? getUnifiedStoreReader();
   const writer = options.writer ?? getUnifiedStoreWriter();
+  const fetchArchivedIds = options.fetchArchivedIds ?? fetchArchivedDashboardMessageIds;
 
   let files: string[];
   try {
@@ -224,6 +373,14 @@ export async function reconcileDashboardsFromGDrive(
   }
   const keyed = files.filter(isKeyedDashboardFile);
   result.filesScanned = keyed.length;
+
+  // Archive-scan heal: one readdir of the archive dir for the whole pass,
+  // grouped by owning key (lookback-bounded, forks skipped at indexing).
+  const archiveIndex = isArchiveScanEnabled()
+    ? await indexArchiveFiles(options.dashboardsDir, archiveScanDays(), () => {
+        result.archiveFilesUnmatched++;
+      })
+    : new Map<string, IndexedArchiveFile[]>();
 
   for (const file of keyed) {
     const key = file.replace(/\.md$/, '');
@@ -298,6 +455,76 @@ export async function reconcileDashboardsFromGDrive(
         }
       }
 
+      // ─── Archive-scan heal (condensed-before-mirrored, #3151 Phase C
+      // residual — see the helpers' block doc). Source = this key's recent
+      // condensation archives; target = ids the WHOLE journal (active ∪
+      // archived) lacks. Insert is backfill (DO NOTHING converges on races
+      // with a live dual-write), then the rows are stamped archived — where
+      // condensation would have put them. A stamp failure self-heals: the
+      // next pass's archival pass sees the row alive-but-absent and archives
+      // it under its own 24 h min-age guard.
+      const keyArchives = archiveIndex.get(key);
+      if (keyArchives !== undefined && keyArchives.length > 0) {
+        let archivedIds: Set<string> | null = null;
+        try {
+          archivedIds = await fetchArchivedIds(key);
+        } catch {
+          archivedIds = null; // fail-open: inserts stay DO NOTHING-safe
+        }
+        const knownIds = new Set<string>([
+          ...(existing?.messages ?? [])
+            .map((m) => m.message_id)
+            .filter((id): id is string => !!id),
+          ...(archivedIds ?? []),
+        ]);
+        const unmirrored = new Map<string, IntercomMessage>();
+        for (const arch of keyArchives) {
+          try {
+            const raw = await readFile(
+              join(options.dashboardsDir, 'archive', arch.name),
+              'utf-8'
+            );
+            result.archiveFilesScanned++;
+            const parsed = parseArchiveIdBearingMessages(raw);
+            result.archiveIdsSeen += parsed.messages.length;
+            result.archiveIdlessSkipped += parsed.idless;
+            for (const m of parsed.messages) {
+              if (knownIds.has(m.id) || unmirrored.has(m.id)) continue;
+              unmirrored.set(m.id, {
+                id: m.id,
+                timestamp: m.timestamp,
+                author: { machineId: m.machineId, workspace: m.workspace },
+                content: m.content,
+              });
+            }
+          } catch (error) {
+            result.errors++;
+            result.failures.push(`${arch.name}: archive-scan read failed — ${String(error)}`);
+          }
+        }
+        if (unmirrored.size > 0) {
+          const rows = mapDashboardToRows({
+            ...dashboard,
+            intercom: { ...dashboard.intercom, messages: [...unmirrored.values()] },
+          });
+          try {
+            await writer.syncRooSyncDashboard(
+              mapDashboardToRows(dashboard).row,
+              rows.messages,
+              { backfill: true }
+            );
+            const stamped = await writer.archiveRooSyncDashboardMessages(
+              key,
+              [...unmirrored.keys()]
+            );
+            result.archiveHealed += stamped;
+          } catch (error) {
+            result.errors++;
+            result.failures.push(`${file}: archive-scan heal failed — ${String(error)}`);
+          }
+        }
+      }
+
       // ─── Archival pass (#3151-D gate — guards documented in the module
       // header). Runs on the PRE-insert snapshot: only rows PG already
       // held, whose message a fresh file read no longer shows, under the
@@ -358,6 +585,14 @@ export async function reconcileDashboardsFromGDrive(
       `[dashboard-reconcile] Archived ${result.archivedRows} condensed row(s) in PG ` +
         `(${result.archiveTooYoung} too young deferred, ` +
         `${result.staleFileKeys.length} stale-file key(s) + ${result.forkFiles.length} fork file(s) untouched)`
+    );
+  }
+  if (result.archiveHealed > 0) {
+    logger.warn(
+      `[dashboard-reconcile] Archive-scan healed ${result.archiveHealed} condensed-before-mirrored ` +
+        `row(s) into PG history (${result.archiveIdsSeen} id(s) seen across ` +
+        `${result.archiveFilesScanned} archive file(s), ${result.archiveIdlessSkipped} id-less skipped — ` +
+        `pre-fix archives)`
     );
   }
   // #3482-follow — the fork count above is only emitted when this pass happened
