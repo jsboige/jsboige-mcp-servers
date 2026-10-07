@@ -9,5 +9,8 @@ venv/
 sk_agent_config.json
 sk_agent_config.json.bak*
 
+# Playwright MCP runtime dir (profile/session files created beside the server)
+.playwright-mcp/
+
 # Container usage telemetry (docker-compose.sk-agent.yml bind mount)
 usage/

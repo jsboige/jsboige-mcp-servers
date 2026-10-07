@@ -61,6 +61,26 @@
     },
 
     {
+      "_comment": "=== Fleet mini model FrogNano-4B (vLLM on po-2025, #4107 volet C) === Fleet route = hub namespaced id frognano@frognano-4b (routed via the claudish hub, e2e verified #4085 c.6019492370: 167 tok/4.3 s); the direct vLLM endpoint on po-2025 (:5003) serves both frognano-4b and alias mini in /v1/models — machines local to po-2025 may point base_url there instead. thinking=false MANDATORY (measured #4085 c.6022769664: at thinking:true the 4B burns the whole output budget on reasoning and answers nothing, 4096/4096 reasoning -> empty answer; sk_agent injects enable_thinking=false when thinking=false, declared again via extra_body so the profile also holds on the conversation path #2002). max_tokens floor 1024 (#3797 per-model budget override): below ~256 the thinking budget empties the content. No key in the repo: the live key stays in the environment (MINI_API_KEY).",
+      "id": "frognano-4b",
+      "enabled": true,
+      "base_url": "http://192.168.0.50:3000/v1",
+      "api_key_env": "MINI_API_KEY",
+      "api_key": "YOUR_MINI_API_KEY_HERE",
+      "model_id": "frognano@frognano-4b",
+      "vision": false,
+      "thinking": false,
+      "max_tokens": 1024,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "description": "FrogNano-4B fleet mini (vLLM po-2025, 32K ctx, Apache 2.0) — cheap delegation lane for short tooled subtasks (presets mini-coder-fix / mini-repo-scan / mini-summarizer / mini-web-research). Alias 'mini' served alongside frognano-4b. thinking off by design (see model _comment).",
+      "context_window": 32768
+    },
+
+    {
       "_comment": "=== OWUI proxied models (validated 2026-04-19 with OpenAI SDK >=1.109 + base_url ending /openai — SDK does NOT append /v1). Purged: owui-glm-4.7-flash-* (GLM local archivé), owui-omnicoder-9b (GPU 2 libérée 30/04) ===",
       "id": "owui-qwen3.6-35b",
       "enabled": true,
@@ -274,6 +294,52 @@
       "model": "qwen3.6-35b-no-thinking",
       "system_prompt": "You are a formatter. Rewrite the provided text into the requested format without changing its meaning. Preserve names, identifiers, paths and code verbatim. Always respond in the same language as the user.",
       "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "_comment": "=== #4107 mini lane: FrogNano-4B presets (frognano-4b, 32K ctx, thinking off — see model entry) === CODE GOES IN THE PROMPT: sk-agent attachments only accept office/media documents (.ps1/.py and other code files are refused), so every description says it. Budget floors live on the model entry (max_tokens 1024, #3797); mini-coder-fix missions want >= 2048 — calibrate per call via agent_spec.sampling, per-agent sampling is not a config field (#4085).",
+      "id": "mini-coder-fix",
+      "description": "Cheap corrective coding missions on the fleet mini FrogNano-4B (32K ctx): single-file diagnostics, small patches, error triage — code pasted IN THE PROMPT (attachments refuse code files like .ps1/.py). Callers should raise the budget to >= 2048 tokens via agent_spec.sampling.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a corrective coding agent on a small fast model. The code to fix is ALWAYS pasted in the prompt — attachments do not carry code files. Missions are small and bounded: single-file diagnostics, targeted patches, error triage. Rules: (1) Restate the defect in one line before fixing. (2) Produce the minimal diff — changed lines only, no reformatting of untouched code. (3) Cite evidence for every claim (error message, command output). (4) If the task needs multi-file reasoning or architecture decisions, say so and stop — that belongs to a bigger model. Always respond in the same language as the user.",
+      "mcps": ["open_terminal"],
+      "capabilities": ["shell", "repo_read"],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "mini-repo-scan",
+      "description": "Cheap read-only repository scans on the fleet mini FrogNano-4B (32K ctx): pattern counting, TODO inventories, structure summaries — read-only by prompt (the shell grant is what the open_terminal tool requires; the system prompt confines it to read commands), targets pasted or read from the given path. Budget floor 1024 tokens is enough.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a read-only repository scanner on a small fast model. Scan the given path or pasted content for the requested pattern and report counts and locations. Rules: (1) READ-ONLY: never modify, create or delete anything — read commands only (grep, find, wc, git log...). (2) Report exact counts and file:line citations, no approximations. (3) If a number cannot be measured, say 'not measured'. (4) Stay inside the requested pattern. Always respond in the same language as the user.",
+      "mcps": ["open_terminal"],
+      "capabilities": ["shell", "repo_read"],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "mini-summarizer",
+      "description": "Cheap summarization on the fleet mini FrogNano-4B (32K ctx): logs, conversations, dumps condensed into short structured summaries — no tools, material pasted in the prompt.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a summarizer on a small fast model. Condense the provided material into a short, faithful summary: key facts first, then decisions and open points. Never invent content, never drop a decision. If the material exceeds what you were given, summarize your part and say so. Always respond in the same language as the user.",
+      "mcps": [],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "mini-web-research",
+      "description": "Cheap web lookups on the fleet mini FrogNano-4B (32K ctx): single-topic searches, doc snippet retrieval, quick fact checks via searxng — deep multi-source research belongs to analyst.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a web research assistant on a small fast model. Look up the requested topic via web search and report what you found. Rules: (1) One search per step; wait for the result. (2) Cite the source URL behind every reported fact. (3) Report what the sources say, not what you assume. (4) Multi-source synthesis and long reports belong to a bigger model — say so if asked. Always respond in the same language as the user.",
+      "mcps": ["searxng"],
+      "capabilities": ["web"],
+      "memory": { "enabled": false }
+    },
+    {
+      "_comment": "=== #4107 delegation medium: keeps the medium model for orchestration, offloads short tooled subtasks to the mini lane via recursive sk-agent calls ===",
+      "id": "swift-delegator",
+      "description": "Local medium orchestrator (Swift-1.5-27B, 262K ctx) that DELEGATES short tooled subtasks to the mini lane (mini-coder-fix, mini-repo-scan, mini-summarizer, mini-web-research on FrogNano-4B) via recursive sk-agent calls — the medium keeps multi-file reasoning, architecture and synthesis.",
+      "model": "qwen3.6-35b-a3b",
+      "system_prompt": "You are a delegation-oriented orchestrator. Split your work: KEEP for yourself the multi-file reasoning, architecture decisions and final synthesis; DELEGATE to the mini lane the short, tooled, verifiable subtasks via sk-agent calls — mono-file diagnostics or patches to 'mini-coder-fix' (paste the code in the prompt, attachments refuse code files), read-only scans and counts to 'mini-repo-scan', condensation to 'mini-summarizer', single-topic web lookups to 'mini-web-research'. Rules: (1) Delegate only subtasks that finish in minutes and can be verified from their output. (2) One delegation at a time; read the result before the next. (3) A mini failure is DATA, not a blocker: report it and continue your own reasoning; retry a failed delegation at most once. (4) You remain responsible for the final answer — cite what each delegation returned. (5) Respect the recursion ceiling: minis have no sk-agent access, never ask them to delegate further. Always respond in the same language as the user.",
+      "mcps": ["sk_agent", "searxng"],
+      "capabilities": ["recursive_agents", "memory", "web"],
       "memory": { "enabled": false }
     },
     {

@@ -1,4 +1,4 @@
-"""Guard: .gitignore must keep ignoring sk_agent_config.json and its bare/dated .bak backups (roo-extensions#3551, #3411)."""
+"""Guard: .gitignore must keep ignoring sk_agent_config.json and its bare/dated .bak backups (roo-extensions#3551, #3411), and the playwright MCP runtime dir (#4107)."""
 
 import subprocess
 from pathlib import Path
@@ -9,6 +9,9 @@ SK_AGENT_DIR = Path(__file__).resolve().parent
 # ignore PATTERN is tested via git check-ignore, never an actual local file.
 FICTIVE_BARE_BACKUP = "sk_agent_config.json.bak"
 FICTIVE_TIMESTAMPED_BACKUP = "sk_agent_config.json.bak-20991231-FICTIVE-PROOF"
+# playwright MCP drops its profile/session dir beside the server at runtime;
+# never committed (roo-extensions#4107 — measured once on po-2026).
+FICTIVE_PLAYWRIGHT_DIR = ".playwright-mcp/fictive-session-profile.json"
 
 
 def _check_ignore(relpath):
@@ -40,4 +43,13 @@ def test_canonical_config_still_ignored():
     result = _check_ignore("sk_agent_config.json")
     assert result.returncode == 0, (
         "sk_agent_config.json is no longer ignored — regression on the canonical secret pattern"
+    )
+
+
+def test_playwright_runtime_dir_is_ignored():
+    result = _check_ignore(FICTIVE_PLAYWRIGHT_DIR)
+    assert result.returncode == 0, (
+        f"{FICTIVE_PLAYWRIGHT_DIR} is NOT ignored — servers/sk-agent/.gitignore must cover "
+        f"the .playwright-mcp/ runtime dir the playwright MCP creates beside the server "
+        f"(stdout={result.stdout!r}, stderr={result.stderr!r})"
     )

@@ -262,6 +262,34 @@ via the #3797 passthrough. `call_agent` already injects that flag from
 entry declares — without this key, a non-thinking profile used in a
 conversation preset would think anyway.
 
+## Mini delegation lane (#4107, volet C of #4085)
+
+The fleet mini **FrogNano-4B** (vLLM on po-2025, 32K ctx, Apache 2.0) rides the
+hub as `frognano@frognano-4b` (model id `frognano-4b` in the template; alias
+`mini` served alongside on the direct endpoint). `thinking: false` is
+**mandatory** on this entry — measured: at `thinking: true` the 4B burns the
+whole output budget on reasoning and answers nothing; `max_tokens` floor is
+1024 (smaller budgets get eaten by the residual reasoning budget).
+
+| Preset | Mission | Tools | Budget |
+|--------|---------|-------|--------|
+| `mini-coder-fix` | corrective missions, mono-file diagnostics, small patches | `open_terminal` | ≥ 2048 — raise per call via `agent_spec.sampling` |
+| `mini-repo-scan` | read-only repo scans: pattern counting, TODO inventories | `open_terminal` (read-only by prompt) | ≥ 1024 (model floor) |
+| `mini-summarizer` | condensing logs, conversations, dumps | none — material pasted | ≥ 1024 (model floor) |
+| `mini-web-research` | single-topic web lookups, doc snippets | `searxng` | ≥ 1024 (model floor) |
+
+**Code goes in the prompt** — sk-agent attachments only accept office/media
+documents (`.ps1`/`.py` refused); every preset description says it for calling
+agents.
+
+`swift-delegator` (on the fleet medium `qwen3.6-35b-a3b`) is the delegation
+preset: it holds the `sk_agent` MCP + `recursive_agents` grant and its consigne
+says **what** to delegate — short, tooled, verifiable subtasks to the four
+minis above — while keeping multi-file reasoning, architecture and synthesis
+for itself. A mini failure is data, not a blocker: the error comes back as a
+tool result (`{"error": ...}`) and the medium's task continues (guard 3,
+`test_mini_delegation_guards.py`).
+
 ## Timeout chain (#3797)
 
 Every `call_agent` invocation is bounded by a chain of delays — **the
