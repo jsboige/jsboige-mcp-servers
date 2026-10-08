@@ -42,7 +42,7 @@ import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER } from '../../utils/secret-redaction.js';
 import { redactSecrets } from '../../services/task-indexer/EmbeddingValidator.js';
-import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
+import { getLocalMachineId, getLocalWorkspaceId, assertStampsMachine } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient, getLLMModelId, getFallbackChatOpenAIClient, getFallbackLLMModelId } from '../../services/openai.js';
 import {
@@ -4803,6 +4803,21 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
 
   const resolvedMachineId = args.machineId ?? getLocalMachineId();
   const resolvedWorkspace = args.workspace ?? getLocalWorkspaceId();
+
+  // #4135 — gate du stamp d'auteur (mirror #3591 sur le chemin dashboard).
+  // write/append/update stampent un auteur (intercom author, lastModifiedBy) :
+  // une machine assertée ≠ machine locale du process doit être listée dans
+  // ROOSYNC_TRUSTED_CALLER_IDS, sinon elle devient une machine « online »
+  // fantôme dans le health flotte (appends `myia-po-204` depuis la lane
+  // NanoClaw ai-01, 2e occurrence). read/list/merge/delete ne stampent pas :
+  // `machineId` y reste un filtre légitime cross-machine — non gated.
+  if (args.action === 'append' || args.action === 'write' || args.action === 'update') {
+    assertStampsMachine(
+      args.author?.machineId ?? resolvedMachineId,
+      args.author ? 'author' : 'machineId'
+    );
+  }
+
   let key = buildDashboardKey(args.type, resolvedMachineId, resolvedWorkspace);
   const createIfNotExists = args.createIfNotExists !== false; // défaut: true
 
