@@ -207,16 +207,59 @@ interface ParsedMention {
 export const FLEET_MACHINE_PATTERN = /^myia-[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /**
+ * Destinataires légitimes **hors forme** `myia-*` — consommateurs vivants, mesurés.
+ *
+ * Un seul cas connu (review ms#1408, mesuré sur ai-01 le 08/10) : le poller
+ * NanoClaw (`NanoClawRooSyncInboxWatcher`, `D:\nanoclaw\src\roosync-inbox-standalone.ts`)
+ * ne lit que les messages dont le `to` figure dans son `EXPECTED_TARGETS`. Son
+ * `.env` réel : `ROOSYNC_MACHINE_ID=nanoclaw-cluster` (+ extra targets à deux-points,
+ * qui passent par la voie v3 structurée, non gardée — cibles choisies, pas parsées).
+ * Une mention `@nanoclaw-cluster` en prose est donc parsée par la voie v1 et DOIT
+ * continuer à produire une notification, sinon le bot n'est plus réveillé — le défaut
+ * précis que le code nanoclaw dit éviter (*« mentions aimed at the bot's own user-id
+ * are silently dropped »*).
+ *
+ * Distinct de `ROO_FLEET_ROSTER` (qui pilote aussi le partitionnement d'indexation) :
+ * cette liste n'a AUCUN autre effet que d'élargir la garde des mentions v1.
+ * `ROO_MENTION_EXTRA_RECIPIENTS` (comma-separated) **étend** la liste par défaut —
+ * un siège peut ajouter un destinataire hors forme sans toucher au code ; il ne peut
+ * pas retirer le défaut (c'est le sens : le défaut est un consommateur vivant).
+ *
+ * Ne PAS y ajouter `NanoClaw`, `Hermes`, `hermes-pr-review` : mesurés 87/56/25 non lus
+ * sans consommateur (review ms#1408, PG central) — ce sont des orphelines, la garde
+ * a raison de les jeter.
+ *
+ * @issue #2591
+ */
+const DEFAULT_EXTRA_MENTION_RECIPIENTS: readonly string[] = ['nanoclaw-cluster'];
+
+/**
+ * Liste effective des destinataires hors forme : défaut ∪ `ROO_MENTION_EXTRA_RECIPIENTS`.
+ * Lecture à l'appel (pas au chargement du module) — testable et chaude en rechargement.
+ *
+ * @issue #2591
+ */
+export function loadExtraMentionRecipients(): string[] {
+  const raw = process.env.ROO_MENTION_EXTRA_RECIPIENTS;
+  const parsed = raw
+    ? raw.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+    : [];
+  return [...new Set([...DEFAULT_EXTRA_MENTION_RECIPIENTS, ...parsed])];
+}
+
+/**
  * Décide si un destinataire de mention peut être une machine de la flotte.
  *
- * Deux sources indépendantes, en UNION (et non en intersection) :
+ * Trois sources indépendantes, en UNION (et non en intersection) :
  *
  * 1. **La forme `myia-*`** — toujours active, aucune configuration requise.
  *    C'est le garde principal, et c'est lui qui rend la validation indépendante
  *    du partitionnement d'indexation : `ROO_FLEET_ROSTER` pilote AUSSI le
  *    partitionnement du task-space (`state.fleetRoster`, `background-services.ts`),
  *    on ne peut donc pas « corriger » les orphelines en posant la variable.
- * 2. **Le roster**, quand il est configuré — seconde voie d'acceptation, pour une
+ * 2. **La liste explicite des destinataires hors forme** (défaut + env) — les
+ *    consommateurs vivants qui ne suivent pas la convention de nommage.
+ * 3. **Le roster**, quand il est configuré — dernière voie d'acceptation, pour une
  *    machine dont l'id ne suivrait pas la convention.
  *
  * L'union est délibérée : une intersection ferait perdre des notifications
@@ -225,8 +268,9 @@ export const FLEET_MACHINE_PATTERN = /^myia-[a-z0-9]+(?:-[a-z0-9]+)*$/;
  *
  * @issue #2591
  */
-export function isFleetRecipient(machine: string, roster: string[] | null): boolean {
+export function isFleetRecipient(machine: string, roster: string[] | null, extra?: readonly string[]): boolean {
   if (FLEET_MACHINE_PATTERN.test(machine)) return true;
+  if (extra && extra.includes(machine)) return true;
   return roster !== null && roster.includes(machine);
 }
 
@@ -267,11 +311,12 @@ export async function sendMentionNotificationsAsync(
     // un roster configuré, donc inerte là où ROO_FLEET_ROSTER est absent : chaque
     // token de prose capté par le pattern catch-all devenait une notification
     // orpheline vers un destinataire inexistant. La garde ne dépend plus du
-    // roster (cf. isFleetRecipient).
+    // roster (cf. isFleetRecipient : forme + liste explicite hors forme + roster).
     const roster = tryLoadRooSyncConfig()?.fleetRoster ?? null;
+    const extra = loadExtraMentionRecipients();
 
     for (const [machine, machineMentions] of mentionsByMachine) {
-      if (!isFleetRecipient(machine, roster)) {
+      if (!isFleetRecipient(machine, roster, extra)) {
         logger.debug('Skipping mention notification to non-fleet recipient (#2591)', {
           messageId,
           machine,

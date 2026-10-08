@@ -195,3 +195,80 @@ describe('isFleetRecipient — shape gate + roster union (#2591)', () => {
 		expect(isFleetRecipient('NanoClaw', ['myia-ai-01', 'myia-po-2025'])).toBe(false);
 	});
 });
+
+describe('extra mention recipients — out-of-shape live consumers (review ms#1408)', () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		mockSendMessage.mockResolvedValue(undefined);
+	});
+
+	afterEach(() => {
+		delete process.env.ROO_MENTION_EXTRA_RECIPIENTS;
+	});
+
+	it('still notifies @nanoclaw-cluster with no roster — the NanoClaw poller machine id (measured regression)', async () => {
+		mockFleetRoster.value = null;
+		delete process.env.ROO_MENTION_EXTRA_RECIPIENTS;
+		const { sendMentionNotificationsAsync } = await import('../dashboard-helpers.js');
+
+		await sendMentionNotificationsAsync('msg-8', [
+			{ type: 'machine', target: 'nanoclaw-cluster', pattern: '@nanoclaw-cluster' }
+		], 'workspace-roo-extensions', 'excerpt');
+
+		expect(mockSendMessage).toHaveBeenCalledTimes(1);
+		expect(mockSendMessage.mock.calls[0][1]).toBe('nanoclaw-cluster');
+	});
+
+	it('still drops the unread orphan look-alikes NanoClaw / Hermes / hermes-pr-review', async () => {
+		// Counter-requirement of the review: the default list is the poller's machine
+		// id, NOT every bot-shaped token — 87/56/25 unread with no consumer.
+		mockFleetRoster.value = null;
+		delete process.env.ROO_MENTION_EXTRA_RECIPIENTS;
+		const { sendMentionNotificationsAsync } = await import('../dashboard-helpers.js');
+
+		await sendMentionNotificationsAsync('msg-9', [
+			{ type: 'machine', target: 'NanoClaw', pattern: '@NanoClaw' },
+			{ type: 'machine', target: 'Hermes', pattern: '@Hermes' },
+			{ type: 'machine', target: 'hermes-pr-review', pattern: '@hermes-pr-review' }
+		], 'workspace-roo-extensions', 'excerpt');
+
+		expect(mockSendMessage).not.toHaveBeenCalled();
+	});
+
+	it('ROO_MENTION_EXTRA_RECIPIENTS extends the default list (seat-local, no code change)', async () => {
+		mockFleetRoster.value = null;
+		process.env.ROO_MENTION_EXTRA_RECIPIENTS = ' Custom-Bot , second-bot ';
+		const { sendMentionNotificationsAsync } = await import('../dashboard-helpers.js');
+
+		await sendMentionNotificationsAsync('msg-10', [
+			{ type: 'machine', target: 'custom-bot', pattern: '@custom-bot' },
+			{ type: 'machine', target: 'second-bot', pattern: '@second-bot' },
+			{ type: 'machine', target: 'unlisted-bot', pattern: '@unlisted-bot' }
+		], 'workspace-roo-extensions', 'excerpt');
+
+		const recipients = mockSendMessage.mock.calls.map((c: unknown[]) => c[1]);
+		expect(recipients).toEqual(['custom-bot', 'second-bot']);
+	});
+
+	it('loadExtraMentionRecipients — default ∪ env, deduped, lowercased', async () => {
+		const { loadExtraMentionRecipients } = await import('../dashboard-helpers.js');
+
+		delete process.env.ROO_MENTION_EXTRA_RECIPIENTS;
+		expect(loadExtraMentionRecipients()).toEqual(['nanoclaw-cluster']);
+
+		process.env.ROO_MENTION_EXTRA_RECIPIENTS = 'NANOCLAW-CLUSTER, extra-one';
+		expect(loadExtraMentionRecipients()).toEqual(['nanoclaw-cluster', 'extra-one']);
+
+		process.env.ROO_MENTION_EXTRA_RECIPIENTS = ' , ,';
+		expect(loadExtraMentionRecipients()).toEqual(['nanoclaw-cluster']);
+	});
+
+	it('isFleetRecipient — extra list is an independent third acceptance path', async () => {
+		const { isFleetRecipient } = await import('../dashboard-helpers.js');
+
+		expect(isFleetRecipient('nanoclaw-cluster', null)).toBe(false);          // no extra passed
+		expect(isFleetRecipient('nanoclaw-cluster', null, ['nanoclaw-cluster'])).toBe(true);
+		expect(isFleetRecipient('NanoClaw', null, ['nanoclaw-cluster'])).toBe(false); // case matters
+		expect(isFleetRecipient('nanoclaw-cluster', ['myia-ai-01'], [])).toBe(false); // empty extra, roster w/o it
+	});
+});
