@@ -318,13 +318,13 @@ export async function fetchArchivedDashboardMessageIds(key: string): Promise<Set
       timeout,
     ]);
     if (result === null && timedOut) {
-      logger.warn('[merge-tombstones] archived-id fetch timed out — union proceeds unfiltered (fail-open)', { key });
+      logger.warn('[merge-tombstones] archived-id fetch timed out — returning null; the CALLER decides (merge union: unfiltered; archive-scan heal: fail-closed, no heal this pass)', { key });
       return null;
     }
     if (!result) return null;
     return new Set(result);
   } catch (error) {
-    logger.warn('[merge-tombstones] archived-id fetch failed — union proceeds unfiltered (fail-open)', {
+    logger.warn('[merge-tombstones] archived-id fetch failed — returning null; the CALLER decides (merge union: unfiltered; archive-scan heal: fail-closed, no heal this pass)', {
       key,
       error: String(error),
     });

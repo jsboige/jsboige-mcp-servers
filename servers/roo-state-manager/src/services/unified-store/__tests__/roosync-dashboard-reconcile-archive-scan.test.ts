@@ -1,0 +1,530 @@
+/**
+ * Archive-scan heal du reconcile dashboards (#3151 Phase C residual).
+ *
+ * Incident fondateur (po-2025, 07/10, message « adjoint » de
+ * workspace-CoursIA-2) : un append atterrit dans le canon GDrive mais son
+ * dual-write PG échoue en silence ; la condensation suivante retire le
+ * message du canon ; la passe insert — dont la SEULE source est le fichier
+ * courant — ne le voit plus jamais : trou PG permanent. Cette passe scanne
+ * les archives de condensation récentes de la clé et réinsère les ids que le
+ * journal COMPLET (actif ∪ archivé) ne connaît pas, puis les stampe archivés.
+ *
+ * Harness : mêmes doubles reader/writer que roosync-dashboard-reconcile.test.ts,
+ * plus un seam fetchArchivedIds. Les archives sont de vrais fichiers dans un
+ * tmpdir (mtime = maintenant → dans le lookback par défaut).
+ */
+import { describe, test, expect, beforeEach, afterEach } from 'vitest';
+import { existsSync, rmSync, mkdirSync, writeFileSync, utimesSync } from 'fs';
+import { join } from 'path';
+import {
+  reconcileDashboardsFromGDrive,
+  parseArchiveIdBearingMessages,
+  archiveScanDays,
+  ARCHIVE_SCAN_LOCK_KEY,
+} from '../roosync-dashboard-reconcile.js';
+import type { RooSyncDashboardRow, RooSyncDashboardMessageRow } from '../types.js';
+
+/** Horodatage de nom d'archive au format réel `yyyy-MM-ddTHH-mm-ss` (local). */
+function fmtArchiveStamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
+
+function liveFixture(key: string, ids: string[]): string {
+  const blocks = ids.map(
+    (id, i) => `### [2026-10-07T22:0${i}:00Z] m1|w1\n[msg: ${id}]\ncontent ${i}\n\n---\n`
+  );
+  return [
+    '---',
+    'type: workspace',
+    `key: ${key}`,
+    "lastModified: '2026-10-07T22:00:00Z'",
+    'lastModifiedBy:',
+    '  machineId: m1',
+    '  workspace: w1',
+    `totalMessages: ${ids.length}`,
+    '---',
+    '',
+    '## Status',
+    '',
+    'status body',
+    '',
+    '## Intercom',
+    '',
+    ...blocks,
+  ].join('\n');
+}
+
+/**
+ * Archive de condensation. `entries` : soit un id (bloc AVEC [msg:]), soit
+ * null (bloc pré-fix SANS [msg:]). Le nom suit la forme réelle
+ * `{key}-{yyyy-MM-ddTHH-mm-ss}.md` (deux-points remplacés).
+ */
+function archiveFixture(key: string, date: string, entries: (string | null)[]): string {
+  const blocks = entries.map((id, i) =>
+    id === null
+      ? `### [2026-10-07T2${i}:00:00Z] myia-po-2025|Maintenance\n\ncontenu pré-fix ${i}`
+      : `### [2026-10-07T2${i}:00:00Z] myia-po-2025|Maintenance\n[msg: ${id}]\n\ncontenu ${i}`
+  );
+  return [
+    '---',
+    'type: archive',
+    `originalKey: ${key}`,
+    `archivedAt: ${date}`,
+    `messageCount: ${entries.length}`,
+    'llmGenerated: true',
+    'statusUpdated: true',
+    '---',
+    '',
+    `# Archive : ${key}`,
+    '',
+    ...blocks.flatMap((b) => [b, '', '---', '']),
+  ].join('\n');
+}
+
+describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => {
+  let dashboardsDir: string;
+  let savedEnv: Record<string, string | undefined>;
+  let writerCalls: {
+    key: string;
+    messages: RooSyncDashboardMessageRow[];
+    opts?: Record<string, unknown>;
+  }[];
+  let archiveCalls: { key: string; ids: string[] }[];
+  let pgIds: Map<string, string[]>;
+  let pgCreatedAt: Map<string, string>;
+  let archivedIds: Map<string, Set<string> | null>;
+  let syncThrows: boolean;
+
+  const readerDouble = {
+    async getRooSyncDashboard(key: string) {
+      const ids = pgIds.get(key);
+      if (!ids) return null;
+      return {
+        dashboard: {} as RooSyncDashboardRow,
+        messages: ids.map((id) => ({
+          dashboard_key: key,
+          message_id: id,
+          created_at: pgCreatedAt.get(`${key}:${id}`) ?? '2026-09-01T00:00:00Z',
+        } as RooSyncDashboardMessageRow)),
+      };
+    },
+  };
+
+  const writerDouble = {
+    async syncRooSyncDashboard(
+      row: RooSyncDashboardRow,
+      messages: RooSyncDashboardMessageRow[],
+      opts?: Record<string, unknown>
+    ) {
+      if (syncThrows) throw new Error('pg insert down');
+      writerCalls.push({ key: row.key, messages, opts });
+      const ids = pgIds.get(row.key) ?? [];
+      ids.push(...messages.map((m) => m.message_id as string));
+      pgIds.set(row.key, ids);
+    },
+    async archiveRooSyncDashboardMessages(key: string, messageIds: string[]) {
+      archiveCalls.push({ key, ids: [...messageIds] });
+      return messageIds.length;
+    },
+  };
+
+  // null = échec/timeout du fetch (sémantique réelle : succès sans lignes →
+  // Set vide). Le drapeau permet de forcer l'échec sans toucher à la map.
+  let fetchArchivedIdsFails = false;
+  const fetchArchivedIdsDouble = async (key: string) =>
+    fetchArchivedIdsFails ? null : (archivedIds.get(key) ?? new Set<string>());
+
+  const run = () =>
+    reconcileDashboardsFromGDrive({
+      dashboardsDir,
+      reader: readerDouble,
+      writer: writerDouble,
+      fetchArchivedIds: fetchArchivedIdsDouble,
+    });
+
+  const writeLive = (key = 'workspace-a', ids = ['id-live']) =>
+    writeFileSync(join(dashboardsDir, `${key}.md`), liveFixture(key, ids));
+
+  const writeArchive = (
+    key = 'workspace-a',
+    // Date du nom dérivée de maintenant : le cutoff du scan lit le NOM, des
+    // dates fixes casseraient la suite au-delà de 30 jours.
+    date = fmtArchiveStamp(new Date()),
+    entries: (string | null)[] = ['id-arch'],
+    name?: string
+  ) => {
+    mkdirSync(join(dashboardsDir, 'archive'), { recursive: true });
+    const fname = name ?? `${key}-${date}.md`;
+    writeFileSync(join(dashboardsDir, 'archive', fname), archiveFixture(key, date, entries));
+    return fname;
+  };
+
+  beforeEach(() => {
+    dashboardsDir = join(__dirname, '../../../__test-data__/reconcile-archive-scan');
+    if (existsSync(dashboardsDir)) rmSync(dashboardsDir, { recursive: true, force: true });
+    mkdirSync(dashboardsDir, { recursive: true });
+    savedEnv = {
+      DUAL: process.env.UNIFIED_STORE_DUAL_WRITE,
+      PG: process.env.UNIFIED_STORE_PG_URL,
+      SCAN: process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN,
+      DAYS: process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS,
+      ARCH: process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE,
+    };
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://user:pass@pg.test:5432/store';
+    // ms#1405 review: the archive-scan is OPT-IN now (only '1' enables). This
+    // file exercises the scan, so it asks for it; the default-off contract and
+    // the '0' / other-value cases have their own tests below.
+    process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN = '1';
+    delete process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS;
+    delete process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE;
+    writerCalls = [];
+    archiveCalls = [];
+    pgIds = new Map();
+    pgCreatedAt = new Map();
+    archivedIds = new Map();
+    syncThrows = false;
+    fetchArchivedIdsFails = false;
+  });
+
+  afterEach(() => {
+    process.env.UNIFIED_STORE_DUAL_WRITE = savedEnv.DUAL;
+    process.env.UNIFIED_STORE_PG_URL = savedEnv.PG;
+    for (const [k, v] of [
+      ['ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN', savedEnv.SCAN],
+      ['ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS', savedEnv.DAYS],
+      ['ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE', savedEnv.ARCH],
+    ] as const) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    if (existsSync(dashboardsDir)) rmSync(dashboardsDir, { recursive: true, force: true });
+  });
+
+  test('id d’archive inconnu du journal complet → inséré backfill puis stampe archivé', async () => {
+    writeLive();
+    writeArchive();
+    const result = await run();
+    expect(result.status).toBe('ok');
+    expect(result.archiveFilesScanned).toBe(1);
+    expect(result.archiveIdsSeen).toBe(1);
+    const healSync = writerCalls.find((c) =>
+      c.messages.some((m) => m.message_id === 'id-arch')
+    );
+    expect(healSync).toBeDefined();
+    expect(healSync!.opts).toEqual({ backfill: true });
+    expect(healSync!.messages.map((m) => m.message_id)).toEqual(['id-arch']);
+    // created_at = l'horodatage ORIGINAL du message, pas celui de la passe.
+    expect(healSync!.messages[0].created_at).toBe('2026-10-07T20:00:00Z');
+    expect(archiveCalls).toEqual([{ key: 'workspace-a', ids: ['id-arch'] }]);
+    expect(result.archiveHealed).toBe(1);
+  });
+
+  test('id déjà ACTIF dans le journal → pas de guérison', async () => {
+    writeLive();
+    writeArchive();
+    pgIds.set('workspace-a', ['id-live', 'id-arch']);
+    // Jeune : sinon la passe d'archival EXISTANTE (hors périmètre de ce test)
+    // l'archive légitimement — row vive absente du fichier courant.
+    pgCreatedAt.set('workspace-a:id-arch', new Date().toISOString());
+    const result = await run();
+    expect(result.archiveHealed).toBe(0);
+    expect(archiveCalls).toEqual([]);
+    expect(writerCalls.some((c) => c.messages.some((m) => m.message_id === 'id-arch'))).toBe(
+      false
+    );
+  });
+
+  test('id déjà ARCHIVÉ dans le journal → pas de résurrection', async () => {
+    writeLive();
+    writeArchive();
+    archivedIds.set('workspace-a', new Set(['id-arch']));
+    const result = await run();
+    expect(result.archiveHealed).toBe(0);
+    expect(archiveCalls).toEqual([]);
+  });
+
+  test('archive pré-fix (sans [msg:]) → comptée idless, aucun insert', async () => {
+    writeLive();
+    writeArchive('workspace-a', fmtArchiveStamp(new Date()), [null, null]);
+    const result = await run();
+    expect(result.archiveIdlessSkipped).toBe(2);
+    expect(result.archiveIdsSeen).toBe(0);
+    expect(result.archiveHealed).toBe(0);
+    expect(archiveCalls).toEqual([]);
+  });
+
+  test('nom d’archive hors forme {key}-{ISO} → non indexé, compté unmatched', async () => {
+    writeLive();
+    writeArchive('workspace-a', fmtArchiveStamp(new Date()), ['id-x'], 'workspace-a-manuel.md');
+    const result = await run();
+    expect(result.archiveFilesUnmatched).toBe(1);
+    expect(result.archiveFilesScanned).toBe(0);
+    expect(result.archiveHealed).toBe(0);
+  });
+
+  test('lookback sur la date du NOM, pas le mtime (DriveFS peut dériver le mtime)', async () => {
+    writeLive();
+    // Nom vieux de 40 j (lookback 30 j), mtime maintenant → EXCLU par le nom.
+    writeArchive(
+      'workspace-a',
+      fmtArchiveStamp(new Date(Date.now() - 40 * 86_400_000)),
+      ['id-stale']
+    );
+    // Nom frais, mtime vieux de 40 j → SCANNÉ quand même : le nom gouverne.
+    const fresh = writeArchive('workspace-a', fmtArchiveStamp(new Date()), ['id-fresh']);
+    const old = new Date(Date.now() - 40 * 86_400_000);
+    utimesSync(join(dashboardsDir, 'archive', fresh), old, old);
+    const result = await run();
+    expect(result.archiveFilesScanned).toBe(1);
+    expect(result.archiveHealed).toBe(1); // id-fresh uniquement
+    expect(archiveCalls).toEqual([{ key: 'workspace-a', ids: ['id-fresh'] }]);
+  });
+
+  test('fetch d’ids archivés en échec (null) → fail-closed : aucune guérison ce tour', async () => {
+    writeLive();
+    writeArchive();
+    fetchArchivedIdsFails = true;
+    const result = await run();
+    expect(result.archiveFilesScanned).toBe(0);
+    expect(result.archiveHealed).toBe(0);
+    expect(archiveCalls).toEqual([]);
+    // Contrôle positif : la passe fichier vivant reste active.
+    expect(result.reconciled).toBe(1);
+  });
+
+  test('id revenu dans le canon ET présent en archive → réactivé par la passe fichier, JAMAIS re-archivé par le heal', async () => {
+    // Fork-merge : id-live condensé autrefois (donc en archive) puis restauré
+    // dans le canon, avec dual-write PG historiquement manqué. La passe
+    // fichier l'insère ACTIF ; le heal ne doit pas le stamper archivé.
+    writeLive('workspace-a', ['id-live']);
+    writeArchive('workspace-a', fmtArchiveStamp(new Date()), ['id-live']);
+    const result = await run();
+    expect(result.reconciled).toBe(1);
+    expect(result.archiveHealed).toBe(0);
+    expect(archiveCalls).toEqual([]);
+  });
+
+  test('archiveScanDays : défaut 30, vide/garbage/<1 → 30, valide flooré', () => {
+    expect(archiveScanDays()).toBe(30);
+    process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = '';
+    expect(archiveScanDays()).toBe(30);
+    process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = 'abc';
+    expect(archiveScanDays()).toBe(30);
+    process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = '0';
+    expect(archiveScanDays()).toBe(30);
+    process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = '7';
+    expect(archiveScanDays()).toBe(7);
+    process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = '3.9';
+    expect(archiveScanDays()).toBe(3);
+  });
+
+  // ms#1405 review (ai-01): the scan is opt-in — the fleet GDrive cost
+  // (thousands of archive files, >120 s readdir during the 07/10 DriveFS
+  // episode) must not land on every dual-write RSM process by default.
+  test('flag absent → pas de passe archive (opt-in), contrat par défaut', async () => {
+    writeLive();
+    writeArchive();
+    delete process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN;
+    const result = await run();
+    expect(result.archiveFilesScanned).toBe(0);
+    expect(result.archiveHealed).toBe(0);
+    expect(result.archiveScanSkipped).toBe('disabled');
+    // La passe insert du fichier vivant reste active (contrôle positif).
+    expect(result.parsedKeys).toBe(1);
+  });
+
+  test.each(['0', 'false', '00', ''])(
+    'flag=%j (non-«1») → passe absente',
+    async (value) => {
+      writeLive();
+      writeArchive();
+      process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN = value;
+      const result = await run();
+      expect(result.archiveFilesScanned).toBe(0);
+      expect(result.archiveHealed).toBe(0);
+      expect(result.archiveScanSkipped).toBe('disabled');
+    }
+  );
+
+  test('flag=1 → passe active (contrôle positif de l’opt-in)', async () => {
+    writeLive();
+    writeArchive();
+    const result = await run();
+    expect(result.archiveScanSkipped).toBeUndefined();
+    expect(result.archiveFilesScanned).toBe(1);
+    expect(result.archiveHealed).toBe(1);
+  });
+
+  // ms#1405 review, point 2: the fleet pass lock — one scan per cluster, not
+  // one per RSM process (13-15 claude.exe per machine, each with its own RSM).
+  test('verrou tenu par un autre processus → passe sautée, aucun readdir', async () => {
+    writeLive();
+    writeArchive();
+    const holder = { held: true };
+    const lockCalls: string[] = [];
+    const result = await reconcileDashboardsFromGDrive({
+      dashboardsDir,
+      reader: readerDouble,
+      writer: {
+        ...writerDouble,
+        async tryAcquireRooSyncDashboardLock() {
+          lockCalls.push('acquire');
+          return 'held' as const;
+        },
+        async releaseRooSyncDashboardLock() {
+          lockCalls.push('release');
+        },
+      },
+      fetchArchivedIds: fetchArchivedIdsDouble,
+    });
+    expect(holder.held).toBe(true); // le double d'origine reste intact
+    expect(result.archiveScanSkipped).toBe('lock-held');
+    expect(result.archiveFilesScanned).toBe(0);
+    expect(archiveCalls).toEqual([]);
+    expect(lockCalls).toEqual(['acquire']); // jamais acquis → jamais relâché
+    // Le reste de la passe est intact (contrôle positif).
+    expect(result.parsedKeys).toBe(1);
+  });
+
+  test('verrou acquis → passe exécutée puis verrou relâché avec le même holder', async () => {
+    writeLive();
+    writeArchive();
+    const acquired: Array<[string, string]> = [];
+    const released: Array<[string, string]> = [];
+    const result = await reconcileDashboardsFromGDrive({
+      dashboardsDir,
+      reader: readerDouble,
+      writer: {
+        ...writerDouble,
+        async tryAcquireRooSyncDashboardLock(lockKey: string, holderJson: string) {
+          acquired.push([lockKey, holderJson]);
+          return 'acquired' as const;
+        },
+        async releaseRooSyncDashboardLock(lockKey: string, holderJson: string) {
+          released.push([lockKey, holderJson]);
+        },
+      },
+      fetchArchivedIds: fetchArchivedIdsDouble,
+    });
+    expect(result.archiveHealed).toBe(1);
+    expect(acquired).toHaveLength(1);
+    expect(acquired[0][0]).toBe(ARCHIVE_SCAN_LOCK_KEY);
+    // Le relâchement doit viser EXACTEMENT le holder posé (le store ne libère
+    // que si le détenteur correspond).
+    expect(released).toEqual([[ARCHIVE_SCAN_LOCK_KEY, acquired[0][1]]]);
+  });
+
+  // ms#1405 review, point 3 (one line): the truncation-fallback archive
+  // (`{key}-{ISO}-fallback.md`, dashboard.ts:3862) now stamps [msg:] too, and
+  // it is the over-cap incident window itself — it must be healable.
+  test('archive de repli `-fallback.md` → indexée et guérie', async () => {
+    writeLive();
+    writeArchive(
+      'workspace-a',
+      `${fmtArchiveStamp(new Date(Date.now() - 3_600_000))}-fallback`,
+      ['id-fallback']
+    );
+    const result = await run();
+    expect(result.archiveFilesUnmatched).toBe(0);
+    expect(result.archiveFilesScanned).toBe(1);
+    expect(result.archiveIdsSeen).toBe(1);
+    expect(result.archiveHealed).toBe(1);
+    expect(archiveCalls).toEqual([{ key: 'workspace-a', ids: ['id-fallback'] }]);
+  });
+
+  test('kill-switch ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN=0 → passe absente', async () => {
+    writeLive();
+    writeArchive();
+    process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN = '0';
+    const result = await run();
+    expect(result.archiveFilesScanned).toBe(0);
+    expect(result.archiveHealed).toBe(0);
+    // La passe insert du fichier vivant reste active (contrôle positif).
+    expect(result.parsedKeys).toBe(1);
+  });
+
+  test('échec d’insert PG → compté en erreur, la passe ne crashe pas', async () => {
+    writeLive();
+    writeArchive();
+    // Journal vivant déjà complet pour id-live : la passe fichier n'insère
+    // rien (pas de `continue` sur son échec), seul le heal d'archive échoue.
+    pgIds.set('workspace-a', ['id-live']);
+    syncThrows = true;
+    const result = await run();
+    expect(result.status).toBe('ok');
+    expect(result.errors).toBeGreaterThanOrEqual(1);
+    expect(result.failures.some((f) => f.includes('archive-scan'))).toBe(true);
+    expect(result.archiveHealed).toBe(0);
+  });
+
+  test('même id dans deux archives de la clé → guéri une seule fois', async () => {
+    writeLive();
+    writeArchive('workspace-a', fmtArchiveStamp(new Date(Date.now() - 7_200_000)), ['id-dup']);
+    writeArchive('workspace-a', fmtArchiveStamp(new Date(Date.now() - 3_600_000)), ['id-dup']);
+    const result = await run();
+    expect(result.archiveFilesScanned).toBe(2);
+    expect(result.archiveIdsSeen).toBe(2);
+    const heals = writerCalls.filter((c) =>
+      c.messages.some((m) => m.message_id === 'id-dup')
+    );
+    expect(heals).toHaveLength(1);
+    expect(archiveCalls).toEqual([{ key: 'workspace-a', ids: ['id-dup'] }]);
+  });
+
+  test('gap vivant + gap d’archive → les deux passes guérissent', async () => {
+    writeLive('workspace-a', ['id-live']);
+    writeArchive('workspace-a', fmtArchiveStamp(new Date()), ['id-arch']);
+    const result = await run();
+    expect(result.keysWithGap).toBe(1); // id-live inséré par la passe fichier
+    expect(result.reconciled).toBe(1);
+    expect(result.archiveHealed).toBe(1); // id-arch par la passe archive
+  });
+
+  test('parseArchiveIdBearingMessages : headers non-message ignorés, CRLF normalisé', () => {
+    const content = [
+      '---',
+      'type: archive',
+      '---',
+      '',
+      '# Archive : workspace-a',
+      '',
+      '## Statut avant condensation',
+      '',
+      'texte de statut quelconque',
+      '',
+      '### [2026-10-07T21:00:00Z] m|w\r\n[msg: id-crlf]\r\n\r\ncontenu crlf',
+    ].join('\r\n');
+    const parsed = parseArchiveIdBearingMessages(content);
+    expect(parsed.messages).toHaveLength(1);
+    expect(parsed.messages[0].id).toBe('id-crlf');
+    expect(parsed.messages[0].content).toBe('contenu crlf');
+    expect(parsed.idless).toBe(0);
+  });
+
+  test('parseArchiveIdBearingMessages : bloc à en-tête illisible COMPTÉ, préambule non', () => {
+    const content = [
+      '# Archive : workspace-a', // préambule — pas un message, jamais compté
+      '',
+      '### [2026-10-07T21:00:00Z] m', // en-tête tronqué (pas de |workspace) : regex non satisfaite
+      '',
+      'contenu orphelin',
+      '',
+      '### [2026-10-07T22:00:00Z] m|w',
+      '[msg: id-ok]',
+      '',
+      'contenu ok',
+      '',
+      '### [2026-10-07T23:00:00Z] m|w', // id-less (pré-fix d’émission)
+      '',
+      'sans empreinte',
+    ].join('\n');
+    const parsed = parseArchiveIdBearingMessages(content);
+    expect(parsed.messages).toHaveLength(1);
+    expect(parsed.messages[0].id).toBe('id-ok');
+    // 2, pas 1 : l’en-tête illisible est une entrée que le heal ne peut pas
+    // lier — la compter est ce qui rend la dérive visible (ms#1405 review).
+    expect(parsed.idless).toBe(2);
+  });
+});

@@ -880,6 +880,27 @@ function getArchiveDir(): string {
   return path.join(getDashboardsDir(), 'archive');
 }
 
+/**
+ * Blocs markdown d'une archive de condensation — extrait pour être testable.
+ *
+ * #3151 Phase C residual (incident po-2025 07/10, message « adjoint » sur
+ * workspace-CoursIA-2) : la ligne [msg: id] DOIT survivre à l'archivage. Sans
+ * elle, un message condensé avant que son dual-write PG n'ait atterri devient
+ * unfingerprintable — la passe de reconcile archive-scan ne peut jamais le
+ * guérir (même règle que les messages pré-v3). Le parseur read_archive
+ * comprend [msg:] depuis #1363 ; seul l'écrivain ne l'émettait pas, et la
+ * perte mesurée (id ni dans le canon, ni dans PG, ni identifiable dans aucune
+ * des 5 316 archives CoursIA-2) est la conséquence directe de ce trou.
+ */
+export function buildArchiveMessagesMarkdown(messages: IntercomMessage[]): string {
+  return messages
+    .map(
+      (msg) =>
+        `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]\n\n${msg.content}`
+    )
+    .join('\n\n---\n\n');
+}
+
 // ─── #4003 : sweep des staging .tmp orphelins ───
 
 /** #4003 — un tmp plus jeune que ce seuil est présumé in-flight et laissé en place. */
@@ -3897,9 +3918,9 @@ async function executeTruncationFallback(
     fallbackError,
   });
 
-  const archiveMessages = toArchive.map(msg => {
-    return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n\n${msg.content}`;
-  }).join('\n\n---\n\n');
+  // #3151 Phase C residual (incident po-2025 07/10, message « adjoint ») : la
+  // ligne [msg: id] DOIT survivre à l'archivage — cf. buildArchiveMessagesMarkdown.
+  const archiveMessages = buildArchiveMessagesMarkdown(toArchive);
 
   const archiveContent = `---
 ${archiveFrontmatter.trim()}
@@ -4406,9 +4427,9 @@ async function condenseIntercom(
     statusUpdated
   });
 
-  const archiveMessages = toArchive.map(msg => {
-    return `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n\n${msg.content}`;
-  }).join('\n\n---\n\n');
+  // #3151 Phase C residual (incident po-2025 07/10, message « adjoint ») : la
+  // ligne [msg: id] DOIT survivre à l'archivage — cf. buildArchiveMessagesMarkdown.
+  const archiveMessages = buildArchiveMessagesMarkdown(toArchive);
 
   const archiveContent = `---
 ${archiveFrontmatter.trim()}
