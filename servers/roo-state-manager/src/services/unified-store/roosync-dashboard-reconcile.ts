@@ -66,7 +66,7 @@
  * UNIFIED_STORE_PG_URL) — reconciling into a Null writer is pure GDrive IO.
  */
 
-import { readdir, readFile, stat } from 'fs/promises';
+import { readdir, readFile } from 'fs/promises';
 import { join } from 'path';
 import {
   parseDashboardMarkdown,
@@ -203,16 +203,26 @@ export function isArchiveScanEnabled(): boolean {
 
 /** Max age (days) of an archive file this pass will scan. */
 export function archiveScanDays(): number {
-  const v = Number(process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS);
-  return Number.isFinite(v) && v >= 0 ? v : 30;
+  // '' / garbage / <1 would silently window out every archive — default 30.
+  const raw = (process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS ?? '').trim();
+  if (raw === '') return 30;
+  const v = Number(raw);
+  return Number.isFinite(v) && v >= 1 ? Math.floor(v) : 30;
 }
 
 /** Condensation archive name shape: `{key}-{yyyy-MM-ddTHH-mm-ss}.md`. */
 const ARCHIVE_FILE_RE = /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.md$/;
 
-interface IndexedArchiveFile {
-  name: string;
-  mtimeMs: number;
+/** `yyyy-MM-ddTHH-mm-ss` (name suffix) → epoch ms, local components. */
+function archiveNameDateMs(stamp: string): number {
+  return new Date(
+    Number(stamp.slice(0, 4)),
+    Number(stamp.slice(5, 7)) - 1,
+    Number(stamp.slice(8, 10)),
+    Number(stamp.slice(11, 13)),
+    Number(stamp.slice(14, 16)),
+    Number(stamp.slice(17, 19))
+  ).getTime();
 }
 
 /**
@@ -226,8 +236,8 @@ export async function indexArchiveFiles(
   dashboardsDir: string,
   lookbackDays: number,
   onUnmatched: () => void
-): Promise<Map<string, IndexedArchiveFile[]>> {
-  const index = new Map<string, IndexedArchiveFile[]>();
+): Promise<Map<string, string[]>> {
+  const index = new Map<string, string[]>();
   let files: string[];
   try {
     files = await readdir(join(dashboardsDir, 'archive'));
@@ -242,16 +252,11 @@ export async function indexArchiveFiles(
       continue;
     }
     if (isGdriveConflictCopyFile(name)) continue;
-    const path = join(dashboardsDir, 'archive', name);
-    let mtimeMs = 0;
-    try {
-      mtimeMs = (await stat(path)).mtimeMs;
-    } catch {
-      continue; // DriveFS hiccup — next pass retries
-    }
-    if (mtimeMs < cutoff) continue;
+    // The name's date suffix — not mtime, which DriveFS hydration/sync can
+    // drift — is the authoritative creation time (archives are write-once).
+    if (archiveNameDateMs(m[2]) < cutoff) continue;
     const list = index.get(m[1]) ?? [];
-    list.push({ name, mtimeMs });
+    list.push(name);
     index.set(m[1], list);
   }
   return index;
@@ -380,7 +385,7 @@ export async function reconcileDashboardsFromGDrive(
     ? await indexArchiveFiles(options.dashboardsDir, archiveScanDays(), () => {
         result.archiveFilesUnmatched++;
       })
-    : new Map<string, IndexedArchiveFile[]>();
+    : new Map<string, string[]>();
 
   for (const file of keyed) {
     const key = file.replace(/\.md$/, '');
@@ -469,58 +474,63 @@ export async function reconcileDashboardsFromGDrive(
         try {
           archivedIds = await fetchArchivedIds(key);
         } catch {
-          archivedIds = null; // fail-open: inserts stay DO NOTHING-safe
+          archivedIds = null;
         }
-        const knownIds = new Set<string>([
-          ...(existing?.messages ?? [])
-            .map((m) => m.message_id)
-            .filter((id): id is string => !!id),
-          ...(archivedIds ?? []),
-        ]);
-        const unmirrored = new Map<string, IntercomMessage>();
-        for (const arch of keyArchives) {
-          try {
-            const raw = await readFile(
-              join(options.dashboardsDir, 'archive', arch.name),
-              'utf-8'
-            );
-            result.archiveFilesScanned++;
-            const parsed = parseArchiveIdBearingMessages(raw);
-            result.archiveIdsSeen += parsed.messages.length;
-            result.archiveIdlessSkipped += parsed.idless;
-            for (const m of parsed.messages) {
-              if (knownIds.has(m.id) || unmirrored.has(m.id)) continue;
-              unmirrored.set(m.id, {
-                id: m.id,
-                timestamp: m.timestamp,
-                author: { machineId: m.machineId, workspace: m.workspace },
-                content: m.content,
-              });
+        // null = fetch failed/timed out (logged upstream) → the journal is
+        // incomplete → fail-closed: no heal for this key this pass. Unlike the
+        // merge-tombstone union (fail-open there, where a missing set only
+        // risks keeping a row alive), an unfiltered stamp here would re-archive
+        // previously-healed rows and inflate archiveHealed every pass.
+        if (archivedIds !== null) {
+          // Canon wins: an id present in the live file (e.g. restored by a
+          // fork merge after condensation) is never archived by this pass —
+          // the file-pass above just re-activated it in PG.
+          const knownIds = new Set<string>([...persisted, ...pgIds, ...archivedIds]);
+          const unmirrored = new Map<string, IntercomMessage>();
+          for (const arch of keyArchives) {
+            try {
+              const raw = await readFile(
+                join(options.dashboardsDir, 'archive', arch),
+                'utf-8'
+              );
+              result.archiveFilesScanned++;
+              const parsed = parseArchiveIdBearingMessages(raw);
+              result.archiveIdsSeen += parsed.messages.length;
+              result.archiveIdlessSkipped += parsed.idless;
+              for (const m of parsed.messages) {
+                if (knownIds.has(m.id) || unmirrored.has(m.id)) continue;
+                unmirrored.set(m.id, {
+                  id: m.id,
+                  timestamp: m.timestamp,
+                  author: { machineId: m.machineId, workspace: m.workspace },
+                  content: m.content,
+                });
+              }
+            } catch (error) {
+              result.errors++;
+              result.failures.push(`${arch}: archive-scan read failed — ${String(error)}`);
             }
-          } catch (error) {
-            result.errors++;
-            result.failures.push(`${arch.name}: archive-scan read failed — ${String(error)}`);
           }
-        }
-        if (unmirrored.size > 0) {
-          const rows = mapDashboardToRows({
-            ...dashboard,
-            intercom: { ...dashboard.intercom, messages: [...unmirrored.values()] },
-          });
-          try {
-            await writer.syncRooSyncDashboard(
-              mapDashboardToRows(dashboard).row,
-              rows.messages,
-              { backfill: true }
-            );
-            const stamped = await writer.archiveRooSyncDashboardMessages(
-              key,
-              [...unmirrored.keys()]
-            );
-            result.archiveHealed += stamped;
-          } catch (error) {
-            result.errors++;
-            result.failures.push(`${file}: archive-scan heal failed — ${String(error)}`);
+          if (unmirrored.size > 0) {
+            const rows = mapDashboardToRows({
+              ...dashboard,
+              intercom: { ...dashboard.intercom, messages: [...unmirrored.values()] },
+            });
+            try {
+              await writer.syncRooSyncDashboard(
+                mapDashboardToRows(dashboard).row,
+                rows.messages,
+                { backfill: true }
+              );
+              const stamped = await writer.archiveRooSyncDashboardMessages(
+                key,
+                [...unmirrored.keys()]
+              );
+              result.archiveHealed += stamped;
+            } catch (error) {
+              result.errors++;
+              result.failures.push(`${key}: archive-scan heal failed — ${String(error)}`);
+            }
           }
         }
       }

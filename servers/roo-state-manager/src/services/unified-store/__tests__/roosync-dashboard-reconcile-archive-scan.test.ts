@@ -19,8 +19,15 @@ import { join } from 'path';
 import {
   reconcileDashboardsFromGDrive,
   parseArchiveIdBearingMessages,
+  archiveScanDays,
 } from '../roosync-dashboard-reconcile.js';
 import type { RooSyncDashboardRow, RooSyncDashboardMessageRow } from '../types.js';
+
+/** Horodatage de nom d'archive au format réel `yyyy-MM-ddTHH-mm-ss` (local). */
+function fmtArchiveStamp(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+}
 
 function liveFixture(key: string, ids: string[]): string {
   const blocks = ids.map(
@@ -121,7 +128,11 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
     },
   };
 
-  const fetchArchivedIdsDouble = async (key: string) => archivedIds.get(key) ?? null;
+  // null = échec/timeout du fetch (sémantique réelle : succès sans lignes →
+  // Set vide). Le drapeau permet de forcer l'échec sans toucher à la map.
+  let fetchArchivedIdsFails = false;
+  const fetchArchivedIdsDouble = async (key: string) =>
+    fetchArchivedIdsFails ? null : (archivedIds.get(key) ?? new Set<string>());
 
   const run = () =>
     reconcileDashboardsFromGDrive({
@@ -136,7 +147,9 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
 
   const writeArchive = (
     key = 'workspace-a',
-    date = '2026-10-07T23-05-18',
+    // Date du nom dérivée de maintenant : le cutoff du scan lit le NOM, des
+    // dates fixes casseraient la suite au-delà de 30 jours.
+    date = fmtArchiveStamp(new Date()),
     entries: (string | null)[] = ['id-arch'],
     name?: string
   ) => {
@@ -168,6 +181,7 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
     pgCreatedAt = new Map();
     archivedIds = new Map();
     syncThrows = false;
+    fetchArchivedIdsFails = false;
   });
 
   afterEach(() => {
@@ -229,7 +243,7 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
 
   test('archive pré-fix (sans [msg:]) → comptée idless, aucun insert', async () => {
     writeLive();
-    writeArchive('workspace-a', '2026-10-07T23-05-18', [null, null]);
+    writeArchive('workspace-a', fmtArchiveStamp(new Date()), [null, null]);
     const result = await run();
     expect(result.archiveIdlessSkipped).toBe(2);
     expect(result.archiveIdsSeen).toBe(0);
@@ -239,24 +253,67 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
 
   test('nom d’archive hors forme {key}-{ISO} → non indexé, compté unmatched', async () => {
     writeLive();
-    writeArchive('workspace-a', '2026-10-07T23-05-18', ['id-x'], 'workspace-a-manuel.md');
+    writeArchive('workspace-a', fmtArchiveStamp(new Date()), ['id-x'], 'workspace-a-manuel.md');
     const result = await run();
     expect(result.archiveFilesUnmatched).toBe(1);
     expect(result.archiveFilesScanned).toBe(0);
     expect(result.archiveHealed).toBe(0);
   });
 
-  test('archive plus vieille que le lookback → non scannée', async () => {
+  test('lookback sur la date du NOM, pas le mtime (DriveFS peut dériver le mtime)', async () => {
     writeLive();
-    const fname = writeArchive();
-    // mtime posé à 40 j (lookback par défaut 30 j) — déterministe, pas de
-    // course avec l'horloge comme un lookback 0 l'aurait été.
-    const p = join(dashboardsDir, 'archive', fname);
+    // Nom vieux de 40 j (lookback 30 j), mtime maintenant → EXCLU par le nom.
+    writeArchive(
+      'workspace-a',
+      fmtArchiveStamp(new Date(Date.now() - 40 * 86_400_000)),
+      ['id-stale']
+    );
+    // Nom frais, mtime vieux de 40 j → SCANNÉ quand même : le nom gouverne.
+    const fresh = writeArchive('workspace-a', fmtArchiveStamp(new Date()), ['id-fresh']);
     const old = new Date(Date.now() - 40 * 86_400_000);
-    utimesSync(p, old, old);
+    utimesSync(join(dashboardsDir, 'archive', fresh), old, old);
+    const result = await run();
+    expect(result.archiveFilesScanned).toBe(1);
+    expect(result.archiveHealed).toBe(1); // id-fresh uniquement
+    expect(archiveCalls).toEqual([{ key: 'workspace-a', ids: ['id-fresh'] }]);
+  });
+
+  test('fetch d’ids archivés en échec (null) → fail-closed : aucune guérison ce tour', async () => {
+    writeLive();
+    writeArchive();
+    fetchArchivedIdsFails = true;
     const result = await run();
     expect(result.archiveFilesScanned).toBe(0);
     expect(result.archiveHealed).toBe(0);
+    expect(archiveCalls).toEqual([]);
+    // Contrôle positif : la passe fichier vivant reste active.
+    expect(result.reconciled).toBe(1);
+  });
+
+  test('id revenu dans le canon ET présent en archive → réactivé par la passe fichier, JAMAIS re-archivé par le heal', async () => {
+    // Fork-merge : id-live condensé autrefois (donc en archive) puis restauré
+    // dans le canon, avec dual-write PG historiquement manqué. La passe
+    // fichier l'insère ACTIF ; le heal ne doit pas le stamper archivé.
+    writeLive('workspace-a', ['id-live']);
+    writeArchive('workspace-a', fmtArchiveStamp(new Date()), ['id-live']);
+    const result = await run();
+    expect(result.reconciled).toBe(1);
+    expect(result.archiveHealed).toBe(0);
+    expect(archiveCalls).toEqual([]);
+  });
+
+  test('archiveScanDays : défaut 30, vide/garbage/<1 → 30, valide flooré', () => {
+    expect(archiveScanDays()).toBe(30);
+    process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = '';
+    expect(archiveScanDays()).toBe(30);
+    process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = 'abc';
+    expect(archiveScanDays()).toBe(30);
+    process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = '0';
+    expect(archiveScanDays()).toBe(30);
+    process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = '7';
+    expect(archiveScanDays()).toBe(7);
+    process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = '3.9';
+    expect(archiveScanDays()).toBe(3);
   });
 
   test('kill-switch ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN=0 → passe absente', async () => {
@@ -286,8 +343,8 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
 
   test('même id dans deux archives de la clé → guéri une seule fois', async () => {
     writeLive();
-    writeArchive('workspace-a', '2026-10-07T22-00-00', ['id-dup']);
-    writeArchive('workspace-a', '2026-10-07T23-00-00', ['id-dup']);
+    writeArchive('workspace-a', fmtArchiveStamp(new Date(Date.now() - 7_200_000)), ['id-dup']);
+    writeArchive('workspace-a', fmtArchiveStamp(new Date(Date.now() - 3_600_000)), ['id-dup']);
     const result = await run();
     expect(result.archiveFilesScanned).toBe(2);
     expect(result.archiveIdsSeen).toBe(2);
@@ -300,7 +357,7 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
 
   test('gap vivant + gap d’archive → les deux passes guérissent', async () => {
     writeLive('workspace-a', ['id-live']);
-    writeArchive('workspace-a', '2026-10-07T23-05-18', ['id-arch']);
+    writeArchive('workspace-a', fmtArchiveStamp(new Date()), ['id-arch']);
     const result = await run();
     expect(result.keysWithGap).toBe(1); // id-live inséré par la passe fichier
     expect(result.reconciled).toBe(1);
