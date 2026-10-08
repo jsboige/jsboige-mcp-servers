@@ -142,6 +142,51 @@ describe('MessageManager — cloud-only inbox read timeout (#818 class, #2267)',
     expect(mocks.error).toHaveBeenCalled();
   }, 10_000);
 
+  test('#4131 lot 2: the read carries an AbortSignal — aborting it CANCELS the read, not just races it', async () => {
+    const goodId = 'msg-good-eeeeeeeeee';
+    const slowId = 'msg-slow-ffffffffff';
+    seedInboxMessage(sharedState, goodId, 'myia-po-2023', 'myia-po-2025');
+    seedInboxMessage(sharedState, slowId, 'myia-po-2024', 'myia-po-2025');
+
+    const manager = new MessageManager(sharedState, TEST_TIMEOUT_MS);
+
+    // A read that OBSERVES the signal, the way fs does: reject with AbortError
+    // the moment it is aborted. The race backstop sits at timeout+250ms, so a
+    // passing assertion on the AbortError path below can only come from the
+    // signal — this is what distinguishes cancellation from the old behavior
+    // (result discarded, underlying read left running).
+    let captured: AbortSignal | undefined;
+    mocks.readFile.mockImplementation(async (filePath: string, opts?: unknown) => {
+      if (String(filePath).includes(slowId)) {
+        captured = (opts as { signal?: AbortSignal } | undefined)?.signal;
+        return new Promise<string>((_resolve, reject) => {
+          captured?.addEventListener('abort', () => {
+            const err = new Error('The operation was aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        });
+      }
+      return realReadFile(filePath, 'utf-8');
+    });
+
+    const result = await manager.readInbox('myia-po-2025', 'all');
+
+    // The signal reached fs.readFile — the read is cancellable…
+    expect(captured).toBeDefined();
+    // …it was aborted (the read's own deadline), the file is skipped…
+    expect(captured!.aborted).toBe(true);
+    const ids = result.map(m => m.id);
+    expect(ids).toContain(goodId);
+    expect(ids).not.toContain(slowId);
+    // …and the skip was settled by the CANCELLATION, not by the race: the
+    // logged reason is the read's AbortError, and the race's "timed out" error
+    // never appears.
+    const reasons = mocks.error.mock.calls.map(c => c[1] as { name?: string; message?: string });
+    expect(reasons.some(r => r?.name === 'AbortError')).toBe(true);
+    expect(reasons.some(r => String(r?.message ?? '').includes('timed out'))).toBe(false);
+  }, 10_000);
+
   test('readInbox returns empty when every inbox file is cloud-only', async () => {
     const hungId1 = 'msg-hung1-cccccccccc';
     const hungId2 = 'msg-hung2-dddddddddd';

@@ -367,6 +367,17 @@ export class MessageManager {
    * Cf. #818 (AttachmentManager) + #2267.
    */
   private static readonly INBOX_READ_TIMEOUT_MS = 10_000;
+  /**
+   * Grace added to the caller-bounding race so the abort lands first (#4131
+   * lot 2).
+   *
+   * Each read carries an `AbortSignal` at `readTimeoutMs`; a read that can
+   * observe it rejects on its own inside this grace, so what surfaces is the
+   * cancellation (AbortError) and never the race's timeout. The grace exists
+   * only for a read that CANNOT observe the signal (a wedged native call),
+   * where `withReadTimeout` remains the backstop.
+   */
+  private static readonly READ_ABORT_GRACE_MS = 250;
   /** Per-file read timeout (overridable for tests; production = INBOX_READ_TIMEOUT_MS) */
   private readonly readTimeoutMs: number;
   /** Negative-cache TTL (overridable for tests; production = NEGATIVE_CACHE_TTL_MS) */
@@ -1056,9 +1067,25 @@ export class MessageManager {
           // MCP tool timeout. On timeout, throw → this becomes a rejected
           // settled result → the existing rejected-handler below logs + skips
           // the file, so the inbox returns a partial result (#818 / #2267).
+          //
+          // #4131 lot 2: the deadline now CANCELS the read instead of only
+          // abandoning it. `withReadTimeout` alone stopped waiting — a
+          // cloud-only fetch kept churning the threadpool after its result was
+          // discarded, and a slow-but-alive file was recorded as a failure.
+          // `fs.readFile` honours the signal: queued work is dropped, an
+          // in-flight read rejects and the chain stops. `withReadTimeout` stays
+          // as the caller-bounding backstop behind READ_ABORT_GRACE_MS.
+          //
+          // Still reachable after the PG cut-over: this is the graceful
+          // degradation path when the PG mailbox read returns null
+          // (`readInbox`, "[channel-pg] PG mailbox read failed"), and the
+          // primary path on every seat that has not flipped the flag.
           const content = await withReadTimeout(
-            fs.readFile(join(this.inboxPath, file), 'utf-8'),
-            this.readTimeoutMs,
+            fs.readFile(join(this.inboxPath, file), {
+              encoding: 'utf-8',
+              signal: AbortSignal.timeout(this.readTimeoutMs),
+            }),
+            this.readTimeoutMs + MessageManager.READ_ABORT_GRACE_MS,
           );
           if (content === null) {
             throw new Error(`Inbox file read timed out (cloud-only?): ${file}`);
