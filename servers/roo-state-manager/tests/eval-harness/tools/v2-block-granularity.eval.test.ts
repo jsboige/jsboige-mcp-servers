@@ -58,9 +58,12 @@ import { handleCodebaseSearch } from '../../../src/tools/search/search-codebase.
  * exact path — every other seat gets collection_not_found and the V2 contract
  * is graded FAIL for an environment reason. Walking up from this test file to
  * the enclosing roo-extensions checkout makes each seat probe the collection
- * of the checkout the harness actually runs from. Returns null when the
- * harness runs outside a roo-extensions checkout (e.g. a bare submodule
- * worktree): the scenario then records INCONCLUSIVE, never a crash.
+ * of the checkout the harness actually runs from. Returns null when the walk
+ * up finds no enclosing checkout (e.g. a bare submodule worktree outside any
+ * roo-extensions clone): the scenario then records INCONCLUSIVE, never a
+ * crash. A worktree NESTED under a roo-extensions checkout resolves to that
+ * worktree's own root (its git dir satisfies the walk-up) — same safe
+ * outcome, precise wording (ai-01 review on ms#1404).
  */
 function resolveScenarioWorkspace(): string | null {
 	let dir = dirname(fileURLToPath(import.meta.url));
@@ -93,6 +96,26 @@ const BUILD_DIR_RE = /(^|[\\/])build(-[a-z0-9]+)?[\\/]/i;
 const DATA_FILE_RE = /\.(json|jsonc|json5|ya?ml|csv|tsv|ini|toml|lock)$/i;
 const SOURCE_EXT_RE = /\.(ts|tsx|js|jsx|mjs|cjs|py|psm1|ps1|go|rs|java|cs|cpp|cc|c|h|hpp)$/i;
 
+// Environment-only failure modes: INCONCLUSIVE at grading time. Any other
+// non-success — chiefly the catch-all `unknown` of classifySearchError
+// (rendered at search-codebase.tool.ts l.1937) — is a genuine code exception
+// and reads FAIL: grading falls through to the gates, which cannot pass
+// without results (ai-01 review on ms#1404). Keep in sync with the `mode:`
+// values of search-error-classifier.ts plus the tool's own
+// collection_not_found (l.1443).
+const ENVIRONMENT_STATUS_MODES = new Set([
+	'collection_not_found',
+	'auth_failed',
+	'qdrant_collection_missing',
+	'embedding_unreachable',
+	'embedding_timeout',
+	'qdrant_client_failure',
+	'qdrant_unreachable',
+	'qdrant_proxy_drop',
+	'qdrant_backend_slow',
+	'resource_exhausted',
+]);
+
 beforeAll(async () => {
 	await runStormGuard();
 });
@@ -123,9 +146,15 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 
 		// ---- infra shapes are INCONCLUSIVE, never FAIL (ai-01 triage #4105, 2026-10-07) ----
 		// Grade the V2 contract on a real semantic run only:
-		// (1) any non-success status (collection_not_found, qdrant_unreachable…)
-		//     is an environment state — e.g. this seat holds no collection for
-		//     the resolved checkout path — not a V2 regression;
+		// (1) a non-success status in the KNOWN environment modes
+		//     (collection_not_found — e.g. this seat holds no collection for the
+		//     resolved checkout path — embedding/qdrant unreachable or slow,
+		//     auth, rate limits) is an environment state, not a V2 regression →
+		//     INCONCLUSIVE. Any OTHER non-success — chiefly the catch-all
+		//     `unknown` of classifySearchError (search-codebase.tool.ts l.1937)
+		//     — is a genuine code exception and reads FAIL (ai-01 review on
+		//     ms#1404): grading falls through to the gates below, which cannot
+		//     pass without results;
 		// (2) fallback_used=true means the embedding breaker half-opened and the
 		//     tool answered from the token-match fallback, a path that renders
 		//     no blocks (search-codebase.tool.ts l.873-895) — the scenario is
@@ -133,9 +162,12 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 		//     closes the race window of the beforeAll storm-guard probe (the
 		//     guard's verdict can go stale between beforeAll and the call).
 		if (parsed.status !== 'success') {
-			console.log(`[INCONCLUSIVE] status=${parsed.status} for workspace '${SCENARIO_3_WORKSPACE}' — environment shape, the V2 contract is unmeasured on this run`);
-			expect(parsed.status).not.toBe('success');
-			return;
+			if (ENVIRONMENT_STATUS_MODES.has(parsed.status)) {
+				console.log(`[INCONCLUSIVE] status=${parsed.status} for workspace '${SCENARIO_3_WORKSPACE}' — environment shape, the V2 contract is unmeasured on this run`);
+				expect(parsed.status).not.toBe('success');
+				return;
+			}
+			console.log(`status=${parsed.status} (message: ${String(parsed.message ?? '').slice(0, 160)}) is not a known environment mode — grading continues: a genuine code exception reads FAIL, not INCONCLUSIVE`);
 		}
 		if (parsed.fallback_used === true) {
 			console.log(`[INCONCLUSIVE] codebase_search answered from the text fallback (fallback_used=true, fallback_reason=${parsed.fallback_reason}) — the V2 block contract does not apply to that path`);
