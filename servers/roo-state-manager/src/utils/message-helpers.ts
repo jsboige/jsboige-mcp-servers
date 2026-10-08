@@ -173,6 +173,55 @@ export function getLocalFullId(): string {
  */
 export const TRUSTED_CALLER_IDS_ENV = 'ROOSYNC_TRUSTED_CALLER_IDS';
 
+/**
+ * Parse ROOSYNC_TRUSTED_CALLER_IDS into a canonical lowercase list.
+ * Single parser for every "assertable machine" check (#3591 `as` gate,
+ * #4135 dashboard author-stamp gate) — two consumers, one definition.
+ */
+function parseTrustedCallerIds(): string[] {
+  return (process.env[TRUSTED_CALLER_IDS_ENV] ?? '')
+    .split(',')
+    .map((entry) => canonicalMachineId(entry.trim()).toLowerCase())
+    .filter(Boolean);
+}
+
+/**
+ * Gate a machine id about to be STAMPED as a dashboard author (#4135).
+ *
+ * Mirrors the #3591 `as` gate onto the dashboard path: `author`/`machineId`
+ * on write/append/update are client-side assertions resolved server-side, and
+ * an unvalidated one creates a phantom "online" machine in fleet health
+ * (measured: appends stamped `myia-po-204` from the NanoClaw ai-01 lane —
+ * a decommissioned/typo'd id that then carried a fresh `lastSeen`).
+ *
+ * Local machine always passes (zero behavior change for seats that don't
+ * assert). A foreign machine must be listed in ROOSYNC_TRUSTED_CALLER_IDS —
+ * same fail-closed list, same operator remedy as #3591.
+ *
+ * @param machineId Machine id as asserted by the caller (raw — canonicalized here)
+ * @param rejectedParam Name of the rejected parameter for the error payload
+ *                      ('author' or 'machineId' on the dashboard path)
+ * @throws StateManagerError VALIDATION_FAILED when the machine is neither
+ *                          local nor trusted
+ */
+export function assertStampsMachine(machineId: string, rejectedParam: string): void {
+  const local = getLocalMachineId().toLowerCase();
+  const canonical = canonicalMachineId(machineId.trim()).toLowerCase();
+  if (!canonical || canonical === local) return;
+  const trusted = parseTrustedCallerIds();
+  if (trusted.includes(canonical)) return;
+  throw new StateManagerError(
+    `Paramètre "${rejectedParam}" refusé : la machine « ${canonical} » n'est pas assertable sur ce process ` +
+      `(${TRUSTED_CALLER_IDS_ENV} ${trusted.length > 0 ? 'ne la liste pas' : 'non défini'}). ` +
+      `#4135 (mirror #3591) : le stamp d'auteur du dashboard est résolu côté serveur — une machine ` +
+      `périmée ou typoïée y devient une machine « online » fantôme dans le health flotte. ` +
+      `Faire lister la machine par l'opérateur du process RSM, ou corriger la source de l'assertion.`,
+    'VALIDATION_FAILED',
+    'MessageHelpers',
+    { rejectedParam, envVar: TRUSTED_CALLER_IDS_ENV, asserted: canonical }
+  );
+}
+
 export function resolveCallerIdentity(as?: string): {
   machineId: string;
   workspaceId: string | undefined;
@@ -192,10 +241,7 @@ export function resolveCallerIdentity(as?: string): {
   // donc le gate n'a qu'un seul endroit à vivre.
   const canonical = canonicalizeFullId(as.trim());
   const machine = parseMachineWorkspace(canonical).machineId.toLowerCase();
-  const trusted = (process.env[TRUSTED_CALLER_IDS_ENV] ?? '')
-    .split(',')
-    .map((entry) => canonicalMachineId(entry.trim()).toLowerCase())
-    .filter(Boolean);
+  const trusted = parseTrustedCallerIds();
   if (!trusted.includes(machine)) {
     throw new StateManagerError(
       `Paramètre "as" refusé : la machine « ${machine} » n'est pas assertable sur ce process ` +

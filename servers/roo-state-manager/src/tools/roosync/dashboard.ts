@@ -42,7 +42,7 @@ import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER } from '../../utils/secret-redaction.js';
 import { redactSecrets } from '../../services/task-indexer/EmbeddingValidator.js';
-import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
+import { getLocalMachineId, getLocalWorkspaceId, assertStampsMachine } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient, getLLMModelId, getFallbackChatOpenAIClient, getFallbackLLMModelId } from '../../services/openai.js';
 import {
@@ -4752,6 +4752,44 @@ function buildSizes(dashboard: Dashboard): DashboardSizes {
 }
 
 /**
+ * #4135 (revue ai-01/NanoClaw 08/10) — actions du dashboard qui ÉCRIVENT un
+ * stamp d'auteur. L'ensemble est **dérivé des sites `lastModifiedBy:` réels**
+ * du fichier, pas de l'intention : l'énumération écrite à l'intention est
+ * précisément ce qui avait laissé `merge` et `scrub` hors du premier gate.
+ *
+ *   write  → handleWrite   l.5377  `lastModifiedBy: author`
+ *   scrub  → handleScrub   l.5484  `lastModifiedBy: { machineId: resolvedMachineId, … }`
+ *   append → handleAppend  l.5785  `lastModifiedBy: author`
+ *   append → handleAppend  l.6044  `lastModifiedBy: author`
+ *   merge  → handleMerge   l.6853  `lastModifiedBy: author`
+ *   update → handleUpdate  l.7534  `lastModifiedBy: author`
+ *
+ * Plus un 7e site hors handler : `createEmptyDashboard` l.2400 (helper de
+ * création) — atteint uniquement depuis write/append/update (l.5412, 5645,
+ * 5653, 5663, 5670, 5680, 6078, 7557), jamais depuis read/list/delete/
+ * read_archive/read_overview, comme sa propre docstring l'énonce. Il n'ajoute
+ * donc aucune action au périmètre ; le test de dérive résout un tel helper par
+ * ses appelants et exige que chacune de ces actions soit déclarée ici.
+ *
+ * Hors ensemble, parce que ce ne sont PAS des écritures d'identité : les
+ * recopies `lastModifiedBy: dashboard.lastModifiedBy` (l.1919/2265/5270/6262/
+ * 6392) et les déclarations de type (l.4555/4664). Le health flotte lit
+ * `lastModifiedBy.machineId` (l.2129) — c'est ce champ, et lui seul, qui fait
+ * d'une machine une machine « online ».
+ *
+ * Un test de dérive (`__tests__/dashboard-author-gate.test.ts`) relit ce
+ * fichier, retrouve chaque site d'écriture et son handler, et échoue si un
+ * handler porteur d'un site n'est pas couvert par cet ensemble.
+ */
+const STAMPING_ACTIONS: ReadonlySet<string> = new Set([
+  'append',
+  'write',
+  'update',
+  'merge',
+  'scrub'
+]);
+
+/**
  * Handler pour l'outil roosync_dashboard
  */
 export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResult> {
@@ -4803,6 +4841,30 @@ export async function roosyncDashboard(rawArgs: unknown): Promise<DashboardResul
 
   const resolvedMachineId = args.machineId ?? getLocalMachineId();
   const resolvedWorkspace = args.workspace ?? getLocalWorkspaceId();
+
+  // #4135 — gate du stamp d'auteur (mirror #3591 sur le chemin dashboard).
+  // TOUTE action qui écrit un stamp passe par `assertStampsMachine` : une
+  // machine assertée ≠ machine locale du process doit être listée dans
+  // ROOSYNC_TRUSTED_CALLER_IDS, sinon elle devient une machine « online »
+  // fantôme dans le health flotte (appends `myia-po-204` depuis la lane
+  // NanoClaw ai-01, 2e occurrence).
+  //
+  // `scrub` diffère des autres : il écrit `resolvedMachineId` et **ignore
+  // `args.author`** (l.5484). C'est donc l'identité RÉELLEMENT ÉCRITE qui est
+  // attestée — un `author` fourni mais non écrit ne doit pas servir de
+  // laissez-passer (revue ai-01 08/10).
+  if (STAMPING_ACTIONS.has(args.action)) {
+    const scrubWritesResolved = args.action === 'scrub';
+    const asserted = scrubWritesResolved
+      ? resolvedMachineId
+      : (args.author?.machineId ?? resolvedMachineId);
+    const rejectedParam = (scrubWritesResolved || !args.author) ? 'machineId' : 'author';
+    assertStampsMachine(asserted, rejectedParam);
+  }
+  // read / list / delete / read_archive / read_overview ne stampent pas :
+  // `machineId` y reste un filtre cross-machine légitime, non gated par
+  // conception — et non par caractérisation de la famille d'actions.
+
   let key = buildDashboardKey(args.type, resolvedMachineId, resolvedWorkspace);
   const createIfNotExists = args.createIfNotExists !== false; // défaut: true
 

@@ -50,6 +50,10 @@ describe('roosync_dashboard', () => {
     process.env.ROOSYNC_SHARED_PATH = tmpDir;
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    // #4135 : ces tests simulent des sièges étrangers (author/machineId asserts
+    // sur write/append — tests 14/15, boucle ACK #1956). Le gate d'auteur exige
+    // que les machines simulées soient trustées, comme un vrai harnais flotte.
+    process.env.ROOSYNC_TRUSTED_CALLER_IDS = 'myia-po-2025,myia-ai-01,myia-po-2023,myia-po-2024';
     // #864: Réinitialiser le singleton LLM et supprimer les clés API
     // pour s'assurer que les tests de condensation sans LLM fonctionnent
     resetChatOpenAIClient();
@@ -71,6 +75,7 @@ describe('roosync_dashboard', () => {
     delete process.env.ROOSYNC_SHARED_PATH;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
+    delete process.env.ROOSYNC_TRUSTED_CALLER_IDS; // #4135
   });
 
   // === Test 1: Création dashboard global ===
@@ -2523,6 +2528,9 @@ describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sou
     process.env.ROOSYNC_SHARED_PATH = rlTmpDir;
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    // #4135 : le bloc simule un siège étranger « other-machine » (author asserts
+    // + writes type:'machine' ciblés) — trusté pour le harnais multi-machines.
+    process.env.ROOSYNC_TRUSTED_CALLER_IDS = 'other-machine';
     // #3782 locks-off-Drive : verrous fichier en tmpdir dédié.
     process.env.ROOSYNC_LOCK_DIR = path.join(rlTmpDir, 'locks');
     await fsp.mkdir(process.env.ROOSYNC_LOCK_DIR, { recursive: true });
@@ -2540,6 +2548,7 @@ describe('#3205 write-side résiduel — status-write / Auto-ACK / crossPost sou
     else process.env.ROOSYNC_LOCK_DIR = setupLockDir;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
+    delete process.env.ROOSYNC_TRUSTED_CALLER_IDS; // #4135
     await rm(rlTmpDir, { recursive: true, force: true });
   });
 
