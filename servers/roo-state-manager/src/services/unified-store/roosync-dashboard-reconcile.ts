@@ -38,8 +38,10 @@
  *     scans the key's recent condensation archives (which now emit [msg:]
  *     ids), inserts ids the whole journal (active ∪ archived) lacks, and
  *     stamps them archived. Pre-fix archives are id-less and skipped by
- *     design. Kill-switch: ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN=0;
- *     lookback: ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS (default 30).
+ *     design. **OPT-IN** (ms#1405 review): ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN=1
+ *     enables it — the pass reads thousands of GDrive archive files and one
+ *     holder per cluster is enough (fleet pass lock); lookback:
+ *     ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS (default 30).
  *   - ARCHIVAL pass (#3151-D gate, 21/09): alive PG rows whose message the
  *     fresh file no longer shows (condensed on a machine whose dual-write
  *     never landed — the 404-line/8-key "family A" debt measured by ai-01
@@ -74,7 +76,7 @@ import {
 } from '../../tools/roosync/dashboard-markdown.js';
 import { mapDashboardToRows, fetchArchivedDashboardMessageIds } from './roosync-dashboard-store.js';
 import type { Dashboard, IntercomMessage } from '../../tools/roosync/dashboard-schemas.js';
-import type { IUnifiedStoreWriter } from './UnifiedStoreWriter.js';
+import type { IUnifiedStoreWriter, RooSyncLockAcquireStatus } from './UnifiedStoreWriter.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
@@ -123,6 +125,13 @@ export interface DashboardReconcileResult {
   archiveIdlessSkipped: number;
   /** Rows inserted AND archived-stamped by the archive-scan heal this pass. */
   archiveHealed: number;
+  /**
+   * Why the archive-scan did not run this pass. `'disabled'` = opt-in flag
+   * absent (the default); `'lock-held'` = another process in the fleet holds
+   * the pass lock (ms#1405 review: one pass per cluster, not per RSM process).
+   * Absent = the scan ran (or had nothing to do).
+   */
+  archiveScanSkipped?: 'disabled' | 'lock-held';
   durationMs: number;
 }
 
@@ -131,8 +140,17 @@ export interface DashboardReconcileOptions {
   dashboardsDir: string;
   /** Reader seam for tests. Default getUnifiedStoreReader(). */
   reader?: Pick<IUnifiedStoreReader, 'getRooSyncDashboard'>;
-  /** Writer seam for tests. Default getUnifiedStoreWriter(). */
-  writer?: Pick<IUnifiedStoreWriter, 'syncRooSyncDashboard' | 'archiveRooSyncDashboardMessages'>;
+  /**
+   * Writer seam for tests. Default getUnifiedStoreWriter(). The lock methods
+   * are optional on the seam: a fake without them is treated as
+   * `'unavailable'` (no PG half) and the scan proceeds — the same contract the
+   * real Null writer gets when dual-write is off.
+   */
+  writer?: Pick<
+    IUnifiedStoreWriter,
+    'syncRooSyncDashboard' | 'archiveRooSyncDashboardMessages'
+  > &
+    Partial<Pick<IUnifiedStoreWriter, 'tryAcquireRooSyncDashboardLock' | 'releaseRooSyncDashboardLock'>>;
   /**
    * Archived-id fetcher seam for tests. Default fetchArchivedDashboardMessageIds
    * (fail-open null → treated as "unknown", inserts stay DO NOTHING-safe).
@@ -196,12 +214,29 @@ export function canonicalKeyOfFork(key: string): string {
 // lands in PG history where condensation would have put it. Archives written
 // before the [msg:] emission fix are unfingerprintable and skipped by design.
 
-/** Archive-scan kill-switch — '0' restores the pre-heal behavior. */
+/**
+ * Archive-scan switch — **opt-in**: only an explicit '1' enables the scan.
+ * ms#1405 review (ai-01, head a5a9d8b5): the pass reads up to thousands of
+ * GDrive archive files (10 516 files / 221 MB measured fleet-wide, 3 152 in
+ * the 30-day window; a bare readdir took >120 s during the 07/10 DriveFS
+ * episode). Defaulting it ON put that cost on every dual-write RSM process —
+ * 13-15 `claude.exe` per machine, each with its own stdio RSM — i.e. exactly
+ * on the GDrive SPOF that roosync#4131 takes out of the critical path. A
+ * kill-switch (`!== '0'`) is the wrong contract for a cost this size: it has
+ * to be asked for. `''` / `'0'` / `'false'` / `'00'` all leave it off.
+ */
 export function isArchiveScanEnabled(): boolean {
-  return process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN !== '0';
+  return process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN === '1';
 }
 
-/** Max age (days) of an archive file this pass will scan. */
+/**
+ * Max age (days) of an archive file this pass will scan.
+ *
+ * Caveat for a wide window: the FIRST pass after enabling scans the whole
+ * window in one go — the heal has no per-pass rate limit, so a 30-day window
+ * on a busy share is one large insert burst. Start narrow if the store is
+ * large; the window only bounds how much history the pass can recover.
+ */
 export function archiveScanDays(): number {
   // '' / garbage / <1 would silently window out every archive — default 30.
   const raw = (process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS ?? '').trim();
@@ -210,8 +245,24 @@ export function archiveScanDays(): number {
   return Number.isFinite(v) && v >= 1 ? Math.floor(v) : 30;
 }
 
-/** Condensation archive name shape: `{key}-{yyyy-MM-ddTHH-mm-ss}.md`. */
-const ARCHIVE_FILE_RE = /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})\.md$/;
+/** PG lock row key + TTL for the archive-scan pass (one pass per cluster). */
+export const ARCHIVE_SCAN_LOCK_KEY = 'dashboard-reconcile-archive-scan';
+/**
+ * Bounds a crashed holder: the next pass (6 h cadence) always finds the row
+ * older than the TTL and steals it, so a dead process cannot wedge the heal.
+ */
+export const ARCHIVE_SCAN_LOCK_TTL_MS = 30 * 60_000;
+
+/**
+ * Condensation archive name shapes:
+ *   `{key}-{yyyy-MM-ddTHH-mm-ss}.md`          — LLM-summarised archive
+ *   `{key}-{yyyy-MM-ddTHH-mm-ss}-fallback.md` — truncation fallback
+ * The second shape is what the over-cap path writes (dashboard.ts:3862) and
+ * it now stamps `[msg:]` too (dashboard.ts:3883/3923) — without the optional
+ * group those archives stay unhealable, i.e. the very incident window the
+ * heal exists for (ms#1405 review, point 2).
+ */
+const ARCHIVE_FILE_RE = /^(.+)-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})(?:-fallback)?\.md$/;
 
 /** `yyyy-MM-ddTHH-mm-ss` (name suffix) → epoch ms, local components. */
 function archiveNameDateMs(stamp: string): number {
@@ -227,10 +278,10 @@ function archiveNameDateMs(stamp: string): number {
 
 /**
  * One readdir of `{dashboardsDir}/archive`, grouped by owning key. Only
- * non-fork `{key}-{ISO}.md` names within the lookback are indexed — the date
- * suffix is what separates `workspace-A-{date}` from a distinct key that
- * merely starts with `workspace-A-`. Missing dir = empty index (a share with
- * zero archives is healthy), never an error.
+ * `{key}-{ISO}.md` and `{key}-{ISO}-fallback.md` names within the lookback are
+ * indexed — the date suffix is what separates `workspace-A-{date}` from a
+ * distinct key that merely starts with `workspace-A-`. Missing dir = empty
+ * index (a share with zero archives is healthy), never an error.
  */
 export async function indexArchiveFiles(
   dashboardsDir: string,
@@ -381,11 +432,51 @@ export async function reconcileDashboardsFromGDrive(
 
   // Archive-scan heal: one readdir of the archive dir for the whole pass,
   // grouped by owning key (lookback-bounded, forks skipped at indexing).
-  const archiveIndex = isArchiveScanEnabled()
-    ? await indexArchiveFiles(options.dashboardsDir, archiveScanDays(), () => {
+  // Gated on the store's consultative lock row (#3782, ms#1405 review): the
+  // readdir is the expensive step — thousands of GDrive files, >120 s in the
+  // 07/10 episode — and 13-15 dual-write RSM processes per machine would
+  // otherwise run it in parallel and double-count `archiveHealed` (a per-host
+  // counter of matched rows). One holder scans; the rest skip this pass.
+  // 'unavailable' (no PG half — Null writer or a test fake without the method)
+  // keeps the single-host behaviour: there is nothing to contend with.
+  let archiveIndex = new Map<string, string[]>();
+  let archiveScanLockHolder: string | null = null;
+  if (!isArchiveScanEnabled()) {
+    result.archiveScanSkipped = 'disabled';
+  } else {
+    const holderJson = JSON.stringify({
+      machine: process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? 'unknown',
+      pid: process.pid,
+      at: new Date().toISOString(),
+    });
+    let lockStatus: RooSyncLockAcquireStatus = 'unavailable';
+    if (typeof writer.tryAcquireRooSyncDashboardLock === 'function') {
+      try {
+        lockStatus = await writer.tryAcquireRooSyncDashboardLock(
+          ARCHIVE_SCAN_LOCK_KEY,
+          holderJson,
+          ARCHIVE_SCAN_LOCK_TTL_MS
+        );
+      } catch (error) {
+        // A lock failure must not lose the heal: degrade to the unlocked
+        // behaviour and say so, rather than skip silently.
+        logger.warn(
+          `[dashboard-reconcile] Archive-scan lock acquire failed (${String(error)}) — scanning without the fleet lock`
+        );
+      }
+    }
+    if (lockStatus === 'held') {
+      result.archiveScanSkipped = 'lock-held';
+      logger.info(
+        '[dashboard-reconcile] Archive-scan skipped this pass: another process holds the fleet lock'
+      );
+    } else {
+      if (lockStatus === 'acquired') archiveScanLockHolder = holderJson;
+      archiveIndex = await indexArchiveFiles(options.dashboardsDir, archiveScanDays(), () => {
         result.archiveFilesUnmatched++;
-      })
-    : new Map<string, string[]>();
+      });
+    }
+  }
 
   for (const file of keyed) {
     const key = file.replace(/\.md$/, '');
@@ -605,6 +696,15 @@ export async function reconcileDashboardsFromGDrive(
         `pre-fix archives)`
     );
   }
+  // The unmatched counter is what surfaced the `-fallback.md` gap (ms#1405
+  // review): report it whenever the scan ran, not only when it healed — a
+  // name this pass cannot parse is history it cannot recover.
+  if (result.archiveFilesUnmatched > 0 && result.archiveScanSkipped === undefined) {
+    logger.warn(
+      `[dashboard-reconcile] Archive-scan: ${result.archiveFilesUnmatched} archive file(s) matched no known ` +
+        `name shape — their ids are not recoverable (ARCHIVE_FILE_RE, ms#1405 review)`
+    );
+  }
   // #3482-follow — the fork count above is only emitted when this pass happened
   // to archive a row, so a quiet pass stayed silent about the forks it saw.
   // Fork reporting is a standing fact about the store, not a side note of the
@@ -614,6 +714,18 @@ export async function reconcileDashboardsFromGDrive(
       `[dashboard-reconcile] ${result.forkFiles.length} fork file(s) seen, left untouched (#3482) — ` +
         `merge remedy; the enumeration-side signal is on action:"list"`
     );
+  }
+  if (archiveScanLockHolder !== null) {
+    try {
+      await writer.releaseRooSyncDashboardLock?.(ARCHIVE_SCAN_LOCK_KEY, archiveScanLockHolder);
+    } catch (error) {
+      // TTL backstop: a row left behind is stolen by the next pass once it
+      // ages past ARCHIVE_SCAN_LOCK_TTL_MS, so a failed release cannot wedge
+      // the heal — it only delays the next holder.
+      logger.warn(
+        `[dashboard-reconcile] Archive-scan lock release failed (${String(error)}) — the TTL will reap it`
+      );
+    }
   }
   return result;
 }

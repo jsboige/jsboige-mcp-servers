@@ -20,6 +20,7 @@ import {
   reconcileDashboardsFromGDrive,
   parseArchiveIdBearingMessages,
   archiveScanDays,
+  ARCHIVE_SCAN_LOCK_KEY,
 } from '../roosync-dashboard-reconcile.js';
 import type { RooSyncDashboardRow, RooSyncDashboardMessageRow } from '../types.js';
 
@@ -172,7 +173,10 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
     };
     process.env.UNIFIED_STORE_DUAL_WRITE = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgres://user:pass@pg.test:5432/store';
-    delete process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN;
+    // ms#1405 review: the archive-scan is OPT-IN now (only '1' enables). This
+    // file exercises the scan, so it asks for it; the default-off contract and
+    // the '0' / other-value cases have their own tests below.
+    process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN = '1';
     delete process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS;
     delete process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE;
     writerCalls = [];
@@ -314,6 +318,120 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
     expect(archiveScanDays()).toBe(7);
     process.env.ROOSYNC_DASHBOARD_ARCHIVE_SCAN_DAYS = '3.9';
     expect(archiveScanDays()).toBe(3);
+  });
+
+  // ms#1405 review (ai-01): the scan is opt-in — the fleet GDrive cost
+  // (thousands of archive files, >120 s readdir during the 07/10 DriveFS
+  // episode) must not land on every dual-write RSM process by default.
+  test('flag absent → pas de passe archive (opt-in), contrat par défaut', async () => {
+    writeLive();
+    writeArchive();
+    delete process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN;
+    const result = await run();
+    expect(result.archiveFilesScanned).toBe(0);
+    expect(result.archiveHealed).toBe(0);
+    expect(result.archiveScanSkipped).toBe('disabled');
+    // La passe insert du fichier vivant reste active (contrôle positif).
+    expect(result.parsedKeys).toBe(1);
+  });
+
+  test.each(['0', 'false', '00', ''])(
+    'flag=%j (non-«1») → passe absente',
+    async (value) => {
+      writeLive();
+      writeArchive();
+      process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN = value;
+      const result = await run();
+      expect(result.archiveFilesScanned).toBe(0);
+      expect(result.archiveHealed).toBe(0);
+      expect(result.archiveScanSkipped).toBe('disabled');
+    }
+  );
+
+  test('flag=1 → passe active (contrôle positif de l’opt-in)', async () => {
+    writeLive();
+    writeArchive();
+    const result = await run();
+    expect(result.archiveScanSkipped).toBeUndefined();
+    expect(result.archiveFilesScanned).toBe(1);
+    expect(result.archiveHealed).toBe(1);
+  });
+
+  // ms#1405 review, point 2: the fleet pass lock — one scan per cluster, not
+  // one per RSM process (13-15 claude.exe per machine, each with its own RSM).
+  test('verrou tenu par un autre processus → passe sautée, aucun readdir', async () => {
+    writeLive();
+    writeArchive();
+    const holder = { held: true };
+    const lockCalls: string[] = [];
+    const result = await reconcileDashboardsFromGDrive({
+      dashboardsDir,
+      reader: readerDouble,
+      writer: {
+        ...writerDouble,
+        async tryAcquireRooSyncDashboardLock() {
+          lockCalls.push('acquire');
+          return 'held' as const;
+        },
+        async releaseRooSyncDashboardLock() {
+          lockCalls.push('release');
+        },
+      },
+      fetchArchivedIds: fetchArchivedIdsDouble,
+    });
+    expect(holder.held).toBe(true); // le double d'origine reste intact
+    expect(result.archiveScanSkipped).toBe('lock-held');
+    expect(result.archiveFilesScanned).toBe(0);
+    expect(archiveCalls).toEqual([]);
+    expect(lockCalls).toEqual(['acquire']); // jamais acquis → jamais relâché
+    // Le reste de la passe est intact (contrôle positif).
+    expect(result.parsedKeys).toBe(1);
+  });
+
+  test('verrou acquis → passe exécutée puis verrou relâché avec le même holder', async () => {
+    writeLive();
+    writeArchive();
+    const acquired: Array<[string, string]> = [];
+    const released: Array<[string, string]> = [];
+    const result = await reconcileDashboardsFromGDrive({
+      dashboardsDir,
+      reader: readerDouble,
+      writer: {
+        ...writerDouble,
+        async tryAcquireRooSyncDashboardLock(lockKey: string, holderJson: string) {
+          acquired.push([lockKey, holderJson]);
+          return 'acquired' as const;
+        },
+        async releaseRooSyncDashboardLock(lockKey: string, holderJson: string) {
+          released.push([lockKey, holderJson]);
+        },
+      },
+      fetchArchivedIds: fetchArchivedIdsDouble,
+    });
+    expect(result.archiveHealed).toBe(1);
+    expect(acquired).toHaveLength(1);
+    expect(acquired[0][0]).toBe(ARCHIVE_SCAN_LOCK_KEY);
+    // Le relâchement doit viser EXACTEMENT le holder posé (le store ne libère
+    // que si le détenteur correspond).
+    expect(released).toEqual([[ARCHIVE_SCAN_LOCK_KEY, acquired[0][1]]]);
+  });
+
+  // ms#1405 review, point 3 (one line): the truncation-fallback archive
+  // (`{key}-{ISO}-fallback.md`, dashboard.ts:3862) now stamps [msg:] too, and
+  // it is the over-cap incident window itself — it must be healable.
+  test('archive de repli `-fallback.md` → indexée et guérie', async () => {
+    writeLive();
+    writeArchive(
+      'workspace-a',
+      `${fmtArchiveStamp(new Date(Date.now() - 3_600_000))}-fallback`,
+      ['id-fallback']
+    );
+    const result = await run();
+    expect(result.archiveFilesUnmatched).toBe(0);
+    expect(result.archiveFilesScanned).toBe(1);
+    expect(result.archiveIdsSeen).toBe(1);
+    expect(result.archiveHealed).toBe(1);
+    expect(archiveCalls).toEqual([{ key: 'workspace-a', ids: ['id-fallback'] }]);
   });
 
   test('kill-switch ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE_SCAN=0 → passe absente', async () => {
