@@ -14,6 +14,10 @@
  *   - `status` promotes unread -> read only, and never demotes: a PG row
  *     already 'read' while the file says 'unread' is a stale-file ANOMALY,
  *     reported, never "fixed" by apply (PG-ahead is not ours to undo);
+ *   - 'archived' is TERMINAL (types.ts:92 — the only other status): a row
+ *     archived before T0, or by a concurrent writer at T1, keeps 'archived'.
+ *     It is never normalized to 'unread' — that normalization is exactly how
+ *     an archived row got promoted back to 'read' (ms#1410 2nd review);
  *   - divergent = apply would change the row = array additions OR a status
  *     promotion. pgAheadOfFile rows are NOT divergent (apply leaves them).
  */
@@ -21,7 +25,10 @@
 export const READ = 'read';
 
 const asArray = (v) => (Array.isArray(v) ? v : []);
-const asStatus = (v) => (v === READ ? READ : 'unread');
+/** Verbatim status: 'unread' | 'read' | 'archived' (types.ts:92). Only a
+ * missing/invalid value falls back to 'unread' — 'archived' is PRESERVED,
+ * never normalized away (ms#1410 2nd review). */
+const asStatus = (v) => (typeof v === 'string' && v.length > 0 ? v : 'unread');
 
 /**
  * Decision for ONE message row (dry-run diff basis).
@@ -41,7 +48,10 @@ export function rowDecision(fileRow, pgRow) {
 
   const fileStatus = asStatus(fileRow?.status);
   const pgStatus = asStatus(pgRow?.status);
-  const promote = fileStatus === READ && pgStatus !== READ;
+  // Promotion requires the CURRENT PG status to be 'unread' (ms#1410 2nd
+  // review): 'archived' is terminal — the archive outranks a T0 file read,
+  // whether it landed before T0 or between the measure and the UPDATE.
+  const promote = fileStatus === READ && pgStatus === 'unread';
   const pgAheadOfFile = fileStatus !== READ && pgStatus === READ;
 
   const divergent = readByAdded.length > 0 || rbwAdded.length > 0 || promote;
@@ -70,10 +80,10 @@ export function rowDecision(fileRow, pgRow) {
 export function applyToPgRow(pgRow, fileRow) {
   const mergedReadBy = [...new Set([...asArray(pgRow?.read_by), ...asArray(fileRow?.read_by)])];
   const mergedRbw = [...new Set([...asArray(pgRow?.read_by_workspace), ...asArray(fileRow?.read_by_workspace)])];
-  const status =
-    asStatus(fileRow?.status) === READ || asStatus(pgRow?.status) === READ
-      ? READ
-      : asStatus(pgRow?.status);
+  const pgStatus = asStatus(pgRow?.status);
+  // Mirror of the SQL CASE: promote ONLY unread -> read; every other current
+  // status (including the terminal 'archived') is kept verbatim.
+  const status = pgStatus === 'unread' && asStatus(fileRow?.status) === READ ? READ : pgStatus;
   return { status, read_by: mergedReadBy, read_by_workspace: mergedRbw };
 }
 

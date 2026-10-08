@@ -82,6 +82,42 @@ describe('G-R backfill logic — fusion (rowDecision + applyToPgRow)', () => {
   });
 });
 
+describe('G-R backfill logic — terminal states (archived, ms#1410 2nd review)', () => {
+  test('PG archived at T0 stays archived — a T0 file read does NOT resurrect it', () => {
+    const d = rowDecision(file({ status: 'read' }), pg({ status: 'archived' }));
+    expect(d.divergent).toBe(false); // nothing for apply to write
+    expect(d.delta.status_promotion).toBeNull(); // contract: promote || null
+    expect(applyToPgRow(pg({ status: 'archived' }), file({ status: 'read' })).status).toBe('archived');
+  });
+
+  test('concurrent archiving at T1 survives the T2 UPDATE (the concrete scenario)', () => {
+    // T0: file scanned as read, PG still unread -> apply would have promoted.
+    // T1: another writer archives the row (the file moves out of the inbox).
+    // T2: the UPDATE re-evaluates the CURRENT status and keeps archived.
+    const fileAtT0 = file({ status: 'read' });
+    const pgAtT1 = pg({ status: 'archived' });
+    expect(applyToPgRow(pgAtT1, fileAtT0).status).toBe('archived');
+    // the pre-image captured 'archived' verbatim, so --restore can restore it
+    expect(preimageRow('m', pgAtT1).status).toBe('archived');
+    expect(restoreToPgRow(preimageRow('m', pgAtT1)).status).toBe('archived');
+  });
+
+  test('array union stays MONOTONE on a terminal row (archived does not freeze read_by)', () => {
+    const applied = applyToPgRow(
+      pg({ status: 'archived', read_by: ['pg-only'] }),
+      file({ status: 'read', read_by: ['a'] })
+    );
+    expect(applied.status).toBe('archived'); // status untouched
+    expect(applied.read_by).toEqual(['pg-only', 'a']); // arrays still union
+  });
+
+  test('a file-side archived status is not a promotion source (out of scope, no write)', () => {
+    const d = rowDecision(file({ status: 'archived' }), pg({ status: 'unread' }));
+    expect(d.divergent).toBe(false);
+    expect(applyToPgRow(pg({ status: 'unread' }), file({ status: 'archived' })).status).toBe('unread');
+  });
+});
+
 describe('G-R backfill logic — idempotence (2nd pass = 0 divergente)', () => {
   test('re-deciding after a simulated apply converges every row', () => {
     const cases = [
@@ -90,6 +126,7 @@ describe('G-R backfill logic — idempotence (2nd pass = 0 divergente)', () => {
       [file({ status: 'read', read_by_workspace: ['m:w1'] }), pg({ read_by_workspace: ['m:w0', 'm:w1'] })],
       [file({ status: 'unread' }), pg({ status: 'unread' })],
       [file({ read_by: [] }), pg({ read_by: ['pg-only'] })],
+      [file({ status: 'read' }), pg({ status: 'archived' })], // terminal, untouched
     ];
     for (const [f, p] of cases) {
       const first = rowDecision(f, p);

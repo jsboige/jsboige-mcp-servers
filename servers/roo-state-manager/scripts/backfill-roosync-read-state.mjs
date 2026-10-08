@@ -132,8 +132,10 @@ if (HELP) {
                      the run exits 1 (fail closed). MANDATORY with --apply.
   --apply            UPDATE the divergent rows (one transaction, pre-image
                      first, advisory lock). The UPDATE unions IN SQL against
-                     the CURRENT row and promotes status unread->read only —
-                     a racing mark_read dual-write is merged in, never lost.
+                     the CURRENT row and promotes status unread->read ONLY
+                     (the CASE tests the current status: a row already 'read'
+                     or terminal-'archived' is left alone) — a racing
+                     mark_read dual-write is merged in, never lost.
                      Ends with a control re-read of the touched rows.
                      Requires --accord-rx92 + --preimage-out +
                      --expect-files — the central-PG write is user-gated
@@ -280,7 +282,8 @@ const totals = {
   missingInPg: 0,        // file id with no PG row — the insert reconcile's target, NOT ours
   inSync: 0,
   divergent: 0,          // would be UPDATEd by --apply (array additions OR status promotion)
-  statusPromotion: 0,    // unread -> read: the ONLY status direction apply writes
+  statusPromotion: 0,    // unread -> read: the ONLY status change apply writes
+                         // (never demotes; 'archived' is terminal, untouched)
   pgAheadOfFile: 0,      // PG 'read', file 'unread' — anomaly, reported, never demoted
   readByAdded: 0,        // file read_by entries PG lacks (union adds them)
   readByPgOnly: 0,       // PG entries the file lacks (kept, reported — never dropped)
@@ -391,8 +394,10 @@ outer: for (const dir of DIRS) {
         if (perReaderStatus(fileMsg, pgRow.to_machine, ws) === 'read' && perReaderStatus(pgMsg, pgRow.to_machine, ws) === 'unread') { effectiveFixed = true; break; }
       }
     } else {
-      // direct target (machine:workspace): the global status is the verdict
-      effectiveFixed = message.status === 'read' && pgRow.status !== 'read';
+      // direct target (machine:workspace): the global status is the verdict.
+      // Strict 'unread': an 'archived' row is terminal, apply never flips it
+      // (ms#1410 2nd review) — counting it would over-report the KPI.
+      effectiveFixed = message.status === 'read' && pgRow.status === 'unread';
     }
     if (effectiveFixed) bumpTarget(targetKey, 'effectiveUnreadFixed');
 
@@ -499,11 +504,14 @@ if (APPLY) {
       await client.query(
         // UNION IN SQL against the CURRENT row (ms#1410 point 1): a dual-write
         // landing between the T0 measure and this UPDATE is merged in, never
-        // overwritten. Status promotes unread -> read only (CASE), never
-        // demotes. Mirror of scripts/lib/backfill-read-state-logic.mjs
-        // applyToPgRow — the unit tests pin both to the same semantics.
+        // overwritten. Status promotes unread -> read ONLY — the CASE tests the
+        // CURRENT status — so it never demotes and never resurrects a terminal
+        // 'archived' row, whether the archiving happened before T0 or between
+        // the measure and this UPDATE (ms#1410 2nd review). Mirror of
+        // scripts/lib/backfill-read-state-logic.mjs applyToPgRow — the unit
+        // tests pin both to the same semantics.
         `UPDATE roosync_messages SET
-           status = CASE WHEN $2::text = 'read' THEN 'read' ELSE status END,
+           status = CASE WHEN $2::text = 'read' AND status = 'unread' THEN 'read' ELSE status END,
            read_by = (SELECT coalesce(jsonb_agg(DISTINCT e), '[]'::jsonb) FROM jsonb_array_elements(coalesce(read_by, '[]'::jsonb) || $3::jsonb) AS e),
            read_by_workspace = (SELECT coalesce(jsonb_agg(DISTINCT e), '[]'::jsonb) FROM jsonb_array_elements(coalesce(read_by_workspace, '[]'::jsonb) || $4::jsonb) AS e)
          WHERE id = $1`,
