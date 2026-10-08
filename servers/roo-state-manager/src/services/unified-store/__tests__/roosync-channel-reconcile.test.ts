@@ -17,7 +17,9 @@ import { join } from 'path';
 import {
   reconcileChannelFromGDrive,
   cutoffIdFor,
+  embeddedDateKeyFor,
   isChannelDualWriteArmed,
+  UNDATED_CAP_PER_PASS,
   type ChannelReconcileResult,
 } from '../roosync-channel-reconcile.js';
 import type { IUnifiedStoreWriter } from '../UnifiedStoreWriter.js';
@@ -260,6 +262,129 @@ describe('roosync-channel-reconcile (#3292)', () => {
 
       expect(result.errors).toBe(1);
       expect(result.reconciled).toBe(1);
+    });
+  });
+
+  describe('#4131 item 4 — window by embedded date, undated included under a cap', () => {
+    test('embeddedDateKeyFor: msg-* unchanged, date anywhere, time optional/padded', () => {
+      // msg-* ids: the key IS the embedded timestamp the old lexicographic
+      // comparison read — behavior for them must not change.
+      expect(embeddedDateKeyFor('msg-20260904T120000-abc123')).toBe('20260904T120000');
+      // Date deeper in the name, HHMM time — padded right to HHMMSS.
+      expect(embeddedDateKeyFor('hermes-relance-repair-20260919T0624')).toBe('20260919T062400');
+      // Date only — midnight.
+      expect(embeddedDateKeyFor('po2026-audit73-final-20260921')).toBe('20260921T000000');
+      // Trailing Z tolerated.
+      expect(embeddedDateKeyFor('adjoint-repair-16399-20260916T1551Z')).toBe('20260916T155100');
+    });
+
+    test('embeddedDateKeyFor: a digit run inside a SHA is not a date', () => {
+      // The lookarounds reject a calendar-shaped run that is part of a longer
+      // digit run; the month/day ranges reject non-calendar shapes.
+      expect(embeddedDateKeyFor('adjoint-6d0db3c1-4d8f-4a1e-9c6e-08d94f57a2f3')).toBeNull();
+      expect(embeddedDateKeyFor('ledger-stack-preflight-16564-16574-16575')).toBeNull();
+      expect(embeddedDateKeyFor('dispatch-mgs-120261021-po2027')).toBeNull(); // 8 digits inside a run
+      expect(embeddedDateKeyFor('collision-20261332')).toBeNull(); // month 13 is not a month
+      expect(embeddedDateKeyFor('collision-20260231-x')).toBe('20260231T000000'); // pattern-strict: day 31 passes — documented
+    });
+
+    test('a non-msg id with an embedded date is windowed by that date — no longer skipped forever', async () => {
+      // Both carry 2026-09-04, inside the 7-day window of NOW (2026-09-05).
+      writeMessage('inbox', 'hermes-relance-repair-20260904T0624');
+      // This one carries 2026-08-01 — provably old, must not be a candidate.
+      writeMessage('sent', 'ai01-oldbatch-20260801T0900');
+      listResponses = [[], []]; // full listing: absent; window listing: absent; post: absent
+
+      const result = await run();
+
+      expect(result.candidateIds).toBe(1);
+      expect(result.undatedCandidates).toBe(0);
+      expect(insertedRows.map((r) => r.id)).toEqual(['hermes-relance-repair-20260904T0624']);
+    });
+
+    test('a non-msg id OUTSIDE the window is skipped exactly like an old msg-* id', async () => {
+      writeMessage('inbox', 'hermes-old-20260801T0900');
+      // The pre-fix behavior for this file: permanently outside (sorted
+      // before every msg-*). The fix must not swing to "never old".
+      writeMessage('inbox', 'msg-20260801T090000-old');
+
+      const result = await run();
+
+      expect(result.candidateIds).toBe(0);
+      expect(listCalls).toHaveLength(0); // zero PG roundtrips — nothing in window
+    });
+
+    test('an undated id is INCLUDED, counted, and reconciled', async () => {
+      // The B8-shaped historical hole: no date anywhere in the name. Pre-fix
+      // this id sorted before every msg-* and was skipped by every pass.
+      writeMessage('inbox', 'adjoint-order-16297-16300-v2');
+      // Call order with undated present: full listing, window listing, post.
+      listResponses = [[], [], ['adjoint-order-16297-16300-v2']];
+
+      const result = await run();
+
+      expect(result.undatedCandidates).toBe(1);
+      expect(result.undatedCapped).toBe(0);
+      expect(insertedRows.map((r) => r.id)).toEqual(['adjoint-order-16297-16300-v2']);
+      expect(result.reconciled).toBe(1); // verified via the FULL post listing
+      expect(listCalls).toEqual(['', 'msg-20260829T031833', '']);
+    });
+
+    test('an undated id ALREADY in PG (full listing) is not re-opened', async () => {
+      writeMessage('inbox', 'adjoint-vision-15159-c445-v2');
+      listResponses = [['adjoint-vision-15159-c445-v2']]; // full listing: present
+
+      const result = await run();
+
+      expect(result.undatedCandidates).toBe(1);
+      expect(insertedRows).toHaveLength(0);
+      // Presence is filtered BEFORE candidacy (that is what lets the cap
+      // advance), so the id never enters byId — alreadyPresent stays 0 and
+      // the pass needs no window listing at all.
+      expect(result.alreadyPresent).toBe(0);
+      expect(listCalls).toEqual(['']); // no window listing needed — byId empty
+    });
+
+    test('the cap bounds undated opens per pass and SHEDS the excess visibly', async () => {
+      // UNDATED_CAP_PER_PASS + 2 undated ids, all missing from PG. Call order:
+      // full listing, window listing (byId holds the cap'd undated), post.
+      const ids = Array.from(
+        { length: UNDATED_CAP_PER_PASS + 2 },
+        (_, i) => `adjoint-batch-${String(i).padStart(4, '0')}`
+      );
+      for (const id of ids) writeMessage('sent', id);
+      listResponses = [[], [], ids.slice(0, UNDATED_CAP_PER_PASS)];
+
+      const result = await run();
+
+      expect(result.undatedCandidates).toBe(UNDATED_CAP_PER_PASS + 2);
+      expect(result.undatedCapped).toBe(2);
+      expect(insertedRows).toHaveLength(UNDATED_CAP_PER_PASS);
+      // Sorted order — the shed 2 are the tail; next pass they are the head.
+      expect(insertedRows[0].id).toBe('adjoint-batch-0000');
+      expect(insertedRows[UNDATED_CAP_PER_PASS - 1].id).toBe(`adjoint-batch-${String(UNDATED_CAP_PER_PASS - 1).padStart(4, '0')}`);
+    });
+
+    test('the cap ADVANCES: a healed undated id stops consuming a slot', async () => {
+      // Pass 1: 1 id, missing → healed. Pass 2 (same pool + 1 new): the healed
+      // id is in the full listing, so the new one takes a slot despite being
+      // alphabetically AFTER the healed one.
+      writeMessage('inbox', 'adjoint-keep-0001');
+      writeMessage('inbox', 'adjoint-keep-0002');
+      // Pass 1 responses: full=[0001 present? no → missing]... simpler: run
+      // pass 1 with 0001 missing (heals it), pass 2 with 0001 present.
+      listResponses = [[], [], ['adjoint-keep-0001']];
+      const r1 = await run();
+      expect(r1.reconciled).toBe(1);
+
+      listCalls = [];
+      insertedRows = [];
+      listResponses = [['adjoint-keep-0001'], [], ['adjoint-keep-0002']];
+      const r2 = await run();
+      expect(insertedRows.map((r) => r.id)).toEqual(['adjoint-keep-0002']);
+      // The healed 0001 was presence-filtered before candidacy — exactly the
+      // advance under test (it no longer occupies a cap slot).
+      expect(r2.alreadyPresent).toBe(0);
     });
   });
 });
