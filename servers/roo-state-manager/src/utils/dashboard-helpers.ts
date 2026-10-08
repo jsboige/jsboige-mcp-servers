@@ -187,6 +187,50 @@ interface ParsedMention {
 }
 
 /**
+ * Forme d'un identifiant de machine de la flotte : `myia-*`.
+ *
+ * Mesuré le 2026-10-08 sur la liste de flotte du shared-state
+ * (`.shared-state/configs/`, 8/8 répertoires machine : `myia-ai-01`,
+ * `myia-po-2023..2027`, `myia-web1`, `myia-web2`).
+ *
+ * La validation d'id de machine de RSM (`/^[a-z0-9_-]+$/`,
+ * `config/roosync-config.ts`) est bien trop lâche pour filtrer des mentions :
+ * elle accepte tout token capté par le pattern catch-all `@mention` dans de la
+ * prose libre — `@head`, `@main`, `@v4`, `@gmail`, `@11`, un SHA de commit,
+ * `@vscode`, `@NanoClaw` — c'est-à-dire exactement la population orpheline de
+ * #2591.
+ *
+ * Sensible à la casse, volontairement : une graphie `@Myia-Po-2027` est
+ * écartée (fail-closed) plutôt que transformée en destinataire que nul inbox
+ * ne lit.
+ */
+export const FLEET_MACHINE_PATTERN = /^myia-[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/**
+ * Décide si un destinataire de mention peut être une machine de la flotte.
+ *
+ * Deux sources indépendantes, en UNION (et non en intersection) :
+ *
+ * 1. **La forme `myia-*`** — toujours active, aucune configuration requise.
+ *    C'est le garde principal, et c'est lui qui rend la validation indépendante
+ *    du partitionnement d'indexation : `ROO_FLEET_ROSTER` pilote AUSSI le
+ *    partitionnement du task-space (`state.fleetRoster`, `background-services.ts`),
+ *    on ne peut donc pas « corriger » les orphelines en posant la variable.
+ * 2. **Le roster**, quand il est configuré — seconde voie d'acceptation, pour une
+ *    machine dont l'id ne suivrait pas la convention.
+ *
+ * L'union est délibérée : une intersection ferait perdre des notifications
+ * réelles sur un roster divergent (#2591, mesuré le 07/10 — `myia-po-2027` absent
+ * du roster du projet vllm, `myia-web2` absent des deux valeurs connues).
+ *
+ * @issue #2591
+ */
+export function isFleetRecipient(machine: string, roster: string[] | null): boolean {
+  if (FLEET_MACHINE_PATTERN.test(machine)) return true;
+  return roster !== null && roster.includes(machine);
+}
+
+/**
  * Envoie des notifications RooSync automatiques quand un message mentionne d'autres machines/agents
  *
  * Cette fonction est fire-and-forget et n'interrompt pas le flux principal.
@@ -218,23 +262,20 @@ export async function sendMentionNotificationsAsync(
       }
     }
 
-    // Construire et envoyer les notifications
-    // Validate recipients against the fleet roster before sending (#2591).
-    // Without this, prose tokens / bot names / test leaks mis-classified as
-    // machine mentions (e.g. "NanoClaw", "vscode", "test-machine", bare "ai-01")
-    // create orphan notifications addressed to non-existent recipients that no
-    // cleanup agent ever processes → shared inbox bloats → roosync_messages timeout.
+    // Construire et envoyer les notifications.
+    // #2591 — validation du destinataire. Le garde d'origine était conditionné à
+    // un roster configuré, donc inerte là où ROO_FLEET_ROSTER est absent : chaque
+    // token de prose capté par le pattern catch-all devenait une notification
+    // orpheline vers un destinataire inexistant. La garde ne dépend plus du
+    // roster (cf. isFleetRecipient).
     const roster = tryLoadRooSyncConfig()?.fleetRoster ?? null;
 
     for (const [machine, machineMentions] of mentionsByMachine) {
-      // Skip recipients not in the fleet roster (when a roster is configured).
-      // fleetRoster is null when ROO_FLEET_ROSTER is unset — then we keep the
-      // legacy behavior (send to all) for backward compatibility.
-      if (roster && !roster.includes(machine)) {
+      if (!isFleetRecipient(machine, roster)) {
         logger.debug('Skipping mention notification to non-fleet recipient (#2591)', {
           messageId,
           machine,
-          rosterSize: roster.length
+          rosterSize: roster?.length ?? null
         });
         continue;
       }
