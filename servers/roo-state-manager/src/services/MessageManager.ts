@@ -8,8 +8,10 @@
  * @version 1.0.0
  */
 
-import { existsSync, promises as fs } from 'fs';
+import { existsSync, promises as fs, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname, basename } from 'path';
+import { tmpdir } from 'os';
+import { createHash } from 'crypto';
 import { createLogger } from '../utils/logger.js';
 import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
@@ -229,6 +231,26 @@ function toInboxListItem(message: Message): MessageListItem {
 }
 
 /**
+ * One negative-cache row: when the read last failed, and how many times in a row
+ * it has failed since the last success (#4131). The count is what lets a
+ * permanently-unreadable file stop being retried on every TTL cycle.
+ */
+interface NegativeCacheEntry {
+  failedAt: number;
+  failures: number;
+}
+
+/** On-disk shape of the persisted dead-file set (#4131). */
+interface PersistedNegativeCache {
+  entries: Record<string, NegativeCacheEntry>;
+}
+
+/** Filename-safe 8-hex digest of the shared-state path (persist key). */
+function negativeCacheKey(sharedStatePath: string): string {
+  return createHash('sha256').update(sharedStatePath).digest('hex').slice(0, 8);
+}
+
+/**
  * Gestionnaire de messagerie RooSync
  * 
  * Responsabilités :
@@ -317,13 +339,46 @@ export class MessageManager {
   private readonly rebuildBudgetMs: number;
   /** Last known file count in inbox dir (cheap invalidation check) */
   private lastInboxFileCount: number = -1;
-  /** Files that failed to read during a cache build, mapped to failure timestamp.
+  /** Files that failed to read during a cache build, mapped to their last failure
+   *  instant and consecutive-failure count.
    *  Skipped on rebuild while unexpired so a cloud-only GDrive file that times out
    *  once isn't re-read (~10s each) every 5-min rebuild (#3205). */
-  private negativeCache: Map<string, number> = new Map();
+  private negativeCache: Map<string, NegativeCacheEntry> = new Map();
   /** Negative-cache TTL in ms (15 min — long enough to skip repeated dead reads,
    *  short enough to retry once a file hydrates). */
   private static readonly NEGATIVE_CACHE_TTL_MS = 900_000;
+  /**
+   * Consecutive failures after which a file is treated as DEAD (#4131): its skip
+   * window escalates from NEGATIVE_CACHE_TTL_MS to DEAD_FILE_TTL_MS.
+   *
+   * WHY — a plain TTL bounds the cost per unit of time but not forever: a file
+   * that is cloud-only on THIS machine (hydration state is per-machine, measured
+   * 08/10: `hermes-dm-condense-lock-20260927T1358Z.json` hangs on ai-01, reads in
+   * 1s from po-2024) times out again on every expiry, indefinitely — ~96 x 10s/day
+   * per file. Escalating after N consecutive failures bounds that to ~1 retry/day
+   * while keeping the door open, since a single success resets the counter.
+   */
+  private static readonly NEGATIVE_CACHE_MAX_FAILURES = 3;
+  /** Escalated skip window once a file is declared dead (#4131). Deliberately
+   *  finite: a hydrated file must still be picked up without an operator. */
+  private static readonly DEAD_FILE_TTL_MS = 86_400_000;
+  /** Escalated skip window (overridable for tests; production = DEAD_FILE_TTL_MS) */
+  private readonly deadFileTtlMs: number;
+  /**
+   * Dead files survive a process restart (#4131). The in-memory cache dies with
+   * the host, and the stdio server restarts with every Claude Code session — so
+   * on a machine whose DriveFS is degraded, every cold start re-pays the full
+   * timeout again, which is the "a chaque rebuild de cache" cost the issue
+   * measures. Only files that reached NEGATIVE_CACHE_MAX_FAILURES are persisted,
+   * so a single transient failure never writes state.
+   *
+   * Machine-local by construction (os.tmpdir(), cf. background-services.ts:1334):
+   * hydration is a per-machine property, so po-2024's healthy cache must never
+   * suppress a read on ai-01. Disabled via ROOSYNC_INBOX_NEGCACHE_PERSIST=0.
+   */
+  private negativeCacheHydrated = false;
+  /** Cached persist path (null = persistence disabled / unavailable). */
+  private negativeCachePath: string | null | undefined;
   /**
    * Wall-clock budget for one full inbox rebuild (ms).
    *
@@ -401,11 +456,13 @@ export class MessageManager {
     readTimeoutMs: number = MessageManager.INBOX_READ_TIMEOUT_MS,
     negativeCacheTtlMs: number = MessageManager.NEGATIVE_CACHE_TTL_MS,
     rebuildBudgetMs: number = MessageManager.INBOX_REBUILD_BUDGET_MS,
+    deadFileTtlMs: number = MessageManager.DEAD_FILE_TTL_MS,
   ) {
     this.sharedStatePath = sharedStatePath;
     this.readTimeoutMs = readTimeoutMs;
     this.negativeCacheTtlMs = negativeCacheTtlMs;
     this.rebuildBudgetMs = rebuildBudgetMs;
+    this.deadFileTtlMs = deadFileTtlMs;
     this.messagesPath = join(sharedStatePath, 'messages');
     this.inboxPath = join(this.messagesPath, 'inbox');
     this.sentPath = join(this.messagesPath, 'sent');
@@ -462,24 +519,153 @@ export class MessageManager {
     return this.inboxCachePartial;
   }
 
-  /** Prune expired negative-cache entries. Returns true if any were pruned
-   *  (signals a forced rebuild so hydrated files are retried — the count-only
-   *  fast path alone would never re-read them, #3205). */
-  private pruneNegativeCache(): boolean {
-    let pruned = false;
-    const now = Date.now();
-    for (const [file, failedAt] of this.negativeCache) {
-      if (now - failedAt >= this.negativeCacheTtlMs) {
-        this.negativeCache.delete(file);
-        pruned = true;
-      }
-    }
-    return pruned;
+  /** Effective skip window: escalated once the file is declared dead (#4131). */
+  private negativeCacheTtlFor(entry: NegativeCacheEntry): number {
+    return entry.failures >= MessageManager.NEGATIVE_CACHE_MAX_FAILURES
+      ? this.deadFileTtlMs
+      : this.negativeCacheTtlMs;
   }
 
-  /** True if the file is in the negative cache (unexpired — pruning happens at build start). */
+  /** True once the skip window of `entry` has elapsed (a retry is due). */
+  private negativeCacheExpired(entry: NegativeCacheEntry, now: number): boolean {
+    return (now - entry.failedAt) >= this.negativeCacheTtlFor(entry);
+  }
+
+  /**
+   * Housekeeping at build start, over the CURRENT inbox listing.
+   *
+   * Returns true when some entry's skip window has elapsed, which forces a
+   * rebuild so hydrated files are retried — the count-only fast path alone
+   * would never re-read them (#3205).
+   *
+   * An elapsed window does NOT drop the entry: the consecutive-failure count is
+   * what drives the #4131 escalation, and discarding it here would reset the
+   * count on every retry, so a file re-read once per window would never reach
+   * the threshold — precisely the sparse-retry case the escalation exists for.
+   * `isNegativelyCached` decides on the window, not on presence.
+   * Entries for files that left the inbox are dropped (the map is bounded by
+   * the pool size, but the pool churns).
+   */
+  private pruneNegativeCache(currentFiles: string[]): boolean {
+    this.hydrateNegativeCache();
+    const present = new Set(currentFiles);
+    const now = Date.now();
+    let expired = false;
+    let removed = false;
+    for (const [file, entry] of this.negativeCache) {
+      if (!present.has(file)) {
+        this.negativeCache.delete(file);
+        removed = true;
+      } else if (this.negativeCacheExpired(entry, now)) {
+        expired = true;
+      }
+    }
+    if (removed) this.persistNegativeCache();
+    return expired;
+  }
+
+  /** True while the file is inside its skip window (see pruneNegativeCache). */
   private isNegativelyCached(file: string): boolean {
-    return this.negativeCache.has(file);
+    this.hydrateNegativeCache();
+    const entry = this.negativeCache.get(file);
+    return entry !== undefined && !this.negativeCacheExpired(entry, Date.now());
+  }
+
+  /** Persist path for the dead-file set, or null when persistence is off. */
+  private getNegativeCachePath(): string | null {
+    if (this.negativeCachePath !== undefined) return this.negativeCachePath;
+    if (process.env.ROOSYNC_INBOX_NEGCACHE_PERSIST === '0') {
+      this.negativeCachePath = null;
+      return null;
+    }
+    this.negativeCachePath = join(
+      tmpdir(),
+      'roo-state-manager',
+      `inbox-read-failures-${negativeCacheKey(this.sharedStatePath)}.json`,
+    );
+    return this.negativeCachePath;
+  }
+
+  /**
+   * Load the persisted dead-file set, once per instance. Best-effort: a corrupt
+   * or unreadable file degrades to the pre-#4131 in-memory behavior, never to a
+   * failed inbox read.
+   */
+  private hydrateNegativeCache(): void {
+    if (this.negativeCacheHydrated) return;
+    this.negativeCacheHydrated = true;
+    const path = this.getNegativeCachePath();
+    if (!path) return;
+    try {
+      if (!existsSync(path)) return;
+      const parsed = JSON.parse(readFileSync(path, 'utf-8')) as Partial<PersistedNegativeCache>;
+      const now = Date.now();
+      for (const [file, entry] of Object.entries(parsed.entries ?? {})) {
+        if (
+          typeof entry?.failedAt === 'number' &&
+          typeof entry?.failures === 'number' &&
+          entry.failures >= MessageManager.NEGATIVE_CACHE_MAX_FAILURES &&
+          (now - entry.failedAt) < this.negativeCacheTtlFor(entry)
+        ) {
+          this.negativeCache.set(file, entry);
+        }
+      }
+    } catch (error) {
+      logger.warn('Inbox negative-cache hydrate failed (ignored)', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Write the dead-file set. Only entries past MAX_FAILURES are persisted, so a
+   *  single transient failure never leaves state on disk. Best-effort. */
+  private persistNegativeCache(): void {
+    const path = this.getNegativeCachePath();
+    if (!path) return;
+    try {
+      const now = Date.now();
+      const entries: Record<string, NegativeCacheEntry> = {};
+      for (const [file, entry] of this.negativeCache) {
+        if (
+          entry.failures >= MessageManager.NEGATIVE_CACHE_MAX_FAILURES &&
+          (now - entry.failedAt) < this.negativeCacheTtlFor(entry)
+        ) {
+          entries[file] = entry;
+        }
+      }
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify({ entries }), 'utf-8');
+    } catch (error) {
+      logger.warn('Inbox negative-cache persist failed (ignored)', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /** Record one failed read: bump the consecutive count, escalate + persist a dead file. */
+  private noteReadFailure(file: string): void {
+    const failures = (this.negativeCache.get(file)?.failures ?? 0) + 1;
+    this.negativeCache.set(file, { failedAt: Date.now(), failures });
+    if (failures === MessageManager.NEGATIVE_CACHE_MAX_FAILURES) {
+      logger.warn(
+        `Inbox file failed ${failures} consecutive reads — escalating its skip window to ` +
+          `${Math.round(this.deadFileTtlMs / 3_600_000)}h (#4131): ${file}`,
+      );
+    }
+    if (failures >= MessageManager.NEGATIVE_CACHE_MAX_FAILURES) {
+      this.persistNegativeCache();
+    }
+  }
+
+  /** Clear the failure record after a successful read (#3205); a recovering dead
+   *  file is also dropped from the persisted set (#4131). */
+  private clearReadFailure(file: string): void {
+    const entry = this.negativeCache.get(file);
+    if (!entry) return;
+    this.negativeCache.delete(file);
+    if (entry.failures >= MessageManager.NEGATIVE_CACHE_MAX_FAILURES) {
+      this.persistNegativeCache();
+    }
   }
 
   /**
@@ -580,7 +766,7 @@ export class MessageManager {
 
     // Prune expired negative-cache entries; a prune forces a rebuild so hydrated
     // files are retried (count alone would never trigger one, #3205).
-    const negativePruned = this.pruneNegativeCache();
+    const negativePruned = this.pruneNegativeCache(files);
 
     // If count unchanged and cache exists, refresh TTL without re-reading files.
     // Bounded (#3205 follow-up): the count is blind to IN-PLACE mutations, and
@@ -836,7 +1022,7 @@ export class MessageManager {
           const message = result.value;
           // Read succeeded — clear any negative-cache entry so a recovered file is
           // not skipped on the next build (#3205).
-          this.negativeCache.delete(chunk[r]);
+          this.clearReadFailure(chunk[r]);
           // Phantom-message guard: the inbox is LISTED by each file's internal `id`,
           // but every mutation (getMessage/markAsRead/archiveMessage/destroyMessage)
           // locates the file by reconstructing `inbox/${id}.json`. A file whose name
@@ -855,7 +1041,7 @@ export class MessageManager {
           // Record the read failure so the file is skipped on subsequent rebuilds
           // until the window elapses (or it reads successfully), #3205.
           if (chunk[r]) {
-            this.negativeCache.set(chunk[r], Date.now());
+            this.noteReadFailure(chunk[r]);
           }
           logger.error(`Error reading message file during parallel cache build: ${failedFile}`, result.reason);
         }
