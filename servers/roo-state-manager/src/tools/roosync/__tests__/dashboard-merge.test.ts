@@ -95,6 +95,7 @@ const WATCHED_ENV = [
   'ROOSYNC_LOCK_DIR',
   'ROOSYNC_MACHINE_ID',
   'ROOSYNC_WORKSPACE_ID',
+  'ROOSYNC_TRUSTED_CALLER_IDS',
   'UNIFIED_STORE_DASHBOARD_READ_PG',
   'UNIFIED_STORE_DUAL_WRITE',
   'UNIFIED_STORE_PG_URL',
@@ -170,6 +171,14 @@ beforeEach(() => {
   process.env.ROOSYNC_SHARED_PATH = path.join(testDir, 'shared-state');
   process.env.ROOSYNC_MACHINE_ID = 'myia-po-2026';
   process.env.ROOSYNC_WORKSPACE_ID = 'roo-extensions';
+  // #4135 — ce harnais simule un siège qui merge le dashboard D'UNE AUTRE
+  // MACHINE (`machineId: 'myia-po-2025'`, plusieurs appels par test) depuis un
+  // process 'myia-po-2026'. `merge` stampe `lastModifiedBy` : le gate d'auteur
+  // exige donc que la machine simulée soit déclarée, exactement comme un
+  // opérateur réel mergeant un dashboard étranger doit le faire. Remède #3591
+  // appliqué à ses propres tests : l'intention des tests est inchangée, seule
+  // la déclaration de confiance est nouvelle.
+  process.env.ROOSYNC_TRUSTED_CALLER_IDS = 'myia-po-2025';
   // Gates #3151 fermées : lecture fichier, writers espionnés.
   delete process.env.UNIFIED_STORE_DASHBOARD_READ_PG;
   delete process.env.UNIFIED_STORE_DUAL_WRITE;
