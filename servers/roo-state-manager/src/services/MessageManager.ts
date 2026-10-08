@@ -8,7 +8,7 @@
  * @version 1.0.0
  */
 
-import { existsSync, promises as fs, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, promises as fs, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import { join, dirname, basename } from 'path';
 import { tmpdir } from 'os';
 import { createHash } from 'crypto';
@@ -670,7 +670,22 @@ export class MessageManager {
         }
       }
       mkdirSync(dirname(path), { recursive: true });
-      writeFileSync(path, JSON.stringify({ entries }), 'utf-8');
+      // Atomic publish (#4131 review): several stdio hosts of the same machine
+      // persist this file concurrently, and a host killed mid-write would
+      // otherwise leave a truncated JSON that the next cold start can only
+      // discard (hydrate is best-effort, so the whole dead set is re-paid).
+      // Write the pid-suffixed temp then rename over the target — rename is
+      // atomic, so a reader sees either the previous set or the new one.
+      const tmpPath = `${path}.${process.pid}.tmp`;
+      try {
+        writeFileSync(tmpPath, JSON.stringify({ entries }), 'utf-8');
+        renameSync(tmpPath, path);
+      } catch (error) {
+        // Never leave the temp behind: a stale .tmp is noise the next run
+        // would have to reason about, and the previous set is still valid.
+        try { unlinkSync(tmpPath); } catch { /* nothing to clean */ }
+        throw error;
+      }
     } catch (error) {
       logger.warn('Inbox negative-cache persist failed (ignored)', {
         error: error instanceof Error ? error.message : String(error),
