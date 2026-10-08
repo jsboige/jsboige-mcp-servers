@@ -502,4 +502,29 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
     expect(parsed.messages[0].content).toBe('contenu crlf');
     expect(parsed.idless).toBe(0);
   });
+
+  test('parseArchiveIdBearingMessages : bloc à en-tête illisible COMPTÉ, préambule non', () => {
+    const content = [
+      '# Archive : workspace-a', // préambule — pas un message, jamais compté
+      '',
+      '### [2026-10-07T21:00:00Z] m', // en-tête tronqué (pas de |workspace) : regex non satisfaite
+      '',
+      'contenu orphelin',
+      '',
+      '### [2026-10-07T22:00:00Z] m|w',
+      '[msg: id-ok]',
+      '',
+      'contenu ok',
+      '',
+      '### [2026-10-07T23:00:00Z] m|w', // id-less (pré-fix d’émission)
+      '',
+      'sans empreinte',
+    ].join('\n');
+    const parsed = parseArchiveIdBearingMessages(content);
+    expect(parsed.messages).toHaveLength(1);
+    expect(parsed.messages[0].id).toBe('id-ok');
+    // 2, pas 1 : l’en-tête illisible est une entrée que le heal ne peut pas
+    // lier — la compter est ce qui rend la dérive visible (ms#1405 review).
+    expect(parsed.idless).toBe(2);
+  });
 });

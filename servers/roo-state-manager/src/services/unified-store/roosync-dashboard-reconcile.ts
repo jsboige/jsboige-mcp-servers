@@ -327,6 +327,16 @@ export interface ParsedArchiveMessage {
  * shape as the live parser and read_archive; blocks without a `[msg: id]`
  * line (archives written before the emission fix) are counted and skipped —
  * the id IS the fingerprint, without it a row cannot be healed.
+ *
+ * Deliberately narrower than `read_archive`: that tool is the canonical reader
+ * and must render every archive entry, while this one exists solely to bind
+ * ids for the heal — a block it cannot bind is useless here, not lossy. The
+ * divergence is the counting rule below, and `archiveIdlessSkipped` is what
+ * makes it visible: anything header-shaped this parser fails to bind is
+ * counted rather than dropped (ms#1405 review — a silent `continue` reported a
+ * clean number while parser drift, e.g. the `-fallback.md` shape, hid in it).
+ * Converging on `read_archive` for real would remove the second parser; kept
+ * apart for now because that tool is a handler with its own dependencies.
  */
 export function parseArchiveIdBearingMessages(content: string): {
   messages: ParsedArchiveMessage[];
@@ -338,10 +348,16 @@ export function parseArchiveIdBearingMessages(content: string): {
   const blocks = normalized.split(/(?=^### \[)/m).filter((b) => b.trim());
   for (const raw of blocks) {
     const block = raw.replace(/\n---\s*$/, '').trim();
+    // The split keeps any preamble before the first header as its own block —
+    // that is not a message. Anything header-SHAPED we then fail to bind is.
+    if (!block.startsWith('### [')) continue;
     const header = block.match(
       /^### \[([^\]]+)\]\s+([^|\n]+)\|([^\s|]+)\n([\s\S]*)$/
     );
-    if (!header) continue;
+    if (!header) {
+      idless++;
+      continue;
+    }
     const [, timestamp, machineId, workspace, afterHeader] = header;
     const msg = afterHeader.match(/^\[msg: ([^\]]+)\]\n?([\s\S]*)$/);
     if (!msg) {
