@@ -20,7 +20,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { randomUUID } from 'crypto';
+import { randomUUID, createHash } from 'crypto';
 
 // vi.hoisted: stable refs usable inside vi.mock factories.
 const mocks = vi.hoisted(() => ({
@@ -232,4 +232,154 @@ describe('MessageManager — negative cache for unreadable inbox files (#3205)',
     expect(second.map(m => m.id)).toContain(badId);
     expect(second.map(m => m.id)).toContain(newId);
   }, 10_000);
+});
+
+/**
+ * #4131 — a file that is cloud-only on THIS machine never hydrates, so a plain
+ * TTL makes it time out again on every expiry, forever. Measured 08/10 on
+ * ai-01:vllm (2 September placeholders re-read at each cache rebuild). The fix
+ * escalates the skip window after N consecutive failures and persists ONLY the
+ * dead set, so a cold start (the stdio host restarts with every session) does
+ * not re-pay the timeouts either.
+ */
+describe('MessageManager — consecutive-failure escalation + dead-set persistence (#4131)', () => {
+  let sharedState: string;
+
+  /** Normal negative-cache window: short, so it expires between assertions. */
+  const NEG_TTL_MS = 60;
+  /** Escalated window: long, so it is still active when asserted. */
+  const DEAD_TTL_MS = 60_000;
+
+  /** Same derivation as MessageManager.getNegativeCachePath (test-side cleanup). */
+  function persistPathFor(dir: string): string {
+    const key = createHash('sha256').update(dir).digest('hex').slice(0, 8);
+    return join(tmpdir(), 'roo-state-manager', `inbox-read-failures-${key}.json`);
+  }
+
+  beforeEach(() => {
+    sharedState = makeTempSharedState();
+    mocks.error.mockClear();
+    mocks.readFile.mockClear();
+    mocks.readFile.mockImplementation(realReadFile as never);
+    // Contain the blast radius: only the persistence tests opt back in.
+    process.env.ROOSYNC_INBOX_NEGCACHE_PERSIST = '0';
+  });
+
+  afterEach(() => {
+    rmSync(sharedState, { recursive: true, force: true });
+    rmSync(persistPathFor(sharedState), { force: true });
+    delete process.env.ROOSYNC_INBOX_NEGCACHE_PERSIST;
+  });
+
+  /** Fail every read of `badId`; other files pass through. Returns a call counter. */
+  function failAlways(badId: string): () => number {
+    mocks.readFile.mockImplementation(async (filePath: string, _enc: string) => {
+      if (filePath.includes(badId)) throw new Error('Simulated EIO read failure');
+      return realReadFile(filePath, 'utf-8');
+    });
+    return () => mocks.readFile.mock.calls.filter(c => String(c[0]).includes(badId)).length;
+  }
+
+  test('escalates the skip window after N consecutive failures', async () => {
+    const goodId = 'msg-esc-good-aaaaaaaa';
+    const badId = 'msg-esc-bad-bbbbbbbb';
+    seedInboxMessage(sharedState, goodId, 'myia-po-2023', 'myia-po-2025');
+    seedInboxMessage(sharedState, badId, 'myia-po-2024', 'myia-po-2025');
+
+    const badReads = failAlways(badId);
+    const manager = new MessageManager(sharedState, TEST_TIMEOUT_MS, NEG_TTL_MS, 60_000, DEAD_TTL_MS);
+
+    // Three failing builds inside the normal window → the file is declared dead.
+    for (let round = 1; round <= 3; round++) {
+      const result = await manager.readInbox('myia-po-2025', 'all');
+      expect(result.map(m => m.id)).not.toContain(badId);
+      expect(badReads()).toBe(round);
+      await new Promise(resolve => setTimeout(resolve, NEG_TTL_MS + 15));
+      if (round < 3) manager.invalidateCache();
+    }
+    expect(badReads()).toBe(3);
+
+    // Past the NORMAL window the entry survives on the ESCALATED one.
+    manager.invalidateCache();
+    const after = await manager.readInbox('myia-po-2025', 'all');
+    expect(after.map(m => m.id)).toContain(goodId);
+    expect(after.map(m => m.id)).not.toContain(badId);
+    expect(badReads()).toBe(3);
+  }, 20_000);
+
+  test('a success below the threshold resets the counter (no escalation)', async () => {
+    const goodId = 'msg-reset-good-aaaaaa';
+    const badId = 'msg-reset-bad-bbbbbbbb';
+    seedInboxMessage(sharedState, goodId, 'myia-po-2023', 'myia-po-2025');
+    seedInboxMessage(sharedState, badId, 'myia-po-2024', 'myia-po-2025');
+
+    // Fail twice, then hydrate: 2 < N, so nothing is declared dead.
+    let failing = true;
+    mocks.readFile.mockImplementation(async (filePath: string, _enc: string) => {
+      if (filePath.includes(badId) && failing) throw new Error('Simulated EIO read failure');
+      return realReadFile(filePath, 'utf-8');
+    });
+    const manager = new MessageManager(sharedState, TEST_TIMEOUT_MS, NEG_TTL_MS, 60_000, DEAD_TTL_MS);
+
+    for (let i = 0; i < 2; i++) {
+      await manager.readInbox('myia-po-2025', 'all');
+      await new Promise(resolve => setTimeout(resolve, NEG_TTL_MS + 15));
+      manager.invalidateCache();
+    }
+
+    failing = false;
+    const recovered = await manager.readInbox('myia-po-2025', 'all');
+    expect(recovered.map(m => m.id)).toContain(badId);
+  }, 20_000);
+
+  test('a dead file is skipped by a NEW instance (cold start) without re-reading it', async () => {
+    process.env.ROOSYNC_INBOX_NEGCACHE_PERSIST = '1';
+    const goodId = 'msg-persist-good-aaaa';
+    const badId = 'msg-persist-bad-bbbbbb';
+    seedInboxMessage(sharedState, goodId, 'myia-po-2023', 'myia-po-2025');
+    seedInboxMessage(sharedState, badId, 'myia-po-2024', 'myia-po-2025');
+
+    const badReads = failAlways(badId);
+    const first = new MessageManager(sharedState, TEST_TIMEOUT_MS, NEG_TTL_MS, 60_000, DEAD_TTL_MS);
+    for (let round = 1; round <= 3; round++) {
+      await first.readInbox('myia-po-2025', 'all');
+      await new Promise(resolve => setTimeout(resolve, NEG_TTL_MS + 15));
+      if (round < 3) first.invalidateCache();
+    }
+    expect(badReads()).toBe(3);
+
+    // Cold start: a fresh host must inherit the dead set, not re-pay 3 timeouts.
+    const readsBefore = badReads();
+    const second = new MessageManager(sharedState, TEST_TIMEOUT_MS, NEG_TTL_MS, 60_000, DEAD_TTL_MS);
+    const result = await second.readInbox('myia-po-2025', 'all');
+
+    expect(result.map(m => m.id)).toContain(goodId);
+    expect(result.map(m => m.id)).not.toContain(badId);
+    expect(badReads()).toBe(readsBefore);
+  }, 20_000);
+
+  test('a single transient failure is never persisted', async () => {
+    process.env.ROOSYNC_INBOX_NEGCACHE_PERSIST = '1';
+    const goodId = 'msg-transient-good-aaa';
+    const badId = 'msg-transient-bad-bbbb';
+    seedInboxMessage(sharedState, goodId, 'myia-po-2023', 'myia-po-2025');
+    seedInboxMessage(sharedState, badId, 'myia-po-2024', 'myia-po-2025');
+
+    // Fails once, then hydrates.
+    let failing = true;
+    mocks.readFile.mockImplementation(async (filePath: string, _enc: string) => {
+      if (filePath.includes(badId) && failing) throw new Error('Simulated EIO read failure');
+      return realReadFile(filePath, 'utf-8');
+    });
+    const first = new MessageManager(sharedState, TEST_TIMEOUT_MS, NEG_TTL_MS, 60_000, DEAD_TTL_MS);
+    await first.readInbox('myia-po-2025', 'all');
+
+    // Below the threshold ⇒ no state on disk ⇒ a fresh host still reads the file.
+    expect(existsSync(persistPathFor(sharedState))).toBe(false);
+
+    failing = false;
+    const second = new MessageManager(sharedState, TEST_TIMEOUT_MS, NEG_TTL_MS, 60_000, DEAD_TTL_MS);
+    const result = await second.readInbox('myia-po-2025', 'all');
+    expect(result.map(m => m.id)).toContain(badId);
+  }, 20_000);
 });
