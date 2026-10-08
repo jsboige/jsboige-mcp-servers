@@ -225,13 +225,30 @@ export const FLEET_MACHINE_PATTERN = /^myia-[a-z0-9]+(?:-[a-z0-9]+)*$/;
  * un siège peut ajouter un destinataire hors forme sans toucher au code ; il ne peut
  * pas retirer le défaut (c'est le sens : le défaut est un consommateur vivant).
  *
+ * Review ms#1413 — la liste porte aussi les cibles à deux-points du poller
+ * (`nanoclaw:agent`, `nanoclaw:nanoclaw`) : le poller lit ces adresses, donc une
+ * notification qui y est destinée est du courrier vivant. `cluster-manager:nanoclaw-cluster`
+ * est ajouté **conservatoirement** — non mesuré comme consommateur, et le coût des deux
+ * erreurs n'est pas symétrique : garder une notification morte coûte une entrée de
+ * répertoire, archiver une notification vivante perd un message en silence.
+ *
+ * Doit rester **identique** à `DEFAULT_EXTRA_MENTION_RECIPIENTS` de
+ * `scripts/archive-orphan-mention-notifications.mjs` (le test d'alignement
+ * `tests/unit/archive-orphan-mention-notifications.test.ts` compare les deux listes).
+ *
  * Ne PAS y ajouter `NanoClaw`, `Hermes`, `hermes-pr-review` : mesurés 87/56/25 non lus
  * sans consommateur (review ms#1408, PG central) — ce sont des orphelines, la garde
- * a raison de les jeter.
+ * a raison de les jeter. Et ne pas ajouter un `nanoclaw` nu : il garderait `nanoclaw:*`
+ * par la règle de tête ci-dessous, ce qui blanchirait la classe orpheline entière.
  *
  * @issue #2591
  */
-const DEFAULT_EXTRA_MENTION_RECIPIENTS: readonly string[] = ['nanoclaw-cluster'];
+const DEFAULT_EXTRA_MENTION_RECIPIENTS: readonly string[] = [
+  'nanoclaw-cluster',
+  'nanoclaw:agent',
+  'nanoclaw:nanoclaw',
+  'cluster-manager:nanoclaw-cluster'
+];
 
 /**
  * Liste effective des destinataires hors forme : défaut ∪ `ROO_MENTION_EXTRA_RECIPIENTS`.
@@ -258,7 +275,12 @@ export function loadExtraMentionRecipients(): string[] {
  *    partitionnement du task-space (`state.fleetRoster`, `background-services.ts`),
  *    on ne peut donc pas « corriger » les orphelines en posant la variable.
  * 2. **La liste explicite des destinataires hors forme** (défaut + env) — les
- *    consommateurs vivants qui ne suivent pas la convention de nommage.
+ *    consommateurs vivants qui ne suivent pas la convention de nommage. Le
+ *    rapprochement est **symétrique de la forme `myia-*`** : l'adresse exacte
+ *    (insensible à la casse), **plus** — pour une entrée nue, sans `:` — ses
+ *    propres adresses de lane `entrée:<workspace>`. La comparaison par adresse
+ *    seule (review ms#1413) laissait tomber `nanoclaw-cluster:nanoclaw` dans la
+ *    classe orpheline : une cible vivante du poller, archivable par le sweep.
  * 3. **Le roster**, quand il est configuré — dernière voie d'acceptation, pour une
  *    machine dont l'id ne suivrait pas la convention.
  *
@@ -270,8 +292,28 @@ export function loadExtraMentionRecipients(): string[] {
  */
 export function isFleetRecipient(machine: string, roster: string[] | null, extra?: readonly string[]): boolean {
   if (FLEET_MACHINE_PATTERN.test(machine)) return true;
-  if (extra && extra.includes(machine)) return true;
+  if (extra && extraMentionMatches(machine, extra)) return true;
   return roster !== null && roster.includes(machine);
+}
+
+/**
+ * Rapprochement d'une adresse avec la liste hors forme — sémantique PARTAGÉE
+ * avec `scripts/archive-orphan-mention-notifications.mjs` (le test d'alignement
+ * exerce les deux sur un corpus identique).
+ *
+ * Deux règles, et l'union est délibérée :
+ * 1. l'adresse exacte, insensible à la casse (la liste est minusculée au
+ *    chargement) ;
+ * 2. pour une entrée **nue** (sans `:`) seulement, ses propres adresses de lane
+ *    `entrée:<workspace>` — la même générosité que `FLEET_MACHINE_PATTERN`
+ *    accorde à `myia-*`. Une entrée portant déjà un `:` reste exacte : on ne
+ *    veut pas qu'une cible à deux-points blanchisse sa tête.
+ *
+ * @issue #2591 / review ms#1413
+ */
+function extraMentionMatches(recipient: string, extras: readonly string[]): boolean {
+  const r = recipient.toLowerCase();
+  return extras.some(e => r === e || (!e.includes(':') && r.startsWith(`${e}:`)));
 }
 
 /**
