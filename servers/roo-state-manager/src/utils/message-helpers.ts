@@ -403,6 +403,32 @@ export function matchesRecipient(
 }
 
 /**
+ * True when the caller's MACHINE is the message's machine, whatever the
+ * workspace half says — i.e. this machine carries a copy of the message.
+ *
+ * Sibling of `matchesRecipient`, for the one caller that must not use it:
+ * **archiving**. A message addressed to `X:<half>` whose workspace half
+ * resolves to nothing (a dashboard key, a Claude project key like
+ * `c--dev-roo-extensions`, a workspace since renamed) is carried by X's inbox
+ * and readable by nobody: `matchesRecipient` rejects every workspace of X, so
+ * `getMessage` throws ACCESS_DENIED and **no caller can ever archive it** — the
+ * message is immortal in the store. Measured on ai-01 (#4131 B8):
+ * `hermes-dm-condense-lock-20260927T1358Z` targets
+ * `myia-ai-01:workspace-cluster-coordination`, a dashboard key and not a
+ * workspace, and no caller could archive it.
+ *
+ * Reading stays workspace-scoped: archiving is housekeeping — it moves a
+ * message, it does not return its content to a new reader — and every
+ * workspace of one machine is one host, one user, one RSM process tree.
+ */
+export function matchesMachineTarget(messageTo: string, localMachineId: string): boolean {
+  // A broadcast is copied into every machine's mailbox, so every machine may
+  // archive its own copy (matchesRecipient already allows the read).
+  if (messageTo === 'all' || messageTo === 'All') return true;
+  return parseMachineWorkspace(messageTo).machineId === canonicalMachineId(localMachineId);
+}
+
+/**
  * True when `messageTo` names a machine WITHOUT a workspace (e.g. "myia-ai-01"),
  * excluding the "all"/"All" broadcast.
  *
