@@ -459,7 +459,14 @@ describe('CLI exit codes — ms#1413 point 4 (subprocess, no real store)', () =>
 	it('exits 2 on every fail-closed refusal (the fix: it used to exit 0)', () => {
 		expect(runCli(['--nope']).status).toBe(2);
 		expect(runCli([]).status).toBe(2);
-		expect(runCli(['--manifest', 'x.json']).status).toBe(2); // no store resolvable
+		// "No store resolvable" must point at a LOCAL nonexistent path. Deleting the
+		// env var alone is NOT hermetic: in a main checkout the server .env exists
+		// and resolves the real GDrive store, so the CLI stats DriveFS — a cold
+		// mount stalls the whole 30 s spawnSync budget and the child dies with
+		// status null (measured 2/2 on po-2027's main checkout; green only where
+		// no .env exists, i.e. CI ubuntu and a bare worktree).
+		const noStore = path.join(os.tmpdir(), `orphan-no-store-${process.pid}`, 'messages', 'inbox');
+		expect(runCli(['--manifest', 'x.json', '--inbox', noStore]).status).toBe(2);
 		expect(runCli(['--manifest', 'x.json', '--limit', '0']).status).toBe(2);
 		expect(runCli(['--manifest', 'x.json', '--manifest', 'y.json']).status).toBe(2);
 	});
