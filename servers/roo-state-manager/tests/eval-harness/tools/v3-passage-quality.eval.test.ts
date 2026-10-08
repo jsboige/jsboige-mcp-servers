@@ -7,7 +7,18 @@
  * WITHOUT re-opening a grep.
  *
  * Rubric (Epic #2609):
- *   (a) coherent passage — snippet is a multi-sentence window, not a fragment
+ *   (a) coherent passage — snippet is a multi-sentence window, not a fragment;
+ *       a truncated snippet must land on a content-appropriate boundary:
+ *       end-of-SENTENCE for prose, end-of-LINE for structured and code
+ *       content (JSON / [tool_result] / code) — ai-01 triage on #4105,
+ *       2026-10-07, after the daily run measured a [tool_result] JSON
+ *       snippet cut right after a complete member line
+ *       ("search_timestamp": "…",\n), which snapToSentence accepts as a line
+ *       boundary (search-semantic.tool.ts l.266/280). No runtime change —
+ *       this grades what the runtime already produces; the shape-based
+ *       classifier itself lives in src/utils/snippet-boundary.ts, pinned by
+ *       the CI-included unit tests in src/utils/__tests__/ (this suite never
+ *       runs in CI).
  *   (b) handle — drill_down (conversation_browser view, pre-windowed)
  *   (c) context — conversation_context adjacent turns (data-dependent: legacy
  *       points without message_index cannot anchor it; recorded, not gated)
@@ -22,6 +33,7 @@ import { handleRooSyncSearch } from '../../../src/tools/search/roosync-search.to
 import { handleDiagnoseSemanticIndex } from '../../../src/tools/indexing/diagnose-index.tool.js';
 import { handleSearchTasksSemanticFallback } from '../../../src/tools/search/search-fallback.tool.js';
 import type { ConversationSkeleton } from '../../../src/types/conversation.js';
+import { gradeSnippetBoundary } from '../../../src/utils/snippet-boundary.js';
 
 // Epic #2609 baseline query, verbatim (2026-06-16 live measurement)
 const SCENARIO_2_ARGS = {
@@ -81,13 +93,12 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
     const passageOk = snippet.length >= 100;
     checks.push({ name: 'rubric(a): snippet >= 100 chars (passage, not fragment)', ok: passageOk, observed: `${snippet.length} chars` });
 
-    // Truncated snippets must land on a sentence end (no mid-sentence cut)
-    let sentenceEndOk = true;
-    if (snippet.endsWith('...') && snippet.length >= 100) {
-      const body = snippet.slice(0, -3);
-      sentenceEndOk = /[.!?]["')]?\s*$/.test(body.trim());
-    }
-    checks.push({ name: 'rubric(a): truncated snippet ends on sentence boundary', ok: sentenceEndOk, observed: snippet.slice(-40) });
+    // Truncated snippets must land on a content-appropriate boundary:
+    // end-of-sentence for prose, end-of-line for structured content (JSON /
+    // [tool_result] / code) — see gradeSnippetBoundary (ai-01 triage #4105).
+    const boundary = gradeSnippetBoundary(snippet);
+    const sentenceEndOk = boundary.ok;
+    checks.push({ name: 'rubric(a): truncated snippet ends on content-appropriate boundary (sentence for prose, line for structured)', ok: sentenceEndOk, observed: `[${boundary.kind}] ${snippet.slice(-40)}` });
 
     // ---- rubric (b): drill-down handle ----
     const drillOk = !!bestChunk?.drill_down
@@ -138,3 +149,9 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
     expect(drillOk).toBe(true);
   });
 });
+
+// The classifier's anti-vacuity unit pin (prose mid-sentence FAILs
+// unconditionally, embedded-member prose stays prose, code line-boundary
+// passes, mid-member/mid-line fail) lives in
+// src/utils/__tests__/snippet-boundary.test.ts — CI-included, because this
+// eval-harness suite never runs in CI (vitest.config.ci.ts).
