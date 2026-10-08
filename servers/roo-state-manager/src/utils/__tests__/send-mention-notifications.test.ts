@@ -252,15 +252,24 @@ describe('extra mention recipients — out-of-shape live consumers (review ms#14
 
 	it('loadExtraMentionRecipients — default ∪ env, deduped, lowercased', async () => {
 		const { loadExtraMentionRecipients } = await import('../dashboard-helpers.js');
+		// ms#1413 — the default is the poller's machine id PLUS the two-points
+		// targets it reads (a lane-shaped target used to fall through to the
+		// orphan class, where the store sweep would have archived it).
+		const defaults = [
+			'nanoclaw-cluster',
+			'nanoclaw:agent',
+			'nanoclaw:nanoclaw',
+			'cluster-manager:nanoclaw-cluster'
+		];
 
 		delete process.env.ROO_MENTION_EXTRA_RECIPIENTS;
-		expect(loadExtraMentionRecipients()).toEqual(['nanoclaw-cluster']);
+		expect(loadExtraMentionRecipients()).toEqual(defaults);
 
 		process.env.ROO_MENTION_EXTRA_RECIPIENTS = 'NANOCLAW-CLUSTER, extra-one';
-		expect(loadExtraMentionRecipients()).toEqual(['nanoclaw-cluster', 'extra-one']);
+		expect(loadExtraMentionRecipients()).toEqual([...defaults, 'extra-one']);
 
 		process.env.ROO_MENTION_EXTRA_RECIPIENTS = ' , ,';
-		expect(loadExtraMentionRecipients()).toEqual(['nanoclaw-cluster']);
+		expect(loadExtraMentionRecipients()).toEqual(defaults);
 	});
 
 	it('isFleetRecipient — extra list is an independent third acceptance path', async () => {
@@ -268,7 +277,15 @@ describe('extra mention recipients — out-of-shape live consumers (review ms#14
 
 		expect(isFleetRecipient('nanoclaw-cluster', null)).toBe(false);          // no extra passed
 		expect(isFleetRecipient('nanoclaw-cluster', null, ['nanoclaw-cluster'])).toBe(true);
-		expect(isFleetRecipient('NanoClaw', null, ['nanoclaw-cluster'])).toBe(false); // case matters
+		expect(isFleetRecipient('NanoClaw', null, ['nanoclaw-cluster'])).toBe(false); // a different id, not a case variant
 		expect(isFleetRecipient('nanoclaw-cluster', ['myia-ai-01'], [])).toBe(false); // empty extra, roster w/o it
+		// ms#1413 — the extra list matches like the `myia-*` pattern: case-insensitively,
+		// and a BARE entry also covers its own lane addresses. A two-points entry stays
+		// exact, so it never blanches its head.
+		expect(isFleetRecipient('NanoClaw-Cluster', null, ['nanoclaw-cluster'])).toBe(true);
+		expect(isFleetRecipient('nanoclaw-cluster:nanoclaw', null, ['nanoclaw-cluster'])).toBe(true);
+		expect(isFleetRecipient('nanoclaw-cluster:nanoclaw', null, ['nanoclaw:agent'])).toBe(false);
+		expect(isFleetRecipient('nanoclaw:agent', null, ['nanoclaw:agent'])).toBe(true);
+		expect(isFleetRecipient('nanoclaw:other', null, ['nanoclaw:agent'])).toBe(false);
 	});
 });
