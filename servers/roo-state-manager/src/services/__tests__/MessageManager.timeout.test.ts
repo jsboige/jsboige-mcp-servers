@@ -17,8 +17,8 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { existsSync, mkdirSync, writeFileSync, rmSync } from 'fs';
-import { join } from 'path';
+import { existsSync, mkdirSync, writeFileSync, rmSync, readdirSync } from 'fs';
+import { join, dirname, basename } from 'path';
 import { tmpdir } from 'os';
 import { randomUUID, createHash } from 'crypto';
 
@@ -26,6 +26,11 @@ import { randomUUID, createHash } from 'crypto';
 const mocks = vi.hoisted(() => ({
   error: vi.fn(),
   readFile: vi.fn(),
+  // Write override holder. NOT a vi.fn: vitest.config.ts sets
+  // mockReset+restoreMocks, which wipe every implementation before each test —
+  // an implementation installed by a mock factory would vanish and turn the
+  // seeding writes into silent no-ops (whole inbox reads empty).
+  writeFileOverride: { current: null as null | ((p: string, data: unknown, enc?: string) => void) },
 }));
 
 // Logger mock: capture error calls to assert the skip is logged.
@@ -39,13 +44,22 @@ vi.mock('../../utils/logger.js', () => ({
 }));
 
 // fs mock: default readFile passes through to real; per-test overrides hang it.
-// existsSync/mkdirSync/writeFileSync/rmSync stay real (module-level re-exports
-// below use the original so seeding/cleanup touch the real fs).
+// writeFileSync is a plain passthrough (seeding keeps working) that merely
+// consults mocks.writeFileOverride: the atomic-persist test makes any write to
+// the FINAL path hostile to prove the tmp+rename publish never exposes a
+// partial file. It is deliberately NOT a vi.fn — see the holder's comment.
+// existsSync/mkdirSync/rmSync stay real (module-level re-exports below use the
+// original so seeding/cleanup touch the real fs).
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
   mocks.readFile.mockImplementation(actual.promises.readFile as never);
+  const passthroughWrite = ((p: string, data: unknown, enc?: string) =>
+    mocks.writeFileOverride.current
+      ? mocks.writeFileOverride.current(p, data, enc)
+      : actual.writeFileSync(p as never, data as never, enc as never)) as unknown as typeof actual.writeFileSync;
   return {
     ...actual,
+    writeFileSync: passthroughWrite,
     promises: {
       ...actual.promises,
       readFile: mocks.readFile,
@@ -59,6 +73,7 @@ import { MessageManager } from '../MessageManager.js';
 // Real fs captured at module load (before any mock override) for passthrough.
 const realFs = await vi.importActual<typeof import('fs')>('fs');
 const realReadFile = realFs.promises.readFile as (p: string, enc: string) => Promise<string>;
+const realWriteFile = realFs.writeFileSync as unknown as (p: string, data: string, enc: string) => void;
 
 /** Tiny timeout for tests (real timers). Production default is 10s. */
 const TEST_TIMEOUT_MS = 50;
@@ -261,6 +276,7 @@ describe('MessageManager — consecutive-failure escalation + dead-set persisten
     mocks.error.mockClear();
     mocks.readFile.mockClear();
     mocks.readFile.mockImplementation(realReadFile as never);
+    mocks.writeFileOverride.current = null;
     // Contain the blast radius: only the persistence tests opt back in.
     process.env.ROOSYNC_INBOX_NEGCACHE_PERSIST = '0';
   });
@@ -268,6 +284,15 @@ describe('MessageManager — consecutive-failure escalation + dead-set persisten
   afterEach(() => {
     rmSync(sharedState, { recursive: true, force: true });
     rmSync(persistPathFor(sharedState), { force: true });
+    // Atomic publish leaves `${path}.${pid}.tmp` only on a crash path; sweep
+    // any residue so a leaked temp cannot make the NEXT test's assertions lie.
+    const cacheDir = dirname(persistPathFor(sharedState));
+    const stamp = basename(persistPathFor(sharedState));
+    try {
+      for (const f of readdirSync(cacheDir)) {
+        if (f.startsWith(stamp) && f.endsWith('.tmp')) rmSync(join(cacheDir, f), { force: true });
+      }
+    } catch { /* directory absent — nothing to sweep */ }
     delete process.env.ROOSYNC_INBOX_NEGCACHE_PERSIST;
   });
 
@@ -381,5 +406,50 @@ describe('MessageManager — consecutive-failure escalation + dead-set persisten
     const second = new MessageManager(sharedState, TEST_TIMEOUT_MS, NEG_TTL_MS, 60_000, DEAD_TTL_MS);
     const result = await second.readInbox('myia-po-2025', 'all');
     expect(result.map(m => m.id)).toContain(badId);
+  }, 20_000);
+
+  test('the persisted dead-set is published atomically — a hostile write to the final path never yields a partial file', async () => {
+    process.env.ROOSYNC_INBOX_NEGCACHE_PERSIST = '1';
+    const goodId = 'msg-atomic-good-aaaa';
+    const badId = 'msg-atomic-bad-bbbbbb';
+    seedInboxMessage(sharedState, goodId, 'myia-po-2023', 'myia-po-2025');
+    seedInboxMessage(sharedState, badId, 'myia-po-2024', 'myia-po-2025');
+
+    // Every direct write to the FINAL path is hostile: partial content then a
+    // throw, i.e. exactly the crash-in-the-middle the tmp+rename publish exists
+    // to survive. Writes to the .tmp sibling pass through untouched.
+    const persistPath = persistPathFor(sharedState);
+    mocks.writeFileOverride.current = (p: string, data: unknown, enc?: string) => {
+      if (p === persistPath) {
+        realWriteFile(p, '{"entries":{"msg-atomic-bad', enc as string); // truncated JSON
+        throw new Error('Simulated crash mid-write');
+      }
+      return realWriteFile(p, data as string, enc as string);
+    };
+
+    const badReads = failAlways(badId);
+    const first = new MessageManager(sharedState, TEST_TIMEOUT_MS, NEG_TTL_MS, 60_000, DEAD_TTL_MS);
+    for (let round = 1; round <= 3; round++) {
+      await first.readInbox('myia-po-2025', 'all');
+      await new Promise(resolve => setTimeout(resolve, NEG_TTL_MS + 15));
+      if (round < 3) first.invalidateCache();
+    }
+    expect(badReads()).toBe(3);
+
+    // The publish went through the temp + rename: the final file is complete
+    // JSON (the hostile branch never had a chance to land), and no temp is left.
+    // The dead set is keyed by inbox FILE name (the phantom guard compares the
+    // basename to `message.id + '.json'`), not by bare id.
+    const onDisk = JSON.parse(realFs.readFileSync(persistPath, 'utf-8')) as { entries: Record<string, unknown> };
+    expect(Object.keys(onDisk.entries)).toContain(`${badId}.json`);
+    expect(readdirSync(dirname(persistPath)).filter(f => f.endsWith('.tmp'))).toEqual([]);
+
+    // And the property that matters: a fresh host still inherits the dead set.
+    const readsBefore = badReads();
+    const second = new MessageManager(sharedState, TEST_TIMEOUT_MS, NEG_TTL_MS, 60_000, DEAD_TTL_MS);
+    const result = await second.readInbox('myia-po-2025', 'all');
+    expect(result.map(m => m.id)).toContain(goodId);
+    expect(result.map(m => m.id)).not.toContain(badId);
+    expect(badReads()).toBe(readsBefore);
   }, 20_000);
 });
