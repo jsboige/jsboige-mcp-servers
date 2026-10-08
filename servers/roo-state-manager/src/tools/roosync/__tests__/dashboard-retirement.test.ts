@@ -77,6 +77,7 @@ const WATCHED_ENV = [
   'ROOSYNC_SHARED_PATH',
   'ROOSYNC_MACHINE_ID',
   'ROOSYNC_WORKSPACE_ID',
+  'ROOSYNC_TRUSTED_CALLER_IDS',
   'UNIFIED_STORE_DASHBOARD_READ_PG',
   'UNIFIED_STORE_DUAL_WRITE',
   'UNIFIED_STORE_PG_URL',
@@ -154,6 +155,10 @@ beforeEach(() => {
   process.env.ROOSYNC_SHARED_PATH = path.join(testDir, 'shared-state');
   process.env.ROOSYNC_MACHINE_ID = 'myia-po-2026';
   process.env.ROOSYNC_WORKSPACE_ID = 'roo-extensions';
+  // #4135 : les tests #3782 (b) appendent sur des clés fork (« myia-po-2025 (1) »…)
+  // en ciblant type:'machine' — le gate d'auteur exige que ces machines-cibles
+  // simulées soient trustées depuis le siège local myia-po-2026.
+  process.env.ROOSYNC_TRUSTED_CALLER_IDS = 'myia-po-2025,myia-po-2025 (1),myia-po-2025 (1) (1)';
   delete process.env.UNIFIED_STORE_DASHBOARD_READ_PG;
   delete process.env.UNIFIED_STORE_DUAL_WRITE;
   delete process.env.UNIFIED_STORE_PG_URL;
