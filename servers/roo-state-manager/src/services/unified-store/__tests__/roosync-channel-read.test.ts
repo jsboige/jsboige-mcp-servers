@@ -97,6 +97,7 @@ function sampleRow(overrides?: Partial<RooSyncMessageRow>): RooSyncMessageRow {
     created_at: '2026-08-18T10:00:00.000Z',
     reply_to: 'msg-20260817T000000-bbbbbb',
     read_by: [],
+    read_by_workspace: [],
     options: {},
     ...overrides,
   };
@@ -131,6 +132,7 @@ describe('row → Message mapping (full-fidelity round-trip)', () => {
       thread_id: 'thread-1',
       reply_to: 'msg-20260817T000000-bbbbbb',
       read_by: ['myia-po-2025'],
+      read_by_workspace: ['myia-ai-01:roo-extensions'],
       auto_destruct: true,
       destruct_after: '30m',
       destruct_after_read_by: ['myia-ai-01'],
@@ -255,6 +257,44 @@ describe('readChannelInboxFromPg (GDrive inbox semantics)', () => {
     mockGetRooSyncMailbox.mockRejectedValue(new Error('PG down'));
     const items = await readChannelInboxFromPg(getReaderDouble(), 'myia-ai-01');
     expect(items).toBeNull();
+  });
+
+
+  test('machine-wide read state is per-workspace from read_by_workspace (#3960, migrations/010)', async () => {
+    mockGetRooSyncMailbox.mockResolvedValue([
+      // Lu par CE workspace -> read, quel que soit le status global (qui reste
+      // 'unread' pour ne pas masquer les siblings).
+      sampleRow({ id: 'mw-read-here', to_workspace: '', read_by_workspace: ['myia-ai-01:roo-extensions'] }),
+      // Lu par un AUTRE workspace uniquement -> unread pour ce lecteur (#3960).
+      sampleRow({ id: 'mw-read-elsewhere', to_workspace: '', read_by_workspace: ['myia-ai-01:vllm'] }),
+      // Legacy : jamais tracké par workspace, status global read -> lu.
+      sampleRow({ id: 'mw-legacy', to_workspace: '', status: 'read' }),
+      // Legacy inverse : jamais tracké, status global unread -> NON lu
+      // (c'est la population qui ressortait en boucle avant migrations/010).
+      sampleRow({ id: 'mw-never-read', to_workspace: '', status: 'unread' }),
+    ]);
+
+    const all = await readChannelInboxFromPg(getReaderDouble(), 'myia-ai-01', undefined, 'roo-extensions');
+    const byId = Object.fromEntries(all!.map((i) => [i.id, i.status]));
+    expect(byId).toEqual({
+      'mw-read-here': 'read',
+      'mw-read-elsewhere': 'unread',
+      'mw-legacy': 'read',
+      'mw-never-read': 'unread',
+    });
+
+    const unread = await readChannelInboxFromPg(getReaderDouble(), 'myia-ai-01', 'unread', 'roo-extensions');
+    expect(unread!.map((i) => i.id)).toEqual(['mw-read-elsewhere', 'mw-never-read']);
+  });
+
+  test('unread count honours per-workspace machine-wide state (#3151)', async () => {
+    mockGetRooSyncMailbox.mockResolvedValue([
+      sampleRow({ id: 'mw-read-here', to_workspace: '', read_by_workspace: ['myia-ai-01:roo-extensions'] }),
+      sampleRow({ id: 'mw-read-elsewhere', to_workspace: '', read_by_workspace: ['myia-ai-01:vllm'] }),
+      sampleRow({ id: 'u', status: 'unread' }),
+    ]);
+    const counts = await countChannelInboxFromPg(getReaderDouble(), 'myia-ai-01', 'roo-extensions');
+    expect(counts).toEqual({ total: 3, unread: 2, read: 1 });
   });
 
   test('countChannelInboxFromPg counts per-machine broadcast state', async () => {

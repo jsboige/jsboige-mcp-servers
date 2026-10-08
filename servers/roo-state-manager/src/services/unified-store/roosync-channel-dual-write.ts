@@ -164,6 +164,7 @@ export function mapMessageToRow(message: Message): RooSyncMessageRow {
     created_at: message.timestamp,
     reply_to: message.reply_to ?? null,
     read_by: message.read_by ?? [],
+    read_by_workspace: message.read_by_workspace ?? [],
     options: mapMessageOptions(message),
   };
 }
@@ -250,6 +251,25 @@ export function dualWriteRooSyncMessageBroadcastRead(
   return runTrackedMirrorOp('broadcast-read', messageId, () =>
     getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
       read_by: readBy,
+    })
+  );
+}
+
+/**
+ * Dual-write the per-workspace read state of a machine-wide message
+ * (markAsRead — migrations/010, #3960 semantics).
+ *
+ * Without this mirror a CHANNEL_READ_PG seat judged machine-wide rows by the
+ * raw global `status` and re-surfaced them as unread forever — the read-state
+ * divergence observed 02/10 on the ai-01 seat (#3151).
+ */
+export function dualWriteRooSyncMessageWorkspaceRead(
+  messageId: string,
+  readByWorkspace: string[]
+): Promise<void> {
+  return runTrackedMirrorOp('workspace-read', messageId, () =>
+    getUnifiedStoreWriter().updateRooSyncMessage(messageId, {
+      read_by_workspace: readByWorkspace,
     })
   );
 }

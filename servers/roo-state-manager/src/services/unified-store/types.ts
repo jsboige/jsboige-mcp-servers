@@ -96,6 +96,8 @@ export interface RooSyncMessageRow {
   /** #3151 Phase B — full-fidelity read path (migrations/005). */
   reply_to: string | null;
   read_by: string[];
+  /** Per-workspace read state of machine-wide targets (#3960, migrations/010). */
+  read_by_workspace: string[];
   options: RooSyncMessageOptions;
   /**
    * Stamps written by the update path only (migrations/003/004) — absent on
@@ -126,6 +128,9 @@ export interface RooSyncMessageUpdate {
   reminder_sent_at?: string;
   /** Phase B — per-machine broadcast read tracking (whole-array replace). */
   read_by?: string[];
+  /** Phase B (migrations/010) — per-workspace read tracking of machine-wide
+   *  targets, whole-array replace (same contract as `read_by`). */
+  read_by_workspace?: string[];
   /**
    * Phase D — whole-object replace of the `options` JSONB payload
    * (acknowledged_at, metadata, TTL fields). Safe only from a caller that

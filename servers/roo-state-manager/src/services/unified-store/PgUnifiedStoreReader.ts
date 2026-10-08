@@ -324,6 +324,7 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
         : String(row.created_at),
       reply_to: row.reply_to ?? null,
       read_by: row.read_by ?? [],
+      read_by_workspace: row.read_by_workspace ?? [],
       options: row.options ?? {},
       destroyed_at: row.destroyed_at ?? null,
       destroyed_reason: row.destroyed_reason ?? null,

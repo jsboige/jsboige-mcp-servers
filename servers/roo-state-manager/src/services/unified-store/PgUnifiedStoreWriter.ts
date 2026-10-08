@@ -322,6 +322,9 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     ['reminder_sent_at', 'reminder_sent_at', false],
     // Phase B (#3151) — per-machine broadcast read tracking (migrations/005).
     ['read_by', 'read_by', true],
+    // Phase B (#3151, migrations/010) — per-workspace read tracking of
+    // machine-wide targets (#3960).
+    ['read_by_workspace', 'read_by_workspace', true],
     // Phase D (#3151) — whole-object options replace (acknowledged_at,
     // metadata, TTL fields) from the PG-primary mutation paths.
     ['options', 'options', true],
