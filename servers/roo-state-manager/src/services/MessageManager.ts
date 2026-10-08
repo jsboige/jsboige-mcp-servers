@@ -14,7 +14,7 @@ import { createLogger } from '../utils/logger.js';
 import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
-import { parseMachineWorkspace, matchesRecipient, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
+import { parseMachineWorkspace, matchesRecipient, matchesMachineTarget, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
 import { maskSecretTextForPublication } from '../utils/secret-redaction.js';
 // Safe as a static import: AttachmentManager pulls fs/path/crypto/logger plus the
 // unified-store gate modules (#3151 §7.5.2), whose MessageManager references are
@@ -94,6 +94,41 @@ function compareByEmbeddedRecencyDesc(a: string, b: string): number {
   if (tb) return -1;
   if (ta) return 1;
   return 0;
+}
+
+/**
+ * What the caller intends to do with the message it is looking up — the one
+ * input that changes the access verdict in `messageAccessVerdict`.
+ *
+ * `'read'` (default): recipient-or-sender, workspace-scoped. Every reading
+ * path. `'archive'`: the same, plus the caller's MACHINE when the address's
+ * workspace half resolves to nothing (#4131 G-A, B8) — archiving is
+ * housekeeping, not disclosure, and a message nobody can archive is immortal.
+ */
+export type MessageAccessScope = 'read' | 'archive';
+
+/**
+ * What the caller may see of a message it looked up — the gate's answer, richer
+ * than a boolean because `'archive'` scope opens a grant that is NOT a read.
+ *
+ * - `'full'`     : recipient (workspace-aware) or sender. The message as stored.
+ * - `'envelope'` : the caller's MACHINE carries this message, its address does
+ *   not resolve to this workspace, AND the caller named `'archive'` scope.
+ *   Subject/from/to/timestamp/status — never `body`. Archiving is housekeeping;
+ *   reading is not implied by it. Returning the body here would move the
+ *   cross-workspace read boundary (tested as intentional: same machine, another
+ *   workspace → denied) from "denied" to "allowed by a flag".
+ * - `'denied'`   : neither. Callers throw ACCESS_DENIED.
+ */
+export type MessageAccessVerdict = 'full' | 'envelope' | 'denied';
+
+/**
+ * Reduce a message to what its verdict allows. `'envelope'` strips the body and
+ * nothing else — the fields the archive report needs (`subject`, `from`, `to`,
+ * `timestamp`, `status`) all stay.
+ */
+function applyAccessVerdict(message: Message, verdict: MessageAccessVerdict): Message {
+  return verdict === 'envelope' ? { ...message, body: '' } : message;
 }
 
 /**
@@ -998,6 +1033,26 @@ export class MessageManager {
       );
     }
 
+    // #4131 G-A — the same phantom class has two more shapes, and both are
+    // DECIDABLE here, so they are refused here:
+    //   - a second colon (`myia-po-2024:a:b`) — the workspace half can never
+    //     equal a receiver basename, so no workspace matches it;
+    //   - an empty machine (`:roo-extensions`) — matches no machine at all.
+    // The REST of "unresolvable" is not decidable at send time: nothing holds a
+    // fleet workspace registry (the roster depends on indexing partitioning,
+    // #2591/#4131-G-M), so a sender cannot know whether `X:<ws>` exists. That
+    // undecidable remainder is why the receiver-side archive grant exists — a
+    // message we cannot promise will resolve must at least remain archivable.
+    if (to.startsWith(':') || to.indexOf(':') !== to.lastIndexOf(':')) {
+      throw new MessageManagerError(
+        `Destinataire invalide : « ${to} » n'est pas une adresse résoluble. ` +
+        `Convention : « machine » (toute la machine) ou « machine:basename-du-workspace » — un seul deux-points, machine non vide. ` +
+        `Une machine vide ou un second deux-points ne peut correspondre à aucun destinataire : le message apparaîtrait dans l'inbox sans être lisible (classe phantom, #4131 G-A).`,
+        MessageManagerErrorCode.INVALID_RECIPIENT,
+        { from, to, type: 'malformed-address' }
+      );
+    }
+
     // Compute expires_at from destruct_after TTL
     let expiresAt: string | undefined;
     if (options?.destruct_after) {
@@ -1357,16 +1412,32 @@ export class MessageManager {
   }
 
   /**
-   * #2287 access check shared by the PG and GDrive read paths of `getMessage`:
-   * allow if the caller is the recipient (workspace-aware) or the sender.
-   * No callerId → allow (backward compat, matches the original behavior).
+   * #2287 access verdict shared by the PG and GDrive paths of `getMessage`:
+   * `'full'` if the caller is the recipient (workspace-aware) or the sender.
+   * No callerId → `'full'` (backward compat, matches the original behavior).
+   *
+   * `scope` widens the rule for the ONE non-reading caller (#4131 G-A, B8):
+   * `'archive'` also allows the caller's MACHINE when the workspace half of the
+   * address resolves to nothing — see `matchesMachineTarget`. Without it, a
+   * message addressed to `X:<unresolvable>` is readable by nobody AND
+   * archivable by nobody, so it can never leave the store. Reading is
+   * untouched: the default is `'read'`.
    */
-  private callerCanAccessMessage(message: Message, callerId?: string): boolean {
-    if (!callerId) return true;
+  private messageAccessVerdict(
+    message: Message,
+    callerId?: string,
+    scope: MessageAccessScope = 'read'
+  ): MessageAccessVerdict {
+    if (!callerId) return 'full';
     const caller = parseMachineWorkspace(callerId);
     const isRecipient = matchesRecipient(message.to, caller.machineId, caller.workspaceId);
     const isSender = parseMachineWorkspace(message.from).machineId === caller.machineId;
-    return isRecipient || isSender;
+    if (isRecipient || isSender) return 'full';
+    // The relaxation is an ENVELOPE grant, not a read: see MessageAccessVerdict.
+    if (scope === 'archive' && matchesMachineTarget(message.to, caller.machineId)) {
+      return 'envelope';
+    }
+    return 'denied';
   }
 
   /**
@@ -1400,11 +1471,19 @@ export class MessageManager {
    *
    * @param messageId ID du message à récupérer
    * @param callerId ID complet du caller (machine:workspace) pour vérification d'accès
+   * @param accessScope `'read'` (défaut) = destinataire ou expéditeur, portée
+   *   workspace. `'archive'` = idem, plus la MACHINE du caller quand la moitié
+   *   workspace de l'adresse ne se résout à rien (#4131 G-A, B8) — un message
+   *   que personne ne peut archiver ne quitte jamais le store.
    * @returns Le message complet ou null si introuvable
    * @throws MessageManagerError ACCESS_DENIED si le message existe mais est adressé
    *   à un autre machine:workspace que celui du caller (po-2024)
    */
-  async getMessage(messageId: string, callerId?: string): Promise<Message | null> {
+  async getMessage(
+    messageId: string,
+    callerId?: string,
+    accessScope: MessageAccessScope = 'read'
+  ): Promise<Message | null> {
     logger.info(`Getting message: ${messageId}`);
 
     // #3151 Phase B — PG-primary lookup. null = PG unavailable OR unknown id;
@@ -1412,7 +1491,7 @@ export class MessageManager {
     //
     // Requires a callerId. On GDrive the filesystem itself was the access
     // boundary — a message addressed elsewhere is simply not in this machine's
-    // inbox/sent/archive — which is why `callerCanAccessMessage` can allow a
+    // inbox/sent/archive — which is why `messageAccessVerdict` can allow a
     // caller that provides no id. `roosync_messages` holds the whole fleet's
     // mail in one table, so that same allowance would hand a foreign message to
     // the five entry points that omit callerId (archive_message,
@@ -1423,12 +1502,13 @@ export class MessageManager {
     if (pgReader) {
       const pgMessage = await getChannelMessageFromPg(pgReader, messageId);
       if (pgMessage) {
-        if (!this.callerCanAccessMessage(pgMessage, callerId)) {
+        const verdict = this.messageAccessVerdict(pgMessage, callerId, accessScope);
+        if (verdict === 'denied') {
           logger.warn(`Access denied: message ${messageId} targets ${pgMessage.to}, caller is ${callerId}`);
           throw this.accessDeniedError(messageId, pgMessage, callerId!);
         }
         logger.info(`Message served from PG: ${messageId}`);
-        return pgMessage;
+        return applyAccessVerdict(pgMessage, verdict);
       }
       logger.info(`[channel-pg] message not in PG (or PG down) — trying GDrive paths: ${messageId}`);
     }
@@ -1447,12 +1527,13 @@ export class MessageManager {
           logger.info(`Message found in: ${filePath}`);
 
           // #2287: Verify workspace access — allow if caller is recipient OR sender
-          if (!this.callerCanAccessMessage(message, callerId)) {
+          const verdict = this.messageAccessVerdict(message, callerId, accessScope);
+          if (verdict === 'denied') {
             logger.warn(`Access denied: message ${messageId} targets ${message.to}, caller is ${callerId}`);
             throw this.accessDeniedError(messageId, message, callerId!);
           }
 
-          return message;
+          return applyAccessVerdict(message, verdict);
         } catch (error) {
           // po-2024: the access-denied throw above is a protocol error, not a
           // filesystem error — never swallow it into "try the next path".
@@ -1479,11 +1560,12 @@ export class MessageManager {
       this.lastInboxFileCount = -1;
       // po-2024: the inbox cache can hold messages the caller cannot access
       // (e.g. addressed to a dashed workspace key) — same denial as the disk path.
-      if (!this.callerCanAccessMessage(cached, callerId)) {
+      const verdict = this.messageAccessVerdict(cached, callerId, accessScope);
+      if (verdict === 'denied') {
         throw this.accessDeniedError(messageId, cached, callerId!);
       }
       // Return cached message with archived status so callers treat it as processed
-      return { ...cached, status: 'archived' as const };
+      return { ...applyAccessVerdict(cached, verdict), status: 'archived' as const };
     }
 
     return null;

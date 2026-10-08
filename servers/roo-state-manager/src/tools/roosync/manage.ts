@@ -223,8 +223,20 @@ async function archiveMessageFunc(
   }
 
   // Vérifier existence du message
+  //
+  // #4131 G-A (B8) : `'archive'` et non le défaut `'read'`. L'archivage est de
+  // l'entretien, pas une divulgation — il déplace le message sans le rendre à
+  // un nouveau lecteur — et sa portée est la MACHINE. Sans cela, un message
+  // adressé à `X:<demi-adresse non résoluble>` (clé de dashboard, clé de projet
+  // Claude, workspace renommé) n'est lisible par personne ET archivable par
+  // personne : il ne peut jamais quitter le store. Mesuré sur ai-01 :
+  // `hermes-dm-condense-lock-20260927T1358Z` → `myia-ai-01:workspace-cluster-coordination`.
   logger.debug('🔍 Checking message existence', { messageId: args.message_id });
-  const message = await messageManager.getMessage(args.message_id, resolveCallerIdentity(args.as).fullId);
+  const message = await messageManager.getMessage(
+    args.message_id,
+    resolveCallerIdentity(args.as).fullId,
+    'archive'
+  );
 
   // Cas : message introuvable
   if (!message) {
