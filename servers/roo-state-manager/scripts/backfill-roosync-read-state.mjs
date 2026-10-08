@@ -4,20 +4,30 @@
  * `roosync_messages`), closing blocage B9.
  *
  * WHY: the channel dual-write INSERTs a message once, at creation
- * (PgUnifiedStoreWriter.insertRooSyncMessage — ON CONFLICT DO NOTHING), and the
- * reconcile is insert-only. mark_read / bulk_mark_read mutate the GDRIVE file
- * only (status for direct targets, `read_by` for broadcasts #629,
- * `read_by_workspace` for machine-wide #3960/migrations/010). A seat reading
- * its mailbox from PG (UNIFIED_STORE_CHANNEL_READ_PG=1) therefore re-surfaces
- * every message it already read: the B9 measure — 782 rows for ai-01, ~55-100
- * per executor seat — which is why the 13/10 flag flip waits on this backfill.
+ * (PgUnifiedStoreWriter.insertRooSyncMessage — ON CONFLICT DO NOTHING), and
+ * the reconcile is insert-only. mark_read / bulk_mark_read DO mirror reads to
+ * PG (MessageManager.ts:1852-1860 → dualWriteRooSyncMessage{,Broadcast,Workspace}
+ * Read → PgUnifiedStoreWriter.updateRooSyncMessage) — but fire-and-forget, and
+ * those mirror writes are exactly what B9 measured as lost: a seat reading its
+ * mailbox from PG (UNIFIED_STORE_CHANNEL_READ_PG=1) re-surfaces every message
+ * it already read — 782 rows for ai-01, ~55-100 per executor seat — which is
+ * why the 13/10 flag flip waits on this backfill.
+ *
+ * Because that dual-write is ALIVE, apply never writes a value computed at
+ * measure time T0: the UPDATE unions IN SQL against the CURRENT row
+ * (read_by / read_by_workspace via `row || $file`, jsonb_agg DISTINCT — review
+ * ms#1410 point 1), and `status` only ever PROMOTES unread → read (CASE): a
+ * mark_read racing the apply between T0 and the UPDATE survives it. A PG row
+ * already 'read' while its file says 'unread' (PG ahead of the file) is
+ * reported as an anomaly and left alone — apply never demotes.
  *
  * WHAT: for every message file under messages/inbox (default), diff the three
- * read-state fields against the PG row and, in --apply, set PG to the merged
- * value. Arrays merge by UNION (file entries PG lacks are added; PG entries
- * the file lacks are KEPT and reported — today no path writes reads to PG, but
- * the PG-primary future makes losing one a regression we never need).
- * `status` follows the file: it is the only writer (mark_read) today.
+ * read-state fields against the PG row and, in --apply, merge as above.
+ * Arrays merge by UNION (file entries PG lacks are added; PG entries the file
+ * lacks are KEPT and reported). Pure merge logic lives in
+ * scripts/lib/backfill-read-state-logic.mjs, unit-tested (fusion, idempotence,
+ * restore round-trip) in src/services/unified-store/__tests__/
+ * backfill-read-state.test.ts — review ms#1410 point 2.
  *
  * Modes:
  *   default                  DRY RUN — PG is read (SELECT only), nothing is
@@ -50,6 +60,7 @@
  */
 
 import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
+import { rowDecision, applyToPgRow, preimageRow, restoreToPgRow } from './lib/backfill-read-state-logic.mjs';
 import { readFileSync, writeFileSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
@@ -120,7 +131,11 @@ if (HELP) {
                      DriveFS mirror is suspected: every metric understates and
                      the run exits 1 (fail closed). MANDATORY with --apply.
   --apply            UPDATE the divergent rows (one transaction, pre-image
-                     first). Requires --accord-rx92 + --preimage-out +
+                     first, advisory lock). The UPDATE unions IN SQL against
+                     the CURRENT row and promotes status unread->read only —
+                     a racing mark_read dual-write is merged in, never lost.
+                     Ends with a control re-read of the touched rows.
+                     Requires --accord-rx92 + --preimage-out +
                      --expect-files — the central-PG write is user-gated
                      (decision #4131 c.6050799241, registre RX92 ai-01).
   --restore f.json   Reverse an --apply from its pre-image (hash-verified;
@@ -159,7 +174,7 @@ const pg = require2('pg');
 // source, "The SINGLE place that decides it"); a local re-implementation could
 // silently diverge from the reader it is meant to fix.
 const buildDir = resolveBuildDir(RSM_ROOT);
-const { perReaderStatus } = await import(
+const { perReaderStatus, isMachineWideTarget } = await import(
   pathToFileURL(path.join(buildDir, 'utils/message-helpers.js')).href
 );
 
@@ -178,7 +193,10 @@ const messagesRoot = path.join(getSharedStatePath(), 'messages');
 
 const client = new pg.Client({
   connectionString: process.env.UNIFIED_STORE_PG_URL,
-  ssl: { rejectUnauthorized: false },
+  // No ssl option ON PURPOSE: SSL comes from the connection string
+  // (sslmode=…), the single source the server itself uses
+  // (PgUnifiedStoreWriter.ts passes none either) — script and RSM cannot
+  // diverge (review ms#1410 point 3).
   statement_timeout: 60000,
 });
 await client.connect();
@@ -228,9 +246,10 @@ if (RESTORE) {
   await client.query('BEGIN');
   try {
     for (const r of pre.rows) {
+      const back = restoreToPgRow(r);
       await client.query(
         'UPDATE roosync_messages SET status=$2, read_by=$3::jsonb, read_by_workspace=$4::jsonb WHERE id=$1',
-        [r.id, r.status, JSON.stringify(r.read_by ?? []), JSON.stringify(r.read_by_workspace ?? [])]
+        [r.id, back.status, JSON.stringify(back.read_by), JSON.stringify(back.read_by_workspace)]
       );
       restored++;
     }
@@ -260,9 +279,9 @@ const totals = {
   filesSeen: 0, filesRead: 0, skippedNoId: 0, skippedNameMismatch: 0, errors: 0,
   missingInPg: 0,        // file id with no PG row — the insert reconcile's target, NOT ours
   inSync: 0,
-  divergent: 0,          // would be UPDATEd by --apply
-  statusDiff: 0,         // file.status !== pg.status (direction counted below)
-  statusUnreadToRead: 0, statusReadToUnread: 0,
+  divergent: 0,          // would be UPDATEd by --apply (array additions OR status promotion)
+  statusPromotion: 0,    // unread -> read: the ONLY status direction apply writes
+  pgAheadOfFile: 0,      // PG 'read', file 'unread' — anomaly, reported, never demoted
   readByAdded: 0,        // file read_by entries PG lacks (union adds them)
   readByPgOnly: 0,       // PG entries the file lacks (kept, reported — never dropped)
   readByWsAdded: 0, readByWsPgOnly: 0,
@@ -326,28 +345,28 @@ outer: for (const dir of DIRS) {
     const pgReadBy = Array.isArray(pgRow.read_by) ? pgRow.read_by : [];
     const pgRbw = Array.isArray(pgRow.read_by_workspace) ? pgRow.read_by_workspace : [];
 
-    const mergedReadBy = [...new Set([...pgReadBy, ...fileReadBy])];
-    const mergedRbw = [...new Set([...pgRbw, ...fileRbw])];
-    const readByAdded = mergedReadBy.length - pgReadBy.length;           // file entries PG lacks
-    const readByWsAdded = mergedRbw.length - pgRbw.length;
-    const readByPgOnlyCount = pgReadBy.filter((x) => !fileReadBy.includes(x)).length;   // kept, never dropped
-    const readByWsPgOnlyCount = pgRbw.filter((x) => !fileRbw.includes(x)).length;
-    const statusDiff = (message.status ?? 'unread') !== pgRow.status;
+    const fileRow = { status: message.status, read_by: fileReadBy, read_by_workspace: fileRbw };
+    const decision = rowDecision(fileRow, pgRow);
 
-    const divergent = readByAdded > 0 || readByWsAdded > 0 || statusDiff || readByPgOnlyCount > 0 || readByWsPgOnlyCount > 0;
-    if (!divergent) { totals.inSync++; continue; }
+    // PG-only entries are KEPT on every row, divergent or not — counted first.
+    totals.readByPgOnly += decision.delta.read_by_pg_only_kept.length;
+    totals.readByWsPgOnly += decision.delta.read_by_workspace_pg_only_kept.length;
+    if (decision.pgAheadOfFile) totals.pgAheadOfFile++;
+    if (!decision.divergent) { totals.inSync++; continue; }
+
+    // T0 PREVIEW of the merge — the actual UPDATE unions IN SQL against the
+    // CURRENT row, so what lands is >= this on arrays (never less) and
+    // promotion-only on status. Kept for the diff-out artifact.
+    const merged = applyToPgRow(pgRow, fileRow);
+    const promote = decision.delta.status_promotion === true;
+    const readByAdded = decision.delta.read_by_added.length;
+    const readByWsAdded = decision.delta.read_by_workspace_added.length;
 
     totals.divergent++;
     bumpTarget(targetKey, 'divergent');
-    if (statusDiff) {
-      totals.statusDiff++;
-      if (message.status === 'read' && pgRow.status !== 'read') totals.statusUnreadToRead++;
-      else if (message.status !== 'read' && pgRow.status === 'read') totals.statusReadToUnread++;
-    }
+    if (promote) totals.statusPromotion++;
     totals.readByAdded += readByAdded;
-    totals.readByPgOnly += readByPgOnlyCount;
     totals.readByWsAdded += readByWsAdded;
-    totals.readByWsPgOnly += readByWsPgOnlyCount;
 
     // Effective-status KPI via the reader's own predicate (message-helpers is
     // the SINGLE place that decides it — same import as the reader). The row
@@ -359,20 +378,21 @@ outer: for (const dir of DIRS) {
     const fileMsg = { to: message.to, status: message.status, read_by: fileReadBy, read_by_workspace: fileRbw };
     const pgMsg = { to: pgRow.to_machine, status: pgRow.status, read_by: pgReadBy, read_by_workspace: pgRbw };
     const isBroadcast = message.to === 'all' || message.to === 'All';
+    const isMachineWide = !isBroadcast && isMachineWideTarget(String(message.to ?? ''));
     let effectiveFixed = false;
     if (isBroadcast) {
       for (const m of fileReadBy) {
         if (perReaderStatus(fileMsg, m, undefined) === 'read' && perReaderStatus(pgMsg, m, undefined) === 'unread') { effectiveFixed = true; break; }
       }
-    } else if (String(message.to ?? '').includes(':')) {
-      // direct target: the global status is the verdict
-      effectiveFixed = message.status === 'read' && pgRow.status !== 'read';
-    } else {
+    } else if (isMachineWide) {
       // machine-wide: probe each workspace the file records as having read
       for (const full of fileRbw) {
         const ws = String(full).includes(':') ? String(full).split(':').slice(1).join(':') : full;
         if (perReaderStatus(fileMsg, pgRow.to_machine, ws) === 'read' && perReaderStatus(pgMsg, pgRow.to_machine, ws) === 'unread') { effectiveFixed = true; break; }
       }
+    } else {
+      // direct target (machine:workspace): the global status is the verdict
+      effectiveFixed = message.status === 'read' && pgRow.status !== 'read';
     }
     if (effectiveFixed) bumpTarget(targetKey, 'effectiveUnreadFixed');
 
@@ -381,13 +401,15 @@ outer: for (const dir of DIRS) {
       to: message.to ?? null,
       file: { status: message.status ?? null, read_by: fileReadBy, read_by_workspace: fileRbw },
       pg: { status: pgRow.status, read_by: pgReadBy, read_by_workspace: pgRbw },
-      merged: { status: message.status ?? 'unread', read_by: mergedReadBy, read_by_workspace: mergedRbw },
+      // T0 preview: the UPDATE unions against the CURRENT row (>= merged on
+      // arrays) and promotes status only — see the WHY header (ms#1410).
+      merged,
       delta: {
-        status: statusDiff ? `${pgRow.status} -> ${message.status ?? 'unread'}` : null,
+        status: promote ? `${pgRow.status} -> read (promotion only)` : null,
         read_by_added: readByAdded || null,
-        read_by_pg_only_kept: readByPgOnlyCount || null,
+        read_by_pg_only_kept: decision.delta.read_by_pg_only_kept.length || null,
         read_by_workspace_added: readByWsAdded || null,
-        read_by_workspace_pg_only_kept: readByWsPgOnlyCount || null,
+        read_by_workspace_pg_only_kept: decision.delta.read_by_workspace_pg_only_kept.length || null,
       },
     });
   }
@@ -411,8 +433,8 @@ const pgMatched = totals.filesRead - totals.missingInPg;
 console.log(`  rows PG:             ${pgRowsAll.length} | appariées à un fichier inbox: ${pgMatched} | sans fichier inbox: ${pgRowsAll.length - pgMatched} (archive/sent — hors périmètre read-state)`);
 console.log(`  manquantes en PG:    ${totals.missingInPg}  (cible du reconcile INSERT, pas de ce script)`);
 console.log(`  convergentes:        ${totals.inSync}`);
-console.log(`  DIVERGENTES:         ${totals.divergent}  (${APPLY ? 'seront UPDATE' : 'seraient UPDATE'} par --apply)`);
-console.log(`    status:            ${totals.statusDiff} (unread→read: ${totals.statusUnreadToRead}, read→unread: ${totals.statusReadToUnread})`);
+console.log(`  DIVERGENTES:         ${totals.divergent}  (${APPLY ? 'seront UPDATE' : 'seraient UPDATE'} par --apply — union IN SQL contre la row COURANTE, promotion unread->read seule)`);
+console.log(`    status:            ${totals.statusPromotion} promotion(s) unread->read | ${totals.pgAheadOfFile} row(s) PG-ahead-of-file (anomalie fichier périmé, rapportées, JAMAIS rétrogradées)`);
 console.log(`    read_by:           +${totals.readByAdded} entrée(s) ajoutée(s) | ${totals.readByPgOnly} entrée(s) PG-seules conservées`);
 console.log(`    read_by_workspace: +${totals.readByWsAdded} entrée(s) ajoutée(s) | ${totals.readByWsPgOnly} entrée(s) PG-seules conservées`);
 console.log(`  erreurs de lecture:  ${totals.errors}`);
@@ -424,7 +446,8 @@ if (failures.length > 0) {
 }
 
 console.log('');
-console.log('KPI par destinataire — rows dont le statut EFFECTIF change pour un lecteur du siège (prédicat du reader, message-helpers):');
+console.log('KPI par destinataire — rows dont le statut EFFECTIF change pour un lecteur du siège (prédicat du reader, message-helpers).');
+console.log('  (clé: les broadcasts sont rangés sous "(broadcast)", les machine-wide et direct sous leur machine — même clé que perTarget du --diff-out):');
 const targetKeys = [...perTarget.keys()].sort((a, b) => (perTarget.get(b).effectiveUnreadFixed - perTarget.get(a).effectiveUnreadFixed) || a.localeCompare(b));
 for (const k of targetKeys) {
   const t = perTarget.get(k);
@@ -459,20 +482,32 @@ if (APPLY) {
     process.exit(0);
   }
   // Pre-image: the CURRENT PG values of exactly the rows we will touch.
-  const preRows = divergentRows.map((d) => {
-    const pgRow = pgById.get(d.id);
-    return { id: d.id, status: pgRow.status, read_by: pgRow.read_by ?? [], read_by_workspace: pgRow.read_by_workspace ?? [] };
-  });
+  // Still the T0 snapshot — the right return point (ms#1410): a row raced
+  // between T0 and the UPDATE keeps its race-won reads on restore only if the
+  // operator chooses to; the pre-image is what we MEASURED and own.
+  const preRows = divergentRows.map((d) => preimageRow(d.id, pgById.get(d.id)));
   writeFileSync(PREIMAGE_OUT, JSON.stringify({ generatedAt: new Date().toISOString(), kind: 'apply-pre-image', rowCount: preRows.length, sha256: rowsHash(preRows), rows: preRows }, null, 2));
   console.log(`\npré-image écrite: ${PREIMAGE_OUT} (${preRows.length} rows, sha256 ${rowsHash(preRows).slice(0, 12)}…)`);
 
   let applied = 0;
   await client.query('BEGIN');
   try {
+    // Concurrent-apply guard (ms#1410, welcomed): xact-scoped, released at
+    // COMMIT/ROLLBACK — nothing to unlock by hand, nothing left held on crash.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext('backfill-roosync-read-state'))");
     for (const d of divergentRows) {
       await client.query(
-        'UPDATE roosync_messages SET status=$2, read_by=$3::jsonb, read_by_workspace=$4::jsonb WHERE id=$1',
-        [d.id, d.merged.status, JSON.stringify(d.merged.read_by), JSON.stringify(d.merged.read_by_workspace)]
+        // UNION IN SQL against the CURRENT row (ms#1410 point 1): a dual-write
+        // landing between the T0 measure and this UPDATE is merged in, never
+        // overwritten. Status promotes unread -> read only (CASE), never
+        // demotes. Mirror of scripts/lib/backfill-read-state-logic.mjs
+        // applyToPgRow — the unit tests pin both to the same semantics.
+        `UPDATE roosync_messages SET
+           status = CASE WHEN $2::text = 'read' THEN 'read' ELSE status END,
+           read_by = (SELECT coalesce(jsonb_agg(DISTINCT e), '[]'::jsonb) FROM jsonb_array_elements(coalesce(read_by, '[]'::jsonb) || $3::jsonb) AS e),
+           read_by_workspace = (SELECT coalesce(jsonb_agg(DISTINCT e), '[]'::jsonb) FROM jsonb_array_elements(coalesce(read_by_workspace, '[]'::jsonb) || $4::jsonb) AS e)
+         WHERE id = $1`,
+        [d.id, d.file.status ?? 'unread', JSON.stringify(d.file.read_by), JSON.stringify(d.file.read_by_workspace)]
       );
       applied++;
     }
@@ -484,8 +519,25 @@ if (APPLY) {
     await client.end();
     process.exit(1);
   }
-  console.log(`APPLY terminé: ${applied} row(s) mises à jour en une transaction.`);
+  console.log(`APPLY terminé: ${applied} row(s) mises à jour en une transaction (union contre la row courante + verrou consultatif).`);
   console.log(`Retour arrière: node scripts/backfill-roosync-read-state.mjs --restore ${PREIMAGE_OUT}`);
+
+  // CONTROL RE-RUN (ms#1410 point 1, sortie de procédure): re-read the touched
+  // rows NOW and re-decide against the same T0 file data. Expected 0 —
+  // anything else is a dual-write that landed after T0 on a file we read
+  // before it; the FULL dry run below is the honest artifact either way.
+  const { rows: postRows } = await client.query(
+    'SELECT id, status, read_by, read_by_workspace FROM roosync_messages WHERE id = ANY($1)',
+    [divergentRows.map((d) => d.id)]
+  );
+  const postById = new Map(postRows.map((r) => [r.id, r]));
+  let residual = 0;
+  for (const d of divergentRows) {
+    const after = postById.get(d.id);
+    if (after && rowDecision(d.file, after).divergent) residual++;
+  }
+  console.log(`Contrôle post-apply: ${residual} row(s) encore divergente(s) parmi les ${applied} touchées (attendu 0).`);
+  if (residual > 0) console.log('  -> re-exécuter le dry-run complet: un mark_read a écrit le fichier APRÈS sa lecture T0.');
 }
 
 await client.end();
