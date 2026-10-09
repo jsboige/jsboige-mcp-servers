@@ -18,8 +18,10 @@ from pathlib import Path
 from typing import Optional
 
 # Memory sobriety (#4149, user directive 2026-10-09): OpenBLAS allocates
-# per-core buffers when numpy first loads (transitive). Must run before any
-# third-party import; setdefault keeps an operator override possible.
+# per-core buffers when numpy first loads (transitive via papermill). The
+# cap must cover the third-party imports below -- the OpenBLAS pool is
+# sized when numpy loads. setdefault keeps an operator override possible.
+_blas_capped_here = "OPENBLAS_NUM_THREADS" not in os.environ
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 # Force unbuffered stdout/stderr for MCP stdio compatibility
@@ -53,6 +55,15 @@ from .config import get_config, MCPConfig
 from .tools.notebook_tools import register_notebook_tools, initialize_notebook_tools
 from .tools.kernel_tools import register_kernel_tools, initialize_kernel_tools
 from .tools.execution_tools import register_execution_tools, initialize_execution_tools
+
+if _blas_capped_here:
+    # The cap has served its purpose: numpy is loaded and the OpenBLAS pool
+    # is sized to 1 thread, so the server keeps the memory savings for its
+    # own life. Remove the variable so child processes -- interactive
+    # kernels (jupyter_client copies os.environ), async jobs
+    # (env = os.environ.copy()) and papermill/nbclient kernels -- inherit
+    # the machine default instead of a forced single thread.
+    os.environ.pop("OPENBLAS_NUM_THREADS", None)
 
 # Configure logging with enhanced format
 # CRITICAL FIX: Use stderr for logs to avoid corrupting MCP stdio protocol

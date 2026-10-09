@@ -63,10 +63,10 @@ from pathlib import Path
 from typing import Any
 
 # Memory sobriety (#4149, user directive 2026-10-09): OpenBLAS allocates
-# per-core buffers when numpy first loads (transitive via semantic_kernel /
-# media_processing) -- an idle server measured ~875 MB drops to ~136 MB with
-# this variable. Must run before any third-party import; setdefault keeps an
-# operator override possible through the environment.
+# per-core buffers when numpy first loads (transitive via semantic_kernel;
+# media_processing imports only PIL) -- an idle server measured ~875 MB drops
+# to ~136 MB with this variable. Must run before any third-party import;
+# setdefault keeps an operator override possible through the environment.
 os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import httpx
