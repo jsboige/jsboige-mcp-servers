@@ -12,9 +12,15 @@ Version finale avec 32 outils unifies
 
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Optional
+
+# Memory sobriety (#4149, user directive 2026-10-09): OpenBLAS allocates
+# per-core buffers when numpy first loads (transitive). Must run before any
+# third-party import; setdefault keeps an operator override possible.
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 # Force unbuffered stdout/stderr for MCP stdio compatibility
 # When stdout is piped (not TTY), Python uses block-buffering which delays
