@@ -32,9 +32,9 @@ roosync_harmonization(action: "create", target_file: "claude-settings", fleet: [
   "version": "hc-claude-settings-2.0.0",
   "mode": "enforce-value",
   "keys": {
-    "env.ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5[1m]",
-    "env.ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5-1",
-    "env.ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5[1m]",
+    "env.ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-5-5[1m]",
+    "env.ANTHROPIC_DEFAULT_FABLE_MODEL": "claude-fable-5-1[1m]",
+    "env.ANTHROPIC_DEFAULT_SONNET_MODEL": "claude-sonnet-5-5[1m]",
     "env.ANTHROPIC_DEFAULT_HAIKU_MODEL": "claude-haiku-4-5-20251001[1m]",
     "env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "95",
     "env.CLAUDE_CODE_AUTO_COMPACT_WINDOW": "280000",
