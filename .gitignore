@@ -77,6 +77,12 @@ tmp/
 temp/
 .tmp/
 .temp/
+# Scratch d'agent (regle harnais v2, roo-extensions#4156) : les deux motifs
+# suivants attrapent des accidents de resolution de chemin qu'aucune regle ne
+# voit — un chemin absolu dont les separateurs ont disparu devient un nom de
+# fichier, et `scratchpad_*` se resout contre le CWD.
+scratchpad_*
+C:Users*
 
 # Fichiers de couverture de test
 coverage/
