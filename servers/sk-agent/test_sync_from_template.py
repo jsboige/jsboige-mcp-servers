@@ -193,6 +193,128 @@ def test_same_id_local_model_keeps_local_endpoint():
         assert "glm-5.3" in proc.stderr
         # Sibling models unaffected: URL matching still serves the medium key.
         assert by_id["qwen3.6-35b-a3b"]["api_key"] == "sk-medium-real-key"
+        # Review note (ai-01): banner carries ids and field names only —
+        # no endpoint values on stderr.
+        assert "models.myia.io" not in proc.stderr
+        assert "192.168.0.50" not in proc.stderr
+
+
+# --- Local-only agent preservation (#3411, ai-01 spec c.6105550181) ------
+
+LOCAL_WITH_AUDITOR = {
+    "models": [
+        {
+            "id": "glm-5.3-local",
+            "base_url": "http://192.168.0.50:3000/v1",
+            "api_key": "sk-hub-real-key",
+        },
+        {
+            "id": "qwen3.6-35b-a3b-local",
+            "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+            "api_key": "sk-medium-real-key",
+        },
+        # Template-absent model referenced ONLY by the local-only agent.
+        {
+            "id": "qwen3.6-35b-a3b-audit",
+            "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+            "api_key": "sk-audit-real-key",
+            "request_timeout_s": 600,
+        },
+    ],
+    "agents": [
+        {
+            "id": "notebook-auditor",
+            "description": "seat-local campaign agent",
+            "model": "qwen3.6-35b-a3b-audit",
+            "system_prompt": "audit notebooks",
+            "mcps": ["desktop_commander", "jupyter_papermill"],
+            "memory": {"enabled": False},
+        },
+        {
+            "id": "mini-assistant",
+            "description": "stopgap",
+            "model": "glm-5.3-local",  # resolves via URL-matched template model
+            "system_prompt": "x",
+            "mcps": [],
+            "memory": {"enabled": False},
+        },
+    ],
+    "conversations": [],
+    "mcps": [
+        {"id": "desktop_commander", "command": "python", "args": ["-m", "dc"]},
+        {"id": "jupyter_papermill", "command": "python", "args": ["-m", "jp"]},
+    ],
+}
+
+
+def _agents_of(config):
+    return {a["id"] for a in config["agents"]}
+
+
+def test_local_only_agent_preserved_with_dependencies():
+    """ai-01's notebook-auditor case: a live-caller seat-local agent must
+    survive a sync, together with the model and MCP entries the template
+    does not carry. Ids on stderr only, never values."""
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(Path(td), LOCAL_WITH_AUDITOR)
+        assert proc.returncode == 0, f"stderr={proc.stderr!r}"
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        assert "notebook-auditor" in _agents_of(written), "local-only agent deleted"
+        assert "mini-assistant" in _agents_of(written)
+        model_ids = {m["id"] for m in written["models"]}
+        assert "qwen3.6-35b-a3b-audit" in model_ids, "template-absent model dropped"
+        mcp_ids = {m["id"] for m in written["mcps"]}
+        assert {"desktop_commander", "jupyter_papermill"} <= mcp_ids
+        # The preserved model entry came verbatim (budget field intact).
+        audit_model = next(m for m in written["models"] if m["id"] == "qwen3.6-35b-a3b-audit")
+        assert audit_model["request_timeout_s"] == 600
+        # Visibility: ids only on stderr.
+        assert "PRESERVED LOCAL-ONLY AGENTS" in proc.stderr
+        assert "notebook-auditor" in proc.stderr
+        assert "model:qwen3.6-35b-a3b-audit" in proc.stderr
+        assert "mcp:desktop_commander" in proc.stderr
+        # No endpoint/command values leak in the banner (ids and field names only).
+        assert "api.medium.text-generation-webui" not in proc.stderr
+
+
+def test_prune_local_drops_agent_and_orphaned_dependencies():
+    """Retirement is a written gesture: --prune-local mini-assistant drops
+    that agent; deps are collected from SURVIVING agents only."""
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(
+            Path(td), LOCAL_WITH_AUDITOR, extra_args=("--prune-local", "mini-assistant")
+        )
+        assert proc.returncode == 0, f"stderr={proc.stderr!r}"
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        agents = _agents_of(written)
+        assert "mini-assistant" not in agents, "pruned agent must be gone"
+        assert "notebook-auditor" in agents, "survivor must stay"
+        # notebook-auditor's deps survive; glm-5.3 (template model) unaffected.
+        model_ids = {m["id"] for m in written["models"]}
+        assert "qwen3.6-35b-a3b-audit" in model_ids
+        assert "glm-5.3" in model_ids
+        # The report shows the removal; stderr names the prune.
+        assert "mini-assistant" in proc.stdout  # sync report Removed line
+        assert "Pruned via --prune-local" in proc.stderr
+
+
+def test_prune_local_lone_agent_takes_its_unique_deps_down():
+    """Pruning the only agent that references a template-absent model/MCP
+    removes those deps too — no orphans left behind."""
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(
+            Path(td), LOCAL_WITH_AUDITOR, extra_args=("--prune-local", "notebook-auditor")
+        )
+        assert proc.returncode == 0, f"stderr={proc.stderr!r}"
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        assert "notebook-auditor" not in _agents_of(written)
+        model_ids = {m["id"] for m in written["models"]}
+        assert "qwen3.6-35b-a3b-audit" not in model_ids, "orphan model kept"
+        mcp_ids = {m["id"] for m in written["mcps"]}
+        assert "desktop_commander" not in mcp_ids, "orphan mcp kept"
+        assert "jupyter_papermill" not in mcp_ids
+        # mini-assistant (the other local-only agent) still preserved.
+        assert "mini-assistant" in _agents_of(written)
 
 
 def test_dry_run_degraded_exits_nonzero_and_writes_nothing():
