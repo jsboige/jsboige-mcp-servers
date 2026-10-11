@@ -1846,6 +1846,29 @@ class SKAgentManager:
                 result["effective_config"] = spec_effective
                 if spec_model_used:
                     result["model_used"] = spec_model_used
+            # Fallback visibility (#3411 web2/po-2024 cells): an explicitly
+            # requested agent that is not in the served catalogue silently
+            # resolved to the default agent — the call "succeeds" on the wrong
+            # (costly) agent and post-deployment smokes validate the default,
+            # not the agent under test. Surface the substitution as data:
+            # `fallback_from` names what was asked, `agent_used` still names
+            # what answered. Compare on the base id — model_override appends
+            # a "[model]" suffix that is NOT a fallback.
+            if agent_id and "error" not in result:
+                used = result.get("agent_used")
+                used_base = used.split("[")[0] if used and "[" in used else used
+                if used_base and used_base != agent_id:
+                    result["fallback_from"] = agent_id
+                    result["fallback_reason"] = (
+                        f"agent '{agent_id}' not in the served catalogue; "
+                        f"served '{used_base}' instead"
+                    )
+                    log.warning(
+                        "call_agent fallback: requested '%s' not configured, "
+                        "served '%s'",
+                        agent_id,
+                        used_base,
+                    )
             return result
         except asyncio.TimeoutError:
             return {
