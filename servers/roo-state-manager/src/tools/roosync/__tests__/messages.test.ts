@@ -571,6 +571,18 @@ describe('roosync_messages dispatcher', () => {
       );
     });
 
+    test('blank as (whitespace-only) behaves as absent, not a machine «» assertion (CoursIA-2, 11/10)', async () => {
+      // Incident : `as:" "` glissait sous le test brut !as, puis le .trim() de
+      // la canonisation produisait machine «» → refus TRUSTED_CALLER_IDS
+      // trompeur. Blank = aucune identité assertée → résolution locale.
+      delete process.env[ENV_VAR];
+      // Pas de rejet : une assertion blank ne doit jamais atteindre le gate.
+      await roosyncMessages({ action: 'message', message_id: 'msg-1', as: ' ' });
+      expect(mockRead).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'message', message_id: 'msg-1', as: undefined })
+      );
+    });
+
     test('as + to_machine naming a different machine = identity conflict (#3177 mirror)', async () => {
       await expect(
         roosyncMessages({ action: 'inbox', as: 'myia-po-2026:hermes-agent', to_machine: 'myia-po-2024' })

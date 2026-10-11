@@ -199,7 +199,9 @@ const KNOWN_ALIAS_HINTS: Record<string, { realParam: string; note: string }> = {
  *          or undefined when no assertion was made
  */
 function resolveAssertedCaller(as: string | undefined): string | undefined {
-  if (!as) return undefined;
+  // Blank = absent (mirror of resolveCallerIdentity's blank guard — a
+  // whitespace-only `as` must not log a bogus "asserted" line).
+  if (!as?.trim()) return undefined;
   const canonical = resolveCallerIdentity(as).fullId;
   logger.info(`[#3591] Caller identity asserted: "${canonical}" (trusted via ${TRUSTED_CALLER_IDS_ENV})`);
   return canonical;

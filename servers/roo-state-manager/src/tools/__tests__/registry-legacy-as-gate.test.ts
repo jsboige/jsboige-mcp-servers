@@ -123,4 +123,20 @@ describe('legacy registry path — `as` gate (#3591, review #1154)', () => {
     expect(mockSendMessage.mock.calls[0][0]).toBe('myia-po-2023:roo-extensions');
     expect(result.content[0].text).toContain('envoyé');
   });
+
+  test('roosync_send DIRECT + `as` blank (" ") → traité comme ABSENT : identité locale, aucun refus (CoursIA-2, 11/10)', async () => {
+    // Incident CoursIA-2 : `as:" "` glissait sous le test brut !as du choke
+    // point, puis le .trim() de la canonisation produisait machine «» → refus
+    // TRUSTED_CALLER_IDS trompeur. Blank = rien à asserter (#3177) → envoi
+    // sous l'identité locale du process, comme sans `as` du tout.
+    delete process.env[ENV];
+    const result = await handler({
+      params: {
+        name: 'roosync_send',
+        arguments: { action: 'send', to: 'myia-ai-01', subject: 'S', body: 'B', as: ' ' },
+      },
+    });
+    expect(result.content[0].text).not.toContain('refusé');
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+  });
 });
