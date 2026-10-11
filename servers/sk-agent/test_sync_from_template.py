@@ -144,6 +144,57 @@ def test_healthy_sync_exits_zero_without_banner():
         assert by_id["qwen3.6-35b-a3b"]["api_key"] == "sk-medium-real-key"
 
 
+def test_same_id_local_model_keeps_local_endpoint():
+    """#3411 web2 cell: off-LAN seat, same model id, different base_url.
+
+    web2 (VPS) serves glm-5.3 from https://models.myia.io/v1 with a real key;
+    the template points at the LAN hub (192.168.0.50). The old matcher only
+    paired by base_url, so the key stayed a placeholder (exit 1) AND a
+    successful sync would have regressed the URL to one unreachable from
+    that seat. Same-id + real local key must take key, base_url AND enabled
+    from local, exit 0, and say so on stderr — never silently.
+    """
+    local = {
+        "models": [
+            {
+                "id": "glm-5.3",
+                "base_url": "https://models.myia.io/v1",
+                "api_key": "sk-glm-real-key",
+                "enabled": False,
+            },
+            {
+                "id": "qwen3.6-35b-a3b-local",
+                "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+                "api_key": "sk-medium-real-key",
+            },
+        ],
+        "agents": [],
+        "conversations": [],
+        "mcps": [],
+    }
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(Path(td), local)
+        assert proc.returncode == 0, (
+            f"same-id key must inject — stderr={proc.stderr!r}"
+        )
+        assert "MISSING API KEYS" not in proc.stderr
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        by_id = {m["id"]: m for m in written["models"]}
+        glm = by_id["glm-5.3"]
+        assert glm["api_key"] == "sk-glm-real-key", "id-direct key injection"
+        assert glm["base_url"] == "https://models.myia.io/v1", (
+            "off-LAN seat endpoint must NOT regress to the template LAN URL"
+        )
+        assert glm["enabled"] is False, "local enabled flag is the seat's reality"
+        # The divergence is visible next to the report, not silent.
+        assert "PRESERVED LOCAL ENDPOINTS" in proc.stderr, (
+            f"preserved-endpoint note missing: {proc.stderr!r}"
+        )
+        assert "glm-5.3" in proc.stderr
+        # Sibling models unaffected: URL matching still serves the medium key.
+        assert by_id["qwen3.6-35b-a3b"]["api_key"] == "sk-medium-real-key"
+
+
 def test_dry_run_degraded_exits_nonzero_and_writes_nothing():
     with tempfile.TemporaryDirectory() as td:
         before = json.dumps(LOCAL_NO_MEDIUM, sort_keys=True)

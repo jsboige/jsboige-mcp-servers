@@ -106,9 +106,16 @@ def match_api_key(model_id: str, model_config: dict, local_keys: dict) -> str:
     return "REPLACE_ME"
 
 
-def inject_keys_into_template(template: dict, local_keys: dict, local_config: dict) -> dict:
-    """Inject API keys from local config into template structure."""
+def inject_keys_into_template(
+    template: dict, local_keys: dict, local_config: dict
+) -> tuple[dict, list[str]]:
+    """Inject API keys from local config into template structure.
+
+    Returns (config, preserved_endpoint_notes) — each note names a model whose
+    local base_url was kept over the template's (off-LAN seats, #3411 web2).
+    """
     result = deepcopy(template)
+    preserved_endpoint_notes: list[str] = []
 
     # Build a local model lookup by base_url pattern for better matching
     local_models_by_url = {}
@@ -118,10 +125,37 @@ def inject_keys_into_template(template: dict, local_keys: dict, local_config: di
         if api_key and not api_key.startswith("YOUR_"):
             local_models_by_url[base_url] = api_key
 
+    # Same-id lookup: the strongest match. A local model with the SAME id and
+    # a real key authenticates against its own base_url by construction — the
+    # seat's endpoint and enabled flag are its network reality (web2 is an
+    # off-LAN VPS serving glm-5.3 via models.myia.io while the template points
+    # at the LAN hub; a plain sync left the key a placeholder AND regressed
+    # the URL to one unreachable from that seat — #3411 web2 cell).
+    local_models_by_id = {}
+    for model in local_config.get("models", []):
+        mid = model.get("id", "")
+        api_key = model.get("api_key", "")
+        if mid and api_key and not api_key.startswith("YOUR_"):
+            local_models_by_id[mid] = model
+
     # Inject model API keys
     for model in result.get("models", []):
         mid = model.get("id", "")
         base_url = model.get("base_url", "")
+
+        # 0. Same model id with a real local key: local endpoint wins
+        local_same_id = local_models_by_id.get(mid)
+        if local_same_id is not None:
+            model["api_key"] = local_same_id["api_key"]
+            if local_same_id.get("base_url") and local_same_id["base_url"] != base_url:
+                model["base_url"] = local_same_id["base_url"]
+                preserved_endpoint_notes.append(
+                    f"{mid}: local base_url kept "
+                    f"({local_same_id['base_url']} != template {base_url})"
+                )
+            if "enabled" in local_same_id:
+                model["enabled"] = local_same_id["enabled"]
+            continue
 
         # Try exact base_url match first
         exact = local_models_by_url.get(base_url)
@@ -165,7 +199,7 @@ def inject_keys_into_template(template: dict, local_keys: dict, local_config: di
             if mcp_key in local_keys:
                 env[env_key] = local_keys[mcp_key]
 
-    return result
+    return result, preserved_endpoint_notes
 
 
 def add_oracle_additions(config: dict, local_config: dict) -> dict:
@@ -203,7 +237,20 @@ def main():
     local_keys = extract_api_keys(local)
 
     # Build new config from template + local secrets
-    new_config = inject_keys_into_template(template, local_keys, local)
+    new_config, preserved_endpoint_notes = inject_keys_into_template(
+        template, local_keys, local
+    )
+
+    # Off-LAN endpoint visibility (#3411): a preserved base_url is a seat
+    # divergence from the template — say so on stderr so the operator sees
+    # it next to the sync report, never silently.
+    if preserved_endpoint_notes:
+        print("", file=sys.stderr)
+        print("=" * 62, file=sys.stderr)
+        print("PRESERVED LOCAL ENDPOINTS (same model id, local key set):", file=sys.stderr)
+        for note in preserved_endpoint_notes:
+            print(f"  - {note}", file=sys.stderr)
+        print("=" * 62, file=sys.stderr)
 
     # Optionally add local-only additions
     if args.local_additions:
