@@ -227,7 +227,12 @@ export function resolveCallerIdentity(as?: string): {
   workspaceId: string | undefined;
   fullId: string;
 } {
-  if (!as) {
+  // Blank (empty OR whitespace-only) = no assertion, exactly like absent.
+  // The raw test must match what the canonicalization below consumes: `as:" "`
+  // slipped past `!as`, then `.trim()` produced machine «» → confusing
+  // TRUSTED_CALLER_IDS refusal (CoursIA-2 po-2025, 11/10). A provided-but-blank
+  // assertion carries no identity content to honor or reject (#3177).
+  if (!as?.trim()) {
     return {
       machineId: getLocalMachineId(),
       workspaceId: getLocalWorkspaceId(),
