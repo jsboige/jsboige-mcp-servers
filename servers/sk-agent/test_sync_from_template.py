@@ -71,11 +71,11 @@ LOCAL_NO_MEDIUM = {
 }
 
 
-def _run_sync(tmp_path, local, extra_args=()):
+def _run_sync(tmp_path, local, extra_args=(), template=TEMPLATE):
     """Copy the real script + fixtures into tmp, run it, return (proc, config_path)."""
     shutil.copy2(SK_AGENT_DIR / SCRIPT_NAME, tmp_path / SCRIPT_NAME)
     (tmp_path / "sk_agent_config.template.json").write_text(
-        json.dumps(TEMPLATE, indent=2), encoding="utf-8"
+        json.dumps(template, indent=2), encoding="utf-8"
     )
     config_path = tmp_path / "sk_agent_config.json"
     config_path.write_text(json.dumps(local, indent=2), encoding="utf-8")
@@ -197,6 +197,121 @@ def test_same_id_local_model_keeps_local_endpoint():
         # no endpoint values on stderr.
         assert "models.myia.io" not in proc.stderr
         assert "192.168.0.50" not in proc.stderr
+
+
+# --- Declared successor (renamed id) key/endpoint inheritance (ms#1421) --
+
+TEMPLATE_WITH_SUCCESSOR = {
+    "models": [
+        {
+            "id": "glm-5.3",
+            "base_url": "http://192.168.0.50:3000/v1",
+            "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
+            "api_key_env": "ZAI_API_KEY",
+        },
+        {
+            "id": "swift-1.5-27b",
+            "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+            "api_key": "YOUR_MEDIUM_API_KEY_HERE",
+            "succeeds": "qwen3.6-35b-a3b",
+        },
+        {
+            "id": "qwen3.6-35b-a3b",
+            "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+            "api_key": "YOUR_MEDIUM_API_KEY_HERE",
+        },
+    ],
+    "agents": [],
+    "conversations": [],
+    "mcps": [],
+}
+
+# ai-01-shaped seat (ms#1421 review): the local medium endpoint diverges from
+# the template (docker-network URL) and only the OLD id exists locally.
+LOCAL_DIVERGENT_ALIAS = {
+    "models": [
+        {
+            "id": "glm-5.3-local",
+            "base_url": "http://192.168.0.50:3000/v1",
+            "api_key": "sk-hub-real-key",
+        },
+        {
+            "id": "qwen3.6-35b-a3b",
+            "base_url": "http://host.docker.internal:5002/v1",
+            "api_key": "sk-medium-real-key",
+        },
+    ],
+    "agents": [],
+    "conversations": [],
+    "mcps": [],
+}
+
+
+def test_new_id_succeeding_alias_inherits_key_and_divergent_base_url():
+    """ms#1421 blocker: a renamed id on a seat whose local medium base_url
+    diverges from the template. Steps 0-3 all miss (new id, different URL,
+    no api_key_env) — without the successor step the renamed id deploys
+    keyless AND against a URL the seat may not even reach."""
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(
+            Path(td), LOCAL_DIVERGENT_ALIAS, template=TEMPLATE_WITH_SUCCESSOR
+        )
+        assert proc.returncode == 0, (
+            f"successor must inherit a key — stderr={proc.stderr!r}"
+        )
+        assert "MISSING API KEYS" not in proc.stderr
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        by_id = {m["id"]: m for m in written["models"]}
+        swift = by_id["swift-1.5-27b"]
+        assert swift["api_key"] == "sk-medium-real-key", (
+            "renamed id must inherit the local alias key"
+        )
+        assert swift["base_url"] == "http://host.docker.internal:5002/v1", (
+            "renamed id must inherit the alias's local endpoint, not the template URL"
+        )
+        # The alias itself keeps its own key + endpoint via the same-id path.
+        alias = by_id["qwen3.6-35b-a3b"]
+        assert alias["api_key"] == "sk-medium-real-key"
+        assert alias["base_url"] == "http://host.docker.internal:5002/v1"
+        # Sibling model unaffected (exact URL match still serves the hub key).
+        assert by_id["glm-5.3"]["api_key"] == "sk-hub-real-key"
+        # Visibility: the inheritance is announced — ids and field names
+        # only, no endpoint values on stderr.
+        assert "PRESERVED LOCAL ENDPOINTS" in proc.stderr
+        assert "swift-1.5-27b" in proc.stderr
+        assert "qwen3.6-35b-a3b" in proc.stderr
+        assert "host.docker.internal" not in proc.stderr
+
+
+def test_dry_run_divergent_seat_lists_no_missing_keys_for_successor():
+    """Review exit criterion (ms#1421): --dry-run against a diverging
+    config no longer lists the renamed id under MISSING-KEYS."""
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(
+            Path(td),
+            LOCAL_DIVERGENT_ALIAS,
+            extra_args=("--dry-run",),
+            template=TEMPLATE_WITH_SUCCESSOR,
+        )
+        assert proc.returncode == 0, (
+            f"dry-run on divergent seat must exit 0 — stderr={proc.stderr!r}"
+        )
+        assert "[DRY RUN]" in proc.stdout
+        assert "MISSING API KEYS" not in proc.stderr
+        # Dry-run leaves the local config untouched.
+        assert json.loads(config_path.read_text(encoding="utf-8")) == LOCAL_DIVERGENT_ALIAS
+
+
+def test_successor_without_local_alias_still_fails_loud():
+    """No local alias to inherit from (fresh seat, or alias already removed
+    locally): the successor step must not mask the missing-key guard."""
+    with tempfile.TemporaryDirectory() as td:
+        proc, _ = _run_sync(
+            Path(td), LOCAL_NO_MEDIUM, template=TEMPLATE_WITH_SUCCESSOR
+        )
+        assert proc.returncode == 1
+        assert "MISSING API KEYS" in proc.stderr
+        assert "swift-1.5-27b" in proc.stderr
 
 
 # --- Local-only agent preservation (#3411, ai-01 spec c.6105550181) ------

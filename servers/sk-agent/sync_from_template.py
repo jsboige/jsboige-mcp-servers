@@ -117,7 +117,9 @@ def inject_keys_into_template(
     """Inject API keys from local config into template structure.
 
     Returns (config, preserved_endpoint_notes) — each note names a model whose
-    local base_url was kept over the template's (off-LAN seats, #3411 web2).
+    local base_url was kept over the template's (same-id off-LAN seats,
+    #3411 web2; or a declared successor inheriting its alias's endpoint,
+    ms#1421).
     """
     result = deepcopy(template)
     preserved_endpoint_notes: list[str] = []
@@ -185,6 +187,24 @@ def inject_keys_into_template(
                                 model["api_key"] = local_key
                                 break
                         break
+
+        # 4. Declared successor of a local alias (template field "succeeds"):
+        # a renamed id inherits the alias's local key AND base_url. Reached
+        # only when steps 0-3 all missed — e.g. a seat whose local medium
+        # endpoint diverges from the template (ai-01 host.docker.internal) —
+        # where the renamed id would otherwise deploy keyless against a URL
+        # the seat may not even reach (#3411 option A, ms#1421 review).
+        succeeds = model.get("succeeds", "")
+        if succeeds and model.get("api_key", "").startswith("YOUR_"):
+            alias_local = local_models_by_id.get(succeeds)
+            if alias_local is not None:
+                model["api_key"] = alias_local["api_key"]
+                if alias_local.get("base_url") and alias_local["base_url"] != base_url:
+                    model["base_url"] = alias_local["base_url"]
+                    preserved_endpoint_notes.append(
+                        f"{mid}: key+base_url inherited from local alias "
+                        f"'{succeeds}' (diverges from template)"
+                    )
 
     # Inject embeddings key
     if "embeddings" in result and "embeddings" in local_keys:
@@ -327,7 +347,7 @@ def main():
     if preserved_endpoint_notes:
         print("", file=sys.stderr)
         print("=" * 62, file=sys.stderr)
-        print("PRESERVED LOCAL ENDPOINTS (same model id, local key set):", file=sys.stderr)
+        print("PRESERVED LOCAL ENDPOINTS (local key set — same id or declared successor):", file=sys.stderr)
         for note in preserved_endpoint_notes:
             print(f"  - {note}", file=sys.stderr)
         print("=" * 62, file=sys.stderr)

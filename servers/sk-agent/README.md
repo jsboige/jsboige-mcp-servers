@@ -394,7 +394,7 @@ Key: `ZAI_API_KEY` (`api_key_env`) — the **cluster hub client key**, the same 
 
 ### vLLM Local Direct (4)
 
-Since 25/09 the fleet medium model is **Swift-1.5-27B** (`ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ`), served on ai-01 as `swift-1.5-27b` and under the historical id `qwen3.6-35b-a3b`. Qwen3.6 35B MoE is retired. Since 11/10 (#3411 option A) the template's canonical ids are the served engine names; the historical entries stay as deprecated aliases until ~2026-11-10 so ad hoc agent_specs citing them keep resolving, and the server keeps serving both names.
+Since 25/09 the fleet medium model is **Swift-1.5-27B** (`ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ`), served on ai-01 as `swift-1.5-27b` and under the historical id `qwen3.6-35b-a3b`. Qwen3.6 35B MoE is retired. Since 11/10 (#3411 option A) the template's canonical ids are the served engine names; the historical entries stay as deprecated aliases until ~2026-11-10 so ad hoc agent_specs citing them keep resolving, and the server keeps serving both names. The canonical entries declare `"succeeds": "<alias id>"` — on a seat whose local medium `base_url` diverges from the template, the sync inherits the alias's local key AND endpoint, so a renamed id never deploys keyless (ms#1421 review).
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
@@ -506,6 +506,7 @@ Each preset states in its own `description` what the calling agent may hand over
 
 - **New canonical ids**: `swift-1.5-27b` (+ `swift-1.5-27b-no-thinking` preset) — the served engine name, so `list_agents` states what actually runs
 - **Deprecated aliases**: `qwen3.6-35b-a3b` and `qwen3.6-35b-no-thinking` kept ~30 days (removal ~2026-11-10) — ad hoc agent_specs (extends + model) citing them keep resolving; the server keeps serving both names
+- **Successor key inheritance** (sync, ms#1421 review): the canonical ids carry `"succeeds": "<alias id>"` — on a seat whose local medium `base_url` diverges from the template (ai-01 `host.docker.internal`), `sync_from_template.py` step 4 inherits the alias's local key AND endpoint, so a renamed id never deploys keyless against an unreachable URL
 - **Presets re-pointed**: the 8 thinking and 7 no-thinking medium presets (incl. the pr-review-tier1 inline synthesizer) now cite the canonical ids; OWUI entries unchanged (OWUI-side naming, changes when OWUI renames)
 - 11 models / 42 agents
 
