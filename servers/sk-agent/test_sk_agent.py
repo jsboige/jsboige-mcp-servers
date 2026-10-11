@@ -2418,7 +2418,7 @@ class TestComplementaryLocalProfiles2002:
 
     def test_no_thinking_model_declares_enable_thinking_false(self):
         raw = self._load_template()
-        m = self._get_model(raw, "qwen3.6-35b-no-thinking")
+        m = self._get_model(raw, "swift-1.5-27b-no-thinking")
         assert m["thinking"] is False
         assert m.get("extra_body", {}).get("chat_template_kwargs", {}).get(
             "enable_thinking"
@@ -2429,8 +2429,8 @@ class TestComplementaryLocalProfiles2002:
 
     def test_thinking_pair_on_same_local_model(self):
         raw = self._load_template()
-        thinking = self._get_model(raw, "qwen3.6-35b-a3b")
-        no_thinking = self._get_model(raw, "qwen3.6-35b-no-thinking")
+        thinking = self._get_model(raw, "swift-1.5-27b")
+        no_thinking = self._get_model(raw, "swift-1.5-27b-no-thinking")
         assert thinking["thinking"] is True
         assert no_thinking["thinking"] is False
         # Complementary profiles on the SAME local model (same hardware, same
@@ -2447,7 +2447,7 @@ class TestComplementaryLocalProfiles2002:
                 f"#2002: cheap-task agent '{agent_id}' missing from template"
             )
             agent = agents_by_id[agent_id]
-            assert agent.get("model") == "qwen3.6-35b-no-thinking", (
+            assert agent.get("model") == "swift-1.5-27b-no-thinking", (
                 f"Agent '{agent_id}' must run on the non-thinking local profile"
             )
             assert agent.get("mcps", []) == [], (

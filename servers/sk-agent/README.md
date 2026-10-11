@@ -159,9 +159,9 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
       "context_window": 200000
     },
     {
-      "id": "qwen3.6-35b-a3b",
+      "id": "swift-1.5-27b",
       "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
-      "model_id": "qwen3.6-35b-a3b",
+      "model_id": "swift-1.5-27b",
       "vision": true,
       "context_window": 262144
     }
@@ -182,7 +182,7 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
   "agents": [
     {
       "id": "analyst",
-      "model": "qwen3.6-35b-a3b",
+      "model": "swift-1.5-27b",
       "system_prompt": "You are a helpful analyst.",
       "capabilities": ["memory"],
       "mcps": ["searxng"],
@@ -190,7 +190,7 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
     },
     {
       "id": "vision-analyst",
-      "model": "qwen3.6-35b-a3b",
+      "model": "swift-1.5-27b",
       "system_prompt": "You are a vision specialist.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -248,13 +248,15 @@ a time (nothing is activated in the shipped template).
 
 ### Complementary local profiles (#2002)
 
-The same local vLLM model (`qwen3.6-35b-a3b`, fleet vLLM on ai-01) is exposed
-as a thinking / non-thinking pair:
+The same local vLLM model (Swift-1.5-27B, fleet vLLM on ai-01) is exposed
+as a thinking / non-thinking pair under the canonical ids (`swift-1.5-27b`,
+`swift-1.5-27b-no-thinking` since 11/10, #3411 option A — the historical
+`qwen3.6-35b-a3b*` entries remain as deprecated aliases until ~2026-11-10):
 
 | Profile | Model entry | Use |
 |---------|-------------|-----|
-| Thinking | `qwen3.6-35b-a3b` | analysis and review — chain-of-thought (`analyst`, `qwen-local`, `fast-local-thinking`) |
-| Non-thinking | `qwen3.6-35b-no-thinking` | short, cheap tasks: summaries, classification, formatting (`summarizer-local`, `classifier-local`, `formatter-local`, `fast`, `fast-local`, `coder`) |
+| Thinking | `swift-1.5-27b` | analysis and review — chain-of-thought (`analyst`, `qwen-local`, `fast-local-thinking`) |
+| Non-thinking | `swift-1.5-27b-no-thinking` | short, cheap tasks: summaries, classification, formatting (`summarizer-local`, `classifier-local`, `formatter-local`, `fast`, `fast-local`, `coder`) |
 
 The non-thinking entry declares `extra_body.chat_template_kwargs.enable_thinking = false`
 via the #3797 passthrough. `call_agent` already injects that flag from
@@ -376,7 +378,7 @@ python -m pytest test_sk_agent.py test_config.py -v
 | `glm-5.3` | GLM-5.3 | ❌ | ✅ | 200K |
 | `glm-5.3-flash` | GLM-5.3-Flash | ❌ | ❌ | 131K |
 
-Vision is **not** served through the hub: it strips `image_url` parts before they reach z.ai (VERIFIED, roo-extensions#794) — vision routes local (qwen3.6-35b-a3b) until the claudish passthrough fix.
+Vision is **not** served through the hub: it strips `image_url` parts before they reach z.ai (VERIFIED, roo-extensions#794) — vision routes local (`swift-1.5-27b`, historically `qwen3.6-35b-a3b`) until the claudish passthrough fix.
 
 ### Mini tier — FrogNano-4B (1) — economy routing (#4107, volet C of #4085)
 
@@ -390,14 +392,16 @@ The mini tier is the cheapest budget in the fleet: it takes the reading and the 
 
 Key: `ZAI_API_KEY` (`api_key_env`) — the **cluster hub client key**, the same env var as the `glm-*` entries; **never** the MINI key, which is the hub→vLLM transport credential and must not leave the hub. The template ships a placeholder only.
 
-### vLLM Local Direct (2)
+### vLLM Local Direct (4)
 
-Since 25/09 the fleet medium model is **Swift-1.5-27B** (`ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ`), served on ai-01 as `swift-1.5-27b` and under the historical id `qwen3.6-35b-a3b` (kept so callers do not break). Qwen3.6 35B MoE is retired.
+Since 25/09 the fleet medium model is **Swift-1.5-27B** (`ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ`), served on ai-01 as `swift-1.5-27b` and under the historical id `qwen3.6-35b-a3b`. Qwen3.6 35B MoE is retired. Since 11/10 (#3411 option A) the template's canonical ids are the served engine names; the historical entries stay as deprecated aliases until ~2026-11-10 so ad hoc agent_specs citing them keep resolving, and the server keeps serving both names.
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
-| `qwen3.6-35b-a3b` | Swift-1.5-27B (historical id) | ✅ | ✅ | 262K |
-| `qwen3.6-35b-no-thinking` | Swift-1.5-27B, no-thinking | ❌ | ❌ | 262K |
+| `swift-1.5-27b` | Swift-1.5-27B (canonical id) | ✅ | ✅ | 262K |
+| `swift-1.5-27b-no-thinking` | Swift-1.5-27B, no-thinking | ❌ | ❌ | 262K |
+| `qwen3.6-35b-a3b` | deprecated alias of `swift-1.5-27b` (removal ~2026-11-10) | ✅ | ✅ | 262K |
+| `qwen3.6-35b-no-thinking` | deprecated alias of `swift-1.5-27b-no-thinking` (removal ~2026-11-10) | ❌ | ❌ | 262K |
 
 ### OWUI Proxy (1)
 
@@ -421,19 +425,19 @@ Purged (dead): `omnicoder-9b` + `owui-omnicoder-9b` (GPU 2 freed 30/04), `owui-g
 
 | ID | Model | Vision | Thinking | Tools | Memory | Description |
 |----|-------|--------|----------|-------|--------|-------------|
-| `analyst` | qwen3.6-35b-a3b | ✅ | ✅ | searxng, playwright, markitdown | ✅ | General analyst — **fleet default, local** (user mandate 22/09) |
+| `analyst` | swift-1.5-27b | ✅ | ✅ | searxng, playwright, markitdown | ✅ | General analyst — **fleet default, local** (user mandate 22/09) |
 | `analyst-glm5` | glm-5.3 | ❌ | ✅ | searxng, playwright, markitdown | ✅ | Cloud twin of analyst (heavy tasks, local-down fallback) |
 | `analyst-fast` | glm-5.3-flash | ❌ | ❌ | searxng | ❌ | Fast analyst (hub) |
 | `fast-responder` | glm-5.3-flash | ❌ | ❌ | — | ❌ | Quick answers / triage (hub) |
-| `vision-analyst` | qwen3.6-35b-a3b | ✅ | ✅ | searxng, playwright, markitdown | ❌ | Vision specialist — **local** (hub strips images, #794) |
-| `vision-local` | qwen3.6-35b-a3b | ✅ | ✅ | searxng, playwright, markitdown | ❌ | Local vision+thinking |
+| `vision-analyst` | swift-1.5-27b | ✅ | ✅ | searxng, playwright, markitdown | ❌ | Vision specialist — **local** (hub strips images, #794) |
+| `vision-local` | swift-1.5-27b | ✅ | ✅ | searxng, playwright, markitdown | ❌ | Local vision+thinking |
 | `vision-local-owui` | owui-qwen3.6-35b | ✅ | ✅ | — | ❌ | OWUI Swift-1.5-27B vision |
-| `coder` | qwen3.6-35b-no-thinking | ❌ | ❌ | open_terminal, searxng | ❌ | Local coding (vLLM direct) |
+| `coder` | swift-1.5-27b-no-thinking | ❌ | ❌ | open_terminal, searxng | ❌ | Local coding (vLLM direct) |
 | `coder-local` | owui-qwen3.6-35b | ✅ | ✅ | — | ❌ | Local coding (OWUI proxy) |
-| `fast` | qwen3.6-35b-no-thinking | ❌ | ❌ | — | ❌ | Fastest reliable (local no-thinking) |
-| `fast-local` | qwen3.6-35b-no-thinking | ❌ | ❌ | — | ❌ | Fast local (direct vLLM) |
-| `fast-local-thinking` | qwen3.6-35b-a3b | ✅ | ✅ | — | ❌ | Local with thinking |
-| `qwen-local` | qwen3.6-35b-a3b | ✅ | ✅ | — | ❌ | Direct vLLM Swift-1.5-27B |
+| `fast` | swift-1.5-27b-no-thinking | ❌ | ❌ | — | ❌ | Fastest reliable (local no-thinking) |
+| `fast-local` | swift-1.5-27b-no-thinking | ❌ | ❌ | — | ❌ | Fast local (direct vLLM) |
+| `fast-local-thinking` | swift-1.5-27b | ✅ | ✅ | — | ❌ | Local with thinking |
+| `qwen-local` | swift-1.5-27b | ✅ | ✅ | — | ❌ | Direct vLLM Swift-1.5-27B |
 
 ### Operational Agents (4)
 
@@ -494,9 +498,16 @@ Each preset states in its own `description` what the calling agent may hand over
 
 | ID | Model | Tools | Description |
 |----|-------|-------|-------------|
-| `swift-delegator` | qwen3.6-35b-a3b | sk_agent | Fleet medium (Swift-1.5-27B) that keeps the judgement and delegates short, tooled, verifiable sub-tasks to the mini presets through the self-inclusion plugin. A child failure is reported and finished by the medium — never a silent gap. |
+| `swift-delegator` | swift-1.5-27b | sk_agent | Fleet medium (Swift-1.5-27B) that keeps the judgement and delegates short, tooled, verifiable sub-tasks to the mini presets through the self-inclusion plugin. A child failure is reported and finished by the medium — never a silent gap. |
 
 ## Changelog
+
+### v2.4 (2026-10-11) — canonical swift-1.5-27b ids (#3411, fleet audit option A)
+
+- **New canonical ids**: `swift-1.5-27b` (+ `swift-1.5-27b-no-thinking` preset) — the served engine name, so `list_agents` states what actually runs
+- **Deprecated aliases**: `qwen3.6-35b-a3b` and `qwen3.6-35b-no-thinking` kept ~30 days (removal ~2026-11-10) — ad hoc agent_specs (extends + model) citing them keep resolving; the server keeps serving both names
+- **Presets re-pointed**: the 8 thinking and 7 no-thinking medium presets (incl. the pr-review-tier1 inline synthesizer) now cite the canonical ids; OWUI entries unchanged (OWUI-side naming, changes when OWUI renames)
+- 11 models / 42 agents
 
 ### v2.3 (2026-10-07) — mini tier + delegation (#4107, volet C of #4085)
 

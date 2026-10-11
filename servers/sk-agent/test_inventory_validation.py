@@ -84,9 +84,13 @@ def test_template_counts_match_expected_baseline():
     OFF by correctness) plus the four mini presets (mini-coder-fix,
     mini-repo-scan, mini-summarizer, mini-web-research) and the Swift
     delegating preset swift-delegator.
+    9->11 models (11/11 enabled, #3411 option A): canonical swift-1.5-27b
+    id (+swift-1.5-27b-no-thinking preset) added; qwen3.6-35b-a3b and
+    qwen3.6-35b-no-thinking kept as 30-day deprecated aliases
+    (~2026-11-10) so ad hoc agent_specs citing them keep resolving.
     """
     cfg = load_config(str(TEMPLATE_PATH))
-    assert len(cfg.models) == 9, f"models: {len(cfg.models)}"
+    assert len(cfg.models) == 11, f"models: {len(cfg.models)}"
     assert len(cfg.agents) == 42, f"agents: {len(cfg.agents)}"
     assert len(cfg.mcps) == 6, f"mcps: {len(cfg.mcps)}"
     assert len(cfg.conversations) == 11, f"conversations: {len(cfg.conversations)}"
@@ -95,7 +99,7 @@ def test_template_counts_match_expected_baseline():
     assert inline_total == 15, f"inline agents: {inline_total}"
 
     enabled = sum(1 for m in cfg.models if m.enabled)
-    assert enabled == 9, f"enabled models: {enabled}"
+    assert enabled == 11, f"enabled models: {enabled}"
 
     mem_agents = sum(1 for a in cfg.agents if a.memory.enabled)
     assert mem_agents == 5, f"memory-enabled agents: {mem_agents}"
@@ -124,8 +128,9 @@ def test_template_lot_e_entries():
     assert ca.mcps == ["roo_state_manager", "searxng"]
     assert set(ca.capabilities) == {"coordination", "web"}
     # Both presets run the local fleet model, memory off (vllm dossier §4).
+    # Re-pointed to the canonical id swift-1.5-27b (#3411 option A).
     for preset in (ta, ca):
-        assert preset.model == "qwen3.6-35b-a3b"
+        assert preset.model == "swift-1.5-27b"
         assert preset.memory.enabled is False
 
 
@@ -273,7 +278,7 @@ def test_deployment_doc_check_detects_drift():
     good = (
         "# Deployment\n\n"
         "| Metric | Count | Notes |\n|---|---|---|\n"
-        "| **Models** | 9 | notes |\n"
+        "| **Models** | 11 | notes |\n"
         "| **Top-level agents** | 42 | notes |\n"
         "| **Inline agents** (conversation-scoped) | 15 | notes |\n"
         "| **Memory-enabled agents** | 5 | notes |\n"

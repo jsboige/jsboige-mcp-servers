@@ -1249,7 +1249,7 @@ def test_v2_rejects_duplicate_inline_agent_ids_single_reference():
 
 MINI_MODEL_ID = "frognano-4b"
 DELEGATING_PRESET_ID = "swift-delegator"
-MEDIUM_MODEL_ID = "qwen3.6-35b-a3b"
+MEDIUM_MODEL_ID = "swift-1.5-27b"
 
 #: Preset id -> (mcps it lists, floor of its output budget). Floor = 4096 for
 #: all four: measured through the hub on 2026-10-07, the model reasons

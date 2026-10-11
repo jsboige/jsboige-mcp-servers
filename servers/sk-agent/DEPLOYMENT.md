@@ -97,9 +97,9 @@ Dans Claude Code, taper une commande qui liste les MCPs ou vérifier que les out
 
 ### Tests recommandés
 
-1. **list_agents** - Vérifier 32 agents (analyst, fast, researcher, coder-local, etc.)
-2. **call_agent(fast, "Bonjour")** - Test local rapide (qwen3.6-35b-no-thinking via vLLM)
-3. **call_agent(analyst, "Capitale de France?")** - Test défaut LOCAL (qwen3.6-35b-a3b via vLLM — user mandate 22/09 ; `model_used` doit rendre qwen3.6-35b-a3b)
+1. **list_agents** - Vérifier 42 agents (analyst, fast, researcher, coder-local, etc.)
+2. **call_agent(fast, "Bonjour")** - Test local rapide (swift-1.5-27b-no-thinking via vLLM)
+3. **call_agent(analyst, "Capitale de France?")** - Test défaut LOCAL (swift-1.5-27b via vLLM — user mandate 22/09 ; `model_used` doit rendre swift-1.5-27b ; l'id historique qwen3.6-35b-a3b reste un alias déprécié jusqu'à ~2026-11-10)
 4. **list_conversations** - Vérifier 11 conversations (deep-search, deep-think, pr-review-tier1-3, etc.)
 
 ### Tests unitaires (optionnel)
