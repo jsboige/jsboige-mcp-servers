@@ -6,7 +6,7 @@
 
   "models": [
     {
-      "_comment": "=== GLM cloud models via the fleet hub (claudish, #3574) === Do NOT route vision through the hub: it strips image_url parts before they reach z.ai (VERIFIED ai-01 22/09, roo-extensions#794) — vision routes local (qwen3.6-35b-a3b). Both ids probed HTTP 200 from po-2025 on 22/09; note glm-5.3-flash is not yet declared in hub /v1/models (claudish lane to declare).",
+      "_comment": "=== GLM cloud models via the fleet hub (claudish, #3574) === Do NOT route vision through the hub: it strips image_url parts before they reach z.ai (VERIFIED ai-01 22/09, roo-extensions#794) — vision routes local (swift-1.5-27b, historically qwen3.6-35b-a3b). Both ids probed HTTP 200 from po-2025 on 22/09; note glm-5.3-flash is not yet declared in hub /v1/models (claudish lane to declare).",
       "id": "glm-5.3",
       "enabled": true,
       "base_url": "http://192.168.0.50:3000/v1",
@@ -49,6 +49,35 @@
 
     {
       "_comment": "=== vLLM local models (direct endpoint, fleet-hosted on ai-01 — measured N=16 ≈ 760-870 tok/s aggregate, <3% util on 22/09; purged: omnicoder-9b, GPU 2 freed 30/04) === Per-model budget overrides (#3797, ALL optional, absent = current behaviour): \"request_timeout_s\": 600 (OpenAI client budget, default 300; declaring it ALSO raises the coupled call_agent wait_for ceiling to max(caller timeout, request_timeout_s + 30) — use case: notebook-auditor under parallel load bumps into 300 s), \"max_tokens\": 8000 (default output budget; precedence per-call/agent_spec > model > global sampling; use case: a thinking model burning the global 4096 on reasoning before answering), \"extra_body\": {\"chat_template_kwargs\": {\"thinking_budget\": 2048}} (generic vLLM passthrough; model keys override sampling-derived top_k/min_p/repetition_penalty; chat_template_kwargs deep-merged with the enable_thinking injection). Deployment of real values is a separate, per-model decision — none activated here. Timeout chain doc: README 'Timeout chain'.",
+      "id": "swift-1.5-27b",
+      "enabled": true,
+      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+      "api_key": "YOUR_MEDIUM_API_KEY_HERE",
+      "succeeds": "qwen3.6-35b-a3b",
+      "model_id": "swift-1.5-27b",
+      "vision": true,
+      "thinking": true,
+      "description": "Swift-1.5-27B (Qwen3.8 base, AWQ W4A16) — fleet vLLM medium (ai-01), 262K ctx, vision+thinking. Canonical id since 11/10 (fleet audit #3411, option A): the served engine name, so list_agents states what actually runs. The historical id qwen3.6-35b-a3b (deprecated alias below) resolves to the same engine on the server side. Fleet default since 22/09 (user mandate).",
+      "context_window": 262144
+    },
+    {
+      "id": "swift-1.5-27b-no-thinking",
+      "enabled": true,
+      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+      "api_key": "YOUR_MEDIUM_API_KEY_HERE",
+      "succeeds": "qwen3.6-35b-no-thinking",
+      "model_id": "swift-1.5-27b",
+      "vision": false,
+      "thinking": false,
+      "extra_body": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      },
+      "description": "Swift-1.5-27B (fleet vLLM medium, ai-01) — no-thinking mode. Faster inference for short/cheap tasks (summaries, classification, formatting). Same hardware as swift-1.5-27b. enable_thinking=false also declared via extra_body (#3797) so the profile holds on the conversation path, not just call_agent (#2002).",
+      "context_window": 262144
+    },
+    {
       "id": "qwen3.6-35b-a3b",
       "enabled": true,
       "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
@@ -56,7 +85,7 @@
       "model_id": "qwen3.6-35b-a3b",
       "vision": true,
       "thinking": true,
-      "description": "Swift-1.5-27B (Qwen3.8 base, AWQ W4A16) — fleet vLLM medium (ai-01), 262K ctx, vision+thinking. Served under this historical id and as swift-1.5-27b since 25/09, replacing Qwen3.6 35B MoE (retired). Fleet default since 22/09 (user mandate).",
+      "description": "DEPRECATED alias of swift-1.5-27b (#3411 option A) — removal ~2026-11-10. Swift-1.5-27B (Qwen3.8 base, AWQ W4A16) — fleet vLLM medium (ai-01), 262K ctx, vision+thinking, served under this historical id and as swift-1.5-27b since 25/09, replacing Qwen3.6 35B MoE (retired). Kept 30 days because ad hoc agent_specs (extends + model) may cite it; new specs use swift-1.5-27b.",
       "context_window": 262144
     },
     {
@@ -72,7 +101,7 @@
           "enable_thinking": false
         }
       },
-      "description": "Swift-1.5-27B (fleet vLLM medium, ai-01) — no-thinking mode. Faster inference for short/cheap tasks (summaries, classification, formatting). Same hardware as qwen3.6-35b-a3b. enable_thinking=false also declared via extra_body (#3797) so the profile holds on the conversation path, not just call_agent (#2002).",
+      "description": "DEPRECATED alias of swift-1.5-27b-no-thinking (#3411 option A) — removal ~2026-11-10. Swift-1.5-27B (fleet vLLM medium, ai-01) — no-thinking mode. Faster inference for short/cheap tasks (summaries, classification, formatting). Same hardware as qwen3.6-35b-a3b. enable_thinking=false also declared via extra_body (#3797) so the profile holds on the conversation path, not just call_agent (#2002). Kept 30 days because ad hoc agent_specs may cite it; new specs use swift-1.5-27b-no-thinking.",
       "context_window": 262144
     },
 
@@ -215,7 +244,7 @@
       "_comment": "=== Core utility agents === Capability lists (issue #3408) follow the ``mcps`` they cover — adding a tool without expanding ``capabilities`` is rejected at schema validation time.",
       "id": "analyst",
       "description": "General analyst with web search, document conversion, and memory — FLEET DEFAULT, local Swift-1.5-27B (262K ctx) since user mandate 22/09. Cloud twin for heavy tasks: analyst-glm5 (GLM-5.3 via hub).",
-      "model": "qwen3.6-35b-a3b",
+      "model": "swift-1.5-27b",
       "system_prompt": "You are a helpful analyst with web search, browsing, and document conversion capabilities. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Always respond in the same language as the user.",
       "mcps": ["searxng", "playwright", "markitdown"],
       "capabilities": ["web", "browser", "document_text", "document_visual", "memory"],
@@ -226,8 +255,8 @@
     },
     {
       "id": "vision-analyst",
-      "description": "Image and document analysis specialist with web context and document conversion — LOCAL vision since 22/09: qwen3.6-35b-a3b (the hub strips image_url parts before they reach z.ai, VERIFIED #794; cloud GLM-5.3-Flash vision returns when claudish fixes passthrough — #3389 pricing). Can browse web, search context, and convert PDF/DOCX/XLSX to markdown.",
-      "model": "qwen3.6-35b-a3b",
+      "description": "Image and document analysis specialist with web context and document conversion — LOCAL vision since 22/09: swift-1.5-27b (the hub strips image_url parts before they reach z.ai, VERIFIED #794; cloud GLM-5.3-Flash vision returns when claudish fixes passthrough — #3389 pricing). Can browse web, search context, and convert PDF/DOCX/XLSX to markdown.",
+      "model": "swift-1.5-27b",
       "system_prompt": "You are a vision analysis specialist with web search, browsing, and document conversion capabilities. Describe images in detail, focusing on relevant visual elements. Use web search to find context about what you see in images when helpful. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown for analysis. Be precise and thorough.",
       "mcps": ["searxng", "playwright", "markitdown"],
       "capabilities": ["web", "browser", "document_text", "document_visual"],
@@ -236,7 +265,7 @@
     {
       "id": "vision-local",
       "description": "Fast local vision+thinking with web context and document conversion (Swift-1.5-27B — fleet vLLM ai-01, 262K ctx, vision+thinking). Best for OCR, spatial reasoning, detailed analysis",
-      "model": "qwen3.6-35b-a3b",
+      "model": "swift-1.5-27b",
       "system_prompt": "You are a vision analysis assistant with web search, browsing, and document conversion capabilities. Analyze images carefully, describe what you see, and search for context when needed. Use markitdown to convert PDF, DOCX, XLSX, and PPTX documents to markdown when analyzing documents. Be concise but thorough.",
       "mcps": ["searxng", "playwright", "markitdown"],
       "capabilities": ["web", "browser", "document_text", "document_visual"],
@@ -245,7 +274,7 @@
     {
       "id": "coder",
       "description": "Agentic coding assistant with terminal access and web search (Swift-1.5-27B — fleet vLLM ai-01, 262K ctx, no-thinking mode). Can execute commands and search documentation",
-      "model": "qwen3.6-35b-no-thinking",
+      "model": "swift-1.5-27b-no-thinking",
       "system_prompt": "You are an agentic coding assistant with terminal access and web search. When given a coding task: (1) analyze the requirements, (2) plan your approach, (3) implement step by step, (4) verify the result. Use terminal to run commands and search the web for documentation when needed. Always respond in the same language as the user.",
       "mcps": ["open_terminal", "searxng"],
       "capabilities": ["shell", "repo_read", "web"],
@@ -254,7 +283,7 @@
     {
       "id": "fast",
       "description": "Fast responses via local vLLM Swift-1.5-27B no-thinking (fleet vLLM ai-01, 262K ctx). No tools, fastest reliable option (glm-4.7-flash deprecated: 60% rate-limit failures in benchmark)",
-      "model": "qwen3.6-35b-no-thinking",
+      "model": "swift-1.5-27b-no-thinking",
       "system_prompt": "Respond concisely and accurately. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -262,7 +291,7 @@
     {
       "id": "fast-local",
       "description": "Quick local responses via direct vLLM Swift-1.5-27B no-thinking mode (fleet vLLM ai-01, 262K ctx). No tools, no thinking overhead",
-      "model": "qwen3.6-35b-no-thinking",
+      "model": "swift-1.5-27b-no-thinking",
       "system_prompt": "You are a fast local assistant. Respond concisely and accurately without thinking mode. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -271,7 +300,7 @@
       "_comment": "=== #2002 cheap-task lane: task-tuned no-thinking profiles on the same local model as analyst (thinking). Short outputs, no tools, no memory — offloading epic #2404 ===",
       "id": "summarizer-local",
       "description": "Condenses logs, conversations, dumps and documents into short structured summaries — local Swift-1.5-27B no-thinking (fleet vLLM ai-01, 262K ctx). Cheap lane of #2002/#2404",
-      "model": "qwen3.6-35b-no-thinking",
+      "model": "swift-1.5-27b-no-thinking",
       "system_prompt": "You are a summarizer. Condense the provided material into a short, faithful summary: key facts first, then decisions and open points. Never invent content, never drop a decision. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -279,7 +308,7 @@
     {
       "id": "classifier-local",
       "description": "Classifies items (issues, PRs, alerts, notebooks, log lines) into a caller-provided label set — local Swift-1.5-27B no-thinking (fleet vLLM ai-01, 262K ctx). Cheap lane of #2002/#2404",
-      "model": "qwen3.6-35b-no-thinking",
+      "model": "swift-1.5-27b-no-thinking",
       "system_prompt": "You are a classifier. Assign each provided item exactly one label from the caller's label set, with a one-line justification. If nothing fits, use 'other'. Output one line per item. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -287,7 +316,7 @@
     {
       "id": "formatter-local",
       "description": "Normalizes and reformats text (markdown cleanup, dump normalization, consistent formatting) without changing meaning — local Swift-1.5-27B no-thinking (fleet vLLM ai-01, 262K ctx). Cheap lane of #2002/#2404",
-      "model": "qwen3.6-35b-no-thinking",
+      "model": "swift-1.5-27b-no-thinking",
       "system_prompt": "You are a formatter. Rewrite the provided text into the requested format without changing its meaning. Preserve names, identifiers, paths and code verbatim. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -295,7 +324,7 @@
     {
       "id": "fast-local-thinking",
       "description": "Local responses with thinking mode via direct vLLM Swift-1.5-27B (fleet vLLM ai-01, 262K ctx, vision+thinking). Better reasoning, slightly slower",
-      "model": "qwen3.6-35b-a3b",
+      "model": "swift-1.5-27b",
       "system_prompt": "You are a local assistant with thinking mode. Think step by step before responding, showing your reasoning. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -348,7 +377,7 @@
     {
       "id": "qwen-local",
       "description": "Direct vLLM access to Swift-1.5-27B — fleet vLLM ai-01, 262K ctx, vision+thinking. Best local quality, no OWUI overhead",
-      "model": "qwen3.6-35b-a3b",
+      "model": "swift-1.5-27b",
       "system_prompt": "You are a helpful assistant with advanced reasoning capabilities. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -554,7 +583,7 @@
       "_comment": "=== LOT E showcase presets (vllm#63, dossier PR #62 §4) === Adaptations from the dossier: desktop_commander -> open_terminal (desktop-commander RETIRED fleet-wide 2026-09, #3423); per-agent ``sampling`` NOT a config field (callers calibrate via agent_spec.sampling — coding profile per dossier §5: temperature 0.6, presence_penalty 0.0).",
       "id": "terminal-analyst",
       "description": "Local analyst with terminal+repo access: log analysis, config drift, read-only gh queries. Evidence-cited, output French (vllm dossier §6 skeleton).",
-      "model": "qwen3.6-35b-a3b",
+      "model": "swift-1.5-27b",
       "system_prompt": "You are a local terminal analyst with shell access and web search. Rules: (1) You never conclude without executed evidence — every quantitative claim goes through a tool (shell command or web search) whose command and result you cite. (2) One tool per step; wait for the result before the next step. (3) Always respond in French; numbers and claims carry their source; 'not verified' is a valid answer. (4) Stay inside the requested scope; if an action would be destructive or out of scope, stop and report instead of acting. (5) Final format: findings (with evidence), then diagnosis, then recommendation. Concise. Typical tasks: log analysis, config drift detection, read-only git/gh inspection.",
       "mcps": ["open_terminal", "searxng"],
       "capabilities": ["shell", "repo_read", "web"],
@@ -563,7 +592,7 @@
     {
       "id": "coordination-agent",
       "description": "Local agent that reads/posts RooSync dashboards (7-machine fleet) and drafts lane reports. Sampling per dossier §5 (thinking profile): calibrate via agent_spec.sampling {temperature: 0.7, presence_penalty: 1.5, max_tokens: 2048}.",
-      "model": "qwen3.6-35b-a3b",
+      "model": "swift-1.5-27b",
       "system_prompt": "You are a local coordination agent on a 7-machine fleet, reading and posting on shared RooSync dashboards. Rules: (1) Every reported fact comes from a tool call made this turn — cite the dashboard read or inbox query behind each line. (2) One tool per step; wait for the result before the next step. (3) Always respond in French; every number carries its source; 'not verified' is a valid answer. (4) Never mark work as done without a verifiable artefact (commit SHA, PR URL); appends are concise and structured. (5) Stay inside the requested scope; asked to mutate anything beyond reading and posting reports, stop and report. Final format: findings (with evidence), then recommendation.",
       "mcps": ["roo_state_manager", "searxng"],
       "capabilities": ["coordination", "web"],
@@ -611,7 +640,7 @@
       "_comment": "Delegating preset (#4107, volet C of #4085): the Swift medium calls the mini through the self-inclusion plugin. The capability grant must satisfy the #3408 risk gates for an MCP the config declares stateful — memory/repl — plus recursive_agents for the child spawn; max_recursion_depth 2 (top of this file) bounds the chain.",
       "id": "swift-delegator",
       "description": "Fleet medium (Swift-1.5-27B) that works by delegation: it keeps the judgement and hands the mechanical sub-tasks to the mini tier through the sk_agent plugin. DELEGATE TO IT: a task whose answer is a decision plus a set of short, tool-backed, verifiable sub-tasks. The child presets are mini-coder-fix, mini-repo-scan, mini-summarizer, mini-web-research — each states in its own description what it accepts and that code goes in the prompt.",
-      "model": "qwen3.6-35b-a3b",
+      "model": "swift-1.5-27b",
       "system_prompt": "You are the fleet medium model and you work BY DELEGATION. The mini tier (FrogNano-4B, presets mini-coder-fix, mini-repo-scan, mini-summarizer, mini-web-research) is far cheaper per token; you are the one that decides. Rules: (1) Delegate a sub-task only when it is SHORT (one file, one document, one question), TOOLED (the child has an MCP that can actually answer it) and VERIFIABLE (you can tell a right answer from a wrong one without redoing the work). (2) Pass the child everything it needs in the prompt: the mini cannot see your context, and source code must be pasted in the prompt because attachments refuse source files. (3) Keep for yourself everything that is judgement: architecture, arbitration between contradictory findings, anything the user will act on. (4) Never delegate a task whose result you could not check. (5) When a delegated call fails or returns nothing usable, say so and do the sub-task yourself — a child failure never becomes a silent gap. (6) Report which preset handled which sub-task. Answer in the language of the request.",
       "mcps": ["sk_agent"],
       "capabilities": ["recursive_agents", "memory"],
@@ -773,7 +802,7 @@
         {
           "id": "review-synthesizer",
           "description": "Formats review findings into structured JSON",
-          "model": "qwen3.6-35b-no-thinking",
+          "model": "swift-1.5-27b-no-thinking",
           "system_prompt": "Given code review findings, format them into a clean JSON with: verdict (APPROVE/COMMENT/REQUEST_CHANGES), confidence, summary, blocking_issues, suggestions. Keep it concise."
         }
       ]

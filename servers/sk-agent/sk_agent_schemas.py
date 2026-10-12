@@ -294,6 +294,16 @@ class ModelSpec(_StrictModel):
         ),
     )
     model_id: str = Field(default="default", min_length=1, max_length=256)
+    succeeds: RefId | None = Field(
+        default=None,
+        description=(
+            "Predecessor model id this id supersedes (rename lineage, "
+            "#3411 option A / ms#1421). Consumed by sync_from_template.py "
+            "step 4: when no local key matches this id, inherit the "
+            "predecessor's local key AND base_url (seats whose local "
+            "endpoint diverges from the template). Not a runtime field."
+        ),
+    )
     description: str = Field(default="", max_length=2048)
     capabilities: CapabilityProfile = Field(default_factory=CapabilityProfile)
     context_window: int = Field(default=32_000, ge=128, le=10_000_000)
