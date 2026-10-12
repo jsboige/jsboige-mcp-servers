@@ -14,9 +14,10 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-# Configuration
-$RepoRoot = "C:\dev\roo-extensions"
-$SkAgentDir = "$RepoRoot\mcps\internal\servers\sk-agent"
+# Configuration — dérivés de l'emplacement du script, jamais d'un chemin fixe
+# (le clone peut vivre hors C:\dev : D:\dev\roo-extensions, seats cloud, etc.)
+$SkAgentDir = $PSScriptRoot
+$RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..\..\..\..")).Path
 $VenvDir = "$SkAgentDir\venv"
 $ConfigFile = "$SkAgentDir\sk_agent_config.json"
 $WrapperFile = "$SkAgentDir\sk_agent.ps1"
@@ -182,10 +183,14 @@ Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. Edit API keys in: $ConfigFile" -ForegroundColor White
 Write-Host "2. Add to ~/.claude.json:" -ForegroundColor White
+# Chemins réels du déploiement, backslashes doublés pour JSON valide
+$SampleCommand = ("$VenvDir\Scripts\python.exe").Replace('\', '\\')
+$SampleArgs = ("$SkAgentDir\sk_agent.py").Replace('\', '\\')
+$SampleConfig = ("$ConfigFile").Replace('\', '\\')
 Write-Host '   "sk-agent": {' -ForegroundColor Gray
-Write-Host '     "command": "C:\\dev\\roo-extensions\\mcps\\internal\\servers\\sk-agent\\venv\\Scripts\\python.exe",' -ForegroundColor Gray
-Write-Host '     "args": ["C:\\dev\\roo-extensions\\mcps\\internal\\servers\\sk-agent\\sk_agent.py"],' -ForegroundColor Gray
-Write-Host '     "env": { "SK_AGENT_CONFIG": "C:\\dev\\roo-extensions\\mcps\\internal\\servers\\sk-agent\\sk_agent_config.json" }' -ForegroundColor Gray
+Write-Host "     `"command`": `"$SampleCommand`"," -ForegroundColor Gray
+Write-Host "     `"args`": [`"$SampleArgs`"]," -ForegroundColor Gray
+Write-Host "     `"env`": { `"SK_AGENT_CONFIG`": `"$SampleConfig`" }" -ForegroundColor Gray
 Write-Host '   }' -ForegroundColor Gray
 Write-Host "3. Restart VS Code" -ForegroundColor White
 Write-Host ""
