@@ -464,3 +464,63 @@ def test_missing_local_config_exits_nonzero_with_error():
         )
         assert proc.returncode == 1
         assert "not found" in proc.stdout
+
+
+# --- #4085: MCP install-path placeholders -----------------------------------
+# The template ships the sk_agent self-inclusion declaration with symbolic
+# install paths (VENV_PATH/Scripts/python.exe, INSTALLATION_PATH/sk_agent.py).
+# A sync that let them through verbatim left every seat's sk_agent tool dead
+# at spawn (c.218 dogfood). The sync must derive the real paths from its own
+# location and REFUSE any placeholder that survives the rewrite.
+
+
+def _template_with_placeholder_mcp():
+    template = json.loads(json.dumps(TEMPLATE))
+    template["mcps"] = [
+        {
+            "id": "sk_agent",
+            "command": "VENV_PATH/Scripts/python.exe",
+            "args": ["INSTALLATION_PATH/sk_agent.py"],
+            "env": {"SK_AGENT_HOME": "INSTALLATION_PATH"},
+        }
+    ]
+    return template
+
+
+def test_mcp_path_placeholders_rewritten_to_script_dir_paths():
+    template = _template_with_placeholder_mcp()
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        proc, config_path = _run_sync(tmp, LOCAL_HEALTHY, template=template)
+        assert proc.returncode == 0, (
+            f"placeholder rewrite must keep the sync healthy — stderr={proc.stderr!r}"
+        )
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        mcp = next(m for m in written["mcps"] if m["id"] == "sk_agent")
+        assert mcp["command"] == f"{tmp / 'venv'}/Scripts/python.exe", mcp["command"]
+        assert mcp["args"] == [f"{tmp}/sk_agent.py"], mcp["args"]
+        assert mcp["env"] == {"SK_AGENT_HOME": str(tmp)}, mcp["env"]
+        # No residual and no refusal banner.
+        assert "UNREPLACED MCP PATH PLACEHOLDERS" not in proc.stderr
+
+
+def test_residual_placeholder_in_untouched_mcp_field_refused():
+    # The rewriter covers command/args/env; a placeholder reaching any OTHER
+    # field of an MCP declaration must trip the tripwire, not ship silently.
+    template = _template_with_placeholder_mcp()
+    template["mcps"][0]["cwd"] = "INSTALLATION_PATH/subdir"
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        proc, config_path = _run_sync(tmp, LOCAL_HEALTHY, template=template)
+        assert proc.returncode == 1, (
+            f"residual placeholder must exit 1 — got {proc.returncode}"
+        )
+        assert "UNREPLACED MCP PATH PLACEHOLDERS" in proc.stderr, proc.stderr
+        assert "sk_agent" in proc.stderr
+        # File still written (hand-fixable), and the KNOWN fields were still
+        # rewritten — only the untouched field keeps its placeholder.
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        mcp = next(m for m in written["mcps"] if m["id"] == "sk_agent")
+        assert "VENV_PATH" not in mcp["command"]
+        assert "INSTALLATION_PATH" not in mcp["args"][0]
+        assert mcp["cwd"] == "INSTALLATION_PATH/subdir"
