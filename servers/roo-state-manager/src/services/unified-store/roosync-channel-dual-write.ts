@@ -72,7 +72,7 @@ const pendingMirrorOps = new Set<Promise<void>>();
  * Run one mirror op registered above, keeping the #1069 failure contract
  * verbatim (swallowed, logged with op + id, never blocks the GDrive path).
  */
-function runTrackedMirrorOp(op: string, id: string, work: () => Promise<void>): Promise<void> {
+function runTrackedMirrorOp(op: string, id: string, work: () => Promise<unknown>): Promise<void> {
   const tracked = (async () => {
     try {
       await work();

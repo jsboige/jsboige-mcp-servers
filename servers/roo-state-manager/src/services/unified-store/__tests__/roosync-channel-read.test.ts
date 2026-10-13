@@ -43,7 +43,7 @@ vi.mock('../reader-factory.js', () => ({
 // Module scope: vi.mock factories are hoisted, so referenced consts must
 // live here (same pattern as roosync-channel-dual-write.test.ts).
 
-const mockUpdateRooSyncMessage = vi.fn().mockResolvedValue(undefined);
+const mockUpdateRooSyncMessage = vi.fn().mockResolvedValue(1);
 
 vi.mock('../writer-factory.js', () => ({
   getUnifiedStoreWriter: () => ({

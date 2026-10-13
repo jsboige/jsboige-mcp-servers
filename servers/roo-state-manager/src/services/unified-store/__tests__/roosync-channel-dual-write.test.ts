@@ -33,7 +33,8 @@ vi.mock('pg', () => ({ default: { Pool: vi.fn(() => mockPool) } }));
 // ─── Mock the writer factory (controls every PG interaction) ──────────
 
 const insertRooSyncMessage = vi.fn().mockResolvedValue(undefined);
-const updateRooSyncMessage = vi.fn().mockResolvedValue(undefined);
+// #4131 B9: updateRooSyncMessage now returns the affected row count.
+const updateRooSyncMessage = vi.fn().mockResolvedValue(1);
 const insertRooSyncAttachment = vi.fn().mockResolvedValue(undefined);
 const deleteRooSyncAttachment = vi.fn().mockResolvedValue(undefined);
 
@@ -521,7 +522,7 @@ describe('env-gate (flag off → Null writer)', () => {
     ).resolves.toBeUndefined();
     await expect(
       nullWriter.updateRooSyncMessage('id', { body: 'x' })
-    ).resolves.toBeUndefined();
+    ).resolves.toBe(0);
     await expect(
       nullWriter.insertRooSyncAttachment({
         id: 'u',

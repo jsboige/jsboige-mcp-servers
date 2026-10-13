@@ -72,16 +72,26 @@ export async function insertRooSyncMessagePrimary(message: Message): Promise<boo
  * PG-primary update of an existing row (read / archived / amend / destroy
  * transitions executed against a row loaded from PG).
  *
- * @returns true when the update was persisted — the caller skips the GDrive
- *   file writes. false on any PG failure — the caller falls back to the
- *   GDrive file path.
+ * @returns true when the update was persisted AND matched at least one row —
+ *   the caller skips the GDrive file writes. false on any PG failure OR when
+ *   the UPDATE matched 0 rows (#4131 B9: a silent no-op UPDATE leaves the PG
+ *   mirror missing while reporting success, which is exactly the drift this
+ *   channel exists to prevent) — the caller falls back to the GDrive file
+ *   path.
  */
 export async function updateRooSyncMessagePrimary(
   id: string,
   fields: RooSyncMessageUpdate
 ): Promise<boolean> {
   try {
-    await getUnifiedStoreWriter().updateRooSyncMessage(id, fields);
+    const rowCount = await getUnifiedStoreWriter().updateRooSyncMessage(id, fields);
+    if (rowCount === 0) {
+      logger.warn('[channel-pg] PG-primary update matched 0 rows — falling back to GDrive path', {
+        id,
+        fields: Object.keys(fields),
+      });
+      return false;
+    }
     return true;
   } catch (error) {
     logger.warn('[channel-pg] PG-primary update failed — falling back to GDrive path', {

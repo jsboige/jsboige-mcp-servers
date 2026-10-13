@@ -27,7 +27,7 @@ const state = vi.hoisted(() => ({ gates: [] as Array<() => void>, closeCalls: 0 
 vi.mock('../writer-factory.js', () => ({
   getUnifiedStoreWriter: () => ({
     insertRooSyncMessage: () => new Promise<void>(resolve => { state.gates.push(resolve); }),
-    updateRooSyncMessage: () => new Promise<void>(resolve => { state.gates.push(resolve); }),
+    updateRooSyncMessage: () => new Promise<number>(resolve => { state.gates.push(() => resolve(1)); }),
     insertRooSyncAttachment: () => Promise.resolve(),
     deleteRooSyncAttachment: () => Promise.resolve(),
     close: async () => { state.closeCalls++; },
