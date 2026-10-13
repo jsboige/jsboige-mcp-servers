@@ -108,7 +108,11 @@ export async function updateRooSyncMessagePrimary(
  * GDrive path and dualWriteRooSyncMessageDestroyed, so a partial failure
  * never reports a destroyed message whose bytes survive one layer down.
  *
- * @returns true when payloads + stamp both persisted.
+ * @returns true when payloads + stamp both persisted AND the stamp matched at
+ *   least one row. false on any PG failure OR when the stamp UPDATE matched 0
+ *   rows (#4131 B9 destroy, NanoClaw reserve: the row id is absent from PG —
+ *   reporting success would leave an un-stamped mirror) — the caller falls
+ *   back to the GDrive destroy path (attachment purges are idempotent there).
  */
 export async function destroyRooSyncMessageInStore(
   messageId: string,
@@ -120,11 +124,17 @@ export async function destroyRooSyncMessageInStore(
     for (const uuid of attachmentUuids) {
       await writer.deleteRooSyncAttachment(uuid);
     }
-    await writer.updateRooSyncMessage(messageId, {
+    const rowCount = await writer.updateRooSyncMessage(messageId, {
       body: '[DESTROYED]',
       destroyed_at: new Date().toISOString(),
       destroyed_reason: reason,
     });
+    if (rowCount === 0) {
+      logger.warn('[channel-pg] PG-primary destroy matched 0 rows — falling back to GDrive path', {
+        id: messageId,
+      });
+      return false;
+    }
     return true;
   } catch (error) {
     logger.warn('[channel-pg] PG-primary destroy failed — falling back to GDrive path', {
