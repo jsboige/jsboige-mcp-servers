@@ -1,4 +1,4 @@
-# deploy-sk-agent.ps1 - Déploiement automatisé sk-agent
+﻿# deploy-sk-agent.ps1 - Déploiement automatisé sk-agent
 #
 # Issue #475 : sk-agent déploiement + tests intégration 6 machines
 #
