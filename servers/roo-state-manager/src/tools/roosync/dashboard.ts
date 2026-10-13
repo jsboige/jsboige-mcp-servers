@@ -39,7 +39,7 @@ import * as path from 'path';
 import { createHash } from 'crypto';
 import * as os from 'os';
 import * as yaml from 'js-yaml';
-import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir } from '../../utils/shared-state-path.js';
+import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir, isSharedPathAccessible } from '../../utils/shared-state-path.js';
 import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER } from '../../utils/secret-redaction.js';
 import { redactSecrets } from '../../services/task-indexer/EmbeddingValidator.js';
 import { getLocalMachineId, getLocalWorkspaceId, assertStampsMachine } from '../../utils/message-helpers.js';
@@ -270,6 +270,37 @@ const condenseLockClockSkewMs = (): number => {
 const appendLockTtlMs = (): number => Number(process.env.APPEND_LOCK_TTL_MS) || 30000;
 const appendLockAcquireBudgetMs = (): number => Number(process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS) || 5000;
 const appendLockRetryMs = (): number => Number(process.env.APPEND_LOCK_RETRY_MS) || 150;
+
+// #4131 G-B lot 1 — borne temporelle de la moitié GDrive d'une écriture de
+// dashboard. Incident 07/10 : DriveFS hangé → 86 s/write mesuré, sondes 300 Ko
+// sans retour en 120 s, et l'opération entière partait avec lui alors que la
+// moitié PG allait bien. Défaut 30 s (écriture saine ~1,3 s ; la borne ne doit
+// couper que le pathologique). Même convention de lecture que les bornes du
+// verrou append : au CALL, pas au chargement du module (tests + tuning flotte
+// sans restart de l'hôte MCP).
+const gdriveWriteTimeoutMs = (): number =>
+  Number(process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS) || 30000;
+
+/**
+ * #4131 G-B lot 1 — rejette si `p` ne règle pas dans `ms`. La course abandonne
+ * l'attente, pas le travail : les appels fs qui l'exposent reçoivent aussi un
+ * `AbortSignal.timeout` (l'annulation tue la requête en vol, cf. ms#1414) ;
+ * pour ceux qui n'en exposent pas (copyFile), un atterrissage tardif ne
+ * dépose que le contenu complet du staging tmp — convergent avec PG, et réparé
+ * au prochain append par la garde stale-file #3230 sur hôte READ_PG.
+ */
+function withWriteDeadline<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} : ${ms} ms dépassés (borne GDrive #4131)`)),
+      ms
+    );
+    p.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (err) => { clearTimeout(timer); reject(err); }
+    );
+  });
+}
 
 // Max tokens for every condensation LLM call (summary, status, text-condense).
 //
@@ -1579,6 +1610,13 @@ export interface WriteVerifyResult {
    * visible** : un `pgChecked:false` n'est jamais un succès implicite.
    */
   pgChecked?: boolean;
+  /**
+   * #4131 G-B lot 1 — la moitié GDrive a échoué ou expiré (borne
+   * `UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS`) et l'écriture a atterri
+   * sur le miroir PG SEUL. Porte le motif ; le succès reste un succès (le
+   * message est publié) mais l'appelant doit voir la dégradation.
+   */
+  gdriveDegraded?: string;
 }
 
 /**
@@ -1975,7 +2013,6 @@ async function writeDashboardFile(
   dashboard = redactForPublication(key, dashboard);
 
   const dir = getDashboardsDir();
-  ensureStoreSubdir(getSharedStatePath(), 'dashboards');
   const filePath = getDashboardPath(key);
   // #3782 — tmp pid-suffixé : deux writers concurrents ne doivent pas se voler
   // leur staging (le `.tmp` nu était une collision supplémentaire sous contention).
@@ -1983,29 +2020,6 @@ async function writeDashboardFile(
 
   const content = buildDashboardMarkdown(dashboard);
 
-  const writeStartedAtMs = Date.now();
-  // #4003 — le staging tmp doit mourir sur TOUT chemin de sortie de l'écriture :
-  // un writer tué entre copyFile et unlink laissait un `*.md.<pid>.tmp` qu'aucun
-  // run ultérieur ne reconnaissait (PID différent) — accumulation DriveFS.
-  // try/finally ; l'unlink reste best-effort (son échec ne doit ni masquer
-  // celui de la copie ni faire échouer l'écriture).
-  try {
-    await fs.writeFile(tmpPath, content, 'utf8');
-    // #3782 — copy-in-place, jamais rename : sur DriveFS, le rename-over-existing
-    // parque l'ancienne version à la racine du Drive (orphelins machine-*.md,
-    // 4/24 h mesurés le 28/09) ou la dévie en fork ` (N)` (#3482). copyFile
-    // remplace le contenu du même file-ID — pas de permutation de métadonnées.
-    await fs.copyFile(tmpPath, filePath);
-  } finally {
-    await fs.unlink(tmpPath).catch((err: Error) => {
-      logger.debug('Dashboard tmp staging cleanup failed (non-critical)', { tmpPath, error: err.message });
-    });
-  }
-  logger.debug('Dashboard écrit', { key, path: filePath });
-
-  // #3482 — post-write guard: a rename "succeeded" by DriveFS can have landed
-  // on a ` (N).md` fork. Loud error + result flag; never throws (the write
-  // itself must not be undone by its verification).
   // #3774 — jeton d'atterrissage : l'id du DERNIER message de l'instantané écrit.
   // Pour un APPEND il est neuf par construction (produit par ce process, absent
   // de toute version antérieure) et la comparaison de chemin est concluante. Ce
@@ -2014,24 +2028,96 @@ async function writeDashboardFile(
   // retrouvé au chemin demandé quoi qu'il arrive — c'est précisément pourquoi la
   // garde ne sort PAS sur ce verdict nominal et laisse parler les contrôles
   // historiques (cf. verifyDashboardWriteLanded).
+  // #4131 lot 1 — calculé AVANT la moitié GDrive : c'est le seul jeton dont la
+  // vérification PG reste pertinente quand la moitié fichier échoue.
   const landedIds = dashboard.intercom.messages.length > 0
     ? [dashboard.intercom.messages[dashboard.intercom.messages.length - 1].id]
     : undefined;
-  let wv = await verifyDashboardWriteLanded(filePath, {
-    lastModified: dashboard.lastModified,
-    totalMessages: dashboard.intercom.totalMessages
-  }, writeStartedAtMs, landedIds);
 
-  // #3151 Phase C — dual-write to PG (roosync_dashboards + journal). AWAITED,
-  // never-throwing: PG becomes the read-primary store, so the mirror must be
-  // consistent before the caller returns. A hard PG failure still degrades to
-  // the GDrive-only behavior (dualWriteDashboardSync swallows its errors and
-  // the writer's circuit breaker caps the retry cost).
+  // #4131 G-B lot 1 — la moitié GDrive est BORNÉE en temps et la moitié PG ne
+  // dépend plus d'elle (demande 3 de l'arbitrage user 08/10) : un DriveFS qui
+  // rampe fait échouer la copie GDrive, plus l'opération entière. writeFile
+  // porte l'AbortSignal (la requête en vol est tuée) ; copyFile n'expose pas de
+  // signal, c'est la course qui la borne.
+  const writeTimeoutMs = gdriveWriteTimeoutMs();
+  let gdriveFailure: string | undefined;
+  let wv: WriteVerifyResult = { forkSuspected: false };
+
+  const gdriveHalf = async (): Promise<WriteVerifyResult> => {
+    const writeStartedAtMs = Date.now();
+    // #4131 lot 1 — la préparation du répertoire appartient à la moitié GDrive :
+    // son échec (racine présente mais non réplicable, ENOTDIR) dégrade, il ne
+    // tue pas l'écriture PG. Racine absente → skip fail-closed (#3459), l'erreur
+    // viendra du writeFile ci-dessous.
+    ensureStoreSubdir(getSharedStatePath(), 'dashboards');
+    // #4003 — le staging tmp doit mourir sur TOUT chemin de sortie de l'écriture :
+    // un writer tué entre copyFile et unlink laissait un `*.md.<pid>.tmp` qu'aucun
+    // run ultérieur ne reconnaissait (PID différent) — accumulation DriveFS.
+    // try/finally ; l'unlink reste best-effort (son échec ne doit ni masquer
+    // celui de la copie ni faire échouer l'écriture).
+    try {
+      await fs.writeFile(tmpPath, content, {
+        encoding: 'utf8',
+        signal: AbortSignal.timeout(writeTimeoutMs)
+      });
+      // #3782 — copy-in-place, jamais rename : sur DriveFS, le rename-over-existing
+      // parque l'ancienne version à la racine du Drive (orphelins machine-*.md,
+      // 4/24 h mesurés le 28/09) ou la dévie en fork ` (N)` (#3482). copyFile
+      // remplace le contenu du même file-ID — pas de permutation de métadonnées.
+      await fs.copyFile(tmpPath, filePath);
+    } finally {
+      await fs.unlink(tmpPath).catch((err: Error) => {
+        logger.debug('Dashboard tmp staging cleanup failed (non-critical)', { tmpPath, error: err.message });
+      });
+    }
+    logger.debug('Dashboard écrit', { key, path: filePath });
+
+    // #3482 — post-write guard: a rename "succeeded" by DriveFS can have landed
+    // on a ` (N).md` fork. Loud error + result flag; never throws (the write
+    // itself must not be undone by its verification).
+    return await verifyDashboardWriteLanded(filePath, {
+      lastModified: dashboard.lastModified,
+      totalMessages: dashboard.intercom.totalMessages
+    }, writeStartedAtMs, landedIds);
+  };
+
+  try {
+    wv = await withWriteDeadline(gdriveHalf(), writeTimeoutMs, `moitié GDrive de l'écriture dashboard '${key}'`);
+  } catch (err) {
+    gdriveFailure = err instanceof Error ? err.message : String(err);
+    logger.warn('[GDRIVE-BOUNDED #4131] moitié GDrive échouée/expirée — le miroir PG porte seule l\'écriture', {
+      key,
+      timeoutMs: writeTimeoutMs,
+      error: gdriveFailure
+    });
+    // Best-effort non attendu : le staging peut survivre à une annulation mi-course.
+    void fs.unlink(tmpPath).catch(() => { /* déjà parti ou jamais créé */ });
+    wv = { forkSuspected: false }; // invérifiable ≠ suspecté (cf. verifyDashboardWriteLanded)
+  }
+
+  // #3151 Phase C + #4131 lot 1 — dual-write to PG (roosync_dashboards +
+  // journal). AWAITED, never-throwing en chemin nominal. INCONDITIONNEL : il
+  // court aussi quand la moitié GDrive a échoué — mais l'opération ne réussit
+  // « dégradée » QUE si le miroir a réellement pris l'écriture. Sur un siège
+  // sans miroir (writer Null, DUAL_WRITE off) ou PG en panne, l'échec GDrive
+  // reste un échec total : sinon l'opération « réussirait » sans avoir atterri
+  // nulle part.
   // `opts.condensed` (threaded from applyCondensedWithMerge) is the only mode
   // allowed to stamp archived_at — a plain write's snapshot can lag concurrent
   // appends from the other machines (GDrive parity: condensation is the sole
   // operation that removes intercom messages).
-  await dualWriteDashboardSync(dashboard, opts);
+  if (gdriveFailure) {
+    const pgOutcome = await dualWriteDashboardSyncChecked(dashboard, opts);
+    if (!pgOutcome.ok) {
+      throw new Error(
+        `écriture dashboard '${key}' : moitié GDrive échouée (${gdriveFailure}) ` +
+        `et miroir PG n'a pas pris l'écriture (${pgOutcome.reason}) — aucune surface ne porte le message`
+      );
+    }
+    wv = { ...wv, gdriveDegraded: gdriveFailure };
+  } else {
+    await dualWriteDashboardSync(dashboard, opts);
+  }
 
   // #3774 critère 2 — relecture du substrat autoritaire, fusionnée AVANT la
   // journalisation (cf. appendDashboardIncremental : même contrat).
@@ -2116,9 +2202,13 @@ async function appendDashboardIncremental(
   newMessageCount: number
 ): Promise<WriteVerifyResult> {
   const dir = getDashboardsDir();
-  ensureStoreSubdir(getSharedStatePath(), 'dashboards');
   const filePath = getDashboardPath(key);
   const tmpPath = `${filePath}.${process.pid}.tmp`; // #3782 — cf. writeDashboardFile
+  // #4131 G-B lot 1 — même borne que writeDashboardFile : la lecture-modification-
+  // écriture ci-dessous tient le verrou append (couche PG + fichier local) pendant
+  // qu'elle touche G:. Un DriveFS qui rampe étirait la détention du verrou sur
+  // toute sa fenêtre — la borne est aussi la durée maximale de détention.
+  const writeTimeoutMs = gdriveWriteTimeoutMs();
 
   // #3205 write-side — the read→rename window below is the last-writer-wins
   // race: two processes/machines appending inside the same window each succeed
@@ -2135,11 +2225,23 @@ async function appendDashboardIncremental(
   let wv: WriteVerifyResult = { forkSuspected: false };
   // #3774 — ids des messages NEUFS de cet append : le seul jeton que le writer
   // produit lui-même, donc le seul qui puisse établir où ses octets ont atterri.
-  let landedIds: string[] = [];
+  // #4131 lot 1 — rempli AVANT l'écriture : la vérification PG reste pertinente
+  // quand la moitié fichier échoue.
+  const newMessagesAll = dashboard.intercom.messages.slice(-newMessageCount);
+  let landedIds: string[] = newMessagesAll.map(m => m.id);
+  // #4131 lot 1 — motif de l'échec GDrive (borne dépassée ou erreur fs) : la
+  // moitié PG ci-dessous en fait l'opération dégradée, pas d'un échec total.
+  let gdriveFailure: string | undefined;
   try {
     let existing: string;
     try {
-      existing = await fs.readFile(filePath, 'utf8');
+      // #4131 lot 1 — signal sur la lecture : une DriveFS hangée ne doit pas
+      // tenir le verrou append au-delà de la borne (abort → catch →
+      // writeDashboardFile, lui-même borné).
+      existing = await fs.readFile(filePath, {
+        encoding: 'utf8',
+        signal: AbortSignal.timeout(writeTimeoutMs)
+      });
     } catch {
       // #3230 (b, dispatch ai-01 29/09) — await OBLIGATOIRE : sans lui le
       // `finally` ci-dessous relâche l'append lock pendant que writeDashboardFile
@@ -2296,39 +2398,73 @@ async function appendDashboardIncremental(
       result = fmReplaced.trimEnd() + '\n\n---\n\n' + newBlock + '\n';
     }
 
-    const writeStartedAtMs = Date.now();
-    // #4003 — même contrat try/finally que writeDashboardFile : le staging tmp
-    // est retiré même si writeFile/copyFile échoue en cours de route.
+    // #4131 lot 1 — moitié GDrive bornée (cf. writeDashboardFile) : signal sur
+    // writeFile, course sur l'ensemble write+copy+verify.
     try {
-      await fs.writeFile(tmpPath, result, 'utf8');
-      // #3782 — copy-in-place au lieu du rename (cf. writeDashboardFile) : la
-      // permutation rename-over-existing est le chemin des orphelins racine Drive.
-      await fs.copyFile(tmpPath, filePath);
-    } finally {
-      await fs.unlink(tmpPath).catch((err: Error) => {
-        logger.debug('Dashboard incremental tmp cleanup failed (non-critical)', { tmpPath, error: err.message });
-      });
-    }
-    logger.debug('Dashboard append incrémental', { key, path: filePath, newMessages: newMessageCount });
+      wv = await withWriteDeadline((async (): Promise<WriteVerifyResult> => {
+        const writeStartedAtMs = Date.now();
+        // #4131 lot 1 — la préparation du répertoire appartient à la moitié GDrive
+        // (son échec dégrade, il ne tue pas l'écriture PG). Racine absente → skip
+        // fail-closed (#3459), l'erreur viendra du writeFile ci-dessous.
+        ensureStoreSubdir(getSharedStatePath(), 'dashboards');
+        // #4003 — même contrat try/finally que writeDashboardFile : le staging tmp
+        // est retiré même si writeFile/copyFile échoue en cours de route.
+        try {
+          await fs.writeFile(tmpPath, result, {
+            encoding: 'utf8',
+            signal: AbortSignal.timeout(writeTimeoutMs)
+          });
+          // #3782 — copy-in-place au lieu du rename (cf. writeDashboardFile) : la
+          // permutation rename-over-existing est le chemin des orphelins racine Drive.
+          await fs.copyFile(tmpPath, filePath);
+        } finally {
+          await fs.unlink(tmpPath).catch((err: Error) => {
+            logger.debug('Dashboard incremental tmp cleanup failed (non-critical)', { tmpPath, error: err.message });
+          });
+        }
+        logger.debug('Dashboard append incrémental', { key, path: filePath, newMessages: newMessageCount });
 
-    // #3482 — post-write guard (même contrat que writeDashboardFile) : un
-    // append « réussi » peut avoir été dévié vers un fork ` (N).md`.
-    landedIds = newMessages.map(m => m.id);
-    wv = await verifyDashboardWriteLanded(filePath, {
-      lastModified: dashboard.lastModified,
-      totalMessages: dashboard.intercom.totalMessages
-    }, writeStartedAtMs, landedIds);
+        // #3482 — post-write guard (même contrat que writeDashboardFile) : un
+        // append « réussi » peut avoir été dévié vers un fork ` (N).md`.
+        return await verifyDashboardWriteLanded(filePath, {
+          lastModified: dashboard.lastModified,
+          totalMessages: dashboard.intercom.totalMessages
+        }, writeStartedAtMs, landedIds);
+      })(), writeTimeoutMs, `moitié GDrive de l'append incrémental '${key}'`);
+    } catch (err) {
+      gdriveFailure = err instanceof Error ? err.message : String(err);
+      logger.warn('[GDRIVE-BOUNDED #4131] moitié GDrive de l\'append échouée/expirée — le miroir PG porte seule l\'écriture', {
+        key,
+        timeoutMs: writeTimeoutMs,
+        error: gdriveFailure
+      });
+      // Best-effort non attendu : le staging peut survivre à une annulation mi-course.
+      void fs.unlink(tmpPath).catch(() => { /* déjà parti ou jamais créé */ });
+      wv = { forkSuspected: false }; // invérifiable ≠ suspecté
+    }
   } finally {
     if (lockOwned) {
       await releaseAppendLock(key, holder);
     }
   }
 
-  // #3151 Phase C — dual-write the appended journal rows to PG. Same awaited,
-  // never-throwing contract as writeDashboardFile: the incremental file append
-  // stays the primary write; PG mirrors it (append-first is what makes the
-  // condense-after phase below safe to fail).
-  await dualWriteDashboardSync(dashboard);
+  // #3151 Phase C + #4131 lot 1 — dual-write the appended journal rows to PG.
+  // INCONDITIONNEL (même contrat que writeDashboardFile) : l'incrément fichier
+  // reste l'écriture primaire en chemin nominal ; quand sa moitié a échoué, le
+  // miroir doit avoir PRIS l'écriture pour que l'opération réussisse dégradée
+  // (append-first : c'est ce qui rend la condense-after ci-dessous sûre).
+  if (gdriveFailure) {
+    const pgOutcome = await dualWriteDashboardSyncChecked(dashboard);
+    if (!pgOutcome.ok) {
+      throw new Error(
+        `append dashboard '${key}' : moitié GDrive échouée (${gdriveFailure}) ` +
+        `et miroir PG n'a pas pris l'écriture (${pgOutcome.reason}) — aucune surface ne porte le message`
+      );
+    }
+    wv = { ...wv, gdriveDegraded: gdriveFailure };
+  } else {
+    await dualWriteDashboardSync(dashboard);
+  }
 
   // #3774 critère 2 — le verdict n'est complet qu'APRÈS la relecture du store
   // autoritaire (le dual-write vient d'avoir lieu : la clé est interrogeable).
@@ -5587,17 +5723,29 @@ async function handleAppend(
   // #3459: refuser de créer un dashboard fantôme quand le magasin est absent.
   // createIfNotExists est un piège actif ici : l'appliquer écrit un fichier
   // dans un store injoignable qui masquera le vrai au retour du montage.
-  try {
-    assertSharedStoreAccessible();
-  } catch (err) {
-    return {
-      success: false,
-      action: 'append',
-      key,
-      type: args.type!,
-      request: requestEcho,
-      message: (err as Error).message
-    };
+  // #4131 G-B lot 1 (blocage B2) — le refus reste la règle quand seule la
+  // moitié fichier peut porter l'opération. Sur un hôte READ_PG=1, PG sert la
+  // lecture ET peut recevoir seule l'écriture (cf. writeDashboardFile) :
+  // refuser l'append parce que G: est absent tuerait une opération dont la
+  // moitié PG va bien. L'append continue, l'écriture fichier se dégrade en
+  // miroir-seul au lieu de tuer le canal.
+  let storeMissing = false;
+  if (isSharedPathAccessible() || process.env.UNIFIED_STORE_DASHBOARD_READ_PG !== '1') {
+    try {
+      assertSharedStoreAccessible();
+    } catch (err) {
+      return {
+        success: false,
+        action: 'append',
+        key,
+        type: args.type!,
+        request: requestEcho,
+        message: (err as Error).message
+      };
+    }
+  } else {
+    storeMissing = true;
+    logger.warn('[B2 #4131] store G: absent mais READ_PG=1 — append en mode dégradé PG-seul', { key });
   }
 
   let dashboard = await readDashboardFile(key);
@@ -6232,15 +6380,20 @@ async function handleAppend(
     splitCount: newMessages.length,
     // #4003 — écho de la forme normalisée effectivement persistée.
     tags: normalizedTags.length > 0 ? normalizedTags : undefined,
-    warning: guardAWarning,
-    writeVerification: writeVerify.forkSuspected ? writeVerify : undefined,
+    // #4131 lot 1 — la dégradation GDrive (message publié sur le miroir PG
+    // seul) est visible dans la réponse : un succès silencieux apprendrait à
+    // l'appelant à l'ignorer. storeMissing (B2) n'a pas forcément dégradé
+    // l'écriture (le montage peut revenir entre-temps) : warning d'entrée.
+    warning: guardAWarning
+      ?? (storeMissing ? "[B2 #4131] store G: absent à l'entrée — écriture tentée en mode PG-seul" : undefined),
+    writeVerification: (writeVerify.forkSuspected || writeVerify.gdriveDegraded) ? writeVerify : undefined,
     durationBreakdown: {
       totalMs,
       preemptiveCondenseMs,
       reactiveCondenseMs,
       writeMs
     },
-    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${cloudSuffix}${stallSuffix}${crossPostSuffix}${writeVerify.forkSuspected ? ` — 🚨 [FORK SUSPECTÉ #3482] ${writeVerify.forkDetail ?? ''}${writeVerify.forkPath ? ` (${writeVerify.forkPath})` : ''}. L'écriture a peut-être dévié vers un fork DriveFS : RELIRE le canonique avant tout retry — re-poster seulement si le message y est absent (intercom-protocol §append expiré).` : ''}`
+    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${cloudSuffix}${stallSuffix}${crossPostSuffix}${writeVerify.gdriveDegraded ? ` — ⚠️ [GDRIVE DÉGRADÉ #4131] la moitié fichier a échoué (${writeVerify.gdriveDegraded}) ; le message est publié sur le miroir PG SEUL. Les sièges READ_PG=1 le lisent déjà ; le fichier suivra à la relecture/réparation.` : ''}${writeVerify.forkSuspected ? ` — 🚨 [FORK SUSPECTÉ #3482] ${writeVerify.forkDetail ?? ''}${writeVerify.forkPath ? ` (${writeVerify.forkPath})` : ''}. L'écriture a peut-être dévié vers un fork DriveFS : RELIRE le canonique avant tout retry — re-poster seulement si le message y est absent (intercom-protocol §append expiré).` : ''}`
   };
 }
 
