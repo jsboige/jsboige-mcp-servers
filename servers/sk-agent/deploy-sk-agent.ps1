@@ -70,11 +70,14 @@ if ($skCheck) {
 # aucune bibliothèque partagée, l'isolement ne coûte rien à l'exécution.
 $MarkitdownVenv = "$SkAgentDir\venv-markitdown"
 if (-not $SkipVenv) {
-    if (-not (Test-Path $MarkitdownVenv)) {
+    # pip.exe (pas le répertoire) : un venv cassé en cours de création doit se refaire
+    if (-not (Test-Path "$MarkitdownVenv\Scripts\pip.exe")) {
         Write-Host "  Creating venv-markitdown..." -ForegroundColor Cyan
-        python -m venv $MarkitdownVenv
+        python -m venv $MarkitdownVenv --clear
+        if ($LASTEXITCODE -ne 0) { throw "venv-markitdown creation failed (exit $LASTEXITCODE)" }
     }
     & "$MarkitdownVenv\Scripts\pip.exe" install -q -r "$SkAgentDir\requirements-markitdown.txt"
+    if ($LASTEXITCODE -ne 0) { throw "venv-markitdown pip install failed (exit $LASTEXITCODE)" }
     Write-Host "  ✓ venv-markitdown ready (markitdown MCP)" -ForegroundColor Green
 }
 

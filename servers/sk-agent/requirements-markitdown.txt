@@ -6,3 +6,4 @@
 # tool (handshake-verified); the prompts-only lookalike markitdown-mcp-server
 # does NOT (list_tools -> []).
 markitdown-mcp==0.0.1a7
+mcp>=2.1.1,<3
