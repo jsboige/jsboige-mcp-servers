@@ -269,6 +269,14 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     return result.rows.map(r => String(r.source_key));
   }
 
+  async listRooSyncDashboardKeys(): Promise<string[]> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query('SELECT key FROM roosync_dashboards');
+    return result.rows.map(r => String(r.key));
+  }
+
   private mapRooSyncDashboardRow(row: pg.QueryResult['rows'][0]): RooSyncDashboardRow {
     return {
       key: row.key,

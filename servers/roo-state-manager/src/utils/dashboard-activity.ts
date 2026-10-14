@@ -85,6 +85,24 @@ export function isRecentlyActive(lastSeen: string, thresholdMs: number = DEFAULT
 }
 
 /**
+ * #4131 G-B lot 2 (B4) — render the activity-bearing markdown of a dashboard
+ * held as data (PG journal rows mapped by mapRowsToDashboard), in the exact
+ * message-header format the file writer emits (dashboard.ts `### [ts]
+ * machine|workspace`) so extractMachineActivity parses it identically to a
+ * GDrive file. Only the `### [ts] author` lines carry activity — the body
+ * content is included for debuggability, the `[msg: id]` line is not needed.
+ */
+export function renderDashboardActivityMarkdown(dashboard: {
+	status: { markdown: string };
+	intercom: { messages: Array<{ timestamp: string; content: string; author: { machineId: string; workspace: string } }> };
+}): string {
+	const messages = dashboard.intercom.messages
+		.map(m => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n${m.content}`)
+		.join('\n\n');
+	return `${dashboard.status.markdown}\n${messages}`;
+}
+
+/**
  * Cross-check heartbeat-derived status against dashboard activity.
  *
  * For machines marked UNKNOWN (heartbeat stale) or IDLE by HeartbeatService,

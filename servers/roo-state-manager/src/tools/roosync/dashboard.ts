@@ -68,6 +68,7 @@ import {
   fetchArchivedDashboardMessageIds,
   getDashboardRetirement,
   listRetiredDashboardKeys,
+  listRooSyncDashboardKeysFromPg,
   retireDashboardKeyChecked,
   acquireDashboardSharedLock,
   releaseDashboardSharedLock,
@@ -6716,6 +6717,77 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
 
   // #1410 item 4: auto-cleanup stale worktree dashboards before listing
   const cleanedUp = await cleanupStaleWorktreeDashboards();
+
+  // #4131 G-B lot 2 (B4): when the dashboard read gate is on, the LIST itself
+  // comes from PG — dashboards whose only home is PG (written while GDrive was
+  // degraded, fork keys archived on disk) must stay visible, and the summaries
+  // must reflect the PG journal rather than a stale mirror. Null = PG has no
+  // story (gate off, failure, 3s hang) → fall through to the GDrive readdir
+  // below. Same under-show protection shape as the per-key read (l.1484).
+  const pgListKeys = await listRooSyncDashboardKeysFromPg();
+  if (pgListKeys !== null) {
+    const retiredKeys = await listRetiredDashboardKeys();
+    const summaries: DashboardSummary[] = [];
+    for (const key of pgListKeys) {
+      if (retiredKeys.has(key)) continue;
+      try {
+        const dashboard = await readDashboardFromPg(key);
+        if (dashboard) {
+          const sizes = buildSizes(dashboard);
+          summaries.push({
+            key: dashboard.key,
+            type: dashboard.type,
+            lastModified: dashboard.lastModified,
+            lastModifiedBy: dashboard.lastModifiedBy,
+            messageCount: dashboard.intercom.messages.length,
+            statusLength: sizes.statusLength,
+            intercomLength: sizes.intercomLength,
+            totalLength: sizes.totalLength,
+            utilizationPct: sizes.utilizationPct
+          });
+        }
+      } catch {
+        // Skip rows that fail to map — same tolerance as malformed files
+      }
+    }
+
+    summaries.sort((a, b) => b.lastModified.localeCompare(a.lastModified));
+    const cleanupNote = cleanedUp > 0 ? ` (${cleanedUp} worktree(s) expiré(s) archivé(s))` : '';
+
+    // #3482-follow — same fork enumeration as the GDrive path below, driven by
+    // the PG keys (detectDashboardForks only needs the key list).
+    let forks: DashboardForkGroup[] = [];
+    try {
+      forks = detectDashboardForks(pgListKeys.filter(k => !retiredKeys.has(k)));
+      for (const group of forks) {
+        logger.warn('[DASHBOARD-FORK] clé(s) forkée(s) détectée(s) (#3482) — writers potentiellement divergents', {
+          canonical: group.canonical,
+          forks: group.forks,
+          canonicalPresent: group.canonicalPresent
+        });
+      }
+    } catch (err) {
+      logger.debug('Détection de forks impossible (non bloquant)', {
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+    const forkNote = forks.length > 0
+      ? ` — 🚨 ${forks.length} famille(s) forkée(s) [FORK #3482]: ${forks
+          .map(g => `${g.canonical}${g.canonicalPresent ? '' : ' (canonique ABSENT)'} ← ${g.forks.join(', ')}`)
+          .join(' | ')}. Le même dashboard est lisible sous plusieurs clés : RELIRE le canonique avant d'agir sur un fork, et remède = roosync_dashboard merge (le rapport de merge dit si le contenu du fork est déjà contenu dans le canonique).`
+      : '';
+
+    return {
+      success: true,
+      action: 'list',
+      key: '',
+      type: '',
+      request: requestEcho,
+      dashboards: summaries,
+      ...(forks.length > 0 ? { forks } : {}),
+      message: `${summaries.length} dashboard(s) trouvé(s) [source: PG]${cleanupNote}${forkNote}`
+    };
+  }
 
   const dir = getDashboardsDir();
   try {

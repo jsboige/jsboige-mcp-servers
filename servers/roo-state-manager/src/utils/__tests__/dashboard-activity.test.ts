@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, DEFAULT_ACTIVITY_THRESHOLD_MS } from '../dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, DEFAULT_ACTIVITY_THRESHOLD_MS } from '../dashboard-activity.js';
 
 describe('dashboard-activity', () => {
 	describe('extractMachineActivity', () => {
@@ -258,6 +258,58 @@ describe('dashboard-activity', () => {
 			expect(result.onlineMachines).toContain('myia-po-2024'); // overridden
 			expect(result.unknownMachines).toHaveLength(0);
 			expect(result.overrides).toHaveLength(2);
+		});
+	});
+
+	describe('renderDashboardActivityMarkdown (#4131 G-B lot 2 B4)', () => {
+		it('should render headers extractMachineActivity parses identically to a file', () => {
+			const dashboard = {
+				status: { markdown: '# Status section\nsome status text' },
+				intercom: {
+					messages: [
+						{
+							timestamp: '2026-10-14T18:22:31.000Z',
+							content: 'Cycle done',
+							author: { machineId: 'myia-po-2024', workspace: 'CoursIA' },
+						},
+						{
+							timestamp: '2026-10-14T18:25:02.500Z',
+							content: 'Ack',
+							author: { machineId: 'myia-po-2025', workspace: 'CoursIA-2' },
+						},
+					],
+				},
+			};
+
+			const rendered = renderDashboardActivityMarkdown(dashboard);
+			const activity = extractMachineActivity(rendered);
+
+			expect(activity.size).toBe(2);
+			expect(activity.get('myia-po-2024')).toBe('2026-10-14T18:22:31.000Z');
+			expect(activity.get('myia-po-2025')).toBe('2026-10-14T18:25:02.500Z');
+		});
+
+		it('should keep the most recent timestamp per machine across dashboards', () => {
+			const older = {
+				status: { markdown: '' },
+				intercom: { messages: [{ timestamp: '2026-10-13T08:00:00.000Z', content: 'x', author: { machineId: 'myia-ai-01', workspace: 'CoursIA' } }] },
+			};
+			const newer = {
+				status: { markdown: '' },
+				intercom: { messages: [{ timestamp: '2026-10-14T09:30:00.000Z', content: 'y', author: { machineId: 'myia-ai-01', workspace: 'roo-extensions' } }] },
+			};
+
+			const activity = extractMachineActivity([
+				renderDashboardActivityMarkdown(older),
+				renderDashboardActivityMarkdown(newer),
+			]);
+
+			expect(activity.get('myia-ai-01')).toBe('2026-10-14T09:30:00.000Z');
+		});
+
+		it('should produce an empty activity map for a dashboard without messages', () => {
+			const dashboard = { status: { markdown: '# empty' }, intercom: { messages: [] } };
+			expect(extractMachineActivity(renderDashboardActivityMarkdown(dashboard)).size).toBe(0);
 		});
 	});
 });

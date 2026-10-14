@@ -98,6 +98,14 @@ describe('NullUnifiedStoreReader — silent no-op contract', () => {
     expect(r.isNull()).toBe(true);
   });
 
+  test('listRooSyncDashboardKeys(any) returns [] (#4131 G-B lot 2 B4)', async () => {
+    // Null contract: never a throw, never a bogus "no dashboards" signal —
+    // the store wrapper checks isNull() BEFORE calling, an [] here would be a
+    // valid "reachable, no rows" answer if it leaked through.
+    const r = new NullUnifiedStoreReader();
+    expect(await r.listRooSyncDashboardKeys()).toEqual([]);
+  });
+
   test('multiple Null instances are independent', async () => {
     // Null object pattern: each `new` creates a fresh instance, no shared state.
     const a = new NullUnifiedStoreReader();
