@@ -65,6 +65,19 @@ if ($skCheck) {
     Write-Host "  ✓ Dependencies installed" -ForegroundColor Green
 }
 
+# 3b. Venv dédié markitdown (#3411) — markitdown-mcp exige mcp>=2.1.1, le venv
+# principal reste sous mcp<2 (semantic-kernel 1.41). Serveur stdio séparé :
+# aucune bibliothèque partagée, l'isolement ne coûte rien à l'exécution.
+$MarkitdownVenv = "$SkAgentDir\venv-markitdown"
+if (-not $SkipVenv) {
+    if (-not (Test-Path $MarkitdownVenv)) {
+        Write-Host "  Creating venv-markitdown..." -ForegroundColor Cyan
+        python -m venv $MarkitdownVenv
+    }
+    & "$MarkitdownVenv\Scripts\pip.exe" install -q -r "$SkAgentDir\requirements-markitdown.txt"
+    Write-Host "  ✓ venv-markitdown ready (markitdown MCP)" -ForegroundColor Green
+}
+
 # 4. Créer la config si nécessaire
 if (-not $SkipConfig) {
     Write-Host "[4/5] Setting up configuration..." -ForegroundColor Yellow

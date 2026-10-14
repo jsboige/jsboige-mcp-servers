@@ -1,0 +1,8 @@
+# Dedicated venv for the markitdown MCP server (venv-markitdown/) — #3411.
+# Kept OUT of requirements.txt: markitdown-mcp needs mcp>=2.1.1 while the main
+# venv runs semantic-kernel 1.41 (pins mcp<2). The MCP server is a stdio
+# subprocess, so this isolation costs nothing at runtime.
+# PyPI has no stable release yet — 0.0.1a7 exposes the convert_to_markdown
+# tool (handshake-verified); the prompts-only lookalike markitdown-mcp-server
+# does NOT (list_tools -> []).
+markitdown-mcp==0.0.1a7
