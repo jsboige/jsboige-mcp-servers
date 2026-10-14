@@ -57,6 +57,47 @@ export function getDashboardPgReader(): IUnifiedStoreReader | null {
 }
 
 /**
+ * #4131 G-B lot 2 — true when the dashboard write-primary gate is on: PG is
+ * written FIRST and the GDrive file becomes a bounded best-effort mirror.
+ *
+ * Mirrors isChannelPgPrimary (roosync-channel-write.ts) exactly, including the
+ * Null-writer guard: UNIFIED_STORE_DUAL_WRITE=1 is required because
+ * writer-factory only builds a real PgUnifiedStoreWriter under that flag —
+ * without it the writer is the Null writer whose syncRooSyncDashboard is a
+ * silent no-op, a PG_PRIMARY gate on it would report success while nothing
+ * landed (review #1030, same trap as the channel).
+ */
+export function isDashboardPgPrimary(): boolean {
+  return process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY === '1'
+    && process.env.UNIFIED_STORE_DUAL_WRITE === '1'
+    && !!process.env.UNIFIED_STORE_PG_URL;
+}
+
+/**
+ * #4131 G-B lot 2 — same read as readDashboardFromPg, WITHOUT the
+ * UNIFIED_STORE_DASHBOARD_READ_PG gate. For internal decision inputs of the
+ * write path (condensation delta anchor, post-write store verification) on a
+ * host whose READ gate is still off but whose write side is PG-primary: the
+ * write path already talks to PG through the dual-write, the READ_PG gate
+ * only decides which surface serves FLEET reads (same rationale as the #3782
+ * guard-a probe). Returns null when the write-half prerequisites are absent,
+ * PG fails, or the key has no row.
+ */
+export async function readDashboardFromPgUngated(key: string): Promise<Dashboard | null> {
+  if (!isDashboardPgPrimary()) return null;
+  try {
+    const reader = getUnifiedStoreReader();
+    if (reader.isNull()) return null;
+    const result = await reader.getRooSyncDashboard(key);
+    if (!result) return null;
+    return mapRowsToDashboard(result.dashboard, result.messages);
+  } catch (error) {
+    logger.warn('[dashboard-pg] ungated read failed — caller falls back', { key, error: String(error) });
+    return null;
+  }
+}
+
+/**
  * Split a dashboard key ('machine-foo' | 'workspace-Bar' | 'global') into the
  * machine_id / workspace columns. Mirrors buildDashboardKey's strip rules —
  * the stored columns are informational (type queries), the key stays the
