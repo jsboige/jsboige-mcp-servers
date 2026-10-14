@@ -74,6 +74,7 @@ import {
   readClaudeSettingsFile,
   isAllowedKeyPath,
   findLatestClaudeSettingsSnapshot,
+  getPath,
 } from './ClaudeSettingsService.js';
 import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 
@@ -1159,8 +1160,57 @@ Recette pour atteindre l'état « confirmé » vu du coordinateur :
       return { status: 'unreadable', detail: `settings.json local ${read.state} — apply requis avant confirmation` };
     }
 
+    const mode = record.canon.mode;
     const observed = hashProjection(this.observedOverCanonScope(record, machine, read.settings));
     const expected = this.canonHashForMachine(record, machine);
+
+    // #4185 défaut 1 — `confirm` honore le MODE du canon. En `enforce-value` le
+    // critère reste l'égalité stricte de valeur (observed === expected). En
+    // `ensure-present`, `apply` PRÉSERVE délibérément une valeur locale divergente
+    // (ClaudeSettingsService : « présent localement — préservé (ensure-present) ») :
+    // exiger l'égalité de valeur rendrait les deux prédicats insatisfaisables
+    // ensemble (mesuré sur la campagne hc-claude-settings-2026.10.11-1 — cinq lanes
+    // bloquées en `drifted` avec 6 clés conformes au caractère près sauf `model`).
+    // Le critère aligné sur le mode est la PRÉSENCE de chaque chemin canon
+    // (non-exempté) : une clé absente = apply requis ; présente = choix machine
+    // préservé, la campagne ne peut pas exiger sa valeur sans renier son mode.
+    if (mode === 'ensure-present') {
+      const exceptions = record.exceptions[machine] || [];
+      const exempt = new Set(exceptions);
+      const missing: string[] = [];
+      for (const path of Object.keys(record.canon.keys)) {
+        if (exempt.has(path)) continue;
+        if (getPath(read.settings, path) === undefined) missing.push(path);
+      }
+      if (missing.length === 0) {
+        await this.writeObservation(id, {
+          kind: 'confirm',
+          machine,
+          at: this.now().toISOString(),
+          canonHash: record.canon.hash,
+          observedHash: observed,
+          source: 'live-read',
+        });
+        return {
+          status: 'confirmed',
+          observedHash: observed,
+          detail: `chemins canon tous présents (mode ensure-present — valeurs locales préservées par apply)`,
+        };
+      }
+      await this.writeObservation(id, {
+        kind: 'failed',
+        machine,
+        at: this.now().toISOString(),
+        reason: `chemins canon absents (ensure-present) : ${missing.join(', ')}`,
+        observedHash: observed,
+        claimed: !!options.claimedHash,
+      });
+      return {
+        status: 'mismatch',
+        observedHash: observed,
+        detail: `chemins canon absents (ensure-present) : ${missing.join(', ')} — apply requis pour les poser`,
+      };
+    }
 
     if (observed === expected) {
       await this.writeObservation(id, {
@@ -1211,6 +1261,33 @@ Recette pour atteindre l'état « confirmé » vu du coordinateur :
 
   // ----------------------------------------------------------------- status
 
+  /**
+   * #4185 — prédicat d'ALIGNEMENT conscient du mode, partagé par confirm,
+   * status et remind (source unique : les trois vues ne peuvent pas diverger).
+   * `ensure-present` : aligné = chaque chemin canon non-exempté est PRÉSENT
+   * (apply préserve les valeurs locales — l'égalité de valeur n'est pas le
+   * critère du mode). `enforce-value` : égalité stricte de la projection.
+   * Retourne [aligné, chemins manquants].
+   */
+  private alignmentForMode(
+    record: HarmonizationCampaignRecord,
+    machine: string,
+    observedProjection: Record<string, unknown>,
+    hashMatches: boolean
+  ): { aligned: boolean; missing: string[] } {
+    if (record.canon.mode !== 'ensure-present') {
+      return { aligned: hashMatches, missing: [] };
+    }
+    const exceptions = record.exceptions[machine] || [];
+    const exempt = new Set(exceptions);
+    const missing: string[] = [];
+    for (const path of Object.keys(record.canon.keys)) {
+      if (exempt.has(path)) continue;
+      if (observedProjection[path] === undefined) missing.push(path);
+    }
+    return { aligned: missing.length === 0, missing };
+  }
+
   private disjointState(
     confirmationState: MachineCampaignStatus['confirmationState'],
     alignment: MachineCampaignStatus['alignment']
@@ -1260,8 +1337,17 @@ Recette pour atteindre l'état « confirmé » vu du coordinateur :
       } else if (read.state === 'missing') {
         alignment = 'missing';
       } else {
-        const observed = hashProjection(this.observedOverCanonScope(record, machine, read.settings));
-        alignment = observed === this.canonHashForMachine(record, machine) ? 'aligned' : 'drifted';
+        const observedProjection = this.observedOverCanonScope(record, machine, read.settings);
+        const observed = hashProjection(observedProjection);
+        // #4185 : alignment conscient du mode (même prédicat que confirm)
+        const localAlign = this.alignmentForMode(
+          record, machine, observedProjection,
+          observed === this.canonHashForMachine(record, machine)
+        );
+        alignment = localAlign.aligned ? 'aligned' : 'drifted';
+        if (!localAlign.aligned && localAlign.missing.length > 0) {
+          alignmentDetail = `chemins canon absents (ensure-present) : ${localAlign.missing.join(', ')}`;
+        }
       }
     } else {
       const snap = await findLatestClaudeSettingsSnapshot(this.deps.sharedStatePath, machine);
@@ -1274,7 +1360,13 @@ Recette pour atteindre l'état « confirmé » vu du coordinateur :
           if (v !== undefined) restricted[p] = v;
         }
         const observed = hashProjection(restricted);
-        if (observed === this.canonHashForMachine(record, machine)) {
+        // #4185 : alignment conscient du mode (même prédicat que confirm — en
+        // ensure-present, une valeur divergente mais présente n'est PAS du drift)
+        const remoteAlign = this.alignmentForMode(
+          record, machine, restricted,
+          observed === this.canonHashForMachine(record, machine)
+        );
+        if (remoteAlign.aligned) {
           alignment = 'aligned';
           if (confirmation && snap.snapshot.collectedAt && confirmation.confirmedAt && snap.snapshot.collectedAt < confirmation.confirmedAt) {
             alignment = 'snapshot-stale';
@@ -1282,7 +1374,9 @@ Recette pour atteindre l'état « confirmé » vu du coordinateur :
           }
         } else {
           alignment = 'drifted';
-          alignmentDetail = `snapshot du ${snap.snapshot.collectedAt} diverge du canon`;
+          alignmentDetail = remoteAlign.missing.length > 0
+            ? `snapshot du ${snap.snapshot.collectedAt} — chemins canon absents (ensure-present) : ${remoteAlign.missing.join(', ')}`
+            : `snapshot du ${snap.snapshot.collectedAt} diverge du canon`;
         }
       } else {
         alignment = 'no-snapshot';

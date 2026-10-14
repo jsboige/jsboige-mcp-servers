@@ -662,12 +662,24 @@ export async function applyCanonToFile(
   }
 
   if (!wouldWrite) {
-    // Rien à écrire — idempotent
+    // Rien à écrire — idempotent. #4185 défaut 2 : la vérification n'est PAS
+    // fabriquée ici (`observedHash` recopié depuis `expectedHash` ne prouve rien) —
+    // on RELIT le fichier et on hashe la projection réellement observée, comme sur
+    // le chemin d'écriture. Sur un no-op l'observé devrait égaler l'attendu ; un
+    // écart signe une falsification on-disk entre lectures (ex. test falsifiable
+    // ai-01 : valeur modifiée sur disque puis apply rendait PASS).
+    const reread = await readClaudeSettingsFile(settingsPath);
+    const noopObservedHash = hashProjection(projectSettings(reread.settings, options.exemptedPaths || []));
     return {
       applied: true,
       changes,
       skipped,
-      verification: { performed: true, success: true, observedHash: expectedHash, expectedHash },
+      verification: {
+        performed: true,
+        success: noopObservedHash === expectedHash,
+        observedHash: noopObservedHash,
+        expectedHash,
+      },
     };
   }
 
