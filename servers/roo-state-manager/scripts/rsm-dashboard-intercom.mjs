@@ -109,6 +109,11 @@ const client = new pg.Client({
   connectionString: process.env.UNIFIED_STORE_PG_URL,
   // No ssl option ON PURPOSE: SSL comes from the connection string
   // (sslmode=…), the single source the server itself uses.
+  // Bounded connect (dogfood review #4085, 14/10): a hung PG TCP connect
+  // would hang the CLI and stall the listener's poll — fail-open must be
+  // bounded in TIME too, not just in outcome. Same budget as the store's
+  // own pool (connectionTimeoutMillis default, PgUnifiedStoreReader).
+  connectionTimeoutMillis: 5000,
 });
 
 try {
