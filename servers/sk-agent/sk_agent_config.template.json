@@ -221,9 +221,10 @@
       "allowed_capabilities": ["shell", "repo_read"]
     },
     {
+      "_comment": "#3411: dedicated venv — markitdown-mcp 0.0.1a7 requires mcp>=2.1.1 while semantic-kernel 1.41 pins mcp<2, so it cannot live in the main venv. The MCP server is a separate stdio process (no library sharing); deploy-sk-agent.ps1 provisions venv-markitdown/ from requirements-markitdown.txt.",
       "id": "markitdown",
       "description": "Document conversion (PDF/DOCX/XLSX/PPTX/HTML/images) to Markdown via Microsoft markitdown",
-      "command": "markitdown-mcp",
+      "command": "INSTALLATION_PATH/venv-markitdown/Scripts/markitdown-mcp.exe",
       "args": [],
       "risk_class": "read",
       "allowed_capabilities": ["document_text", "document_visual"]

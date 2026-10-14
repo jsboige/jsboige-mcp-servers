@@ -524,3 +524,20 @@ def test_residual_placeholder_in_untouched_mcp_field_refused():
         assert "VENV_PATH" not in mcp["command"]
         assert "INSTALLATION_PATH" not in mcp["args"][0]
         assert mcp["cwd"] == "INSTALLATION_PATH/subdir"
+
+
+def test_markitdown_mcp_declares_dedicated_venv_path():
+    # #3411: the bare "markitdown-mcp" command resolved nowhere (not on PATH,
+    # not in the venv, not in requirements) — 6 agents silently lost the tool.
+    # The fix pins a dedicated venv: markitdown-mcp needs mcp>=2.1.1 while the
+    # main venv stays under mcp<2 (semantic-kernel 1.41). Guard both halves:
+    # the shipped declaration AND the provisioning pin that builds the venv.
+    template = json.loads(
+        (SK_AGENT_DIR / "sk_agent_config.template.json").read_text(encoding="utf-8")
+    )
+    mcp = next(m for m in template["mcps"] if m["id"] == "markitdown")
+    assert mcp["command"] == (
+        "INSTALLATION_PATH/venv-markitdown/Scripts/markitdown-mcp.exe"
+    ), mcp["command"]
+    pin = (SK_AGENT_DIR / "requirements-markitdown.txt").read_text(encoding="utf-8")
+    assert "markitdown-mcp==0.0.1a7" in pin, pin
