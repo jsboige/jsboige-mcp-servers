@@ -186,9 +186,12 @@ const unserialized = !lockOwned;
 // Review item 2 (#3782): readDashboardFile is the CHOKE POINT — a retired key
 // is invisible in both halves, and under the host read gate it is PG-first.
 // (The first head's direct readDashboardFromPg bypassed the retirement guard.)
-let dashboard = await readDashboardFile(key);
-const base = dashboard ? 'file' : 'created';
-if (!dashboard) dashboard = createEmptyDashboard('machine', key, author);
+// G-C step 2 (APPROVE ms#1425 non-blocking note): the read also lives INSIDE
+// the try/finally below — a throwing read (retirement lookup, PG or GDrive
+// read error) used to kill the process still holding the lock, leaking it to
+// its 30 s TTL; under the try it fails with the lock released.
+let dashboard;
+let base = 'created';
 
 // 4 chars in [0-9a-z] — parity with the PS `Get-Random` over 48..57 + 97..122.
 let rand = '';
@@ -202,6 +205,12 @@ for (let i = 0; i < 4; i++) {
 let posted = false;
 let output = null;
 try {
+  dashboard = await readDashboardFile(key);
+  if (dashboard) {
+    base = 'file';
+  } else {
+    dashboard = createEmptyDashboard('machine', key, author);
+  }
   const message = buildListenerEscalationMessage({ machineId, content, nowIso: new Date().toISOString(), rand });
   const next = nextDashboardState(dashboard, message);
   const markdown = buildDashboardMarkdown(next);
