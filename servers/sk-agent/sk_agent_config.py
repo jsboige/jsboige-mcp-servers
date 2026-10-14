@@ -62,6 +62,13 @@ DEFAULT_MAX_RECURSION_DEPTH = 2
 # couples the call_agent wait_for ceiling to it (see _effective_call_timeout).
 DEFAULT_REQUEST_TIMEOUT_S = 300.0
 
+# #4085: separate bound for the TCP/TLS connect phase. A scalar httpx timeout
+# shares one budget across phases, so a black-holed connect (unreachable hub,
+# e.g. a LAN endpoint from an off-LAN seat) can hold the whole window with no
+# error until the budget expires; connect bounded separately fails fast
+# instead. Overridable per entry via ModelConfig.connect_timeout_s.
+DEFAULT_MODEL_CONNECT_TIMEOUT_S = 5.0
+
 
 def can_spawn_recursive_agent(
     current_depth: int | None = None,
@@ -218,6 +225,9 @@ class ModelConfig:
     # request_timeout_s: None → DEFAULT_REQUEST_TIMEOUT_S (300, #1587) and the
     # call_agent ceilings stay uncoupled; a declared value couples them.
     request_timeout_s: float | None = None  # OpenAI client budget (seconds)
+    # #4085: None → DEFAULT_MODEL_CONNECT_TIMEOUT_S. Bounds only the TCP/TLS
+    # connect phase; read/write/pool keep the request budget above.
+    connect_timeout_s: float | None = None
     max_tokens: int | None = None  # None → global sampling.max_tokens
     extra_body: dict[str, Any] = field(default_factory=dict)  # vLLM passthrough
 
@@ -236,6 +246,7 @@ class ModelConfig:
             context_window=data.get("context_window", _infer_context_window(data)),
             system_prompt=data.get("system_prompt", ""),
             request_timeout_s=data.get("request_timeout_s"),
+            connect_timeout_s=data.get("connect_timeout_s"),
             max_tokens=data.get("max_tokens"),
             extra_body=dict(data.get("extra_body") or {}),
         )
@@ -258,6 +269,8 @@ class ModelConfig:
             d["system_prompt"] = self.system_prompt
         if self.request_timeout_s is not None:
             d["request_timeout_s"] = self.request_timeout_s
+        if self.connect_timeout_s is not None:
+            d["connect_timeout_s"] = self.connect_timeout_s
         if self.max_tokens is not None:
             d["max_tokens"] = self.max_tokens
         if self.extra_body:

@@ -104,7 +104,11 @@ class TestNonRegressionDefaults:
         manager = _manager()
         _run(manager._init_model_pool())
         client = manager._openai_clients["m-std"]
-        assert client.timeout == DEFAULT_REQUEST_TIMEOUT_S == 300.0
+        # #4085: the scalar timeout became an httpx.Timeout — the request
+        # phases (read/write/pool) still carry the 300 s budget.
+        assert client.timeout.read == DEFAULT_REQUEST_TIMEOUT_S == 300.0
+        assert client.timeout.write == 300.0
+        assert client.timeout.pool == 300.0
 
     def test_global_max_tokens_and_sampling_extra_body_without_field(self):
         manager = _manager()
@@ -145,12 +149,15 @@ class TestClientTimeoutPerModel:
     def test_declared_timeout_reaches_openai_client(self):
         manager = _manager()
         _run(manager._init_model_pool())
-        assert manager._openai_clients["m-slow"].timeout == 600.0
+        # #4085: request phases carry the declared 600 s budget
+        assert manager._openai_clients["m-slow"].timeout.read == 600.0
+        assert manager._openai_clients["m-slow"].timeout.write == 600.0
+        assert manager._openai_clients["m-slow"].timeout.pool == 600.0
 
     def test_default_model_unaffected_by_other_model_declaration(self):
         manager = _manager()
         _run(manager._init_model_pool())
-        assert manager._openai_clients["m-std"].timeout == 300.0
+        assert manager._openai_clients["m-std"].timeout.read == 300.0
 
 
 # ---------------------------------------------------------------------------

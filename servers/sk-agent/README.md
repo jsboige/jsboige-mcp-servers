@@ -218,13 +218,14 @@ v1 configs (without `config_version`) are auto-migrated: each model becomes an a
 
 ### Per-model budget overrides (#3797)
 
-A model entry may declare three OPTIONAL fields — absent fields keep the
+A model entry may declare four OPTIONAL fields — absent fields keep the
 current behaviour exactly (no ceiling change, global budget, sampling-only
 `extra_body`):
 
 | Field | Default | Effect |
 |-------|---------|--------|
 | `request_timeout_s` | `null` (= 300 s) | OpenAI client timeout for this model. Declaring it **also couples** the `call_agent` wait_for ceiling (see Timeout chain). |
+| `connect_timeout_s` | `null` (= 5 s) | #4085 — separate bound for the TCP/TLS **connect phase only** (`read`/`write`/`pool` keep the request budget above). An unreachable endpoint (e.g. a LAN-only hub from an off-LAN seat) fails within this bound instead of holding the whole window with no error. |
 | `max_tokens` | `null` (= global `sampling.max_tokens`, 4096) | Default output budget for the model. Precedence: per-call / `agent_spec` sampling override > model default > global. |
 | `extra_body` | `{}` | Generic vLLM passthrough merged into the request `extra_body`. Model keys override sampling-derived keys (`top_k`/`min_p`/`repetition_penalty` — per-model is more specific than server-wide); `chat_template_kwargs` is deep-merged, so the code-injected `enable_thinking` keeps winning on its key without clobbering other keys. |
 
@@ -281,7 +282,11 @@ MCP caller (client-side tool timeout)          ← governs the WHOLE tool call
    (default 300 s, `#1587`: openai-python's own default of 600 s + 2 retries
    would outlive every tool ceiling). `max_retries=1`: a single attempt must
    fit under the wait_for ceiling; a pathological retry may be cut by it —
-   unchanged from #1587.
+   unchanged from #1587. Since #4085 the client timeout is an
+   `httpx.Timeout` with `connect` bounded separately (default 5 s,
+   `connect_timeout_s` override) while `read`/`write`/`pool` carry the
+   request budget — a black-holed connect (unreachable hub) fails fast
+   instead of holding the whole scalar window.
 2. **`call_agent` wait_for (tiers)** — the `timeout` parameter (default
    120 s, `0` = no limit); `review_pr` raises it per tier (60/180/300 s).
    **Coupling (#3797):** when the resolved model DECLARES
@@ -289,6 +294,14 @@ MCP caller (client-side tool timeout)          ← governs the WHOLE tool call
    `max(caller timeout, request_timeout_s + 30 s)` — the 30 s margin covers
    the pre-LLM work sharing the same window. Undeclared models keep the
    legacy ceilings untouched (non-regression).
+   **Freeze watchdog (#4085):** `wait_for` cannot fire while the event loop
+   itself is frozen — measured: a sync handler block outruns its ceiling and
+   the call still "succeeds"; a permanent connect freeze returns nothing at
+   all (the silent-deaf-spawn signature). Each call arms
+   `faulthandler.dump_traceback_later(ceiling + 5 s, exit=False)`; a normal
+   completion cancels it, so a stack dump on stderr means the result had not
+   come back by ceiling + grace — the watchdog thread auto-documents WHERE
+   the process is frozen for the next occurrence.
 3. **MCP transport** — no server-side ceiling in this repo: stdio is bounded
    only by the caller's client-side MCP timeout; streamable-http (uvicorn)
    sets no request timeout either. **The caller must allow the full chain**:

@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import faulthandler
 import functools
 import json
 import logging
@@ -120,6 +121,7 @@ from sk_agent_config import (
     SK_AGENT_DEPTH,
     DEFAULT_MAX_RECURSION_DEPTH,
     DEFAULT_REQUEST_TIMEOUT_S,
+    DEFAULT_MODEL_CONNECT_TIMEOUT_S,
     can_spawn_recursive_agent,
     expand_env_placeholders,
     is_self_referential_mcp,
@@ -211,6 +213,37 @@ CALL_CEILING_MARGIN_S = 30.0
 # Overridable per entry via McpConfig.connect_timeout_s.
 DEFAULT_MCP_CONNECT_TIMEOUT_S = 30.0
 _MCP_CLOSE_TIMEOUT_S = 10.0
+
+# #4085: grace added to the call_agent ceiling before the faulthandler
+# watchdog dumps the frozen stack. A healthy timeout returns its error dict
+# well before ceiling + grace, so a dump reaching stderr means the event loop
+# itself is frozen (wait_for cannot fire) — the "silent second call" signature
+# observed on a TCP connect to an unreachable hub from an off-LAN seat.
+_FAULT_DUMP_GRACE_S = 5.0
+# Depth counter: one faulthandler timer is active process-wide (re-arming
+# replaces the pending deadline), so concurrent call_agents share it — the
+# timer stays armed while ANY call is in flight and is cancelled only when
+# the last one completes.
+_FAULT_DUMP_DEPTH = 0
+
+
+def _arm_freeze_dump(timeout_s: float) -> None:
+    """Schedule a full-stack dump for a call that outruns its ceiling.
+
+    faulthandler's watchdog thread fires even when the event loop itself is
+    frozen, auto-documenting WHERE the process is stuck instead of going
+    silently deaf for every subsequent call.
+    """
+    global _FAULT_DUMP_DEPTH
+    _FAULT_DUMP_DEPTH += 1
+    faulthandler.dump_traceback_later(timeout_s + _FAULT_DUMP_GRACE_S, exit=False)
+
+
+def _disarm_freeze_dump() -> None:
+    global _FAULT_DUMP_DEPTH
+    _FAULT_DUMP_DEPTH = max(0, _FAULT_DUMP_DEPTH - 1)
+    if _FAULT_DUMP_DEPTH == 0:
+        faulthandler.cancel_dump_traceback_later()
 # How long a failed plugin stays refused before a retry is allowed. Long
 # enough that agent creations inside one session stop paying the connect
 # budget, short enough that an operator fix (installing the binary) is
@@ -621,13 +654,30 @@ class SKAgentManager:
                 # so a raised budget is not silently cancelled at a lower tool
                 # ceiling — while undeclared models keep the exact legacy
                 # behaviour (non-regression).
+                request_budget_s = (
+                    model_cfg.request_timeout_s
+                    if model_cfg.request_timeout_s is not None
+                    else DEFAULT_REQUEST_TIMEOUT_S
+                )
+                # #4085: bound the TCP/TLS connect phase separately from the
+                # request budget. A scalar timeout shares one budget across
+                # all phases, so a black-holed connect (unreachable hub from
+                # an off-LAN seat) can hold the whole window; with connect
+                # bounded, an unreachable endpoint fails within connect
+                # bounds instead — while read/write/pool keep the legacy
+                # budget above (non-regression).
                 client = AsyncOpenAI(
                     api_key=api_key,
                     base_url=model_cfg.base_url,
-                    timeout=(
-                        model_cfg.request_timeout_s
-                        if model_cfg.request_timeout_s is not None
-                        else DEFAULT_REQUEST_TIMEOUT_S
+                    timeout=httpx.Timeout(
+                        connect=(
+                            model_cfg.connect_timeout_s
+                            if model_cfg.connect_timeout_s is not None
+                            else DEFAULT_MODEL_CONNECT_TIMEOUT_S
+                        ),
+                        read=request_budget_s,
+                        write=request_budget_s,
+                        pool=request_budget_s,
                     ),
                     max_retries=1,
                 )
@@ -1833,7 +1883,15 @@ class SKAgentManager:
 
         try:
             if effective_timeout is not None and effective_timeout > 0:
-                result = await asyncio.wait_for(_execute(), timeout=effective_timeout)
+                # #4085: wait_for cannot fire while the loop is frozen — arm
+                # the faulthandler watchdog alongside the normal ceiling. The
+                # dump only fires if the error has NOT come back by ceiling +
+                # grace (healthy timeouts cancel it in the finally below).
+                _arm_freeze_dump(effective_timeout)
+                try:
+                    result = await asyncio.wait_for(_execute(), timeout=effective_timeout)
+                finally:
+                    _disarm_freeze_dump()
             else:
                 result = await _execute()
 
