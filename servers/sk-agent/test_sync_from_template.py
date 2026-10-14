@@ -530,7 +530,8 @@ def test_markitdown_mcp_declares_dedicated_venv_path():
     # #3411: the bare "markitdown-mcp" command resolved nowhere (not on PATH,
     # not in the venv, not in requirements) — 6 agents silently lost the tool.
     # The fix pins a dedicated venv: markitdown-mcp needs mcp>=2.1.1 while the
-    # main venv stays under mcp<2 (semantic-kernel 1.41). Guard both halves:
+    # main venv stays under mcp<2 (sk_agent.py uses the mcp 1.x API,
+    # mcp.server.fastmcp, removed in 2.x). Guard both halves:
     # the shipped declaration AND the provisioning pin that builds the venv.
     template = json.loads(
         (SK_AGENT_DIR / "sk_agent_config.template.json").read_text(encoding="utf-8")

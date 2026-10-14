@@ -61,13 +61,14 @@ if ($skCheck) {
     Write-Host "  ✓ semantic-kernel already installed: $($skCheck.Version)" -ForegroundColor Green
 } else {
     Write-Host "  Installing semantic-kernel..." -ForegroundColor Cyan
-    & $pip install "semantic-kernel[mcp]>=1.39" "mcp>=1.7" "openai>=1.109" "Pillow>=10.0" "httpx>=0.27" "qdrant-client"
+    & $pip install "semantic-kernel[mcp]>=1.39" "mcp>=1.26,<2" "openai>=1.109" "Pillow>=10.0" "httpx>=0.27" "qdrant-client"
     Write-Host "  ✓ Dependencies installed" -ForegroundColor Green
 }
 
-# 3b. Venv dédié markitdown (#3411) — markitdown-mcp exige mcp>=2.1.1, le venv
-# principal reste sous mcp<2 (semantic-kernel 1.41). Serveur stdio séparé :
-# aucune bibliothèque partagée, l'isolement ne coûte rien à l'exécution.
+# 3b. Venv dédié markitdown (#3411) — markitdown-mcp exige mcp>=2.1.1 ; le venv
+# principal reste sous mcp<2 (sk_agent.py utilise l'API mcp 1.x,
+# mcp.server.fastmcp, retirée en 2.x — plafond explicite dans requirements.txt).
+# Serveur stdio séparé : aucune bibliothèque partagée, l'isolement ne coûte rien.
 $MarkitdownVenv = "$SkAgentDir\venv-markitdown"
 if (-not $SkipVenv) {
     # pip.exe (pas le répertoire) : un venv cassé en cours de création doit se refaire

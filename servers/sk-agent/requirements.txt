@@ -2,7 +2,11 @@
 # (e.g. win-cli) fail at plugin construction. Prod venv runs 1.41 (verified
 # unaffected); re-check dashed ids before any bump past 1.41. (roo-ext #1091)
 semantic-kernel[mcp]>=1.39
-mcp>=1.10
+# sk_agent.py uses the mcp 1.x API (mcp.server.fastmcp), removed in mcp 2.x.
+# Explicit ceiling: the previous open floor let pip evaluate mcp 2.3.0 and
+# only backtrack on pydantic (2.14.1 -> 2.13.5) — the 1.x pin held by
+# ricochet, not by constraint. (roo-ext dispatch c.22, follow-up ms#1427)
+mcp>=1.26,<2
 uvicorn>=0.30
 openai>=1.109
 Pillow>=10.0
