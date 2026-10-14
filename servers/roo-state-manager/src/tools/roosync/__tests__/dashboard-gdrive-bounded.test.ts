@@ -34,6 +34,8 @@ const {
   mockDualWriteSyncChecked,
   mockDualWriteDelete,
   mockWriteFile,
+  mockIsDashboardPgPrimary,
+  mockReadDashboardFromPgUngated,
 } = vi.hoisted(() => ({
   mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
   mockProbeHydration: vi.fn().mockResolvedValue({ kind: 'empty' }),
@@ -41,6 +43,10 @@ const {
   mockDualWriteSyncChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
   mockDualWriteDelete: vi.fn().mockResolvedValue(undefined),
   mockWriteFile: vi.fn(),
+  // #4131 G-B lot 2 — la porte write-primary, off par défaut (les tests du
+  // lot 1 épingle le chemin GDrive-first ; le lot 2 a son propre fichier).
+  mockIsDashboardPgPrimary: vi.fn().mockReturnValue(false),
+  mockReadDashboardFromPgUngated: vi.fn().mockResolvedValue(null),
 }));
 
 // La moitié GDrive passe par fs/promises — le mock ne remplace QUE writeFile
@@ -65,6 +71,9 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   releaseDashboardSharedLock: vi.fn().mockResolvedValue(undefined),
   readDashboardSharedLock: vi.fn().mockResolvedValue(null),
   fetchArchivedDashboardMessageIds: vi.fn().mockResolvedValue(null),
+  // #4131 G-B lot 2 — exports consommés par dashboard.ts.
+  isDashboardPgPrimary: mockIsDashboardPgPrimary,
+  readDashboardFromPgUngated: mockReadDashboardFromPgUngated,
 }));
 
 import { roosyncDashboard } from '../dashboard.js';
@@ -106,6 +115,8 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
     mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
     mockDualWriteSync.mockClear().mockResolvedValue(undefined);
     mockDualWriteSyncChecked.mockClear().mockResolvedValue({ ok: true, reason: 'written' });
+    mockIsDashboardPgPrimary.mockReset().mockReturnValue(false);
+    mockReadDashboardFromPgUngated.mockReset().mockResolvedValue(null);
 
     process.env.ROOSYNC_SHARED_PATH = tmpDir;
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
@@ -121,6 +132,7 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
     delete process.env.ROOSYNC_WORKSPACE_ID;
     delete process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS;
     delete process.env.UNIFIED_STORE_DASHBOARD_READ_PG;
+    delete process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY;
   });
 
   it('un writeFile qui ne rend jamais la main : append borné, publié sur PG seul, dégradation visible', async () => {
@@ -259,11 +271,18 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
 
   it('drift-guard statique : la borne câble les DEUX sites d\'écriture + la lecture incrémentale', async () => {
     const src = await readFile(sourcePath, 'utf8');
-    // Signal fs sur les deux writeFile + le readFile de l'incrément.
-    expect(src.match(/AbortSignal\.timeout\(writeTimeoutMs\)/g)?.length).toBe(3);
-    // La course borde les deux moitiés GDrive.
-    expect(src.match(/withWriteDeadline\(/g)?.length).toBe(2);
+    // Signal fs sur les writeFile (helper full-write + incrément append) + les
+    // DEUX readFile bornés (lecture incrémentale + lecture initiale, #4131
+    // G-B lot 2 : les 3 tentatives de readDashboardFromGdrive sont signalées).
+    expect(src.match(/AbortSignal\.timeout\(writeTimeoutMs\)/g)?.length).toBe(4);
+    // La course borde les DEUX moitiés GDrive de writeDashboardFile (miroir
+    // PG-primary + chemin nominal), la moitié incrémentale de l'append, et la
+    // boucle de lecture initiale (lot 2).
+    expect(src.match(/withWriteDeadline\(/g)?.length).toBe(4);
     // Le kill du verrou d'append est bien de courte durée : la borne existe.
     expect(src).toContain('UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS');
+    // #4131 G-B lot 2 — la porte PG-premier est câblée sur les deux writers,
+    // la vérification store et l'ancre de condensation.
+    expect(src.match(/isDashboardPgPrimary\(\)/g)?.length).toBe(4);
   });
 });

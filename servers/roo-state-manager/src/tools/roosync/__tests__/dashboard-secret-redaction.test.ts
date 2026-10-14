@@ -23,6 +23,10 @@ const { mockDualWriteDashboardSync, mockReadDashboardFromPg, mockProbeHydration 
 }));
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
+  // #4131 G-B lot 2 — exports consommés par dashboard.ts : gate OFF + ungated
+  // null par défaut (sémantique lot 1 inchangée pour ces suites).
+  isDashboardPgPrimary: vi.fn().mockReturnValue(false),
+  readDashboardFromPgUngated: vi.fn().mockResolvedValue(null),
     readDashboardFromPg: mockReadDashboardFromPg,
   probeDashboardJournalForHydration: mockProbeHydration,
     dualWriteDashboardSync: mockDualWriteDashboardSync,

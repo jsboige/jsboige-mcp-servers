@@ -1568,7 +1568,7 @@ async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
   // (requête tuée en vol, cf. ms#1414) et l'ENSEMBLE de la boucle est borné par
   // la même course que les moitiés d'écriture (gdriveWriteTimeoutMs : la borne
   // devient la durée max acceptée d'une opération GDrive, lecture incluse).
-  const readTimeoutMs = gdriveWriteTimeoutMs();
+  const writeTimeoutMs = gdriveWriteTimeoutMs();
   // Sentinelle : 'absent' (ENOENT — null légitime, la clé n'a pas de fichier)
   // doit rester distinguable de l'épuisement des retries (throw lastError).
   const ABSENT = Symbol('dashboard-file-absent');
@@ -1577,7 +1577,7 @@ async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
       try {
         return (await fs.readFile(filePath, {
           encoding: 'utf8',
-          signal: AbortSignal.timeout(readTimeoutMs)
+          signal: AbortSignal.timeout(writeTimeoutMs)
         })).replace(/\r\n/g, '\n');
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -1599,7 +1599,7 @@ async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
   try {
     content = await withWriteDeadline(
       attemptRead(),
-      readTimeoutMs,
+      writeTimeoutMs,
       `lecture GDrive du dashboard '${key}'`
     );
   } catch (err) {
