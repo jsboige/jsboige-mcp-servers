@@ -333,12 +333,13 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
   async updateRooSyncMessage(
     id: string,
     fields: RooSyncMessageUpdate
-  ): Promise<void> {
+  ): Promise<number> {
     const updates = PgUnifiedStoreWriter.ROOSYNC_MESSAGE_UPDATE_COLUMNS.filter(
       ([key]) => fields[key] !== undefined
     );
     // Nothing to update — skip before self-init (a no-op must not open a connection)
-    if (updates.length === 0) return;
+    if (updates.length === 0) return 0;
+    let updated = 0;
     await this.withRetry('updateRooSyncMessage', async () => {
       if (!this.pool) await this.init();
       if (!this.pool) throw new Error('Pool not initialized');
@@ -352,14 +353,16 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
           sets.push(`${column} = $${params.length}`);
         }
         params.push(id);
-        await client.query(
+        const result = await client.query(
           `UPDATE roosync_messages SET ${sets.join(', ')} WHERE id = $${params.length}`,
           params as never[]
         );
+        updated = result.rowCount ?? 0;
       } finally {
         client.release();
       }
     });
+    return updated;
   }
 
   /**

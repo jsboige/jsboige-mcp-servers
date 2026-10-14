@@ -26,7 +26,8 @@ import { existsSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'fs';
 // ─── Writer factory mock (module scope: vi.mock factories are hoisted) ──
 
 const mockInsertRooSyncMessage = vi.fn().mockResolvedValue(undefined);
-const mockUpdateRooSyncMessage = vi.fn().mockResolvedValue(undefined);
+// #4131 B9: returns rowCount (Promise<number>) — 0 means the UPDATE matched no row.
+const mockUpdateRooSyncMessage = vi.fn().mockResolvedValue(1);
 const mockDeleteRooSyncAttachment = vi.fn().mockResolvedValue(undefined);
 const mockPurgeArchivedRooSyncMessages = vi.fn().mockResolvedValue(0);
 
@@ -66,6 +67,7 @@ import {
   isChannelPgPrimary,
   insertRooSyncMessagePrimary,
   updateRooSyncMessagePrimary,
+  destroyRooSyncMessageInStore,
   purgeArchivedChannelMessages,
 } from '../roosync-channel-write.js';
 import { getChannelPgReader } from '../roosync-channel-read.js';
@@ -551,6 +553,39 @@ describe('roosync-channel-write helpers (failure contract)', () => {
   test('updateRooSyncMessagePrimary resolves false on PG failure', async () => {
     mockUpdateRooSyncMessage.mockRejectedValue(new Error('PG down'));
     await expect(updateRooSyncMessagePrimary('id', { body: 'x' })).resolves.toBe(false);
+  });
+
+  // #4131 B9 — the silent no-op UPDATE. Before the fix, an UPDATE whose WHERE id
+  // matched no row returned rowCount=0 with no error, and updateRooSyncMessagePrimary
+  // resolved true: markAsRead reported success while the PG mirror was never written.
+  // This is the drift that gates CHANNEL_READ_PG=1.
+  test('updateRooSyncMessagePrimary resolves false when the UPDATE matched 0 rows (#4131 B9)', async () => {
+    mockUpdateRooSyncMessage.mockResolvedValue(0);
+    await expect(updateRooSyncMessagePrimary('msg-missing', { status: 'read' })).resolves.toBe(false);
+  });
+
+  test('updateRooSyncMessagePrimary resolves true when the UPDATE matched ≥1 rows', async () => {
+    mockUpdateRooSyncMessage.mockResolvedValue(1);
+    await expect(updateRooSyncMessagePrimary('msg-1', { status: 'read' })).resolves.toBe(true);
+  });
+
+  // #4131 B9 follow-up (NanoClaw reserve, adopted by ai-01 c.6150740971): the
+  // destroy path had the same hole — the `destroyed_*` stamp UPDATE ran through
+  // writer.updateRooSyncMessage, whose rowCount was ignored. An UPDATE matching
+  // 0 rows (row absent from PG) resolved with no error, so destroy reported
+  // success while nothing was stamped. Same contract as the B9 fix above:
+  // false → the MessageManager caller falls back to the GDrive destroy path.
+  test('destroyRooSyncMessageInStore resolves false when the stamp UPDATE matched 0 rows (#4131 B9 destroy)', async () => {
+    mockDeleteRooSyncAttachment.mockResolvedValue(undefined);
+    mockUpdateRooSyncMessage.mockResolvedValue(0);
+    await expect(destroyRooSyncMessageInStore('msg-missing', 'test-reason', ['uuid-1'])).resolves.toBe(false);
+    expect(mockDeleteRooSyncAttachment).toHaveBeenCalledWith('uuid-1');
+  });
+
+  test('destroyRooSyncMessageInStore resolves true when the stamp UPDATE matched ≥1 rows', async () => {
+    mockDeleteRooSyncAttachment.mockResolvedValue(undefined);
+    mockUpdateRooSyncMessage.mockResolvedValue(1);
+    await expect(destroyRooSyncMessageInStore('msg-1', 'test-reason', [])).resolves.toBe(true);
   });
 
   test('purgeArchivedChannelMessages: non-positive window → no writer call', async () => {

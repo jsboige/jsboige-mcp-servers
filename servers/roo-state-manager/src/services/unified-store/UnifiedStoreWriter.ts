@@ -82,8 +82,13 @@ export interface IUnifiedStoreWriter {
   /**
    * RooSync channel — partial update: amend, attachment-ref refresh, and the
    * read / archived / destroyed state transitions (Phase A.2).
+   *
+   * Returns the number of rows actually updated (0 when the id does not exist).
+   * Callers on the PG-primary path MUST treat 0 as a failure: an UPDATE that
+   * matched no row leaves the mirror missing, which is indistinguishable from
+   * a PG outage from the caller's side (#4131 B9).
    */
-  updateRooSyncMessage(id: string, fields: RooSyncMessageUpdate): Promise<void>;
+  updateRooSyncMessage(id: string, fields: RooSyncMessageUpdate): Promise<number>;
   /**
    * RooSync channel — attachment payload as bytea (+ metadata, migration 007),
    * ON CONFLICT (id) DO NOTHING. Metadata fields are optional: legacy
@@ -228,7 +233,7 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
   async upsertMessages(_rows: MessageRow[]): Promise<void> {}
   async insertRooSyncMessage(_row: RooSyncMessageRow): Promise<void> {}
   async listRooSyncMessageIds(_sinceId: string): Promise<string[]> { return []; }
-  async updateRooSyncMessage(_id: string, _fields: RooSyncMessageUpdate): Promise<void> {}
+  async updateRooSyncMessage(_id: string, _fields: RooSyncMessageUpdate): Promise<number> { return 0; }
   async insertRooSyncAttachment(_row: RooSyncAttachmentRow): Promise<void> {}
   async deleteRooSyncAttachment(_uuid: string): Promise<number> { return 0; }
   async purgeArchivedRooSyncMessages(_retentionDays: number): Promise<number> { return 0; }
