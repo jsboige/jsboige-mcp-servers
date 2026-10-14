@@ -300,6 +300,54 @@ def preserve_local_agents(
     return config, preserved
 
 
+# MCP install-path placeholders (#4085): the template's self-inclusion
+# declaration ships symbolic paths that a blind sync left verbatim — every
+# seat's sk_agent tool then died at spawn (c.218 dogfood). The sync derives
+# the real paths from its own location: it lives beside sk_agent.py and its
+# venv/ by construction. Token -> relative dir under SCRIPT_DIR.
+MCP_PATH_PLACEHOLDERS = {
+    "VENV_PATH": "venv",      # -> <script_dir>/venv
+    "INSTALLATION_PATH": "",  # -> <script_dir>
+}
+
+
+def _replace_path_placeholders(value: str, script_dir: Path) -> str:
+    for token, rel in MCP_PATH_PLACEHOLDERS.items():
+        if token in value:
+            value = value.replace(token, str(script_dir / rel) if rel else str(script_dir))
+    return value
+
+
+def inject_mcp_install_paths(config: dict, script_dir: Path) -> int:
+    """Rewrite MCP install-path placeholders with script-dir-derived paths.
+
+    Covers command, args items and env values of every MCP declaration —
+    template-derived AND preserved-local: fleet seats synced before this fix
+    carry placeholder MCPs that preserve_local_agents copies verbatim, so the
+    cure must run over the final config, not just the template half. Returns
+    the number of rewritten fields (report only).
+    """
+    rewritten = 0
+
+    def _rewrite(value):
+        nonlocal rewritten
+        new = _replace_path_placeholders(value, script_dir)
+        if new != value:
+            rewritten += 1
+        return new
+
+    for mcp in config.get("mcps", []):
+        if isinstance(mcp.get("command"), str):
+            mcp["command"] = _rewrite(mcp["command"])
+        if isinstance(mcp.get("args"), list):
+            mcp["args"] = [_rewrite(a) if isinstance(a, str) else a for a in mcp["args"]]
+        if isinstance(mcp.get("env"), dict):
+            mcp["env"] = {
+                k: _rewrite(v) if isinstance(v, str) else v for k, v in mcp["env"].items()
+            }
+    return rewritten
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sync sk_agent_config.json from template")
     parser.add_argument("--dry-run", action="store_true", help="Print diff instead of writing")
@@ -356,6 +404,10 @@ def main():
     if args.local_additions:
         new_config = add_oracle_additions(new_config, local)
 
+    # MCP install-path cure (#4085): runs over the FINAL config (template +
+    # preserved-local + additions) so seats synced before the fix heal too.
+    rewritten_path_fields = inject_mcp_install_paths(new_config, SCRIPT_DIR)
+
     # Report changes
     template_models = {m["id"] for m in template.get("models", [])}
     local_models = {m["id"] for m in local.get("models", [])}
@@ -382,6 +434,11 @@ def main():
     if removed_a:
         print(f"  Removed: {sorted(removed_a)}")
 
+    print(
+        f"MCPs: {len(new_config.get('mcps', []))} declarations, "
+        f"{rewritten_path_fields} install-path placeholder field(s) rewritten"
+    )
+
     # Missing-keys guard (sk-agent thread 27/09): a template placeholder left in the
     # WRITTEN api_key is how the medium-key incident shipped — the old warning drowned
     # in stdout and the script exited 0. The file is still written (operators may fix
@@ -393,7 +450,18 @@ def main():
         if api_key.startswith("YOUR_") or api_key == "REPLACE_ME":
             missing.append(model)
 
-    exit_code = 1 if missing else 0
+    # Residual-placeholder tripwire (#4085): the rewriter covers command/args/
+    # env; a placeholder surfacing ANYWHERE else in an MCP declaration (future
+    # field, new shape) means the rewrite missed it — same refusal contract as
+    # missing keys: loud stderr banner, non-zero exit, config still written.
+    residual: list[tuple[str, str]] = []
+    for mcp in new_config.get("mcps", []):
+        dumped = json.dumps(mcp)
+        for token in MCP_PATH_PLACEHOLDERS:
+            if token in dumped:
+                residual.append((str(mcp.get("id", "?")), token))
+
+    exit_code = 1 if (missing or residual) else 0
     if missing:
         print("", file=sys.stderr)
         print("=" * 62, file=sys.stderr)
@@ -403,6 +471,15 @@ def main():
             hint = f" (provision {model['api_key_env']})" if model.get("api_key_env") else ""
             print(f"  - {model['id']}: api_key is a template placeholder{hint}", file=sys.stderr)
         print("Config still written — fix these keys or the server will 401 on them.", file=sys.stderr)
+        print("=" * 62, file=sys.stderr)
+    if residual:
+        print("", file=sys.stderr)
+        print("=" * 62, file=sys.stderr)
+        print("UNREPLACED MCP PATH PLACEHOLDERS — the generated config has dead MCP commands:", file=sys.stderr)
+        print("=" * 62, file=sys.stderr)
+        for mcp_id, token in residual:
+            print(f"  - {mcp_id}: {token} still present after rewrite", file=sys.stderr)
+        print("Config still written — fix these paths or the MCP will fail to spawn.", file=sys.stderr)
         print("=" * 62, file=sys.stderr)
 
     if args.dry_run:
