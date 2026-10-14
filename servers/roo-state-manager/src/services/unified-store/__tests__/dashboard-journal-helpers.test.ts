@@ -196,6 +196,13 @@ describe('G-C escalation CLI surface (drift-guard on the CLI source)', () => {
     // Bounded write (07/10 class): the fs write carries an abort signal
     expect(cli).toContain('AbortSignal.timeout');
     expect(cli).toContain('UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS');
+    // ORDER (re-review 11:04Z): the lock is acquired BEFORE the base read —
+    // presence alone let a pre-lock snapshot through (stale fold overwrite).
+    const lockCall = cliCode.indexOf('acquireAppendLock(key, holder)');
+    const readCall = cliCode.indexOf('readDashboardFile(key)');
+    expect(lockCall).toBeGreaterThan(-1);
+    expect(readCall).toBeGreaterThan(-1);
+    expect(lockCall).toBeLessThan(readCall);
   });
   it('reads the base via readDashboardFile, never readDashboardFromPg (review item 2, #3782)', () => {
     expect(cli).toContain('readDashboardFile');

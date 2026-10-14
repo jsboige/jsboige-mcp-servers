@@ -172,19 +172,23 @@ const machineId = machine.trim().toLowerCase();
 const key = buildDashboardKey('machine', machineId, '');
 const author = { machineId, workspace: 'listener' };
 
-// Review item 2 (#3782): readDashboardFile is the CHOKE POINT — a retired key
-// is invisible in both halves, and under the host read gate it is PG-first.
-// (The first head's direct readDashboardFromPg bypassed the retirement guard.)
-let dashboard = await readDashboardFile(key);
-const base = dashboard ? 'file' : 'created';
-if (!dashboard) dashboard = createEmptyDashboard('machine', key, author);
-
 // Review item 1 (verrou append, fail-open): #3761 escalations must never be
 // dropped, so an unacquired lock proceeds unserialized and says so. Holder
 // shape = CondenseLockInfo (same as the cross-post path).
 const holder = { machineId, workspace: 'listener', pid: process.pid, acquiredAt: new Date().toISOString() };
 const lockOwned = await acquireAppendLock(key, holder);
 const unserialized = !lockOwned;
+
+// Review item 1 (re-review 11:04Z): the base read runs UNDER the lock — a
+// pre-lock snapshot would fold on stale state and overwrite the previous
+// holder's message in the file half, the exact race the lock closes. The MCP
+// writer reads inside the lock too (cross-post path, dashboard.ts ~l.2224).
+// Review item 2 (#3782): readDashboardFile is the CHOKE POINT — a retired key
+// is invisible in both halves, and under the host read gate it is PG-first.
+// (The first head's direct readDashboardFromPg bypassed the retirement guard.)
+let dashboard = await readDashboardFile(key);
+const base = dashboard ? 'file' : 'created';
+if (!dashboard) dashboard = createEmptyDashboard('machine', key, author);
 
 // 4 chars in [0-9a-z] — parity with the PS `Get-Random` over 48..57 + 97..122.
 let rand = '';
@@ -225,22 +229,22 @@ try {
   if (!writeFailed) {
     posted = true;
 
-  // Review item 3: Checked variant decides pgSynced — the void variant
-  // swallows its errors, so "it didn't throw" proved nothing. The file half
-  // stands either way; the journal reconcile converges a miss.
-  let pgSynced = true;
-  let pgSyncReason;
-  try {
-    const outcome = await dualWriteDashboardSyncChecked(next);
-    pgSynced = outcome?.ok === true;
-    if (!pgSynced) pgSyncReason = outcome?.reason ?? String(outcome);
-  } catch (err) {
-    pgSynced = false;
-    pgSyncReason = err instanceof Error ? err.message : String(err);
-  }
-  if (!pgSynced) {
-    console.error(`WARN: sync PG non confirmée (${pgSyncReason}) — l’écriture GDrive tient, le journal convergera`);
-  }
+    // Review item 3: Checked variant decides pgSynced — the void variant
+    // swallows its errors, so "it didn't throw" proved nothing. The file half
+    // stands either way; the journal reconcile converges a miss.
+    let pgSynced = true;
+    let pgSyncReason;
+    try {
+      const outcome = await dualWriteDashboardSyncChecked(next);
+      pgSynced = outcome?.ok === true;
+      if (!pgSynced) pgSyncReason = outcome?.reason ?? String(outcome);
+    } catch (err) {
+      pgSynced = false;
+      pgSyncReason = err instanceof Error ? err.message : String(err);
+    }
+    if (!pgSynced) {
+      console.error(`WARN: sync PG non confirmée (${pgSyncReason}) — l’écriture GDrive tient, le journal convergera`);
+    }
 
     output = {
       ok: true,
