@@ -174,6 +174,10 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
       tags: ['INFO'],
     });
 
+    // Garde anti-régression plateforme : la lecture DOIT venir du miroir —
+    // si le READ_PG disparaît, le test redevient ENOTDIR/ENOENT-dépendant
+    // sans que Windows le voie localement.
+    expect(mockReadDashboardFromPg).toHaveBeenCalled();
     expect(result.success).toBe(true);
     expect(result.writeVerification?.gdriveDegraded).toBeTruthy();
     expect(mockDualWriteSyncChecked).toHaveBeenCalledTimes(1);
@@ -198,6 +202,8 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
         tags: ['INFO'],
       })
     ).rejects.toThrow(/aucune surface ne porte le message/);
+    // Même garde plateforme que le test précédent (suggestion dogfood #4085).
+    expect(mockReadDashboardFromPg).toHaveBeenCalled();
   });
 
   it('B2 : store G: absent + READ_PG=1 → append PG-seul dégradé, plus de refus d\'entrée', async () => {
