@@ -900,7 +900,7 @@ function getDashboardsDir(): string {
 /**
  * Retourne le chemin complet d'un dashboard
  */
-function getDashboardPath(key: string): string {
+export function getDashboardPath(key: string): string {
   return path.join(getDashboardsDir(), keyToFilename(key));
 }
 
@@ -1464,7 +1464,7 @@ export async function withAppendLockRequired<T>(
  * purges) mais le choke point rend la clé absente pour read/append/merge.
  * Fail-open : lookup PG injoignable ⇒ clé traitée comme non retirée (comportement d'avant).
  */
-async function readDashboardFile(key: string): Promise<Dashboard | null> {
+export async function readDashboardFile(key: string): Promise<Dashboard | null> {
   // #3782 — retired key: ignore it before touching either half. The retained
   // PG rows would otherwise serve the fork (the rows survive the mark by
   // design), and the preserved file (deleteSource:false) would serve it too.
@@ -1950,7 +1950,7 @@ function redactForPublication(key: string, dashboard: Dashboard): Dashboard {
  * write-back d'hydratation produit des fichiers byte-identiques via UN seul
  * sérialiseur — deux constructeurs dériveraient.
  */
-function buildDashboardMarkdown(dashboard: Dashboard): string {
+export function buildDashboardMarkdown(dashboard: Dashboard): string {
   const frontmatter: DashboardFrontmatter = {
     type: dashboard.type,
     lastModified: dashboard.lastModified,
