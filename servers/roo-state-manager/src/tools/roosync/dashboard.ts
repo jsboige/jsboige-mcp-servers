@@ -56,8 +56,10 @@ import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 // global dashboard so the [NOTIF] footer can report what the reader has missed.
 import { advanceGlobalSeenCursor } from '../../notifications/GlobalNotifState.js';
 // #3151 Phase C: PG persistence for dashboards (read PG-primary, dual-write)
+// #4131 G-B lot 2: + write-primary gate (PG first, GDrive bounded mirror)
 import {
   readDashboardFromPg,
+  readDashboardFromPgUngated,
   dualWriteDashboardSync,
   dualWriteDashboardDelete,
   getDashboardPgReader,
@@ -70,6 +72,7 @@ import {
   acquireDashboardSharedLock,
   releaseDashboardSharedLock,
   readDashboardSharedLock,
+  isDashboardPgPrimary,
 } from '../../services/unified-store/roosync-dashboard-store.js';
 // #3782: journal-level retirement mark (mark, never DELETE — gel des purges)
 import type { DashboardRetirementMark } from '../../services/unified-store/types.js';
@@ -1559,24 +1562,56 @@ async function readDashboardFromGdrive(key: string): Promise<Dashboard | null> {
   // vidés dans dashboards/) × (500+1500) ms de sleep = 4 s DÉTERMINISTES sur
   // CHAQUE roosync_dashboard(list) — la marche E2E 277 ms → ~4 340 ms du
   // 24/08 (bump #1032) au 04/09. Semblable à ENOENT : échec certain → pas de retry.
-  let content: string | null = null;
-  for (let attempt = 1; attempt <= DASHBOARD_READ_MAX_ATTEMPTS; attempt++) {
-    try {
-      content = (await fs.readFile(filePath, 'utf8')).replace(/\r\n/g, '\n');
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-        return null;
-      }
-      lastError = error;
-      logger.warn(`Lecture dashboard échouée (tentative ${attempt}/${DASHBOARD_READ_MAX_ATTEMPTS})`, {
-        key,
-        error: error instanceof Error ? error.message : String(error)
-      });
-      if (attempt < DASHBOARD_READ_MAX_ATTEMPTS) {
-        await new Promise(resolve => setTimeout(resolve, DASHBOARD_READ_BACKOFF_MS[attempt - 1]));
+  // #4131 G-B lot 2 (drapeau review NanoClaw) : les 3 tentatives couraient SANS
+  // signal — un readFile hangé sur DriveFS pendait la lecture initiale (et donc
+  // l'append) indéfiniment. Chaque tentative porte maintenant l'AbortSignal
+  // (requête tuée en vol, cf. ms#1414) et l'ENSEMBLE de la boucle est borné par
+  // la même course que les moitiés d'écriture (gdriveWriteTimeoutMs : la borne
+  // devient la durée max acceptée d'une opération GDrive, lecture incluse).
+  const readTimeoutMs = gdriveWriteTimeoutMs();
+  // Sentinelle : 'absent' (ENOENT — null légitime, la clé n'a pas de fichier)
+  // doit rester distinguable de l'épuisement des retries (throw lastError).
+  const ABSENT = Symbol('dashboard-file-absent');
+  const attemptRead = async (): Promise<string | null | typeof ABSENT> => {
+    for (let attempt = 1; attempt <= DASHBOARD_READ_MAX_ATTEMPTS; attempt++) {
+      try {
+        return (await fs.readFile(filePath, {
+          encoding: 'utf8',
+          signal: AbortSignal.timeout(readTimeoutMs)
+        })).replace(/\r\n/g, '\n');
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+          return ABSENT;
+        }
+        lastError = error;
+        logger.warn(`Lecture dashboard échouée (tentative ${attempt}/${DASHBOARD_READ_MAX_ATTEMPTS})`, {
+          key,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        if (attempt < DASHBOARD_READ_MAX_ATTEMPTS) {
+          await new Promise(resolve => setTimeout(resolve, DASHBOARD_READ_BACKOFF_MS[attempt - 1]));
+        }
       }
     }
+    return null;
+  };
+  let content: string | null | typeof ABSENT;
+  try {
+    content = await withWriteDeadline(
+      attemptRead(),
+      readTimeoutMs,
+      `lecture GDrive du dashboard '${key}'`
+    );
+  } catch (err) {
+    // Borne dépassée (DriveFS hangé) : la course abandonne l'attente. Pour les
+    // appelants de LECTURE, un hang n'est pas « introuvable » — on propage :
+    // readDashboardFile tombera sur son autre moitié, et l'append refusera
+    // plutôt de publier depuis une vue possiblement périmée.
+    logger.error('Lecture dashboard : borne GDrive dépassée', err, { key });
+    throw err;
+  }
+  if (content === ABSENT) {
+    return null;
   }
   if (content === null) {
     logger.error('Erreur lecture dashboard', lastError, { key });
@@ -1828,7 +1863,14 @@ export async function verifyWriteVisibleInStore(
   if (!landedIds || landedIds.length === 0) return { pgChecked: false };
   let stored: Dashboard | null = null;
   try {
-    stored = await readDashboardFromPg(key);
+    // #4131 G-B lot 2 — sous la porte write-primary, le store vient d'être
+    // écrit même si le gate de lecture flotte (READ_PG) est encore off sur
+    // cet hôte : la vérification est une entrée de décision interne du chemin
+    // d'écriture, elle lit la surface primaire sans exiger le gate (cf.
+    // guard-a / readDashboardFromPgUngated).
+    stored = isDashboardPgPrimary()
+      ? await readDashboardFromPgUngated(key)
+      : await readDashboardFromPg(key);
   } catch {
     stored = null;
   }
@@ -1999,12 +2041,72 @@ ${intercomSection}
 }
 
 /**
+ * #4131 G-B lot 2 — moitié GDrive d'une écriture COMPLÈTE de fichier (staging
+ * tmp pid-suffixé + copy-in-place + garde anti-fork #3482). Extraite du corps
+ * de writeDashboardFile pour servir aussi le chemin PG-premier de l'append :
+ * son miroir a besoin du full-write FICHIER SEUL (sans re-passer par la moitié
+ * PG, déjà écrite par l'appelant sous le même verrou). Jette à la borne —
+ * l'appelant l'enveloppe dans withWriteDeadline.
+ */
+async function runGdriveFullWriteHalf(
+  key: string,
+  dashboard: Dashboard,
+  filePath: string,
+  tmpPath: string,
+  writeTimeoutMs: number,
+  landedIds?: readonly string[]
+): Promise<WriteVerifyResult> {
+  const writeStartedAtMs = Date.now();
+  // #4131 lot 1 — la préparation du répertoire appartient à la moitié GDrive :
+  // son échec (racine présente mais non réplicable, ENOTDIR) dégrade, il ne
+  // tue pas l'écriture PG. Racine absente → skip fail-closed (#3459), l'erreur
+  // viendra du writeFile ci-dessous.
+  ensureStoreSubdir(getSharedStatePath(), 'dashboards');
+  // #4003 — le staging tmp doit mourir sur TOUT chemin de sortie de l'écriture :
+  // un writer tué entre copyFile et unlink laissait un `*.md.<pid>.tmp` qu'aucun
+  // run ultérieur ne reconnaissait (PID différent) — accumulation DriveFS.
+  // try/finally ; l'unlink reste best-effort (son échec ne doit ni masquer
+  // celui de la copie ni faire échouer l'écriture).
+  try {
+    await fs.writeFile(tmpPath, buildDashboardMarkdown(dashboard), {
+      encoding: 'utf8',
+      signal: AbortSignal.timeout(writeTimeoutMs)
+    });
+    // #3782 — copy-in-place, jamais rename : sur DriveFS, le rename-over-existing
+    // parque l'ancienne version à la racine du Drive (orphelins machine-*.md,
+    // 4/24 h mesurés le 28/09) ou la dévie en fork ` (N)` (#3482). copyFile
+    // remplace le contenu du même file-ID — pas de permutation de métadonnées.
+    await fs.copyFile(tmpPath, filePath);
+  } finally {
+    await fs.unlink(tmpPath).catch((err: Error) => {
+      logger.debug('Dashboard tmp staging cleanup failed (non-critical)', { tmpPath, error: err.message });
+    });
+  }
+  logger.debug('Dashboard écrit', { key, path: filePath });
+
+  // #3482 — post-write guard: a rename "succeeded" by DriveFS can have landed
+  // on a ` (N).md` fork. Loud error + result flag; never throws (the write
+  // itself must not be undone by its verification).
+  return await verifyDashboardWriteLanded(filePath, {
+    lastModified: dashboard.lastModified,
+    totalMessages: dashboard.intercom.totalMessages
+  }, writeStartedAtMs, landedIds);
+}
+
+/**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
 async function writeDashboardFile(
   key: string,
   dashboard: Dashboard,
-  opts?: { condensed?: boolean }
+  opts?: { condensed?: boolean },
+  // #4131 G-B lot 2 — usage interne : l'appelant (appendDashboardIncremental,
+  // sous le verrou append) a DÉJÀ écrit la moitié PG primaire de cette même
+  // vue. Ce full-write ne re-passe donc pas par la porte PG (un upsert
+  // idempotent, mais surtout : si PG flanche entre les deux, le fallback
+  // GDrive-first de CETTE fonction throwrait « aucune surface » alors que le
+  // message est déjà publié côté PG — le throw serait mensonger).
+  internal?: { pgPrimaryPreWritten?: boolean }
 ): Promise<WriteVerifyResult> {
   // #3584 — masquer AVANT toute persistance : ce choke point alimente à la fois le
   // fichier partagé et le miroir PostgreSQL (`dualWriteDashboardSync` ci-dessous), et
@@ -2017,8 +2119,6 @@ async function writeDashboardFile(
   // #3782 — tmp pid-suffixé : deux writers concurrents ne doivent pas se voler
   // leur staging (le `.tmp` nu était une collision supplémentaire sous contention).
   const tmpPath = `${filePath}.${process.pid}.tmp`;
-
-  const content = buildDashboardMarkdown(dashboard);
 
   // #3774 — jeton d'atterrissage : l'id du DERNIER message de l'instantané écrit.
   // Pour un APPEND il est neuf par construction (produit par ce process, absent
@@ -2043,43 +2143,55 @@ async function writeDashboardFile(
   let gdriveFailure: string | undefined;
   let wv: WriteVerifyResult = { forkSuspected: false };
 
-  const gdriveHalf = async (): Promise<WriteVerifyResult> => {
-    const writeStartedAtMs = Date.now();
-    // #4131 lot 1 — la préparation du répertoire appartient à la moitié GDrive :
-    // son échec (racine présente mais non réplicable, ENOTDIR) dégrade, il ne
-    // tue pas l'écriture PG. Racine absente → skip fail-closed (#3459), l'erreur
-    // viendra du writeFile ci-dessous.
-    ensureStoreSubdir(getSharedStatePath(), 'dashboards');
-    // #4003 — le staging tmp doit mourir sur TOUT chemin de sortie de l'écriture :
-    // un writer tué entre copyFile et unlink laissait un `*.md.<pid>.tmp` qu'aucun
-    // run ultérieur ne reconnaissait (PID différent) — accumulation DriveFS.
-    // try/finally ; l'unlink reste best-effort (son échec ne doit ni masquer
-    // celui de la copie ni faire échouer l'écriture).
-    try {
-      await fs.writeFile(tmpPath, content, {
-        encoding: 'utf8',
-        signal: AbortSignal.timeout(writeTimeoutMs)
-      });
-      // #3782 — copy-in-place, jamais rename : sur DriveFS, le rename-over-existing
-      // parque l'ancienne version à la racine du Drive (orphelins machine-*.md,
-      // 4/24 h mesurés le 28/09) ou la dévie en fork ` (N)` (#3482). copyFile
-      // remplace le contenu du même file-ID — pas de permutation de métadonnées.
-      await fs.copyFile(tmpPath, filePath);
-    } finally {
-      await fs.unlink(tmpPath).catch((err: Error) => {
-        logger.debug('Dashboard tmp staging cleanup failed (non-critical)', { tmpPath, error: err.message });
-      });
-    }
-    logger.debug('Dashboard écrit', { key, path: filePath });
+  const gdriveHalf = (): Promise<WriteVerifyResult> =>
+    runGdriveFullWriteHalf(key, dashboard, filePath, tmpPath, writeTimeoutMs, landedIds);
 
-    // #3482 — post-write guard: a rename "succeeded" by DriveFS can have landed
-    // on a ` (N).md` fork. Loud error + result flag; never throws (the write
-    // itself must not be undone by its verification).
-    return await verifyDashboardWriteLanded(filePath, {
-      lastModified: dashboard.lastModified,
-      totalMessages: dashboard.intercom.totalMessages
-    }, writeStartedAtMs, landedIds);
-  };
+  // #4131 G-B lot 2 — PG-PREMIER : quand la porte write-primary est armée
+  // (`UNIFIED_STORE_DASHBOARD_PG_PRIMARY=1`), le store PG est la surface
+  // primaire et l'ordre s'inverse — PG d'abord (checked), GDrive devient un
+  // miroir borné best-effort dont l'échec ne fait que dégrader. Échec PG →
+  // repli intégral sur le chemin GDrive-first du lot 1 ci-dessous (dont le
+  // dual-write re-tentera le miroir PG) : contrat d'échec inversé du canal
+  // (roosync-channel-write.ts) — une panne PG dégrade au comportement
+  // d'avant, elle ne perd jamais le message.
+  if (isDashboardPgPrimary()) {
+    // Deux entrées vers le miroir best-effort : (a) la moitié PG vient
+    // d'écrire avec succès ; (b) appelant interne sous verrou append
+    // (pgPrimaryPreWritten) — l'a déjà écrite. Dans les deux cas la surface
+    // primaire tient l'écriture, le fichier n'est plus qu'un miroir.
+    let pgMirrorMode = internal?.pgPrimaryPreWritten === true;
+    if (!pgMirrorMode) {
+      const pgOutcome = await dualWriteDashboardSyncChecked(dashboard, opts);
+      if (pgOutcome.ok) {
+        pgMirrorMode = true;
+      } else {
+        logger.warn('[PG-PRIMARY #4131] écriture PG primaire échouée — repli sur le chemin GDrive-first', {
+          key,
+          reason: pgOutcome.reason
+        });
+      }
+    }
+    if (pgMirrorMode) {
+      try {
+        wv = await withWriteDeadline(gdriveHalf(), writeTimeoutMs, `moitié GDrive (miroir) de l'écriture dashboard '${key}'`);
+      } catch (err) {
+        const mirrorFailure = err instanceof Error ? err.message : String(err);
+        logger.warn('[PG-PRIMARY #4131] miroir GDrive échoué/expiré — le store PG porte seule l\'écriture', {
+          key,
+          timeoutMs: writeTimeoutMs,
+          error: mirrorFailure
+        });
+        // Best-effort non attendu : le staging peut survivre à une annulation mi-course.
+        void fs.unlink(tmpPath).catch(() => { /* déjà parti ou jamais créé */ });
+        wv = { forkSuspected: false, gdriveDegraded: mirrorFailure };
+      }
+      // #3774 critère 2 — même verdict complet que le chemin nominal : la
+      // relecture du store (primaire) qualifie l'atterrissage du message.
+      wv = mergeStoreVerification(wv, await verifyWriteVisibleInStore(key, landedIds));
+      if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
+      return wv;
+    }
+  }
 
   try {
     wv = await withWriteDeadline(gdriveHalf(), writeTimeoutMs, `moitié GDrive de l'écriture dashboard '${key}'`);
@@ -2148,7 +2260,17 @@ async function applyCondensedWithMerge(
   // from a PG-reading host would have erased 23 messages of three other machines.
   // The docstring above always said "re-reads the file from disk" -- the read gate
   // silently changed the source, not the intent.
-  const current = await readDashboardFromGdrive(key);
+  //
+  // #4131 G-B lot 2 : sous la porte write-primary, l'artefact écrasé d'abord
+  // est le STORE — l'ancre du delta devient la relecture PG (sans le gate
+  // READ_PG : entrée de décision interne du chemin d'écriture, cf. guard-a),
+  // fallback fichier si la clé n'a pas encore de row. La condensation ne
+  // dépend plus d'une relecture G: sur son chemin critique (jalon « dashboards
+  // PG seul »), et le suffixe concurrent à réintégrer est celui que la
+  // surface primaire voit.
+  const current = isDashboardPgPrimary()
+    ? ((await readDashboardFromPgUngated(key)) ?? (await readDashboardFromGdrive(key)))
+    : await readDashboardFromGdrive(key);
   if (!current) {
     return await writeDashboardFile(key, condensedDashboard, { condensed: true });
   }
@@ -2222,6 +2344,23 @@ async function appendDashboardIncremental(
     acquiredAt: new Date().toISOString()
   };
   const lockOwned = await acquireAppendLock(key, holder);
+  // #4131 G-B lot 2 — PG-PREMIER SOUS VERROU append : le verrou existe pour
+  // sérialiser la course read→write last-writer-wins ; la surface primaire
+  // doit donc être sérialisée comme l'était le fichier (le journal PG est
+  // additif par message_id, mais la row status reste un upsert
+  // last-writer-wins). Échec PG → repli sur le chemin GDrive-first complet
+  // ci-dessous (dual-write inclus) — le message n'est jamais perdu.
+  let pgPrimaryOk = false;
+  if (isDashboardPgPrimary()) {
+    const pgOutcome = await dualWriteDashboardSyncChecked(dashboard);
+    pgPrimaryOk = pgOutcome.ok;
+    if (!pgPrimaryOk) {
+      logger.warn('[PG-PRIMARY #4131] append PG échoué — repli sur le chemin GDrive-first', {
+        key,
+        reason: pgOutcome.reason
+      });
+    }
+  }
   let wv: WriteVerifyResult = { forkSuspected: false };
   // #3774 — ids des messages NEUFS de cet append : le seul jeton que le writer
   // produit lui-même, donc le seul qui puisse établir où ses octets ont atterri.
@@ -2248,7 +2387,10 @@ async function appendDashboardIncremental(
       // écrit encore, et sa rejection échappe au moment où le caller croit la
       // publication terminée (le lock libéré ouvre en plus la fenêtre de course
       // qu'il existait pour fermer).
-      return await writeDashboardFile(key, dashboard);
+      // #4131 lot 2 — pgPrimaryPreWritten : sous PG-premier, la moitié PG de
+      // cette vue est déjà écrite sous le verrou ; le full-write ne re-passe
+      // pas par la porte PG (et un échec GDrive dégrade au lieu de thrower).
+      return await writeDashboardFile(key, dashboard, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
     }
 
     // #3782 correctif 1 (spec c.5907835962 ; incident 30/09 06:08Z — le feeder
@@ -2271,7 +2413,7 @@ async function appendDashboardIncremental(
       });
       // await obligatoire, même contrat que le fichier absent (#3230 b) : la
       // rejection ne doit pas échapper au finally qui relâche le verrou.
-      return await writeDashboardFile(key, dashboard);
+      return await writeDashboardFile(key, dashboard, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
     }
 
     // #3230 write-side — un append depuis une copie locale en retard effaçait
@@ -2357,7 +2499,7 @@ async function appendDashboardIncremental(
             error: parseErr instanceof Error ? parseErr.message : String(parseErr),
           });
         }
-        return await writeDashboardFile(key, repair);
+        return await writeDashboardFile(key, repair, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
       }
     }
 
@@ -2448,12 +2590,21 @@ async function appendDashboardIncremental(
     }
   }
 
-  // #3151 Phase C + #4131 lot 1 — dual-write the appended journal rows to PG.
-  // INCONDITIONNEL (même contrat que writeDashboardFile) : l'incrément fichier
-  // reste l'écriture primaire en chemin nominal ; quand sa moitié a échoué, le
-  // miroir doit avoir PRIS l'écriture pour que l'opération réussisse dégradée
-  // (append-first : c'est ce qui rend la condense-after ci-dessous sûre).
-  if (gdriveFailure) {
+  if (pgPrimaryOk) {
+    // #4131 G-B lot 2 — la surface primaire (PG) a PRIS l'écriture sous le
+    // verrou : la moitié GDrive ci-dessus n'était plus qu'un miroir. Son échec
+    // éventuel DÉGRADE, il ne fait pas échouer l'opération — symétrique exact
+    // du lot 1, surfaces échangées. Pas de dual-write supplémentaire : le
+    // checked du haut a déjà persisté la vue (row + journal).
+    if (gdriveFailure) {
+      wv = { ...wv, gdriveDegraded: gdriveFailure };
+    }
+  } else if (gdriveFailure) {
+    // #3151 Phase C + #4131 lot 1 — dual-write the appended journal rows to PG.
+    // INCONDITIONNEL (même contrat que writeDashboardFile) : l'incrément fichier
+    // reste l'écriture primaire en chemin nominal ; quand sa moitié a échoué, le
+    // miroir doit avoir PRIS l'écriture pour que l'opération réussisse dégradée
+    // (append-first : c'est ce qui rend la condense-after ci-dessous sûre).
     const pgOutcome = await dualWriteDashboardSyncChecked(dashboard);
     if (!pgOutcome.ok) {
       throw new Error(
