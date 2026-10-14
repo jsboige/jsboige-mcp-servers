@@ -154,9 +154,18 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
   it('échec fs rapide (racine du store non réplicable) + PG vivant : succès dégradé, miroir écrit', async () => {
     // La racine du store est un FICHIER : existsSync passe, mais ni mkdir du
     // sous-répertoire ni writeFile ne peuvent réussir — échec GDrive immédiat.
+    // La lecture est armée côté PG (même patron que le test B2 ci-dessous) :
+    // sous cette racine-fichier, le READ GDrive rend ENOTDIR sous Linux
+    // (rethrow après retries → l'append meurt AVANT la moitié écriture, cf. CI
+    // 38486520162) mais ENOENT sous Windows (dashboard absent → le flux
+    // continue) — armer PG rend le test plateforme-neutre : la lecture vient
+    // du miroir, le flux atteint la moitié écriture, où l'échec de la
+    // racine-fichier est identique partout. Le chemin de lecture reste le lot 2.
     const fileAsStore = path.join(tmpDir, 'faux-store');
     await fsWriteFileReal(fileAsStore, 'not a directory', 'utf8');
     process.env.ROOSYNC_SHARED_PATH = fileAsStore;
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    mockReadDashboardFromPg.mockImplementation(async (key: string) => pgDashboard(key as string));
 
     const result = await roosyncDashboard({
       action: 'append',
@@ -171,9 +180,14 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
   });
 
   it('échec GDrive + miroir PG indisponible : échec TOTAL, aucune surface ne porte le message', async () => {
+    // Lecture armée côté PG pour la même raison plateforme (ENOTDIR Linux vs
+    // ENOENT Windows, cf. CI 38486520162) : l'échec testé est celui de la
+    // moitié écriture, pas de la lecture.
     const fileAsStore = path.join(tmpDir, 'faux-store-2');
     await fsWriteFileReal(fileAsStore, 'not a directory', 'utf8');
     process.env.ROOSYNC_SHARED_PATH = fileAsStore;
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    mockReadDashboardFromPg.mockImplementation(async (key: string) => pgDashboard(key as string));
     mockDualWriteSyncChecked.mockResolvedValue({ ok: false, reason: 'disabled' });
 
     await expect(
