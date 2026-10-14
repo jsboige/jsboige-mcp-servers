@@ -29,12 +29,19 @@ vi.mock('fs', () => ({
   existsSync: mockExistsSync
 }));
 
-vi.mock('path', () => ({
-  default: {
+// #4194 — passthrough du module path réel : seule `join` est moquée (assertions
+// d'appels) ; `isAbsolute` (branche #2406 P1-a de executeScript) et le reste du
+// module viennent de l'implémentation réelle, sinon `path.default.isAbsolute
+// is not a function` fait échouer la suite entière en local Windows (invisible
+// en CI : la famille POWERSHELL est exclue de vitest.config.ci.ts).
+vi.mock('path', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('path')>();
+  return {
+    ...actual,
+    default: { ...actual, join: mockJoin },
     join: mockJoin
-  },
-  join: mockJoin
-}));
+  };
+});
 
 // Unmock PowerShellExecutor to use real implementation with locally mocked dependencies
 vi.unmock('../../../src/services/PowerShellExecutor.js');
