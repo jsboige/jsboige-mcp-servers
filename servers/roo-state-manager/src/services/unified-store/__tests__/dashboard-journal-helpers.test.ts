@@ -180,4 +180,30 @@ describe('G-C escalation CLI surface (drift-guard on the CLI source)', () => {
   it('refuses [ERROR] content via the shared guard', () => {
     expect(cli).toContain('validateEscalationContent');
   });
+
+  // ms#1425 CHANGES_REQUESTED (14/10): the three review items are part of the
+  // CLI contract and must not drift. Negative assertions run on the CODE ONLY
+  // (comments stripped) — the docstring legitimately NAMES the removed APIs
+  // when narrating what the first head did wrong.
+  const cliCode = cli
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
+  it('serializes the read→fold→write under the append lock, fail-open (review item 1)', () => {
+    expect(cli).toContain('acquireAppendLock');
+    expect(cli).toContain('releaseAppendLock');
+    expect(cliCode).not.toContain('withAppendLockRequired'); // fail-closed sibling — destructive ops only, NEVER escalations
+    expect(cli).toContain('unserialized');           // output field when the lock was not acquired
+    // Bounded write (07/10 class): the fs write carries an abort signal
+    expect(cli).toContain('AbortSignal.timeout');
+    expect(cli).toContain('UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS');
+  });
+  it('reads the base via readDashboardFile, never readDashboardFromPg (review item 2, #3782)', () => {
+    expect(cli).toContain('readDashboardFile');
+    expect(cliCode).not.toContain('readDashboardFromPg');
+  });
+  it('decides pgSynced via dualWriteDashboardSyncChecked (review item 3)', () => {
+    expect(cli).toContain('dualWriteDashboardSyncChecked');
+    // The void variant swallows its errors — a boolean derived from it is a lie.
+    expect(cliCode).not.toMatch(/\bdualWriteDashboardSync\b(?!Checked)/);
+  });
 });

@@ -21,14 +21,26 @@
  *   - author is `<machine>|listener`, msg id `<machine>:listener:ic-…`
  *     (parity with the previous format).
  *
- * Read path is PG-primary (readDashboardFromPg), GDrive file as fallback,
- * empty-dashboard creation last — mirrors handleAppend's resolution order
- * for a seat whose read gate may be off.
+ * Review contract (ms#1425 CHANGES_REQUESTED, 3 items — 14/10):
+ *   1. APPEND LOCK, fail-open: the read→fold→write runs under
+ *      `acquireAppendLock` (cross-process: PG row + tmpdir), mirroring the
+ *      cross-post path. #3761 escalations must never be dropped, so a lock
+ *      we could not acquire does NOT abort: the write proceeds unserialized
+ *      and the JSON output carries `unserialized: true`. The write half is
+ *      BOUNDED (`UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS`, default
+ *      30 s, read at call time — same convention as the G-B lot 1 bounds)
+ *      so lock detention cannot be indefinite (07/10 class).
+ *   2. #3782: the base state comes from `readDashboardFile` — the choke
+ *      point that makes a retired (merged-away) key invisible in BOTH
+ *      halves. The first head called `readDashboardFromPg` directly, which
+ *      would resurrect a retired machine key.
+ *   3. `pgSynced` is decided by `dualWriteDashboardSyncChecked` — the void
+ *      `dualWriteDashboardSync` swallows its errors, so a boolean derived
+ *      from "it didn't throw" was structurally always true.
  *
- * Exit codes: 0 posted (PG-sync failure is a WARN, not an error — the GDrive
- * write stands and the journal reconcile converges it, exactly like the
- * store's own dual-write semantics) · 1 file write failed (nothing posted)
- * · 2 usage / contract violation.
+ * Exit codes: 0 posted (a PG-sync miss is a WARN, not an error — the GDrive
+ * write stands and the journal reconcile converges it) · 1 file write failed
+ * (nothing posted) · 2 usage / contract violation.
  *
  * Usage (from servers/roo-state-manager/):
  *   node scripts/rsm-dashboard-append.mjs --machine myia-po-2023 --content-file msg.txt
@@ -37,10 +49,10 @@
  * never printed.
  */
 
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
+import { readFileSync, mkdirSync } from 'fs';
+import { writeFile } from 'fs/promises';
 import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
-import { createRequire } from 'node:module';
 import { randomInt } from 'node:crypto';
 import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
 import { validateEscalationContent, buildListenerEscalationMessage, nextDashboardState } from './lib/dashboard-journal.mjs';
@@ -87,7 +99,10 @@ if (args.includes('--help') || args.includes('-h')) {
 
 The dashboard type is FIXED to machine by construction (#3761 condition 1):
 there is no --type option, and passing one is a usage error. Author is
-<machine>|listener. Exit 0/1/2. Loads .env automatically.`);
+<machine>|listener. The read→fold→write runs under the cross-process append
+lock (fail-open: unserialized=true when not acquired); the file write is
+bounded by UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS. Exit 0/1/2.
+Loads .env automatically.`);
   process.exit(0);
 }
 
@@ -136,7 +151,7 @@ loadEnv(path.join(RSM_ROOT, '.env'));
 // and store writes the MCP host serves, not a private copy (G-R pattern).
 const buildDir = resolveBuildDir(RSM_ROOT);
 const buildUrl = (rel) => pathToFileURL(path.join(buildDir, rel)).href;
-const { readDashboardFromPg, dualWriteDashboardSync } = await import(
+const { dualWriteDashboardSyncChecked } = await import(
   buildUrl('services/unified-store/roosync-dashboard-store.js')
 );
 const {
@@ -145,20 +160,31 @@ const {
   readDashboardFile,
   getDashboardPath,
   buildDashboardMarkdown,
+  acquireAppendLock,
+  releaseAppendLock,
 } = await import(buildUrl('tools/roosync/dashboard.js'));
+
+// Same bound as the G-B lot 1 write halves, same call-time convention.
+const gdriveWriteTimeoutMs = () =>
+  Number(process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS) || 30000;
 
 const machineId = machine.trim().toLowerCase();
 const key = buildDashboardKey('machine', machineId, '');
 const author = { machineId, workspace: 'listener' };
 
-// Read resolution: PG journal first (G-C), GDrive file second, creation last.
-let dashboard = await readDashboardFromPg(key);
-let base = 'pg';
-if (!dashboard) {
-  dashboard = await readDashboardFile(key);
-  base = dashboard ? 'file' : 'created';
-  if (!dashboard) dashboard = createEmptyDashboard('machine', key, author);
-}
+// Review item 2 (#3782): readDashboardFile is the CHOKE POINT — a retired key
+// is invisible in both halves, and under the host read gate it is PG-first.
+// (The first head's direct readDashboardFromPg bypassed the retirement guard.)
+let dashboard = await readDashboardFile(key);
+const base = dashboard ? 'file' : 'created';
+if (!dashboard) dashboard = createEmptyDashboard('machine', key, author);
+
+// Review item 1 (verrou append, fail-open): #3761 escalations must never be
+// dropped, so an unacquired lock proceeds unserialized and says so. Holder
+// shape = CondenseLockInfo (same as the cross-post path).
+const holder = { machineId, workspace: 'listener', pid: process.pid, acquiredAt: new Date().toISOString() };
+const lockOwned = await acquireAppendLock(key, holder);
+const unserialized = !lockOwned;
 
 // 4 chars in [0-9a-z] — parity with the PS `Get-Random` over 48..57 + 97..122.
 let rand = '';
@@ -166,35 +192,73 @@ for (let i = 0; i < 4; i++) {
   const n = randomInt(36);
   rand += n < 10 ? String.fromCharCode(48 + n) : String.fromCharCode(87 + n); // 97-10
 }
-const message = buildListenerEscalationMessage({ machineId, content, nowIso: new Date().toISOString(), rand });
-const next = nextDashboardState(dashboard, message);
-const markdown = buildDashboardMarkdown(next);
-const target = getDashboardPath(key);
 
+// process.exit inside the locked section would skip the finally (and leak the
+// lock to its TTL): the section computes, exits happen AFTER the release.
+let posted = false;
+let output = null;
 try {
-  mkdirSync(path.dirname(target), { recursive: true });
-  writeFileSync(target, markdown, 'utf-8');
-} catch (err) {
-  console.error(`ERREUR: écriture GDrive impossible (${target}) : ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
+  const message = buildListenerEscalationMessage({ machineId, content, nowIso: new Date().toISOString(), rand });
+  const next = nextDashboardState(dashboard, message);
+  const markdown = buildDashboardMarkdown(next);
+  const target = getDashboardPath(key);
+
+  // process.exit inside the locked section would skip the finally (and leak
+  // the lock to its TTL); a top-level `return` is a SyntaxError in ESM.
+  // The section computes into flags, the exit happens AFTER the release.
+  let writeFailed = false;
+  try {
+    mkdirSync(path.dirname(target), { recursive: true });
+    // Review item 1 (détention bornée): the writeFile carries the abort
+    // signal, so a hung DriveFS kills the in-flight request at the bound —
+    // the lock is released at the bound, not held indefinitely (07/10 class).
+    await writeFile(target, markdown, {
+      encoding: 'utf8',
+      signal: AbortSignal.timeout(gdriveWriteTimeoutMs())
+    });
+  } catch (err) {
+    writeFailed = true;
+    console.error(`ERREUR: écriture GDrive impossible (${target}) : ${err instanceof Error ? err.message : String(err)}`);
+    process.exitCode = 1;
+  }
+
+  if (!writeFailed) {
+    posted = true;
+
+  // Review item 3: Checked variant decides pgSynced — the void variant
+  // swallows its errors, so "it didn't throw" proved nothing. The file half
+  // stands either way; the journal reconcile converges a miss.
+  let pgSynced = true;
+  let pgSyncReason;
+  try {
+    const outcome = await dualWriteDashboardSyncChecked(next);
+    pgSynced = outcome?.ok === true;
+    if (!pgSynced) pgSyncReason = outcome?.reason ?? String(outcome);
+  } catch (err) {
+    pgSynced = false;
+    pgSyncReason = err instanceof Error ? err.message : String(err);
+  }
+  if (!pgSynced) {
+    console.error(`WARN: sync PG non confirmée (${pgSyncReason}) — l’écriture GDrive tient, le journal convergera`);
+  }
+
+    output = {
+      ok: true,
+      key,
+      base,          // file | created — which half supplied the base state
+      unserialized,  // true = the append lock could not be acquired (fail-open)
+      messageId: message.id,
+      totalMessages: next.intercom.totalMessages,
+      pgSynced,
+    };
+  }
+} finally {
+  if (lockOwned) {
+    await releaseAppendLock(key, holder);
+  }
 }
 
-// PG half: never fatal (dual-write semantics — the store itself swallows and
-// warns; the journal reconcile converges a missed sync).
-let pgSynced = true;
-try {
-  await dualWriteDashboardSync(next);
-} catch (err) {
-  pgSynced = false;
-  console.error(`WARN: sync PG échouée — l’écriture GDrive tient, le journal convergera : ${err instanceof Error ? err.message : String(err)}`);
+if (posted) {
+  console.log(JSON.stringify(output));
 }
-
-console.log(JSON.stringify({
-  ok: true,
-  key,
-  base,           // pg | file | created — which half supplied the base state
-  messageId: message.id,
-  totalMessages: next.intercom.totalMessages,
-  pgSynced,
-}));
-process.exit(0);
+process.exit(process.exitCode ?? 0);
