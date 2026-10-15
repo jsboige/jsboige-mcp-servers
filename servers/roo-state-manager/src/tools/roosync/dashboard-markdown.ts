@@ -65,7 +65,21 @@ export function parseDashboardMarkdown(content: string, key: string): Dashboard 
     throw new Error(`Format dashboard invalide: frontmatter manquant (${key})`);
   }
 
-  const frontmatter: DashboardFrontmatter = yaml.load(frontmatterMatch[1]) as DashboardFrontmatter;
+  // js-yaml parse un timestamp ISO NON quoté en objet Date (règle YAML 1.1).
+  // Le writer sérialise toujours la string (yaml.dump la quote), mais un
+  // fichier écrit à la main ou par un outil tiers peut porter la forme nue :
+  // un Date qui s'échappe fait crasher le tri de handleList
+  // (lastModified.localeCompare) dans le catch « Répertoire dashboards vide »
+  // — under-show silencieux, même classe que #1432 review. Le type Dashboard
+  // dit string : normaliser.
+  const loaded = yaml.load(frontmatterMatch[1]) as Omit<DashboardFrontmatter, 'lastModified'> & {
+    lastModified: DashboardFrontmatter['lastModified'] | Date;
+  };
+  const frontmatter: DashboardFrontmatter = {
+    ...loaded,
+    lastModified:
+      loaded.lastModified instanceof Date ? loaded.lastModified.toISOString() : loaded.lastModified,
+  };
 
   // Extraire le contenu markdown après le frontmatter
   const markdownContent = content.slice(frontmatterMatch[0].length);

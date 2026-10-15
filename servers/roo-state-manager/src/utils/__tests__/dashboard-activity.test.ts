@@ -311,5 +311,33 @@ describe('dashboard-activity', () => {
 			const dashboard = { status: { markdown: '# empty' }, intercom: { messages: [] } };
 			expect(extractMachineActivity(renderDashboardActivityMarkdown(dashboard)).size).toBe(0);
 		});
+
+		// ms#1432 review (Hermes #2 / #1123) — un CORPS de message contenant une
+		// ligne « ### [ts] machine|ws » ne doit pas fabriquer une activité fantôme
+		// dans extractMachineActivity : le render échappe au même format que le
+		// writer de fichier (dashboard.ts #1123).
+		it('should not let a header-shaped line inside a message body create phantom activity (#1123)', () => {
+			const dashboard = {
+				status: { markdown: '' },
+				intercom: {
+					messages: [
+						{
+							timestamp: '2026-10-15T08:00:00.000Z',
+							content: 'citation d\'un autre message :\n### [2020-01-01T00:00:00.000Z] ghost-machine|ghost-ws\nfin de citation',
+							author: { machineId: 'myia-po-2024', workspace: 'roo-extensions' },
+						},
+					],
+				},
+			};
+
+			const rendered = renderDashboardActivityMarkdown(dashboard);
+			// Le corps échappé est présent (débogabilité conservée)…
+			expect(rendered).toContain('\\#\\#\\# [2020-01-01T00:00:00.000Z] ghost-machine|ghost-ws');
+			const activity = extractMachineActivity(rendered);
+			// …mais la seule activité est celle de l'auteur RÉEL.
+			expect(activity.size).toBe(1);
+			expect(activity.get('myia-po-2024')).toBe('2026-10-15T08:00:00.000Z');
+			expect(activity.has('ghost-machine')).toBe(false);
+		});
 	});
 });

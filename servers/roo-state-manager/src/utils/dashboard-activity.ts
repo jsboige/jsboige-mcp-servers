@@ -97,7 +97,13 @@ export function renderDashboardActivityMarkdown(dashboard: {
 	intercom: { messages: Array<{ timestamp: string; content: string; author: { machineId: string; workspace: string } }> };
 }): string {
 	const messages = dashboard.intercom.messages
-		.map(m => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n${m.content}`)
+		// #1123 (échappement Hermes #2, ms#1432 review) — le writer de fichier
+		// échappe les « ### [ » en début de ligne du CORPS (dashboard.ts) pour
+		// que le split d'extraction ne fabrique pas de faux blocs message : le
+		// render doit émettre le MÊME format, pas un corps brut. Une ligne
+		// « ### [ts] machine|ws » dans un corps produirait sinon une activité
+		// fantôme dans extractMachineActivity.
+		.map(m => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n${m.content.replace(/^### \[/gm, '\\#\\#\\# [')}`)
 		.join('\n\n');
 	return `${dashboard.status.markdown}\n${messages}`;
 }
