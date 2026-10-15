@@ -111,4 +111,52 @@ describe('RooSettingsService — vscdb key resolution (targetExtension)', () => 
 
     expect(boundKey()).toBe(DEFAULT_VSCDB_KEY);
   });
+
+  // ============================================================
+  // #2766 W1 — the default must be resolved at CONSTRUCTION time
+  // (env > filesystem probe > roo fallback), not frozen at module
+  // load. On a Zoo-only host with no env override and no explicit
+  // targetExtension, the service must address the Zoo key — the
+  // module-const DEFAULT_KEY (RooSettingsService.ts:26) froze the
+  // import-time env and made that impossible.
+  // ============================================================
+  describe('#2766 W1 — construction-time default resolution', () => {
+    it('uses the Zoo key on a Zoo-only host when no targetExtension is given', async () => {
+      const path = await import('path');
+      const os = await import('os');
+      const fsActual = await vi.importActual<typeof import('fs')>('fs');
+
+      // Controlled APPDATA: ONLY the zoo-code tasks dir exists.
+      const tmpAppData = path.join(os.tmpdir(), `rss-w1-${process.pid}`);
+      const gsRoot = path.join(tmpAppData, 'Code', 'User', 'globalStorage');
+      fsActual.rmSync(tmpAppData, { recursive: true, force: true });
+      fsActual.mkdirSync(path.join(gsRoot, 'zoocodeorganization.zoo-code', 'tasks'), { recursive: true });
+
+      const savedAppData = process.env.APPDATA;
+      const savedExt = process.env.ROO_EXTENSION_ID;
+      const savedKey = process.env.ROO_VSCDB_KEY;
+      delete process.env.ROO_EXTENSION_ID;
+      delete process.env.ROO_VSCDB_KEY;
+      process.env.APPDATA = tmpAppData;
+      // Path-aware existsSync: zoo tasks dir + state.vscdb exist, nothing else.
+      vi.mocked(existsSync).mockImplementation((p: unknown) =>
+        String(p).includes('zoocodeorganization.zoo-code') || String(p).endsWith('state.vscdb'));
+
+      try {
+        const { RooSettingsService } = await import('../RooSettingsService');
+        const svc = new RooSettingsService(); // no targetExtension
+        await svc.extractSettings('safe');
+
+        expect(boundKey()).toBe(ZOO_CODE_VSCDB_KEY);
+        expect(boundKey()).not.toBe(DEFAULT_VSCDB_KEY);
+      } finally {
+        if (savedAppData === undefined) delete process.env.APPDATA;
+        else process.env.APPDATA = savedAppData;
+        if (savedExt !== undefined) process.env.ROO_EXTENSION_ID = savedExt;
+        if (savedKey !== undefined) process.env.ROO_VSCDB_KEY = savedKey;
+        vi.mocked(existsSync).mockReturnValue(true);
+        fsActual.rmSync(tmpAppData, { recursive: true, force: true });
+      }
+    });
+  });
 });

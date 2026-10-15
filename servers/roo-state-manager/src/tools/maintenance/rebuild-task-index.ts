@@ -88,24 +88,28 @@ function dbGet(db: sqlite3.Database, sql: string, params: unknown[]): Promise<{ 
 	});
 }
 
-function dbRun(db: sqlite3.Database, sql: string, params: unknown[]): Promise<void> {
+function dbRun(db: sqlite3.Database, sql: string, params: unknown[]): Promise<number> {
+	// #2766 W1 — returns this.changes so the UPDATE caller can assert it
+	// affected exactly one row (a missing key row otherwise no-ops silently).
 	return new Promise((resolve, reject) => {
-		db.run(sql, params, (err: Error | null) => {
+		db.run(sql, params, function (this: { changes?: number }, err: Error | null) {
 			if (err) reject(err);
-			else resolve();
+			else resolve(this?.changes ?? 0);
 		});
 	});
 }
 
 // ── State read/write (with temp copy for reads, backup for writes) ──
 
-async function readRooState(): Promise<VSCodeRooState> {
+async function readRooState(vscdbKey: string): Promise<VSCodeRooState> {
 	const dbPath = getStateDbPath();
 	if (!existsSync(dbPath)) {
 		throw new Error(`state.vscdb not found at: ${dbPath}`);
 	}
 
-	const vscdbKey = resolveActiveVscdbKey();
+	// #2766 W1 — the key is resolved ONCE per invocation by the handler and
+	// threaded through read AND write, so one rebuild always addresses the
+	// same extension even if the filesystem probe would flip mid-invocation.
 
 	// Copy to temp to avoid locking conflicts with VS Code
 	const tmpPath = dbPath + '.rebuild-tmp';
@@ -131,10 +135,8 @@ async function readRooState(): Promise<VSCodeRooState> {
 	}
 }
 
-async function writeRooState(state: VSCodeRooState): Promise<void> {
+async function writeRooState(state: VSCodeRooState, vscdbKey: string): Promise<void> {
 	const dbPath = getStateDbPath();
-
-	const vscdbKey = resolveActiveVscdbKey();
 
 	// Create backup before writing
 	const backupPath = dbPath + '.rebuild-backup';
@@ -144,7 +146,16 @@ async function writeRooState(state: VSCodeRooState): Promise<void> {
 	const db = await openDatabase(dbPath, sqlite3.OPEN_READWRITE);
 	try {
 		const value = JSON.stringify(state);
-		await dbRun(db, 'UPDATE ItemTable SET value = ? WHERE key = ?', [value, vscdbKey]);
+		const changes = await dbRun(db, 'UPDATE ItemTable SET value = ? WHERE key = ?', [value, vscdbKey]);
+		// #2766 W1 — exactly one row must match. changes === 0 means the key
+		// row is absent from ItemTable and the UPDATE silently no-opped: fail
+		// loudly instead of reporting INDEX UPDATED with nothing persisted.
+		if (changes !== 1) {
+			throw new Error(
+				`UPDATE affected ${changes} rows for key '${vscdbKey}' — expected exactly 1 ` +
+				`(key row missing from state.vscdb? the rebuild was NOT persisted)`
+			);
+		}
 		logger.info('taskHistory written to state.vscdb');
 	} finally {
 		await closeDatabase(db);
@@ -157,8 +168,12 @@ export async function handleRebuildTaskIndex(args: RebuildTaskIndexArgs): Promis
 	const { workspace_filter, max_tasks = 0, dry_run = true } = args;
 
 	try {
+		// #2766 W1 — resolve the vscdb key ONCE for the whole invocation; read
+		// and write-back address the same extension by construction.
+		const vscdbKey = resolveActiveVscdbKey();
+
 		// 1. Read current VS Code state
-		const state = await readRooState();
+		const state = await readRooState(vscdbKey);
 		const indexedTasks = new Set<string>();
 		const currentHistory: HistoryItem[] = [];
 
@@ -239,6 +254,9 @@ export async function handleRebuildTaskIndex(args: RebuildTaskIndexArgs): Promis
 		let report = `# Rebuild Task Index\n\n`;
 		report += `**Mode:** ${dry_run ? 'SIMULATION (dry-run)' : 'LIVE REBUILD'}\n`;
 		report += `**Tasks directory:** ${tasksDir}\n`;
+		// #2766 W1 — operator observability: which SQLite key this invocation
+		// addresses (read AND write), resolved once above.
+		report += `**VSCDB key:** ${vscdbKey}\n`;
 		report += `**Tasks in SQLite index:** ${indexedTasks.size}\n`;
 		report += `**Tasks on disk:** ${diskTasks.length}\n`;
 		report += `**Orphaned tasks (total):** ${diskTasks.filter(t => !indexedTasks.has(t.id)).length}\n`;
@@ -305,7 +323,7 @@ export async function handleRebuildTaskIndex(args: RebuildTaskIndexArgs): Promis
 		if (!dry_run && newItems.length > 0) {
 			const allTasks = [...currentHistory, ...newItems].sort((a, b) => b.ts - a.ts);
 			const updatedState = { ...state, taskHistory: allTasks };
-			await writeRooState(updatedState);
+			await writeRooState(updatedState, vscdbKey);
 
 			report += `## Result: INDEX UPDATED\n\n`;
 			report += `**Tasks added:** ${addedCount}\n`;

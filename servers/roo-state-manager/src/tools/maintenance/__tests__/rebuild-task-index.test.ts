@@ -27,6 +27,26 @@ const { mockAnalyzeConversation } = vi.hoisted(() => ({
 	mockAnalyzeConversation: vi.fn()
 }));
 
+// #2766 W1 — sqlite3 run-callback `this.changes` value (1 = UPDATE matched the
+// key row; 0 = key row missing). The shared db.run mock binds it as `this`.
+const { mockChanges, resolveKeyCalls } = vi.hoisted(() => ({
+	mockChanges: { current: 1 },
+	resolveKeyCalls: vi.fn()
+}));
+
+// #2766 W1 — count resolveActiveVscdbKey() invocations without changing its
+// behaviour (partial mock: everything else comes from the actual module).
+vi.mock('../../../utils/extension-paths.js', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../../../utils/extension-paths.js')>();
+	return {
+		...actual,
+		resolveActiveVscdbKey: (...args: []) => {
+			resolveKeyCalls();
+			return actual.resolveActiveVscdbKey(...args);
+		}
+	};
+});
+
 vi.mock('fs', async () => {
 	const actual = await vi.importActual<typeof import('fs')>('fs');
 	return {
@@ -94,7 +114,8 @@ describe('rebuild-task-index', () => {
 		});
 		mockDb.close.mockImplementation((cb: Function) => cb(null));
 		mockDb.run.mockImplementation((_sql: string, _params: unknown[], cb: Function) => {
-			if (cb) cb(null);
+			// Bind `this.changes` like the real sqlite3 run callback (#2766 W1)
+			if (cb) cb.call({ changes: mockChanges.current }, null);
 		});
 	});
 
@@ -567,6 +588,76 @@ describe('rebuild-task-index', () => {
 			expect(mockDb.run).toHaveBeenCalledTimes(1);
 			expect(mockDb.run.mock.calls[0][1][1]).toBe('ZooCodeOrganization.zoo-code');
 			expect((result.content[0] as any).text).toContain('INDEX UPDATED');
+		});
+
+		// ============================================================
+		// #2766 W1 — hardening: (1) the UPDATE must assert it affected
+		// exactly 1 row (a missing key row otherwise no-ops silently),
+		// (2) the vscdb key is resolved ONCE per invocation and shared by
+		// read + write (two probes could disagree if the filesystem flips
+		// mid-invocation), (3) the report exposes the resolved key.
+		// ============================================================
+		describe('#2766 W1 — changes guard + single key resolution per invocation', () => {
+			beforeEach(() => {
+				delete process.env.ROO_EXTENSION_ID;
+				delete process.env.ROO_VSCDB_KEY;
+				mockChanges.current = 1;
+				mockExistsSync.mockImplementation((p: unknown) =>
+					String(p).includes('zoocodeorganization.zoo-code') || String(p).endsWith('state.vscdb'));
+			});
+
+			afterEach(() => {
+				mockExistsSync.mockReturnValue(true);
+				mockChanges.current = 1;
+			});
+
+			function liveWriteSetup(): void {
+				mockDb.get.mockImplementation((_sql: string, _params: unknown[], cb: Function) => {
+					cb(null, { value: JSON.stringify({ taskHistory: [] }) });
+				});
+				mockReaddir
+					.mockResolvedValueOnce(['orphan-id'])
+					.mockResolvedValueOnce(['api_conversation_history.json']);
+				mockStat.mockResolvedValue({
+					isDirectory: () => true,
+					mtime: new Date('2026-06-01T00:00:00Z'),
+					birthtime: new Date('2026-06-01T00:00:00Z')
+				});
+				mockAnalyzeConversation.mockResolvedValue(null);
+			}
+
+			test('errors when the UPDATE affects 0 rows (key row missing) instead of silent no-op', async () => {
+				liveWriteSetup();
+				mockChanges.current = 0; // UPDATE matched no row — key absent from ItemTable
+
+				const result = await handleRebuildTaskIndex({ dry_run: false });
+
+				expect(result.isError).toBe(true);
+				expect((result.content[0] as any).text).toContain('affected 0 rows');
+				expect((result.content[0] as any).text).toContain('ZooCodeOrganization.zoo-code');
+			});
+
+			test('resolves the vscdb key exactly once per invocation (read and write share it)', async () => {
+				liveWriteSetup();
+
+				const result = await handleRebuildTaskIndex({ dry_run: false });
+
+				// Pre-fix: readRooState and writeRooState each resolve → 2 calls
+				expect(resolveKeyCalls).toHaveBeenCalledTimes(1);
+				// The SAME key is bound in the SELECT (read) and the UPDATE (write)
+				const readKey = mockDb.get.mock.calls[0][1][0];
+				const writeKey = mockDb.run.mock.calls[0][1][1];
+				expect(writeKey).toBe(readKey);
+				expect((result.content[0] as any).text).toContain('INDEX UPDATED');
+			});
+
+			test('reports the resolved vscdb key for operator observability', async () => {
+				mockReaddir.mockResolvedValueOnce([]); // no tasks on disk
+
+				const result = await handleRebuildTaskIndex({ dry_run: true });
+
+				expect((result.content[0] as any).text).toContain('**VSCDB key:** ZooCodeOrganization.zoo-code');
+			});
 		});
 	});
 });
