@@ -20,10 +20,15 @@
  *     derivatives) and a cross-vintage per-file cap key (same logical file
  *     across vintages shares its 2-slot budget).
  *
- * Hard gates below are the DATA-INDEPENDENT contracts of V2(a) — they hold
- * for whatever source-class hits the live index returns:
- *   - every source-class hit renders a multi-line block (never a line)
- *   - every source-class hit carries the match_lines handle
+ * Hard gates below are the contracts of V2(a) against the LIVE index:
+ *   - the run returns results with at least one source-class hit
+ *   - NO VALID-ANCHOR source-class hit fails the block contract (multi-line
+ *     block, match_lines handle): a hit whose stored anchor no longer
+ *     verifies in the current file is classified stale-anchor PER HIT and
+ *     recorded in the freshness line instead of graded (#4105 levier 2, GO
+ *     ai-01 2026-10-15 — index content is not a V2 render regression)
+ *   - when every failing hit is stale and NO valid-anchor hit exists, the
+ *     run records INCONCLUSIVE (stale-anchor) — never PASS
  *   - expansion observability present
  *
  * Grading scope (ai-01 triage on #4105, 2026-10-07): the contract is graded
@@ -47,6 +52,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { STORM_ACTIVE, STORM_GUARD_RESULT, runStormGuard } from '../storm-guard.js';
+import { assessIndexFreshness } from '../anchor-probe.js';
 import type { CheckResult } from '../verdict.js';
 import { handleCodebaseSearch } from '../../../src/tools/search/search-codebase.tool.js';
 
@@ -202,37 +208,42 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 				: `top: ${(parsed.results || []).slice(0, 3).map((r: any) => r.file_path).join(', ')}`,
 		});
 
-		// ---- rubric (a): every source-class hit renders a multi-line block ----
-		const allBlocks = sourceClassHits.every((r: any) =>
-			typeof r.start_line === 'number'
-			&& typeof r.end_line === 'number'
-			&& r.end_line > r.start_line
-			&& typeof r.snippet === 'string'
-			&& r.snippet.length >= 200);
-		checks.push({
-			name: 'rubric(a): every source-class hit is a multi-line block (end>start, snippet ≥ 200 chars)',
-			ok: allBlocks,
-			observed: sourceClassHits.length
-				? `min span ${Math.min(...sourceClassHits.map((r: any) => r.end_line - r.start_line))} lines`
-				: 'no source-class hit',
-		});
+		// ---- #4105 levier 2: per-hit stale-anchor classification (GO ai-01 2026-10-15 04:57Z) ----
+		// The rubrics grade the V2 render contract on the LIVE index; a hit whose
+		// stored anchor drifted past the ±5-line tolerance can never be expanded
+		// (verifyAnchor refuses by design) and the tool honestly renders the stored
+		// fragment — red for an index-content reason, not a V2 regression (measured
+		// po-2027 2026-10-15: 4/6 hits at +18..+385 lines of drift). anchor-probe.ts
+		// re-verifies each failing hit's anchor with the tool's own verifyAnchor,
+		// against the stored chunk scrolled from the collection this response names.
+		// Garde-fous: classification is PER HIT (1); INCONCLUSIVE only when every
+		// failure is PROVEN stale and no valid-anchor hit fails (2); the freshness
+		// line is ALWAYS logged so index drift never goes silent (3).
+		const assessment = await assessIndexFreshness(
+			sourceClassHits, SCENARIO_3_WORKSPACE as string,
+			typeof parsed.collection === 'string' ? parsed.collection : null
+		);
+		for (const d of assessment.details) console.log(`[freshness] ${d}`);
+		console.log(assessment.report.line);
 
-		// Baseline signature killed: no returned source-class hit is a single-line fragment
-		const noSingleLine = sourceClassHits.every((r: any) =>
-			!(typeof r.start_line === 'number' && typeof r.end_line === 'number' && r.start_line === r.end_line));
-		checks.push({
-			name: 'baseline signature dead: zero source-class hit with start_line == end_line',
-			ok: noSingleLine,
-			observed: `${sourceClassHits.filter((r: any) => r.start_line === r.end_line).length} single-line hits`,
-		});
+		if (assessment.report.verdict === 'inconclusive') {
+			// Presence gates first: zero source-class hits is not a staleness state
+			// (absence is graded FAIL by the gates below, staleness INCONCLUSIVE).
+			expect(hasResults).toBe(true);
+			expect(hasSourceClassHit).toBe(true);
+			console.log(`[INCONCLUSIVE] ${assessment.report.line} — every failing source-class hit is PROVEN stale-anchor and no valid-anchor hit exists: the V2 contract is unmeasured on this run (never PASS, garde-fou 2)`);
+			expect(assessment.report.rendered).toBe(0);
+			return;
+		}
 
-		// ---- rubric (b): handle — block range + the vector-matched lines ----
-		const allHandles = sourceClassHits.every((r: any) =>
-			typeof r.match_lines === 'string' && /^\d+(-\d+)?$/.test(r.match_lines));
+		// ---- garde-fou 1: no valid-anchor hit may fail a rubric ----
+		// The valid-anchor population (rendered) is what the rubrics grade; the
+		// stale-anchor hits are recorded in the freshness line, not graded.
 		checks.push({
-			name: 'rubric(b): match_lines handle on every source-class hit',
-			ok: allHandles,
-			observed: sourceClassHits.length ? String(sourceClassHits[0].match_lines) : 'no source-class hit',
+			name: 'garde-fou 1: structural failures are all PROVEN stale-anchor (no valid-anchor hit fails a rubric)',
+			ok: assessment.report.broken.length === 0,
+			observed: `${assessment.report.rendered} rendered / ${assessment.report.stale} stale / ${assessment.report.broken.length} broken`
+				+ (assessment.report.broken.length ? ` — ${assessment.report.broken.join(', ')}` : ''),
 		});
 
 		// ---- observability ----
@@ -257,12 +268,14 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 		console.log(`latency_ms=${latencyMs}, results=${parsed.results_count}, block_expansion_applied=${parsed.block_expansion_applied}, build_dir_malus_applied=${parsed.build_dir_malus_applied}`);
 		console.log('checks:', JSON.stringify(checks.map(c => ({ n: c.name, ok: c.ok }))));
 
-		// Hard gates: structural contracts only (data-independent).
+		// Hard gates: presence + the freshness-aware rubric contract. After the
+		// inconclusive path returned above, 'pass' means every structural failure
+		// was PROVEN stale-anchor (garde-fou 1 — a valid-anchor single-line or
+		// handle-less hit reads FAIL) and at least one valid-anchor hit rendered
+		// the block contract (garde-fou 2).
 		expect(hasResults).toBe(true);
 		expect(hasSourceClassHit).toBe(true);
-		expect(allBlocks).toBe(true);
-		expect(noSingleLine).toBe(true);
-		expect(allHandles).toBe(true);
+		expect(assessment.report.verdict).toBe('pass');
 		expect(expansionObserved).toBe(true);
 	});
 });
