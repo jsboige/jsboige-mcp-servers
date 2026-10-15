@@ -4940,6 +4940,14 @@ export interface DashboardSummary {
   intercomLength?: number;
   totalLength?: number;
   utilizationPct?: number;
+  /**
+   * #4187 — le fichier GDrive et le miroir PG de cette clé divergent au-delà
+   * du seuil : les compteurs de CETTE entrée viennent de la surface servie
+   * (PG), l'autre surface est périmée. Un consommateur qui agit (merge,
+   * purge, triage) doit relier par `read` avant de se fier aux chiffres.
+   */
+  mirrorDiverged?: boolean;
+  mirrorDivergedDetail?: string;
 }
 
 /** Echo of effective request parameters (after defaults applied) */
@@ -6793,6 +6801,44 @@ export function detectDashboardForks(keys: string[]): DashboardForkGroup[] {
     .sort((a, b) => a.canonical.localeCompare(b.canonical));
 }
 
+// #4187 — garde de divergence de fraîcheur entre les deux surfaces d'une clé.
+// L'incident claudish : un writer qui perd sa moitié PG (env emporté, #2767)
+// continue d'écrire le fichier seul — le miroir PG fige les compteurs
+// d'avant-panne et `list` (PG-first, ms#1432) sert alors des chiffres périmés
+// de façon *cohérente*. Le seuil couvre la latence normale du dual-write
+// (sub-seconde ; DriveFS mesuré jusqu'à ~68 s) avec un ordre de marge.
+export const MIRROR_DIVERGENCE_THRESHOLD_MS = 10 * 60 * 1000;
+
+export interface MirrorDivergence {
+  diverged: boolean;
+  direction?: 'file-newer' | 'pg-newer';
+  gapMs?: number;
+}
+
+/**
+ * #4187 — pure core, exportée pour tests : classe deux horodatages de
+ * surfaces. Une seule surface présente, ou horodatage illisible → pas de
+ * divergence mesurable (fail-open, jamais un faux positif d'alarme).
+ */
+export function classifyMirrorDivergence(
+  pgLastModifiedIso: string | undefined,
+  fileMtimeMs: number | undefined,
+  thresholdMs: number = MIRROR_DIVERGENCE_THRESHOLD_MS
+): MirrorDivergence {
+  if (!pgLastModifiedIso || fileMtimeMs === undefined) {
+    return { diverged: false };
+  }
+  const pgMs = Date.parse(pgLastModifiedIso);
+  if (Number.isNaN(pgMs)) return { diverged: false };
+  const gapMs = fileMtimeMs - pgMs;
+  if (Math.abs(gapMs) <= thresholdMs) return { diverged: false };
+  return {
+    diverged: true,
+    direction: gapMs > 0 ? 'file-newer' : 'pg-newer',
+    gapMs: Math.abs(gapMs),
+  };
+}
+
 async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
   // #3459: fail-closed. A missing store must never be reported as "0 dashboards".
   try {
@@ -6833,6 +6879,17 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
         const dashboard = await readDashboardFromPg(key);
         if (dashboard) {
           const sizes = buildSizes(dashboard);
+          // #4187 — fraîcheur fichier ↔ miroir PG (fs.stat seul, pas de
+          // re-lecture de contenu) : une entrée divergente porte des compteurs
+          // suspects, l'alarme ne mélange plus les deux surfaces en silence.
+          let fileMtimeMs: number | undefined;
+          try {
+            fileMtimeMs = (await fs.stat(getDashboardPath(key))).mtimeMs;
+          } catch {
+            // clé PG-sans-fichier : légitime (dashboard né dégradé, G-B) —
+            // une seule surface, pas une divergence.
+          }
+          const div = classifyMirrorDivergence(dashboard.lastModified, fileMtimeMs);
           summaries.push({
             key: dashboard.key,
             type: dashboard.type,
@@ -6842,7 +6899,20 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
             statusLength: sizes.statusLength,
             intercomLength: sizes.intercomLength,
             totalLength: sizes.totalLength,
-            utilizationPct: sizes.utilizationPct
+            utilizationPct: sizes.utilizationPct,
+            ...(div.diverged ? {
+              mirrorDiverged: true,
+              // Review ms#1440 : dans cette branche PG, les compteurs servis
+              // viennent TOUJOURS de PG — en file-newer PG est la moitié en
+              // retard (compteurs périmés), en pg-newer PG est la moitié
+              // fraîche (compteurs bons, c'est le fichier qui traîne — ou un
+              // skew d'horloge entre hôtes). L'attribution doit nommer la
+              // surface SERVIE, pas celle qui bouge.
+              mirrorDivergedDetail:
+                div.direction === 'file-newer'
+                  ? `fichier GDrive plus frais de ${Math.round((div.gapMs ?? 0) / 60000)} min — les compteurs servis viennent de la surface PG, périmée (#4187)`
+                  : `miroir PG plus frais de ${Math.round((div.gapMs ?? 0) / 60000)} min — les compteurs servis viennent de PG (surface fraîche) ; la moitié fichier est en retard (skew d'horloge entre hôtes possible) (#4187)`,
+            } : {}),
           });
         }
       } catch {
@@ -6886,6 +6956,15 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
             .join(' | ')}. Le même dashboard est lisible sous plusieurs clés : RELIRE le canonique avant d'agir sur un fork, et remède = roosync_dashboard merge (le rapport de merge dit si le contenu du fork est déjà contenu dans le canonique).`
         : '';
 
+      // #4187 — les entrées divergentes sont nommées dans le message : les
+      // compteurs (utilizationPct, intercomLength) de ces clés viennent d'une
+      // surface périmée, l'alarme qui s'y appuie ne doit pas crier sans dire
+      // qu'elle crie sur du mort (demande 2 de l'issue).
+      const divergedEntries = summaries.filter(s => s.mirrorDiverged);
+      const divergedNote = divergedEntries.length > 0
+        ? ` — ⚠️ ${divergedEntries.length} entrée(s) mirrorDiverged (#4187): ${divergedEntries.map(s => s.key).join(', ')} — fichier GDrive et miroir PG divergent, compteurs de ces clés suspects (relier par read avant d'agir)`
+        : '';
+
       return {
         success: true,
         action: 'list',
@@ -6894,7 +6973,7 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
         request: requestEcho,
         dashboards: summaries,
         ...(forks.length > 0 ? { forks } : {}),
-        message: `${summaries.length} dashboard(s) trouvé(s) [source: PG]${cleanupNote}${forkNote}`
+        message: `${summaries.length} dashboard(s) trouvé(s) [source: PG]${cleanupNote}${forkNote}${divergedNote}`
       };
     }
 
