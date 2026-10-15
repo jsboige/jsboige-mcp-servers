@@ -55,6 +55,10 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
   let messageManager: MessageManager;
 
   beforeEach(async () => {
+    // #4206 — garde à l'envoi : allow-list explicite des destinataires
+    // fixtures de ce harnais (hors forme myia-*), via le mécanisme prévu.
+    process.env.ROO_MENTION_EXTRA_RECIPIENTS = 'target,target-machine,test-machine';
+
     // Setup : créer répertoire temporaire
     const dirs = [
       testSharedStatePath,
@@ -74,6 +78,7 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
   });
 
   afterEach(async () => {
+    delete process.env.ROO_MENTION_EXTRA_RECIPIENTS;
     // Cleanup
     if (existsSync(testSharedStatePath)) {
       rmSync(testSharedStatePath, { recursive: true, force: true });

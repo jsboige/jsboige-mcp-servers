@@ -68,6 +68,11 @@ describe('roosyncSend', () => {
   let messageManager: MessageManager;
 
   beforeEach(async () => {
+    // #4206 — garde à l'envoi : allow-list explicite des destinataires
+    // fixtures de ce harnais (hors forme myia-*), via le mécanisme prévu.
+    process.env.ROO_MENTION_EXTRA_RECIPIENTS =
+      'm1,m2,m3,other-machine,target,target-machine,test-machine';
+
     // Setup : créer répertoire temporaire pour tests isolés
     const dirs = [
       testSharedStatePath,
@@ -87,6 +92,7 @@ describe('roosyncSend', () => {
   });
 
   afterEach(async () => {
+    delete process.env.ROO_MENTION_EXTRA_RECIPIENTS;
     // Cleanup : supprimer répertoire test pour isolation
     if (existsSync(testSharedStatePath)) {
       rmSync(testSharedStatePath, { recursive: true, force: true });

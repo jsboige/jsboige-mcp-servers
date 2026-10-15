@@ -63,6 +63,10 @@ describe('roosyncSend - Edge Cases', () => {
     process.env.ROOSYNC_AUTO_SYNC = 'false';
     process.env.ROOSYNC_CONFLICT_STRATEGY = 'manual';
     process.env.ROOSYNC_LOG_LEVEL = 'info';
+    // #4206 — garde à l'envoi : allow-list explicite des destinataires
+    // fixtures de ce harnais (hors forme myia-*), via le mécanisme prévu.
+    // afterEach restaure process.env = originalEnv (plus haut dans ce hook).
+    process.env.ROO_MENTION_EXTRA_RECIPIENTS = 'target,target-machine';
 
     // Setup : créer répertoire temporaire
     const dirs = [
@@ -303,7 +307,7 @@ const code = "block";
       const promises = Array.from({ length: 10 }, (_, i) =>
         roosyncSend({
           action: 'send',
-          to: `machine-${i}`,
+          to: `myia-machine-${i}`, // #4206 : forme flotte pour passer le garde
           subject: `Concurrent message ${i}`,
           body: `Body ${i}`
         })

@@ -28,9 +28,15 @@ vi.mock('../../services/lazy-roosync.js', () => ({
   }),
 }));
 
-vi.mock('../../utils/dashboard-helpers.js', () => ({
-  updateDashboardActivityAsync: async () => undefined,
-}));
+// #4206 — passthrough RÉEL du garde à l'envoi (destinataires myia-*),
+// seul updateDashboardActivityAsync reste mocké.
+vi.mock('../../utils/dashboard-helpers.js', async () => {
+  const actual = await vi.importActual('../../utils/dashboard-helpers.js');
+  return {
+    ...(actual as object),
+    updateDashboardActivityAsync: async () => undefined,
+  };
+});
 
 // roosync_send exige la capability 'sharedPath' (TOOL_CAPABILITIES) — sans
 // ce mock le capability guard bloquerait l'outil avant le switch en env de

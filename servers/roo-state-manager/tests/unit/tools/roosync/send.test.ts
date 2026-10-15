@@ -84,9 +84,16 @@ vi.mock('../../../../src/tools/roosync/heartbeat-activity.js', () => ({
     recordRooSyncActivityAsync: mockRecordActivity,
 }));
 
-vi.mock('../../../../src/utils/dashboard-helpers.js', () => ({
-    updateDashboardActivityAsync: mockUpdateDashboardActivity,
-}));
+// #4206 — garde à l'envoi : passthrough RÉEL (importActual) + le mock
+// d'activité. Le garde doit tourner sur ces envois (destinataires myia-*)
+// pour que ce harnais mesure aussi une éventuelle régression du garde.
+vi.mock('../../../../src/utils/dashboard-helpers.js', async () => {
+    const actual = await vi.importActual('../../../../src/utils/dashboard-helpers.js');
+    return {
+        ...(actual as object),
+        updateDashboardActivityAsync: mockUpdateDashboardActivity,
+    };
+});
 
 vi.mock('../../../../src/utils/logger.js', () => ({
     createLogger: () => ({
