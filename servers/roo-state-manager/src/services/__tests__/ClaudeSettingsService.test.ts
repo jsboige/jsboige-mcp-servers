@@ -177,6 +177,17 @@ describe('buildSnapshot — non-divulgation des secrets à la sérialisation', (
     expect(snap.projectionHash).toBe(hashProjection(snap.harmonization));
   });
 
+  test('#4186 : clé allow-listée au nom contenant TOKEN (MAX_CONTEXT_TOKENS) non masquée', async () => {
+    const read = await readClaudeSettingsFileFrom(settingsPath, {
+      env: { CLAUDE_CODE_MAX_CONTEXT_TOKENS: 280000 },
+    });
+    const snap = buildSnapshot(read, 'machine-x', '2026-09-08T10:00:00Z');
+    // La valeur (un entier non secret) reste observable à distance
+    expect(snap.maskedEnvKeys['CLAUDE_CODE_MAX_CONTEXT_TOKENS']).toBeUndefined();
+    expect(snap.harmonization['env.CLAUDE_CODE_MAX_CONTEXT_TOKENS']).toBe(280000);
+    expect(snap.state).toBe('ok');
+  });
+
   test('état missing snapshoté tel quel (couverture détectable côté compare)', async () => {
     const read = await readClaudeSettingsFile(settingsPath); // absent
     const snap = buildSnapshot(read, 'machine-x', '2026-09-08T10:00:00Z');
@@ -207,6 +218,14 @@ describe('validateCanon — allow-list + valeurs sûres', () => {
   test('chemin sensible rejeté même s il était allow-listé', () => {
     const v = validateCanon({ ...baseCanon, keys: { 'env.ANTHROPIC_API_KEY': 'whatever' } });
     expect(v.valid).toBe(false);
+  });
+
+  // #4186 — non-régression : clé allow-listée dont le nom contient la
+  // sous-chaine `TOKEN` (dans `TOKENS`) doit être ACCEPTÉE, pas rejetée
+  // par le détecteur de secrets /TOKEN/i.
+  test('#4186 : env.CLAUDE_CODE_MAX_CONTEXT_TOKENS allow-listée passe la validation', () => {
+    const v = validateCanon({ ...baseCanon, keys: { 'env.CLAUDE_CODE_MAX_CONTEXT_TOKENS': 1000000 } });
+    expect(v.valid).toBe(true);
   });
 
   test('valeur au pattern secret rejetée (sk-, ghp_, hex64, BEGIN KEY)', () => {
@@ -347,6 +366,36 @@ describe('applyCanonToFile', () => {
     const res2 = await applyCanonToFile(settingsPath, canon, { now: () => '2026-09-08T10:00:00Z', backup: false });
     expect(readFileSync(settingsPath, 'utf-8')).toBe(first);
     expect(res2.skipped.some(s => s.reason === 'déjà conforme')).toBe(true);
+  });
+
+  test('#4185 défaut 2 : apply no-op RELIT le fichier (observé depuis une relecture, pas recopié)', async () => {
+    // Chemin !wouldWrite : l'ancien code recopiait observedHash = expectedHash SANS
+    // relire (vérification tautologique). La fix relit le fichier et hashe la
+    // projection réellement observée.
+    //
+    // Note de méthode : à no-op, expectedHash est calculé sur `working` qui egale
+    // toujours le contenu fichier (clés conformes ou préservées) — AUCUN état
+    // on-disk statique ne discrimine l'ancien du nouveau code. Le cas
+    // discriminant est une mutation on-disk ENTRE la lecture de préparation et la
+    // vérification (le test falsifiable ai-01), non déterministe en unitaire sans
+    // injection de la fonction de lecture. Ce test épingle le contrat observable :
+    // observedHash = hash de la projection RELUE du disque, recalculée
+    // indépendamment.
+    const enforceCanon: CanonPayload = {
+      version: '2026.09.08-1',
+      mode: 'enforce-value',
+      keys: { 'env.ANTHROPIC_BASE_URL': 'https://relay.example' },
+    };
+    // Fichier déjà conforme => no-op (!wouldWrite).
+    writeSettings({ env: { ANTHROPIC_BASE_URL: 'https://relay.example' } });
+    const res = await applyCanonToFile(settingsPath, enforceCanon, { now: () => '2026-09-08T10:00:00Z', backup: false });
+    expect(res.verification?.performed).toBe(true);
+    expect(res.verification?.success).toBe(true);
+    // L'observé est le hash de la projection relue du fichier réel — recalculé
+    // ici indépendamment depuis le disque, pas une recopie de expectedHash.
+    const onDisk = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    const expectedObserved = hashProjection(projectSettings(onDisk));
+    expect(res.verification?.observedHash).toBe(expectedObserved);
   });
 
   test('fail closed : fichier invalide => aucun write', async () => {

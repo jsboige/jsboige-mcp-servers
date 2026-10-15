@@ -476,7 +476,11 @@ export function buildSnapshot(
     : {};
   const maskedEnvKeys: Record<string, string> = {};
   for (const k of Object.keys(env).sort()) {
-    if (isSensitiveKey(k)) maskedEnvKeys[k] = maskSecretValue(env[k]);
+    // #4186 — Ne pas masquer une clé explicitement allow-listée (ex.
+    // env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, un entier non secret) : sinon la
+    // valeur reste inobservable à distance même après correction du validateur.
+    // Note : k est le nom nu (sans préfixe 'env.'), d'où le préfixage.
+    if (isSensitiveKey(k) && !isAllowedKeyPath(`env.${k}`)) maskedEnvKeys[k] = maskSecretValue(env[k]);
   }
   const covered = new Set(['env', ...ALLOWED_KEY_PATHS.map(p => p.split('.')[0])]);
   const otherTopLevelKeys = Object.keys(read.settings)
@@ -543,7 +547,12 @@ export function validateCanon(canon: CanonPayload): CanonValidationResult {
       problems.push(`chemin non allow-listé: ${path}`);
       continue;
     }
-    if (isSensitiveKey(path)) {
+    // #4186 — Precedence explicite : un chemin allow-listé est une décision
+    // humaine revue, il est ACQUITTE du test de sensibilité (heuristique).
+    // Sans ce garde, `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` (allow-listé) est
+    // rejeté à vie par /TOKEN/i car la sous-chaine `TOKEN` est contenue dans
+    // `TOKENS` — le deny-list écrasait l'allow-list du même fichier.
+    if (isSensitiveKey(path) && !isAllowedKeyPath(path)) {
       problems.push(`chemin sensible interdit dans un canon: ${path}`);
       continue;
     }
@@ -653,12 +662,24 @@ export async function applyCanonToFile(
   }
 
   if (!wouldWrite) {
-    // Rien à écrire — idempotent
+    // Rien à écrire — idempotent. #4185 défaut 2 : la vérification n'est PAS
+    // fabriquée ici (`observedHash` recopié depuis `expectedHash` ne prouve rien) —
+    // on RELIT le fichier et on hashe la projection réellement observée, comme sur
+    // le chemin d'écriture. Sur un no-op l'observé devrait égaler l'attendu ; un
+    // écart signe une falsification on-disk entre lectures (ex. test falsifiable
+    // ai-01 : valeur modifiée sur disque puis apply rendait PASS).
+    const reread = await readClaudeSettingsFile(settingsPath);
+    const noopObservedHash = hashProjection(projectSettings(reread.settings, options.exemptedPaths || []));
     return {
       applied: true,
       changes,
       skipped,
-      verification: { performed: true, success: true, observedHash: expectedHash, expectedHash },
+      verification: {
+        performed: true,
+        success: noopObservedHash === expectedHash,
+        observedHash: noopObservedHash,
+        expectedHash,
+      },
     };
   }
 

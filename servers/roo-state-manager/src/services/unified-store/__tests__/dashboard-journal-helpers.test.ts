@@ -203,6 +203,13 @@ describe('G-C escalation CLI surface (drift-guard on the CLI source)', () => {
     expect(lockCall).toBeGreaterThan(-1);
     expect(readCall).toBeGreaterThan(-1);
     expect(lockCall).toBeLessThan(readCall);
+    // G-C step 2 (APPROVE ms#1425 follow-up): the read sits INSIDE the
+    // try/finally — a throwing read releases the lock via the finally instead
+    // of leaking it to its TTL. The first `try {` after the lock is the
+    // enclosing one (nothing throws between the two).
+    const tryCall = cliCode.indexOf('try {', lockCall);
+    expect(tryCall).toBeGreaterThan(-1);
+    expect(readCall).toBeGreaterThan(tryCall);
   });
   it('reads the base via readDashboardFile, never readDashboardFromPg (review item 2, #3782)', () => {
     expect(cli).toContain('readDashboardFile');

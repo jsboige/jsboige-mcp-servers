@@ -8,17 +8,21 @@
  * Expected behaviour during Qdrant indexing storm: probe latency > threshold,
  * storm guard fires, all tests return INCONCLUSIVE — this is correct.
  *
- * @issue Epic #2609 V1
+ * #2609 V2 / #4104 (split-timing): probe 2 now times the embedding call and
+ * the Qdrant search SEPARATELY. A degraded embedding path (~15 s/call, Qdrant
+ * healthy and fast) fires the guard as `slow_embedding` — still INCONCLUSIVE,
+ * but the verdict names the embedder as the cause instead of a storm. The
+ * classification logic lives in storm-guard-classification.ts (pure, CI-tested).
+ *
+ * @issue Epic #2609 V2
  */
 
 import type { StormGuardResult } from './verdict.js';
+import { classifyStormGuard, resolveStormGuardThresholds } from './storm-guard-classification.js';
 import { handleDiagnoseSemanticIndex } from '../../src/tools/indexing/diagnose-index.tool.js';
 import { getQdrantClient } from '../../src/services/qdrant.js';
 import getOpenAIClient, { getEmbeddingModel } from '../../src/services/openai.js';
 import type { ConversationSkeleton } from '../../src/types/conversation.js';
-
-/** Default latency threshold in ms (8 s). Override via EVAL_STORM_LATENCY_MS. */
-const DEFAULT_STORM_LATENCY_MS = 8000;
 
 /** Module-level storm state — set by runStormGuard, read by tool tests. */
 export let STORM_ACTIVE = false;
@@ -26,20 +30,20 @@ export let STORM_GUARD_RESULT: StormGuardResult = {
   active: false,
   probe_latency_ms: 0,
   diagnose_status: 'not_run',
+  classification: 'ok',
 };
 
 /**
  * Run the storm guard probes. Sets STORM_ACTIVE and STORM_GUARD_RESULT.
  *
- * Probe 1: handleDiagnoseSemanticIndex (status !== 'healthy' → INCONCLUSIVE)
- * Probe 2: one tiny embedding + qdrant.search (wall-clock > threshold → INCONCLUSIVE)
+ * Probe 1: handleDiagnoseSemanticIndex (status !== 'healthy' → storm, unmeasured legs)
+ * Probe 2: one tiny embedding (timed) + qdrant.search (timed) — each leg judged
+ * against its own threshold; see storm-guard-classification.ts for precedence.
  *
  * Safe to call multiple times; uses the same singleton state.
  */
 export async function runStormGuard(): Promise<StormGuardResult> {
-  const stormLatencyMs =
-    parseInt(process.env.EVAL_STORM_LATENCY_MS ?? String(DEFAULT_STORM_LATENCY_MS), 10) ||
-    DEFAULT_STORM_LATENCY_MS;
+  const thresholds = resolveStormGuardThresholds(process.env);
 
   let diagnoseStatus = 'unknown';
   let diagnoseErrors: string[] = [];
@@ -62,57 +66,59 @@ export async function runStormGuard(): Promise<StormGuardResult> {
     diagnoseErrors = [err?.message ?? String(err)];
   }
 
-  if (diagnoseStatus !== 'healthy') {
-    const result: StormGuardResult = {
-      active: true,
-      probe_latency_ms: 0,
-      diagnose_status: diagnoseStatus,
-      reason: `Qdrant index not healthy (status=${diagnoseStatus}). Errors: ${diagnoseErrors.join('; ')}`,
-    };
-    STORM_ACTIVE = true;
-    STORM_GUARD_RESULT = result;
-    return result;
-  }
-
-  // ---- Probe 2: Latency probe (embedding + Qdrant search) ----
+  // ---- Probe 2: Latency probe (embedding + Qdrant search, timed separately) ----
   const collectionName = process.env.QDRANT_COLLECTION_NAME ?? 'roo_tasks_semantic_index';
   const probeStart = Date.now();
-  let probeLatencyMs = 0;
+  let embeddingLatencyMs: number | undefined;
+  let searchLatencyMs: number | undefined;
   let probeError: string | undefined;
 
-  try {
-    const openai = getOpenAIClient();
-    const model = getEmbeddingModel();
-    const embeddingResp = await openai.embeddings.create({
-      model,
-      input: 'storm guard probe',
-    });
-    const vector = embeddingResp.data[0].embedding;
+  if (diagnoseStatus === 'healthy') {
+    try {
+      const openai = getOpenAIClient();
+      const model = getEmbeddingModel();
+      const embedStart = Date.now();
+      const embeddingResp = await openai.embeddings.create({
+        model,
+        input: 'storm guard probe',
+      });
+      embeddingLatencyMs = Date.now() - embedStart;
+      const vector = embeddingResp.data[0].embedding;
 
-    const qdrant = getQdrantClient();
-    await qdrant.search(collectionName, { vector, limit: 1 });
-
-    probeLatencyMs = Date.now() - probeStart;
-  } catch (err: any) {
-    probeLatencyMs = Date.now() - probeStart;
-    probeError = err?.message ?? String(err);
+      const qdrant = getQdrantClient();
+      const searchStart = Date.now();
+      await qdrant.search(collectionName, { vector, limit: 1 });
+      searchLatencyMs = Date.now() - searchStart;
+    } catch (err: any) {
+      probeError = err?.message ?? String(err);
+    }
   }
+  // Legacy combined figure — kept for verdict.ts compatibility.
+  const probeLatencyMs = Date.now() - probeStart;
 
-  const stormActive = probeError !== undefined || probeLatencyMs > stormLatencyMs;
-  const reason = probeError
-    ? `Probe failed: ${probeError}`
-    : stormActive
-    ? `Probe latency ${probeLatencyMs}ms > threshold ${stormLatencyMs}ms (indexing storm suspected)`
-    : undefined;
+  // ---- Classification (pure — see storm-guard-classification.ts) ----
+  const decision = classifyStormGuard(
+    {
+      diagnose_status: diagnoseStatus,
+      diagnose_errors: diagnoseErrors,
+      embedding_latency_ms: embeddingLatencyMs,
+      search_latency_ms: searchLatencyMs,
+      probe_error: probeError,
+    },
+    thresholds
+  );
 
   const result: StormGuardResult = {
-    active: stormActive,
+    active: decision.active,
     probe_latency_ms: probeLatencyMs,
     diagnose_status: diagnoseStatus,
-    reason,
+    reason: decision.reason,
+    classification: decision.classification,
+    embedding_latency_ms: embeddingLatencyMs,
+    search_latency_ms: searchLatencyMs,
   };
 
-  STORM_ACTIVE = stormActive;
+  STORM_ACTIVE = decision.active;
   STORM_GUARD_RESULT = result;
   return result;
 }
