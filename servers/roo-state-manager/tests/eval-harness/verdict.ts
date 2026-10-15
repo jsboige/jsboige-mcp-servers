@@ -8,6 +8,8 @@
  * @issue Epic #2609 V1
  */
 
+import type { StormClassification } from './storm-guard-classification.js';
+
 export type VerdictOutcome = 'PASS' | 'FAIL' | 'INCONCLUSIVE';
 
 export interface CheckResult {
@@ -39,12 +41,22 @@ export interface ToolVerdict {
 export interface StormGuardResult {
   /** Whether the storm guard fired (latency too high or Qdrant unhealthy) */
   active: boolean;
-  /** Latency measured by the probe embedding + search in ms */
+  /** Combined latency of the probe embedding + search in ms (legacy field) */
   probe_latency_ms: number;
   /** Status from handleDiagnoseSemanticIndex */
   diagnose_status: string;
   /** Reason if active */
   reason?: string;
+  /**
+   * #2609 V2 / #4104: cause classification — 'ok' | 'storm' | 'slow_embedding'
+   * | 'probe_failed'. Distinguishes a degraded embedding path (Qdrant healthy)
+   * from a genuine indexing storm.
+   */
+  classification: StormClassification;
+  /** Embedding leg alone in ms (undefined if probe 1 short-circuited or the leg threw) */
+  embedding_latency_ms?: number;
+  /** Qdrant search leg alone in ms (undefined if probe 1 short-circuited or the leg threw) */
+  search_latency_ms?: number;
 }
 
 export interface HarnessRun {
@@ -92,7 +104,7 @@ export function printRunReport(run: HarnessRun): void {
   console.log(`Config   : Qdrant=${run.config.qdrant_url} collection=${run.config.collection}`);
   console.log(`DualWrite: ${run.config.dual_write}`);
   console.log('---');
-  console.log(`Storm guard: active=${storm_guard.active} latency=${storm_guard.probe_latency_ms}ms diagnose=${storm_guard.diagnose_status}`);
+  console.log(`Storm guard: active=${storm_guard.active} class=${storm_guard.classification} latency=${storm_guard.probe_latency_ms}ms (embed=${storm_guard.embedding_latency_ms ?? 'n/a'}ms search=${storm_guard.search_latency_ms ?? 'n/a'}ms) diagnose=${storm_guard.diagnose_status}`);
   if (storm_guard.reason) console.log(`  Reason: ${storm_guard.reason}`);
   console.log('---');
   for (const v of verdicts) {
