@@ -85,6 +85,30 @@ export function isRecentlyActive(lastSeen: string, thresholdMs: number = DEFAULT
 }
 
 /**
+ * #4131 G-B lot 2 (B4) — render the activity-bearing markdown of a dashboard
+ * held as data (PG journal rows mapped by mapRowsToDashboard), in the exact
+ * message-header format the file writer emits (dashboard.ts `### [ts]
+ * machine|workspace`) so extractMachineActivity parses it identically to a
+ * GDrive file. Only the `### [ts] author` lines carry activity — the body
+ * content is included for debuggability, the `[msg: id]` line is not needed.
+ */
+export function renderDashboardActivityMarkdown(dashboard: {
+	status: { markdown: string };
+	intercom: { messages: Array<{ timestamp: string; content: string; author: { machineId: string; workspace: string } }> };
+}): string {
+	const messages = dashboard.intercom.messages
+		// #1123 (échappement Hermes #2, ms#1432 review) — le writer de fichier
+		// échappe les « ### [ » en début de ligne du CORPS (dashboard.ts) pour
+		// que le split d'extraction ne fabrique pas de faux blocs message : le
+		// render doit émettre le MÊME format, pas un corps brut. Une ligne
+		// « ### [ts] machine|ws » dans un corps produirait sinon une activité
+		// fantôme dans extractMachineActivity.
+		.map(m => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n${m.content.replace(/^### \[/gm, '\\#\\#\\# [')}`)
+		.join('\n\n');
+	return `${dashboard.status.markdown}\n${messages}`;
+}
+
+/**
  * Cross-check heartbeat-derived status against dashboard activity.
  *
  * For machines marked UNKNOWN (heartbeat stale) or IDLE by HeartbeatService,

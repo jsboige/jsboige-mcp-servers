@@ -31,10 +31,11 @@ import { mkdtemp, rm, readFile, writeFile, readdir } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
-const { mockDualWriteDashboardSync, mockReadDashboardFromPg, mockProbeHydration, llm } = vi.hoisted(() => ({
+const { mockDualWriteDashboardSync, mockReadDashboardFromPg, mockProbeHydration, mockListKeysFromPg, llm } = vi.hoisted(() => ({
     mockDualWriteDashboardSync: vi.fn().mockResolvedValue(undefined),
     mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
     mockProbeHydration: vi.fn().mockResolvedValue({ kind: 'empty' }),
+    mockListKeysFromPg: vi.fn().mockResolvedValue(null),
     llm: {
         enabled: false,
         create: vi.fn(),
@@ -46,6 +47,8 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   // null par défaut (sémantique lot 1 inchangée pour ces suites).
   isDashboardPgPrimary: vi.fn().mockReturnValue(false),
   readDashboardFromPgUngated: vi.fn().mockResolvedValue(null),
+  // B4 (incr. 2) : listing PG → null = pas d'histoire PG → chemin GDrive.
+  listRooSyncDashboardKeysFromPg: mockListKeysFromPg,
     readDashboardFromPg: mockReadDashboardFromPg,
   probeDashboardJournalForHydration: mockProbeHydration,
     dualWriteDashboardSync: mockDualWriteDashboardSync,
@@ -358,6 +361,8 @@ describe('roosync_dashboard — wt-cleanup archive copy is masked (#3584 limite 
         mockDualWriteDashboardSync.mockReset().mockResolvedValue(undefined);
         mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
 mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
+        // B4 : listing PG sans histoire → null (chemin GDrive de handleList).
+        mockListKeysFromPg.mockReset().mockResolvedValue(null);
         llm.enabled = false;
         llm.create.mockReset();
     });

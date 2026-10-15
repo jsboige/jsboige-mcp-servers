@@ -15,7 +15,8 @@ import { createLogger } from '../../utils/logger.js';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchives } from '../../utils/dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchives, renderDashboardActivityMarkdown } from '../../utils/dashboard-activity.js';
+import { listRooSyncDashboardKeysFromPg, readDashboardFromPg } from '../../services/unified-store/roosync-dashboard-store.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import * as os from 'os';
 
@@ -127,6 +128,27 @@ function getLocalMachineId(): string {
   return os.hostname().toLowerCase();
 }
 
+/**
+ * #4131 G-B lot 2 (B4) — dashboard contents from PG for the presence view:
+ * one markdown per key (activity headers reconstituted from the journal
+ * rows), or null when PG has no story — the caller then reads the GDrive
+ * mirror. Dashboards whose read fails are skipped (same tolerance as an
+ * unreadable file); an empty array is a valid answer (store reachable, no
+ * rows).
+ */
+async function collectDashboardContentsFromPg(): Promise<string[] | null> {
+  const keys = await listRooSyncDashboardKeysFromPg();
+  if (keys === null) return null;
+  const contents: string[] = [];
+  for (const key of keys) {
+    try {
+      const dashboard = await readDashboardFromPg(key);
+      if (dashboard) contents.push(renderDashboardActivityMarkdown(dashboard));
+    } catch { /* skip unreadable rows */ }
+  }
+  return contents;
+}
+
 async function collectSystemHealth(): Promise<{
   onlineCount: number;
   unknownCount: number;
@@ -154,19 +176,32 @@ async function collectSystemHealth(): Promise<{
 
   try {
     const dashboardsDir = join(sharedPath, 'dashboards');
-    if (!existsSync(dashboardsDir)) {
-      return {
-        onlineCount: 0, unknownCount: 0, totalCount: 0,
-        flags: ['DASHBOARDS_DIR_MISSING'], lastSeenByMachine: {}, unknownMachines: [],
-      };
-    }
+    // #4131 G-B lot 2 (B4): when the dashboard read gate is on, presence reads
+    // the PG journals — activity headers reconstituted in the exact format
+    // extractMachineActivity parses (renderDashboardActivityMarkdown). Null =
+    // no PG story (gate off / failure / 3s hang) → the GDrive mirror read
+    // below stands (fail-open). The dir check lives INSIDE the fallback: a
+    // host reading PG must not report DASHBOARDS_DIR_MISSING for a mirror it
+    // no longer reads.
+    const pgContents = await collectDashboardContentsFromPg();
+    let contents: string[];
+    if (pgContents !== null) {
+      contents = pgContents;
+    } else {
+      if (!existsSync(dashboardsDir)) {
+        return {
+          onlineCount: 0, unknownCount: 0, totalCount: 0,
+          flags: ['DASHBOARDS_DIR_MISSING'], lastSeenByMachine: {}, unknownMachines: [],
+        };
+      }
 
-    const dashboardFiles = readdirSync(dashboardsDir).filter(f => f.endsWith('.md'));
-    const contents: string[] = [];
-    for (const file of dashboardFiles) {
-      try {
-        contents.push(readFileSync(join(dashboardsDir, file), 'utf-8'));
-      } catch { /* skip unreadable */ }
+      const dashboardFiles = readdirSync(dashboardsDir).filter(f => f.endsWith('.md'));
+      contents = [];
+      for (const file of dashboardFiles) {
+        try {
+          contents.push(readFileSync(join(dashboardsDir, file), 'utf-8'));
+        } catch { /* skip unreadable */ }
+      }
     }
 
     // #2546: Use shared extractMachineActivity + isRecentlyActive (8h threshold)

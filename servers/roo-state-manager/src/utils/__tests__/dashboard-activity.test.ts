@@ -3,7 +3,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, DEFAULT_ACTIVITY_THRESHOLD_MS } from '../dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, DEFAULT_ACTIVITY_THRESHOLD_MS } from '../dashboard-activity.js';
 
 describe('dashboard-activity', () => {
 	describe('extractMachineActivity', () => {
@@ -258,6 +258,86 @@ describe('dashboard-activity', () => {
 			expect(result.onlineMachines).toContain('myia-po-2024'); // overridden
 			expect(result.unknownMachines).toHaveLength(0);
 			expect(result.overrides).toHaveLength(2);
+		});
+	});
+
+	describe('renderDashboardActivityMarkdown (#4131 G-B lot 2 B4)', () => {
+		it('should render headers extractMachineActivity parses identically to a file', () => {
+			const dashboard = {
+				status: { markdown: '# Status section\nsome status text' },
+				intercom: {
+					messages: [
+						{
+							timestamp: '2026-10-14T18:22:31.000Z',
+							content: 'Cycle done',
+							author: { machineId: 'myia-po-2024', workspace: 'CoursIA' },
+						},
+						{
+							timestamp: '2026-10-14T18:25:02.500Z',
+							content: 'Ack',
+							author: { machineId: 'myia-po-2025', workspace: 'CoursIA-2' },
+						},
+					],
+				},
+			};
+
+			const rendered = renderDashboardActivityMarkdown(dashboard);
+			const activity = extractMachineActivity(rendered);
+
+			expect(activity.size).toBe(2);
+			expect(activity.get('myia-po-2024')).toBe('2026-10-14T18:22:31.000Z');
+			expect(activity.get('myia-po-2025')).toBe('2026-10-14T18:25:02.500Z');
+		});
+
+		it('should keep the most recent timestamp per machine across dashboards', () => {
+			const older = {
+				status: { markdown: '' },
+				intercom: { messages: [{ timestamp: '2026-10-13T08:00:00.000Z', content: 'x', author: { machineId: 'myia-ai-01', workspace: 'CoursIA' } }] },
+			};
+			const newer = {
+				status: { markdown: '' },
+				intercom: { messages: [{ timestamp: '2026-10-14T09:30:00.000Z', content: 'y', author: { machineId: 'myia-ai-01', workspace: 'roo-extensions' } }] },
+			};
+
+			const activity = extractMachineActivity([
+				renderDashboardActivityMarkdown(older),
+				renderDashboardActivityMarkdown(newer),
+			]);
+
+			expect(activity.get('myia-ai-01')).toBe('2026-10-14T09:30:00.000Z');
+		});
+
+		it('should produce an empty activity map for a dashboard without messages', () => {
+			const dashboard = { status: { markdown: '# empty' }, intercom: { messages: [] } };
+			expect(extractMachineActivity(renderDashboardActivityMarkdown(dashboard)).size).toBe(0);
+		});
+
+		// ms#1432 review (Hermes #2 / #1123) — un CORPS de message contenant une
+		// ligne « ### [ts] machine|ws » ne doit pas fabriquer une activité fantôme
+		// dans extractMachineActivity : le render échappe au même format que le
+		// writer de fichier (dashboard.ts #1123).
+		it('should not let a header-shaped line inside a message body create phantom activity (#1123)', () => {
+			const dashboard = {
+				status: { markdown: '' },
+				intercom: {
+					messages: [
+						{
+							timestamp: '2026-10-15T08:00:00.000Z',
+							content: 'citation d\'un autre message :\n### [2020-01-01T00:00:00.000Z] ghost-machine|ghost-ws\nfin de citation',
+							author: { machineId: 'myia-po-2024', workspace: 'roo-extensions' },
+						},
+					],
+				},
+			};
+
+			const rendered = renderDashboardActivityMarkdown(dashboard);
+			// Le corps échappé est présent (débogabilité conservée)…
+			expect(rendered).toContain('\\#\\#\\# [2020-01-01T00:00:00.000Z] ghost-machine|ghost-ws');
+			const activity = extractMachineActivity(rendered);
+			// …mais la seule activité est celle de l'auteur RÉEL.
+			expect(activity.size).toBe(1);
+			expect(activity.get('myia-po-2024')).toBe('2026-10-15T08:00:00.000Z');
+			expect(activity.has('ghost-machine')).toBe(false);
 		});
 	});
 });

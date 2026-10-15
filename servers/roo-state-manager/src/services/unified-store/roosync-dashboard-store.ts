@@ -523,6 +523,49 @@ export async function listRetiredDashboardKeys(): Promise<Set<string>> {
 }
 
 /**
+ * #4131 G-B lot 2 (B4) — shape guard for keys listed from PG. The store
+ * inherits pre-pilot data faults (empty 'workspace-' key, broken-case
+ * 'machine-MYIA-PO-2027', pre-migration paths — divergence probe 14/10):
+ * those rows are a DATA-cleanup concern (targeted archival, dérouleur Phase
+ * 0.5), the listing must simply not show them as dashboards.
+ */
+export function isValidDashboardKeyShape(key: string): boolean {
+  return key === 'global' || /^(machine|workspace)-.+/.test(key);
+}
+
+/**
+ * #4131 G-B lot 2 (B4) — every dashboard key present in PG, or null.
+ *
+ * Feeds handleList and the health presence view when the read gate is on:
+ * dashboards whose only home is PG must stay listable. Null (= fall back to
+ * the GDrive listing) when the gate is off, PG fails, or the read hangs past
+ * the same 3s race as the retirement list (#3782 suite, review ai-01 26/09 —
+ * list feeds handleList on EVERY dashboard call, a hung PG read must not hang
+ * it). An empty array is a valid answer (store reachable, no rows).
+ */
+export async function listRooSyncDashboardKeysFromPg(): Promise<string[] | null> {
+  const reader = getDashboardPgReader();
+  if (!reader) return null;
+  try {
+    let timedOut = false;
+    const timeout = new Promise<string[]>((resolve) => {
+      setTimeout(() => { timedOut = true; resolve([]); }, RETIREMENT_LOOKUP_TIMEOUT_MS);
+    });
+    const keys = await Promise.race([reader.listRooSyncDashboardKeys(), timeout]);
+    if (timedOut) {
+      logger.warn('[dashboard-pg] key list timed out — caller should fall back to GDrive');
+      return null;
+    }
+    return keys.filter(isValidDashboardKeyShape);
+  } catch (error) {
+    logger.warn('[dashboard-pg] key list failed — caller should fall back to GDrive', {
+      error: String(error),
+    });
+    return null;
+  }
+}
+
+/**
  * #3782 — retire a merged-away source key: a MARK, never a DELETE. The
  * dashboard + journal rows stay in base (gel des purges); reads, listings and
  * the fork detector stop seeing the key; writes are redirected to the target.
