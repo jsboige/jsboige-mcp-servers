@@ -22,17 +22,19 @@ import { existsSync, copyFileSync } from 'fs';
 import sqlite3 from 'sqlite3';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
-import { getVscdbKey, getTasksPath } from '../../utils/extension-paths.js';
+import { resolveActiveVscdbKey, getActiveTasksPath } from '../../utils/extension-paths.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('rebuild-task-index');
 
 /**
- * The key VS Code uses to store Roo extension state in SQLite.
+ * The key VS Code uses to store the active extension's state in SQLite.
  * Must match the extension's actual key (case-sensitive in SQLite).
+ *
+ * #2766 étape 2 — resolved per call (not at module load): the filesystem-aware
+ * resolution must see the current env/probe state, and a module-load constant
+ * would freeze whatever was true at import time.
  */
-const VSCDB_KEY = getVscdbKey();
-
 const VSCDB_RELATIVE_PATH = path.join('AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'state.vscdb');
 
 interface HistoryItem {
@@ -103,13 +105,15 @@ async function readRooState(): Promise<VSCodeRooState> {
 		throw new Error(`state.vscdb not found at: ${dbPath}`);
 	}
 
+	const vscdbKey = resolveActiveVscdbKey();
+
 	// Copy to temp to avoid locking conflicts with VS Code
 	const tmpPath = dbPath + '.rebuild-tmp';
 	try {
 		copyFileSync(dbPath, tmpPath);
 		const db = await openDatabase(tmpPath, sqlite3.OPEN_READONLY);
 		try {
-			const row = await dbGet(db, 'SELECT value FROM ItemTable WHERE key = ?', [VSCDB_KEY]);
+			const row = await dbGet(db, 'SELECT value FROM ItemTable WHERE key = ?', [vscdbKey]);
 			if (!row) {
 				return {};
 			}
@@ -130,6 +134,8 @@ async function readRooState(): Promise<VSCodeRooState> {
 async function writeRooState(state: VSCodeRooState): Promise<void> {
 	const dbPath = getStateDbPath();
 
+	const vscdbKey = resolveActiveVscdbKey();
+
 	// Create backup before writing
 	const backupPath = dbPath + '.rebuild-backup';
 	copyFileSync(dbPath, backupPath);
@@ -138,7 +144,7 @@ async function writeRooState(state: VSCodeRooState): Promise<void> {
 	const db = await openDatabase(dbPath, sqlite3.OPEN_READWRITE);
 	try {
 		const value = JSON.stringify(state);
-		await dbRun(db, 'UPDATE ItemTable SET value = ? WHERE key = ?', [value, VSCDB_KEY]);
+		await dbRun(db, 'UPDATE ItemTable SET value = ? WHERE key = ?', [value, vscdbKey]);
 		logger.info('taskHistory written to state.vscdb');
 	} finally {
 		await closeDatabase(db);
@@ -166,7 +172,9 @@ export async function handleRebuildTaskIndex(args: RebuildTaskIndexArgs): Promis
 		}
 
 		// 2. Scan tasks on disk
-		const tasksDir = getTasksPath();
+		// #2766 étape 2 — filesystem-aware: resolves the Zoo tasks directory on
+		// Zoo-only hosts instead of ENOENTing on the roo-cline default.
+		const tasksDir = getActiveTasksPath();
 
 		let diskTasks: Array<{ id: string; workspace?: string; lastActivity: Date }> = [];
 
@@ -230,6 +238,7 @@ export async function handleRebuildTaskIndex(args: RebuildTaskIndexArgs): Promis
 		// 4. Build report
 		let report = `# Rebuild Task Index\n\n`;
 		report += `**Mode:** ${dry_run ? 'SIMULATION (dry-run)' : 'LIVE REBUILD'}\n`;
+		report += `**Tasks directory:** ${tasksDir}\n`;
 		report += `**Tasks in SQLite index:** ${indexedTasks.size}\n`;
 		report += `**Tasks on disk:** ${diskTasks.length}\n`;
 		report += `**Orphaned tasks (total):** ${diskTasks.filter(t => !indexedTasks.has(t.id)).length}\n`;

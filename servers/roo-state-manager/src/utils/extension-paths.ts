@@ -170,6 +170,71 @@ export function getActiveMcpSettingsPath(targetExtension?: 'roo' | 'zoo'): strin
 	return path.join(resolveGlobalStorageRoot(), extensionId, 'settings', 'mcp_settings.json');
 }
 
+// ── Tasks/vscdb filesystem-aware resolution (#2766 étape 2) ────────
+
+/**
+ * #2766 étape 2 — Probe which extension's `tasks/` directory exists on disk.
+ *
+ * Companion to `probeInstalledExtensionId()` with a probe target matched to
+ * what the caller reads (#3006 rationale applied to the tasks touchpoint):
+ * mcp-management reads the settings FILE so it probes that file;
+ * rebuild-task-index reads the tasks DIRECTORY so it probes that directory.
+ * On a host mid-migration the two probes can legitimately diverge (stale
+ * roo-cline tasks shell with no settings, or Zoo settings with no tasks yet).
+ *
+ * Preference when BOTH tasks directories exist: Roo (preserves pre-fix
+ * behavior on dual-install hosts, same rationale as #2766 S2).
+ *
+ * @returns The discovered extension ID, or `null` when neither tasks
+ * directory exists (no task history yet, or a test APPDATA).
+ */
+export function probeTaskExtensionId(): string | null {
+	try {
+		const root = resolveGlobalStorageRoot();
+		if (fs.existsSync(path.join(root, DEFAULT_EXTENSION_ID, 'tasks'))) return DEFAULT_EXTENSION_ID;
+		if (fs.existsSync(path.join(root, ZOO_CODE_EXTENSION_ID, 'tasks'))) return ZOO_CODE_EXTENSION_ID;
+		return null;
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Resolve the extension that owns the task history. Priority: `ROO_EXTENSION_ID`
+ * env (explicit operator intent) > tasks-dir probe > the #3006 settings probe
+ * (better-than-default guess when no tasks directory exists yet). Shared by
+ * `getActiveTasksPath()` and `resolveActiveVscdbKey()` so one rebuild
+ * invocation addresses the SAME extension on both touchpoints (tasks dir and
+ * SQLite key).
+ */
+function resolveTaskExtensionId(): string {
+	return process.env.ROO_EXTENSION_ID || probeTaskExtensionId() || resolveActiveExtensionId();
+}
+
+/**
+ * #2766 étape 2 — Path to the active extension's `tasks/` directory, resolved
+ * via filesystem probe. `getTasksPath()` stays env-only (back-compat contract
+ * with its tests); this is the variant rebuild-task-index must use so it
+ * finds Zoo tasks on Zoo-only hosts instead of ENOENTing on the roo-cline
+ * default.
+ *
+ * Path: `...globalStorage/<extensionId>/tasks`
+ */
+export function getActiveTasksPath(): string {
+	return path.join(resolveGlobalStorageRoot(), resolveTaskExtensionId(), 'tasks');
+}
+
+/**
+ * #2766 étape 2 — The SQLite ItemTable key matching the task-history owner,
+ * with the same probe chain as `getActiveTasksPath()`. `getVscdbKey()` stays
+ * env-only; rebuild-task-index uses this so the Zoo key is read (and written
+ * back) on Zoo hosts instead of silently addressing the roo-cline key.
+ */
+export function resolveActiveVscdbKey(): string {
+	if (process.env.ROO_VSCDB_KEY) return process.env.ROO_VSCDB_KEY;
+	return resolveTaskExtensionId() === ZOO_CODE_EXTENSION_ID ? ZOO_CODE_VSCDB_KEY : DEFAULT_VSCDB_KEY;
+}
+
 // ── Source detection from storage path (#2429) ─────────────────────────
 
 /**
