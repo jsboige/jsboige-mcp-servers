@@ -239,7 +239,10 @@ describe('dispatch', () => {
 describe('confirm — la relecture live prime', () => {
   test('mismatch : projection locale diverge => failedAttempt, PAS de confirmation', async () => {
     const svc = makeService();
-    const rec = await svc.createCampaign(defaultCanonInput());
+    // #4185 : en ensure-present une valeur divergente mais PRÉSENTE est confirmée
+    // (le mode préserve le choix machine) — ce test de divergence de VALEUR exige
+    // donc enforce-value, où l'égalité stricte reste le critère.
+    const rec = await svc.createCampaign({ ...defaultCanonInput(), canon: { ...defaultCanonInput().canon, mode: 'enforce-value' } });
     writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://autre.example' } });
     const r = await svc.confirm(rec.id);
     expect(r.status).toBe('mismatch');
@@ -250,7 +253,7 @@ describe('confirm — la relecture live prime', () => {
 
   test('claimed_hash conforme mais live divergent => jamais compté comme confirmation', async () => {
     const svc = makeService();
-    const rec = await svc.createCampaign(defaultCanonInput());
+    const rec = await svc.createCampaign({ ...defaultCanonInput(), canon: { ...defaultCanonInput().canon, mode: 'enforce-value' } });
     writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://autre.example' } });
     const r = await svc.confirm(rec.id, { claimedHash: rec.canon.hash });
     expect(r.status).toBe('mismatch');
@@ -294,6 +297,74 @@ describe('confirm — la relecture live prime', () => {
     expect(r.status).toBe('confirmed');
     const after = JSON.parse(readFileSync(fakeSettings, 'utf-8'));
     expect(after.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(200000); // exempté, préservé
+  });
+});
+
+describe('confirm — honore le mode du canon (#4185)', () => {
+  // #4185 défaut 1 : confirm exigeait l'égalité de VALEUR quel que soit le mode,
+  // alors qu'apply en ensure-present PRÉSERVE les valeurs locales divergentes —
+  // les deux prédicats étaient insatisfaisables ensemble (mesuré sur la campagne
+  // hc-claude-settings-2026.10.11-1 : 5 lanes bloquées en `drifted`, seul `model`
+  // divergeait). Le critère aligné sur ensure-present est la PRÉSENCE des chemins.
+
+  test('ensure-present : valeur divergente MAIS présente => confirmed (choix machine préservé)', async () => {
+    const svc = makeService();
+    const rec = await svc.createCampaign(defaultCanonInput()); // mode ensure-present
+    // BASE_URL divergente (choix local), fenêtre conforme — apply préserverait la divergence
+    writeLocalSettings({
+      env: {
+        ANTHROPIC_BASE_URL: 'https://local-choice.example',
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000,
+      },
+    });
+    const r = await svc.confirm(rec.id);
+    expect(r.status).toBe('confirmed');
+    // la valeur locale n'a PAS été forcée à la valeur canon
+    const settings = JSON.parse(readFileSync(fakeSettings, 'utf-8'));
+    expect(settings.env.ANTHROPIC_BASE_URL).toBe('https://local-choice.example');
+    // l'observedHash diffère du canon (valeur divergente) mais le confirm est valide
+    expect(r.observedHash).not.toBe(rec.canon.hash);
+    expect(readConfirmations(rec.id, 'myia-ai-01')).toHaveLength(1);
+  });
+
+  test('ensure-present : chemin canon ABSENT => mismatch, apply requis', async () => {
+    const svc = makeService();
+    const rec = await svc.createCampaign(defaultCanonInput()); // mode ensure-present
+    // BASE_URL présente mais fenêtre canon ABSENTE — presence non satisfaite
+    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://relay.example' } });
+    const r = await svc.confirm(rec.id);
+    expect(r.status).toBe('mismatch');
+    expect(r.detail).toMatch(/CLAUDE_CODE_AUTO_COMPACT_WINDOW/);
+    expect(readConfirmations(rec.id, 'myia-ai-01')).toHaveLength(0);
+    expect(readEvents(rec.id, 'myia-ai-01').filter(e => e.kind === 'failed')).toHaveLength(1);
+  });
+
+  test('ensure-present : apply préserve la divergence, confirm la valide ensuite (boucle complète)', async () => {
+    const svc = makeService();
+    const rec = await svc.createCampaign(defaultCanonInput()); // mode ensure-present
+    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://local-choice.example' } });
+    // apply : pose la fenêtre (absente), PRÉSERVE la BASE_URL divergente
+    await svc.apply(rec.id);
+    const after = JSON.parse(readFileSync(fakeSettings, 'utf-8'));
+    expect(after.env.ANTHROPIC_BASE_URL).toBe('https://local-choice.example'); // préservé
+    expect(after.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(280000);            // posé
+    // confirm : toutes les clés canon présentes => confirmed malgré la valeur divergente
+    const r = await svc.confirm(rec.id);
+    expect(r.status).toBe('confirmed');
+  });
+
+  test('enforce-value : égalité stricte conservée — valeur divergente => mismatch', async () => {
+    const svc = makeService();
+    const rec = await svc.createCampaign({ ...defaultCanonInput(), canon: { ...defaultCanonInput().canon, mode: 'enforce-value' } });
+    writeLocalSettings({
+      env: {
+        ANTHROPIC_BASE_URL: 'https://local-choice.example', // divergente
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000,
+      },
+    });
+    const r = await svc.confirm(rec.id);
+    expect(r.status).toBe('mismatch'); // présente mais valeur différente => enforce-value refuse
+    expect(readConfirmations(rec.id, 'myia-ai-01')).toHaveLength(0);
   });
 });
 
@@ -576,7 +647,10 @@ describe('remind — idempotence et échecs', () => {
 describe('status — re-détection de drift', () => {
   test('local : drift après confirmation détecté (live diverge) — la confirmation historique ne compte plus', async () => {
     const svc = makeService('myia-po-2023');
+    // #4185 : la divergence de VALEUR n'est du drift qu'en enforce-value —
+    // ce test garde la divergence sémantique d'origine via enforce-value.
     const input = defaultCanonInput();
+    input.canon.mode = 'enforce-value';
     input.fleet = ['myia-po-2023'];
     const rec = await svc.createCampaign(input);
     writeLocalSettings({ env: {} });
@@ -592,6 +666,37 @@ describe('status — re-détection de drift', () => {
     expect(st.machines[0].confirmationState).toBe('mismatch-latest');
     expect(st.summary.confirmed).toBe(0);
     expect(st.summary.allConfirmed).toBe(false);
+  });
+
+  test('#4185 ensure-present : changement de VALEUR post-confirm => toujours aligned (le mode préserve le choix machine)', async () => {
+    const svc = makeService('myia-po-2023');
+    const input = defaultCanonInput(); // ensure-present
+    input.fleet = ['myia-po-2023'];
+    const rec = await svc.createCampaign(input);
+    writeLocalSettings({ env: {} });
+    await svc.apply(rec.id);
+    await svc.confirm(rec.id);
+    // la machine détourne une valeur canon APRÈS confirmation : présent, divergent
+    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://choix-machine.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 } });
+    const st = await svc.status(rec.id);
+    expect(st.machines[0].alignment).toBe('aligned');
+    expect(st.machines[0].state).toBe('confirmed');
+  });
+
+  test('#4185 ensure-present : RETRAIT de clé post-confirm => drifted (violation de présence)', async () => {
+    const svc = makeService('myia-po-2023');
+    const input = defaultCanonInput(); // ensure-present
+    input.fleet = ['myia-po-2023'];
+    const rec = await svc.createCampaign(input);
+    writeLocalSettings({ env: {} });
+    await svc.apply(rec.id);
+    await svc.confirm(rec.id);
+    // la machine SUPPRIME une clé canon : le critère de présence est violé
+    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://relay.example' } });
+    const st = await svc.status(rec.id);
+    expect(st.machines[0].alignment).toBe('drifted');
+    expect(st.machines[0].state).toBe('drifted');
+    expect(st.machines[0].confirmationState).toBe('mismatch-latest');
   });
 
   test('confirm-then-missing : fichier local supprimé => état disjoint missing, pas confirmé', async () => {
@@ -629,6 +734,8 @@ describe('status — re-détection de drift', () => {
   test('distant : drift via snapshot publié post-confirmation ; snapshot antérieur => snapshot-stale', async () => {
     const svc = makeService('myia-ai-01');
     const input = defaultCanonInput();
+    // #4185 : la divergence de VALEUR distante n'est du drift qu'en enforce-value
+    input.canon.mode = 'enforce-value';
     input.fleet = ['myia-po-2023'];
     const rec = await svc.createCampaign(input);
 

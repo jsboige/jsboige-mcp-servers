@@ -35,7 +35,7 @@ import {
 
 export const HarmonizationArgsSchema = z.object({
   action: z.enum(['create', 'dispatch', 'remind', 'apply', 'confirm', 'status', 'list', 'close'])
-    .describe('Action de campagne: create, dispatch (DM machine:workspace), remind (idempotent, cooldown), apply (canon → settings LOCAL), confirm (relit live, atteste hash), status (drift par machine), list, close'),
+    .describe('Action de campagne: create, dispatch (DM machine:workspace), remind (idempotent, cooldown), apply (canon → settings LOCAL), confirm (relit live, honore le mode du canon #4185 : présence des chemins en ensure-present, égalité de valeur en enforce-value), status (drift par machine), list, close'),
 
   campaign_id: z.string().optional()
     .describe('ID de campagne (ex: hc-claude-settings-2026.09.08-1). Requis pour tout sauf create/list'),

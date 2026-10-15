@@ -368,6 +368,36 @@ describe('applyCanonToFile', () => {
     expect(res2.skipped.some(s => s.reason === 'déjà conforme')).toBe(true);
   });
 
+  test('#4185 défaut 2 : apply no-op RELIT le fichier (observé depuis une relecture, pas recopié)', async () => {
+    // Chemin !wouldWrite : l'ancien code recopiait observedHash = expectedHash SANS
+    // relire (vérification tautologique). La fix relit le fichier et hashe la
+    // projection réellement observée.
+    //
+    // Note de méthode : à no-op, expectedHash est calculé sur `working` qui egale
+    // toujours le contenu fichier (clés conformes ou préservées) — AUCUN état
+    // on-disk statique ne discrimine l'ancien du nouveau code. Le cas
+    // discriminant est une mutation on-disk ENTRE la lecture de préparation et la
+    // vérification (le test falsifiable ai-01), non déterministe en unitaire sans
+    // injection de la fonction de lecture. Ce test épingle le contrat observable :
+    // observedHash = hash de la projection RELUE du disque, recalculée
+    // indépendamment.
+    const enforceCanon: CanonPayload = {
+      version: '2026.09.08-1',
+      mode: 'enforce-value',
+      keys: { 'env.ANTHROPIC_BASE_URL': 'https://relay.example' },
+    };
+    // Fichier déjà conforme => no-op (!wouldWrite).
+    writeSettings({ env: { ANTHROPIC_BASE_URL: 'https://relay.example' } });
+    const res = await applyCanonToFile(settingsPath, enforceCanon, { now: () => '2026-09-08T10:00:00Z', backup: false });
+    expect(res.verification?.performed).toBe(true);
+    expect(res.verification?.success).toBe(true);
+    // L'observé est le hash de la projection relue du fichier réel — recalculé
+    // ici indépendamment depuis le disque, pas une recopie de expectedHash.
+    const onDisk = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    const expectedObserved = hashProjection(projectSettings(onDisk));
+    expect(res.verification?.observedHash).toBe(expectedObserved);
+  });
+
   test('fail closed : fichier invalide => aucun write', async () => {
     writeFileSync(settingsPath, '{broken', 'utf-8');
     await expect(applyCanonToFile(settingsPath, canon)).rejects.toThrow(/fail closed/);
