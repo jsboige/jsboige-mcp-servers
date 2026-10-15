@@ -28,6 +28,9 @@ import {
 	probeInstalledExtensionId,
 	resolveActiveExtensionId,
 	getActiveMcpSettingsPath,
+	probeTaskExtensionId,
+	getActiveTasksPath,
+	resolveActiveVscdbKey,
 	DEFAULT_VSCDB_KEY,
 	ZOO_CODE_VSCDB_KEY,
 } from '../extension-paths.js';
@@ -271,5 +274,115 @@ describe('#2766 S2 — filesystem-aware resolution', () => {
 	test('getActiveMcpSettingsPath does NOT resolve to roo-cline on a zoo-only host (regression guard)', () => {
 		writeMcpSettings(ZOO);
 		expect(getActiveMcpSettingsPath()).not.toContain(ROO);
+	});
+});
+
+// ============================================================
+// #2766 étape 2 — tasks/vscdb filesystem-aware resolution.
+// Covers the rebuild-task-index ENOENT on Zoo-only hosts: the tool's
+// tasks-dir + vscdb-key touchpoints must follow the tasks DIRECTORY probe
+// (not the #3006 settings-file probe, not the env-only default).
+// ============================================================
+describe('#2766 étape 2 — tasks/vscdb filesystem-aware resolution', () => {
+	const ROO = 'rooveterinaryinc.roo-cline';
+	const ZOO = 'zoocodeorganization.zoo-code';
+	let tmpAppData: string;
+	let globalStorageRoot: string;
+
+	beforeEach(() => {
+		delete process.env.ROO_EXTENSION_ID;
+		delete process.env.ROO_VSCDB_KEY;
+		tmpAppData = path.join(os.tmpdir(), `ext-paths-tasks-${process.pid}`);
+		globalStorageRoot = path.join(tmpAppData, 'Code', 'User', 'globalStorage');
+		fs.rmSync(tmpAppData, { recursive: true, force: true });
+		fs.mkdirSync(globalStorageRoot, { recursive: true });
+		process.env.APPDATA = tmpAppData;
+	});
+
+	afterEach(() => {
+		fs.rmSync(tmpAppData, { recursive: true, force: true });
+	});
+
+	function writeTasksDir(extId: string): void {
+		fs.mkdirSync(path.join(globalStorageRoot, extId, 'tasks'), { recursive: true });
+	}
+
+	function writeMcpSettings(extId: string): void {
+		const settingsDir = path.join(globalStorageRoot, extId, 'settings');
+		fs.mkdirSync(settingsDir, { recursive: true });
+		fs.writeFileSync(path.join(settingsDir, 'mcp_settings.json'), '{}');
+	}
+
+	test('probeTaskExtensionId returns null when neither tasks dir exists', () => {
+		expect(probeTaskExtensionId()).toBeNull();
+	});
+
+	test('probeTaskExtensionId returns zoo-code on a zoo-only host (the ENOENT regression)', () => {
+		writeTasksDir(ZOO);
+		expect(probeTaskExtensionId()).toBe(ZOO);
+	});
+
+	test('probeTaskExtensionId returns roo-cline when only roo-cline has tasks', () => {
+		writeTasksDir(ROO);
+		expect(probeTaskExtensionId()).toBe(ROO);
+	});
+
+	test('probeTaskExtensionId prefers roo-cline when both have tasks (back-compat)', () => {
+		writeTasksDir(ROO);
+		writeTasksDir(ZOO);
+		expect(probeTaskExtensionId()).toBe(ROO);
+	});
+
+	test('probeTaskExtensionId can diverge from the settings probe (stale roo tasks shell, live zoo settings)', () => {
+		// Migrated host: roo-cline keeps a leftover tasks dir, Zoo carries the
+		// live config. Each probe answers for its own touchpoint — documented,
+		// intentional divergence (#3006 rationale applied to tasks).
+		writeTasksDir(ROO);
+		writeMcpSettings(ZOO);
+		expect(probeTaskExtensionId()).toBe(ROO);
+		expect(probeInstalledExtensionId()).toBe(ZOO);
+	});
+
+	test('getActiveTasksPath resolves to zoo-code tasks on a zoo-only host', () => {
+		writeTasksDir(ZOO);
+		const resolved = getActiveTasksPath();
+		expect(resolved).toContain(ZOO);
+		expect(resolved.endsWith(path.join('globalStorage', ZOO, 'tasks'))).toBe(true);
+	});
+
+	test('getActiveTasksPath: ROO_EXTENSION_ID env wins over the filesystem probe', () => {
+		writeTasksDir(ROO);
+		process.env.ROO_EXTENSION_ID = 'custom.override.ext';
+		expect(getActiveTasksPath()).toContain('custom.override.ext');
+	});
+
+	test('getActiveTasksPath falls back to the settings probe when no tasks dir exists', () => {
+		// No tasks anywhere yet, but Zoo settings exist → resolve Zoo (its
+		// tasks path will ENOENT truthfully) instead of the roo-cline default.
+		writeMcpSettings(ZOO);
+		expect(getActiveTasksPath()).toContain(ZOO);
+	});
+
+	test('resolveActiveVscdbKey derives the Zoo key on a zoo-only host', () => {
+		writeTasksDir(ZOO);
+		expect(resolveActiveVscdbKey()).toBe(ZOO_CODE_VSCDB_KEY);
+	});
+
+	test('resolveActiveVscdbKey keeps the Roo key when roo tasks exist', () => {
+		writeTasksDir(ROO);
+		expect(resolveActiveVscdbKey()).toBe(DEFAULT_VSCDB_KEY);
+	});
+
+	test('resolveActiveVscdbKey: ROO_VSCDB_KEY env wins over the probe', () => {
+		writeTasksDir(ZOO);
+		process.env.ROO_VSCDB_KEY = 'Custom.Override.Key';
+		expect(resolveActiveVscdbKey()).toBe('Custom.Override.Key');
+	});
+
+	test('resolveActiveVscdbKey stays consistent with getActiveTasksPath (same probe chain)', () => {
+		writeTasksDir(ZOO);
+		const isZooPath = getActiveTasksPath().includes(ZOO);
+		const isZooKey = resolveActiveVscdbKey() === ZOO_CODE_VSCDB_KEY;
+		expect(isZooPath).toBe(isZooKey);
 	});
 });

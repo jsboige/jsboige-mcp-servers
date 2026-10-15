@@ -158,6 +158,10 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
   });
 
   beforeEach(async () => {
+    // #4206 — garde à l'envoi : allow-list explicite des destinataires
+    // fixtures de ce harnais (hors forme myia-*), via le mécanisme prévu.
+    process.env.ROO_MENTION_EXTRA_RECIPIENTS = 'self,test-machine';
+
     // Setup : créer répertoire temporaire
     const dirs = [
       testSharedStatePath,
@@ -177,6 +181,7 @@ describe('Stress Tests - Large Inbox 1000+ (Issue #531)', () => {
   });
 
   afterEach(async () => {
+    delete process.env.ROO_MENTION_EXTRA_RECIPIENTS;
     // Cleanup best-effort (#2639) : un échec de nettoyage ne fait jamais échouer
     // le test — même politique que baseline.integration / #1355 v3.
     try {
