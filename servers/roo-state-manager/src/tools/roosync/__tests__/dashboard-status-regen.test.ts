@@ -132,7 +132,10 @@ describe('shouldRegenerateStatus (#4205) — décision pure', () => {
     });
 
     it('signaux de contenu → régénère', () => {
-        for (const content of ['PR #4131 mergée', 'ms#1432 en review', 'décision actée', 'arbitrage user RX92', '[WAKE-CLAUDE] myia-po-2024', '[GO-ROSTER] posé', 'escalade prod']) {
+        // Review ms#1439 items 1+3 : `mandat` (réclamé par le body, absent de
+        // l'ancienne regex) et marqueurs bracket écrits DANS le contenu de
+        // messages non taggés — casse quelconque (/i).
+        for (const content of ['PR #4131 mergée', 'ms#1432 en review', 'décision actée', 'arbitrage user RX92', '[WAKE-CLAUDE] myia-po-2024', '[GO-ROSTER] posé', 'escalade prod', 'mandat user accepté', '[DONE] cycle clôturé', '[ASK] clé du vLLM', '[BLOCKED] GPU saturé', '[CLAIMED] #4205 lane po-2024', '[RESULT] mesure postée', '[done] en minuscules']) {
             expect(shouldRegenerateStatus([msg({ content })]).regenerate, `content « ${content} »`).toBe(true);
         }
     });
@@ -226,6 +229,15 @@ describe('roosync_dashboard — condensation status regen on-change (#4205)', ()
         expect(allArchived).toContain('## Statut avant condensation (#3962)');
         expect(after).toContain('CONDENSATION-SUMMARY');
         expect(after).toContain('## Résumé des messages archivés (test)');
+
+        // #4205 honnêteté (review ms#1439) : une passe skippée dit « Statut
+        // conservé », jamais « Statut mis à jour » — notice ET frontmatter
+        // d'archive (statusUpdated: false).
+        expect(after).toContain('Statut conservé (skip #4205');
+        expect(after).not.toContain('Statut mis à jour');
+        for (const a of archives) {
+            expect(a.content).toContain('statusUpdated: false');
+        }
     });
 
     it('passe AVEC signal d état dans la tranche archivée → statut régénéré', async () => {
@@ -258,6 +270,22 @@ describe('roosync_dashboard — condensation status regen on-change (#4205)', ()
         });
         expect(r.success).toBe(true);
 
+        const counts = countCallsByPrompt();
+        expect(counts.status).toBe(1);
+        expect(counts.summary).toBe(1);
+    });
+
+    it('knob ALWAYS avec espace → rollback quand même (review ms#1439 item 2 : insensible à la casse après trim)', async () => {
+        process.env.DASHBOARD_CONDENSE_STATUS_MODE = '  ALWAYS ';
+        await seedFillerDashboardOverThreshold();
+
+        const r = await roosyncDashboard({
+            action: 'append', type: 'workspace',
+            content: 'post declencheur stateless', createIfNotExists: true,
+        });
+        expect(r.success).toBe(true);
+
+        // Valeur non exacte « always » mais reconnue : le statut est régénéré.
         const counts = countCallsByPrompt();
         expect(counts.status).toBe(1);
         expect(counts.summary).toBe(1);

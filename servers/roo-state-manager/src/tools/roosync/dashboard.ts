@@ -4514,7 +4514,10 @@ const STATUS_BEARING_TAGS = new Set([
 ]);
 // Références d'issue/PR (#NNN, ms#N), fusions, mandats et arbitrages user — tout
 // ce qu'une synthèse d'état doit replier. /i : MERGÉ matche via son préfixe MERG.
-const STATUS_BEARING_CONTENT = /#\d{3,}|ms#\d+|merg|\[go|\[wake|\[stop|\[split-brain|décision|arbitrage|rx\d+|escalad/i;
+// Marqueurs bracket inline ([DONE]/[ASK]/[BLOCKED]/[CLAIMED]/[RESULT]) : les tags
+// normalisés (#4003) portent déjà via STATUS_BEARING_TAGS, mais la flotte les
+// écrit aussi DANS le contenu d'un message non taggé (review ms#1439, item 3).
+const STATUS_BEARING_CONTENT = /#\d{3,}|ms#\d+|merg|mandat|\[go|\[wake|\[stop|\[split-brain|\[done|\[ask|\[blocked|\[claimed|\[result|décision|arbitrage|rx\d+|escalad/i;
 
 /**
  * #4205 — la passe de condensation doit-elle régénérer le bloc status ?
@@ -4600,7 +4603,13 @@ async function condenseIntercom(
   // historique (chaque passe réécrit le statut) ; défaut `on-change` : skip si les
   // messages archivés ne portent AUCUN signal d'état → previousStatus conservé tel
   // quel (l'archive et generateLLMSummary restent inchangés — aucune perte).
-  const statusMode = process.env.DASHBOARD_CONDENSE_STATUS_MODE || 'on-change';
+  const rawStatusMode = (process.env.DASHBOARD_CONDENSE_STATUS_MODE ?? '').trim();
+  const statusMode = rawStatusMode === '' ? 'on-change' : rawStatusMode.toLowerCase();
+  if (statusMode !== 'on-change' && statusMode !== 'always') {
+    // Review ms#1439 item 2 : `ALWAYS` ou `always ` ne doit pas retomber
+    // silencieusement en on-change — un knob de rollback se doit d'être lisible.
+    logger.warn(`DASHBOARD_CONDENSE_STATUS_MODE « ${rawStatusMode} » inconnu — défaut on-change appliqué (#4205)`, { key });
+  }
   const statusDecision = statusMode === 'always'
     ? { regenerate: true, reason: 'mode=always' }
     : (previousStatus.trim().length === 0
@@ -4765,7 +4774,9 @@ async function condenseIntercom(
     newStatus = newStatus + '\n\n' + reconciledMarkers.join('\n');
   }
 
-  const statusUpdated = true;
+  // #4205 honesty (review ms#1439) : un skip conserve previousStatus tel quel —
+  // le frontmatter de l'archive ne doit pas prétendre le contraire.
+  const statusUpdated = statusDecision.regenerate;
 
   // Archiver les anciens messages (format Markdown)
   const archiveDir = getArchiveDir();
@@ -4833,12 +4844,22 @@ ${archiveMessages}
 
   const statusSizeBytes = Buffer.byteLength(newStatus!, 'utf8');
   const summarySizeBytes = Buffer.byteLength(llmSummary ?? '', 'utf8');
-  logger.info('Status updated from archived messages', {
-    previousLength: previousStatus.length,
-    newLength: newStatus!.length,
-    statusSizeKB: `${(statusSizeBytes / 1024).toFixed(1)}KB`,
-    summarySizeKB: `${(summarySizeBytes / 1024).toFixed(1)}KB`
-  });
+  // #4205 honesty (review ms#1439) : sur une passe skippée le statut n'est PAS
+  // régénéré — le log et la notice ne doivent pas revendiquer une mise à jour.
+  if (statusDecision.regenerate) {
+    logger.info('Status updated from archived messages', {
+      previousLength: previousStatus.length,
+      newLength: newStatus!.length,
+      statusSizeKB: `${(statusSizeBytes / 1024).toFixed(1)}KB`,
+      summarySizeKB: `${(summarySizeBytes / 1024).toFixed(1)}KB`
+    });
+  } else {
+    logger.info('Status kept verbatim (skip #4205)', {
+      reason: statusDecision.reason,
+      statusSizeKB: `${(statusSizeBytes / 1024).toFixed(1)}KB`,
+      summarySizeKB: `${(summarySizeBytes / 1024).toFixed(1)}KB`
+    });
+  }
 
   // Ajouter le message de condensation standard avec timing et tailles
   // #2719 (ask CoursIA 25/09 20:10Z, dispatch ai-01 26/09) : le notice ne doit
@@ -4859,6 +4880,11 @@ ${archiveMessages}
     : summaryViaCloud
       ? `résumé généré via fallback cloud (${(summarySizeBytes / 1024).toFixed(1)}KB, modèle primaire en échec)`
       : `résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)`;
+  // #4205 honesty : même algebra que summaryClause — une passe skippée dit
+  // « Statut conservé », pas « Statut mis à jour ».
+  const statusClause = !statusDecision.regenerate
+    ? `Statut conservé (skip #4205, ${statusDecision.reason})`
+    : `Statut mis à jour${statusViaCloud ? ' via fallback cloud' : ''} (${(statusSizeBytes / 1024).toFixed(1)}KB)`;
   const totalElapsed = Date.now() - condensationStart;
   const condenseNotice: IntercomMessage = {
     id: generateMessageId('system', 'system'),
@@ -4867,7 +4893,7 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour${statusViaCloud ? ' via fallback cloud' : ''} (${(statusSizeBytes / 1024).toFixed(1)}KB), ${summaryClause}\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
+    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${statusClause}, ${summaryClause}\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
   };
   systemMessages.push(condenseNotice);
 
