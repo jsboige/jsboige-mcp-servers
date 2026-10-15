@@ -170,6 +170,10 @@ fait collecter des deux côtés (contrôle croisé 14e en tête de document) ; l
 
 CI tourne sur `ubuntu-22.04` ; ces tests requièrent Windows PowerShell / APPDATA.
 
+**Aucune garde automatisée** ne couvre cette famille : le drift-guard verrouille seulement le header
+du config (pas l'exécution de ces tests sous Windows), et aucun test dédié ne ré-audite ces exclusions —
+le contrôle est manuel (#4194 point 3, arbitrage ai-01 du 15/10).
+
 | Entrée | Tests | Datée |
 |---|---|---|
 | `src/services/__tests__/PowerShellExecutor.test.ts` | 29 | non |

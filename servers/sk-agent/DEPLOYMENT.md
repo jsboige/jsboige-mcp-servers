@@ -31,7 +31,7 @@ If wrapper writes `Write-Host "Starting..."` to stdout:
 ## Prérequis
 
 1. **Python 3.13+** (miniconda3 recommandé)
-2. **Dépendances installées** (semantic-kernel >= 1.39, mcp >= 1.7, etc.)
+2. **Dépendances installées** (semantic-kernel >= 1.39, mcp >= 1.26 et < 2, etc.)
 3. **Config `sk_agent_config.json`** avec clés API (z.ai, Qdrant, Embeddings)
 
 ---

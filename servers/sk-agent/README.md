@@ -343,7 +343,7 @@ Each agent has its own collection: `{prefix}-{collection}` (e.g., `sk-agent-anal
 
 - Python 3.11+
 - `semantic-kernel[mcp]>=1.39`
-- `mcp>=1.7`
+- `mcp>=1.26,<2`
 - `openai>=1.109`
 - `Pillow>=10.0`
 - `httpx>=0.27`

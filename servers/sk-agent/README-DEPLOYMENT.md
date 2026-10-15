@@ -66,7 +66,7 @@ python -m venv venv
 .\venv\Scripts\pip install -r requirements.txt
 
 # Or manually:
-pip install "semantic-kernel[mcp]>=1.39" "mcp>=1.10" "uvicorn>=0.30" "openai>=1.109" "Pillow>=10.0" "httpx>=0.27" "qdrant-client"
+pip install "semantic-kernel[mcp]>=1.39" "mcp>=1.26,<2" "uvicorn>=0.30" "openai>=1.109" "Pillow>=10.0" "httpx>=0.27" "qdrant-client"
 ```
 
 ### 4. Create Configuration File
