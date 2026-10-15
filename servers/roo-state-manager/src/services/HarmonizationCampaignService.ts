@@ -74,7 +74,6 @@ import {
   readClaudeSettingsFile,
   isAllowedKeyPath,
   findLatestClaudeSettingsSnapshot,
-  getPath,
 } from './ClaudeSettingsService.js';
 import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 
@@ -1161,7 +1160,8 @@ Recette pour atteindre l'état « confirmé » vu du coordinateur :
     }
 
     const mode = record.canon.mode;
-    const observed = hashProjection(this.observedOverCanonScope(record, machine, read.settings));
+    const observedProjection = this.observedOverCanonScope(record, machine, read.settings);
+    const observed = hashProjection(observedProjection);
     const expected = this.canonHashForMachine(record, machine);
 
     // #4185 défaut 1 — `confirm` honore le MODE du canon. En `enforce-value` le
@@ -1175,14 +1175,15 @@ Recette pour atteindre l'état « confirmé » vu du coordinateur :
     // (non-exempté) : une clé absente = apply requis ; présente = choix machine
     // préservé, la campagne ne peut pas exiger sa valeur sans renier son mode.
     if (mode === 'ensure-present') {
-      const exceptions = record.exceptions[machine] || [];
-      const exempt = new Set(exceptions);
-      const missing: string[] = [];
-      for (const path of Object.keys(record.canon.keys)) {
-        if (exempt.has(path)) continue;
-        if (getPath(read.settings, path) === undefined) missing.push(path);
-      }
-      if (missing.length === 0) {
+      // Reviews ms#1436 (po-2024 + po-2027) : la boucle de présence vit dans
+      // `alignmentForMode` — confirm consomme le prédicat partagé, pas une copie.
+      const { aligned, missing } = this.alignmentForMode(
+        record,
+        machine,
+        observedProjection,
+        observed === expected
+      );
+      if (aligned) {
         await this.writeObservation(id, {
           kind: 'confirm',
           machine,
