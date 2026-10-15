@@ -23,7 +23,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'path';
 import * as os from 'os';
-import { mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync, utimesSync } from 'fs';
 
 const { listKeysSpy, pgReadSpy, listRetiredSpy, getRetirementSpy } = vi.hoisted(() => ({
   listKeysSpy: vi.fn(),
@@ -43,7 +43,7 @@ vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (imp
   };
 });
 
-import { roosyncDashboard } from '../dashboard.js';
+import { roosyncDashboard, classifyMirrorDivergence, MIRROR_DIVERGENCE_THRESHOLD_MS } from '../dashboard.js';
 
 let testDir: string;
 let dashboardsDir: string;
@@ -188,5 +188,97 @@ describe('roosync_dashboard list — branche PG complète ou repli déclaré (#1
     expect(r.message).toContain('0 dashboard(s) trouvé(s) [source: PG]');
     expect(r.message).not.toContain('repli GDrive');
     expect(r.dashboards).toHaveLength(0);
+  });
+});
+
+// ─── #4187 : classifyMirrorDivergence (pur) ─────────────────────────────────
+
+describe('classifyMirrorDivergence (#4187, pur)', () => {
+  it('fichier plus frais que le miroir PG au-delà du seuil → file-newer', () => {
+    const pg = new Date(Date.now() - 40 * 60 * 1000).toISOString();
+    const fileMtime = Date.now();
+    const v = classifyMirrorDivergence(pg, fileMtime);
+    expect(v.diverged).toBe(true);
+    expect(v.direction).toBe('file-newer');
+    expect(v.gapMs).toBeGreaterThan(MIRROR_DIVERGENCE_THRESHOLD_MS);
+  });
+
+  it('miroir PG plus frais au-delà du seuil → pg-newer (direction inverse)', () => {
+    const pg = new Date(Date.now() + 40 * 60 * 1000).toISOString();
+    const v = classifyMirrorDivergence(pg, Date.now());
+    expect(v.diverged).toBe(true);
+    expect(v.direction).toBe('pg-newer');
+  });
+
+  it('écart sous le seuil (latence normale du dual-write) → pas de divergence', () => {
+    const pg = new Date(Date.now() - 60 * 1000).toISOString();
+    expect(classifyMirrorDivergence(pg, Date.now()).diverged).toBe(false);
+  });
+
+  it('une seule surface présente → jamais divergent (fail-open)', () => {
+    expect(classifyMirrorDivergence(undefined, Date.now()).diverged).toBe(false);
+    expect(classifyMirrorDivergence(new Date().toISOString(), undefined).diverged).toBe(false);
+  });
+
+  it('horodatage PG illisible → fail-open, pas de faux positif', () => {
+    expect(classifyMirrorDivergence('pas-un-iso', Date.now()).diverged).toBe(false);
+  });
+});
+
+// ─── #4187 : garde mirrorDiverged dans la branche PG de handleList ─────────
+
+describe('roosync_dashboard list — garde mirrorDiverged (#4187)', () => {
+  it('fichier GDrive plus frais que le miroir PG : entrée flaggée + divergence nommée dans le message', async () => {
+    listKeysSpy.mockResolvedValue(['workspace-claudish']);
+    // Miroir PG figé il y a 30 min (rows périmées — la fenêtre #4187)…
+    pgReadSpy.mockResolvedValue(pgDashboard('workspace-claudish', new Date(Date.now() - 30 * 60 * 1000).toISOString()));
+    // …pendant que le fichier vit (mtime = maintenant).
+    seedGdriveFile('workspace-claudish.md', 'workspace', new Date().toISOString());
+
+    const r = (await roosyncDashboard({ action: 'list' })) as any;
+    expect(r.success).toBe(true);
+    expect(r.message).toContain('[source: PG]');
+    const entry = r.dashboards.find((d: any) => d.key === 'workspace-claudish');
+    expect(entry.mirrorDiverged).toBe(true);
+    expect(entry.mirrorDivergedDetail).toContain('fichier GDrive plus frais');
+    expect(r.message).toContain('mirrorDiverged (#4187)');
+    expect(r.message).toContain('workspace-claudish');
+  });
+
+  it('surfaces alignées : aucun flag, message inchangé', async () => {
+    listKeysSpy.mockResolvedValue(['workspace-alpha']);
+    pgReadSpy.mockResolvedValue(pgDashboard('workspace-alpha', new Date().toISOString()));
+    seedGdriveFile('workspace-alpha.md', 'workspace', new Date().toISOString());
+
+    const r = (await roosyncDashboard({ action: 'list' })) as any;
+    expect(r.success).toBe(true);
+    const entry = r.dashboards.find((d: any) => d.key === 'workspace-alpha');
+    expect(entry.mirrorDiverged).toBeUndefined();
+    expect(r.message).not.toContain('mirrorDiverged');
+  });
+
+  it('miroir PG plus frais que le fichier : flaggé aussi (moitié GDrive en retard)', async () => {
+    listKeysSpy.mockResolvedValue(['machine-beta']);
+    pgReadSpy.mockResolvedValue(pgDashboard('machine-beta', new Date().toISOString()));
+    seedGdriveFile('machine-beta.md', 'machine', new Date().toISOString());
+    // Le fichier a été écrit il y a 30 min puis plus rien (GDrive en retard).
+    const back = new Date(Date.now() - 30 * 60 * 1000);
+    utimesSync(path.join(dashboardsDir, 'machine-beta.md'), back, back);
+
+    const r = (await roosyncDashboard({ action: 'list' })) as any;
+    const entry = r.dashboards.find((d: any) => d.key === 'machine-beta');
+    expect(entry.mirrorDiverged).toBe(true);
+    expect(entry.mirrorDivergedDetail).toContain('miroir PG plus frais');
+  });
+
+  it('clé PG-sans-fichier : une seule surface, pas de divergence', async () => {
+    listKeysSpy.mockResolvedValue(['workspace-pg-only']);
+    pgReadSpy.mockResolvedValue(pgDashboard('workspace-pg-only', new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString()));
+    // AUCUN fichier GDrive — dashboard né dégradé (G-B), légitime.
+
+    const r = (await roosyncDashboard({ action: 'list' })) as any;
+    const entry = r.dashboards.find((d: any) => d.key === 'workspace-pg-only');
+    expect(entry.mirrorDiverged).toBeUndefined();
+    expect(r.message).not.toContain('mirrorDiverged');
   });
 });
