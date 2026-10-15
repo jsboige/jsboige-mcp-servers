@@ -2869,8 +2869,10 @@ export interface LLMCallStats {
    * error/timeout, or `guard-rejected` (#3962 — reason + lengths of the rejected status). */
   lastError?: string;
   /** Final outcome. `guard-rejected` (#3962) : le garde « jamais pire que l'entrée » a rejeté
-   * un statut-artefact d'échec transporté en 200 (vide / `[Error:` / trop court). */
-  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback' | 'guard-rejected';
+   * un statut-artefact d'échec transporté en 200 (vide / `[Error:` / trop court).
+   * `skipped-on-change` (#4205) : l'appel n'a PAS eu lieu — les messages archivés ne
+   * portaient aucun signal d'état, le statut précédent est conservé tel quel. */
+  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback' | 'guard-rejected' | 'skipped-on-change';
   // #2719: Cloud fallback fields
   /** Whether the cloud fallback (z.ai / OpenAI) was used for this call. */
   fallbackUsed?: boolean;
@@ -4500,6 +4502,47 @@ export function isModelFailureStatus(
  * Si le statut ou le résumé dépasse les limites de taille, auto-condense via LLM.
  * Retourne le dashboard condensé.
  */
+// #4205 — Régénérer le bloc status seulement s'il y a lieu. Le statut représente
+// ~88 % du texte produit par une condensation (~120 passes/jour flotte) alors
+// qu'il change peu d'une passe à l'autre : les passes qui n'archivent que du
+// bavardage sans état (INFO/REPLY/ACK, avis système CONDENSATION) peuvent
+// conserver `previousStatus` tel quel. Décision CONSERVATRICE : le doute
+// régénère — un skip ne survient que si AUCUN message archivé ne porte de
+// signal d'état.
+const STATUS_BEARING_TAGS = new Set([
+  'DONE', 'TASK', 'BLOCKED', 'ERROR', 'WARN', 'ASK', 'PROPOSAL', 'CLAIMED', 'FRICTION',
+]);
+// Références d'issue/PR (#NNN, ms#N), fusions, mandats et arbitrages user — tout
+// ce qu'une synthèse d'état doit replier. /i : MERGÉ matche via son préfixe MERG.
+// Marqueurs bracket inline ([DONE]/[ASK]/[BLOCKED]/[CLAIMED]/[RESULT]) : les tags
+// normalisés (#4003) portent déjà via STATUS_BEARING_TAGS, mais la flotte les
+// écrit aussi DANS le contenu d'un message non taggé (review ms#1439, item 3).
+const STATUS_BEARING_CONTENT = /#\d{3,}|ms#\d+|merg|mandat|\[go|\[wake|\[stop|\[split-brain|\[done|\[ask|\[blocked|\[claimed|\[result|décision|arbitrage|rx\d+|escalad/i;
+
+/**
+ * #4205 — la passe de condensation doit-elle régénérer le bloc status ?
+ * Pure et exportée pour tests unitaires. Les avis `system` (notices
+ * CONDENSATION/CONDENSATION-SUMMARY) ne portent jamais d'état par construction.
+ */
+export function shouldRegenerateStatus(messages: IntercomMessage[]): { regenerate: boolean; reason: string } {
+  if (messages.length === 0) {
+    return { regenerate: true, reason: 'no-archived-messages' };
+  }
+  for (const message of messages) {
+    const stateTag = (message.tags ?? []).find(t => STATUS_BEARING_TAGS.has(t.toUpperCase()));
+    if (stateTag) {
+      return { regenerate: true, reason: `tag:${stateTag}` };
+    }
+    if (message.author?.machineId === 'system') {
+      continue; // notices CONDENSATION : aucun état à replier
+    }
+    if (STATUS_BEARING_CONTENT.test(message.content ?? '')) {
+      return { regenerate: true, reason: 'content-signal' };
+    }
+  }
+  return { regenerate: false, reason: 'no-state-signal' };
+}
+
 async function condenseIntercom(
   key: string,
   dashboard: Dashboard,
@@ -4556,10 +4599,44 @@ async function condenseIntercom(
   // (intercom-append-timeout.md). WRITE-FIRST already persisted the message before
   // this; the deadline keeps the append's answer from expiring client-side.
   const passDeadlineMs = condensationStart + parseInt(process.env.CONDENSE_PASS_DEADLINE_MS || '165000', 10);
+  // #4205 — statut régénéré seulement s'il y a lieu. Mode `always` = comportement
+  // historique (chaque passe réécrit le statut) ; défaut `on-change` : skip si les
+  // messages archivés ne portent AUCUN signal d'état → previousStatus conservé tel
+  // quel (l'archive et generateLLMSummary restent inchangés — aucune perte).
+  const rawStatusMode = (process.env.DASHBOARD_CONDENSE_STATUS_MODE ?? '').trim();
+  const statusMode = rawStatusMode === '' ? 'on-change' : rawStatusMode.toLowerCase();
+  if (statusMode !== 'on-change' && statusMode !== 'always') {
+    // Review ms#1439 item 2 : `ALWAYS` ou `always ` ne doit pas retomber
+    // silencieusement en on-change — un knob de rollback se doit d'être lisible.
+    logger.warn(`DASHBOARD_CONDENSE_STATUS_MODE « ${rawStatusMode} » inconnu — défaut on-change appliqué (#4205)`, { key });
+  }
+  const statusDecision = statusMode === 'always'
+    ? { regenerate: true, reason: 'mode=always' }
+    : (previousStatus.trim().length === 0
+        ? { regenerate: true, reason: 'empty-previous-status' }
+        : shouldRegenerateStatus(toArchive));
+  // Statut synthétique du skip : contenu = previousStatus (non-null, les gardes
+  // #3962/#2463 passent par construction — le statut existait sous les plafonds),
+  // stats marquées `skipped-on-change` (0 tentative) pour la télémétrie.
+  const skippedStatusCall = (): LLMCallResult => ({
+    content: previousStatus,
+    stats: emptyLLMStats('skipped-on-change'),
+  });
   const [statusCall, summaryCall] = await Promise.all([
-    generateStatusUpdate(previousStatus, safeMessages, toArchive.length, key, { skipPrimary: primaryCircuitOpen, passDeadlineMs }),
+    statusDecision.regenerate
+      ? generateStatusUpdate(previousStatus, safeMessages, toArchive.length, key, { skipPrimary: primaryCircuitOpen, passDeadlineMs })
+      : Promise.resolve(skippedStatusCall()),
     generateLLMSummary(toArchive, { skipPrimary: primaryCircuitOpen, passDeadlineMs })
   ]);
+  if (!statusDecision.regenerate) {
+    logger.info('Status regeneration skipped — archived messages carry no state signal (#4205)', {
+      key,
+      reason: statusDecision.reason,
+      archived: toArchive.length,
+      mode: statusMode,
+      statusSkipped: true,
+    });
+  }
   if (diagnostic) {
     diagnostic.llm = { summary: summaryCall.stats, status: statusCall.stats };
   }
@@ -4697,7 +4774,9 @@ async function condenseIntercom(
     newStatus = newStatus + '\n\n' + reconciledMarkers.join('\n');
   }
 
-  const statusUpdated = true;
+  // #4205 honesty (review ms#1439) : un skip conserve previousStatus tel quel —
+  // le frontmatter de l'archive ne doit pas prétendre le contraire.
+  const statusUpdated = statusDecision.regenerate;
 
   // Archiver les anciens messages (format Markdown)
   const archiveDir = getArchiveDir();
@@ -4765,12 +4844,22 @@ ${archiveMessages}
 
   const statusSizeBytes = Buffer.byteLength(newStatus!, 'utf8');
   const summarySizeBytes = Buffer.byteLength(llmSummary ?? '', 'utf8');
-  logger.info('Status updated from archived messages', {
-    previousLength: previousStatus.length,
-    newLength: newStatus!.length,
-    statusSizeKB: `${(statusSizeBytes / 1024).toFixed(1)}KB`,
-    summarySizeKB: `${(summarySizeBytes / 1024).toFixed(1)}KB`
-  });
+  // #4205 honesty (review ms#1439) : sur une passe skippée le statut n'est PAS
+  // régénéré — le log et la notice ne doivent pas revendiquer une mise à jour.
+  if (statusDecision.regenerate) {
+    logger.info('Status updated from archived messages', {
+      previousLength: previousStatus.length,
+      newLength: newStatus!.length,
+      statusSizeKB: `${(statusSizeBytes / 1024).toFixed(1)}KB`,
+      summarySizeKB: `${(summarySizeBytes / 1024).toFixed(1)}KB`
+    });
+  } else {
+    logger.info('Status kept verbatim (skip #4205)', {
+      reason: statusDecision.reason,
+      statusSizeKB: `${(statusSizeBytes / 1024).toFixed(1)}KB`,
+      summarySizeKB: `${(summarySizeBytes / 1024).toFixed(1)}KB`
+    });
+  }
 
   // Ajouter le message de condensation standard avec timing et tailles
   // #2719 (ask CoursIA 25/09 20:10Z, dispatch ai-01 26/09) : le notice ne doit
@@ -4791,6 +4880,11 @@ ${archiveMessages}
     : summaryViaCloud
       ? `résumé généré via fallback cloud (${(summarySizeBytes / 1024).toFixed(1)}KB, modèle primaire en échec)`
       : `résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)`;
+  // #4205 honesty : même algebra que summaryClause — une passe skippée dit
+  // « Statut conservé », pas « Statut mis à jour ».
+  const statusClause = !statusDecision.regenerate
+    ? `Statut conservé (skip #4205, ${statusDecision.reason})`
+    : `Statut mis à jour${statusViaCloud ? ' via fallback cloud' : ''} (${(statusSizeBytes / 1024).toFixed(1)}KB)`;
   const totalElapsed = Date.now() - condensationStart;
   const condenseNotice: IntercomMessage = {
     id: generateMessageId('system', 'system'),
@@ -4799,7 +4893,7 @@ ${archiveMessages}
       machineId: 'system',
       workspace: 'system'
     },
-    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\nStatut mis à jour${statusViaCloud ? ' via fallback cloud' : ''} (${(statusSizeBytes / 1024).toFixed(1)}KB), ${summaryClause}\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
+    content: `**CONDENSATION** - ${now}\n\n${toArchive.length} messages archivés dans \`archive/${path.basename(archivePath)}\`\n${toKeep.length} messages conservés (plus récents)\n${statusClause}, ${summaryClause}\nDurée: ${Math.round(totalElapsed / 1000)}s (status + summary parallèle: ${Math.round(tParallelElapsed / 1000)}s)`
   };
   systemMessages.push(condenseNotice);
 

@@ -56,6 +56,10 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
     process.env.ROOSYNC_SHARED_PATH = tmpDir;
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    // #4205: ce harnais teste la mecanique de la jambe status (retry, garde
+    // #3962, fallback, notice) sous regeneration FORCEE -- pas la politique de
+    // skip on-change ; sans ceci, ses remplissages sans signal skippent la jambe.
+    process.env.DASHBOARD_CONDENSE_STATUS_MODE = 'always';
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
     delete process.env.OPENAI_CHAT_MODEL_ID;
@@ -69,10 +73,12 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
   });
 
   afterEach(async () => {
+    delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
     await rm(tmpDir, { recursive: true, force: true });
     delete process.env.ROOSYNC_SHARED_PATH;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
+    delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
   });
 
   async function fillUntilCondensed(): Promise<any> {
