@@ -499,4 +499,74 @@ describe('rebuild-task-index', () => {
 			expect((result.content[0] as any).text).toContain('**Tasks on disk:** 1');
 		});
 	});
+
+	// ============================================================
+	// #2766 étape 2 — Zoo-only host: the tool must address the ZOO tasks
+	// directory AND the ZOO SQLite key (pre-fix: env-only defaults made it
+	// readdir the roo-cline path → ENOENT, and read/write the roo-cline key).
+	// existsSync is routed to mockExistsSync by the fs mock, so the probe is
+	// steered by making only the zoo-code tasks path "exist".
+	// ============================================================
+	describe('#2766 étape 2 — Zoo-only host resolution', () => {
+		beforeEach(() => {
+			delete process.env.ROO_EXTENSION_ID;
+			delete process.env.ROO_VSCDB_KEY;
+			// Only the zoo-code tasks directory exists (zoo-only host);
+			// state.vscdb itself obviously still exists.
+			mockExistsSync.mockImplementation((p: unknown) =>
+				String(p).includes('zoocodeorganization.zoo-code') || String(p).endsWith('state.vscdb'));
+		});
+
+		afterEach(() => {
+			mockExistsSync.mockReturnValue(true);
+		});
+
+		test('reads the Zoo SQLite key, not the roo-cline default', async () => {
+			mockReaddir.mockResolvedValueOnce([]); // no tasks on disk
+
+			await handleRebuildTaskIndex({ dry_run: true });
+
+			const getCall = mockDb.get.mock.calls[0];
+			expect(getCall[1][0]).toBe('ZooCodeOrganization.zoo-code');
+		});
+
+		test('scans the Zoo tasks directory, not the roo-cline default (the ENOENT regression)', async () => {
+			mockReaddir.mockResolvedValueOnce([]);
+
+			await handleRebuildTaskIndex({ dry_run: true });
+
+			expect(mockReaddir.mock.calls[0][0]).toContain('zoocodeorganization.zoo-code');
+			expect(mockReaddir.mock.calls[0][0]).not.toContain('rooveterinaryinc.roo-cline');
+		});
+
+		test('reports the resolved tasks directory for operator observability', async () => {
+			mockReaddir.mockResolvedValueOnce([]);
+
+			const result = await handleRebuildTaskIndex({ dry_run: true });
+
+			expect((result.content[0] as any).text).toContain('**Tasks directory:**');
+			expect((result.content[0] as any).text).toContain('zoocodeorganization.zoo-code');
+		});
+
+		test('live write targets the Zoo key (write-back consistency)', async () => {
+			mockDb.get.mockImplementation((_sql: string, _params: unknown[], cb: Function) => {
+				cb(null, { value: JSON.stringify({ taskHistory: [] }) });
+			});
+			mockReaddir
+				.mockResolvedValueOnce(['orphan-id'])
+				.mockResolvedValueOnce(['api_conversation_history.json']);
+			mockStat.mockResolvedValue({
+				isDirectory: () => true,
+				mtime: new Date('2026-06-01T00:00:00Z'),
+				birthtime: new Date('2026-06-01T00:00:00Z')
+			});
+			mockAnalyzeConversation.mockResolvedValue(null);
+
+			const result = await handleRebuildTaskIndex({ dry_run: false });
+
+			expect(mockDb.run).toHaveBeenCalledTimes(1);
+			expect(mockDb.run.mock.calls[0][1][1]).toBe('ZooCodeOrganization.zoo-code');
+			expect((result.content[0] as any).text).toContain('INDEX UPDATED');
+		});
+	});
 });
