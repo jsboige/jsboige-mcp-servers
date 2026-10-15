@@ -6808,9 +6808,16 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
             utilizationPct: sizes.utilizationPct,
             ...(div.diverged ? {
               mirrorDiverged: true,
-              mirrorDivergedDetail: `${div.direction === 'file-newer' ? 'fichier GDrive plus frais' : 'miroir PG plus frais'} de ${Math.round((div.gapMs ?? 0) / 60000)} min — les compteurs de cette entrée viennent de la surface ${
-                div.direction === 'file-newer' ? 'PG, périmée' : 'fichier, périmée'
-              } (#4187)`,
+              // Review ms#1440 : dans cette branche PG, les compteurs servis
+              // viennent TOUJOURS de PG — en file-newer PG est la moitié en
+              // retard (compteurs périmés), en pg-newer PG est la moitié
+              // fraîche (compteurs bons, c'est le fichier qui traîne — ou un
+              // skew d'horloge entre hôtes). L'attribution doit nommer la
+              // surface SERVIE, pas celle qui bouge.
+              mirrorDivergedDetail:
+                div.direction === 'file-newer'
+                  ? `fichier GDrive plus frais de ${Math.round((div.gapMs ?? 0) / 60000)} min — les compteurs servis viennent de la surface PG, périmée (#4187)`
+                  : `miroir PG plus frais de ${Math.round((div.gapMs ?? 0) / 60000)} min — les compteurs servis viennent de PG (surface fraîche) ; la moitié fichier est en retard (skew d'horloge entre hôtes possible) (#4187)`,
             } : {}),
           });
         }

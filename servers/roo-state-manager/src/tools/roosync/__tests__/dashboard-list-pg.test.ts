@@ -269,6 +269,13 @@ describe('roosync_dashboard list — garde mirrorDiverged (#4187)', () => {
     const entry = r.dashboards.find((d: any) => d.key === 'machine-beta');
     expect(entry.mirrorDiverged).toBe(true);
     expect(entry.mirrorDivergedDetail).toContain('miroir PG plus frais');
+    // Review ms#1440 — l'attribution ne doit PAS être inversée : en pg-newer,
+    // les compteurs servis viennent de PG (FRAÎCHE) ; c'est la moitié fichier
+    // qui est en retard. L'ancienne formulation « surface fichier, périmée »
+    // décrivait la moitié qui n'est pas servie.
+    expect(entry.mirrorDivergedDetail).toContain('compteurs servis viennent de PG (surface fraîche)');
+    expect(entry.mirrorDivergedDetail).toContain('moitié fichier est en retard');
+    expect(entry.mirrorDivergedDetail).not.toContain('surface fichier, périmée');
   });
 
   it('clé PG-sans-fichier : une seule surface, pas de divergence', async () => {
