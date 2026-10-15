@@ -47,6 +47,10 @@ describe('SMOKE: roosync_send', () => {
     process.env.ROOSYNC_SHARED_PATH = testMessagesPath;
     process.env.ROOSYNC_MACHINE_ID = 'smoke-test-sender';
     process.env.ROOSYNC_WORKSPACE_ID = 'smoke-test-ws';
+    // #4206 — garde à l'envoi : allow-list explicite des destinataires
+    // fixtures de ce harnais (hors forme myia-*), via le mécanisme prévu.
+    process.env.ROO_MENTION_EXTRA_RECIPIENTS =
+      'test-machine-1,test-machine-2,test-machine-iso,smoke-test-sender';
 
     // Create test directory structure (messages/sent, messages/inbox, messages/archive)
     for (const dir of [testSentPath, testInboxPath, path.join(testMessagesPath, 'messages', 'archive')]) {

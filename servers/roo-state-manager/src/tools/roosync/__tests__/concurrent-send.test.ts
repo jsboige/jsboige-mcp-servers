@@ -57,6 +57,13 @@ describe('roosyncSend - Concurrent Same Recipient (Issue #531)', () => {
   let messageManager: MessageManager;
 
   beforeEach(async () => {
+    // #4206 — garde à l'envoi : les destinataires fixtures de ce harnais
+    // (machine-b, shared-recipient, …) ne suivent pas la forme myia-* ;
+    // allow-list explicite via le mécanisme prévu (extra-liste), pour que
+    // le garde tourner REELLEMENT sur ces envois sans refuser les fixtures.
+    process.env.ROO_MENTION_EXTRA_RECIPIENTS =
+      'machine-b,shared-recipient,ordered-recipient,late-target,test-machine-1';
+
     // Reset machine ID
     currentMachineId = 'test-machine-1';
 
@@ -79,6 +86,7 @@ describe('roosyncSend - Concurrent Same Recipient (Issue #531)', () => {
   });
 
   afterEach(async () => {
+    delete process.env.ROO_MENTION_EXTRA_RECIPIENTS;
     // Cleanup
     if (existsSync(testSharedStatePath)) {
       rmSync(testSharedStatePath, { recursive: true, force: true });
@@ -229,7 +237,7 @@ describe('roosyncSend - Concurrent Same Recipient (Issue #531)', () => {
         currentMachineId = `sender-${i}`;
         return roosyncSend({
           action: 'send',
-          to: `recipient-${i}`,
+          to: `myia-recipient-${i}`, // #4206 : forme flotte pour passer le garde
           subject: `Message ${i}`,
           body: `Body ${i}`
         });
@@ -258,7 +266,7 @@ describe('roosyncSend - Concurrent Same Recipient (Issue #531)', () => {
         currentMachineId = `sender-${i}`;
         return roosyncSend({
           action: 'send',
-          to: `target-${i}`,
+          to: `myia-target-${i}`, // #4206 : forme flotte pour passer le garde
           subject: `Initial ${i}`,
           body: `Body ${i}`
         });

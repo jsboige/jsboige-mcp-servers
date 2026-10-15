@@ -317,6 +317,147 @@ function extraMentionMatches(recipient: string, extras: readonly string[]): bool
 }
 
 /**
+ * Verdict du garde à l'envoi (#4206) — `ok: false` porte un `reason` humain et,
+ * quand la correction est évidente, la `suggestion` à utiliser.
+ */
+export interface SendRecipientVerdict {
+  ok: boolean;
+  reason?: string;
+  suggestion?: string;
+}
+
+/**
+ * Clés de dashboard qui ressemblent à un destinataire sans en être un —
+ * ce sont des valeurs du paramètre `type` de `roosync_dashboard`, pas des
+ * adresses RooSync. Les 27 orphelines mesurées (#4206 recensement) en
+ * contiennent : envoyées comme `to`, personne ne les lit jamais.
+ */
+const DASHBOARD_RESERVED_KEYS: ReadonlySet<string> = new Set(['global', 'machine', 'workspace']);
+
+/**
+ * Garde à l'envoi (#4206) — refuse un destinataire malformé AVANT écriture.
+ *
+ * La file `messages/` contient des messages orphelins produits par un `to`
+ * mal formé qui n'échoue nulle part : le message s'écrit, personne ne le lit.
+ * Cette garde ferme la porte à l'envoi (elle ne purge pas l'existant —
+ * les 27 orphelines déjà là relèvent du recensement, pas de ce ticket) :
+ *
+ * 1. **machine répétée** (`myia-ai-01:myia-ai-01:CoursIA-2`) — suggestion :
+ *    la forme dédupliquée ;
+ * 2. **machine inconnue** — ni `myia-*` (forme), ni l'extra-liste famille B,
+ *    ni le roster. Le cas mesuré est le préfixe oublié (`po-2023` nu,
+ *    `po-204`) — suggestion évidente `myia-<x>` quand `myia-<x>` serait
+ *    valide ;
+ * 3. **clé de dashboard comme destinataire** (`global`, `machine`,
+ *    `workspace`) — suggestion : la forme de destinataire attendue.
+ *
+ * Passe : `all`, toute machine `myia-*` (seule ou `machine:workspace`), et
+ * la famille B (`nanoclaw-cluster`, `nanoclaw:agent`, `cluster-manager:…`)
+ * via {@link loadExtraMentionRecipients} — la même union que la garde des
+ * mentions ms#1413, pour ne pas couper un consommateur vivant. Le test de
+ * l'extra-liste se fait sur l'adresse **complète** avant découpage : une
+ * entrée à deux-points (`cluster-manager:nanoclaw-cluster`) ne blanchit pas
+ * sa tête seule.
+ *
+ * Sensible à la casse, comme {@link FLEET_MACHINE_PATTERN} : une graphie
+ * `MYIA-PO-2023` est refusée (fail-closed) plutôt que transformée.
+ *
+ * Pure : roster et extra-liste en paramètres (défauts évalués à l'appel),
+ * aucune écriture, aucun effet de bord — testable en table.
+ *
+ * @issue #4206
+ */
+export function validateSendMessageRecipient(
+  to: string,
+  roster: string[] | null = tryLoadRooSyncConfig()?.fleetRoster ?? null,
+  extra: readonly string[] = loadExtraMentionRecipients()
+): SendRecipientVerdict {
+  const raw = to.trim();
+  if (!raw) {
+    return { ok: false, reason: 'destinataire vide' };
+  }
+  if (raw === 'all') {
+    return { ok: true };
+  }
+
+  // Famille B : adresse complète contre l'extra-liste, AVANT le découpage —
+  // `cluster-manager:nanoclaw-cluster` est une entrée exacte, pas une tête
+  // `cluster-manager` qui blanchirait ses propres lanes.
+  if (extraMentionMatches(raw, extra)) {
+    return { ok: true };
+  }
+
+  // Clé de dashboard prise pour un destinataire (familles #4206) : ce sont
+  // des valeurs de `roosync_dashboard.type`, aucune inbox ne s'appelle ainsi.
+  if (DASHBOARD_RESERVED_KEYS.has(raw.toLowerCase())) {
+    return {
+      ok: false,
+      reason: `"${raw}" est une clé de dashboard (paramètre type de roosync_dashboard), pas un destinataire de message`,
+      suggestion: 'all | myia-po-2023 | myia-po-2023:roo-extensions'
+    };
+  }
+
+  const parts = raw.split(':');
+  if (parts.length > 2) {
+    // Machine répétée (X:X:workspace) : la tête se retrouve deux fois de
+    // suite. Suggestion = la forme dédupliquée, sinon la forme attendue.
+    const [head, second, ...rest] = parts;
+    if (head === second && FLEET_MACHINE_PATTERN.test(head)) {
+      const deduped = [head, ...rest].join(':');
+      return {
+        ok: false,
+        reason: `machine répétée "${head}:${second}"`,
+        suggestion: deduped
+      };
+    }
+    return {
+      ok: false,
+      reason: 'trop de segments (attendu : machine | machine:workspace | all)',
+      suggestion: `${parts[0]}${parts[1] ? `:${parts[1]}` : ''}`
+    };
+  }
+
+  const machine = parts[0];
+  const workspace = parts.length === 2 ? parts[1] : null;
+  if (!machine || workspace === '') {
+    return {
+      ok: false,
+      reason: 'machine ou workspace vide',
+      suggestion: raw.replace(/:+$/, '')
+    };
+  }
+
+  // Workspace auto-nommé (#4206 famille D, ex. mesuré `myia-po-2025:Microsoft
+  // VS Code` — le nom de workspace PAR DÉFAUT de VS Code, #1861) : une lane
+  // réelle est un slug sans espace (aucune lane connue n'en contient, et un
+  // espace casserait le chemin d'inbox). La machine est connue — la
+  // suggestion évidente est la machine seule.
+  if (workspace !== null && /\s/.test(workspace)) {
+    return {
+      ok: false,
+      reason: `workspace "${workspace}" invalide (espace dans le nom — workspace auto-nommé, pas une lane)`,
+      suggestion: machine
+    };
+  }
+
+  if (isFleetRecipient(machine, roster, extra)) {
+    return { ok: true };
+  }
+
+  // Refus : machine inconnue. Suggestion évidente quand le seul défaut est
+  // le préfixe oublié (`po-2023` → `myia-po-2023`).
+  const prefixed = `myia-${machine.toLowerCase()}`;
+  const suggestion = FLEET_MACHINE_PATTERN.test(prefixed) || (roster?.includes(prefixed) ?? false)
+    ? (workspace !== null ? `${prefixed}:${workspace}` : prefixed)
+    : 'all | myia-po-2023 | myia-po-2023:roo-extensions';
+  return {
+    ok: false,
+    reason: `machine "${machine}" inconnue de la flotte`,
+    suggestion
+  };
+}
+
+/**
  * Envoie des notifications RooSync automatiques quand un message mentionne d'autres machines/agents
  *
  * Cette fonction est fire-and-forget et n'interrompt pas le flux principal.

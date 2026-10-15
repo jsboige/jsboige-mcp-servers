@@ -23,7 +23,7 @@ import {
 } from '../../utils/message-helpers.js';
 import { maskSecretTextForPublication } from '../../utils/secret-redaction.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
-import { updateDashboardActivityAsync } from '../../utils/dashboard-helpers.js';
+import { updateDashboardActivityAsync, validateSendMessageRecipient } from '../../utils/dashboard-helpers.js';
 
 /**
  * #3584 — frontière unique de masquage pour les messages RooSync (send/reply/amend).
@@ -157,6 +157,29 @@ async function sendNewMessage(
       'Paramètre "to" requis : ID de la machine destinataire',
       MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
       { missingParam: 'to', providedArgs: Object.keys(args) }
+    );
+  }
+
+  // #4206 — garde à l'envoi : un `to` mal formé s'écrivait sans échouer et
+  // personne ne le lisait (27 orphelines recensées). Refus AVANT toute
+  // écriture, avec la correction quand elle est évidente (`po-2023` →
+  // `myia-po-2023`). Même union d'acceptation que la garde des mentions
+  // ms#1413 (forme myia-* ∪ extra-liste famille B ∪ roster) pour ne pas
+  // couper un consommateur vivant (poller NanoClaw).
+  const recipientVerdict = validateSendMessageRecipient(args.to);
+  if (!recipientVerdict.ok) {
+    const hint = recipientVerdict.suggestion
+      ? ` (suggestion : ${recipientVerdict.suggestion})`
+      : '';
+    throw new MessageManagerError(
+      `Destinataire invalide "${args.to}" : ${recipientVerdict.reason}${hint}. Forme attendue : all | myia-po-2023 | myia-po-2023:roo-extensions`,
+      MessageManagerErrorCode.INVALID_MESSAGE_FORMAT,
+      {
+        to: args.to,
+        reason: recipientVerdict.reason,
+        suggestion: recipientVerdict.suggestion,
+        guard: '#4206 send-time recipient guard'
+      }
     );
   }
 

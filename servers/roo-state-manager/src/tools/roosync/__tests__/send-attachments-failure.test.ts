@@ -107,9 +107,15 @@ vi.mock('../../../../src/tools/roosync/heartbeat-activity.js', () => ({
     recordRooSyncActivityAsync: mockRecordActivity,
 }));
 
-vi.mock('../../../../src/utils/dashboard-helpers.js', () => ({
-    updateDashboardActivityAsync: mockUpdateDashboardActivity,
-}));
+// #4206 — passthrough RÉEL du garde à l'envoi (destinataires myia-*),
+// seul updateDashboardActivityAsync reste mocké.
+vi.mock('../../../../src/utils/dashboard-helpers.js', async () => {
+    const actual = await vi.importActual('../../../../src/utils/dashboard-helpers.js');
+    return {
+        ...(actual as object),
+        updateDashboardActivityAsync: mockUpdateDashboardActivity,
+    };
+});
 
 vi.mock('../../../../src/utils/logger.js', () => ({
     createLogger: () => ({
