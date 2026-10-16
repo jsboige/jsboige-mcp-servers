@@ -114,6 +114,83 @@ describe('ContentTruncator', () => {
         });
     });
 
+    describe('hardCapString — #2609 V4 fix rubric (b) : pas de marqueur [role] orphelin en frontière de coupe', () => {
+        // Reproduit la classe mesurée 16/10 : 7/141 conversations locales
+        // rendent exactement 1 orphelin, toutes avec la coupe-tête tombant
+        // juste après une ligne marqueur (le contenu suit dans la partie
+        // élidée). Le run ai-01 03:37 échoue la rubric (b) sur ce shape.
+        const ORPHAN_RE = /\[(?:👤 User|🤖 Assistant)\]:\n(?:[ \t]*\n|\s*$)/g;
+
+        /** Construit un rendu dont la coupe-tête brute tombe pile après la ligne marqueur. */
+        const buildOrphanBoundaryContent = (): { content: string; headerKeepChars: number; markerLineEnd: number } => {
+            const markerLine = '  [🤖 Assistant]:\n';
+            const prefix = 'en-tete-metadonnees'.padEnd(1980, 'h') + '\n';
+            const head = prefix + markerLine;
+            const middle = 'm'.repeat(3_000);
+            const tail = '\n  [👤 User]:\n    | contenu final substantiel\n';
+            return {
+                content: head + middle + tail,
+                headerKeepChars: head.length, // coupe brute pile à la fin de la ligne marqueur
+                markerLineEnd: head.length,
+            };
+        };
+
+        test('la coupe-tête recule avant la ligne marqueur orpheline (eval rubric (b))', () => {
+            const { content, headerKeepChars } = buildOrphanBoundaryContent();
+            const maxChars = 4_000;
+            const capped = ContentTruncator.hardCapString(content, maxChars, { headerKeepChars });
+            // Regex EXACTE de v4-essential-drilldown.eval.test.ts l.129 : zéro orphelin.
+            const orphans = capped.match(ORPHAN_RE);
+            expect(orphans).toBeNull();
+        });
+
+        test('la tête ne se termine pas sur une ligne marqueur', () => {
+            const { content, headerKeepChars } = buildOrphanBoundaryContent();
+            const capped = ContentTruncator.hardCapString(content, 4_000, { headerKeepChars });
+            const elision = capped.indexOf('\n\n[... ');
+            expect(elision).toBeGreaterThan(0);
+            const head = capped.substring(0, elision);
+            expect(head).not.toMatch(/\[(?:👤 User|🤖 Assistant)\]:[ \t]*$/);
+            // Le recul n'a perdu que la ligne marqueur : le préfixe reste.
+            expect(head).toContain('en-tete-metadonnees');
+        });
+
+        test('la borne stricte ≤ maxChars tient après le recul anti-orphelin', () => {
+            const { content, headerKeepChars } = buildOrphanBoundaryContent();
+            const capped = ContentTruncator.hardCapString(content, 4_000, { headerKeepChars });
+            expect(capped.length).toBeLessThanOrEqual(4_000);
+            expect(capped).toContain('hard cap');
+        });
+
+        test('comptabilité élision exacte après recul (removed + kept = content)', () => {
+            const { content, headerKeepChars } = buildOrphanBoundaryContent();
+            const capped = ContentTruncator.hardCapString(content, 4_000, { headerKeepChars });
+            const match = capped.match(/\[\.\.\. (\d+) chars by hard cap \.\.\.\]/);
+            expect(match).not.toBeNull();
+            const removed = parseInt(match![1], 10);
+            const kept = capped.replace(`\n\n${match![0]}\n\n`, '');
+            expect(removed + kept.length).toBe(content.length);
+        });
+
+        test('marqueur en position 0 (tête = ligne marqueur seule) : recul à 0, pas d’orphelin', () => {
+            const markerLine = '  [🤖 Assistant]:\n';
+            const content = markerLine + 'm'.repeat(3_000) + '\n  [👤 User]:\n    | fin\n';
+            const capped = ContentTruncator.hardCapString(content, 4_000, { headerKeepChars: markerLine.length });
+            expect(capped.match(ORPHAN_RE)).toBeNull();
+            expect(capped.length).toBeLessThanOrEqual(4_000);
+        });
+
+        test('sans marqueur à la frontière : comportement inchangé (garde non-greedy)', () => {
+            // Coupe-tête sur une ligne de contenu ordinaire : aucun recul parasite.
+            const content = 'aaaa\n' + 'contenu ordinaire ligne 2\n' + 'm'.repeat(6_000) + '\n  [👤 User]:\n    | fin\n';
+            const headerKeepChars = content.indexOf('ligne 2\n') + 'ligne 2\n'.length; // fin de ligne 2
+            const capped = ContentTruncator.hardCapString(content, 4_000, { headerKeepChars });
+            expect(capped).toContain('contenu ordinaire ligne 2\n');
+            expect(capped).toContain('hard cap');
+            expect(capped.length).toBeLessThanOrEqual(4_000);
+        });
+    });
+
     describe('applyTruncationPlans', () => {
         test('should return unchanged tasks when no plans provided', () => {
             const tasks = [createMockTask('task1', ['Hello', 'Hi there'])];

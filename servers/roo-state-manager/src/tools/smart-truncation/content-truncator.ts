@@ -39,6 +39,29 @@ function snapTailStartToLineBoundary(content: string, rawStart: number): number 
 }
 
 /**
+ * #2609 V4 (fix rubric (b), 16/10) — une coupe de tête qui s'arrête juste
+ * APRÈS une ligne marqueur `[role]:` laisse un marqueur orphelin : son
+ * contenu est tombé dans la partie élidée, le marqueur promet un signal
+ * absent. Mesuré : 7/141 conversations locales rendent exactement 1 orphelin
+ * chacune (toutes coupe-tête), + FAIL persistant du run ai-01 03:37.
+ *
+ * Recule la coupe AVANT la ligne marqueur si la tête s'y termine. Recul
+ * borné (une ligne marqueur) : la tête ne grossit jamais, la borne
+ * ≤ maxChars de hardCapString tient par construction.
+ */
+const ORPHAN_MARKER_LINE_RE = /(?:^|\n)[ \t]*\[(?:👤 User|🤖 Assistant)\]:[ \t]*\n$/;
+
+function backOffHeadEndPastOrphanMarker(content: string, headEnd: number): number {
+    if (headEnd <= 0) return headEnd;
+    const m = ORPHAN_MARKER_LINE_RE.exec(content.substring(0, headEnd));
+    if (!m) return headEnd;
+    // m.index pointe sur le \n qui précède la ligne marqueur (ou sur le
+    // marqueur en position 0) : couper juste après ce \n sort la ligne
+    // marqueur entière de la tête.
+    return m.index === 0 ? 0 : m.index + 1;
+}
+
+/**
  * Troncateur de contenu avec méthodes sémantiques
  */
 export class ContentTruncator {
@@ -82,7 +105,10 @@ export class ContentTruncator {
         // borné pour la tête, avance bornée pour la queue) au lieu de couper
         // en plein milieu d'un mot/ligne. Les deux snaps ne font que rétrécir
         // les segments : la borne stricte ≤ maxChars tient par construction.
-        const headEnd = snapHeadEndToLineBoundary(content, headerKeepChars);
+        let headEnd = snapHeadEndToLineBoundary(content, headerKeepChars);
+        // #2609 V4 (fix rubric (b)) — la tête ne doit pas se TERMINER sur une
+        // ligne marqueur orpheline (contenu élidé juste après).
+        headEnd = backOffHeadEndPastOrphanMarker(content, headEnd);
         const head = content.substring(0, headEnd);
         const tailStart = snapTailStartToLineBoundary(content, content.length - tailBudget);
         const tail = content.substring(tailStart);
