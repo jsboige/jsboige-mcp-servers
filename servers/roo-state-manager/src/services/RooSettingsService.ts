@@ -17,13 +17,8 @@ import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import sqlite3 from 'sqlite3';
 import { createLogger, Logger } from '../utils/logger.js';
-import { getVscdbKey, ZOO_CODE_VSCDB_KEY, DEFAULT_VSCDB_KEY } from '../utils/extension-paths.js';
+import { resolveActiveVscdbKey, ZOO_CODE_VSCDB_KEY } from '../utils/extension-paths.js';
 
-/**
- * Default VSCDB key resolved at module load (backward compat).
- * Individual instances can override via constructor option.
- */
-const DEFAULT_KEY = getVscdbKey();
 const VSCDB_RELATIVE_PATH = join('AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'state.vscdb');
 
 /** Options for RooSettingsService construction (#2543 Phase 1a). */
@@ -184,14 +179,20 @@ export class RooSettingsService {
 
   constructor(options?: RooSettingsServiceOptions) {
     this.logger = createLogger('RooSettingsService');
-    // Resolve target vscdb key from options, falling back to module-load default
+    // Resolve target vscdb key from options, falling back to the
+    // filesystem-aware resolution evaluated at CONSTRUCTION time.
+    // #2766 W1 — the previous module-load const (getVscdbKey() frozen at
+    // import) made a Zoo-only seat address the Roo key forever, whatever the
+    // filesystem said; resolving here (env > probe > roo fallback) matches
+    // rebuild-task-index's per-invocation resolution. Explicit overrides
+    // ('zoo', raw key, 'roo' explicit) are unchanged.
     if (options?.targetExtension === 'zoo') {
       this.vscdbKey = ZOO_CODE_VSCDB_KEY;
     } else if (options?.targetExtension && options.targetExtension !== 'roo') {
       // Custom raw key
       this.vscdbKey = options.targetExtension;
     } else {
-      this.vscdbKey = DEFAULT_KEY;
+      this.vscdbKey = resolveActiveVscdbKey();
     }
   }
 
