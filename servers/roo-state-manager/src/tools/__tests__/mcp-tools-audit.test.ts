@@ -86,8 +86,7 @@ const TOOL_MAPPINGS: Record<string, string> = {
   'roosync_diagnose': 'roosync/debug-reset.ts',
   // [REMOVED] roosync_export_baseline — Phase B #1863: backward-compat wrapper, consolidated into roosync_baseline
   // [REMOVED] roosync_collect/publish/apply_config — Phase B #1863: backward-compat wrappers, consolidated into roosync_config
-  'roosync_decision': 'roosync/decision.ts',
-  'roosync_decision_info': 'roosync/decision-info.ts',
+  // [REMOVED #603 P3] roosync_decision / roosync_decision_info — dead-code tail deleted (usage measured null)
   'roosync_baseline': 'roosync/baseline.ts',
   'roosync_config': 'roosync/config.ts',
   'roosync_inventory': 'roosync/inventory.ts',
@@ -132,8 +131,7 @@ const ALL_MCP_TOOLS = [
   'roosync_baseline',
   'roosync_cleanup_messages',
   'roosync_config',
-  'roosync_decision',
-  'roosync_decision_info',
+  // [REMOVED #603 P3] roosync_decision / roosync_decision_info — deleted
   'roosync_diagnose',
   'roosync_get_message',
   'roosync_get_status',
@@ -174,7 +172,8 @@ describe('Issue #564 - MCP Tools Audit', () => {
   describe('Phase 1: Inventaire des outils', () => {
     it('should list all expected MCP tools', () => {
       // Vérifier que le nombre d'outils est correct (basé sur registry.ts)
-      expect(ALL_MCP_TOOLS.length).toBeGreaterThanOrEqual(50); // Au moins 50 outils
+      // #603 P3: 51 → 49 (roosync_decision/decision_info retirés de l'inventaire historique)
+      expect(ALL_MCP_TOOLS.length).toBeGreaterThanOrEqual(45); // Au moins 45 outils
 
       // Quelques outils critiques doivent être présents
       expect(ALL_MCP_TOOLS).toContain('conversation_browser');

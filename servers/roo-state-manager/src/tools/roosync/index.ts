@@ -40,20 +40,8 @@ export type {
 
 // [REMOVED Phase B #1863] approve/reject/apply/rollback decision + get-decision-details backward-compat exports
 
-// CONS-5: Outils consolidés de décisions (5→2)
-export {
-  roosyncDecision,
-  RooSyncDecisionArgsSchema,
-  RooSyncDecisionResultSchema
-} from './decision.js';
-
-export type {
-  RooSyncDecisionArgs,
-  RooSyncDecisionResult
-} from './decision.js';
-
-// [REMOVED #1863] Deprecated roosync_decision_info exports — fused into roosync_decision(action: "info")
-// Source file decision-info.ts retained for: decision.ts imports + registry.ts redirect + tests
+// [REMOVED #603 P3] roosync_decision/decision_info consolidated exports — dead code tail deleted
+// (pipeline never operationalized in prod; tombstone + definition removed alongside decision.ts)
 
 export {
   roosyncInit,

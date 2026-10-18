@@ -70,7 +70,10 @@ le fichier `D` de 0 octet du CWD était un **flux ADS NTFS** : le nom de backup 
 `:` du lecteur (`D:_dev_…json` = flux porté par un fichier de base `D`), et le `copyFileSync(…, 'D')`
 du restore copiait ce `D` vide dans le CWD (root-cause #1358 : nom déterministe, restauration pilotée
 par manifeste). Mesuré 28/28 verts sous config CI sur Windows — la plateforme **native** du flux ADS,
-donc le cas défavorable — sans aucun `D` avant ni après → **22 entrées**. **#2639 (2026-10-05, 8e réactivation) :**
+donc le cas défavorable — sans aucun `D` avant ni après → **22 entrées**. (**Suivi #603 P3, 2026-10-18 :**
+`decision.integration.test.ts` **supprimé** avec le pipeline decision — usage nul mesuré sur toutes les
+jambes ; le compte d'exclusions ne bouge pas, le fichier n'y figurait plus depuis cette réactivation.)
+**#2639 (2026-10-05, 8e réactivation) :**
 `config.integration.test.ts` réactivé — l'unique rouge (`apply_profile` « profile not found ») tenait à
 ce que la branche source-locale résout `model-configs.json` via **`InventoryService`** (inventaire frais
 de la machine réelle), pas via le `getSharedStatePath` mocké : vert **par accident** sur les machines

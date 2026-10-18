@@ -1084,7 +1084,7 @@ describe('registry.ts - Tool Registration', () => {
     // #833 C3 (po-2024): registry.ts source-grounded contract coverage.
     // Targets 3 previously-untested contracts (file was 64.49% L / 37.5% F):
     //   (1) getToolTimeoutMs — the #2267 per-tool anti-hang timeout config
-    //   (2) Deprecated-tool deprecation contract (roosync_list_diffs/init/decision/claim)
+    //   (2) Deprecated-tool deprecation contract (roosync_list_diffs/init/claim; decision deleted #603 P3)
     //   (3) TOOL_CAPABILITIES — the REAL exported map (the existing
     //       'TOOL_CAPABILITIES Configuration' block shadows the import with a
     //       stale hardcoded copy listing removed tools → false confidence).
@@ -1127,8 +1127,8 @@ describe('registry.ts - Tool Registration', () => {
     });
 
     describe('#833 C3: deprecated-tool deprecation contract', () => {
-        // Source: registry.ts L546-590 (roosync_list_diffs/init/decision) and
-        // L773-784 (roosync_claim). These CONS-8 #603 dead-tool cases return a
+        // Source: registry.ts (roosync_list_diffs; roosync_claim L773-784).
+        // These CONS-8 #603 dead-tool cases return a
         // deterministic deprecated JSON with a redirection `alternative` pointer
         // that agents rely on — the contract must be locked, not just "not throw".
         let mockServer: any;
@@ -1175,15 +1175,9 @@ describe('registry.ts - Tool Registration', () => {
         // #2406 P2 : roosync_init n'est plus un stub deprecated — le test du
         // contrat réel vit dans le describe dédié ci-dessous.
 
-        it('roosync_decision returns deprecated status redirecting to dashboard', async () => {
-            // Source L579-590
-            const result = await callTool('roosync_decision');
-            expect(result.isError).toBe(false);
-            const payload = JSON.parse(result.content[0].text);
-            expect(payload.status).toBe('deprecated');
-            expect(payload.alternative).toContain('roosync_dashboard');
-            expect(payload.alternative).toContain('roosync_compare_config');
-        });
+        // [REMOVED #603 P3] roosync_decision tombstone test — case deleted from
+        // registry.ts (usage measured null, dead-code tail removed). A stale call
+        // now falls to the default unknown-tool path.
 
         it('roosync_claim returns deprecated status redirecting to dashboard CLAIMED tags', async () => {
             // Source L773-784
@@ -1196,9 +1190,9 @@ describe('registry.ts - Tool Registration', () => {
         });
 
         it('every deprecated payload carries a non-empty message + alternative', async () => {
-            // Structural invariant for the 3 CONS-8 #603 dead tools
-            // (roosync_init reconnected #2406, removed from the list).
-            for (const name of ['roosync_list_diffs', 'roosync_decision', 'roosync_claim']) {
+            // Structural invariant for the 2 remaining CONS-8 #603 dead-tool
+            // tombstones (roosync_init reconnected #2406; roosync_decision deleted #603 P3).
+            for (const name of ['roosync_list_diffs', 'roosync_claim']) {
                 const result = await callTool(name);
                 const payload = JSON.parse(result.content[0].text);
                 expect(payload.status).toBe('deprecated');
