@@ -6,8 +6,6 @@
  * registerCallToolHandler uses per-case dynamic imports for each tool.
  *
  * DO NOT import any tool handler modules here.
- * Schemas for roosync_decision and roosync_decision_info are inlined
- * (those two tools use zodToJsonSchema at module scope in their source files).
  * #1470: dashboard schema derived from dashboard-schemas.ts (no handler imports).
  */
 
