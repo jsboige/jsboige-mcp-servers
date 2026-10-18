@@ -113,6 +113,13 @@ export interface EmbeddingMetrics {
     preflight_batches_qdrant_unreachable_total: number;
     preflight_chunks_returned_existing_total: number;
     preflight_chunks_returned_missing_total: number;
+    /**
+     * #4153: GAUGE, not a cumulative counter — live size of the embedding cache.
+     * Surfaces in diagnose + the [EMB-METRICS] cycle log; a size that tracks the
+     * configured cap (instead of climbing for the life of the process) is the
+     * on-seat proof the #4153 eviction works.
+     */
+    embeddings_cache_size: number;
 }
 
 const _metrics: EmbeddingMetrics = {
@@ -126,11 +133,12 @@ const _metrics: EmbeddingMetrics = {
     preflight_batches_total: 0,
     preflight_batches_qdrant_unreachable_total: 0,
     preflight_chunks_returned_existing_total: 0,
+    embeddings_cache_size: 0, // gauge placeholder — getEmbeddingMetrics() overrides with the live size
     preflight_chunks_returned_missing_total: 0,
 };
 
 export function getEmbeddingMetrics(): Readonly<EmbeddingMetrics> {
-    return { ..._metrics };
+    return { ..._metrics, embeddings_cache_size: embeddingCache.size };
 }
 
 export function resetEmbeddingMetricsForTest(): void {
@@ -142,6 +150,40 @@ export function resetEmbeddingMetricsForTest(): void {
 // 🛡️ CACHE ANTI-FUITE POUR ÉVITER EMBEDDINGS RÉPÉTÉS
 const embeddingCache = new Map<string, { vector: number[], timestamp: number }>();
 const EMBEDDING_CACHE_TTL = 7 * 24 * 60 * 60 * 1000; // 7 jours cache pour embeddings (FIX: augmenté de 24h)
+
+/**
+ * #4153: Hard cap on embeddingCache entries. The TTL alone was checked ONLY on read
+ * (embeddingCache.get) — nothing ever evicted an entry, so every unique embedding
+ * (~12.7 KB at 1536 dims: vector + sha256 key + wrapper) stayed resident for the
+ * life of the process. On a seat whose indexing queue is continuously fed (po-203,
+ * 15-16/10: Vibe feeder), that measured 230-300 MB/h of private-memory growth and
+ * killed hosts at ~3.6-3.8 GB (~280-300k entries). Map preserves insertion order,
+ * so evicting from the front is FIFO — an acceptable approximation of LRU here:
+ * the cache's marginal value is small (preflight dedup #2018/#2369 already skips
+ * content Qdrant holds, BEFORE embedding), it only short-changes very cold re-hits.
+ * 0 disables the cache entirely (writes become no-ops). Default 2000 ≈ 25 MB at
+ * 1536 dims. Env: EMBEDDING_CACHE_MAX_ENTRIES (read per call, cheap vs an embed).
+ */
+function embeddingCacheMaxEntries(): number {
+    const raw = parseInt(process.env.EMBEDDING_CACHE_MAX_ENTRIES ?? '2000', 10);
+    return Number.isFinite(raw) ? Math.max(0, raw) : 2000;
+}
+
+/**
+ * #4153: the only write path into embeddingCache — enforces the cap above.
+ * Exported for the regression test (same pattern as collectExistingContentHashes).
+ */
+export function cacheEmbedding(contentHash: string, vector: number[], timestamp: number): void {
+    const maxEntries = embeddingCacheMaxEntries();
+    if (maxEntries === 0) return;
+    embeddingCache.set(contentHash, { vector, timestamp });
+    while (embeddingCache.size > maxEntries) {
+        const oldest = embeddingCache.keys().next().value;
+        if (oldest === undefined) break;
+        embeddingCache.delete(oldest);
+    }
+}
+
 const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
 // Embedding ops per minute per instance. The former default of 30 was sized from an ASSUMED
 // embedder capacity of ~5-10 req/s (12 MCP instances × 30 = 360/min ≈ 6 emb/s). Measurement on
@@ -864,7 +906,7 @@ async function embedSingle(
         return null;
     }
 
-    embeddingCache.set(contentHash, { vector, timestamp: now });
+    cacheEmbedding(contentHash, vector, now);
     operationTimestamps.push(now);
     return vector;
 }
@@ -885,7 +927,7 @@ async function embedBatch(
             operationTimestamps.push(now);
             const vector = resp.data[0]?.embedding;
             if (vector && Array.isArray(vector) && vector.length === expectedDims) {
-                embeddingCache.set(batch[0].contentHash, { vector, timestamp: now });
+                cacheEmbedding(batch[0].contentHash, vector, now);
                 return [vector];
             }
             if (vector && vector.length !== expectedDims) {
@@ -922,7 +964,7 @@ async function embedBatch(
                 continue;
             }
             results[i] = vector;
-            embeddingCache.set(batch[i].contentHash, { vector, timestamp: now });
+            cacheEmbedding(batch[i].contentHash, vector, now);
         }
         return results;
     } catch (error: any) {

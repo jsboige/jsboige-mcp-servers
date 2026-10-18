@@ -1446,7 +1446,8 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             `preflight_skipped=${m.embeddings_preflight_skipped_total} ` +
             `post_skipped=${m.embeddings_post_dedup_skipped_total} ` +
             `breaker_blocked=${m.embeddings_circuit_breaker_blocked_total} ` +
-            `preflight_fail=${m.preflight_batches_qdrant_unreachable_total}`
+            `preflight_fail=${m.preflight_batches_qdrant_unreachable_total} ` +
+            `cache_size=${m.embeddings_cache_size}`
         );
 
         if (!state.isQdrantIndexingEnabled || state.qdrantIndexQueue.size === 0) {
