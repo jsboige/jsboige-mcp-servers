@@ -36,10 +36,12 @@ describe('EmbeddingMetrics', () => {
         }
     });
 
-    it('should have exactly 11 counters', () => {
+    it('should have exactly 11 counters (+1 gauge, #4153)', () => {
         const metrics = getEmbeddingMetrics();
         const keys = Object.keys(metrics);
-        expect(keys.length).toBe(11);
+        // 11 cumulative counters + embeddings_cache_size, a live gauge (not a counter)
+        // added by #4153 to make the embedding-cache cap observable on seat.
+        expect(keys.length).toBe(12);
     });
 
     it('should contain all expected counter names', () => {
