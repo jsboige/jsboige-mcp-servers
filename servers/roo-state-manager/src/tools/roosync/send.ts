@@ -204,7 +204,11 @@ async function sendNewMessage(
   // ROOSYNC_TRUSTED_CALLER_IDS dans resolveCallerIdentity, appelée ici) —
   // sinon le from hérite de l'hôte proxy et les réponses arrivent dans la
   // mauvaise mailbox.
-  const from = resolveCallerIdentity(args.as).fullId;
+  // ms#1339 : la dérivation process (`as` absent) est EXPOSÉE dans l'ack —
+  // l'héritage silencieux de la lane hôte a estampillé des messages du nom
+  // de la passerelle (03/10, classe #3591/#3230).
+  const callerIdentity = resolveCallerIdentity(args.as);
+  const from = callerIdentity.fullId;
   logger.debug('📍 Message routing', { from, to: args.to });
 
   // #3654 — idempotence sur action="send" : si le caller a passé un messageId
@@ -364,10 +368,16 @@ async function sendNewMessage(
   const failedAttachmentInfo = failedAttachments.length > 0
     ? `\n**⚠️ Pièces jointes en échec :** ${failedAttachments.length}/${args.attachments!.length} fichier(s) NON joint(s) — le message ci-dessus est parti **sans** ces fichiers.\n${failedDetail}\nVérifiez que le chemin existe côté serveur puis renvoyez les fichiers (envoi séparé ou nouvel envoi).\n`
     : '';
+  // ms#1339 — l'expéditeur dérivé du process hôte est visible dans l'ack :
+  // le siège passerelle voit l'écart au moment du geste, pas 3 h plus tard
+  // au watchdog. Délibérément absent quand `as` est asserté.
+  const fromDerivedNote = callerIdentity.derived
+    ? `\n⚠️ **Expéditeur résolu du process hôte** (\`as\` absent) — si ce message doit porter une autre lane (siège passerelle), renvoyer avec \`as: "<machine>:<workspace>".\n`
+    : '';
   const result = `✅ **Message envoyé avec succès**
 
 **ID :** ${message.id}
-**De :** ${message.from}
+**De :** ${message.from}${fromDerivedNote}
 **À :** ${message.to}
 **Sujet :** ${message.subject}
 **Priorité :** ${getPriorityIcon(message.priority)} ${message.priority}
@@ -464,7 +474,9 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
   // replyFrom = la machine locale (celle qui répond), pas originalMessage.to
   // car si originalMessage.to = "all", on ne veut pas "all" comme expéditeur
   // #3591 : `as` fait foi pour un siège gateway (gate dans resolveCallerIdentity, single choke point).
-  const replyFrom = resolveCallerIdentity(args.as).fullId;
+  // ms#1339 : la dérivation process est exposée dans l'ack (même note que send).
+  const replyIdentity = resolveCallerIdentity(args.as);
+  const replyFrom = replyIdentity.fullId;
   const replyTo = originalMessage.from;
 
   // Sujet avec préfixe "Re: "
@@ -617,7 +629,7 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
 
 **ID :** \`${replyMessageObj.id}\`
 **Sujet :** ${replySubject}
-**De :** ${replyFrom} *(inversé)*
+**De :** ${replyFrom} *(inversé)*${replyIdentity.derived ? '\n⚠️ **Expéditeur résolu du process hôte** (`as` absent) — si cette réponse doit porter une autre lane (siège passerelle), renvoyer avec `as: "<machine>:<workspace>".' : ''}
 **À :** ${replyTo} *(inversé)*
 **Date :** ${formatDateFull(replyMessageObj.timestamp)}
 **Priorité :** ${replyPriorityIcon} ${priority}

@@ -5022,6 +5022,16 @@ export interface DashboardResult {
   /** Stall diagnostics — age in ms of the condense lock at stall time (PG clock when the PG layer holds it, else holder.acquiredAt). */
   condensationStallLockAgeMs?: number;
   /**
+   * ms#1339 — présent quand l'auteur a été résolu depuis le process hôte
+   * (`author` absent), ex. `process-default: myia-ai-01|roo-extensions`. Un
+   * append passerelle sans `author` était attribué en silence à la lane hôte
+   * (occurrences 03/10, classe #3591/#3230) ; la dérivation est visible au
+   * moment du geste, l'émetteur corrige avant le watchdog. Délibérément
+   * absent (pas de valeur vide) quand `author` est fourni — information,
+   * jamais un rejet (les sièges mono-lane légitimes passent toujours).
+   */
+  authorResolution?: string;
+  /**
    * #4003 — append-only : la forme NORMALISÉE des tags effectivement persistée
    * (variants casse/crochets pliés, tags vides/unsafe écartés). Absent quand
    * l'appel n'a pas passé de tags, pour garder la forme historique du payload.
@@ -5973,6 +5983,11 @@ async function handleAppend(
     machineId: resolvedMachineId,
     workspace: resolvedWorkspace
   };
+  // ms#1339 — l'attribution dérivée du process hôte n'est plus silencieuse :
+  // l'ack la porte, l'émetteur la voit au moment du geste.
+  const authorResolution = args.author
+    ? undefined
+    : `process-default: ${resolvedMachineId}|${resolvedWorkspace}`;
 
   // #3459: refuser de créer un dashboard fantôme quand le magasin est absent.
   // createIfNotExists est un piège actif ici : l'appliquer écrit un fichier
@@ -6615,6 +6630,8 @@ async function handleAppend(
     key,
     type: args.type!,
     request: requestEcho,
+    // ms#1339 — dérivation d'auteur visible dans l'ack (undefined si `author` fourni).
+    authorResolution,
     sizes: buildSizes(finalDashboard),
     messageCount: finalDashboard.intercom.messages.length,
     condensed,
