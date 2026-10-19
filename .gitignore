@@ -24,13 +24,13 @@ yarn-error.log
 # Mesuré le 11/09 : `.env.newkey-rotation-20260910`, `relay-emb-key.txt`,
 # `relay-embeddings-newkey.txt`, `probe-hermes.txt` étaient NON suivis **et**
 # NON ignorés — un `git add -A` les publiait. Les gabarits versionnés restent
-# suivis, d'où les négations : `.env.example`, `.env.template` et
-# `.env.postgres.local.example` sont trackés et ne doivent pas disparaître.
+# suivis, d'où les négations : `.env.example` (référence unique depuis #4258,
+# `.env.template` consolidé dedans) et `.env.postgres.local.example`
+# (docker-compose.postgres.yml) sont trackés et ne doivent pas disparaître.
 # Rien n'est supprimé ici (pas de preuve de préservation) — seule la porte
 # d'une publication accidentelle est fermée.
 .env.*
 !.env.example
-!.env.template
 !.env.postgres.local.example
 relay-*.txt
 probe-*.txt

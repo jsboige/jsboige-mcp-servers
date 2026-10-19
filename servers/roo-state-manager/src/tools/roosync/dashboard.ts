@@ -530,7 +530,7 @@ async function cloudCondenseOnce(
 
 /**
  * #2719 (22/09): the cloud tier's model CHAIN. `FALLBACK_LLM_MODEL_ID` accepts a
- * comma-separated list (e.g. `glm-4.7,deepseek-v4-flash` against the hub): each
+ * comma-separated list (e.g. `glm-5.3-flash,deepseek-v4-flash` against the hub): each
  * model is tried in order and the next one takes over on ANY failure of the
  * previous — including an empty 200 body, a timeout or a quota error, which a
  * single-model tier could only turn into truncation. The next model only survives
@@ -2876,7 +2876,7 @@ export interface LLMCallStats {
   // #2719: Cloud fallback fields
   /** Whether the cloud fallback (z.ai / OpenAI) was used for this call. */
   fallbackUsed?: boolean;
-  /** Model name used for the fallback attempt (e.g. "glm-4.7-flash"). */
+  /** Model name used for the fallback attempt (e.g. "glm-5.3-flash"). */
   fallbackModel?: string;
   /** Wall-clock time for the successful fallback attempt (ms). */
   fallbackElapsedMs?: number;

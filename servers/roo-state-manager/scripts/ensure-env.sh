@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ensure .env exists for roo-state-manager — restores from .env.template if missing.
+# Ensure .env exists for roo-state-manager — restores from .env.example if missing.
 # Issue #2089 — Bash equivalent of ensure-env.ps1
 # Exit codes: 0 = OK, 1 = missing template, 2 = placeholders detected
 
@@ -8,7 +8,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RSM_DIR="$(dirname "$SCRIPT_DIR")"
 ENV_FILE="$RSM_DIR/.env"
-TEMPLATE_FILE="$RSM_DIR/.env.template"
+TEMPLATE_FILE="$RSM_DIR/.env.example"
 
 QUIET=0
 [[ "${1:-}" == "--quiet" ]] && QUIET=1
@@ -18,7 +18,7 @@ log_warn()  { echo "[ensure-env] WARN: $*" >&2; }
 log_error() { echo "[ensure-env] ERROR: $*" >&2; }
 
 if [[ ! -f "$TEMPLATE_FILE" ]]; then
-    log_error ".env.template missing at $TEMPLATE_FILE"
+    log_error ".env.example missing at $TEMPLATE_FILE"
     exit 1
 fi
 
@@ -30,7 +30,7 @@ read_keys() {
 template_keys=$(read_keys "$TEMPLATE_FILE")
 
 if [[ ! -f "$ENV_FILE" ]]; then
-    log_warn ".env missing — restoring from .env.template"
+    log_warn ".env missing — restoring from .env.example"
     cp "$TEMPLATE_FILE" "$ENV_FILE"
     log_warn "Restored .env contains __FILL_ME__ placeholders for secrets:"
     grep -E '^[^#=]+=__FILL_ME__' "$ENV_FILE" | cut -d= -f1 | sed 's/^/  - /' >&2

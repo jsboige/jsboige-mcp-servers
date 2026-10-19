@@ -46,7 +46,7 @@ const mockGetPrimaryClient = vi.fn();
 const mockFallbackCreate = vi.fn();
 const mockGetFallbackClient = vi.fn();
 // #2719 (22/09): the model chain reads FALLBACK_LLM_MODEL_ID through this getter.
-const mockFallbackModelId = vi.fn(() => 'glm-4.7-flash');
+const mockFallbackModelId = vi.fn(() => 'glm-5.3-flash');
 
 vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => mockGetPrimaryClient(),
@@ -87,7 +87,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     mockPrimaryCreate.mockReset();
     mockGetFallbackClient.mockImplementation(() => null);
     mockFallbackCreate.mockReset();
-    mockFallbackModelId.mockImplementation(() => 'glm-4.7-flash');
+    mockFallbackModelId.mockImplementation(() => 'glm-5.3-flash');
     resetCondenseCircuitBreaker();
   });
 
@@ -371,7 +371,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
       chat: { completions: { create: mockFallbackCreate } },
     });
     // HTTP 200 but no completion content (e.g. a reasoning model burning the whole
-    // max_tokens budget in reasoning_content — the glm-4.7-flash behaviour
+    // max_tokens budget in reasoning_content — the glm-5.3-flash behaviour
     // documented in #2719 c.12).
     mockFallbackCreate.mockResolvedValue({
       choices: [{ message: { content: '' }, finish_reason: 'length' }],

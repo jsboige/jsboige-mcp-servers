@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Restaure le fichier .env depuis .env.template si le .env est manquant ou vide.
+    Restaure le fichier .env depuis .env.example si le .env est manquant ou vide.
 .DESCRIPTION
     Ce script est appele automatiquement apres un git submodule update ou git pull
     pour s'assurer que le fichier .env existe toujours avec les bonnes valeurs.
@@ -24,7 +24,7 @@ param(
     [string]$EnvPath = "$PSScriptRoot\..\\.env",
 
     [Parameter(Mandatory = $false)]
-    [string]$TemplatePath = "$PSScriptRoot\..\\.env.template"
+    [string]$TemplatePath = "$PSScriptRoot\..\\.env.example"
 )
 
 Set-StrictMode -Version Latest
@@ -38,7 +38,7 @@ function Write-Log {
 
 # Verifier que le template existe
 if (-not (Test-Path $TemplatePath)) {
-    Write-Log "Template .env.template introuvable: $TemplatePath" "WARN"
+    Write-Log "Template .env.example introuvable: $TemplatePath" "WARN"
     exit 1
 }
 
@@ -56,7 +56,7 @@ if (Test-Path $EnvPath) {
 
 # Creer le .env a partir du template
 Copy-Item $TemplatePath $EnvPath -Force
-Write-Log ".env restaure depuis .env.template" "OK"
+Write-Log ".env restaure depuis .env.example" "OK"
 
 # Verifier et remplacer les placeholders non-definis
 $placeholders = @("CHANGE_ME_MACHINE_ID", "CHANGE_ME_SHARED_PATH", "CHANGE_ME_MEDIUM_KEY", "CHANGE_ME_MINI_KEY", "CHANGE_ME_EMBEDDING_KEY", "CHANGE_ME_QDRANT_KEY")
