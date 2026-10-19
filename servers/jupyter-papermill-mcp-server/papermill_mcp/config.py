@@ -134,17 +134,21 @@ class ConfigManager:
         if config_file_path and Path(config_file_path).exists():
             try:
                 config_dict = self._load_config_file(config_file_path)
-                print(f"Configuration chargee depuis {config_file_path}")
+                # stderr only: stdout belongs to the JSON-RPC channel in stdio MCP mode
+                # (bare print before initialize breaks the handshake -- fleet incident 19/10)
+                print(f"Configuration chargee depuis {config_file_path}", file=sys.stderr)
                 self._config_file_path = config_file_path
             except Exception as e:
                 print(
-                    f"Erreur lors du chargement du fichier de configuration {config_file_path}: {e}"
+                    f"Erreur lors du chargement du fichier de configuration {config_file_path}: {e}",
+                    file=sys.stderr,
                 )
-                print("Utilisation des valeurs par defaut")
+                print("Utilisation des valeurs par defaut", file=sys.stderr)
         else:
             if config_file_path:
                 print(
-                    f"Fichier de configuration {config_file_path} non trouve, utilisation des valeurs par defaut"
+                    f"Fichier de configuration {config_file_path} non trouve, utilisation des valeurs par defaut",
+                    file=sys.stderr,
                 )
 
         # Apply environment variables
@@ -207,7 +211,8 @@ class ConfigManager:
                 )
             except ValueError:
                 print(
-                    f"Valeur invalide pour JUPYTER_MCP_TIMEOUT: {os.getenv('JUPYTER_MCP_TIMEOUT')}"
+                    f"Valeur invalide pour JUPYTER_MCP_TIMEOUT: {os.getenv('JUPYTER_MCP_TIMEOUT')}",
+                    file=sys.stderr,
                 )
 
         # Transport timeout configuration (#2206)
@@ -220,7 +225,8 @@ class ConfigManager:
                 )
             except ValueError:
                 print(
-                    f"Invalid MCP_JUPYTER_DEFAULT_TIMEOUT: {os.getenv('MCP_JUPYTER_DEFAULT_TIMEOUT')}"
+                    f"Invalid MCP_JUPYTER_DEFAULT_TIMEOUT: {os.getenv('MCP_JUPYTER_DEFAULT_TIMEOUT')}",
+                    file=sys.stderr,
                 )
 
         if os.getenv("MCP_JUPYTER_MAX_TIMEOUT"):
@@ -232,7 +238,8 @@ class ConfigManager:
                 )
             except ValueError:
                 print(
-                    f"Invalid MCP_JUPYTER_MAX_TIMEOUT: {os.getenv('MCP_JUPYTER_MAX_TIMEOUT')}"
+                    f"Invalid MCP_JUPYTER_MAX_TIMEOUT: {os.getenv('MCP_JUPYTER_MAX_TIMEOUT')}",
+                    file=sys.stderr,
                 )
 
     def _apply_command_line_options(
