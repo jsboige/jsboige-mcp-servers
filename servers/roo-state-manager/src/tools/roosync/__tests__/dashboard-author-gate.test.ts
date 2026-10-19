@@ -102,6 +102,19 @@ describe('assertStampsMachine (#4135, unit)', () => {
     expect(() => assertStampsMachine('', 'author')).not.toThrow();
     expect(() => assertStampsMachine('  ', 'author')).not.toThrow();
   });
+
+  it('a lane-scoped trust entry does NOT widen the machine stamp gate (19/10, option b)', () => {
+    // Le stamp d'auteur assert une MACHINE — il n'a pas de dimension voie.
+    // Une entrée "machine:workspace" doit donc y rester INERTE : l'honorer
+    // élargirait la confiance à toute la machine, exactement le trou que la
+    // décision du 19/10 ferme (une entrée "myia-ai-01" ouvrirait toutes les
+    // voies ai-01 à tout porteur du jeton fleet partagé).
+    process.env.ROOSYNC_TRUSTED_CALLER_IDS = 'myia-po-2026:hermes-agent';
+    expect(() => assertStampsMachine('myia-po-2026', 'author')).toThrow(/ROOSYNC_TRUSTED_CALLER_IDS/);
+    // L'entrée machine seule, elle, autorise toujours le stamp :
+    process.env.ROOSYNC_TRUSTED_CALLER_IDS = 'myia-po-2026';
+    expect(() => assertStampsMachine('myia-po-2026', 'author')).not.toThrow();
+  });
 });
 
 describe('roosync_dashboard author-stamp gate (#4135, dispatch)', () => {
@@ -169,6 +182,20 @@ describe('roosync_dashboard author-stamp gate (#4135, dispatch)', () => {
     expect(res.success).toBe(true);
     const read = await roosyncDashboard({ action: 'read', type: 'workspace', section: 'intercom' });
     expect(read.success).toBe(true);
+  });
+
+  it('append from a lane-scoped entry is still refused — the stamp gate is NOT widened to the lane', async () => {
+    // Même refus au niveau du dispatch : une entrée "machine:workspace"
+    // n'autorise PAS le stamp de la machine entière (#4135 reste machine-level).
+    process.env.ROOSYNC_TRUSTED_CALLER_IDS = 'myia-po-2024:roo-extensions';
+    await expect(
+      roosyncDashboard({
+        action: 'append',
+        type: 'workspace',
+        content: 'lane-scoped entry must not widen the stamp gate',
+        author: { machineId: 'myia-po-2024', workspace: 'roo-extensions' },
+      })
+    ).rejects.toThrow('#4135');
   });
 
   it('read with a foreign machineId is NOT gated — cross-machine filtering stays legitimate', async () => {

@@ -227,7 +227,7 @@ export const McpManagementArgsSchema = z.object({
     // seal. Gateway seats sharing one RSM host process MUST pass the same `as`
     // for the opening read and the write — the seal compares seats, not hosts.
     as: z.string().optional()
-        .describe('#3591 caller identity assertion (gateway seats), format "machine" or "machine:workspace". Trust-gated against ROOSYNC_TRUSTED_CALLER_IDS. #3989: the read→write authorization is sealed per seat — pass the SAME `as` on the opening "read" and on the write, or the write is refused.')
+        .describe('#3591 caller identity assertion (gateway seats), format "machine" or "machine:workspace". Trust-gated against ROOSYNC_TRUSTED_CALLER_IDS — entry "machine" (whole machine) or "machine:workspace" (that single lane only). #3989: the read→write authorization is sealed per seat — pass the SAME `as` on the opening "read" and on the write, or the write is refused.')
 });
 
 export type McpManagementArgs = z.infer<typeof McpManagementArgsSchema>;
