@@ -36,7 +36,7 @@ const mockPrimaryCreate = vi.fn();
 const mockGetPrimaryClient = vi.fn();
 const mockFallbackCreate = vi.fn();
 const mockGetFallbackClient = vi.fn();
-const mockFallbackModelId = vi.fn(() => 'glm-4.7-flash');
+const mockFallbackModelId = vi.fn(() => 'glm-5.3-flash');
 
 vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => mockGetPrimaryClient(),

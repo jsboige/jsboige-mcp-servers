@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 <#
 .SYNOPSIS
-    Ensure .env exists for roo-state-manager — restores from .env.template if missing,
+    Ensure .env exists for roo-state-manager — restores from .env.example if missing,
     detects placeholder values, validates required keys.
 
 .DESCRIPTION
@@ -9,7 +9,7 @@
     or other agressive git operations. Idempotent: safe to run repeatedly.
 
     Behaviour:
-    - If .env missing AND .env.template exists: copies template -> .env, warns user.
+    - If .env missing AND .env.example exists: copies template -> .env, warns user.
     - If .env exists: validates all keys from template are present, adds missing keys.
     - Detects __FILL_ME__ placeholders and warns user to fill them.
 
@@ -31,7 +31,7 @@ $ErrorActionPreference = 'Stop'
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $rsmDir = Split-Path -Parent $scriptDir
 $envFile = Join-Path $rsmDir '.env'
-$templateFile = Join-Path $rsmDir '.env.template'
+$templateFile = Join-Path $rsmDir '.env.example'
 
 function Write-Info {
     param([string]$Message)
@@ -49,7 +49,7 @@ function Write-Err {
 }
 
 if (-not (Test-Path $templateFile)) {
-    Write-Err ".env.template missing at $templateFile — cannot validate or restore .env"
+    Write-Err ".env.example missing at $templateFile — cannot validate or restore .env"
     exit 1
 }
 
@@ -69,7 +69,7 @@ function Read-EnvKeys {
 $templateKeys = Read-EnvKeys -Path $templateFile
 
 if (-not (Test-Path $envFile)) {
-    Write-Warning2 ".env missing — restoring from .env.template"
+    Write-Warning2 ".env missing — restoring from .env.example"
     Copy-Item -Path $templateFile -Destination $envFile -Force
     Write-Warning2 "Restored .env contains __FILL_ME__ placeholders for secrets:"
     foreach ($line in (Get-Content $envFile)) {

@@ -46,7 +46,7 @@ vi.mock('@/services/openai', () => ({
   resetChatOpenAIClient: vi.fn(),
   getLLMModelId: () => 'test-primary-model',
   getFallbackChatOpenAIClient: () => mockGetFallbackClient(),
-  getFallbackLLMModelId: () => 'glm-4.7-flash',
+  getFallbackLLMModelId: () => 'glm-5.3-flash',
 }));
 
 // ============================================================
