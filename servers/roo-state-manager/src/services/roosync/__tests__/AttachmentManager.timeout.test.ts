@@ -9,8 +9,8 @@
  *
  * This can't be reproduced on a real local fs, so we mock `fs.promises.readFile`
  * to hang (never resolve) for the "cloud-only" entry. The timeout is injected
- * via the constructor (50ms here) so the test runs in real time without fake
- * timers (which interact poorly with the real-IO readdir passthrough).
+ * via the constructor (TEST_TIMEOUT_MS below) so the test runs in real time
+ * without fake timers (which interact poorly with the real-IO readdir passthrough).
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -79,8 +79,14 @@ import { roosyncListAttachments } from '../../../tools/roosync/roosync-attachmen
 const realFs = await vi.importActual<typeof import('fs')>('fs');
 const realReadFile = realFs.promises.readFile as (p: string, enc: string) => Promise<string>;
 
-/** Tiny timeout for tests (real timers). Production default is 10s. */
-const TEST_TIMEOUT_MS = 50;
+/**
+ * Small timeout for tests (real timers). Production default is 10s.
+ * 1000 ms, not 50: healthy entries are read through `realFs` here, so the timer
+ * races real fs latency; a 50 ms budget expired on healthy entries under
+ * full-suite parallel load. Every hung-read case must still complete well inside
+ * the per-test budget, which 1000 ms satisfies with room to spare.
+ */
+const TEST_TIMEOUT_MS = 1000;
 
 function makeTempDir(): string {
   const dir = join(tmpdir(), `att-timeout-${randomUUID()}`);
@@ -245,7 +251,7 @@ describe('AttachmentManager — cloud-only timeout (#2267 residual)', () => {
   }, 10_000);
 
   test('listAttachments cost is bounded by the pool, not by the entry count', async () => {
-    // 8 cloud-only entries. Sequential: 8 × 50ms = 400ms. Pooled (C=32): ~50ms.
+    // 8 cloud-only entries. Sequential: 8 × TEST_TIMEOUT_MS. Pooled (C=32): ~1 × TEST_TIMEOUT_MS.
     for (let i = 0; i < 8; i++) {
       seedAttachment(sharedState, `44444444-0000-0000-0000-00000000000${i}`);
     }
@@ -258,9 +264,10 @@ describe('AttachmentManager — cloud-only timeout (#2267 residual)', () => {
     const elapsed = Date.now() - started;
 
     expect(result).toEqual([]);
-    // Generous bound: well under the sequential 400ms, well above the ~50ms floor
-    // so a loaded CI machine doesn't flake.
-    expect(elapsed).toBeLessThan(250);
+    // Generous bound, expressed in the timeout itself so it survives a change of
+    // magnitude: pooled elapsed is ~1 × TEST_TIMEOUT_MS, sequential is 8 × — 4 ×
+    // separates the two with load margin in both directions.
+    expect(elapsed).toBeLessThan(TEST_TIMEOUT_MS * 4);
   }, 10_000);
 
   test('listAttachments preserves readdir order despite out-of-order completion', async () => {

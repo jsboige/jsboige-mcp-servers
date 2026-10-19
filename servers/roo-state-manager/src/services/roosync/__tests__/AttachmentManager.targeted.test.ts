@@ -63,7 +63,12 @@ const realFs = await vi.importActual<typeof import('fs')>('fs');
 
 /** Total synthetic store size — the acceptance floor is 10 000. */
 const STORE_SIZE = 10_000;
-const TEST_TIMEOUT_MS = 50;
+// 1000 ms, not 50: the manager timer races REAL fs reads here (only `hangPaths`
+// is synthetic). Under full-suite parallel load a 50 ms budget expired on healthy
+// entries and two different cases of this file failed across two full runs while
+// passing 5/5 in isolation. The discriminating instrument is the readFile COUNT
+// (see header) — the timeout only has to fire well inside the per-test budget.
+const TEST_TIMEOUT_MS = 1000;
 
 let sharedState: string;
 let manager: AttachmentManager;
