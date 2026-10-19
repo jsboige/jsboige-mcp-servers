@@ -21,8 +21,10 @@ import {
   formatDate,
   getPriorityIcon,
   getStatusIcon,
-  resolveWorkspaceFromWorktree
+  resolveWorkspaceFromWorktree,
+  resolveCallerIdentity
 } from '../message-helpers.js';
+import { StateManagerError } from '../../types/errors.js';
 
 describe('message-helpers', () => {
   describe('getLocalMachineId', () => {
@@ -403,6 +405,104 @@ describe('message-helpers', () => {
     test('agent names still match exactly (no alias collision)', () => {
       expect(matchesRecipient('NanoClaw', 'NanoClaw', 'roo-extensions')).toBe(true);
       expect(matchesRecipient('NanoClaw', 'myia-ai-01', 'roo-extensions')).toBe(false);
+    });
+  });
+
+  // ============================================================
+  // #3591 — ROOSYNC_TRUSTED_CALLER_IDS : entrées machine vs machine:workspace
+  // ============================================================
+  describe('resolveCallerIdentity — entrées de confiance "machine" / "machine:workspace" (19/10, option b)', () => {
+    const ENV = 'ROOSYNC_TRUSTED_CALLER_IDS';
+    let savedEnv: string | undefined;
+    let savedMachine: string | undefined;
+    let savedWorkspace: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env[ENV];
+      savedMachine = process.env.ROOSYNC_MACHINE_ID;
+      savedWorkspace = process.env.ROOSYNC_WORKSPACE_ID;
+      // Identité locale FIXE : les assertions ci-dessous sont toujours
+      // explicites, la locality ne doit jamais entrer dans le gate. Le
+      // workspace est fixé aussi — l'auto-détection dépend du cwd (worktree
+      // vs checkout : cf. le piège signalé sur getLocalWorkspaceId).
+      process.env.ROOSYNC_MACHINE_ID = 'myia-web1';
+      process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env[ENV];
+      else process.env[ENV] = savedEnv;
+      if (savedMachine === undefined) delete process.env.ROOSYNC_MACHINE_ID;
+      else process.env.ROOSYNC_MACHINE_ID = savedMachine;
+      if (savedWorkspace === undefined) delete process.env.ROOSYNC_WORKSPACE_ID;
+      else process.env.ROOSYNC_WORKSPACE_ID = savedWorkspace;
+    });
+
+    test('une entrée de voie ("machine:workspace") autorise EXACTEMENT cette voie', () => {
+      process.env[ENV] = 'myia-ai-01:hermes-agent';
+      const id = resolveCallerIdentity('myia-ai-01:hermes-agent');
+      expect(id.machineId).toBe('myia-ai-01');
+      expect(id.workspaceId).toBe('hermes-agent');
+      expect(id.fullId).toBe('myia-ai-01:hermes-agent');
+    });
+
+    test('une entrée de voie refuse un AUTRE workspace de la MÊME machine', () => {
+      // Cœur du choix (b) : l'entrée "myia-ai-01:hermes-agent" n'ouvre que
+      // cette voie — "myia-ai-01:roo-extensions" reste refusé.
+      process.env[ENV] = 'myia-ai-01:hermes-agent';
+      expect(() => resolveCallerIdentity('myia-ai-01:roo-extensions')).toThrow(StateManagerError);
+    });
+
+    test('une entrée de voie refuse l\'assertion machine seule', () => {
+      process.env[ENV] = 'myia-ai-01:hermes-agent';
+      expect(() => resolveCallerIdentity('myia-ai-01')).toThrow(StateManagerError);
+    });
+
+    test('la comparaison du workspace est case-insensitive des DEUX côtés', () => {
+      process.env[ENV] = 'myia-ai-01:hermes-agent';
+      expect(resolveCallerIdentity('MYIA-AI-01:HERMES-AGENT').fullId).toBe('MYIA-AI-01:HERMES-AGENT');
+      process.env[ENV] = 'myia-ai-01:HERMES-AGENT';
+      expect(resolveCallerIdentity('myia-ai-01:hermes-agent').fullId).toBe('myia-ai-01:hermes-agent');
+    });
+
+    test('la machine de l\'entrée de voie est canonique des deux côtés (#3292)', () => {
+      process.env[ENV] = 'ai-01:hermes-agent';
+      expect(resolveCallerIdentity('myia-ai-01:hermes-agent').fullId).toBe('myia-ai-01:hermes-agent');
+      expect(resolveCallerIdentity('ai-01:hermes-agent').fullId).toBe('myia-ai-01:hermes-agent');
+    });
+
+    test('une entrée machine seule reste inchangée : tout workspace de la machine passe', () => {
+      process.env[ENV] = 'myia-po-2026';
+      expect(resolveCallerIdentity('myia-po-2026').fullId).toBe('myia-po-2026');
+      expect(resolveCallerIdentity('myia-po-2026:roo-extensions').fullId).toBe('myia-po-2026:roo-extensions');
+      expect(resolveCallerIdentity('myia-po-2026:CoursIA').fullId).toBe('myia-po-2026:CoursIA');
+    });
+
+    test('une entrée machine seule n\'est PAS rétrécie par une entrée de voie de la même machine', () => {
+      // Les deux entrées se cumulent : "myia-po-2026" continue d'ouvrir
+      // toutes ses voies, la voie listée n'y change rien.
+      process.env[ENV] = 'myia-po-2026, myia-po-2026:hermes-agent';
+      expect(resolveCallerIdentity('myia-po-2026:roo-extensions').fullId).toBe('myia-po-2026:roo-extensions');
+      expect(resolveCallerIdentity('myia-po-2026').fullId).toBe('myia-po-2026');
+    });
+
+    test('le refus nomme l\'identité assertée et le format des entrées', () => {
+      process.env[ENV] = 'myia-ai-01:hermes-agent';
+      try {
+        resolveCallerIdentity('myia-ai-01:roo-extensions');
+        expect.unreachable('must throw');
+      } catch (err) {
+        const e = err as StateManagerError;
+        expect(e.message).toContain('myia-ai-01:roo-extensions');
+        expect(e.message).toContain(ENV);
+        expect(e.message).toContain('"machine:workspace"');
+        expect(e.code).toBe('VALIDATION_FAILED');
+      }
+    });
+
+    test('une assertion sans `as` reste l\'identité locale — la liste de confiance n\'intervient pas', () => {
+      process.env[ENV] = 'myia-ai-01:hermes-agent';
+      expect(resolveCallerIdentity().fullId).toBe('myia-web1:test-workspace');
     });
   });
 

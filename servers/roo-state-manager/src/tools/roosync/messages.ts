@@ -151,7 +151,7 @@ export const MessagesArgsSchema = z.object({
   targetPath: z.string().optional().describe('Chemin destination pour attachments_get — #1105 : omettez-le pour recevoir le contenu en base64 dans le résultat MCP (client distant ; plafond inline 1 MB, #3997 : au-delà la lecture inline est refusée et exige targetPath), fournissez-le pour une copie SIDE-SERVEUR (chemin de l hôte RooSync, pas du client)'),
 
   // --- Caller identity (#3591) ---
-  as: z.string().optional().describe('#3591 Caller identity assertion for gateway seats (chaîne mcp-remote/myia-mcp-proxy résout l appelant côté serveur comme l hôte proxy). Format "machine" ou "machine:workspace". Honoré uniquement si la machine est listée dans l env serveur ROOSYNC_TRUSTED_CALLER_IDS — sinon rejet bruyant. S applique à send/reply/amend (expéditeur), message/mark_read/archive (garde d accès), inbox/bulk/cleanup/stats (machine par défaut). Aucun effet (rejeté) sur attachments_*.'),
+  as: z.string().optional().describe('#3591 Caller identity assertion for gateway seats (chaîne mcp-remote/myia-mcp-proxy résout l appelant côté serveur comme l hôte proxy). Format "machine" ou "machine:workspace". Honoré uniquement si l env serveur ROOSYNC_TRUSTED_CALLER_IDS le liste — entrée "machine" (toute la machine) ou "machine:workspace" (cette seule voie) — sinon rejet bruyant. S applique à send/reply/amend (expéditeur), message/mark_read/archive (garde d accès), inbox/bulk/cleanup/stats (machine par défaut). Aucun effet (rejeté) sur attachments_*.'),
 
   // --- Output format ---
   format: z.enum(['json', 'markdown']).optional().describe('Format de sortie pour inbox/stats')
@@ -178,11 +178,14 @@ const KNOWN_ALIAS_HINTS: Record<string, { realParam: string; note: string }> = {
 // ====================================================================
 
 /**
- * Env var listing the machines whose identity MAY be asserted via `as` on
+ * Env var listing the identities whose assertion MAY be honored via `as` on
  * this RSM process. Set by the operator of the host that runs the process
  * (for the mcp-remote/myia-mcp-proxy chain: the proxy host's spawn env).
- * Comma-separated, machine ids only — the workspace part is free within an
- * allowed machine. Single definition: message-helpers (single choke point).
+ * Comma-separated, entries are "machine" (the whole machine is trusted — the
+ * workspace part of the assertion is then free) or "machine:workspace" (that
+ * single lane only: the machine-only assertion and every other workspace of
+ * that machine stay refused — decision user 19/10/2026). Single definition:
+ * message-helpers (single choke point).
  */
 
 /**
@@ -256,7 +259,7 @@ export async function roosyncMessages(args: MessagesArgs) {
     throw new StateManagerError(
       `Paramètre "from" n'est pas l'expéditeur : c'est un filtre inbox/bulk (substring). ` +
       `Pour fixer l'expéditeur d'un siège gateway (chaîne mcp-remote), utilisez "as" (#3591) — ` +
-      `machine:workspace assertable si listée dans ${TRUSTED_CALLER_IDS_ENV}.`,
+      `machine:workspace assertable si listée dans ${TRUSTED_CALLER_IDS_ENV} — entrée "machine" (toute la machine) ou "machine:workspace" (cette seule voie).`,
       'VALIDATION_FAILED',
       'RooSyncMessagesTool',
       { rejectedParams: ['from'], expectedParam: 'as' }

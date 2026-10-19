@@ -145,4 +145,41 @@ describe('legacy registry path — `as` gate (#3591, review #1154)', () => {
     expect(result.content[0].text).not.toContain('refusé');
     expect(mockSendMessage).toHaveBeenCalledTimes(1);
   });
+
+  test('roosync_send DIRECT + entrée de confiance par voie → seule la voie listée passe (19/10, option b)', async () => {
+    // Une entrée "machine:workspace" n'ouvre QUE cette voie : l'assertion
+    // machine seule et tout autre workspace de la même machine sont refusés.
+    process.env[ENV] = 'myia-ai-01:hermes-agent';
+
+    const accepted = await handler({
+      params: {
+        name: 'roosync_send',
+        arguments: { action: 'send', to: 'myia-po-2026', subject: 'S', body: 'B', as: 'myia-ai-01:hermes-agent' },
+      },
+    });
+    expect(accepted.isError).toBeFalsy();
+    expect(mockSendMessage).toHaveBeenCalledTimes(1);
+    expect(mockSendMessage.mock.calls[0][0]).toBe('myia-ai-01:hermes-agent');
+
+    mockSendMessage.mockClear();
+
+    const refusedOtherLane = await handler({
+      params: {
+        name: 'roosync_send',
+        arguments: { action: 'send', to: 'myia-po-2026', subject: 'S', body: 'B', as: 'myia-ai-01:roo-extensions' },
+      },
+    });
+    expect(refusedOtherLane.content[0].text).toContain('refusé');
+    expect(refusedOtherLane.content[0].text).toContain(ENV);
+    expect(mockSendMessage).not.toHaveBeenCalled();
+
+    const refusedMachineOnly = await handler({
+      params: {
+        name: 'roosync_send',
+        arguments: { action: 'send', to: 'myia-po-2026', subject: 'S', body: 'B', as: 'myia-ai-01' },
+      },
+    });
+    expect(refusedMachineOnly.content[0].text).toContain('refusé');
+    expect(mockSendMessage).not.toHaveBeenCalled();
+  });
 });

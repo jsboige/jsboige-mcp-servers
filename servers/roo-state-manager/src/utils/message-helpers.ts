@@ -169,20 +169,64 @@ export function getLocalFullId(): string {
  *           assertions keep workspaceId undefined: workspace-scoped checks
  *           then behave as "any workspace of that machine" (matchesRecipient
  *           semantics), and workspace fallbacks stay on the local resolution.
+ *           Trust is read from ROOSYNC_TRUSTED_CALLER_IDS, whose entries are
+ *           "machine" (the whole machine is trusted) or "machine:workspace"
+ *           (that single lane only — the machine-only assertion and every
+ *           other workspace of that machine stay refused).
  * @returns machine / workspace parts + the full id to use as callerId/from
  */
 export const TRUSTED_CALLER_IDS_ENV = 'ROOSYNC_TRUSTED_CALLER_IDS';
 
 /**
- * Parse ROOSYNC_TRUSTED_CALLER_IDS into a canonical lowercase list.
- * Single parser for every "assertable machine" check (#3591 `as` gate,
- * #4135 dashboard author-stamp gate) — two consumers, one definition.
+ * One ROOSYNC_TRUSTED_CALLER_IDS entry, parsed.
+ *
+ * - `workspaceId` undefined — the entry is a bare MACHINE: the whole machine
+ *   is trusted, any `as` on it passes with or without a workspace (historical
+ *   behaviour, #3591).
+ * - `workspaceId` set — the entry is a LANE ("machine:workspace"): only an
+ *   `as` naming exactly that workspace passes. The machine-only assertion and
+ *   every other workspace of that machine stay refused (decision user
+ *   19/10/2026, option b: a whole-machine entry for a hub host would open
+ *   every workspace inbox of that host to any bearer of the shared fleet
+ *   token).
  */
-function parseTrustedCallerIds(): string[] {
+interface TrustedCallerEntry {
+  /** Canonical machine id (#3292 canonicalMachineId), lowercased. */
+  machineId: string;
+  /** Workspace basename lowercased (normalizeWorkspaceId) — undefined = whole machine. */
+  workspaceId?: string;
+}
+
+/**
+ * Parse ROOSYNC_TRUSTED_CALLER_IDS into a canonical list of trust entries.
+ * Single parser for every "assertable identity" check (#3591 `as` gate,
+ * #4135 dashboard author-stamp gate) — two consumers, one definition.
+ *
+ * An entry is "machine" (whole machine trusted) or "machine:workspace" (that
+ * single lane trusted). Both sides are canonicalized: the machine through
+ * canonicalMachineId (#3292 short forms), the workspace through
+ * normalizeWorkspaceId (basename, case-insensitive — the same normalization
+ * the recipient matching already uses).
+ */
+function parseTrustedCallerIds(): TrustedCallerEntry[] {
   return (process.env[TRUSTED_CALLER_IDS_ENV] ?? '')
     .split(',')
-    .map((entry) => canonicalMachineId(entry.trim()).toLowerCase())
-    .filter(Boolean);
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry): TrustedCallerEntry | null => {
+      const { machineId, workspaceId } = parseMachineWorkspace(entry);
+      const canonicalMachine = machineId.toLowerCase();
+      if (!canonicalMachine) return null;
+      // An entry WITHOUT a workspace trusts the whole machine; an entry WITH
+      // one trusts that lane only. An empty workspace part ("machine:") stays
+      // a lane entry with an empty workspace — it matches nothing, exactly as
+      // before this change (the whole entry never equalled a bare machine id).
+      return {
+        machineId: canonicalMachine,
+        workspaceId: workspaceId === undefined ? undefined : normalizeWorkspaceId(workspaceId.trim()),
+      };
+    })
+    .filter((entry): entry is TrustedCallerEntry => entry !== null);
 }
 
 /**
@@ -209,7 +253,14 @@ export function assertStampsMachine(machineId: string, rejectedParam: string): v
   const canonical = canonicalMachineId(machineId.trim()).toLowerCase();
   if (!canonical || canonical === local) return;
   const trusted = parseTrustedCallerIds();
-  if (trusted.includes(canonical)) return;
+  // Machine-level gate, DELIBERATELY: only a whole-machine entry
+  // ("myia-po-2024") authorizes stamping that machine. A lane-scoped entry
+  // ("myia-ai-01:hermes-agent") must NOT widen the stamp to the whole host:
+  // the dashboard author-stamp asserts a MACHINE — it has no lane dimension —
+  // so honoring a lane entry here would re-open the very hole the 19/10
+  // decision closed. A lane entry therefore stays INERT on this path (it
+  // never equals a bare canonical machine id).
+  if (trusted.some((entry) => entry.workspaceId === undefined && entry.machineId === canonical)) return;
   throw new StateManagerError(
     `Paramètre "${rejectedParam}" refusé : la machine « ${canonical} » n'est pas assertable sur ce process ` +
       `(${TRUSTED_CALLER_IDS_ENV} ${trusted.length > 0 ? 'ne la liste pas' : 'non défini'}). ` +
@@ -245,20 +296,39 @@ export function resolveCallerIdentity(as?: string): {
   // roosync_messages : tout consommateur de `as` traverse cette fonction,
   // donc le gate n'a qu'un seul endroit à vivre.
   const canonical = canonicalizeFullId(as.trim());
-  const machine = parseMachineWorkspace(canonical).machineId.toLowerCase();
+  const parsed = parseMachineWorkspace(canonical);
+  const machine = parsed.machineId.toLowerCase();
+  // The asserted workspace, normalized like the trust entries (basename,
+  // case-insensitive). No workspace part — or an empty one — means a
+  // machine-only assertion: "myia-ai-01" and "myia-ai-01:" behave alike.
+  const assertedWorkspace = parsed.workspaceId === undefined
+    ? undefined
+    : normalizeWorkspaceId(parsed.workspaceId.trim()) || undefined;
   const trusted = parseTrustedCallerIds();
-  if (!trusted.includes(machine)) {
+  // Trust matrix:
+  //   entry "machine"           → any `as` on that machine passes, with or
+  //                               without a workspace (historical #3591).
+  //   entry "machine:workspace" → ONLY that lane passes: the machine-only
+  //                               assertion and every other workspace of the
+  //                               same machine stay refused (19/10, option b).
+  const allowed = trusted.some((entry) => {
+    if (entry.machineId !== machine) return false;
+    if (entry.workspaceId === undefined) return true;
+    return assertedWorkspace !== undefined && entry.workspaceId === assertedWorkspace;
+  });
+  if (!allowed) {
+    const assertedLabel = assertedWorkspace ? `${machine}:${assertedWorkspace}` : machine;
     throw new StateManagerError(
-      `Paramètre "as" refusé : la machine « ${machine} » n'est pas assertable sur ce process ` +
+      `Paramètre "as" refusé : l'identité « ${assertedLabel} » n'est pas assertable sur ce process ` +
       `(${TRUSTED_CALLER_IDS_ENV} ${trusted.length > 0 ? 'ne la liste pas' : 'non défini'}). ` +
-      `#3591 : un siège gateway (chaîne mcp-remote/myia-mcp-proxy) doit faire lister sa machine par ` +
-      `l'opérateur du process RSM pour assert son identité réelle ; sans cela l'appelant reste résolu côté serveur.`,
+      `#3591 : un siège gateway (chaîne mcp-remote/myia-mcp-proxy) doit faire lister son identité par ` +
+      `l'opérateur du process RSM pour assert son identité réelle ; sans cela l'appelant reste résolu côté serveur. ` +
+      `Entrée de confiance : "machine" (toute la machine) ou "machine:workspace" (cette seule voie).`,
       'VALIDATION_FAILED',
       'MessageHelpers',
       { rejectedParam: 'as', envVar: TRUSTED_CALLER_IDS_ENV, asserted: canonical }
     );
   }
-  const parsed = parseMachineWorkspace(canonical);
   return {
     machineId: parsed.machineId,
     workspaceId: parsed.workspaceId,

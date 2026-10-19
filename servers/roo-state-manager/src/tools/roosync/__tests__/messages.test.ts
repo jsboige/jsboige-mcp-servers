@@ -613,4 +613,52 @@ describe('roosync_messages dispatcher', () => {
       expect(mockAttachments).not.toHaveBeenCalled();
     });
   });
+
+  // ============================================================
+  // #3591 — entrées de confiance "machine:workspace" (voie unique, 19/10)
+  // ============================================================
+  describe('caller identity assertion — entrées de confiance par voie (#3591, 19/10)', () => {
+    const ENV_VAR = 'ROOSYNC_TRUSTED_CALLER_IDS';
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env[ENV_VAR];
+      // Voie unique : "myia-ai-01:hermes-agent" n'autorise QUE cette voie.
+      process.env[ENV_VAR] = 'myia-ai-01:hermes-agent';
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env[ENV_VAR];
+      else process.env[ENV_VAR] = savedEnv;
+    });
+
+    test('la voie exacte est honorée et relayée au sous-outil', async () => {
+      await roosyncMessages({ action: 'inbox', as: 'myia-ai-01:hermes-agent' });
+      expect(mockRead).toHaveBeenCalledWith(
+        expect.objectContaining({ as: 'myia-ai-01:hermes-agent' })
+      );
+    });
+
+    test('un AUTRE workspace de la même machine est refusé', async () => {
+      await expect(
+        roosyncMessages({ action: 'inbox', as: 'myia-ai-01:roo-extensions' })
+      ).rejects.toThrow(new RegExp(ENV_VAR));
+      expect(mockRead).not.toHaveBeenCalled();
+    });
+
+    test('l\'assertion machine seule est refusée (l\'entrée est scopée à une voie)', async () => {
+      await expect(
+        roosyncMessages({ action: 'inbox', as: 'myia-ai-01' })
+      ).rejects.toThrow(new RegExp(ENV_VAR));
+      expect(mockRead).not.toHaveBeenCalled();
+    });
+
+    test('une entrée machine seule continue d\'ouvrir toutes les voies de la machine', async () => {
+      process.env[ENV_VAR] = 'myia-ai-01';
+      await roosyncMessages({ action: 'inbox', as: 'myia-ai-01:roo-extensions' });
+      expect(mockRead).toHaveBeenCalledWith(
+        expect.objectContaining({ as: 'myia-ai-01:roo-extensions' })
+      );
+    });
+  });
 });
