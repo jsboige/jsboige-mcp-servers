@@ -119,17 +119,101 @@ class TestPapermillExecutor:
     @pytest.mark.unit
     @patch("subprocess.run")
     def test_get_available_kernels_success(self, mock_subprocess):
-        """Test la detection des kernels disponibles"""
+        """Test la detection des kernels disponibles (source en memoire)"""
+        with patch(
+            "jupyter_client.kernelspec.KernelSpecManager"
+        ) as mock_ksm, patch(
+            "papermill_mcp.core.papermill_executor.get_config"
+        ) as mock_get_config:
+            mock_ksm.return_value.get_all_specs.return_value = {
+                "python3": {"spec": {"display_name": "Python 3"}},
+                "dotnet": {"spec": {"display_name": ".NET"}},
+            }
+            mock_papermill = Mock()
+            mock_papermill.output_dir = "/test"
+            mock_config = Mock()
+            mock_config.papermill = mock_papermill
+            mock_get_config.return_value = mock_config
+
+            executor = PapermillExecutor()
+            kernels = executor._get_available_kernels()
+
+            assert "python3" in kernels
+            assert "dotnet" in kernels
+            # Source primaire en memoire : le sous-process ne doit JAMAIS partir
+            mock_subprocess.assert_not_called()
+
+    @pytest.mark.unit
+    @patch("subprocess.run")
+    def test_get_available_kernels_in_memory_result_is_cached(self, mock_subprocess):
+        """Le resultat en memoire est cache : le 2e appel ne re-detecte rien"""
+        with patch(
+            "jupyter_client.kernelspec.KernelSpecManager"
+        ) as mock_ksm, patch(
+            "papermill_mcp.core.papermill_executor.get_config"
+        ) as mock_get_config:
+            mock_ksm.return_value.get_all_specs.return_value = {
+                "python3": {"spec": {"display_name": "Python 3"}}
+            }
+            mock_papermill = Mock()
+            mock_papermill.output_dir = "/test"
+            mock_config = Mock()
+            mock_config.papermill = mock_papermill
+            mock_get_config.return_value = mock_config
+
+            executor = PapermillExecutor()
+            first = executor._get_available_kernels()
+            second = executor._get_available_kernels()
+
+            assert first is second
+            mock_ksm.return_value.get_all_specs.assert_called_once()
+
+    @pytest.mark.unit
+    @patch("subprocess.run")
+    def test_get_available_kernels_empty_discovery_no_subprocess_recall(
+        self, mock_subprocess
+    ):
+        """Decouverte VIDE en memoire : pas de sous-process, et le vide est
+        cache — un execute_notebook sans kernel ne doit plus empiler 3 x 60s
+        de detection (les 3 sites d'appel partagent le meme cache)."""
+        with patch(
+            "jupyter_client.kernelspec.KernelSpecManager"
+        ) as mock_ksm, patch(
+            "papermill_mcp.core.papermill_executor.get_config"
+        ) as mock_get_config:
+            mock_ksm.return_value.get_all_specs.return_value = {}
+            mock_papermill = Mock()
+            mock_papermill.output_dir = "/test"
+            mock_config = Mock()
+            mock_config.papermill = mock_papermill
+            mock_get_config.return_value = mock_config
+
+            executor = PapermillExecutor()
+            for _ in range(3):  # les 3 sites d'appel d'un meme flow
+                assert executor._get_available_kernels() == {}
+
+            # Aucun nouvel appel au sous-process, meme apres une decouverte vide
+            mock_subprocess.assert_not_called()
+            assert executor._available_kernels == {}
+
+    @pytest.mark.unit
+    @patch("subprocess.run")
+    def test_get_available_kernels_subprocess_fallback(self, mock_subprocess):
+        """KernalSpecManager en echec -> repli sous-process, resultat resolu"""
         mock_result = Mock()
         mock_result.returncode = 0
         mock_result.stdout = '{"kernelspecs": {"python3": {"spec": {"display_name": "Python 3"}}, "dotnet": {"spec": {"display_name": ".NET"}}}}'
         mock_subprocess.return_value = mock_result
 
         with patch(
+            "jupyter_client.kernelspec.KernelSpecManager",
+            side_effect=Exception("ksm unavailable"),
+        ), patch(
             "papermill_mcp.core.papermill_executor.get_config"
         ) as mock_get_config:
             mock_papermill = Mock()
             mock_papermill.output_dir = "/test"
+            mock_papermill.kernel_detection_timeout = 5
             mock_config = Mock()
             mock_config.papermill = mock_papermill
             mock_get_config.return_value = mock_config
@@ -144,13 +228,18 @@ class TestPapermillExecutor:
     @pytest.mark.unit
     @patch("subprocess.run")
     def test_get_available_kernels_failure(self, mock_subprocess):
-        """Test la gestion d'echec de detection des kernels"""
+        """Echec du repli sous-process : vide RENVOYE et surtout CACHE —
+        l'ancien comportement ne cachait pas l'echec et relançait la
+        detection a chaque site d'appel."""
         mock_result = Mock()
         mock_result.returncode = 1
         mock_result.stderr = "Command failed"
         mock_subprocess.return_value = mock_result
 
         with patch(
+            "jupyter_client.kernelspec.KernelSpecManager",
+            side_effect=Exception("ksm unavailable"),
+        ), patch(
             "papermill_mcp.core.papermill_executor.get_config"
         ) as mock_get_config:
             mock_papermill = Mock()
@@ -160,9 +249,13 @@ class TestPapermillExecutor:
             mock_get_config.return_value = mock_config
 
             executor = PapermillExecutor()
-            kernels = executor._get_available_kernels()
+            assert executor._get_available_kernels() == {}
+            assert executor._available_kernels == {}
 
-            assert kernels == {}
+            # 2e appel : le vide echoue est servi depuis le cache, le
+            # sous-process ne repart pas
+            assert executor._get_available_kernels() == {}
+            mock_subprocess.assert_called_once()
 
     @pytest.mark.unit
     @patch(
