@@ -28,7 +28,7 @@ import {
     // [REMOVED #1935 Cluster E] roosyncGetStatusDefinition — fused into roosync_inventory(type: "status")
     roosyncCompareConfigDefinition,
     roosyncListDiffsDefinition,
-    roosyncDecisionDefinition,
+    // [REMOVED #603 P3] roosyncDecisionDefinition — const deleted with the dead-code tail
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncHarmonizationDefinition, // #3545 — campagne d'harmonisation flotte
@@ -71,7 +71,7 @@ const allDefinitions = [
     // [REMOVED CONS-8 #603] roosyncInitDefinition — dead code
     roosyncCompareConfigDefinition,
     // [REMOVED CONS-8 #603] roosyncListDiffsDefinition — thin wrapper
-    // [REMOVED CONS-8 #603] roosyncDecisionDefinition — pipeline mort
+    // [REMOVED #603 P3] roosyncDecisionDefinition — const deleted (usage measured null)
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     // #3545 — campagne d'harmonisation flotte (canon + confirmations + relances)

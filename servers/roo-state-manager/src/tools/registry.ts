@@ -610,19 +610,9 @@ export function registerCallToolHandler(
               }
               break;
           }
-          // [REMOVED CONS-8 #603] roosync_decision — pipeline mort, never operationalized in prod
-          case 'roosync_decision': {
-              result = {
-                  content: [{ type: 'text', text: JSON.stringify({
-                      status: 'deprecated',
-                      message: 'roosync_decision removed (CONS-8 #603). Decision pipeline never operationalized in production.',
-                      alternative: 'Use roosync_dashboard for coordination. For config arbitration, use roosync_compare_config + dashboard discussion.'
-                  }) }],
-                  isError: false
-              };
-              break;
-          }
-          // #1863 FUSION A1: roosync_decision_info removed — redirects to roosync_decision(action: "info")
+          // [REMOVED #603 P3] roosync_decision tombstone — usage measured null (greps, alwaysAllow,
+          // git log -S, transcripts), dead-code tail (decision.ts/info/helpers + tests) deleted.
+          // A stale client calling it now falls to the default unknown-tool path.
           // Consolidated tools: CallTool handlers for CONS-2/3/4/6 consolidated tools
           case 'roosync_baseline': {
               try {

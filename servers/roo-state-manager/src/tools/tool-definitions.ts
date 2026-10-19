@@ -6,8 +6,6 @@
  * registerCallToolHandler uses per-case dynamic imports for each tool.
  *
  * DO NOT import any tool handler modules here.
- * Schemas for roosync_decision and roosync_decision_info are inlined
- * (those two tools use zodToJsonSchema at module scope in their source files).
  * #1470: dashboard schema derived from dashboard-schemas.ts (no handler imports).
  */
 
@@ -428,27 +426,9 @@ export const roosyncListDiffsDefinition = {
     }
 };
 
-// roosync_decision — inlined from zodToJsonSchema(RooSyncDecisionArgsSchema)
-export const roosyncDecisionDefinition = {
-    name: 'roosync_decision',
-    description: 'Manage RooSync decisions: approve/reject/apply/rollback/info.',
-    inputSchema: {
-        type: 'object',
-        properties: {
-            action: { type: 'string', enum: ['approve', 'reject', 'apply', 'rollback', 'info'] },
-            decisionId: { type: 'string' },
-            comment: { type: 'string' },
-            reason: { type: 'string', description: 'Required for reject/rollback' },
-            dryRun: { type: 'boolean' },
-            force: { type: 'boolean' },
-            includeHistory: { type: 'boolean', default: true },
-            includeLogs: { type: 'boolean', default: true }
-        },
-        required: ['action', 'decisionId']
-    }
-};
+// [REMOVED #603 P3] roosync_decision definition — orphaned const deleted with the dead-code tail
+// (#1863 FUSION A1 had already removed roosync_decision_info; usage measured null before deletion)
 
-// #1863 FUSION A1: roosync_decision_info removed — use roosync_decision(action: "info")
 export const roosyncBaselineDefinition = {
     name: 'roosync_baseline',
     description: 'Baseline management: update, version, restore, export, list_versions, current_version.',

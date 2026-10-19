@@ -1,8 +1,7 @@
 /**
  * #1863 Phase A — Tool Fusions Test Matrix
  *
- * 3 fusions × 2 scenarios = 6 test cases:
- *   Fusion A1: decision_info → decision(action: "info")
+ * 2 fusions + cross-cutting (Fusion A1 deleted with the decision pipeline, #603 P3):
  *   Fusion A2: machines → inventory(type: "machines")
  *   Fusion A3: cleanup → manage redirect
  *
@@ -12,88 +11,16 @@
  *
  * Note: Backward-compat definitions (roosync_decision_info, roosync_machines,
  * roosync_cleanup_messages) were removed in #1922 Pass 4 — 644 tokens saved.
+ * #603 P3: the decision pipeline itself (decision.ts/info/helpers + Fusion A1
+ * matrix) was deleted after usage measured null across all legs.
  */
 
 import { describe, it, expect } from 'vitest';
-import { RooSyncDecisionArgsSchema } from '../../../../src/tools/roosync/decision.js';
 import { InventoryArgsSchema } from '../../../../src/tools/roosync/inventory.js';
 import {
   allToolDefinitions,
-  roosyncDecisionDefinition,
   roosyncInventoryDefinition,
 } from '../../../../src/tools/tool-definitions.js';
-
-// ============================================================
-// FUSION A1: decision_info → decision(action: "info")
-// ============================================================
-describe('#1863 Fusion A1: decision_info → decision(action: "info")', () => {
-  describe('Scenario 1: Canonical call via decision(action: "info")', () => {
-    it('should validate action="info" with decisionId', () => {
-      const result = RooSyncDecisionArgsSchema.safeParse({
-        action: 'info',
-        decisionId: 'DEC-001'
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.action).toBe('info');
-        expect(result.data.decisionId).toBe('DEC-001');
-      }
-    });
-
-    it('should validate action="info" with optional includeHistory', () => {
-      const result = RooSyncDecisionArgsSchema.safeParse({
-        action: 'info',
-        decisionId: 'DEC-001',
-        includeHistory: false
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.includeHistory).toBe(false);
-      }
-    });
-
-    it('should default includeHistory and includeLogs to true for info action', () => {
-      const result = RooSyncDecisionArgsSchema.safeParse({
-        action: 'info',
-        decisionId: 'DEC-001'
-      });
-      expect(result.success).toBe(true);
-      if (result.success) {
-        expect(result.data.includeHistory).toBe(true);
-        expect(result.data.includeLogs).toBe(true);
-      }
-    });
-
-    it('should have "info" in decision definition action enum', () => {
-      const actionEnum = (roosyncDecisionDefinition.inputSchema as any).properties.action.enum;
-      expect(actionEnum).toContain('info');
-    });
-
-    it('should have includeHistory and includeLogs in decision definition', () => {
-      const props = (roosyncDecisionDefinition.inputSchema as any).properties;
-      expect(props).toHaveProperty('includeHistory');
-      expect(props).toHaveProperty('includeLogs');
-    });
-  });
-
-  describe('Scenario 2: Error case — invalid info parameters', () => {
-    it('should reject info action without decisionId', () => {
-      const result = RooSyncDecisionArgsSchema.safeParse({
-        action: 'info'
-      });
-      expect(result.success).toBe(false);
-    });
-
-    it('should reject non-boolean includeHistory', () => {
-      const result = RooSyncDecisionArgsSchema.safeParse({
-        action: 'info',
-        decisionId: 'DEC-001',
-        includeHistory: 'yes'
-      });
-      expect(result.success).toBe(false);
-    });
-  });
-});
 
 // ============================================================
 // FUSION A2: machines → inventory(type: "machines")
