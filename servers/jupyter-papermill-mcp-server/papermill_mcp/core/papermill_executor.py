@@ -120,12 +120,36 @@ class PapermillExecutor:
         """
         Auto-detect available kernels.
 
+        Primary source is the in-memory KernelSpecManager (same source as
+        list_kernels) — no subprocess, no 60s stall per call. The subprocess
+        remains as a fallback when the manager itself fails. The result is
+        cached on every path, INCLUDING an empty discovery: an uncached empty
+        result used to re-run the detection on each of the 3 call sites of a
+        single kernel-less execute_notebook (3 x 60s measured).
+
         Returns:
             Dict mapping kernel names to their specifications
         """
         if self._available_kernels is not None:
             return self._available_kernels
 
+        # Primary: in-memory discovery, same source as notebook_service.list_kernels
+        try:
+            from jupyter_client.kernelspec import KernelSpecManager
+
+            self._available_kernels = dict(KernelSpecManager().get_all_specs())
+            self.logger.info(
+                f"Available kernels detected (in-memory): "
+                f"{list(self._available_kernels.keys())}"
+            )
+            return self._available_kernels
+        except Exception as e:
+            self.logger.warning(
+                f"In-memory kernel discovery failed, falling back to "
+                f"subprocess: {e}"
+            )
+
+        # Fallback: subprocess with the configurable detection timeout
         try:
             # Utiliser le timeout configurable pour la détection des kernels
             kernel_timeout = getattr(
@@ -147,12 +171,16 @@ class PapermillExecutor:
 
                 return self._available_kernels
             else:
+                # Cache the empty result: a transient failure must not
+                # re-trigger a 60s subprocess on every call site.
                 self.logger.warning(f"Failed to detect kernels: {result.stderr}")
-                return {}
+                self._available_kernels = {}
+                return self._available_kernels
 
         except Exception as e:
             self.logger.warning(f"Error detecting kernels: {e}")
-            return {}
+            self._available_kernels = {}
+            return self._available_kernels
 
     def _auto_detect_kernel(self, notebook_path: str) -> Optional[str]:
         """
