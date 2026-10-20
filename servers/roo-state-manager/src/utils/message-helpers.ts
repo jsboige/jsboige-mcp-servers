@@ -277,6 +277,15 @@ export function resolveCallerIdentity(as?: string): {
   machineId: string;
   workspaceId: string | undefined;
   fullId: string;
+  /**
+   * ms#1339 — true quand l'identité vient du process hôte (`as` absent/blanc),
+   * pas d'une assertion du caller. Les acks qui attribuent du contenu (send,
+   * reply messages ; append dashboard) l'exposent : une dérivation invisible a
+   * estampillé des messages du nom de la lane passerelle (occurrences 03/10,
+   * classe #3591/#3230). Délibérément absent (pas false) quand `as` est
+   * asserté — même forme que `summaryFailed` (#2719).
+   */
+  derived?: true;
 } {
   // Blank (empty OR whitespace-only) = no assertion, exactly like absent.
   // The raw test must match what the canonicalization below consumes: `as:" "`
@@ -288,6 +297,7 @@ export function resolveCallerIdentity(as?: string): {
       machineId: getLocalMachineId(),
       workspaceId: getLocalWorkspaceId(),
       fullId: getLocalFullId(),
+      derived: true,
     };
   }
   // #3591 (review #1154) : le contrôle de confiance vit ICI — étranglement
