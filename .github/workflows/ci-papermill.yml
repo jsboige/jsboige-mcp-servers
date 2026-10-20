@@ -41,6 +41,11 @@ jobs:
         # async tests) and pytest-timeout (timeout = 300); without them the run
         # is 59 failed / 36 passed (measured 20/10, pytest 9.1.1).
         pip install pytest pytest-asyncio pytest-timeout
+        # The server targets the mcp 1.x API (from mcp.server.fastmcp import
+        # FastMCP); pyproject's unbounded 'mcp>=1.0.0' resolves to 2.x where
+        # FastMCP was renamed MCPServer. Pre-installing 1.x (1.27.0 = the
+        # fleet's version) satisfies the constraint and keeps it pinned.
+        pip install 'mcp<2'
 
     - name: Run unit tests
       run: |
