@@ -114,15 +114,22 @@ export function refreshChatKeyEnvIfChanged(): string[] {
     if (lastStat !== null && stat.mtimeMs === lastStat.mtimeMs && stat.size === lastStat.size) {
         return [];
     }
-    lastStat = stat;
 
     let parsed: Record<string, string>;
     try {
         parsed = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
     } catch {
-        // Unreadable mid-write: keep the current credentials, retry on the next call.
+        // Unreadable mid-write: keep the current credentials AND the previous
+        // baseline. Stamping `lastStat` before the read would swallow the change
+        // for good — the next call would see the same stat and skip it, and the
+        // rotation would only be seen at the file's NEXT write.
         return [];
     }
+
+    // Order matters: the baseline advances only after the new contents were read.
+    // A writer that lands between this stat and the read leaves the baseline one
+    // revision behind — the next call re-reads and no-ops on equal values.
+    lastStat = stat;
 
     const hostKeys = getHostEnvKeys();
     const changed: string[] = [];
