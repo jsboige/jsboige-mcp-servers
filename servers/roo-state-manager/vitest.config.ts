@@ -22,6 +22,12 @@ export default defineConfig({
       'tests/integration/**/*.test.js',
       'tests/performance/**/*.test.ts',
       'tests/performance/**/*.test.js',
+      // #2639 lot 2 : e2e réparés (vrai service + mocks fs/PowerShell locaux,
+      // ré-armés par test) — exécutables en local ; la CI les exclut toujours
+      // (vitest.config.ci.ts, 'tests/e2e/**'). Les AUTRES fichiers tests/e2e/
+      // restent hors include jusqu'à leur rang #2639 respectif.
+      'tests/e2e/roosync-error-handling.test.ts',
+      'tests/e2e/roosync-workflow.test.ts',
       'src/**/__tests__/**/*.test.ts',
       'src/**/__tests__/**/*.test.js'
     ],
