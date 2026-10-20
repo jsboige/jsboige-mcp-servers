@@ -46,6 +46,9 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   retireDashboardKeyChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
   // #3782 locks-off-Drive : couche PG → 'unavailable' (hôte sans PG — fallback fichier).
   acquireDashboardSharedLock: vi.fn().mockResolvedValue('unavailable'),
+  // #4293 — handleRead lit le gate via ce lecteur : null = aucun PG pour porter
+  // la lecture, donc la garde #3459 reste la règle (sémantique de la suite).
+  getDashboardPgReader: vi.fn().mockReturnValue(null),
   releaseDashboardSharedLock: vi.fn().mockResolvedValue(undefined),
   // #3782 tombstones : pas d'histoire PG archivée → null (fail-open).
   fetchArchivedDashboardMessageIds: vi.fn().mockResolvedValue(null),

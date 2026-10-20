@@ -593,7 +593,7 @@ async function readAttachmentsMode(args: RooSyncReadArgs, messageManager: Messag
     // #4293 — store absent : [] n'est probant que si le message a été LU (via
     // PG) et ne porte aucune ref. Sinon le vide vient d'un scan sur un store
     // injoignable : erreur explicite, jamais « aucune pièce jointe » (#3459).
-    const definitiveEmpty = message !== null && (message.attachments?.length ?? 0) === 0
+    const definitiveEmpty = message != null && (message.attachments?.length ?? 0) === 0
       // PG-primary scan: the empty set comes from the authoritative store, not
       // from a GDrive scan of an unmounted drive.
       || isAttachmentPgPrimary();
