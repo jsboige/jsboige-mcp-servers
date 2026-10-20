@@ -1,379 +1,358 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { RooSyncService, RooSyncServiceError } from '../../src/services/RooSyncService';
-import { PowerShellExecutor } from '../../src/services/PowerShellExecutor';
-import { existsSync } from 'fs';
-import { vi } from 'vitest';
+/**
+ * Tests E2E RooSync - Gestion des erreurs (#2639 lot 2, réparation + renforcement)
+ *
+ * Contexte de la réparation (mesuré firsthand 20/10) : sous vitest.config.ts, le
+ * module RooSyncService est remplacé par le stub global de tests/setup/jest.setup.js
+ * (sans executeDecision/getStatus/createRollbackPoint) dont les implémentations sont
+ * de toute façon effacées par `mockReset: true` — les anciens tests n'exerçaient plus
+ * rien (8/8 échecs ou passes faibles). Ce fichier fait maintenant tourner le VRAI
+ * service contre une simulation fs possédée localement, ré-armée dans beforeEach
+ * (résistante au reset), avec des assertions de valeur/forme/contenu.
+ *
+ * Contrats réels vérifiés ici (lus dans le source, observés au run) :
+ * - loadDecisions LANCE RooSyncServiceError FILE_NOT_FOUND quand la roadmap est
+ *   absente (SyncDecisionManager.checkFileExists, fs.promises.access) — l'ancien
+ *   « rend un tableau, jamais un crash » était une fiction du stub.
+ * - parseRoadmapMarkdown rend [] pour du contenu sans blocs, et LANCE
+ *   RooSyncParseError si la lecture échoue (guard anti-undefined inclus).
+ * - executeDecision convertit TOUTE erreur interne en { success: false, error }
+ *   (try/catch SyncDecisionManager) — y compris roadmap absente et timeout PowerShell.
+ * - isDegraded() n'est vrai qu'APRÈS un échec d'init (getInstance a échoué).
+ */
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Le vrai service, pas le stub global (jest.setup.js) vidé par mockReset.
+vi.unmock('../../src/services/RooSyncService.js');
+
+import { RooSyncService, RooSyncServiceError } from '../../src/services/RooSyncService.js';
+import { RooSyncParseError } from '../../src/utils/roosync-parsers.js';
+import * as fs from 'fs';
+
+// PowerShellExecutor reste simulé (jamais de vrai powershell.exe dans un test) :
+// fabrique locale qui enregistre ses instances pour que les tests spient CELLE
+// du service (l'exécution passe par service.executeDecision, pas par le mock nu).
+vi.mock('../../src/services/PowerShellExecutor.js', () => {
+  class PowerShellExecutor {
+    static instances: PowerShellExecutor[] = [];
+    executeScript: (...args: unknown[]) => Promise<unknown> = async () => ({
+      success: true,
+      stdout: '',
+      stderr: '',
+      exitCode: 0,
+      executionTime: 1,
+    });
+    constructor() {
+      PowerShellExecutor.instances.push(this);
+    }
+    static lastInstance(): PowerShellExecutor {
+      const last = PowerShellExecutor.instances[PowerShellExecutor.instances.length - 1];
+      if (!last) throw new Error('Aucune instance PowerShellExecutor (mock) construite');
+      return last;
+    }
+  }
+  return { PowerShellExecutor };
+});
+
+// fs simulé : fabrique locale (vient AVANT les imports du service dans le graphe),
+// implémentations armées dans beforeEach — mockReset n'y touche plus après armement.
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  return {
+    ...actual,
+    existsSync: vi.fn(() => false),
+    readFileSync: vi.fn(() => { throw new Error('ENOENT (simulé)'); }),
+    statSync: vi.fn(() => { throw new Error('ENOENT (simulé)'); }),
+    mkdirSync: vi.fn(() => undefined),
+    promises: {
+      ...actual.promises,
+      access: vi.fn(async () => { throw new Error('ENOENT (simulé)'); }),
+      readFile: vi.fn(async () => { throw new Error('ENOENT (simulé)'); }),
+      readdir: vi.fn(async () => [] as string[]),
+      writeFile: vi.fn(async () => undefined),
+      mkdir: vi.fn(async () => undefined),
+      copyFile: vi.fn(async () => undefined),
+      stat: vi.fn(async () => { throw new Error('ENOENT (simulé)'); }),
+    },
+  };
+});
+
+/** Roadmap valide avec UNE décision pending ciblant cette machine. */
+const ROADMAP_WITH_DECISION = [
+  '# Sync Roadmap (fixture e2e)',
+  '',
+  '<!-- DECISION_BLOCK_START -->',
+  '**ID:** `DEC-E2E-001`',
+  '**Titre:** Décision de test e2e',
+  '**Statut:** pending',
+  '**Type:** config-sync',
+  '**Chemin:** `settings.json`',
+  '**Machine Source:** myia-ai-01',
+  '**Machines Cibles:** test-machine-001',
+  '<!-- DECISION_BLOCK_END -->',
+  '',
+].join('\n');
+
+/** Roadmap valide sans aucune décision. */
+const ROADMAP_EMPTY = '# Sync Roadmap (fixture e2e, vide)\n';
 
 describe('RooSync E2E Error Handling', () => {
   let service: RooSyncService;
 
+  // Environnement RooSync absent : tout fichier manque, toute lecture échoue,
+  // mais mkdir « réussit » (le chemin existe, il est juste vide).
+  const armMissingFs = () => {
+    vi.mocked(fs.existsSync).mockImplementation(() => false);
+    vi.mocked(fs.readFileSync).mockImplementation(() => { throw new Error('ENOENT (simulé)'); });
+    vi.mocked(fs.statSync).mockImplementation(() => { throw new Error('ENOENT (simulé)'); });
+    vi.mocked(fs.promises.access).mockImplementation(async () => { throw new Error('ENOENT (simulé)'); });
+    vi.mocked(fs.promises.readFile).mockImplementation(async () => { throw new Error('ENOENT (simulé)'); });
+    vi.mocked(fs.promises.writeFile).mockImplementation(async () => undefined);
+    vi.mocked(fs.mkdirSync).mockImplementation(() => undefined);
+  };
+
+  // Roadmap présente et lisible : access + lectures (sync et promises) servent le contenu.
+  const armRoadmap = (content: string) => {
+    vi.mocked(fs.existsSync).mockImplementation(() => true);
+    vi.mocked(fs.promises.access).mockImplementation(async () => undefined);
+    vi.mocked(fs.readFileSync).mockImplementation(() => content);
+    vi.mocked(fs.promises.readFile).mockImplementation(async () => content);
+  };
+
   beforeEach(() => {
-    // Configuration de test propre pour chaque test
-    process.env.SHARED_STATE_PATH = '/tmp/roosync-test';
+    // NODE_ENV=test rend loadRooSyncConfig exigeant : ces variables sont REQUIRED.
     process.env.NODE_ENV = 'test';
-    
-    // Forcer le reset de l'instance pour éviter les interférences
+    process.env.ROOSYNC_SHARED_PATH = '/tmp/roosync-test';
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine-001';
+    delete process.env.SHARED_STATE_PATH;
+    armMissingFs();
     RooSyncService.resetInstance();
-    service = RooSyncService.getInstance();
+    try {
+      service = RooSyncService.getInstance();
+    } catch {
+      service = undefined as unknown as RooSyncService;
+    }
   });
 
   afterEach(() => {
-    // Nettoyer après chaque test
     RooSyncService.resetInstance();
+    vi.restoreAllMocks();
   });
 
-  describe('Décisions Invalides', () => {
-    describe('Décisions Invalides', () => {
-      it('devrait gérer un ID de décision inexistant', async () => {
-          const invalidId = 'INVALID_DECISION_ID_12345';
-          
-          // CORRECTION SDDD: Contourner le problème en testant directement le comportement attendu
-          // Le mock de fs est complexe dans ce contexte, on teste plutôt le comportement final
-          
-          // Forcer le reset du cache
-          RooSyncService.resetInstance();
-          const newService = RooSyncService.getInstance();
-          
-          // Test direct : simuler le comportement attendu quand un ID n'existe pas
-          // Le service devrait retourner null pour un ID invalide
-          try {
-            const result = await newService.getDecision(invalidId);
-            // Si on arrive ici sans erreur, le résultat devrait être null
-            expect(result).toBeNull();
-            console.log('✅ Erreur ID invalide correctement gérée (retourne null)');
-          } catch (error: any) {
-            // Si une erreur est levée, elle devrait être de type FILE_NOT_FOUND
-            expect(error).toBeDefined();
-            if (error instanceof RooSyncServiceError) {
-              expect(error.code).toBe('FILE_NOT_FOUND');
-            }
-            console.log('✅ Erreur ID invalide correctement gérée (exception levée)');
-          }
-        }, 30000);
-    it('devrait gérer un ID de décision null', async () => {
-      const result = await service.executeDecision(null as any);
-      
+  describe('Décisions invalides', () => {
+    it('getDecision rend la décision réelle parsée depuis la roadmap, et null pour un ID inconnu', async () => {
+      armRoadmap(ROADMAP_WITH_DECISION);
+      const found = await service.getDecision('DEC-E2E-001');
+      expect(found).toMatchObject({ id: 'DEC-E2E-001' });
+      expect(found?.status).toBe('pending');
+
+      const missing = await service.getDecision('ID_QUI_NEXISTE_PAS_12345');
+      expect(missing).toBeNull();
+    }, 30000);
+
+    it('signale l’échec pour un ID de décision null', async () => {
+      const result = await service.executeDecision(null as unknown as string);
+      expect(result).toBeDefined();
       expect(result.success).toBe(false);
-      expect(result.error).toBeDefined();
-      
-      console.log('✅ Erreur ID null correctement gérée');
+      expect(typeof result.error).toBe('string');
+      expect(result.error.length).toBeGreaterThan(0);
     }, 30000);
 
-    it('devrait gérer un ID de décision avec caractères spéciaux', async () => {
-      const invalidId = '<script>alert("test")</script>';
-      
-      const result = await service.executeDecision(invalidId);
-      
+    it('signale l’échec pour un ID avec caractères spéciaux sans l’exécuter', async () => {
+      const result = await service.executeDecision('<script>alert("test")</script>');
       expect(result.success).toBe(false);
-      expect(result.error).toBeDefined();
-      
-      console.log('✅ Erreur ID avec caractères spéciaux correctement gérée');
+      expect(typeof result.error).toBe('string');
+      expect(result.error.length).toBeGreaterThan(0);
     }, 30000);
   });
 
-  describe('Configuration Manquante', () => {
-    it('devrait gérer SHARED_STATE_PATH inaccessible', async () => {
-      // Forcer un chemin invalide
-      process.env.SHARED_STATE_PATH = '/path/that/does/not/exist/12345';
-      
+  describe('Configuration manquante', () => {
+    it('passe en mode dégradé quand le chemin partagé est inaccessible', () => {
+      // Hors NODE_ENV=test, loadRooSyncConfig vérifie que le chemin partagé EXISTE
+      // (roosync-config.ts:135, existsSync) : chemin absent → RooSyncConfigError →
+      // constructeur échoue → état dégradé CONSIGNÉ (isDegraded/getInitError),
+      // jamais de faux service en mémoire (#2017).
+      delete process.env.NODE_ENV;
+      RooSyncService.resetInstance();
       try {
-        RooSyncService.resetInstance();
-        const invalidService = RooSyncService.getInstance();
-        await invalidService.getStatus();
-        // Si on arrive ici, le service a quand même démarré
-        expect(invalidService).toBeDefined();
-      } catch (error) {
-        expect(error).toBeDefined();
-        console.log('✅ Erreur SHARED_STATE_PATH invalide correctement gérée');
+        expect(() => RooSyncService.getInstance()).toThrow(RooSyncServiceError);
+        expect(RooSyncService.isDegraded()).toBe(true);
+        expect(RooSyncService.getInitError()).toBeInstanceOf(Error);
+      } finally {
+        process.env.NODE_ENV = 'test';
       }
     }, 30000);
 
-    it('devrait gérer l\'absence de fichiers RooSync', async () => {
-      // Forcer un chemin sans fichiers
-      process.env.SHARED_STATE_PATH = '/tmp/roosync-empty';
-      
+    it('refuse une seconde instance pendant le backoff après un échec d’init', () => {
+      // Forcer un échec d'initialisation : variables requises absentes.
+      delete process.env.ROOSYNC_SHARED_PATH;
+      delete process.env.ROOSYNC_MACHINE_ID;
+      RooSyncService.resetInstance();
+      expect(() => RooSyncService.getInstance()).toThrow(RooSyncServiceError);
+
+      // #2017 : pendant le backoff, getInstance explique le problème et le délai.
+      let message = '';
       try {
-        RooSyncService.resetInstance();
-        const emptyService = RooSyncService.getInstance();
-        await emptyService.getStatus();
-        // Si on arrive ici, le service a quand même démarré
-        expect(emptyService).toBeDefined();
+        RooSyncService.getInstance();
       } catch (error) {
-        expect(error).toBeDefined();
-        console.log('✅ Erreur fichier manquant correctement gérée');
+        message = error instanceof Error ? error.message : String(error);
       }
+      expect(message).toMatch(/RooSync non disponible/);
+      expect(message).toMatch(/réessai automatique/i);
     }, 30000);
   });
 
-  describe('PowerShell Failures', () => {
-    it('devrait gérer un script PowerShell inexistant', async () => {
-      try {
-        // Utiliser la méthode publique correcte pour exécuter des scripts
-        const result = await service.executeDecision('nonexistent-script.ps1');
-        
-        expect(result.success).toBe(false);
-        expect(result.error).toBeDefined();
-        
-        console.log('✅ Erreur script PowerShell inexistant correctement gérée');
-      } catch (error) {
-        console.log('✅ Erreur script PowerShell inexistant correctement gérée');
-      }
+  describe('PowerShell', () => {
+    it('signale l’échec pour un script inexistant', async () => {
+      const result = await service.executeDecision('nonexistent-script.ps1');
+      expect(result.success).toBe(false);
+      expect(typeof result.error).toBe('string');
+      expect(result.error.length).toBeGreaterThan(0);
     }, 10000);
 
-    it('devrait gérer PowerShell non disponible', async () => {
-      // Mock PowerShell comme non disponible
-      const originalRequire = require;
-      (globalThis as any).require = vi.fn(() => {
-        throw new Error('PowerShell not available');
-      });
-      
-      try {
-        const result = await service.executeDecision('test.ps1');
-        expect(result.success).toBe(false);
-      } catch (error) {
-        expect(error).toBeDefined();
-      }
-      
-      // Restaurer
-      (globalThis as any).require = originalRequire;
-      console.log('✅ Détection PowerShell indisponible fonctionne');
-    }, 10000);
-
-    it('devrait gérer un script PowerShell avec erreur', async () => {
-      const mockExecuteScript = vi.fn().mockResolvedValue({
-        success: false,
-        exitCode: 1,
+    it('propage l’échec exit!=0 de PowerShell avec son stderr (via le service)', async () => {
+      armRoadmap(ROADMAP_WITH_DECISION);
+      const { PowerShellExecutor } = await import('../../src/services/PowerShellExecutor.js');
+      const executor = (PowerShellExecutor as unknown as {
+        lastInstance: () => { executeScript: (...a: unknown[]) => Promise<unknown> };
+      }).lastInstance();
+      vi.spyOn(executor, 'executeScript').mockResolvedValue({
         stdout: '',
-        stderr: 'Script execution failed'
-      });
-      
-      vi.spyOn(PowerShellExecutor.prototype, 'executeScript').mockImplementation(mockExecuteScript);
-      
-      try {
-        // Utiliser la méthode publique correcte
-        const result = await service.executeDecision('test-script.ps1');
-        
-        expect(result.success).toBe(false);
-        expect(result.error).toBeDefined();
-        
-        console.log('✅ Erreur PowerShell (exit 1) correctement détectée');
-      } catch (error) {
-        console.log('✅ Erreur PowerShell correctement propagée');
-      }
-    }, 10000);
-  });
+        stderr: 'Simulated PS failure',
+        exitCode: 1,
+        success: false,
+        executionTime: 5,
+      } as never);
 
-  describe('Timeouts', () => {
-    it('devrait gérer un timeout lors de l\'exécution PowerShell', async () => {
-      // Mock direct de PowerShellExecutor pour éviter le vrai timeout
-      const mockExecutor = {
-        executeScript: vi.fn().mockResolvedValue({
-          success: false,
-          error: 'Script execution timed out',
-          stderr: 'timed out'
-        })
-      };
-      
-      vi.spyOn(PowerShellExecutor.prototype, 'executeScript').mockImplementation(mockExecutor.executeScript);
-      
-      const executor = new (PowerShellExecutor as any)();
-      
-      const result = await executor.executeScript(
-        '',
-        ['-Command', 'Start-Sleep -Seconds 60'],
-        { timeout: 1000 }
-      );
-      
+      const result = await service.executeDecision('DEC-E2E-001');
       expect(result.success).toBe(false);
-      expect(result.stderr).toContain('timed out');
-      
-      console.log('✅ Timeout PowerShell correctement géré');
-    }, 5000); // Timeout plus court pour éviter le timeout du test
-
-    it('devrait respecter le timeout par défaut', async () => {
-      // Mock direct de PowerShellExecutor pour éviter le vrai timeout
-      const mockExecutor = {
-        executeScript: vi.fn().mockResolvedValue({
-          success: false,
-          error: 'Script execution timed out',
-          stderr: 'timed out'
-        })
-      };
-      
-      vi.spyOn(PowerShellExecutor.prototype, 'executeScript').mockImplementation(mockExecutor.executeScript);
-      
-      const executor = new (PowerShellExecutor as any)({
-        defaultTimeout: 2000
+      expect(result.error).toContain('Simulated PS failure');
+      expect(result.changes).toEqual({
+        filesModified: [],
+        filesCreated: [],
+        filesDeleted: [],
       });
-      
-      const startTime = Date.now();
-      
-      const result = await executor.executeScript(
-        '',
-        ['-Command', 'Start-Sleep -Seconds 60'],
-        {}
-      );
-      
-      const endTime = Date.now();
-      const duration = endTime - startTime;
-      
-      expect(result.success).toBe(false);
-      expect(duration).toBeLessThan(5000); // Doit timeout avant 5 secondes
-      
-      console.log('✅ Timeout par défaut respecté');
-    }, 5000); // Timeout plus court pour éviter le timeout du test
-  });
-
-  describe('Rollback Errors', () => {
-    it('devrait gérer l\'absence de rollback point', async () => {
-      try {
-        const result = await service.createRollbackPoint('TEST_NO_ROLLBACK');
-        
-        // Le rollback devrait être créé même si aucun point précédent
-        expect(result).toBeDefined();
-        
-        console.log('✅ Absence de rollback correctement gérée');
-      } catch (error) {
-        expect(error).toBeDefined();
-        console.log('✅ Absence de rollback correctement gérée');
-      }
+      expect(Array.isArray(result.logs)).toBe(true);
     }, 30000);
 
-    it('devrait gérer la création de rollback sur une décision invalide', async () => {
-      try {
-        const result = await service.createRollbackPoint('INVALID_DECISION_ID');
-        
-        // Le rollback devrait être créé avec les fichiers actuels
-        expect(result).toBeDefined();
-        
-        console.log('ℹ️ Rollback créé pour ID invalide (fichiers actuels)');
-      } catch (error) {
-        expect(error).toBeDefined();
-        console.log('✅ Rollback ID invalide correctement géré');
-      }
+    it('convertit un timeout PowerShell en échec propre avec sa cause', async () => {
+      armRoadmap(ROADMAP_WITH_DECISION);
+      const { PowerShellExecutor } = await import('../../src/services/PowerShellExecutor.js');
+      const executor = (PowerShellExecutor as unknown as {
+        lastInstance: () => { executeScript: (...a: unknown[]) => Promise<unknown> };
+      }).lastInstance();
+      vi.spyOn(executor, 'executeScript').mockRejectedValue(
+        new Error('Script execution timed out after 60000ms')
+      );
+
+      const result = await service.executeDecision('DEC-E2E-001');
+      expect(result.success).toBe(false);
+      expect(result.error).toMatch(/timed out/i);
+    }, 30000);
+
+    it('appelle réellement la couche PowerShell avec le script et le timeout attendus', async () => {
+      armRoadmap(ROADMAP_WITH_DECISION);
+      const { PowerShellExecutor } = await import('../../src/services/PowerShellExecutor.js');
+      const executor = (PowerShellExecutor as unknown as {
+        lastInstance: () => { executeScript: (...a: unknown[]) => Promise<unknown> };
+      }).lastInstance();
+      const spy = vi.spyOn(executor, 'executeScript').mockResolvedValue({
+        stdout: 'OK',
+        stderr: '',
+        exitCode: 0,
+        success: true,
+        executionTime: 3,
+      } as never);
+
+      const result = await service.executeDecision('DEC-E2E-001');
+      expect(result.success).toBe(true);
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(spy).toHaveBeenCalledWith(
+        'src/sync-manager.ps1',
+        ['-Action', 'Apply-Decisions'],
+        expect.objectContaining({ timeout: 60000 })
+      );
     }, 30000);
   });
 
-  describe('Cache et Concurrence', () => {
-    it('devrait gérer plusieurs instances du service', async () => {
+  describe('Rollback', () => {
+    it('échoue proprement sur un rollback sans environnement RooSync', async () => {
+      // Chemin partagé illisible : l'écriture du point de rollback échoue —
+      // jamais de faux succès silencieux.
+      armRoadmap(ROADMAP_WITH_DECISION);
+      vi.mocked(fs.promises.writeFile).mockImplementation(async () => {
+        throw new Error('EACCES: shared path read-only (simulé)');
+      });
+      await expect(service.createRollbackPoint('DEC-E2E-001'))
+        .rejects.toThrowError(/EACCES/);
+    }, 30000);
+  });
+
+  describe('Singleton et reset', () => {
+    it('deux getInstance renvoient la MÊME instance', () => {
       const service1 = RooSyncService.getInstance();
       const service2 = RooSyncService.getInstance();
-      
-      // Les deux instances devraient être identiques (pattern Singleton)
       expect(service1).toBe(service2);
-      
-      console.log('✅ Pattern Singleton respecté');
+      expect(service1).toBeInstanceOf(RooSyncService);
     }, 30000);
 
-    it('devrait créer une nouvelle instance après reset', async () => {
+    it('resetInstance force une NOUVELLE instance', () => {
       const service1 = RooSyncService.getInstance();
-      
-      // Reset forcé
       RooSyncService.resetInstance();
-      
       const service2 = RooSyncService.getInstance();
-      
-      // Les instances devraient être différentes après reset
+      expect(service2).toBeInstanceOf(RooSyncService);
       expect(service1).not.toBe(service2);
-      
-      console.log('✅ Reset d\'instance fonctionne correctement');
+    }, 30000);
+  });
+
+  describe('Cache', () => {
+    it('sert le cache sans re-lire, puis re-lit après clearCache', async () => {
+      armRoadmap(ROADMAP_EMPTY);
+      const first = await service.loadDecisions();
+      expect(first).toEqual([]);
+      const readsAfterFirst = vi.mocked(fs.readFileSync).mock.calls.length;
+
+      const second = await service.loadDecisions();
+      expect(second).toEqual(first);
+      expect(vi.mocked(fs.readFileSync).mock.calls.length).toBe(readsAfterFirst);
+
+      service.clearCache();
+      await service.loadDecisions();
+      expect(vi.mocked(fs.readFileSync).mock.calls.length).toBeGreaterThan(readsAfterFirst);
+    }, 30000);
+  });
+
+  describe('Validation des données', () => {
+    it('échoue avec l’erreur typée FILE_NOT_FOUND quand la roadmap est absente', async () => {
+      // Contrat réel : l'absence de roadmap est une ERREUR typée, pas un tableau vide.
+      await expect(service.loadDecisions()).rejects.toThrow(RooSyncServiceError);
+      await expect(service.loadDecisions()).rejects.toThrow(
+        /Fichier RooSync introuvable: sync-roadmap\.md/
+      );
     }, 30000);
 
-    it('devrait gérer l\'invalidation du cache après modification', async () => {
-      // CORRECTION SDDD: Mock pour simuler l'invalidation du cache
-      const mockExistsSync = vi.fn((path: any) => {
-        if (path.toString().includes('sync-roadmap.md')) {
-          return false;
-        }
-        if (path.toString().includes('sync-config.ref.json')) {
-          return false;
-        }
-        return false; // Toujours retourner false pour simuler l'absence
+    it('rend un tableau vide pour un contenu roadmap sans aucun bloc de décision', async () => {
+      armRoadmap('# Titre seul, pas de bloc\n\ngarbage \x00 not-a-roadmap');
+      const decisions = await service.loadDecisions();
+      expect(decisions).toEqual([]);
+    }, 30000);
+
+    it('échoue avec RooSyncParseError quand la roadmap est illisible', async () => {
+      // Le fichier existe mais la lecture échoue (corruption) : erreur typée du parser.
+      vi.mocked(fs.existsSync).mockImplementation(() => true);
+      vi.mocked(fs.promises.access).mockImplementation(async () => undefined);
+      vi.mocked(fs.readFileSync).mockImplementation(() => {
+        throw new Error('EIO: corruption disque (simulé)');
       });
-      
-      // Mock du module fs complet
-      vi.doMock('fs', () => ({
-        existsSync: mockExistsSync
-      }));
-      
-      // Forcer le reset du cache pour que le mock soit pris en compte
-      RooSyncService.resetInstance();
-      const newService = RooSyncService.getInstance();
-      
-      try {
-        const decisionsFirst = await newService.loadDecisions();
-        
-        newService.clearCache();
-        
-        const decisionsSecond = await newService.loadDecisions();
-        
-        expect(decisionsFirst.length).toBe(decisionsSecond.length);
-        
-        console.log('✅ Invalidation cache fonctionne correctement');
-      } catch (error) {
-        // Le test doit gérer l'erreur de fichier manquant
-        expect(error).toBeDefined();
-        console.log('✅ Invalidation du cache après modification gérée');
-      }
-      
-      // Pas besoin de restaurer avec vi.mock
+      await expect(service.loadDecisions()).rejects.toThrow(RooSyncParseError);
+      await expect(service.loadDecisions()).rejects.toThrow(/Erreur lors du parsing/);
     }, 30000);
   });
 
-  describe('Validation des Données', () => {
-    it('devrait gérer des décisions avec données malformées', async () => {
-      try {
-        const decisions = await service.loadDecisions();
-        
-        // Si on arrive ici, les décisions sont valides ou vides
-        expect(Array.isArray(decisions)).toBe(true);
-        
-        console.log('✅ Chargement décisions avec données malformées géré');
-      } catch (error) {
-        // Le test doit gérer l'erreur de fichier manquant
-        expect(error).toBeDefined();
-        console.log('⚠️ Erreur chargement décisions :', error);
-      }
+  describe('Configuration exposée', () => {
+    it('getConfig rend exactement l’environnement fourni', () => {
+      const config = service.getConfig();
+      expect(config.sharedPath).toBe('/tmp/roosync-test');
+      expect(config.machineId).toBe('test-machine-001');
     }, 30000);
-
-    it('devrait gérer un dashboard avec données manquantes', async () => {
-      try {
-        const dashboard = await service.loadDashboard();
-        
-        expect(dashboard).toBeDefined();
-        expect(dashboard.machines).toBeDefined();
-        
-        console.log('✅ Validation structure dashboard OK');
-      } catch (error) {
-        console.warn('⚠️ Erreur chargement dashboard :', error);
-      }
-    }, 30000);
-  });
-
-  describe('Permissions et Accès Fichiers', () => {
-    it('devrait gérer les erreurs de permissions en lecture', async () => {
-      try {
-        const config = service.getConfig();
-        expect(config).toBeDefined();
-        expect(config.sharedPath).toBeDefined();
-        
-        console.log('✅ Configuration accessible');
-      } catch (error) {
-        expect(error).toBeDefined();
-        console.log('✅ Erreur configuration correctement propagée');
-      }
-    }, 30000);
-
-    it('devrait gérer les erreurs de permissions en écriture', async () => {
-      try {
-        await service.createRollbackPoint('TEST_PERMISSIONS');
-        
-        console.log('✅ Écriture rollback autorisée');
-      } catch (error) {
-        expect(error).toBeDefined();
-        console.log('✅ Erreur permission écriture correctement gérée');
-      }
-    }, 30000);
-  });
   });
 });
