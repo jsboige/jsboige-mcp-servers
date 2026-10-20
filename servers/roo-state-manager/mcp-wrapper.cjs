@@ -186,6 +186,15 @@ function spawnServer() {
         cwd: __dirname,
         env: {
             ...process.env,
+            // #4131 B11(b): libuv's default pool (4 threads) is shared by every
+            // fs/DNS/TLS operation; the inbox rebuild's G: reads would otherwise
+            // occupy it whole and a concurrent PG connect waits behind them all.
+            // Raised here so the reads (capped at pool - THREADPOOL_RESERVE in
+            // MessageManager) keep their throughput with headroom kept free.
+            // UV_THREADPOOL_SIZE is read at the threadpool's first use, so it
+            // must be in the env BEFORE the child starts — which is exactly here.
+            // A host value wins: this is a default for the child, not an override.
+            UV_THREADPOOL_SIZE: process.env.UV_THREADPOOL_SIZE || '8',
             WORKSPACE_PATH: process.env.WORKSPACE_PATH || originalCwd,
             // #2719: read by services/host-env-snapshot.ts. WORKSPACE_PATH is set just
             // above, by the wrapper itself: host-owned from the child's side.

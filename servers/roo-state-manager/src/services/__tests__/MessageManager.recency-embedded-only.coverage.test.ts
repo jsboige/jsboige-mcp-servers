@@ -58,8 +58,10 @@ const realReadFile = realFs.promises.readFile as (p: string, enc: string) => Pro
 /** Generous: truncation under test is the BUDGET's, never a read timeout's. */
 const READ_TIMEOUT_MS = 10_000;
 const RECIPIENT = 'myia-po-2025';
-const POOL_SIZE = 105; // 50 + 50 + 5 chunks
-const READ_CONCURRENCY = 50;
+const POOL_SIZE = 105; // several chunks and a remainder under any cap
+/** The cap the MODULE runs with (derived from the threadpool, #4131 B11(b)) —
+ *  read from the module, so a budget below is always exactly ONE chunk. */
+const READ_CONCURRENCY = (MessageManager as any).READ_CONCURRENCY as number;
 const EXPLICIT_ID = 'ai01-dispatch-note';
 
 /**
@@ -133,7 +135,7 @@ describe('MessageManager — recency ordering is embedded-instant only (#3292 fo
     seedMessage(sharedState, EXPLICIT_ID, new Date(Date.UTC(2026, 8, 1)).toISOString());
     const manager = new MessageManager(sharedState, READ_TIMEOUT_MS);
 
-    // One-chunk deep pass: reads 50 of the 106 files, truncates.
+    // One-chunk deep pass: reads one chunk of the 106 files, truncates.
     (manager as any).rebuildBudgetMs = READ_CONCURRENCY;
     const items = await manager.readInbox(
       RECIPIENT, 'all', undefined, undefined, undefined, undefined, true,
