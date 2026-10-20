@@ -119,7 +119,7 @@ export const viewTaskDetailsTool = {
             // #1752 Bug #1: Load Claude Code sessions when not in cache or has empty sequence
             const isClaudeTaskId = task_id.startsWith('claude-');
             const needsClaudeLoad = !skeleton
-                || (isClaudeTaskId && (!skeleton.sequence || skeleton.sequence.length === 0) && skeleton.metadata.messageCount > 0)
+                || (isClaudeTaskId && (!skeleton.sequence || skeleton.sequence.length === 0)) // #2307: messageCount=0 ne doit plus court-circuiter (session ayant grandi apres indexation)
                 || (skeleton && (!skeleton.sequence || skeleton.sequence.length === 0) && skeleton.metadata.messageCount > 0
                     && ((skeleton.metadata as any)?.source === 'claude-code' || (skeleton.metadata as any)?.dataSource === 'claude'));
 
