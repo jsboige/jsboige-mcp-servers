@@ -12,7 +12,7 @@
 import { AttachmentManager, type AttachmentListStats } from '../../services/roosync/AttachmentManager.js';
 import { getMessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath, assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
-import { getAttachmentPgReader, isAttachmentPgPrimary } from '../../services/unified-store/roosync-attachment-pg.js';
+import { getAttachmentPgReader, scanAttachmentMetadataFromPg } from '../../services/unified-store/roosync-attachment-pg.js';
 import { getChannelMessageFromPg } from '../../services/unified-store/roosync-channel-read.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -116,23 +116,37 @@ export async function roosyncListAttachments(
     // miss). `null` (message inconnu) seul retombe sur le scan historique.
     let attachments;
     let refsDefinitiveEmpty = false;
+    // #4293 — store absent : le scan est lu directement dans PG, pour savoir
+    // s'il a RÉPONDU. `listAttachments` retombe en silence sur un disque absent
+    // quand PG échoue, et rendrait alors un vide indiscernable d'un vrai vide.
+    let pgScanAnswered = false;
     if (args.message_id) {
       const refs = await resolveMessageAttachmentRefs(args.message_id, storeAccessible);
       refsDefinitiveEmpty = refs !== null && refs.length === 0;
-      attachments = refs === null
-        ? await manager.listAttachments(args.message_id, stats)
-        : await manager.listAttachmentsByRefs(refs.map((r) => r.uuid), stats);
+      if (refs !== null) {
+        attachments = await manager.listAttachmentsByRefs(refs.map((r) => r.uuid), stats);
+      } else if (!storeAccessible) {
+        const scanned = await scanAttachmentMetadataFromPg(args.message_id);
+        pgScanAnswered = scanned !== null;
+        attachments = scanned ?? [];
+      } else {
+        attachments = await manager.listAttachments(args.message_id, stats);
+      }
+    } else if (!storeAccessible) {
+      const scanned = await scanAttachmentMetadataFromPg();
+      pgScanAnswered = scanned !== null;
+      attachments = scanned ?? [];
     } else {
       attachments = await manager.listAttachments(undefined, stats);
     }
 
     if (attachments.length === 0) {
       // #4293 — store absent : [] n'est probant que si le message a été lu dans
-      // PG et ne portait aucune ref, ou si le scan PG est lui-même la source
-      // autoritative (PG-primary). Sinon ni PG ni le disque n'ont pu répondre :
-      // erreur explicite, jamais « aucune pièce jointe » (#3459).
-      const pgScanAuthoritative = isAttachmentPgPrimary();
-      if (!storeAccessible && !refsDefinitiveEmpty && !pgScanAuthoritative) {
+      // PG et ne portait aucune ref, ou si le scan PG a effectivement répondu
+      // (PG-primary). Un drapeau à 1 ne prouve rien : PG peut être tombé.
+      // Sinon ni PG ni le disque n'ont pu répondre : erreur explicite, jamais
+      // « aucune pièce jointe » (#3459).
+      if (!storeAccessible && !refsDefinitiveEmpty && !pgScanAnswered) {
         throw storeAndPgUnavailableError();
       }
       const scopeLabel = args.message_id ? `le message \`${args.message_id}\`` : 'le stockage partagé';

@@ -8,7 +8,10 @@
  *   3. G: absent + PG KO → erreur explicite, jamais « aucune pièce jointe » ;
  *   4. G: absent + drapeau off → erreur de garde #3459 inchangée ;
  *   5. G: absent + message lu dans PG sans ref → « aucune pièce jointe » est
- *      une réponse PROBANTE (on ne transforme pas un vide définitif en erreur).
+ *      une réponse PROBANTE (on ne transforme pas un vide définitif en erreur) ;
+ *   6-9. config du pilote (`CHANNEL_PG_PRIMARY=1`) : seul un scan PG qui a
+ *      effectivement RÉPONDU rend un vide probant ; un drapeau à 1 avec PG
+ *      tombé reste une erreur explicite.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'path';
@@ -21,12 +24,14 @@ const {
   mockListAttachmentsByRefs,
   mockGetMessage,
   mockGetChannelMessageFromPg,
+  mockScanAttachmentMetadataFromPg,
 } = vi.hoisted(() => ({
   mockGetAttachmentPgReader: vi.fn(),
   mockListAttachments: vi.fn(),
   mockListAttachmentsByRefs: vi.fn(),
   mockGetMessage: vi.fn(),
   mockGetChannelMessageFromPg: vi.fn(),
+  mockScanAttachmentMetadataFromPg: vi.fn(),
 }));
 
 vi.mock('../../../services/roosync/AttachmentManager.js', () => ({
@@ -44,7 +49,7 @@ vi.mock('../../../services/unified-store/roosync-attachment-pg.js', () => ({
   getAttachmentPgReader: mockGetAttachmentPgReader,
   isAttachmentPgPrimary: () => process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY === '1',
   listAttachmentMetadataFromPg: vi.fn().mockResolvedValue(null),
-  scanAttachmentMetadataFromPg: vi.fn().mockResolvedValue(null),
+  scanAttachmentMetadataFromPg: mockScanAttachmentMetadataFromPg,
 }));
 
 vi.mock('../../../services/unified-store/roosync-channel-read.js', () => ({
@@ -92,6 +97,8 @@ beforeEach(() => {
   mockListAttachmentsByRefs.mockReset().mockResolvedValue([]);
   mockGetMessage.mockReset().mockResolvedValue(null);
   mockGetChannelMessageFromPg.mockReset().mockResolvedValue(null);
+  // Défaut : PG ne répond pas (non PG-primary, ou PG tombé).
+  mockScanAttachmentMetadataFromPg.mockReset().mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -161,14 +168,58 @@ describe('#4293 — roosync_list_attachments, store absent + PG', () => {
     expect(text).not.toContain('ROOSYNC_SHARED_PATH inaccessible');
   });
 
-  it('cas 6 — G: absent + scan PG primaire vide : le vide est probant aussi', async () => {
+  it('cas 6 — G: absent + scan PG primaire qui RÉPOND vide : le vide est probant aussi', async () => {
     process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '1';
     mockGetAttachmentPgReader.mockReturnValue(fakeReader);
-    mockListAttachments.mockResolvedValue([]);
+    mockScanAttachmentMetadataFromPg.mockResolvedValue([]);
 
     const text = textOf(await roosyncListAttachments({}));
 
     expect(text).toContain('Aucune pièce jointe trouvée');
     expect(text).not.toContain('ROOSYNC_SHARED_PATH inaccessible');
+    // Le disque absent n'est jamais scanné : seul PG porte la réponse.
+    expect(mockListAttachments).not.toHaveBeenCalled();
+  });
+
+  it('cas 7 — G: absent + PG-primary + PG tombé : erreur explicite (config du pilote)', async () => {
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '1';
+    mockGetAttachmentPgReader.mockReturnValue(fakeReader);
+    // Le scan PG dégrade à null (requête en échec) ; l'ancien code retombait sur
+    // `listAttachments` → [] sur un disque absent → « aucune pièce jointe ».
+    mockScanAttachmentMetadataFromPg.mockResolvedValue(null);
+    mockListAttachments.mockResolvedValue([]);
+
+    const text = textOf(await roosyncListAttachments({}));
+
+    expect(text).toContain('ROOSYNC_SHARED_PATH inaccessible');
+    expect(text).toContain('PostgreSQL de secours');
+    expect(text).not.toContain('Aucune pièce jointe trouvée');
+  });
+
+  it('cas 8 — G: absent + message inconnu de PG + scan PG qui répond : liste servie', async () => {
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '1';
+    mockGetAttachmentPgReader.mockReturnValue(fakeReader);
+    mockGetChannelMessageFromPg.mockResolvedValue(null);
+    mockScanAttachmentMetadataFromPg.mockResolvedValue([meta]);
+
+    const text = textOf(await roosyncListAttachments({ message_id: 'msg-4293' }));
+
+    expect(text).toContain('att-uuid-4293');
+    expect(mockScanAttachmentMetadataFromPg).toHaveBeenCalledWith('msg-4293');
+  });
+
+  it('cas 9 — G: absent + refs présentes mais métadonnées illisibles : erreur explicite', async () => {
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '1';
+    mockGetAttachmentPgReader.mockReturnValue(fakeReader);
+    mockGetChannelMessageFromPg.mockResolvedValue({
+      id: 'msg-4293',
+      attachments: [{ uuid: 'att-uuid-4293', filename: 'rapport.pdf', sizeBytes: 1024 }],
+    });
+    mockListAttachmentsByRefs.mockResolvedValue([]);
+
+    const text = textOf(await roosyncListAttachments({ message_id: 'msg-4293' }));
+
+    expect(text).toContain('ROOSYNC_SHARED_PATH inaccessible');
+    expect(text).not.toContain('Aucune pièce jointe trouvée');
   });
 });

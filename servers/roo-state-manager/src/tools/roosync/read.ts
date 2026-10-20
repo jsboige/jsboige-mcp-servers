@@ -24,7 +24,7 @@ import {
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { AttachmentManager, type AttachmentListStats } from '../../services/roosync/AttachmentManager.js';
 import { getChannelPgReader } from '../../services/unified-store/roosync-channel-read.js';
-import { getAttachmentPgReader, isAttachmentPgPrimary } from '../../services/unified-store/roosync-attachment-pg.js';
+import { getAttachmentPgReader, scanAttachmentMetadataFromPg } from '../../services/unified-store/roosync-attachment-pg.js';
 
 // Logger instance for read tool
 const logger: Logger = createLogger('RooSyncReadTool');
@@ -581,23 +581,35 @@ async function readAttachmentsMode(args: RooSyncReadArgs, messageManager: Messag
   // #4293 : callerId requis pour que getMessage puisse servir depuis PG quand
   // G: est absent — sans identité, il reste borné aux fichiers.
   const message = await messageManager.getMessage(messageId, resolveCallerIdentity(args.as).fullId);
-  const attachments = message
-    ? await attachmentManager.listAttachmentsByRefs(
-        (message.attachments ?? []).map((r) => r.uuid),
-        stats,
-      )
-    : await attachmentManager.listAttachments(messageId, stats);
+  const storeAccessible = isStoreAccessible();
+  // #4293 — store absent : le scan est lu directement dans PG pour savoir s'il a
+  // RÉPONDU ; `listAttachments` retombe en silence sur un disque absent quand PG
+  // échoue, et son vide serait indiscernable d'un vrai vide.
+  let pgScanAnswered = false;
+  let attachments;
+  if (message) {
+    attachments = await attachmentManager.listAttachmentsByRefs(
+      (message.attachments ?? []).map((r) => r.uuid),
+      stats,
+    );
+  } else if (!storeAccessible) {
+    const scanned = await scanAttachmentMetadataFromPg(messageId);
+    pgScanAnswered = scanned !== null;
+    attachments = scanned ?? [];
+  } else {
+    attachments = await attachmentManager.listAttachments(messageId, stats);
+  }
 
   // Cas : aucun attachment
   if (attachments.length === 0) {
     // #4293 — store absent : [] n'est probant que si le message a été LU (via
-    // PG) et ne porte aucune ref. Sinon le vide vient d'un scan sur un store
-    // injoignable : erreur explicite, jamais « aucune pièce jointe » (#3459).
-    const definitiveEmpty = message != null && (message.attachments?.length ?? 0) === 0
-      // PG-primary scan: the empty set comes from the authoritative store, not
-      // from a GDrive scan of an unmounted drive.
-      || isAttachmentPgPrimary();
-    if (!isStoreAccessible() && !definitiveEmpty) {
+    // PG) et ne porte aucune ref, ou si le scan PG a effectivement répondu.
+    // Un drapeau PG-primary à 1 ne prouve rien : PG peut être tombé. Sinon le
+    // vide vient d'un store injoignable : erreur explicite, jamais « aucune
+    // pièce jointe » (#3459).
+    const definitiveEmpty = (message != null && (message.attachments?.length ?? 0) === 0)
+      || pgScanAnswered;
+    if (!storeAccessible && !definitiveEmpty) {
       throw storeAndPgUnavailableError();
     }
     return `📎 **Pièces Jointes** - Message ${messageId}
