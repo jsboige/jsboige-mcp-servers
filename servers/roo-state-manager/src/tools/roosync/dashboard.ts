@@ -1656,6 +1656,31 @@ export interface WriteVerifyResult {
 }
 
 /**
+ * #4286 — décomposition de `writeMs` : une entrée par étape chronométrée de
+ * la fenêtre d'écriture d'`appendDashboardIncremental`. Un champ n'apparaît
+ * que pour une étape réellement exécutée (un hôte sans PG-primaire ne
+ * rapporte pas `pgPrimaryWriteMs`). La somme des étapes est ≤ `writeMs` par
+ * construction — le résidu non chronométré est le collage incrémental en
+ * mémoire, négligeable par design.
+ */
+export interface WriteStageTimings {
+  /** Attente du verrou append 2 couches (row PG + fichier local). */
+  lockWaitMs?: number;
+  /** Écritriture PG-primaire sous verrou (UNIFIED_STORE_DASHBOARD_PG_PRIMARY). */
+  pgPrimaryWriteMs?: number;
+  /** Lecture du fichier dashboard sur G: (bornée par la deadline DriveFS). */
+  gdriveReadMs?: number;
+  /** Fallback writeDashboardFile (fichier absent, tête NUL, réparation stale-file). */
+  fallbackFullWriteMs?: number;
+  /** Moitié GDrive : writeFile tmp + copyFile + cleanup + vérification d'atterrissage. */
+  gdriveWriteMs?: number;
+  /** Dual-write miroir PG après le verrou (chemin nominal GDrive-first). */
+  pgMirrorWriteMs?: number;
+  /** Relecture du store autoritaire (verifyWriteVisibleInStore). */
+  storeVerifyMs?: number;
+}
+
+/**
  * #3482 — Vérifie qu'une écriture dashboard a bien atterri sur le fichier
  * canonique et n'a pas été déviée par DriveFS/Windows vers un fork
  * `<stem> (N).md` (incident mesuré 06/09 : un [ASK USER] urgent est resté
@@ -2322,7 +2347,8 @@ async function applyCondensedWithMerge(
 async function appendDashboardIncremental(
   key: string,
   dashboard: Dashboard,
-  newMessageCount: number
+  newMessageCount: number,
+  stages?: WriteStageTimings
 ): Promise<WriteVerifyResult> {
   const dir = getDashboardsDir();
   const filePath = getDashboardPath(key);
@@ -2344,7 +2370,9 @@ async function appendDashboardIncremental(
     pid: process.pid,
     acquiredAt: new Date().toISOString()
   };
+  const lockT0 = Date.now();
   const lockOwned = await acquireAppendLock(key, holder);
+  if (stages) stages.lockWaitMs = Date.now() - lockT0;
   // #4131 G-B lot 2 — PG-PREMIER SOUS VERROU append : le verrou existe pour
   // sérialiser la course read→write last-writer-wins ; la surface primaire
   // doit donc être sérialisée comme l'était le fichier (le journal PG est
@@ -2353,7 +2381,9 @@ async function appendDashboardIncremental(
   // ci-dessous (dual-write inclus) — le message n'est jamais perdu.
   let pgPrimaryOk = false;
   if (isDashboardPgPrimary()) {
+    const pgT0 = Date.now();
     const pgOutcome = await dualWriteDashboardSyncChecked(dashboard);
+    if (stages) stages.pgPrimaryWriteMs = Date.now() - pgT0;
     pgPrimaryOk = pgOutcome.ok;
     if (!pgPrimaryOk) {
       logger.warn('[PG-PRIMARY #4131] append PG échoué — repli sur le chemin GDrive-first', {
@@ -2378,10 +2408,12 @@ async function appendDashboardIncremental(
       // #4131 lot 1 — signal sur la lecture : une DriveFS hangée ne doit pas
       // tenir le verrou append au-delà de la borne (abort → catch →
       // writeDashboardFile, lui-même borné).
+      const readT0 = Date.now();
       existing = await fs.readFile(filePath, {
         encoding: 'utf8',
         signal: AbortSignal.timeout(writeTimeoutMs)
       });
+      if (stages) stages.gdriveReadMs = Date.now() - readT0;
     } catch {
       // #3230 (b, dispatch ai-01 29/09) — await OBLIGATOIRE : sans lui le
       // `finally` ci-dessous relâche l'append lock pendant que writeDashboardFile
@@ -2391,7 +2423,10 @@ async function appendDashboardIncremental(
       // #4131 lot 2 — pgPrimaryPreWritten : sous PG-premier, la moitié PG de
       // cette vue est déjà écrite sous le verrou ; le full-write ne re-passe
       // pas par la porte PG (et un échec GDrive dégrade au lieu de thrower).
-      return await writeDashboardFile(key, dashboard, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
+      const fbT0 = Date.now();
+      const wvFallback = await writeDashboardFile(key, dashboard, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
+      if (stages) stages.fallbackFullWriteMs = Date.now() - fbT0;
+      return wvFallback;
     }
 
     // #3782 correctif 1 (spec c.5907835962 ; incident 30/09 06:08Z — le feeder
@@ -2414,7 +2449,10 @@ async function appendDashboardIncremental(
       });
       // await obligatoire, même contrat que le fichier absent (#3230 b) : la
       // rejection ne doit pas échapper au finally qui relâche le verrou.
-      return await writeDashboardFile(key, dashboard, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
+      const fbT0 = Date.now();
+      const wvFallback = await writeDashboardFile(key, dashboard, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
+      if (stages) stages.fallbackFullWriteMs = Date.now() - fbT0;
+      return wvFallback;
     }
 
     // #3230 write-side — un append depuis une copie locale en retard effaçait
@@ -2500,7 +2538,10 @@ async function appendDashboardIncremental(
             error: parseErr instanceof Error ? parseErr.message : String(parseErr),
           });
         }
-        return await writeDashboardFile(key, repair, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
+        const fbT0 = Date.now();
+        const wvRepair = await writeDashboardFile(key, repair, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
+        if (stages) stages.fallbackFullWriteMs = Date.now() - fbT0;
+        return wvRepair;
       }
     }
 
@@ -2543,6 +2584,7 @@ async function appendDashboardIncremental(
 
     // #4131 lot 1 — moitié GDrive bornée (cf. writeDashboardFile) : signal sur
     // writeFile, course sur l'ensemble write+copy+verify.
+    const gdT0 = Date.now();
     try {
       wv = await withWriteDeadline((async (): Promise<WriteVerifyResult> => {
         const writeStartedAtMs = Date.now();
@@ -2585,6 +2627,7 @@ async function appendDashboardIncremental(
       void fs.unlink(tmpPath).catch(() => { /* déjà parti ou jamais créé */ });
       wv = { forkSuspected: false }; // invérifiable ≠ suspecté
     }
+    if (stages) stages.gdriveWriteMs = Date.now() - gdT0;
   } finally {
     if (lockOwned) {
       await releaseAppendLock(key, holder);
@@ -2606,7 +2649,9 @@ async function appendDashboardIncremental(
     // reste l'écriture primaire en chemin nominal ; quand sa moitié a échoué, le
     // miroir doit avoir PRIS l'écriture pour que l'opération réussisse dégradée
     // (append-first : c'est ce qui rend la condense-after ci-dessous sûre).
+    const mirrorT0 = Date.now();
     const pgOutcome = await dualWriteDashboardSyncChecked(dashboard);
+    if (stages) stages.pgMirrorWriteMs = Date.now() - mirrorT0;
     if (!pgOutcome.ok) {
       throw new Error(
         `append dashboard '${key}' : moitié GDrive échouée (${gdriveFailure}) ` +
@@ -2615,7 +2660,9 @@ async function appendDashboardIncremental(
     }
     wv = { ...wv, gdriveDegraded: gdriveFailure };
   } else {
+    const mirrorT0 = Date.now();
     await dualWriteDashboardSync(dashboard);
+    if (stages) stages.pgMirrorWriteMs = Date.now() - mirrorT0;
   }
 
   // #3774 critère 2 — le verdict n'est complet qu'APRÈS la relecture du store
@@ -2623,7 +2670,9 @@ async function appendDashboardIncremental(
   // Fusionné AVANT la journalisation, pour que le log et la réponse de l'outil
   // portent le verdict des DEUX surfaces ; sans ce contrôle, un atterrissage
   // fichier nominal masquait une absence côté store — le cas qui a vécu 3 semaines.
+  const verifyT0 = Date.now();
   wv = mergeStoreVerification(wv, await verifyWriteVisibleInStore(key, landedIds));
+  if (stages) stages.storeVerifyMs = Date.now() - verifyT0;
   if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
   return wv;
 }
@@ -5105,6 +5154,12 @@ export interface DashboardResult {
     preemptiveCondenseMs: number;
     reactiveCondenseMs: number;
     writeMs: number;
+    /**
+     * #4286 — décomposition de `writeMs` par étape (verrou, PG, GDrive,
+     * vérification). Présent sur tout append dont le chemin d'écriture a
+     * rapporté au moins une étape.
+     */
+    writeBreakdown?: WriteStageTimings;
   };
   /** Advisory warning (#2306). Non-blocking hint for agents about suboptimal usage patterns. */
   warning?: string;
@@ -6266,8 +6321,21 @@ async function handleAppend(
   let condensationStallLock: { holder: string; ageMs: number } | null = null;
 
   const tWrite = Date.now();
-  let writeVerify = await appendDashboardIncremental(key, updatedDashboard, newMessages.length);
+  const writeStages: WriteStageTimings = {};
+  let writeVerify = await appendDashboardIncremental(key, updatedDashboard, newMessages.length, writeStages);
   writeMs = Date.now() - tWrite;
+  // #4286 — la décomposition doit se VOIR : au-delà de 10 s d'écriture, la
+  // ligne WARN porte l'étape dominante (seuil du grain : « un retour à plus
+  // de 10 s se voit »).
+  if (writeMs >= 10_000) {
+    logger.warn('[SLOW-WRITE #4286] moitié écritriture ≥ 10 s — décomposition par étape', {
+      key,
+      writeMs,
+      ...writeStages
+    });
+  } else {
+    logger.debug('Append write stages (#4286)', { key, writeMs, ...writeStages });
+  }
 
   // === CONDENSE-AFTER: best-effort condensation ===
   // Now that the message is safely persisted, attempt condensation if the
@@ -6662,7 +6730,8 @@ async function handleAppend(
       totalMs,
       preemptiveCondenseMs,
       reactiveCondenseMs,
-      writeMs
+      writeMs,
+      ...(Object.keys(writeStages).length > 0 ? { writeBreakdown: writeStages } : {})
     },
     message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${cloudSuffix}${stallSuffix}${crossPostSuffix}${writeVerify.gdriveDegraded ? ` — ⚠️ [GDRIVE DÉGRADÉ #4131] la moitié fichier a échoué (${writeVerify.gdriveDegraded}) ; le message est publié sur le miroir PG SEUL. Les sièges READ_PG=1 le lisent déjà ; le fichier suivra à la relecture/réparation.` : ''}${writeVerify.forkSuspected ? ` — 🚨 [FORK SUSPECTÉ #3482] ${writeVerify.forkDetail ?? ''}${writeVerify.forkPath ? ` (${writeVerify.forkPath})` : ''}. L'écriture a peut-être dévié vers un fork DriveFS : RELIRE le canonique avant tout retry — re-poster seulement si le message y est absent (intercom-protocol §append expiré).` : ''}`
   };
