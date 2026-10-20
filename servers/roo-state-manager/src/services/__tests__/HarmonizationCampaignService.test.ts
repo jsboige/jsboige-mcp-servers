@@ -787,6 +787,74 @@ describe('status — re-détection de drift', () => {
   });
 });
 
+describe('#4223 — symétrie confirm/apply/status (faux positifs campagne #3544)', () => {
+  // 15/10 : la vue coordinateur a rapporté `drifted` des machines dont seul le
+  // CHOIX de valeur divergeait (ensure-present) — confirm disait confirmed,
+  // status disait drifted. #4185 (ms#1436) a unifié le prédicat via
+  // alignmentForMode partagé ; ces tests piègent l'asymétrie si elle revient.
+
+  test('distant ensure-present : snapshot divergent-mais-PRÉSENT post-confirm => aligned, pas drifted', async () => {
+    const svc = makeService('myia-ai-01'); // vue coordinateur
+    const input = defaultCanonInput(); // ensure-present
+    input.fleet = ['myia-po-2023'];
+    const rec = await svc.createCampaign(input);
+
+    const svcPo23 = makeService('myia-po-2023');
+    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://choix-po23.example' } });
+    await svcPo23.apply(rec.id); // pose la fenêtre, PRÉSERVE la BASE_URL divergente
+    await svcPo23.confirm(rec.id); // présence satisfaite => confirmed (12:00)
+
+    // la machine publie son état RÉEL : chemins présents, valeurs divergentes
+    await publishSnapshot('myia-po-2023', {
+      env: { ANTHROPIC_BASE_URL: 'https://choix-po23.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 310000 },
+    }, '2026-09-08T13:00:00Z');
+
+    const st = await svc.status(rec.id);
+    // le faux positif du 15/10 : divergent-mais-présent n'est PAS du drift en ensure-present
+    expect(st.machines[0].alignment).toBe('aligned');
+    expect(st.machines[0].state).toBe('confirmed');
+    expect(st.summary.drifted).toBe(0);
+    expect(st.summary.allConfirmed).toBe(true);
+  });
+
+  test('machine conforme : apply dry-run rien à poser, confirm confirmed, status distant aligned — les vues d accord', async () => {
+    // Wording #4223 : « une machine conforme doit rapporter identique via les
+    // deux actions, y compris clés ensure-present » — conforme au sens
+    // ensure-present : présente, avec des valeurs divergentes (le cas qui
+    // produisait le faux écart entre confirm et status).
+    const svc = makeService('myia-ai-01');
+    const input = defaultCanonInput(); // ensure-present
+    input.fleet = ['myia-po-2023'];
+    const rec = await svc.createCampaign(input);
+
+    const svcPo23 = makeService('myia-po-2023');
+    writeLocalSettings({
+      env: {
+        ANTHROPIC_BASE_URL: 'https://choix-po23.example', // divergent
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: 310000,          // divergent
+      },
+    });
+
+    // VUE 1 — apply (dry-run) : rien à poser, la machine est conforme
+    const dry = await svcPo23.apply(rec.id, { dryRun: true });
+    expect(dry.applied).toBe(false);
+    expect(dry.changes.filter(c => c.action === 'set')).toHaveLength(0);
+
+    // VUE 2 — confirm (relecture live, côté machine) : présence satisfaite
+    const conf = await svcPo23.confirm(rec.id);
+    expect(conf.status).toBe('confirmed');
+
+    // VUE 3 — status (coordinateur, via le snapshot publié de l'état réel)
+    await publishSnapshot('myia-po-2023', {
+      env: { ANTHROPIC_BASE_URL: 'https://choix-po23.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 310000 },
+    }, '2026-09-08T14:00:00Z');
+    const st = await svc.status(rec.id);
+    expect(st.machines[0].alignment).toBe('aligned');
+    expect(st.machines[0].state).toBe('confirmed');
+    expect(st.summary.allConfirmed).toBe(true);
+  });
+});
+
 describe('close — gating', () => {
   test('refus sans confirmations complètes ; force+reason requis', async () => {
     const svc = makeService();
