@@ -123,12 +123,18 @@ export function isSharedPathAccessible(): boolean {
  */
 export class SharedStoreInaccessibleError extends Error {
     readonly code = 'ROOSYNC_STORE_INACCESSIBLE';
-    constructor(readonly storePath: string | null) {
+    constructor(readonly storePath: string | null, readonly pgReadFailed = false) {
         super(
             `ROOSYNC_SHARED_PATH inaccessible` +
             (storePath ? ` (${storePath})` : ' (variable non définie)') +
             ` : le magasin partagé RooSync est absent du système de fichiers. ` +
-            `Toute lecture est interrompue (fail-closed) — vérifiez le montage du lecteur.`
+            `Toute lecture est interrompue (fail-closed) — vérifiez le montage du lecteur.` +
+            (pgReadFailed
+                // #4293: the store was already absent, and the PG half did not
+                // serve the read either — both halves are down, so the caller
+                // must not read the result as "nothing to show".
+                ? ` La lecture PostgreSQL de secours n'a rien rendu non plus : aucune des deux moitiés du magasin ne peut servir cette lecture.`
+                : '')
         );
         this.name = 'SharedStoreInaccessibleError';
     }

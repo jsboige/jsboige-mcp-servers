@@ -23,9 +23,35 @@ import {
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { AttachmentManager, type AttachmentListStats } from '../../services/roosync/AttachmentManager.js';
+import { getChannelPgReader } from '../../services/unified-store/roosync-channel-read.js';
+import { getAttachmentPgReader } from '../../services/unified-store/roosync-attachment-pg.js';
 
 // Logger instance for read tool
 const logger: Logger = createLogger('RooSyncReadTool');
+
+/**
+ * #4293 — accessibilité du store, sans nouvel export de shared-state-path :
+ * la surface historique (getSharedStatePath / assertSharedStoreAccessible) est
+ * celle que portent les mocks de tests existants.
+ */
+function isStoreAccessible(): boolean {
+  try {
+    assertSharedStoreAccessible();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** #4293 — les DEUX moitiés sont muettes : erreur explicite, jamais un vide. */
+function storeAndPgUnavailableError(): Error {
+  let storePath = 'variable non définie';
+  try { storePath = getSharedStatePath(); } catch { /* unset */ }
+  return new Error(
+    `ROOSYNC_SHARED_PATH inaccessible (${storePath}) : le magasin partagé RooSync est absent du système de fichiers. ` +
+    `La lecture PostgreSQL de secours n'a rien rendu non plus : aucune des deux moitiés du magasin ne peut servir cette lecture.`
+  );
+}
 
 // Throttle fire-and-forget cleanup tasks: run at most once every 5 minutes
 const CLEANUP_THROTTLE_MS = 5 * 60 * 1000;
@@ -552,7 +578,9 @@ async function readAttachmentsMode(args: RooSyncReadArgs, messageManager: Messag
   // retombe sur le scan historique filtré par messageId (dernier recours pour
   // un id inconnu des index). Miroir exact de roosync_list_attachments.
   const stats: AttachmentListStats = { missingMetadata: 0, readTimeout: 0, parseError: 0 };
-  const message = await messageManager.getMessage(messageId);
+  // #4293 : callerId requis pour que getMessage puisse servir depuis PG quand
+  // G: est absent — sans identité, il reste borné aux fichiers.
+  const message = await messageManager.getMessage(messageId, resolveCallerIdentity(args.as).fullId);
   const attachments = message
     ? await attachmentManager.listAttachmentsByRefs(
         (message.attachments ?? []).map((r) => r.uuid),
@@ -562,6 +590,13 @@ async function readAttachmentsMode(args: RooSyncReadArgs, messageManager: Messag
 
   // Cas : aucun attachment
   if (attachments.length === 0) {
+    // #4293 — store absent : [] n'est probant que si le message a été LU (via
+    // PG) et ne porte aucune ref. Sinon le vide vient d'un scan sur un store
+    // injoignable : erreur explicite, jamais « aucune pièce jointe » (#3459).
+    const definitiveEmpty = message !== null && (message.attachments?.length ?? 0) === 0;
+    if (!isStoreAccessible() && !definitiveEmpty) {
+      throw storeAndPgUnavailableError();
+    }
     return `📎 **Pièces Jointes** - Message ${messageId}
 
 Aucune pièce jointe pour ce message.
@@ -618,7 +653,18 @@ export async function roosyncRead(
     // #3459: fail-closed at the single entry point for all three modes
     // (inbox / message / attachments). An unreachable store is an explicit
     // error, never the silent "your inbox is empty".
-    assertSharedStoreAccessible();
+    // #4293: the guard only fires when no PG reader can carry this read. A seat
+    // whose PG half is live keeps its mail while G: is down — the PG readers
+    // then own the read, and MessageManager turns "PG failed too" into an
+    // explicit SharedStoreInaccessibleError instead of a phony empty result.
+    const pgReaderForMode = args.mode === 'attachments' ? getAttachmentPgReader() : getChannelPgReader();
+    const storeAccessible = isStoreAccessible();
+    if (!storeAccessible && !pgReaderForMode) {
+      // No PG half to carry the read: raise the #3459 error verbatim.
+      assertSharedStoreAccessible();
+    } else if (!storeAccessible) {
+      logger.warn(`[#4293] magasin partagé absent — lecture servie par PG (mode=${args.mode})`);
+    }
 
     // Validation du mode
     if (!args.mode) {
