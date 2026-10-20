@@ -1,10 +1,41 @@
+import * as crypto from 'crypto';
 import OpenAI from 'openai';
 import { StateManagerError } from '../types/errors.js';
+import { createLogger, Logger } from '../utils/logger.js';
+import { refreshChatKeyEnvIfChanged } from './chat-key-refresh.js';
 import { resolveChatApiKey } from './chat-key.js';
 
 let openai: OpenAI | null = null;
 let chatOpenai: OpenAI | null = null;
 let fallbackChatOpenai: OpenAI | null = null;
+
+// Lazy on purpose: the Logger constructor touches the filesystem
+// (ensureLogDirectory) and os.tmpdir(), so a module-level instance would force
+// those side effects on every consumer importing this module — and crash test
+// graphs that mock fs/os partially (measured: diagnose.test.ts, build-skeleton-
+// cache.test.ts). A rotation is rare and always served in a real runtime, which
+// is the only place this logger is ever created.
+let rotationLogger: Logger | null = null;
+function logRotation(message: string, meta: Record<string, unknown>): void {
+  if (!rotationLogger) rotationLogger = createLogger('openai');
+  rotationLogger.info(message, meta);
+}
+
+// #4095: the (key, baseURL) pair each singleton was built with, held as an
+// 8-hex-char sha256 prefix. Never the values themselves — enough to detect a
+// rotation, and safe if the print ever reaches a log (the fleet's own forensics
+// publish ≤12-char prints).
+let chatOpenaiPrint: string | null = null;
+let fallbackChatOpenaiPrint: string | null = null;
+
+function chatConfigPrint(apiKey: string, baseUrl: string | undefined): string {
+  return crypto.createHash('sha256').update(`${apiKey}\u0000${baseUrl ?? ''}`, 'utf8').digest('hex').slice(0, 8);
+}
+
+/** Single source for the fallback endpoint, so build and rotation-check cannot drift. */
+function resolveFallbackBaseUrl(): string {
+  return process.env.ZAI_BASE_URL || process.env.FALLBACK_BASE_URL || 'https://api.z.ai/api/paas/v4';
+}
 
 /**
  * Returns the embedding model name from env or default.
@@ -67,6 +98,23 @@ function getOpenAIClient(): OpenAI {
  * The OpenAI Node.js SDK automatically reads OPENAI_BASE_URL from environment.
  */
 export function getChatOpenAIClient(): OpenAI {
+  // #4095: serve the key `.env` holds NOW, not the one the process saw at spawn.
+  // Stat-guarded (cheap; inert while the file does not move), so a fleet rotation
+  // reaches this host on its next condensation instead of waiting — po-2023 served
+  // a key revoked 30/09 for 169 requests because nothing refreshed this singleton.
+  const changed = refreshChatKeyEnvIfChanged();
+  if (chatOpenai) {
+    const current = resolveChatApiKey();
+    const print = current ? chatConfigPrint(current.apiKey, process.env.OPENAI_BASE_URL) : null;
+    if (print !== chatOpenaiPrint) {
+      // The environment no longer resolves to the pair this client was built with
+      // (rotation, endpoint move, or an explicit reload): rebuild from the current
+      // values rather than keep presenting the old key.
+      chatOpenai = null;
+      chatOpenaiPrint = null;
+      logRotation('Chat client rebuilt — condensation credentials moved', { changed });
+    }
+  }
   if (!chatOpenai) {
     const resolved = resolveChatApiKey();
     if (!resolved) {
@@ -90,6 +138,7 @@ export function getChatOpenAIClient(): OpenAI {
       maxRetries: 0,
       timeout: 1800000
     });
+    chatOpenaiPrint = chatConfigPrint(apiKey, process.env.OPENAI_BASE_URL);
   }
   return chatOpenai;
 }
@@ -121,12 +170,24 @@ export function getFallbackLLMModelId(): string {
  * secrets are provisioned.
  */
 export function getFallbackChatOpenAIClient(): OpenAI | null {
+  // #4095: the cloud fallback is a condensation key too — same rotation class as the
+  // primary (a stale ZAI_API_KEY silently degrades every degraded-dashboard append).
+  const changed = refreshChatKeyEnvIfChanged();
+  if (fallbackChatOpenai) {
+    const apiKey = process.env.ZAI_API_KEY || process.env.FALLBACK_API_KEY;
+    const print = apiKey ? chatConfigPrint(apiKey, resolveFallbackBaseUrl()) : null;
+    if (print !== fallbackChatOpenaiPrint) {
+      fallbackChatOpenai = null;
+      fallbackChatOpenaiPrint = null;
+      logRotation('Fallback chat client rebuilt — condensation credentials moved', { changed });
+    }
+  }
   if (!fallbackChatOpenai) {
     const apiKey = process.env.ZAI_API_KEY || process.env.FALLBACK_API_KEY;
     if (!apiKey) {
       return null;
     }
-    const baseUrl = process.env.ZAI_BASE_URL || process.env.FALLBACK_BASE_URL || 'https://api.z.ai/api/paas/v4';
+    const baseUrl = resolveFallbackBaseUrl();
     // #3016: Default 120000ms (2 min). The prior 30000ms default — combined with a
     // silent Math.min(timeout, 60000) clamp (now removed below) that defeated this
     // env var — was too short for the SUMMARY condensation call (the largest prompt).
@@ -154,6 +215,7 @@ export function getFallbackChatOpenAIClient(): OpenAI | null {
       timeout,
       maxRetries: 0,
     });
+    fallbackChatOpenaiPrint = chatConfigPrint(apiKey, baseUrl);
   }
   return fallbackChatOpenai;
 }
@@ -164,6 +226,7 @@ export function getFallbackChatOpenAIClient(): OpenAI | null {
  */
 export function resetFallbackChatOpenAIClient(): void {
   fallbackChatOpenai = null;
+  fallbackChatOpenaiPrint = null;
 }
 
 /**
@@ -172,6 +235,7 @@ export function resetFallbackChatOpenAIClient(): void {
  */
 export function resetChatOpenAIClient(): void {
   chatOpenai = null;
+  chatOpenaiPrint = null;
 }
 
 /**
