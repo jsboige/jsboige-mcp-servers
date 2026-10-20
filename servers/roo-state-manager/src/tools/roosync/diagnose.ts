@@ -518,6 +518,29 @@ async function handleEnvAction(
     report.status = 'DEGRADED';
   }
 
+  // #4095 lever 2: condensation key fingerprint probe — served vs canonical.
+  // Lazy import like the actions above: it pulls the openai SDK graph and the
+  // env action should not pay for it (nor inherit its mocks) when unset.
+  try {
+    const { probeChatKeyState } = await import('../../services/openai.js');
+    const chatKey = probeChatKeyState();
+    report.chatKey = {
+      ...chatKey,
+      note: 'empreinte servie == empreinte canon ? (prints only: 8-hex pair, 12-hex key; source = env var NAME, jamais la valeur)',
+    };
+    if (
+      (chatKey.primary.inSync === false || chatKey.fallback.inSync === false)
+      && report.status === 'OK'
+    ) {
+      // Rotation on disk that the served singleton has not picked up yet. It
+      // self-heals at the next condensation, but the drift belongs in the
+      // report, not buried — never downgrade an existing WARNING/DEGRADED.
+      report.status = 'WARNING';
+    }
+  } catch {
+    report.chatKey = { error: 'PROBE_UNAVAILABLE' };
+  }
+
   // #2766 S2+ (P3): success reflects whether the diagnostic COMPLETED, not whether
   // it found issues. WARNING/DEGRADED are diagnostic findings surfaced in the report
   // body (status, directories, capabilities) — a warning is not a failure. A genuine
