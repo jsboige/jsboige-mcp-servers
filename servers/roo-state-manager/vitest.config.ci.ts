@@ -13,17 +13,27 @@
  * issue to fix the underlying test so it can run in CI, and re-run
  * scripts/count-ci-exclusions.mjs to refresh the census counts below.
  *
- * Exclusion census: 8 test-file entries + 4 tests-directory globs
+ * Exclusion census: 12 test-file entries + 5 tests-directory globs
  * (canonical measure, script-extracted — per-entry reasons and effective
  * delta vs local run: docs/CI-EXCLUSIONS-CENSUS.md).
  *
- * Last audit: 2026-10-05 (#2639) — drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts
+ * Last audit: 2026-10-20 (#2639) — W1: e2e error-handling + workflow entrent en CI
+ * (drift-guard: tests/unit/ci-exclusion-drift-guard.test.ts)
  */
 import { defineConfig, mergeConfig } from 'vitest/config';
 import unitConfig from './vitest.config.unit.js';
 
 export default mergeConfig(unitConfig, defineConfig({
   test: {
+    // #2639 W1 : les 2 fichiers e2e réparés au lot 2 (ms#1458) ENTRENT en CI.
+    // L'include du config unit (tests/unit/** + src/**/__tests__/**) ne les
+    // couvre pas — lever l'exclusion seule ne les aurait jamais collectés.
+    // mergeConfig concatène les include comme les exclude : le résultat est
+    // l'include unit + ces 2 entrées nominales.
+    include: [
+      'tests/e2e/roosync-error-handling.test.ts',
+      'tests/e2e/roosync-workflow.test.ts',
+    ],
     exclude: [
       // ===== Inherited from base config =====
       'node_modules',
@@ -230,8 +240,19 @@ export default mergeConfig(unitConfig, defineConfig({
       // ===== EVAL HARNESS (live services — excluded from CI) =====
       'tests/eval-harness/**',
 
-      // ===== E2E (already excluded in base) =====
-      'tests/e2e/**',
+      // ===== E2E =====
+      // #2639 W1 : les 2 fichiers réparés au lot 2 (ms#1458 — error-handling,
+      // workflow) ENTRENT en CI via l'include nominal ci-dessus. Le reste de
+      // tests/e2e/ reste exclu, nommément (les rangs 1-2 sont retirés par
+      // ms#1464 ; les autres rangs suivent à leur tour de #2639). NB : pas de
+      // crochet fermant dans les commentaires de ce tableau — le parseur du
+      // recensement s'arrête au premier rencontré.
+      'tests/e2e/roosync-compare-validate-apply.test.ts',
+      'tests/e2e/roosync-conflict-management.test.ts',
+      'tests/e2e/roosync-conflict-resolution.test.ts',
+      'tests/e2e/synthesis.e2e.test.ts',
+      'tests/e2e/scenarios/**',
+      'tests/e2e/manual-test-storage/**',
     ],
   },
 }));

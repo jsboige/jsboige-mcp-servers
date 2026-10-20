@@ -1,6 +1,6 @@
 # Recensement des exclusions CI — `vitest.config.ci.ts`
 
-**Dernier audit :** 2026-10-05 (#2639 réactivation)
+**Dernier audit :** 2026-10-20 (#2639 W1 — e2e error-handling + workflow entrent en CI)
 **Mesure canonique :** `node scripts/count-ci-exclusions.mjs` (script, jamais à la main)
 **Drift-guard :** `tests/unit/ci-exclusion-drift-guard.test.ts` — échoue si le header du config dérive ou si une entrée ghost apparaît
 
@@ -8,13 +8,13 @@
 
 ## Mesures canoniques
 
-| Mesure | Valeur (2026-10-05) | Méthode |
+| Mesure | Valeur (2026-10-20, W1) | Méthode |
 |---|---|---|
-| **Entrées fichiers de test déclarées** | **8** | parse du tableau `exclude` du config |
-| **Globs répertoires de tests déclarés** | **4** | idem |
+| **Entrées fichiers de test déclarées** | **12** | parse du tableau `exclude` du config |
+| **Globs répertoires de tests déclarés** | **5** | idem |
 | Entrées structurelles (node_modules/build/dist/backups) | 9 | idem — hygiène, pas des exclusions de tests |
 | Fichiers effectivement non collectés en CI (vs run local) | **7** | `node scripts/count-ci-exclusions.mjs --collect` (diff `vitest list` unit vs CI) |
-| Tests sautés en CI (vs run local) | **165** | idem |
+| Delta brut tests (`unit − ci`, lecture W1 ci-dessous) | **140** | idem — `vitest list` : unit=811, ci=806 |
 
 **Pourquoi deux nombres.** Le compte *déclaré* ne change que quand on édite le config — c'est lui que le
 drift-guard verrouille et que les docs citent. Le compte *effectif* (7 fichiers / 165 tests) dépend
@@ -26,6 +26,11 @@ le config unit ne l'excluait pas, sa réactivation côté CI la fait collecter d
 tests passent désormais **exécutés** en CI (plus de skip du tout, contrairement à `skepticism-protocol`
 en 12e qui reste skipée hors parent). `vitest list` : unit=795, ci=788. **Suite CI complète sur la même
 tête** : cf. historique 14e ci-dessous.
+**Lecture W1 (2026-10-20, mesuré)** : le delta brut passe de 165 à **140** tests — mais cette
+mesure est désormais **bidirectionnelle** : `unit − ci` mêle les 165 tests des 7 fichiers exclus
+(— côté CI) et les **25 tests e2e** (17 error-handling + 8 workflow) collectés **seulement** côté
+CI depuis l'include nominal W1 (+ côté CI). 165 − 25 = 140 ✓. Les 7 fichiers du delta effectif
+sont inchangés ; le compte *déclaré* seul (12 + 5) est gardé par le drift-guard.
 
 ## Historique de la dérive (avant #3322)
 
@@ -164,10 +169,25 @@ Adjudicateur : la CI ubuntu (verte à cette échelle en 12e/13e).
 **7 fichiers / 165 tests** — le config unit n'excluait pas ce fichier, sa réactivation côté CI le
 fait collecter des deux côtés (contrôle croisé 14e en tête de document) ; le fichier est désormais
 **exécuté** en CI, pas collecté-skipé.
+**#2639 (2026-10-20, W1 — e2e error-handling + workflow entrent en CI) :** la levée de l'exclusion
+s'est faite en **deux gestes**, le premier seul étant insuffisant — c'est la découverte de la passe.
+(1) Le glob blanket `tests/e2e/**` est remplacé par **6 entrées nominales** (4 fichiers + 2 globs)
+pour les seuls fichiers restants → 12 entrées fichiers + 5 globs déclarés. (2) **L'include du
+config unit (`tests/unit/**` + `src/**/__tests__/**`) ne couvre pas `tests/e2e/`** : lever
+l'exclusion n'aurait jamais collecté les 2 fichiers réparés au lot 2 (ms#1458) — ils sont donc
+**ajoutés nominalement à l'include du config CI** (`mergeConfig` concatène les `include` comme les
+`exclude`). Mesuré sous `vitest.config.ci.ts` : drift-guard 9/9, `roosync-error-handling` 17/17,
+`roosync-workflow` 8/8 ; suite CI complète : 15 199 passés + 44 skipés + 3 todo, **2 échecs dans
+`backfill-channel-attachments.test.ts` — préexistants et étrangers à W1** (passe sur le checkout
+principal et en CI ubuntu ; reproduits à l'identique sur la tête du retrait `011841c2` **sans les
+changements W1**, stash posé pour la preuve ; déjà documentés hors-lot-2 au cycle précédent).
+Les 6 nouvelles entrées nominales conservent le **statu quo** pour les fichiers qu'elles couvrent
+(couverts par le blanket avant, nommés après) — leur réactivation est le sujet des rangs suivants
+de #2639.
 
 ---
 
-## Les 8 entrées fichiers de test
+## Les 12 entrées fichiers de test
 
 ### POWERSHELL — 6 entrées, toutes effectives (159 tests)
 
@@ -275,18 +295,36 @@ matériel** — micro-benchmark de calibration I/O de la même forme de charge (
 facteur clampé [1, 5] — plus fixture `mkdtemp` hors arbre et cleanup best-effort. 10/10 verts
 mesurés sous config CI en local ; la CI submodule (ubuntu) exerce le facteur > 1.)*
 
-**Total déclaré : 6+0+1+0+0+0+1+0 = 8 · effectif : cf. tableau de mesures (rafraîchi à la 14e)**
+### E2E — 4 entrées fichiers + 2 globs (W1, #2639)
+
+| Entrée | Tests | Raison |
+|---|---|---|
+| `tests/e2e/roosync-compare-validate-apply.test.ts` | (statu quo) | couvert par l'exclusion blanket `tests/e2e/**` avant W1, nommé après — réactivation = rangs suivants #2639 |
+| `tests/e2e/roosync-conflict-management.test.ts` | (statu quo) | idem |
+| `tests/e2e/roosync-conflict-resolution.test.ts` | (statu quo) | idem |
+| `tests/e2e/synthesis.e2e.test.ts` | (statu quo) | idem |
+| `tests/e2e/scenarios/**` (glob) | — | idem |
+| `tests/e2e/manual-test-storage/**` (glob) | — | idem |
+
+Les 2 fichiers réparés du lot 2 (`roosync-error-handling`, 17 tests ; `roosync-workflow`, 8 tests)
+ne sont **plus exclus** et tournent désormais en CI (include nominal du config CI — voir historique W1).
+
+**Total déclaré : 6+0+1+0+0+0+1+4 = 12 fichiers (+5 globs) · effectif : cf. tableau de mesures (rafraîchi à la W1)**
 
 ---
 
-## Les 4 globs répertoires de tests
+## Les 5 globs répertoires de tests
 
-| Glob | Contenu au 2026-08-31 | Datée |
+| Glob | Contenu au 2026-10-20 | Datée |
 |---|---|---|
 | `tests/integration/_archives/**` | 2 fichiers archivés | 2026-05-14 (#1143) |
 | `tests/performance/_archives/**` | 1 fichier archivé (concurrency) | 2026-05-14 (#1143) |
 | `tests/eval-harness/**` | harnais d'éval (services vivants) | non |
-| `tests/e2e/**` | déjà exclu du config de base | non |
+| `tests/e2e/scenarios/**` | scénarios e2e (statu quo W1, ex-blanket) | 2026-10-20 (#2639 W1) |
+| `tests/e2e/manual-test-storage/**` | stockage manuel e2e (statu quo W1, ex-blanket) | 2026-10-20 (#2639 W1) |
+
+*(Le glob blanket `tests/e2e/**` est retiré par W1 — remplacé par les entrées nominales ci-dessus ;
+`tests/e2e/` n'est plus couvert par aucun glob, seuls les fichiers listés le restent.)*
 
 ## Entrées structurelles (9) — hors périmètre tests
 
