@@ -271,6 +271,15 @@ export async function handleRooSyncSearch(
             };
             const textResult = await handleSearchTasksSemanticFallback(fallbackArgs, conversationCache);
 
+            // #4287: degradation must be VISIBLE — the response LEADS with a readable
+            // warning instead of burying it as late keys in the JSON payload. The text
+            // fallback itself stays (deliberate choice, #249); only the surface changes:
+            // block 0 = human-readable warning, block 1 = structured payload so JSON
+            // consumers keep parsing content[1] with the #1496 metadata intact.
+            const degradedWarning =
+                '⚠️ SEMANTIC DEGRADED — embedding backend unreachable: results are TEXT search only. ' +
+                'Run roosync_search(action: "diagnose") to inspect the embedding endpoint.';
+
             // Inject semantic degraded warning + #1496 fallback metadata into text results
             try {
                 const parsed = JSON.parse((textResult.content?.[0] as any)?.text || '{}');
@@ -282,11 +291,19 @@ export async function handleRooSyncSearch(
                 parsed.original_search_mode = 'semantic';
                 parsed.actual_search_mode = 'text';
                 return {
-                    content: [{ type: 'text', text: JSON.stringify(parsed, null, 2) }]
+                    content: [
+                        { type: 'text', text: degradedWarning },
+                        { type: 'text', text: JSON.stringify(parsed, null, 2) }
+                    ]
                 };
             } catch {
-                // If JSON parse fails, just prepend warning
-                return textResult;
+                // If JSON parse fails, still lead with the warning before the raw payload
+                return {
+                    content: [
+                        { type: 'text', text: degradedWarning },
+                        ...(textResult.content ?? [])
+                    ]
+                };
             }
         }
 
