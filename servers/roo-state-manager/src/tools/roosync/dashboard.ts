@@ -2311,13 +2311,44 @@ async function applyCondensedWithMerge(
     return undefined;
   }
 
+  // #4284 — CAS du statut : la fenêtre LLM de la condensation peut chevaucher
+  // un `update section:status` concurrent (append/prepend/replace sous le
+  // verrou append). Mesuré ai-01 20/10 : l'ajout 11:19Z (statusLength 17258)
+  // était effacé par la passe ~11:28Z qui réécrivait le statut depuis son
+  // instantané pré-LLM. Le delta INTERCOM est réintégré depuis #2328 ; le
+  // statut ne l'était pas — tout update status sans message intercom tombait
+  // dans la branche delta vide et était écrasé par la réécriture. Même
+  // discipline que l'intercom : suffixe/préfixe ajouté autour du statut
+  // condensé → réintégré ; statut disque divergé sans relation extractible
+  // (replace) → le disque, écriture la plus récente, gagne (la passe de
+  // résumé suivante le reprendra).
+  const statusBefore = snapshotBefore.status?.markdown ?? '';
+  const statusNow = current.status?.markdown ?? '';
+  let statusMarkdown = condensedDashboard.status?.markdown ?? '';
+  if (statusNow !== statusBefore) {
+    if (statusBefore.length > 0 && statusNow.startsWith(statusBefore)) {
+      const suffix = statusNow.slice(statusBefore.length);
+      if (!statusMarkdown.endsWith(suffix)) statusMarkdown += suffix;
+    } else if (statusBefore.length > 0 && statusNow.endsWith(statusBefore)) {
+      const prefix = statusNow.slice(0, statusNow.length - statusBefore.length);
+      if (!statusMarkdown.startsWith(prefix)) statusMarkdown = prefix + statusMarkdown;
+    } else {
+      logger.warn('[COLLISION] statut divergé pendant la condensation — le statut disque (plus récent) gagne', { key });
+      statusMarkdown = statusNow;
+    }
+  }
+  const withStatusCas: Dashboard =
+    statusMarkdown === (condensedDashboard.status?.markdown ?? '')
+      ? condensedDashboard
+      : { ...condensedDashboard, status: { ...condensedDashboard.status, markdown: statusMarkdown } };
+
   // Delta = messages on disk that weren't in our pre-condensation snapshot.
   // append-only => these are concurrent appends => always a suffix.
   const seen = new Set(snapshotBefore.intercom.messages.map(m => m.id));
   const delta = current.intercom.messages.filter(m => !seen.has(m.id));
 
   if (delta.length === 0) {
-    return await writeDashboardFile(key, condensedDashboard, { condensed: true });
+    return await writeDashboardFile(key, withStatusCas, { condensed: true });
   }
 
   logger.warn('[COLLISION] stitching concurrent appends into condensed result', {
@@ -2325,7 +2356,7 @@ async function applyCondensedWithMerge(
   });
 
   const merged: Dashboard = {
-    ...condensedDashboard,
+    ...withStatusCas,
     lastModified: current.lastModified > condensedDashboard.lastModified
       ? current.lastModified
       : condensedDashboard.lastModified,
