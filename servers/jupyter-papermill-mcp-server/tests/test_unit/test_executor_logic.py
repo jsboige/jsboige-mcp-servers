@@ -21,6 +21,19 @@ from papermill_mcp.config import MCPConfig
 from papermill.exceptions import PapermillExecutionError
 
 
+@pytest.fixture(autouse=True)
+def _stub_path_mkdir(monkeypatch):
+    """Neutralise Path.mkdir pour tout ce module.
+
+    Les configs mockees portent un output_dir "/test" : ce chemin se cree sur
+    Windows (D:\\test resolu par le lecteur courant) mais leve EACCES a la
+    racine d'un runner CI Linux. Le mkdir du constructeur n'est pas ce que
+    ces tests exercent -- test_executor_initialization le mocke deja
+    separerment par son decorateur.
+    """
+    monkeypatch.setattr("pathlib.Path.mkdir", lambda self, *args, **kwargs: None)
+
+
 class TestExecutionMetrics:
     """Tests unitaires pour la classe ExecutionMetrics"""
 
