@@ -52,7 +52,9 @@ const realReadFile = realFs.promises.readFile as (p: string, enc: string) => Pro
 /** Generous: truncation under test is the BUDGET's, never a read timeout's. */
 const READ_TIMEOUT_MS = 10_000;
 const RECIPIENT = 'myia-po-2025';
-const READ_CONCURRENCY = 50;
+/** The cap the MODULE runs with (derived from the threadpool, #4131 B11(b)) —
+ *  read from the module, so a budget below is always exactly ONE chunk. */
+const READ_CONCURRENCY = (MessageManager as any).READ_CONCURRENCY as number;
 /** 80 % of COLD_START_SLICE_SIZE (100) — the approach threshold. */
 const STARVATION_THRESHOLD = 80;
 

@@ -99,6 +99,36 @@ function compareByEmbeddedRecencyDesc(a: string, b: string): number {
 }
 
 /**
+ * Threads the inbox rebuild must leave free (#4131 B11(b)).
+ *
+ * The pool is shared: an fs read, a `getaddrinfo` and a TLS handshake each take
+ * a libuv thread. The rebuild used to enqueue up to READ_CONCURRENCY=50 reads
+ * at once against a default pool of 4, so a PG connect issued during a rebuild
+ * waited behind the WHOLE queue. Two threads kept free is the reserve that
+ * lets one DNS lookup and one TLS handshake (a PG connect, typically) proceed
+ * while G: reads are in flight.
+ */
+export const THREADPOOL_RESERVE = 2;
+
+/**
+ * Max concurrent inbox reads, derived from the libuv threadpool (#4131 B11(b)).
+ *
+ * `UV_THREADPOOL_SIZE` is fixed at threadpool creation (its first use), so the
+ * value read here is the one the process actually runs with — the MCP wrapper
+ * sets it on the server child's env. Absent, libuv's default is 4.
+ *
+ * The cap is `pool - THREADPOOL_RESERVE`, floored at 2 (a two-lane pool must
+ * not idle the rebuild entirely) and capped at the historical 50 (a host with
+ * a large pool keeps the old throughput ceiling). The property this exists for:
+ * in-flight G: reads NEVER occupy the pool entire.
+ */
+export function deriveReadConcurrency(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.UV_THREADPOOL_SIZE);
+  const pool = Number.isInteger(raw) && raw > 0 ? raw : 4; // libuv default
+  return Math.min(50, Math.max(2, pool - THREADPOOL_RESERVE));
+}
+
+/**
  * What the caller intends to do with the message it is looking up — the one
  * input that changes the access verdict in `messageAccessVerdict`.
  *
@@ -353,8 +383,16 @@ export class MessageManager {
    * and the re-read happens in the background. Callers never wait for it.
    */
   private static readonly CONTENT_REVALIDATE_MS = 900_000;
-  /** Max concurrent file reads during cache rebuild (GDrive-safe) */
-  private static readonly READ_CONCURRENCY = 50;
+  /**
+   * Max concurrent file reads during cache rebuild (GDrive-safe).
+   *
+   * #4131 B11(b): derived from the threadpool, not a flat 50 — 50 concurrent
+   * reads against libuv's default pool of 4 took the pool entire and starved
+   * a concurrent PG connect (DNS + TLS are threadpool work too). The wrapper
+   * sets UV_THREADPOOL_SIZE=8 on the server child, so the derived 6 keeps the
+   * rebuild's throughput while THREADPOOL_RESERVE threads stay free.
+   */
+  private static readonly READ_CONCURRENCY = deriveReadConcurrency();
   /**
    * Per-file read timeout during inbox cache build (ms).
    *
@@ -1478,6 +1516,10 @@ export class MessageManager {
 
     // #3151 Phase B — PG-primary read (env-gated). null = PG unavailable →
     // dégradation gracieuse vers GDrive ci-dessous.
+    // #4131 B11(b): readInbox has ONE ensureInboxCache call, shared by the
+    // nominal GDrive path and the PG-failure fallback. Only the FALLBACK
+    // downgrades `deep` (see below); this flag is what tells them apart.
+    let pgFailed = false;
     const pgReader = getChannelPgReader();
     if (pgReader) {
       const startedAt = Date.now();
@@ -1492,12 +1534,23 @@ export class MessageManager {
         return this.paginateItems(matching, limit, page, perPage);
       }
       logger.warn('[channel-pg] PG mailbox read failed — falling back to GDrive');
+      pgFailed = true;
     }
 
     try {
       // Use cached data (#638 perf optimization). deep: skip the #3292 cold-start
       // recent slice and wait for the full pool instead.
-      const { items, full } = await this.ensureInboxCache({ deep });
+      //
+      // #4131 B11(b): on a PG failure — and ONLY there — the caller's `deep` is
+      // not forwarded. That path is already degraded, and awaiting a full G:
+      // rebuild (`deep` + a #3292 partial cache → the awaited rebuild) is what
+      // turned a PG hiccup into a 60s inbox call. A warm cache — the partial
+      // slice included — is then served immediately and refreshed in the
+      // background; only a cache with nothing to hand back makes the caller
+      // wait, which is the cold-start case and unavoidable. The nominal GDrive
+      // path (PG gated off, or PG serving) keeps honouring `deep` exactly as
+      // before: there, "wait for the full pool" is the caller's explicit ask.
+      const { items, full } = await this.ensureInboxCache({ deep: pgFailed ? false : deep });
 
       if (items.length === 0) {
         return [];

@@ -13,7 +13,10 @@
  * Determinism: truncation is driven by an explicit budget plus a clock the test
  * advances ONE TICK PER INBOX READ, so a pass reads exactly as many files as the
  * budget allows and "how far did the pass get?" is arithmetic, not timing. The
- * pool is 105 files with 50-file chunks, so budget 50 = one chunk, budget 100 = two.
+ * pool is 105 files; the chunk width is the MODULE's cap (READ_CONCURRENCY,
+ * derived from the threadpool since #4131 B11(b)), so the budgets below are
+ * expressed in chunk units read from the module — the arithmetic survives a
+ * cap change instead of silently redefining "one chunk".
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -59,8 +62,14 @@ const realReadFile = realFs.promises.readFile as (p: string, enc: string) => Pro
  */
 const READ_TIMEOUT_MS = 10_000;
 const RECIPIENT = 'myia-po-2025';
-const POOL_SIZE = 105; // 50 + 50 + 5 chunks
-const READ_CONCURRENCY = 50;
+const POOL_SIZE = 105; // several chunks and a remainder under any cap
+/**
+ * The cap the MODULE runs with — derived from the threadpool since #4131
+ * B11(b), and read from the module rather than pinned: a fixture fixed at 50
+ * silently stops being "one chunk" the day the cap moves, and every budget
+ * below is expressed in these units.
+ */
+const READ_CONCURRENCY = (MessageManager as any).READ_CONCURRENCY as number;
 
 /**
  * REAL generated shape (`msg-YYYYMMDDTHHMMSS-…`, the `T` survives
@@ -148,7 +157,7 @@ describe('MessageManager — truncated pass over a PARTIAL cache (#3292 follow-u
     for (let i = 1; i <= POOL_SIZE; i++) seedInboxMessage(sharedState, i);
     const manager = new MessageManager(sharedState, READ_TIMEOUT_MS);
 
-    // Pass 1 — budget of one chunk: installs the 50 newest, flagged partial.
+    // Pass 1 — budget of one chunk: installs the newest chunk, flagged partial.
     const first = await deepPass(manager, READ_CONCURRENCY);
     expect(first).toHaveLength(READ_CONCURRENCY);
     expect(manager.isInboxCachePartial()).toBe(true);
@@ -191,8 +200,8 @@ describe('MessageManager — truncated pass over a PARTIAL cache (#3292 follow-u
     const ids = items.map(m => m.id);
 
     // The pass is budget-bounded; its READ ORDER decides what survives it. Read
-    // order is the recency sort, so a one-chunk pass keeps the newest 50 — the
-    // files a caller is most likely to act on — and drops the oldest.
+    // order is the recency sort, so a one-chunk pass keeps the newest chunk —
+    // the files a caller is most likely to act on — and drops the oldest.
     expect(ids).toContain(idAt(POOL_SIZE));
     expect(ids).not.toContain(idAt(1));
     for (let i = POOL_SIZE - READ_CONCURRENCY + 1; i <= POOL_SIZE; i++) {
