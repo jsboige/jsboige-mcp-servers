@@ -87,7 +87,7 @@ async def test_cancellation_force_stops_noncooperative_kernel(manager_with_busy_
             )
 
     # The kernel must no longer be registered: the leak is closed.
-    assert kernel_id not in mgr._kernel_info
+    assert kernel_id in mgr._kernel_info  # deliberately broken: positive control for #1453
     assert kernel_id not in mgr._active_kernels
     # The process was actually asked to die, hard.
     km_mock.shutdown_kernel.assert_called_once_with(now=True)
