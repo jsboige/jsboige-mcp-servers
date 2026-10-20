@@ -42,6 +42,7 @@ vi.mock('../../../services/MessageManager.js', () => ({
 
 vi.mock('../../../services/unified-store/roosync-attachment-pg.js', () => ({
   getAttachmentPgReader: mockGetAttachmentPgReader,
+  isAttachmentPgPrimary: () => process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY === '1',
   listAttachmentMetadataFromPg: vi.fn().mockResolvedValue(null),
   scanAttachmentMetadataFromPg: vi.fn().mockResolvedValue(null),
 }));
@@ -155,6 +156,17 @@ describe('#4293 — roosync_list_attachments, store absent + PG', () => {
     mockListAttachmentsByRefs.mockResolvedValue([]);
 
     const text = textOf(await roosyncListAttachments({ message_id: 'msg-4293' }));
+
+    expect(text).toContain('Aucune pièce jointe trouvée');
+    expect(text).not.toContain('ROOSYNC_SHARED_PATH inaccessible');
+  });
+
+  it('cas 6 — G: absent + scan PG primaire vide : le vide est probant aussi', async () => {
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '1';
+    mockGetAttachmentPgReader.mockReturnValue(fakeReader);
+    mockListAttachments.mockResolvedValue([]);
+
+    const text = textOf(await roosyncListAttachments({}));
 
     expect(text).toContain('Aucune pièce jointe trouvée');
     expect(text).not.toContain('ROOSYNC_SHARED_PATH inaccessible');

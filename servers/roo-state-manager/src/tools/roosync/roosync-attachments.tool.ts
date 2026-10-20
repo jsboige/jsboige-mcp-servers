@@ -12,7 +12,7 @@
 import { AttachmentManager, type AttachmentListStats } from '../../services/roosync/AttachmentManager.js';
 import { getMessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath, assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
-import { getAttachmentPgReader } from '../../services/unified-store/roosync-attachment-pg.js';
+import { getAttachmentPgReader, isAttachmentPgPrimary } from '../../services/unified-store/roosync-attachment-pg.js';
 import { getChannelMessageFromPg } from '../../services/unified-store/roosync-channel-read.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -128,9 +128,11 @@ export async function roosyncListAttachments(
 
     if (attachments.length === 0) {
       // #4293 — store absent : [] n'est probant que si le message a été lu dans
-      // PG et ne portait aucune ref. Sinon ni PG ni le disque n'ont pu répondre :
+      // PG et ne portait aucune ref, ou si le scan PG est lui-même la source
+      // autoritative (PG-primary). Sinon ni PG ni le disque n'ont pu répondre :
       // erreur explicite, jamais « aucune pièce jointe » (#3459).
-      if (!storeAccessible && !refsDefinitiveEmpty) {
+      const pgScanAuthoritative = isAttachmentPgPrimary();
+      if (!storeAccessible && !refsDefinitiveEmpty && !pgScanAuthoritative) {
         throw storeAndPgUnavailableError();
       }
       const scopeLabel = args.message_id ? `le message \`${args.message_id}\`` : 'le stockage partagé';
