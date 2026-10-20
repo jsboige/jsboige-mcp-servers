@@ -1,0 +1,54 @@
+name: CI papermill
+
+# pytest job for servers/jupyter-papermill-mcp-server (#1453).
+# Separate workflow because path filters live on `on:`, not per job: adding
+# them to ci.yml would silence every existing job on unrelated PRs.
+# The workflow lists itself in `paths` so PRs touching it (like the one that
+# added it) still trigger the job they modify.
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'servers/jupyter-papermill-mcp-server/**'
+      - '.github/workflows/ci-papermill.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'servers/jupyter-papermill-mcp-server/**'
+      - '.github/workflows/ci-papermill.yml'
+
+jobs:
+  test-jupyter-papermill-mcp-server:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        # Fleet version: the 3.13 interpreter that validated ms#1450
+        # (pyproject requires-python >=3.8 is the floor, not the fleet pin).
+        python-version: '3.13'
+
+    - name: Install server dependencies and pytest plugins
+      run: |
+        python -m pip install --upgrade pip
+        # Server runtime deps (mcp, jupyter-client, nbformat, papermill, pydantic...)
+        # via its own packaging; NOT requirements-test.txt, which carries a full
+        # dev toolchain (tox, sphinx, black, pickle5...) irrelevant here.
+        pip install ./servers/jupyter-papermill-mcp-server
+        # pytest.ini addopts require pytest-asyncio (--asyncio-mode=auto, the 59
+        # async tests) and pytest-timeout (timeout = 300); without them the run
+        # is 59 failed / 36 passed (measured 20/10, pytest 9.1.1).
+        pip install pytest pytest-asyncio pytest-timeout
+        # The server targets the mcp 1.x API (from mcp.server.fastmcp import
+        # FastMCP); pyproject's unbounded 'mcp>=1.0.0' resolves to 2.x where
+        # FastMCP was renamed MCPServer. Pre-installing 1.x (1.27.0 = the
+        # fleet's version) satisfies the constraint and keeps it pinned.
+        pip install 'mcp<2'
+
+    - name: Run unit tests
+      run: |
+        cd servers/jupyter-papermill-mcp-server
+        # Explicit path: an accidental empty collection exits 5 (red), never green.
+        python -m pytest tests/test_unit
