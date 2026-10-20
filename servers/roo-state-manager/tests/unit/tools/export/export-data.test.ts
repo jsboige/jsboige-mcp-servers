@@ -175,7 +175,12 @@ describe('handleExportData — validation', () => {
   });
 
   it('should reject path traversal in filePath for json export', async () => {
-    const getSkeleton = async () => ({ metadata: {}, messages: [] } as any);
+    // #2307: séquence non vide — la garde EMPTY_CONVERSATION_SEQUENCE précède
+    // la validation de chemin, le sujet ici est le filePath.
+    const getSkeleton = async () => ({
+      metadata: {},
+      sequence: [{ role: 'user', content: 'x', timestamp: '2026-10-20T00:00:00.000Z', isTruncated: false }],
+    } as any);
     const result = await handleExportData(
       { target: 'conversation', format: 'json', taskId: 'task-1', filePath: '../../../etc/passwd' } as any,
       emptyCache, mockXmlExporter, noopEnsureFresh, getSkeleton
@@ -186,7 +191,11 @@ describe('handleExportData — validation', () => {
 
   it('should reject too long filePath for csv export', async () => {
     const longPath = 'a'.repeat(300);
-    const getSkeleton = async () => ({ metadata: {}, messages: [] } as any);
+    // #2307: séquence non vide — même raison que le test path-traversal.
+    const getSkeleton = async () => ({
+      metadata: {},
+      sequence: [{ role: 'user', content: 'x', timestamp: '2026-10-20T00:00:00.000Z', isTruncated: false }],
+    } as any);
     const result = await handleExportData(
       { target: 'conversation', format: 'csv', taskId: 'task-1', filePath: longPath } as any,
       emptyCache, mockXmlExporter, noopEnsureFresh, getSkeleton
