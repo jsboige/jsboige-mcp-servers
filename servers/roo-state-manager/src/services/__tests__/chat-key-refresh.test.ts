@@ -156,9 +156,16 @@ describe('chat-key-refresh — rotation detection, host-owned guard, allowlist',
         setChatEnvPathForTest(p);
         process.env.ROOSYNC_SHARED_PATH = '/the/real/store';
 
+        // The seat's real .env may already define EMBEDDING_API_KEY — setup-env.ts
+        // loads it into process.env before any test runs. The invariant under test
+        // is "never touched by the refresh", not "undefined" (which also leaked the
+        // first 40 chars of the real key into the failure diff on such seats).
+        const embeddingKeyBefore = process.env.EMBEDDING_API_KEY;
+
         expect(refreshChatKeyEnvIfChanged()).toEqual([]);
         expect(process.env.ROOSYNC_SHARED_PATH).toBe('/the/real/store');
-        expect(process.env.EMBEDDING_API_KEY).toBeUndefined();
+        expect(process.env.EMBEDDING_API_KEY).toBe(embeddingKeyBefore);
+        expect(process.env.EMBEDDING_API_KEY).not.toBe('embed-key');
     });
 
     test('every CHAT_ENV_KEYS entry is a key config-reload is also allowed to move (drift guard)', async () => {

@@ -23,13 +23,25 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 // The global setup file (tests/setup/jest.setup.js) registers a PowerShellExecutor
-// mock for EVERY test file — and `mockReset: true` in vitest.config.ts wipes its
-// mockImplementation before each test, so `new PowerShellExecutor()` would yield a
-// bare object without executeScript. This file exists to exercise the REAL
-// executor; vi.unmock is hoisted like vi.mock and cancels the global registration
-// for this module graph, so the service's internal `new PowerShellExecutor()`
-// resolves to the real class.
-vi.unmock('../PowerShellExecutor.js');
+// mock for EVERY test file, and neither vi.unmock nor a local vi.mock-override
+// cancels it from a file in src/**/__tests__/ (measured 20/10 on po-2028: the
+// service graph kept the mocked class and its canned 'spawn pwsh.exe ENOENT'
+// rejection, so this suite had been red on every Windows seat since 2d4744df —
+// unseen because CI skips it on ubuntu; a local override with importActual only
+// wins when it reuses the setup file's exact specifier string, which does not
+// resolve from this directory). The way through is the service's own DI seam:
+// vi.importActual always returns the real module, and the constructor accepts an
+// injected executor. The executor is pinned to powershell.exe because the real
+// class defaults to pwsh.exe, absent from part of the fleet (po-2027, po-2028),
+// while Windows PowerShell 5.1 is universal. The static parseJsonOutput the
+// service calls still resolves to the setup mock's faithful copy — pure
+// first-{..last-} JSON extraction, behavior-identical to the real static.
+async function newServiceWithRealExecutor(): Promise<SchtasksConfigService> {
+  const { PowerShellExecutor: RealExecutor } = await vi.importActual<
+    typeof import('../PowerShellExecutor.js')
+  >('../PowerShellExecutor.js');
+  return new SchtasksConfigService(new RealExecutor({ powershellPath: 'powershell.exe' }));
+}
 
 // Deliberately absurd name: matches the Claude-* fleet family yet cannot exist
 // on any machine. No wildcard metacharacters — Get-ScheduledTask -TaskName
@@ -49,7 +61,7 @@ describe.skipIf(process.platform !== 'win32')('SchtasksConfigService — real AP
   it(
     'apply() on an absent task runs the real script and reports missing + failure',
     async () => {
-      const service = new SchtasksConfigService(); // real PowerShellExecutor, no mock
+      const service = await newServiceWithRealExecutor(); // real PowerShellExecutor, injected
 
       const result = await service.apply([fixtureTask]);
 
@@ -67,7 +79,7 @@ describe.skipIf(process.platform !== 'win32')('SchtasksConfigService — real AP
   it(
     'dry-run on the same absent task reads the machine and reports the same missing (no mutation)',
     async () => {
-      const service = new SchtasksConfigService();
+      const service = await newServiceWithRealExecutor();
 
       const result = await service.apply([fixtureTask], true);
 
