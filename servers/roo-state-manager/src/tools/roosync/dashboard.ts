@@ -4439,6 +4439,20 @@ ${archiveMessages}
     'Status (fallback)'
   );
 
+  // #4095 lever 3: escalate to the fleet level — the notice and the status
+  // marker above land ONLY on this dashboard, so an LLM outage that also
+  // degrades this machine's coordination stays machine-local news. Fire-and-
+  // forget: the alert path is fully guarded (rate limit, skip-global, internal
+  // try/catch) and must never slow or fail the fallback it reports on.
+  void alertFleetTruncationFallback({
+    sourceKey: key,
+    machineId: process.env.ROOSYNC_MACHINE_ID || 'unknown',
+    archivedCount: toArchive.length,
+    fallbackError,
+    circuitBreaker: `${condenseCB.consecutiveFailures}/${CONDENSE_CB_OPEN_THRESHOLD}${condenseCB.isOpen ? ' OPEN' : ''}`,
+    archiveBasename: path.basename(archivePath),
+  });
+
   return {
     ...dashboard,
     status: { ...dashboard.status, markdown: `${statusMarker}\n${truncatedStatus}` },
@@ -4449,6 +4463,114 @@ ${archiveMessages}
       lastCondensedAt: now,
     },
   };
+}
+
+// === #4095 lever 3 — fleet escalation of truncation fallbacks ===
+//
+// The truncation notice and the status marker land only on the degraded
+// dashboard itself. When the condensation 401/outage that caused the
+// truncation also degrades the machine's coordination, the very lane that dug
+// the hole is the only one that knows about it. A fleet-level [ERROR] on the
+// global dashboard is the minimum viable escalation channel: the global is
+// read by every lane and by the coordinator each cycle, so a truncation can
+// no longer stay machine-local.
+//
+// Guards:
+// - source key 'global' is skipped (the [WARN] notice already lands there, and
+//   re-entering the dashboard we are CURRENTLY condensing under its own lock
+//   would be a same-file race);
+// - 1 alert/hour per source key (a wedged condenser truncates repeatedly; the
+//   first alert is news, the fortieth is noise that would push the global over
+//   its own condensation threshold);
+// - fire-and-forget from executeTruncationFallback: never blocks the fallback;
+// - lock discipline mirrors cross-post (v3 #1363): read-modify-write of the
+//   target under withAppendLock('global', …). The source append lock is a
+//   different key, so no nesting cycle is possible, and the 30s lock TTL
+//   (#3205) bounds any pathological wait.
+
+const TRUNCATION_ALERT_MIN_INTERVAL_MS = 60 * 60 * 1000;
+const truncationAlertLastSentAt = new Map<string, number>();
+
+/** Test hook: the limiter is module state; reset it between cases. */
+export function resetTruncationAlertLimiterForTest(): void {
+  truncationAlertLastSentAt.clear();
+}
+
+/**
+ * #4095 lever 3: post a fleet [ERROR] on the global dashboard about a
+ * truncation fallback that just happened on `sourceKey`. Rate-limited,
+ * global-skipping, best-effort — never throws to its caller.
+ */
+export async function alertFleetTruncationFallback(params: {
+  sourceKey: string;
+  machineId: string;
+  archivedCount: number;
+  fallbackError: string;
+  circuitBreaker: string;
+  archiveBasename: string;
+}): Promise<void> {
+  const { sourceKey, machineId, archivedCount, fallbackError, circuitBreaker, archiveBasename } = params;
+  if (sourceKey === 'global') return;
+  const now = Date.now();
+  const last = truncationAlertLastSentAt.get(sourceKey);
+  if (last !== undefined && now - last < TRUNCATION_ALERT_MIN_INTERVAL_MS) return;
+  truncationAlertLastSentAt.set(sourceKey, now);
+
+  const alertAuthor: Author = { machineId, workspace: 'rsm' };
+  const holder: CondenseLockInfo = {
+    machineId,
+    workspace: 'rsm',
+    pid: process.pid,
+    acquiredAt: new Date().toISOString(),
+  };
+  const isoNow = new Date().toISOString();
+  const message: IntercomMessage = {
+    id: generateMessageId(machineId, 'rsm'),
+    timestamp: isoNow,
+    author: alertAuthor,
+    tags: ['ERROR'],
+    content: `**[ERROR] Condensation truncation fallback — ${sourceKey}**\n\n`
+      + `${archivedCount} messages archived WITHOUT LLM summary at ${isoNow} on ${machineId}. `
+      + `Cloud fallback: ${fallbackError}. Circuit breaker: ${circuitBreaker}.\n`
+      + `Archive: \`archive/${archiveBasename}\`.\n`
+      + `The condensation LLM of this machine is degraded — the dashboard above now has a content hole. `
+      + `(escalade automatique #4095; max 1/h par dashboard)`,
+  };
+
+  try {
+    await withAppendLock('global', holder, async () => {
+      let target = await readDashboardFile('global');
+      if (!target) {
+        target = createEmptyDashboard('global', 'global', alertAuthor);
+      }
+      const updated: Dashboard = {
+        ...target,
+        lastModified: isoNow,
+        lastModifiedBy: alertAuthor,
+        intercom: {
+          messages: [...target.intercom.messages, message],
+          totalMessages: target.intercom.totalMessages + 1,
+          lastCondensedAt: target.intercom.lastCondensedAt,
+        },
+      };
+      const wv = await writeDashboardFile('global', updated);
+      if (wv?.forkSuspected) {
+        // #3774: an escalation that deviated to a fork is an escalation that
+        // did not happen — say so in the logs even if nobody reads the return.
+        logger.warn('Fleet truncation alert wrote to a fork-suspected global (#3482)', {
+          sourceKey,
+          machineId,
+          forkDetail: wv.forkDetail,
+        });
+      }
+    });
+  } catch (err) {
+    logger.warn('Fleet truncation alert failed (non-fatal)', {
+      sourceKey,
+      machineId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**

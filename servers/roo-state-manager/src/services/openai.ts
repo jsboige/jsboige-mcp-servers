@@ -139,6 +139,10 @@ export function getChatOpenAIClient(): OpenAI {
       timeout: 1800000
     });
     chatOpenaiPrint = chatConfigPrint(apiKey, process.env.OPENAI_BASE_URL);
+    // #4095 lever 2: the build moment is the forensic anchor of the served
+    // print — without this line, nothing in the logs says WHEN the singleton
+    // the probe reports as "served" was actually built. Source NAME only.
+    logRotation('Chat client built — condensation credentials set', { source: resolved.source });
   }
   return chatOpenai;
 }
@@ -216,6 +220,10 @@ export function getFallbackChatOpenAIClient(): OpenAI | null {
       maxRetries: 0,
     });
     fallbackChatOpenaiPrint = chatConfigPrint(apiKey, baseUrl);
+    // #4095 lever 2: same forensic anchor as the primary leg. Source NAME only.
+    logRotation('Fallback chat client built — condensation credentials set', {
+      source: process.env.ZAI_API_KEY ? 'ZAI_API_KEY' : 'FALLBACK_API_KEY',
+    });
   }
   return fallbackChatOpenai;
 }
@@ -249,6 +257,102 @@ export function resetChatOpenAIClient(): void {
  */
 export function resetEmbeddingOpenAIClient(): void {
   openai = null;
+}
+
+// === #4095 lever 2 — served-fingerprint probe ===
+//
+// The rotation-aware rebuild above heals a moved credential at the NEXT
+// condensation. Until then the host keeps serving the OLD pair — and the only
+// one who can notice is whoever compares "what is served" with "what the
+// environment resolves to NOW" (the po-2023 shape: a key revoked in the fleet
+// while the singleton kept presenting it). This probe makes that comparison
+// observable without building, calling, or logging anything sensitive: pair
+// prints (8 hex), key-only print (12 hex) and env var NAMES. Never values.
+
+export interface ChatKeyLegProbe {
+  /** 12-hex sha256 prefix of the resolved KEY alone — survives baseUrl moves. */
+  keyPrint: string | null;
+  /** Env var NAME the key resolved from (e.g. VLLM_API_KEY_MEDIUM). Never a value. */
+  source: string | null;
+  /** 8-hex print of the (key, baseUrl) pair a rebuild would use right now. */
+  resolvedPrint: string | null;
+  /** 8-hex print of the (key, baseUrl) pair the SERVED singleton was built with. */
+  servedPrint: string | null;
+  /**
+   * null while nothing is served (first build pending — no drift possible).
+   * false = the singleton predates the current credentials (rotation on disk
+   * not yet picked up — the exact #4095 drift), true = in sync.
+   */
+  inSync: boolean | null;
+}
+
+export interface ChatKeyProbe {
+  primary: ChatKeyLegProbe;
+  fallback: ChatKeyLegProbe;
+}
+
+/**
+ * Key-only print. Deliberately longer than the pair print: fleet forensics
+ * convention publishes ≤12-char prints, and a key-only print survives endpoint
+ * moves (the pair print does not — that is why both exist).
+ */
+function keyOnlyPrint(apiKey: string): string {
+  return crypto.createHash('sha256').update(apiKey, 'utf8').digest('hex').slice(0, 12);
+}
+
+/**
+ * #4095 lever 2: "empreinte servie == empreinte canon" in one call, for the
+ * coordination cycle's periodic check. Read-only by construction: it runs the
+ * same stat-guarded `.env` refresh the getters run (so it observes what the
+ * NEXT condensation would see) but never builds, rebuilds or resets a client.
+ */
+export function probeChatKeyState(): ChatKeyProbe {
+  refreshChatKeyEnvIfChanged();
+  const primary = resolveChatApiKey();
+  const primaryResolvedPrint = primary
+    ? chatConfigPrint(primary.apiKey, process.env.OPENAI_BASE_URL)
+    : null;
+
+  const fallbackSource = process.env.ZAI_API_KEY
+    ? 'ZAI_API_KEY'
+    : process.env.FALLBACK_API_KEY
+      ? 'FALLBACK_API_KEY'
+      : null;
+  const fallbackKey = process.env.ZAI_API_KEY || process.env.FALLBACK_API_KEY || null;
+  const fallbackResolvedPrint = fallbackKey
+    ? chatConfigPrint(fallbackKey, resolveFallbackBaseUrl())
+    : null;
+
+  const leg = (
+    keyPrint: string | null,
+    source: string | null,
+    resolvedPrint: string | null,
+    servedPrint: string | null
+  ): ChatKeyLegProbe => ({
+    keyPrint,
+    source,
+    resolvedPrint,
+    servedPrint,
+    // Getter parity: a served singleton rebuilds whenever its print differs
+    // from the freshly resolved one — so resolved=null under a served client
+    // is a drift (credentials gone), while served=null is just "not built yet".
+    inSync: servedPrint === null ? null : servedPrint === resolvedPrint,
+  });
+
+  return {
+    primary: leg(
+      primary ? keyOnlyPrint(primary.apiKey) : null,
+      primary ? primary.source : null,
+      primaryResolvedPrint,
+      chatOpenaiPrint
+    ),
+    fallback: leg(
+      fallbackKey ? keyOnlyPrint(fallbackKey) : null,
+      fallbackSource,
+      fallbackResolvedPrint,
+      fallbackChatOpenaiPrint
+    ),
+  };
 }
 
 export default getOpenAIClient;
