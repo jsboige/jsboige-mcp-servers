@@ -40,6 +40,7 @@ import {
 import {
   getChannelPgReader,
   readChannelInboxFromPg,
+  readChannelMailboxFromPg,
   countChannelInboxFromPg,
   getChannelMessageFromPg,
 } from './unified-store/roosync-channel-read.js';
@@ -2687,16 +2688,6 @@ export class MessageManager {
       }
     }
 
-    if (!existsSync(this.inboxPath)) {
-      return { operation, matched: 0, processed: 0, errors: 0, message_ids: [], failed_ids: [], failed_reasons: {} };
-    }
-
-    // Use cached data for filtering (#638 perf optimization)
-    const { items, full } = await this.ensureInboxCache();
-    const matchedIds: string[] = [];
-    let errors = 0;
-    const failedIds: string[] = [];
-
     // #3996 — TZ-déterminisme du filtre before_date : sans offset explicite,
     // new Date() parsait selon la TZ LOCALE du serveur — la fenêtre glissait
     // de quelques heures selon le siège qui exécute (timestamps stockés ISO-Z).
@@ -2707,48 +2698,131 @@ export class MessageManager {
       ? Date.parse(/(?:Z|[+-]\d{2}:?\d{2})$/i.test(filters.before_date) ? filters.before_date : `${filters.before_date}Z`)
       : NaN;
 
+    // #4285 — bulk must enumerate the SAME pool the inbox serves. bulk_*
+    // matched over the GDrive cache only; on CHANNEL_READ_PG seats the inbox
+    // serves PG, where the whole history lives — rows that messages/inbox/
+    // no longer holds (rotated out, or PG-primary sends that never filed).
+    // Measured on ai-01 (20/10): 15 unread ghosts the badge counted forever
+    // while bulk_mark_read(before_date) answered « Messages trouvés : 0 ».
+    // PG-primary here mirrors readInbox: enumerate PG when the reader is up,
+    // fall back to the GDrive enumeration when it is not. The operations
+    // themselves (markAsRead/archiveMessage) already pick their own store
+    // (isChannelPgPrimary).
+    const pgReader = getChannelPgReader();
+    if (pgReader) {
+      const pgMessages = await readChannelMailboxFromPg(pgReader, machineId, effectiveWorkspaceId);
+      if (pgMessages !== null) {
+        const matchedIds = pgMessages
+          .filter((m) => MessageManager.matchesBulkFilters(m, machineId, effectiveWorkspaceId, filters, beforeDateMs))
+          .map((m) => m.id);
+        logger.info(`[channel-pg] bulk ${operation} matched ${matchedIds.length} message(s) over the PG pool`);
+        return this.applyBulkOperation(matchedIds, operation, `${machineId}:${effectiveWorkspaceId}`);
+      }
+      logger.warn('[channel-pg] PG mailbox enumeration failed — bulk falling back to GDrive');
+    }
+
+    if (!existsSync(this.inboxPath)) {
+      return { operation, matched: 0, processed: 0, errors: 0, message_ids: [], failed_ids: [], failed_reasons: {} };
+    }
+
+    // Use cached data for filtering (#638 perf optimization). #4285: deep —
+    // a bulk filter with before_date targets the old pool by construction;
+    // matching over the #3292 recent slice would under-report exactly the
+    // messages the caller is trying to reach.
+    const { items, full } = await this.ensureInboxCache({ deep: true });
+    const matchedIds: string[] = [];
+
     for (const item of items) {
       const message = full.get(item.id);
       if (!message) continue;
 
-      // Check recipient match
-      if (!matchesRecipient(message.to, machineId, effectiveWorkspaceId)) {
-        continue;
+      if (MessageManager.matchesBulkFilters(message, machineId, effectiveWorkspaceId, filters, beforeDateMs)) {
+        matchedIds.push(message.id);
       }
-
-      // Apply filters (AND logic)
-      if (filters.from && !message.from.toLowerCase().includes(filters.from.toLowerCase())) {
-        continue;
-      }
-      if (filters.priority && message.priority !== filters.priority) {
-        continue;
-      }
-      if (filters.before_date && !Number.isNaN(beforeDateMs) && new Date(message.timestamp).getTime() >= beforeDateMs) {
-        continue;
-      }
-      if (filters.subject_contains && !message.subject.toLowerCase().includes(filters.subject_contains.toLowerCase())) {
-        continue;
-      }
-      if (filters.tag && (!message.tags || !message.tags.includes(filters.tag))) {
-        continue;
-      }
-      if (filters.status) {
-        // #3702: same per-reader lens as the inbox view. Broadcasts are tracked
-        // per machine and machine-wide targets per workspace (applyReadTracking
-        // never flips their global status by design) — filtering on the global
-        // status re-matched machine-wide messages this workspace had already
-        // read. perReaderStatus is the single source; null = class not tracked
-        // per-reader (direct targets, legacy already-flipped) -> global status.
-        const perReader = perReaderStatus(message, machineId, effectiveWorkspaceId);
-        const effective = perReader ?? message.status;
-        if (effective !== filters.status) continue;
-      }
-
-      matchedIds.push(message.id);
     }
 
-    // Apply the operation to matched messages
+    // Apply the operation over the GDrive-matched set (#4285: same helper the
+    // PG enumeration path uses — one apply loop, two pools).
+    return this.applyBulkOperation(matchedIds, operation, `${machineId}:${effectiveWorkspaceId}`);
+  }
+
+  /**
+   * #4285 — single source for the bulk predicates, shared by the PG pool and
+   * the GDrive cache enumeration so both paths filter the same way: recipient
+   * (workspace-aware), from/priority/before_date/subject_contains/tag (AND
+   * logic), and the #3702 per-reader status lens.
+   */
+  private static matchesBulkFilters(
+    message: Message,
+    machineId: string,
+    workspaceId: string,
+    filters: {
+      from?: string;
+      priority?: 'LOW' | 'MEDIUM' | 'HIGH' | 'URGENT';
+      before_date?: string;
+      subject_contains?: string;
+      tag?: string;
+      status?: 'unread' | 'read';
+    },
+    beforeDateMs: number
+  ): boolean {
+    // Check recipient match
+    if (!matchesRecipient(message.to, machineId, workspaceId)) {
+      return false;
+    }
+
+    // Apply filters (AND logic)
+    if (filters.from && !message.from.toLowerCase().includes(filters.from.toLowerCase())) {
+      return false;
+    }
+    if (filters.priority && message.priority !== filters.priority) {
+      return false;
+    }
+    if (filters.before_date && !Number.isNaN(beforeDateMs) && new Date(message.timestamp).getTime() >= beforeDateMs) {
+      return false;
+    }
+    if (filters.subject_contains && !message.subject.toLowerCase().includes(filters.subject_contains.toLowerCase())) {
+      return false;
+    }
+    if (filters.tag && (!message.tags || !message.tags.includes(filters.tag))) {
+      return false;
+    }
+    if (filters.status) {
+      // #3702: same per-reader lens as the inbox view. Broadcasts are tracked
+      // per machine and machine-wide targets per workspace (applyReadTracking
+      // never flips their global status by design) — filtering on the global
+      // status re-matched machine-wide messages this workspace had already
+      // read. perReaderStatus is the single source; null = class not tracked
+      // per-reader (direct targets, legacy already-flipped) -> global status.
+      const perReader = perReaderStatus(message, machineId, workspaceId);
+      const effective = perReader ?? message.status;
+      if (effective !== filters.status) return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Apply a bulk operation to a matched id set (#4285: extracted so the PG
+   * pool and the GDrive cache paths share one apply loop — the pool may
+   * differ, the mutation semantics must not).
+   */
+  private async applyBulkOperation(
+    matchedIds: string[],
+    operation: 'mark_read' | 'archive',
+    readerId: string
+  ): Promise<{
+    operation: string;
+    matched: number;
+    processed: number;
+    errors: number;
+    message_ids: string[];
+    failed_ids: string[];
+    failed_reasons: Record<string, string>;
+  }> {
     let processed = 0;
+    let errors = 0;
+    const failedIds: string[] = [];
     const failedReasons: Record<string, string> = {};
     // #2730: pass the full readerId (machine:workspace) to markAsRead so the #2287
     // access-control guard (matchesRecipient) sees the workspace. bulkOperationHandler
@@ -2756,7 +2830,6 @@ export class MessageManager {
     // a readerId with workspaceId=undefined → matchesRecipient rejected every message
     // targeting a specific workspace → "mark_read returned false" (unitary mark_read,
     // which passes getLocalFullId(), succeeded on the same messages).
-    const readerId = `${machineId}:${effectiveWorkspaceId}`;
     for (const id of matchedIds) {
       try {
         if (operation === 'mark_read') {

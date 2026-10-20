@@ -346,8 +346,14 @@ async function bulkOperationHandler(
 
   logger.info(`🔄 Starting bulk ${operation}`, { filters: { from: args.from, priority: args.priority, before_date: args.before_date, subject_contains: args.subject_contains, tag: args.tag } });
 
+  // #4285: pass the caller's workspace through. messages.ts folds the
+  // `workspace` override (#1498/#3702) into `as` — resolving only the machine
+  // here dropped it, so bulk filtered by the PROCESS workspace while inbox
+  // honored the override: same family as the pool divergence, on the
+  // recipient axis this time.
+  const caller = resolveCallerIdentity(args.as);
   const result = await messageManager.bulkOperation(
-    resolveCallerIdentity(args.as).machineId,
+    caller.machineId,
     operation,
     {
       from: args.from,
@@ -356,7 +362,8 @@ async function bulkOperationHandler(
       subject_contains: args.subject_contains,
       tag: args.tag,
       status: operation === 'mark_read' ? 'unread' : undefined
-    }
+    },
+    caller.workspaceId
   );
 
   const filtersDesc: string[] = [];
