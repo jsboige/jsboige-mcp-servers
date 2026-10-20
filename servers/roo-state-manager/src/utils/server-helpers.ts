@@ -372,10 +372,12 @@ export async function resolveFullConversationSkeleton(
         //    both with empty <sequence/>; this branch covers the Claude half. Mirrors
         //    view-details.tool.ts:118-140.
         if (id.startsWith('claude-')) {
-            // Empty cached conversation — no disk read needed (mirror Roo empty-header).
-            if (cached && cached.metadata.messageCount === 0) {
-                return { ...cached, sequence: [] } as any as ConversationSkeleton;
-            }
+            // #2307: the lookup runs FIRST. Claude session indexing writes headers
+            // with messageCount=0 (counts unparsed, totalSize from statSync), so an
+            // empty-header shortcut taken before the lookup short-circuits EVERY
+            // indexed Claude conversation into an empty export — the header says
+            // "empty", the JSONL on disk says otherwise. The shortcut may only fire
+            // on a NEGATIVE lookup, where "empty" is then the honest answer.
             const { ClaudeStorageDetector } = await import('./claude-storage-detector.js');
             const loaded = await ClaudeStorageDetector.findConversationById(id);
             if (loaded) {
@@ -384,6 +386,10 @@ export async function resolveFullConversationSkeleton(
                 (loaded.metadata as any).dataSource = 'claude';
                 cache.set(id, loaded as any as SkeletonHeader);
                 return loaded;
+            }
+            // Negative lookup + empty cached header — no further disk read needed.
+            if (cached && cached.metadata.messageCount === 0) {
+                return { ...cached, sequence: [] } as any as ConversationSkeleton;
             }
             // Not found in Claude storage — fall through to Roo paths (rare).
         }
