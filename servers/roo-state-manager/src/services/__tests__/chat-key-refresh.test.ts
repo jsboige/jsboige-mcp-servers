@@ -13,6 +13,28 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+/**
+ * readFileSync control for the mid-write test below. An ESM namespace cannot be
+ * spied on (`vi.spyOn(fs, …)` throws "module namespace is not configurable"), so
+ * the module is mocked with a pass-through that throws once, on demand, on the
+ * `.env` read only. Everything else in this file sees the real `fs`.
+ */
+const mockFsState = vi.hoisted(() => ({ throwOnNextEnvRead: false }));
+
+vi.mock('fs', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('fs')>();
+    return {
+        ...actual,
+        readFileSync: ((...args: unknown[]) => {
+            if (mockFsState.throwOnNextEnvRead && String(args[0]).endsWith('.env')) {
+                mockFsState.throwOnNextEnvRead = false;
+                throw new Error('EBUSY: resource busy or locked (mid-write)');
+            }
+            return (actual.readFileSync as (...a: unknown[]) => unknown)(...args);
+        }) as typeof actual.readFileSync,
+    };
+});
+
 describe('chat-key-refresh — rotation detection, host-owned guard, allowlist', () => {
     const origEnv = { ...process.env };
     let tmpDir: string;
@@ -105,6 +127,27 @@ describe('chat-key-refresh — rotation detection, host-owned guard, allowlist',
         fs.writeFileSync(p, 'ZAI_API_KEY=z1\n', 'utf8');
         expect(refreshChatKeyEnvIfChanged()).toEqual(['ZAI_API_KEY']);
         expect(process.env.ZAI_API_KEY).toBe('z1');
+    });
+
+    test('a read that fails mid-write does not swallow the change (lastStat stamps only after success)', async () => {
+        const p = path.join(tmpDir, '.env');
+        const { setChatEnvPathForTest, refreshChatKeyEnvIfChanged } = await import('../chat-key-refresh.js');
+        setChatEnvPathForTest(p); // baseline: file does not exist yet
+
+        // The writer lands the new content...
+        fs.writeFileSync(p, 'OPENAI_API_KEY=key-after-midwrite\n', 'utf8');
+
+        // ...and this first look hits it while it is unreadable (mid-write).
+        // One thrown read must NOT consume the change: stamping the baseline
+        // before the read would make the next call skip this same stat and the
+        // rotation would only be seen at the file's NEXT write.
+        mockFsState.throwOnNextEnvRead = true; // the first look reads mid-write
+        expect(refreshChatKeyEnvIfChanged()).toEqual([]);
+        expect(process.env.OPENAI_API_KEY).toBeUndefined();
+
+        // Same stat as the failed look — the retry must still land the key.
+        expect(refreshChatKeyEnvIfChanged()).toEqual(['OPENAI_API_KEY']);
+        expect(process.env.OPENAI_API_KEY).toBe('key-after-midwrite');
     });
 
     test('keys outside the condensation set are never touched, even when .env moves', async () => {
