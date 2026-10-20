@@ -1096,6 +1096,18 @@ describe('roosync_dashboard', () => {
       expect(result.durationBreakdown!.preemptiveCondenseMs).toBe(0);
       expect(result.durationBreakdown!.reactiveCondenseMs).toBe(0);
       expect(result.durationBreakdown!.writeMs).toBeGreaterThanOrEqual(0);
+      // #4286 — writeMs decomposition: every executed stage is reported as a
+      // non-negative number, and the stages never exceed the writeMs window
+      // they were measured inside (sum ≤ writeMs by construction).
+      const stages = result.durationBreakdown!.writeBreakdown;
+      expect(stages).toBeDefined();
+      const stageSum = Object.values(stages!).reduce((acc, v) => acc + (v as number), 0);
+      expect(stageSum).toBeLessThanOrEqual(result.durationBreakdown!.writeMs);
+      // Nominal path in tests (file exists, PG-primary off): the append lock,
+      // the GDrive read and the GDrive write halves are all individually visible.
+      expect(stages!.lockWaitMs).toBeGreaterThanOrEqual(0);
+      expect(stages!.gdriveReadMs).toBeGreaterThanOrEqual(0);
+      expect(stages!.gdriveWriteMs).toBeGreaterThanOrEqual(0);
     });
 
     it('reports preemptiveCondenseMs > 0 when preemptive condense fires', async () => {
