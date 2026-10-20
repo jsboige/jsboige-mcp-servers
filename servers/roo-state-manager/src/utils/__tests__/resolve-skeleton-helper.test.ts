@@ -150,6 +150,71 @@ describe('resolveFullConversationSkeleton — #3007 helper', () => {
         expect(mockFindConversationById).toHaveBeenCalledWith('claude-phantom');
     });
 
+    // #2307 regression — the exact empty-export bug measured on po-2027 (19/10):
+    // Claude session INDEXING writes cache headers with messageCount=0 (counts
+    // unparsed, totalSize from statSync). The old ordering took the empty-header
+    // shortcut BEFORE findConversationById, so every indexed Claude conversation
+    // exported as a fabricated 0-message skeleton while the JSONL sat on disk.
+    test('claude-* empty-header in cache (#2307): lookup runs first, real messages load', async () => {
+        const indexingHeader: SkeletonHeader = {
+            taskId: 'claude-indexed-empty-counts',
+            metadata: {
+                lastActivity: '2026-10-19T10:00:00Z',
+                createdAt: '2026-10-19T09:00:00Z',
+                messageCount: 0,
+                actionCount: 0,
+                totalSize: 631674372
+            }
+        };
+        cache.set('claude-indexed-empty-counts', indexingHeader);
+
+        const claudeFull: ConversationSkeleton = {
+            ...indexingHeader,
+            metadata: { ...indexingHeader.metadata, messageCount: 11368 },
+            sequence: [
+                { role: 'user', content: 'real message 1', timestamp: '2026-10-19T09:00:01Z', isTruncated: false },
+                { role: 'assistant', content: 'real reply 1', timestamp: '2026-10-19T09:00:02Z', isTruncated: false }
+            ]
+        };
+        mockFindConversationById.mockResolvedValueOnce(claudeFull);
+
+        const result = await resolveFullConversationSkeleton('claude-indexed-empty-counts', cache);
+
+        // The lookup MUST have run despite the empty cached header.
+        expect(mockFindConversationById).toHaveBeenCalledWith('claude-indexed-empty-counts');
+        expect(result).toBe(claudeFull);
+        expect((result!.sequence ?? []).length).toBe(2);
+        // Roo path still never runs for a claude-* id.
+        expect(mockLoadFullSkeleton).not.toHaveBeenCalled();
+        // Cache now carries the real counts for subsequent resolutions.
+        expect(cache.get('claude-indexed-empty-counts')).toBe(claudeFull as any);
+    });
+
+    test('claude-* empty-header + NEGATIVE lookup (#2307): shortcut fires after, returns empty sequence', async () => {
+        // Header vide + conversation introuvable dans le store Claude : le raccourci
+        // reste légitime — mais seulement APRÈS le lookup négatif, jamais avant.
+        const emptyHeader: SkeletonHeader = {
+            taskId: 'claude-truly-empty',
+            metadata: {
+                lastActivity: '2026-10-19T10:00:00Z',
+                createdAt: '2026-10-19T10:00:00Z',
+                messageCount: 0,
+                actionCount: 0,
+                totalSize: 0
+            }
+        };
+        cache.set('claude-truly-empty', emptyHeader);
+        mockFindConversationById.mockResolvedValueOnce(null);
+
+        const result = await resolveFullConversationSkeleton('claude-truly-empty', cache);
+
+        expect(mockFindConversationById).toHaveBeenCalledWith('claude-truly-empty');
+        expect(result).toBeTruthy();
+        expect(result!.sequence).toEqual([]);
+        // No Roo disk scan for a claude-* conversation the Claude store doesn't know.
+        expect(mockLoadFullSkeleton).not.toHaveBeenCalled();
+    });
+
     test('Tier 2/3: returns full skeleton from cache when sequence is non-empty', async () => {
         const fullInCache: ConversationSkeleton = {
             taskId: 'tier2-task',
