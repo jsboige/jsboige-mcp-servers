@@ -248,6 +248,65 @@ describe('roosync_search', () => {
 	});
 
 	// ============================================================
+	// #4287: semantic degradation must be VISIBLE, not buried in JSON
+	// ============================================================
+
+	describe('#4287: degraded fallback response leads with a readable warning', () => {
+		test('warning block first, #1496 structured payload second and parseable', async () => {
+			mockSemanticHandler.mockResolvedValue({
+				isError: true,
+				content: [{ type: 'text', text: 'Semantic search failed after retry' }]
+			});
+			mockFallbackHandler.mockResolvedValue({
+				content: [{ type: 'text', text: JSON.stringify({ results: [{ id: 'r1' }], total: 1 }) }]
+			});
+
+			const result = await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'deploy checklist', workspace: 'test-ws' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler,
+				mockDiagnoseHandler
+			);
+
+			// Block 0: human-readable warning — the FIRST thing the agent sees
+			const first = getTextContent(result, 0);
+			expect(first).toMatch(/SEMANTIC DEGRADED/i);
+			expect(first).toMatch(/text search/i);
+			expect(first).toMatch(/diagnose/i);
+
+			// Block 1: structured payload stays parseable with #1496 metadata intact
+			const payload = JSON.parse(getTextContent(result, 1));
+			expect(payload.semantic_degraded).toBe(true);
+			expect(payload.fallback_used).toBe(true);
+			expect(payload.fallback_reason).toBe('embedding_api_error');
+			expect(payload.original_search_mode).toBe('semantic');
+			expect(payload.actual_search_mode).toBe('text');
+			expect(payload.results).toEqual([{ id: 'r1' }]);
+		});
+
+		test('non-JSON fallback payload still gets the leading warning block', async () => {
+			mockSemanticHandler.mockResolvedValue({
+				isError: true,
+				content: [{ type: 'text', text: 'Semantic search failed after retry' }]
+			});
+			mockFallbackHandler.mockResolvedValue({
+				content: [{ type: 'text', text: 'plain text results' }]
+			});
+
+			const result = await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'anything' },
+				mockCache,
+				mockEnsureCache,
+				mockFallbackHandler
+			);
+
+			expect(getTextContent(result, 0)).toMatch(/SEMANTIC DEGRADED/i);
+			expect(getTextContent(result, 1)).toBe('plain text results');
+		});
+	});
+
+	// ============================================================
 	// Action: text
 	// ============================================================
 

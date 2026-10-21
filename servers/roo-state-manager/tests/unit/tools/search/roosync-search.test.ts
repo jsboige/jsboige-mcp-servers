@@ -234,7 +234,11 @@ describe('roosync_search - CONS-11', () => {
 
             // Should NOT error — auto-fallback provides text results
             expect(result.isError).toBeUndefined();
-            const resultText = (result.content[0] as any).text;
+            // #4287: block 0 = human-readable SEMANTIC DEGRADED warning, block 1 =
+            // structured payload (contract change vs pre-#4287 single-JSON shape).
+            const warning = (result.content[0] as any).text;
+            expect(warning).toMatch(/SEMANTIC DEGRADED/i);
+            const resultText = (result.content[1] as any).text;
             const parsed = JSON.parse(resultText);
             // Must include semantic_degraded flag so agents know results are from text fallback
             expect(parsed.semantic_degraded).toBe(true);
