@@ -171,6 +171,39 @@ export async function readChannelInboxFromPg(
 }
 
 /**
+ * #4285 — full-message mailbox enumeration for the bulk operations.
+ *
+ * `readChannelInboxFromPg` returns condensed list items (no `tags`, no
+ * per-message read state), which cannot serve `bulkOperation`'s tag filter
+ * nor its #3702 per-reader status lens. This returns the recipient's FULL
+ * Messages, so the bulk predicates run over the same rows the inbox serves.
+ * Recipient matching is applied here (same `matchesRecipient` call the
+ * inbox path uses); rows arrive newest-first from the reader.
+ *
+ * @returns The recipient's messages, or **null** when PG is unavailable —
+ *   the caller must then fall back to the GDrive enumeration.
+ */
+export async function readChannelMailboxFromPg(
+  reader: IUnifiedStoreReader,
+  machineId: string,
+  workspaceId?: string
+): Promise<Message[] | null> {
+  try {
+    const rows = await reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId);
+    const messages: Message[] = [];
+    for (const row of rows) {
+      const to = row.to_workspace ? `${row.to_machine}:${row.to_workspace}` : row.to_machine;
+      if (!matchesRecipient(to, machineId, workspaceId)) continue;
+      messages.push(mapRowToMessage(row));
+    }
+    return messages;
+  } catch (error) {
+    logger.warn('[channel-pg] mailbox enumeration failed — caller should fall back to GDrive', { error: String(error) });
+    return null;
+  }
+}
+
+/**
  * Count mailbox items from PG (parity with `getFilteredCount`).
  *
  * @returns Counts, or null when PG is unavailable (fallback expected).
