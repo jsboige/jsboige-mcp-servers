@@ -76,10 +76,13 @@ vi.mock('pg', () => ({ default: { Pool: vi.fn(() => mockPool) } }));
 // runs at import time — before const declarations. Same lazy-call reason
 // the reader/writer factories below survive hoisting without it.
 
-const { mockLoggerWarn } = vi.hoisted(() => ({ mockLoggerWarn: vi.fn() }));
+const { mockLoggerWarn, mockLoggerInfo } = vi.hoisted(() => ({
+  mockLoggerWarn: vi.fn(),
+  mockLoggerInfo: vi.fn(),
+}));
 
 vi.mock('../../../utils/logger.js', () => ({
-  createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: mockLoggerWarn, error: vi.fn() }),
+  createLogger: () => ({ debug: vi.fn(), info: mockLoggerInfo, warn: mockLoggerWarn, error: vi.fn() }),
 }));
 
 // Import AFTER the factory mocks are registered.
@@ -300,6 +303,25 @@ describe('readDashboardFromPg', () => {
     expect(result!.intercom.messages[0].id).toBe('myia-po-2025:roo-extensions:ic-20260821T0900-a1b2');
     expect(result!.intercom.messages[0].reply_to).toBeDefined();
     expect(result!.intercom.totalMessages).toBe(47);
+  }));
+
+  // #4304 — trou d'instrument : une lecture dashboard servie par PG ne loguait
+  // RIEN (seuls les replis étaient visibles), le ratio fichier/PG attendu pour
+  // la bascule du 27/10 (#4131) était inmesurable. Chaque lecture servie émet
+  // maintenant une ligne info, même famille que `[channel-pg] inbox served`
+  // (MessageManager) : format grep-able dans les logs de siège.
+  test('#4304: gate on, hit → ligne d\'instrument "[dashboard-pg] dashboard served from PG"', withReadGate(async () => {
+    mockGetRooSyncDashboard.mockResolvedValueOnce({
+      dashboard: sampleDashboardRow(),
+      messages: [sampleMessageRow()],
+    });
+    const result = await readDashboardFromPg('workspace-roo-extensions');
+    expect(result).not.toBeNull();
+    expect(mockLoggerInfo).toHaveBeenCalledWith(
+      expect.stringMatching(
+        /\[dashboard-pg\] dashboard served from PG in \d+ms \(workspace-roo-extensions, \d+ messages\)/
+      )
+    );
   }));
 
   test('null message_id row → deterministic id stable across two reads', withReadGate(async () => {

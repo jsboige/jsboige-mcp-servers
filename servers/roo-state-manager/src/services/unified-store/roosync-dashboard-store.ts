@@ -228,13 +228,21 @@ export function mapRowsToDashboard(
 export async function readDashboardFromPg(key: string): Promise<Dashboard | null> {
   const reader = getDashboardPgReader();
   if (!reader) return null;
+  // #4304 — instrument: every PG-served read emits a grep-able info line
+  // (same family as "[channel-pg] inbox served", MessageManager), so the
+  // PG/file ratio can be measured on a seat before the 27/10 switchover.
+  const startedAt = Date.now();
   try {
     const result = await withColdPoolResume(
       () => reader.getRooSyncDashboard(key),
       `dashboard-read:${key}`
     );
     if (!result) return null;
-    return mapRowsToDashboard(result.dashboard, result.messages);
+    const dashboard = mapRowsToDashboard(result.dashboard, result.messages);
+    logger.info(
+      `[dashboard-pg] dashboard served from PG in ${Date.now() - startedAt}ms (${key}, ${result.messages.length} messages)`
+    );
+    return dashboard;
   } catch (error) {
     logger.warn('[dashboard-pg] read failed — caller should fall back to GDrive', { key, error: String(error) });
     return null;
@@ -538,14 +546,25 @@ export function isValidDashboardKeyShape(key: string): boolean {
 }
 
 /**
+ * #4304 — dedicated budget for the key list, decoupled from the 3s retirement
+ * race. Measured (#4291): under G: inbox-rebuild contention the PG answer
+ * lands past 3s — slow but succeeding — and every such timeout pays a full
+ * GDrive listing. Unlike the retirement lookups (which run on EVERY dashboard
+ * call and must stay tight), this list feeds handleList and the health view
+ * only: a wider one-shot window absorbs the measured contention without
+ * re-queuing a second query behind the very pool that is busy.
+ */
+const DASHBOARD_KEY_LIST_TIMEOUT_MS = 8000;
+
+/**
  * #4131 G-B lot 2 (B4) — every dashboard key present in PG, or null.
  *
  * Feeds handleList and the health presence view when the read gate is on:
  * dashboards whose only home is PG must stay listable. Null (= fall back to
  * the GDrive listing) when the gate is off, PG fails, or the read hangs past
- * the same 3s race as the retirement list (#3782 suite, review ai-01 26/09 —
- * list feeds handleList on EVERY dashboard call, a hung PG read must not hang
- * it). An empty array is a valid answer (store reachable, no rows).
+ * the dedicated key-list budget (#4304 — 8s, vs 3s for the retirement
+ * lookups that run on every dashboard call). An empty array is a valid
+ * answer (store reachable, no rows).
  */
 export async function listRooSyncDashboardKeysFromPg(): Promise<string[] | null> {
   const reader = getDashboardPgReader();
@@ -553,7 +572,7 @@ export async function listRooSyncDashboardKeysFromPg(): Promise<string[] | null>
   try {
     let timedOut = false;
     const timeout = new Promise<string[]>((resolve) => {
-      setTimeout(() => { timedOut = true; resolve([]); }, RETIREMENT_LOOKUP_TIMEOUT_MS);
+      setTimeout(() => { timedOut = true; resolve([]); }, DASHBOARD_KEY_LIST_TIMEOUT_MS);
     });
     const keys = await Promise.race([reader.listRooSyncDashboardKeys(), timeout]);
     if (timedOut) {

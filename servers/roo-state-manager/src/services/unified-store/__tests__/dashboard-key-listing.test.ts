@@ -3,8 +3,9 @@
  *
  * `listRooSyncDashboardKeysFromPg` feeds handleList and the health presence
  * view when the dashboard read gate is on:
- *   - gate off / reader null / PG failure / 3s hang → null (the caller falls
- *     back to the GDrive listing — never "0 dashboards", #3459);
+ *   - gate off / reader null / PG failure / hang past the dedicated budget
+ *     (#4304) → null (the caller falls back to the GDrive listing — never
+ *     "0 dashboards", #3459);
  *   - an empty array is a VALID answer (store reachable, no rows) — distinct
  *     from null;
  *   - keys of invalid shape (pre-pilot data faults measured by the divergence
@@ -132,14 +133,32 @@ describe('listRooSyncDashboardKeysFromPg', () => {
     );
   });
 
-  test('3s hang → null (same bounded race as the retirement list, #3782)', async () => {
+  test('hang past the dedicated key-list budget → null (bounded race, #3782/#4304)', async () => {
     vi.useFakeTimers();
     mockListRooSyncDashboardKeys.mockReturnValue(new Promise<string[]>(() => {}));
     const pending = listRooSyncDashboardKeysFromPg();
-    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(8000);
     await expect(pending).resolves.toBeNull();
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       expect.stringContaining('key list timed out')
     );
+  });
+
+  // #4304 — mesuré #4291 : sous charge (rebuild inbox G:), la réponse PG du
+  // key-list atterrit APRÈs la course à 3 s héritée des lookups retraite, et
+  // chaque timeout paie un listing GDrive complet. Le key-list n'est pas sur
+  // le chemin de chaque appel dashboard (contrairement aux lookups retraite) :
+  // il a son propre budget, assez large pour tenir la contention mesurée.
+  test('#4304: réponse PG plus lente que la course retraite (3s) mais dans le budget dédié → clés servies, pas de repli GDrive', async () => {
+    vi.useFakeTimers();
+    let resolveList!: (keys: string[]) => void;
+    const slowAnswer = new Promise<string[]>((resolve) => { resolveList = resolve; });
+    mockListRooSyncDashboardKeys.mockReturnValue(slowAnswer);
+    const pending = listRooSyncDashboardKeysFromPg();
+    // La charge mesurée : la réponse atterrit après l'ancienne échéance de 3 s…
+    await vi.advanceTimersByTimeAsync(3000);
+    resolveList(['workspace-roo-extensions', 'global']);
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(pending).resolves.toEqual(['workspace-roo-extensions', 'global']);
   });
 });
