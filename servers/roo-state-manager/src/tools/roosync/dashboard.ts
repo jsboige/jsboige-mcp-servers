@@ -227,6 +227,42 @@ export function computeFallbackAttemptTimeoutMs(
   return Math.max(Math.round(timeoutMs), 1000);
 }
 
+// #3962 piste 2 — réserve de budget pour la jambe cloud. The #2719 pass deadline
+// was wired into the CLOUD leg only: the primary ran unclamped at 720s × up to 3
+// attempts, so a hung vLLM (~86s/engine cut, measured 29-30/09) burned the whole
+// 165s shared budget BEFORE the rescue tier got a turn — the cloud leg then
+// inherited a shrunken window ("Request timed out" at the leftover) or refused
+// outright ('budget-exhausted', zero traffic) → truncation. The rescue was
+// structurally starved by the exact failure it exists to cover. This reserve is
+// the part of the pass deadline the PRIMARY may never consume: it must fit one
+// minimum viable cloud attempt (FALLBACK_TIMEOUT_MIN_MS floor 30s + the 5s
+// FB_DEADLINE_SKIP_FLOOR_MS). Env read per call (hot-reloadable, like the other
+// bounds); 0 disables the reservation (restores the pre-#3962 allocation).
+const condenseCloudReserveMs = (): number => {
+  const raw = process.env.CONDENSE_CLOUD_RESERVE_MS;
+  if (raw === undefined || raw === '') return 35000;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : 35000;
+};
+
+/**
+ * #3962 piste 2: per-attempt PRIMARY timeout, clamped to what the pass has left
+ * AFTER holding back the cloud reserve — the mirror image of
+ * computeFallbackAttemptTimeoutMs. Returns null when the primary must refuse to
+ * start (less than FB_DEADLINE_SKIP_FLOOR_MS left before the reserve); the caller
+ * falls through to the cloud fallback, which then runs ON the reserved budget.
+ * No passDeadlineMs (tests, non-condensation callers) → the base timeout as-is.
+ */
+export function computePrimaryAttemptTimeoutMs(
+  baseTimeoutMs: number,
+  passDeadlineMs?: number,
+): number | null {
+  if (passDeadlineMs === undefined) return baseTimeoutMs;
+  const availableMs = (passDeadlineMs - condenseCloudReserveMs()) - Date.now();
+  if (availableMs < FB_DEADLINE_SKIP_FLOOR_MS) return null;
+  return Math.min(baseTimeoutMs, availableMs);
+}
+
 // #2267 follow-up: per-request timeout for condensation LLM calls. Runaway
 // generation is already bounded UNDER the ~600s IIS→vLLM gateway by
 // CONDENSE_LLM_MAX_TOKENS, so the only thing the old 1800s/900s ceilings ever
@@ -2952,7 +2988,7 @@ export interface LLMCallStats {
    * un statut-artefact d'échec transporté en 200 (vide / `[Error:` / trop court).
    * `skipped-on-change` (#4205) : l'appel n'a PAS eu lieu — les messages archivés ne
    * portaient aucun signal d'état, le statut précédent est conservé tel quel. */
-  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback' | 'guard-rejected' | 'skipped-on-change';
+  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback' | 'guard-rejected' | 'skipped-on-change' | 'budget-exhausted';
   // #2719: Cloud fallback fields
   /** Whether the cloud fallback (z.ai / OpenAI) was used for this call. */
   fallbackUsed?: boolean;
@@ -3171,6 +3207,20 @@ FORMAT :
 
   // Retry with exponential backoff (error/empty only — size handled post-hoc)
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
+    // #3962 piste 2: deadline-aware per-attempt clamp — the primary may only spend
+    // what the pass has left MINUS the cloud reserve. null = refuse to start (the
+    // cloud leg then runs on the reserved budget instead of inheriting nothing).
+    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(timeoutMs, opts?.passDeadlineMs);
+    if (attemptTimeoutMs === null) {
+      stats.finalOutcome = 'budget-exhausted';
+      stats.elapsedMs = Date.now() - callStart;
+      stats.lastError = 'budget-exhausted (condensation pass deadline; cloud reserve held back)';
+      logger.warn('Primary summary attempt refused — pass deadline reached the cloud reserve (#3962)', {
+        attempt, remainingMs: opts?.passDeadlineMs !== undefined ? opts.passDeadlineMs - Date.now() : undefined,
+      });
+      const fbBudget = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+      return fbBudget ?? { content: null, stats };
+    }
     stats.attempts = attempt;
     const startTime = Date.now();
     try {
@@ -3192,7 +3242,7 @@ FORMAT :
         // reliability — "moindre mal" while the cluster is in crisis.
         ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
       }, {
-        timeout: timeoutMs
+        timeout: attemptTimeoutMs
       });
 
       const summary = response.choices[0]?.message?.content;
@@ -3231,7 +3281,7 @@ FORMAT :
       const isTimeout = isLLMTimeoutError(error);
       if (isTimeout) {
         stats.timeoutCount += 1;
-        logger.warn('LLM summary timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
+        logger.warn('LLM summary timeout', { attempt, timeout: attemptTimeoutMs, elapsed: `${elapsed}ms` });
       } else {
         logger.error('LLM summary error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
@@ -3249,7 +3299,7 @@ FORMAT :
       }
       stats.finalOutcome = isTimeout ? 'timeout' : 'error';
       stats.elapsedMs = Date.now() - callStart;
-      stats.lastError = describeLLMError(error, { isTimeout, timeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
+      stats.lastError = describeLLMError(error, { isTimeout, timeoutMs: attemptTimeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
       // #2719: primary endpoint failed (down/timeout) → cloud fallback before giving up
       const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
       if (fbErr) return fbErr;
@@ -3419,6 +3469,18 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
 
   // Retry with exponential backoff
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
+    // #3962 piste 2: deadline-aware per-attempt clamp, cloud reserve held back.
+    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(timeoutMs, opts?.passDeadlineMs);
+    if (attemptTimeoutMs === null) {
+      stats.finalOutcome = 'budget-exhausted';
+      stats.elapsedMs = Date.now() - callStart;
+      stats.lastError = 'budget-exhausted (condensation pass deadline; cloud reserve held back)';
+      logger.warn('Primary status attempt refused — pass deadline reached the cloud reserve (#3962)', {
+        attempt, remainingMs: opts?.passDeadlineMs !== undefined ? opts.passDeadlineMs - Date.now() : undefined,
+      });
+      const fbBudget = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+      return fbBudget ?? { content: null, stats };
+    }
     stats.attempts = attempt;
     const startTime = Date.now();
     try {
@@ -3435,7 +3497,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
         // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
         ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
       }, {
-        timeout: timeoutMs
+        timeout: attemptTimeoutMs
       });
 
       const newStatus = response.choices[0]?.message?.content;
@@ -3472,7 +3534,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       const isTimeout = isLLMTimeoutError(error);
       if (isTimeout) {
         stats.timeoutCount += 1;
-        logger.warn('LLM status update timeout', { attempt, timeout: timeoutMs, elapsed: `${elapsed}ms` });
+        logger.warn('LLM status update timeout', { attempt, timeout: attemptTimeoutMs, elapsed: `${elapsed}ms` });
       } else {
         logger.error('LLM status update error', { attempt, elapsed: `${elapsed}ms`, error: errStr });
       }
@@ -3486,7 +3548,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       }
       stats.finalOutcome = isTimeout ? 'timeout' : 'error';
       stats.elapsedMs = Date.now() - callStart;
-      stats.lastError = describeLLMError(error, { isTimeout, timeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
+      stats.lastError = describeLLMError(error, { isTimeout, timeoutMs: attemptTimeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
       // #2719: primary endpoint failed (down/timeout) → cloud fallback before giving up
       const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
       if (fbErr) return fbErr;
@@ -3538,6 +3600,14 @@ export async function condenseTextIfTooLarge(
   let bestSize = sizeBytes;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    // #3962 piste 2: same deadline clamp as the pass condensers — the primary
+    // spends only what's left beyond the cloud reserve; on refusal, fall through
+    // to the cloud fallback below (which runs on the reserve).
+    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(CONDENSE_LLM_TIMEOUT_MS, passDeadlineMs);
+    if (attemptTimeoutMs === null) {
+      logger.warn(`Auto-condense ${label}: primary attempt refused — pass deadline reached the cloud reserve (#3962)`, { attempt });
+      break;
+    }
     const targetKb = attempt === 1 ? capKb : Math.max(1, Math.floor((maxSizeBytes * 0.8) / 1024));
     const aggressiveNote = attempt === 1
       ? ''
@@ -3574,7 +3644,7 @@ RÈGLES :
         // Disable Qwen3.6 thinking mode (user mandate 2026-05-26).
         ...(thinkingCtrl.chatTemplateKwargs ? { chat_template_kwargs: thinkingCtrl.chatTemplateKwargs } : {})
       }, {
-        timeout: CONDENSE_LLM_TIMEOUT_MS  // #2267 follow-up: bounded so a hung endpoint fast-fails (was 900000)
+        timeout: attemptTimeoutMs  // #2267 ceiling, #3962 deadline-clamped (cloud reserve held back)
       });
 
       const condensed = response.choices[0]?.message?.content;
@@ -4209,16 +4279,21 @@ export function buildStatusFallbackMarker(
   now: string,
   archivedCount: number,
   legs: { primary: string; cloud: string },
+  hostCounter?: { count: number; firstAt: string },
 ): string {
   const breaker = `${condenseCB.consecutiveFailures}/${CONDENSE_CB_OPEN_THRESHOLD}`
     + (condenseCB.isOpen ? ' OPEN' : '');
   // Both legs are named, each bounded independently: appending the cloud discriminant
   // AFTER a bounded primary would let a long primary error (a 502 HTML page) truncate
   // away the very field that separates "cloud unconfigured" from "cloud rejected".
+  // #3962 piste 3: the host counter rides the marker so a Status-only reader sees
+  // the degradation RATE (N since firstAt), not just the latest pass.
   return `${STATUS_FALLBACK_MARKER_PREFIX} @${now} — ${archivedCount} message`
     + `${archivedCount === 1 ? '' : 's'} archived without LLM summary`
     + ` (breaker ${breaker}; primary: ${truncateError(legs.primary || 'failed')}`
-    + `; cloud: ${truncateError(legs.cloud)})`;
+    + `; cloud: ${truncateError(legs.cloud)}`
+    + (hostCounter ? `; host: ${hostCounter.count} truncation${hostCounter.count === 1 ? '' : 's'} since ${hostCounter.firstAt}` : '')
+    + `)`;
 }
 
 /**
@@ -4232,6 +4307,28 @@ export function stripStatusFallbackMarker(text: string): string {
     .join('\n');
 }
 
+// #3962 piste 3 — per-key fallback-truncation counter (host lifetime). The
+// [WARN] notice and the status marker describe the LATEST pass only: a slow-burn
+// degradation (9 archives / 3 days on `workspace-roo-extensions`, 28-30/09) was
+// invisible without listing archive files — each truncation looked like an
+// isolated event. The counter accumulates per dashboard key in THIS host and is
+// surfaced on every re-stamp (status marker, archive frontmatter, fleet alert). In-memory by
+// design: it measures this host's condense passes; the durable cross-host census
+// remains the `-fallback.md` archives.
+const fallbackTruncationCounters = new Map<string, { count: number; firstAt: string; lastAt: string }>();
+
+/** #3962 piste 3: snapshot of this host's per-key truncation counters. */
+export function getFallbackTruncationCounters(): Array<{ key: string; count: number; firstAt: string; lastAt: string }> {
+  return [...fallbackTruncationCounters.entries()]
+    .map(([key, v]) => ({ key, count: v.count, firstAt: v.firstAt, lastAt: v.lastAt }))
+    .sort((a, b) => b.count - a.count || a.key.localeCompare(b.key));
+}
+
+/** Test-only: clear the per-key truncation counters. */
+export function resetFallbackTruncationCountersForTest(): void {
+  fallbackTruncationCounters.clear();
+}
+
 async function executeTruncationFallback(
   key: string,
   dashboard: Dashboard,
@@ -4242,9 +4339,16 @@ async function executeTruncationFallback(
   failedCalls?: { statusCall?: LLMCallResult; summaryCall?: LLMCallResult }
 ): Promise<Dashboard> {
   const now = new Date().toISOString();
+  // #3962 piste 3: count this truncation per key BEFORE building the surfaces —
+  // the marker, notice and fleet alert below all read the incremented value.
+  const truncCounter = fallbackTruncationCounters.get(key) ?? { count: 0, firstAt: now, lastAt: now };
+  truncCounter.count += 1;
+  truncCounter.lastAt = now;
+  fallbackTruncationCounters.set(key, truncCounter);
   const fallbackSummary = `[FALLBACK TRUNCATION] ${toArchive.length} messages archived without LLM summary.`
     + ` Circuit breaker failures: ${condenseCB.consecutiveFailures}.`
-    + (condenseCB.isOpen ? ` Circuit breaker OPEN (resets after ${Math.round(CONDENSE_CB_RESET_TTL_MS / 60000)}min).` : '');
+    + (condenseCB.isOpen ? ` Circuit breaker OPEN (resets after ${Math.round(CONDENSE_CB_RESET_TTL_MS / 60000)}min).` : '')
+    + ` Host truncation counter for ${key}: ${truncCounter.count} since ${truncCounter.firstAt}.`;
 
   // Write archive file with template summary
   const archiveDir = getArchiveDir();
@@ -4286,6 +4390,7 @@ async function executeTruncationFallback(
     circuitBreakerOpen: condenseCB.isOpen,
     condensedBy: process.env.ROOSYNC_MACHINE_ID || 'unknown',
     fallbackError,
+    hostTruncationCount: truncCounter.count, // #3962 piste 3: Nth truncation of this key on this host
   });
 
   // #3151 Phase C residual (incident po-2025 07/10, message « adjoint ») : la
@@ -4462,7 +4567,7 @@ ${archiveMessages}
     // attempted-no-error-captured / no-fallback-failure-captured / unconfigured),
     // so the Status line and the archive cannot disagree about the cloud leg.
     cloud: fallbackError,
-  });
+  }, { count: truncCounter.count, firstAt: truncCounter.firstAt });
   const markerBytes = Buffer.byteLength(statusMarker + '\n', 'utf8');
   const truncatedStatus = truncateToMaxSize(
     stripStatusFallbackMarker(dashboard.status.markdown),
@@ -4482,6 +4587,7 @@ ${archiveMessages}
     fallbackError,
     circuitBreaker: `${condenseCB.consecutiveFailures}/${CONDENSE_CB_OPEN_THRESHOLD}${condenseCB.isOpen ? ' OPEN' : ''}`,
     archiveBasename: path.basename(archivePath),
+    hostTruncationCount: truncCounter.count,
   });
 
   return {
@@ -4539,8 +4645,9 @@ export async function alertFleetTruncationFallback(params: {
   fallbackError: string;
   circuitBreaker: string;
   archiveBasename: string;
+  hostTruncationCount?: number; // #3962 piste 3: cumulative truncations for this key on this host
 }): Promise<void> {
-  const { sourceKey, machineId, archivedCount, fallbackError, circuitBreaker, archiveBasename } = params;
+  const { sourceKey, machineId, archivedCount, fallbackError, circuitBreaker, archiveBasename, hostTruncationCount } = params;
   if (sourceKey === 'global') return;
   const now = Date.now();
   const last = truncationAlertLastSentAt.get(sourceKey);
@@ -4562,7 +4669,8 @@ export async function alertFleetTruncationFallback(params: {
     tags: ['ERROR'],
     content: `**[ERROR] Condensation truncation fallback — ${sourceKey}**\n\n`
       + `${archivedCount} messages archived WITHOUT LLM summary at ${isoNow} on ${machineId}. `
-      + `Cloud fallback: ${fallbackError}. Circuit breaker: ${circuitBreaker}.\n`
+      + `Cloud fallback: ${fallbackError}. Circuit breaker: ${circuitBreaker}.`
+      + (hostTruncationCount !== undefined ? ` Host counter: ${hostTruncationCount} truncation${hostTruncationCount === 1 ? '' : 's'} on this key (host lifetime).` : '') + `\n`
       + `Archive: \`archive/${archiveBasename}\`.\n`
       + `The condensation LLM of this machine is degraded — the dashboard above now has a content hole. `
       + `(escalade automatique #4095; max 1/h par dashboard)`,
