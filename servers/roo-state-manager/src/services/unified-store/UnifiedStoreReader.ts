@@ -119,6 +119,13 @@ export interface IUnifiedStoreReader {
   getRooSyncMailbox(machineId: string): Promise<RooSyncMessageRow[]>;
   /** Full-fidelity lookup of one channel message by id (any status). */
   getRooSyncMessageById(id: string): Promise<RooSyncMessageRow | null>;
+  /**
+   * #4302 — the whole non-archived, non-destroyed channel pool (every
+   * recipient), newest first. Bounds the global scans (cleanupExpiredMessages,
+   * sendExpiryReminders) that iterate the entire GDrive pool today: the
+   * mailbox read is recipient-scoped and cannot express them.
+   */
+  getRooSyncChannelMessages(): Promise<RooSyncMessageRow[]>;
 
   // ─── RooSync dashboard reads (#3151 Phase C) ─────────────────────
 
@@ -193,6 +200,7 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   isNull(): boolean { return true; }
   async getRooSyncMailbox(_machineId: string): Promise<RooSyncMessageRow[]> { return []; }
   async getRooSyncMessageById(_id: string): Promise<RooSyncMessageRow | null> { return null; }
+  async getRooSyncChannelMessages(): Promise<RooSyncMessageRow[]> { return []; }
   async getRooSyncDashboard(_key: string): Promise<{
     dashboard: RooSyncDashboardRow;
     messages: RooSyncDashboardMessageRow[];

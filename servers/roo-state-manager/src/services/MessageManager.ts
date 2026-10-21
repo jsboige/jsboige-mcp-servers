@@ -43,6 +43,7 @@ import {
   readChannelMailboxFromPg,
   countChannelInboxFromPg,
   getChannelMessageFromPg,
+  readWholeChannelFromPg,
 } from './unified-store/roosync-channel-read.js';
 // #3151 Phase D — PG-primary channel writes (env-gated, GDrive fallback on
 // PG failure). The dual-write above made GDrive primary and PG the mirror;
@@ -832,6 +833,26 @@ export class MessageManager {
       this.inboxCache = this.inboxCache.filter(item => item.id !== messageId);
     }
     if (this.lastInboxFileCount > 0) this.lastInboxFileCount--;
+  }
+
+  /**
+   * Full messages of the GDrive inbox pool (#4302) — the fallback source for
+   * the bulk/stats scans when PG is off or failed. Same semantics as the
+   * previous in-line `items`/`full` walk (absent directory → empty pool).
+   * @private
+   */
+  private async gdriveInboxMessages(): Promise<Message[]> {
+    if (!existsSync(this.inboxPath)) return [];
+    // #4285: deep — the stats scans (oldest_unread) read the whole history by
+    // construction; matching over the #3292 recent slice would under-report
+    // exactly the messages the caller is trying to measure.
+    const { items, full } = await this.ensureInboxCache({ deep: true });
+    const messages: Message[] = [];
+    for (const item of items) {
+      const message = full.get(item.id);
+      if (message) messages.push(message);
+    }
+    return messages;
   }
 
   /**
@@ -2280,9 +2301,33 @@ export class MessageManager {
     const now = new Date();
     let destroyed = 0;
 
+    // #4302 — PG-primary global scan (env-gated): the whole pool read is
+    // recipient-blind by design here, so the mailbox read cannot express it.
+    // null = PG unavailable → GDrive pool below.
+    const pgReader = getChannelPgReader();
+    if (pgReader) {
+      const startedAt = Date.now();
+      const pgPool = await readWholeChannelFromPg(pgReader);
+      if (pgPool !== null) {
+        logger.info(`[channel-pg] cleanup scan served from PG in ${Date.now() - startedAt}ms (${pgPool.length} messages)`);
+        return this.cleanupExpiredIn(pgPool, now);
+      }
+      logger.warn('[channel-pg] PG channel pool read failed — falling back to GDrive');
+    }
+
     // Use cached inbox data instead of re-scanning GDrive directory
     const { full } = await this.ensureInboxCache();
-    for (const message of full.values()) {
+    return this.cleanupExpiredIn(full.values(), now);
+  }
+
+  /**
+   * TTL-expired destruction pass over a message iterable (#4302). PG and
+   * GDrive scans converge here.
+   * @private
+   */
+  private async cleanupExpiredIn(messages: Iterable<Message>, now: Date): Promise<number> {
+    let destroyed = 0;
+    for (const message of messages) {
       if (message.auto_destruct && message.expires_at && !message.destroyed_at) {
         if (new Date(message.expires_at) <= now) {
           await this.destroyMessage(message.id, 'ttl_expired');
@@ -2305,13 +2350,35 @@ export class MessageManager {
    * @returns Number of reminders sent
    */
   async sendExpiryReminders(): Promise<number> {
-    const now = Date.now();
-    let remindersSent = 0;
+    // #4302 — PG-primary global scan (env-gated), same shape as
+    // cleanupExpiredMessages above. null = PG unavailable → GDrive pool.
+    const pgReader = getChannelPgReader();
+    if (pgReader) {
+      const startedAt = Date.now();
+      const pgPool = await readWholeChannelFromPg(pgReader);
+      if (pgPool !== null) {
+        logger.info(`[channel-pg] reminder scan served from PG in ${Date.now() - startedAt}ms (${pgPool.length} messages)`);
+        return this.sendExpiryRemindersIn(pgPool);
+      }
+      logger.warn('[channel-pg] PG channel pool read failed — falling back to GDrive');
+    }
 
     // Use cached inbox data instead of re-scanning GDrive directory
     const { full } = await this.ensureInboxCache();
+    return this.sendExpiryRemindersIn(full.values());
+  }
 
-    for (const message of full.values()) {
+  /**
+   * Expiry reminder pass over a message iterable (#4302). Reminder
+   * threshold: max(5 minutes, TTL × 10%). Each message only gets one
+   * reminder (reminder_sent flag). PG and GDrive scans converge here.
+   * @private
+   */
+  private async sendExpiryRemindersIn(messages: Iterable<Message>): Promise<number> {
+    const now = Date.now();
+    let remindersSent = 0;
+
+    for (const message of messages) {
       // Only for auto-destruct messages with TTL that haven't been destroyed or reminded
       if (!message.auto_destruct || !message.expires_at || !message.destruct_after ||
           message.destroyed_at || message.reminder_sent) {
@@ -3261,14 +3328,29 @@ export class MessageManager {
       oldest_unread: null as string | null
     };
 
-    // Use cached data (#638 perf optimization)
-    const { items, full } = await this.ensureInboxCache();
+    // #4302 — PG-primary stats (env-gated): full PG messages carry every
+    // field the stats read (priority, sender, timestamps, read_by for the
+    // per-reader verdict). null = PG unavailable → GDrive pool below.
+    const pgReader = getChannelPgReader();
+    let candidates: Message[];
+    if (pgReader) {
+      const startedAt = Date.now();
+      const pgMessages = await readChannelMailboxFromPg(pgReader, machineId, effectiveWorkspaceId);
+      if (pgMessages !== null) {
+        logger.info(`[channel-pg] inbox stats served from PG in ${Date.now() - startedAt}ms (${pgMessages.length} messages)`);
+        candidates = pgMessages;
+      } else {
+        logger.warn('[channel-pg] PG scoped message read failed — falling back to GDrive');
+        candidates = await this.gdriveInboxMessages();
+      }
+    } else {
+      // Use cached data (#638 perf optimization)
+      candidates = await this.gdriveInboxMessages();
+    }
+
     let oldestUnreadDate: Date | null = null;
 
-    for (const item of items) {
-      const message = full.get(item.id);
-      if (!message) continue;
-
+    for (const message of candidates) {
       if (!matchesRecipient(message.to, machineId, effectiveWorkspaceId)) {
         continue;
       }
