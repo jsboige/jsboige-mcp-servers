@@ -16,7 +16,7 @@ import { createLogger } from '../utils/logger.js';
 import { ensureStoreSubdir, isSharedPathAccessible, tryGetSharedStatePath, SharedStoreInaccessibleError } from '../utils/shared-state-path.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
-import { parseMachineWorkspace, matchesRecipient, matchesMachineTarget, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
+import { parseMachineWorkspace, matchesRecipient, matchesMachineTarget, getLocalMachineId, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
 import { maskSecretTextForPublication } from '../utils/secret-redaction.js';
 // Safe as a static import: AttachmentManager pulls fs/path/crypto/logger plus the
 // unified-store gate modules (#3151 §7.5.2), whose MessageManager references are
@@ -44,12 +44,15 @@ import {
   countChannelInboxFromPg,
   getChannelMessageFromPg,
   readWholeChannelFromPg,
+  readChannelSweepRowsFromPg,
+  mapRowToMessage,
 } from './unified-store/roosync-channel-read.js';
 // #3151 Phase D — PG-primary channel writes (env-gated, GDrive fallback on
 // PG failure). The dual-write above made GDrive primary and PG the mirror;
 // these invert it, so GDrive becomes the read-only legacy archive.
 import {
   isChannelPgPrimary,
+  isChannelPgWritable,
   insertRooSyncMessagePrimary,
   updateRooSyncMessagePrimary,
   destroyRooSyncMessageInStore,
@@ -1905,7 +1908,12 @@ export class MessageManager {
     // Falls back to the file path when the row is unknown (legacy message,
     // GDrive-only) or when the PG update fails — for a PG-only message the
     // fallback then surfaces "not found" and the caller retries.
-    if (isChannelPgPrimary()) {
+    // B13 (#4131) — a DUAL_WRITE seat without PG_PRIMARY (READ_PG host) must
+    // still mutate PG-only rows: their GDrive file was never written, so the
+    // PG_PRIMARY-only gate fell through to "not found". The file path below
+    // stays authoritative whenever the file exists.
+    const filePath = join(this.inboxPath, `${messageId}.json`);
+    if (isChannelPgPrimary() || (isChannelPgWritable() && !existsSync(filePath))) {
       const reader = getChannelPgReader();
       if (reader) {
         const pgMessage = await getChannelMessageFromPg(reader, messageId);
@@ -1948,7 +1956,6 @@ export class MessageManager {
       }
     }
 
-    const filePath = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(filePath)) {
       // Phantom message fix (#2307 Phase 4): message may have been auto-archived
       // between cache build and this mutation. Check archive for idempotency.
@@ -2142,7 +2149,12 @@ export class MessageManager {
     // secret that survives one layer down is the exact defect the survivors
     // guard exists for. Falls back to the file path when the row is unknown
     // or the PG write fails.
-    if (isChannelPgPrimary()) {
+    // B13 (#4131) — a DUAL_WRITE seat without PG_PRIMARY (READ_PG host) must
+    // still destroy PG-only rows: their GDrive file was never written, so the
+    // PG_PRIMARY-only gate fell through to "not found". The file path stays
+    // authoritative whenever the file exists.
+    const filePath = join(this.inboxPath, `${messageId}.json`);
+    if (isChannelPgPrimary() || (isChannelPgWritable() && !existsSync(filePath))) {
       const reader = getChannelPgReader();
       if (reader) {
         const pgMessage = await getChannelMessageFromPg(reader, messageId);
@@ -2192,7 +2204,6 @@ export class MessageManager {
       }
     }
 
-    const filePath = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(filePath)) {
       logger.warn(`Message not found for destruction: ${messageId}`);
       return false;
@@ -2301,11 +2312,14 @@ export class MessageManager {
     const now = new Date();
     let destroyed = 0;
 
-    // #4302 — PG-primary global scan (env-gated): the whole pool read is
-    // recipient-blind by design here, so the mailbox read cannot express it.
+// #4302/#4301 — PG scan (env-gated): the pool read is recipient-blind by
+    // design here, so the mailbox read cannot express it. The sweep only takes
+    // the PG candidates when it can also commit the destroy transitions
+    // (#4301): on a READ_PG host without the PG writer, destroyMessage would
+    // fall through to a file path that PG-only rows do not have.
     // null = PG unavailable → GDrive pool below.
     const pgReader = getChannelPgReader();
-    if (pgReader) {
+    if (pgReader && isChannelPgWritable()) {
       const startedAt = Date.now();
       const pgPool = await readWholeChannelFromPg(pgReader);
       if (pgPool !== null) {
@@ -2350,102 +2364,120 @@ export class MessageManager {
    * @returns Number of reminders sent
    */
   async sendExpiryReminders(): Promise<number> {
-    // #4302 — PG-primary global scan (env-gated), same shape as
-    // cleanupExpiredMessages above. null = PG unavailable → GDrive pool.
+    const now = Date.now();
+    let remindersSent = 0;
+
+    // #4301 — PG-host sweep: candidates come from the rows that serve the
+    // mailbox. No inbox/sent file writes here: the PG row is the served state,
+    // and `reminder_sent_at` is the flag every later pass reads.
     const pgReader = getChannelPgReader();
-    if (pgReader) {
-      const startedAt = Date.now();
-      const pgPool = await readWholeChannelFromPg(pgReader);
-      if (pgPool !== null) {
-        logger.info(`[channel-pg] reminder scan served from PG in ${Date.now() - startedAt}ms (${pgPool.length} messages)`);
-        return this.sendExpiryRemindersIn(pgPool);
+    if (pgReader && isChannelPgWritable()) {
+      const rows = await readChannelSweepRowsFromPg(pgReader, getLocalMachineId());
+      if (rows !== null) {
+        for (const row of rows) {
+          const message = mapRowToMessage(row);
+          const minutesLeft = this.expiryReminderMinutesLeft(message, now);
+          if (minutesLeft === null) continue;
+
+          await this.sendExpiryReminderMessage(message, minutesLeft);
+          dualWriteRooSyncMessageReminderSent(message.id).catch(() => {});
+
+          remindersSent++;
+          logger.info(`Sent expiry reminder for message ${message.id} (${minutesLeft}min left, PG rows)`);
+        }
+
+        if (remindersSent > 0) {
+          logger.info(`Sent ${remindersSent} expiry reminders`);
+        }
+        return remindersSent;
       }
-      logger.warn('[channel-pg] PG channel pool read failed — falling back to GDrive');
+      logger.warn('[channel-pg] expiry-reminders: PG sweep read failed — falling back to GDrive cache');
     }
 
     // Use cached inbox data instead of re-scanning GDrive directory
     const { full } = await this.ensureInboxCache();
-    return this.sendExpiryRemindersIn(full.values());
-  }
 
-  /**
-   * Expiry reminder pass over a message iterable (#4302). Reminder
-   * threshold: max(5 minutes, TTL × 10%). Each message only gets one
-   * reminder (reminder_sent flag). PG and GDrive scans converge here.
-   * @private
-   */
-  private async sendExpiryRemindersIn(messages: Iterable<Message>): Promise<number> {
-    const now = Date.now();
-    let remindersSent = 0;
+    for (const message of full.values()) {
+      const minutesLeft = this.expiryReminderMinutesLeft(message, now);
+      if (minutesLeft === null) continue;
 
-    for (const message of messages) {
-      // Only for auto-destruct messages with TTL that haven't been destroyed or reminded
-      if (!message.auto_destruct || !message.expires_at || !message.destruct_after ||
-          message.destroyed_at || message.reminder_sent) {
-        continue;
+      await this.sendExpiryReminderMessage(message, minutesLeft);
+
+      // Mark reminder as sent on the original message file
+      message.reminder_sent = true;
+      const msgFileName = `${message.id}.json`;
+      const filePath = join(this.inboxPath, msgFileName);
+      try {
+        await fs.writeFile(filePath, JSON.stringify(message, null, 2));
+      } catch {
+        // Non-critical: cache is updated, file write may fail
       }
 
-      const expiresAt = new Date(message.expires_at).getTime();
-      if (expiresAt <= now) continue; // Already expired, cleanup will handle it
+      // #3151 Phase A.2 — mirror the flag so a PG-side sweep does not remind twice.
+      dualWriteRooSyncMessageReminderSent(message.id).catch(() => {});
 
-      // Calculate reminder threshold: max(5min, TTL × 10%)
-      const ttlMs = MessageManager.parseDuration(message.destruct_after);
-      if (!ttlMs) continue;
-
-      const reminderThreshold = Math.max(5 * 60 * 1000, ttlMs * 0.1);
-      const timeUntilExpiry = expiresAt - now;
-
-      if (timeUntilExpiry <= reminderThreshold) {
-        // Send reminder message
-        const minutesLeft = Math.ceil(timeUntilExpiry / 60000);
-        const reminderSubject = `[REMINDER] Message "${message.subject}" expires in ${minutesLeft}min`;
-        const reminderBody = `⏰ **Rappel d'expiration**\n\nLe message auto-destructeur suivant va expirer :\n\n` +
-          `- **ID:** \`${message.id}\`\n` +
-          `- **Sujet:** ${message.subject}\n` +
-          `- **De:** ${message.from}\n` +
-          `- **Expire dans:** ~${minutesLeft} minute${minutesLeft > 1 ? 's' : ''}\n\n` +
-          `Lisez-le avant qu'il ne soit détruit automatiquement.`;
-
-        await this.sendMessage(
-          'system', message.to, reminderSubject, reminderBody,
-          'HIGH', ['auto-destruct-reminder', 'system']
-        );
-
-        // Mark reminder as sent on the original message file
-        message.reminder_sent = true;
-        const msgFileName = `${message.id}.json`;
-        const filePath = join(this.inboxPath, msgFileName);
+      // Also update sent copy if exists
+      const sentFile = join(this.sentPath, msgFileName);
+      if (existsSync(sentFile)) {
         try {
-          await fs.writeFile(filePath, JSON.stringify(message, null, 2));
+          const sentContent = await fs.readFile(sentFile, 'utf-8');
+          const sentMessage: Message = JSON.parse(sentContent);
+          sentMessage.reminder_sent = true;
+          await fs.writeFile(sentFile, JSON.stringify(sentMessage, null, 2));
         } catch {
-          // Non-critical: cache is updated, file write may fail
+          // Non-critical
         }
-
-        // #3151 Phase A.2 — mirror the flag so a PG-side sweep does not remind twice.
-        dualWriteRooSyncMessageReminderSent(message.id).catch(() => {});
-
-        // Also update sent copy if exists
-        const sentFile = join(this.sentPath, msgFileName);
-        if (existsSync(sentFile)) {
-          try {
-            const sentContent = await fs.readFile(sentFile, 'utf-8');
-            const sentMessage: Message = JSON.parse(sentContent);
-            sentMessage.reminder_sent = true;
-            await fs.writeFile(sentFile, JSON.stringify(sentMessage, null, 2));
-          } catch {
-            // Non-critical
-          }
-        }
-
-        remindersSent++;
-        logger.info(`Sent expiry reminder for message ${message.id} (${minutesLeft}min left)`);
       }
+
+      remindersSent++;
+      logger.info(`Sent expiry reminder for message ${message.id} (${minutesLeft}min left)`);
     }
 
     if (remindersSent > 0) {
       logger.info(`Sent ${remindersSent} expiry reminders`);
     }
     return remindersSent;
+  }
+
+  /**
+   * Reminder decision shared by both sweeps (#4301): minutes left when a
+   * reminder is due, else null. Threshold: max(5 minutes, TTL × 10%).
+   */
+  private expiryReminderMinutesLeft(message: Message, now: number): number | null {
+    // Only for auto-destruct messages with TTL that haven't been destroyed or reminded
+    if (!message.auto_destruct || !message.expires_at || !message.destruct_after ||
+        message.destroyed_at || message.reminder_sent) {
+      return null;
+    }
+
+    const expiresAt = new Date(message.expires_at).getTime();
+    if (expiresAt <= now) return null; // Already expired, cleanup will handle it
+
+    // Calculate reminder threshold: max(5min, TTL × 10%)
+    const ttlMs = MessageManager.parseDuration(message.destruct_after);
+    if (!ttlMs) return null;
+
+    const reminderThreshold = Math.max(5 * 60 * 1000, ttlMs * 0.1);
+    const timeUntilExpiry = expiresAt - now;
+    if (timeUntilExpiry > reminderThreshold) return null;
+
+    return Math.ceil(timeUntilExpiry / 60000);
+  }
+
+  /** Reminder message itself, shared by both sweeps (#4301). */
+  private async sendExpiryReminderMessage(message: Message, minutesLeft: number): Promise<void> {
+    const reminderSubject = `[REMINDER] Message "${message.subject}" expires in ${minutesLeft}min`;
+    const reminderBody = `⏰ **Rappel d'expiration**\n\nLe message auto-destructeur suivant va expirer :\n\n` +
+      `- **ID:** \`${message.id}\`\n` +
+      `- **Sujet:** ${message.subject}\n` +
+      `- **De:** ${message.from}\n` +
+      `- **Expire dans:** ~${minutesLeft} minute${minutesLeft > 1 ? 's' : ''}\n\n` +
+      `Lisez-le avant qu'il ne soit détruit automatiquement.`;
+
+    await this.sendMessage(
+      'system', message.to, reminderSubject, reminderBody,
+      'HIGH', ['auto-destruct-reminder', 'system']
+    );
   }
 
   /**
@@ -2464,7 +2496,12 @@ export class MessageManager {
     // update (status + archived_at), no file move. Idempotent on an already
     // archived row. Falls back to the file path when the row is unknown
     // (legacy message) or the PG write fails.
-    if (isChannelPgPrimary()) {
+    // B13 (#4131) — a DUAL_WRITE seat without PG_PRIMARY (READ_PG host) must
+    // still archive PG-only rows: their GDrive file was never written, so the
+    // PG_PRIMARY-only gate fell through to "not found". The file path stays
+    // authoritative whenever the file exists.
+    const inboxFile = join(this.inboxPath, `${messageId}.json`);
+    if (isChannelPgPrimary() || (isChannelPgWritable() && !existsSync(inboxFile))) {
       const reader = getChannelPgReader();
       if (reader) {
         const pgMessage = await getChannelMessageFromPg(reader, messageId);
@@ -2486,7 +2523,6 @@ export class MessageManager {
       }
     }
 
-    const inboxFile = join(this.inboxPath, `${messageId}.json`);
     if (!existsSync(inboxFile)) {
       // Phantom message fix (#2307 Phase 4): already archived = success (idempotent)
       const archiveFile = join(this.archivePath, `${messageId}.json`);
@@ -3032,6 +3068,63 @@ export class MessageManager {
       `Auto-archiving messages older than ${maxAgeDays} days ` +
       `(onlyRead=${onlyRead}, unreadMaxAgeDays=${unreadMaxAgeDays})`
     );
+
+    // #4301 — on a CHANNEL_READ_PG host the mailbox is served from PG, so the
+    // candidates come from PG rows: rebuilding the GDrive inbox cache just to
+    // decide what to archive was the largest remaining GDrive traffic on such
+    // a seat (39 scans / 38 rebuilds on ai-01 in 11 h 45, 511 read errors).
+    // The transition is a row update — no file move; the GDrive file sweep
+    // stays for hosts without PG until dual-write ends (03/11).
+    const pgReader = getChannelPgReader();
+    if (pgReader && isChannelPgWritable()) {
+      const machineId = getLocalMachineId();
+      const rows = await readChannelSweepRowsFromPg(pgReader, machineId);
+      if (rows !== null) {
+        const toArchive: string[] = [];
+
+        for (const row of rows) {
+          const msgTime = new Date(row.created_at).getTime();
+          if (!Number.isFinite(msgTime) || msgTime >= cutoff) continue;
+
+          if (onlyRead) {
+            // Same verdict source as the PG read path (#629 broadcasts,
+            // #3960 read_by_workspace): the raw status is the fallback, not
+            // the rule — a broadcast unread for this machine must stay on the
+            // abandoned horizon below.
+            const effective = perReaderStatus(mapRowToMessage(row), machineId) ?? row.status;
+            // Unread messages are spared until the much longer abandoned horizon (#3150).
+            if (effective === 'unread' && (unreadMaxAgeDays <= 0 || msgTime >= unreadCutoff)) continue;
+          }
+
+          toArchive.push(row.id);
+        }
+
+        if (toArchive.length === 0) {
+          logger.info('No messages to auto-archive (PG rows)');
+          return 0;
+        }
+
+        let archived = 0;
+        for (const id of toArchive) {
+          // The row IS the served state on this seat: archive it in place
+          // (`status` + `archived_at`), the exact transition the dual-write
+          // mirror applies to a file-path archive.
+          if (await updateRooSyncMessagePrimary(id, {
+            status: 'archived',
+            archived_at: new Date().toISOString(),
+          })) {
+            this.removeFromCache(id);
+            archived++;
+          } else {
+            logger.warn(`[channel-pg] auto-archive: PG update failed for ${id}`);
+          }
+        }
+
+        logger.info(`Auto-archived ${archived}/${toArchive.length} messages (PG rows)`);
+        return archived;
+      }
+      logger.warn('[channel-pg] auto-archive: PG sweep read failed — falling back to GDrive cache');
+    }
 
     const { items, full } = await this.ensureInboxCache();
     const toArchive: string[] = [];

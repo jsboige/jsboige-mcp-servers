@@ -265,6 +265,35 @@ export async function countChannelInboxFromPg(
 }
 
 /**
+ * Rows for the pre-listing maintenance sweeps (#4301): auto-archive, expired
+ * auto-destruct cleanup, expiry reminders.
+ *
+ * On a CHANNEL_READ_PG host the mailbox is served from PG, so rebuilding the
+ * GDrive inbox cache just to decide what to sweep is pure waste — measured on
+ * ai-01 (20/10, build `ca2da038`): 39 passes, 38 cache rebuilds (~4 400 files
+ * each) and 511 read errors over 11 h 45, while PG served all 799 inbox reads.
+ *
+ * Scope: the local machine's mailbox (rows addressed to the machine or
+ * broadcast). The historical GDrive scan was fleet-wide only because `inbox/`
+ * is a shared directory with no recipient index — PG rows carry their
+ * recipient, so each host sweeps what it owns.
+ *
+ * @returns Rows (newest first), or **null** when PG is unavailable — the
+ *   caller must then fall back to the GDrive cache scan.
+ */
+export async function readChannelSweepRowsFromPg(
+  reader: IUnifiedStoreReader,
+  machineId: string
+): Promise<RooSyncMessageRow[] | null> {
+  try {
+    return await reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId);
+  } catch (error) {
+    logger.warn('[channel-pg] sweep read failed — caller should fall back to GDrive', { error: String(error) });
+    return null;
+  }
+}
+
+/**
  * Fetch one full message from PG.
  *
  * @returns The message, or null when PG is unavailable OR the id is unknown —
