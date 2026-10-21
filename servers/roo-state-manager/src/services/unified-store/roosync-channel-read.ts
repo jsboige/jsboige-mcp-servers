@@ -24,6 +24,7 @@ import type { Message, MessageListItem } from '../MessageManager.js';
 import type { RooSyncMessageRow } from './types.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
+import { withColdPoolResume } from './pg-cold-pool-resume.js';
 import { parseMachineWorkspace, matchesRecipient, perReaderStatus } from '../../utils/message-helpers.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -158,7 +159,10 @@ export async function readChannelInboxFromPg(
   workspaceId?: string
 ): Promise<MessageListItem[] | null> {
   try {
-    const rows = await reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId);
+    const rows = await withColdPoolResume(
+      () => reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId),
+      'channel:mailbox'
+    );
     return filterMailboxRows(rows, machineId, status, workspaceId);
   } catch (error) {
     logger.warn('[channel-pg] mailbox read failed — caller should fall back to GDrive', { error: String(error) });
@@ -177,7 +181,10 @@ export async function countChannelInboxFromPg(
   workspaceId?: string
 ): Promise<{ total: number; unread: number; read: number } | null> {
   try {
-    const rows = await reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId);
+    const rows = await withColdPoolResume(
+      () => reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId),
+      'channel:count'
+    );
     let total = 0;
     let unread = 0;
     let read = 0;
@@ -218,7 +225,10 @@ export async function getChannelMessageFromPg(
   messageId: string
 ): Promise<Message | null> {
   try {
-    const row = await reader.getRooSyncMessageById(messageId);
+    const row = await withColdPoolResume(
+      () => reader.getRooSyncMessageById(messageId),
+      `channel:message:${messageId}`
+    );
     if (!row) return null;
     return mapRowToMessage(row);
   } catch (error) {
