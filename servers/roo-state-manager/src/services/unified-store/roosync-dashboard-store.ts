@@ -37,6 +37,7 @@ import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import type { RooSyncLockAcquireStatus, UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { PgUnifiedStoreReader } from './PgUnifiedStoreReader.js';
+import { withColdPoolResume } from './pg-cold-pool-resume.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -228,7 +229,10 @@ export async function readDashboardFromPg(key: string): Promise<Dashboard | null
   const reader = getDashboardPgReader();
   if (!reader) return null;
   try {
-    const result = await reader.getRooSyncDashboard(key);
+    const result = await withColdPoolResume(
+      () => reader.getRooSyncDashboard(key),
+      `dashboard-read:${key}`
+    );
     if (!result) return null;
     return mapRowsToDashboard(result.dashboard, result.messages);
   } catch (error) {
