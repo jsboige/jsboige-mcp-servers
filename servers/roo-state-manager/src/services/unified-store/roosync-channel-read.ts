@@ -287,3 +287,50 @@ export async function getChannelMessageFromPg(
     return null;
   }
 }
+
+/**
+ * #4131 B14 — one-shot inbox read for the scheduled workers (CLI contract).
+ *
+ * `scripts/scheduling/start-claude-worker.ps1` reads `messages\inbox` as files
+ * in two places (`Get-RooSyncTask`, `Test-RooSyncResponse`). Under
+ * `CHANNEL_PG_PRIMARY` messages no longer have files, so those functions go
+ * blind. The worker cannot host an MCP client, but it CAN shell out to
+ * `scripts/read-roosync-inbox.mjs` — which calls this helper.
+ *
+ * Unlike the helpers above, this one is self-contained: it resolves the gated
+ * reader itself and CLOSES it before returning (a CLI must not leave a live PG
+ * pool holding the event loop open at exit). The `status` of each message is
+ * adjusted through `perReaderStatus` — same verdict source as the inbox path —
+ * so a broadcast already read by another seat of the machine does not re-fire
+ * the worker under PG.
+ *
+ * @returns `{source: 'pg', messages}` — the recipient's full messages (newest
+ *   first, read and unread alike; the PowerShell callers filter `status`
+ *   themselves, mirroring the file pool). `{source: 'file'}` tells the caller
+ *   to keep the legacy file path: gate off, or PG unreachable.
+ */
+export async function readCliInboxFromPg(
+  machineId: string,
+  workspaceId?: string
+): Promise<
+  | { source: 'pg'; messages: Message[] }
+  | { source: 'file'; reason: 'gate-off' | 'pg-unavailable' }
+> {
+  const reader = getChannelPgReader();
+  if (!reader) return { source: 'file', reason: 'gate-off' };
+
+  try {
+    const messages = await readChannelMailboxFromPg(reader, machineId, workspaceId);
+    if (messages === null) return { source: 'file', reason: 'pg-unavailable' };
+
+    return {
+      source: 'pg',
+      messages: messages.map((message) => {
+        const perReader = perReaderStatus(message, machineId, workspaceId);
+        return perReader ? { ...message, status: perReader } : message;
+      }),
+    };
+  } finally {
+    await reader.close();
+  }
+}
