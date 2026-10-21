@@ -166,7 +166,7 @@ export interface ExportDataArgs {
  */
 export const exportDataTool: Tool = {
     name: 'export_data',
-    description: 'Export data as XML, JSON, CSV, or Markdown. Debug task parsing. Targets: task (XML, debug), conversation (all formats), project (XML). CONS-10 + CONS-14 (absorbs task_export).',
+    description: 'Export data as XML, JSON, CSV, or Markdown. Debug task parsing. Targets: task (XML, debug), conversation (all formats), project (XML). CONS-10 + CONS-14 (absorbs task_export). Required IDs per combination: conversation json/csv/debug take taskId; conversation xml/markdown take conversationId (root of tree); task xml/debug take taskId; project takes projectPath. #2307: conversation json/csv with an empty sequence (oversized session above the discovery cap, or Tier-3 stub) fails with EMPTY_CONVERSATION_SEQUENCE instead of an empty "successful" document.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -194,7 +194,7 @@ export const exportDataTool: Tool = {
             },
             filePath: {
                 type: 'string',
-                description: 'Output file path. If omitted, returns content inline.'
+                description: '#2307: Output file path — RELATIVE, resolved against the MCP server process CWD (the submodule tree), NOT the agent workspace. Absolute Windows paths are rejected by the path guard (drive letter ":"). If omitted, returns content inline.'
             },
             // Options XML
             includeContent: {
@@ -560,6 +560,44 @@ async function handleProjectXml(
 }
 
 /**
+ * #2307: Une séquence vide doit échouer franchement plutôt que produire un
+ * document vide annoncé en succès (mesure 20/10/2026 : session JSONL de
+ * 602,4 MiB → export json « réussi » avec 0 message et des timestamps
+ * fabriqués). Deux causes connues de séquence vide :
+ * - session au-dessus du plafond de découverte du scanner de conversations
+ *   (le fichier n'est jamais lu, la skeleton ne porte que l'en-tête) ;
+ * - stub Tier-3 (#3661, metadata.hydrated=true) : séquence vide par design,
+ *   corps chargé à la demande.
+ */
+function assertExportableSequence(
+    conversation: ConversationSkeleton,
+    taskId: string,
+    format: 'json' | 'csv'
+): void {
+    if ((conversation.sequence?.length ?? 0) > 0) {
+        return;
+    }
+    const meta = conversation.metadata;
+    throw new StateManagerError(
+        `Séquence vide pour la tâche '${taskId}' — l'export ${format.toUpperCase()} produirait un ` +
+        `document vide annoncé en succès : refusé. Causes fréquentes : session au-dessus du plafond ` +
+        `de découverte du scanner de conversations (fichier jamais chargé), ou stub Tier-3 non ` +
+        `hydraté (hydrated: ${meta.hydrated === true} — corps chargé à la demande, #3661). ` +
+        `Vérifier le contenu réel avec conversation_browser(action: "view") avant d'exporter.`,
+        'EMPTY_CONVERSATION_SEQUENCE',
+        'ExportDataTool',
+        {
+            taskId,
+            format,
+            sequenceLength: conversation.sequence?.length ?? 0,
+            messageCount: meta.messageCount,
+            totalSize: meta.totalSize,
+            hydrated: meta.hydrated === true
+        }
+    );
+}
+
+/**
  * Handler pour export JSON d'une conversation
  */
 async function handleConversationJson(
@@ -577,6 +615,9 @@ async function handleConversationJson(
             { taskId }
         );
     }
+
+    // #2307: séquence vide → erreur franche AVANT toute génération
+    assertExportableSequence(conversation, taskId!, 'json');
 
     const summaryOptions: SummaryOptions = {
         detailLevel: 'Full',
@@ -640,6 +681,9 @@ async function handleConversationCsv(
             { taskId }
         );
     }
+
+    // #2307: séquence vide → erreur franche AVANT toute génération
+    assertExportableSequence(conversation, taskId!, 'csv');
 
     const summaryOptions: SummaryOptions = {
         detailLevel: 'Full',

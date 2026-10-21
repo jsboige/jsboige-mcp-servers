@@ -82,7 +82,12 @@ describe('export_data - CONS-10', () => {
             totalSize: 1024,
             workspace: '/test/workspace'
         },
-        sequence: []
+        // #2307: séquence non vide — la garde EMPTY_CONVERSATION_SEQUENCE refuse
+        // les exports json/csv sur séquence vide, les fixtures success doivent
+        // porter du contenu.
+        sequence: [
+            { role: 'user', content: 'fixture message', timestamp: new Date().toISOString(), isTruncated: false }
+        ]
     });
 
     beforeEach(() => {

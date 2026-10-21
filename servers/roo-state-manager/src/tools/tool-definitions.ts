@@ -292,7 +292,7 @@ export const claudishTrafficDefinition = {
 // ============================================================
 export const exportDataDefinition = {
     name: 'export_data',
-    description: 'Export data as XML, JSON, CSV, Markdown, or debug parsing. Targets: task, conversation, project. Gotcha: large exports (full conversations/projects) can timeout — prefer filePath output and/or jsonVariant:light + truncationChars for big targets.',
+    description: 'Export data as XML, JSON, CSV, Markdown, or debug parsing. Targets: task (XML, debug), conversation (all formats), project (XML). Required IDs per combination: conversation json/csv/debug take taskId; conversation xml/markdown take conversationId; task xml/debug take taskId; project takes projectPath. #2307: conversation json/csv with an empty sequence (oversized session above the discovery cap, or Tier-3 stub) fails with EMPTY_CONVERSATION_SEQUENCE instead of an empty "successful" document. Gotcha: large exports (full conversations/projects) can timeout — prefer filePath output and/or jsonVariant:light + truncationChars for big targets.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -301,7 +301,7 @@ export const exportDataDefinition = {
             taskId: { type: 'string', description: 'Required for task target, or conversation with json/csv/debug' },
             conversationId: { type: 'string', description: 'Required for conversation with xml/markdown' },
             projectPath: { type: 'string', description: 'Required for project' },
-            filePath: { type: 'string', description: 'Output path. If omitted, returns content.' },
+            filePath: { type: 'string', description: '#2307: Output file path — RELATIVE, resolved against the MCP server process CWD (the submodule tree), NOT the agent workspace. Absolute Windows paths are rejected by the path guard (drive letter ":"). If omitted, returns content inline.' },
             includeContent: { type: 'boolean', description: 'XML only' },
             prettyPrint: { type: 'boolean', default: true },
             maxDepth: { type: 'integer', description: 'XML/markdown' },
