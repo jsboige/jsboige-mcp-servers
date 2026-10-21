@@ -113,7 +113,16 @@ export class Logger {
         // write conflicts when multiple MCP server instances run concurrently.
         // GDrive virtual FS (GoogleDriveFS) does not handle concurrent appendFileSync
         // from multiple processes, causing UNKNOWN/EINVAL write errors.
-        const defaultLogDir = join(tmpdir(), 'roo-state-manager-logs');
+        // Refs #371 (grain c.34, mesure ai-01 21/10) : sous vitest, le défaut
+        // devient un répertoire DISTINCT — toute exécution de test sur un siège
+        // écrivait dans le MÊME roosync-YYYYMMDD.log que le serveur vivant (un
+        // log de test a été relayé comme panne de production). Le chemin de
+        // production ne change jamais.
+        const isTestRun = process.env.NODE_ENV === 'test' || !!process.env.VITEST;
+        const defaultLogDir = join(
+            tmpdir(),
+            isTestRun ? 'roo-state-manager-logs-test' : 'roo-state-manager-logs'
+        );
 
         this.logDir = options.logDir || defaultLogDir;
         this.filePrefix = options.filePrefix || 'roosync';
