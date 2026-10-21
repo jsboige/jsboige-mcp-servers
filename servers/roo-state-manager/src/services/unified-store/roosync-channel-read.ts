@@ -171,7 +171,7 @@ export async function readChannelInboxFromPg(
 }
 
 /**
- * #4285 — full-message mailbox enumeration for the bulk operations.
+ * #4285 — full-message mailbox enumeration for the bulk operations and stats.
  *
  * `readChannelInboxFromPg` returns condensed list items (no `tags`, no
  * per-message read state), which cannot serve `bulkOperation`'s tag filter
@@ -199,6 +199,24 @@ export async function readChannelMailboxFromPg(
     return messages;
   } catch (error) {
     logger.warn('[channel-pg] mailbox enumeration failed — caller should fall back to GDrive', { error: String(error) });
+    return null;
+  }
+}
+
+/**
+ * #4302 — the WHOLE channel pool from PG (cleanupExpiredMessages,
+ * sendExpiryReminders), parity with the GDrive pool those scans iterate
+ * today: every non-archived, non-destroyed message regardless of recipient.
+ *
+ * @returns Full messages (newest first), or **null** when PG is unavailable
+ *   — the caller must then fall back to the GDrive path.
+ */
+export async function readWholeChannelFromPg(reader: IUnifiedStoreReader): Promise<Message[] | null> {
+  try {
+    const rows = await reader.getRooSyncChannelMessages();
+    return rows.map(mapRowToMessage);
+  } catch (error) {
+    logger.warn('[channel-pg] channel pool read failed — caller should fall back to GDrive', { error: String(error) });
     return null;
   }
 }

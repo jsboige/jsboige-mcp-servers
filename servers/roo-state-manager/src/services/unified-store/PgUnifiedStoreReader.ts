@@ -132,6 +132,22 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     return this.mapRooSyncMessageRow(result.rows[0]);
   }
 
+  async getRooSyncChannelMessages(): Promise<RooSyncMessageRow[]> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    // Same pool as getRooSyncMailbox minus the recipient clause — the global
+    // scans (#4302) are recipient-blind by design.
+    const result = await this.pool.query(
+      `SELECT * FROM roosync_messages
+       WHERE status <> 'archived'
+         AND destroyed_at IS NULL
+       ORDER BY created_at DESC`
+    );
+
+    return result.rows.map(row => this.mapRooSyncMessageRow(row));
+  }
+
   // ─── RooSync attachment reads (#3151 §7.5.2) ─────────────────────
 
   async getRooSyncAttachmentById(id: string): Promise<(RooSyncAttachmentMetadataRow & { payload: Buffer }) | null> {
