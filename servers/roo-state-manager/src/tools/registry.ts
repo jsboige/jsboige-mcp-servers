@@ -212,6 +212,20 @@ export function registerCallToolHandler(
                                 if (full) return full;
                                 // Fall through to disk scan if full skeleton load fails
                             } else {
+                                // #2307 (resolver frere): un id claude-* indexe a 0 peut avoir grandi
+                                // depuis l'indexation - consulter le detector AVANT de rendre un
+                                // squelette vide (meme ordre que le fix export ms#1469). Echec muet
+                                // (null / sequence vide) -> comportement inchange (header rendu).
+                                if (id.startsWith('claude-')) {
+                                    try {
+                                        const { ClaudeStorageDetector } = await getClaudeStorageDetector();
+                                        const skeleton = await ClaudeStorageDetector.findConversationById(id);
+                                        if (skeleton && (skeleton.sequence ?? []).length > 0) {
+                                            cache.set(id, skeleton);
+                                            return skeleton;
+                                        }
+                                    } catch { /* Claude fallback failed - header vide rendu */ }
+                                }
                                 // Empty conversation — return header as skeleton (no sequence needed)
                                 return { ...cached, sequence: [] } as any;
                             }
