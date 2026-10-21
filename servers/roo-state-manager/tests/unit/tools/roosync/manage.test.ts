@@ -216,7 +216,8 @@ describe('roosync_manage', () => {
             expect(result.content[0].text).toContain('3');
             expect(mockBulkOperation).toHaveBeenCalledWith(
                 'myia-po-2025', 'mark_read',
-                expect.objectContaining({ from: 'test-machine', priority: 'LOW', status: 'unread' })
+                expect.objectContaining({ from: 'test-machine', priority: 'LOW', status: 'unread' }),
+                'roo-extensions' // workspace pass-through (#4285/ms#1466, override #1498/#3702)
             );
         });
 
@@ -240,7 +241,8 @@ describe('roosync_manage', () => {
             expect(result.content[0].text).toContain('5');
             expect(mockBulkOperation).toHaveBeenCalledWith(
                 'myia-po-2025', 'archive',
-                expect.objectContaining({ before_date: '2026-04-01T00:00:00Z' })
+                expect.objectContaining({ before_date: '2026-04-01T00:00:00Z' }),
+                'roo-extensions' // workspace pass-through (#4285/ms#1466, override #1498/#3702)
             );
         });
     });
