@@ -55,10 +55,19 @@ if (-not $SkipVenv) {
 Write-Host "[3/5] Installing dependencies..." -ForegroundColor Yellow
 $pip = "$VenvDir\Scripts\pip.exe"
 
-# Vérifier si semantic-kernel est installé
+# Vérifier si semantic-kernel est installé. PS 5.1 : un redirect 2>$null sur un
+# exe natif qui écrit sur stderr (pip show -> "WARNING: Package(s) not found")
+# lève une NativeCommandError TERMINANTE sous $ErrorActionPreference='Stop'
+# (#3411, mesuré po-2028) — on baisse l'EAP le temps de l'appel et on décide
+# sur $LASTEXITCODE, pas sur la forme de la sortie.
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = "Continue"
 $skCheck = & $pip show semantic-kernel 2>$null
-if ($skCheck) {
-    Write-Host "  ✓ semantic-kernel already installed: $($skCheck.Version)" -ForegroundColor Green
+$skInstalled = ($LASTEXITCODE -eq 0)
+$ErrorActionPreference = $prevEap
+if ($skInstalled) {
+    $skVersion = ($skCheck | Where-Object { $_ -match '^Version:\s*(.+)' } | ForEach-Object { $Matches[1] } | Select-Object -First 1)
+    Write-Host "  ✓ semantic-kernel already installed: $skVersion" -ForegroundColor Green
 } else {
     Write-Host "  Installing semantic-kernel..." -ForegroundColor Cyan
     & $pip install "semantic-kernel[mcp]>=1.39" "mcp>=1.26,<2" "openai>=1.109" "Pillow>=10.0" "httpx>=0.27" "qdrant-client"
