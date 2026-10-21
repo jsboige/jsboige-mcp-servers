@@ -11,11 +11,18 @@
  * tmpdir() est détournée vers un scratch via mock de 'os' (même specifier que
  * logger.ts) : le rouge lui-même ne doit pas polluer le répertoire de
  * production — ce serait commettre l'offense que ce test interdit.
+ *
+ * Le scratch est retiré en afterAll (grain c.35) : chaque exécution du fichier
+ * laissait sinon un rsm-logdir-test-* permanent dans le tmpdir du siège (3
+ * résidus mesurés sur po-2028 après les runs du 21/10). Le chemin passe par
+ * globalThis : la factory vi.mock est hoistée au-dessus des déclarations du
+ * module, une variable locale serait en TDZ au moment de son exécution.
  */
 
-import { describe, test, expect, vi } from 'vitest';
+import { describe, test, expect, vi, afterAll } from 'vitest';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { rmSync } from 'fs';
 import { Logger } from '../logger.js';
 
 vi.mock('os', async (importOriginal) => {
@@ -23,7 +30,15 @@ vi.mock('os', async (importOriginal) => {
     const fs = await import('fs');
     const path = await import('path');
     const scratch = fs.mkdtempSync(path.join(actual.tmpdir(), 'rsm-logdir-test-'));
+    (globalThis as Record<string, unknown>).__rsmLogdirScratch = scratch;
     return { ...actual, tmpdir: () => scratch };
+});
+
+afterAll(() => {
+    const scratch = (globalThis as Record<string, unknown>).__rsmLogdirScratch;
+    if (typeof scratch === 'string') {
+        rmSync(scratch, { recursive: true, force: true });
+    }
 });
 
 describe('Logger default logDir under VITEST (Refs #371)', () => {
