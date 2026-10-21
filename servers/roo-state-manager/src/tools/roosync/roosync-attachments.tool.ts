@@ -12,6 +12,8 @@
 import { AttachmentManager, type AttachmentListStats } from '../../services/roosync/AttachmentManager.js';
 import { getMessageManager } from '../../services/MessageManager.js';
 import { getSharedStatePath, assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
+import { getAttachmentPgReader, scanAttachmentMetadataFromPg } from '../../services/unified-store/roosync-attachment-pg.js';
+import { getChannelMessageFromPg } from '../../services/unified-store/roosync-channel-read.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('RooSyncAttachmentTools');
@@ -23,6 +25,29 @@ const logger = createLogger('RooSyncAttachmentTools');
  * Refus avec redirection vers `targetPath` (copie fichier côté hôte).
  */
 const INLINE_ATTACHMENT_MAX_BYTES = 1024 * 1024; // 1 MB
+
+/**
+ * #4293 — accessibilité du store sans nouvel export de shared-state-path :
+ * la surface historique est celle que portent les mocks de tests existants.
+ */
+function isStoreAccessible(): boolean {
+  try {
+    assertSharedStoreAccessible();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** #4293 — les deux moitiés sont muettes : erreur explicite, jamais un vide. */
+function storeAndPgUnavailableError(): Error {
+  let storePath = 'variable non définie';
+  try { storePath = getSharedStatePath(); } catch { /* unset */ }
+  return new Error(
+    `ROOSYNC_SHARED_PATH inaccessible (${storePath}) : le magasin partagé RooSync est absent du système de fichiers. ` +
+    `La lecture PostgreSQL de secours n'a rien rendu non plus : aucune des deux moitiés du magasin ne peut servir cette lecture.`
+  );
+}
 
 /**
  * #3256 — Résout les refs d'attachments d'un message SANS parcourir le store.
@@ -38,7 +63,20 @@ const INLINE_ATTACHMENT_MAX_BYTES = 1024 * 1024; // 1 MB
  */
 async function resolveMessageAttachmentRefs(
   messageId: string,
+  storeAccessible: boolean,
 ): Promise<Array<{ uuid: string; filename: string; sizeBytes: number }> | null> {
+  // #4293 — store absent : getMessage reste borné aux fichiers (cette surface
+  // ne fournit pas de callerId), donc les refs sont lues directement dans PG.
+  // PG miss ou échec → null, l'appelant retombe sur le scan ; un résultat vide
+  // issu de ce repli sera converti en erreur explicite plus bas.
+  if (!storeAccessible) {
+    const reader = getAttachmentPgReader();
+    if (reader) {
+      const pgMessage = await getChannelMessageFromPg(reader, messageId);
+      if (pgMessage) return pgMessage.attachments ?? [];
+    }
+    return null;
+  }
   const message = await getMessageManager().getMessage(messageId);
   if (!message) return null;
   return message.attachments ?? [];
@@ -55,7 +93,17 @@ export async function roosyncListAttachments(
 
   try {
     // #3459: fail-closed — an unreachable store must not render "Aucune pièce jointe".
-    assertSharedStoreAccessible();
+    // #4293: unless the PG reader can carry the read — then an absent G: is not
+    // a reason to refuse, and the empty-result guard below keeps the fail-closed
+    // intent when PG cannot answer either.
+    const storeAccessible = isStoreAccessible();
+    const pgReader = getAttachmentPgReader();
+    if (!storeAccessible && !pgReader) {
+      // No PG half to carry the read: raise the #3459 error verbatim.
+      assertSharedStoreAccessible();
+    } else if (!storeAccessible) {
+      logger.warn('[#4293] magasin partagé absent — liste d’attachments tentée sur PG');
+    }
     const sharedStatePath = getSharedStatePath();
     const manager = new AttachmentManager(sharedStatePath);
     // Pass-by-reference accumulator so the tool response can say *how many*
@@ -67,16 +115,40 @@ export async function roosyncListAttachments(
     // jamais depuis un parcours du store (O(N_flotte), 17,9 s mesurés pour un
     // miss). `null` (message inconnu) seul retombe sur le scan historique.
     let attachments;
+    let refsDefinitiveEmpty = false;
+    // #4293 — store absent : le scan est lu directement dans PG, pour savoir
+    // s'il a RÉPONDU. `listAttachments` retombe en silence sur un disque absent
+    // quand PG échoue, et rendrait alors un vide indiscernable d'un vrai vide.
+    let pgScanAnswered = false;
     if (args.message_id) {
-      const refs = await resolveMessageAttachmentRefs(args.message_id);
-      attachments = refs === null
-        ? await manager.listAttachments(args.message_id, stats)
-        : await manager.listAttachmentsByRefs(refs.map((r) => r.uuid), stats);
+      const refs = await resolveMessageAttachmentRefs(args.message_id, storeAccessible);
+      refsDefinitiveEmpty = refs !== null && refs.length === 0;
+      if (refs !== null) {
+        attachments = await manager.listAttachmentsByRefs(refs.map((r) => r.uuid), stats);
+      } else if (!storeAccessible) {
+        const scanned = await scanAttachmentMetadataFromPg(args.message_id);
+        pgScanAnswered = scanned !== null;
+        attachments = scanned ?? [];
+      } else {
+        attachments = await manager.listAttachments(args.message_id, stats);
+      }
+    } else if (!storeAccessible) {
+      const scanned = await scanAttachmentMetadataFromPg();
+      pgScanAnswered = scanned !== null;
+      attachments = scanned ?? [];
     } else {
       attachments = await manager.listAttachments(undefined, stats);
     }
 
     if (attachments.length === 0) {
+      // #4293 — store absent : [] n'est probant que si le message a été lu dans
+      // PG et ne portait aucune ref, ou si le scan PG a effectivement répondu
+      // (PG-primary). Un drapeau à 1 ne prouve rien : PG peut être tombé.
+      // Sinon ni PG ni le disque n'ont pu répondre : erreur explicite, jamais
+      // « aucune pièce jointe » (#3459).
+      if (!storeAccessible && !refsDefinitiveEmpty && !pgScanAnswered) {
+        throw storeAndPgUnavailableError();
+      }
       const scopeLabel = args.message_id ? `le message \`${args.message_id}\`` : 'le stockage partagé';
       return {
         content: [{
@@ -147,7 +219,7 @@ export async function roosyncGetAttachment(
     if (!args.message_id || !args.filename) {
       return { content: [{ type: 'text', text: '❌ Paramètre `uuid` requis (ou `message_id` + `filename` — #3256).' }] };
     }
-    const refs = await resolveMessageAttachmentRefs(args.message_id);
+    const refs = await resolveMessageAttachmentRefs(args.message_id, isStoreAccessible());
     if (refs === null) {
       return { content: [{ type: 'text', text: `❌ Message introuvable : \`${args.message_id}\` — impossible de résoudre \`filename\` sans UUID.` }] };
     }

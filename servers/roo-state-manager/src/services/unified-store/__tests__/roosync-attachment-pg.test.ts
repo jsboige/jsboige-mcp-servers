@@ -353,6 +353,17 @@ describe('#3151 §7.5.2 read helpers', () => {
       expect(rows![0].uuid).toBe(fullRow().id);
     });
   });
+
+  // #4293 — the store-absent tools read `null` as "PG did not answer" and an
+  // array (even empty) as a definitive answer. A failure must never become [].
+  test('scan: PG error → null, never [] (a failed scan is not an empty answer)', async () => {
+    await withEnv(PRIMARY_ENV, async () => {
+      mockScanRooSyncAttachments.mockRejectedValueOnce(new Error('connect ECONNREFUSED 127.0.0.1:1'));
+      expect(await scanAttachmentMetadataFromPg()).toBeNull();
+      mockScanRooSyncAttachments.mockResolvedValueOnce([]);
+      expect(await scanAttachmentMetadataFromPg()).toEqual([]);
+    });
+  });
 });
 
 // ─── Delete helpers ─────────────────────────────────────────────────

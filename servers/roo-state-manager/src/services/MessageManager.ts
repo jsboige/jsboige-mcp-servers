@@ -13,7 +13,7 @@ import { join, dirname, basename } from 'path';
 import { tmpdir } from 'os';
 import { createHash } from 'crypto';
 import { createLogger } from '../utils/logger.js';
-import { ensureStoreSubdir } from '../utils/shared-state-path.js';
+import { ensureStoreSubdir, isSharedPathAccessible, tryGetSharedStatePath, SharedStoreInaccessibleError } from '../utils/shared-state-path.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
 import { parseMachineWorkspace, matchesRecipient, matchesMachineTarget, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
@@ -1533,6 +1533,12 @@ export class MessageManager {
         );
         return this.paginateItems(matching, limit, page, perPage);
       }
+      if (!isSharedPathAccessible()) {
+        // #4293: the store is down AND PG did not serve the mailbox. Falling
+        // through would scan absent directories and return [] — the phony
+        // "empty inbox" #3459 exists to forbid.
+        throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
+      }
       logger.warn('[channel-pg] PG mailbox read failed — falling back to GDrive');
       pgFailed = true;
     }
@@ -1790,6 +1796,11 @@ export class MessageManager {
         }
         logger.info(`Message served from PG: ${messageId}`);
         return applyAccessVerdict(pgMessage, verdict);
+      }
+      if (!isSharedPathAccessible()) {
+        // #4293: a PG miss with the store down is not a "message not found".
+        // The file half could not be consulted at all — say so (fail-closed).
+        throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
       }
       logger.info(`[channel-pg] message not in PG (or PG down) — trying GDrive paths: ${messageId}`);
     }

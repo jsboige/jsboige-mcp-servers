@@ -402,9 +402,16 @@ ${truncateBodyPreview(args.body!)}
 
   logger.info('✅ Message sent successfully', { messageId: message.id, to: args.to, writeMs, from });
   // Fire-and-forget heartbeat update: sending a message proves the machine is active
-  (await getRooSyncService()).getHeartbeatService()
-    .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_send', messageId: message.id })
-    .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
+  // #4293: the service resolution itself can throw when ROOSYNC_SHARED_PATH is
+  // absent (G: down) — the message was already persisted (PG-primary), so a
+  // failing heartbeat must never turn a delivered send into a reported error.
+  try {
+    (await getRooSyncService()).getHeartbeatService()
+      .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_send', messageId: message.id })
+      .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
+  } catch (err) {
+    logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) });
+  }
   // Fire-and-forget dashboard update: track last activity (#546 Phase 2)
   updateDashboardActivityAsync(`Message envoyé à ${args.to}`, { messageId: message.id, subject: args.subject })
     .catch(err => logger.debug('Dashboard update skipped (non-critical)', { error: String(err) }));
@@ -673,9 +680,15 @@ ${truncateBodyPreview(args.body!)}
 
   logger.info('✅ Reply sent successfully', { replyId: replyMessageObj.id, threadId });
   // Fire-and-forget heartbeat update: sending a reply proves the machine is active
-  (await getRooSyncService()).getHeartbeatService()
-    .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_reply', messageId: replyMessageObj.id })
-    .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
+  // #4293: same contract as roosyncSend — a heartbeat failure must not report a
+  // persisted reply as failed when the shared store is down.
+  try {
+    (await getRooSyncService()).getHeartbeatService()
+      .registerHeartbeat(getLocalMachineId(), { lastActivity: 'roosync_reply', messageId: replyMessageObj.id })
+      .catch(err => logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) }));
+  } catch (err) {
+    logger.debug('Heartbeat update skipped (non-critical)', { error: String(err) });
+  }
   // Fire-and-forget dashboard update: track last activity (#546 Phase 2)
   updateDashboardActivityAsync(`Réponse envoyée à ${replyTo}`, { messageId: replyMessageObj.id, subject: replySubject })
     .catch(err => logger.debug('Dashboard update skipped (non-critical)', { error: String(err) }));

@@ -5813,23 +5813,51 @@ async function handleRead(
   resolvedWorkspace: string,
   requestEcho: DashboardRequestEcho
 ): Promise<DashboardResult> {
+  // #4293 — chemin lisible pour l'erreur « les deux moitiés sont muettes »,
+  // sans nouvel export de shared-state-path (surface des mocks existants).
+  const storePathLabel = (): string => {
+    try { return getSharedStatePath(); } catch { return 'ROOSYNC_SHARED_PATH non défini'; }
+  };
   // #3459: fail-closed. When the shared store root is unreachable, an agent must
   // be STOPPED, not reassured with "dashboard not found — use createIfNotExists".
-  try {
-    assertSharedStoreAccessible();
-  } catch (err) {
-    return {
-      success: false,
-      action: 'read',
-      key,
-      type: args.type!,
-      request: requestEcho,
-      message: (err as Error).message
-    };
+  // #4293: same relaxation as the append path (B2) — when the PG reader can
+  // serve the read, an absent G: does not block it. The
+  // "key missing everywhere" answer below then names the unreachable half
+  // instead of claiming the dashboard does not exist.
+  const storeAccessible = isSharedPathAccessible();
+  const pgReader = getDashboardPgReader();
+  if (storeAccessible || !pgReader) {
+    try {
+      assertSharedStoreAccessible();
+    } catch (err) {
+      return {
+        success: false,
+        action: 'read',
+        key,
+        type: args.type!,
+        request: requestEcho,
+        message: (err as Error).message
+      };
+    }
+  } else {
+    logger.warn('[#4293] magasin partagé absent — lecture dashboard tentée sur PG', { key });
   }
 
   let dashboard = await readDashboardFile(key);
   if (!dashboard) {
+    if (!storeAccessible) {
+      return {
+        success: false,
+        action: 'read',
+        key,
+        type: args.type!,
+        request: requestEcho,
+        message:
+          `Dashboard '${key}' introuvable : PostgreSQL n'a pas servi cette clé et le magasin partagé ` +
+          `(${storePathLabel()}) est injoignable. ` +
+          `La moitié fichier n'a pas pu être consultée — ce n'est pas « aucun dashboard » (fail-closed #3459/#4293).`
+      };
+    }
     return {
       success: false,
       action: 'read',
