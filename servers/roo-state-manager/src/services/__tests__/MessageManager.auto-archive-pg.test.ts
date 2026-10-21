@@ -99,7 +99,7 @@ vi.mock('../../services/lazy-roosync.js', () => ({
   }),
 }));
 
-vi.mock('../tools/roosync/heartbeat-activity.js', () => ({
+vi.mock('../../tools/roosync/heartbeat-activity.js', () => ({
   recordRooSyncActivityAsync: () => undefined,
 }));
 
