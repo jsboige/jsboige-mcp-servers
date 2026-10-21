@@ -13,13 +13,19 @@
  * PG from the moment it is posted.
  *
  * Surface = the #3761 escalation contract, imposed BY CONSTRUCTION:
- *   - there is NO --type option: the key is always `machine-<id>` (passing
- *     --type is a usage error, exit 2 — a global append cannot even be
- *     expressed);
+ *   - there is NO --type option on the escalation mode (passing --type is a
+ *     usage error); the key is `machine-<id>`;
  *   - content must be [TAG]-prefixed and the tag must not be ERROR
  *     (machine dashboards escalate WARN-class events only);
  *   - author is `<machine>|listener`, msg id `<machine>:listener:ic-…`
  *     (parity with the previous format).
+ *
+ * #4090 additive fleet surface (user RX107, 19/10): `--dashboard
+ * global|workspace:<name>` posts through the SAME dual-write path with a
+ * REQUIRED stable `--message-id` (a re-post with the same id is a no-op) and
+ * `--author-workspace` for the emitter's lane. [ERROR] is allowed there —
+ * watchdog DOWN alerts legitimately carry it. The escalation contract above
+ * is untouched and remains the default mode.
  *
  * Review contract (ms#1425 CHANGES_REQUESTED, 3 items — 14/10):
  *   1. APPEND LOCK, fail-open: the read→fold→write runs under
@@ -55,7 +61,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
 import { randomInt } from 'node:crypto';
 import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
-import { validateEscalationContent, buildListenerEscalationMessage, nextDashboardState } from './lib/dashboard-journal.mjs';
+import { validateEscalationContent, validateTaggedContent, buildListenerEscalationMessage, buildAppendMessage, shouldDeduplicate, parseAppendArgs, nextDashboardState } from './lib/dashboard-journal.mjs';
 
 // --- .env loader (zero-dep, same contract as backfill-roosync-read-state.mjs) ---
 function loadEnv(file) {
@@ -93,15 +99,24 @@ const args = process.argv.slice(2);
 if (args.includes('--help') || args.includes('-h')) {
   console.log(`Usage: node scripts/rsm-dashboard-append.mjs [options]
 
-  --machine <id>              Target machine (dashboard key machine-<id>).
+  --machine <id>              Author machine (dashboard key machine-<id> in
+                              escalation mode).
   --content-file <f> | --content <text>
-                              Escalation content, [TAG]-prefixed ([ERROR] refused).
+                              Content, [TAG]-prefixed.
+  --dashboard <global|workspace:<name>>
+                              #4090 fleet append — REQUIRES --message-id.
+                              [ERROR] is allowed here; the machine
+                              escalation below still refuses it.
+  --message-id <stable id>    Idempotence key: a re-post with the same id is
+                              a no-op (charset [A-Za-z0-9._:-], <=128).
+  --author-workspace <ws>     Author workspace for --dashboard (default
+                              listener; e.g. qdrant-watchdog).
 
-The dashboard type is FIXED to machine by construction (#3761 condition 1):
-there is no --type option, and passing one is a usage error. Author is
-<machine>|listener. The read→fold→write runs under the cross-process append
-lock (fail-open: unserialized=true when not acquired); the file write is
-bounded by UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS. Exit 0/1/2.
+Default mode (no --dashboard): machine-<id> escalation, WARN-class only,
+author <machine>|listener, generated id — the #3761 contract, unchanged.
+The read→fold→write runs under the cross-process append lock (fail-open:
+unserialized=true when not acquired); the file write is bounded by
+UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS. Exit 0/1/2.
 Loads .env automatically.`);
   process.exit(0);
 }
@@ -113,22 +128,18 @@ if (args.includes('--type')) {
   usageError('--type n’existe pas sur cette surface : le dashboard est TOUJOURS machine-<id> (#3761 condition 1)');
 }
 
-const flagValue = (name) => {
-  const i = args.indexOf(name);
-  return i !== -1 ? args[i + 1] : undefined;
-};
-const known = new Set(['--machine', '--content-file', '--content', '--help', '-h']);
-for (const a of args) {
-  if (a.startsWith('--') && !known.has(a)) usageError(`option inconnue « ${a} »`);
-}
+const parsed = parseAppendArgs(args);
+if (parsed.error) usageError(parsed.error);
 
-const machine = flagValue('--machine');
-const contentFile = flagValue('--content-file');
-const contentInline = flagValue('--content');
-if (!machine || machine.trim() === '') usageError('--machine <id> requis');
-if ((contentFile === undefined) === (contentInline === undefined)) {
-  usageError('exactement une source de contenu : --content-file <f> OU --content <texte>');
-}
+const {
+  mode,
+  machineId: machineArg,
+  contentFile,
+  contentInline,
+  dashboard: dashboardTarget,
+  messageId,
+  authorWorkspace,
+} = parsed;
 if (contentFile !== undefined && !/^[A-Za-z0-9._-]+$/.test(path.basename(contentFile))) {
   usageError(`--content-file attend un nom de fichier simple, reçu « ${contentFile} »`);
 }
@@ -140,8 +151,10 @@ try {
   usageError(`lecture de --content-file impossible : ${err instanceof Error ? err.message : String(err)}`);
 }
 
-const verdict = validateEscalationContent(content);
-if (!verdict.ok) usageError(`contenu d’escalade refusé : ${verdict.error}`);
+// #4090: fleet surfaces legitimately carry [ERROR] (watchdog DOWN alerts);
+// the machine-escalation guard stays as-is.
+const verdict = mode === 'dashboard' ? validateTaggedContent(content) : validateEscalationContent(content);
+if (!verdict.ok) usageError(`contenu refusé : ${verdict.error}`);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RSM_ROOT = path.resolve(__dirname, '..'); // servers/roo-state-manager/
@@ -168,9 +181,14 @@ const {
 const gdriveWriteTimeoutMs = () =>
   Number(process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS) || 30000;
 
-const machineId = machine.trim().toLowerCase();
-const key = buildDashboardKey('machine', machineId, '');
-const author = { machineId, workspace: 'listener' };
+const machineId = machineArg.trim().toLowerCase();
+// #4090: --dashboard selects the fleet surface; absent it stays the machine
+// escalation key by construction (#3761). Message ids stay machine-prefixed
+// in both modes so authorship and filtering keep working downstream.
+const key = dashboardTarget
+  ? buildDashboardKey(dashboardTarget.type, machineId, dashboardTarget.workspace ?? '')
+  : buildDashboardKey('machine', machineId, '');
+const author = { machineId, workspace: authorWorkspace };
 
 // Review item 1 (verrou append, fail-open): #3761 escalations must never be
 // dropped, so an unacquired lock proceeds unserialized and says so. Holder
@@ -209,61 +227,81 @@ try {
   if (dashboard) {
     base = 'file';
   } else {
-    dashboard = createEmptyDashboard('machine', key, author);
-  }
-  const message = buildListenerEscalationMessage({ machineId, content, nowIso: new Date().toISOString(), rand });
-  const next = nextDashboardState(dashboard, message);
-  const markdown = buildDashboardMarkdown(next);
-  const target = getDashboardPath(key);
-
-  // process.exit inside the locked section would skip the finally (and leak
-  // the lock to its TTL); a top-level `return` is a SyntaxError in ESM.
-  // The section computes into flags, the exit happens AFTER the release.
-  let writeFailed = false;
-  try {
-    mkdirSync(path.dirname(target), { recursive: true });
-    // Review item 1 (détention bornée): the writeFile carries the abort
-    // signal, so a hung DriveFS kills the in-flight request at the bound —
-    // the lock is released at the bound, not held indefinitely (07/10 class).
-    await writeFile(target, markdown, {
-      encoding: 'utf8',
-      signal: AbortSignal.timeout(gdriveWriteTimeoutMs())
-    });
-  } catch (err) {
-    writeFailed = true;
-    console.error(`ERREUR: écriture GDrive impossible (${target}) : ${err instanceof Error ? err.message : String(err)}`);
-    process.exitCode = 1;
+    dashboard = createEmptyDashboard(dashboardTarget ? dashboardTarget.type : 'machine', key, author);
   }
 
-  if (!writeFailed) {
+  // #4090 idempotence: a stable id already present means this exact alert was
+  // already posted. Fold/write are skipped — no second message, no counter
+  // bump — and the JSON says so. This runs INSIDE the lock so two concurrent
+  // posters of the same id cannot both miss it.
+  if (shouldDeduplicate(dashboard, messageId ?? null)) {
     posted = true;
-
-    // Review item 3: Checked variant decides pgSynced — the void variant
-    // swallows its errors, so "it didn't throw" proved nothing. The file half
-    // stands either way; the journal reconcile converges a miss.
-    let pgSynced = true;
-    let pgSyncReason;
-    try {
-      const outcome = await dualWriteDashboardSyncChecked(next);
-      pgSynced = outcome?.ok === true;
-      if (!pgSynced) pgSyncReason = outcome?.reason ?? String(outcome);
-    } catch (err) {
-      pgSynced = false;
-      pgSyncReason = err instanceof Error ? err.message : String(err);
-    }
-    if (!pgSynced) {
-      console.error(`WARN: sync PG non confirmée (${pgSyncReason}) — l’écriture GDrive tient, le journal convergera`);
-    }
-
     output = {
       ok: true,
       key,
-      base,          // file | created — which half supplied the base state
-      unserialized,  // true = the append lock could not be acquired (fail-open)
-      messageId: message.id,
-      totalMessages: next.intercom.totalMessages,
-      pgSynced,
+      base,
+      deduplicated: true,
+      messageId,
+      totalMessages: dashboard.intercom.totalMessages ?? dashboard.intercom.messages.length,
     };
+  } else {
+    const nowIso = new Date().toISOString();
+    const message = mode === 'dashboard'
+      ? buildAppendMessage({ machineId, workspace: authorWorkspace, content, messageId, nowIso, rand })
+      : buildListenerEscalationMessage({ machineId, content, nowIso, rand });
+    const next = nextDashboardState(dashboard, message);
+    const markdown = buildDashboardMarkdown(next);
+    const targetPath = getDashboardPath(key);
+
+    // process.exit inside the locked section would skip the finally (and leak
+    // the lock to its TTL); a top-level `return` is a SyntaxError in ESM.
+    // The section computes into flags, the exit happens AFTER the release.
+    let writeFailed = false;
+    try {
+      mkdirSync(path.dirname(targetPath), { recursive: true });
+      // Review item 1 (détention bornée): the writeFile carries the abort
+      // signal, so a hung DriveFS kills the in-flight request at the bound —
+      // the lock is released at the bound, not held indefinitely (07/10 class).
+      await writeFile(targetPath, markdown, {
+        encoding: 'utf8',
+        signal: AbortSignal.timeout(gdriveWriteTimeoutMs())
+      });
+    } catch (err) {
+      writeFailed = true;
+      console.error(`ERREUR: écriture GDrive impossible (${targetPath}) : ${err instanceof Error ? err.message : String(err)}`);
+      process.exitCode = 1;
+    }
+
+    if (!writeFailed) {
+      posted = true;
+
+      // Review item 3: Checked variant decides pgSynced — the void variant
+      // swallows its errors, so "it didn't throw" proved nothing. The file half
+      // stands either way; the journal reconcile converges a miss.
+      let pgSynced = true;
+      let pgSyncReason;
+      try {
+        const outcome = await dualWriteDashboardSyncChecked(next);
+        pgSynced = outcome?.ok === true;
+        if (!pgSynced) pgSyncReason = outcome?.reason ?? String(outcome);
+      } catch (err) {
+        pgSynced = false;
+        pgSyncReason = err instanceof Error ? err.message : String(err);
+      }
+      if (!pgSynced) {
+        console.error(`WARN: sync PG non confirmée (${pgSyncReason}) — l’écriture GDrive tient, le journal convergera`);
+      }
+
+      output = {
+        ok: true,
+        key,
+        base,          // file | created — which half supplied the base state
+        unserialized,  // true = the append lock could not be acquired (fail-open)
+        messageId: message.id,
+        totalMessages: next.intercom.totalMessages,
+        pgSynced,
+      };
+    }
   }
 } finally {
   if (lockOwned) {

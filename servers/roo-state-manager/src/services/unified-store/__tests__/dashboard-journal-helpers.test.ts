@@ -22,6 +22,10 @@ import {
   buildListenerEscalationMessage,
   nextDashboardState,
   parseIntercomArgs,
+  validateTaggedContent,
+  parseAppendArgs,
+  buildAppendMessage,
+  shouldDeduplicate,
 } from '../../../../scripts/lib/dashboard-journal.mjs';
 import { readFileSync } from 'fs';
 import path from 'path';
@@ -219,5 +223,106 @@ describe('G-C escalation CLI surface (drift-guard on the CLI source)', () => {
     expect(cli).toContain('dualWriteDashboardSyncChecked');
     // The void variant swallows its errors — a boolean derived from it is a lie.
     expect(cliCode).not.toMatch(/\bdualWriteDashboardSync\b(?!Checked)/);
+  });
+});
+
+// #4090 — the approved remedy (user RX107, 19/10) says the watchdogs must post
+// through this helper with a STABLE messageId. The escalation surface alone
+// cannot express it: machine-only key, [ERROR] refused, generated id. These
+// tests pin the additive general surface the remedy needs, without weakening
+// the escalation contract above (which stays the default mode).
+describe('#4090 fleet append surface (general targets + stable id)', () => {
+  const cli4090 = readFileSync(
+    path.join(__dirname, '../../../../scripts/rsm-dashboard-append.mjs'),
+    'utf-8'
+  );
+  const cliCode4090 = cli4090
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|[^:'"`])\/\/[^\n]*/g, '$1');
+
+  it('validateTaggedContent allows [ERROR] on fleet surfaces but still requires a [TAG]', () => {
+    expect(validateTaggedContent('[ERROR][WATCHDOG] Backend embeddings DOWN')).toEqual({ ok: true, tag: 'ERROR' });
+    expect(validateTaggedContent('[WARN][WATCHDOG] restored').ok).toBe(true);
+    expect(validateTaggedContent('   ').ok).toBe(false);
+    expect(validateTaggedContent('pas de tag').ok).toBe(false);
+  });
+
+  it('parseAppendArgs keeps the machine escalation as the default mode', () => {
+    const a = parseAppendArgs(['--machine', 'myia-ai-01', '--content-file', 'msg.txt']);
+    expect(a.mode).toBe('escalation');
+    expect(a.machineId).toBe('myia-ai-01');
+    expect(a.contentFile).toBe('msg.txt');
+    expect(a.authorWorkspace).toBe('listener');
+    expect(a.messageId).toBeNull();
+    expect(a.dashboard).toBeNull();
+  });
+
+  it('parses a global dashboard append with a stable message id', () => {
+    const a = parseAppendArgs([
+      '--machine', 'myia-ai-01', '--content', '[ERROR][WATCHDOG] down',
+      '--dashboard', 'global', '--message-id', 'myia-ai-01:qdrant-watchdog:ic-20261021T0900',
+      '--author-workspace', 'qdrant-watchdog',
+    ]);
+    expect(a.mode).toBe('dashboard');
+    expect(a.dashboard).toEqual({ type: 'global', workspace: null });
+    expect(a.messageId).toBe('myia-ai-01:qdrant-watchdog:ic-20261021T0900');
+    expect(a.authorWorkspace).toBe('qdrant-watchdog');
+  });
+
+  it('parses a workspace dashboard append', () => {
+    const a = parseAppendArgs(['--machine', 'myia-ai-01', '--content', '[WARN] x', '--dashboard', 'workspace:qdrant', '--message-id', 'm-1']);
+    expect(a.mode).toBe('dashboard');
+    expect(a.dashboard).toEqual({ type: 'workspace', workspace: 'qdrant' });
+  });
+
+  it('refuses a dashboard append without a stable message id (non-idempotent writes are the #4090 bug)', () => {
+    const a = parseAppendArgs(['--machine', 'myia-ai-01', '--content', '[WARN] x', '--dashboard', 'global']);
+    expect(a.error).toContain('--message-id');
+  });
+
+  it('refuses a message id or author workspace on the escalation mode, unknown targets and unknown flags', () => {
+    expect(parseAppendArgs(['--machine', 'm', '--content', 'x', '--message-id', 'm-1']).error).toContain('--dashboard');
+    expect(parseAppendArgs(['--machine', 'm', '--content', 'x', '--author-workspace', 'w']).error).toContain('--dashboard');
+    expect(parseAppendArgs(['--machine', 'm', '--content', 'x', '--dashboard', 'machine:foo', '--message-id', 'm-1']).error).toContain('global');
+    expect(parseAppendArgs(['--machine', 'm', '--content', 'x', '--dashboard', 'workspace:', '--message-id', 'm-1']).error).toContain('workspace');
+    expect(parseAppendArgs(['--machine', 'm', '--content', 'x', '--frobnicate']).error).toContain('option inconnue');
+    expect(parseAppendArgs(['--machine', 'm', '--content', 'x', '--content-file', 'y']).error).toContain('exactement une source');
+  });
+
+  it('buildAppendMessage uses the provided stable id verbatim (idempotence key)', () => {
+    const m = buildAppendMessage({
+      machineId: 'myia-ai-01',
+      workspace: 'qdrant-watchdog',
+      content: '[ERROR][WATCHDOG] down',
+      messageId: 'myia-ai-01:qdrant-watchdog:ic-20261021T0900',
+      nowIso: '2026-10-21T09:00:02.123Z',
+      rand: 'ab12',
+    });
+    expect(m.id).toBe('myia-ai-01:qdrant-watchdog:ic-20261021T0900');
+    expect(m.author).toEqual({ machineId: 'myia-ai-01', workspace: 'qdrant-watchdog' });
+    expect(m.timestamp).toBe('2026-10-21T09:00:02.123Z');
+  });
+
+  it('buildAppendMessage generates the id when none is supplied (escalation parity)', () => {
+    const m = buildAppendMessage({ machineId: 'myia-po-2023', workspace: 'listener', content: '[WARN] x', nowIso: '2026-10-14T01:23:45.678Z', rand: 'ab12' });
+    expect(m.id).toBe('myia-po-2023:listener:ic-20261014T012345-ab12');
+  });
+
+  it('shouldDeduplicate matches on the message id only', () => {
+    const dash = { intercom: { messages: [{ id: 'a' }, { id: 'b' }] } };
+    expect(shouldDeduplicate(dash, 'b')).toBe(true);
+    expect(shouldDeduplicate(dash, 'zz')).toBe(false);
+    expect(shouldDeduplicate({}, 'a')).toBe(false);
+  });
+
+  it('CLI source wires the general surface: --dashboard/--message-id, dedup before fold', () => {
+    expect(cli4090).toContain('--dashboard');
+    expect(cli4090).toContain('--message-id');
+    expect(cli4090).toContain('shouldDeduplicate');
+    const dedupCall = cliCode4090.indexOf('shouldDeduplicate(');
+    const foldCall = cliCode4090.indexOf('nextDashboardState(');
+    expect(dedupCall).toBeGreaterThan(-1);
+    expect(foldCall).toBeGreaterThan(-1);
+    expect(dedupCall).toBeLessThan(foldCall);
   });
 });
