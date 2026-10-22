@@ -448,6 +448,42 @@ export function redactValue(path: string, value: unknown): unknown {
 // Snapshot de comparaison (collect/publish) — secrets masqués, jamais raw
 // ---------------------------------------------------------------------------
 
+/**
+ * Couverture des hooks (#4243) — de quoi attester À DISTANCE quel garde est
+ * câblé, sans jamais publier la ligne de commande.
+ *
+ * `otherTopLevelKeys` ne rend que le NOM `hooks` : un siège avec un garde et un
+ * siège sans garde produisent le même snapshot, donc le déploiement flotte d'un
+ * hook n'était pas vérifiable hors de la machine. Ce champ comble ce trou en
+ * publiant trois choses non sensibles : l'événement, le matcher, et les
+ * BASENAMES des scripts référencés (ex. `guard-bash-composite.js`). Le digest
+ * de la commande complète discrimine deux hooks de même basename sans exposer
+ * le raw (une commande peut embarquer un token : `node x.js --token=…`).
+ */
+export interface HookCoverageEntry {
+  /** Événement du harnais (`PreToolUse`, `PostToolUse`, …). */
+  event: string;
+  /** Matcher de l'entrée, ou null quand l'entrée ne filtre pas d'outil. */
+  matcher: string | null;
+  /** Basenames des scripts référencés par la commande, triés et dédupliqués. */
+  scripts: string[];
+  /** sha256 tronqué de la ligne de commande — irréversible, discriminant. */
+  commandDigest: string;
+}
+
+const HOOK_SCRIPT_RE = /^[\w.@-]+\.(?:js|cjs|mjs|ts|py|ps1|sh|cmd|bat|exe)$/i;
+
+/** Basenames de scripts cités dans une commande de hook — jamais le chemin, jamais le raw. */
+export function extractHookScriptBasenames(command: string): string[] {
+  const found = new Set<string>();
+  for (const rawToken of command.split(/[\s"'`;|&()<>=,]+/)) {
+    if (!rawToken) continue;
+    const base = rawToken.split(/[\\/]/).pop() || '';
+    if (HOOK_SCRIPT_RE.test(base)) found.add(base);
+  }
+  return [...found].sort();
+}
+
 export interface ClaudeSettingsSnapshot {
   /** Version du format snapshot. */
   format: 1;
@@ -461,9 +497,47 @@ export interface ClaudeSettingsSnapshot {
   maskedEnvKeys: Record<string, string>;
   /** NOMS des autres clés top-level (permissions, hooks, etc.) — présence seulement, aucun contenu. */
   otherTopLevelKeys: string[];
+  /**
+   * Hooks câblés (#4243) — `[]` = aucun hook de commande, champ ABSENT =
+   * snapshot produit par un collecteur antérieur (ne dit rien des hooks).
+   */
+  hookCoverage?: HookCoverageEntry[];
   /** Hash de la projection harmonisation (comparaison rapide sans exposer les valeurs). */
   projectionHash: string;
   error?: string;
+}
+
+/**
+ * Projection des hooks câblés (#4243) : événement + matcher + basenames + digest.
+ * Tolérant par construction — une forme inattendue ne doit jamais faire échouer
+ * une collecte ni divulguer la commande brute.
+ */
+export function buildHookCoverage(settings: Record<string, unknown>): HookCoverageEntry[] {
+  const hooks = settings.hooks;
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return [];
+  const out: HookCoverageEntry[] = [];
+  for (const event of Object.keys(hooks).sort()) {
+    const entries = (hooks as Record<string, unknown>)[event];
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== 'object') continue;
+      const matcher = (entry as Record<string, unknown>).matcher;
+      const commands = (entry as Record<string, unknown>).hooks;
+      if (!Array.isArray(commands)) continue;
+      for (const cmd of commands) {
+        if (!cmd || typeof cmd !== 'object') continue;
+        const command = (cmd as Record<string, unknown>).command;
+        if (typeof command !== 'string' || command.length === 0) continue;
+        out.push({
+          event,
+          matcher: typeof matcher === 'string' ? matcher : null,
+          scripts: extractHookScriptBasenames(command),
+          commandDigest: secretDigest(command),
+        });
+      }
+    }
+  }
+  return out;
 }
 
 export function buildSnapshot(
@@ -498,6 +572,7 @@ export function buildSnapshot(
     harmonization: projectSettingsSafe(read.settings),
     maskedEnvKeys,
     otherTopLevelKeys,
+    hookCoverage: buildHookCoverage(read.settings),
     projectionHash: hashProjection(projectSettingsSafe(read.settings)),
     error: read.error,
   };

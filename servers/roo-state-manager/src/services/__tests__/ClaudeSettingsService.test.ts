@@ -196,6 +196,97 @@ describe('buildSnapshot — non-divulgation des secrets à la sérialisation', (
   });
 });
 
+describe('buildSnapshot — couverture des hooks (#4243)', () => {
+  test('aucun hooks : coverage vide (≠ champ absent d’un ancien collecteur)', async () => {
+    const read = await readClaudeSettingsFileFrom(settingsPath, { env: {} });
+    const snap = buildSnapshot(read, 'machine-x', '2026-10-22T10:00:00Z');
+    expect(snap.hookCoverage).toEqual([]);
+    // Le champ est SÉRIALISÉ : c’est ce qui distingue « pas de hook » de
+    // « collecteur antérieur qui ne savait pas regarder ».
+    expect(JSON.stringify(snap)).toContain('hookCoverage');
+  });
+
+  test('garde câblé : événement + matcher + basename, digest à la place du raw', async () => {
+    const command = 'node "D:/dev/roo-extensions/scripts/hooks/guard-bash-composite.js"';
+    const read = await readClaudeSettingsFileFrom(settingsPath, {
+      hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command }] }] },
+    });
+    const snap = buildSnapshot(read, 'machine-x', '2026-10-22T10:00:00Z');
+
+    expect(snap.hookCoverage).toEqual([
+      {
+        event: 'PreToolUse',
+        matcher: 'Bash',
+        scripts: ['guard-bash-composite.js'],
+        commandDigest: expect.stringMatching(/^[0-9a-f]{16}$/),
+      },
+    ]);
+    // Le chemin complet et la ligne de commande ne sortent jamais.
+    const serialized = JSON.stringify(snap);
+    expect(serialized).not.toContain('D:/dev/roo-extensions');
+    expect(serialized).not.toContain('node ');
+  });
+
+  test('un token dans la commande n’est jamais publié', async () => {
+    const read = await readClaudeSettingsFileFrom(settingsPath, {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'node C:/h/guard.js --token=sk-live-supersecret' }] },
+        ],
+      },
+    });
+    const snap = buildSnapshot(read, 'machine-x', '2026-10-22T10:00:00Z');
+    const serialized = JSON.stringify(snap);
+    expect(serialized).not.toContain('sk-live-supersecret');
+    expect(serialized).not.toContain('C:/h/guard.js');
+    expect(snap.hookCoverage?.[0].scripts).toEqual(['guard.js']);
+  });
+
+  test('deux hooks de même basename restent distinguables par le digest', async () => {
+    const read = await readClaudeSettingsFileFrom(settingsPath, {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'node a/guard.js' }] },
+          { matcher: 'Write', hooks: [{ type: 'command', command: 'node b/guard.js' }] },
+        ],
+      },
+    });
+    const snap = buildSnapshot(read, 'machine-x', '2026-10-22T10:00:00Z');
+    const digests = (snap.hookCoverage || []).map(e => e.commandDigest);
+    expect(digests).toHaveLength(2);
+    expect(new Set(digests).size).toBe(2);
+  });
+
+  test('formes inattendues : jamais d’exception, jamais de contenu', async () => {
+    const shapes: unknown[] = [
+      { hooks: 'not-an-object' },
+      { hooks: [] },
+      { hooks: { PreToolUse: 'not-an-array' } },
+      { hooks: { PreToolUse: [null, 42, { matcher: 7, hooks: [{ command: 123 }] }] } },
+      { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '' }] }] } },
+    ];
+    for (const shape of shapes) {
+      const read = await readClaudeSettingsFileFrom(settingsPath, shape as Record<string, unknown>);
+      const snap = buildSnapshot(read, 'machine-x', '2026-10-22T10:00:00Z');
+      expect(snap.hookCoverage).toEqual([]);
+    }
+  });
+
+  test('matcher absent → null, événements et entrées rendus dans un ordre stable', async () => {
+    const read = await readClaudeSettingsFileFrom(settingsPath, {
+      hooks: {
+        PostToolUse: [{ hooks: [{ type: 'command', command: 'bash /s/post.sh' }] }],
+        PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'bash /s/pre.sh' }] }],
+      },
+    });
+    const snap = buildSnapshot(read, 'machine-x', '2026-10-22T10:00:00Z');
+    expect(snap.hookCoverage?.map(e => [e.event, e.matcher, e.scripts])).toEqual([
+      ['PostToolUse', null, ['post.sh']],
+      ['PreToolUse', 'Bash', ['pre.sh']],
+    ]);
+  });
+});
+
 describe('validateCanon — allow-list + valeurs sûres', () => {
   const baseCanon: CanonPayload = {
     version: '2026.09.08-1',
