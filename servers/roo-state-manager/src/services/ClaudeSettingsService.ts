@@ -55,6 +55,12 @@ export interface ClaudeSettingsReadResult {
  * (suffixes [1m] inclus dans les valeurs), fenêtre/pourcentage de compaction.
  * `model` est l'ID de modèle top-level du settings.
  *
+ * Libellés du sélecteur /model (ASK claudish 22/10 — « libellés faux ») :
+ * ANTHROPIC_DEFAULT_{TIER}_MODEL_{NAME,DESCRIPTION} et les paires
+ * ANTHROPIC_CUSTOM_MODEL_OPTION_{NAME,DESCRIPTION} pilotent le nom/la
+ * description affichés quand le rôle est servi par un modèle non-Anthropic.
+ * Un siège qui pose _DESCRIPTION sans _NAME affiche le nom intégré Anthropic.
+ *
  * Clés harnais serré #3657 (canon settings #3924) : ENABLE_TOOL_SEARCH,
  * disableBundledSkills/disableClaudeAiConnectors/disableRemoteControl,
  * outputStyle. `permissions.*` reste volontairement hors allow-list : le
@@ -69,10 +75,20 @@ export const ALLOWED_KEY_PATHS: readonly string[] = Object.freeze([
   'env.API_TIMEOUT_MS',
   'env.ANTHROPIC_BASE_URL',
   'env.ANTHROPIC_CUSTOM_MODEL_OPTION',
+  'env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION',
+  'env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME',
   'env.ANTHROPIC_DEFAULT_FABLE_MODEL',
+  'env.ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION',
+  'env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME',
   'env.ANTHROPIC_DEFAULT_HAIKU_MODEL',
+  'env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION',
+  'env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME',
   'env.ANTHROPIC_DEFAULT_OPUS_MODEL',
+  'env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION',
+  'env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME',
   'env.ANTHROPIC_DEFAULT_SONNET_MODEL',
+  'env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION',
+  'env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME',
   'env.ANTHROPIC_SMALL_FAST_MODEL',
   'env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE',
   'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW',
@@ -104,10 +120,20 @@ export function isAllowedKeyPath(path: string): boolean {
 export const KEY_PATH_SEVERITY: Record<string, string> = {
   'env.ANTHROPIC_BASE_URL': 'CRITICAL',
   'env.ANTHROPIC_CUSTOM_MODEL_OPTION': 'CRITICAL',
+  'env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION': 'CRITICAL',
+  'env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME': 'CRITICAL',
   'env.ANTHROPIC_DEFAULT_FABLE_MODEL': 'CRITICAL',
+  'env.ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION': 'CRITICAL',
+  'env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME': 'CRITICAL',
   'env.ANTHROPIC_DEFAULT_HAIKU_MODEL': 'CRITICAL',
+  'env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION': 'CRITICAL',
+  'env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME': 'CRITICAL',
   'env.ANTHROPIC_DEFAULT_OPUS_MODEL': 'CRITICAL',
+  'env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION': 'CRITICAL',
+  'env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME': 'CRITICAL',
   'env.ANTHROPIC_DEFAULT_SONNET_MODEL': 'CRITICAL',
+  'env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION': 'CRITICAL',
+  'env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME': 'CRITICAL',
   'env.ANTHROPIC_SMALL_FAST_MODEL': 'CRITICAL',
   'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW': 'IMPORTANT',
   'env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE': 'IMPORTANT',
@@ -203,8 +229,13 @@ function isSensitiveQueryParamName(key: string): boolean {
  */
 export function validateCanonValue(path: string, value: unknown): string[] {
   const problems: string[] = [];
-  if (value === null || value === undefined) {
-    problems.push('valeur null/undefined interdite dans un canon');
+  // null = marqueur de suppression explicite (ASK claudish 22/10 « sémantique
+  // absent ») : `canon.keys[path] = null` ordonne l'ABSENCE de la clé — retirer
+  // l'option custom doit supprimer la clé, pas la laisser vide (la chaîne vide
+  // reste interdite ci-dessous). undefined reste un canon malformé.
+  if (value === null) return problems;
+  if (value === undefined) {
+    problems.push('valeur undefined interdite dans un canon');
     return problems;
   }
   if (typeof value === 'number') {
@@ -282,6 +313,28 @@ export function setPath(target: Record<string, unknown>, path: string, value: un
     cur = cur[s] as Record<string, unknown>;
   }
   cur[segs[segs.length - 1]] = value;
+}
+
+/**
+ * Supprime la clé feuille d'un chemin point (sémantique « absent » — ASK
+ * claudish 22/10). Retourne true ssi la clé existait et fut supprimée. Les
+ * parents intermédiaires restent intacts : le conteneur `env` porte aussi des
+ * clés hors allow-list qu'on ne doit pas détruire ; un parent vidé devient
+ * `{}`, inoffensif. Chemin non résoluble => false (déjà absent).
+ */
+export function deletePath(target: Record<string, unknown>, path: string): boolean {
+  const segs = path.split('.');
+  let cur: unknown = target;
+  for (let i = 0; i < segs.length - 1; i++) {
+    if (cur === null || typeof cur !== 'object' || Array.isArray(cur)) return false;
+    cur = (cur as Record<string, unknown>)[segs[i]];
+  }
+  if (cur === null || typeof cur !== 'object' || Array.isArray(cur)) return false;
+  const holder = cur as Record<string, unknown>;
+  const leaf = segs[segs.length - 1];
+  if (!Object.prototype.hasOwnProperty.call(holder, leaf)) return false;
+  delete holder[leaf];
+  return true;
 }
 
 /**
@@ -559,8 +612,14 @@ export function validateCanon(canon: CanonPayload): CanonValidationResult {
     problems.push(...validateCanonValue(path, value).map(p => `${path}: ${p}`));
   }
   if (problems.length > 0) return { valid: false, problems };
+  // Projection pour hash : les marqueurs null (suppression) sont OMIS — la clé
+  // visée doit être absente du fichier, et une projection observée ne porte
+  // jamais les clés absentes. Inclure `path: null` rendrait le canon
+  // mathématiquement inconvergeable (hash jamais égal à l'observé).
   const projection: Record<string, unknown> = {};
-  for (const [path, value] of Object.entries(canon.keys)) projection[path] = value;
+  for (const [path, value] of Object.entries(canon.keys)) {
+    if (value !== null) projection[path] = value;
+  }
   return { valid: true, problems: [], canonHash: hashProjection(projection) };
 }
 
@@ -572,7 +631,7 @@ export interface ApplyCanonChange {
   path: string;
   before?: unknown;
   after: unknown;
-  action: 'set' | 'preserved';
+  action: 'set' | 'preserved' | 'removed';
 }
 
 export interface ApplyCanonResult {
@@ -598,6 +657,9 @@ export interface ApplyCanonOptions {
  *
  * - ensure-present : pose les clés absentes, préserve les existantes (choix machine).
  * - enforce-value   : écrase les clés listées.
+ * - `keys[path] = null` : suppression explicite de la clé (sémantique « absent »,
+ *   ASK claudish 22/10) — uniforme aux deux modes, car « garantir l'absence »
+ *   est le dual de « garantir la présence ».
  * - Jamais de clé hors allow-list ; jamais permissions/hooks/apiKeyHelper touchés
  *   (ils ne sont jamais dans canon.keys, validé en amont).
  * - Concurrent edit : le fichier est relu AVANT le write ; si le hash a changé
@@ -633,6 +695,26 @@ export async function applyCanonToFile(
       continue;
     }
     const current = getPath(working, path);
+    // null = suppression explicite (sémantique « absent », ASK claudish 22/10),
+    // uniforme aux deux modes : c'est le dual de ensure-present (« garantir
+    // l'absence »), pas une valeur. Clé déjà absente => rien à faire.
+    if (value === null) {
+      if (current === undefined) {
+        skipped.push({ path, reason: 'déjà absent (null)' });
+        continue;
+      }
+      const removed = deletePath(working, path);
+      if (removed) {
+        changes.push({ path, before: current, after: null, action: 'removed' });
+        wouldWrite = true;
+      } else {
+        // parent non-objet (ex. valeur scalaire en travers du chemin) : le
+        // chemin est inapplicable en suppression, on le rapporte au lieu de
+        // muter aveuglément.
+        skipped.push({ path, reason: 'chemin non résoluble en suppression (parent non-objet)' });
+      }
+      continue;
+    }
     if (current === undefined) {
       setPath(working, path, value);
       changes.push({ path, after: value, action: 'set' });

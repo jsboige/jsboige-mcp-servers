@@ -30,7 +30,9 @@ import {
   findLatestClaudeSettingsSnapshot,
   isAllowedKeyPath,
   maskSecretValue,
+  deletePath,
   ALLOWED_KEY_PATHS,
+  KEY_PATH_SEVERITY,
   CanonPayload,
 } from '../ClaudeSettingsService.js';
 
@@ -312,6 +314,187 @@ describe('clés harnais serré #3657 (canon settings #3924) — v2 allow-list', 
       expect(v.valid).toBe(false);
       expect(v.problems.join()).toMatch(/non allow-listé/);
     }
+  });
+});
+
+describe('libellés /model + sémantique « absent » (ASK claudish 22/10)', () => {
+  const labelPaths = [
+    'env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION',
+    'env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME',
+    'env.ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION',
+    'env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME',
+    'env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION',
+    'env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME',
+    'env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION',
+    'env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME',
+    'env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION',
+    'env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME',
+  ];
+
+  test('les 10 chemins de libellés sont allow-listés, projetés et CRITICAL', () => {
+    for (const p of labelPaths) {
+      expect(isAllowedKeyPath(p)).toBe(true);
+      expect(ALLOWED_KEY_PATHS).toContain(p);
+      expect(KEY_PATH_SEVERITY[p]).toBe('CRITICAL');
+    }
+    const settings = {
+      env: {
+        ANTHROPIC_DEFAULT_SONNET_MODEL_NAME: 'GLM 5.2 (z.ai)',
+        ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION: 'Coding plan via gc@',
+      },
+    };
+    const proj = projectSettings(settings as Record<string, unknown>);
+    expect(proj['env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME']).toBe('GLM 5.2 (z.ai)');
+    expect(proj['env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION']).toBe('Coding plan via gc@');
+  });
+
+  test('canon de libellés complet passe la validation', () => {
+    const keys: Record<string, unknown> = {
+      'env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME': 'Opus relay',
+      'env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION': 'Opus-class via relay',
+      'env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME': 'GLM 5.2 (z.ai)',
+      'env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION': 'Coding plan',
+      'env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME': 'qwen-flash',
+      'env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION': 'Haiku-class',
+      'env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME': 'fable-relay',
+      'env.ANTHROPIC_DEFAULT_FABLE_MODEL_DESCRIPTION': 'Fable-class',
+    };
+    const v = validateCanon({ version: '2026.10.22-1', mode: 'enforce-value', keys });
+    expect(v.valid).toBe(true);
+    expect(v.canonHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  test('null accepté comme marqueur de suppression ; undefined toujours rejeté ; chaîne vide toujours rejetée', () => {
+    const withNull = validateCanon({
+      version: '2026.10.22-1', mode: 'enforce-value',
+      keys: { 'env.ANTHROPIC_CUSTOM_MODEL_OPTION': null as unknown as string },
+    });
+    expect(withNull.valid).toBe(true);
+    expect(withNull.problems).toHaveLength(0);
+
+    const withUndefined = validateCanon({
+      version: '2026.10.22-1', mode: 'enforce-value',
+      keys: { 'env.ANTHROPIC_CUSTOM_MODEL_OPTION': undefined as unknown as string },
+    });
+    expect(withUndefined.valid).toBe(false);
+    expect(withUndefined.problems.join()).toMatch(/undefined interdit/);
+
+    const withEmpty = validateCanon({
+      version: '2026.10.22-1', mode: 'enforce-value',
+      keys: { 'env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME': '' },
+    });
+    expect(withEmpty.valid).toBe(false);
+    expect(withEmpty.problems.join()).toMatch(/chaîne vide interdite/);
+  });
+
+  test('hash canon : les marqueurs null sont OMIS (un canon « clé absente » converge vers un fichier sans la clé)', () => {
+    // Canon A : null sur CUSTOM_MODEL_OPTION + valeurs sur deux autres clés.
+    const canonA = validateCanon({
+      version: 'v', mode: 'enforce-value',
+      keys: {
+        'env.ANTHROPIC_CUSTOM_MODEL_OPTION': null as unknown as string,
+        'env.ANTHROPIC_DEFAULT_SONNET_MODEL': 'glm-5.2[1m]',
+        'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW': 280000,
+      },
+    });
+    // Canon B : même chose SANS l'entrée null du tout.
+    const canonB = validateCanon({
+      version: 'v', mode: 'enforce-value',
+      keys: {
+        'env.ANTHROPIC_DEFAULT_SONNET_MODEL': 'glm-5.2[1m]',
+        'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW': 280000,
+      },
+    });
+    expect(canonA.valid).toBe(true);
+    expect(canonB.valid).toBe(true);
+    expect(canonA.canonHash).toBe(canonB.canonHash);
+    // Et ce hash est atteignable par un fichier réel sans la clé :
+    const onDisk = {
+      env: {
+        ANTHROPIC_DEFAULT_SONNET_MODEL: 'glm-5.2[1m]',
+        CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000,
+      },
+    };
+    expect(hashProjection(projectSettings(onDisk))).toBe(canonA.canonHash);
+  });
+
+  test('apply : null SUPPRIME la clé (les deux modes), les voisines hors allow-list intactes', async () => {
+    writeSettings({
+      env: {
+        ANTHROPIC_CUSTOM_MODEL_OPTION: 'glm-5.2-opus',
+        ANTHROPIC_CUSTOM_MODEL_OPTION_NAME: 'Opus GLM',
+        ANTHROPIC_DEFAULT_OPUS_MODEL: 'glm-5.2[1m]',
+        UNRELATED_SECRET_KEY: 'keep-me',
+      },
+    });
+    const removalCanon: CanonPayload = {
+      version: '2026.10.22-1',
+      mode: 'ensure-present', // la suppression est le dual de la présence : mode-indépendante
+      keys: {
+        'env.ANTHROPIC_CUSTOM_MODEL_OPTION': null as unknown as string,
+        'env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME': null as unknown as string,
+      },
+    };
+    const res = await applyCanonToFile(settingsPath, removalCanon, { now: () => '2026-10-22T18:00:00Z', backup: false });
+
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(after.env).not.toHaveProperty('ANTHROPIC_CUSTOM_MODEL_OPTION');
+    expect(after.env).not.toHaveProperty('ANTHROPIC_CUSTOM_MODEL_OPTION_NAME');
+    expect(after.env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('glm-5.2[1m]');   // voisin allow-listé intact
+    expect(after.env.UNRELATED_SECRET_KEY).toBe('keep-me');               // hors allow-list : jamais touché
+
+    const removed = res.changes.filter(c => c.action === 'removed');
+    expect(removed).toHaveLength(2);
+    expect(removed.map(c => c.path).sort()).toEqual([
+      'env.ANTHROPIC_CUSTOM_MODEL_OPTION',
+      'env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME',
+    ]);
+    expect(removed[0].before).toBeDefined();
+    expect(removed[0].after).toBeNull();
+    // La vérification post-write converge (projection sans les clés supprimées).
+    expect(res.verification?.success).toBe(true);
+  });
+
+  test('apply : null sur clé déjà absente = no-op idempotent (aucune réécriture)', async () => {
+    writeSettings({ env: { ANTHROPIC_BASE_URL: 'https://stable.example' } });
+    const before = readFileSync(settingsPath, 'utf-8');
+    const removalCanon: CanonPayload = {
+      version: '2026.10.22-1', mode: 'enforce-value',
+      keys: { 'env.ANTHROPIC_CUSTOM_MODEL_OPTION': null as unknown as string },
+    };
+    const res = await applyCanonToFile(settingsPath, removalCanon, { now: () => '2026-10-22T18:00:00Z', backup: false });
+    // Contrat no-op préexistant (#4185) : applied=true (la passe a tourné et
+    // VÉRIFIÉ par relecture), fichier inchangé, skip explicite.
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(before);
+    expect(res.skipped.some(s => s.reason === 'déjà absent (null)')).toBe(true);
+    expect(res.verification?.performed).toBe(true);
+    expect(res.verification?.success).toBe(true);
+  });
+
+  test('apply : dry-run rapporte la suppression SANS écrire', async () => {
+    writeSettings({ env: { ANTHROPIC_CUSTOM_MODEL_OPTION: 'glm-5.2-opus' } });
+    const removalCanon: CanonPayload = {
+      version: '2026.10.22-1', mode: 'enforce-value',
+      keys: { 'env.ANTHROPIC_CUSTOM_MODEL_OPTION': null as unknown as string },
+    };
+    const res = await applyCanonToFile(settingsPath, removalCanon, { dryRun: true });
+    expect(res.applied).toBe(false);
+    expect(res.changes.some(c => c.action === 'removed')).toBe(true);
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(after.env.ANTHROPIC_CUSTOM_MODEL_OPTION).toBe('glm-5.2-opus'); // intact
+  });
+
+  test('deletePath : supprime la feuille, préserve parents et voisins ; false si absent', () => {
+    const target: Record<string, unknown> = {
+      env: { A: 1, B: 2 },
+      model: 'x',
+    };
+    expect(deletePath(target, 'env.A')).toBe(true);
+    expect((target.env as Record<string, unknown>).A).toBeUndefined();
+    expect((target.env as Record<string, unknown>).B).toBe(2);   // voisin intact
+    expect(target.env).toEqual({ B: 2 });                          // parent préservé
+    expect(deletePath(target, 'env.A')).toBe(false);               // déjà absent
+    expect(deletePath(target, 'modelMap.opus')).toBe(false);       // parent inexistant
   });
 });
 

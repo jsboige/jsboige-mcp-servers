@@ -81,13 +81,21 @@ restent liées à son hash).
 ## Sécurité (décisions de conception)
 
 - **Allow-list stricte** (`ALLOWED_KEY_PATHS`, `ClaudeSettingsService.ts`) :
-  `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL`,
-  `env.ANTHROPIC_CUSTOM_MODEL_OPTION`, `env.ANTHROPIC_SMALL_FAST_MODEL`,
-  `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW`, `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS`,
-  `env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, `env.API_TIMEOUT_MS`, `env.MCP_TIMEOUT`,
-  `env.MCP_TOOL_TIMEOUT`, `model`, `modelMap.{opus,sonnet,haiku,fable}`.
+  `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL`
+  (+ leurs `_NAME`/`_DESCRIPTION` — libellés du sélecteur `/model`, ASK claudish 22/10),
+  `env.ANTHROPIC_CUSTOM_MODEL_OPTION` (+ `_NAME`/`_DESCRIPTION`),
+  `env.ANTHROPIC_SMALL_FAST_MODEL`, `env.CLAUDE_CODE_AUTO_COMPACT_WINDOW`,
+  `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `env.CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`,
+  `env.API_TIMEOUT_MS`, `env.MCP_TIMEOUT`, `env.MCP_TOOL_TIMEOUT`, `model`,
+  `modelMap.{opus,sonnet,haiku,fable}`.
   Tout le reste (permissions, hooks, apiKeyHelper, clés sensibles) est hors
   périmètre : jamais appliqué, jamais publié en clair, jamais compté dans un diff.
+- **Sémantique « absent »** (ASK claudish 22/10) : `canon.keys[path] = null`
+  ordonne la **suppression** de la clé au fichier local (pas une valeur vide) —
+  le dual de ensure-present. Le marqueur `null` est validé par `validateCanonValue`
+  et **omis du hash canon** (une clé visée absente du fichier produit une
+  projection observée qui ne la porte pas — hash convergent). Chaîne vide reste
+  interdite (présence sans valeur = non applicable).
 - **Valeurs de canon validées** : scalaires uniquement ; patterns secrets
   rejetés (`sk-`, `ghp_`, hex-64, `BEGIN PRIVATE KEY`, `Bearer`, `token=…`) ;
   les `*_BASE_URL` doivent être http(s), sans credentials inline, sans query à
