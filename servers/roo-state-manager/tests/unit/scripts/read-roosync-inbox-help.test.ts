@@ -57,6 +57,13 @@ describe('read-roosync-inbox.mjs shell (#4131 B14)', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-cli-f3-'));
     try {
       fs.mkdirSync(path.join(root, 'build', 'services', 'unified-store'), { recursive: true });
+      // The fixture stub is ESM (`export`) and lives where no package.json
+      // exists, so its module type falls back to Node's syntax detection —
+      // which is VERSION-DEPENDENT: on by default in Node 25 (green locally),
+      // still off in CI's 20.18.0, where the same stub loaded as CommonJS and
+      // died on "Unexpected token 'export'" (red run 39717607484). Declare
+      // the type explicitly so the test does not encode the runner's Node.
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ type: 'module' }));
       const messages = Array.from({ length: 30 }, (_, i) => ({
         id: `msg-${i}`,
         subject: '[TASK] filler',
