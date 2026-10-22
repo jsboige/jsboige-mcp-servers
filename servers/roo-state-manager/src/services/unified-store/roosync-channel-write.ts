@@ -34,18 +34,33 @@ import { createLogger } from '../../utils/logger.js';
 const logger = createLogger('roosync-channel-write');
 
 /**
+ * True when the unified store accepts REAL writes — a `PgUnifiedStoreWriter`,
+ * not the Null no-op.
+ *
+ * Also the precondition of the read-path maintenance sweeps (#4301): those are
+ * driven by a CHANNEL_READ_PG reader, but their transitions land in the store.
+ * On the Null writer every update silently matches 0 rows, so the sweep would
+ * report nothing archived while the served mailbox never shrinks.
+ */
+export function isChannelPgWritable(): boolean {
+  // DUAL_WRITE=1 is required because writer-factory only builds a real
+  // PgUnifiedStoreWriter under that flag — without it the writer is the Null
+  // writer, whose insert/update/delete are no-ops that resolve without
+  // throwing.
+  return process.env.UNIFIED_STORE_DUAL_WRITE === '1'
+    && !!process.env.UNIFIED_STORE_PG_URL;
+}
+
+/**
  * True when the Phase D write-primary gate is on. Read at call time so tests
  * and config reloads can toggle it without a process restart.
  */
 export function isChannelPgPrimary(): boolean {
-  // DUAL_WRITE=1 is required because writer-factory only builds a real
-  // PgUnifiedStoreWriter under that flag — without it the writer is the Null
-  // writer, whose insert/update/delete are no-ops that resolve without
-  // throwing. A PG_PRIMARY gate on the Null writer reports success, skips the
-  // GDrive fallback, and loses the message with no signal (review #1030).
+  // A PG_PRIMARY gate on the Null writer reports success, skips the GDrive
+  // fallback, and loses the message with no signal (review #1030) — hence the
+  // writability precondition.
   return process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY === '1'
-    && process.env.UNIFIED_STORE_DUAL_WRITE === '1'
-    && !!process.env.UNIFIED_STORE_PG_URL;
+    && isChannelPgWritable();
 }
 
 /**
