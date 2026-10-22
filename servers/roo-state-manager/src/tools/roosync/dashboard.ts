@@ -309,6 +309,29 @@ const condenseLockClockSkewMs = (): number => {
 // restart, and tests shorten the budget.
 const appendLockTtlMs = (): number => Number(process.env.APPEND_LOCK_TTL_MS) || 30000;
 const appendLockAcquireBudgetMs = (): number => Number(process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS) || 5000;
+
+/**
+ * #4286 §2 — the file half of an append may leave the critical path only when
+ * BOTH hold:
+ *  - PG can carry the authoritative write (`UNIFIED_STORE_DUAL_WRITE` + a store
+ *    URL, i.e. the append is dual-written and checkable), and
+ *  - no reader treats the file as primary: fleet reads are served from PG
+ *    (`UNIFIED_STORE_DASHBOARD_READ_PG=1`), or PG is already the declared
+ *    primary surface (`UNIFIED_STORE_DASHBOARD_PG_PRIMARY=1`).
+ *
+ * Outside those two, the file IS the read surface and its write must stay
+ * synchronous — deferring it would let a reader see a message that the
+ * author's own surface does not have yet.
+ *
+ * Read lazily (one call site), so a hot-swapped build or a config reload takes
+ * effect without a process restart.
+ */
+function isDashboardFileMirrorDeferrable(): boolean {
+  const pgCanCarryWrite =
+    process.env.UNIFIED_STORE_DUAL_WRITE === '1' && !!process.env.UNIFIED_STORE_PG_URL;
+  if (!pgCanCarryWrite) return false;
+  return process.env.UNIFIED_STORE_DASHBOARD_READ_PG === '1' || isDashboardPgPrimary();
+}
 const appendLockRetryMs = (): number => Number(process.env.APPEND_LOCK_RETRY_MS) || 150;
 
 // #4131 G-B lot 1 — borne temporelle de la moitié GDrive d'une écriture de
@@ -1689,6 +1712,31 @@ export interface WriteVerifyResult {
    * message est publié) mais l'appelant doit voir la dégradation.
    */
   gdriveDegraded?: string;
+  /**
+   * #4286 — la moitié fichier a été **sortie du chemin critique** : PG portait
+   * déjà l'écriture autoritaire et vérifiée, aucun lecteur ne dépend du
+   * fichier, donc le miroir s'écrit en arrière-plan. L'append est complet ; le
+   * fichier suit (et #3230 le répare depuis la vue PG s'il n'a jamais suivi).
+   */
+  gdriveDeferred?: true;
+}
+
+/**
+ * #4286 — résultat de la moitié fichier d'un append. Elle est extraite pour
+ * pouvoir tourner soit sur le chemin critique, soit en arrière-plan : le corps
+ * est le même dans les deux modes, seule l'attente de l'appelant change.
+ */
+interface FileHalfOutcome {
+  wv: WriteVerifyResult;
+  gdriveFailure?: string;
+  /**
+   * #4286 — la moitié fichier a pris un chemin de réécriture complète (fichier
+   * absent, tête NUL #3782, réparation #3230) qui a DÉJÀ persisté les deux
+   * surfaces. L'appelant s'arrête là, exactement comme avant l'extraction :
+   * rejouer le miroir PG ajouterait des lignes de journal pour une écriture
+   * qui a eu lieu.
+   */
+  terminal?: true;
 }
 
 /**
@@ -1702,7 +1750,7 @@ export interface WriteVerifyResult {
 export interface WriteStageTimings {
   /** Attente du verrou append 2 couches (row PG + fichier local). */
   lockWaitMs?: number;
-  /** Écritriture PG-primaire sous verrou (UNIFIED_STORE_DASHBOARD_PG_PRIMARY). */
+  /** Écriture PG sous le verrou append : PG-primaire déclaré, ou « PG d'abord » (#4286). */
   pgPrimaryWriteMs?: number;
   /** Lecture du fichier dashboard sur G: (bornée par la deadline DriveFS). */
   gdriveReadMs?: number;
@@ -2440,6 +2488,9 @@ async function appendDashboardIncremental(
   const lockT0 = Date.now();
   const lockOwned = await acquireAppendLock(key, holder);
   if (stages) stages.lockWaitMs = Date.now() - lockT0;
+  // #4286 §2 — décidé UNE fois, avant toute écriture : la moitié fichier
+  // n'entre sur le chemin critique que si un lecteur en dépend.
+  const deferFileMirror = isDashboardFileMirrorDeferrable();
   // #4131 G-B lot 2 — PG-PREMIER SOUS VERROU append : le verrou existe pour
   // sérialiser la course read→write last-writer-wins ; la surface primaire
   // doit donc être sérialisée comme l'était le fichier (le journal PG est
@@ -2459,17 +2510,41 @@ async function appendDashboardIncremental(
       });
     }
   }
-  let wv: WriteVerifyResult = { forkSuspected: false };
   // #3774 — ids des messages NEUFS de cet append : le seul jeton que le writer
   // produit lui-même, donc le seul qui puisse établir où ses octets ont atterri.
   // #4131 lot 1 — rempli AVANT l'écriture : la vérification PG reste pertinente
   // quand la moitié fichier échoue.
   const newMessagesAll = dashboard.intercom.messages.slice(-newMessageCount);
-  let landedIds: string[] = newMessagesAll.map(m => m.id);
-  // #4131 lot 1 — motif de l'échec GDrive (borne dépassée ou erreur fs) : la
-  // moitié PG ci-dessous en fait l'opération dégradée, pas d'un échec total.
-  let gdriveFailure: string | undefined;
-  try {
+  const landedIds: string[] = newMessagesAll.map(m => m.id);
+
+  // #4286 §2 — « PG d'abord ». Différer le fichier n'a de sens que si une
+  // surface autoritaire porte déjà le message : ici, c'est PG, écrit et
+  // *vérifié* sous ce même verrou. Mesuré sur ai-01 le 22/10 (log SLOW-WRITE) :
+  // la moitié GDrive coûte 15,7-24,3 s de lecture + 30,0 s d'écriture (borne
+  // mordue) là où l'écriture PG coûte 15-1342 ms. Échec PG → aucun report, le
+  // chemin GDrive-first complet ci-dessous reste le filet.
+  if (deferFileMirror && !pgPrimaryOk) {
+    const pgT0 = Date.now();
+    const pgOutcome = await dualWriteDashboardSyncChecked(dashboard);
+    if (stages) stages.pgPrimaryWriteMs = Date.now() - pgT0;
+    pgPrimaryOk = pgOutcome.ok;
+    if (!pgPrimaryOk) {
+      logger.warn('[PG-FIRST #4286] écriture PG d\'abord échouée — repli sur le chemin GDrive-first', {
+        key,
+        reason: pgOutcome.reason
+      });
+    }
+  }
+
+  // #4286 — la moitié fichier devient une VALEUR : son corps est inchangé, seul
+  // son déclencheur change (attendue par l'appelant, ou lancée en arrière-plan).
+  // Les garanties de l'incrément (suffixe intact #2121, réparation #3230, tête
+  // NUL #3782, tags #4003) valent donc à l'identique dans les deux modes.
+  const runFileHalf = async (stages?: WriteStageTimings): Promise<FileHalfOutcome> => {
+    let wv: WriteVerifyResult = { forkSuspected: false };
+    // #4131 lot 1 — motif de l'échec GDrive (borne dépassée ou erreur fs) : la
+    // moitié PG ci-dessous en fait l'opération dégradée, pas d'un échec total.
+    let gdriveFailure: string | undefined;
     let existing: string;
     try {
       // #4131 lot 1 — signal sur la lecture : une DriveFS hangée ne doit pas
@@ -2493,7 +2568,7 @@ async function appendDashboardIncremental(
       const fbT0 = Date.now();
       const wvFallback = await writeDashboardFile(key, dashboard, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
       if (stages) stages.fallbackFullWriteMs = Date.now() - fbT0;
-      return wvFallback;
+      return { wv: wvFallback, terminal: true };
     }
 
     // #3782 correctif 1 (spec c.5907835962 ; incident 30/09 06:08Z — le feeder
@@ -2519,7 +2594,7 @@ async function appendDashboardIncremental(
       const fbT0 = Date.now();
       const wvFallback = await writeDashboardFile(key, dashboard, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
       if (stages) stages.fallbackFullWriteMs = Date.now() - fbT0;
-      return wvFallback;
+      return { wv: wvFallback, terminal: true };
     }
 
     // #3230 write-side — un append depuis une copie locale en retard effaçait
@@ -2608,7 +2683,7 @@ async function appendDashboardIncremental(
         const fbT0 = Date.now();
         const wvRepair = await writeDashboardFile(key, repair, undefined, { pgPrimaryPreWritten: pgPrimaryOk || undefined });
         if (stages) stages.fallbackFullWriteMs = Date.now() - fbT0;
-        return wvRepair;
+        return { wv: wvRepair, terminal: true };
       }
     }
 
@@ -2695,10 +2770,75 @@ async function appendDashboardIncremental(
       wv = { forkSuspected: false }; // invérifiable ≠ suspecté
     }
     if (stages) stages.gdriveWriteMs = Date.now() - gdT0;
-  } finally {
-    if (lockOwned) {
-      await releaseAppendLock(key, holder);
+    return { wv, gdriveFailure };
+  };
+
+  // #4286 — le déclencheur. Différé : l'appelant ne l'attend pas, et le verrou
+  // append (acquis plus haut, détenu à travers la moitié fichier) est relâché
+  // par la tâche de fond en sortant — la fenêtre read→write garde donc sa
+  // protection #3205 pour le miroir aussi.
+  //
+  // Recul assumé : le miroir peut désormais chevaucher la condensation que
+  // l'appelant déclenche juste après. Le fichier peut alors revenir à la vue
+  // pré-condensation ; ce n'est pas une perte — PG reste autoritaire et
+  // lisible, la réparation #3230 réécrit le fichier depuis la vue au prochain
+  // append, et ses tombstones empêchent la réinjection des ids archivés. Sans
+  // ce recul, un DriveFS qui rampe coûte 45-60 s à chaque append (mesure §1).
+  let outcome: FileHalfOutcome = { wv: { forkSuspected: false } };
+  let fileMirrorDeferred = false;
+  if (deferFileMirror && pgPrimaryOk) {
+    fileMirrorDeferred = true;
+    const mirrorT0 = Date.now();
+    void runFileHalf()
+      .then(o => {
+        if (o.gdriveFailure) {
+          logger.warn('[GDRIVE-MIRROR #4286] miroir fichier en arrière-plan en échec — PG porte seul ; #3230 répare depuis la vue au prochain append', {
+            key,
+            mirrorMs: Date.now() - mirrorT0,
+            error: o.gdriveFailure
+          });
+        } else {
+          logger.info('[GDRIVE-MIRROR #4286] miroir fichier écrit hors du chemin critique', {
+            key,
+            mirrorMs: Date.now() - mirrorT0
+          });
+        }
+      })
+      .catch((err: Error) => {
+        logger.warn('[GDRIVE-MIRROR #4286] miroir fichier en arrière-plan rejeté — PG porte seul', {
+          key,
+          mirrorMs: Date.now() - mirrorT0,
+          error: err.message
+        });
+      })
+      .finally(() => {
+        if (lockOwned) {
+          void releaseAppendLock(key, holder).catch((err: Error) => {
+            logger.warn('[GDRIVE-MIRROR #4286] relâchement du verrou append impossible', { key, error: err.message });
+          });
+        }
+      });
+  } else {
+    try {
+      outcome = await runFileHalf(stages);
+    } finally {
+      if (lockOwned) {
+        await releaseAppendLock(key, holder);
+      }
     }
+  }
+
+  // Une réécriture complète a déjà persisté les deux surfaces : on s'arrête là,
+  // comme avant l'extraction de la moitié fichier (#4286) — sinon le miroir PG
+  // ci-dessous rejouerait une écriture qui a eu lieu.
+  if (outcome.terminal) {
+    return outcome.wv;
+  }
+
+  let wv = outcome.wv;
+  const gdriveFailure = outcome.gdriveFailure;
+  if (fileMirrorDeferred) {
+    wv = { ...wv, gdriveDeferred: true };
   }
 
   if (pgPrimaryOk) {
@@ -7014,7 +7154,10 @@ async function handleAppend(
     // l'écriture (le montage peut revenir entre-temps) : warning d'entrée.
     warning: guardAWarning
       ?? (storeMissing ? "[B2 #4131] store G: absent à l'entrée — écriture tentée en mode PG-seul" : undefined),
-    writeVerification: (writeVerify.forkSuspected || writeVerify.gdriveDegraded) ? writeVerify : undefined,
+    // #4286 — le miroir différé est un état, pas une panne : l'appelant doit
+    // savoir que le fichier suit derrière (il ne peut pas en déduire l'inverse
+    // d'un simple succès).
+    writeVerification: (writeVerify.forkSuspected || writeVerify.gdriveDegraded || writeVerify.gdriveDeferred) ? writeVerify : undefined,
     durationBreakdown: {
       totalMs,
       preemptiveCondenseMs,

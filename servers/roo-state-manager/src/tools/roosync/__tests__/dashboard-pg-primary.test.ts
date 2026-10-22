@@ -305,3 +305,159 @@ seed
     expect(Date.now() - t0).toBeLessThan(2500);
   });
 });
+
+/**
+ * #4286 §2/§3 — « PG d'abord, GDrive en asynchrone ».
+ *
+ * Mesure de l'issue : un append sur `workspace-roo-extensions` coûtait 54-99 s
+ * d'écriture sur ai-01, décomposition à l'appui (log SLOW-WRITE du 22/10 :
+ * `gdriveReadMs` 15,7-24,3 s + `gdriveWriteMs` 30,0 s à la borne, contre
+ * `pgMirrorWriteMs` 15-1342 ms et `lockWaitMs` 34-316 ms — le verrou était hors
+ * de cause). Le terme dominant est donc la moitié fichier, et elle n'a aucune
+ * raison de tenir l'appelant quand aucun lecteur ne dépend d'elle.
+ *
+ * Ce bloc épingle :
+ *  1. le report effectif : l'append rend la main pendant que l'écriture fichier
+ *     est encore bloquée, puis le miroir atterrit quand même (le message n'est
+ *     pas perdu, il arrive plus tard) ;
+ *  2. la porte : sans lecteur PG ni PG-primaire, le fichier reste synchrone —
+ *     différer ferait lire à un consommateur un message que sa surface n'a pas ;
+ *  3. l'échec PG d'abord : pas de report, repli GDrive-first complet ;
+ *  4. la décomposition ne ment pas : une étape non exécutée sur le chemin de
+ *     l'appelant n'est pas rapportée (sinon la somme « étapes ≤ writeMs »
+ *     couvrirait un travail fait ailleurs).
+ */
+describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
+  let tmpDir: string;
+
+  /** Rejette après `ms` — transforme un blocage en échec lisible. */
+  const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+    Promise.race([
+      p,
+      new Promise<T>((_res, rej) => setTimeout(() => rej(new Error(`bloqué: ${label} (${ms} ms)`)), ms)),
+    ]);
+
+  const pgView = () => ({
+    type: 'workspace' as const,
+    key: 'workspace-test-workspace',
+    lastModified: new Date().toISOString(),
+    lastModifiedBy: { machineId: 'other-machine', workspace: 'w' },
+    status: { markdown: 'status' },
+    intercom: { messages: [], totalMessages: 0 },
+  });
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(testTmpBase);
+    const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+    fsWriteFileReal = actual.writeFile;
+    mockWriteFile.mockReset().mockImplementation(((file: unknown, data: unknown, opts: unknown) =>
+      fsWriteFileReal(file as string, data as string, opts as undefined)) as typeof fsWriteFileReal);
+    mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
+    mockReadDashboardFromPgUngated.mockReset().mockResolvedValue(null);
+    mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
+    mockDualWriteSync.mockClear().mockResolvedValue(undefined);
+    mockDualWriteSyncChecked.mockClear().mockResolvedValue({ ok: true, reason: 'written' });
+    mockIsDashboardPgPrimary.mockReset().mockReturnValue(false);
+
+    process.env.ROOSYNC_SHARED_PATH = tmpDir;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
+    process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS = '150';
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.ROOSYNC_MACHINE_ID;
+    delete process.env.ROOSYNC_WORKSPACE_ID;
+    delete process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS;
+    delete process.env.UNIFIED_STORE_DASHBOARD_READ_PG;
+    delete process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY;
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    delete process.env.UNIFIED_STORE_PG_URL;
+  });
+
+  it('report effectif : l\'append rend la main pendant que l\'écriture fichier pend, le miroir atterrit ensuite', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    mockReadDashboardFromPg.mockResolvedValue(pgView());
+
+    // Une porte que le test ouvre lui-même : l'écriture du staging reste
+    // bloquée tant qu'elle est fermée — c'est le DriveFS qui rampe, en
+    // contrôlable.
+    let openGate!: () => void;
+    const gate = new Promise<void>((resolve) => { openGate = resolve; });
+    mockWriteFile.mockImplementation(((file: unknown, data: unknown, opts: unknown) => {
+      const f = String(file);
+      if (f.includes('dashboards') && f.endsWith('.tmp')) {
+        return gate.then(() => fsWriteFileReal(f, data as string, opts as undefined));
+      }
+      return fsWriteFileReal(file as string, data as string, opts as unknown as undefined);
+    }) as typeof fsWriteFileReal);
+
+    const t0 = Date.now();
+    const result = await withTimeout(
+      roosyncDashboard({ action: 'append', type: 'workspace', content: 'append sous miroir différé' }),
+      1500,
+      'append bloqué par la moitié fichier — le report n\'a pas eu lieu'
+    );
+    const elapsed = Date.now() - t0;
+
+    expect(result.success).toBe(true);
+    // PG a porté l'écriture autoritaire, une seule fois, et le report est dit.
+    expect(mockDualWriteSyncChecked).toHaveBeenCalledTimes(1);
+    expect(result.writeVerification?.gdriveDeferred).toBe(true);
+    expect(result.writeVerification?.gdriveDegraded).toBeFalsy();
+    // L'étape GDrive n'est PAS rapportée sur le chemin de l'appelant : elle se
+    // mesure dans la tâche de fond, où plus personne ne l'attend.
+    expect(result.durationBreakdown?.writeBreakdown?.gdriveWriteMs).toBeUndefined();
+    expect(elapsed).toBeLessThan(1000);
+
+    // Le miroir atterrit après coup — le message n'est pas perdu, il est tardif.
+    openGate();
+    const filePath = path.join(tmpDir, 'dashboards', `${result.key}.md`);
+    await vi.waitFor(async () => {
+      const content = await readFile(filePath, 'utf8').catch(() => '');
+      expect(content).toContain('append sous miroir différé');
+    }, { timeout: 3000, interval: 25 });
+  });
+
+  it('porte : sans lecteur PG ni PG-primaire, le fichier reste SYNCHRONE (pas de report)', async () => {
+    // DUAL_WRITE + PG_URL présents, mais READ_PG absent et PG_PRIMARY off :
+    // le fichier est encore une surface de lecture, il ne peut pas être différé.
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    // Dashboard préexistant : on veut le chemin INCRÉMENTAL (lecture + écriture
+    // GDrive), pas le full-write du premier append.
+    await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Init' });
+
+    const result = await roosyncDashboard({ action: 'append', type: 'workspace', content: 'append synchrone ordinaire' });
+
+    expect(result.success).toBe(true);
+    expect(result.writeVerification?.gdriveDeferred).toBeFalsy();
+    // La moitié GDrive a bien couru SUR le chemin de l'appelant : ses deux
+    // étapes sont mesurées ici et pas ailleurs.
+    expect(result.durationBreakdown?.writeBreakdown?.gdriveReadMs).toBeGreaterThanOrEqual(0);
+    expect(result.durationBreakdown?.writeBreakdown?.gdriveWriteMs).toBeGreaterThanOrEqual(0);
+    // Pas de PG d'abord : aucune écriture PG sous verrou n'a couru.
+    expect(result.durationBreakdown?.writeBreakdown?.pgPrimaryWriteMs).toBeUndefined();
+    expect(mockDualWriteSyncChecked).not.toHaveBeenCalled();
+  });
+
+  it('échec PG d\'abord : aucun report, repli GDrive-first complet, le message atterrit', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    mockReadDashboardFromPg.mockResolvedValue(pgView());
+    mockDualWriteSyncChecked.mockResolvedValue({ ok: false, reason: 'exhausted' });
+
+    const result = await roosyncDashboard({ action: 'append', type: 'workspace', content: 'repli après échec PG d\'abord' });
+
+    expect(result.success).toBe(true);
+    expect(result.writeVerification?.gdriveDeferred).toBeFalsy();
+    const filePath = path.join(tmpDir, 'dashboards', `${result.key}.md`);
+    const content = await readFile(filePath, 'utf8');
+    expect(content).toContain('repli après échec PG d\'abord');
+  });
+});
