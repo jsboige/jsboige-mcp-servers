@@ -189,7 +189,14 @@ export async function readChannelMailboxFromPg(
   workspaceId?: string
 ): Promise<Message[] | null> {
   try {
-    const rows = await reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId);
+    // Same bounded cold-pool resume as the count sibling above (#4303): the
+    // callers that hit this at process boot (the B14 CLI) land on the pool at
+    // its coldest — one retry on the connection-timeout signature, then the
+    // null → GDrive fallback contract stands for durable failures.
+    const rows = await withColdPoolResume(
+      () => reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId),
+      'channel:mailbox'
+    );
     const messages: Message[] = [];
     for (const row of rows) {
       const to = row.to_workspace ? `${row.to_machine}:${row.to_workspace}` : row.to_machine;
@@ -314,5 +321,62 @@ export async function getChannelMessageFromPg(
   } catch (error) {
     logger.warn('[channel-pg] message fetch failed — caller should fall back to GDrive', { error: String(error) });
     return null;
+  }
+}
+
+/**
+ * #4131 B14 — one-shot inbox read for the scheduled workers (CLI contract).
+ *
+ * `scripts/scheduling/start-claude-worker.ps1` reads `messages\inbox` as files
+ * in two places (`Get-RooSyncTask`, `Test-RooSyncResponse`). Under
+ * `CHANNEL_PG_PRIMARY` messages no longer have files, so those functions go
+ * blind. The worker cannot host an MCP client, but it CAN shell out to
+ * `scripts/read-roosync-inbox.mjs` — which calls this helper.
+ *
+ * Unlike the helpers above, this one is self-contained: it resolves the gated
+ * reader itself and CLOSES it before returning (a CLI must not leave a live PG
+ * pool holding the event loop open at exit). The `status` of each message is
+ * adjusted through `perReaderStatus` — same verdict source as the inbox path —
+ * so a broadcast already read by another seat of the machine does not re-fire
+ * the worker under PG.
+ *
+ * @returns `{source: 'pg', messages}` — the recipient's full messages (newest
+ *   first, read and unread alike; the PowerShell callers filter `status`
+ *   themselves, mirroring the file pool). `{source: 'file'}` tells the caller
+ *   to keep the legacy file path: gate off, or PG unreachable.
+ */
+export async function readCliInboxFromPg(
+  machineId: string,
+  workspaceId?: string
+): Promise<
+  | { source: 'pg'; messages: Message[] }
+  | { source: 'file'; reason: 'gate-off' | 'pg-unavailable' }
+> {
+  // The CLI documents the combined "machine:workspace" form (--help parity
+  // with the MCP inbox): parse it here like read.ts does for its workspace
+  // argument (#3177) — the machine half is SUBSTITUTED, never concatenated.
+  // canonicalMachineId alone would leave the colon in and matchesRecipient
+  // would reject everything but 'all' (review head cad920f5, F1). An
+  // explicit workspace qualifier still wins over the combined suffix.
+  const parsedCaller = parseMachineWorkspace(machineId);
+  const machine = parsedCaller.machineId;
+  const workspace = workspaceId ?? parsedCaller.workspaceId;
+
+  const reader = getChannelPgReader();
+  if (!reader) return { source: 'file', reason: 'gate-off' };
+
+  try {
+    const messages = await readChannelMailboxFromPg(reader, machine, workspace);
+    if (messages === null) return { source: 'file', reason: 'pg-unavailable' };
+
+    return {
+      source: 'pg',
+      messages: messages.map((message) => {
+        const perReader = perReaderStatus(message, machine, workspace);
+        return perReader ? { ...message, status: perReader } : message;
+      }),
+    };
+  } finally {
+    await reader.close();
   }
 }
