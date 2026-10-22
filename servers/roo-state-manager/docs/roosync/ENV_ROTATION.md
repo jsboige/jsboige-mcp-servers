@@ -132,7 +132,7 @@ Chaque publish/apply écrit **exactement une entrée par tentative** dans `$SHAR
 
 ## Tests
 
-49 tests adversariaux (27 unitaires + 22 coverage) couvrant :
+**49 tests adversariaux** (27 unitaires + 22 coverage, `src/services/__tests__/EnvRotationService.test.ts`) — auxquels s'ajoutent **33 tests d'intégration** préexistants (`tests/unit/services/EnvRotationService.test.ts`). Le décompte « 49 » ne couvre que le premier fichier. Ils couvrent :
 - Round-trip encrypt/decrypt
 - Une ligne d'audit `[ENV-ROTATION]` par tentative, échecs inclus — sans valeur (#2410)
 - Tampered ciphertext/tag/IV detection (GCM auth)
@@ -142,6 +142,6 @@ Chaque publish/apply écrit **exactement une entrée par tentative** dans `$SHAR
 - Key rotation scenarios
 - Allowlist enforcement
 - Audit log verification
-- Concurrent publish — même version : chaque écriture `.enc` est un wire complet déchiffrable (jamais torn), last-write-wins, une ligne d'audit par tentative (#2410, dispatch ai-01 22/10)
+- Concurrent publish — même version : chaque écriture `.enc` est un wire complet déchiffrable au **niveau buffer du service** (salt/iv/tag voyagent avec le ciphertext — jamais de buffer déchiré remis à `fs.writeFile`) — ce n'est **pas** une garantie d'atomicité du système de fichiers : l'artefact atterrit par un `fs.writeFile` nu (sans tmp+rename), un lecteur ouvrant le fichier *pendant* l'écriture peut encore voir un fichier partiel ; last-write-wins entre writers complets, une ligne d'audit par tentative (#2410, dispatch ai-01 22/10)
 - Concurrent publish — versions différentes : artefacts indépendants, aucun conflit
 - Full publish/apply integration with backup

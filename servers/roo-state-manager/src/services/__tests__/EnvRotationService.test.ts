@@ -490,9 +490,11 @@ describe('EnvRotationService', () => {
   // Concurrent publishes — #2410 (dispatch ai-01 22/10): two
   // publish() in flight on the SAME service+version. Contract:
   // every artifact write is a COMPLETE wire (salt/iv/tag travel
-  // WITH the ciphertext, so a reader never sees a torn buffer),
-  // last write wins, and each attempt still gets its own audit
-  // line.
+  // WITH the ciphertext, so the service never hands fs.writeFile
+  // a partial buffer — a BUFFER-level guarantee, not filesystem
+  // atomicity: the .enc lands via a bare fs.writeFile, no
+  // tmp+rename), last write wins, and each attempt still gets
+  // its own audit line.
   // ============================================================
   describe('concurrent publishes — same service+version (#2410)', () => {
     const CONTENT_A = 'API_KEY=alpha\nSOURCE=machine-a\n';
@@ -526,12 +528,14 @@ describe('EnvRotationService', () => {
         expect([CONTENT_A, CONTENT_B]).toContain(plain);
       }
 
-      // Last-write-wins: the LAST .enc write to the shared path is the
-      // artifact that stands, and it is itself complete + decryptable.
+      // Last-write-wins: under the synchronous mocks the two publish chains
+      // interleave deterministically (A's awaits resolve before B's), so the
+      // wire that STANDS on the shared path is B's — asserted on its plain
+      // content, not re-derived from the {A,B} membership proven above.
       const lastWire = encWrites[encWrites.length - 1][1] as Buffer;
       const last = service.deserializeEncrypted(lastWire);
       const lastPlain = service.decrypt(last.ciphertext, last.iv, last.tag, last.salt).toString('utf-8');
-      expect([CONTENT_A, CONTENT_B]).toContain(lastPlain);
+      expect(lastPlain).toBe(CONTENT_B);
     });
 
     test('one audit line per attempt — 2 lines, both success, each naming its machine', async () => {
