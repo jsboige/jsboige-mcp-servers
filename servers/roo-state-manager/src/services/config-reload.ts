@@ -122,6 +122,34 @@ export interface ConfigReloadReport {
 }
 
 /**
+ * #4317 — per-path record of the names the LAST parse (or the boot revision,
+ * seeded at module load) took from `.env`. Only a name in this set may be unset
+ * when a later parse drops it: a key something else put in the env was never
+ * the file's to cut. Seeded RAW for the default path — host ownership is
+ * checked live at unset time, because the module can load before index.ts has
+ * captured the #2719 snapshot.
+ */
+const envSourcedNamesByPath = new Map<string, ReadonlySet<string>>();
+{
+  const bootPath = resolveEnvPath();
+  const bootNames = readEnvSourcedNames(bootPath, RELOADABLE_ENV_KEYS);
+  if (bootNames) envSourcedNamesByPath.set(bootPath, bootNames);
+}
+
+const NO_NAMES: ReadonlySet<string> = new Set();
+
+/** Names of `keys` the file at `envPath` carries; null when unreadable mid-write. */
+function readEnvSourcedNames(envPath: string, keys: readonly string[]): ReadonlySet<string> | null {
+  let parsed: Record<string, string>;
+  try {
+    parsed = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
+  } catch {
+    return null; // absent or unreadable — the caller treats null as "no revision seen"
+  }
+  return new Set(keys.filter((key) => key in parsed));
+}
+
+/**
  * Describe a secret without disclosing it: length plus a truncated SHA-256.
  * Two fingerprints differ iff the values differ; neither reveals the value.
  * Mask the VALUE, never the NAME.
@@ -189,25 +217,41 @@ export function reloadConfig(envPath: string = resolveEnvPath()): ConfigReloadRe
   report.skippedKeys = Object.keys(parsed).filter((k) => !allowed.has(k)).sort();
 
   const hostKeys = getHostEnvKeys();
+  const prevSourced = envSourcedNamesByPath.get(envPath) ?? NO_NAMES;
+  const nextSourced = new Set<string>();
   const changedKeys = new Set<string>();
   for (const key of RELOADABLE_ENV_KEYS) {
-    if (!(key in parsed)) continue; // absent from .env → leave process.env alone
-    // #2719: startup precedence is host > `.env` (dotenv never overrides). A key the
-    // host set outranked `.env` at startup, so it must outrank it on reload too.
-    if (hostKeys?.has(key)) {
-      report.hostOwnedKeys.push(key);
-      continue;
+    if (key in parsed) {
+      // #2719: startup precedence is host > `.env` (dotenv never overrides). A key the
+      // host set outranked `.env` at startup, so it must outrank it on reload too.
+      if (hostKeys?.has(key)) {
+        report.hostOwnedKeys.push(key);
+        continue;
+      }
+      nextSourced.add(key);
+      const before = process.env[key];
+      const after = parsed[key];
+      if (before === after) {
+        report.unchangedCount++;
+        continue;
+      }
+      process.env[key] = after;
+      changedKeys.add(key);
+      report.changed.push({ key, before: fingerprint(before), after: fingerprint(after) });
+    } else if (prevSourced.has(key)) {
+      // #4317: the PREVIOUS parse took this key from `.env`; the new one drops it.
+      // A restart would not have the key — cut it from the live env too, or a
+      // removed credential keeps serving until respawn (`ZAI_API_KEY ||
+      // FALLBACK_API_KEY` kept resolving the corpse on ai-01, 22/10). Host
+      // ownership is checked live: the raw boot seed may predate the snapshot.
+      if (hostKeys?.has(key)) continue;
+      const before = process.env[key];
+      delete process.env[key];
+      changedKeys.add(key);
+      report.changed.push({ key, before: fingerprint(before), after: fingerprint(undefined) });
     }
-    const before = process.env[key];
-    const after = parsed[key];
-    if (before === after) {
-      report.unchangedCount++;
-      continue;
-    }
-    process.env[key] = after;
-    changedKeys.add(key);
-    report.changed.push({ key, before: fingerprint(before), after: fingerprint(after) });
   }
+  envSourcedNamesByPath.set(envPath, nextSourced);
 
   for (const [client, deps] of Object.entries(CLIENT_DEPENDENCIES)) {
     if (deps.some((d) => changedKeys.has(d))) {

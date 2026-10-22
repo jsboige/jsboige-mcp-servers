@@ -175,4 +175,73 @@ describe('chat-key-refresh — rotation detection, host-owned guard, allowlist',
         const orphans = CHAT_ENV_KEYS.filter((k) => !reloadable.has(k));
         expect(orphans).toEqual([]);
     });
+
+    // === #4317 — a key REMOVED from .env is cut from process.env ===
+    // Measured on ai-01 (22/10): commenting out ZAI_API_KEY in the server-dir .env
+    // left every live RSM serving it, because the refresh only ever SET keys.
+
+    test('#4317 — a key removed from .env is unset in process.env (criterion 1)', async () => {
+        const p = envFile('.env', 'ZAI_API_KEY=zai-boot\nFALLBACK_API_KEY=f1-boot\n');
+        const { setChatEnvPathForTest, refreshChatKeyEnvIfChanged } = await import('../chat-key-refresh.js');
+        setChatEnvPathForTest(p); // baseline + seed = the boot revision (both keys .env-sourced)
+        // What dotenv did at boot: the file values already sit in process.env.
+        process.env.ZAI_API_KEY = 'zai-boot';
+        process.env.FALLBACK_API_KEY = 'f1-boot';
+        expect(refreshChatKeyEnvIfChanged()).toEqual([]); // unchanged stat → no-op
+
+        // The single operator edit — the ai-01 move. NO refresh saw the file between
+        // boot and now: only the boot-seeded tracking can know ZAI was .env-sourced.
+        fs.writeFileSync(p, '# ZAI_API_KEY=zai-boot\nFALLBACK_API_KEY=f1-boot\n', 'utf8');
+
+        expect(refreshChatKeyEnvIfChanged()).toEqual(['ZAI_API_KEY']);
+        expect(process.env.ZAI_API_KEY).toBeUndefined();
+        expect(process.env.FALLBACK_API_KEY).toBe('f1-boot');
+
+        // Idempotent: the next call sees nothing left to do.
+        expect(refreshChatKeyEnvIfChanged()).toEqual([]);
+        expect(process.env.ZAI_API_KEY).toBeUndefined();
+    });
+
+    test('#4317 — the same cut works across two live parses (rotation, then removal)', async () => {
+        const p = path.join(tmpDir, '.env');
+        const { setChatEnvPathForTest, refreshChatKeyEnvIfChanged } = await import('../chat-key-refresh.js');
+        setChatEnvPathForTest(p); // baseline: file absent (spawn-time)
+        fs.writeFileSync(p, 'ZAI_API_KEY=z1\nFALLBACK_API_KEY=f1\n', 'utf8');
+        expect(refreshChatKeyEnvIfChanged()).toEqual(['ZAI_API_KEY', 'FALLBACK_API_KEY']);
+
+        fs.writeFileSync(p, '# ZAI_API_KEY=z1\nFALLBACK_API_KEY=f1\n', 'utf8');
+        expect(refreshChatKeyEnvIfChanged()).toEqual(['ZAI_API_KEY']);
+        expect(process.env.ZAI_API_KEY).toBeUndefined();
+        expect(process.env.FALLBACK_API_KEY).toBe('f1');
+    });
+
+    test('#4317 — a HOST-owned key survives its removal from .env (precedence outlives the file)', async () => {
+        const p = envFile('.env', 'ZAI_API_KEY=from-file\n');
+        const { setChatEnvPathForTest, refreshChatKeyEnvIfChanged } = await import('../chat-key-refresh.js');
+        const { captureHostEnvKeys } = await import('../host-env-snapshot.js');
+        captureHostEnvKeys({ RSM_HOST_ENV_KEYS: 'ZAI_API_KEY' } as NodeJS.ProcessEnv);
+        process.env.ZAI_API_KEY = 'host-value';
+        // The override seed is RAW (no host filter at read time): the name enters
+        // the tracking set, and only the live #2719 guard keeps the cut from firing.
+        setChatEnvPathForTest(p);
+
+        fs.writeFileSync(p, 'FALLBACK_API_KEY=f1-longer\n', 'utf8'); // ZAI leaves the file
+        expect(refreshChatKeyEnvIfChanged()).toEqual(['FALLBACK_API_KEY']);
+        expect(process.env.ZAI_API_KEY).toBe('host-value');
+        expect(process.env.FALLBACK_API_KEY).toBe('f1-longer');
+    });
+
+    test('#4317 — a key .env never carried is never unset (foreign env keys are not ours to cut)', async () => {
+        const p = path.join(tmpDir, '.env');
+        const { setChatEnvPathForTest, refreshChatKeyEnvIfChanged } = await import('../chat-key-refresh.js');
+        process.env.VLLM_API_KEY_MEDIUM = 'set-by-something-else';
+        setChatEnvPathForTest(p); // baseline: file absent → empty tracking
+        fs.writeFileSync(p, 'OPENAI_API_KEY=k1\n', 'utf8');
+        expect(refreshChatKeyEnvIfChanged()).toEqual(['OPENAI_API_KEY']);
+
+        fs.writeFileSync(p, '# OPENAI_API_KEY=k1\n', 'utf8'); // everything leaves the file
+        expect(refreshChatKeyEnvIfChanged()).toEqual(['OPENAI_API_KEY']);
+        expect(process.env.OPENAI_API_KEY).toBeUndefined();
+        expect(process.env.VLLM_API_KEY_MEDIUM).toBe('set-by-something-else');
+    });
 });
