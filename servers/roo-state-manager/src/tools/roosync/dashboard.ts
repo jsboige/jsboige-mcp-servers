@@ -4405,6 +4405,85 @@ export function resetFallbackTruncationCountersForTest(): void {
   fallbackTruncationCounters.clear();
 }
 
+// #3962 piste 3 renforcée (META po-2025 21/10): durable cross-host census.
+// The host counter above dies with the process and never sees other hosts'
+// condense passes; the `-fallback.md` archive listing is the durable
+// cross-host record — but it had to be listed BY HAND, and the LLM status
+// was measured hand-typing a wrong count on the very day of the META
+// (announced 3, 5 archives measured, 21/10). The census line below is
+// machine-counted from the archive listing on every regenerated status:
+// the LLM never writes it, it only sees it.
+export const FALLBACK_CENSUS_WINDOW_MS = 48 * 60 * 60 * 1000;
+export const FALLBACK_CENSUS_MARKER_PREFIX = 'Fallback-truncated (48h):';
+
+/**
+ * #3962 piste 3 renforcée: count `${key}-<YYYY-MM-DDTHH-MM-SS>-fallback.md`
+ * entries within the sliding window, keyed on the FILE-NAME timestamp (UTC —
+ * names are minted from toISOString). Pure: pass the directory listing.
+ */
+export function countRecentFallbackArchives(
+  names: readonly string[],
+  key: string,
+  nowMs: number = Date.now(),
+  windowMs: number = FALLBACK_CENSUS_WINDOW_MS
+): number {
+  const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const fallbackNameRe = new RegExp(
+    `^${escapedKey}-(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2})-(\\d{2})-(\\d{2})-fallback\\.md$`
+  );
+  let count = 0;
+  for (const name of names) {
+    const match = name.match(fallbackNameRe);
+    if (!match) continue;
+    const tsMs = Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +match[6]);
+    // A slightly-future stamp (clock skew on the writing host) still counts —
+    // the census must under-count nothing; the archive expires when it falls
+    // 48h behind the wall clock, like any other.
+    if (nowMs - tsMs < windowMs) count += 1;
+  }
+  return count;
+}
+
+/**
+ * #3962 piste 3 renforcée: remove previously stamped census lines so at most
+ * one survives per cycle. Line-anchored on the sentinel — LLM prose quoting
+ * the phrase mid-line is not a marker (same pattern as
+ * stripStatusFallbackMarker). Also swallows the blank line the stamp preceded:
+ * appendFallbackCensusLine always emits `\n\n` + line, so without this each
+ * cycle without re-emission would leave one more blank line behind.
+ */
+export function stripFallbackCensusLine(text: string): string {
+  const kept: string[] = [];
+  for (const line of text.split('\n')) {
+    if (line.startsWith(FALLBACK_CENSUS_MARKER_PREFIX)) {
+      if (kept.length > 0 && kept[kept.length - 1].trim() === '') kept.pop();
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join('\n');
+}
+
+/**
+ * #3962 piste 3 renforcée: stamp the machine-counted census line on a freshly
+ * condensed status. No history on this key → no line (strip only). The archive
+ * dir is read, never created, here — creating it is the archiving path's job.
+ */
+export async function appendFallbackCensusLine(key: string, status: string): Promise<string> {
+  const stripped = stripFallbackCensusLine(status);
+  let names: string[];
+  try {
+    names = await fs.readdir(getArchiveDir());
+  } catch {
+    return stripped; // archive dir absent → no history → no line
+  }
+  const recent = countRecentFallbackArchives(names, key);
+  if (recent === 0) return stripped;
+  const line = `${FALLBACK_CENSUS_MARKER_PREFIX} ${recent} archive${recent === 1 ? '' : 's'} on this key`
+    + ` in the last 48h — machine-counted from the archive listing (#3962)`;
+  return `${stripped}\n\n${line}`;
+}
+
 async function executeTruncationFallback(
   key: string,
   dashboard: Dashboard,
@@ -5168,6 +5247,14 @@ async function condenseIntercom(
   if (reconciledMarkers.length > 0) {
     newStatus = newStatus + '\n\n' + reconciledMarkers.join('\n');
   }
+
+  // #3962 piste 3 renforcée: stamp the durable per-key census (archive listing,
+  // cross-host) on every regenerated status — the LLM hand-typed a wrong count
+  // within a day of the incident; this line is machine-counted, stripped and
+  // re-emitted fresh each cycle (same idempotence pattern as the #1502/#3803
+  // markers above). Counts PAST passes only: a truncating pass returns through
+  // executeTruncationFallback above and never reaches this line.
+  newStatus = await appendFallbackCensusLine(key, newStatus!);
 
   // #4205 honesty (review ms#1439) : un skip conserve previousStatus tel quel —
   // le frontmatter de l'archive ne doit pas prétendre le contraire.
