@@ -57,6 +57,8 @@ export const CHAT_ENV_KEYS = [
     'ZAI_BASE_URL',
     'FALLBACK_BASE_URL',
     'FALLBACK_LLM_MODEL_ID',
+    // #3962 piste 4: wire format of the cloud tier, read per call (dashboard.ts fallbackApiFormat)
+    'FALLBACK_API_FORMAT',
 ] as const;
 
 /**

@@ -134,6 +134,10 @@ describe('#3962 — leg budget independence + truncation counter', { timeout: 12
     // cloud salvages on the reserve; WITHOUT the fix the primary runs the full
     // 45s, the cloud inherits ~5s (< skip floor) and the pass truncates.
     process.env.CONDENSE_PASS_DEADLINE_MS = '50000';
+    // Pins the piste 2 mechanism at the historical fixed reserve: since piste 4 the
+    // default is prompt-sized (dashboard.claudish-fallback.test.ts c2), which on this
+    // scaled-down 50s pass would leave the primary no slice at all.
+    process.env.CONDENSE_CLOUD_RESERVE_MS = '35000';
 
     const primaryTimeouts: Array<number | undefined> = [];
     const cloudTimeouts: Array<number | undefined> = [];

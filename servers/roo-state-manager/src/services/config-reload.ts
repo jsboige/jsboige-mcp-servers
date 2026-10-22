@@ -68,6 +68,8 @@ export const RELOADABLE_ENV_KEYS = [
   'FALLBACK_BASE_URL',
   'FALLBACK_LLM_MODEL_ID',
   'FALLBACK_TIMEOUT_MS',
+  // #3962 piste 4: read per call in dashboard.ts (fallbackApiFormat), no client to reset.
+  'FALLBACK_API_FORMAT',
 ] as const;
 
 export type ReloadableEnvKey = typeof RELOADABLE_ENV_KEYS[number];

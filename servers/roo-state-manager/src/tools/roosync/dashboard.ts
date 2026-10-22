@@ -238,11 +238,30 @@ export function computeFallbackAttemptTimeoutMs(
 // minimum viable cloud attempt (FALLBACK_TIMEOUT_MIN_MS floor 30s + the 5s
 // FB_DEADLINE_SKIP_FLOOR_MS). Env read per call (hot-reloadable, like the other
 // bounds); 0 disables the reservation (restores the pre-#3962 allocation).
-const condenseCloudReserveMs = (): number => {
+//
+// #3962 piste 4: a fixed 35s reserve was still a starved rescue. When vLLM hung
+// (22/10), the primary took its full slice (165 - 35 = 130s) and the frognano
+// fallback, which needs 55-70s on a full summary prompt, was cut 20-27s before it
+// would have answered (measured by po-2025:vllm). Without an explicit env value,
+// the reserve is now sized to the cloud attempt THIS prompt will request
+// (computeFallbackAttemptTimeoutMs, same knobs: FALLBACK_TIMEOUT_MIN_MS / _PER_KB /
+// FALLBACK_TIMEOUT_MS) plus the skip floor, never below the historical 35s, and
+// capped so the primary always keeps at least half of the default 165s pass. An
+// explicit CONDENSE_CLOUD_RESERVE_MS still wins as-is.
+const CONDENSE_CLOUD_RESERVE_DEFAULT_MS = 35000;
+const CONDENSE_CLOUD_RESERVE_MAX_MS = 82000;
+const condenseCloudReserveMs = (promptBytes?: number): number => {
   const raw = process.env.CONDENSE_CLOUD_RESERVE_MS;
-  if (raw === undefined || raw === '') return 35000;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : 35000;
+  if (raw !== undefined && raw !== '') {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n >= 0) return n;
+  }
+  if (promptBytes === undefined) return CONDENSE_CLOUD_RESERVE_DEFAULT_MS;
+  const attemptMs = computeFallbackAttemptTimeoutMs(promptBytes) ?? 0;
+  return Math.min(
+    CONDENSE_CLOUD_RESERVE_MAX_MS,
+    Math.max(CONDENSE_CLOUD_RESERVE_DEFAULT_MS, attemptMs + FB_DEADLINE_SKIP_FLOOR_MS),
+  );
 };
 
 /**
@@ -252,13 +271,16 @@ const condenseCloudReserveMs = (): number => {
  * start (less than FB_DEADLINE_SKIP_FLOOR_MS left before the reserve); the caller
  * falls through to the cloud fallback, which then runs ON the reserved budget.
  * No passDeadlineMs (tests, non-condensation callers) → the base timeout as-is.
+ * #3962 piste 4: `promptBytes` (the cloud prompt the fallback would send) sizes the
+ * default reserve; omitted → the historical fixed 35s.
  */
 export function computePrimaryAttemptTimeoutMs(
   baseTimeoutMs: number,
   passDeadlineMs?: number,
+  promptBytes?: number,
 ): number | null {
   if (passDeadlineMs === undefined) return baseTimeoutMs;
-  const availableMs = (passDeadlineMs - condenseCloudReserveMs()) - Date.now();
+  const availableMs = (passDeadlineMs - condenseCloudReserveMs(promptBytes)) - Date.now();
   if (availableMs < FB_DEADLINE_SKIP_FLOOR_MS) return null;
   return Math.min(baseTimeoutMs, availableMs);
 }
@@ -477,6 +499,33 @@ type CloudCondenseOnceResult =
   | { ok: false; retryable: boolean; error: string; elapsedMs: number; model: string }
   | null; // unconfigured (no API key)
 
+/**
+ * #3962 piste 4: wire format of the cloud tier. `anthropic` posts to
+ * `<FALLBACK_BASE_URL>/messages` (claudish role names, e.g. `claude-sonnet-5-5`);
+ * anything else keeps the historical OpenAI chat-completions route. Read per call,
+ * so the `.env` hot reload applies without a host restart.
+ */
+export function fallbackApiFormat(): 'openai' | 'anthropic' {
+  return (process.env.FALLBACK_API_FORMAT ?? '').trim().toLowerCase() === 'anthropic' ? 'anthropic' : 'openai';
+}
+
+/** The part of an Anthropic Messages response the condensation reads. */
+interface AnthropicMessageResponse {
+  content?: Array<{ type?: string; text?: string }>;
+}
+
+/**
+ * Text of an Anthropic Messages response: the `text` blocks only, in order.
+ * `thinking` blocks are the model's scratchpad, never the summary.
+ */
+export function extractAnthropicText(message: AnthropicMessageResponse | null | undefined): string {
+  const blocks = Array.isArray(message?.content) ? message!.content : [];
+  return blocks
+    .filter(b => b?.type === 'text' && typeof b.text === 'string')
+    .map(b => b.text as string)
+    .join('');
+}
+
 async function cloudCondenseOnce(
   systemPrompt: string,
   userPrompt: string,
@@ -508,35 +557,59 @@ async function cloudCondenseOnce(
   }
   const fbStart = Date.now();
   try {
-    // gpt-5 / o-series reasoning models reject `max_tokens` (require
-    // `max_completion_tokens`) and any `temperature` != 1. Classic OpenAI-compat /
-    // GLM / Qwen models use `max_tokens` + `temperature` and honour `/no_think`.
-    const isReasoningModel = /^(gpt-5|o[1-9])/i.test(fbModel);
-    const response = await fallbackClient.chat.completions.create(
-      isReasoningModel
-        ? {
-            model: fbModel,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: userPrompt },
-            ],
-            max_completion_tokens: opts.maxTokens,
-          }
-        : {
-            model: fbModel,
-            messages: [
-              { role: 'system', content: systemPrompt },
-              { role: 'user', content: '/no_think\n' + userPrompt },
-            ],
-            max_tokens: opts.maxTokens,
-            temperature: opts.temperature,
-          },
-      // #2719 borne: per-request timeout override — prompt-proportional and
-      // deadline-clamped (computeFallbackAttemptTimeoutMs), so the singleton's
-      // constructor default never gates this call.
-      { timeout: attemptTimeoutMs },
-    );
-    const content = response.choices[0]?.message?.content;
+    let content: string | null | undefined;
+    if (fallbackApiFormat() === 'anthropic') {
+      // #3962 piste 4 (user 22/10: the fleet's rescue is claudish under its Sonnet
+      // role, which has its own failover cascade): Anthropic /v1/messages route. On
+      // /v1/chat/completions a thinking backend behind a role name (glm-5.3 behind
+      // claude-sonnet-*) returns an EMPTY content (measured 22/10, finish=length);
+      // its text only survives here, as a `text` block next to a `thinking` block.
+      // Same client: same key (claudish accepts the Bearer header), base URL,
+      // per-request timeout and SDK error classes — isRetryableFallbackError and the
+      // retry/chain loop below apply unchanged.
+      const message = await fallbackClient.post<unknown, AnthropicMessageResponse>('/messages', {
+        body: {
+          model: fbModel,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }],
+          max_tokens: opts.maxTokens,
+          temperature: opts.temperature,
+        },
+        headers: { 'anthropic-version': '2023-06-01' },
+        timeout: attemptTimeoutMs,
+      });
+      content = extractAnthropicText(message);
+    } else {
+      // gpt-5 / o-series reasoning models reject `max_tokens` (require
+      // `max_completion_tokens`) and any `temperature` != 1. Classic OpenAI-compat /
+      // GLM / Qwen models use `max_tokens` + `temperature` and honour `/no_think`.
+      const isReasoningModel = /^(gpt-5|o[1-9])/i.test(fbModel);
+      const response = await fallbackClient.chat.completions.create(
+        isReasoningModel
+          ? {
+              model: fbModel,
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: userPrompt },
+              ],
+              max_completion_tokens: opts.maxTokens,
+            }
+          : {
+              model: fbModel,
+              messages: [
+                { role: 'system', content: systemPrompt },
+                { role: 'user', content: '/no_think\n' + userPrompt },
+              ],
+              max_tokens: opts.maxTokens,
+              temperature: opts.temperature,
+            },
+        // #2719 borne: per-request timeout override — prompt-proportional and
+        // deadline-clamped (computeFallbackAttemptTimeoutMs), so the singleton's
+        // constructor default never gates this call.
+        { timeout: attemptTimeoutMs },
+      );
+      content = response.choices[0]?.message?.content;
+    }
     const elapsedMs = Date.now() - fbStart;
     if (!content) {
       logger.warn('#2719 cloud fallback returned empty content', { fbModel, elapsed: `${elapsedMs}ms` });
@@ -3210,7 +3283,7 @@ FORMAT :
     // #3962 piste 2: deadline-aware per-attempt clamp — the primary may only spend
     // what the pass has left MINUS the cloud reserve. null = refuse to start (the
     // cloud leg then runs on the reserved budget instead of inheriting nothing).
-    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(timeoutMs, opts?.passDeadlineMs);
+    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(timeoutMs, opts?.passDeadlineMs, Buffer.byteLength(systemPrompt + userPrompt, 'utf8'));
     if (attemptTimeoutMs === null) {
       stats.finalOutcome = 'budget-exhausted';
       stats.elapsedMs = Date.now() - callStart;
@@ -3470,7 +3543,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
   // Retry with exponential backoff
   for (let attempt = 1; attempt <= LLM_MAX_RETRIES; attempt++) {
     // #3962 piste 2: deadline-aware per-attempt clamp, cloud reserve held back.
-    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(timeoutMs, opts?.passDeadlineMs);
+    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(timeoutMs, opts?.passDeadlineMs, Buffer.byteLength(systemPrompt + userPrompt, 'utf8'));
     if (attemptTimeoutMs === null) {
       stats.finalOutcome = 'budget-exhausted';
       stats.elapsedMs = Date.now() - callStart;
@@ -3603,7 +3676,7 @@ export async function condenseTextIfTooLarge(
     // #3962 piste 2: same deadline clamp as the pass condensers — the primary
     // spends only what's left beyond the cloud reserve; on refusal, fall through
     // to the cloud fallback below (which runs on the reserve).
-    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(CONDENSE_LLM_TIMEOUT_MS, passDeadlineMs);
+    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(CONDENSE_LLM_TIMEOUT_MS, passDeadlineMs, sizeBytes);
     if (attemptTimeoutMs === null) {
       logger.warn(`Auto-condense ${label}: primary attempt refused — pass deadline reached the cloud reserve (#3962)`, { attempt });
       break;
@@ -5008,7 +5081,16 @@ async function condenseIntercom(
 
   // LLM succeeded — reset circuit breaker (only a pass that exercised the primary
   // can vouch for it; a cloud-only pass leaves the breaker to its half-open timer).
-  if (!primaryCircuitOpen) condenseCBRecordSuccess();
+  // #3962 piste 4: a pass the CLOUD rescued is a primary FAILURE. Counting it as a
+  // success reset the breaker on every rescued pass, so a hung vLLM never opened
+  // it and every append kept paying the primary's full slice before the rescue.
+  // Three rescued passes now open the breaker and the next ones go straight to
+  // the cloud tier on the whole pass budget.
+  const primaryRescued = statusCall.stats.fallbackUsed === true || summaryCall.stats.fallbackUsed === true;
+  if (!primaryCircuitOpen) {
+    if (primaryRescued) condenseCBRecordFailure();
+    else condenseCBRecordSuccess();
+  }
 
   // Both operations succeeded — now auto-condense if outputs exceed size limits
   newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status', passDeadlineMs);
