@@ -130,10 +130,12 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     this.pool = new pg.Pool({
       connectionString: this.config.connectionString,
       max: this.config.poolMax ?? 5,
-      statement_timeout: this.config.statementTimeoutMs ?? 5000,
+      // #4131 B15: default headroom 15 s (statement timeouts at 5 s fired
+      // under mailbox load, 22/10); still bounded for the fallback contract.
+      statement_timeout: this.config.statementTimeoutMs ?? 15000,
       // #2191 deep-queue: same guard as the reader — an unreachable host must
       // reject fast, not hang the dual-write arming path until the OS TCP timeout.
-      connectionTimeoutMillis: this.config.connectionTimeoutMillis ?? 5000,
+      connectionTimeoutMillis: this.config.connectionTimeoutMillis ?? 15000,
       // SSL is configured via the connection string (sslmode=require)
     });
 

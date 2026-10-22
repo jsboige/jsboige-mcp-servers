@@ -29,6 +29,7 @@ import type {
 import type {
   IUnifiedStoreReader,
   UnifiedStoreReaderConfig,
+  RooSyncMailboxReadOptions,
   ConversationListFilters,
   ConversationListRow,
 } from './UnifiedStoreReader.js';
@@ -50,10 +51,12 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     this.pool = new pg.Pool({
       connectionString: this.config.connectionString,
       max: this.config.poolMax ?? 5,
-      statement_timeout: this.config.statementTimeoutMs ?? 5000,
+      // #4131 B15: 5 s statement timeout fired 189× on 22/10 under mailbox
+      // load — default headroom 15 s (same as ai-01's stopgap); still bounded.
+      statement_timeout: this.config.statementTimeoutMs ?? 15000,
       // #2191 deep-queue: without this, a dropped-SYN host hangs pool.connect()
       // until the OS TCP timeout — the GDrive fallback catch never fires.
-      connectionTimeoutMillis: this.config.connectionTimeoutMillis ?? 5000,
+      connectionTimeoutMillis: this.config.connectionTimeoutMillis ?? 15000,
     });
 
     // Idle-client errors are emitted on the POOL with no awaited query to
@@ -103,17 +106,35 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
 
   // ─── RooSync channel reads (#3151 Phase B) ─────────────────────
 
-  async getRooSyncMailbox(machineId: string): Promise<RooSyncMessageRow[]> {
+  async getRooSyncMailbox(machineId: string, opts?: RooSyncMailboxReadOptions): Promise<RooSyncMessageRow[]> {
     if (!this.pool) await this.init();
     if (!this.pool) throw new Error('Pool not initialized');
 
+    // #4131 B15 — array-shaped recipient clause + explicit columns so the
+    // partial index idx_roosync_messages_mailbox_live (to_machine,
+    // created_at DESC, WHERE the live-set predicate, migrations/011) serves
+    // the read. The OR form fetched the machine's full history including
+    // archived/destroyed rows: 5 139 dead rows per read for 486 live ones,
+    // 4 212 vs 575 shared buffers (EXPLAIN ANALYZE, 23/10). `body` is the
+    // one unbounded column — `bodyChars` bounds it (RooSyncMailboxReadOptions).
+    const bodyChars = opts?.bodyChars;
+    const bodyExpr = bodyChars === undefined
+      ? 'body'
+      : bodyChars > 0 ? 'LEFT(body, $2) AS body' : "'' AS body";
+    const params: Array<string | number | string[]> = [[machineId, 'all', 'All']];
+    if (bodyChars !== undefined && bodyChars > 0) params.push(bodyChars);
+
     const result = await this.pool.query(
-      `SELECT * FROM roosync_messages
+      `SELECT id, thread_id, from_machine, from_workspace, to_machine, to_workspace,
+              subject, ${bodyExpr}, priority, status, tags, attachment_refs, created_at,
+              reply_to, read_by, read_by_workspace, options, destroyed_at, destroyed_reason,
+              reminder_sent_at
+       FROM roosync_messages
        WHERE status <> 'archived'
          AND destroyed_at IS NULL
-         AND (to_machine = $1 OR to_machine IN ('all', 'All'))
+         AND to_machine = ANY($1::text[])
        ORDER BY created_at DESC`,
-      [machineId],
+      params,
     );
 
     return result.rows.map(row => this.mapRooSyncMessageRow(row));
@@ -136,10 +157,18 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     if (!this.pool) await this.init();
     if (!this.pool) throw new Error('Pool not initialized');
 
-    // Same pool as getRooSyncMailbox minus the recipient clause — the global
-    // scans (#4302) are recipient-blind by design.
+    // Same live set as getRooSyncMailbox minus the recipient clause — the
+    // global scans (#4302) are recipient-blind by design. Explicit columns
+    // (#4131 B15); the partial index idx_roosync_messages_channel_live
+    // (created_at DESC, migrations/011) serves the ordered scan. Full body:
+    // both consumers (cleanupExpiredMessages, sendExpiryReminders) map rows
+    // to full Messages.
     const result = await this.pool.query(
-      `SELECT * FROM roosync_messages
+      `SELECT id, thread_id, from_machine, from_workspace, to_machine, to_workspace,
+              subject, body, priority, status, tags, attachment_refs, created_at,
+              reply_to, read_by, read_by_workspace, options, destroyed_at, destroyed_reason,
+              reminder_sent_at
+       FROM roosync_messages
        WHERE status <> 'archived'
          AND destroyed_at IS NULL
        ORDER BY created_at DESC`

@@ -5,7 +5,7 @@
  * Without connectionTimeoutMillis, a dropped-SYN PG host hangs pool.connect()
  * until the OS TCP timeout (~20-120s+) — the GDrive/file fallback catch never
  * fires because the promise never rejects. These tests pin the plumbing:
- * default 5000ms, config override, and env override in both factories.
+ * default 15000ms (#4131 B15), config override, and env override in both factories.
  *
  * The behavioral test (real network, unreachable host, fast reject → null
  * fallback) lives in pg-connection-timeout.e2e.test.ts.
@@ -63,16 +63,16 @@ describe('connectionTimeoutMillis plumbing (#2191 deep-queue)', () => {
     delete process.env.UNIFIED_STORE_CONNECT_TIMEOUT_MS;
   });
 
-  test('reader pool defaults to 5000ms connectionTimeoutMillis', async () => {
+  test('reader pool defaults to 15000ms connectionTimeoutMillis', async () => {
     await initReader();
     expect(PoolMock).toHaveBeenCalledTimes(1);
-    expect(PoolMock.mock.calls[0][0]).toMatchObject({ connectionTimeoutMillis: 5000 });
+    expect(PoolMock.mock.calls[0][0]).toMatchObject({ connectionTimeoutMillis: 15000 });
   });
 
-  test('writer pool defaults to 5000ms connectionTimeoutMillis', async () => {
+  test('writer pool defaults to 15000ms connectionTimeoutMillis', async () => {
     await initWriter();
     expect(PoolMock).toHaveBeenCalledTimes(1);
-    expect(PoolMock.mock.calls[0][0]).toMatchObject({ connectionTimeoutMillis: 5000 });
+    expect(PoolMock.mock.calls[0][0]).toMatchObject({ connectionTimeoutMillis: 15000 });
   });
 
   test('reader honors explicit connectionTimeoutMillis config', async () => {
