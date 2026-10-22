@@ -192,4 +192,49 @@ describe('readCliInboxFromPg (#4131 B14)', () => {
 
     expect(result).toEqual({ source: 'pg', messages: [] });
   });
+
+  // --- review head cad920f5 (Hermes) — F1: the combined machine:workspace
+  // form is documented by --help; on the pre-fix head it silently produced an
+  // authoritative EMPTY inbox (canonicalMachineId does not split, so
+  // matchesRecipient rejected everything but 'all').
+  it('combined machine:workspace form parses (#3177) — machine-wide and own-ws visible, other-ws dropped', async () => {
+    mockMailbox.mockResolvedValue([
+      row({ id: 'mw', to_machine: MACHINE, subject: '[TASK] machine-wide' }),
+      row({ id: 'own-ws', to_machine: MACHINE, to_workspace: 'roo-extensions' }),
+      row({ id: 'other-ws', to_machine: MACHINE, to_workspace: 'other-ws' }),
+    ]);
+
+    const result = await readCliInboxFromPg(`${MACHINE}:roo-extensions`);
+
+    if (result.source !== 'pg') throw new Error('expected pg');
+    expect(result.messages.map((m) => m.id).sort()).toEqual(['mw', 'own-ws']);
+  });
+
+  it('explicit workspace qualifier wins over the combined suffix', async () => {
+    mockMailbox.mockResolvedValue([
+      row({ id: 'mw', to_machine: MACHINE }),
+      row({ id: 'explicit-ws', to_machine: MACHINE, to_workspace: 'explicit-ws' }),
+      row({ id: 'suffix-ws', to_machine: MACHINE, to_workspace: 'ignored-suffix' }),
+    ]);
+
+    const result = await readCliInboxFromPg(`${MACHINE}:ignored-suffix`, 'explicit-ws');
+
+    if (result.source !== 'pg') throw new Error('expected pg');
+    expect(result.messages.map((m) => m.id).sort()).toEqual(['explicit-ws', 'mw']);
+  });
+
+  // --- review head cad920f5 (Hermes) — F2: the CLI runs at worker boot, the
+  // coldest moment of the PG pool (#4303); the mailbox enumeration must carry
+  // the same bounded resume its count sibling already has.
+  it('cold-pool connection timeout resumes once before any fallback (parity with countChannelInboxFromPg)', async () => {
+    mockMailbox
+      .mockRejectedValueOnce(new Error('Connection terminated due to connection timeout'))
+      .mockResolvedValueOnce([row({ id: 'msg-1', to_machine: MACHINE })]);
+
+    const result = await readCliInboxFromPg(MACHINE);
+
+    if (result.source !== 'pg') throw new Error('expected pg');
+    expect(result.messages.map((m) => m.id)).toEqual(['msg-1']);
+    expect(mockMailbox).toHaveBeenCalledTimes(2);
+  });
 });

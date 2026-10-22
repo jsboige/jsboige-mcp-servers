@@ -12,6 +12,8 @@ import { describe, it, expect } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import fs from 'node:fs';
+import os from 'node:os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI = path.resolve(__dirname, '../../../scripts/read-roosync-inbox.mjs');
@@ -43,5 +45,44 @@ describe('read-roosync-inbox.mjs shell (#4131 B14)', () => {
   it('missing --machine exits 1 before any PG or build dependency', () => {
     const { status } = run([]);
     expect(status).toBe(1);
+  });
+
+  // --- review head cad920f5 (Hermes) — F3: process.exit() does not drain a
+  // piped stdout; an inbox above the 64 KiB pipe buffer left a TRUNCATED JSON
+  // with exit 0, which the worker would parse as a valid empty answer. This
+  // subprocess test pins the fix: RSM_ROOT points at a fixture build stub
+  // serving ~120 KiB, the child's stdout is a pipe (execFileSync), and the
+  // whole payload must arrive parseable.
+  it('payload above the 64 KiB pipe buffer arrives complete on a piped stdout', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-cli-f3-'));
+    try {
+      fs.mkdirSync(path.join(root, 'build', 'services', 'unified-store'), { recursive: true });
+      const messages = Array.from({ length: 30 }, (_, i) => ({
+        id: `msg-${i}`,
+        subject: '[TASK] filler',
+        body: 'A'.repeat(4000),
+      }));
+      fs.writeFileSync(
+        path.join(root, 'build', 'services', 'unified-store', 'roosync-channel-read.js'),
+        `export async function readCliInboxFromPg() {\n` +
+          `  return { source: 'pg', messages: ${JSON.stringify(messages)} };\n` +
+          `}\n`
+      );
+
+      const stdout = execFileSync('node', [CLI, '--machine', 'myia-po-2024'], {
+        encoding: 'utf-8',
+        timeout: 30_000,
+        maxBuffer: 16 * 1024 * 1024,
+        env: { ...process.env, RSM_ROOT: root },
+      });
+
+      expect(Buffer.byteLength(stdout, 'utf-8')).toBeGreaterThan(65_536);
+      const parsed = JSON.parse(stdout);
+      expect(parsed.source).toBe('pg');
+      expect(parsed.messages).toHaveLength(30);
+      expect(parsed.messages[29].id).toBe('msg-29');
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -189,7 +189,14 @@ export async function readChannelMailboxFromPg(
   workspaceId?: string
 ): Promise<Message[] | null> {
   try {
-    const rows = await reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId);
+    // Same bounded cold-pool resume as the count sibling above (#4303): the
+    // callers that hit this at process boot (the B14 CLI) land on the pool at
+    // its coldest — one retry on the connection-timeout signature, then the
+    // null → GDrive fallback contract stands for durable failures.
+    const rows = await withColdPoolResume(
+      () => reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId),
+      'channel:mailbox'
+    );
     const messages: Message[] = [];
     for (const row of rows) {
       const to = row.to_workspace ? `${row.to_machine}:${row.to_workspace}` : row.to_machine;
@@ -316,17 +323,27 @@ export async function readCliInboxFromPg(
   | { source: 'pg'; messages: Message[] }
   | { source: 'file'; reason: 'gate-off' | 'pg-unavailable' }
 > {
+  // The CLI documents the combined "machine:workspace" form (--help parity
+  // with the MCP inbox): parse it here like read.ts does for its workspace
+  // argument (#3177) — the machine half is SUBSTITUTED, never concatenated.
+  // canonicalMachineId alone would leave the colon in and matchesRecipient
+  // would reject everything but 'all' (review head cad920f5, F1). An
+  // explicit workspace qualifier still wins over the combined suffix.
+  const parsedCaller = parseMachineWorkspace(machineId);
+  const machine = parsedCaller.machineId;
+  const workspace = workspaceId ?? parsedCaller.workspaceId;
+
   const reader = getChannelPgReader();
   if (!reader) return { source: 'file', reason: 'gate-off' };
 
   try {
-    const messages = await readChannelMailboxFromPg(reader, machineId, workspaceId);
+    const messages = await readChannelMailboxFromPg(reader, machine, workspace);
     if (messages === null) return { source: 'file', reason: 'pg-unavailable' };
 
     return {
       source: 'pg',
       messages: messages.map((message) => {
-        const perReader = perReaderStatus(message, machineId, workspaceId);
+        const perReader = perReaderStatus(message, machine, workspace);
         return perReader ? { ...message, status: perReader } : message;
       }),
     };

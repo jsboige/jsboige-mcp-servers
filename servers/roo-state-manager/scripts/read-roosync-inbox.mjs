@@ -92,7 +92,11 @@ if (!MACHINE) {
 }
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const RSM_ROOT = path.resolve(__dirname, '..'); // servers/roo-state-manager/
+// Test seam: an explicit RSM_ROOT overrides the CLI's own location (the
+// subprocess tests point it at a fixture build stub); never set in production.
+const RSM_ROOT = process.env.RSM_ROOT
+  ? path.resolve(process.env.RSM_ROOT)
+  : path.resolve(__dirname, '..'); // servers/roo-state-manager/
 loadEnv(path.join(RSM_ROOT, '.env'));
 
 const buildUrl = (rel) => pathToFileURL(path.join(resolveBuildDir(RSM_ROOT), rel)).href;
@@ -101,5 +105,13 @@ const { readCliInboxFromPg } = await import(
 );
 
 const result = await readCliInboxFromPg(MACHINE, WORKSPACE);
-console.log(JSON.stringify(result, null, PRETTY ? 2 : 0));
-process.exit(result.source === 'pg' ? 0 : 3);
+// NEVER process.exit() here: it does not drain a piped stdout, and the write
+// stops at the 64 KiB pipe buffer (review head cad920f5, F3 — an inbox above
+// 64 KiB left a TRUNCATED JSON with exit 0). Await the write callback, then
+// set exitCode and let Node exit naturally once stdout is drained. (--help
+// and the usage error keep process.exit: their payloads are a few hundred
+// bytes, far under the buffer.)
+await new Promise((resolve) => {
+  process.stdout.write(`${JSON.stringify(result, null, PRETTY ? 2 : 0)}\n`, resolve);
+});
+process.exitCode = result.source === 'pg' ? 0 : 3;
