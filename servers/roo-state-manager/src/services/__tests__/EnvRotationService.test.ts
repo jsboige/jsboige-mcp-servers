@@ -485,4 +485,94 @@ describe('EnvRotationService', () => {
       expect(line.status).toBe('success');
     });
   });
+
+  // ============================================================
+  // Concurrent publishes — #2410 (dispatch ai-01 22/10): two
+  // publish() in flight on the SAME service+version. Contract:
+  // every artifact write is a COMPLETE wire (salt/iv/tag travel
+  // WITH the ciphertext, so a reader never sees a torn buffer),
+  // last write wins, and each attempt still gets its own audit
+  // line.
+  // ============================================================
+  describe('concurrent publishes — same service+version (#2410)', () => {
+    const CONTENT_A = 'API_KEY=alpha\nSOURCE=machine-a\n';
+    const CONTENT_B = 'API_KEY=beta\nSOURCE=machine-b\n';
+
+    beforeEach(() => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFile.mockImplementation(async (p: { toString: () => string }) =>
+        p.toString().startsWith('/a/') ? CONTENT_A : CONTENT_B
+      );
+    });
+
+    test('both succeed; every .enc write is a complete decryptable wire; last-write-wins', async () => {
+      const [ra, rb] = await Promise.all([
+        service.publish({ service: 'rsm', envPath: '/a/.env', sharedStatePath: '/s', version: '3', machineId: 'machine-a' }),
+        service.publish({ service: 'rsm', envPath: '/b/.env', sharedStatePath: '/s', version: '3', machineId: 'machine-b' }),
+      ]);
+      expect(ra.status).toBe('success');
+      expect(rb.status).toBe('success');
+
+      // 2 publishes × (.enc + .json metadata) = 4 artifact writes
+      expect(mockWriteFile).toHaveBeenCalledTimes(4);
+      const encWrites = mockWriteFile.mock.calls.filter(c => String(c[0]).endsWith('3.enc'));
+      expect(encWrites).toHaveLength(2);
+
+      // Every .enc write is a COMPLETE wire decrypting to one of the two
+      // sources — never a torn buffer, even mid-race.
+      for (const call of encWrites) {
+        const parts = service.deserializeEncrypted(call[1] as Buffer);
+        const plain = service.decrypt(parts.ciphertext, parts.iv, parts.tag, parts.salt).toString('utf-8');
+        expect([CONTENT_A, CONTENT_B]).toContain(plain);
+      }
+
+      // Last-write-wins: the LAST .enc write to the shared path is the
+      // artifact that stands, and it is itself complete + decryptable.
+      const lastWire = encWrites[encWrites.length - 1][1] as Buffer;
+      const last = service.deserializeEncrypted(lastWire);
+      const lastPlain = service.decrypt(last.ciphertext, last.iv, last.tag, last.salt).toString('utf-8');
+      expect([CONTENT_A, CONTENT_B]).toContain(lastPlain);
+    });
+
+    test('one audit line per attempt — 2 lines, both success, each naming its machine', async () => {
+      await Promise.all([
+        service.publish({ service: 'rsm', envPath: '/a/.env', sharedStatePath: '/s', version: '3', machineId: 'machine-a' }),
+        service.publish({ service: 'rsm', envPath: '/b/.env', sharedStatePath: '/s', version: '3', machineId: 'machine-b' }),
+      ]);
+
+      expect(mockAppendFile).toHaveBeenCalledTimes(2);
+      const lines = mockAppendFile.mock.calls.map(c => JSON.parse(String((c as unknown[])[1])));
+      for (const line of lines) {
+        expect(line.marker).toBe('[ENV-ROTATION]');
+        expect(line.action).toBe('publish');
+        expect(line.status).toBe('success');
+      }
+      expect(new Set(lines.map(l => l.machineId))).toEqual(new Set(['machine-a', 'machine-b']));
+    });
+  });
+
+  // ============================================================
+  // Concurrent publishes on DIFFERENT versions — no conflict:
+  // independent artifacts, independent audit lines.
+  // ============================================================
+  describe('concurrent publishes — different versions: independent artifacts (#2410)', () => {
+    test('each version writes its own .enc + .json + audit line', async () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFile.mockImplementation(async (p: { toString: () => string }) =>
+        p.toString().startsWith('/a/') ? 'API_KEY=alpha\n' : 'API_KEY=beta\n'
+      );
+
+      const [r4, r5] = await Promise.all([
+        service.publish({ service: 'rsm', envPath: '/a/.env', sharedStatePath: '/s', version: '4', machineId: 'ma' }),
+        service.publish({ service: 'rsm', envPath: '/b/.env', sharedStatePath: '/s', version: '5', machineId: 'mb' }),
+      ]);
+      expect(r4.status).toBe('success');
+      expect(r5.status).toBe('success');
+
+      expect(mockWriteFile).toHaveBeenCalledTimes(4);
+      expect(mockWriteFile.mock.calls.filter(c => String(c[0]).endsWith('4.enc'))).toHaveLength(1);
+      expect(mockWriteFile.mock.calls.filter(c => String(c[0]).endsWith('5.enc'))).toHaveLength(1);
+      expect(mockAppendFile).toHaveBeenCalledTimes(2);
+    });
+  });
 });

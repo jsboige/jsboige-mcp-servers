@@ -128,10 +128,11 @@ Chaque publish/apply écrit **exactement une entrée par tentative** dans `$SHAR
 - GitHub PATs rotation (gh CLI)
 - Rotation automatique calendaire (Phase 3+)
 - ACL Windows sur fichiers chiffrés (mode 0o600 ignoré sous Windows)
+- Validation post-apply (restart du consommateur) — hors scope de #2410 (arbitrage ai-01 22/10) : aucun organe dédié n'existe et ce n'est pas un livrable de rotation ; le restart est livré séparément par le target `services:<name>` (#2409). Pas de nouvelle issue sans validation user.
 
 ## Tests
 
-46 tests adversariaux (24 unitaires + 22 coverage) couvrant :
+49 tests adversariaux (27 unitaires + 22 coverage) couvrant :
 - Round-trip encrypt/decrypt
 - Une ligne d'audit `[ENV-ROTATION]` par tentative, échecs inclus — sans valeur (#2410)
 - Tampered ciphertext/tag/IV detection (GCM auth)
@@ -141,5 +142,6 @@ Chaque publish/apply écrit **exactement une entrée par tentative** dans `$SHAR
 - Key rotation scenarios
 - Allowlist enforcement
 - Audit log verification
-- Concurrent publish (last-write-wins)
+- Concurrent publish — même version : chaque écriture `.enc` est un wire complet déchiffrable (jamais torn), last-write-wins, une ligne d'audit par tentative (#2410, dispatch ai-01 22/10)
+- Concurrent publish — versions différentes : artefacts indépendants, aucun conflit
 - Full publish/apply integration with backup
