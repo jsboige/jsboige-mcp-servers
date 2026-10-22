@@ -2313,13 +2313,12 @@ export class MessageManager {
     let destroyed = 0;
 
 // #4302/#4301 — PG scan (env-gated): the pool read is recipient-blind by
-    // design here, so the mailbox read cannot express it. The sweep only takes
-    // the PG candidates when it can also commit the destroy transitions
-    // (#4301): on a READ_PG host without the PG writer, destroyMessage would
-    // fall through to a file path that PG-only rows do not have.
+    // design here, so the mailbox read cannot express it. Selection stays
+    // ungated (the merged #4302 contract); the transition it drives stays
+    // gated inside destroyMessage — a Null writer must not report a destroy.
     // null = PG unavailable → GDrive pool below.
     const pgReader = getChannelPgReader();
-    if (pgReader && isChannelPgWritable()) {
+    if (pgReader) {
       const startedAt = Date.now();
       const pgPool = await readWholeChannelFromPg(pgReader);
       if (pgPool !== null) {
@@ -2367,31 +2366,19 @@ export class MessageManager {
     const now = Date.now();
     let remindersSent = 0;
 
-    // #4301 — PG-host sweep: candidates come from the rows that serve the
-    // mailbox. No inbox/sent file writes here: the PG row is the served state,
-    // and `reminder_sent_at` is the flag every later pass reads.
+    // #4302/#4301 — PG scan (env-gated): selection is the whole pool, the
+    // contract #4302 merged for the cleanup sweep. The PG path writes NO
+    // inbox/sent files — `reminder_sent_at` on the row is the state every later
+    // pass reads, and a Null writer must never be mistaken for a persisted flag.
     const pgReader = getChannelPgReader();
-    if (pgReader && isChannelPgWritable()) {
-      const rows = await readChannelSweepRowsFromPg(pgReader, getLocalMachineId());
-      if (rows !== null) {
-        for (const row of rows) {
-          const message = mapRowToMessage(row);
-          const minutesLeft = this.expiryReminderMinutesLeft(message, now);
-          if (minutesLeft === null) continue;
-
-          await this.sendExpiryReminderMessage(message, minutesLeft);
-          dualWriteRooSyncMessageReminderSent(message.id).catch(() => {});
-
-          remindersSent++;
-          logger.info(`Sent expiry reminder for message ${message.id} (${minutesLeft}min left, PG rows)`);
-        }
-
-        if (remindersSent > 0) {
-          logger.info(`Sent ${remindersSent} expiry reminders`);
-        }
-        return remindersSent;
+    if (pgReader) {
+      const startedAt = Date.now();
+      const pgPool = await readWholeChannelFromPg(pgReader);
+      if (pgPool !== null) {
+        logger.info(`[channel-pg] reminder scan served from PG in ${Date.now() - startedAt}ms (${pgPool.length} messages)`);
+        return this.sendExpiryRemindersFromPg(pgPool);
       }
-      logger.warn('[channel-pg] expiry-reminders: PG sweep read failed — falling back to GDrive cache');
+      logger.warn('[channel-pg] PG channel pool read failed — falling back to GDrive');
     }
 
     // Use cached inbox data instead of re-scanning GDrive directory
@@ -2478,6 +2465,32 @@ export class MessageManager {
       'system', message.to, reminderSubject, reminderBody,
       'HIGH', ['auto-destruct-reminder', 'system']
     );
+  }
+
+  /**
+   * Reminder pass over a PG pool (#4301): no inbox/sent file writes — the row
+   * flag is the served state. The mirror is fire-and-forget and stays a no-op
+   * on a host whose writer is the Null writer.
+   */
+  private async sendExpiryRemindersFromPg(messages: Iterable<Message>): Promise<number> {
+    const now = Date.now();
+    let remindersSent = 0;
+
+    for (const message of messages) {
+      const minutesLeft = this.expiryReminderMinutesLeft(message, now);
+      if (minutesLeft === null) continue;
+
+      await this.sendExpiryReminderMessage(message, minutesLeft);
+      dualWriteRooSyncMessageReminderSent(message.id).catch(() => {});
+
+      remindersSent++;
+      logger.info(`Sent expiry reminder for message ${message.id} (${minutesLeft}min left, PG pool)`);
+    }
+
+    if (remindersSent > 0) {
+      logger.info(`Sent ${remindersSent} expiry reminders`);
+    }
+    return remindersSent;
   }
 
   /**
