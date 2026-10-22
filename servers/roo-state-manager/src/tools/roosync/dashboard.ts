@@ -4436,6 +4436,13 @@ export function countRecentFallbackArchives(
     const match = name.match(fallbackNameRe);
     if (!match) continue;
     const tsMs = Date.UTC(+match[1], +match[2] - 1, +match[3], +match[4], +match[5], +match[6]);
+    // `Date.UTC` silently rolls out-of-range parts over (month 13 → next year,
+    // day 32, hour 25), so a malformed-but-well-shaped name would count. Round
+    // the parsed instant back to the exact name shape and drop anything that
+    // moved: "malformed names never count" must hold of the VALUE, not just of
+    // the regex (review ms#1483, minor 4).
+    const roundTrip = new Date(tsMs).toISOString().replace(/[:.]/g, '-').substring(0, 19);
+    if (roundTrip !== `${match[1]}-${match[2]}-${match[3]}T${match[4]}-${match[5]}-${match[6]}`) continue;
     // A slightly-future stamp (clock skew on the writing host) still counts —
     // the census must under-count nothing; the archive expires when it falls
     // 48h behind the wall clock, like any other.
@@ -5248,17 +5255,23 @@ async function condenseIntercom(
     newStatus = newStatus + '\n\n' + reconciledMarkers.join('\n');
   }
 
+  // #4205 honesty (review ms#1439) : un skip conserve previousStatus tel quel —
+  // le frontmatter de l'archive ne doit pas prétendre le contraire.
+  const statusUpdated = statusDecision.regenerate;
+
   // #3962 piste 3 renforcée: stamp the durable per-key census (archive listing,
-  // cross-host) on every regenerated status — the LLM hand-typed a wrong count
+  // cross-host) on every REGENERATED status — the LLM hand-typed a wrong count
   // within a day of the incident; this line is machine-counted, stripped and
   // re-emitted fresh each cycle (same idempotence pattern as the #1502/#3803
   // markers above). Counts PAST passes only: a truncating pass returns through
   // executeTruncationFallback above and never reaches this line.
-  newStatus = await appendFallbackCensusLine(key, newStatus!);
-
-  // #4205 honesty (review ms#1439) : un skip conserve previousStatus tel quel —
-  // le frontmatter de l'archive ne doit pas prétendre le contraire.
-  const statusUpdated = statusDecision.regenerate;
+  // Guarded on `statusUpdated` (review ms#1483): a #4205 skip keeps
+  // previousStatus byte-identical, so stamping there would rewrite the very
+  // status that the notice and the archive frontmatter report as untouched
+  // (`statusUpdated: false`) — the organ-lies defect ms#1439 closed.
+  if (statusUpdated) {
+    newStatus = await appendFallbackCensusLine(key, newStatus!);
+  }
 
   // Archiver les anciens messages (format Markdown)
   const archiveDir = getArchiveDir();

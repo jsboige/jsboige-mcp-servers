@@ -22,7 +22,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, readFile, writeFile, mkdir } from 'fs/promises';
+import { mkdtemp, rm, readFile, writeFile, mkdir, readdir } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -109,6 +109,30 @@ describe('#3962 piste 3 renforcée — machine-counted per-key census of fallbac
         tsName(KEY, '2026-10-22T12:05:00'), // 5min AHEAD (clock skew on writer) → counts
       ];
       expect(countRecentFallbackArchives(names, KEY, now)).toBe(2);
+    });
+
+    it('(c1b) une clé plus LONGUE qui préfixe la nôtre ne compte jamais (ancre ^…- + $)', () => {
+      // `workspace-m-1` vs `workspace-m-1-2` : réaliste sur cette flotte, et le
+      // seul cas où un `^${key}` non ancré à droite compterait l’archive d’autrui.
+      const names = [
+        tsName(KEY, '2026-10-22T09:00:00'),              // ours → counts
+        tsName(`${KEY}-2`, '2026-10-22T09:00:00'),       // longer key, same prefix → no
+        tsName(`${KEY}-bis`, '2026-10-22T10:00:00'),     // another longer key → no
+      ];
+      expect(countRecentFallbackArchives(names, KEY, now)).toBe(1);
+    });
+
+    it('(c1c) un horodatage de FORME valide mais hors calendrier ne compte pas (rollover Date.UTC)', () => {
+      // Sans round-trip, Date.UTC résout 2026-13-01 au 2027-01-01, le 32 du
+      // mois, et 25 h : la phrase du body « malformed names never count »
+      // n’était vraie qu’à la forme (review ms#1483, minor 4).
+      const names = [
+        tsName(KEY, '2026-13-01T00:00:00'),   // month 13 → rolled into 2027 → no
+        tsName(KEY, '2026-10-32T00:00:00'),   // day 32 → rolled into November → no
+        tsName(KEY, '2026-10-22T25:00:00'),   // hour 25 → rolled into next day → no
+        tsName(KEY, '2026-10-22T12:00:00'),   // well-formed → counts
+      ];
+      expect(countRecentFallbackArchives(names, KEY, now)).toBe(1);
     });
   });
 
@@ -276,6 +300,70 @@ describe('#3962 piste 3 renforcée — machine-counted per-key census of fallbac
       // …and the machine-counted census line landed, with the RIGHT count.
       expect(status).toContain(`${FALLBACK_CENSUS_MARKER_PREFIX} 2 archives`);
       expect(status).toContain('machine-counted');
+    });
+
+    it('(c6) chemin #4205 skip → statut BYTE-IDENTIQUE, la ligne de census n’est ni retirée ni re-estampée', async () => {
+      const seededStatus = [
+        'STATUT INITIAL — bavardage sans état depuis',
+        '',
+        `${FALLBACK_CENSUS_MARKER_PREFIX} 7 archives on this key in the last 48h — machine-counted from the archive listing (#3962)`,
+      ].join('\n');
+      const writeResult = await roosyncDashboard({
+        action: 'write',
+        type: 'workspace',
+        content: seededStatus,
+        createIfNotExists: true,
+      });
+      const key = writeResult.key;
+      const archiveDir = path.join(tmpDir, 'dashboards', 'archive');
+      await mkdir(archiveDir, { recursive: true });
+      // Deux archives fraîches existent : re-estampée, la ligne passerait de 7 à 2.
+      await writeFile(path.join(archiveDir, archiveName(key, 1 * HOUR)), '', 'utf8');
+      await writeFile(path.join(archiveDir, archiveName(key, 4 * HOUR)), '', 'utf8');
+
+      const before = await readStatusSection(key);
+      expect(before).toContain(`${FALLBACK_CENSUS_MARKER_PREFIX} 7 archives`);
+
+      // Mode par DÉFAUT (on-change) + messages sans signal d’état → skip #4205.
+      delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
+      const filler = 'z'.repeat(900);
+      for (let i = 0; i < 40; i++) {
+        await roosyncDashboard({
+          action: 'append',
+          type: 'workspace',
+          content: `Bavardage ${i}: ${filler}`,
+          tags: ['INFO'],
+        });
+      }
+      let estimated = 200 + Buffer.byteLength(seededStatus, 'utf8');
+      for (let i = 0; i < 40; i++) {
+        estimated += 110 + Buffer.byteLength(`Bavardage ${i}: ${filler}`, 'utf8');
+      }
+      const PREEMPTIVE_THRESHOLD = Math.floor(50 * 1024 * 0.92);
+      const fill = Math.max(400, PREEMPTIVE_THRESHOLD - estimated + 150);
+      const final = await roosyncDashboard({
+        action: 'append',
+        type: 'workspace',
+        content: `Final: ${'w'.repeat(fill)}`,
+        tags: ['INFO'],
+      });
+      expect(final.success).toBe(true);
+
+      // La condensation a bien eu lieu — un archivage ordinaire est né…
+      const archives = await readdir(archiveDir);
+      const plainArchives = archives.filter(
+        n => n.startsWith(`${key}-`) && n.endsWith('.md') && !n.endsWith('-fallback.md')
+      );
+      expect(plainArchives.length).toBeGreaterThan(0);
+      // …sur le chemin skip, et le frontmatter le déclare (cohérence notice/statut).
+      const archived = await readFile(path.join(archiveDir, plainArchives[0]), 'utf8');
+      expect(archived).toContain('statusUpdated: false');
+
+      // Le statut n’a pas bougé d’un octet : ni strip, ni re-stamp.
+      const after = await readStatusSection(key);
+      expect(after).toBe(before);
+      expect(after).toContain(`${FALLBACK_CENSUS_MARKER_PREFIX} 7 archives`);
+      expect(after).not.toContain(`${FALLBACK_CENSUS_MARKER_PREFIX} 2 archives`);
     });
   });
 });
