@@ -368,7 +368,7 @@ describe('MessageManager PG-first reads (#3151 Phase B)', () => {
       const items = await messageManager.readInbox('myia-ai-01', 'all', undefined, 'roo-extensions');
       expect(items.map((i) => i.id)).toEqual(['pg-1']);
       expect(items[0].subject).toBe('from PG');
-      expect(mockGetRooSyncMailbox).toHaveBeenCalledWith('myia-ai-01');
+      expect(mockGetRooSyncMailbox).toHaveBeenCalledWith('myia-ai-01', { bodyChars: 101 });
     })
   );
 
@@ -572,7 +572,7 @@ describe('PgUnifiedStoreReader channel SQL shape', () => {
     mockQuery.mockResolvedValue({ rows: [] });
   });
 
-  test('mailbox query bounds candidates via to_machine + non-archived, newest first', async () => {
+  test('mailbox query bounds candidates via ANY(to_machine) + live set, no SELECT * (#4131 B15)', async () => {
     const { PgUnifiedStoreReader } = await import('../PgUnifiedStoreReader.js');
     const reader = new PgUnifiedStoreReader({
       connectionString: 'postgres://t:t@localhost:5432/x',
@@ -582,11 +582,35 @@ describe('PgUnifiedStoreReader channel SQL shape', () => {
     const call = mockQuery.mock.calls.find((c) =>
       String(c[0]).includes('FROM roosync_messages')
     )!;
-    expect(String(call[0])).toContain("status <> 'archived'");
-    expect(String(call[0])).toContain("to_machine = $1");
-    expect(String(call[0])).toContain("to_machine IN ('all', 'All')");
-    expect(String(call[0])).toContain('ORDER BY created_at DESC');
-    expect(call[1]).toEqual(['myia-ai-01']);
+    const sql = String(call[0]);
+    expect(sql).toContain("status <> 'archived'");
+    expect(sql).toContain('destroyed_at IS NULL');
+    // Array-shaped recipient clause — serves idx_roosync_messages_mailbox_live
+    // (migrations/011); the OR form degraded every plan (57 K-row scans).
+    expect(sql).toContain('to_machine = ANY($1::text[])');
+    expect(sql).not.toContain('to_machine IN (');
+    // #4131 B15: explicit column projection, never SELECT * on this path.
+    expect(sql).not.toContain('SELECT *');
+    expect(sql).toContain('ORDER BY created_at DESC');
+    expect(call[1]).toEqual([['myia-ai-01', 'all', 'All']]);
+  });
+
+  test('mailbox bodyChars plumbs the body projection (#4131 B15)', async () => {
+    const { PgUnifiedStoreReader } = await import('../PgUnifiedStoreReader.js');
+    const reader = new PgUnifiedStoreReader({
+      connectionString: 'postgres://t:t@localhost:5432/x',
+    });
+
+    await reader.getRooSyncMailbox('myia-ai-01', { bodyChars: 101 });
+    let sql = String(mockQuery.mock.calls.at(-1)![0]);
+    expect(sql).toContain('LEFT(body, $2) AS body');
+    expect(mockQuery.mock.calls.at(-1)![1]).toEqual([['myia-ai-01', 'all', 'All'], 101]);
+
+    await reader.getRooSyncMailbox('myia-ai-01', { bodyChars: 0 });
+    sql = String(mockQuery.mock.calls.at(-1)![0]);
+    expect(sql).toContain("'' AS body");
+    // Constant '' — no second parameter.
+    expect(mockQuery.mock.calls.at(-1)![1]).toEqual([['myia-ai-01', 'all', 'All']]);
   });
 
   test('by-id lookup is a primary-key select', async () => {
