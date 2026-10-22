@@ -24,6 +24,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, readFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -74,7 +75,7 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   isDashboardPgPrimary: mockIsDashboardPgPrimary,
 }));
 
-import { roosyncDashboard } from '../dashboard.js';
+import { roosyncDashboard, getAppendLockPath } from '../dashboard.js';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-pg-primary-');
 
@@ -325,7 +326,11 @@ seed
  *  3. l'échec PG d'abord : pas de report, repli GDrive-first complet ;
  *  4. la décomposition ne ment pas : une étape non exécutée sur le chemin de
  *     l'appelant n'est pas rapportée (sinon la somme « étapes ≤ writeMs »
- *     couvrirait un travail fait ailleurs).
+ *     couvrirait un travail fait ailleurs) ;
+ *  5. la TROISIÈME combinaison de la porte (PG-primaire SANS READ_PG) : report
+ *     ouvert ET réparation #3230 armée par le prédicat partagé ;
+ *  6. le chemin `.catch` du miroir détaché : rejet avalé + logué, verrou rendu,
+ *     aucun rejet non capturé.
  */
 describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
   let tmpDir: string;
@@ -459,5 +464,161 @@ describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
     const filePath = path.join(tmpDir, 'dashboards', `${result.key}.md`);
     const content = await readFile(filePath, 'utf8');
     expect(content).toContain('repli après échec PG d\'abord');
+  });
+
+  /**
+   * Revues jsboige / po-2024 — la TROISIÈME combinaison de la porte, celle qui
+   * manquait : `PG_PRIMARY=1` + `DUAL_WRITE=1` + `PG_URL`, `READ_PG` ABSENT.
+   * La porte s'ouvre (PG porte l'écriture) et la réparation #3230 doit être
+   * armée par le MÊME prédicat (`isDashboardViewPgDerived`) — avant le
+   * correctif elle était gatée sur `READ_PG === '1'` seul et restait muette,
+   * laissant le fichier en retard sans réparation ni signal.
+   */
+  it('PG-premier SANS READ_PG : report ouvert ET réparation #3230 armée (prédicat partagé)', async () => {
+    mockIsDashboardPgPrimary.mockReturnValue(true);
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    // READ_PG absent — tout le point du cas.
+    expect(process.env.UNIFIED_STORE_DASHBOARD_READ_PG).toBeUndefined();
+
+    // Le fichier local est EN RETARD : il ne porte pas `seed-1`, que la vue
+    // PG détient (c'est la forme du lag que le miroir différé peut créer).
+    const dashDir = path.join(tmpDir, 'dashboards');
+    const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+    await actual.mkdir(dashDir, { recursive: true });
+    await fsWriteFileReal(
+      path.join(dashDir, 'workspace-test-workspace.md'),
+      `---
+type: workspace
+lastModified: '2026-10-14T10:00:00.000Z'
+lastModifiedBy:
+  machineId: other-machine
+  workspace: w
+totalMessages: 1
+---
+
+## Status
+
+status
+
+## Intercom (1 messages)
+
+### [2026-10-14T10:00:00.000Z] other-machine|w
+[msg: file-only-1]
+
+message présent seulement sur le fichier
+`,
+      'utf8'
+    );
+    mockReadDashboardFromPg.mockResolvedValue({
+      type: 'workspace',
+      key: 'workspace-test-workspace',
+      lastModified: new Date().toISOString(),
+      lastModifiedBy: { machineId: 'other-machine', workspace: 'w' },
+      status: { markdown: 'status' },
+      intercom: {
+        messages: [{
+          id: 'seed-1',
+          timestamp: '2026-10-14T10:05:00.000Z',
+          author: { machineId: 'other-machine', workspace: 'w' },
+          content: 'message vivant côté PG',
+        }],
+        totalMessages: 1,
+      },
+    });
+
+    const result = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: 'append sous PG-premier sans READ_PG',
+    });
+
+    expect(result.success).toBe(true);
+    // 1) Le report est effectif dans cette configuration.
+    expect(result.writeVerification?.gdriveDeferred).toBe(true);
+
+    // 2) La réparation est armée : le miroir de fond réécrit le fichier depuis
+    //    la vue PG — `seed-1` (absent du fichier) y arrive. Sans le prédicat
+    //    partagé, l'incrément aurait collé le message neuf sur la copie en
+    //    retard et `seed-1` serait resté dehors.
+    const filePath = path.join(dashDir, 'workspace-test-workspace.md');
+    await vi.waitFor(async () => {
+      const content = await readFile(filePath, 'utf8').catch(() => '');
+      expect(content).toContain('seed-1');
+    }, { timeout: 3000, interval: 25 });
+
+    // 3) Le cas mixte #3230 garde l'id file-only (réinjection), et le message
+    //    neuf est là : l'union vue ∪ fichier.
+    const finalContent = await readFile(filePath, 'utf8');
+    expect(finalContent).toContain('file-only-1');
+    expect(finalContent).toContain('append sous PG-premier sans READ_PG');
+  });
+
+  /**
+   * Réserve R3 (po-2023 / po-2024 / jsboige) — le SEUL chemin `.catch` du
+   * miroir détaché n'était épinglé par aucun test. On force un vrai REJET (pas
+   * un blocage) de la moitié fichier : PG d'abord réussit, la lecture du
+   * fichier absent part en full-write, l'écriture fichier rejette, et le
+   * dual-write du repli échoue aussi → `writeDashboardFile` lève « aucune
+   * surface » DANS la tâche de fond. Attendu : le `.catch` logue et avale
+   * (aucun rejet non capturé), le `.finally` rend le verrou, et l'append a
+   * déjà répondu `success` + `gdriveDeferred`.
+   */
+  it('rejet du miroir de fond : le chemin .catch s\'exécute, le verrou est rendu, aucun rejet non capturé', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    mockReadDashboardFromPg.mockResolvedValue(pgView());
+
+    // 1er appel PG (le « PG d'abord ») réussit ; les suivants (le repli interne
+    // du full-write) échouent → la moitié fichier lève dans la tâche de fond.
+    mockDualWriteSyncChecked
+      .mockResolvedValueOnce({ ok: true, reason: 'written' })
+      .mockResolvedValue({ ok: false, reason: 'exhausted' });
+
+    // Rejet franc sur le staging (pas un hang) : c'est le rejet que le `.catch`
+    // du miroir détaché doit avaler.
+    mockWriteFile.mockImplementation(((file: unknown, data: unknown, opts: unknown) => {
+      const f = String(file);
+      if (f.includes('dashboards') && f.endsWith('.tmp')) {
+        return Promise.reject(new Error('DriveFS indisponible (test .catch #4286)'));
+      }
+      return fsWriteFileReal(file as string, data as string, opts as undefined);
+    }) as typeof fsWriteFileReal);
+
+    const logged: string[] = [];
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(((...args: unknown[]) => {
+      logged.push(args.map(String).join(' '));
+    }) as typeof console.error);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const result = await roosyncDashboard({
+        action: 'append', type: 'workspace', content: 'append dont le miroir rejette',
+      });
+
+      // L'appelant a eu sa réponse AVANT l'échec : PG porte le message.
+      expect(result.success).toBe(true);
+      expect(result.writeVerification?.gdriveDeferred).toBe(true);
+      expect(result.writeVerification?.gdriveDegraded).toBeFalsy();
+
+      // Le `.catch` a couru (log dédié), et le `.finally` a rendu le verrou.
+      await vi.waitFor(() => {
+        expect(logged.some(line => line.includes('[GDRIVE-MIRROR #4286] miroir fichier en arrière-plan rejeté'))).toBe(true);
+      }, { timeout: 3000, interval: 25 });
+      await vi.waitFor(() => {
+        expect(existsSync(getAppendLockPath('workspace-test-workspace'))).toBe(false);
+      }, { timeout: 3000, interval: 25 });
+
+      // Aucun rejet non capturé n'a fui de la promesse détachée.
+      expect(unhandled).toEqual([]);
+      // Le miroir a échoué avant d'écrire : le fichier n'existe pas, PG seul.
+      expect(existsSync(path.join(tmpDir, 'dashboards', 'workspace-test-workspace.md'))).toBe(false);
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+      consoleSpy.mockRestore();
+    }
   });
 });

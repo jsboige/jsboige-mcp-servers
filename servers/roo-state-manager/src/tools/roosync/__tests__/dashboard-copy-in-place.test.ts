@@ -101,10 +101,16 @@ describe('dashboard copy-in-place #3782', () => {
     // The exact regression: fs.rename(tmpPath, filePath) on either write site.
     expect(src).not.toContain('fs.rename(tmpPath');
 
-    // The replacement mechanic and the pid-suffixed staging must both be present
-    // on the two write sites (writeDashboardFile + appendDashboardIncremental).
+    // The replacement mechanic and the staging naming must both be present on
+    // the two write sites (writeDashboardFile + appendDashboardIncremental).
+    // #4286 — the staging is per-CALL now (`<pid>.<seq>`): two writers of the
+    // SAME process (deferred file mirror + the condensation chained by the
+    // same handleAppend) must not share a staging path (po-2023 finding). Both
+    // sites go through the one helper, and the #4003 sweep recognises both
+    // shapes (`\.md\.(\d+)(?:\.\d+)?\.tmp$` — see the sweep tests).
     expect(src.match(/fs\.copyFile\(tmpPath, filePath\)/g)?.length).toBe(2);
-    expect(src.match(/`\$\{filePath\}\.\$\{process\.pid\}\.tmp`/g)?.length).toBe(2);
+    expect(src.match(/nextDashboardStagingPath\(filePath\)/g)?.length).toBe(2);
+    expect(src).toContain('`${filePath}.${process.pid}.${++dashboardStagingSeq}.tmp`');
 
     // The only rename left in the store layer is the archive move (new path,
     // not rename-over-existing) — assert it stays the sole one.

@@ -311,26 +311,57 @@ const appendLockTtlMs = (): number => Number(process.env.APPEND_LOCK_TTL_MS) || 
 const appendLockAcquireBudgetMs = (): number => Number(process.env.APPEND_LOCK_ACQUIRE_BUDGET_MS) || 5000;
 
 /**
+ * #4286 §2 — ONE predicate for "PG, not the file, is the AUTHORITATIVE surface
+ * of this dashboard": the fleet read gate is on (`READ_PG=1`), or this seat's
+ * write side is PG-primary (`isDashboardPgPrimary` — PG_PRIMARY + DUAL_WRITE
+ * + PG_URL). In the second case PG is written first and read back through the
+ * internal ungated reads (condensation anchor, post-write store verification,
+ * hydration probe — readDashboardFromPgUngated, #4131 G-B lot 2) even while
+ * the fleet READ gate is still off, so the file is a mirror there too.
+ *
+ * TWO call sites share it — the file-mirror deferral gate below and the #3230
+ * file-repair guard — so the two can never diverge by construction: wherever
+ * the file is allowed to fall behind the view, the repair that rewrites it
+ * from the view is armed too. Computing it once (rather than re-reading
+ * `READ_PG` at each site) is the point: the gate used to read `READ_PG` alone
+ * and stayed mute under PG_PRIMARY-without-READ_PG, where the file can lag.
+ *
+ * Fleet-wide property, per-seat variable: `READ_PG=1` does not assert "THIS
+ * seat reads PG", it asserts "the FLEET reads PG" — the deferral removes the
+ * file from the critical path for every seat. A file reader on another seat
+ * (no READ_PG there) does not declare anything and still experiences the
+ * deferral; the effect is a delayed mirror, not a lost message. Keep the flag
+ * uniform across seats: a seat whose READ_PG drifts from the fleet re-opens
+ * that window silently.
+ *
+ * Read lazily (call-time), so a hot-swapped build or a config reload takes
+ * effect without a process restart.
+ */
+export function isDashboardViewPgDerived(): boolean {
+  return process.env.UNIFIED_STORE_DASHBOARD_READ_PG === '1' || isDashboardPgPrimary();
+}
+
+/**
  * #4286 §2 — the file half of an append may leave the critical path only when
  * BOTH hold:
  *  - PG can carry the authoritative write (`UNIFIED_STORE_DUAL_WRITE` + a store
  *    URL, i.e. the append is dual-written and checkable), and
- *  - no reader treats the file as primary: fleet reads are served from PG
- *    (`UNIFIED_STORE_DASHBOARD_READ_PG=1`), or PG is already the declared
- *    primary surface (`UNIFIED_STORE_DASHBOARD_PG_PRIMARY=1`).
+ *  - the view is PG-derived (`isDashboardViewPgDerived()`): no reader depends
+ *    on the file as its primary surface.
  *
  * Outside those two, the file IS the read surface and its write must stay
  * synchronous — deferring it would let a reader see a message that the
  * author's own surface does not have yet.
  *
- * Read lazily (one call site), so a hot-swapped build or a config reload takes
- * effect without a process restart.
+ * Decided ONCE per append, before any write: a config reload in the middle of
+ * an append cannot change the decision (deliberate — the file half and the
+ * repair guard must agree with the write already done under the lock).
  */
 function isDashboardFileMirrorDeferrable(): boolean {
   const pgCanCarryWrite =
     process.env.UNIFIED_STORE_DUAL_WRITE === '1' && !!process.env.UNIFIED_STORE_PG_URL;
   if (!pgCanCarryWrite) return false;
-  return process.env.UNIFIED_STORE_DASHBOARD_READ_PG === '1' || isDashboardPgPrimary();
+  return isDashboardViewPgDerived();
 }
 const appendLockRetryMs = (): number => Number(process.env.APPEND_LOCK_RETRY_MS) || 150;
 
@@ -997,6 +1028,26 @@ export function buildArchiveMessagesMarkdown(messages: IntercomMessage[]): strin
 
 // ─── #4003 : sweep des staging .tmp orphelins ───
 
+/**
+ * #4286 — chemin de staging d'UN appel d'écriture.
+ *
+ * Le PID sépare les PROCESSUS ; il ne sépare pas deux writers d'un même
+ * processus. Depuis #4286 ce cas existe : le miroir fichier différé et la
+ * condensation enchaînée par le MÊME `handleAppend` tournent concurrentment,
+ * même PID, même `<fichier>` — ils partageraient un unique `.<pid>.tmp` et
+ * leurs `writeFile`/`copyFile` pouvaient s'entrelacer (contenu déchiré, po-2023
+ * finding). Une séquence monotone par processus sépare les APPELS : deux
+ * writers ne partagent jamais un staging.
+ *
+ * Changé AVEC la regex du sweep ci-dessous (`.<pid>.<seq>.tmp` la reconnaît,
+ * comme l'ancien `.<pid>.tmp`) : changer le suffixe seul orphelinerait les
+ * staging futurs du sweep.
+ */
+let dashboardStagingSeq = 0;
+function nextDashboardStagingPath(filePath: string): string {
+  return `${filePath}.${process.pid}.${++dashboardStagingSeq}.tmp`;
+}
+
 /** #4003 — un tmp plus jeune que ce seuil est présumé in-flight et laissé en place. */
 export const TMP_SWEEP_MIN_AGE_MS = 15 * 60_000;
 
@@ -1011,13 +1062,14 @@ function isPidAlive(pid: number): boolean {
 }
 
 /**
- * #4003 — sweep des staging `*.md.<pid>.tmp` orphelins de dashboards/.
+ * #4003 — sweep des staging `*.md.<pid>[.<seq>].tmp` orphelins de dashboards/.
  *
- * Les chemins d'écriture (#3782) staged chaque write dans `<fichier>.<pid>.tmp`
- * puis copy-in-place + unlink sous try/finally ; un writer tué avant l'unlink
- * laisse son staging derrière, et aucun run ultérieur ne le reconnaît (PID
- * différent) — accumulation DriveFS jusqu'à saturation. Le sweep ne supprime
- * un staging que si les DEUX conditions tiennent :
+ * Les chemins d'écriture (#3782, complétés #4286) staged chaque write dans
+ * `<fichier>.<pid>.<seq>.tmp` (anciennement `.<pid>.tmp`) puis copy-in-place +
+ * unlink sous try/finally ; un writer tué avant l'unlink laisse son staging
+ * derrière, et aucun run ultérieur ne le reconnaît (PID différent) —
+ * accumulation DriveFS jusqu'à saturation. Le sweep ne supprime un staging que
+ * si les DEUX conditions tiennent :
  *   - plus vieux que `minAgeMs` (défaut 15 min : un write vivant tient son tmp
  *     au pire le budget d'append, ~2 min mesuré le 30/09) ;
  *   - son PID est mort sur CETTE machine. Le store est partagé flotte
@@ -1044,7 +1096,11 @@ export async function sweepOrphanDashboardTmpFiles(
   }
   const now = Date.now();
   for (const entry of entries) {
-    const m = entry.match(/\.md\.(\d+)\.tmp$/);
+    // #4286 — deux formes reconnues, le PID reste le groupe 1 : le staging
+    // per-appel `.<pid>.<seq>.tmp` ET l'ancien `.<pid>.tmp` (les fichiers déjà
+    // sur disque d'avant la PR). Changer le suffixe sans cette regex
+    // orphelinerait les staging futurs du sweep.
+    const m = entry.match(/\.md\.(\d+)(?:\.\d+)?\.tmp$/);
     if (!m) continue;
     const pid = parseInt(m[1], 10);
     const full = path.join(dir, entry);
@@ -2226,9 +2282,11 @@ async function writeDashboardFile(
 
   const dir = getDashboardsDir();
   const filePath = getDashboardPath(key);
-  // #3782 — tmp pid-suffixé : deux writers concurrents ne doivent pas se voler
-  // leur staging (le `.tmp` nu était une collision supplémentaire sous contention).
-  const tmpPath = `${filePath}.${process.pid}.tmp`;
+  // #3782 — tmp suffixé : deux writers concurrents ne doivent pas se voler
+  // leur staging (le `.tmp` nu était une collision supplémentaire sous
+  // contention). #4286 — pid + séquence d'appel : deux writers du MÊME
+  // processus (miroir différé + condensation) ne partagent plus le staging.
+  const tmpPath = nextDashboardStagingPath(filePath);
 
   // #3774 — jeton d'atterrissage : l'id du DERNIER message de l'instantané écrit.
   // Pour un APPEND il est neuf par construction (produit par ce process, absent
@@ -2467,7 +2525,7 @@ async function appendDashboardIncremental(
 ): Promise<WriteVerifyResult> {
   const dir = getDashboardsDir();
   const filePath = getDashboardPath(key);
-  const tmpPath = `${filePath}.${process.pid}.tmp`; // #3782 — cf. writeDashboardFile
+  const tmpPath = nextDashboardStagingPath(filePath); // #3782/#4286 — cf. writeDashboardFile
   // #4131 G-B lot 1 — même borne que writeDashboardFile : la lecture-modification-
   // écriture ci-dessous tient le verrou append (couche PG + fichier local) pendant
   // qu'elle touche G:. Un DriveFS qui rampe étirait la détention du verrou sur
@@ -2601,18 +2659,27 @@ async function appendDashboardIncremental(
     // les messages que la copie n'avait pas encore reçus (mesuré ai-01 28/09 :
     // 2 vagues d'écrasement, 11 des 15 messages vivants omis du fichier en
     // ligne à 23:21Z — l'incrément vaut « copie locale + mon message », et
-    // DriveFS pousse ce fichier au cloud). Sur un hôte READ_PG, la vue en main
-    // (`dashboard`) est PG-première : si le fichier local lui manque des ids
-    // vivants, c'est une copie en retard — écrire le fichier COMPLET depuis la
-    // vue au lieu d'y coller l'incrément (l'append devient une réparation).
+    // DriveFS pousse ce fichier au cloud). Sur une vue PG-dérivée, la vue en
+    // main (`dashboard`) est PG-première : si le fichier local lui manque des
+    // ids vivants, c'est une copie en retard — écrire le fichier COMPLET depuis
+    // la vue au lieu d'y coller l'incrément (l'append devient une réparation).
     // Garde volontairement UNIDIRECTIONNELLE et GATED :
     //   - un fichier qui porte des ids ABSENTS de la vue (append d'un writer
     //     concurrent, condensation qui a archivé) garde ces ids — via le
     //     suffixe intact de l'incrément quand la vue est à jour, via la
     //     réinjection du cas mixte ci-dessous quand la réparation se déclenche ;
-    //   - hors READ_PG la vue provient du fichier lui-même, la garde ne peut
-    //     que rester muette.
-    if (process.env.UNIFIED_STORE_DASHBOARD_READ_PG === '1') {
+    //   - hors d'une vue PG-dérivée la vue provient du fichier lui-même, la
+    //     garde ne peut que rester muette. Mais « hors READ_PG » n'implique PAS
+    //     « vue fichier » : sur un siège PG-primaire dont le gate de lecture est
+    //     encore off, les lectures internes du chemin d'écriture (ancre de
+    //     condensation, vérification store, sonde d'hydratation) viennent de PG
+    //     (#4286, readDashboardFromPgUngated) — et la vue en vient aussi quand
+    //     le fichier local manque. La garde lit donc le MÊME prédicat que la
+    //     porte de report (isDashboardViewPgDerived) : partout où le fichier
+    //     peut prendre du retard — dont le miroir différé de #4286 — la
+    //     réparation est armée. Sans ce partage, PG_PRIMARY + DUAL_WRITE +
+    //     PG_URL sans READ_PG ouvrait le report en laissant la garde muette.
+    if (isDashboardViewPgDerived()) {
       const priorCount = dashboard.intercom.messages.length - newMessageCount;
       const missingIds: string[] = [];
       for (let i = 0; i < priorCount; i++) {
@@ -2798,7 +2865,13 @@ async function appendDashboardIncremental(
             error: o.gdriveFailure
           });
         } else {
-          logger.info('[GDRIVE-MIRROR #4286] miroir fichier écrit hors du chemin critique', {
+          // #4286 (revue po-2024, nit) — `terminal` n'est pas un miroir
+          // incrémental : c'était une réécriture complète (fichier absent,
+          // tête NUL #3782, réparation #3230) qui a déjà persisté les deux
+          // surfaces. Le log le dit, il ne revendique pas un miroir.
+          logger.info(o.terminal
+            ? '[GDRIVE-MIRROR #4286] réécriture complète de la moitié fichier hors du chemin critique'
+            : '[GDRIVE-MIRROR #4286] miroir fichier écrit hors du chemin critique', {
             key,
             mirrorMs: Date.now() - mirrorT0
           });
