@@ -560,11 +560,13 @@ async function cloudCondenseOnce(
     let content: string | null | undefined;
     if (fallbackApiFormat() === 'anthropic') {
       // #3962 piste 4 (user 22/10: the fleet's rescue is claudish under its Sonnet
-      // role, which has its own failover cascade): Anthropic /v1/messages route. On
-      // /v1/chat/completions a thinking backend behind a role name (glm-5.3 behind
-      // claude-sonnet-*) returns an EMPTY content (measured 22/10, finish=length);
-      // its text only survives here, as a `text` block next to a `thinking` block.
-      // Same client: same key (claudish accepts the Bearer header), base URL,
+      // role, which has its own failover cascade): Anthropic /v1/messages route. The
+      // role names are served by a thinking backend (glm-5.3, measured 22-23/10): its
+      // reasoning spends the token budget before any text (0 text at 1500 tokens), and
+      // `/no_think` is not honoured through the role. `thinking: disabled` is, on this
+      // route only: on a real 33 KB archive at 7200 tokens, 10.5 s with thinking
+      // disabled vs 37.9 s with it (chat-completions route: 31 s). Only `text` blocks
+      // are kept. Same client: same key (claudish accepts the Bearer header), base URL,
       // per-request timeout and SDK error classes — isRetryableFallbackError and the
       // retry/chain loop below apply unchanged.
       const message = await fallbackClient.post<unknown, AnthropicMessageResponse>('/messages', {
@@ -574,6 +576,7 @@ async function cloudCondenseOnce(
           messages: [{ role: 'user', content: userPrompt }],
           max_tokens: opts.maxTokens,
           temperature: opts.temperature,
+          thinking: { type: 'disabled' },
         },
         headers: { 'anthropic-version': '2023-06-01' },
         timeout: attemptTimeoutMs,

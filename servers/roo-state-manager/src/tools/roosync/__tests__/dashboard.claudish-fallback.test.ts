@@ -187,6 +187,7 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
       expect(options.body.messages[0].role).toBe('user');
       expect(options.body.messages[0].content.startsWith('/no_think')).toBe(false);
       expect(options.body.max_tokens).toBeGreaterThan(0);
+      expect(options.body.thinking).toEqual({ type: 'disabled' });
       expect(options.headers['anthropic-version']).toBe('2023-06-01');
       expect(options.timeout).toBeGreaterThanOrEqual(30000);
     }
