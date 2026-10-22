@@ -314,17 +314,35 @@ const appendLockAcquireBudgetMs = (): number => Number(process.env.APPEND_LOCK_A
  * #4286 §2 — ONE predicate for "PG, not the file, is the AUTHORITATIVE surface
  * of this dashboard": the fleet read gate is on (`READ_PG=1`), or this seat's
  * write side is PG-primary (`isDashboardPgPrimary` — PG_PRIMARY + DUAL_WRITE
- * + PG_URL). In the second case PG is written first and read back through the
- * internal ungated reads (condensation anchor, post-write store verification,
- * hydration probe — readDashboardFromPgUngated, #4131 G-B lot 2) even while
- * the fleet READ gate is still off, so the file is a mirror there too.
+ * + PG_URL).
+ *
+ * What the second case does NOT mean (#4286 review, finding 1 — verified):
+ * on a PG-primary seat whose fleet read gate is still OFF, the view of an
+ * APPEND still comes from the FILE. `handleAppend` reads through
+ * `readDashboardFile`, whose PG half is GATED (readDashboardFromPg →
+ * getDashboardPgReader, which returns null without READ_PG —
+ * roosync-dashboard-store.ts), so the view falls through to the GDrive file.
+ * The internal ungated reads do come from PG (condensation anchor, post-write
+ * store verification, hydration probe — readDashboardFromPgUngated, #4131 G-B
+ * lot 2), but those are write-path decisions, not the view the append is
+ * applied to.
+ *
+ * Consequence for the #3230 repair guard: on that seat it is ARMED by this
+ * predicate yet INERT, because it compares the file to itself — the view's
+ * ids ARE the file's ids, so nothing can ever look "missing". It starts
+ * repairing only once `READ_PG=1` lands fleet-wide (27/10 milestone), which is
+ * exactly when the view becomes PG. This is not a data-loss window: the PG
+ * journal loses nothing from a deferred mirror (the dual-write upserts the row
+ * and appends the journal; only condensation archives, and it does so on both
+ * surfaces), and condensation on a PG-primary seat reads PG UNGATED (the
+ * anchor above) then rewrites the file IN FULL — a natural full resync.
  *
  * TWO call sites share it — the file-mirror deferral gate below and the #3230
  * file-repair guard — so the two can never diverge by construction: wherever
  * the file is allowed to fall behind the view, the repair that rewrites it
  * from the view is armed too. Computing it once (rather than re-reading
  * `READ_PG` at each site) is the point: the gate used to read `READ_PG` alone
- * and stayed mute under PG_PRIMARY-without-READ_PG, where the file can lag.
+ * and stayed mute under PG_PRIMARY-without-READ_PG.
  *
  * Fleet-wide property, per-seat variable: `READ_PG=1` does not assert "THIS
  * seat reads PG", it asserts "the FLEET reads PG" — the deferral removes the
@@ -2669,16 +2687,24 @@ async function appendDashboardIncremental(
     //     suffixe intact de l'incrément quand la vue est à jour, via la
     //     réinjection du cas mixte ci-dessous quand la réparation se déclenche ;
     //   - hors d'une vue PG-dérivée la vue provient du fichier lui-même, la
-    //     garde ne peut que rester muette. Mais « hors READ_PG » n'implique PAS
-    //     « vue fichier » : sur un siège PG-primaire dont le gate de lecture est
-    //     encore off, les lectures internes du chemin d'écriture (ancre de
-    //     condensation, vérification store, sonde d'hydratation) viennent de PG
-    //     (#4286, readDashboardFromPgUngated) — et la vue en vient aussi quand
-    //     le fichier local manque. La garde lit donc le MÊME prédicat que la
-    //     porte de report (isDashboardViewPgDerived) : partout où le fichier
-    //     peut prendre du retard — dont le miroir différé de #4286 — la
-    //     réparation est armée. Sans ce partage, PG_PRIMARY + DUAL_WRITE +
-    //     PG_URL sans READ_PG ouvrait le report en laissant la garde muette.
+    //     garde ne peut que rester muette.
+    //   ATTENTION (revue #4286, finding 1) : sur un siège PG-primaire dont le
+    //   gate de lecture est encore off, la vue de l'APPEND vient AUSSI du
+    //   fichier — handleAppend lit via readDashboardFile, dont la moitié PG
+    //   est GATÉE (readDashboardFromPg → getDashboardPgReader, null sans
+    //   READ_PG), tandis que les lectures internes du chemin d'écriture (ancre
+    //   de condensation, vérification store, sonde d'hydratation) viennent de
+    //   PG (readDashboardFromPgUngated, #4286). La garde y est donc ARMÉE PAR
+    //   LE PRÉDICAT mais INERTE : elle compare le fichier à lui-même, aucun id
+    //   ne peut « manquer ». Elle ne répare qu'une fois READ_PG=1 posé flotte
+    //   (jalon 27/10). Pas de fenêtre de perte pour autant : le journal PG ne
+    //   perd rien d'un miroir différé (le dual-write upserte la row + ajoute
+    //   au journal ; seule la condensation archive, et elle le fait sur les
+    //   deux surfaces), et la condensation d'un siège PG-primaire lit PG SANS
+    //   gate (l'ancre ci-dessus) puis réécrit le fichier EN ENTIER —
+    //   resynchronisation naturelle. La garde lit le MÊME prédicat que la
+    //   porte de report (isDashboardViewPgDerived) pour que les deux ne
+    //   divergent jamais.
     if (isDashboardViewPgDerived()) {
       const priorCount = dashboard.intercom.messages.length - newMessageCount;
       const missingIds: string[] = [];
