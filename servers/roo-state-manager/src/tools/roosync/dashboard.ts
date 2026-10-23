@@ -677,6 +677,15 @@ async function cloudCondenseOnce(
               ],
               max_tokens: opts.maxTokens,
               temperature: opts.temperature,
+              // #3962: claudish honours `enable_thinking: false` on this route (GLM
+              // today, DeepSeek after claudish#612). A thinking backend spends the
+              // output budget before emitting any text, which the empty-content
+              // branch below reads as a 0-byte completion and hands to the next
+              // model. Measured on the hub, 23/10: deepseek-v4-flash answers 200
+              // with and without the field, 92 chars of `reasoning_content` without
+              // it, none with it. `/no_think` stays in the prompt — the same route
+              // accepts it and it costs nothing.
+              ...{ enable_thinking: false },
             },
         // #2719 borne: per-request timeout override — prompt-proportional and
         // deadline-clamped (computeFallbackAttemptTimeoutMs), so the singleton's
