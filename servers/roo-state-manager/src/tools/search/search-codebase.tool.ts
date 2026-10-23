@@ -1029,10 +1029,13 @@ function extractSnippet(codeChunk: string, query: string, maxChars: number = 500
 //
 // Safety: expansion only applies when the anchor is VERIFIABLE in the current
 // file (the stored chunk's head must still be found within ±5 lines of the
-// stored startLine) — a stale index must degrade to the raw chunk snippet,
-// never render the wrong block. Bounded walks (≤200 back, ≤400 forward),
-// bounded render (≤80 lines / ≤3000 chars, cut on line boundaries per the V4
-// signal lesson), files ≤2 MB. Rollback: CODEBASE_BLOCK_EXPANSION=0.
+// stored startLine) — or RELOCATABLE by unique content match when the stored
+// position drifted (relocateAnchor: the chunk head found exactly once anywhere
+// in the file re-anchors the expansion to its true current position; zero or
+// multiple occurrences degrade to the raw chunk snippet, never the wrong
+// block). Bounded walks (≤200 back, ≤400 forward), bounded render (≤80 lines /
+// ≤3000 chars, cut on line boundaries per the V4 signal lesson), files ≤2 MB.
+// Rollback: CODEBASE_BLOCK_EXPANSION=0.
 /** Read per call (not at module load) so the rollback env is testable and applies without a restart. */
 function blockExpansionEnabled(): boolean {
 	return process.env.CODEBASE_BLOCK_EXPANSION !== '0';
@@ -1150,6 +1153,33 @@ export function verifyAnchor(lines: string[], anchorIdx: number, codeChunk: stri
 }
 
 /**
+ * #2609 V2 residual: relocate a stale anchor by content. When the stored
+ * startLine no longer verifies (index drift), the chunk's head often still
+ * exists ELSEWHERE in the current file — the vector matched real text that
+ * merely moved (measured 2026-10-24: golden-query top-1 stored line 901, live
+ * at 944, 43 lines of drift; the ±5 tolerance refused expansion and the tool
+ * rendered a 54-char comment fragment four days straight). Scanning the whole
+ * file for the verifyAnchor probe and accepting a UNIQUE occurrence re-anchors
+ * the expansion to the true current position — the passage AND the file:line
+ * handle become honest again. Zero or multiple occurrences degrade to the raw
+ * chunk (an ambiguous relocation could render the wrong block).
+ */
+export function relocateAnchor(lines: string[], codeChunk: string): number | null {
+	const firstChunkLine = codeChunk.split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0);
+	if (!firstChunkLine) return null;
+	const probe = firstChunkLine.slice(0, 40);
+	if (!probe) return null;
+	let found = -1;
+	for (let i = 0; i < lines.length; i++) {
+		if (lines[i].includes(probe)) {
+			if (found >= 0) return null;
+			found = i;
+		}
+	}
+	return found >= 0 ? found : null;
+}
+
+/**
  * Render the block as a passage: window the render around the anchor if the
  * block exceeds the line/char budget (cuts on LINE boundaries — never
  * mid-line), with honest omission markers. Returns 1-based line numbers, or
@@ -1189,8 +1219,9 @@ export function renderBlock(
 /**
  * #2609 V2(a): expand one hit to its enclosing block read from the CURRENT file.
  * Returns null (caller keeps the raw chunk snippet) when: disabled by env,
- * non-source file, file unreadable/too large/absent, anchor line out of range,
- * the anchor can't be verified (file drifted since indexing), or no line-bounded
+ * non-source file, file unreadable/too large/absent, the anchor can't be
+ * verified at the stored position AND can't be uniquely relocated by content
+ * (see relocateAnchor — file drifted since indexing), or no line-bounded
  * window fits the char budget (minified / very long lines).
  */
 export function expandHitBlock(
@@ -1199,7 +1230,7 @@ export function expandHitBlock(
 	codeChunk: string,
 	workspaceRoot: string,
 	fileLinesCache: Map<string, string[] | null>
-): { text: string; startLine: number; endLine: number } | null {
+): { text: string; startLine: number; endLine: number; relocated?: true } | null {
 	if (!blockExpansionEnabled()) return null;
 	try {
 		const abs = isAbsolute(filePath) ? filePath : join(workspaceRoot, filePath);
@@ -1219,11 +1250,22 @@ export function expandHitBlock(
 		}
 		if (!lines) return null;
 		const anchorIdx = storedStartLine - 1; // payload startLine is 1-based (parser: row + 1)
-		if (anchorIdx < 0 || anchorIdx >= lines.length) return null;
-		if (!verifyAnchor(lines, anchorIdx, codeChunk)) return null;
-		const range = computeBlockRange(lines, anchorIdx);
+		if (anchorIdx < 0) return null;
+		// Stale-anchor relocation (#2609 V2 residual): the stored position may be
+		// out of range (file shrank) or drifted beyond tolerance — either way the
+		// chunk head may still exist, uniquely, elsewhere in the current file.
+		let anchor = anchorIdx;
+		let relocated = false;
+		if (anchorIdx >= lines.length || !verifyAnchor(lines, anchorIdx, codeChunk)) {
+			const relocatedIdx = relocateAnchor(lines, codeChunk);
+			if (relocatedIdx === null) return null;
+			anchor = relocatedIdx;
+			relocated = true;
+		}
+		const range = computeBlockRange(lines, anchor);
 		if (!range) return null;
-		return renderBlock(lines, range, anchorIdx);
+		const rendered = renderBlock(lines, range, anchor);
+		return rendered ? { ...rendered, ...(relocated ? { relocated: true } : {}) } : null;
 	} catch {
 		return null;
 	}
@@ -1788,6 +1830,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		let archiveMalusApplied = 0;
 		let buildDirMalusApplied = 0;
 		let blockExpansionApplied = 0;
+		let staleAnchorsRelocated = 0;
 
 		const results = rankedHits.map((hit) => {
 			const point = hit.point;
@@ -1814,6 +1857,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// needs the block ranges before the cap) — reuse it here, never re-expand.
 			const expanded = hit.expanded;
 			if (expanded) blockExpansionApplied++;
+			if (expanded?.relocated) staleAnchorsRelocated++;
 			// #3172: a fixture chunk embeds source code inside a JSON capture — the stored
 			// startLine/endLine point at the single-line JSON container, not at the embedded
 			// code shown in the snippet ("1-1" navigates to nothing). Omit the line fields
@@ -1899,6 +1943,13 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// range, match_lines = the lines the vector matched). Rollback:
 			// CODEBASE_BLOCK_EXPANSION=0.
 			...(blockExpansionApplied > 0 ? { block_expansion_applied: blockExpansionApplied } : {}),
+			// #2609 V2 residual: stale-anchor relocation observability — among the
+			// expanded hits, how many had their stored startLine drifted beyond the ±5
+			// verification tolerance and were re-anchored by UNIQUE content match
+			// (relocateAnchor). Index drift stays visible instead of hiding behind
+			// green blocks; the stored position remains readable in each hit's
+			// match_lines.
+			...(staleAnchorsRelocated > 0 ? { stale_anchors_relocated: staleAnchorsRelocated } : {}),
 			// #2609 V2 follow-up: overlapping-window merge observability — same-file
 			// chunks whose line windows overlap (or abut ≤2 lines) were folded into the
 			// higher-scored window, freeing their slot(s) for a distinct file.

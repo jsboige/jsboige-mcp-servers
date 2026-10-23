@@ -56,6 +56,7 @@ import {
 	resetCodebaseEmbeddingClient,
 	computeBlockRange,
 	verifyAnchor,
+	relocateAnchor,
 	renderBlock,
 	expandHitBlock,
 	evaluateCoverage,
@@ -2846,10 +2847,119 @@ describe('#3344 transport resilience + hash convergence', () => {
 			expect(result.content[0].text.length).toBeLessThan(10_000);
 		});
 
-		test('anchor beyond EOF (file shrank since indexing) → null', () => {
+		test('anchor beyond EOF with chunk text absent from the file → null', () => {
+			const cache = new Map<string, string[] | null>();
+			const out = expandHitBlock('src/foo.ts', 9999, 'GONE FROM DISK ages ago', '/ws', cache);
+			expect(out).toBeNull();
+		});
+
+		test('relocateAnchor: unique occurrence returns its index, ambiguous or absent returns null', () => {
+			const lines = [
+				'export function a() {',
+				'\tconst rows = await joinWithPostgres(filter);',
+				'}',
+				'',
+				'export function b() {',
+				'\tconst other = 1;',
+				'}'
+			];
+			// Unique content → its index
+			expect(relocateAnchor(lines, '\tconst rows = await joinWithPostgres(filter);')).toBe(1);
+			// Absent content → null
+			expect(relocateAnchor(lines, 'TOTALLY ABSENT TEXT')).toBeNull();
+			// Ambiguous content (occurs twice) → null — relocation could pick the wrong block
+			expect(relocateAnchor(lines, '}')).toBeNull();
+			// Empty chunk → null
+			expect(relocateAnchor(lines, '   \n  ')).toBeNull();
+			// Segment chunk (substring of a long line) relocates to the line containing it
+			const oneLongLine = ['const config = {"qdrant": "localhost:6333", "pg": "postgres://u:p@h/db"};'];
+			expect(relocateAnchor(oneLongLine, '"pg": "postgres://u:p@h/db"};')).toBe(0);
+		});
+
+		test('stale anchor within bounds but drifted beyond ±5 relocates by unique content (live golden-query case)', async () => {
+			// Live shape (2026-10-24): golden-query top-1 stored line 901, real line 944 —
+			// 43 lines of drift. Here: chunk stored at line 2, true content at line 12 —
+			// verifyAnchor refuses (10 lines > ±5), relocation re-anchors and the block
+			// renders with TRUE current line numbers.
+			const drifted = [
+				'const filler0 = 0;',
+				'const filler1 = 1;', // stored (wrong) position, line 2 — the drift replaced it
+				'const filler2 = 2;',
+				'const filler3 = 3;',
+				'const filler4 = 4;',
+				'const filler5 = 5;',
+				'const filler6 = 6;',
+				'const filler7 = 7;',
+				'const filler8 = 8;',
+				'',
+				'export async function searchSemantic(query: string): Promise<Result> {',
+				'\tconst filter = buildFilter(query);',
+				'\tconst rows = await joinWithPostgres(filter);', // true position, line 13
+				'\treturn { rows, filter };',
+				'}'
+			].join('\n');
+			mockReadFileSync.mockReturnValue(drifted);
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.8,
+					payload: { filePath: 'src/search-semantic.tool.ts', codeChunk: '\tconst rows = await joinWithPostgres(filter);', startLine: 2, endLine: 2 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'postgres join', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+
+			expect(parsed.block_expansion_applied).toBe(1);
+			expect(parsed.stale_anchors_relocated).toBe(1);
+			const hit = parsed.results[0];
+			// The handle is the block at the TRUE current position (declaration line 11
+			// to closing brace line 15), not the drifted stored line 2
+			expect(hit.start_line).toBe(11);
+			expect(hit.end_line).toBe(15);
+			// The stored (drifted) position stays visible in match_lines
+			expect(hit.match_lines).toBe('2-2');
+			expect(hit.snippet).toContain('export async function searchSemantic');
+			expect(hit.snippet.length).toBeGreaterThan(150);
+		});
+
+		test('ambiguous stale anchor (chunk text twice in the file) degrades to the raw chunk', async () => {
+			const duplicated = [
+				'export function first() {',
+				'\tconst rows = await joinWithPostgres(filter);',
+				'}',
+				'',
+				'export function second() {',
+				'\tconst rows = await joinWithPostgres(filter);', // same line twice → ambiguous
+				'}'
+			].join('\n');
+			mockReadFileSync.mockReturnValue(duplicated);
+			// Stored position far from BOTH occurrences → verify fails, relocation ambiguous
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.8,
+					payload: { filePath: 'src/search-semantic.tool.ts', codeChunk: '\tconst rows = await joinWithPostgres(filter);', startLine: 999, endLine: 999 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'postgres join', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+
+			expect(parsed.block_expansion_applied).toBeUndefined();
+			expect(parsed.stale_anchors_relocated).toBeUndefined();
+			expect(parsed.results[0].start_line).toBe(999);
+			expect(parsed.results[0].match_lines).toBeUndefined();
+		});
+
+		test('anchor beyond EOF with unique content relocates (file shrank since indexing)', () => {
+			// The stored position is past EOF, but the chunk text exists exactly once —
+			// relocation still finds it and the expansion renders the true block.
 			const cache = new Map<string, string[] | null>();
 			const out = expandHitBlock('src/foo.ts', 9999, ANCHOR_LINE, '/ws', cache);
-			expect(out).toBeNull();
+			expect(out).not.toBeNull();
+			expect(out!.relocated).toBe(true);
+			// ANCHOR_LINE lives inside searchSemantic (declaration line 5, closes line 9)
+			expect(out!.startLine).toBe(5);
+			expect(out!.endLine).toBe(9);
 		});
 
 		test('unreadable file → null, and the miss is cached (one stat attempt per file)', () => {
