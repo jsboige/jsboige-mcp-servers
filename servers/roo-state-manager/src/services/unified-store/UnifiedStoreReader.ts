@@ -77,8 +77,25 @@ export interface ConversationListFilters {
    * Hard cap, applied after `ORDER BY last_ts DESC NULLS LAST` — truncation
    * therefore drops the OLDEST rows, which is also the caller's default sort.
    * The caller reports whether the cap was reached rather than truncating silently.
+   *
+   * With `startDate`/`endDate` set the cap applies to the WINDOWED set: the date
+   * predicates ride the same WHERE, so rows outside the window no longer consume
+   * the budget (#2428 levier (a)).
    */
   limit?: number;
+  /**
+   * Lower bound on `last_ts`, inclusive (#2428). Before this filter, the query
+   * read the 5 000 newest conversations and the caller filtered dates in JS —
+   * any window older than the 5 000th newest row rendered 0 even though the
+   * store held the rows (measured 23/10: 11 081 of 16 081 unreachable).
+   */
+  startDate?: Date;
+  /**
+   * Upper bound on `last_ts`, inclusive. Callers pass the END-OF-DAY WIDENED
+   * bound (`resolveDateRangeBounds`) so SQL and the in-memory filter agree on
+   * what `endDate: "2026-05-31"` means.
+   */
+  endDate?: Date;
 }
 
 /**

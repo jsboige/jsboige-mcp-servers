@@ -3,7 +3,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseFilterDate, isWithinDateRange } from '../date-filters.js';
+import {
+    parseFilterDate,
+    isWithinDateRange,
+    endOfDayIfMidnight,
+    resolveDateRangeBounds,
+} from '../date-filters.js';
 
 describe('parseFilterDate', () => {
     it('devrait retourner null pour undefined', () => {
@@ -129,5 +134,39 @@ describe('isWithinDateRange', () => {
 
     it('devrait retourner true si timestamp invalide sans bornes (pas de filtrage)', () => {
         expect(isWithinDateRange('not-a-date', null, null)).toBe(true);
+    });
+});
+
+// #2428 levier (a) — bornes poussées dans le WHERE SQL : le SQL et le filtre en
+// mémoire doivent couper au MÊME instant, sinon le tier écarte des lignes que
+// l'appelant aurait gardées.
+describe('resolveDateRangeBounds / endOfDayIfMidnight (#2428)', () => {
+    it('endOfDayIfMidnight étend une borne à minuit à 23:59:59.999', () => {
+        const widened = endOfDayIfMidnight(new Date('2026-05-31T00:00:00.000Z'));
+        expect(widened.toISOString()).toBe('2026-05-31T23:59:59.999Z');
+    });
+
+    it('endOfDayIfMidnight laisse intacte une borne non-minuit', () => {
+        const exact = new Date('2026-05-31T12:00:00.000Z');
+        expect(endOfDayIfMidnight(exact).toISOString()).toBe('2026-05-31T12:00:00.000Z');
+    });
+
+    it('resolveDateRangeBounds élargit un endDate YYYY-MM-DD comme isWithinDateRange', () => {
+        const { start, end } = resolveDateRangeBounds('2026-05-01', '2026-05-31');
+        expect(start?.toISOString()).toBe('2026-05-01T00:00:00.000Z');
+        expect(end?.toISOString()).toBe('2026-05-31T23:59:59.999Z');
+        // Parité : la dernière seconde du dernier jour est DANS la fenêtre des
+        // deux côtés (avant #2428 seul le filtre JS l'incluait).
+        const lastSecond = '2026-05-31T23:59:59.999Z';
+        expect(isWithinDateRange(lastSecond, start, end)).toBe(true);
+        expect(new Date(lastSecond).getTime()).toBeLessThanOrEqual(end!.getTime());
+    });
+
+    it('resolveDateRangeBounds rend null/null sans bornes (plafond inchangé)', () => {
+        expect(resolveDateRangeBounds(undefined, undefined)).toEqual({ start: null, end: null });
+    });
+
+    it('resolveDateRangeBounds ignore une date invalide plutôt que de lever', () => {
+        expect(resolveDateRangeBounds('not-a-date', 'also-bad')).toEqual({ start: null, end: null });
     });
 });

@@ -459,6 +459,38 @@ describe('PgUnifiedStoreReader.listConversations — SQL shape', () => {
     expect(sql).toMatch(/ORDER BY last_ts DESC NULLS LAST/);
   });
 
+  test('#2428 — the date window rides the WHERE, parameterized, BEFORE the cap', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    const startDate = new Date('2026-05-01T00:00:00.000Z');
+    const endDate = new Date('2026-05-31T23:59:59.999Z');
+
+    await makeReader().listConversations({ startDate, endDate });
+
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('FROM conversations'))!;
+    const sql = String(call[0]);
+    // Bound parameters, never a date literal interpolated into the text.
+    expect(sql).toMatch(/last_ts >= \$3::timestamptz/);
+    expect(sql).toMatch(/last_ts <= \$4::timestamptz/);
+    expect(sql).not.toMatch(/2026-05/);
+    // Inside the CTE's WHERE, i.e. before the LIMIT that spends the cap: a row
+    // outside the window must not consume the budget (that was the bug — the
+    // newest 5 000 rows were read first, then dates were filtered in JS).
+    expect(sql.indexOf('last_ts >= $3')).toBeLessThan(sql.indexOf('LIMIT $2'));
+    expect((call[1] as unknown[])[2]).toBe(startDate);
+    expect((call[1] as unknown[])[3]).toBe(endDate);
+  });
+
+  test('control #2428 — without a window the cap and the parameter set are unchanged', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    await makeReader().listConversations({});
+
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('FROM conversations'))!;
+    const params = call[1] as unknown[];
+    expect(params[1]).toBe(5000);   // same cap as before #2428
+    expect(params[2]).toBeNull();   // `$3::timestamptz IS NULL` → no lower bound
+    expect(params[3]).toBeNull();   // `$4::timestamptz IS NULL` → no upper bound
+  });
+
   test('matches machine_id case-insensitively, and passes null to mean "all machines"', async () => {
     mockQuery.mockResolvedValue({ rows: [] });
     const reader = makeReader();

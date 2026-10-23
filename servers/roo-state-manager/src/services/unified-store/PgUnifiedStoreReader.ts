@@ -421,11 +421,21 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
 
     const machineId = filters?.machineId?.trim() || null;
     const limit = filters?.limit ?? 5000;
+    // #2428 levier (a) — window bounds ride the WHERE, parameterized. Applied
+    // before the LIMIT on purpose: with the dates only filtered in JS
+    // (unified-header-pipeline.ts), the cap was spent on the newest 5 000 rows
+    // overall and any older window rendered 0 (11 081 of 16 081 unreachable,
+    // measured 23/10). A NULL `last_ts` row satisfies neither bound, matching
+    // `isWithinDateRange(undefined, …) === false`.
+    const startDate = filters?.startDate ?? null;
+    const endDate = filters?.endDate ?? null;
 
     const result = await this.pool.query(
       `WITH c AS (
          SELECT * FROM conversations
          WHERE ($1::text IS NULL OR LOWER(machine_id) = LOWER($1))
+           AND ($3::timestamptz IS NULL OR last_ts >= $3::timestamptz)
+           AND ($4::timestamptz IS NULL OR last_ts <= $4::timestamptz)
          ORDER BY last_ts DESC NULLS LAST
          LIMIT $2
        )
@@ -439,7 +449,7 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
          ORDER BY messages.seq ASC
          LIMIT 1
        ) m ON TRUE`,
-      [machineId, limit],
+      [machineId, limit, startDate, endDate],
     );
 
     return result.rows.map(row => ({
