@@ -49,6 +49,7 @@ import type { Message } from '../MessageManager.js';
 import type { IUnifiedStoreWriter } from './UnifiedStoreWriter.js';
 import { mapMessageToRow } from './roosync-channel-dual-write.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
+import { acquireGdriveScanLock } from '../gdrive-scan-lock.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-channel-reconcile');
@@ -57,8 +58,10 @@ const logger = createLogger('roosync-channel-reconcile');
 const RECONCILE_DIRS = ['inbox', 'archive', 'sent'] as const;
 
 export interface ChannelReconcileResult {
-  /** 'skipped-not-armed' = dual-write off on this process — nothing was done. */
-  status: 'ok' | 'skipped-not-armed';
+  /** 'skipped-not-armed' = dual-write off on this process — nothing was done.
+   *  'skipped-scan-lock' = another RSM process on this host held the G: scan
+   *  lock (#4131 B16) — the pass opened nothing and will retry next tick. */
+  status: 'ok' | 'skipped-not-armed' | 'skipped-scan-lock';
   /** Lookback cutoff in id form (`msg-YYYYMMDDTHHMMSS`) — same order as ids. */
   sinceId: string;
   /** .json files in the lookback window across the three dirs (undated
@@ -93,6 +96,15 @@ export interface ChannelReconcileOptions {
   now?: number;
   /** Writer seam for tests. Default getUnifiedStoreWriter(). */
   writer?: Pick<IUnifiedStoreWriter, 'insertRooSyncMessage' | 'listRooSyncMessageIds'>;
+  /**
+   * #4131 B16 — whether this process's inbox cache is fully hydrated. When
+   * `false`, the UNDATED pool is counted but not opened this pass: those
+   * opens are GDrive IO, and firing them while the cache is still hydrating
+   * (right after boot) competes with the rebuild on the same DriveFS. Omitted
+   * (`undefined`) = legacy behavior, candidates opened under the cap — the
+   * daemon always passes the real value.
+   */
+  inboxHydrated?: boolean;
 }
 
 /**
@@ -120,14 +132,17 @@ export function cutoffIdFor(now: number, lookbackDays: number): string {
 
 /**
  * Per-pass ceiling on undated-id opens (#4131 item 4, arbitration
- * c.6053412912): a name that proves no date is not provably old, so undated
- * ids are candidates — but the measured pool is 3 706 (08/10, filename-only
- * count) and each candidate is one GDrive open, the exact cost class that
- * blocked ms#1405. Above the cap the pass stops opening; the excess is
- * `undatedCapped`, logged, never silent. The bulk of the historical pool is
- * G-R's one-shot (same script family as the backfill), not this daemon.
+ * c.6053412912; lowered 200 → 20 by the B16 arbitration c.6353630611).
+ * A name that proves no date is not provably old, so undated ids are
+ * candidates — but the measured pool is 3 706 (08/10, filename-only count)
+ * and each candidate is one GDrive open, the exact cost class that blocked
+ * ms#1405 and fed the 22-23/10 DriveFS saturation. 201 opens per pass, per
+ * process, compounded on 74 processes. Above the cap the pass stops opening;
+ * the excess is `undatedCapped`, logged, never silent. The bulk of the
+ * historical pool is G-R's one-shot (same script family as the backfill),
+ * not this daemon — healing 20/pass per armed host is ample.
  */
-export const UNDATED_CAP_PER_PASS = 200;
+export const UNDATED_CAP_PER_PASS = 20;
 
 /**
  * Date embedded ANYWHERE in an id, as a `YYYYMMDDTHHMMSS` key — or null.
@@ -237,10 +252,22 @@ export async function reconcileChannelFromGDrive(
   if (undated.size > 0) {
     presentAll = new Set(await writer.listRooSyncMessageIds(''));
     const undatedMissing = [...undated.keys()].filter((id) => !presentAll!.has(id)).sort();
-    const kept = undatedMissing.slice(0, UNDATED_CAP_PER_PASS);
-    keptUndated = kept.length;
-    result.undatedCapped = undatedMissing.length - kept.length;
-    for (const id of kept) byId.set(id, undated.get(id)!);
+    if (options.inboxHydrated === false) {
+      // #4131 B16 — the process's inbox cache is still hydrating (or absent):
+      // these opens would compete with the rebuild on the same DriveFS. The
+      // backlog is COUNTED (visibility stays honest) and opened on a later
+      // pass, once the cache is hydrated.
+      result.undatedCapped = undatedMissing.length;
+      logger.info('[channel-reconcile] undated pool deferred — inbox cache not hydrated yet (#4131 B16)', {
+        undated: undated.size,
+        missing: undatedMissing.length,
+      });
+    } else {
+      const kept = undatedMissing.slice(0, UNDATED_CAP_PER_PASS);
+      keptUndated = kept.length;
+      result.undatedCapped = undatedMissing.length - kept.length;
+      for (const id of kept) byId.set(id, undated.get(id)!);
+    }
   }
   result.candidates = datedFiles + keptUndated;
   result.candidateIds = byId.size;
@@ -261,23 +288,42 @@ export async function reconcileChannelFromGDrive(
   const missing = [...byId.keys()].filter((id) => !known.has(id));
   result.alreadyPresent = byId.size - missing.length;
   let insertAttempts = 0;
-  for (const id of missing) {
+  if (missing.length > 0) {
+    // #4131 B16 — one G: scanner per host: the per-file OPEN is the expensive
+    // phase (#3292) and the one that saturated DriveFS. Host-local lock
+    // (os.tmpdir), never the PG dashboard lock. Refused = another process is
+    // scanning; defer this pass, nothing was opened.
+    const releaseScanLock = await acquireGdriveScanLock('channel-reconcile');
+    if (!releaseScanLock) {
+      result.status = 'skipped-scan-lock';
+      result.durationMs = Date.now() - startedAt;
+      logger.info('[channel-reconcile] pass skipped — another RSM process on this host holds the G: scan lock (#4131 B16)', {
+        pending: missing.length,
+      });
+      return result;
+    }
     try {
-      let content = await readFile(byId.get(id)!, 'utf-8');
-      if (content.charCodeAt(0) === 0xfeff) content = content.slice(1); // strip UTF-8 BOM
-      const message = JSON.parse(content) as Message & { id?: string };
-      // Phantom guard, same rationale as ensureInboxCache: a file whose name
-      // does not match its id would import an unreachable row.
-      if (!message || !message.id || message.id !== id) {
-        result.skipped++;
-        continue;
+      for (const id of missing) {
+        try {
+          let content = await readFile(byId.get(id)!, 'utf-8');
+          if (content.charCodeAt(0) === 0xfeff) content = content.slice(1); // strip UTF-8 BOM
+          const message = JSON.parse(content) as Message & { id?: string };
+          // Phantom guard, same rationale as ensureInboxCache: a file whose name
+          // does not match its id would import an unreachable row.
+          if (!message || !message.id || message.id !== id) {
+            result.skipped++;
+            continue;
+          }
+          await writer.insertRooSyncMessage(mapMessageToRow(message));
+          insertAttempts++;
+        } catch {
+          // 0-byte husk, transient DriveFS miss, parse error — the next run
+          // re-detects the id as missing and retries. Never aborts the pass.
+          result.errors++;
+        }
       }
-      await writer.insertRooSyncMessage(mapMessageToRow(message));
-      insertAttempts++;
-    } catch {
-      // 0-byte husk, transient DriveFS miss, parse error — the next run
-      // re-detects the id as missing and retries. Never aborts the pass.
-      result.errors++;
+    } finally {
+      await releaseScanLock().catch(() => { /* staleness covers a failed release */ });
     }
   }
 

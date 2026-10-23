@@ -12,8 +12,10 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
-import { existsSync, rmSync, mkdirSync, writeFileSync } from 'fs';
+import { existsSync, rmSync, mkdirSync, mkdtempSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { tmpdir } from 'os';
+import { acquireGdriveScanLock } from '../../gdrive-scan-lock.js';
 import {
   reconcileChannelFromGDrive,
   cutoffIdFor,
@@ -385,6 +387,62 @@ describe('roosync-channel-reconcile (#3292)', () => {
       // The healed 0001 was presence-filtered before candidacy — exactly the
       // advance under test (it no longer occupies a cap slot).
       expect(r2.alreadyPresent).toBe(0);
+    });
+  });
+
+  describe('#4131 B16 — bounded G: scans (host lock, hydration gate, cap 20)', () => {
+    let savedLockDir: string | undefined;
+    let lockDir: string;
+
+    beforeEach(() => {
+      lockDir = mkdtempSync(join(tmpdir(), 'rsm-b16-reconcile-lock-'));
+      savedLockDir = process.env.ROOSYNC_SCAN_LOCK_DIR;
+      process.env.ROOSYNC_SCAN_LOCK_DIR = lockDir;
+    });
+
+    afterEach(() => {
+      if (savedLockDir === undefined) delete process.env.ROOSYNC_SCAN_LOCK_DIR;
+      else process.env.ROOSYNC_SCAN_LOCK_DIR = savedLockDir;
+      rmSync(lockDir, { recursive: true, force: true });
+    });
+
+    test('inboxHydrated:false counts the undated backlog but opens NOTHING', async () => {
+      writeMessage('inbox', 'adjoint-order-16297-16300-v2');
+      listResponses = [[]]; // full listing: nothing present
+
+      const result = await reconcileChannelFromGDrive({
+        messagesRoot,
+        lookbackDays: LOOKBACK_DAYS,
+        now: NOW,
+        writer: makeWriter(),
+        inboxHydrated: false,
+      });
+
+      expect(result.status).toBe('ok');
+      expect(result.undatedCandidates).toBe(1);
+      expect(result.undatedCapped).toBe(1); // counted, never silent
+      expect(insertedRows).toHaveLength(0); // not opened
+    });
+
+    test('a held host G: scan lock defers the pass — zero files opened', async () => {
+      writeMessage('inbox', 'msg-20260904T120000-held');
+      listResponses = [[], []]; // full listing (none undated) then window listing
+
+      const release = await acquireGdriveScanLock('channel-reconcile');
+      expect(release).not.toBeNull();
+      try {
+        const result = await run();
+        expect(result.status).toBe('skipped-scan-lock');
+        expect(insertedRows).toHaveLength(0);
+      } finally {
+        await release!();
+      }
+
+      // Released: the next pass does its work.
+      listCalls = [];
+      const next = await run();
+      expect(next.status).toBe('ok');
+      expect(insertedRows.map((r) => r.id)).toEqual(['msg-20260904T120000-held']);
     });
   });
 });
