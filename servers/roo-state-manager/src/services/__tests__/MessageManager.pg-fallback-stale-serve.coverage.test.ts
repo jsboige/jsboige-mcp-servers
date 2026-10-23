@@ -190,7 +190,11 @@ describe('MessageManager — PG failure serves the warm cache, not a full rebuil
     expect(raced).not.toBe('GATED');
     const items = (raced as { items: unknown[] }).items;
     expect(items).toHaveLength(ONE_CHUNK_BUDGET_MS); // the warm partial cache
-    expect(mocks.inFlight).toBeGreaterThan(0); // the background refresh IS running
+    // The background refresh IS running. Since #4131 B16 it must acquire the
+    // host G: scan lock before its first read, so "running" is a couple of fs
+    // syscalls async rather than same-tick — poll instead of assuming the
+    // scheduling instant. The gate is still shut, so the pass cannot finish.
+    await vi.waitFor(() => expect(mocks.inFlight).toBeGreaterThan(0), { timeout: 2000 });
     expect((manager as any).inboxRebuildInFlight).not.toBeNull();
 
     // Drain the background pass so nothing leaks into the next test.

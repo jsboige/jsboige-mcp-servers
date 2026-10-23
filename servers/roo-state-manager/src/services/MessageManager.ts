@@ -64,6 +64,15 @@ import {
   reconcileChannelFromGDrive,
   type ChannelReconcileResult,
 } from './unified-store/roosync-channel-reconcile.js';
+// #4131 B16 — a PG timeout must not fan every caller out into G: reads (the
+// 22-23/10 DriveFS saturation loop): sticky per-process breaker + host-local
+// scan lock + degraded routing under PG_PRIMARY.
+import {
+  channelPgBreakerOpen,
+  noteChannelPgReadFailure,
+  noteChannelPgReadSuccess,
+} from './unified-store/channel-pg-breaker.js';
+import { acquireGdriveScanLock } from './gdrive-scan-lock.js';
 import type { RooSyncMessageUpdate } from './unified-store/types.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
@@ -1022,6 +1031,57 @@ export class MessageManager {
    * @private
    */
   private async rebuildInboxCache(files: string[]): Promise<{ items: MessageListItem[]; full: Map<string, Message> }> {
+    // #4131 B16 — at most ONE RSM process per host scans the G: pool. Without
+    // this, every process on the host rebuilds at once and the concurrent
+    // reads stall on the same DriveFS (74 live processes on ai-01, 22-23/10).
+    // Host-LOCAL lock (os.tmpdir), never the PG dashboard lock: these scans
+    // run precisely when PG is not answering.
+    const releaseScanLock = await acquireGdriveScanLock('inbox-pool');
+    if (!releaseScanLock) {
+      // Another process on this host is scanning. The lock is a THROTTLE on
+      // concurrent G: scans, never a gate on correctness: handing back an empty
+      // inbox because a neighbour happens to be scanning would be a worse defect
+      // than the contention it prevents (measured 23/10: parallel processes
+      // starved each other into empty reads).
+      if (this.inboxCache !== null) {
+        // Warm cache → defer this pass. Not an error: serve what we have, and
+        // lastInboxFileCount = -1 defeats the count fast-path so the next TTL
+        // expiry retries.
+        logger.info('Inbox rebuild deferred — another RSM process on this host holds the G: scan lock (#4131 B16)');
+        this.lastInboxFileCount = -1;
+        this.cacheBuiltAt = Date.now(); // TTL renewed: a deferred pass must not spin
+        return { items: this.inboxCache, full: this.inboxFullCache };
+      }
+      if (isChannelPgPrimary() && getChannelPgReader() !== null) {
+        // No cache AND PG can actually serve: the caller-facing path fails
+        // closed / serves stale (routeChannelPgUnavailable); scanning G: here
+        // would be exactly the fan-out B16 forbids. Defer. The reader check
+        // matters: a seat flagged primary with no usable reader has G: as its
+        // only source again, and deferring there would hand back an empty inbox.
+        this.lastInboxFileCount = -1;
+        this.cacheBuiltAt = Date.now();
+        return { items: [], full: new Map() };
+      }
+      // No cache and G: IS this seat's store (file backend / READ_PG fallback):
+      // there is nothing else to serve. One foreground caller cannot storm
+      // DriveFS, and the background/reconcile passes stay serialized by the lock.
+      logger.warn('Inbox rebuild proceeding WITHOUT the host scan lock — no cache to serve (#4131 B16)');
+      return await this.rebuildInboxCacheLocked(files);
+    }
+    try {
+      return await this.rebuildInboxCacheLocked(files);
+    } finally {
+      await releaseScanLock().catch(() => { /* release is best-effort; staleness covers a failure */ });
+    }
+  }
+
+  /**
+   * Body of {@link rebuildInboxCache}, run while the host G: scan lock is
+   * held (#4131 B16 extraction — one entry point, one lock, one release).
+   *
+   * @private
+   */
+  private async rebuildInboxCacheLocked(files: string[]): Promise<{ items: MessageListItem[]; full: Map<string, Message> }> {
     const now = Date.now();
 
     // Skip files that failed a recent read (negative cache): a cloud-only GDrive
@@ -1508,6 +1568,109 @@ export class MessageManager {
   }
 
   /**
+   * #4131 B16 — route a channel read whose PG half is unavailable (fresh
+   * failure, or the breaker is open so PG was not even probed).
+   *
+   * UNDER `CHANNEL_PG_PRIMARY` the historical GDrive fan-out is FORBIDDEN: it
+   * is the self-feeding loop of the 22-23/10 incident (PG connect timeout →
+   * libuv threadpool stall → G: reads stall → more timeouts, mechanism
+   * c.6353386994), and G: is not authoritative there anyway — PG-only sends
+   * never file (po-2028 « original introuvable », 23/10). Serve the warm
+   * in-memory inbox cache STALE when there is one; otherwise fail CLOSED:
+   * an explicit error, never the phony empty inbox #3459 forbids. Routing
+   * BEFORE the #4293 store-down check is deliberate — a warm cache is served
+   * even when G: is down, which is strictly better than throwing, and the
+   * no-cache branch throws the same error #4293 would.
+   *
+   * Non-PG_PRIMARY seats keep the graceful GDrive fallback unchanged — there
+   * G: IS the primary store and its fallback is the designed degradation.
+   *
+   * @returns 'cache-stale' (serve `this.inboxCache`, zero GDrive IO) or
+   *   'gdrive-fallback' (legacy path, unchanged).
+   * @throws SharedStoreInaccessibleError when PG_PRIMARY and no warm cache.
+   */
+  private routeChannelPgUnavailable(context: string, cause: 'pg-failed' | 'breaker-open'): 'cache-stale' | 'gdrive-fallback' {
+    if (!isChannelPgPrimary()) return 'gdrive-fallback';
+    if (this.inboxCache !== null) {
+      const ageS = Math.max(0, Math.round((Date.now() - this.contentBuiltAt) / 1000));
+      logger.warn(
+        `[channel-pg] B16: ${context} (${cause}) — PG unavailable, serving in-memory inbox cache STALE ` +
+        `(${this.inboxCache.length} items, built ${ageS}s ago${this.inboxCachePartial ? ', partial' : ''}) (#4131)`
+      );
+      return 'cache-stale';
+    }
+    logger.warn(`[channel-pg] B16: ${context} (${cause}) — PG unavailable and no warm cache: failing closed, no GDrive fan-out under PG_PRIMARY (#4131)`);
+    throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
+  }
+
+  /**
+   * #4131 B16 — filter + paginate cache entries for a mailbox read. Body of
+   * the GDrive path extracted verbatim so the stale-cache serve filters
+   * identically WITHOUT re-entering `ensureInboxCache` (whose rebuilds are
+   * exactly the GDrive scan B16 forbids under PG_PRIMARY).
+   */
+  private filterInboxItemsFor(
+    items: MessageListItem[],
+    full: Map<string, Message>,
+    machineId: string,
+    status: 'unread' | 'read' | 'all' | undefined,
+    workspaceId: string | undefined,
+    fromFilter?: string,
+    subjectFilter?: string,
+    priorityFilter?: string,
+    limit?: number,
+    page?: number,
+    perPage?: number
+  ): MessageListItem[] {
+    if (items.length === 0) return [];
+
+    // Filter from cache (items are already sorted by timestamp desc)
+    const filtered: MessageListItem[] = [];
+
+    for (const item of items) {
+      // Filter by recipient (workspace-aware) — need full message for broadcast read_by
+      const fullMsg = full.get(item.id);
+      if (!fullMsg) continue;
+
+      if (!matchesRecipient(fullMsg.to, machineId, workspaceId)) {
+        continue;
+      }
+
+      // Filter by status — per-machine for broadcasts (#629)
+      if (status && status !== 'all') {
+        const perReader = perReaderStatus(fullMsg, machineId, workspaceId);
+        if (perReader !== null) {
+          if (perReader !== status) continue;
+        } else {
+          if (fullMsg.status !== status) continue;
+        }
+      }
+
+      // #2307 Phase 4: For broadcast messages, adjust status per-machine so
+      // callers (read.ts inbox display) see the correct read/unread state.
+      // Without this, broadcast messages always show "unread" even after being read.
+      const perReader = perReaderStatus(fullMsg, machineId, workspaceId);
+      if (perReader !== null) {
+        filtered.push({ ...item, status: perReader });
+      } else {
+        filtered.push(item);
+      }
+    }
+
+    // #3351: sender/subject filters — applied BEFORE pagination (#638) so
+    // limit/page slice the FILTERED set. Semantics mirror bulkOperation
+    // (case-insensitive substring, AND logic; priority = exact equality)
+    // so both surfaces read the pool the same way.
+    const matching = this.applyInboxFilters(filtered, fromFilter, subjectFilter, priorityFilter);
+
+    // Apply pagination (#638)
+    const result = this.paginateItems(matching, limit, page, perPage);
+
+    logger.info(`Returning ${result.length}/${matching.length} messages (cached)`);
+    return result;
+  }
+
+  /**
    * Lit la boîte de réception d'une machine
    *
    * Filtre les messages par destinataire et statut, puis les trie
@@ -1544,28 +1707,46 @@ export class MessageManager {
     // #4131 B11(b): readInbox has ONE ensureInboxCache call, shared by the
     // nominal GDrive path and the PG-failure fallback. Only the FALLBACK
     // downgrades `deep` (see below); this flag is what tells them apart.
+    // #4131 B16: a PG failure no longer falls to GDrive on a PG_PRIMARY seat
+    // (breaker + stale-cache/fail-closed routing — routeChannelPgUnavailable).
     let pgFailed = false;
     const pgReader = getChannelPgReader();
     if (pgReader) {
-      const startedAt = Date.now();
-      const pgItems = await readChannelInboxFromPg(pgReader, machineId, status, effectiveWorkspaceId);
-      if (pgItems !== null) {
-        // #3351: filters apply BEFORE pagination so limit/page slice the
-        // filtered set on the PG path too, never the raw one.
-        const matching = this.applyInboxFilters(pgItems, fromFilter, subjectFilter, priorityFilter);
-        logger.info(
-          `[channel-pg] inbox served from PG in ${Date.now() - startedAt}ms (${matching.length}/${pgItems.length} items)`
-        );
-        return this.paginateItems(matching, limit, page, perPage);
+      // #4131 B16 — the breaker is a PG_PRIMARY mechanism: on a non-primary
+      // READ_PG seat the per-call GDrive fallback IS the design, so neither
+      // the trip nor the probe-skip applies there (pre-B16 behaviour kept).
+      if (isChannelPgPrimary() && channelPgBreakerOpen()) {
+        if (this.routeChannelPgUnavailable('inbox read', 'breaker-open') === 'cache-stale') {
+          return this.filterInboxItemsFor(this.inboxCache!, this.inboxFullCache, machineId, status, effectiveWorkspaceId, fromFilter, subjectFilter, priorityFilter, limit, page, perPage);
+        }
+      } else {
+        const startedAt = Date.now();
+        const pgItems = await readChannelInboxFromPg(pgReader, machineId, status, effectiveWorkspaceId);
+        if (pgItems !== null) {
+          noteChannelPgReadSuccess();
+          // #3351: filters apply BEFORE pagination so limit/page slice the
+          // filtered set on the PG path too, never the raw one.
+          const matching = this.applyInboxFilters(pgItems, fromFilter, subjectFilter, priorityFilter);
+          logger.info(
+            `[channel-pg] inbox served from PG in ${Date.now() - startedAt}ms (${matching.length}/${pgItems.length} items)`
+          );
+          return this.paginateItems(matching, limit, page, perPage);
+        }
+        noteChannelPgReadFailure();
+        // #4131 B16 — under PG_PRIMARY: stale cache or fail-closed, BEFORE the
+        // #4293 store-down check (see routeChannelPgUnavailable for why).
+        if (this.routeChannelPgUnavailable('inbox read', 'pg-failed') === 'cache-stale') {
+          return this.filterInboxItemsFor(this.inboxCache!, this.inboxFullCache, machineId, status, effectiveWorkspaceId, fromFilter, subjectFilter, priorityFilter, limit, page, perPage);
+        }
+        if (!isSharedPathAccessible()) {
+          // #4293: the store is down AND PG did not serve the mailbox. Falling
+          // through would scan absent directories and return [] — the phony
+          // "empty inbox" #3459 exists to forbid.
+          throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
+        }
+        logger.warn('[channel-pg] PG mailbox read failed — falling back to GDrive');
+        pgFailed = true;
       }
-      if (!isSharedPathAccessible()) {
-        // #4293: the store is down AND PG did not serve the mailbox. Falling
-        // through would scan absent directories and return [] — the phony
-        // "empty inbox" #3459 exists to forbid.
-        throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
-      }
-      logger.warn('[channel-pg] PG mailbox read failed — falling back to GDrive');
-      pgFailed = true;
     }
 
     try {
@@ -1582,55 +1763,7 @@ export class MessageManager {
       // path (PG gated off, or PG serving) keeps honouring `deep` exactly as
       // before: there, "wait for the full pool" is the caller's explicit ask.
       const { items, full } = await this.ensureInboxCache({ deep: pgFailed ? false : deep });
-
-      if (items.length === 0) {
-        return [];
-      }
-
-      // Filter from cache (items are already sorted by timestamp desc)
-      const filtered: MessageListItem[] = [];
-
-      for (const item of items) {
-        // Filter by recipient (workspace-aware) — need full message for broadcast read_by
-        const fullMsg = full.get(item.id);
-        if (!fullMsg) continue;
-
-        if (!matchesRecipient(fullMsg.to, machineId, effectiveWorkspaceId)) {
-          continue;
-        }
-
-        // Filter by status — per-machine for broadcasts (#629)
-        if (status && status !== 'all') {
-          const perReader = perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
-          if (perReader !== null) {
-            if (perReader !== status) continue;
-          } else {
-            if (fullMsg.status !== status) continue;
-          }
-        }
-
-        // #2307 Phase 4: For broadcast messages, adjust status per-machine so
-        // callers (read.ts inbox display) see the correct read/unread state.
-        // Without this, broadcast messages always show "unread" even after being read.
-        const perReader = perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
-        if (perReader !== null) {
-          filtered.push({ ...item, status: perReader });
-        } else {
-          filtered.push(item);
-        }
-      }
-
-      // #3351: sender/subject filters — applied BEFORE pagination (#638) so
-      // limit/page slice the FILTERED set. Semantics mirror bulkOperation
-      // (case-insensitive substring, AND logic; priority = exact equality)
-      // so both surfaces read the pool the same way.
-      const matching = this.applyInboxFilters(filtered, fromFilter, subjectFilter, priorityFilter);
-
-      // Apply pagination (#638)
-      const result = this.paginateItems(matching, limit, page, perPage);
-
-      logger.info(`Returning ${result.length}/${matching.length} messages (cached)`);
-      return result;
+      return this.filterInboxItemsFor(items, full, machineId, status, effectiveWorkspaceId, fromFilter, subjectFilter, priorityFilter, limit, page, perPage);
     } catch (error) {
       logger.error('Error reading inbox', error);
       return [];
@@ -1693,15 +1826,45 @@ export class MessageManager {
     const effectiveWorkspaceId = workspaceId;
 
     // #3151 Phase B — PG-primary count, GDrive fallback.
+    // #4131 B16 — under PG_PRIMARY a failed count serves the warm cache stale
+    // or fails closed; it never rebuilds the GDrive cache to count.
     const pgReader = getChannelPgReader();
     if (pgReader) {
-      const pgCounts = await countChannelInboxFromPg(pgReader, machineId, effectiveWorkspaceId);
-      if (pgCounts !== null) return pgCounts;
-      logger.warn('[channel-pg] PG mailbox count failed — falling back to GDrive');
+      // #4131 B16 — primary-only, like readInbox (non-primary seats keep the
+      // per-call GDrive fallback design).
+      if (isChannelPgPrimary() && channelPgBreakerOpen()) {
+        if (this.routeChannelPgUnavailable('inbox count', 'breaker-open') === 'cache-stale') {
+          return this.countInboxCacheFor(this.inboxCache!, this.inboxFullCache, machineId, effectiveWorkspaceId);
+        }
+      } else {
+        const pgCounts = await countChannelInboxFromPg(pgReader, machineId, effectiveWorkspaceId);
+        if (pgCounts !== null) {
+          noteChannelPgReadSuccess();
+          return pgCounts;
+        }
+        noteChannelPgReadFailure();
+        if (this.routeChannelPgUnavailable('inbox count', 'pg-failed') === 'cache-stale') {
+          return this.countInboxCacheFor(this.inboxCache!, this.inboxFullCache, machineId, effectiveWorkspaceId);
+        }
+        logger.warn('[channel-pg] PG mailbox count failed — falling back to GDrive');
+      }
     }
 
     const { items, full } = await this.ensureInboxCache({ deep });
+    return this.countInboxCacheFor(items, full, machineId, effectiveWorkspaceId);
+  }
 
+  /**
+   * Count from a cache snapshot (#4131 B16: extracted from getFilteredCount's
+   * fallback body so the stale-cache serve counts identically without
+   * re-entering ensureInboxCache).
+   */
+  private countInboxCacheFor(
+    items: MessageListItem[],
+    full: Map<string, Message>,
+    machineId: string,
+    workspaceId: string | undefined
+  ): { total: number; unread: number; read: number } {
     let total = 0;
     let unread = 0;
     let read = 0;
@@ -1709,10 +1872,10 @@ export class MessageManager {
     for (const item of items) {
       const fullMsg = full.get(item.id);
       if (!fullMsg) continue;
-      if (!matchesRecipient(fullMsg.to, machineId, effectiveWorkspaceId)) continue;
+      if (!matchesRecipient(fullMsg.to, machineId, workspaceId)) continue;
 
       total++;
-      const perReader = perReaderStatus(fullMsg, machineId, effectiveWorkspaceId);
+      const perReader = perReaderStatus(fullMsg, machineId, workspaceId);
       const isUnreadForMachine =
         perReader !== null ? perReader === 'unread' : fullMsg.status === 'unread';
 
@@ -2322,8 +2485,17 @@ export class MessageManager {
       const startedAt = Date.now();
       const pgPool = await readWholeChannelFromPg(pgReader);
       if (pgPool !== null) {
+        noteChannelPgReadSuccess();
         logger.info(`[channel-pg] cleanup scan served from PG in ${Date.now() - startedAt}ms (${pgPool.length} messages)`);
         return this.cleanupExpiredIn(pgPool, now);
+      }
+      noteChannelPgReadFailure();
+      if (isChannelPgPrimary()) {
+        // #4131 B16 — under PG_PRIMARY this sweep's transitions ARE PG writes;
+        // with PG down there is nothing to commit, and rebuilding the GDrive
+        // cache just to decide the pass is the fan-out B16 forbids. Defer.
+        logger.warn('[channel-pg] B16: cleanup scan deferred — PG unavailable under PG_PRIMARY (#4131)');
+        return 0;
       }
       logger.warn('[channel-pg] PG channel pool read failed — falling back to GDrive');
     }
@@ -2377,6 +2549,14 @@ export class MessageManager {
       if (pgPool !== null) {
         logger.info(`[channel-pg] reminder scan served from PG in ${Date.now() - startedAt}ms (${pgPool.length} messages)`);
         return this.sendExpiryRemindersFromPg(pgPool);
+      }
+      noteChannelPgReadFailure();
+      if (isChannelPgPrimary()) {
+        // #4131 B16 — same deferral as cleanupExpiredMessages: the reminder
+        // flag is a PG column on a PG_PRIMARY seat, and the GDrive pass below
+        // would rebuild the cache for a pass that cannot persist anything.
+        logger.warn('[channel-pg] B16: reminder scan deferred — PG unavailable under PG_PRIMARY (#4131)');
+        return 0;
       }
       logger.warn('[channel-pg] PG channel pool read failed — falling back to GDrive');
     }
@@ -2890,15 +3070,30 @@ export class MessageManager {
     // (isChannelPgPrimary).
     const pgReader = getChannelPgReader();
     if (pgReader) {
-      const pgMessages = await readChannelMailboxFromPg(pgReader, machineId, effectiveWorkspaceId);
-      if (pgMessages !== null) {
-        const matchedIds = pgMessages
-          .filter((m) => MessageManager.matchesBulkFilters(m, machineId, effectiveWorkspaceId, filters, beforeDateMs))
-          .map((m) => m.id);
-        logger.info(`[channel-pg] bulk ${operation} matched ${matchedIds.length} message(s) over the PG pool`);
-        return this.applyBulkOperation(matchedIds, operation, `${machineId}:${effectiveWorkspaceId}`);
+      // #4131 B16 — bulk is a MUTATION surface: under PG_PRIMARY its writes
+      // land in PG (isChannelPgPrimary), so with PG unavailable there is
+      // nothing a stale-cache match could honestly apply. Fail closed instead
+      // of the historical GDrive fan-out; non-primary seats keep the fallback.
+      if (isChannelPgPrimary() && channelPgBreakerOpen()) {
+        logger.warn(`[channel-pg] B16: bulk ${operation} (breaker-open) — PG unavailable under PG_PRIMARY, failing closed (#4131)`);
+        throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
+      } else {
+        const pgMessages = await readChannelMailboxFromPg(pgReader, machineId, effectiveWorkspaceId);
+        if (pgMessages !== null) {
+          noteChannelPgReadSuccess();
+          const matchedIds = pgMessages
+            .filter((m) => MessageManager.matchesBulkFilters(m, machineId, effectiveWorkspaceId, filters, beforeDateMs))
+            .map((m) => m.id);
+          logger.info(`[channel-pg] bulk ${operation} matched ${matchedIds.length} message(s) over the PG pool`);
+          return this.applyBulkOperation(matchedIds, operation, `${machineId}:${effectiveWorkspaceId}`);
+        }
+        noteChannelPgReadFailure();
+        if (isChannelPgPrimary()) {
+          logger.warn(`[channel-pg] B16: bulk ${operation} — PG enumeration failed under PG_PRIMARY, failing closed, no GDrive fan-out (#4131)`);
+          throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
+        }
+        logger.warn('[channel-pg] PG mailbox enumeration failed — bulk falling back to GDrive');
       }
-      logger.warn('[channel-pg] PG mailbox enumeration failed — bulk falling back to GDrive');
     }
 
     if (!existsSync(this.inboxPath)) {
@@ -3136,6 +3331,14 @@ export class MessageManager {
         logger.info(`Auto-archived ${archived}/${toArchive.length} messages (PG rows)`);
         return archived;
       }
+      // #4131 B16 — under PG_PRIMARY the transitions are PG row updates; with
+      // PG down there is nothing to commit and the GDrive pass below would be
+      // a scan for nothing. Defer. A non-primary READ_PG seat keeps its
+      // designed GDrive fallback.
+      if (isChannelPgPrimary()) {
+        logger.warn('[channel-pg] B16: auto-archive deferred — PG sweep read failed under PG_PRIMARY (#4131)');
+        return 0;
+      }
       logger.warn('[channel-pg] auto-archive: PG sweep read failed — falling back to GDrive cache');
     }
 
@@ -3318,6 +3521,10 @@ export class MessageManager {
         const result = await reconcileChannelFromGDrive({
           messagesRoot: this.messagesPath,
           lookbackDays,
+          // #4131 B16 — do not open the undated pool while this process's
+          // inbox cache is still hydrating (or absent: under PG_PRIMARY the
+          // G: cache never builds, so undated healing is a non-primary job).
+          inboxHydrated: this.inboxCache !== null && !this.inboxCachePartial,
         });
         this.channelReconcileLastRun = { at, result };
         if (result.status === 'ok' && result.reconciled > 0) {

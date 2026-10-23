@@ -83,6 +83,7 @@ vi.mock('../unified-store/roosync-channel-write.js', async (importOriginal) => {
 // Import after mocks
 import { MessageManager } from '../MessageManager.js';
 import type { RooSyncMessageRow } from '../unified-store/types.js';
+import { SharedStoreInaccessibleError } from '../../utils/shared-state-path.js';
 
 const MACHINE = 'myia-ai-01';
 const WS = 'roo-extensions';
@@ -231,8 +232,11 @@ describe('MessageManager.bulkOperation — pool parity with the inbox (#4285)', 
     expect(onDisk(shared, 'file-1').status).toBe('read');
   });
 
-  test('PG enumeration failure → graceful GDrive fallback (same degradation as readInbox)', async () => {
+  test('PG enumeration failure → graceful GDrive fallback on a NON-primary seat', async () => {
     pg.state.mode = 'throw';
+    // #4131 B16: on a READ_PG seat with no PG_PRIMARY, G: IS the store and this
+    // fallback is the design. The PG_PRIMARY case is the next test.
+    pg.state.pgPrimary = false;
     seedFile(shared, {
       id: 'file-2', from: 'myia-po-2023:roo-extensions', to: `${MACHINE}:${WS}`,
       subject: 'file message 2', body: 'b', priority: 'MEDIUM',
@@ -248,5 +252,26 @@ describe('MessageManager.bulkOperation — pool parity with the inbox (#4285)', 
 
     expect(result.matched).toBe(1);
     expect(result.processed).toBe(1);
+  });
+
+  test('PG enumeration failure under PG_PRIMARY → fail closed, no G: enumeration (#4131 B16)', async () => {
+    pg.state.mode = 'throw';
+    seedFile(shared, {
+      id: 'file-3', from: 'myia-po-2023:roo-extensions', to: `${MACHINE}:${WS}`,
+      subject: 'file message 3', body: 'b', priority: 'MEDIUM',
+      timestamp: '2026-01-05T08:00:00.000Z', status: 'unread',
+    });
+
+    const mm = new MessageManager(shared, 5000);
+    // Under PG_PRIMARY the G: half is FORBIDDEN, not absent: a mutation surface
+    // must not silently match nothing, and must not fan out onto DriveFS.
+    await expect(
+      mm.bulkOperation(
+        MACHINE, 'mark_read',
+        { before_date: '2026-10-03T00:00:00Z', status: 'unread' },
+        WS
+      )
+    ).rejects.toBeInstanceOf(SharedStoreInaccessibleError);
+    expect(onDisk(shared, 'file-3').status).toBe('unread');
   });
 });

@@ -42,3 +42,14 @@ if (!process.env.APPDATA?.includes('__test-data__')) {
 if (!process.env.ROOSYNC_LOCK_DIR) {
   process.env.ROOSYNC_LOCK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-locks-'));
 }
+
+// #4131 B16 — per-WORKER G: scan lock dir, same reasoning as #3782 above. The
+// host scan lock defaults to os.tmpdir()/roo-state-manager so that every RSM
+// process on a host serializes its DriveFS scans; parallel vitest workers would
+// inherit that and defer each other's inbox rebuilds, which is intended ACROSS
+// PROCESSES but makes rebuild-mechanics suites measure an artifact of the
+// runner instead of their subject. One dir per worker process; the lock suite
+// and any test needing real cross-acquirer contention override it explicitly.
+if (!process.env.ROOSYNC_SCAN_LOCK_DIR) {
+  process.env.ROOSYNC_SCAN_LOCK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-scan-locks-'));
+}
