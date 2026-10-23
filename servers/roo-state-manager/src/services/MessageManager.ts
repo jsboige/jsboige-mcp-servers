@@ -331,8 +331,25 @@ function negativeCacheKey(sharedStatePath: string): string {
 }
 
 /**
+ * Inbox counters as published by `getInboxStats` (#4131 B16 review): the
+ * stale-cache serve must return the SAME shape as the PG/file paths — a
+ * three-field counter would silently drop `by_priority`, `by_priority_unread`,
+ * `by_sender` and `oldest_unread`, which are exactly what `get-status` renders
+ * (including the INBOX_URGENT verdict).
+ */
+export interface InboxStats {
+  total: number;
+  unread: number;
+  read: number;
+  by_priority: Record<string, number>;
+  by_priority_unread: Record<string, number>;
+  by_sender: Record<string, number>;
+  oldest_unread: string | null;
+}
+
+/**
  * Gestionnaire de messagerie RooSync
- * 
+ *
  * Responsabilités :
  * - Création et envoi de messages structurés
  * - Lecture de la boîte de réception
@@ -1055,12 +1072,20 @@ export class MessageManager {
       if (isChannelPgPrimary() && getChannelPgReader() !== null) {
         // No cache AND PG can actually serve: the caller-facing path fails
         // closed / serves stale (routeChannelPgUnavailable); scanning G: here
-        // would be exactly the fan-out B16 forbids. Defer. The reader check
-        // matters: a seat flagged primary with no usable reader has G: as its
-        // only source again, and deferring there would hand back an empty inbox.
-        this.lastInboxFileCount = -1;
-        this.cacheBuiltAt = Date.now();
-        return { items: [], full: new Map() };
+        // would be exactly the fan-out B16 forbids. The reader check matters:
+        // a seat flagged primary with no usable reader has G: as its only
+        // source again, and deferring there would hand back an empty inbox.
+        //
+        // #4131 B16 review (ai-01, Hermes) — this branch used to return
+        // `{ items: [], full: new Map() }`: an all-zero pool, indistinguishable
+        // from a genuinely empty inbox, handed to whoever called. That is the
+        // exactly the phony empty #3459 forbids and the contract this PR states
+        // ("a contended lock may not turn into an empty inbox") — so it is now
+        // the same fail-closed error the routed surfaces raise. Measured on the
+        // PR head: two messages present, lock held by a neighbour → total=0,
+        // unread=0, oldest_unread=null served in silence.
+        logger.error('Inbox rebuild deferred by the host G: scan lock under CHANNEL_PG_PRIMARY with no warm cache — failing closed, no phony empty (#4131 B16)');
+        throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
       }
       // No cache and G: IS this seat's store (file backend / READ_PG fallback):
       // there is nothing else to serve. One foreground caller cannot storm
@@ -1765,6 +1790,10 @@ export class MessageManager {
       const { items, full } = await this.ensureInboxCache({ deep: pgFailed ? false : deep });
       return this.filterInboxItemsFor(items, full, machineId, status, effectiveWorkspaceId, fromFilter, subjectFilter, priorityFilter, limit, page, perPage);
     } catch (error) {
+      // #4131 B16 review — a fail-closed verdict must REACH the caller. Turning
+      // SharedStoreInaccessibleError into `[]` here would re-create, one frame
+      // above, the phony empty the rebuild guard just refused to return.
+      if (error instanceof SharedStoreInaccessibleError) throw error;
       logger.error('Error reading inbox', error);
       return [];
     }
@@ -3619,40 +3648,42 @@ export class MessageManager {
   async getInboxStats(
     machineId: string,
     workspaceId?: string
-  ): Promise<{
-    total: number;
-    unread: number;
-    read: number;
-    by_priority: Record<string, number>;
-    by_priority_unread: Record<string, number>;
-    by_sender: Record<string, number>;
-    oldest_unread: string | null;
-  }> {
+  ): Promise<InboxStats> {
     const effectiveWorkspaceId = workspaceId || getLocalWorkspaceId();
     logger.info(`Getting inbox stats for ${machineId}:${effectiveWorkspaceId}`);
-
-    const stats = {
-      total: 0,
-      unread: 0,
-      read: 0,
-      by_priority: {} as Record<string, number>,
-      by_priority_unread: {} as Record<string, number>,
-      by_sender: {} as Record<string, number>,
-      oldest_unread: null as string | null
-    };
 
     // #4302 — PG-primary stats (env-gated): full PG messages carry every
     // field the stats read (priority, sender, timestamps, read_by for the
     // per-reader verdict). null = PG unavailable → GDrive pool below.
+    //
+    // #4131 B16 review (ai-01, Hermes, web1) — this surface had escaped the
+    // routing. Under PG_PRIMARY a PG failure fell straight into
+    // `gdriveInboxMessages()` — `deep: true`, the heaviest G: read there is —
+    // and never called `noteChannelPgReadFailure`, so the brake the rest of
+    // B16 relies on was never armed from the one tool an operator runs while
+    // diagnosing the outage. It now routes exactly like `readInbox`.
     const pgReader = getChannelPgReader();
     let candidates: Message[];
     if (pgReader) {
+      if (isChannelPgPrimary() && channelPgBreakerOpen()) {
+        // 'cache-stale' returns, no warm cache throws — same contract as
+        // readInbox. 'gdrive-fallback' cannot happen here (primary branch).
+        this.routeChannelPgUnavailable('inbox stats', 'breaker-open');
+        return this.statsInboxCacheFor(this.inboxCache!, this.inboxFullCache, machineId, effectiveWorkspaceId);
+      }
       const startedAt = Date.now();
       const pgMessages = await readChannelMailboxFromPg(pgReader, machineId, effectiveWorkspaceId);
       if (pgMessages !== null) {
+        noteChannelPgReadSuccess();
         logger.info(`[channel-pg] inbox stats served from PG in ${Date.now() - startedAt}ms (${pgMessages.length} messages)`);
         candidates = pgMessages;
       } else {
+        noteChannelPgReadFailure();
+        // #4131 B16 — under PG_PRIMARY: stale stats or fail-closed, never the
+        // deep G: pool scan this surface used to do.
+        if (this.routeChannelPgUnavailable('inbox stats', 'pg-failed') === 'cache-stale') {
+          return this.statsInboxCacheFor(this.inboxCache!, this.inboxFullCache, machineId, effectiveWorkspaceId);
+        }
         logger.warn('[channel-pg] PG scoped message read failed — falling back to GDrive');
         candidates = await this.gdriveInboxMessages();
       }
@@ -3660,6 +3691,51 @@ export class MessageManager {
       // Use cached data (#638 perf optimization)
       candidates = await this.gdriveInboxMessages();
     }
+
+    return this.computeInboxStats(candidates, machineId, effectiveWorkspaceId);
+  }
+
+  /**
+   * Stats over the in-memory inbox cache (#4131 B16 review) — the stale serve
+   * for `getInboxStats`. Same iteration as `countInboxCacheFor` (items, looked
+   * up in `full`) so a cache with a partially built list counts what the read
+   * path would have returned.
+   */
+  private statsInboxCacheFor(
+    items: MessageListItem[],
+    full: Map<string, Message>,
+    machineId: string,
+    workspaceId: string | undefined
+  ): InboxStats {
+    const messages: Message[] = [];
+    for (const item of items) {
+      const message = full.get(item.id);
+      if (message) messages.push(message);
+    }
+    return this.computeInboxStats(messages, machineId, workspaceId);
+  }
+
+  /**
+   * Count an inbox pool (#4131 B16 review: extracted from `getInboxStats` so
+   * the PG path, the GDrive path and the stale cache produce identical
+   * counters — the three used to be one loop, and the stale serve would have
+   * been a second copy of it).
+   */
+  private computeInboxStats(
+    candidates: Iterable<Message>,
+    machineId: string,
+    workspaceId: string | undefined
+  ): InboxStats {
+    const stats: InboxStats = {
+      total: 0,
+      unread: 0,
+      read: 0,
+      by_priority: {},
+      by_priority_unread: {},
+      by_sender: {},
+      oldest_unread: null
+    };
+    const effectiveWorkspaceId = workspaceId;
 
     let oldestUnreadDate: Date | null = null;
 

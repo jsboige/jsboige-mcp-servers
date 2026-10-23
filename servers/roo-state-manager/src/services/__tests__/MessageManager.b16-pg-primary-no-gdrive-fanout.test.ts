@@ -60,7 +60,8 @@ vi.mock('../unified-store/roosync-channel-read.js', async (importOriginal) => {
 });
 
 import { MessageManager } from '../MessageManager.js';
-import { resetChannelPgBreakerForTests } from '../unified-store/channel-pg-breaker.js';
+import { resetChannelPgBreakerForTests, channelPgBreakerState } from '../unified-store/channel-pg-breaker.js';
+import { acquireGdriveScanLock } from '../gdrive-scan-lock.js';
 import { SharedStoreInaccessibleError } from '../../utils/shared-state-path.js';
 
 let previousEnv: Record<string, string | undefined>;
@@ -242,5 +243,72 @@ describe('B16 — no GDrive fan-out under CHANNEL_PG_PRIMARY (#4131)', () => {
 
     expect(counts.total).toBeGreaterThan(0);
     expect(inboxFsCalls({ readdir: readdirSpy as never, readFile: readFileSpy as never })).toBe(0);
+  });
+
+  // ── Review round (ai-01 / Hermes / web1, 23/10): the two surfaces that had
+  // escaped B16 — `getInboxStats` was unrouted, and the no-cache branch of the
+  // rebuild served a silent all-zero pool. Both are pinned here.
+
+  test('getInboxStats under PG_PRIMARY + PG down + no cache → fails closed, no zero stats, no G: scan', async () => {
+    setPgPrimaryEnv();
+    mocks.mailboxFails = true;
+
+    const readdirSpy = vi.spyOn(fsp, 'readdir');
+    const readFileSpy = vi.spyOn(fsp, 'readFile');
+
+    await expect(manager.getInboxStats(MACHINE, WORKSPACE)).rejects.toBeInstanceOf(SharedStoreInaccessibleError);
+
+    // Zero G: reads: the surface used to run `gdriveInboxMessages()` (deep) here.
+    expect(inboxFsCalls({ readdir: readdirSpy as never, readFile: readFileSpy as never })).toBe(0);
+    // And it arms the brake the rest of B16 relies on (it never did).
+    expect(channelPgBreakerState().open).toBe(true);
+  });
+
+  test('getInboxStats under PG_PRIMARY + PG down + warm cache → stale stats, full shape, no G: scan', async () => {
+    mocks.pgActive = false;
+    writeInboxFile('msg-20261020T120000-b16b', { priority: 'HIGH', from: 'myia-po-2025:roo-extensions' });
+    await manager.readInbox(MACHINE, 'all', undefined, WORKSPACE); // warm cache over G:
+    mocks.pgActive = true;
+    setPgPrimaryEnv();
+    mocks.mailboxFails = true;
+
+    const readdirSpy = vi.spyOn(fsp, 'readdir');
+    const readFileSpy = vi.spyOn(fsp, 'readFile');
+
+    const stats = await manager.getInboxStats(MACHINE, WORKSPACE);
+
+    expect(stats).toEqual(expect.objectContaining({ total: 2, unread: 2, read: 0 }));
+    // The four fields a three-counter serve would have silently dropped —
+    // these are what get-status renders (INBOX_URGENT reads by_priority_unread).
+    expect(stats.by_priority).toEqual({ MEDIUM: 1, HIGH: 1 });
+    expect(stats.by_priority_unread).toEqual({ MEDIUM: 1, HIGH: 1 });
+    expect(stats.by_sender).toEqual({ 'myia-ai-01': 1, 'myia-po-2025': 1 });
+    expect(stats.oldest_unread).not.toBeNull();
+    expect(inboxFsCalls({ readdir: readdirSpy as never, readFile: readFileSpy as never })).toBe(0);
+  });
+
+  test('ensureInboxCache, no cache, host scan lock held by a neighbour, PG_PRIMARY → throws, never a silent empty', async () => {
+    // Two messages really are in the pool: a "total = 0" answer would be a lie.
+    writeInboxFile('msg-20261020T120000-b16b');
+    setPgPrimaryEnv();
+
+    const release = await acquireGdriveScanLock('inbox-pool');
+    expect(release).not.toBeNull();
+    try {
+      await expect((manager as unknown as { ensureInboxCache: () => Promise<unknown> }).ensureInboxCache())
+        .rejects.toBeInstanceOf(SharedStoreInaccessibleError);
+    } finally {
+      await release!();
+    }
+
+    // Control — the same manager, same fixture, lock free: the pool IS served.
+    // Without this, the rejection above would not prove the lock was the cause.
+    const { items } = await (manager as unknown as {
+      ensureInboxCache: () => Promise<{ items: Array<{ id: string }> }>;
+    }).ensureInboxCache();
+    expect(items.map((i) => i.id).sort()).toEqual([
+      'msg-20261020T120000-b16a',
+      'msg-20261020T120000-b16b',
+    ]);
   });
 });
