@@ -65,6 +65,8 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
     delete process.env.OPENAI_CHAT_MODEL_ID;
     delete process.env.EMBEDDING_API_KEY;
     delete process.env.EMBEDDING_API_BASE_URL;
+    // #3962 hermeticity: seat .env carries FALLBACK_API_FORMAT since the 23/10 fleet gesture
+    delete process.env.FALLBACK_API_FORMAT;
     mockGetPrimaryClient.mockImplementation(() => { throw new Error('No chat API key configured'); });
     mockPrimaryCreate.mockReset();
     mockGetFallbackClient.mockImplementation(() => null);

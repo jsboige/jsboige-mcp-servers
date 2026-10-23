@@ -104,6 +104,8 @@ describe('#3016 cloud-fallback per-attempt timeout budget', { testTimeout: 30000
     delete process.env.OPENAI_CHAT_MODEL_ID;
     delete process.env.EMBEDDING_API_KEY;
     delete process.env.EMBEDDING_API_BASE_URL;
+    // #3962 hermeticity: seat .env carries FALLBACK_API_FORMAT since the 23/10 fleet gesture
+    delete process.env.FALLBACK_API_FORMAT;
     // CRITICAL: FALLBACK_TIMEOUT_MS unset so the code DEFAULT applies. The default is
     // what the fix changes (30000+clamp → 120000 no-clamp); setting it here would make
     // the test indistinguishable between current and fixed code.

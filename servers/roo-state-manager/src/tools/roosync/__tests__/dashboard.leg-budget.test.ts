@@ -69,6 +69,8 @@ describe('#3962 — leg budget independence + truncation counter', { timeout: 12
     delete process.env.OPENAI_CHAT_MODEL_ID;
     delete process.env.EMBEDDING_API_KEY;
     delete process.env.EMBEDDING_API_BASE_URL;
+    // #3962 hermeticity: seat .env carries FALLBACK_API_FORMAT since the 23/10 fleet gesture
+    delete process.env.FALLBACK_API_FORMAT;
     delete process.env.CONDENSE_CLOUD_RESERVE_MS;
     delete process.env.CONDENSE_PASS_DEADLINE_MS;
     resetTruncationAlertLimiterForTest();
