@@ -92,6 +92,7 @@ import {
 import {
   parseDashboardMarkdown,
   generateMessageId,
+  intercomMessageFingerprint,
 } from './dashboard-markdown.js';
 
 // #1470: Single source of truth schemas from dedicated module
@@ -2695,8 +2696,24 @@ async function applyCondensedWithMerge(
 
   // Delta = messages on disk that weren't in our pre-condensation snapshot.
   // append-only => these are concurrent appends => always a suffix.
+  // #4090 — the id-only test mistakes id-less messages (external watchdog
+  // scripts writing `### [ts] machine|workspace` blocks straight into the
+  // file) for concurrent appends: their synthesized id is FRESH on every
+  // parse, so the same block re-read after the LLM window never matches the
+  // snapshot id and gets stitched in beside itself — every watchdog alert
+  // landed twice on the global dashboard (measured 05-06/10/2026, pairs at
+  // the same millisecond with distinct ic- ids). The fingerprint
+  // (timestamp|author|content) is parse-stable: a current message already in
+  // the snapshot under ANY id is not a delta. True concurrent appends still
+  // pass: a real append differs on timestamp or content, and an exact retry
+  // duplicate is precisely what this dedups.
   const seen = new Set(snapshotBefore.intercom.messages.map(m => m.id));
-  const delta = current.intercom.messages.filter(m => !seen.has(m.id));
+  const seenFingerprints = new Set(
+    snapshotBefore.intercom.messages.map(m => intercomMessageFingerprint(m))
+  );
+  const delta = current.intercom.messages.filter(
+    m => !seen.has(m.id) && !seenFingerprints.has(intercomMessageFingerprint(m))
+  );
 
   if (delta.length === 0) {
     return await writeDashboardFile(key, withStatusCas, { condensed: true });
