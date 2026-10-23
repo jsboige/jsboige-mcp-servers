@@ -29,12 +29,40 @@ export function generateMessageId(machineId: string, workspace: string): string 
 }
 
 /**
+ * Content fingerprint of a message — stable across parses for the id-less
+ * population (external scripts writing `### [ts] machine|workspace` blocks
+ * straight into the file, e.g. embedding/vllm watchdogs), whose synthesized
+ * id changes on every parse. Two independent FNV-style hashes (64 effective
+ * bits) over timestamp|author|content: two parses of the same block yield the
+ * same fingerprint, two distinct messages colliding on it is beyond fleet
+ * scale. Used by the condensation stitch delta (#4090) — NOT a persisted id:
+ * extractPersistedMessageIds remains the only identity the reconcile keys on.
+ */
+export function intercomMessageFingerprint(m: {
+  timestamp: string;
+  author: { machineId: string; workspace: string };
+  content: string;
+}): string {
+  const basis = `${m.timestamp}|${m.author.machineId}|${m.author.workspace}|${m.content}`;
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193;
+  for (let i = 0; i < basis.length; i++) {
+    const c = basis.charCodeAt(i);
+    h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+    h2 = (Math.imul(h2 + c, 31) + i) >>> 0;
+  }
+  return `${h1.toString(36)}-${h2.toString(36)}`;
+}
+
+/**
  * Ids PERSISTED in the markdown (`[msg: <id>]` metadata lines, v3 #1363) —
  * the only stable message identity across parses. Pre-v3 messages carry no
  * id line and parseDashboardMarkdown SYNTHESIZES a fresh one at each parse
- * (`new Date()` + random), so they cannot be fingerprinted: any GDrive↔PG
- * parity work (reconcile, backfill) must key on this set and SKIP the rest,
- * or it re-imports id-less messages under a new id forever.
+ * (`new Date()` + random), so they cannot be fingerprinted by ID: any
+ * GDrive↔PG parity work (reconcile, backfill) must key on this set and SKIP
+ * the rest, or it re-imports id-less messages under a new id forever. For
+ * same-process dedup needs use intercomMessageFingerprint (content-stable)
+ * instead — never the synthesized id.
  *
  * @param content Normalized content (\n line endings, BOM stripped) — same
  *   contract as parseDashboardMarkdown's callers.
