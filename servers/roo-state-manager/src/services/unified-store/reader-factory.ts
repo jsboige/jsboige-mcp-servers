@@ -32,8 +32,10 @@ export function getUnifiedStoreReader(): IUnifiedStoreReader {
     instance = new PgUnifiedStoreReader({
       connectionString: pgUrl,
       poolMax: parseInt(process.env.UNIFIED_STORE_POOL_MAX ?? '5', 10),
-      statementTimeoutMs: parseInt(process.env.UNIFIED_STORE_TIMEOUT_MS ?? '5000', 10),
-      connectionTimeoutMillis: parseInt(process.env.UNIFIED_STORE_CONNECT_TIMEOUT_MS ?? '5000', 10),
+      // #4131 B15 — default 15 s (was 5 s: statement timeouts fired under
+      // mailbox load); env overrides still win.
+      statementTimeoutMs: parseInt(process.env.UNIFIED_STORE_TIMEOUT_MS ?? '15000', 10),
+      connectionTimeoutMillis: parseInt(process.env.UNIFIED_STORE_CONNECT_TIMEOUT_MS ?? '15000', 10),
     });
   } else {
     instance = new NullUnifiedStoreReader();

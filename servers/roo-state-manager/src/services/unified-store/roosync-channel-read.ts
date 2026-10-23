@@ -159,8 +159,11 @@ export async function readChannelInboxFromPg(
   workspaceId?: string
 ): Promise<MessageListItem[] | null> {
   try {
+    // #4131 B15 — 101 body chars: filterMailboxRows builds the list preview
+    // from substring(0,100) + length>100 ellipsis, exact parity on the first
+    // 101 chars (perReaderStatus never reads the body).
     const rows = await withColdPoolResume(
-      () => reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId),
+      () => reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId, { bodyChars: 101 }),
       'channel:mailbox'
     );
     return filterMailboxRows(rows, machineId, status, workspaceId);
@@ -239,8 +242,10 @@ export async function countChannelInboxFromPg(
   workspaceId?: string
 ): Promise<{ total: number; unread: number; read: number } | null> {
   try {
+    // #4131 B15 — count only: no consumer below reads the body (statuses come
+    // from read_by/read_by_workspace/options), so the query skips it entirely.
     const rows = await withColdPoolResume(
-      () => reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId),
+      () => reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId, { bodyChars: 0 }),
       'channel:count'
     );
     let total = 0;
@@ -293,7 +298,9 @@ export async function readChannelSweepRowsFromPg(
   machineId: string
 ): Promise<RooSyncMessageRow[] | null> {
   try {
-    return await reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId);
+    // #4131 B15 — the sweep consumer (auto-archive, MessageManager) reads
+    // created_at/read_by/status only; the body never crosses the wire.
+    return await reader.getRooSyncMailbox(parseMachineWorkspace(machineId).machineId, { bodyChars: 0 });
   } catch (error) {
     logger.warn('[channel-pg] sweep read failed — caller should fall back to GDrive', { error: String(error) });
     return null;

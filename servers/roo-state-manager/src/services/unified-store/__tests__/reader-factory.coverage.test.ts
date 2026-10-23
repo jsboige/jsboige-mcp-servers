@@ -83,10 +83,10 @@ describe('reader-factory — env-gate branches', () => {
     expect(reader.isNull()).toBe(false);
   });
 
-  test('PgUnifiedStoreReader is constructed with default poolMax=5 and statementTimeoutMs=5000', () => {
+  test('PgUnifiedStoreReader is constructed with default poolMax=5 and statementTimeoutMs=15000', () => {
     vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', '1');
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
-    // Defaults read via `?? '5'` / `?? '5000'` + parseInt.
+    // Defaults read via `?? '5'` / `?? '15000'` + parseInt (#4131 B15).
     const reader = getUnifiedStoreReader() as PgUnifiedStoreReader;
     expect(reader).toBeInstanceOf(PgUnifiedStoreReader);
     // We can't directly inspect private config, but we can verify construction

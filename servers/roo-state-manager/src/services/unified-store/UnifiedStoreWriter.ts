@@ -38,10 +38,10 @@ export interface UnifiedStoreWriterConfig {
   connectionString: string;
   /** Pool max connections. Default 5. */
   poolMax?: number;
-  /** Per-query timeout in ms. Default 5000. */
+  /** Per-query timeout in ms. Default 15000 (#4131 B15). */
   statementTimeoutMs?: number;
   /**
-   * Connection establishment timeout in ms. Default 5000.
+   * Connection establishment timeout in ms. Default 15000 (#4131 B15).
    * Guards the PG-unreachable case: a dropped SYN must reject fast so callers
    * degrade to the file path instead of hanging (#2191 deep-queue, 2026-09-29).
    */

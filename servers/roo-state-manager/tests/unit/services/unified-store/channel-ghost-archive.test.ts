@@ -308,6 +308,6 @@ describe('PgUnifiedStoreReader.getRooSyncMailbox — destroyed guard', () => {
     expect(sql).toContain("status <> 'archived'");
     expect(sql).toContain('destroyed_at IS NULL');
     expect(sql).toContain('ORDER BY created_at DESC');
-    expect(mockQuery.mock.calls[0][1]).toEqual(['myia-po-2026']);
+    expect(mockQuery.mock.calls[0][1]).toEqual([['myia-po-2026', 'all', 'All']]);
   });
 });

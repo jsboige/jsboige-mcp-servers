@@ -33,12 +33,26 @@ import type {
   DashboardRetirementMark,
 } from './types.js';
 
+/**
+ * #4131 B15 — body projection for the mailbox read. The query projects
+ * explicit columns (no `SELECT *`); `body` is the one column whose size is
+ * unbounded, so the caller states how much of it it needs:
+ *   - `undefined` → full body (bulk enumeration, whole-channel scans);
+ *   - `101`       → `LEFT(body, 101)`: the inbox preview is
+ *                   `substring(0, 100)` + `length > 100` ellipsis, exact parity
+ *                   on the first 101 chars (`mapRowToListItem`);
+ *   - `0`         → constant `''`: count/sweep consumers never read the body.
+ */
+export interface RooSyncMailboxReadOptions {
+  bodyChars?: number;
+}
+
 export interface UnifiedStoreReaderConfig {
   connectionString: string;
   poolMax?: number;
   statementTimeoutMs?: number;
   /**
-   * Connection establishment timeout in ms. Default 5000.
+   * Connection establishment timeout in ms. Default 15000 (#4131 B15).
    * Without it, pool.connect() to an unreachable host (dropped SYN) hangs until
    * the OS TCP timeout and the file fallback never triggers (#2191 deep-queue,
    * 2026-09-29: unreachable PG = hang, not degrade).
@@ -115,8 +129,16 @@ export interface IUnifiedStoreReader {
    * per-machine broadcast status are applied by the caller (JS) for exact
    * parity with the GDrive `matchesRecipient` semantics — the query's job is
    * to bound the candidate set via the mailbox index (D5).
+   *
+   * #4131 B15: the recipient clause is array-shaped (`to_machine = ANY($1)`
+   * over `[machineId, 'all', 'All']`) so the partial index
+   * `idx_roosync_messages_mailbox_live` (migrations/011) serves the live set —
+   * the OR form fetched the machine's full history including archived rows
+   * (5 139 dead rows per read for 486 live ones, measured 23/10). Columns are
+   * explicit; `opts.bodyChars` bounds the body (see
+   * `RooSyncMailboxReadOptions`).
    */
-  getRooSyncMailbox(machineId: string): Promise<RooSyncMessageRow[]>;
+  getRooSyncMailbox(machineId: string, opts?: RooSyncMailboxReadOptions): Promise<RooSyncMessageRow[]>;
   /** Full-fidelity lookup of one channel message by id (any status). */
   getRooSyncMessageById(id: string): Promise<RooSyncMessageRow | null>;
   /**
@@ -198,7 +220,7 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   }
   async ping(): Promise<boolean> { return false; }
   isNull(): boolean { return true; }
-  async getRooSyncMailbox(_machineId: string): Promise<RooSyncMessageRow[]> { return []; }
+  async getRooSyncMailbox(_machineId: string, _opts?: RooSyncMailboxReadOptions): Promise<RooSyncMessageRow[]> { return []; }
   async getRooSyncMessageById(_id: string): Promise<RooSyncMessageRow | null> { return null; }
   async getRooSyncChannelMessages(): Promise<RooSyncMessageRow[]> { return []; }
   async getRooSyncDashboard(_key: string): Promise<{

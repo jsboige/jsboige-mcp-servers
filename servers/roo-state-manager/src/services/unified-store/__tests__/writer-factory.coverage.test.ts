@@ -77,7 +77,7 @@ describe('writer-factory — env-gate branches', () => {
     expect(writer).toBeInstanceOf(PgUnifiedStoreWriter);
   });
 
-  test('PgUnifiedStoreWriter is constructed with default poolMax=5 and statementTimeoutMs=5000', () => {
+  test('PgUnifiedStoreWriter is constructed with default poolMax=5 and statementTimeoutMs=15000', () => {
     vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', '1');
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
     const writer = getUnifiedStoreWriter();
