@@ -886,6 +886,12 @@ const condenseCB: CondenseCircuitBreaker = {
  * would let one test file open it for another); otherwise one file per primary
  * endpoint in `os.tmpdir()`.
  */
+/**
+ * Resolution order: explicit `CONDENSE_CB_STATE_FILE` (tests, ops pin), then a
+ * per-pid file under vitest (parallel workers share `os.tmpdir()`), otherwise
+ * one file per primary endpoint so every RSM process of the host shares one
+ * breaker. Rationale in the block comment above.
+ */
 function condenseCBStateFile(): string {
   const explicit = process.env.CONDENSE_CB_STATE_FILE;
   if (explicit && explicit.trim()) return explicit.trim();
@@ -907,15 +913,30 @@ function condenseCBReadShared(): CondenseCircuitBreaker | null {
     ) {
       return null;
     }
-    return {
+    const state: CondenseCircuitBreaker = {
       consecutiveFailures: parsed.consecutiveFailures,
       lastFailureTime: parsed.lastFailureTime,
       isOpen: parsed.isOpen,
     };
+    // #3962 review: a stamp in the future (clock corrected backwards after a
+    // write) keeps `Date.now() - lastFailureTime` negative, so the cooldown
+    // never elapses and the breaker stays OPEN past any TTL. Clamp once and
+    // republish: the cooldown then counts from the first read that saw the
+    // skew, instead of from a wall clock the host may never reach again.
+    if (state.lastFailureTime > Date.now()) {
+      state.lastFailureTime = Date.now();
+      condenseCBWriteShared(state);
+    }
+    return state;
   } catch {
     return null;
   }
 }
+
+// One WARN per failure episode, re-armed by the next successful write: total
+// silence hides a persistently unwritable state file, a WARN per write would
+// spam every condensation of every process on the host (#3962 review note).
+let condenseCBWriteWarned = false;
 
 function condenseCBWriteShared(state: CondenseCircuitBreaker): void {
   try {
@@ -923,8 +944,15 @@ function condenseCBWriteShared(state: CondenseCircuitBreaker): void {
     const tmp = `${file}.tmp-${process.pid}`;
     fsSync.writeFileSync(tmp, JSON.stringify(state), 'utf8');
     fsSync.renameSync(tmp, file);
-  } catch {
+    condenseCBWriteWarned = false;
+  } catch (err) {
     // Breaker bookkeeping must never break a condensation pass.
+    if (!condenseCBWriteWarned) {
+      condenseCBWriteWarned = true;
+      logger.warn('Condensation breaker state file unwritable — breaker stays process-local', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 }
 

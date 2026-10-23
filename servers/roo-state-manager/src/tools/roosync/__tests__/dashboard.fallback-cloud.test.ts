@@ -82,6 +82,11 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     delete process.env.OPENAI_CHAT_MODEL_ID;
     delete process.env.EMBEDDING_API_KEY;
     delete process.env.EMBEDDING_API_BASE_URL;
+    // #3962 hermeticity: since the 23/10 fleet gesture every seat's real .env
+    // sets FALLBACK_API_FORMAT — a leaked value would silently flip this
+    // suite's OpenAI-compat leg onto the anthropic branch (mirror of
+    // dashboard.claudish-fallback.test.ts beforeEach).
+    delete process.env.FALLBACK_API_FORMAT;
     // Default: primary unavailable, no fallback configured (inert).
     mockGetPrimaryClient.mockImplementation(() => { throw new Error('No chat API key configured'); });
     mockPrimaryCreate.mockReset();

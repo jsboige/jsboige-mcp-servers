@@ -35,6 +35,7 @@ const TOUCHED = [
   'OPENAI_API_KEY', 'EMBEDDING_API_KEY', 'VLLM_API_KEY_MEDIUM', 'QDRANT_URL', 'QDRANT_API_KEY',
   'ZAI_API_KEY', 'FALLBACK_API_KEY', 'EMBEDDING_MODEL', 'QDRANT_COLLECTION_NAME', 'EMBEDDING_API_BASE_URL',
   'ROOSYNC_SHARED_PATH', 'NODE_ENV', 'EMBEDDING_BATCH_SIZE', 'RSM_HOST_ENV_KEYS',
+  'CONDENSE_CLOUD_RESERVE_MS',
 ];
 
 function writeEnv(contents: string): void {
@@ -131,6 +132,24 @@ describe('reloadConfig — client invalidation follows the keys that changed', (
     expect(resetChatOpenAIClient).toHaveBeenCalledTimes(1);
     expect(resetEmbeddingOpenAIClient).not.toHaveBeenCalled();
     expect(resetCodebaseEmbeddingClient).not.toHaveBeenCalled();
+    expect(resetQdrantClient).not.toHaveBeenCalled();
+  });
+
+  it('a changed CONDENSE_CLOUD_RESERVE_MS lands in process.env and resets NO client (#3962)', () => {
+    // Primary/cloud budget split, read per call by condenseCloudReserveMs
+    // (dashboard.ts) — no lazy singleton derives from it, so the reload must
+    // move the value and rebuild nothing.
+    process.env.CONDENSE_CLOUD_RESERVE_MS = '35000';
+    writeEnv('CONDENSE_CLOUD_RESERVE_MS=75000\n');
+
+    const report = reloadConfig(envPath);
+
+    expect(process.env.CONDENSE_CLOUD_RESERVE_MS).toBe('75000');
+    expect(report.changed.map((c) => c.key)).toEqual(['CONDENSE_CLOUD_RESERVE_MS']);
+    expect(report.clientsReset).toEqual([]);
+    expect(resetChatOpenAIClient).not.toHaveBeenCalled();
+    expect(resetFallbackChatOpenAIClient).not.toHaveBeenCalled();
+    expect(resetEmbeddingOpenAIClient).not.toHaveBeenCalled();
     expect(resetQdrantClient).not.toHaveBeenCalled();
   });
 

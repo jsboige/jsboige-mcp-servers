@@ -129,6 +129,8 @@ describe('#2719 borne — prompt-proportional timeout end-to-end', { testTimeout
     delete process.env.OPENAI_CHAT_MODEL_ID;
     delete process.env.EMBEDDING_API_KEY;
     delete process.env.EMBEDDING_API_BASE_URL;
+    // #3962 hermeticity: seat .env carries FALLBACK_API_FORMAT since the 23/10 fleet gesture
+    delete process.env.FALLBACK_API_FORMAT;
     // Code defaults must apply (30000 floor + 900/KB + 120000 ceiling + 165000 deadline).
     delete process.env.FALLBACK_TIMEOUT_MS;
     delete process.env.FALLBACK_TIMEOUT_MIN_MS;
