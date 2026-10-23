@@ -154,6 +154,52 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     }
   });
 
+  it('(a2) OpenAI-compat fallback body carries enable_thinking:false and keeps /no_think (#3962)', async () => {
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    mockFallbackCreate.mockResolvedValue({
+      choices: [{ message: { content: '## Cloud summary\n\nSalvaged by the hub.' } }],
+    });
+
+    await fillUntilCondensed();
+
+    expect(mockFallbackCreate).toHaveBeenCalled();
+    const body = mockFallbackCreate.mock.calls[0][0] as any;
+    // The whole point of #3962: the hub's thinking backends must not spend the
+    // output budget on reasoning the reader discards.
+    expect(body.enable_thinking).toBe(false);
+    // /no_think stays in the prompt — same route, no cost, belt and braces.
+    expect(body.messages[1].content.startsWith('/no_think\n')).toBe(true);
+    expect(typeof body.max_tokens).toBe('number');
+    expect(body).not.toHaveProperty('max_completion_tokens');
+  });
+
+  it('(a3) the reasoning-model dialect does NOT receive enable_thinking (#3962 scope)', async () => {
+    mockFallbackModelId.mockImplementation(() => 'gpt-5-mini');
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    mockFallbackCreate.mockResolvedValue({
+      choices: [{ message: { content: '## Cloud summary\n\nSalvaged by gpt-5-mini.' } }],
+    });
+
+    await fillUntilCondensed();
+
+    expect(mockFallbackCreate).toHaveBeenCalled();
+    const body = mockFallbackCreate.mock.calls[0][0] as any;
+    expect(body).not.toHaveProperty('enable_thinking');
+    expect(body).toHaveProperty('max_completion_tokens');
+  });
+
   it('(b) primary down AND cloud down → outcome `fallback-truncated` (graceful degradation, #2719 criterion #6b)', async () => {
     mockGetPrimaryClient.mockReturnValue({
       chat: { completions: { create: mockPrimaryCreate } },
