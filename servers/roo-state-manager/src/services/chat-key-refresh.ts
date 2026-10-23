@@ -59,6 +59,8 @@ export const CHAT_ENV_KEYS = [
     'FALLBACK_LLM_MODEL_ID',
     // #3962 piste 4: wire format of the cloud tier, read per call (dashboard.ts fallbackApiFormat)
     'FALLBACK_API_FORMAT',
+    // #3962 piste 2: primary/cloud budget split, read per call (condenseCloudReserveMs)
+    'CONDENSE_CLOUD_RESERVE_MS',
 ] as const;
 
 /**

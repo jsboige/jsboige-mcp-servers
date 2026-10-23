@@ -70,6 +70,9 @@ export const RELOADABLE_ENV_KEYS = [
   'FALLBACK_TIMEOUT_MS',
   // #3962 piste 4: read per call in dashboard.ts (fallbackApiFormat), no client to reset.
   'FALLBACK_API_FORMAT',
+  // #3962 piste 2: primary/cloud budget split, read per call (condenseCloudReserveMs
+  // in dashboard.ts) — same shape: no lazy singleton derives from it.
+  'CONDENSE_CLOUD_RESERVE_MS',
 ] as const;
 
 export type ReloadableEnvKey = typeof RELOADABLE_ENV_KEYS[number];

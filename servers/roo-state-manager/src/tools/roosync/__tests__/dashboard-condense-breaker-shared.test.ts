@@ -148,4 +148,32 @@ describe('#3962 piste 5 — host-shared condensation breaker', { timeout: 30000 
       delete process.env.OPENAI_BASE_URL;
     }
   });
+
+  it('a future lastFailureTime is clamped on read and cannot pin the breaker open past one TTL', async () => {
+    // #3962 review note: a clock corrected backwards after a write leaves a
+    // future stamp in the file. Unclamped, `Date.now() - lastFailureTime` is
+    // negative and the cooldown NEVER elapses — the breaker stays OPEN until
+    // the wall clock re-reaches a moment that may be hours away. The read must
+    // clamp the stamp to now and republish, so the cooldown counts from the
+    // first read that saw the skew.
+    const a = await freshModule();
+    const t0 = Date.now();
+    await writeFile(stateFile, JSON.stringify({ consecutiveFailures: 3, lastFailureTime: t0 + 60 * 60 * 1000, isOpen: true }), 'utf8');
+
+    vi.useFakeTimers();
+    try {
+      // 31 min in: still OPEN (the clamp restarts the cooldown from THIS read)
+      // and the file no longer carries the future stamp.
+      vi.setSystemTime(t0 + 31 * 60 * 1000);
+      expect(a.__condenseBreakerHooks.shouldBypass()).toBe(true);
+      expect(JSON.parse(await readFile(stateFile, 'utf8')).lastFailureTime).toBeLessThanOrEqual(Date.now());
+
+      // 62 min in (31 min after the clamp): half-open — at most one TTL after
+      // the skew was first seen, not until the bogus wall-clock moment.
+      vi.setSystemTime(t0 + 62 * 60 * 1000);
+      expect(a.__condenseBreakerHooks.shouldBypass()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
