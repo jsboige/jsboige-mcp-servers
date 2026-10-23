@@ -854,16 +854,95 @@ const condenseCB: CondenseCircuitBreaker = {
   isOpen: false,
 };
 
+/**
+ * #3962 piste 5: the breaker is HOST-shared, not process-local.
+ *
+ * Measured on ai-01 (22/10, build `cdd65a86`): with the primary hung, a
+ * condensation salvaged by the cloud still took 2 min 07 s against a 180 s
+ * client timeout, because almost every pass paid the full primary timeout
+ * first. The in-memory breaker opens after 3 consecutive failures, but a host
+ * runs dozens of RSM processes and each condenses rarely, so nearly none of
+ * them ever reaches 3. Sharing one state file per primary endpoint means ONE
+ * timeout opens the breaker for every process on the host, for the whole
+ * cooldown — a hung primary then costs one timeout per host per window instead
+ * of one per condensation.
+ *
+ * Fail-open by construction: an absent, unreadable or corrupt file is ignored
+ * and the in-memory breaker keeps its historical behaviour. Writes are atomic
+ * (`.tmp` + rename), so a reader never sees a half-written state.
+ *
+ * Path: `CONDENSE_CB_STATE_FILE` wins when set; under vitest the file is
+ * per-process (parallel workers share `os.tmpdir()`, and a shared breaker
+ * would let one test file open it for another); otherwise one file per primary
+ * endpoint in `os.tmpdir()`.
+ */
+function condenseCBStateFile(): string {
+  const explicit = process.env.CONDENSE_CB_STATE_FILE;
+  if (explicit && explicit.trim()) return explicit.trim();
+  const endpoint = (process.env.OPENAI_BASE_URL || 'default').trim().toLowerCase();
+  const key = createHash('sha256').update(endpoint).digest('hex').slice(0, 12);
+  // Under vitest the file carries the pid: parallel workers share os.tmpdir(),
+  // and one test file opening the breaker for another would be a phantom failure.
+  if (process.env.VITEST) return path.join(os.tmpdir(), `rsm-condense-cb-test-${process.pid}-${key}.json`);
+  return path.join(os.tmpdir(), `rsm-condense-cb-${key}.json`);
+}
+
+function condenseCBReadShared(): CondenseCircuitBreaker | null {
+  try {
+    const parsed = JSON.parse(fsSync.readFileSync(condenseCBStateFile(), 'utf8')) as Partial<CondenseCircuitBreaker>;
+    if (
+      typeof parsed?.consecutiveFailures !== 'number' ||
+      typeof parsed?.lastFailureTime !== 'number' ||
+      typeof parsed?.isOpen !== 'boolean'
+    ) {
+      return null;
+    }
+    return {
+      consecutiveFailures: parsed.consecutiveFailures,
+      lastFailureTime: parsed.lastFailureTime,
+      isOpen: parsed.isOpen,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function condenseCBWriteShared(state: CondenseCircuitBreaker): void {
+  try {
+    const file = condenseCBStateFile();
+    const tmp = `${file}.tmp-${process.pid}`;
+    fsSync.writeFileSync(tmp, JSON.stringify(state), 'utf8');
+    fsSync.renameSync(tmp, file);
+  } catch {
+    // Breaker bookkeeping must never break a condensation pass.
+  }
+}
+
+/** Adopt a state as this process's own (keeps the local view honest for logs/reset). */
+function condenseCBAdopt(state: CondenseCircuitBreaker): void {
+  condenseCB.consecutiveFailures = state.consecutiveFailures;
+  condenseCB.lastFailureTime = state.lastFailureTime;
+  condenseCB.isOpen = state.isOpen;
+}
+
 function condenseCBRecordFailure(): void {
-  condenseCB.consecutiveFailures++;
-  condenseCB.lastFailureTime = Date.now();
-  if (condenseCB.consecutiveFailures >= CONDENSE_CB_OPEN_THRESHOLD) {
-    condenseCB.isOpen = true;
+  const shared = condenseCBReadShared();
+  const base = shared ?? condenseCB;
+  const next: CondenseCircuitBreaker = {
+    consecutiveFailures: base.consecutiveFailures + 1,
+    lastFailureTime: Date.now(),
+    isOpen: false,
+  };
+  next.isOpen = next.consecutiveFailures >= CONDENSE_CB_OPEN_THRESHOLD;
+  condenseCBAdopt(next);
+  if (next.isOpen && !base.isOpen) {
     logger.warn('Condensation circuit breaker OPENED', {
-      consecutiveFailures: condenseCB.consecutiveFailures,
+      consecutiveFailures: next.consecutiveFailures,
       resetAfterMs: CONDENSE_CB_RESET_TTL_MS,
+      shared: shared !== null,
     });
   }
+  condenseCBWriteShared(next);
 }
 
 function condenseCBRecordSuccess(): void {
@@ -872,27 +951,54 @@ function condenseCBRecordSuccess(): void {
       previousFailures: condenseCB.consecutiveFailures,
     });
   }
-  condenseCB.consecutiveFailures = 0;
-  condenseCB.isOpen = false;
+  const cleared: CondenseCircuitBreaker = { consecutiveFailures: 0, lastFailureTime: 0, isOpen: false };
+  condenseCBAdopt(cleared);
+  condenseCBWriteShared(cleared);
 }
 
 function condenseCBShouldBypass(): boolean {
-  if (!condenseCB.isOpen) return false;
-  // Auto-half-open after cooldown
-  if (Date.now() - condenseCB.lastFailureTime > CONDENSE_CB_RESET_TTL_MS) {
-    logger.info('Condensation circuit breaker HALF-OPEN (cooldown elapsed), retrying LLM');
-    condenseCB.isOpen = false;
-    condenseCB.consecutiveFailures = 0;
+  const shared = condenseCBReadShared();
+  const state = shared ?? condenseCB;
+  if (!state.isOpen) {
+    // Another process may have reset the breaker while this one still held a
+    // stale OPEN — the published state wins.
+    if (shared) condenseCBAdopt(shared);
     return false;
   }
+  // Auto-half-open after cooldown
+  if (Date.now() - state.lastFailureTime > CONDENSE_CB_RESET_TTL_MS) {
+    logger.info('Condensation circuit breaker HALF-OPEN (cooldown elapsed), retrying LLM');
+    const cleared: CondenseCircuitBreaker = { consecutiveFailures: 0, lastFailureTime: 0, isOpen: false };
+    condenseCBAdopt(cleared);
+    condenseCBWriteShared(cleared);
+    return false;
+  }
+  condenseCBAdopt(state);
   return true;
 }
+
+/**
+ * Test-only surface (mirrors `resetCondenseCircuitBreaker`): the #3962 piste 5
+ * suite drives two module instances through these to prove the state file is
+ * what makes the breaker host-wide.
+ */
+export const __condenseBreakerHooks = {
+  recordFailure: condenseCBRecordFailure,
+  recordSuccess: condenseCBRecordSuccess,
+  shouldBypass: condenseCBShouldBypass,
+  stateFile: condenseCBStateFile,
+};
 
 /** Reset circuit breaker state (for testing). */
 export function resetCondenseCircuitBreaker(): void {
   condenseCB.consecutiveFailures = 0;
   condenseCB.lastFailureTime = 0;
   condenseCB.isOpen = false;
+  try {
+    fsSync.unlinkSync(condenseCBStateFile());
+  } catch {
+    // No file to clear — the in-memory reset above is the whole state.
+  }
 }
 
 // === Per-key mutex ===
