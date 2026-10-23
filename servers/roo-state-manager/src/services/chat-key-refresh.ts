@@ -78,6 +78,16 @@ interface EnvFileStat {
 let envPathOverride: string | null = null; // test-only
 let lastStat: EnvFileStat | null = statOf(currentPath()); // baseline at module load — see header
 
+/**
+ * #4317 — names the last revision of `.env` (module-load read, or the last
+ * successful parse) carried. ONLY a name in this set may be unset when a later
+ * parse drops it: a key something else put in the env (host env beyond the
+ * #2719 snapshot, test harness, in-process code) was never the file's to cut.
+ * Seeded RAW — host ownership is checked live at unset time, because this read
+ * can run before index.ts has captured the host snapshot.
+ */
+let envSourcedKeys: ReadonlySet<string> | null = readEnvSourcedNames(currentPath());
+
 function currentPath(): string {
     return envPathOverride ?? resolveChatEnvPath();
 }
@@ -92,10 +102,23 @@ function statOf(envPath: string): EnvFileStat | null {
     }
 }
 
+/** Names of `keys` the file at `envPath` carries; null when unreadable mid-write. */
+function readEnvSourcedNames(envPath: string, keys: readonly string[] = CHAT_ENV_KEYS): ReadonlySet<string> | null {
+    if (statOf(envPath) === null) return new Set<string>();
+    let parsed: Record<string, string>;
+    try {
+        parsed = dotenv.parse(fs.readFileSync(envPath, 'utf8'));
+    } catch {
+        return null; // unreadable mid-write — the caller retries on its next pass
+    }
+    return new Set(keys.filter((key) => key in parsed));
+}
+
 /** Point the refresh at a different `.env` and re-baseline (tests only). */
 export function setChatEnvPathForTest(envPath: string | null): void {
     envPathOverride = envPath;
     lastStat = statOf(currentPath());
+    envSourcedKeys = readEnvSourcedNames(currentPath());
 }
 
 /**
@@ -105,9 +128,22 @@ export function setChatEnvPathForTest(envPath: string | null): void {
  * from a no-op. A cheap `stat` and nothing else when the file is unchanged,
  * absent or unreadable — the client then keeps its current credentials and the
  * next call retries.
+ *
+ * #4317: a key the PREVIOUS revision of `.env` carried that the new one drops is
+ * UNSET — until now the refresh only set keys, so commenting out `ZAI_API_KEY`
+ * left the live process serving it until respawn, and `ZAI_API_KEY ||
+ * FALLBACK_API_KEY` resolution kept favouring the corpse. Two keys are exempt:
+ * host-owned keys (#2719: the host outranked `.env` at boot and still does) and
+ * keys the file never carried (not ours to cut).
  */
 export function refreshChatKeyEnvIfChanged(): string[] {
     const envPath = currentPath();
+    if (envSourcedKeys === null) {
+        // The seed read failed at module load (mid-write): retry it now.
+        envSourcedKeys = readEnvSourcedNames(envPath);
+        if (envSourcedKeys === null) return [];
+    }
+    const prevSourced = envSourcedKeys;
     const stat = statOf(envPath);
     if (stat === null) {
         lastStat = null; // a `.env` created later is picked up on the next call
@@ -135,12 +171,20 @@ export function refreshChatKeyEnvIfChanged(): string[] {
 
     const hostKeys = getHostEnvKeys();
     const changed: string[] = [];
+    const nextSourced = new Set<string>();
     for (const key of CHAT_ENV_KEYS) {
-        if (!(key in parsed)) continue; // absent from `.env` → leave process.env alone
-        if (hostKeys?.has(key)) continue; // #2719: the host outranked `.env` at boot — never invert
-        if (process.env[key] === parsed[key]) continue;
-        process.env[key] = parsed[key];
-        changed.push(key);
+        if (key in parsed) {
+            if (hostKeys?.has(key)) continue; // #2719: the host outranked `.env` at boot — never invert
+            nextSourced.add(key);
+            if (process.env[key] === parsed[key]) continue;
+            process.env[key] = parsed[key];
+            changed.push(key);
+        } else if (prevSourced.has(key)) {
+            if (hostKeys?.has(key)) continue; // raw seed may predate the snapshot — check live
+            delete process.env[key];
+            changed.push(key);
+        }
     }
+    envSourcedKeys = nextSourced;
     return changed;
 }

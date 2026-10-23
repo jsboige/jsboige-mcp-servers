@@ -33,7 +33,7 @@ const savedEnv: Record<string, string | undefined> = {};
 /** Keys these tests touch — saved and restored so no test leaks into the next. */
 const TOUCHED = [
   'OPENAI_API_KEY', 'EMBEDDING_API_KEY', 'VLLM_API_KEY_MEDIUM', 'QDRANT_URL', 'QDRANT_API_KEY',
-  'ZAI_API_KEY', 'EMBEDDING_MODEL', 'QDRANT_COLLECTION_NAME', 'EMBEDDING_API_BASE_URL',
+  'ZAI_API_KEY', 'FALLBACK_API_KEY', 'EMBEDDING_MODEL', 'QDRANT_COLLECTION_NAME', 'EMBEDDING_API_BASE_URL',
   'ROOSYNC_SHARED_PATH', 'NODE_ENV', 'EMBEDDING_BATCH_SIZE', 'RSM_HOST_ENV_KEYS',
 ];
 
@@ -260,6 +260,48 @@ describe('fingerprint — masks the VALUE, never the NAME', () => {
     expect(serialised).not.toContain('new-secret-value');
     // The NAME, however, must be there — that is what makes the report actionable.
     expect(serialised).toContain('EMBEDDING_API_KEY');
+  });
+});
+
+describe('reloadConfig — #4317: a key REMOVED from .env is cut from the live env', () => {
+  it('unsets a key the previous parse took from .env, reports it, and resets its clients (criterion 2)', () => {
+    // The pre-edit steady state: `.env` matches the live env value-for-value.
+    process.env.ZAI_API_KEY = 'zai-v1';
+    process.env.FALLBACK_API_KEY = 'f1';
+    writeEnv('ZAI_API_KEY=zai-v1\nFALLBACK_API_KEY=f1\n');
+    let report = reloadConfig(envPath);
+    expect(report.changed).toHaveLength(0); // identical — but the parse RECORDS both as .env-sourced
+    expect(report.unchangedCount).toBe(2);
+
+    // The ai-01 edit: the z.ai leg commented out, the fallback leg kept.
+    writeEnv('# ZAI_API_KEY=zai-v1\nFALLBACK_API_KEY=f1\n');
+    report = reloadConfig(envPath);
+
+    expect(report.changed.map((c) => c.key)).toEqual(['ZAI_API_KEY']);
+    expect(report.changed[0].before).toMatch(/^len=\d+ fp=[0-9a-f]{8}$/); // masked, never the value
+    expect(report.changed[0].after).toBe('ABSENT');
+    expect(process.env.ZAI_API_KEY).toBeUndefined();
+    expect(process.env.FALLBACK_API_KEY).toBe('f1');
+    // The removal drives the rotation-aware client rebuild like any change would.
+    expect(report.clientsReset).toEqual(['fallbackChatClient']);
+    expect(resetFallbackChatOpenAIClient).toHaveBeenCalledTimes(1);
+  });
+
+  it('never unsets a host-owned key nor a key .env never carried (criterion 3)', () => {
+    process.env.EMBEDDING_API_BASE_URL = 'http://host-lan:8004/v1'; // host-owned below
+    process.env.QDRANT_API_KEY = 'set-by-parent-process';            // never in .env
+    captureHostEnvKeys({ RSM_HOST_ENV_KEYS: 'EMBEDDING_API_BASE_URL' } as NodeJS.ProcessEnv);
+    writeEnv('EMBEDDING_API_BASE_URL=https://file.example/v1\nZAI_API_KEY=z1\n');
+    reloadConfig(envPath); // records ZAI as .env-sourced; EMBEDDING stays host-owned
+
+    // Both non-.env-owned shapes leave the file (or were never in it).
+    writeEnv('# ZAI_API_KEY=z1\n');
+    const report = reloadConfig(envPath);
+
+    expect(report.changed.map((c) => c.key)).toEqual(['ZAI_API_KEY']);
+    expect(process.env.EMBEDDING_API_BASE_URL).toBe('http://host-lan:8004/v1'); // host still wins
+    expect(process.env.QDRANT_API_KEY).toBe('set-by-parent-process'); // never the file's to cut
+    expect(process.env.ZAI_API_KEY).toBeUndefined();
   });
 });
 

@@ -170,4 +170,31 @@ describe('probeChatKeyState — #4095 lever 2 served-fingerprint probe', () => {
         expect(probe.primary.keyPrint).toMatch(/^[0-9a-f]{12}$/);
         expect(JSON.stringify(probe)).not.toContain('openai-key');
     });
+
+    // #4317 (criterion 1, probe half): the ai-01 shape — ZAI_API_KEY commented out
+    // of `.env` while the process lives. The refresh must CUT the stale key (it only
+    // ever set keys before), the probe must then resolve the fallback leg from
+    // FALLBACK_API_KEY, and the rotation-aware rebuild must fire on the next getter.
+    test('#4317 — ZAI_API_KEY removed from .env: probe source flips to FALLBACK_API_KEY, client rebuilds', async () => {
+        const { openai, refresh } = await importModules();
+        refresh.setChatEnvPathForTest(envPath); // baseline: file absent (spawn-time)
+        fs.writeFileSync(envPath, 'ZAI_API_KEY=zai-one\nFALLBACK_API_KEY=f1-short\n', 'utf8');
+        openai.getFallbackChatOpenAIClient(); // builds under the z.ai key
+        expect(openai.probeChatKeyState().fallback.source).toBe('ZAI_API_KEY');
+
+        // The operator's single edit — no getter, probe or refresh in between.
+        fs.writeFileSync(envPath, '# ZAI_API_KEY=zai-one\nFALLBACK_API_KEY=f1-much-longer\n', 'utf8');
+
+        const probe = openai.probeChatKeyState(); // the probe's own refresh performs the cut
+        expect(probe.fallback.source).toBe('FALLBACK_API_KEY');
+        expect(process.env.ZAI_API_KEY).toBeUndefined();
+        expect(probe.fallback.inSync).toBe(false); // served singleton predates the move
+
+        // Lever 1 fires on the next getter: the client rebuilds on the fallback key.
+        const second = openai.getFallbackChatOpenAIClient();
+        expect(second).not.toBeNull();
+        expect(MockOpenAI).toHaveBeenCalledTimes(2);
+        expect(MockOpenAI.mock.calls[1][0]).toEqual(expect.objectContaining({ apiKey: 'f1-much-longer' }));
+        expect(openai.probeChatKeyState().fallback.inSync).toBe(true);
+    });
 });
