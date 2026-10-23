@@ -120,6 +120,36 @@ describe('dashboard #4003 — tmp staging hygiene', () => {
     expect(result.swept).toEqual([]);
     expect(result.skipped).toEqual([]);
   });
+
+  /**
+   * #4286 — le staging est devenu `<fichier>.<pid>.<seq>.tmp` (séquence par
+   * appel, po-2023 finding : miroir différé + condensation peuvent écrire
+   * concurrentment dans le MÊME processus). Le sweep doit reconnaître les deux
+   * formes : la nouvelle, sinon les staging futurs s'accumuleraient, et
+   * l'ancienne, sinon ceux déjà sur disque deviendraient inatteignables.
+   */
+  it('sweep recognizes the per-call staging shape (.<pid>.<seq>.tmp) and still the legacy one', async () => {
+    const dashDir = path.join(tmpDir, 'dashboards');
+    await mkdir(dashDir, { recursive: true });
+    const pid = await deadPid();
+    const old = new Date(Date.now() - 20 * 60_000);
+
+    const deadSeqOld = `workspace-y.md.${pid}.7.tmp`;            // new shape, dead → swept
+    const deadSeqYoung = `workspace-y.md.${pid + 1}.8.tmp`;      // new shape, young → kept
+    const liveSeqOld = `workspace-y.md.${process.pid}.9.tmp`;    // new shape, own PID → kept
+    const legacyOld = `workspace-z.md.${pid}.tmp`;               // legacy shape, dead → swept
+    for (const name of [deadSeqOld, deadSeqYoung, liveSeqOld, legacyOld]) {
+      await writeFile(path.join(dashDir, name), 'staging');
+    }
+    await utimes(path.join(dashDir, deadSeqOld), old, old);
+    await utimes(path.join(dashDir, liveSeqOld), old, old);
+    await utimes(path.join(dashDir, legacyOld), old, old);
+
+    const result = await sweepOrphanDashboardTmpFiles();
+
+    expect(result.swept.sort()).toEqual([deadSeqOld, legacyOld].sort());
+    expect(result.skipped.sort()).toEqual([deadSeqYoung, liveSeqOld].sort());
+  });
 });
 
 describe('dashboard #4003 — tags normalization + persistence', () => {

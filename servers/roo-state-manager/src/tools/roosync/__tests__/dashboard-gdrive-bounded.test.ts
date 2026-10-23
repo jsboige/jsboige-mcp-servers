@@ -282,7 +282,10 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
     // Le kill du verrou d'append est bien de courte durée : la borne existe.
     expect(src).toContain('UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS');
     // #4131 G-B lot 2 — la porte PG-premier est câblée sur les deux writers,
-    // la vérification store et l'ancre de condensation.
-    expect(src.match(/isDashboardPgPrimary\(\)/g)?.length).toBe(4);
+    // la vérification store et l'ancre de condensation ; #4286 ajoute le 5e
+    // site — `isDashboardFileMirrorDeferrable`, qui décide si la moitié fichier
+    // peut quitter le chemin critique. Un site de plus sans mise à jour de la
+    // borne se verrait ici.
+    expect(src.match(/isDashboardPgPrimary\(\)/g)?.length).toBe(5);
   });
 });
