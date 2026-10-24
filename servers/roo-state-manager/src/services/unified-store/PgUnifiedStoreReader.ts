@@ -421,11 +421,26 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
 
     const machineId = filters?.machineId?.trim() || null;
     const limit = filters?.limit ?? 5000;
+    // #2428 levier (a) — window bounds ride the WHERE, parameterized. Applied
+    // before the LIMIT on purpose: with the dates only filtered in JS
+    // (unified-header-pipeline.ts), the cap was spent on the newest 5 000 rows
+    // overall and any older window rendered 0 (11 081 of 16 081 unreachable,
+    // measured 23/10). The bounds filter on COALESCE(last_ts, first_ts,
+    // ingested_at) — the same chain `mapRowToSkeleton` dates a row with
+    // (`conversation-list-store.ts`, `last_ts ?? meta.lastActivity ?? first_ts
+    // ?? ingested_at`), minus `meta.lastActivity`, which 0 of the 84 NULL-
+    // `last_ts` rows carry (measured 24/10). A NULL-`last_ts` row is therefore
+    // judged on the date the list displays it with, not dropped from every
+    // window.
+    const startDate = filters?.startDate ?? null;
+    const endDate = filters?.endDate ?? null;
 
     const result = await this.pool.query(
       `WITH c AS (
          SELECT * FROM conversations
          WHERE ($1::text IS NULL OR LOWER(machine_id) = LOWER($1))
+           AND ($3::timestamptz IS NULL OR COALESCE(last_ts, first_ts, ingested_at) >= $3::timestamptz)
+           AND ($4::timestamptz IS NULL OR COALESCE(last_ts, first_ts, ingested_at) <= $4::timestamptz)
          ORDER BY last_ts DESC NULLS LAST
          LIMIT $2
        )
@@ -439,7 +454,7 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
          ORDER BY messages.seq ASC
          LIMIT 1
        ) m ON TRUE`,
-      [machineId, limit],
+      [machineId, limit, startDate, endDate],
     );
 
     return result.rows.map(row => ({

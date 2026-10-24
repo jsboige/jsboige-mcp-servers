@@ -16,6 +16,7 @@ import { stripXmlTags, truncateAtBoundary } from '../../utils/text-preview.js';
 import { matchesWorkspace } from '../../utils/workspace-match.js';
 import { deriveWorkspaceFromClaudeProjectSlug } from '../../utils/claude-project-workspace.js';
 import { applyUnifiedHeaderFiltersAndSort } from './unified-header-pipeline.js';
+import { resolveDateRangeBounds } from '../../utils/date-filters.js';
 import { sanitizeInt } from '../../utils/int-validator.js';
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -711,11 +712,27 @@ export const listConversationsTool = {
             // not just conversationCache: a local skeleton always wins over its PG row,
             // which carries no sequence.
             const alreadyPresent = new Set(allSkeletons.map(s => s.taskId));
+            // #2428 levier (a) — la fenetre descend dans le WHERE SQL. Avant,
+            // le tier lisait les 5 000 conversations les plus recentes PUIS le
+            // filtre de dates s'appliquait en memoire (unified-header-pipeline,
+            // plus bas) : toute fenetre plus ancienne que la 5 000e ligne
+            // rendait 0 alors que le store portait les lignes (11 081 sur
+            // 16 081 inatteignables, mesure 23/10). Les bornes viennent du
+            // helper partage, donc le SQL et le filtre JS coupent au meme
+            // instant (fin de journee incluse pour un `endDate` YYYY-MM-DD).
+            const { start: pgStartDate, end: pgEndDate } = resolveDateRangeBounds(
+                args.startDate,
+                args.endDate,
+            );
             const pgStart = Date.now();
             const pgResult = await loadPgConversationTier(
-                args.machineId && args.machineId.trim().length > 0
-                    ? { machineId: args.machineId.trim() }
-                    : {},
+                {
+                    ...(args.machineId && args.machineId.trim().length > 0
+                        ? { machineId: args.machineId.trim() }
+                        : {}),
+                    ...(pgStartDate ? { startDate: pgStartDate } : {}),
+                    ...(pgEndDate ? { endDate: pgEndDate } : {}),
+                },
                 alreadyPresent,
             );
             const pgDuration = Date.now() - pgStart;

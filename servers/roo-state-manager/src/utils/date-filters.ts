@@ -27,6 +27,37 @@ export function parseFilterDate(dateStr: string | undefined | null): Date | null
 }
 
 /**
+ * Etend une borne de fin a 23:59:59.999 UTC quand elle tombe a minuit —
+ * semantique de `endDate: "2026-04-08"` (journee entiere incluse).
+ */
+export function endOfDayIfMidnight(endDate: Date): Date {
+    const endOfDay = new Date(endDate.getTime());
+    if (endOfDay.getUTCHours() === 0 && endOfDay.getUTCMinutes() === 0) {
+        endOfDay.setUTCHours(23, 59, 59, 999);
+    }
+    return endOfDay;
+}
+
+/**
+ * Bornes effectives d'une fenetre exprimee en chaines (ISO 8601 ou YYYY-MM-DD).
+ *
+ * Pour les chemins qui poussent la fenetre dans une requete (le `WHERE` SQL de
+ * `PgUnifiedStoreReader.listConversations`, #2428) : la borne de fin doit etre
+ * celle de `isWithinDateRange`, sinon le SQL ecarte des lignes que le filtre en
+ * memoire aurait gardees (un `endDate: "2026-05-31"` nu couperait a minuit).
+ */
+export function resolveDateRangeBounds(
+    startDate?: string | null,
+    endDate?: string | null,
+): { start: Date | null; end: Date | null } {
+    const parsedEnd = parseFilterDate(endDate);
+    return {
+        start: parseFilterDate(startDate),
+        end: parsedEnd ? endOfDayIfMidnight(parsedEnd) : null,
+    };
+}
+
+/**
  * Verifie qu'un timestamp tombe dans la fenetre [startDate, endDate].
  * Bornes inclusives. Une borne null = pas de contrainte de ce cote.
  *
@@ -46,11 +77,7 @@ export function isWithinDateRange(
         if (startDate && ts < startDate) return false;
         if (endDate) {
             // For end_date given as YYYY-MM-DD, include the entire day
-            const endOfDay = new Date(endDate.getTime());
-            if (endOfDay.getUTCHours() === 0 && endOfDay.getUTCMinutes() === 0) {
-                endOfDay.setUTCHours(23, 59, 59, 999);
-            }
-            if (ts > endOfDay) return false;
+            if (ts > endOfDayIfMidnight(endDate)) return false;
         }
         return true;
     } catch {
