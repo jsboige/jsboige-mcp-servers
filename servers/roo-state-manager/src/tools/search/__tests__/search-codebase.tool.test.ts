@@ -2876,6 +2876,58 @@ describe('#3344 transport resilience + hash convergence', () => {
 			expect(relocateAnchor(oneLongLine, '"pg": "postgres://u:p@h/db"};')).toBe(0);
 		});
 
+		test('relocateAnchor corroboration (#2609 follow-up, ms#1497): a unique head match alone does not relocate', () => {
+			// Two long declarations share their 40-char head but diverge after —
+			// the stored chunk's original line is GONE, and the surviving line is a
+			// DIFFERENT declaration. A head-only match would render the wrong block
+			// with confident line numbers.
+			const sharedHead = '\tconst DEFAULT_EMBEDDING_TUNING_PROFILE: Record<string, number> = {';
+			const lines = [
+				'import { join } from "node:path";',
+				sharedHead + ' fast: 0.9 };', // different body after the shared prefix
+				'',
+				'export function tune() { return 1; }'
+			];
+			const chunk = sharedHead + ' slow: 0.1 };';
+			// Head probe is unique (only line 1 shares the 40-char prefix)…
+			expect(lines.filter(l => l.includes(chunk.trim().slice(0, 40)))).toHaveLength(1);
+			// …but neither the full single-line content nor any body line
+			// corroborates it → degrade to the raw chunk.
+			expect(relocateAnchor(lines, chunk)).toBeNull();
+		});
+
+		test('relocateAnchor corroboration: multi-line chunk corroborates with a body probe in its span', () => {
+			const lines = [
+				'const filler = 0;',
+				'export async function searchSemantic(query: string): Promise<Result> {',
+				'\tconst filter = buildFilter(query);',
+				'\tconst rows = await joinWithPostgres(filter);',
+				'\treturn { rows, filter };',
+				'}'
+			];
+			const chunk = 'export async function searchSemantic(query: string): Promise<Result> {\n\tconst filter = buildFilter(query);\n\tconst rows = await joinWithPostgres(filter);';
+			// Second non-empty line sits inside the chunk's span below the head → corroborated
+			expect(relocateAnchor(lines, chunk)).toBe(1);
+			// Same head, but the body diverged (body lines gone from the file) → null
+			const divergedBody = lines.slice(0, 2).concat(['\tconst completelyDifferent = true;', '}']);
+			expect(relocateAnchor(divergedBody, chunk)).toBeNull();
+		});
+
+		test('relocateAnchor corroboration: single-line chunk requires full-line containment, not the 40-char head', () => {
+			const head = 'const veryLongDeclarationName = computeSomeValue(argumentOne, arg';
+			const fileLines = [
+				head + 'umentTwo, 1234);', // shares the 40-char head, diverges after
+				'const unrelated = 1;'
+			];
+			const chunkLine = head.slice(0, 40) + 'umentTwo, 5678);';
+			expect(fileLines.filter(l => l.includes(chunkLine.trim().slice(0, 40)))).toHaveLength(1);
+			// Head matches line 0 uniquely, but the full trimmed chunk line is NOT
+			// contained in it (differs after the prefix) → null.
+			expect(relocateAnchor(fileLines, chunkLine)).toBeNull();
+			// Full containment on the same line → relocates.
+			expect(relocateAnchor(fileLines, fileLines[0])).toBe(0);
+		});
+
 		test('stale anchor within bounds but drifted beyond ±5 relocates by unique content (live golden-query case)', async () => {
 			// Live shape (2026-10-24): golden-query top-1 stored line 901, real line 944 —
 			// 43 lines of drift. Here: chunk stored at line 2, true content at line 12 —
