@@ -1163,20 +1163,52 @@ export function verifyAnchor(lines: string[], anchorIdx: number, codeChunk: stri
  * the expansion to the true current position — the passage AND the file:line
  * handle become honest again. Zero or multiple occurrences degrade to the raw
  * chunk (an ambiguous relocation could render the wrong block).
+ *
+ * #2609 follow-up (ms#1497 review): a unique HEAD match alone can still land on
+ * the wrong line — a different line sharing the 40-char prefix (long repeated
+ * declarations, generated test names) renders the wrong block with confident
+ * line numbers. The candidate is only accepted when CORROBORATED:
+ *   - multi-line chunk: a body line (the second non-empty one first, then any
+ *     later one ≥ 8 chars) must appear within the chunk's own span + 5 lines
+ *     below the candidate head — intra-block drift moves body lines down
+ *     (insertions) or up (deletions), never past the head;
+ *   - single-line chunk: the candidate line must contain the FULL trimmed
+ *     chunk line, not just its 40-char head — a prefix collision requires the
+ *     line to be longer than the probe, and full containment kills exactly
+ *     that case. A chunk that cannot corroborate itself degrades to the raw
+ *     chunk, as the ambiguity guard already does.
  */
 export function relocateAnchor(lines: string[], codeChunk: string): number | null {
-	const firstChunkLine = codeChunk.split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0);
-	if (!firstChunkLine) return null;
-	const probe = firstChunkLine.slice(0, 40);
-	if (!probe) return null;
+	const chunkLines = codeChunk.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+	if (!chunkLines.length) return null;
+	const headProbe = chunkLines[0].slice(0, 40);
+	if (!headProbe) return null;
 	let found = -1;
 	for (let i = 0; i < lines.length; i++) {
-		if (lines[i].includes(probe)) {
+		if (lines[i].includes(headProbe)) {
 			if (found >= 0) return null;
 			found = i;
 		}
 	}
-	return found >= 0 ? found : null;
+	if (found < 0) return null;
+	if (chunkLines.length === 1) {
+		// Single-line chunk: the match must be the whole trimmed line, not a
+		// 40-char prefix of a longer one (self-corroboration by full content).
+		return lines[found].includes(chunkLines[0]) ? found : null;
+	}
+	// Multi-line chunk: corroborate with a body probe inside the chunk's span
+	// (raw line count, blanks included) plus slack for intra-block drift.
+	const corroborateFrom = found + 1;
+	const corroborateTo = Math.min(lines.length - 1, found + codeChunk.split(/\r?\n/).length + 5);
+	for (let c = 1; c < chunkLines.length; c++) {
+		const bodyLine = chunkLines[c];
+		if (bodyLine.length < 8) continue; // '}', '{', 'else {' — matches anywhere, corroborates nothing
+		const bodyProbe = bodyLine.slice(0, 40);
+		for (let i = corroborateFrom; i <= corroborateTo; i++) {
+			if (lines[i].includes(bodyProbe)) return found;
+		}
+	}
+	return null;
 }
 
 /**
