@@ -5679,13 +5679,23 @@ async function condenseIntercom(
   const archivePath = path.join(archiveDir, `${key}-${dateStr}.md`);
 
   // Construire le contenu markdown de l'archive
+  // #3962 instrumentation (proof must survive the pass): the per-leg outcome and
+  // the salvage model land in the frontmatter, so an ok-with-fallback pass stays
+  // quotable a posteriori from the archive alone. Until now only the TRANSIENT
+  // append diagnostic carried them — measure 24/10 po-2028: the E2E proof of the
+  // fleet fallback gesture existed in the returned diagnostic and nowhere on disk
+  // (frontmatter had `llmGenerated`/`statusUpdated` only).
   const archiveFrontmatter = yaml.dump({
     type: 'archive',
     originalKey: key,
     archivedAt: new Date().toISOString(),
     messageCount: toArchive.length,
     llmGenerated: !!llmSummary,
-    statusUpdated
+    statusUpdated,
+    statusOutcome: statusCall.stats.finalOutcome,
+    summaryOutcome: summaryCall.stats.finalOutcome,
+    ...(statusCall.stats.fallbackModel ? { statusFallbackModel: statusCall.stats.fallbackModel } : {}),
+    ...(summaryCall.stats.fallbackModel ? { summaryFallbackModel: summaryCall.stats.fallbackModel } : {})
   });
 
   // #3151 Phase C residual (incident po-2025 07/10, message « adjoint ») : la

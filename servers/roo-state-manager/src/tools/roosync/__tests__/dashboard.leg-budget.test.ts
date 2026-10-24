@@ -196,6 +196,18 @@ describe('#3962 — leg budget independence + truncation counter', { timeout: 12
     expect(outcomes).not.toContain('fallback-truncated');
     const counters = getFallbackTruncationCounters();
     expect(counters.filter(c => c.count > 0)).toHaveLength(0);
+
+    // #3962 instrumentation: the pass outcome + salvage model survive in the
+    // archive frontmatter (previously only the transient diagnostic carried them,
+    // so the ok-with-fallback proof was lost to disk).
+    const archiveDir2 = path.join(tmpDir, 'dashboards', 'archive');
+    const archives2 = (await readdir(archiveDir2)).filter(f => f.endsWith('.md'));
+    expect(archives2).toHaveLength(1);
+    const frontmatter = await readFile(path.join(archiveDir2, archives2[0]), 'utf8');
+    expect(frontmatter).toContain('statusOutcome: ok-with-fallback');
+    expect(frontmatter).toContain('summaryOutcome: ok-with-fallback');
+    expect(frontmatter).toContain('statusFallbackModel: glm-5.3-flash');
+    expect(frontmatter).toContain('summaryFallbackModel: glm-5.3-flash');
   });
 
   it('(t3) per-key host counter — accumulates across truncations, rides marker/frontmatter/fleet alert', async () => {
