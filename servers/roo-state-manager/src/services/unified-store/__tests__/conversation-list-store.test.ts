@@ -468,14 +468,18 @@ describe('PgUnifiedStoreReader.listConversations — SQL shape', () => {
 
     const call = mockQuery.mock.calls.find(c => String(c[0]).includes('FROM conversations'))!;
     const sql = String(call[0]);
-    // Bound parameters, never a date literal interpolated into the text.
-    expect(sql).toMatch(/last_ts >= \$3::timestamptz/);
-    expect(sql).toMatch(/last_ts <= \$4::timestamptz/);
+    // Bound parameters, never a date literal interpolated into the text. The
+    // bounds filter on the COALESCE chain mapRowToSkeleton dates a row with —
+    // a bare `last_ts` bound would drop every NULL-`last_ts` row from every
+    // window while the unwindowed list still shows it (ai-01 review 24/10).
+    expect(sql).toMatch(/COALESCE\(last_ts, first_ts, ingested_at\) >= \$3::timestamptz/);
+    expect(sql).toMatch(/COALESCE\(last_ts, first_ts, ingested_at\) <= \$4::timestamptz/);
+    expect(sql).not.toMatch(/last_ts >= \$3/);
     expect(sql).not.toMatch(/2026-05/);
     // Inside the CTE's WHERE, i.e. before the LIMIT that spends the cap: a row
     // outside the window must not consume the budget (that was the bug — the
     // newest 5 000 rows were read first, then dates were filtered in JS).
-    expect(sql.indexOf('last_ts >= $3')).toBeLessThan(sql.indexOf('LIMIT $2'));
+    expect(sql.indexOf('COALESCE(last_ts, first_ts, ingested_at) >= $3')).toBeLessThan(sql.indexOf('LIMIT $2'));
     expect((call[1] as unknown[])[2]).toBe(startDate);
     expect((call[1] as unknown[])[3]).toBe(endDate);
   });
