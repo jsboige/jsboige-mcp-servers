@@ -4951,6 +4951,17 @@ async function executeTruncationFallback(
     circuitBreakerOpen: condenseCB.isOpen,
     condensedBy: process.env.ROOSYNC_MACHINE_ID || 'unknown',
     fallbackError,
+    // #3962 follow-up (ms#1498 parity, named by ai-01 24/10): per-leg outcomes on
+    // the TRUNCATION path too. A mixed pass — status salvaged by the cloud tier
+    // while the summary died — previously left only the single aggregated
+    // fallbackError above, so the archive could not say WHICH leg failed nor that
+    // the other had been rescued. Mirrors the main condensation path's frontmatter
+    // keys; failedCalls is optional at the signature level, so each key lands only
+    // when its leg actually ran.
+    ...(failedCalls?.statusCall ? { statusOutcome: failedCalls.statusCall.stats.finalOutcome } : {}),
+    ...(failedCalls?.summaryCall ? { summaryOutcome: failedCalls.summaryCall.stats.finalOutcome } : {}),
+    ...(failedCalls?.statusCall?.stats.fallbackModel ? { statusFallbackModel: failedCalls.statusCall.stats.fallbackModel } : {}),
+    ...(failedCalls?.summaryCall?.stats.fallbackModel ? { summaryFallbackModel: failedCalls.summaryCall.stats.fallbackModel } : {}),
     hostTruncationCount: truncCounter.count, // #3962 piste 3: Nth truncation of this key on this host
   });
 

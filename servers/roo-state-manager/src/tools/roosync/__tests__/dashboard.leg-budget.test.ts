@@ -13,7 +13,11 @@
  *        reserved budget (before the fix: primary runs to the engine cut, the
  *        cloud inherits < skip-floor and the pass truncates);
  *   (t3) piste 3 — a per-key host counter accumulates across truncations and
- *        rides the status marker, the archive frontmatter and the fleet alert.
+ *        rides the status marker, the archive frontmatter and the fleet alert;
+ *   (t4) #3962 follow-up (ms#1498 parity) — a MIXED pass (status leg salvaged by
+ *        the cloud tier, summary leg dead → truncation) stamps per-leg outcomes
+ *        in the fallback archive frontmatter, where the single aggregated
+ *        fallbackError previously made it indistinguishable from a total outage.
  *
  * @module tools/roosync/__tests__/dashboard.leg-budget
  */
@@ -296,5 +300,60 @@ describe('#3962 — leg budget independence + truncation counter', { timeout: 12
     md = await readFile(wsPath(), 'utf8');
     expect(md).toContain('host: 2 truncations since');
     expect(md.match(/lastCondense: fallback-truncated/g)?.length).toBe(1); // at most one marker
+  });
+
+  it('(t4) mixed pass — truncation archive carries per-leg outcomes (status rescued, summary dead)', async () => {
+    // #3962 follow-up (ms#1498 parity): the primary dies on both legs (502), the
+    // cloud tier salvages ONLY the status leg. The pass still truncates (the
+    // summary is mandatory), and the fallback archive must name each leg's
+    // outcome separately — statusOutcome: ok-with-fallback + its salvage model,
+    // summaryOutcome: error, and NO summaryFallbackModel (that leg was never
+    // rescued; the key is conditional). Before this instrumentation a mixed pass
+    // left only the single aggregated fallbackError.
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(Object.assign(new Error('502 Bad Gateway'), { status: 502 }));
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    // Cloud tier discriminant — the two legs carry distinct system prompts:
+    // summary = "synthèse de communications inter-agents", status = "synthèse
+    // de dashboards de coordination". Empty content kills the summary leg
+    // (#2998 stamps it as an attempted-but-rejected fallback), real content
+    // rescues the status leg.
+    mockFallbackCreate.mockImplementation(async (body: { messages?: Array<{ content?: string }> }) => {
+      const system = body?.messages?.[0]?.content ?? '';
+      if (system.includes('communications inter-agents')) {
+        return { choices: [{ message: { content: '' } }] };
+      }
+      return { choices: [{ message: { content: '## Statut régénéré par le tier cloud — jambe statut sauvée.' } }] };
+    });
+
+    await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Init' });
+    const filler = 'X'.repeat(3000);
+    let truncated = false;
+    for (let i = 0; i < 20 && !truncated; i++) {
+      const result = await roosyncDashboard({
+        action: 'append',
+        type: 'workspace',
+        content: `${filler} message-${i}`,
+      }) as { condensed?: boolean; condenseDiagnostic?: Array<{ outcome: string }> };
+      truncated = !!result.condensed
+        && (result.condenseDiagnostic ?? []).some(d => d.outcome === 'fallback-truncated');
+    }
+    expect(truncated).toBe(true);
+
+    const archiveDir = path.join(tmpDir, 'dashboards', 'archive');
+    const archives = (await readdir(archiveDir)).filter(f => f.endsWith('-fallback.md'));
+    expect(archives).toHaveLength(1);
+    const frontmatter = await readFile(path.join(archiveDir, archives[0]), 'utf8');
+    // The status leg WAS rescued even though the pass truncated — that fact is
+    // the whole point of the per-leg instrumentation.
+    expect(frontmatter).toContain('statusOutcome: ok-with-fallback');
+    expect(frontmatter).toContain('summaryOutcome: error');
+    expect(frontmatter).toContain('statusFallbackModel: glm-5.3-flash');
+    // The summary leg was never salvaged → no model to name (conditional key).
+    expect(frontmatter).not.toContain('summaryFallbackModel');
   });
 });
