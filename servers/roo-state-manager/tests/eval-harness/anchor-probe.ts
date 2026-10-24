@@ -6,19 +6,22 @@
  * The re-verification runs against the SAME inputs the tool had: the CURRENT
  * file on disk and the STORED chunk payload, scrolled back from the very
  * collection the response names (`parsed.collection`). It calls the tool's
- * exported `verifyAnchor` itself — the grading harness must not take the
- * tool's word for the cause: a self-reported "stale-anchor" would let a real
- * render regression hide behind it.
+ * exported `verifyAnchor` and `relocateAnchor` itself — the grading harness
+ * must not take the tool's word for the cause: a self-reported "stale-anchor"
+ * would let a real render regression hide behind it.
  *
  * Classification per hit (mirrors expandHitBlock's control flow):
  *   - match_lines handle present ⇒ expansion ran ⇒ its anchor gate passed by
  *     construction ⇒ 'verified', no probe (a structural failure on such a hit
  *     — e.g. a single-line rendered window — is a genuine bug → FAIL).
  *   - else: load the current file, scroll the stored chunk(s) for this
- *     file+startLine, and re-run verifyAnchor on each exact candidate. All
- *     false ⇒ 'stale' — the tool's expansion necessarily stopped at the
- *     anchor gate (same function, same inputs). Any true ⇒ 'verified' — the
- *     tool's failure was elsewhere (env, range, render) and is never excused.
+ *     file+startLine, and re-run verifyAnchor on each exact candidate. Any
+ *     true ⇒ 'verified' — the tool's failure was elsewhere (env, range,
+ *     render) and is never excused. All false: try relocateAnchor (mirrors
+ *     the tool's drift step) — a unique content hit ⇒ 'verified' (the tool
+ *     could have re-anchored; its failure is not index staleness), otherwise
+ *     ⇒ 'stale' — the tool's expansion necessarily stopped at the anchor
+ *     gate (same functions, same inputs).
  *   - anything the probe cannot establish (no numeric start_line, unreadable
  *     or oversized file, index holds no matching chunk, scroll failure) ⇒
  *     'unverifiable' — fail-closed, never excused.
@@ -31,7 +34,7 @@
 
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
-import { verifyAnchor } from '../../src/tools/search/search-codebase.tool.js';
+import { verifyAnchor, relocateAnchor } from '../../src/tools/search/search-codebase.tool.js';
 import { getQdrantClient } from '../../src/services/qdrant.js';
 import { summarizeIndexFreshness, type FreshnessReport, type HitFreshness } from './index-freshness.js';
 
@@ -171,9 +174,20 @@ export async function probeAnchorState(
 		const chunk = String(p?.payload?.codeChunk ?? '');
 		return chunk.length > 0 && verifyAnchor(load.lines, s - 1, chunk);
 	});
-	return verified
-		? { state: 'verified', detail: 'stored anchor still verifies — the tool had everything needed to expand (its failure is not index staleness)' }
-		: { state: 'stale', detail: `stored anchor no longer verifies within ±5 lines of line ${s} (index drift)` };
+	if (verified) {
+		return { state: 'verified', detail: 'stored anchor still verifies — the tool had everything needed to expand (its failure is not index staleness)' };
+	}
+	// Mirrors expandHitBlock's relocation step (#2609 V2 residual): a drifted
+	// stored anchor whose chunk head still relocates by UNIQUE content match was
+	// expandable — a structural failure on such a hit is the tool's, not the
+	// index's, and must not be excused as staleness.
+	const relocatable = candidates.some(p => {
+		const chunk = String(p?.payload?.codeChunk ?? '');
+		return chunk.length > 0 && relocateAnchor(load.lines, chunk) !== null;
+	});
+	return relocatable
+		? { state: 'verified', detail: 'stored anchor drifted but the chunk head relocates uniquely — the tool had everything needed to expand (its failure is not index staleness)' }
+		: { state: 'stale', detail: `stored anchor no longer verifies within ±5 lines of line ${s} and the chunk head no longer exists (or is ambiguous) in the current file (index drift)` };
 }
 
 export interface FreshnessAssessment {
