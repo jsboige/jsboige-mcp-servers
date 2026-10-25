@@ -13,6 +13,7 @@ import { createHash } from 'crypto';
 import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { resolveWorkspace } from '../../utils/workspace-resolver.js';
+import { execFile } from 'child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'path';
 
@@ -473,12 +474,20 @@ const COVERAGE_SCROLL_LIMIT = 256;
 const COVERAGE_SCROLL_MAX_PAGES = 1200;
 /** Per-collection TTL: the full scroll is O(points), never re-paid per search. */
 const COVERAGE_CACHE_TTL_MS = parseInt(process.env.CODEBASE_COVERAGE_CACHE_TTL_MS || '900000', 10);
-/** Extensions the Roo/Zoo indexer parses — the denominator's eligible set. */
+/**
+ * Extensions the Zoo indexer parses — the denominator's eligible set. #4352: copied from
+ * Zoo 3.92's scanner list (`dist/extension.js`, the `Vtr` array its scanner filters on).
+ * The previous list also counted `.ps1`, `.sh`, `.yml`/`.yaml`, `.mjs`/`.cjs`, `.sql` and
+ * `.svelte`, which Zoo never indexes, so roo-extensions read 0.593 « PARTIAL » on ai-01
+ * (25/10) while its git-tracked code counted with Zoo's own rules reads 0.891
+ * (#4352 c.6395339763).
+ */
 const COVERAGE_ELIGIBLE_EXTENSIONS = new Set([
-	'.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.ps1', '.sh', '.sql',
-	'.json', '.md', '.yml', '.yaml', '.toml', '.cs', '.java', '.go', '.rs', '.rb',
-	'.php', '.c', '.h', '.cpp', '.hpp', '.vue', '.svelte'
-]);
+	'tla', 'js', 'jsx', 'ts', 'vue', 'tsx', 'py', 'rs', 'go', 'c', 'h', 'cpp', 'hpp', 'cs',
+	'rb', 'java', 'php', 'swift', 'sol', 'kt', 'kts', 'ex', 'exs', 'el', 'html', 'htm', 'md',
+	'markdown', 'txt', 'json', 'css', 'rdl', 'ml', 'mli', 'lua', 'scala', 'toml', 'zig', 'elm',
+	'ejs', 'erb', 'vb', 'dart'
+].map(e => `.${e}`));
 /**
  * #2609 V2(c)(b) follow-up (ai-01, 2026-09-30): the denominator must mirror what the
  * Roo/Zoo indexer can actually parse. Its DIRS_TO_IGNORE (roo-code/src/services/glob/
@@ -569,6 +578,42 @@ function countEligibleWorkspaceFiles(workspaceRoot: string): number {
 }
 
 /**
+ * #4352: Zoo lists files with ripgrep, which honours `.gitignore`; the disk walk does not.
+ * Measured on ai-01, 25/10: the walk finds 10,856 eligible files under D:/roo-extensions,
+ * git sees 7,604, and 7,017 of the 7,018 files indexed in ws-59e7574de63c6e62 are among
+ * those 7,604 (none under a gitignored `build-*` dir). In a git workspace the denominator
+ * is therefore the git-visible set: tracked files, submodules included, plus untracked
+ * files that are not ignored. Zoo also skips files over 1 MB; no eligible tracked file
+ * was that large, so the size is not checked. Null = not a git workspace (walk instead).
+ */
+async function countGitVisibleEligibleFiles(workspaceRoot: string): Promise<number | null> {
+	const git = (args: string[]) => new Promise<string>((resolveOut, reject) => {
+		execFile('git', ['-C', workspaceRoot, ...args], { maxBuffer: 64 * 1024 * 1024, timeout: 20_000, windowsHide: true },
+			(err, stdout) => (err ? reject(err) : resolveOut(String(stdout))));
+	});
+	try {
+		const tracked = await git(['ls-files', '--recurse-submodules', '-z']);
+		const untracked = await git(['ls-files', '--others', '--exclude-standard', '-z']);
+		const paths = `${tracked}\0${untracked}`.split('\0').filter(Boolean);
+		if (paths.length === 0) return null;
+		let count = 0;
+		for (const p of paths) {
+			const segments = p.split('/');
+			let parent: string | null = null;
+			let skipped = false;
+			for (const dir of segments.slice(0, -1)) {
+				if (isCoverageSkippedDir(dir, parent)) { skipped = true; break; }
+				parent = dir;
+			}
+			if (!skipped && COVERAGE_ELIGIBLE_EXTENSIONS.has(extname(p).toLowerCase())) count++;
+		}
+		return count;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Pure coverage arithmetic — the 883/5013 shape measured on ws-d2ffdbaa832aed16
  * at V2(b) time. Returns null when the ratio is undecidable (no denominator).
  */
@@ -642,7 +687,7 @@ async function computeCollectionCoverage(qdrant: any, collectionName: string, wo
 	if (cached && cached.expiresAt > Date.now()) return cached.value;
 	const indexed = await countIndexedFiles(qdrant, collectionName);
 	if (indexed === null) return null;
-	const eligible = countEligibleWorkspaceFiles(workspaceRoot);
+	const eligible = (await countGitVisibleEligibleFiles(workspaceRoot)) ?? countEligibleWorkspaceFiles(workspaceRoot);
 	if (eligible <= 0) return null; // workspace not on disk here — ratio undecidable
 	const value = evaluateCoverage(indexed, eligible);
 	if (value) coverageCache.set(collectionName, { value, expiresAt: Date.now() + COVERAGE_CACHE_TTL_MS });
@@ -2002,7 +2047,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// Absent when undecidable — never a fabricated ratio.
 			...(coverage ? { coverage } : {}),
 			...(coverage?.below_threshold ? {
-				coverage_warning: `collection ${collectionName} is PARTIAL: ${coverage.indexed_files}/${coverage.eligible_files} eligible workspace files indexed (ratio ${coverage.coverage_ratio} < ${coverage.warn_threshold}). Files absent from the corpus cannot be retrieved by any ranking — re-index this workspace (Roo/Zoo Code codebase index on this machine) to repair.`
+				coverage_warning: `collection ${collectionName} is PARTIAL: ${coverage.indexed_files}/${coverage.eligible_files} eligible workspace files indexed (ratio ${coverage.coverage_ratio} < ${coverage.warn_threshold}). Files absent from the corpus cannot be retrieved by any ranking. The repair is a re-index by the seat that writes this collection (its Zoo index on this path); enabling a second index on the same path writes into the same collection.`
 			} : {}),
 			// #4352: the count is still running in the background; the next search reports it.
 			...(coveragePending ? { coverage_pending: true } : {}),
