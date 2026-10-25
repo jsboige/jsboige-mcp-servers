@@ -966,10 +966,16 @@ const DEFAULT_MIN_SCORE = 0.5;
 
 /**
  * Définition de l'outil MCP codebase_search
+ *
+ * #4352: the blind spots are stated in the description because they are the
+ * indexer's design, not a coverage gap: Zoo 3.92 indexes only its `Vtr`
+ * extension list (no .ps1/.sh/.yml/.mjs/.cjs) and lists files with
+ * `-g !**\/.*\/**` (no hidden directory). An agent that does not know this reads
+ * "no result" as "does not exist" for every rule, skill and PowerShell script.
  */
 export const codebaseSearchTool: Tool = {
 	name: 'codebase_search',
-	description: 'Recherche sémantique dans le code du workspace indexé par Roo. Trouve du code par concept, pas par texte exact.',
+	description: 'Recherche sémantique dans le code du workspace indexé par Zoo/Roo. Trouve du code par concept, pas par texte exact. Jamais indexés par construction : fichiers .ps1, .sh, .yml, .mjs, .cjs et répertoires cachés (.claude, .roo, .github) — pour eux, utiliser Grep.',
 	inputSchema: {
 		type: 'object',
 		properties: {
