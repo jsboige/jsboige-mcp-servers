@@ -279,7 +279,7 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 
 		test('#4352 (a4): a wrong-dimension batch item fails the task after writing the valid one (L921-924)', async () => {
 			vi.resetModules();
-			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+			const { indexTask, resetCircuitBreakerForTest, getCircuitBreakerState } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
 			mockExtractTask.mockResolvedValue([chunk('wd1', 'wrongdim a'), chunk('wd2', 'wrongdim b')]);
 			// batch call returns one correct + one wrong-dim vector.
@@ -297,6 +297,8 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			// the valid vector was still written, so the retry only re-embeds the missing one
 			expect(mockUpsert).toHaveBeenCalledTimes(1);
 			expect(mockUpsert.mock.calls[0][1].points).toHaveLength(1);
+			// a content-only hole says nothing about the backend: the breaker does not count it
+			expect(getCircuitBreakerState().failureCount).toBe(0);
 		});
 
 		test('splits a content-attributable (HTTP 400) batch failure into halves and retries each (L930-939)', async () => {
@@ -322,7 +324,7 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			['HTTP 503', 503],
 		])('#4352 (a4): a transport/overload failure (%s) is not bisected and fails the task', async (_label, status) => {
 			vi.resetModules();
-			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+			const { indexTask, resetCircuitBreakerForTest, getCircuitBreakerState } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
 			mockExtractTask.mockResolvedValue([chunk('t1', 'transport one'), chunk('t2', 'transport two')]);
 			mockEmbeddingsCreate.mockImplementation(() =>
@@ -334,6 +336,8 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			// Before: 1 batch call + 2 single-item calls (31 for a batch of 16). Now: one call.
 			expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(1);
 			expect(mockUpsert).not.toHaveBeenCalled();
+			// a transport failure does feed the breaker (repeated outages defer the next tasks, #2165)
+			expect(getCircuitBreakerState().failureCount).toBe(1);
 		});
 
 		test('#4352 (a4): after a transport failure, the next batch of the task is not attempted', async () => {

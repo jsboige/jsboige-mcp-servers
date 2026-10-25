@@ -1272,7 +1272,14 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         // Previously swallowed all errors and returned [], causing:
         // - Silent data loss (caller treats [] as "success with 0 points")
         // - Background indexer infinite retry loop (qdrantIndexedAt never set)
-        recordFailure();
+        // #4352 (a4): a task left incomplete by its content alone (HTTP 400/413/422, a wrong-dimension
+        // or malformed vector in an answered call) says nothing about the backends' health — it fails
+        // the task but must not open the breaker and defer healthy tasks. A transport failure counts.
+        const contentOnlyIncomplete = error instanceof GenericError
+            && error.details?.missingVectors !== undefined && error.details?.transport === false;
+        if (!contentOnlyIncomplete) {
+            recordFailure();
+        }
 
         // Re-throw as GenericError if not already a typed error
         if (error instanceof GenericError) {
