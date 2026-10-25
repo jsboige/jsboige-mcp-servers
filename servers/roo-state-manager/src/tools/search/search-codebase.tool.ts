@@ -16,6 +16,7 @@ import { resolveWorkspace } from '../../utils/workspace-resolver.js';
 import { execFile } from 'child_process';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'path';
+import { ZOO_ELIGIBLE_EXTENSIONS, classifyZooPath, isZooSkippedDir } from '../../services/code-index/zoo-eligibility.js';
 
 /**
  * #2609/#2554 (rename-GC gap): the Roo/Zoo Code indexer (reference-only submodule
@@ -475,19 +476,11 @@ const COVERAGE_SCROLL_MAX_PAGES = 1200;
 /** Per-collection TTL: the full scroll is O(points), never re-paid per search. */
 const COVERAGE_CACHE_TTL_MS = parseInt(process.env.CODEBASE_COVERAGE_CACHE_TTL_MS || '900000', 10);
 /**
- * Extensions the Zoo indexer parses — the denominator's eligible set. #4352: copied from
- * Zoo 3.92's scanner list (`dist/extension.js`, the `Vtr` array its scanner filters on).
- * The previous list also counted `.ps1`, `.sh`, `.yml`/`.yaml`, `.mjs`/`.cjs`, `.sql` and
- * `.svelte`, which Zoo never indexes, so roo-extensions read 0.593 « PARTIAL » on ai-01
- * (25/10) while its git-tracked code counted with Zoo's own rules reads 0.891
- * (#4352 c.6395339763).
+ * Extensions the Zoo indexer parses — the denominator's eligible set. #4352: Zoo 3.92's
+ * rules (extensions and skipped directories) live in services/code-index/zoo-eligibility.ts,
+ * shared with the blind-spot report (`not_indexed_by_design`).
  */
-const COVERAGE_ELIGIBLE_EXTENSIONS = new Set([
-	'tla', 'js', 'jsx', 'ts', 'vue', 'tsx', 'py', 'rs', 'go', 'c', 'h', 'cpp', 'hpp', 'cs',
-	'rb', 'java', 'php', 'swift', 'sol', 'kt', 'kts', 'ex', 'exs', 'el', 'html', 'htm', 'md',
-	'markdown', 'txt', 'json', 'css', 'rdl', 'ml', 'mli', 'lua', 'scala', 'toml', 'zig', 'elm',
-	'ejs', 'erb', 'vb', 'dart'
-].map(e => `.${e}`));
+const COVERAGE_ELIGIBLE_EXTENSIONS = ZOO_ELIGIBLE_EXTENSIONS;
 /**
  * #2609 V2(c)(b) follow-up (ai-01, 2026-09-30): the denominator must mirror what the
  * Roo/Zoo indexer can actually parse. Its DIRS_TO_IGNORE (roo-code/src/services/glob/
@@ -501,14 +494,7 @@ const COVERAGE_ELIGIBLE_EXTENSIONS = new Set([
  * the indexer: hidden dirs + its explicit names, plus its two path patterns expressed
  * as (parent, name) pairs.
  */
-const COVERAGE_SKIP_DIR_NAMES = new Set([
-	'node_modules', '__pycache__', 'env', 'venv', 'dist', 'out', 'bundle',
-	'vendor', 'tmp', 'temp', 'deps', 'pkg', 'Pods',
-]);
-const COVERAGE_SKIP_DIR_PAIRS = new Set(['target/dependency', 'build/dependencies']);
-const isCoverageSkippedDir = (name: string, parentName: string | null): boolean =>
-	name.startsWith('.') || COVERAGE_SKIP_DIR_NAMES.has(name)
-	|| (parentName !== null && COVERAGE_SKIP_DIR_PAIRS.has(`${parentName}/${name}`));
+const isCoverageSkippedDir = isZooSkippedDir;
 
 /** Shape of the `coverage` block exposed in the search response. */
 export type CoverageInfo = {
@@ -517,7 +503,12 @@ export type CoverageInfo = {
 	coverage_ratio: number;
 	warn_threshold: number;
 	below_threshold: boolean;
+	/** #4352: git-visible text files Zoo never indexes; lifted to the response's top level. */
+	not_indexed_by_design?: BlindSpotInfo;
 };
+
+/** Git-visible text files outside the Zoo index by design, counted per kind (`.ps1`, `hidden-dir`…). */
+export type BlindSpotInfo = { files: number; kinds: Record<string, number> };
 
 /** Distinct-file count of a collection via full payload-only scroll (no vector). */
 async function countIndexedFiles(qdrant: any, collectionName: string): Promise<number | null> {
@@ -585,8 +576,13 @@ function countEligibleWorkspaceFiles(workspaceRoot: string): number {
  * is therefore the git-visible set: tracked files, submodules included, plus untracked
  * files that are not ignored. Zoo also skips files over 1 MB; no eligible tracked file
  * was that large, so the size is not checked. Null = not a git workspace (walk instead).
+ *
+ * The same listing also counts the blind spots: text files Zoo never indexes (596 `.ps1`,
+ * 334 files under `.claude/`, `.roo/`, `.github/`, 92 `.mjs`/`.cjs`… on roo-extensions,
+ * 25/10). No ranking can return them, so the response names them instead of letting an
+ * agent read the silence as absence.
  */
-async function countGitVisibleEligibleFiles(workspaceRoot: string): Promise<number | null> {
+async function countGitVisibleFiles(workspaceRoot: string): Promise<{ eligible: number; blindSpots: BlindSpotInfo } | null> {
 	const git = (args: string[]) => new Promise<string>((resolveOut, reject) => {
 		execFile('git', ['-C', workspaceRoot, ...args], { maxBuffer: 64 * 1024 * 1024, timeout: 20_000, windowsHide: true },
 			(err, stdout) => (err ? reject(err) : resolveOut(String(stdout))));
@@ -596,18 +592,17 @@ async function countGitVisibleEligibleFiles(workspaceRoot: string): Promise<numb
 		const untracked = await git(['ls-files', '--others', '--exclude-standard', '-z']);
 		const paths = `${tracked}\0${untracked}`.split('\0').filter(Boolean);
 		if (paths.length === 0) return null;
-		let count = 0;
+		let eligible = 0;
+		const blindSpots: BlindSpotInfo = { files: 0, kinds: {} };
 		for (const p of paths) {
-			const segments = p.split('/');
-			let parent: string | null = null;
-			let skipped = false;
-			for (const dir of segments.slice(0, -1)) {
-				if (isCoverageSkippedDir(dir, parent)) { skipped = true; break; }
-				parent = dir;
+			const kind = classifyZooPath(p);
+			if (kind === 'eligible') eligible++;
+			else if (kind !== null) {
+				blindSpots.files++;
+				blindSpots.kinds[kind] = (blindSpots.kinds[kind] || 0) + 1;
 			}
-			if (!skipped && COVERAGE_ELIGIBLE_EXTENSIONS.has(extname(p).toLowerCase())) count++;
 		}
-		return count;
+		return { eligible, blindSpots };
 	} catch {
 		return null;
 	}
@@ -675,6 +670,31 @@ export function dropOverlappingWindows<T extends { point: any; score: number; ra
 	return { kept, merged };
 }
 
+/**
+ * #4352: drops same-logical-file hits whose chunk text is identical (whitespace-normalised)
+ * to a higher-scored hit's, wherever they sit in the file. Measured on ai-01, 25/10: one JSON
+ * file repeats the same title line at 5 places, and the per-file cap's backfill gave it 5 of
+ * 6 slots with the same snippet. Disjoint ranges, so dropOverlappingWindows keeps them all.
+ * PRECONDITION: `hits` sorted by score descending.
+ */
+export function dropIdenticalChunks<T extends { point: any; score: number }>(
+	hits: T[],
+	capKeyOf: (filePath: string) => string,
+): { kept: T[]; merged: number } {
+	const kept: T[] = [];
+	const seen = new Set<string>();
+	let merged = 0;
+	for (const hit of hits) {
+		const text = String(hit.point?.payload?.codeChunk ?? '').replace(/\s+/g, ' ').trim();
+		if (!text) { kept.push(hit); continue; }
+		const key = `${capKeyOf(String(hit.point?.payload?.filePath || ''))}\u0000${text}`;
+		if (seen.has(key)) { merged++; continue; }
+		seen.add(key);
+		kept.push(hit);
+	}
+	return { kept, merged };
+}
+
 /** Test hook — clears the TTL cache between suites. */
 export function clearCoverageCache(): void {
 	coverageCache.clear();
@@ -687,9 +707,11 @@ async function computeCollectionCoverage(qdrant: any, collectionName: string, wo
 	if (cached && cached.expiresAt > Date.now()) return cached.value;
 	const indexed = await countIndexedFiles(qdrant, collectionName);
 	if (indexed === null) return null;
-	const eligible = (await countGitVisibleEligibleFiles(workspaceRoot)) ?? countEligibleWorkspaceFiles(workspaceRoot);
+	const gitVisible = await countGitVisibleFiles(workspaceRoot);
+	const eligible = gitVisible?.eligible ?? countEligibleWorkspaceFiles(workspaceRoot);
 	if (eligible <= 0) return null; // workspace not on disk here — ratio undecidable
 	const value = evaluateCoverage(indexed, eligible);
+	if (value && gitVisible && gitVisible.blindSpots.files > 0) value.not_indexed_by_design = gitVisible.blindSpots;
 	if (value) coverageCache.set(collectionName, { value, expiresAt: Date.now() + COVERAGE_CACHE_TTL_MS });
 	return value;
 }
@@ -1761,6 +1783,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		const coverageRead = await readCoverageWithin(coverageCount, parseInt(process.env.CODEBASE_COVERAGE_WAIT_MS || '1000', 10));
 		const coverage: CoverageInfo | null = coverageRead ?? null;
 		const coveragePending = coverageRead === undefined;
+		// #4352: the blind spots ride in the cached coverage value; the response lifts them out.
+		const { not_indexed_by_design: blindSpots, ...coverageBlock } = coverage ?? ({} as CoverageInfo);
 
 		// 6. Formater les résultats
 		// #2609/#2554: post-filter dead paths (orphans from rename/delete that the
@@ -1934,7 +1958,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				: (typeof a.point.payload.endLine === 'number' ? a.point.payload.endLine : null);
 			return { point: a.point, score: a.score, expanded, range: (s !== null && e !== null) ? { s, e } : null };
 		});
-		const { kept: dedupedAdjusted, merged: overlappingChunksMerged } = dropOverlappingWindows(withRanges, capKeyOf);
+		const { kept: windowDeduped, merged: overlappingChunksMerged } = dropOverlappingWindows(withRanges, capKeyOf);
+		const { kept: dedupedAdjusted, merged: identicalChunksMerged } = dropIdenticalChunks(windowDeduped, capKeyOf);
 		const perFileCount = new Map<string, number>();
 		const picked: { point: any; score: number; expanded: any }[] = [];
 		const leftovers: { point: any; score: number; expanded: any }[] = [];
@@ -2045,7 +2070,15 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			served_build: getServedBuildId(),
 			// #2609 V2(c)(b): partial-collection observability (computeCollectionCoverage).
 			// Absent when undecidable — never a fabricated ratio.
-			...(coverage ? { coverage } : {}),
+			...(coverage ? { coverage: coverageBlock } : {}),
+			// #4352: text files no ranking can return because Zoo never indexes them.
+			...(blindSpots ? {
+				not_indexed_by_design: {
+					files: blindSpots.files,
+					kinds: Object.fromEntries(Object.entries(blindSpots.kinds).sort((a, b) => b[1] - a[1]).slice(0, 6)),
+					hint: 'Zoo never indexes these files (.ps1, .mjs/.cjs, .sh, .yml, and every hidden directory such as .claude/ or .roo/). No result here does not mean they lack a match: use Grep for them.',
+				},
+			} : {}),
 			...(coverage?.below_threshold ? {
 				coverage_warning: `collection ${collectionName} is PARTIAL: ${coverage.indexed_files}/${coverage.eligible_files} eligible workspace files indexed (ratio ${coverage.coverage_ratio} < ${coverage.warn_threshold}). Files absent from the corpus cannot be retrieved by any ranking. The repair is a re-index by the seat that writes this collection (its Zoo index on this path); enabling a second index on the same path writes into the same collection.`
 			} : {}),
@@ -2089,6 +2122,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// chunks whose line windows overlap (or abut ≤2 lines) were folded into the
 			// higher-scored window, freeing their slot(s) for a distinct file.
 			...(overlappingChunksMerged > 0 ? { overlapping_chunks_merged: overlappingChunksMerged } : {}),
+			// #4352: same-file hits with identical chunk text, folded into the higher-scored one.
+			...(identicalChunksMerged > 0 ? { identical_chunks_merged: identicalChunksMerged } : {}),
 			...(allDead ? { warning: 'all hits resolved to dead paths — workspace root may be wrong or drive unmounted; returning raw results unfiltered' } : {}),
 			// #2609: the repair hint must match the store it names — dead-path vectors live in
 			// THIS ws-* code collection, which cleanup_orphans never touches (it only covers

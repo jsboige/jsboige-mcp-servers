@@ -75,7 +75,8 @@ import {
 	evaluateCoverage,
 	clearCoverageCache,
 	getServedBuildId,
-	dropOverlappingWindows
+	dropOverlappingWindows,
+	dropIdenticalChunks
 } from '../search-codebase.tool.js';
 
 describe('search-codebase.tool', () => {
@@ -1552,6 +1553,40 @@ describe('search-codebase.tool', () => {
 				}
 			});
 
+			// #4352 (a1): Zoo never indexes .ps1/.mjs/.sh/.yml nor hidden dirs, so no ranking can
+			// return them; the response names them so an agent does not read silence as absence.
+			test('a git workspace reports the files Zoo never indexes, at the top level (#4352 a1)', async () => {
+				mockQdrant.scroll.mockResolvedValue({ points: [{ payload: { filePath: 'src/a.ts' } }] });
+				mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string) => void) =>
+					args.includes('--recurse-submodules')
+						? cb(null, ['src/a.ts', 'scripts/x.ps1', 'scripts/y.ps1', 'tools/read.mjs', '.claude/rules/r.md',
+							'docs/img/a.png', 'node_modules/p/i.ps1'].join('\0') + '\0')
+						: cb(null, ''));
+				try {
+					const parsed = JSON.parse((await handleCodebaseSearch({ query: 'blind probe', workspace: '/ws/4352-blind' })).content[0].text);
+					expect(parsed.status).toBe('success');
+					expect(parsed.coverage.eligible_files).toBe(1);
+					// The png (binary) and node_modules/** (skipped by name) are not blind spots.
+					expect(parsed.not_indexed_by_design.files).toBe(4);
+					expect(parsed.not_indexed_by_design.kinds).toEqual({ '.ps1': 2, '.mjs': 1, 'hidden-dir': 1 });
+					expect(parsed.not_indexed_by_design.hint).toContain('Grep');
+					// Lifted out of the coverage block, never reported twice.
+					expect(parsed.coverage.not_indexed_by_design).toBeUndefined();
+				} finally {
+					mockExecFile.mockImplementation(gitFails);
+				}
+			});
+
+			test('a workspace that is not a git checkout reports no blind spots (#4352 a1)', async () => {
+				mockQdrant.scroll.mockResolvedValue({ points: [{ payload: { filePath: 'a.ts' } }] });
+				mockReaddirSync.mockImplementation(() => ['a.ts', 'x.ps1'].map(name => ({ name, isDirectory: () => false, isFile: () => true })));
+
+				const parsed = JSON.parse((await handleCodebaseSearch({ query: 'no-git probe', workspace: '/ws/4352-nogit' })).content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.coverage.eligible_files).toBe(1);
+				expect(parsed.not_indexed_by_design).toBeUndefined();
+			});
+
 			test('the PARTIAL warning names the writing seat, not a local re-index (#4352)', async () => {
 				mockQdrant.scroll.mockResolvedValue({ points: [{ payload: { filePath: 'a.ts' } }] });
 				mockReaddirSync.mockImplementation(() => ['a.ts', 'b.ts', 'c.ts'].map(name => ({ name, isDirectory: () => false, isFile: () => true })));
@@ -2296,6 +2331,85 @@ describe('search-codebase.tool', () => {
 			], key);
 			expect(kept).toHaveLength(1);
 			expect(merged).toBe(2);
+		});
+	});
+
+	describe('dropIdenticalChunks (#4352) — pure merge', () => {
+		const key = (fp: string) => fp;
+		const hit = (fp: string, codeChunk: string, line: number, score: number) => ({
+			point: { payload: { filePath: fp, codeChunk, startLine: line, endLine: line } },
+			score,
+		});
+
+		test('same file, same text at distant lines: one kept, the higher score', () => {
+			const { kept, merged } = dropIdenticalChunks([
+				hit('a.json', '"title": "x"', 9788, 0.61),
+				hit('a.json', '  "title":   "x"', 9070, 0.6),
+			], key);
+			expect(kept).toHaveLength(1);
+			expect(kept[0].point.payload.startLine).toBe(9788);
+			expect(merged).toBe(1);
+		});
+
+		test('same text in two different files is kept twice (two locations are information)', () => {
+			const { kept, merged } = dropIdenticalChunks([
+				hit('.claude/rules/r.md', 'rule text', 1, 0.8),
+				hit('.claude/configs/rules/r.md', 'rule text', 1, 0.79),
+			], key);
+			expect(kept).toHaveLength(2);
+			expect(merged).toBe(0);
+		});
+
+		test('different text in the same file is kept', () => {
+			const { kept, merged } = dropIdenticalChunks([
+				hit('a.ts', 'function a() {}', 1, 0.8),
+				hit('a.ts', 'function b() {}', 9, 0.79),
+			], key);
+			expect(kept).toHaveLength(2);
+			expect(merged).toBe(0);
+		});
+
+		test('hits without chunk text are kept as-is', () => {
+			const { kept, merged } = dropIdenticalChunks([hit('a.ts', '', 1, 0.8), hit('a.ts', '   ', 2, 0.7)], key);
+			expect(kept).toHaveLength(2);
+			expect(merged).toBe(0);
+		});
+	});
+
+	describe('identical-chunk merge — end to end (#4352)', () => {
+		beforeEach(() => {
+			vi.clearAllMocks();
+			mockGetQdrantClient.mockReturnValue(mockQdrant);
+			mockExistsSync.mockReturnValue(true);
+			mockReaddirSync.mockReturnValue([]);
+			process.env.EMBEDDING_API_KEY = 'test-key';
+			mockQdrant.getCollection.mockResolvedValue({ status: 'green' });
+			mockEmbeddingCreate.mockResolvedValue({ data: [{ embedding: new Array(8).fill(0.1) }] });
+		});
+
+		afterEach(() => {
+			delete process.env.EMBEDDING_API_KEY;
+		});
+
+		// The measured shape (ai-01, 25/10, « inject the relevant memory lessons »): one JSON file
+		// repeats the same title at 5 lines; the per-file cap's backfill gave it 5 of 6 slots.
+		test('the same snippet repeated across one file takes ONE slot (#4352)', async () => {
+			const TITLE = '"title": "[FEAT] Auto-inject lessons at task start from MEMORY.md"';
+			mockQdrant.query.mockResolvedValue({
+				points: [
+					...[9788, 9070, 8844, 9687, 9891].map((line, i) => ({
+						score: 0.82 - i * 0.001,
+						payload: { filePath: 'docs/audit-table.json', codeChunk: `${' '.repeat(i)}${TITLE}`, startLine: line, endLine: line }
+					})),
+					{ score: 0.7, payload: { filePath: 'docs/other.md', codeChunk: 'memory lessons are injected at task start', startLine: 3, endLine: 3 } }
+				]
+			});
+
+			const parsed = JSON.parse((await handleCodebaseSearch({ query: 'memory lessons', workspace: '/ws', limit: 6 })).content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(parsed.identical_chunks_merged).toBe(4);
+			expect(parsed.results.filter((r: any) => r.file_path === 'docs/audit-table.json')).toHaveLength(1);
+			expect(parsed.results.map((r: any) => r.file_path)).toContain('docs/other.md');
 		});
 	});
 
