@@ -15,13 +15,21 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 const { mockQdrant, mockEmbeddingCreate, mockExecFile, state } = vi.hoisted(() => {
-	const state = { originUrl: 'https://github.com/jsboige/roo-extensions.git' as string | null };
+	const state = {
+		originUrl: 'https://github.com/jsboige/roo-extensions.git' as string | null,
+		// NUL-separated `git ls-files` output; null = not a git workspace (coverage walk off)
+		gitFiles: null as string | null,
+	};
 	const mockExecFile = vi.fn((_cmd: string, args: string[], _opts: unknown, cb: (err: any, stdout?: string) => void) => {
 		if (args.includes('config') && state.originUrl !== null) {
 			cb(null, `${state.originUrl}\n`);
 			return;
 		}
-		// `ls-files` and everything else: not a git workspace for the coverage walk.
+		if (args.includes('ls-files')) {
+			// the coverage walk lists tracked files then untracked ones; untracked stays empty
+			cb(null, args.includes('--others') ? '' : (state.gitFiles ?? ''));
+			return;
+		}
 		cb(Object.assign(new Error('not a git repository'), { code: 128 }));
 	});
 	const mockQdrant = {
@@ -83,6 +91,7 @@ describe('codebase_search merges the supplement corpus (#4352 a3)', () => {
 		vi.clearAllMocks();
 		clearSupplementCollectionCache();
 		state.originUrl = 'https://github.com/jsboige/roo-extensions.git';
+		state.gitFiles = null;
 		mockEmbeddingCreate.mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] });
 		mockQdrant.getCollection.mockImplementation(async (name: string) => {
 			if (name === MAIN) return { status: 'green', points_count: 500 };
@@ -174,5 +183,50 @@ describe('codebase_search merges the supplement corpus (#4352 a3)', () => {
 		// and the .yml data-file malus (×0.75) is visible in the exposed score
 		expect(body.data_file_malus_applied).toBe(2);
 		expect(supplementHits[0].score).toBeCloseTo(0.95 * 0.75, 5);
+	});
+
+	// ── review ms#1514, fix 1: an absent collection stays silent ───────────────
+
+	test('an ABSENT supplement collection: no supplement block, hint stays on Grep, one query — the 404 probe is paid once then cached', async () => {
+		// a blind spot on disk so the response carries not_indexed_by_design at all
+		state.gitFiles = 'src/a.ts\0scripts/deploy.ps1\0';
+		mockQdrant.getCollection.mockImplementation(async (name: string) => {
+			if (name === MAIN) return { status: 'green', points_count: 500 };
+			// the SUPPLEMENT collection does not exist: a derived name is not an existence proof
+			throw Object.assign(new Error('Not found'), { status: 404 });
+		});
+		mockQdrant.query.mockImplementation(async (collection: string) => {
+			if (collection === MAIN) return { points: [point('src/a.ts', 0.9)] };
+			throw new Error(`unexpected supplement query for ${collection}`);
+		});
+
+		const first = parse(await handleCodebaseSearch({ query: 'x', workspace: WORKSPACE } as any, [] as any, undefined));
+		// silent: no supplement block announcing points: 0 / error for a corpus that does not exist
+		expect(first.supplement).toBeUndefined();
+		// the hint keeps sending the agent to Grep — claiming "searched separately" would be a lie
+		expect(first.not_indexed_by_design.hint).toMatch(/use Grep for them/);
+		expect(first.not_indexed_by_design.hint).not.toMatch(/searched separately/);
+		// mutation check: only the main collection was queried — no 404 round trip
+		expect(mockQdrant.query).toHaveBeenCalledTimes(1);
+		expect(mockQdrant.query.mock.calls[0][0]).toBe(MAIN);
+		// the existence probe was paid exactly once for this workspace
+		expect(mockQdrant.getCollection.mock.calls.filter((c: any[]) => c[0] === SUPPLEMENT)).toHaveLength(1);
+
+		const second = parse(await handleCodebaseSearch({ query: 'y', workspace: WORKSPACE } as any, [] as any, undefined));
+		expect(second.supplement).toBeUndefined();
+		expect(second.not_indexed_by_design.hint).toMatch(/use Grep for them/);
+		// …and not twice: absence is cached 5 minutes, like the remote probe
+		expect(mockQdrant.getCollection.mock.calls.filter((c: any[]) => c[0] === SUPPLEMENT)).toHaveLength(1);
+		expect(mockQdrant.query).toHaveBeenCalledTimes(2); // the second main query only
+	});
+
+	test('a PRESENT supplement collection flips the same hint to "searched separately" (control for fix 1)', async () => {
+		state.gitFiles = 'src/a.ts\0scripts/deploy.ps1\0';
+		mockQdrant.query.mockImplementation(async (collection: string) => ({
+			points: collection === MAIN ? [point('src/a.ts', 0.9)] : [],
+		}));
+		const body = parse(await handleCodebaseSearch({ query: 'x', workspace: WORKSPACE } as any, [] as any, undefined));
+		expect(body.supplement).toMatchObject({ collection: SUPPLEMENT, points: 0, hits: 0 });
+		expect(body.not_indexed_by_design.hint).toMatch(new RegExp(`searched separately in ${SUPPLEMENT}`));
 	});
 });

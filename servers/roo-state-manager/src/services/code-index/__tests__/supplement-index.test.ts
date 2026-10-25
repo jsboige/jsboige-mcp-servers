@@ -35,6 +35,7 @@ import {
 	runSupplementIndex,
 	resolveSupplementCollection,
 	clearSupplementCollectionCache,
+	supplementCollectionPresent,
 	SUPPLEMENT_SENTINEL_ID,
 	MIN_BLOCK_CHARS,
 	MIN_CHUNK_REMAINDER_CHARS,
@@ -555,6 +556,118 @@ describe('runSupplementIndex (#4352 a3)', () => {
 		})).rejects.toThrow(/misaligned|returned \d+ vectors/);
 		const written = client.pointsOf(`sup-${'0'.repeat(16)}`);
 		expect(written).toHaveLength(0);
+	});
+
+	// ── review ms#1514, fix 2: the embedding-space fingerprint ────────────────
+
+	test('the sentinel records the embedding fingerprint — flip the recording off and a model switch goes silent', async () => {
+		const dir = repoWithFiles();
+		const client = new FakeQdrant({ 'ws-served': { points: 100, size: 2560 } });
+		const report = await runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed, dryRun: false, batchSize: 100, throttleMs: 0,
+			embeddingModelId: 'text-embedding-3-small',
+		});
+		const sentinel = client.collections.get(report.collection)!.points.get(SUPPLEMENT_SENTINEL_ID)!;
+		expect(sentinel.payload.embeddingModelId).toBe('text-embedding-3-small');
+		// dimensions come from the template collection — the served space, not a guess
+		expect(sentinel.payload.embeddingModelDimensions).toBe(2560);
+	});
+
+	test('a second run under the SAME fingerprint still skips unchanged files', async () => {
+		const dir = repoWithFiles();
+		const client = new FakeQdrant({ 'ws-served': { points: 100 } });
+		await runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed, dryRun: false, batchSize: 100, throttleMs: 0,
+			embeddingModelId: 'text-embedding-3-small',
+		});
+		embedCalls = [];
+		const second = await runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed, dryRun: false, batchSize: 100, throttleMs: 0,
+			embeddingModelId: 'text-embedding-3-small',
+		});
+		expect(second.files_skipped_unchanged).toBe(2);
+		expect(second.points_written).toBe(0);
+		expect(embedCalls).toHaveLength(0);
+	});
+
+	test('a run under a DIFFERENT model refuses, writes nothing, and leaves the sentinel untouched', async () => {
+		const dir = repoWithFiles();
+		const client = new FakeQdrant({ 'ws-served': { points: 100 } });
+		const first = await runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed, dryRun: false, batchSize: 100, throttleMs: 0,
+			embeddingModelId: 'text-embedding-3-small',
+		});
+		const pointsBefore = client.pointsOf(first.collection).length;
+		const sentinelBefore = client.collections.get(first.collection)!.points.get(SUPPLEMENT_SENTINEL_ID)!.payload;
+		embedCalls = [];
+		// the guard must name both spaces — a refusal the caller cannot act on is noise
+		await expect(runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed, dryRun: false, batchSize: 100, throttleMs: 0,
+			embeddingModelId: 'text-embedding-3-large',
+		})).rejects.toThrow(/holds vectors embedded with text-embedding-3-small .* would embed with text-embedding-3-large/s);
+		// mutation check: nothing written and nothing embedded by the refused run
+		expect(client.pointsOf(first.collection)).toHaveLength(pointsBefore);
+		expect(embedCalls).toHaveLength(0);
+		// the guard fires before the claim, so the old fingerprint survives the refusal
+		const sentinelAfter = client.collections.get(first.collection)!.points.get(SUPPLEMENT_SENTINEL_ID)!.payload;
+		expect(sentinelAfter).toEqual(sentinelBefore);
+	});
+
+	test('the model refusal also fires on a DRY run — planning must not cross spaces either', async () => {
+		const dir = repoWithFiles();
+		const client = new FakeQdrant({ 'ws-served': { points: 100 } });
+		await runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed, dryRun: false, batchSize: 100, throttleMs: 0,
+			embeddingModelId: 'text-embedding-3-small',
+		});
+		// dry_run defaults to true here
+		await expect(runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed,
+			embeddingModelId: 'text-embedding-3-large',
+		})).rejects.toThrow(/takeover does not cross a model change/);
+	});
+
+	test('takeover does NOT cross a model change — ownership and embedding space are two different guards', async () => {
+		const dir = repoWithFiles();
+		const client = new FakeQdrant({ 'ws-served': { points: 100 } });
+		await runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'ai-01:roo-extensions', templateCollection: 'ws-served',
+			embed, dryRun: false, batchSize: 100, throttleMs: 0,
+			embeddingModelId: 'text-embedding-3-small',
+		});
+		// takeover answers the writer guard; the model guard stands on its own
+		await expect(runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed, dryRun: false, batchSize: 100, throttleMs: 0, takeover: true,
+			embeddingModelId: 'text-embedding-3-large',
+		})).rejects.toThrow(/takeover does not cross a model change/);
+	});
+
+	// ── review ms#1514, fix 1: the presence gate (unit) ───────────────────────
+
+	test('supplementCollectionPresent: an absent collection answers false, and the absence is cached until the TTL or the clear', async () => {
+		const client = new FakeQdrant({}); // no sup- collection at all
+		clearSupplementCollectionCache();
+		expect(await supplementCollectionPresent(client, '/test/presence-ws', 'sup-aaaaaaaaaaaaaaaa')).toBe(false);
+		// the collection appears behind our back: the cached absence still answers
+		await client.createCollection('sup-aaaaaaaaaaaaaaaa', { vectors: { size: 4, distance: 'Cosine' } });
+		expect(await supplementCollectionPresent(client, '/test/presence-ws', 'sup-aaaaaaaaaaaaaaaa')).toBe(false);
+		// cache cleared: the probe sees reality
+		clearSupplementCollectionCache();
+		expect(await supplementCollectionPresent(client, '/test/presence-ws', 'sup-aaaaaaaaaaaaaaaa')).toBe(true);
+	});
+
+	test('supplementCollectionPresent: a client without getCollection says present — never suppress the corpus because the instrument is missing', async () => {
+		const bare = {} as QdrantLike;
+		clearSupplementCollectionCache();
+		expect(await supplementCollectionPresent(bare, '/test/presence-bare', 'sup-bbbbbbbbbbbbbbbb')).toBe(true);
 	});
 
 	test('a workspace with no origin remote is an explicit error, not an empty index', async () => {

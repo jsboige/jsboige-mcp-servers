@@ -359,12 +359,18 @@ export const SUPPLEMENT_SENTINEL_ID = supplementPointId('rsm-supplement', 'senti
  * What the sentinel records. `writer` is the lane that owns the collection
  * (`machine:workspace`); `takenOverFrom` records the previous owner when an
  * explicit takeover happened, so a silent handover leaves a trace.
+ * `embeddingModelId`/`embeddingModelDimensions` pin the embedding space the
+ * existing points live in: the incremental skip keys on `fileHash` alone, so a
+ * model switch with no recorded fingerprint would keep vectors from another
+ * space and report them as "unchanged" (review ms#1514, fix 2).
  */
 export interface SupplementWriterRecord {
 	writer: string;
 	since: string;
 	remote: string;
 	takenOverFrom?: string;
+	embeddingModelId?: string;
+	embeddingModelDimensions?: number;
 }
 
 export interface QdrantLike {
@@ -398,6 +404,8 @@ export interface QdrantLike {
 					since: String(payload.since ?? ''),
 					remote: String(payload.remote ?? ''),
 					takenOverFrom: typeof payload.takenOverFrom === 'string' ? payload.takenOverFrom : undefined,
+					...(typeof payload.embeddingModelId === 'string' ? { embeddingModelId: payload.embeddingModelId } : {}),
+					...(typeof payload.embeddingModelDimensions === 'number' ? { embeddingModelDimensions: payload.embeddingModelDimensions } : {}),
 				};
 			}
 			return null;
@@ -418,6 +426,8 @@ export interface QdrantLike {
 					since: String(payload.since ?? ''),
 					remote: String(payload.remote ?? ''),
 					takenOverFrom: typeof payload.takenOverFrom === 'string' ? payload.takenOverFrom : undefined,
+					...(typeof payload.embeddingModelId === 'string' ? { embeddingModelId: payload.embeddingModelId } : {}),
+					...(typeof payload.embeddingModelDimensions === 'number' ? { embeddingModelDimensions: payload.embeddingModelDimensions } : {}),
 				};
 			}
 		}
@@ -495,6 +505,8 @@ export async function claimSupplementWriter(
 		dryRun?: boolean;
 		now?: string;
 		vector: number[];
+		/** Recorded in the sentinel so the incremental skip can detect a model switch. */
+		embeddingModel?: { id: string | null; dimensions: number | null };
 	},
 ): Promise<{ claimed: boolean; previous: SupplementWriterRecord | null; sentinelId: string }> {
 	const previous = await readWriterRecord(client, collection);
@@ -522,6 +534,8 @@ export async function claimSupplementWriter(
 				since: options.now ?? new Date().toISOString(),
 				remote: options.remote,
 				...(isOther ? { takenOverFrom: previous?.writer } : {}),
+				...(options.embeddingModel?.id ? { embeddingModelId: options.embeddingModel.id } : {}),
+				...(options.embeddingModel?.dimensions ? { embeddingModelDimensions: options.embeddingModel.dimensions } : {}),
 			},
 		}],
 	});
@@ -529,7 +543,8 @@ export async function claimSupplementWriter(
 	if (readBack && readBack.writer !== writer) {
 		throw new Error(
 			`writer guard: ${collection} is now owned by ${readBack.writer}, not ${writer} — a concurrent ` +
-			`claim won the sentinel; nothing was written by this call.`
+			`claim won the sentinel; no points were written by this call, but the sentinel itself may have ` +
+			`been overwritten.`
 		);
 	}
 	return { claimed: true, previous, sentinelId: SUPPLEMENT_SENTINEL_ID };
@@ -635,6 +650,8 @@ export interface SupplementIndexDeps {
 	takeover?: boolean;
 	/** The served Zoo collection to copy vector size/distance from (required for creation). */
 	templateCollection?: string | null;
+	/** Model id this run embeds with — recorded in the sentinel, compared on the next run. */
+	embeddingModelId?: string | null;
 	embed: (texts: string[]) => Promise<number[][]>;
 	batchSize?: number;
 	throttleMs?: number;
@@ -726,6 +743,28 @@ export async function runSupplementIndex(deps: SupplementIndexDeps): Promise<Sup
 			`is meant to own it from now on.`
 		);
 	}
+	// Embedding-space guard (review ms#1514, fix 2). The incremental skip keys on
+	// `fileHash` alone: after a model switch every hash is "unchanged", the run
+	// would embed nothing, and the collection would mix two vector spaces while
+	// reporting files_skipped_unchanged as good news. The sentinel fingerprint
+	// makes the switch visible, and the run REFUSES — takeover does not cross a
+	// model change, because that is exactly the silent failure it exists for.
+	// Remedy: the supplement is derived data — delete the collection and rerun to
+	// rebuild it whole under the current model.
+	if (previous?.embeddingModelId != null) {
+		const dimensionsMatch = previous.embeddingModelDimensions == null
+			|| vectorConfig == null
+			|| previous.embeddingModelDimensions === vectorConfig.size;
+		if (previous.embeddingModelId !== deps.embeddingModelId || !dimensionsMatch) {
+			throw new Error(
+				`collection ${collection} holds vectors embedded with ${previous.embeddingModelId} (${previous.embeddingModelDimensions ?? '?'}d), ` +
+				`but this run would embed with ${deps.embeddingModelId ?? 'an unknown model'} (${vectorConfig?.size ?? '?'}d). ` +
+				`Mixing embedding spaces yields a meaningless ranking with no error, so the run refuses — ` +
+				`takeover does not cross a model change. The supplement is derived data: delete the ` +
+				`${collection} collection and rerun to rebuild it under the current model.`
+			);
+		}
+	}
 
 	const report: SupplementIndexReport = {
 		status: dryRun ? 'dry_run' : 'success',
@@ -799,6 +838,9 @@ export async function runSupplementIndex(deps: SupplementIndexDeps): Promise<Sup
 		await deps.client.createCollection(collection, {
 			vectors: { size: vectorConfig.size, distance: vectorConfig.distance },
 		});
+		// The search path caches "collection absent" for 5 minutes — a collection
+		// that just came into being must not stay invisible until the TTL expires.
+		collectionPresenceCache.delete(deps.workspaceRoot);
 	}
 
 	// 4. Claim the writer (sentinel), with a zero vector of the collection's size.
@@ -807,6 +849,7 @@ export async function runSupplementIndex(deps: SupplementIndexDeps): Promise<Sup
 		takeover: deps.takeover,
 		vector: new Array(vectorConfig?.size ?? 0).fill(0),
 		now: now(),
+		embeddingModel: { id: deps.embeddingModelId ?? null, dimensions: vectorConfig?.size ?? null },
 	});
 	if (claim.claimed) report.writer_guard.ok = true;
 
@@ -888,9 +931,45 @@ export async function runSupplementIndex(deps: SupplementIndexDeps): Promise<Sup
 const collectionCache = new Map<string, { value: string | null; remote: string | null; expiresAt: number }>();
 const COLLECTION_CACHE_TTL_MS = 5 * 60_000;
 
-/** Test hook — clears the workspace → collection cache. */
+/**
+ * Negative cache for the search path: a derived collection name is NOT an
+ * existence proof, and most repos will never have a `sup-` collection. Without
+ * this gate every search pays a Qdrant query that 404s and the response
+ * announces a supplement that does not exist (review ms#1514, fix 1). Same TTL
+ * as the remote probe.
+ */
+const collectionPresenceCache = new Map<string, { name: string; present: boolean; expiresAt: number }>();
+
+/** Test hook — clears the workspace → collection caches (name and presence). */
 export function clearSupplementCollectionCache(): void {
 	collectionCache.clear();
+	collectionPresenceCache.clear();
+}
+
+/**
+ * Whether the supplement collection actually exists in Qdrant. Cached per
+ * workspace for 5 minutes, absence included: probing on every search would
+ * reintroduce the per-call round trip this gate removes. A client without
+ * `getCollection` cannot tell, so it says "present" and lets `searchSupplement`
+ * fail open — never suppress the corpus because the instrument is missing.
+ */
+export async function supplementCollectionPresent(
+	client: QdrantLike,
+	workspaceRoot: string,
+	collection: string,
+): Promise<boolean> {
+	const cached = collectionPresenceCache.get(workspaceRoot);
+	if (cached && cached.name === collection && cached.expiresAt > Date.now()) return cached.present;
+	let present = true;
+	if (typeof client.getCollection === 'function') {
+		try {
+			await client.getCollection(collection);
+		} catch {
+			present = false;
+		}
+	}
+	collectionPresenceCache.set(workspaceRoot, { name: collection, present, expiresAt: Date.now() + COLLECTION_CACHE_TTL_MS });
+	return present;
 }
 
 /**

@@ -871,7 +871,7 @@ export async function handleRooSyncIndexing(
         case 'index_code_supplement': {
             const { resolveWorkspace } = await import('../../utils/workspace-resolver.js');
             const { getQdrantClient } = await import('../../services/qdrant.js');
-            const { embedCodebaseTexts } = await import('../../services/code-index/embedding-client.js');
+            const { embedCodebaseTexts, getCodebaseEmbeddingModel } = await import('../../services/code-index/embedding-client.js');
             const {
                 runSupplementIndex,
                 pickLargestCollection,
@@ -898,6 +898,9 @@ export async function handleRooSyncIndexing(
                     dryRun: args.dry_run !== false,
                     takeover: args.takeover === true,
                     templateCollection,
+                    // Recorded in the sentinel; a later run under a different model
+                    // refuses instead of mixing two embedding spaces (ms#1514 fix 2).
+                    embeddingModelId: getCodebaseEmbeddingModel(),
                     embed: embedCodebaseTexts,
                     batchSize: args.batch_size,
                     maxFiles: args.max_files,

@@ -24,6 +24,7 @@ import {
 import {
 	resolveSupplementCollection,
 	searchSupplement,
+	supplementCollectionPresent,
 } from '../../services/code-index/supplement-index.js';
 
 /**
@@ -778,11 +779,21 @@ function startSupplementProbe(workspaceRoot: string): SupplementProbe {
 async function collectSupplementHits(
 	qdrant: any,
 	probe: SupplementProbe,
+	workspaceRoot: string,
 	queryVector: number[],
 	options: { limit: number; minScore: number; directoryPrefix?: string; timeoutSec?: number },
 ): Promise<{ collection: string | null; points: any[]; error?: string }> {
 	const { collection, error: resolveError } = await probe;
 	if (!collection) return { collection: null, points: [], ...(resolveError ? { error: resolveError } : {}) };
+	// #4352 review fix 1: a derived name is not an existence proof. Most repos
+	// will never have a `sup-` collection — without this gate each search pays a
+	// Qdrant query that 404s, the response announces `points: 0, error`, and the
+	// blind-spot hint claims the files are "searched separately" when they are
+	// not. Absence is cached 5 minutes like the remote probe; an ABSENT
+	// collection yields no supplement block at all and the hint stays on Grep.
+	// `error` is only for a collection that exists and whose query failed.
+	const present = await supplementCollectionPresent(qdrant, workspaceRoot, collection);
+	if (!present) return { collection: null, points: [] };
 	const { points, error } = await searchSupplement(qdrant, collection, queryVector, options);
 	return { collection, points, ...(error ? { error } : {}) };
 }
@@ -1802,7 +1813,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// #4352 (a3): the supplement corpus, queried with the same vector and the same
 		// bounds. Fail-open: a missing/absent/unreachable `sup-` collection yields zero
 		// points plus a reason, never an error for the caller.
-		const supplement = await collectSupplementHits(qdrant, supplementProbe, queryVector, {
+		const supplement = await collectSupplementHits(qdrant, supplementProbe, workspace, queryVector, {
 			limit: fetchLimit,
 			minScore: effectiveMinScore,
 			directoryPrefix: directory_prefix,
