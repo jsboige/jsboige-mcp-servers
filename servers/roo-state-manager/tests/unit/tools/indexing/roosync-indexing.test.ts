@@ -96,9 +96,10 @@ describe('roosync_indexing - CONS-11', () => {
             expect(roosyncIndexingTool.name).toBe('roosync_indexing');
         });
 
-        it('should have action enum with 15 values', () => {
+        it('should have action enum with 16 values', () => {
             const actionProp = (roosyncIndexingTool.inputSchema as any).properties.action;
-            expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report']);
+            // #4352 (a3): index_code_supplement is the 16th action.
+            expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement']);
         });
 
         it('should require action parameter', () => {

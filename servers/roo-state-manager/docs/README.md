@@ -28,6 +28,7 @@
 | Document | Description | Focus |
 |----------|-------------|--------|
 | [`ARCHITECTURE-SYSTEME-HIERARCHIQUE.md`](ARCHITECTURE-SYSTEME-HIERARCHIQUE.md) | 🏗️ Architecture globale système reconstruction hiérarchique | Composants clés, flux données, architecture finale |
+| [`SUPPLEMENT-INDEX-4352.md`](SUPPLEMENT-INDEX-4352.md) | 🔍 Index complémentaire `sup-` : ce que Zoo n'indexe jamais (#4352 a3) | Sélection git-visible, chunker Zoo, écrivain unique, fusion `codebase_search` |
 
 ### ⚙️ **Parsing & Algorithmes**
 
