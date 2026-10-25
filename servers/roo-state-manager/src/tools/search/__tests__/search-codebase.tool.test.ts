@@ -1218,6 +1218,7 @@ describe('search-codebase.tool', () => {
 
 			afterEach(() => {
 				delete process.env.EMBEDDING_API_KEY;
+				delete process.env.CODEBASE_COVERAGE_WAIT_MS;
 				// Restore the hoisted default so later suites stay deterministic.
 				mockReaddirSync.mockReturnValue([]);
 			});
@@ -1328,6 +1329,50 @@ describe('search-codebase.tool', () => {
 				await handleCodebaseSearch({ query: 'one', workspace: '/ws/v2c-cache' });
 				await handleCodebaseSearch({ query: 'two', workspace: '/ws/v2c-cache' });
 				expect(mockQdrant.scroll).toHaveBeenCalledTimes(1);
+			});
+
+			// #4352: the count scrolls every point (12-14 s on 486k points, ai-01 25/10) and
+			// used to run before the embedding — every search after the TTL waited for it.
+			test('a slow coverage count does not hold the search: pending now, from cache next time (#4352)', async () => {
+				process.env.CODEBASE_COVERAGE_WAIT_MS = '20';
+				let releaseScroll!: (v: any) => void;
+				mockQdrant.scroll.mockImplementationOnce(() => new Promise(r => { releaseScroll = r; }));
+				mockReaddirSync.mockImplementation(() => [
+					{ name: 'a.ts', isDirectory: () => false, isFile: () => true },
+					{ name: 'b.ts', isDirectory: () => false, isFile: () => true }
+				]);
+
+				const first = JSON.parse((await handleCodebaseSearch({ query: 'slow count', workspace: '/ws/4352-slow' })).content[0].text);
+				expect(first.status).toBe('success');
+				expect(first.coverage_pending).toBe(true);
+				expect(first.coverage).toBeUndefined();
+
+				releaseScroll({ points: [{ payload: { filePath: 'a.ts' } }] });
+				await new Promise(r => setTimeout(r, 0));
+
+				const second = JSON.parse((await handleCodebaseSearch({ query: 'after count', workspace: '/ws/4352-slow' })).content[0].text);
+				expect(second.coverage_pending).toBeUndefined();
+				expect(second.coverage.indexed_files).toBe(1);
+				expect(second.coverage.eligible_files).toBe(2);
+				expect(mockQdrant.scroll).toHaveBeenCalledTimes(1);
+			});
+
+			test('concurrent searches on one collection share one coverage count (#4352)', async () => {
+				process.env.CODEBASE_COVERAGE_WAIT_MS = '20';
+				let releaseScroll!: (v: any) => void;
+				mockQdrant.scroll.mockImplementationOnce(() => new Promise(r => { releaseScroll = r; }));
+				mockReaddirSync.mockImplementation(() => [
+					{ name: 'a.ts', isDirectory: () => false, isFile: () => true }
+				]);
+
+				const [a, b] = await Promise.all([
+					handleCodebaseSearch({ query: 'first', workspace: '/ws/4352-shared' }),
+					handleCodebaseSearch({ query: 'second', workspace: '/ws/4352-shared' })
+				]);
+				expect(JSON.parse(a.content[0].text).coverage_pending).toBe(true);
+				expect(JSON.parse(b.content[0].text).coverage_pending).toBe(true);
+				expect(mockQdrant.scroll).toHaveBeenCalledTimes(1);
+				releaseScroll({ points: [] });
 			});
 
 			test('served_build pins the running build dir on every success response (#2609 V2(c)(c))', async () => {
