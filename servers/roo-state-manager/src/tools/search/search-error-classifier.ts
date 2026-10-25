@@ -92,8 +92,12 @@ async function probeQdrantHealth(): Promise<{ ok: boolean; latencyMs: number; st
  * (cold cache, on-disk vectors, CPU), never a proxy drop. Qdrant's own search
  * timeout ("Operation 'Search' timed out") says the same on any host.
  */
+// Qdrant's exact wording only: the OpenAI SDK says "Request timed out." for an
+// embedding timeout, which roosync_search reports under operation 'search'.
+const QDRANT_OWN_SEARCH_TIMEOUT = /Operation '?Search'? timed out/i;
+
 function qdrantHasNoProxyInPath(errorMsg: string): boolean {
-	if (/Operation '?Search'? timed out/i.test(errorMsg)) return true;
+	if (QDRANT_OWN_SEARCH_TIMEOUT.test(errorMsg)) return true;
 	try {
 		const host = new URL(process.env.QDRANT_URL || 'http://localhost:6333').hostname;
 		return host === 'localhost' || host === '[::1]' || /^127\./.test(host);
@@ -233,7 +237,7 @@ export async function classifySearchError(
 
 		// Abort/timeout → probe health to distinguish proxy_drop vs unreachable
 		if (errorMsg.includes('abort') || errorMsg.includes('timeout') ||
-			/timed out/i.test(errorMsg) || // #4352: Qdrant's own "Operation 'Search' timed out"
+			QDRANT_OWN_SEARCH_TIMEOUT.test(errorMsg) || // #4352
 			errorMsg.includes('This operation was aborted') ||
 			errorCode === 'UND_ERR_CONNECT_TIMEOUT' ||
 			isHttpServerError(error)) {

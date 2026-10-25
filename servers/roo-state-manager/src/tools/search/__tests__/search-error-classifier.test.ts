@@ -166,6 +166,24 @@ describe('classifySearchError', () => {
 		expect(result.mode).toBe('qdrant_backend_slow');
 	});
 
+	it("Qdrant's own search timeout with no HTTP status still enters the timeout branch", async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const err = makeError("Timeout error: Operation 'Search' timed out after 59 seconds");
+		const result = await classifySearchError(err, 'search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+	});
+
+	// #4352 review: roosync_search reports an embedding timeout under 'search'. The
+	// OpenAI SDK's "Request timed out." must not be read as Qdrant being slow.
+	it('an embedding SDK "Request timed out." on a loopback Qdrant is not blamed on Qdrant', async () => {
+		process.env.QDRANT_URL = 'http://localhost:6333';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const result = await classifySearchError(makeError('Request timed out.'), 'search');
+		expect(result.mode).not.toBe('qdrant_backend_slow');
+		expect(result.mode).not.toBe('qdrant_proxy_drop');
+	});
+
 	it('probe !ok → qdrant_backend_slow', async () => {
 		mockFetch.mockResolvedValue({ ok: false, status: 503 });
 		const err = makeError('Request timeout');
