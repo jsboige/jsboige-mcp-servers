@@ -5,7 +5,9 @@
  *  - derivation cohort (workspace present, name missing) → setPayload workspace_name;
  *  - claude-* task_id resolved via local Claude storage (JSONL cwd);
  *  - roo task_id resolved via local Roo storage (task_metadata.json workspace);
- * plus dry_run (no writes) and the unresolved report (by source / machine).
+ *  - zoo task_id resolved via history_item.json (Zoo's task_metadata.json has no workspace, #4352);
+ * plus dry_run (no writes), the unresolved report (by source / machine) and the
+ * scope to this machine's points (#4352).
  */
 
 import { describe, it, expect, vi, beforeAll, afterAll } from 'vitest';
@@ -34,19 +36,26 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 }));
 
 import { handleRepairWorkspace } from '../repair-workspace.js';
+import { getHostIdentifier } from '../../../services/task-indexer/ChunkExtractor.js';
 
 let tmpDir: string;
+const HERE = getHostIdentifier();
 
 const POINTS = [
 	// derivation cohort: workspace present, name missing (3.5% of the ai-01 sample)
-	{ id: 'pA', payload: { workspace: 'd:/dev/CoursIA-2', source: 'roo', host_os: 'm1' } },
+	{ id: 'pA', payload: { workspace: 'd:/dev/CoursIA-2', source: 'roo', host_os: HERE } },
 	// neither field, claude-* task_id resolvable locally via JSONL cwd
-	{ id: 'pB', payload: { task_id: 'claude-MyProj--sess-uuid-1', source: 'claude-code', host_os: 'm1' } },
+	{ id: 'pB', payload: { task_id: 'claude-MyProj--sess-uuid-1', source: 'claude-code', host_os: HERE } },
 	// neither field, roo task_id resolvable locally via task_metadata.json
-	{ id: 'pC', payload: { task_id: 'roo-task-x', source: 'roo', host_os: 'm1' } },
+	{ id: 'pC', payload: { task_id: 'roo-task-x', source: 'roo', host_os: HERE } },
 	// neither field, no task_id → unrepairable, reported by source + machine
-	{ id: 'pD', payload: { source: 'claude-code', host_os: 'm2' } },
+	{ id: 'pD', payload: { source: 'claude-code', host_os: HERE } },
 ];
+
+// #4352: a Zoo task — workspace only in history_item.json
+const ZOO_POINT = { id: 'pZ', payload: { task_id: 'zoo-task-y', source: 'roo', host_os: HERE } };
+// #4352: another machine's point whose task id happens to resolve here — never touched
+const FOREIGN_POINT = { id: 'pF', payload: { task_id: 'roo-task-x', source: 'roo', host_os: 'other-host-win32-x64' } };
 
 beforeAll(async () => {
 	tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'rsm-3344-repair-'));
@@ -67,6 +76,18 @@ beforeAll(async () => {
 	await fs.writeFile(
 		path.join(rooRoot, 'tasks', 'roo-task-x', 'task_metadata.json'),
 		JSON.stringify({ workspace: 'd:/dev/Foo' }),
+		'utf-8'
+	);
+	// Zoo fixture: task_metadata.json without workspace, history_item.json with it (BOM-prefixed)
+	await fs.mkdir(path.join(rooRoot, 'tasks', 'zoo-task-y'), { recursive: true });
+	await fs.writeFile(
+		path.join(rooRoot, 'tasks', 'zoo-task-y', 'task_metadata.json'),
+		JSON.stringify({ files_in_context: [] }),
+		'utf-8'
+	);
+	await fs.writeFile(
+		path.join(rooRoot, 'tasks', 'zoo-task-y', 'history_item.json'),
+		'\uFEFF' + JSON.stringify({ id: 'zoo-task-y', ts: 1, task: 't', workspace: 'd:/dev/Bar' }),
 		'utf-8'
 	);
 	state.rooLocations = [rooRoot];
@@ -123,7 +144,34 @@ describe('handleRepairWorkspace (#3344)', () => {
 		// Unresolved point reported by source and machine — the lane needing a re-index
 		expect(parsed.unresolved.total).toBe(1);
 		expect(parsed.unresolved.by_source['claude-code'].total).toBe(1);
-		expect(parsed.unresolved.by_machine.m2.total).toBe(1);
+		expect(parsed.unresolved.by_machine[HERE].total).toBe(1);
+	});
+
+	it('resolves a Zoo task through history_item.json when task_metadata.json has no workspace (#4352)', async () => {
+		setupScroll([[ZOO_POINT]]);
+
+		const result = await handleRepairWorkspace({});
+		const parsed = JSON.parse(result.content[0].text);
+
+		expect(parsed.repairs.from_local_lookup).toBe(1);
+		expect(parsed.unresolved.total).toBe(0);
+		expect(mockQdrant.setPayload).toHaveBeenCalledWith(
+			expect.any(String),
+			expect.objectContaining({ payload: { workspace: 'd:/dev/Bar', workspace_name: 'Bar' }, points: ['pZ'] }),
+		);
+	});
+
+	it('leaves another machine\'s points alone, even when their task id resolves here (#4352)', async () => {
+		setupScroll([[FOREIGN_POINT, ZOO_POINT]]);
+
+		const result = await handleRepairWorkspace({});
+		const parsed = JSON.parse(result.content[0].text);
+
+		expect(parsed.host_os).toBe(HERE);
+		expect(parsed.findings.missing_workspace_name).toBe(1);
+		expect(parsed.unresolved.total).toBe(0);
+		const written = mockQdrant.setPayload.mock.calls.flatMap((c: any[]) => c[1].points);
+		expect(written).toEqual(['pZ']);
 	});
 
 	it('dry_run reports would-be repairs without writing', async () => {
@@ -185,9 +233,12 @@ describe('handleRepairWorkspace (#3344)', () => {
 		await handleRepairWorkspace({});
 
 		// The probe scroll must carry a server-side filter so the repair covers the
-		// WHOLE collection (missing points only) instead of the first ~20k points.
+		// WHOLE collection (missing points only) instead of the first ~20k points,
+		// scoped to this machine's points (#4352) so re-runs do not stall on foreign ones.
 		expect(probeOpts).not.toBeNull();
-		expect(probeOpts.filter).toEqual({ must: [{ is_empty: { key: 'workspace_name' } }] });
+		expect(probeOpts.filter).toEqual({
+			must: [{ is_empty: { key: 'workspace_name' } }, { key: 'host_os', match: { value: HERE } }],
+		});
 	});
 
 	it('surfaces scroll failures as a structured error instead of throwing', async () => {

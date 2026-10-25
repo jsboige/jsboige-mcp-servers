@@ -22,7 +22,7 @@ import { promises as fs, createReadStream } from 'fs';
 import * as path from 'path';
 import * as readline from 'readline';
 import { getQdrantClient } from '../../services/qdrant.js';
-import { workspaceBasename } from '../../services/task-indexer/ChunkExtractor.js';
+import { workspaceBasename, getHostIdentifier } from '../../services/task-indexer/ChunkExtractor.js';
 
 export interface RepairWorkspaceOptions {
     /** Simulation mode: report what would be repaired, write nothing. Default: false (setPayload only ADDS fields — non-destructive). */
@@ -100,23 +100,36 @@ async function resolveClaudeWorkspace(taskId: string): Promise<string | undefine
     return undefined;
 }
 
-/** Resolve the workspace of a Roo taskId from local Roo storage (task_metadata.json). */
+/** Read `workspace` from a task JSON file (BOM-tolerant); undefined when absent or unreadable. */
+async function readWorkspaceField(filePath: string): Promise<string | undefined> {
+    try {
+        const content = await fs.readFile(filePath, 'utf-8');
+        const clean = content.charCodeAt(0) === 0xFEFF ? content.slice(1) : content;
+        const parsed = JSON.parse(clean);
+        if (typeof parsed.workspace === 'string' && parsed.workspace) {
+            return parsed.workspace;
+        }
+    } catch {
+        // missing or malformed — caller tries the next source
+    }
+    return undefined;
+}
+
+/**
+ * Resolve the workspace of a Roo/Zoo taskId from local storage.
+ * Roo writes `workspace` in task_metadata.json; Zoo's task_metadata.json holds
+ * only `files_in_context` and keeps `workspace` in history_item.json (#4352:
+ * 91% of a 30k sample of ai-01 points missing workspace_name resolved only there).
+ */
 async function resolveRooWorkspace(taskId: string): Promise<string | undefined> {
     const { RooStorageDetector } = await import('../../utils/roo-storage-detector.js');
     const locations = await RooStorageDetector.detectStorageLocations();
     const baseTaskId = taskId.split('#unit-')[0];
     for (const location of locations) {
-        const metadataPath = path.join(location, 'tasks', baseTaskId, 'task_metadata.json');
-        try {
-            const content = await fs.readFile(metadataPath, 'utf-8');
-            const clean = content.charCodeAt(0) === 0xFEFF ? content.slice(1) : content;
-            const metadata = JSON.parse(clean);
-            if (typeof metadata.workspace === 'string' && metadata.workspace) {
-                return metadata.workspace;
-            }
-        } catch {
-            // not in this location — try the next
-        }
+        const taskDir = path.join(location, 'tasks', baseTaskId);
+        const ws = await readWorkspaceField(path.join(taskDir, 'task_metadata.json'))
+            ?? await readWorkspaceField(path.join(taskDir, 'history_item.json'));
+        if (ws) return ws;
     }
     return undefined;
 }
@@ -137,6 +150,11 @@ export async function handleRepairWorkspace(options: RepairWorkspaceOptions = {}
 
     const qdrant = getQdrantClient();
     const taskIdCache = new Map<string, string | undefined>();
+    // #4352: only this machine's points are resolvable here. Unscoped, every re-run
+    // restarts at the head of the collection and re-reads the foreign points it left
+    // unresolved (36% of the 1.1M missing on 25/10): after two or three runs the scan
+    // budget holds nothing else and "stops decreasing" reads as done.
+    const hostOs = getHostIdentifier();
 
     const findings = {
         scanned: 0,
@@ -197,7 +215,7 @@ export async function handleRepairWorkspace(options: RepairWorkspaceOptions = {}
         // 400 "Expected some form of condition" on Qdrant, which silently forced the
         // client_scan fallback (first ~20k points only per call, catastrophic on a
         // 2M+ collection). Verified live against qdrant.myia.io (server 1.18.2).
-        let useFilter: any = { must: [{ is_empty: { key: 'workspace_name' } }] };
+        let useFilter: any = { must: [{ is_empty: { key: 'workspace_name' } }, { key: 'host_os', match: { value: hostOs } }] };
         try {
             await qdrant.scroll(collectionName, {
                 limit: 1,
@@ -237,6 +255,7 @@ export async function handleRepairWorkspace(options: RepairWorkspaceOptions = {}
                 const hasName = typeof payload.workspace_name === 'string' && payload.workspace_name.length > 0;
 
                 if (hasName) continue; // already complete (client_scan mode)
+                if (payload.host_os !== hostOs) continue; // another machine's point (only client_scan sees these)
                 matchedInPage++;
                 findings.missing_workspace_name++;
 
@@ -307,6 +326,7 @@ export async function handleRepairWorkspace(options: RepairWorkspaceOptions = {}
                 text: JSON.stringify({
                     action: 'repair_workspace',
                     collection: collectionName,
+                    host_os: hostOs,
                     dry_run: dryRun,
                     filter_mode: filterMode,
                     stop_reason: stopReason,
@@ -337,7 +357,7 @@ export async function handleRepairWorkspace(options: RepairWorkspaceOptions = {}
                         total: unresolved.total,
                         by_source: unresolved.by_source,
                         by_machine: unresolved.by_machine,
-                        hint: 'Unresolved points carry no workspace coordinate AND their task/session is not on this machine. They belong to other machines (run the action there) or to deleted tasks (re-index to fix).',
+                        hint: 'Only points indexed by this machine (host_os above) are scanned. Unresolved ones carry no workspace coordinate AND their task/session is no longer on disk (deleted tasks: re-index to fix). Other machines run the action themselves.',
                     },
                     hint: 'setPayload only ADDS workspace fields — vectors, content and other payload keys are untouched. Re-run until missing_workspace_name stops decreasing; verify with roosync_indexing(action: "diagnose", deep: true).',
                 }, null, 2)
