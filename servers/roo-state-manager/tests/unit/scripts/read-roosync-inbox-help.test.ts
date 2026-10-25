@@ -40,11 +40,67 @@ describe('read-roosync-inbox.mjs shell (#4131 B14)', () => {
     expect(status).toBe(0);
     expect(stdout).toContain('Usage: node scripts/read-roosync-inbox.mjs --machine');
     expect(stdout).toContain("3 = {source:'file',reason:...}");
+    // #4131 B17 — the mark-read mode and its extra exit code are part of the
+    // contract the PowerShell worker keys on.
+    expect(stdout).toContain('--mark-read');
+    expect(stdout).toContain('4 = --mark-read');
   });
 
   it('missing --machine exits 1 before any PG or build dependency', () => {
     const { status } = run([]);
     expect(status).toBe(1);
+  });
+
+  // --- #4131 B17: the value guard fires before any build/PG dependency.
+  it('--mark-read without a message id exits 1 (trailing flag and next-flag forms)', () => {
+    expect(run(['--machine', 'myia-ai-01', '--mark-read']).status).toBe(1);
+    expect(run(['--machine', 'myia-ai-01', '--mark-read', '--pretty']).status).toBe(1);
+  });
+
+  // --- #4131 B17: the exit-code mapping the PowerShell side will branch on.
+  // 0 = persisted (already-read included), 4 = PG answered but nothing written.
+  it('--mark-read maps helper outcomes to exit codes 0 / 4 via a build stub', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-cli-b17-'));
+    try {
+      fs.mkdirSync(path.join(root, 'build', 'services', 'unified-store'), { recursive: true });
+      fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ type: 'module' }));
+      fs.writeFileSync(
+        path.join(root, 'build', 'services', 'unified-store', 'roosync-channel-read.js'),
+        `export async function readCliInboxFromPg() {\n` +
+          `  return { source: 'pg', messages: [] };\n` +
+          `}\n` +
+          `export async function markCliMessageReadInPg(machine, workspace, id) {\n` +
+          `  if (id === 'msg-ok') return { source: 'pg', written: true, alreadyRead: true };\n` +
+          `  if (id === 'msg-refused') return { source: 'pg', written: false, reason: 'denied' };\n` +
+          `  return { source: 'file', reason: 'gate-off' };\n` +
+          `}\n`
+      );
+      const env = { ...process.env, RSM_ROOT: root };
+
+      const ok = execFileSync('node', [CLI, '--machine', 'myia-ai-01', '--mark-read', 'msg-ok'], {
+        encoding: 'utf-8', timeout: 30_000, env,
+      });
+      expect(JSON.parse(ok)).toEqual({ source: 'pg', written: true, alreadyRead: true });
+
+      const refused = runStub(['--machine', 'myia-ai-01', '--mark-read', 'msg-refused'], env);
+      expect(refused.status).toBe(4);
+      expect(JSON.parse(refused.stdout)).toEqual({ source: 'pg', written: false, reason: 'denied' });
+
+      const gateOff = runStub(['--machine', 'myia-ai-01', '--mark-read', 'msg-x'], env);
+      expect(gateOff.status).toBe(3);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+
+    function runStub(args: string[], env: NodeJS.ProcessEnv): { status: number; stdout: string } {
+      try {
+        const stdout = execFileSync('node', [CLI, ...args], { encoding: 'utf-8', timeout: 30_000, env });
+        return { status: 0, stdout };
+      } catch (error) {
+        const err = error as { status?: number; stdout?: string };
+        return { status: err.status ?? -1, stdout: err.stdout ?? '' };
+      }
+    }
   });
 
   // --- review head cad920f5 (Hermes) — F3: process.exit() does not drain a
