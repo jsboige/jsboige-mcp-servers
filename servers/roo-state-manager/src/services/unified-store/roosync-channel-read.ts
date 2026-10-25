@@ -21,11 +21,14 @@
  */
 
 import type { Message, MessageListItem } from '../MessageManager.js';
-import type { RooSyncMessageRow } from './types.js';
+import type { RooSyncMessageRow, RooSyncMessageUpdate } from './types.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { withColdPoolResume } from './pg-cold-pool-resume.js';
-import { parseMachineWorkspace, matchesRecipient, perReaderStatus } from '../../utils/message-helpers.js';
+import { parseMachineWorkspace, matchesRecipient, perReaderStatus, isMachineWideTarget } from '../../utils/message-helpers.js';
+import { applyReadTracking } from '../../utils/read-tracking.js';
+import { updateRooSyncMessagePrimary } from './roosync-channel-write.js';
+import { mapMessageToRow } from './roosync-channel-dual-write.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-channel-read');
@@ -383,6 +386,99 @@ export async function readCliInboxFromPg(
         return perReader ? { ...message, status: perReader } : message;
       }),
     };
+  } finally {
+    await reader.close();
+  }
+}
+
+/**
+ * #4131 B17 — one-shot mark-read for the scheduled workers (CLI contract).
+ *
+ * The worker reads its inbox as `myia-ai-01` (bare machine, no workspace),
+ * while the lane's interactive session marks read as `myia-ai-01:roo-extensions`
+ * — two DIFFERENT per-reader states. A PG [TASK] the worker served therefore
+ * stayed unread for the worker and re-fired every cycle (6 servings in 30 h
+ * measured on ai-01, 25/10). This helper is the worker-side write: it marks
+ * the message read for the reader identity THE CALLER PASSES (same parsing
+ * rules as readCliInboxFromPg), through the same per-reader semantics the MCP
+ * mark_read applies (applyReadTracking) and the same PG write
+ * (updateRooSyncMessagePrimary).
+ *
+ * Divergence from MessageManager.markAsRead, on purpose: no auto-destruct
+ * trigger (destruction stays the lane's call, the worker only clears its own
+ * red dot), no GDrive fallback (a CLI mark-read on the file path would need
+ * the files the PG-primary fleet no longer writes — the caller WARNs and the
+ * message re-serves, which is the pre-B17 status quo, strictly better than a
+ * silent loss).
+ *
+ * Self-contained like readCliInboxFromPg: resolves the gated reader, closes it
+ * before returning.
+ *
+ * @returns `{source:'pg', written:true}` persisted (a re-mark of an
+ *   already-read message is `written:true, alreadyRead:true`, no write);
+ *   `{source:'pg', written:false, reason}` when the row is unknown, a guard
+ *   denied the reader (#2287), or the UPDATE did not persist — the caller
+ *   WARNs and moves on, never treats it as "the file path";
+ *   `{source:'file'}` when the gate is off or PG is unreachable.
+ */
+export async function markCliMessageReadInPg(
+  machineId: string,
+  workspaceId: string | undefined,
+  messageId: string
+): Promise<
+  | { source: 'pg'; written: true; alreadyRead?: boolean }
+  | { source: 'pg'; written: false; reason: 'not-found' | 'denied' | 'update-not-persisted' }
+  | { source: 'file'; reason: 'gate-off' | 'pg-unavailable' }
+> {
+  // Same reader-identity parsing as readCliInboxFromPg: a combined
+  // "machine:workspace" --machine is SUBSTITUTED, an explicit workspace still
+  // wins. The worker passes a bare machine id (no workspace).
+  const parsedCaller = parseMachineWorkspace(machineId);
+  const machine = parsedCaller.machineId;
+  const workspace = workspaceId ?? parsedCaller.workspaceId;
+  const readerId = workspace ? `${machine}:${workspace}` : machine;
+
+  const reader = getChannelPgReader();
+  if (!reader) return { source: 'file', reason: 'gate-off' };
+
+  try {
+    const message = await getChannelMessageFromPg(reader, messageId);
+    if (!message) return { source: 'pg', written: false, reason: 'not-found' };
+
+    // Idempotency: nothing to write when THIS reader already SEES the message
+    // as read. perReaderStatus is the single read-verdict source, but it
+    // returns null wherever the per-reader arrays cannot represent the reader
+    // (bare machine on a machine-wide target, targeted messages) — there the
+    // verdict falls back to the raw global status, exactly the adjustment
+    // readCliInboxFromPg presents to the worker. Same composition here.
+    const verdict = perReaderStatus(message, machine, workspace);
+    if ((verdict ?? message.status) === 'read') {
+      return { source: 'pg', written: true, alreadyRead: true };
+    }
+
+    if (!applyReadTracking(message, readerId)) {
+      return { source: 'pg', written: false, reason: 'denied' };
+    }
+
+    // Field selection mirrors the PG branch of MessageManager.markAsRead
+    // exactly (read_by / read_by_workspace / global flip + read_at), options
+    // carried so the UPDATE does not clobber them.
+    const isBroadcast = message.to === 'all' || message.to === 'All';
+    const machineWide = isMachineWideTarget(message.to);
+    const trackedPerWorkspace = machineWide && !!workspace;
+    const fields: RooSyncMessageUpdate = isBroadcast
+      ? { read_by: message.read_by ?? [] }
+      : machineWide
+        ? trackedPerWorkspace
+          ? { read_by_workspace: message.read_by_workspace ?? [] }
+          : { status: 'read', read_at: new Date().toISOString() }
+        : { status: 'read', read_at: new Date().toISOString() };
+    fields.options = mapMessageToRow(message).options;
+
+    if (!(await updateRooSyncMessagePrimary(messageId, fields))) {
+      return { source: 'pg', written: false, reason: 'update-not-persisted' };
+    }
+    return { source: 'pg', written: true };
   } finally {
     await reader.close();
   }
