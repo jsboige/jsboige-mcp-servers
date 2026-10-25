@@ -220,6 +220,30 @@ describe('codebase_search merges the supplement corpus (#4352 a3)', () => {
 		expect(mockQdrant.query).toHaveBeenCalledTimes(2); // the second main query only
 	});
 
+	test('a TRANSIENT probe failure never suppresses the corpus nor caches it — the query goes out and carries its error (Hermes pt 1)', async () => {
+		mockQdrant.getCollection.mockImplementation(async (name: string) => {
+			if (name === MAIN) return { status: 'green', points_count: 500 };
+			// the SUPPLEMENT probe dies on transport — an ECONNREFUSED is not a 404, not an absence
+			throw Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:6333'), { code: 'ECONNREFUSED' });
+		});
+		mockQdrant.query.mockImplementation(async (collection: string) => {
+			if (collection === MAIN) return { points: [point('src/a.ts', 0.9)] };
+			throw new Error('connection reset by peer');
+		});
+
+		const first = parse(await handleCodebaseSearch({ query: 'x', workspace: WORKSPACE } as any, [] as any, undefined));
+		// the corpus was NOT suppressed: the block exists and the error says why (fail-open with a reason)
+		expect(first.supplement).toMatchObject({ collection: SUPPLEMENT, points: 0 });
+		expect(first.supplement.error).toMatch(/connection reset/);
+		// mutation check: the supplement query WENT OUT — the probe failure is not a gate
+		expect(mockQdrant.query).toHaveBeenCalledTimes(2);
+
+		const second = parse(await handleCodebaseSearch({ query: 'y', workspace: WORKSPACE } as any, [] as any, undefined));
+		expect(second.supplement.error).toMatch(/connection reset/);
+		// the transport failure was NOT cached: each search probed again (2 probes, not 1)
+		expect(mockQdrant.getCollection.mock.calls.filter((c: any[]) => c[0] === SUPPLEMENT)).toHaveLength(2);
+	});
+
 	test('a PRESENT supplement collection flips the same hint to "searched separately" (control for fix 1)', async () => {
 		state.gitFiles = 'src/a.ts\0scripts/deploy.ps1\0';
 		mockQdrant.query.mockImplementation(async (collection: string) => ({

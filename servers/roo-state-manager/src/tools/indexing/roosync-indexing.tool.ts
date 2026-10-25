@@ -871,7 +871,7 @@ export async function handleRooSyncIndexing(
         case 'index_code_supplement': {
             const { resolveWorkspace } = await import('../../utils/workspace-resolver.js');
             const { getQdrantClient } = await import('../../services/qdrant.js');
-            const { embedCodebaseTexts, getCodebaseEmbeddingModel } = await import('../../services/code-index/embedding-client.js');
+            const { embedCodebaseTexts, getCodebaseEmbeddingModel, getCodebaseEmbeddingEndpoint } = await import('../../services/code-index/embedding-client.js');
             const {
                 runSupplementIndex,
                 pickLargestCollection,
@@ -901,6 +901,9 @@ export async function handleRooSyncIndexing(
                     // Recorded in the sentinel; a later run under a different model
                     // refuses instead of mixing two embedding spaces (ms#1514 fix 2).
                     embeddingModelId: getCodebaseEmbeddingModel(),
+                    // Same fingerprint for the ENDPOINT (review ms#1514, Hermes pt 2):
+                    // same model name on another EMBEDDING_API_BASE_URL = another space.
+                    embeddingEndpoint: getCodebaseEmbeddingEndpoint(),
                     embed: embedCodebaseTexts,
                     batchSize: args.batch_size,
                     maxFiles: args.max_files,

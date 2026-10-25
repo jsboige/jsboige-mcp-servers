@@ -24,7 +24,7 @@ collection qui les contient.
 | Nom de collection | `sup-` + `sha256(remote normalisé)[:16]` | Une par **dépôt**, pas par chemin. Les `ws-` sont indexées par chemin : deux sièges au même chemin partagent une collection, un même dépôt à deux chemins en a deux. Le complément prend l'inverse, ce qui rend un écrivain unique possible. |
 | Normalisation du remote | schéma/credentials/`.git`/slash final retirés, minuscules | `git@…`, `https://…` et `https://user:token@…` du même dépôt doivent tomber sur la même clé — et un token ne doit jamais finir dans un nom de collection. |
 | Écrivain unique | Sentinelle Qdrant + échappatoire `takeover` | Deux sièges qui écrivent avec deux modèles d'embedding produisent une collection dont les points ne sont pas comparables : le classement devient absurde, sans aucune erreur. `takeover` est le seul chemin de passage et il enregistre `takenOverFrom`. | 
-| Empreinte d'embedding | `embeddingModelId` + `embeddingModelDimensions` dans la sentinelle (fix 2, review ms#1514) | L'incrémental saute sur `fileHash` seul : après un changement de modèle, tous les hashes sont « inchangés », la collection mélangerait deux espaces vectoriels en silence. Un run dont l'empreinte diffère **refuse** (message nommant les deux empreintes) ; `takeover` ne traverse PAS un changement de modèle. Remède : le complément est une donnée dérivée — supprimer la collection `sup-` et relancer pour la reconstruire entière sous le modèle courant. |
+| Empreinte d'embedding | `embeddingModelId` + `embeddingModelDimensions` + `embeddingEndpoint` dans la sentinelle (fix 2, review ms#1514 + Hermes pt 2) | L'incrémental saute sur `fileHash` seul : après un changement de modèle — **ou d'endpoint** (`EMBEDDING_API_BASE_URL`, même nom de modèle) — tous les hashes sont « inchangés », la collection mélangerait deux espaces vectoriels en silence. Un run dont l'empreinte diffère **refuse** (message nommant les deux empreintes) ; `takeover` ne traverse PAS un changement de modèle. L'endpoint est enregistré par **hôte** (jamais l'URL brute — un identifiant qui pourrait vivre dans une URL ne finit pas dans un payload Qdrant). Remède : le complément est une donnée dérivée — supprimer la collection `sup-` et relancer pour la reconstruire entière sous le modèle courant. |
 | Sélection | git-visible + `isZooBlindSpot` + texte + ≤ 1 Mo | Zoo liste avec ripgrep (donc `.gitignore` respecté) ; la borne 1 Mo est son propre plafond de scanner, gardée pour que les deux corpus restent comparables. |
 | Chunker | Port du chunker ligne-fenêtre de Zoo (`MIN_BLOCK_CHARS=50`, `MAX_BLOCK_CHARS=1000`, tolérance 1,15, reste ≥ 200) | Une même ligne doit se découper pareil dans les deux pipelines. **Une divergence assumée** : Zoo perd les lignes entre le point de split ré-équilibré et la ligne courante (mesuré : 8 lignes sur 56) ; ce port rejoue depuis le nouveau départ. Aucune compatibilité à préserver — Zoo ne découpe jamais ces fichiers. |
 | Payload | champs Zoo (`filePath`, `codeChunk`, `startLine`, `endLine`, `segmentHash`, `pathSegments.*`) + `fileHash`, `writer`, `source: "rsm-supplement"` | La fusion dans `codebase_search` n'a besoin d'aucun cas particulier : mêmes malus, même plafond par fichier, même dédoublonnage. |
@@ -49,12 +49,16 @@ Réponse : `collection`, `remote`, `writer`, `collection_exists`, `writer_guard`
 
 Côté `codebase_search`, la réponse gagne `supplement: {collection, points, hits}` — `points` =
 candidats apportés au pool, `hits` = combien ont survécu au classement. Le bloc est absent quand le
-workspace n'a pas de remote (pas de collection possible) **et quand la collection n'existe pas dans
-Qdrant** (fix 1, review ms#1514 : un nom dérivé du remote n'est pas une preuve d'existence — sans
-cette porte, chaque recherche paierait une requête 404 et le hint affirmerait « searched separately »
-à tort ; l'absence est mise en cache 5 min par workspace, comme la sonde remote, et le hint retombe
-sur Grep) et porte `error` quand la collection existe mais que la requête échoue : la panne d'un
-corpus secondaire ne fait jamais tomber le corpus principal.
+workspace n'a pas de remote (pas de collection possible) **et quand la collection est prouvée
+absente de Qdrant** (fix 1, review ms#1514 : un nom dérivé du remote n'est pas une preuve
+d'existence — sans cette porte, chaque recherche paierait une requête 404 et le hint affirmerait
+« searched separately » à tort ; l'absence **prouvée** (404 / « not found ») est mise en cache 5 min
+par workspace, comme la sonde remote, et le hint retombe sur Grep) et porte `error` quand la
+collection existe mais que la requête échoue : la panne d'un corpus secondaire ne fait jamais tomber
+le corpus principal. Une erreur de **transport** sur la sonde de présence (ECONNREFUSED, timeout)
+n'est ni une absence ni un motif de suppression : elle n'est pas cachée, la requête part quand même
+et porte son `error` — une micropanne de 2 secondes ne doit pas acheter 5 minutes de corpus invisible
+sans raison (review ms#1514, Hermes pt 1).
 
 ## Ce qui reste à faire / à vérifier
 

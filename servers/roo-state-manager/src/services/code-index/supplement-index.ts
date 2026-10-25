@@ -371,6 +371,7 @@ export interface SupplementWriterRecord {
 	takenOverFrom?: string;
 	embeddingModelId?: string;
 	embeddingModelDimensions?: number;
+	embeddingEndpoint?: string;
 }
 
 export interface QdrantLike {
@@ -406,6 +407,7 @@ export interface QdrantLike {
 					takenOverFrom: typeof payload.takenOverFrom === 'string' ? payload.takenOverFrom : undefined,
 					...(typeof payload.embeddingModelId === 'string' ? { embeddingModelId: payload.embeddingModelId } : {}),
 					...(typeof payload.embeddingModelDimensions === 'number' ? { embeddingModelDimensions: payload.embeddingModelDimensions } : {}),
+					...(typeof payload.embeddingEndpoint === 'string' ? { embeddingEndpoint: payload.embeddingEndpoint } : {}),
 				};
 			}
 			return null;
@@ -428,6 +430,7 @@ export interface QdrantLike {
 					takenOverFrom: typeof payload.takenOverFrom === 'string' ? payload.takenOverFrom : undefined,
 					...(typeof payload.embeddingModelId === 'string' ? { embeddingModelId: payload.embeddingModelId } : {}),
 					...(typeof payload.embeddingModelDimensions === 'number' ? { embeddingModelDimensions: payload.embeddingModelDimensions } : {}),
+					...(typeof payload.embeddingEndpoint === 'string' ? { embeddingEndpoint: payload.embeddingEndpoint } : {}),
 				};
 			}
 		}
@@ -507,6 +510,8 @@ export async function claimSupplementWriter(
 		vector: number[];
 		/** Recorded in the sentinel so the incremental skip can detect a model switch. */
 		embeddingModel?: { id: string | null; dimensions: number | null };
+		/** Same for an ENDPOINT switch: same model name, other EMBEDDING_API_BASE_URL = other space. */
+		embeddingEndpoint?: string | null;
 	},
 ): Promise<{ claimed: boolean; previous: SupplementWriterRecord | null; sentinelId: string }> {
 	const previous = await readWriterRecord(client, collection);
@@ -536,6 +541,7 @@ export async function claimSupplementWriter(
 				...(isOther ? { takenOverFrom: previous?.writer } : {}),
 				...(options.embeddingModel?.id ? { embeddingModelId: options.embeddingModel.id } : {}),
 				...(options.embeddingModel?.dimensions ? { embeddingModelDimensions: options.embeddingModel.dimensions } : {}),
+				...(options.embeddingEndpoint ? { embeddingEndpoint: options.embeddingEndpoint } : {}),
 			},
 		}],
 	});
@@ -652,6 +658,8 @@ export interface SupplementIndexDeps {
 	templateCollection?: string | null;
 	/** Model id this run embeds with — recorded in the sentinel, compared on the next run. */
 	embeddingModelId?: string | null;
+	/** Host of the embedding endpoint this run uses — same model name elsewhere is another space. */
+	embeddingEndpoint?: string | null;
 	embed: (texts: string[]) => Promise<number[][]>;
 	batchSize?: number;
 	throttleMs?: number;
@@ -755,10 +763,20 @@ export async function runSupplementIndex(deps: SupplementIndexDeps): Promise<Sup
 		const dimensionsMatch = previous.embeddingModelDimensions == null
 			|| vectorConfig == null
 			|| previous.embeddingModelDimensions === vectorConfig.size;
-		if (previous.embeddingModelId !== deps.embeddingModelId || !dimensionsMatch) {
+		// Endpoint is part of the fingerprint (review ms#1514, Hermes point 2):
+		// the same model NAME served by another EMBEDDING_API_BASE_URL is another
+		// space, and the docstring of embedding-client.ts names exactly this trap.
+		// Strict comparison — a sentinel that recorded no endpoint (older build)
+		// against a run that has one is undecidable, and undecidable refuses too.
+		const prevEndpoint = previous.embeddingEndpoint ?? null;
+		const nextEndpoint = deps.embeddingEndpoint ?? null;
+		const endpointMatch = prevEndpoint === nextEndpoint;
+		if (previous.embeddingModelId !== deps.embeddingModelId || !dimensionsMatch || !endpointMatch) {
+			const prevAt = prevEndpoint ? ` at ${prevEndpoint}` : '';
+			const nextAt = nextEndpoint ? ` at ${nextEndpoint}` : '';
 			throw new Error(
-				`collection ${collection} holds vectors embedded with ${previous.embeddingModelId} (${previous.embeddingModelDimensions ?? '?'}d), ` +
-				`but this run would embed with ${deps.embeddingModelId ?? 'an unknown model'} (${vectorConfig?.size ?? '?'}d). ` +
+				`collection ${collection} holds vectors embedded with ${previous.embeddingModelId} (${previous.embeddingModelDimensions ?? '?'}d)${prevAt}, ` +
+				`but this run would embed with ${deps.embeddingModelId ?? 'an unknown model'} (${vectorConfig?.size ?? '?'}d)${nextAt}. ` +
 				`Mixing embedding spaces yields a meaningless ranking with no error, so the run refuses — ` +
 				`takeover does not cross a model change. The supplement is derived data: delete the ` +
 				`${collection} collection and rerun to rebuild it under the current model.`
@@ -850,6 +868,7 @@ export async function runSupplementIndex(deps: SupplementIndexDeps): Promise<Sup
 		vector: new Array(vectorConfig?.size ?? 0).fill(0),
 		now: now(),
 		embeddingModel: { id: deps.embeddingModelId ?? null, dimensions: vectorConfig?.size ?? null },
+		embeddingEndpoint: deps.embeddingEndpoint ?? null,
 	});
 	if (claim.claimed) report.writer_guard.ok = true;
 
@@ -947,11 +966,16 @@ export function clearSupplementCollectionCache(): void {
 }
 
 /**
- * Whether the supplement collection actually exists in Qdrant. Cached per
- * workspace for 5 minutes, absence included: probing on every search would
- * reintroduce the per-call round trip this gate removes. A client without
- * `getCollection` cannot tell, so it says "present" and lets `searchSupplement`
- * fail open — never suppress the corpus because the instrument is missing.
+ * Whether the supplement collection actually exists in Qdrant. Only a PROVEN
+ * absence (404 / "not found") is cached and suppresses the corpus, for 5
+ * minutes per workspace: probing on every search would reintroduce the
+ * per-call round trip this gate removes. A transport failure (ECONNREFUSED,
+ * timeout…) is NOT an absence — it returns present WITHOUT caching, so the
+ * query still goes out and `searchSupplement` carries its `error`: a 2-second
+ * blip must not buy 5 minutes of invisible corpus with no reason attached
+ * (review ms#1514, Hermes point 1 — an instrument that FAILS is not treated
+ * worse than a missing one). A client without `getCollection` cannot tell at
+ * all: present, uncached, fail-open.
  */
 export async function supplementCollectionPresent(
 	client: QdrantLike,
@@ -960,16 +984,20 @@ export async function supplementCollectionPresent(
 ): Promise<boolean> {
 	const cached = collectionPresenceCache.get(workspaceRoot);
 	if (cached && cached.name === collection && cached.expiresAt > Date.now()) return cached.present;
-	let present = true;
 	if (typeof client.getCollection === 'function') {
 		try {
 			await client.getCollection(collection);
-		} catch {
-			present = false;
+		} catch (error) {
+			const status = (error as { status?: unknown })?.status ?? (error as { code?: unknown })?.code;
+			const message = error instanceof Error ? error.message : String(error);
+			const provenAbsent = status === 404 || /not found/i.test(message);
+			if (!provenAbsent) return true; // transport failure — present, and NOT cached
+			collectionPresenceCache.set(workspaceRoot, { name: collection, present: false, expiresAt: Date.now() + COLLECTION_CACHE_TTL_MS });
+			return false;
 		}
 	}
-	collectionPresenceCache.set(workspaceRoot, { name: collection, present, expiresAt: Date.now() + COLLECTION_CACHE_TTL_MS });
-	return present;
+	collectionPresenceCache.set(workspaceRoot, { name: collection, present: true, expiresAt: Date.now() + COLLECTION_CACHE_TTL_MS });
+	return true;
 }
 
 /**

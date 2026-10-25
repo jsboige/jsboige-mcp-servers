@@ -8,6 +8,7 @@
  * two different models in one collection, and every search on it returns a
  * meaningless ranking with no error anywhere. Same env contract, same client.
  */
+import { createHash } from 'crypto';
 import OpenAI from 'openai';
 
 let codebaseEmbeddingClient: OpenAI | null = null;
@@ -43,6 +44,23 @@ export function getCodebaseEmbeddingClient(): OpenAI {
 /** The embedding model name both the indexer and the search use. */
 export function getCodebaseEmbeddingModel(): string {
 	return process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
+}
+
+/**
+ * Host of the embedding endpoint, for the supplement sentinel fingerprint
+ * (review ms#1514, Hermes point 2): the SAME model name served by two
+ * `EMBEDDING_API_BASE_URL`s is two vector spaces, exactly like a model switch.
+ * Host only — an unparseable base is hashed, never recorded raw, so no
+ * credential that might live in a URL can end up in a Qdrant payload.
+ */
+export function getCodebaseEmbeddingEndpoint(): string {
+	const base = process.env.EMBEDDING_API_BASE_URL;
+	if (!base) return 'default';
+	try {
+		const host = new URL(base).host;
+		if (host) return host;
+	} catch { /* fall through to the hash */ }
+	return 'unparsed-' + createHash('sha256').update(base).digest('hex').slice(0, 8);
 }
 
 /** Reset the singleton (provider switch, or tests). */

@@ -567,11 +567,34 @@ describe('runSupplementIndex (#4352 a3)', () => {
 			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
 			embed, dryRun: false, batchSize: 100, throttleMs: 0,
 			embeddingModelId: 'text-embedding-3-small',
+			embeddingEndpoint: 'embeddings.myia.io',
 		});
 		const sentinel = client.collections.get(report.collection)!.points.get(SUPPLEMENT_SENTINEL_ID)!;
 		expect(sentinel.payload.embeddingModelId).toBe('text-embedding-3-small');
 		// dimensions come from the template collection — the served space, not a guess
 		expect(sentinel.payload.embeddingModelDimensions).toBe(2560);
+		// the endpoint host completes the fingerprint: same name elsewhere is another space (Hermes pt 2)
+		expect(sentinel.payload.embeddingEndpoint).toBe('embeddings.myia.io');
+	});
+
+	test('the SAME model name on a DIFFERENT endpoint refuses — an endpoint switch is a model switch (Hermes pt 2)', async () => {
+		const dir = repoWithFiles();
+		const client = new FakeQdrant({ 'ws-served': { points: 100 } });
+		await runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed, dryRun: false, batchSize: 100, throttleMs: 0,
+			embeddingModelId: 'Qwen3-4B',
+			embeddingEndpoint: 'embeddings.old.io',
+		});
+		embedCalls = [];
+		await expect(runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed, dryRun: false, batchSize: 100, throttleMs: 0,
+			embeddingModelId: 'Qwen3-4B',
+			embeddingEndpoint: 'embeddings.new.io',
+		})).rejects.toThrow(/embed with Qwen3-4B \(4d\) at embeddings\.new\.io/);
+		// mutation check: the refused run embedded nothing
+		expect(embedCalls).toHaveLength(0);
 	});
 
 	test('a second run under the SAME fingerprint still skips unchanged files', async () => {
@@ -662,6 +685,36 @@ describe('runSupplementIndex (#4352 a3)', () => {
 		// cache cleared: the probe sees reality
 		clearSupplementCollectionCache();
 		expect(await supplementCollectionPresent(client, '/test/presence-ws', 'sup-aaaaaaaaaaaaaaaa')).toBe(true);
+	});
+
+	test('supplementCollectionPresent: a TRANSPORT failure is not an absence — present, and NOT cached (flip the catch back to present=false and this reddens)', async () => {
+		let probes = 0;
+		const client = {
+			async getCollection() {
+				probes++;
+				throw Object.assign(new Error('connect ECONNREFUSED 10.0.0.5:6333'), { code: 'ECONNREFUSED' });
+			},
+		} as unknown as QdrantLike;
+		clearSupplementCollectionCache();
+		expect(await supplementCollectionPresent(client, '/test/presence-transport', 'sup-cccccccccccccccc')).toBe(true);
+		// uncached on purpose: the next call probes again instead of serving the blip for 5 minutes
+		expect(await supplementCollectionPresent(client, '/test/presence-transport', 'sup-cccccccccccccccc')).toBe(true);
+		expect(probes).toBe(2);
+	});
+
+	test('supplementCollectionPresent: a 404 status is a proven absence even when the message does not say "not found" — and it caches', async () => {
+		let probes = 0;
+		const client = {
+			async getCollection() {
+				probes++;
+				throw Object.assign(new Error('Request failed with status code 404'), { status: 404 });
+			},
+		} as unknown as QdrantLike;
+		clearSupplementCollectionCache();
+		expect(await supplementCollectionPresent(client, '/test/presence-404', 'sup-dddddddddddddddd')).toBe(false);
+		// cached this time — the absence is proven, the negative cache applies
+		expect(await supplementCollectionPresent(client, '/test/presence-404', 'sup-dddddddddddddddd')).toBe(false);
+		expect(probes).toBe(1);
 	});
 
 	test('supplementCollectionPresent: a client without getCollection says present — never suppress the corpus because the instrument is missing', async () => {
