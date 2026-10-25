@@ -233,6 +233,18 @@ describe('TaskIndexer.indexTask — Roo standard path resolution (coverage L141-
         expect(updateSkeletonIndexTimestampVector).toHaveBeenCalledWith('roo-task-1', tmpDir);
     });
 
+    test('#4352: indexing error on a PRESENT Roo task propagates as itself, never as not-found', async () => {
+        await fs.mkdir(path.join(tmpDir, 'tasks', 'roo-task-2'), { recursive: true });
+        vi.mocked(RooStorageDetector.detectStorageLocations).mockResolvedValue([tmpDir]);
+        vi.mocked(indexTaskVector).mockRejectedValueOnce(new Error('Qdrant upsert 401'));
+
+        const err = await indexer.indexTask('roo-task-2', 'roo').then(() => null, (e: Error) => e);
+        expect(err).not.toBeNull();
+        expect(err!.message).toMatch(/401/);
+        expect(err!.message).not.toMatch(/not found/i);
+        expect(updateSkeletonIndexTimestampVector).not.toHaveBeenCalled();
+    });
+
     test('Roo task absent from all locations → throws TASK_NOT_FOUND (L156-161)', async () => {
         vi.mocked(RooStorageDetector.detectStorageLocations).mockResolvedValue([tmpDir]);
         await expect(indexer.indexTask('missing-task', 'roo')).rejects.toThrow(/not found/i);
