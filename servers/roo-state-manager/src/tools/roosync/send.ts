@@ -453,9 +453,20 @@ async function replyToMessage(
     );
   }
 
+  // #3591 : `as` fait foi pour un siège gateway (gate dans resolveCallerIdentity, single choke point).
+  // ms#1339 : la dérivation process est exposée dans l'ack (même note que send).
+  const replyIdentity = resolveCallerIdentity(args.as);
+  const replyFrom = replyIdentity.fullId;
+
   // Récupérer le message original
+  // #4131 : avec l'identité de l'appelant. getMessage ne consulte PG que si un
+  // callerId est fourni (MessageManager.getMessage) ; sans lui, la recherche se
+  // bornait aux fichiers inbox/sent/archive, et un message que seul PG porte —
+  // tout message envoyé par un siège sous UNIFIED_STORE_CHANNEL_PG_PRIMARY —
+  // rendait « Message original introuvable » (mesuré ai-01, 25/10 14:45Z).
+  // Même verdict d'accès que action="message" : on répond à ce qu'on peut lire.
   logger.debug('🔍 Fetching original message', { messageId: args.message_id });
-  const originalMessage = await messageManager.getMessage(args.message_id);
+  const originalMessage = await messageManager.getMessage(args.message_id, replyFrom);
 
   // Cas : message introuvable
   if (!originalMessage) {
@@ -480,10 +491,7 @@ Impossible de répondre car le message original n'a pas été trouvé dans :
   // Inversion from/to pour la réponse
   // replyFrom = la machine locale (celle qui répond), pas originalMessage.to
   // car si originalMessage.to = "all", on ne veut pas "all" comme expéditeur
-  // #3591 : `as` fait foi pour un siège gateway (gate dans resolveCallerIdentity, single choke point).
-  // ms#1339 : la dérivation process est exposée dans l'ack (même note que send).
-  const replyIdentity = resolveCallerIdentity(args.as);
-  const replyFrom = replyIdentity.fullId;
+  // (replyIdentity / replyFrom : résolus avant la lecture de l'original, ci-dessus)
   const replyTo = originalMessage.from;
 
   // Sujet avec préfixe "Re: "
