@@ -73,6 +73,7 @@ import {
   ApplyCanonResult,
   readClaudeSettingsFile,
   isAllowedKeyPath,
+  isObserveOnlyKeyPath,
   findLatestClaudeSettingsSnapshot,
 } from './ClaudeSettingsService.js';
 import { ensureStoreSubdir } from '../utils/shared-state-path.js';
@@ -854,6 +855,16 @@ export class HarmonizationCampaignService {
         if (!isAllowedKeyPath(p)) {
           throw new HarmonizationCampaignError(
             `Chemin d'exception non allow-listé: ${p} (machine ${machine})`,
+            'INVALID_EXCEPTIONS',
+            { machine, path: p }
+          );
+        }
+        // #4347 — un chemin observe-only ne peut figurer ni dans canon.keys ni,
+        // par conséquent, dans les exceptions (qui n'exemptent que des chemins
+        // du canon). L'accepter ici serait un no-op silencieux trompeur.
+        if (isObserveOnlyKeyPath(p)) {
+          throw new HarmonizationCampaignError(
+            `Chemin observé seulement (routage machine), interdit en exception : ${p} (machine ${machine})`,
             'INVALID_EXCEPTIONS',
             { machine, path: p }
           );

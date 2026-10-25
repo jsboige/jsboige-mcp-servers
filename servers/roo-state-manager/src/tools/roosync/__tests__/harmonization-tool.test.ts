@@ -100,11 +100,13 @@ describe('HarmonizationArgsSchema — refinements', () => {
 });
 
 describe('Chemin public — cycle de vie complet (create → apply → confirm → status → close)', () => {
+  // #4347 — env.ANTHROPIC_BASE_URL est observe-only (refusé en canon) :
+  // le fixture porte une clé imposable.
   const canon = {
     version: '2026.09.09-1',
     mode: 'ensure-present',
     keys: {
-      'env.ANTHROPIC_BASE_URL': 'https://relay.example',
+      'env.ANTHROPIC_DEFAULT_HAIKU_MODEL': 'claude-haiku-5-5[1m]',
       'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW': 280000,
     },
   };
@@ -130,7 +132,7 @@ describe('Chemin public — cycle de vie complet (create → apply → confirm �
     const applied = await roosyncHarmonization(args({ action: 'apply', campaign_id: campaignId }));
     expect(applied.status).toBe('success');
     const settings = JSON.parse(readFileSync(fakeSettings, 'utf-8'));
-    expect(settings.env.ANTHROPIC_BASE_URL).toBe('https://relay.example');
+    expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('claude-haiku-5-5[1m]');
     expect(settings.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(280000);
 
     // 4. confirm : relecture live conforme

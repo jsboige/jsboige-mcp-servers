@@ -154,7 +154,7 @@ describe('applyConfig targets: ["claude-settings"]', () => {
       'claude-settings/canon.json': {
         version: '2026.09.08-1',
         mode: 'ensure-present',
-        keys: { 'env.ANTHROPIC_BASE_URL': 'https://relay.example' },
+        keys: { 'env.ANTHROPIC_DEFAULT_HAIKU_MODEL': 'claude-haiku-5-5[1m]' },
       },
     });
     const result = await service.applyConfig({
@@ -166,6 +166,29 @@ describe('applyConfig targets: ["claude-settings"]', () => {
     expect(result.errors).toEqual([]);
     expect(result.filesApplied).toBe(0);
     expect(existsSync(fakeSettings)).toBe(false);
+  });
+
+  it('#4347 canon.json avec env.ANTHROPIC_BASE_URL (observe-only) : rejet à la validation, aucun write', async () => {
+    publishPackage({
+      'claude-settings/canon.json': {
+        version: '2026.10.25-1',
+        mode: 'enforce-value',
+        keys: { 'env.ANTHROPIC_BASE_URL': 'https://fleet-hub.example' },
+      },
+    });
+    mkdirSync(fakeHome, { recursive: true });
+    writeFileSync(fakeSettings, JSON.stringify({ env: { ANTHROPIC_BASE_URL: 'https://sidecar.local:3000' } }), 'utf-8');
+    const before = readFileSync(fakeSettings, 'utf-8');
+
+    const result = await service.applyConfig({
+      version: 'latest',
+      machineId: 'test-machine',
+      targets: ['claude-settings'],
+      backup: false,
+    });
+    expect(result.errors!.some(e => e.includes('canon.json invalide'))).toBe(true);
+    expect(result.filesApplied).toBe(0);
+    expect(readFileSync(fakeSettings, 'utf-8')).toBe(before); // BASE_URL locale intacte
   });
 
   it('collectConfig targets ["claude-settings"] produit un snapshot masqué dans le paquet', async () => {
