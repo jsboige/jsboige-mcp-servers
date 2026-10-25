@@ -10,13 +10,22 @@ import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { classifySearchError, formatClassifiedError, isNetworkErrorLike } from './search-error-classifier.js';
 import { createHash } from 'crypto';
-import OpenAI from 'openai';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { resolveWorkspace } from '../../utils/workspace-resolver.js';
-import { execFile } from 'child_process';
+import { listGitVisiblePaths } from '../../services/code-index/git-visible.js';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'path';
 import { ZOO_ELIGIBLE_EXTENSIONS, classifyZooPath, isZooSkippedDir } from '../../services/code-index/zoo-eligibility.js';
+import {
+	getCodebaseEmbeddingClient,
+	getCodebaseEmbeddingModel,
+	resetCodebaseEmbeddingClient,
+} from '../../services/code-index/embedding-client.js';
+import {
+	resolveSupplementCollection,
+	searchSupplement,
+	supplementCollectionPresent,
+} from '../../services/code-index/supplement-index.js';
 
 /**
  * #2609/#2554 (rename-GC gap): the Roo/Zoo Code indexer (reference-only submodule
@@ -583,15 +592,12 @@ function countEligibleWorkspaceFiles(workspaceRoot: string): number {
  * agent read the silence as absence.
  */
 async function countGitVisibleFiles(workspaceRoot: string): Promise<{ eligible: number; blindSpots: BlindSpotInfo } | null> {
-	const git = (args: string[]) => new Promise<string>((resolveOut, reject) => {
-		execFile('git', ['-C', workspaceRoot, ...args], { maxBuffer: 64 * 1024 * 1024, timeout: 20_000, windowsHide: true },
-			(err, stdout) => (err ? reject(err) : resolveOut(String(stdout))));
-	});
 	try {
-		const tracked = await git(['ls-files', '--recurse-submodules', '-z']);
-		const untracked = await git(['ls-files', '--others', '--exclude-standard', '-z']);
-		const paths = `${tracked}\0${untracked}`.split('\0').filter(Boolean);
-		if (paths.length === 0) return null;
+		// #4352 (a3): the git listing lives in services/code-index/git-visible.ts —
+		// the supplement index selects from the SAME list, so the two cannot drift on
+		// what "git-visible" means (tracked + untracked-not-ignored, no submodule recursion).
+		const paths = await listGitVisiblePaths(workspaceRoot, { includeSubmodules: true });
+		if (paths === null || paths.length === 0) return null;
 		let eligible = 0;
 		const blindSpots: BlindSpotInfo = { files: 0, kinds: {} };
 		for (const p of paths) {
@@ -747,6 +753,51 @@ async function readCoverageWithin(count: Promise<CoverageInfo | null>, ms: numbe
 	}
 }
 
+// ─── #4352 (a3): supplement collection (files Zoo never indexes) ─────────────
+// The second corpus: `sup-<hash of the normalised origin URL>`, written by exactly
+// one lane (see services/code-index/supplement-index.ts). It is queried with the
+// SAME query vector as the main collection, in parallel with it, and its hits go
+// through the identical maluses, per-file cap and dedup — a supplement hit is not
+// a privileged hit, it is a hit that would otherwise not exist.
+//
+// Fail-open everywhere: no remote → no supplement; collection missing → no
+// supplement; Qdrant unreachable for it → the search still answers, and the
+// response says why the supplement contributed nothing instead of leaving a
+// silent zero (a failed side corpus must never take the main corpus down).
+
+type SupplementProbe = Promise<{ collection: string | null; error?: string }>;
+
+/** Starts the workspace → collection resolution (git config fork + cache) early. */
+function startSupplementProbe(workspaceRoot: string): SupplementProbe {
+	return resolveSupplementCollection(workspaceRoot).then(
+		(collection) => ({ collection }),
+		(error) => ({ collection: null, error: error instanceof Error ? error.message : String(error) }),
+	);
+}
+
+/** Awaits the probe, then queries the supplement collection; never throws. */
+async function collectSupplementHits(
+	qdrant: any,
+	probe: SupplementProbe,
+	workspaceRoot: string,
+	queryVector: number[],
+	options: { limit: number; minScore: number; directoryPrefix?: string; timeoutSec?: number },
+): Promise<{ collection: string | null; points: any[]; error?: string }> {
+	const { collection, error: resolveError } = await probe;
+	if (!collection) return { collection: null, points: [], ...(resolveError ? { error: resolveError } : {}) };
+	// #4352 review fix 1: a derived name is not an existence proof. Most repos
+	// will never have a `sup-` collection — without this gate each search pays a
+	// Qdrant query that 404s, the response announces `points: 0, error`, and the
+	// blind-spot hint claims the files are "searched separately" when they are
+	// not. Absence is cached 5 minutes like the remote probe; an ABSENT
+	// collection yields no supplement block at all and the hint stays on Grep.
+	// `error` is only for a collection that exists and whose query failed.
+	const present = await supplementCollectionPresent(qdrant, workspaceRoot, collection);
+	if (!present) return { collection: null, points: [] };
+	const { points, error } = await searchSupplement(qdrant, collection, queryVector, options);
+	return { collection, points, ...(error ? { error } : {}) };
+}
+
 /**
  * #2609 V2(c)(c): pin the build vintage that SERVES this response. The MCP host
  * runs the compiled server from a vintaged dir (build-<hex>/ — per #3713 the
@@ -766,47 +817,15 @@ export function getServedBuildId(): string {
 }
 
 /**
- * Get a dedicated OpenAI-compatible client for codebase embeddings.
- * Uses EMBEDDING_API_KEY/EMBEDDING_API_BASE_URL if set (for self-hosted models like Qwen3-4B),
- * otherwise falls back to OPENAI_API_KEY (standard OpenAI).
- * Separate from the task-indexer's OpenAI client to avoid config conflicts.
+ * #4352 (a3): the embedding client moved to `services/code-index/embedding-client.ts`
+ * so the supplement indexer writes vectors with the SAME model and endpoint this
+ * search queries with. Two factories would drift silently: a writer without
+ * EMBEDDING_API_BASE_URL embeds with a different model, and every hit it produces
+ * is incomparable with the rest of the collection, with no error anywhere.
+ * `resetCodebaseEmbeddingClient` stays exported from here — `config-reload.ts`
+ * and its tests reach it through this module.
  */
-let codebaseEmbeddingClient: OpenAI | null = null;
-// #1275: Track last API key to detect provider switches
-let lastEmbeddingApiKey: string | undefined = undefined;
-
-function getCodebaseEmbeddingClient(): OpenAI {
-	const apiKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
-	// #1275: Re-create client if API key changed (e.g. after /switch-provider)
-	if (!codebaseEmbeddingClient || apiKey !== lastEmbeddingApiKey) {
-		if (!apiKey) {
-			throw new Error('No embedding API key configured. Set EMBEDDING_API_KEY or OPENAI_API_KEY.');
-		}
-		lastEmbeddingApiKey = apiKey;
-		codebaseEmbeddingClient = new OpenAI({
-			apiKey,
-			baseURL: process.env.EMBEDDING_API_BASE_URL || undefined,
-			// #1232: Reduce timeout and retries to prevent MCP Connection closed.
-			// 60s (not 15s) since 2026-08-25: measured 45.8s under load. maxRetries=1 -> ~120s
-			// worst case, under the 180s codebase_search budget in config/tool-timeouts.ts.
-			timeout: parseInt(process.env.EMBEDDING_TIMEOUT_MS || '60000'),
-			maxRetries: 1,
-		});
-	}
-	return codebaseEmbeddingClient;
-}
-/**
- * Reset the embedding client singleton (for testing).
- * @internal
- */
-export function resetCodebaseEmbeddingClient(): void {
-	codebaseEmbeddingClient = null;
-	lastEmbeddingApiKey = undefined;
-}
-
-function getCodebaseEmbeddingModel(): string {
-	return process.env.EMBEDDING_MODEL || 'text-embedding-3-small';
-}
+export { resetCodebaseEmbeddingClient };
 
 // ─── #3279 Circuit-breaker for embedding API failures ─────────────────────
 // When the embedding API is unreachable (TCP down, DNS fail, timeout), the
@@ -1042,7 +1061,7 @@ const DEFAULT_MIN_SCORE = 0.5;
  */
 export const codebaseSearchTool: Tool = {
 	name: 'codebase_search',
-	description: 'Recherche sémantique dans le code du workspace indexé par Zoo/Roo. Trouve du code par concept, pas par texte exact. Jamais indexés par construction : fichiers .ps1, .sh, .yml, .mjs, .cjs et répertoires cachés (.claude, .roo, .github) — pour eux, utiliser Grep.',
+	description: 'Recherche sémantique dans le code du workspace indexé par Zoo/Roo. Trouve du code par concept, pas par texte exact. Zoo n\'indexe jamais certains fichiers (.ps1, .psm1, .sh, .yml, .mjs, .cjs, .sql et tout répertoire caché : .claude, .roo, .github) : quand le workspace a une collection complémentaire `sup-` construite sur son remote, ces fichiers sont cherchés en parallèle et fusionnés dans le même classement — un hit porte alors `index: "supplement"`, et la réponse expose `supplement: {collection, points, hits}`. Sans collection complémentaire, ils restent invisibles : utiliser Grep pour eux.',
 	inputSchema: {
 		type: 'object',
 		properties: {
@@ -1668,6 +1687,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// when the ratio is undecidable (scroll error, workspace not on disk).
 		// #4352: started here, read after the search (startCollectionCoverage).
 		const coverageCount = startCollectionCoverage(qdrant, collectionName, workspace);
+		// #4352 (a3): resolve the supplement collection now — the `git config` fork and
+		// the 5-minute cache lookup overlap the embedding call below.
+		const supplementProbe = startSupplementProbe(workspace);
 
 		// 3. Générer l'embedding de la requête (uses dedicated codebase embedding client)
 		// #3279: Fast-fail check BEFORE the 60s OpenAI client timeout. If the breaker
@@ -1763,7 +1785,11 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// #2267: Use native Qdrant timeout (seconds) to prevent indefinite hangs.
 		// Follows #1275 convention used in task-searcher.ts and search-semantic.tool.ts.
 		const searchTimeoutSec = Math.ceil(parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10) / 1000);
-		const searchResults = await withTransportRetry(() => qdrant.query(collectionName, {
+		// #4352 (a3): the main query is STARTED here and awaited after the supplement
+		// query, so the two corpora cost one round trip together, not two. The
+		// supplement call is fail-open and bounded by its own timeout, so awaiting it
+		// first cannot extend the search's worst case beyond its own budget.
+		const searchPromise = withTransportRetry(() => qdrant.query(collectionName, {
 			query: queryVector,
 			filter: filter,
 			score_threshold: effectiveMinScore,
@@ -1777,6 +1803,23 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				include: ['filePath', 'codeChunk', 'startLine', 'endLine', 'pathSegments']
 			}
 		}));
+		// A rejected main query stays unhandled for the whole supplement round trip
+		// (git fork + second query), which outlives a tick: Node then reports an
+		// unhandled rejection and fails the CI run even though the search answers
+		// correctly. This keeps the rejection handled while it is in flight; the
+		// error is still propagated by the `await` below.
+		searchPromise.catch(() => {});
+
+		// #4352 (a3): the supplement corpus, queried with the same vector and the same
+		// bounds. Fail-open: a missing/absent/unreachable `sup-` collection yields zero
+		// points plus a reason, never an error for the caller.
+		const supplement = await collectSupplementHits(qdrant, supplementProbe, workspace, queryVector, {
+			limit: fetchLimit,
+			minScore: effectiveMinScore,
+			directoryPrefix: directory_prefix,
+			timeoutSec: searchTimeoutSec,
+		});
+		const searchResults = await searchPromise;
 
 		// #4352: the coverage count started before the embedding, read within
 		// CODEBASE_COVERAGE_WAIT_MS; still running → reported as pending.
@@ -1793,10 +1836,17 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// workspace root, unmounted drive) and avoid silently returning 0 results.
 		const rawHits: any[] = (searchResults.points || [])
 			.filter((p: any) => p.payload?.filePath && p.payload?.codeChunk);
+		// #4352 (a3): supplement hits join the SAME pool — identical dead-path filter,
+		// identical maluses, identical per-file cap and dedup below. `__supplement`
+		// only labels the hit in the response; it never buys it rank.
+		const supplementPoints: any[] = (supplement.points || [])
+			.filter((p: any) => p.payload?.filePath && p.payload?.codeChunk)
+			.map((p: any) => ({ ...p, __supplement: true }));
+		const pooledHits: any[] = [...rawHits, ...supplementPoints];
 
 		const liveHits: any[] = [];
 		let deadPathsFiltered = 0;
-		for (const point of rawHits) {
+		for (const point of pooledHits) {
 			if (isFilePathReachable(point.payload.filePath, workspace)) {
 				liveHits.push(point);
 			} else {
@@ -1807,8 +1857,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// Safety: if filtering killed ALL hits, the workspace root is likely wrong or
 		// the drive is unmounted — return the raw hits with a warning instead of an
 		// empty list, so the caller gets a signal rather than a silent zero.
-		const allDead = rawHits.length > 0 && liveHits.length === 0;
-		const finalHits = allDead ? rawHits : liveHits;
+		const allDead = pooledHits.length > 0 && liveHits.length === 0;
+		const finalHits = allDead ? pooledHits : liveHits;
 		if (allDead) {
 			deadPathsFiltered = 0; // rawHits returned as-is, nothing actually filtered out
 		}
@@ -2035,6 +2085,11 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				score: adjustedScore,
 				relevance: interpretScore(adjustedScore),
 				snippet: expanded ? expanded.text : extractSnippet(point.payload.codeChunk || '', query),
+				// #4352 (a3): which corpus this hit came from. Absent = the Zoo `ws-`
+				// collection (the default, unchanged); 'supplement' = the `sup-` one.
+				// A hit earns this label by origin, never by rank — both went through
+				// the same maluses and the same cap above.
+				...(point.__supplement ? { index: 'supplement' as const } : {}),
 				...lineFields
 			};
 		});
@@ -2072,11 +2127,28 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// Absent when undecidable — never a fabricated ratio.
 			...(coverage ? { coverage: coverageBlock } : {}),
 			// #4352: text files no ranking can return because Zoo never indexes them.
+			// #4352 (a3): once the supplement collection exists, the hint must stop
+			// sending the agent to Grep for a corpus that IS being searched — the two
+			// statements would contradict each other in the same response.
 			...(blindSpots ? {
 				not_indexed_by_design: {
 					files: blindSpots.files,
 					kinds: Object.fromEntries(Object.entries(blindSpots.kinds).sort((a, b) => b[1] - a[1]).slice(0, 6)),
-					hint: 'Zoo never indexes these files (.ps1, .mjs/.cjs, .sh, .yml, and every hidden directory such as .claude/ or .roo/). No result here does not mean they lack a match: use Grep for them.',
+					hint: supplement.collection
+						? `Zoo never indexes these files (.ps1, .mjs/.cjs, .sh, .yml, and every hidden directory such as .claude/ or .roo/). They are searched separately in ${supplement.collection}: a hit from there carries index: "supplement". A file absent from BOTH corpora (not yet indexed, or not committed) still needs Grep.`
+						: 'Zoo never indexes these files (.ps1, .mjs/.cjs, .sh, .yml, and every hidden directory such as .claude/ or .roo/). No result here does not mean they lack a match: use Grep for them.',
+				},
+			} : {}),
+			// #4352 (a3): the second corpus. `points` = candidates it contributed to the
+			// pool, `hits` = how many survived into the ranked list. No block when the
+			// workspace has no remote (no supplement can exist) — a block that always
+			// says "0" trains the reader to ignore it.
+			...(supplement.collection ? {
+				supplement: {
+					collection: supplement.collection,
+					points: supplementPoints.length,
+					hits: results.filter((r) => (r as any).index === 'supplement').length,
+					...(supplement.error ? { error: supplement.error } : {}),
 				},
 			} : {}),
 			...(coverage?.below_threshold ? {
@@ -2129,7 +2201,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// THIS ws-* code collection, which cleanup_orphans never touches (it only covers
 			// the conversation collection roo_tasks_semantic_index). The old hint pointed at
 			// cleanup_orphans, an action that fixes nothing here.
-			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${rawHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (repair: re-index this workspace to replace dead-path vectors)` } : {}),
+			...(recallShrankBelowLimit ? { warning: `dead-path filter reduced recall: ${deadPathsFiltered} of ${pooledHits.length} candidate hits unreachable, results_count=${results.length} < limit=${effectiveLimit} (repair: re-index this workspace to replace dead-path vectors)` } : {}),
 			results: results
 		};
 

@@ -453,7 +453,27 @@ function aggregateToolUsage(
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'repair_workspace' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'repair_workspace' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report' | 'index_code_supplement';
+
+    /**
+     * #4352 (a3) — action=index_code_supplement: the workspace whose supplement
+     * collection (`sup-<hash of the normalised origin URL>`) is built. Resolved
+     * like codebase_search resolves it when omitted.
+     */
+    workspace?: string;
+
+    /**
+     * #4352 (a3) — action=index_code_supplement: claim a collection currently held
+     * by another lane. One writer per collection is enforced in code; this is the
+     * only way past the sentinel, and it records who was taken over from.
+     */
+    takeover?: boolean;
+
+    /** #4352 (a3): cap on files selected per run (0/absent = all). */
+    max_files?: number;
+
+    /** #4352 (a3): chunks per embedding/upsert batch. Default 32. */
+    batch_size?: number;
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -566,8 +586,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), repair_workspace (backfill workspace_name on existing points #3344), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), repair_workspace (backfill workspace_name on existing points #3344), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows), index_code_supplement (#4352: build the sup- collection for files Zoo never indexes — .ps1, .sh, .yml, .mjs/.cjs and hidden dirs; dry_run defaults to TRUE here)'
             },
             task_id: {
                 type: 'string',
@@ -587,6 +607,25 @@ export const roosyncIndexingTool: Tool = {
                 type: 'string',
                 description: 'Workspace filter (for rebuild)'
             },
+            workspace: {
+                type: 'string',
+                description: 'For index_code_supplement (#4352): workspace whose sup- collection is built. Resolved like codebase_search when omitted.'
+            },
+            takeover: {
+                type: 'boolean',
+                description: 'For index_code_supplement (#4352). One writer per sup- collection is enforced in code by a sentinel record: set this ONLY to take ownership from another lane (the previous writer is recorded). Default: false.',
+                default: false
+            },
+            max_files: {
+                type: 'number',
+                description: 'For index_code_supplement (#4352): cap on files selected per run (0 = all). Default: 0.',
+                default: 0
+            },
+            batch_size: {
+                type: 'number',
+                description: 'For index_code_supplement (#4352): chunks per embedding/upsert batch. Default: 32.',
+                default: 32
+            },
             max_tasks: {
                 type: 'number',
                 description: 'Max tasks to process (for rebuild, 0 = all)',
@@ -594,7 +633,7 @@ export const roosyncIndexingTool: Tool = {
             },
             dry_run: {
                 type: 'boolean',
-                description: 'Simulation mode (for rebuild, garbage_scan, cleanup_orphans, repair_workspace)',
+                description: 'Simulation mode (for rebuild, garbage_scan, cleanup_orphans, repair_workspace). INVERTED default for index_code_supplement (#4352): omitting it means dry_run=TRUE — that action writes to Qdrant only when dry_run is explicitly false.',
                 default: false
             },
             machine_id: {
@@ -774,10 +813,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, repair_workspace, cleanup_failed, tool_usage_stats, save_snapshot, trend_report` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, repair_workspace, cleanup_failed, tool_usage_stats, save_snapshot, trend_report, index_code_supplement` }]
         };
     }
 
@@ -812,6 +851,91 @@ export async function handleRooSyncIndexing(
                 max_tasks: args.max_tasks,
                 dry_run: args.dry_run
             });
+        }
+
+        /**
+         * #4352 (a3) — the supplement index: the second collection (`sup-<hash of the
+         * normalised origin URL>`) for the text files Zoo never indexes (.ps1, .sh,
+         * .yml, .mjs/.cjs, and everything under a hidden directory).
+         *
+         * Three guard rails live here rather than in the service:
+         *  - DRY RUN IS THE DEFAULT. `dry_run` is omitted far more often than it is
+         *    set, and this action writes vectors: the only way to write is an explicit
+         *    `dry_run: false`. (Every other action keeps its own convention.)
+         *  - The template collection is resolved through the SAME variant list
+         *    `codebase_search` probes and the LARGEST one wins — the new collection
+         *    must mirror the vectors of the collection searches actually serve.
+         *  - The writer identity is the lane (`machine:workspace`), the same key the
+         *    issue-claim registry uses, so the sentinel names a lane a human can find.
+         */
+        case 'index_code_supplement': {
+            const { resolveWorkspace } = await import('../../utils/workspace-resolver.js');
+            const { getQdrantClient } = await import('../../services/qdrant.js');
+            const { embedCodebaseTexts, getCodebaseEmbeddingModel, getCodebaseEmbeddingEndpoint } = await import('../../services/code-index/embedding-client.js');
+            const {
+                runSupplementIndex,
+                pickLargestCollection,
+            } = await import('../../services/code-index/supplement-index.js');
+            const { getWorkspaceCollectionVariants } = await import('../search/search-codebase.tool.js');
+
+            try {
+                const { workspace: workspaceRoot, source } = await resolveWorkspace(args.workspace);
+                const client: any = getQdrantClient();
+                const templateCollection = await pickLargestCollection(
+                    client,
+                    getWorkspaceCollectionVariants(workspaceRoot),
+                );
+                const machineId = indexingState?.machineId
+                    || process.env.COMPUTERNAME
+                    || process.env.HOSTNAME
+                    || 'unknown-machine';
+                const writer = `${machineId}:${path.basename(workspaceRoot)}`;
+                const report = await runSupplementIndex({
+                    client,
+                    workspaceRoot,
+                    writer,
+                    // INVERTED default — see the block comment above.
+                    dryRun: args.dry_run !== false,
+                    takeover: args.takeover === true,
+                    templateCollection,
+                    // Recorded in the sentinel; a later run under a different model
+                    // refuses instead of mixing two embedding spaces (ms#1514 fix 2).
+                    embeddingModelId: getCodebaseEmbeddingModel(),
+                    // Same fingerprint for the ENDPOINT (review ms#1514, Hermes pt 2):
+                    // same model name on another EMBEDDING_API_BASE_URL = another space.
+                    embeddingEndpoint: getCodebaseEmbeddingEndpoint(),
+                    embed: embedCodebaseTexts,
+                    batchSize: args.batch_size,
+                    maxFiles: args.max_files,
+                });
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            workspace: workspaceRoot,
+                            workspace_source: source,
+                            template_collection: templateCollection,
+                            ...report,
+                            ...(report.dry_run
+                                ? { hint: 'DRY RUN — nothing was written. Pass dry_run: false to write (one writer per collection is enforced; use takeover: true only to take ownership from another lane).' }
+                                : {}),
+                        }, null, 2)
+                    }]
+                };
+            } catch (error) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            status: 'supplement_index_failed',
+                            message: error instanceof Error ? error.message : String(error),
+                            hint: 'index_code_supplement needs: a workspace with an origin remote (the collection is keyed on it), a served ws- collection to mirror the vector size from, and no foreign writer on the sup- collection.',
+                        }, null, 2)
+                    }]
+                };
+            }
         }
 
         case 'diagnose': {
