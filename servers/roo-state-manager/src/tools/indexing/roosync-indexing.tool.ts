@@ -1048,6 +1048,11 @@ export async function handleRooSyncIndexing(
                 const ageClause = leaderInfo ? ` (âge du verrou ${Math.round(leaderInfo.lockAgeMs / 1000)}s)` : ' (verrou illisible/absent)';
                 hints.push(`Ce process n'est PAS le leader d'indexation (is_leader=false) — une file plate est normale, le drain est porté par ${holder}${ageClause}. Si le leader est réellement bloqué, investiguez ce verrou (stale > 15 min = devrait être volé au prochain cycle).`);
             }
+            // #4352: the leader alone drains the queue, so ITS policy decides whether this
+            // machine's Claude sessions reach Qdrant; the per-task skip line never reaches a log.
+            if (leaderInfo?.claudeIndexing === false) {
+                hints.push(`Le leader d'indexation (PID ${leaderInfo.leaderPid}) n'indexe PAS les sessions Claude Code (ROO_INDEX_CLAUDE_SESSIONS=false dans son environnement) : aucune session Claude de cette machine n'atteint Qdrant tant qu'il tient le verrou.`);
+            }
 
             const status = {
                 background_indexer: {
@@ -1057,6 +1062,8 @@ export async function handleRooSyncIndexing(
                     is_leader: isLeader,
                     leader_pid: leaderInfo?.leaderPid ?? null,
                     leader_lock_age_ms: leaderInfo?.lockAgeMs ?? null,
+                    // #4352: the lock holder's Claude-session policy; null = unknown (older leader build).
+                    leader_claude_indexing: leaderInfo?.claudeIndexing ?? null,
                     // #3286: queue_size and metrics are PROCESS-LOCAL magnitudes —
                     // qdrantIndexQueue is an in-memory per-process Set and indexedTasks is
                     // incremented in this same process only. With ~62 concurrent roo-state-manager
