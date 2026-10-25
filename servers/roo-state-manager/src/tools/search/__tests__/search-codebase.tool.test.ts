@@ -24,6 +24,19 @@ const { mockGetQdrantClient, mockQdrant, mockEmbeddingCreate, mockExistsSync, mo
 	mockStatSync: vi.fn(() => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); })
 }));
 
+// #4352: the coverage denominator asks git first. Default: not a git workspace, so the
+// other tests keep exercising the disk walk.
+const { mockExecFile, gitFails } = vi.hoisted(() => {
+	const gitFails = (_cmd: string, _args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string) => void) =>
+		cb(Object.assign(new Error('not a git repository'), { code: 128 }));
+	return { mockExecFile: vi.fn(gitFails), gitFails };
+});
+
+vi.mock('child_process', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('child_process')>();
+	return { ...actual, execFile: mockExecFile };
+});
+
 vi.mock('fs', async (importOriginal) => {
 	const actual = await importOriginal<typeof import('fs')>();
 	return {
@@ -1489,6 +1502,64 @@ describe('search-codebase.tool', () => {
 				expect(parsed.coverage.indexed_files).toBe(1);
 				expect(parsed.coverage.coverage_ratio).toBe(0.5);
 				expect(parsed.coverage_warning).toContain('PARTIAL');
+			});
+
+			// #4352: Zoo 3.92 filters on its own extension list — no .ps1, .sh, .yml, .mjs,
+			// .cjs, .sql — and does index .html, .txt, .css. Counting the former read
+			// roo-extensions as 0.593 « PARTIAL » and told every seat to re-index.
+			test('denominator counts only the extensions Zoo indexes (#4352)', async () => {
+				mockQdrant.scroll.mockResolvedValue({
+					points: ['a.ts', 'page.html', 'notes.txt'].map(filePath => ({ payload: { filePath } }))
+				});
+				const F = (name: string) => ({ name, isDirectory: () => false, isFile: () => true });
+				mockReaddirSync.mockImplementation(() => [
+					F('a.ts'), F('page.html'), F('notes.txt'),
+					F('deploy.ps1'), F('run.sh'), F('ci.yml'), F('ci.yaml'), F('tool.mjs'), F('tool.cjs'), F('schema.sql')
+				]);
+
+				const parsed = JSON.parse((await handleCodebaseSearch({ query: 'ext probe', workspace: '/ws/4352-ext' })).content[0].text);
+				expect(parsed.status).toBe('success');
+				expect(parsed.coverage.eligible_files).toBe(3);
+				expect(parsed.coverage.coverage_ratio).toBe(1);
+				expect(parsed.coverage_warning).toBeUndefined();
+			});
+
+			// #4352: Zoo's ripgrep listing honours .gitignore. On ai-01 the walk counted 10,856
+			// files where git sees 7,604, and 7,017 of the 7,018 indexed files are git-visible.
+			test('in a git workspace the denominator is the git-visible set, not the disk walk (#4352)', async () => {
+				mockQdrant.scroll.mockResolvedValue({
+					points: ['src/a.ts', 'src/b.ts', 'mcps/internal/src/c.ts'].map(filePath => ({ payload: { filePath } }))
+				});
+				mockExecFile.mockImplementation((_cmd: string, args: string[], _opts: unknown, cb: (err: Error | null, stdout?: string) => void) =>
+					args.includes('--recurse-submodules')
+						? cb(null, ['src/a.ts', 'src/b.ts', 'mcps/internal/src/c.ts', 'scripts/x.ps1', '.claude/rules/r.md', 'node_modules/p/i.js'].join('\0') + '\0')
+						: cb(null, 'notes.txt\0'));
+				// The walk would see 50 gitignored files: it must not be consulted.
+				mockReaddirSync.mockImplementation(() => Array.from({ length: 50 }, (_, i) => ({ name: `ignored${i}.ts`, isDirectory: () => false, isFile: () => true })));
+				try {
+					const parsed = JSON.parse((await handleCodebaseSearch({ query: 'git probe', workspace: '/ws/4352-git' })).content[0].text);
+					expect(parsed.status).toBe('success');
+					// Eligible: src/a.ts, src/b.ts, mcps/internal/src/c.ts (submodule), notes.txt (untracked, not ignored).
+					// Not eligible: .ps1 (extension), .claude/** (hidden), node_modules/**.
+					expect(parsed.coverage.eligible_files).toBe(4);
+					expect(parsed.coverage.indexed_files).toBe(3);
+					expect(parsed.coverage.coverage_ratio).toBe(0.75);
+					const gitCalls = mockExecFile.mock.calls.map(c => (c[1] as string[]).join(' '));
+					expect(gitCalls).toContain('-C /ws/4352-git ls-files --recurse-submodules -z');
+					expect(gitCalls).toContain('-C /ws/4352-git ls-files --others --exclude-standard -z');
+				} finally {
+					mockExecFile.mockImplementation(gitFails);
+				}
+			});
+
+			test('the PARTIAL warning names the writing seat, not a local re-index (#4352)', async () => {
+				mockQdrant.scroll.mockResolvedValue({ points: [{ payload: { filePath: 'a.ts' } }] });
+				mockReaddirSync.mockImplementation(() => ['a.ts', 'b.ts', 'c.ts'].map(name => ({ name, isDirectory: () => false, isFile: () => true })));
+
+				const parsed = JSON.parse((await handleCodebaseSearch({ query: 'warn probe', workspace: '/ws/4352-warn' })).content[0].text);
+				expect(parsed.coverage_warning).toContain('PARTIAL');
+				expect(parsed.coverage_warning).toContain('the seat that writes this collection');
+				expect(parsed.coverage_warning).not.toContain('on this machine');
 			});
 		});
 
