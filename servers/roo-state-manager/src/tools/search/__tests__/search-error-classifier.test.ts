@@ -3,7 +3,7 @@
  * #833 Phase 2 P0 blind spot — full coverage of error classification logic
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { classifySearchError, formatClassifiedError, unwrapTransportCause } from '../search-error-classifier.js';
 import type { ClassifiedError } from '../search-error-classifier.js';
 
@@ -20,8 +20,13 @@ function makeError(message: string, overrides: Record<string, unknown> = {}): Er
 }
 
 describe('classifySearchError', () => {
+	const originalQdrantUrl = process.env.QDRANT_URL;
 	beforeEach(() => {
 		mockFetch.mockReset();
+	});
+	afterEach(() => {
+		if (originalQdrantUrl === undefined) delete process.env.QDRANT_URL;
+		else process.env.QDRANT_URL = originalQdrantUrl;
 	});
 
 	// ── Auth failures (highest priority — checked first) ──
@@ -124,11 +129,59 @@ describe('classifySearchError', () => {
 	// ── probeQdrantHealth disambiguation ──
 
 	it('probe OK → qdrant_proxy_drop (proxy drops POST)', async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
 		mockFetch.mockResolvedValue({ ok: true, status: 200 });
 		const err = makeError('This operation was aborted');
 		const result = await classifySearchError(err, 'search');
 		expect(result.mode).toBe('qdrant_proxy_drop');
 		expect(result.hint).toContain('proxy');
+	});
+
+	// #4352: on ai-01 QDRANT_URL is localhost:6333 and the search itself timed out
+	// (cold cache, on-disk vectors); the proxy verdict sent operators to IIS/ARR.
+	it.each([
+		['http://127.0.0.1:6333'],
+		['http://localhost:6333'],
+		['http://[::1]:6333'],
+	])('probe OK on loopback %s → qdrant_backend_slow, never a proxy drop', async (url) => {
+		process.env.QDRANT_URL = url;
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const result = await classifySearchError(makeError('This operation was aborted'), 'codebase_search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+		expect(result.message).toContain('no proxy in the path');
+	});
+
+	it('unset QDRANT_URL defaults to localhost → qdrant_backend_slow', async () => {
+		delete process.env.QDRANT_URL;
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const result = await classifySearchError(makeError('This operation was aborted'), 'search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+	});
+
+	it("Qdrant's own search timeout → qdrant_backend_slow even behind a public URL", async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const err = makeError("Service internal error: 1 of 1 read operations failed: Timeout error: Operation 'Search' timed out after 59 seconds", { status: 500 });
+		const result = await classifySearchError(err, 'codebase_search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+	});
+
+	it("Qdrant's own search timeout with no HTTP status still enters the timeout branch", async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const err = makeError("Timeout error: Operation 'Search' timed out after 59 seconds");
+		const result = await classifySearchError(err, 'search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+	});
+
+	// #4352 review: roosync_search reports an embedding timeout under 'search'. The
+	// OpenAI SDK's "Request timed out." must not be read as Qdrant being slow.
+	it('an embedding SDK "Request timed out." on a loopback Qdrant is not blamed on Qdrant', async () => {
+		process.env.QDRANT_URL = 'http://localhost:6333';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const result = await classifySearchError(makeError('Request timed out.'), 'search');
+		expect(result.mode).not.toBe('qdrant_backend_slow');
+		expect(result.mode).not.toBe('qdrant_proxy_drop');
 	});
 
 	it('probe !ok → qdrant_backend_slow', async () => {
@@ -148,6 +201,7 @@ describe('classifySearchError', () => {
 	});
 
 	it('HTTP 5xx triggers probe', async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
 		mockFetch.mockResolvedValue({ ok: true, status: 200 });
 		const err = makeError('Bad Gateway');
 		const result = await classifySearchError(err, 'search');

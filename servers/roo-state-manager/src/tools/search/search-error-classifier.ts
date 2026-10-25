@@ -87,6 +87,26 @@ async function probeQdrantHealth(): Promise<{ ok: boolean; latencyMs: number; st
 }
 
 /**
+ * #4352: a loopback QDRANT_URL has no reverse proxy in the path, so a search that
+ * times out while /healthz answers is Qdrant itself being slow on that search
+ * (cold cache, on-disk vectors, CPU), never a proxy drop. Qdrant's own search
+ * timeout ("Operation 'Search' timed out") says the same on any host.
+ */
+// Qdrant's exact wording only: the OpenAI SDK says "Request timed out." for an
+// embedding timeout, which roosync_search reports under operation 'search'.
+const QDRANT_OWN_SEARCH_TIMEOUT = /Operation '?Search'? timed out/i;
+
+function qdrantHasNoProxyInPath(errorMsg: string): boolean {
+	if (QDRANT_OWN_SEARCH_TIMEOUT.test(errorMsg)) return true;
+	try {
+		const host = new URL(process.env.QDRANT_URL || 'http://localhost:6333').hostname;
+		return host === 'localhost' || host === '[::1]' || /^127\./.test(host);
+	} catch {
+		return false;
+	}
+}
+
+/**
  * #3344: Unwrap the `cause` chain of a transport error.
  *
  * Node's undici wraps every low-level failure as `TypeError: fetch failed` with
@@ -217,12 +237,21 @@ export async function classifySearchError(
 
 		// Abort/timeout → probe health to distinguish proxy_drop vs unreachable
 		if (errorMsg.includes('abort') || errorMsg.includes('timeout') ||
+			QDRANT_OWN_SEARCH_TIMEOUT.test(errorMsg) || // #4352
 			errorMsg.includes('This operation was aborted') ||
 			errorCode === 'UND_ERR_CONNECT_TIMEOUT' ||
 			isHttpServerError(error)) {
 			// Probe health endpoint to classify
 			try {
 				const health = await probeQdrantHealth();
+				if (health.ok && qdrantHasNoProxyInPath(errorMsg)) {
+					return {
+						mode: 'qdrant_backend_slow',
+						originalError: errorMsg,
+						message: `Qdrant is UP (GET /healthz ${health.status} in ${health.latencyMs}ms) but the ${operation} itself timed out — no proxy in the path, Qdrant is slow on this search`,
+						hint: 'Usual causes: first search on a cold cache, vectors stored on disk without quantization, or Qdrant CPU saturated by indexing. Retry once; if it persists, check the collection config (on_disk, quantization) and the container CPU.',
+					};
+				}
 				if (health.ok) {
 					return {
 						mode: 'qdrant_proxy_drop',
