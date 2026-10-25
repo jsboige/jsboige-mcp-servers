@@ -79,6 +79,13 @@ export interface HealthViewResult {
      */
     embeddingsReachable?: boolean;
     /**
+     * #1518: Cause-resolving embedding probe result, mirroring `qdrantProbe` (#2977).
+     * `embeddingsProbe.kind` names why the probe failed — a TIMEOUT (hung socket,
+     * bounded since #1518) is not an HTTP failure. `embeddingsReachable` above is
+     * retained for consumers that only read the bool.
+     */
+    embeddingsProbe?: EmbeddingProbeResult;
+    /**
      * #2628: Same distinction for Qdrant. `qdrant` above checks env-var presence only;
      * this field reflects an actual bounded authenticated GET /collections round-trip.
      * Without it, a live 503/timeout was masked as "Qdrant: OK" (regression of #2547).
@@ -311,22 +318,62 @@ function collectCapabilities(): {
 }
 
 /**
+ * #1518: Cause-resolving embedding probe result, mirroring `QdrantProbeResult` (#2977).
+ *
+ * - `ok`          : embeddings.create answered with a non-empty vector.
+ * - `timeout`     : our bound fired (EMBEDDINGS_HEALTH_PROBE_TIMEOUT_MS, default 8000)
+ *                   — the hung-socket case that used to stall the whole health call.
+ * - `error`       : the backend answered with a failure (4xx/5xx) or threw before the bound.
+ * - `unconfigured`: the OpenAI client could not even be constructed (env missing).
+ */
+export type EmbeddingProbeResult = {
+  reachable: boolean;
+  kind: 'ok' | 'timeout' | 'error' | 'unconfigured';
+};
+
+/**
  * #2547: Async live probe of the embedding backend.
  * Distinguishes "configured" (env vars present) from "reachable" (backend responds).
  * Uses the same connectivity cache as diagnose-index.tool.ts to avoid redundant API calls.
+ *
+ * #1518: the probe is now BOUNDED (AbortController + EMBEDDINGS_HEALTH_PROBE_TIMEOUT_MS,
+ * default 8000 ms), mirroring probeQdrantBackend(). Before, `openai.embeddings.create`
+ * was awaited with no timeout — a backend that accepted the TCP connection but never
+ * answered (measured 2026-10-25: embeddings.myia.io socket held open, health mute
+ * 60 s+) stalled the whole `roosync_inventory(type: "health")` call until the MCP
+ * layer gave up. `kind` names the cause so a hang is not read as an HTTP failure.
  */
-async function probeEmbeddingBackend(): Promise<boolean> {
+export async function probeEmbeddingBackend(): Promise<EmbeddingProbeResult> {
   try {
     const getOpenAIClient = (await import('../../services/openai.js')).default;
     const { getEmbeddingModel } = await import('../../services/openai.js');
     const openai = getOpenAIClient();
-    const result = await openai.embeddings.create({
-      model: getEmbeddingModel(),
-      input: 'health-check',
-    });
-    return result?.data?.[0]?.embedding?.length > 0;
+    const timeoutMs = parseInt(process.env.EMBEDDINGS_HEALTH_PROBE_TIMEOUT_MS || '8000', 10);
+    const controller = new AbortController();
+    // Deterministic cause classification: the SDK's abort error shape varies across
+    // versions (AbortError / APIUserAbortError), but our own flag never lies.
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+    try {
+      const result = await openai.embeddings.create(
+        { model: getEmbeddingModel(), input: 'health-check' },
+        { signal: controller.signal }
+      );
+      return result?.data?.[0]?.embedding?.length > 0
+        ? { reachable: true, kind: 'ok' }
+        : { reachable: false, kind: 'error' };
+    } catch (err) {
+      return { reachable: false, kind: timedOut ? 'timeout' : 'error' };
+    } finally {
+      clearTimeout(timer);
+    }
   } catch {
-    return false;
+    // Client construction failed (env not configured enough to even try) — mirrors
+    // probeQdrantBackend's unconfigured branch.
+    return { reachable: false, kind: 'unconfigured' };
   }
 }
 
@@ -566,7 +613,7 @@ function qdrantUnreachableRecommendation(probe?: QdrantProbeResult): string {
 function generateRecommendations(
   onlineCount: number,
   totalCount: number,
-  capabilities: { sharedPath: boolean; qdrant: boolean; embeddings: boolean; qdrantReachable?: boolean; qdrantProbe?: QdrantProbeResult },
+  capabilities: { sharedPath: boolean; qdrant: boolean; embeddings: boolean; qdrantReachable?: boolean; qdrantProbe?: QdrantProbeResult; embeddingsReachable?: boolean; embeddingsProbe?: EmbeddingProbeResult },
   drift: { checked: boolean; critical: number; important: number; items: DriftItem[] },
   envMissing: Array<{ name: string; severity: string }>,
   // #3160: registry machines not online, with the last append this observer saw.
@@ -588,6 +635,15 @@ function generateRecommendations(
   }
   if (!capabilities.embeddings) {
     recs.push('Embedding service not configured — codebase_search disabled');
+  } else if (capabilities.embeddingsReachable === false) {
+    // #1518: name the cause — a TIMEOUT (bounded hang) points at the backend host,
+    // not the key; an ERROR is an answered failure.
+    const cause = capabilities.embeddingsProbe?.kind === 'timeout'
+      ? ' — TIMEOUT (bounded probe fired, backend hung)'
+      : capabilities.embeddingsProbe?.kind === 'error'
+        ? ' — backend answered with a failure'
+        : '';
+    recs.push(`Embedding backend unreachable${cause} — semantic search degraded. Check EMBEDDING_API_BASE_URL reachability`);
   }
 
   for (const env of envMissing) {
@@ -654,9 +710,15 @@ export function formatMarkdown(result: HealthViewResult): string {
     : result.capabilities.qdrantReachable === false ? `FAIL (configured but unreachable${qdrantFailCause ? ` — ${qdrantFailCause}` : ''})`
     : 'OK (configured)';
   lines.push(`- Qdrant: ${qdrantStatus}`);
+  // #1518: name the embeddings cause too — a TIMEOUT (bounded hang) is not an HTTP
+  // failure; the operator checks the backend host, not the API key.
+  const embeddingsProbe = result.capabilities.embeddingsProbe;
+  const embFailCause = embeddingsProbe
+    ? { timeout: 'TIMEOUT', error: 'ERROR', unconfigured: 'UNCONFIGURED', ok: '' }[embeddingsProbe.kind]
+    : '';
   const embStatus = !result.capabilities.embeddings ? 'MISSING (not configured)'
     : result.capabilities.embeddingsReachable === true ? 'OK (configured + reachable)'
-    : result.capabilities.embeddingsReachable === false ? 'DEGRADED (configured but unreachable)'
+    : result.capabilities.embeddingsReachable === false ? `DEGRADED (configured but unreachable${embFailCause ? ` — ${embFailCause}` : ''})`
     : 'OK (configured)';
   lines.push(`- Embeddings: ${embStatus}`);
   lines.push('');
@@ -712,27 +774,31 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
   const capabilities = collectCapabilities();
 
   // Collect all data sources in parallel (including optional backend probes)
-  const [systemHealth, drift, envCheck, embeddingsReachable, qdrantProbe] = await Promise.all([
+  const [systemHealth, drift, envCheck, embeddingsProbe, qdrantProbe] = await Promise.all([
     collectSystemHealth(),
     collectDrift(targetMachine, args.driftTarget),
     args.includeEnvCheck !== false ? Promise.resolve(collectEnvCheck()) : Promise.resolve({
       checked: false, missing: [], present: [],
     }),
-    // #2547: Async live probe of embedding backend (only if configured)
-    capabilities.embeddings ? probeEmbeddingBackend() : Promise.resolve(false as boolean),
+    // #2547/#1518: Async live probe of embedding backend (only if configured) — bounded
+    // since #1518, returns the cause, not just a bool
+    capabilities.embeddings
+      ? probeEmbeddingBackend()
+      : Promise.resolve({ reachable: false, kind: 'unconfigured' } as EmbeddingProbeResult),
     // #2628/#2977: Async live Qdrant probe (only if configured) — returns the cause, not just a bool
     capabilities.qdrant
       ? probeQdrantBackend()
       : Promise.resolve({ reachable: false, kind: 'unconfigured' } as QdrantProbeResult),
   ]);
 
-  // #2547/#2628/#2977: Merge the async probe results into capabilities BEFORE scoring,
+  // #2547/#2628/#2977/#1518: Merge the async probe results into capabilities BEFORE scoring,
   // so a configured-but-unreachable backend actually moves the score/verdict. `qdrantProbe`
-  // carries the cause (#2977); `qdrantReachable` is the bool derivative for the score and
-  // backward compatibility with consumers that only read the bool.
+  // and `embeddingsProbe` carry the cause (#2977/#1518); the `*Reachable` bools are the
+  // derivatives for the score and backward compatibility with consumers that only read the bool.
   const enrichedCapabilities = {
     ...capabilities,
-    embeddingsReachable: capabilities.embeddings ? embeddingsReachable : false,
+    embeddingsReachable: capabilities.embeddings ? embeddingsProbe.reachable : false,
+    embeddingsProbe: capabilities.embeddings ? embeddingsProbe : ({ reachable: false, kind: 'unconfigured' } as EmbeddingProbeResult),
     qdrantProbe: capabilities.qdrant ? qdrantProbe : ({ reachable: false, kind: 'unconfigured' } as QdrantProbeResult),
     qdrantReachable: capabilities.qdrant ? qdrantProbe.reachable : false,
   };
