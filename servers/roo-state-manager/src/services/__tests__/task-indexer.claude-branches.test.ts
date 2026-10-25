@@ -119,6 +119,24 @@ describe('TaskIndexer.indexTask — Claude Code branch resolution (coverage #833
         expect(indexTaskVector).not.toHaveBeenCalled();
     });
 
+    test('#4352: an indexing error on a PRESENT session propagates with its own message, never as not-found', async () => {
+        const uuid = 'ffffffff-1111-2222-3333-444444444444';
+        await fs.writeFile(path.join(projectDir, `${uuid}.jsonl`), '{}\n');
+        vi.mocked(ClaudeStorageDetector.detectStorageLocations).mockResolvedValue([
+            { projectPath: projectDir } as any,
+        ]);
+        const taskId = `claude-${path.basename(projectDir)}--${uuid}`;
+        vi.mocked(indexTaskVector).mockRejectedValueOnce(new Error('Embedding service returned 503'));
+
+        // Before #4352 the catch around fs.access ALSO caught this rejection, the loop
+        // fell through, and the task was dead-lettered as claude_session_not_found.
+        const err = await indexer.indexTask(taskId, 'claude-code').then(() => null, (e: Error) => e);
+        expect(err).not.toBeNull();
+        expect(err!.message).toMatch(/503/);
+        expect(err!.message).not.toMatch(/not found/i);
+        expect(indexTaskVector).toHaveBeenCalledTimes(1);
+    });
+
     test('taskId matching no location throws "Claude Code session ... not found" (src L129-134)', async () => {
         vi.mocked(ClaudeStorageDetector.detectStorageLocations).mockResolvedValue([
             { projectPath: projectDir } as any,

@@ -116,13 +116,18 @@ export class TaskIndexer {
                     if (suffix.startsWith(basename + '--')) {
                         const sessionUuid = suffix.substring(basename.length + 2);
                         const sessionFile = path.join(loc.projectPath, sessionUuid + '.jsonl');
+                        // #4352: only the location probe may mean "not here". An error from the
+                        // indexing itself (embedding 503, auth, Qdrant) used to be swallowed by the
+                        // same catch and resurface as "session not found", a class never retried.
+                        let present = true;
                         try {
                             await fs.access(sessionFile);
-                            // Pass the specific file — extractChunksFromClaudeSession() handles single files
-                            const points = await indexTask(taskId, sessionFile, source, metadata);
-                            return points;
                         } catch {
-                            // File doesn't exist in this location, continue searching
+                            present = false; // File doesn't exist in this location, continue searching
+                        }
+                        if (present) {
+                            // Pass the specific file — extractChunksFromClaudeSession() handles single files
+                            return await indexTask(taskId, sessionFile, source, metadata);
                         }
                     }
                 }
@@ -140,16 +145,20 @@ export class TaskIndexer {
 
             for (const location of locations) {
                 const taskPath = path.join(location, 'tasks', taskId);
+                // #4352: same split as the Claude branch — an indexing error must not read as "not found".
+                let present = true;
                 try {
                     await fs.access(taskPath);
+                } catch {
+                    present = false; // Tâche pas dans ce location, on continue
+                }
+                if (present) {
                     const points = await indexTask(taskId, taskPath, source, metadata);
 
                     // FIX ARCHITECTURAL: Mettre à jour le squelette ICI, pas dans index.ts
                     await this.updateSkeletonIndexTimestamp(taskId, location);
 
                     return points;
-                } catch {
-                    // Tâche pas dans ce location, on continue
                 }
             }
 

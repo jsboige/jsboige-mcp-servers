@@ -58,7 +58,7 @@ vi.mock('../../utils/claude-storage-detector.js', () => ({
     ClaudeStorageDetector: { detectStorageLocations: vi.fn(), analyzeConversation: vi.fn() },
 }));
 
-vi.mock('../task-partition.js', () => ({ shouldIndexTask: vi.fn().mockReturnValue(true) }));
+vi.mock('../task-partition.js', async (importOriginal) => ({ ...(await importOriginal<typeof import('../task-partition.js')>()), shouldIndexTask: vi.fn().mockReturnValue(true) }));
 
 vi.mock('../unified-store/dual-write.js', () => ({
     dualWriteConversationToStore: vi.fn().mockResolvedValue({ ok: true }),

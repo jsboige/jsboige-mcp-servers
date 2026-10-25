@@ -198,6 +198,8 @@ const MAX_OPERATIONS_PER_WINDOW = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE 
 const EMBEDDING_BATCH_SIZE = parseInt(process.env.EMBEDDING_BATCH_SIZE || '16', 10);
 // Approximate max tokens per batch request. Split batch if sum of content lengths exceeds this.
 const EMBEDDING_BATCH_MAX_TOKENS = parseInt(process.env.EMBEDDING_BATCH_MAX_TOKENS || '7000', 10);
+// #4352: sub-chunks embedded then upserted together, so a task timeout keeps every finished window.
+const UPSERT_WINDOW_SUBCHUNKS = 256;
 let operationTimestamps: number[] = [];
 
 const MAX_CHUNK_SIZE = 800; // Approx. 200-400 tokens, ultra-conservative safety margin below 8192 limit for text-embedding-3-small
@@ -1079,7 +1081,6 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         }
 
         // Phase C: Compute embeddings only for new/changed chunks
-        let pointsToIndex: PointStruct[] = [];
 
         // #2194: Two-stage pipeline — cache lookup first, then batch embedding for misses
         const embeddingModel = getEmbeddingModel();
@@ -1101,9 +1102,8 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             }
         }
 
-        // Stage 2: Batch embed uncached chunks
+        // Stage 2: Rate-limit check before batch processing (once per task, as before #4352)
         if (uncached.length > 0) {
-            // Rate-limit check before batch processing
             operationTimestamps = operationTimestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
             if (operationTimestamps.length >= MAX_OPERATIONS_PER_WINDOW) {
                 _metrics.embeddings_rate_limit_waited_total++;
@@ -1111,81 +1111,98 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                 await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_WINDOW));
                 operationTimestamps = [];
             }
+        }
 
-            if (EMBEDDING_BATCH_SIZE <= 1) {
-                // Legacy single-input path (backward compat)
-                for (const { chunk: subChunk, contentHash } of uncached) {
-                    const vector = await embedSingle(subChunk, contentHash, embeddingModel, expectedDims, now);
-                    if (vector) {
-                        cachedResults.set(contentHash, vector);
+        // #4352: embed, build and upsert UPSERT_WINDOW_SUBCHUNKS sub-chunks at a time. With a
+        // single upsert at the end, a session that hit the task timeout mid-embedding kept
+        // nothing, and every retry restarted from zero (39 sessions dead-lettered on ai-01,
+        // 25/10). Now a timeout keeps what was written, and the pre-flight dedup above lets
+        // the next attempt resume after it.
+        const indexedPoints: PointStruct[] = [];
+        for (let start = 0; start < subChunksToEmbed.length; start += UPSERT_WINDOW_SUBCHUNKS) {
+            const window = subChunksToEmbed.slice(start, start + UPSERT_WINDOW_SUBCHUNKS);
+            const toEmbed = window.filter(entry => !cachedResults.has(entry.contentHash));
+
+            // Stage 2b: Batch embed this window's uncached chunks
+            if (toEmbed.length > 0) {
+                if (EMBEDDING_BATCH_SIZE <= 1) {
+                    // Legacy single-input path (backward compat)
+                    for (const { chunk: subChunk, contentHash } of toEmbed) {
+                        const vector = await embedSingle(subChunk, contentHash, embeddingModel, expectedDims, now);
+                        if (vector) {
+                            cachedResults.set(contentHash, vector);
+                        }
                     }
-                }
-            } else {
-                // Batch path: split uncached into batches respecting token limits
-                const batches = buildBatches(uncached, EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_MAX_TOKENS);
-                for (const batch of batches) {
-                    const batchVectors = await embedBatch(batch, embeddingModel, expectedDims, now);
-                    for (let i = 0; i < batch.length; i++) {
-                        if (batchVectors[i]) {
-                            cachedResults.set(batch[i].contentHash, batchVectors[i]!);
+                } else {
+                    // Batch path: split uncached into batches respecting token limits
+                    const batches = buildBatches(toEmbed, EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_MAX_TOKENS);
+                    for (const batch of batches) {
+                        const batchVectors = await embedBatch(batch, embeddingModel, expectedDims, now);
+                        for (let i = 0; i < batch.length; i++) {
+                            if (batchVectors[i]) {
+                                cachedResults.set(batch[i].contentHash, batchVectors[i]!);
+                            }
                         }
                     }
                 }
             }
-        }
 
-        // Stage 3: Build points from all resolved vectors
-        for (const { chunk: subChunk, contentHash } of subChunksToEmbed) {
-            const vector = cachedResults.get(contentHash);
-            if (!vector) continue;
+            // Stage 3: Build points from this window's resolved vectors
+            let pointsToIndex: PointStruct[] = [];
+            for (const { chunk: subChunk, contentHash } of window) {
+                const vector = cachedResults.get(contentHash);
+                if (!vector) continue;
 
-            const payload: any = { ...subChunk, source: source, contentHash };
-            // #3344: guarantee workspace_name on every indexed point — derive from
-            // workspace when an emitter set the path but not the name (3.5% cohort in
-            // the ai-01 counter-sample). Safety net: ChunkExtractor already derives it,
-            // this catches any other emitter feeding pointsToIndex.
-            if (payload.workspace && !payload.workspace_name) {
-                payload.workspace_name = workspaceBasename(String(payload.workspace));
+                const payload: any = { ...subChunk, source: source, contentHash };
+                // #3344: guarantee workspace_name on every indexed point — derive from
+                // workspace when an emitter set the path but not the name (3.5% cohort in
+                // the ai-01 counter-sample). Safety net: ChunkExtractor already derives it,
+                // this catches any other emitter feeding pointsToIndex.
+                if (payload.workspace && !payload.workspace_name) {
+                    payload.workspace_name = workspaceBasename(String(payload.workspace));
+                }
+                const point: PointStruct = {
+                    id: subChunk.chunk_id,
+                    vector: vector,
+                    payload: payload,
+                };
+                pointsToIndex.push(point);
             }
-            const point: PointStruct = {
-                id: subChunk.chunk_id,
-                vector: vector,
-                payload: payload,
-            };
-            pointsToIndex.push(point);
-        }
 
-        /**
-         * #1985: Dedup pre-indexation — skip points whose contentHash already exists in Qdrant
-         * Prevents Claude Code session re-indexing creating duplicate vectors on /resume or /compact.
-         */
-        if (pointsToIndex.length > 0) {
-            const deduplicated = await dedupByContentHash(pointsToIndex);
-            if (deduplicated.length < pointsToIndex.length) {
-                console.log(`[#1985] Dedup: ${pointsToIndex.length - deduplicated.length}/${pointsToIndex.length} points already indexed, indexing ${deduplicated.length} new`);
+            /**
+             * #1985: Dedup pre-indexation — skip points whose contentHash already exists in Qdrant
+             * Prevents Claude Code session re-indexing creating duplicate vectors on /resume or /compact.
+             */
+            if (pointsToIndex.length > 0) {
+                const deduplicated = await dedupByContentHash(pointsToIndex);
+                if (deduplicated.length < pointsToIndex.length) {
+                    console.log(`[#1985] Dedup: ${pointsToIndex.length - deduplicated.length}/${pointsToIndex.length} points already indexed, indexing ${deduplicated.length} new`);
+                }
+                pointsToIndex = deduplicated;
             }
-            pointsToIndex = deduplicated;
+
+            if (pointsToIndex.length > 0) {
+                console.log(`📤 Préparation upsert Qdrant: ${pointsToIndex.length} points (de ${chunks.length} chunks originaux) pour tâche ${taskId}`);
+                const success = await safeQdrantUpsert(pointsToIndex);
+                if (!success) {
+                    // #1273: Propagate error instead of swallowing it silently
+                    // Previously returned [] which caller treated as "success with 0 points"
+                    throw new GenericError(
+                        `Indexation failed for task ${taskId} - circuit breaker active or repeated upsert errors (${indexedPoints.length} points already written)`,
+                        GenericErrorCode.NETWORK_ERROR,
+                        { taskId, pointsCount: pointsToIndex.length, alreadyWritten: indexedPoints.length, service: 'VectorIndexer.indexTask' }
+                    );
+                }
+                indexedPoints.push(...pointsToIndex);
+            }
         }
 
         /**
          * ✅ CORRECTION P0 (2025-10-15) - Amélioration logging succès
          * Vérifier si des chunks valides ont été extraits avant de déclarer succès
          */
-        if (pointsToIndex.length > 0) {
-            console.log(`📤 Préparation upsert Qdrant: ${pointsToIndex.length} points (de ${chunks.length} chunks originaux) pour tâche ${taskId}`);
-            const success = await safeQdrantUpsert(pointsToIndex);
-
-            if (success) {
-                console.log(`✅ Indexation réussie: ${pointsToIndex.length} points pour tâche ${taskId}`);
-            } else {
-                // #1273: Propagate error instead of swallowing it silently
-                // Previously returned [] which caller treated as "success with 0 points"
-                throw new GenericError(
-                    `Indexation failed for task ${taskId} - circuit breaker active or repeated upsert errors`,
-                    GenericErrorCode.NETWORK_ERROR,
-                    { taskId, pointsCount: pointsToIndex.length, service: 'VectorIndexer.indexTask' }
-                );
-            }
+        if (indexedPoints.length > 0) {
+            console.log(`✅ Indexation réussie: ${indexedPoints.length} points pour tâche ${taskId}`);
         } else {
             if (chunks.length === 0) {
                 console.warn(`⚠️ Tâche ${taskId} : Aucun chunk extrait, vérifier les données source`);
@@ -1195,7 +1212,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             console.log(`No indexable chunks found for task ${taskId}.`);
         }
 
-        return pointsToIndex;
+        return indexedPoints;
 
     } catch (error) {
         console.error(`Failed to index task ${taskId}:`, error);

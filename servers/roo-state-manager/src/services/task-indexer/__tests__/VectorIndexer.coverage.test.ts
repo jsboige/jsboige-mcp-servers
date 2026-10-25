@@ -504,6 +504,45 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			await expect(indexTask('t-upsert-fail', '/p')).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
 		});
 
+		// #4352: a large session used to embed EVERYTHING before one upsert, so a task
+		// timeout mid-embedding kept nothing. Windows of 256 sub-chunks are written as they finish.
+		const manyChunks = (n: number) =>
+			Array.from({ length: n }, (_, i) => chunk(`win-${i}`, `windowed content number ${i}`));
+
+		test('#4352: upserts the first window before embedding the second', async () => {
+			vi.resetModules();
+			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+			resetCircuitBreakerForTest();
+			mockExtractTask.mockResolvedValue(manyChunks(300));
+			const calls: string[] = [];
+			mockEmbeddingsCreate.mockImplementation((args: any) => { calls.push('embed'); return embedOk()(args); });
+			mockUpsert.mockImplementation(async () => { calls.push('upsert'); });
+
+			const result = await indexTask('t-windowed', '/p');
+
+			expect(result.length).toBe(300);
+			// A write lands while embeddings are still pending: progress survives a timeout.
+			expect(calls.indexOf('upsert')).toBeLessThan(calls.lastIndexOf('embed'));
+		});
+
+		test('#4352: a failure in a later window keeps the earlier windows written and says so', async () => {
+			vi.resetModules();
+			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+			resetCircuitBreakerForTest();
+			mockExtractTask.mockResolvedValue(manyChunks(300));
+			let written = 0;
+			mockUpsert.mockImplementation(async (_collection: any, body: any) => {
+				if (written >= 256) throw Object.assign(new Error('Bad Request'), { response: { status: 400, data: {} } });
+				written += body?.points?.length ?? 0;
+			});
+
+			await expect(indexTask('t-windowed-fail', '/p')).rejects.toMatchObject({
+				code: 'NETWORK_ERROR',
+				message: expect.stringContaining('256 points already written'),
+			});
+			expect(written).toBe(256);
+		});
+
 		test('wraps a non-Error thrown during extraction (String(error) arms L1160-1163)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
