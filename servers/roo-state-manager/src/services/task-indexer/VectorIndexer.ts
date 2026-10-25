@@ -913,13 +913,28 @@ async function embedSingle(
     return vector;
 }
 
+// #4352 (a4): what the embedding calls of one indexTask() run said, so the task can fail
+// visibly instead of being marked indexed with holes.
+type EmbedFailures = { lastError: string | null; transport: boolean };
+
+// #4352 (a4): bisecting a failed batch helps only when its content can be the cause
+// (a chunk over the token limit, a malformed input: HTTP 400/413/422). A transport error,
+// a timeout, a 429 or a 5xx says nothing about the content: bisecting a batch of 16 cost
+// 31 doomed requests, up to 16 in flight, against a backend that was already saturated
+// (ai-01 reproduction 25/10: 3,723 "Connection error." in one session).
+function isContentAttributableEmbeddingError(error: any): boolean {
+    const status = error?.status;
+    return status === 400 || status === 413 || status === 422;
+}
+
 // #2194: Embed a batch of chunks in one API call.
-// On failure, splits into two halves and retries each independently (no data loss).
+// On a content-attributable failure, splits into two halves and retries each independently.
 async function embedBatch(
     batch: Array<{ chunk: Chunk; contentHash: string }>,
     model: string,
     expectedDims: number,
-    now: number
+    now: number,
+    failures: EmbedFailures
 ): Promise<Array<number[] | null>> {
     if (batch.length === 1) {
         // Single item — try once, return null on failure
@@ -935,10 +950,15 @@ async function embedBatch(
             if (vector && vector.length !== expectedDims) {
                 _metrics.embeddings_wrong_dim_total++;
                 console.warn(`⚠️ [batch] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${batch[0].chunk.chunk_id}`);
+                failures.lastError = `wrong dimension ${vector.length} vs ${expectedDims}`;
+            } else {
+                failures.lastError = 'invalid embedding in response';
             }
             return [null];
         } catch (error: any) {
             console.error(`❌ [batch] Single embedding failed for chunk ${batch[0].chunk.chunk_id}: ${error.message}`);
+            failures.lastError = error.message;
+            if (!isContentAttributableEmbeddingError(error)) failures.transport = true;
             return [null];
         }
     }
@@ -958,11 +978,13 @@ async function embedBatch(
             const vector = resp.data[i]?.embedding;
             if (!vector || !Array.isArray(vector)) {
                 console.error(`❌ [batch] Embedding invalide pour chunk ${batch[i].chunk.chunk_id}`);
+                failures.lastError = 'invalid embedding in response';
                 continue;
             }
             if (vector.length !== expectedDims) {
                 _metrics.embeddings_wrong_dim_total++;
                 console.warn(`⚠️ [batch] Dimension inattendue: ${vector.length} vs ${expectedDims} pour chunk ${batch[i].chunk.chunk_id}`);
+                failures.lastError = `wrong dimension ${vector.length} vs ${expectedDims}`;
                 continue;
             }
             results[i] = vector;
@@ -970,12 +992,18 @@ async function embedBatch(
         }
         return results;
     } catch (error: any) {
-        // Full batch failed — split into two halves and retry each independently
+        failures.lastError = error.message;
+        if (!isContentAttributableEmbeddingError(error)) {
+            failures.transport = true;
+            console.warn(`[batch] Batch of ${batch.length} failed (${error.message}) — not bisected: a transport/overload error says nothing about the content`);
+            return new Array(batch.length).fill(null);
+        }
+        // Content-attributable failure — split into two halves and retry each independently
         const mid = Math.ceil(batch.length / 2);
         console.warn(`[batch] Batch of ${batch.length} failed (${error.message}), splitting into ${mid}+${batch.length - mid}`);
         const [left, right] = await Promise.all([
-            embedBatch(batch.slice(0, mid), model, expectedDims, now),
-            embedBatch(batch.slice(mid), model, expectedDims, now),
+            embedBatch(batch.slice(0, mid), model, expectedDims, now, failures),
+            embedBatch(batch.slice(mid), model, expectedDims, now, failures),
         ]);
         return [...left, ...right];
     }
@@ -1119,6 +1147,10 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         // 25/10). Now a timeout keeps what was written, and the pre-flight dedup above lets
         // the next attempt resume after it.
         const indexedPoints: PointStruct[] = [];
+        // #4352 (a4): sub-chunks left without a vector. They used to be skipped silently and
+        // the task resolved — then marked indexed by the caller, holes included, never retried.
+        const embedFailures: EmbedFailures = { lastError: null, transport: false };
+        let missingVectors = 0;
         for (let start = 0; start < subChunksToEmbed.length; start += UPSERT_WINDOW_SUBCHUNKS) {
             const window = subChunksToEmbed.slice(start, start + UPSERT_WINDOW_SUBCHUNKS);
             const toEmbed = window.filter(entry => !cachedResults.has(entry.contentHash));
@@ -1137,7 +1169,10 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                     // Batch path: split uncached into batches respecting token limits
                     const batches = buildBatches(toEmbed, EMBEDDING_BATCH_SIZE, EMBEDDING_BATCH_MAX_TOKENS);
                     for (const batch of batches) {
-                        const batchVectors = await embedBatch(batch, embeddingModel, expectedDims, now);
+                        // #4352 (a4): the backend is failing — stop calling it for this task.
+                        // The retry (with backoff) resumes after what this attempt wrote.
+                        if (embedFailures.transport) break;
+                        const batchVectors = await embedBatch(batch, embeddingModel, expectedDims, now, embedFailures);
                         for (let i = 0; i < batch.length; i++) {
                             if (batchVectors[i]) {
                                 cachedResults.set(batch[i].contentHash, batchVectors[i]!);
@@ -1151,7 +1186,10 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             let pointsToIndex: PointStruct[] = [];
             for (const { chunk: subChunk, contentHash } of window) {
                 const vector = cachedResults.get(contentHash);
-                if (!vector) continue;
+                if (!vector) {
+                    missingVectors++;
+                    continue;
+                }
 
                 const payload: any = { ...subChunk, source: source, contentHash };
                 // #3344: guarantee workspace_name on every indexed point — derive from
@@ -1195,6 +1233,19 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                 }
                 indexedPoints.push(...pointsToIndex);
             }
+        }
+
+        // #4352 (a4): a task with holes is not indexed. Fail it (transient: the caller retries
+        // with backoff) after writing what was obtained; the pre-flight dedup makes the next
+        // attempt embed only the missing sub-chunks.
+        if (missingVectors > 0) {
+            throw new GenericError(
+                `Embedding incomplete for task ${taskId}: ${missingVectors}/${subChunksToEmbed.length} sub-chunks without a vector ` +
+                `(${indexedPoints.length} points written, kept for the retry)` +
+                (embedFailures.lastError ? ` — last embedding error: ${embedFailures.lastError}` : ''),
+                GenericErrorCode.NETWORK_ERROR,
+                { taskId, missingVectors, written: indexedPoints.length, transport: embedFailures.transport, service: 'VectorIndexer.indexTask' }
+            );
         }
 
         /**
