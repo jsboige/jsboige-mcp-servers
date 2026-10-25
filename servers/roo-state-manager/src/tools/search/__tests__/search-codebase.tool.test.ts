@@ -420,6 +420,51 @@ describe('search-codebase.tool', () => {
 			expect(parsed.results[0].score).toBe(0.65);
 		});
 
+		test('#4352: two spellings of the folder own a collection → the largest is served, not the first found', async () => {
+			// D:/Dev/… lowercases to d:/dev/…, which comes BEFORE the drive-only-lowercase
+			// d:\Dev\… in the variant order. Pre-fix, the first existing variant won.
+			const smaller = getWorkspaceCollectionName('d:/dev/roo-ext');
+			const larger = getWorkspaceCollectionName('d:\\Dev\\roo-ext');
+			const variants = getWorkspaceCollectionVariants('D:/Dev/roo-ext');
+			expect(variants.indexOf(smaller)).toBeGreaterThanOrEqual(0);
+			expect(variants.indexOf(smaller)).toBeLessThan(variants.indexOf(larger));
+			mockQdrant.getCollection.mockImplementation(async (name: string) => {
+				if (name === smaller) return { status: 'green', points_count: 328245 };
+				if (name === larger) return { status: 'green', points_count: 486535 };
+				throw new Error('not found');
+			});
+			mockQdrant.query.mockResolvedValue({
+				points: [{ score: 0.7, payload: { filePath: 'src/foo.ts', codeChunk: 'export function foo() {}', startLine: 1, endLine: 5 } }]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'foo function', workspace: 'D:/Dev/roo-ext' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(parsed.collection).toBe(larger);
+			expect(parsed.collection_resolved_by).toBe('hash');
+			expect(parsed.collection_variants).toEqual([
+				{ name: smaller, points: 328245 },
+				{ name: larger, points: 486535 },
+			]);
+		});
+
+		test('#4352: a network error on any variant still surfaces as qdrant_unreachable', async () => {
+			vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('probe refused')));
+			try {
+				const target = getWorkspaceCollectionName('d:\\Dev\\roo-ext');
+				mockQdrant.getCollection.mockImplementation(async (name: string) => {
+					if (name === target) return { status: 'green', points_count: 10 };
+					throw Object.assign(new Error('fetch failed'), { code: 'ECONNREFUSED' });
+				});
+
+				const result = await handleCodebaseSearch({ query: 'foo', workspace: 'D:/Dev/roo-ext' });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('qdrant_unreachable');
+			} finally {
+				vi.unstubAllGlobals();
+			}
+		});
+
 		test('returns success with marginal relevance (score 0.45)', async () => {
 			// Explicit low min_score: this test exercises the relevance labeling at a sub-default
 			// score (0.45 < DEFAULT_MIN_SCORE 0.5). Without it, the post-malus min_score filter
@@ -2539,10 +2584,13 @@ describe('#3344 transport resilience + hash convergence', () => {
 	test('transient fetch failed on getCollection is retried once, search succeeds', async () => {
 		process.env.EMBEDDING_API_KEY = 'test-key';
 		try {
-			let calls = 0;
-			mockQdrant.getCollection.mockImplementation(async () => {
-				calls++;
-				if (calls === 1) {
+			// #4352: variants are probed in parallel, so count the calls of the variant that failed.
+			const callsByName: Record<string, number> = {};
+			let failedName: string | null = null;
+			mockQdrant.getCollection.mockImplementation(async (name: string) => {
+				callsByName[name] = (callsByName[name] ?? 0) + 1;
+				if (failedName === null) {
+					failedName = name;
 					const inner: any = new Error('read ECONNRESET'); inner.code = 'ECONNRESET';
 					const outer: any = new TypeError('fetch failed'); outer.cause = inner;
 					throw outer;
@@ -2555,7 +2603,7 @@ describe('#3344 transport resilience + hash convergence', () => {
 			const result = await handleCodebaseSearch({ query: 'foo', workspace: '/ws' });
 			const parsed = JSON.parse(result.content[0].text);
 			expect(parsed.status).toBe('success');
-			expect(calls).toBe(2); // exactly one retry, then success
+			expect(callsByName[failedName!]).toBe(2); // exactly one retry, then success
 		} finally {
 			delete process.env.EMBEDDING_API_KEY;
 		}
