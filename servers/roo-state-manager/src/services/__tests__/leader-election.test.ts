@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { getLeaderLockPath } from '../background-services.js';
+import { getLeaderLockPath, isClaudeSessionIndexingEnabled, readLeaderLockInfo, tryAcquireLeaderLock as productionTryAcquireLeaderLock } from '../background-services.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 
 // Mock fs
@@ -268,5 +268,64 @@ describe('getLeaderLockPath — #2352 machine-local keying (regression)', () => 
   it('falls back to "local" when machineId is empty', async () => {
     const p = await getLeaderLockPath('');
     expect(p.endsWith('roosync-indexer-leader-local.lock')).toBe(true);
+  });
+});
+
+// --- #4352: the leader publishes its Claude-session policy; followers read it back ---
+describe('Claude-session indexing policy — #4352', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('indexes Claude sessions unless the machine opts out', () => {
+    expect(isClaudeSessionIndexingEnabled({})).toBe(true);
+    expect(isClaudeSessionIndexingEnabled({ ROO_INDEX_CLAUDE_SESSIONS: 'true' })).toBe(true);
+    expect(isClaudeSessionIndexingEnabled({ ROO_INDEX_CLAUDE_SESSIONS: '' })).toBe(true);
+    expect(isClaudeSessionIndexingEnabled({ ROO_INDEX_CLAUDE_SESSIONS: 'false' })).toBe(false);
+    expect(isClaudeSessionIndexingEnabled({ ROO_INDEX_CLAUDE_SESSIONS: ' FALSE ' })).toBe(false);
+    expect(isClaudeSessionIndexingEnabled({ ROO_INDEX_CLAUDE_SESSIONS: '0' })).toBe(false);
+  });
+
+  it('readLeaderLockInfo returns the policy the leader wrote', async () => {
+    (readFile as any).mockResolvedValueOnce(JSON.stringify({ pid: 4242, timestamp: Date.now(), claudeIndexing: false }));
+    const info = await readLeaderLockInfo('myia-ai-01');
+    expect(info?.leaderPid).toBe(4242);
+    expect(info?.claudeIndexing).toBe(false);
+  });
+
+  it('readLeaderLockInfo returns null policy for a lock written before the field existed', async () => {
+    (readFile as any).mockResolvedValueOnce(JSON.stringify({ pid: 4242, timestamp: Date.now() }));
+    const info = await readLeaderLockInfo('myia-ai-01');
+    expect(info?.leaderPid).toBe(4242);
+    expect(info?.claudeIndexing).toBeNull();
+  });
+
+  // The production writer, not the mirror above: the field must be on the lock it writes.
+  describe('the lock the leader writes carries its policy', () => {
+    const original = process.env.ROO_INDEX_CLAUDE_SESSIONS;
+    afterEach(() => {
+      if (original === undefined) delete process.env.ROO_INDEX_CLAUDE_SESSIONS;
+      else process.env.ROO_INDEX_CLAUDE_SESSIONS = original;
+    });
+
+    it('on first acquisition (default policy → true)', async () => {
+      delete process.env.ROO_INDEX_CLAUDE_SESSIONS;
+      (writeFile as any).mockResolvedValueOnce(undefined);
+      expect(await productionTryAcquireLeaderLock('myia-ai-01')).toBe(true);
+      const written = JSON.parse((writeFile as any).mock.calls[0][1]);
+      expect(written.pid).toBe(process.pid);
+      expect(written.claudeIndexing).toBe(true);
+    });
+
+    it('on renewal by the same PID (opted out → false)', async () => {
+      process.env.ROO_INDEX_CLAUDE_SESSIONS = 'false';
+      (writeFile as any)
+        .mockRejectedValueOnce(Object.assign(new Error('exists'), { code: 'EEXIST' }))
+        .mockResolvedValueOnce(undefined);
+      (readFile as any).mockResolvedValueOnce(JSON.stringify({ pid: process.pid, timestamp: Date.now() }));
+      expect(await productionTryAcquireLeaderLock('myia-ai-01')).toBe(true);
+      const renewed = JSON.parse((writeFile as any).mock.calls[1][1]);
+      expect(renewed.claudeIndexing).toBe(false);
+    });
   });
 });

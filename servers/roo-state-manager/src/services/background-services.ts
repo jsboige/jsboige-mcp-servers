@@ -1325,6 +1325,23 @@ async function verifyQdrantConsistency(state: ServerState): Promise<void> {
 export const QDRANT_INDEX_BATCH_SIZE = 5;
 
 /**
+ * #4352: whether this process indexes Claude Code sessions in the background.
+ *
+ * On by default; `ROO_INDEX_CLAUDE_SESSIONS=false` (or `0`) opts a machine out.
+ * The #1985 sanctuary made it opt-in because resumed sessions duplicated their
+ * vectors; #937 (per-session task ids, UUIDv5 chunk ids) and #2369 (contentHash
+ * dedup) removed that cause. Opt-in also failed silently: the flag is read per
+ * PROCESS while the indexing leader is elected per MACHINE, so a machine indexed
+ * its Claude sessions only when a process carrying the flag won the lock. On
+ * ai-01 the MCP-Proxy-RSM child won it at boot without the flag (24/10), and
+ * mcp-wrapper drops `[SKIP]` lines from stderr, so every skip left no trace.
+ */
+export function isClaudeSessionIndexingEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+    const value = (env.ROO_INDEX_CLAUDE_SESSIONS ?? '').trim().toLowerCase();
+    return value !== 'false' && value !== '0';
+}
+
+/**
  * #2352: Leader-election for Qdrant indexing.
  * Only one MCP instance per machine runs embeddings at a time.
  * Lock is a machine-local file under os.tmpdir() (keyed by machineId) containing { pid, timestamp }.
@@ -1367,7 +1384,7 @@ export async function getLeaderLockPath(machineId: string): Promise<string> {
  * A `leader_lock_age_ms` greater than LEADER_LOCK_STALE_MS signals an orphan
  * lock the next cycle would steal.
  */
-export async function readLeaderLockInfo(machineId: string): Promise<{ leaderPid: number; lockAgeMs: number } | null> {
+export async function readLeaderLockInfo(machineId: string): Promise<{ leaderPid: number; lockAgeMs: number; claudeIndexing: boolean | null } | null> {
     try {
         const lockPath = await getLeaderLockPath(machineId);
         const content = await fs.readFile(lockPath, 'utf-8');
@@ -1375,7 +1392,9 @@ export async function readLeaderLockInfo(machineId: string): Promise<{ leaderPid
         if (typeof data.pid !== 'number' || typeof data.timestamp !== 'number') {
             return null;
         }
-        return { leaderPid: data.pid, lockAgeMs: Date.now() - data.timestamp };
+        // #4352: null = a leader built before the field existed, policy unknown.
+        const claudeIndexing = typeof data.claudeIndexing === 'boolean' ? data.claudeIndexing : null;
+        return { leaderPid: data.pid, lockAgeMs: Date.now() - data.timestamp, claudeIndexing };
     } catch {
         return null;
     }
@@ -1384,11 +1403,13 @@ export async function readLeaderLockInfo(machineId: string): Promise<{ leaderPid
 /**
  * Try to acquire or renew the leader lock. Non-blocking (single attempt).
  * Returns true if this process is the leader.
+ * Exported so the tests check the lock this code writes, not a copy (#4352).
  */
-async function tryAcquireLeaderLock(machineId: string): Promise<boolean> {
+export async function tryAcquireLeaderLock(machineId: string): Promise<boolean> {
     const lockPath = await getLeaderLockPath(machineId);
 
-    const lockData = { pid: process.pid, timestamp: Date.now() };
+    // #4352: the leader publishes its Claude-session policy so a follower's status can show it.
+    const lockData = { pid: process.pid, timestamp: Date.now(), claudeIndexing: isClaudeSessionIndexingEnabled() };
 
     try {
         // Try to create the lock file exclusively
@@ -1575,15 +1596,11 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
         // #604: Determine source from skeleton metadata
         const source: 'roo' | 'claude-code' = skeleton.metadata?.dataSource === 'claude' ? 'claude-code' : 'roo';
 
-        // #1985: Claude Code sessions are sanctuary — skip automatic background indexing.
-        // Manual indexing via roosync_indexing(action: "index") is still allowed.
-        // Root cause: Claude Code sessions get new UUIDs on resume/compact, causing
-        // 3-4x duplicate vectors (49% of Qdrant storage = duplicates).
-        // #937 mitigation: Per-session taskIds + UUIDv5 deterministic chunk_ids resolve the
-        // duplicate risk. Set ROO_INDEX_CLAUDE_SESSIONS=true to lift sanctuary per-machine.
-        const allowClaudeIndexing = process.env.ROO_INDEX_CLAUDE_SESSIONS === 'true';
-        if (source === 'claude-code' && !allowClaudeIndexing) {
-            console.log(`[SKIP] Task ${taskId}: Claude Code session — automatic indexing blocked (#1985 sanctuary protection). Set ROO_INDEX_CLAUDE_SESSIONS=true to enable.`);
+        // #1985 → #4352: Claude Code sessions are indexed unless the machine opts out
+        // (ROO_INDEX_CLAUDE_SESSIONS=false). Manual roosync_indexing(action: "index") is
+        // unaffected. Why the default flipped: isClaudeSessionIndexingEnabled().
+        if (source === 'claude-code' && !isClaudeSessionIndexingEnabled()) {
+            console.log(`[SKIP] Task ${taskId}: Claude Code session — background indexing disabled on this machine (ROO_INDEX_CLAUDE_SESSIONS=false).`);
             return;
         }
 
