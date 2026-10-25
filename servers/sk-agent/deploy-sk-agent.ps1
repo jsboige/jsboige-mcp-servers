@@ -95,61 +95,71 @@ if (-not $SkipVenv) {
 if (-not $SkipConfig) {
     Write-Host "[4/5] Setting up configuration..." -ForegroundColor Yellow
 
-    # Template de config (les clés API doivent être fournies)
+    # ms#1519: source de vérité unique — servir le template TRACKÉ quand il est présent.
+    # Avant : hash inline figé à l'ère glm-4.6v, un siège neuf démarrait avec des modèles
+    # obsolètes sans que personne ne le voie.
+    $TemplateFile = Join-Path $SkAgentDir "sk_agent_config.template.json"
+
+    # Repli inline DERNIER RECOURS (template absent) — roster courant aligné sur le template
+    # v2 (ms#1519 : directive user 25/10 — pas de vieux noms de modèles qui traînent).
     $ConfigTemplate = @{
-        default_ask_model = "glm-5"
-        default_vision_model = "glm-4.6v"
+        default_ask_model = "glm-5.3"
+        default_vision_model = "swift-1.5-27b"
         max_recursion_depth = 2
         models = @(
             @{
-                id = "glm-4.6v"
+                id = "glm-5.3"
                 enabled = $true
-                base_url = "https://api.z.ai/api/coding/paas/v4"
+                base_url = "http://192.168.0.50:3000/v1"
                 api_key = ""  # À remplir
-                model_id = "glm-4.6v"
-                vision = $true
-                description = "Vision model (GLM-4.6V via z.ai)"
-                context_window = 128000
-            },
-            @{
-                id = "glm-5"
-                enabled = $true
-                base_url = "https://api.z.ai/api/coding/paas/v4"
-                api_key = ""  # À remplir
-                model_id = "glm-5"
+                model_id = "glm-5.3"
                 vision = $false
-                description = "Text model (GLM-5 via z.ai)"
+                description = "Text model (GLM-5.3 via routeur myia)"
                 context_window = 200000
             },
             @{
-                id = "zwz-8b"
+                id = "glm-5.3-flash"
                 enabled = $true
-                base_url = "https://api.mini.text-generation-webui.myia.io/v1"
+                base_url = "http://192.168.0.50:3000/v1"
                 api_key = ""  # À remplir
-                model_id = "zwz-8b"
+                model_id = "glm-5.3-flash"
                 vision = $false
-                description = "Fast local text (myia.io)"
-                context_window = 8192
+                description = "Fast text (GLM-5.3-flash via routeur myia)"
+                context_window = 131072
             },
             @{
-                id = "glm-4.7-flash"
+                id = "swift-1.5-27b"
                 enabled = $true
-                base_url = "https://api.mini.text-generation-webui.myia.io/v1"
+                base_url = "https://api.medium.text-generation-webui.myia.io/v1"
                 api_key = ""  # À remplir
-                model_id = "glm-4.7-flash"
-                vision = $false
-                description = "Fast local text (myia.io)"
-                context_window = 8192
+                model_id = "swift-1.5-27b"
+                vision = $true
+                description = "Vision model (Swift-1.5-27B via myia.io)"
+                context_window = 262144
+            },
+            @{
+                id = "qwen3.6-35b-a3b"
+                enabled = $true
+                base_url = "https://api.medium.text-generation-webui.myia.io/v1"
+                api_key = ""  # À remplir
+                model_id = "qwen3.6-35b-a3b"
+                vision = $true
+                description = "Vision/text (Qwen3.6-35B-A3B via myia.io)"
+                context_window = 262144
             }
         )
     }
 
-    if (-not (Test-Path $ConfigFile)) {
-        Write-Host "  Creating config template..." -ForegroundColor Cyan
-        $ConfigTemplate | ConvertTo-Json -Depth 10 | Set-Content $ConfigFile -Encoding UTF8
-        Write-Host "  ⚠ Config created - PLEASE EDIT API KEYS: $ConfigFile" -ForegroundColor Yellow
-    } else {
+    if (Test-Path $ConfigFile) {
         Write-Host "  ✓ Config already exists" -ForegroundColor Green
+    } elseif (Test-Path $TemplateFile) {
+        Write-Host "  Creating config from tracked template..." -ForegroundColor Cyan
+        Copy-Item -Path $TemplateFile -Destination $ConfigFile
+        Write-Host "  ⚠ Config created from template - PLEASE EDIT API KEYS: $ConfigFile" -ForegroundColor Yellow
+    } else {
+        Write-Host "  ⚠ sk_agent_config.template.json ABSENT - using refreshed inline fallback (ms#1519)" -ForegroundColor Yellow
+        $ConfigTemplate | ConvertTo-Json -Depth 10 | Set-Content $ConfigFile -Encoding UTF8
+        Write-Host "  ⚠ Config created (inline fallback) - PLEASE EDIT API KEYS: $ConfigFile" -ForegroundColor Yellow
     }
 } else {
     Write-Host "[4/5] Skipping config creation (-SkipConfig)" -ForegroundColor Gray
