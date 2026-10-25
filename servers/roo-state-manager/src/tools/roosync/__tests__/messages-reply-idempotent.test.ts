@@ -253,9 +253,10 @@ describe('roosync_messages reply idempotence on explicit messageId (#1170)', () 
         } as any);
 
         // Seul l'original a été lu — aucun lookup idempotence (getMessage
-        // appelé exactement 1 fois, pour l'original).
+        // appelé exactement 1 fois, pour l'original, avec l'identité de
+        // l'appelant : #4131, sans elle PG n'est jamais consulté).
         expect(mockGetMessage).toHaveBeenCalledTimes(1);
-        expect(mockGetMessage).toHaveBeenCalledWith('msg-original-1170');
+        expect(mockGetMessage).toHaveBeenCalledWith('msg-original-1170', 'myia-po-2026:roo-extensions');
         expect(mockSendMessage).toHaveBeenCalledTimes(1);
         expect(mockSendMessage.mock.calls[0][8]).toBeUndefined();
     });
@@ -354,6 +355,57 @@ describe('roosync_messages reply idempotence on explicit messageId (#1170)', () 
         expect(text).toContain('sans effet sur action="amend"');
         expect(text).toContain('#1170');
         expect(text).toContain('Retirez "messageId"');
+    });
+
+    describe('original held by PG only (#4131)', () => {
+        // MessageManager.getMessage consults PG only when a callerId is passed;
+        // without one it reads inbox/sent/archive files. A seat under
+        // UNIFIED_STORE_CHANNEL_PG_PRIMARY writes no file, so its messages exist
+        // in PG only. This mock reproduces that contract.
+        beforeEach(() => {
+            mockGetMessage.mockImplementation(async (id: string, callerId?: string) =>
+                id === ORIGINAL.id && callerId ? { ...ORIGINAL } : null
+            );
+            mockSendMessage.mockResolvedValue({
+                id: 'reply-4131-pg',
+                from: 'myia-po-2026:roo-extensions',
+                to: 'myia-ai-01:roo-extensions',
+                subject: 'Re: Dispatch 17:01Z',
+                body: 'Réponse à un message PG-only',
+                priority: 'HIGH',
+                timestamp: new Date().toISOString(),
+                status: 'unread',
+            });
+        });
+
+        it('replies to a message only PG holds', async () => {
+            const { roosyncMessages } = await import('../../../../src/tools/roosync/messages.js');
+            const result = await roosyncMessages({
+                action: 'reply',
+                message_id: 'msg-original-1170',
+                body: 'Réponse à un message PG-only'
+            } as any);
+
+            expect(result.content[0].text).not.toContain('introuvable');
+            expect(mockSendMessage).toHaveBeenCalledTimes(1);
+            expect(mockSendMessage.mock.calls[0][1]).toBe('myia-ai-01:roo-extensions');
+            expect(mockSendMessage.mock.calls[0][7]).toBe('msg-original-1170');
+        });
+
+        it('looks the original up as the `as` identity on a gateway seat', async () => {
+            // Straight to the send router: the `as` gate of messages.ts
+            // (TRUSTED_CALLER_IDS) has its own suites; this one pins which
+            // identity the original lookup uses once `as` is resolved.
+            const { roosyncSend } = await import('../../../../src/tools/roosync/send.js');
+            await roosyncSend({
+                action: 'reply',
+                message_id: 'msg-original-1170',
+                body: 'Réponse à un message PG-only',
+                as: 'myia-po-2026:gateway-seat'
+            } as any);
+
+            expect(mockGetMessage).toHaveBeenCalledWith('msg-original-1170', 'myia-po-2026:gateway-seat');
+        });
     });
 
     describe('schema validation', () => {
