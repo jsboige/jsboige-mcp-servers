@@ -277,9 +277,9 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			expect(mockUpsert).toHaveBeenCalled();
 		});
 
-		test('skips a batch item whose embedding has the wrong dimension (L921-924)', async () => {
+		test('#4352 (a4): a wrong-dimension batch item fails the task after writing the valid one (L921-924)', async () => {
 			vi.resetModules();
-			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+			const { indexTask, resetCircuitBreakerForTest, getCircuitBreakerState } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
 			mockExtractTask.mockResolvedValue([chunk('wd1', 'wrongdim a'), chunk('wd2', 'wrongdim b')]);
 			// batch call returns one correct + one wrong-dim vector.
@@ -290,25 +290,66 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 				return embedOk()({ input });
 			});
 
-			const result = await indexTask('t-batch-wrongdim', '/p');
-
-			expect(result.length).toBe(1); // only the correctly-sized vector became a point
+			// Before #4352 (a4) this resolved with 1 point and the caller marked the task indexed.
+			await expect(indexTask('t-batch-wrongdim', '/p')).rejects.toThrow(
+				/Embedding incomplete for task t-batch-wrongdim: 1\/2 sub-chunks without a vector \(1 points written.*wrong dimension 5 vs 1536/
+			);
+			// the valid vector was still written, so the retry only re-embeds the missing one
+			expect(mockUpsert).toHaveBeenCalledTimes(1);
+			expect(mockUpsert.mock.calls[0][1].points).toHaveLength(1);
+			// a content-only hole says nothing about the backend: the breaker does not count it
+			expect(getCircuitBreakerState().failureCount).toBe(0);
 		});
 
-		test('splits a failing multi-item batch into halves and retries each (L930-939)', async () => {
+		test('splits a content-attributable (HTTP 400) batch failure into halves and retries each (L930-939)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
 			mockExtractTask.mockResolvedValue([chunk('s1', 'split content one'), chunk('s2', 'split content two')]);
-			// First call = full batch of 2 → reject; recursive single-item halves → resolve.
+			// First call = full batch of 2 → 400; recursive single-item halves → resolve.
 			mockEmbeddingsCreate.mockImplementation(({ input }: any) => {
-				if (Array.isArray(input) && input.length > 1) return Promise.reject(new Error('batch too big'));
+				if (Array.isArray(input) && input.length > 1) return Promise.reject(Object.assign(new Error('batch too big'), { status: 400 }));
 				return embedOk()({ input });
 			});
 
 			const result = await indexTask('t-batch-split', '/p');
 
 			expect(result.length).toBe(2); // both recovered via split
+			expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(3); // 1 batch + 2 halves
+		});
+
+		test.each([
+			['no status (APIConnectionError)', undefined],
+			['HTTP 429', 429],
+			['HTTP 503', 503],
+		])('#4352 (a4): a transport/overload failure (%s) is not bisected and fails the task', async (_label, status) => {
+			vi.resetModules();
+			const { indexTask, resetCircuitBreakerForTest, getCircuitBreakerState } = await import('../VectorIndexer.js');
+			resetCircuitBreakerForTest();
+			mockExtractTask.mockResolvedValue([chunk('t1', 'transport one'), chunk('t2', 'transport two')]);
+			mockEmbeddingsCreate.mockImplementation(() =>
+				Promise.reject(Object.assign(new Error('Connection error.'), status === undefined ? {} : { status })));
+
+			await expect(indexTask(`t-transport-${status}`, '/p')).rejects.toThrow(
+				/2\/2 sub-chunks without a vector \(0 points written.*last embedding error: Connection error\./
+			);
+			// Before: 1 batch call + 2 single-item calls (31 for a batch of 16). Now: one call.
+			expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(1);
+			expect(mockUpsert).not.toHaveBeenCalled();
+			// a transport failure does feed the breaker (repeated outages defer the next tasks, #2165)
+			expect(getCircuitBreakerState().failureCount).toBe(1);
+		});
+
+		test('#4352 (a4): after a transport failure, the next batch of the task is not attempted', async () => {
+			vi.resetModules();
+			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+			resetCircuitBreakerForTest();
+			const big = 'y'.repeat(30000); // > EMBEDDING_BATCH_MAX_TOKENS each → one batch per chunk
+			mockExtractTask.mockResolvedValue([chunk('n1', big + '-1'), chunk('n2', big + '-2')]);
+			mockEmbeddingsCreate.mockRejectedValue(new Error('Connection error.'));
+
+			await expect(indexTask('t-transport-stop', '/p')).rejects.toThrow(/2\/2 sub-chunks without a vector/);
+			expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(1); // second batch skipped
 		});
 
 		test('splits token-heavy sub-chunks into separate batches (buildBatches L827-834)', async () => {
@@ -325,7 +366,7 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			expect(mockEmbeddingsCreate.mock.calls.length).toBeGreaterThanOrEqual(2);
 		});
 
-		test('single-item batch: wrong dimension → null point (L893-896)', async () => {
+		test('single-item batch: wrong dimension → task fails, nothing written (L893-896)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
@@ -333,25 +374,26 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			mockExtractTask.mockResolvedValue([chunk('sb-wd', 'single-batch wrong dim')]);
 			mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: new Array(9).fill(0.1) }] });
 
-			const result = await indexTask('t-singlebatch-wrongdim', '/p');
-
-			expect(result).toEqual([]);
+			await expect(indexTask('t-singlebatch-wrongdim', '/p')).rejects.toThrow(
+				/1\/1 sub-chunks without a vector.*wrong dimension 9 vs 1536/
+			);
 			expect(mockUpsert).not.toHaveBeenCalled();
 		});
 
-		test('single-item batch: embedding API throws → null point (L898-901)', async () => {
+		test('single-item batch: embedding API throws → task fails with the embedding error (L898-901)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
 			mockExtractTask.mockResolvedValue([chunk('sb-err', 'single-batch error')]);
 			mockEmbeddingsCreate.mockRejectedValue(new Error('embedding service down'));
 
-			const result = await indexTask('t-singlebatch-error', '/p');
-
-			expect(result).toEqual([]); // caught → [null] → no point
+			// Before #4352 (a4): resolved [] and the background caller marked the task indexed.
+			await expect(indexTask('t-singlebatch-error', '/p')).rejects.toThrow(
+				/1\/1 sub-chunks without a vector.*last embedding error: embedding service down/
+			);
 		});
 
-		test('multi-item batch: a null/invalid embedding is skipped (L917-920)', async () => {
+		test('multi-item batch: a null/invalid embedding fails the task after writing the valid one (L917-920)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
@@ -363,9 +405,10 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 				return embedOk()({ input });
 			});
 
-			const result = await indexTask('t-batch-nullvec', '/p');
-
-			expect(result.length).toBe(1); // only the valid vector became a point
+			await expect(indexTask('t-batch-nullvec', '/p')).rejects.toThrow(
+				/1\/2 sub-chunks without a vector \(1 points written.*invalid embedding in response/
+			);
+			expect(mockUpsert.mock.calls[0][1].points).toHaveLength(1);
 		});
 	});
 
@@ -390,29 +433,25 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			expect(mockEmbeddingsCreate).toHaveBeenCalledWith(expect.objectContaining({ input: 'legacy single content' }));
 		});
 
-		test('returns null (skips point) when the embedding has the wrong dimension (L863-867)', async () => {
+		test('wrong dimension → no point built, task fails (L863-867)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
 			mockExtractTask.mockResolvedValue([chunk('single-wd', 'legacy wrong dim')]);
 			mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: new Array(7).fill(0.1) }] });
 
-			const result = await indexTask('t-single-wrongdim', '/p');
-
-			expect(result).toEqual([]); // wrong dim → null → no point built
+			await expect(indexTask('t-single-wrongdim', '/p')).rejects.toThrow(/1\/1 sub-chunks without a vector/);
 			expect(mockUpsert).not.toHaveBeenCalled();
 		});
 
-		test('returns null when the embedding is not an array (L859-862)', async () => {
+		test('embedding not an array → task fails (L859-862)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
 			mockExtractTask.mockResolvedValue([chunk('single-nan', 'legacy not array')]);
 			mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: null }] });
 
-			const result = await indexTask('t-single-notarray', '/p');
-
-			expect(result).toEqual([]);
+			await expect(indexTask('t-single-notarray', '/p')).rejects.toThrow(/1\/1 sub-chunks without a vector/);
 		});
 	});
 
