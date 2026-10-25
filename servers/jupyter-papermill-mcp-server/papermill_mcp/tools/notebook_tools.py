@@ -159,6 +159,7 @@ def register_notebook_tools(app: FastMCP) -> None:
         cell_type: str,
         source: str,
         metadata: Optional[Dict[str, Any]] = None,
+        index: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Ajoute une cellule a un notebook
@@ -168,6 +169,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             cell_type: Type de cellule
             source: Contenu de la cellule
             metadata: Metadonnees de la cellule (optionnel)
+            index: Position d'insertion, 0-based (optionnel, defaut: fin du notebook)
 
         Returns:
             Resultat de l'ajout de cellule
@@ -175,7 +177,7 @@ def register_notebook_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Adding {cell_type} cell to notebook: {path}")
             service = get_notebook_service()
-            result = await service.add_cell(path, cell_type, source, metadata)
+            result = await service.add_cell(path, cell_type, source, metadata, index)
             logger.info(f"Successfully added cell to notebook: {path}")
             return result
         except Exception as e:

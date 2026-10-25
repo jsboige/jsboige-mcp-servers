@@ -132,16 +132,19 @@ async def add_cell(
     path: str,
     cell_type: Literal["code", "markdown", "raw"],
     source: str,
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = None,
+    index: Optional[int] = None
 ) -> Dict[str, Any]:
     """
-    Ajoute une cellule à la fin d'un notebook.
-    
+    Ajoute une cellule à un notebook (à la fin par défaut, à la position
+    `index` si fournie).
+
     Args:
         path: Chemin du fichier notebook
         cell_type: Type de cellule (code/markdown/raw)
         source: Contenu de la cellule
         metadata: Métadonnées optionnelles
+        index: Position d'insertion optionnelle (0-based, défaut : fin)
         
     Returns:
         {
