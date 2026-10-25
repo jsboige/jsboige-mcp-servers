@@ -78,9 +78,11 @@ export function shouldIndexTask(
 /**
  * #4352: the indexing gate. The indexer reads only this machine's files (TaskIndexer
  * resolves a task under `~/.claude/projects` or the local Roo storage), so a task's
- * owner is the machine that holds it, not a hash of its id. Cold-tier archive
- * skeletons describe another machine's files: they are the only ones skipped (both
- * markers, as in list-conversations).
+ * owner is the machine that holds it, not a hash of its id. Skeletons that describe
+ * another machine's files are the only ones skipped: cold-tier archives (both markers,
+ * as in list-conversations) and skeletons read back from the PG unified store
+ * (`PG_DATA_SOURCE` in unified-store/conversation-list-store.ts — kept as a literal so
+ * this module does not load the PG reader; a test pins the two together).
  *
  * `shouldIndexTask()` no longer gates indexing. No two machines hold the same task, so
  * the fleet hash deduplicated nothing and left 8 tasks in 9 to nobody (ai-01, 25/10:
@@ -91,5 +93,5 @@ export function isLocallyIndexable(
 	skeleton: { metadata?: { dataSource?: string } } | undefined,
 ): boolean {
 	const dataSource = skeleton?.metadata?.dataSource;
-	return dataSource !== 'archive' && dataSource !== 'gdrive-archive';
+	return dataSource !== 'archive' && dataSource !== 'gdrive-archive' && dataSource !== 'unified-store-pg';
 }

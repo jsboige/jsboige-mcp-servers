@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { fnv1a32, parseFleetRoster, getTaskOwner, shouldIndexTask, isLocallyIndexable } from '../task-partition.js';
+import { PG_DATA_SOURCE } from '../unified-store/conversation-list-store.js';
 
 describe('task-partition', () => {
 	describe('fnv1a32', () => {
@@ -119,6 +120,10 @@ describe('task-partition', () => {
 		it('skips both archive markers: another machine holds those files', () => {
 			expect(isLocallyIndexable({ metadata: { dataSource: 'archive' } })).toBe(false);
 			expect(isLocallyIndexable({ metadata: { dataSource: 'gdrive-archive' } })).toBe(false);
+		});
+
+		it('skips skeletons read back from the PG unified store: other machines\' tasks', () => {
+			expect(isLocallyIndexable({ metadata: { dataSource: PG_DATA_SOURCE } })).toBe(false);
 		});
 	});
 });
