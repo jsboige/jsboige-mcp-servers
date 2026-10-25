@@ -497,7 +497,7 @@ export const roosyncHarmonizationDefinition = {
             target_file: { type: 'string', enum: ['claude-settings'], description: 'create only' },
             canon: {
                 type: 'object',
-                description: 'create only. Explicit allow-listed keys => scalar values; secrets and non-allow-listed paths rejected. Allowed: env.ANTHROPIC_BASE_URL, env.ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL, env.ANTHROPIC_CUSTOM_MODEL_OPTION, env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, env.*_TIMEOUT, model, modelMap.{opus,sonnet,haiku,fable} (#3545)',
+                description: 'create only. Explicit allow-listed keys => scalar values; secrets and non-allow-listed paths rejected. Allowed: env.ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL, env.ANTHROPIC_CUSTOM_MODEL_OPTION, env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, env.*_TIMEOUT, model, modelMap.{opus,sonnet,haiku,fable} (#3545). env.ANTHROPIC_BASE_URL is OBSERVE-ONLY: reported per seat by compare/snapshot, never allowed in canon.keys or exceptions (#4347)',
                 properties: {
                     version: { type: 'string' },
                     mode: { type: 'string', enum: ['ensure-present', 'enforce-value'] },

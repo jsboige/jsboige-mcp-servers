@@ -65,7 +65,7 @@ function defaultCanonInput(): CreateCampaignInput {
       version: '2026.09.08-1',
       mode: 'ensure-present',
       keys: {
-        'env.ANTHROPIC_BASE_URL': 'https://relay.example',
+        'env.ANTHROPIC_DEFAULT_HAIKU_MODEL': 'https://relay.example',
         'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW': 280000,
       },
     },
@@ -188,6 +188,21 @@ describe('createCampaign', () => {
       svc.createCampaign({ ...defaultCanonInput(), exceptions: { 'myia-po-2023': ['permissions.allow'] } })
     ).rejects.toThrow(/non allow-listé/);
   });
+
+  test('#4347 : env.ANTHROPIC_BASE_URL refusé dans canon.keys (observe-only) et en exception', async () => {
+    const svc = makeService();
+    // canon.keys — les deux modes (ensure-present ci-dessous, enforce-value ensuite)
+    for (const mode of ['ensure-present', 'enforce-value'] as const) {
+      const input = defaultCanonInput();
+      input.canon.mode = mode;
+      (input.canon.keys as any)['env.ANTHROPIC_BASE_URL'] = 'https://hub.example';
+      await expect(svc.createCampaign(input)).rejects.toThrow(/observé seulement.*interdit dans un canon/);
+    }
+    // exceptions — un chemin observe-only n'exempte rien (jamais dans le canon)
+    await expect(
+      svc.createCampaign({ ...defaultCanonInput(), exceptions: { 'myia-po-2023': ['env.ANTHROPIC_BASE_URL'] } })
+    ).rejects.toThrow(/observé seulement.*interdit en exception/);
+  });
 });
 
 describe('dispatch', () => {
@@ -243,7 +258,7 @@ describe('confirm — la relecture live prime', () => {
     // (le mode préserve le choix machine) — ce test de divergence de VALEUR exige
     // donc enforce-value, où l'égalité stricte reste le critère.
     const rec = await svc.createCampaign({ ...defaultCanonInput(), canon: { ...defaultCanonInput().canon, mode: 'enforce-value' } });
-    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://autre.example' } });
+    writeLocalSettings({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://autre.example' } });
     const r = await svc.confirm(rec.id);
     expect(r.status).toBe('mismatch');
     // Preuve participant IMMUABLE : aucun événement 'confirm', un événement 'failed'.
@@ -254,7 +269,7 @@ describe('confirm — la relecture live prime', () => {
   test('claimed_hash conforme mais live divergent => jamais compté comme confirmation', async () => {
     const svc = makeService();
     const rec = await svc.createCampaign({ ...defaultCanonInput(), canon: { ...defaultCanonInput().canon, mode: 'enforce-value' } });
-    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://autre.example' } });
+    writeLocalSettings({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://autre.example' } });
     const r = await svc.confirm(rec.id, { claimedHash: rec.canon.hash });
     expect(r.status).toBe('mismatch');
     expect(r.detail).toMatch(/claim/i);
@@ -290,9 +305,9 @@ describe('confirm — la relecture live prime', () => {
     input.fleet = ['myia-po-2023'];
     input.exceptions = { 'myia-po-2023': ['env.CLAUDE_CODE_AUTO_COMPACT_WINDOW'] };
     const rec = await svc.createCampaign(input);
-    // la machine a une fenêtre DIFFÉRENTE (exemption) et pas de BASE_URL
+    // la machine a une fenêtre DIFFÉRENTE (exemption) et pas de HAIKU (routage modèle)
     writeLocalSettings({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: 200000 } });
-    await svc.apply(rec.id); // pose BASE_URL (fenêtre exemptée → skip)
+    await svc.apply(rec.id); // pose HAIKU (routage modèle) (fenêtre exemptée → skip)
     const r = await svc.confirm(rec.id);
     expect(r.status).toBe('confirmed');
     const after = JSON.parse(readFileSync(fakeSettings, 'utf-8'));
@@ -310,10 +325,10 @@ describe('confirm — honore le mode du canon (#4185)', () => {
   test('ensure-present : valeur divergente MAIS présente => confirmed (choix machine préservé)', async () => {
     const svc = makeService();
     const rec = await svc.createCampaign(defaultCanonInput()); // mode ensure-present
-    // BASE_URL divergente (choix local), fenêtre conforme — apply préserverait la divergence
+    // HAIKU (routage modèle) divergente (choix local), fenêtre conforme — apply préserverait la divergence
     writeLocalSettings({
       env: {
-        ANTHROPIC_BASE_URL: 'https://local-choice.example',
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://local-choice.example',
         CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000,
       },
     });
@@ -321,7 +336,7 @@ describe('confirm — honore le mode du canon (#4185)', () => {
     expect(r.status).toBe('confirmed');
     // la valeur locale n'a PAS été forcée à la valeur canon
     const settings = JSON.parse(readFileSync(fakeSettings, 'utf-8'));
-    expect(settings.env.ANTHROPIC_BASE_URL).toBe('https://local-choice.example');
+    expect(settings.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('https://local-choice.example');
     // l'observedHash diffère du canon (valeur divergente) mais le confirm est valide
     expect(r.observedHash).not.toBe(rec.canon.hash);
     expect(readConfirmations(rec.id, 'myia-ai-01')).toHaveLength(1);
@@ -330,8 +345,8 @@ describe('confirm — honore le mode du canon (#4185)', () => {
   test('ensure-present : chemin canon ABSENT => mismatch, apply requis', async () => {
     const svc = makeService();
     const rec = await svc.createCampaign(defaultCanonInput()); // mode ensure-present
-    // BASE_URL présente mais fenêtre canon ABSENTE — presence non satisfaite
-    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://relay.example' } });
+    // HAIKU (routage modèle) présente mais fenêtre canon ABSENTE — presence non satisfaite
+    writeLocalSettings({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://relay.example' } });
     const r = await svc.confirm(rec.id);
     expect(r.status).toBe('mismatch');
     expect(r.detail).toMatch(/CLAUDE_CODE_AUTO_COMPACT_WINDOW/);
@@ -342,11 +357,11 @@ describe('confirm — honore le mode du canon (#4185)', () => {
   test('ensure-present : apply préserve la divergence, confirm la valide ensuite (boucle complète)', async () => {
     const svc = makeService();
     const rec = await svc.createCampaign(defaultCanonInput()); // mode ensure-present
-    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://local-choice.example' } });
-    // apply : pose la fenêtre (absente), PRÉSERVE la BASE_URL divergente
+    writeLocalSettings({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://local-choice.example' } });
+    // apply : pose la fenêtre (absente), PRÉSERVE la HAIKU (routage modèle) divergente
     await svc.apply(rec.id);
     const after = JSON.parse(readFileSync(fakeSettings, 'utf-8'));
-    expect(after.env.ANTHROPIC_BASE_URL).toBe('https://local-choice.example'); // préservé
+    expect(after.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('https://local-choice.example'); // préservé
     expect(after.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(280000);            // posé
     // confirm : toutes les clés canon présentes => confirmed malgré la valeur divergente
     const r = await svc.confirm(rec.id);
@@ -358,7 +373,7 @@ describe('confirm — honore le mode du canon (#4185)', () => {
     const rec = await svc.createCampaign({ ...defaultCanonInput(), canon: { ...defaultCanonInput().canon, mode: 'enforce-value' } });
     writeLocalSettings({
       env: {
-        ANTHROPIC_BASE_URL: 'https://local-choice.example', // divergente
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://local-choice.example', // divergente
         CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000,
       },
     });
@@ -548,7 +563,7 @@ describe('remind — idempotence et échecs', () => {
     await svcPo23.apply(rec.id);
     await svcPo23.confirm(rec.id); // confirmedAt = 12:00
     await publishSnapshot('myia-po-2023', {
-      env: { ANTHROPIC_BASE_URL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
     }, '2026-09-08T12:05:00Z'); // postérieur au confirm => pas snapshot-stale
 
     // relance : po-2023 skipped (confirmé), po-2024 relancé
@@ -617,7 +632,7 @@ describe('remind — idempotence et échecs', () => {
     await svcPo23.apply(rec.id);
     await svcPo23.confirm(rec.id); // 12:00
     await publishSnapshot('myia-po-2023', {
-      env: { ANTHROPIC_BASE_URL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
     }, '2026-09-08T11:00:00Z'); // antérieur au confirm => snapshot-stale
 
     const st = await svc.status(rec.id);
@@ -658,7 +673,7 @@ describe('status — re-détection de drift', () => {
     await svc.confirm(rec.id);
 
     // la machine change son settings après confirmation (drift réel)
-    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://drift.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 } });
+    writeLocalSettings({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://drift.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 } });
     const st = await svc.status(rec.id);
     expect(st.machines[0].alignment).toBe('drifted');
     // défaut #3 : un état courant drifté => la confirmation historique ne compte PAS
@@ -677,7 +692,7 @@ describe('status — re-détection de drift', () => {
     await svc.apply(rec.id);
     await svc.confirm(rec.id);
     // la machine détourne une valeur canon APRÈS confirmation : présent, divergent
-    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://choix-machine.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 } });
+    writeLocalSettings({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://choix-machine.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 } });
     const st = await svc.status(rec.id);
     expect(st.machines[0].alignment).toBe('aligned');
     expect(st.machines[0].state).toBe('confirmed');
@@ -692,7 +707,7 @@ describe('status — re-détection de drift', () => {
     await svc.apply(rec.id);
     await svc.confirm(rec.id);
     // la machine SUPPRIME une clé canon : le critère de présence est violé
-    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://relay.example' } });
+    writeLocalSettings({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://relay.example' } });
     const st = await svc.status(rec.id);
     expect(st.machines[0].alignment).toBe('drifted');
     expect(st.machines[0].state).toBe('drifted');
@@ -745,7 +760,7 @@ describe('status — re-détection de drift', () => {
 
     // snapshot conforme + confirmation de po-2023
     await publishSnapshot('myia-po-2023', {
-      env: { ANTHROPIC_BASE_URL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
     }, '2026-09-08T11:00:00Z');
     const svcPo23 = makeService('myia-po-2023');
     writeLocalSettings({ env: {} });
@@ -757,7 +772,7 @@ describe('status — re-détection de drift', () => {
 
     // un NOUVEAU snapshot post-confirmation divergent => drifted + confirmation invalidée
     await publishSnapshot('myia-po-2023', {
-      env: { ANTHROPIC_BASE_URL: 'https://drift.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://drift.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
     }, '2026-09-08T13:00:00Z');
     st = await svc.status(rec.id);
     expect(st.machines[0].alignment).toBe('drifted');
@@ -778,7 +793,7 @@ describe('status — re-détection de drift', () => {
     await svcPo23.confirm(rec.id); // 12:00
 
     await publishSnapshot('myia-po-2023', {
-      env: { ANTHROPIC_BASE_URL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 },
     }, '2026-09-08T14:00:00Z');
 
     const st = await svc.status(rec.id);
@@ -800,13 +815,13 @@ describe('#4223 — symétrie confirm/apply/status (faux positifs campagne #3544
     const rec = await svc.createCampaign(input);
 
     const svcPo23 = makeService('myia-po-2023');
-    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://choix-po23.example' } });
-    await svcPo23.apply(rec.id); // pose la fenêtre, PRÉSERVE la BASE_URL divergente
+    writeLocalSettings({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://choix-po23.example' } });
+    await svcPo23.apply(rec.id); // pose la fenêtre, PRÉSERVE la HAIKU (routage modèle) divergente
     await svcPo23.confirm(rec.id); // présence satisfaite => confirmed (12:00)
 
     // la machine publie son état RÉEL : chemins présents, valeurs divergentes
     await publishSnapshot('myia-po-2023', {
-      env: { ANTHROPIC_BASE_URL: 'https://choix-po23.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 310000 },
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://choix-po23.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 310000 },
     }, '2026-09-08T13:00:00Z');
 
     const st = await svc.status(rec.id);
@@ -830,7 +845,7 @@ describe('#4223 — symétrie confirm/apply/status (faux positifs campagne #3544
     const svcPo23 = makeService('myia-po-2023');
     writeLocalSettings({
       env: {
-        ANTHROPIC_BASE_URL: 'https://choix-po23.example', // divergent
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://choix-po23.example', // divergent
         CLAUDE_CODE_AUTO_COMPACT_WINDOW: 310000,          // divergent
       },
     });
@@ -846,7 +861,7 @@ describe('#4223 — symétrie confirm/apply/status (faux positifs campagne #3544
 
     // VUE 3 — status (coordinateur, via le snapshot publié de l'état réel)
     await publishSnapshot('myia-po-2023', {
-      env: { ANTHROPIC_BASE_URL: 'https://choix-po23.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 310000 },
+      env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://choix-po23.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 310000 },
     }, '2026-09-08T14:00:00Z');
     const st = await svc.status(rec.id);
     expect(st.machines[0].alignment).toBe('aligned');
@@ -918,7 +933,7 @@ describe('loadActiveExceptions (compare)', () => {
 
     // campagne fermée => ses exceptions disparaissent
     const svcPo24 = makeService('myia-po-2024');
-    writeLocalSettings({ env: { ANTHROPIC_BASE_URL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 } });
+    writeLocalSettings({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'https://relay.example', CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 } });
     await svcPo24.confirm(rec2.id);
     await svc.close(rec2.id, { force: true, reason: 'nettoyage test : seule po-2024 confirmée' });
     const exceptions2 = await HarmonizationCampaignService.loadActiveExceptions(fakeShared, 'claude-settings');
@@ -929,19 +944,19 @@ describe('loadActiveExceptions (compare)', () => {
   test('conflit détecté : chemin exempté par une campagne mais requis (canon) par une autre', async () => {
     const svc = makeService('myia-ai-01');
     const base = defaultCanonInput();
-    // campagne 1 exige BASE_URL (dans le canon) pour po-2023
+    // campagne 1 exige HAIKU (routage modèle) (dans le canon) pour po-2023
     await svc.createCampaign(base);
-    // campagne 2 exempte BASE_URL pour po-2023
+    // campagne 2 exempte HAIKU (routage modèle) pour po-2023
     const c2 = defaultCanonInput();
     c2.canon = { ...c2.canon, version: '2026.09.08-2' };
     c2.fleet = ['myia-po-2023'];
-    c2.exceptions = { 'myia-po-2023': ['env.ANTHROPIC_BASE_URL'] };
+    c2.exceptions = { 'myia-po-2023': ['env.ANTHROPIC_DEFAULT_HAIKU_MODEL'] };
     await svc.createCampaign(c2);
 
     const res = await HarmonizationCampaignService.loadActiveExceptions(fakeShared, 'claude-settings');
-    // BASE_URL requis par la campagne 1 => PAS une exemption effective
-    expect(res.byMachine['myia-po-2023'] || []).not.toContain('env.ANTHROPIC_BASE_URL');
-    const conflict = res.conflicts.find(c => c.path === 'env.ANTHROPIC_BASE_URL');
+    // HAIKU (routage modèle) requis par la campagne 1 => PAS une exemption effective
+    expect(res.byMachine['myia-po-2023'] || []).not.toContain('env.ANTHROPIC_DEFAULT_HAIKU_MODEL');
+    const conflict = res.conflicts.find(c => c.path === 'env.ANTHROPIC_DEFAULT_HAIKU_MODEL');
     expect(conflict).toBeDefined();
     expect(conflict!.requiredBy).toContain('hc-claude-settings-2026.09.08-1');
     expect(conflict!.exemptedBy).toContain('hc-claude-settings-2026.09.08-2');

@@ -29,9 +29,11 @@ import {
   applyCanonToFile,
   findLatestClaudeSettingsSnapshot,
   isAllowedKeyPath,
+  isObserveOnlyKeyPath,
   maskSecretValue,
   deletePath,
   ALLOWED_KEY_PATHS,
+  OBSERVE_ONLY_KEY_PATHS,
   KEY_PATH_SEVERITY,
   CanonPayload,
 } from '../ClaudeSettingsService.js';
@@ -136,6 +138,18 @@ describe('projection + hash', () => {
     expect(isAllowedKeyPath('permissions.allow')).toBe(false);
     expect(isAllowedKeyPath('hooks')).toBe(false);
     expect(ALLOWED_KEY_PATHS).not.toContain('env.ANTHROPIC_API_KEY');
+  });
+
+  test('#4347 isObserveOnlyKeyPath : observé mais jamais imposé — sous-ensemble de l allow-list', () => {
+    expect(isObserveOnlyKeyPath('env.ANTHROPIC_BASE_URL')).toBe(true);
+    expect(isObserveOnlyKeyPath('env.ANTHROPIC_DEFAULT_HAIKU_MODEL')).toBe(false);
+    expect(isObserveOnlyKeyPath('model')).toBe(false);
+    expect(isObserveOnlyKeyPath('env.ANTHROPIC_API_KEY')).toBe(false); // hors allow-list, pas observe-only
+    // invariant structurel : tout chemin observe-only DOIT rester allow-listé
+    // (sinon compare/snapshot perdent l'observation).
+    for (const p of OBSERVE_ONLY_KEY_PATHS) {
+      expect(isAllowedKeyPath(p)).toBe(true);
+    }
   });
 });
 
@@ -290,10 +304,12 @@ describe('buildSnapshot — couverture des hooks (#4243)', () => {
 });
 
 describe('validateCanon — allow-list + valeurs sûres', () => {
+  // #4347 — env.ANTHROPIC_BASE_URL n'est plus un exemple de clé canon
+  // (observe-only) : le fixture de contrôle positif porte une clé imposable.
   const baseCanon: CanonPayload = {
     version: '2026.09.08-1',
     mode: 'ensure-present',
-    keys: { 'env.ANTHROPIC_BASE_URL': 'https://relay.example' },
+    keys: { 'env.ANTHROPIC_DEFAULT_HAIKU_MODEL': 'claude-haiku-5-5[1m]' },
   };
 
   test('contrôle positif : canon valide produit un hash', () => {
@@ -346,9 +362,15 @@ describe('validateCanon — allow-list + valeurs sûres', () => {
     expect(v.valid).toBe(false);
   });
 
-  test('BASE_URL http(s) propre acceptée', () => {
-    const v = validateCanon({ ...baseCanon, keys: { 'env.ANTHROPIC_BASE_URL': 'https://relay.example/v1' } });
-    expect(v.valid).toBe(true);
+  test('#4347 BASE_URL : refusée dans un canon (observe-only), les DEUX modes — même URL propre', () => {
+    // Le chemin reste allow-listé (observation) mais aucun canon ne peut
+    // l'imposer : la topologie de routage est par machine.
+    expect(isAllowedKeyPath('env.ANTHROPIC_BASE_URL')).toBe(true);
+    for (const mode of ['ensure-present', 'enforce-value'] as const) {
+      const v = validateCanon({ ...baseCanon, mode, keys: { 'env.ANTHROPIC_BASE_URL': 'https://relay.example/v1' } });
+      expect(v.valid).toBe(false);
+      expect(v.problems.join()).toMatch(/observé seulement \(routage machine\), interdit dans un canon : env\.ANTHROPIC_BASE_URL/);
+    }
   });
 
   test('objets/valeurs composites rejetés (scalaires uniquement)', () => {
@@ -590,38 +612,45 @@ describe('libellés /model + sémantique « absent » (ASK claudish 22/10)', () 
 });
 
 describe('applyCanonToFile', () => {
+  // #4347 — le fixture canon ne porte plus BASE_URL (observe-only, refusé en
+  // validation) ; la clé imposable exemplaire est le rôle haiku.
   const canon: CanonPayload = {
     version: '2026.09.08-1',
     mode: 'ensure-present',
     keys: {
-      'env.ANTHROPIC_BASE_URL': 'https://relay.example',
+      'env.ANTHROPIC_DEFAULT_HAIKU_MODEL': 'claude-haiku-5-5[1m]',
       'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW': 280000,
     },
   };
 
   test('ensure-present : pose les absentes, PRÉSERVE les existantes (choix machine)', async () => {
     writeSettings({
-      env: { ANTHROPIC_BASE_URL: 'https://local-choice.example', OTHER: 'keep' },
+      env: {
+        ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5-20251001[1m]',
+        ANTHROPIC_BASE_URL: 'https://local-choice.example',
+        OTHER: 'keep',
+      },
       permissions: { allow: ['Bash'] },
     });
     const res = await applyCanonToFile(settingsPath, canon, { now: () => '2026-09-08T10:00:00Z' });
 
     const after = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    expect(after.env.ANTHROPIC_BASE_URL).toBe('https://local-choice.example');   // préservé
-    expect(after.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(280000);              // posé
-    expect(after.env.OTHER).toBe('keep');                                        // intact
-    expect(after.permissions).toEqual({ allow: ['Bash'] });                      // jamais touché
+    expect(after.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('claude-haiku-4-5-20251001[1m]'); // préservé
+    expect(after.env.ANTHROPIC_BASE_URL).toBe('https://local-choice.example');             // jamais appliqué (#4347)
+    expect(after.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(280000);                        // posé
+    expect(after.env.OTHER).toBe('keep');                                                  // intact
+    expect(after.permissions).toEqual({ allow: ['Bash'] });                                // jamais touché
 
     const preserved = res.changes.find(c => c.action === 'preserved');
-    expect(preserved?.path).toBe('env.ANTHROPIC_BASE_URL');
-    expect(preserved?.before).toBe('https://local-choice.example');
+    expect(preserved?.path).toBe('env.ANTHROPIC_DEFAULT_HAIKU_MODEL');
+    expect(preserved?.before).toBe('claude-haiku-4-5-20251001[1m]');
   });
 
   test('enforce-value : écrase explicitement', async () => {
-    writeSettings({ env: { ANTHROPIC_BASE_URL: 'https://old.example' } });
+    writeSettings({ env: { ANTHROPIC_DEFAULT_HAIKU_MODEL: 'claude-haiku-4-5-20251001[1m]' } });
     await applyCanonToFile(settingsPath, { ...canon, mode: 'enforce-value' }, { now: () => '2026-09-08T10:00:00Z' });
     const after = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    expect(after.env.ANTHROPIC_BASE_URL).toBe('https://relay.example');
+    expect(after.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('claude-haiku-5-5[1m]');
   });
 
   test('dry-run : AUCUN write, AUCUN backup', async () => {
@@ -658,10 +687,10 @@ describe('applyCanonToFile', () => {
     const enforceCanon: CanonPayload = {
       version: '2026.09.08-1',
       mode: 'enforce-value',
-      keys: { 'env.ANTHROPIC_BASE_URL': 'https://relay.example' },
+      keys: { 'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW': 280000 },
     };
     // Fichier déjà conforme => no-op (!wouldWrite).
-    writeSettings({ env: { ANTHROPIC_BASE_URL: 'https://relay.example' } });
+    writeSettings({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: 280000 } });
     const res = await applyCanonToFile(settingsPath, enforceCanon, { now: () => '2026-09-08T10:00:00Z', backup: false });
     expect(res.verification?.performed).toBe(true);
     expect(res.verification?.success).toBe(true);
@@ -770,7 +799,30 @@ describe('applyCanonToFile', () => {
     const res = await applyCanonToFile(settingsPath, canon, { now: () => '2026-09-08T10:00:00Z' });
     expect(res.applied).toBe(true);
     const after = JSON.parse(readFileSync(settingsPath, 'utf-8'));
-    expect(after.env.ANTHROPIC_BASE_URL).toBe('https://relay.example');
+    expect(after.env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('claude-haiku-5-5[1m]');
+    expect(after.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(280000);
+  });
+
+  test('#4347 : chemin observe-only JAMAIS appliqué — skip explicite, valeur locale intacte (défense en profondeur)', async () => {
+    // Simule le « file mode » : un canon construit sans repasser par
+    // validateCanon (qui refuserait déjà) atteint applyCanonToFile direct.
+    // applyCanonToFile doit sauter le chemin de son propre chef.
+    writeSettings({ env: { ANTHROPIC_BASE_URL: 'https://sidecar.local:3000' } });
+    const rogueCanon: CanonPayload = {
+      version: '2026.10.25-1',
+      mode: 'enforce-value',
+      keys: {
+        'env.ANTHROPIC_BASE_URL': 'https://hub-fleet.example',
+        'env.CLAUDE_CODE_AUTO_COMPACT_WINDOW': 250000,
+      },
+    };
+    const res = await applyCanonToFile(settingsPath, rogueCanon, { now: () => '2026-10-24T23:59:00Z', backup: false });
+    const after = JSON.parse(readFileSync(settingsPath, 'utf-8'));
+    expect(after.env.ANTHROPIC_BASE_URL).toBe('https://sidecar.local:3000'); // INTACT — jamais écrit
+    expect(after.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe(250000);          // clé normale appliquée
+    expect(res.skipped.some(s => s.path === 'env.ANTHROPIC_BASE_URL' && /observé seulement/.test(s.reason))).toBe(true);
+    expect(res.changes.some(c => c.path === 'env.ANTHROPIC_BASE_URL')).toBe(false);
+    expect(res.verification?.success).toBe(true);
   });
 
   test('exemptions machine : chemins exemptés skipped', async () => {

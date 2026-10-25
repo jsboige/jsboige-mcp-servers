@@ -48,7 +48,7 @@ export const HarmonizationArgsSchema = z.object({
     mode: z.enum(['ensure-present', 'enforce-value'])
       .describe('ensure-present: préserve les clés déjà présentes localement. enforce-value: impose les valeurs'),
     keys: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
-      .describe('Chemins allow-listés explicites => valeur (env.ANTHROPIC_BASE_URL, env.ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL, env.ANTHROPIC_CUSTOM_MODEL_OPTION, env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, env.MCP_TIMEOUT, model, modelMap.{opus,sonnet,haiku,fable} — #3545)'),
+      .describe('Chemins allow-listés explicites => valeur (env.ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU,FABLE}_MODEL, env.ANTHROPIC_CUSTOM_MODEL_OPTION, env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, env.CLAUDE_CODE_MAX_CONTEXT_TOKENS, env.MCP_TIMEOUT, model, modelMap.{opus,sonnet,haiku,fable} — #3545). env.ANTHROPIC_BASE_URL est observe-only : rapporté par siège (compare/snapshot), interdit dans canon.keys et exceptions (#4347)'),
     description: z.string().optional(),
   }).optional().describe('Canon explicite (create uniquement). Clés hors allow-list ou valeurs secrètes rejetées'),
   fleet: z.array(z.string()).optional()

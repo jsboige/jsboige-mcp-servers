@@ -116,6 +116,25 @@ export function isAllowedKeyPath(path: string): boolean {
   return ALLOWED_KEY_PATH_SET.has(path);
 }
 
+/**
+ * Chemins OBSERVÉS mais jamais IMPOSÉS (#4347). `env.ANTHROPIC_BASE_URL` est
+ * du routage par machine (sidecar d'un siège, hub LAN) : compare et snapshot
+ * le rapportent par siège (CRITICAL en écart), mais aucun canon de campagne
+ * ni apply de package partagé ne peut l'écrire — la flotte n'impose jamais
+ * une topologie de routage locale. Le chemin reste dans ALLOWED_KEY_PATHS
+ * (observation) ; il est refusé dans validateCanon et sauté par
+ * applyCanonToFile (défense en profondeur, y compris « file mode »).
+ */
+export const OBSERVE_ONLY_KEY_PATHS: readonly string[] = Object.freeze([
+  'env.ANTHROPIC_BASE_URL',
+]);
+
+const OBSERVE_ONLY_KEY_PATH_SET: Set<string> = new Set(OBSERVE_ONLY_KEY_PATHS);
+
+export function isObserveOnlyKeyPath(path: string): boolean {
+  return OBSERVE_ONLY_KEY_PATH_SET.has(path);
+}
+
 /** Sévérité par défaut d'un écart sur un chemin harmonisable (compare #3545). */
 export const KEY_PATH_SEVERITY: Record<string, string> = {
   'env.ANTHROPIC_BASE_URL': 'CRITICAL',
@@ -675,6 +694,14 @@ export function validateCanon(canon: CanonPayload): CanonValidationResult {
       problems.push(`chemin non allow-listé: ${path}`);
       continue;
     }
+    // #4347 — BASE_URL est du routage par machine : observé/rapporté, jamais
+    // imposé par un canon (les deux modes — ensure-present autant qu'
+    // enforce-value — poseraient une topologie locale flotte-wide). Émis SANS
+    // court-circuiter : la validation de valeur court aussi, un canon fautif
+    // rapporte ses deux défauts (observe-only + forme).
+    if (isObserveOnlyKeyPath(path)) {
+      problems.push(`chemin observé seulement (routage machine), interdit dans un canon : ${path}`);
+    }
     // #4186 — Precedence explicite : un chemin allow-listé est une décision
     // humaine revue, il est ACQUITTE du test de sensibilité (heuristique).
     // Sans ce garde, `env.CLAUDE_CODE_MAX_CONTEXT_TOKENS` (allow-listé) est
@@ -767,6 +794,15 @@ export async function applyCanonToFile(
   for (const [path, value] of Object.entries(canon.keys)) {
     if (exempt.has(path)) {
       skipped.push({ path, reason: 'exempté pour cette machine' });
+      continue;
+    }
+    // #4347 — défense en profondeur : validateCanon refuse déjà ces chemins,
+    // mais applyCanonToFile est aussi appelé sur des canons issus d'un
+    // package partagé (« file mode » ConfigSharing) sans repasser par la
+    // validation — le skip ici garantit qu'aucun chemin d'apply n'écrit un
+    // chemin observe-only, quel que soit l'appelant.
+    if (isObserveOnlyKeyPath(path)) {
+      skipped.push({ path, reason: 'observé seulement (routage machine) — jamais appliqué (#4347)' });
       continue;
     }
     const current = getPath(working, path);
