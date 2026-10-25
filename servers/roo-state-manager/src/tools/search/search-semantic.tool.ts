@@ -118,6 +118,46 @@ function applyFragmentMalus(score: number, content: string): { score: number; ap
     return { score: score * FRAGMENT_MALUS_FACTOR, applied: true };
 }
 
+// #4352 (user 25/10, search tools mandate): tool output is indexed as ordinary
+// conversation text — Claude tool results as role=user `[tool_result] Result:`,
+// Roo ones as `[tool for '...'] Result:`, tool calls as chunk_type
+// tool_interaction, plus environment_details blocks and raw JSON. On 26
+// known-answer queries, 35 % of the top-5 slots were such machine output;
+// ×0.85 brings it to 1 %, MRR 0.426 → 0.444 (8 queries better, 3 worse).
+// De-ranked, not removed: an answer that only exists in a tool output is
+// still returned (same contract as the fragment malus above).
+// Rollback / A-B: SEMANTIC_MACHINE_OUTPUT_MALUS=0.
+const MACHINE_OUTPUT_MALUS_FACTOR = 0.85;
+const TOOL_RESULT_MARKER = /^\s*\[(?:tool_result|[a-z_]+(?: for [^\]]{0,200})?)\] Result:/;
+const ENV_DETAILS_MARKER = /<environment_details>|# VSCode Visible Files|# VSCode Open Tabs/;
+// Density thresholds per 100 chars of the first 2000, measured on the live
+// pools: prose stays far below either of them.
+const JSON_ESCAPED_QUOTES_PER_100 = 1;
+const JSON_KEYS_PER_100 = 1.5;
+
+export type MachineOutputKind = 'tool_call' | 'tool_result' | 'env_details' | 'json_escaped' | 'json';
+
+export function classifyMachineOutput(chunkType: unknown, content: string): MachineOutputKind | null {
+    if (chunkType === 'tool_interaction') return 'tool_call';
+    if (TOOL_RESULT_MARKER.test(content)) return 'tool_result';
+    if (ENV_DETAILS_MARKER.test(content)) return 'env_details';
+    const head = content.slice(0, 2000);
+    const per100 = (n: number) => n / Math.max(1, head.length / 100);
+    if (per100((head.match(/\\"/g) || []).length) >= JSON_ESCAPED_QUOTES_PER_100) return 'json_escaped';
+    if (per100((head.match(/"[A-Za-z_][\w-]*"\s*:/g) || []).length) >= JSON_KEYS_PER_100) return 'json';
+    return null;
+}
+
+function isMachineOutputMalusEnabled(): boolean {
+    return process.env.SEMANTIC_MACHINE_OUTPUT_MALUS !== '0';
+}
+
+function applyMachineOutputMalus(score: number, chunkType: unknown, content: string): { score: number; kind: MachineOutputKind | null } {
+    if (!isMachineOutputMalusEnabled()) return { score, kind: null };
+    const kind = classifyMachineOutput(chunkType, content);
+    return kind ? { score: score * MACHINE_OUTPUT_MALUS_FACTOR, kind } : { score, kind: null };
+}
+
 function getCachedQueryEmbedding(query: string): number[] | null {
     const cached = queryEmbeddingCache.get(query);
     if (cached && Date.now() < cached.expiresAt) {
@@ -1117,6 +1157,8 @@ export const searchTasksByContentTool = {
 
             // Phase 2: Enriched results with snippets, score interpretation, deduplication
             let fragmentMalusApplied = 0;
+            const machineOutputByKind: Partial<Record<MachineOutputKind, number>> = {};
+            let machineOutputApplied = 0;
             const results: RawSearchResult[] = rawPoints.map((result: any) => {
                 // #982 FIX: Prefer full content for snippet extraction (content_summary is only 200 chars)
                 const fullContent = String(result.payload?.content || result.payload?.content_summary || '');
@@ -1127,7 +1169,13 @@ export const searchTasksByContentTool = {
                 // never to the display snippet.
                 const malus = applyFragmentMalus(result.score || 0, fullContent);
                 if (malus.applied) fragmentMalusApplied++;
-                const score = malus.score;
+                // #4352: machine-output de-rank, same single-helper contract.
+                const machine = applyMachineOutputMalus(malus.score, result.payload?.chunk_type, fullContent);
+                if (machine.kind) {
+                    machineOutputApplied++;
+                    machineOutputByKind[machine.kind] = (machineOutputByKind[machine.kind] || 0) + 1;
+                }
+                const score = machine.score;
                 // #2609 V3: raw ints for the handle — message_position is a display
                 // string and cannot drive a conversation_browser re-expansion.
                 const messageIndex = typeof result.payload?.message_index === 'number'
@@ -1323,6 +1371,15 @@ export const searchTasksByContentTool = {
                             min_chars: FRAGMENT_MALUS_MIN_CHARS,
                             factor: FRAGMENT_MALUS_FACTOR,
                             enabled: process.env.SEMANTIC_FRAGMENT_MALUS !== '0',
+                        }
+                    } : {}),
+                    // #4352: machine-output de-rank observability, same quiet convention.
+                    ...(machineOutputApplied > 0 || process.env.SEMANTIC_MACHINE_OUTPUT_MALUS === '0' ? {
+                        machine_output_malus: {
+                            applied: machineOutputApplied,
+                            by_kind: machineOutputByKind,
+                            factor: MACHINE_OUTPUT_MALUS_FACTOR,
+                            enabled: process.env.SEMANTIC_MACHINE_OUTPUT_MALUS !== '0',
                         }
                     } : {}),
                     // #2609 V3 (rubric (c)): context-expansion observability. Emitted

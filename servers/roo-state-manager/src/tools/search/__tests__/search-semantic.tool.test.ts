@@ -78,7 +78,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 	getUnifiedStoreReader: () => mockUnifiedStoreReader
 }));
 
-import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap } from '../search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput } from '../search-semantic.tool.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 
 // ─────────────────── helpers ───────────────────
@@ -2566,5 +2566,128 @@ describe('#2609 q4 cross-conversation quality — fragment de-rank', () => {
 		// Relevance is reinterpreted from the adjusted score (0.765 stays 'good',
 		// but a 0.78 fragment would read 'moderate' — label follows rendered score)
 		expect(parsed.results[0].relevance).toBe('good');
+	});
+});
+
+describe('#4352 machine-output de-rank', () => {
+	const PROSE = 'Le cycle s\'est arrêté avant tout travail : le disque D était sous les cinq pour cent libres, la règle flotte impose l\'arrêt.';
+	const CLAUDE_TOOL_RESULT = '[tool_result] Result: {"ok":true,"disk":"D:","free_pct":4.97,"total_gb":1863}';
+
+	beforeEach(() => {
+		mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+		mockUnifiedStoreReader.isNull.mockReturnValue(true);
+		mockQdrantClient.scroll.mockReset();
+		delete process.env.SEMANTIC_MACHINE_OUTPUT_MALUS;
+		delete process.env.SEMANTIC_FRAGMENT_MALUS;
+	});
+
+	test('classifies each machine-output shape and leaves prose alone', () => {
+		expect(classifyMachineOutput('tool_interaction', 'Bash: git status')).toBe('tool_call');
+		expect(classifyMachineOutput('message_exchange', CLAUDE_TOOL_RESULT)).toBe('tool_result');
+		expect(classifyMachineOutput('message_exchange', "[read_file for 'src/a.ts'] Result: export const a = 1;")).toBe('tool_result');
+		expect(classifyMachineOutput('message_exchange', 'Voici le contexte.\n<environment_details>\n# VSCode Open Tabs\n</environment_details>')).toBe('env_details');
+		expect(classifyMachineOutput('message_exchange', '{\\"a\\":1,\\"b\\":2,\\"c\\":3}')).toBe('json_escaped');
+		expect(classifyMachineOutput('message_exchange', '{"task_id": "x", "score": 0.8, "workspace": "d:/dev"}')).toBe('json');
+		expect(classifyMachineOutput('message_exchange', PROSE)).toBeNull();
+		// A sentence quoting one key stays prose (density, not presence)
+		expect(classifyMachineOutput('message_exchange', 'Le champ "workspace": il manque sur un tiers des points, d\'où le filtre aveugle sur ces conversations anciennes.')).toBeNull();
+	});
+
+	test('tool result de-ranked below the prose passage that explains it', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.82, payload: { task_id: 'task-tool', chunk_type: 'message_exchange', role: 'user', content: CLAUDE_TOOL_RESULT, host_os: 'h1' } },
+			{ score: 0.78, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', role: 'assistant', content: PROSE, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'disque D sous cinq pour cent' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].taskId).toBe('task-prose');
+		expect(parsed.results[1].taskId).toBe('task-tool');
+		// One helper feeds ranking AND rendered score
+		expect(parsed.results[1].best_score).toBeCloseTo(0.82 * 0.85, 8);
+		expect(parsed.results[0].best_score).toBe(0.78);
+		expect(parsed.current_machine.machine_output_malus).toEqual({
+			applied: 1,
+			by_kind: { tool_result: 1 },
+			factor: 0.85,
+			enabled: true
+		});
+	});
+
+	test('prose-only results keep raw scores and observability stays quiet', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.8, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', content: PROSE, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'disque' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].best_score).toBe(0.8);
+		expect(parsed.current_machine.machine_output_malus).toBeUndefined();
+	});
+
+	test('stacks with the fragment malus on a short tool call', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.8, payload: { task_id: 'task-call', chunk_type: 'tool_interaction', content: 'Bash: ls', host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'ls' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].best_score).toBeCloseTo(0.8 * 0.85 * 0.85, 8);
+		expect(parsed.current_machine.machine_output_malus.by_kind).toEqual({ tool_call: 1 });
+	});
+
+	test('rollback SEMANTIC_MACHINE_OUTPUT_MALUS=0 restores raw order and reports disabled', async () => {
+		process.env.SEMANTIC_MACHINE_OUTPUT_MALUS = '0';
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.82, payload: { task_id: 'task-tool', chunk_type: 'message_exchange', content: CLAUDE_TOOL_RESULT, host_os: 'h1' } },
+			{ score: 0.78, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', content: PROSE, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'disque' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].taskId).toBe('task-tool');
+		expect(parsed.results[0].best_score).toBe(0.82);
+		expect(parsed.current_machine.machine_output_malus).toMatchObject({ applied: 0, enabled: false });
+	});
+
+	test('machine output is de-ranked, never hidden — sole hit still returned', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.9, payload: { task_id: 'task-only', chunk_type: 'message_exchange', content: CLAUDE_TOOL_RESULT, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'free_pct' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results).toHaveLength(1);
+		expect(parsed.results[0].best_score).toBeCloseTo(0.9 * 0.85, 8);
 	});
 });
