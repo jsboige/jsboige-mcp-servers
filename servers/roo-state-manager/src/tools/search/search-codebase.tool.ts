@@ -1420,21 +1420,33 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// populated collection; web1/po-2026 get 0 from an empty one matched by hash.)
 		let hashMatchedPointsCount: number | null = null;
 
-		for (const variant of collectionVariants) {
-			try {
-				const collectionInfo = await withTransportRetry(() => qdrant.getCollection(variant));
-				if (collectionInfo.status !== undefined) {
-					collectionName = variant;
-					hashMatchedPointsCount = (collectionInfo as any)?.points_count ?? null;
-					break;
-				}
-			} catch (err) {
-				// #2636: a 404 means "this variant doesn't exist" → try the next one;
-				// a network/TLS error means the backend is down → stop and propagate so
-				// the outer catch classifies it as qdrant_unreachable (not collection_not_found).
-				if (isNetworkErrorLike(err)) throw err;
-				// Cette variante n'existe pas, essayer la suivante
-			}
+		// #4352: every spelling of the same folder can own its own collection (one per
+		// seat that indexed it under that spelling), so stopping at the first variant
+		// that exists let the spelling of the argument pick the corpus: D:/Dev/… landed
+		// on a frozen 328k-point copy instead of the live 486k-point one. Probe all
+		// variants at once and serve the largest; a tie keeps the earlier spelling.
+		const variantProbes = await Promise.allSettled(collectionVariants.map(async variant => {
+			const collectionInfo = await withTransportRetry(() => qdrant.getCollection(variant));
+			if (collectionInfo.status === undefined) return null;
+			return { name: variant, points: ((collectionInfo as any)?.points_count ?? null) as number | null };
+		}));
+		const existingVariants = variantProbes.flatMap(p => (p.status === 'fulfilled' && p.value ? [p.value] : []));
+		// #2636: a 404 means "this variant doesn't exist"; a network/TLS error means the
+		// backend did not answer. With no variant found, propagate it so the outer catch
+		// classifies it as qdrant_unreachable (not collection_not_found); with one found,
+		// serve it and name the variants that could not be probed.
+		const unreachableVariants = collectionVariants.filter((_, i) => {
+			const p = variantProbes[i];
+			return p.status === 'rejected' && isNetworkErrorLike(p.reason);
+		});
+		if (existingVariants.length === 0 && unreachableVariants.length > 0) {
+			throw (variantProbes.find(p => p.status === 'rejected' && isNetworkErrorLike(p.reason)) as PromiseRejectedResult).reason;
+		}
+		const largestVariant = existingVariants.reduce<{ name: string; points: number | null } | null>(
+			(best, v) => (best === null || (v.points ?? -1) > (best.points ?? -1) ? v : best), null);
+		if (largestVariant) {
+			collectionName = largestVariant.name;
+			hashMatchedPointsCount = largestVariant.points;
 		}
 
 
@@ -1977,6 +1989,10 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// hash missed and we identified the right ws-* collection by its indexed
 			// top-level dirs vs the workspace's actual directory structure.
 			collection_resolved_by: collectionResolvedBy,
+			// #4352: several spellings of this workspace own a collection; the largest was served.
+			...(existingVariants.length > 1 ? { collection_variants: existingVariants } : {}),
+			// #4352: spellings whose probe failed on the network — one of them may be larger.
+			...(unreachableVariants.length > 0 ? { collection_variants_unreachable: unreachableVariants } : {}),
 			...(contentMatchDetails ? { content_match: contentMatchDetails } : {}),
 			// #2609 V2(c)(c): the build vintage serving this response — makes probes
 			// comparable across machines (divergent rankings ≠ divergent code when
