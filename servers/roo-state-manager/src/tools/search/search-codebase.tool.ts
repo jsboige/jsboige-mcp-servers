@@ -1425,19 +1425,23 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// that exists let the spelling of the argument pick the corpus: D:/Dev/… landed
 		// on a frozen 328k-point copy instead of the live 486k-point one. Probe all
 		// variants at once and serve the largest; a tie keeps the earlier spelling.
-		const existingVariants = (await Promise.all(collectionVariants.map(async variant => {
-			try {
-				const collectionInfo = await withTransportRetry(() => qdrant.getCollection(variant));
-				if (collectionInfo.status === undefined) return null;
-				return { name: variant, points: ((collectionInfo as any)?.points_count ?? null) as number | null };
-			} catch (err) {
-				// #2636: a 404 means "this variant doesn't exist"; a network/TLS error means
-				// the backend is down → propagate so the outer catch classifies it as
-				// qdrant_unreachable (not collection_not_found).
-				if (isNetworkErrorLike(err)) throw err;
-				return null;
-			}
-		}))).filter((v): v is { name: string; points: number | null } => v !== null);
+		const variantProbes = await Promise.allSettled(collectionVariants.map(async variant => {
+			const collectionInfo = await withTransportRetry(() => qdrant.getCollection(variant));
+			if (collectionInfo.status === undefined) return null;
+			return { name: variant, points: ((collectionInfo as any)?.points_count ?? null) as number | null };
+		}));
+		const existingVariants = variantProbes.flatMap(p => (p.status === 'fulfilled' && p.value ? [p.value] : []));
+		// #2636: a 404 means "this variant doesn't exist"; a network/TLS error means the
+		// backend did not answer. With no variant found, propagate it so the outer catch
+		// classifies it as qdrant_unreachable (not collection_not_found); with one found,
+		// serve it and name the variants that could not be probed.
+		const unreachableVariants = collectionVariants.filter((_, i) => {
+			const p = variantProbes[i];
+			return p.status === 'rejected' && isNetworkErrorLike(p.reason);
+		});
+		if (existingVariants.length === 0 && unreachableVariants.length > 0) {
+			throw (variantProbes.find(p => p.status === 'rejected' && isNetworkErrorLike(p.reason)) as PromiseRejectedResult).reason;
+		}
 		const largestVariant = existingVariants.reduce<{ name: string; points: number | null } | null>(
 			(best, v) => (best === null || (v.points ?? -1) > (best.points ?? -1) ? v : best), null);
 		if (largestVariant) {
@@ -1987,6 +1991,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			collection_resolved_by: collectionResolvedBy,
 			// #4352: several spellings of this workspace own a collection; the largest was served.
 			...(existingVariants.length > 1 ? { collection_variants: existingVariants } : {}),
+			// #4352: spellings whose probe failed on the network — one of them may be larger.
+			...(unreachableVariants.length > 0 ? { collection_variants_unreachable: unreachableVariants } : {}),
 			...(contentMatchDetails ? { content_match: contentMatchDetails } : {}),
 			// #2609 V2(c)(c): the build vintage serving this response — makes probes
 			// comparable across machines (divergent rankings ≠ divergent code when

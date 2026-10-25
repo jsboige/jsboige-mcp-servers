@@ -448,12 +448,10 @@ describe('search-codebase.tool', () => {
 			]);
 		});
 
-		test('#4352: a network error on any variant still surfaces as qdrant_unreachable', async () => {
+		test('#4352: a network error on every variant surfaces as qdrant_unreachable', async () => {
 			vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('probe refused')));
 			try {
-				const target = getWorkspaceCollectionName('d:\\Dev\\roo-ext');
-				mockQdrant.getCollection.mockImplementation(async (name: string) => {
-					if (name === target) return { status: 'green', points_count: 10 };
+				mockQdrant.getCollection.mockImplementation(async () => {
 					throw Object.assign(new Error('fetch failed'), { code: 'ECONNREFUSED' });
 				});
 
@@ -463,6 +461,25 @@ describe('search-codebase.tool', () => {
 			} finally {
 				vi.unstubAllGlobals();
 			}
+		});
+
+		test('#4352: a network error on one variant does not fail the search when another answered', async () => {
+			const found = getWorkspaceCollectionName('d:\\Dev\\roo-ext');
+			const failed = getWorkspaceCollectionName('d:/dev/roo-ext');
+			mockQdrant.getCollection.mockImplementation(async (name: string) => {
+				if (name === found) return { status: 'green', points_count: 10 };
+				if (name === failed) throw Object.assign(new Error('fetch failed'), { code: 'ECONNRESET' });
+				throw new Error('not found');
+			});
+			mockQdrant.query.mockResolvedValue({
+				points: [{ score: 0.7, payload: { filePath: 'src/foo.ts', codeChunk: 'export function foo() {}', startLine: 1, endLine: 5 } }]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'foo function', workspace: 'D:/Dev/roo-ext' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(parsed.collection).toBe(found);
+			expect(parsed.collection_variants_unreachable).toEqual([failed]);
 		});
 
 		test('returns success with marginal relevance (score 0.45)', async () => {
