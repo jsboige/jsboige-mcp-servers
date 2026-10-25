@@ -1403,8 +1403,9 @@ export async function readLeaderLockInfo(machineId: string): Promise<{ leaderPid
 /**
  * Try to acquire or renew the leader lock. Non-blocking (single attempt).
  * Returns true if this process is the leader.
+ * Exported so the tests check the lock this code writes, not a copy (#4352).
  */
-async function tryAcquireLeaderLock(machineId: string): Promise<boolean> {
+export async function tryAcquireLeaderLock(machineId: string): Promise<boolean> {
     const lockPath = await getLeaderLockPath(machineId);
 
     // #4352: the leader publishes its Claude-session policy so a follower's status can show it.

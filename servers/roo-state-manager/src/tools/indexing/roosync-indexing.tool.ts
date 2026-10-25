@@ -1051,7 +1051,7 @@ export async function handleRooSyncIndexing(
             // #4352: the leader alone drains the queue, so ITS policy decides whether this
             // machine's Claude sessions reach Qdrant; the per-task skip line never reaches a log.
             if (leaderInfo?.claudeIndexing === false) {
-                hints.push(`Le leader d'indexation (PID ${leaderInfo.leaderPid}) n'indexe PAS les sessions Claude Code (ROO_INDEX_CLAUDE_SESSIONS=false dans son environnement) : aucune session Claude de cette machine n'atteint Qdrant tant qu'il tient le verrou.`);
+                hints.push(`Le leader d'indexation (PID ${leaderInfo.leaderPid}) n'indexe PAS les sessions Claude Code en arrière-plan (ROO_INDEX_CLAUDE_SESSIONS=false ou 0 dans son environnement) : tant qu'il tient le verrou, aucune session Claude de cette machine n'est indexée automatiquement. L'indexation manuelle (action: "index", source: "claude-code") reste possible.`);
             }
 
             const status = {

@@ -553,6 +553,28 @@ describe('roosync_indexing status action', () => {
 		expect(parsed.diagnostic_hints.some((h: string) => h.includes('PID 9999') && h.includes('sessions Claude Code'))).toBe(true);
 	});
 
+	test('#4352: leader that indexes Claude sessions → field true, no policy hint', async () => {
+		mockReadLeaderLockInfo.mockResolvedValue({ leaderPid: 9999, lockAgeMs: 120000, claudeIndexing: true });
+		const indexingState = {
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			isIndexLeader: false,
+			machineId: 'myia-test',
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0, lastIndexedAt: undefined },
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.background_indexer.leader_claude_indexing).toBe(true);
+		expect((parsed.diagnostic_hints ?? []).some((h: string) => h.includes('sessions Claude Code'))).toBe(false);
+	});
+
 	test('#3014 (the trap): identical queue plateau → distinguishable leader vs follower output', async () => {
 		// The exact #3014 scenario: queue_size=505 plateaus in BOTH states.
 		// Pre-fix, both produced byte-identical output (no is_leader field).
