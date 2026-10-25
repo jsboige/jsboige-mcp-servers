@@ -73,6 +73,26 @@ class TestNotebookCRUDService:
         assert cell["metadata"] == {"tag": "test"}
 
     @pytest.mark.asyncio
+    async def test_add_cell_with_index(self, crud_service):
+        notebook_path = "cell_index_test.ipynb"
+        await crud_service.create_notebook(notebook_path)
+        await crud_service.add_cell(notebook_path, "code", "first")
+        await crud_service.add_cell(notebook_path, "code", "last")
+
+        # Insert between the two cells instead of appending
+        result = await crud_service.add_cell(
+            notebook_path,
+            cell_type="code",
+            source="middle",
+            index=1,
+        )
+
+        assert result["success"] is True
+        assert result["cell_count"] == 3
+        notebook = await crud_service.read_notebook(notebook_path)
+        assert [c["source"] for c in notebook["cells"]] == ["first", "middle", "last"]
+
+    @pytest.mark.asyncio
     async def test_update_cell(self, crud_service):
         notebook_path = "update_test.ipynb"
         await crud_service.create_notebook(notebook_path)
