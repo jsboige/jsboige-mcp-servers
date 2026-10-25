@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { fnv1a32, parseFleetRoster, getTaskOwner, shouldIndexTask } from '../task-partition.js';
+import { fnv1a32, parseFleetRoster, getTaskOwner, shouldIndexTask, isLocallyIndexable } from '../task-partition.js';
 
 describe('task-partition', () => {
 	describe('fnv1a32', () => {
@@ -105,6 +105,20 @@ describe('task-partition', () => {
 				}
 				expect(owners, `Task ${taskId} should have exactly 1 owner`).toBe(1);
 			}
+		});
+	});
+
+	describe('isLocallyIndexable (#4352)', () => {
+		it('indexes every skeleton that is not a cold-tier archive', () => {
+			expect(isLocallyIndexable({ metadata: {} })).toBe(true);
+			expect(isLocallyIndexable({ metadata: { dataSource: 'claude' } })).toBe(true);
+			expect(isLocallyIndexable({ metadata: { dataSource: 'roo' } })).toBe(true);
+			expect(isLocallyIndexable(undefined)).toBe(true);
+		});
+
+		it('skips both archive markers: another machine holds those files', () => {
+			expect(isLocallyIndexable({ metadata: { dataSource: 'archive' } })).toBe(false);
+			expect(isLocallyIndexable({ metadata: { dataSource: 'gdrive-archive' } })).toBe(false);
 		});
 	});
 });

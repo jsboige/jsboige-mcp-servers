@@ -1,6 +1,9 @@
 /**
  * #2352: Task-space partitioning for Qdrant indexing.
  *
+ * #4352: the indexer no longer applies this partition — see `isLocallyIndexable()`
+ * at the end of this file. The roster helpers stay (config validation, compare-config).
+ *
  * Hash-based consistent partition: each machine in the fleet is responsible
  * for only its shard of the task-space, eliminating N× embedding redundancy.
  *
@@ -70,4 +73,23 @@ export function shouldIndexTask(
 ): boolean {
 	if (!roster || roster.length === 0) return true;
 	return getTaskOwner(taskId, roster) === currentMachineId;
+}
+
+/**
+ * #4352: the indexing gate. The indexer reads only this machine's files (TaskIndexer
+ * resolves a task under `~/.claude/projects` or the local Roo storage), so a task's
+ * owner is the machine that holds it, not a hash of its id. Cold-tier archive
+ * skeletons describe another machine's files: they are the only ones skipped (both
+ * markers, as in list-conversations).
+ *
+ * `shouldIndexTask()` no longer gates indexing. No two machines hold the same task, so
+ * the fleet hash deduplicated nothing and left 8 tasks in 9 to nobody (ai-01, 25/10:
+ * 132 of 1,069 local Claude sessions owned). The redundancy #2352 measured — N MCP
+ * instances on ONE machine — is handled by the indexing leader lock.
+ */
+export function isLocallyIndexable(
+	skeleton: { metadata?: { dataSource?: string } } | undefined,
+): boolean {
+	const dataSource = skeleton?.metadata?.dataSource;
+	return dataSource !== 'archive' && dataSource !== 'gdrive-archive';
 }

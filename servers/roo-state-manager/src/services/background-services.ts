@@ -16,7 +16,7 @@ import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics } from './task-indexer/VectorIndexer.js';
 import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass } from '../types/indexing.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
-import { shouldIndexTask } from './task-partition.js';
+import { isLocallyIndexable } from './task-partition.js';
 import { dualWriteConversationToStore } from './unified-store/dual-write.js';
 // #3661: Worker A election lives in its own dependency-free module so the
 // N-process acceptance test can spawn contenders that run the PRODUCTION
@@ -669,7 +669,8 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                         lastActivityMs,
                                         forceRescan,
                                     });
-                                    if (shouldRequeue && shouldIndexTask(entry.name, state.machineId, state.fleetRoster)) {
+                                    // #4352: a task found by this LOCAL scan is indexed here — no fleet hash gate.
+                                    if (shouldRequeue) {
                                         state.qdrantIndexQueue.add(entry.name);
                                     }
                                     if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -750,7 +751,8 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                             lastActivityMs,
                                             forceRescan,
                                         });
-                                        if (shouldRequeue && shouldIndexTask(taskId, state.machineId, state.fleetRoster)) {
+                                        // #4352: a session found by this LOCAL scan is indexed here — no fleet hash gate.
+                                        if (shouldRequeue) {
                                             state.qdrantIndexQueue.add(taskId);
                                         }
                                         if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -1183,8 +1185,11 @@ async function scanForOutdatedQdrantIndex(state: ServerState): Promise<void> {
     for (const [taskId, skeleton] of state.conversationCache.entries()) {
         state.indexingMetrics.totalTasks++;
 
-        // #2352: Task-space partition — skip tasks owned by other machines
-        if (!shouldIndexTask(taskId, state.machineId, state.fleetRoster)) {
+        // #4352: index what this machine holds. The #2352 fleet hash dropped 8 tasks in 9:
+        // the indexer reads only local files, so a task hashed to another machine was
+        // indexed by nobody. Only cold-tier archive skeletons (another machine's files,
+        // both markers as in list-conversations) are skipped.
+        if (!isLocallyIndexable(skeleton)) {
             skipCount++;
             state.indexingMetrics.skippedTasks++;
             continue;
@@ -1728,8 +1733,8 @@ export function registerDeadLetter(
  *  2. If FORCE mode is on AND the task is already a success AND the file
  *     hasn't changed since lastIndexedAt, skip (avoid #2227 cycle).
  *  3. If the task has no lastIndexedAt OR its lastActivity > lastIndexedAt,
- *     it's a candidate for re-queue — but caller still needs to check
- *     shouldIndexTask() (task-partition) separately.
+ *     it's a candidate for re-queue (the caller found it by a local scan, so
+ *     this machine indexes it — no fleet hash gate since #4352).
  *
  * The perm-failed guard is the #2766 S2+ fix: WITHOUT it, the refresh worker
  * re-queues every cycle and the index worker silently drops it via

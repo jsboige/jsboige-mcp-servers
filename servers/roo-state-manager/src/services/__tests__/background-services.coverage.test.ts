@@ -58,7 +58,10 @@ vi.mock('../../utils/claude-storage-detector.js', () => ({
     },
 }));
 
-vi.mock('../task-partition.js', () => ({
+// #4352: keep the real module (isLocallyIndexable) and spy on the retired fleet gate,
+// so a test can prove the local-scan paths no longer consult it.
+vi.mock('../task-partition.js', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../task-partition.js')>()),
     shouldIndexTask: vi.fn().mockReturnValue(true),
 }));
 
@@ -364,7 +367,7 @@ describe('startSkeletonRefreshWorker', () => {
         expect(state.qdrantIndexQueue.has('task-F')).toBe(false);
     });
 
-    it('does not queue when shouldIndexTask returns false (L512)', async () => {
+    it('#4352: queues a locally scanned Roo task even when the fleet hash names another machine', async () => {
         mockShouldIndex.mockReturnValue(false);
         mockRoo.detectStorageLocations.mockResolvedValue(['/roo/loc1']);
         mockFs.readdir.mockResolvedValue([dirent('task-N')]);
@@ -375,8 +378,25 @@ describe('startSkeletonRefreshWorker', () => {
 
         await fireOnce(state);
 
+        // Only this machine can read task-N: gating it on the hash left it to nobody.
         expect(state.conversationCache.has('task-N')).toBe(true);
-        expect(state.qdrantIndexQueue.has('task-N')).toBe(false);
+        expect(state.qdrantIndexQueue.has('task-N')).toBe(true);
+        expect(mockShouldIndex).not.toHaveBeenCalled();
+    });
+
+    it('#4352: queues a locally scanned Claude session even when the fleet hash names another machine', async () => {
+        mockShouldIndex.mockReturnValue(false);
+        mockRoo.detectStorageLocations.mockResolvedValue([]);
+        mockClaude.detectStorageLocations.mockResolvedValue([{ projectPath: '/cproj/h' }]);
+        mockFs.readdir.mockResolvedValue(['sess.jsonl']);
+        mockFs.stat.mockResolvedValue({ mtime: new Date('2026-03-01T00:00:00Z') } as any);
+        mockClaude.analyzeConversation.mockImplementation(async (taskId: string) => makeSkeleton(taskId));
+        const state = makeState();
+
+        await fireOnce(state);
+
+        expect(state.qdrantIndexQueue.has('claude-h--sess')).toBe(true);
+        expect(mockShouldIndex).not.toHaveBeenCalled();
     });
 
     it('swallows per-task and per-location errors (L518, L522)', async () => {
