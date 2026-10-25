@@ -633,6 +633,7 @@ export function dropOverlappingWindows<T extends { point: any; score: number; ra
 /** Test hook — clears the TTL cache between suites. */
 export function clearCoverageCache(): void {
 	coverageCache.clear();
+	coverageInFlight.clear();
 }
 
 /** Orchestrates the resolution-time coverage check (cache → scroll → disk walk). */
@@ -646,6 +647,37 @@ async function computeCollectionCoverage(qdrant: any, collectionName: string, wo
 	const value = evaluateCoverage(indexed, eligible);
 	if (value) coverageCache.set(collectionName, { value, expiresAt: Date.now() + COVERAGE_CACHE_TTL_MS });
 	return value;
+}
+
+/**
+ * #4352: the indexed-file count scrolls the whole collection — measured on ai-01, 25/10:
+ * 12-14 s for ws-59e7574de63c6e62 (486,533 points). It ran BEFORE the embedding, so every
+ * search after the TTL paid it in full (17.6 s against 2-4 s for the raw Qdrant search).
+ * It now starts before the search and is read after it, within a short wait; a count
+ * still running is reported as pending and fills the cache for the next search.
+ * Concurrent searches on one collection share the same count.
+ */
+const coverageInFlight = new Map<string, Promise<CoverageInfo | null>>();
+
+function startCollectionCoverage(qdrant: any, collectionName: string, workspaceRoot: string): Promise<CoverageInfo | null> {
+	const running = coverageInFlight.get(collectionName);
+	if (running) return running;
+	const started = computeCollectionCoverage(qdrant, collectionName, workspaceRoot)
+		.catch(() => null)
+		.finally(() => coverageInFlight.delete(collectionName));
+	coverageInFlight.set(collectionName, started);
+	return started;
+}
+
+/** The count if it settles within `ms` (null = undecidable), `undefined` if still running. */
+async function readCoverageWithin(count: Promise<CoverageInfo | null>, ms: number): Promise<CoverageInfo | null | undefined> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const stillRunning = new Promise<undefined>(resolve => { timer = setTimeout(() => resolve(undefined), ms); });
+	try {
+		return await Promise.race([count, stillRunning]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /**
@@ -1549,12 +1581,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// surfaces the state in the response so callers can propose a reindex
 		// instead of reading silence as coverage. Fail-open: no `coverage` block
 		// when the ratio is undecidable (scroll error, workspace not on disk).
-		let coverage: CoverageInfo | null = null;
-		try {
-			coverage = await computeCollectionCoverage(qdrant, collectionName, workspace);
-		} catch {
-			coverage = null;
-		}
+		// #4352: started here, read after the search (startCollectionCoverage).
+		const coverageCount = startCollectionCoverage(qdrant, collectionName, workspace);
 
 		// 3. Générer l'embedding de la requête (uses dedicated codebase embedding client)
 		// #3279: Fast-fail check BEFORE the 60s OpenAI client timeout. If the breaker
@@ -1664,6 +1692,12 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				include: ['filePath', 'codeChunk', 'startLine', 'endLine', 'pathSegments']
 			}
 		}));
+
+		// #4352: the coverage count started before the embedding, read within
+		// CODEBASE_COVERAGE_WAIT_MS; still running → reported as pending.
+		const coverageRead = await readCoverageWithin(coverageCount, parseInt(process.env.CODEBASE_COVERAGE_WAIT_MS || '1000', 10));
+		const coverage: CoverageInfo | null = coverageRead ?? null;
+		const coveragePending = coverageRead === undefined;
 
 		// 6. Formater les résultats
 		// #2609/#2554: post-filter dead paths (orphans from rename/delete that the
@@ -1948,6 +1982,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			...(coverage?.below_threshold ? {
 				coverage_warning: `collection ${collectionName} is PARTIAL: ${coverage.indexed_files}/${coverage.eligible_files} eligible workspace files indexed (ratio ${coverage.coverage_ratio} < ${coverage.warn_threshold}). Files absent from the corpus cannot be retrieved by any ranking — re-index this workspace (Roo/Zoo Code codebase index on this machine) to repair.`
 			} : {}),
+			// #4352: the count is still running in the background; the next search reports it.
+			...(coveragePending ? { coverage_pending: true } : {}),
 			// #2609 grain 3: the resolved collection itself is decaying — most of its
 			// sampled indexed paths no longer exist under this workspace. Its hits are
 			// dead paths no ranking can revive; only a re-index repairs.
