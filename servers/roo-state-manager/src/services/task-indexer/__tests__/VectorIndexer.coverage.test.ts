@@ -366,6 +366,64 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			expect(mockEmbeddingsCreate.mock.calls.length).toBeGreaterThanOrEqual(2);
 		});
 
+		// #4352 (a6): EMBEDDING_OPS_PER_MINUTE used to be checked once per task, then every batch
+		// went out unpaced. Token-heavy chunks give one request each, so N chunks = N requests.
+		describe('#4352 (a6): per-request pacing, one sliding window per process', () => {
+			const prev = process.env.EMBEDDING_OPS_PER_MINUTE;
+			afterEach(() => { if (prev === undefined) delete process.env.EMBEDDING_OPS_PER_MINUTE; else process.env.EMBEDDING_OPS_PER_MINUTE = prev; });
+			const heavy = (id: string) => chunk(id, 'z'.repeat(30000) + id);
+
+			test('a request past the budget waits until the oldest slot leaves the window', async () => {
+				process.env.EMBEDDING_OPS_PER_MINUTE = '2';
+				vi.resetModules();
+				vi.useFakeTimers();
+				const { indexTask, resetCircuitBreakerForTest, getEmbeddingMetrics } = await import('../VectorIndexer.js');
+				resetCircuitBreakerForTest();
+				mockExtractTask.mockResolvedValue([heavy('p1'), heavy('p2'), heavy('p3')]);
+
+				const run = indexTask('t-paced', '/p');
+				await vi.advanceTimersByTimeAsync(1_000);
+				expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(2);
+				await vi.advanceTimersByTimeAsync(57_000);
+				expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(2); // still inside the window
+				await vi.advanceTimersByTimeAsync(3_000);
+				expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(3);
+				await vi.advanceTimersByTimeAsync(5_000);
+				await expect(run).resolves.toHaveLength(3);
+				expect(getEmbeddingMetrics().embeddings_rate_limit_waited_total).toBe(1);
+			});
+
+			test('concurrent tasks share the budget instead of each getting its own', async () => {
+				process.env.EMBEDDING_OPS_PER_MINUTE = '2';
+				vi.resetModules();
+				vi.useFakeTimers();
+				const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+				resetCircuitBreakerForTest();
+				mockExtractTask.mockImplementation(async (taskId: string) =>
+					[heavy(`${taskId}-1`), heavy(`${taskId}-2`)]);
+
+				const runs = Promise.all([indexTask('t-a', '/p'), indexTask('t-b', '/p')]);
+				await vi.advanceTimersByTimeAsync(30_000);
+				expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(2); // 4 requests wanted, 2 allowed
+				await vi.advanceTimersByTimeAsync(40_000);
+				expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(4);
+				await vi.advanceTimersByTimeAsync(5_000);
+				await expect(runs).resolves.toEqual([expect.any(Array), expect.any(Array)]);
+			});
+
+			test('EMBEDDING_OPS_PER_MINUTE=0 disables the pacing', async () => {
+				process.env.EMBEDDING_OPS_PER_MINUTE = '0';
+				vi.resetModules();
+				const { indexTask, resetCircuitBreakerForTest, getEmbeddingMetrics } = await import('../VectorIndexer.js');
+				resetCircuitBreakerForTest();
+				mockExtractTask.mockResolvedValue([heavy('d1'), heavy('d2'), heavy('d3')]);
+
+				await expect(indexTask('t-unpaced', '/p')).resolves.toHaveLength(3);
+				expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(3);
+				expect(getEmbeddingMetrics().embeddings_rate_limit_waited_total).toBe(0);
+			});
+		});
+
 		test('single-item batch: wrong dimension → task fails, nothing written (L893-896)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
@@ -547,8 +605,13 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 		// timeout mid-embedding kept nothing. Windows of 256 sub-chunks are written as they finish.
 		const manyChunks = (n: number) =>
 			Array.from({ length: n }, (_, i) => chunk(`win-${i}`, `windowed content number ${i}`));
+		// 300 sub-chunks = 19 requests: past the default budget of 10/min (#4352 a6), not the subject here.
+		const prevOps = process.env.EMBEDDING_OPS_PER_MINUTE;
+		const unpaced = () => { process.env.EMBEDDING_OPS_PER_MINUTE = '0'; };
+		afterEach(() => { if (prevOps === undefined) delete process.env.EMBEDDING_OPS_PER_MINUTE; else process.env.EMBEDDING_OPS_PER_MINUTE = prevOps; });
 
 		test('#4352: upserts the first window before embedding the second', async () => {
+			unpaced();
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
@@ -565,6 +628,7 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 		});
 
 		test('#4352: a failure in a later window keeps the earlier windows written and says so', async () => {
+			unpaced();
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
