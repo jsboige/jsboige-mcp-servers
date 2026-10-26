@@ -27,6 +27,12 @@ vi.mock('../openai.js', () => ({
       create: (...args: any[]) => mockEmbeddingsCreate(...args),
     },
   }),
+  // #4352 (a5): searchTasks queries through the interactive (query) client.
+  getEmbeddingQueryClient: () => ({
+    embeddings: {
+      create: (...args: any[]) => mockEmbeddingsCreate(...args),
+    },
+  }),
   getEmbeddingModel: () => 'test-embedding-model',
 }));
 

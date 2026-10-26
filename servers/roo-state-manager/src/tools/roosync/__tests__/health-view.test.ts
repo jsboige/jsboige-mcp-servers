@@ -38,6 +38,8 @@ vi.stubGlobal('fetch', mockFetch);
 const mockEmbeddingsCreate = vi.fn();
 vi.mock('../../../services/openai.js', () => ({
   default: () => ({ embeddings: { create: mockEmbeddingsCreate } }),
+  // #4352 (a5): the embeddings probe uses the interactive (query) client.
+  getEmbeddingQueryClient: () => ({ embeddings: { create: mockEmbeddingsCreate } }),
   getEmbeddingModel: () => 'test-embed-model',
 }));
 

@@ -54,6 +54,12 @@ export const RELOADABLE_ENV_KEYS = [
   // Embeddings (getOpenAIClient, getCodebaseEmbeddingClient, getEmbeddingModel/Dimensions)
   'EMBEDDING_API_KEY',
   'EMBEDDING_API_BASE_URL',
+  // #4352 (a5): ordered list + failover timing. Host-owned in practice (MCP env),
+  // so this reload path is for .env-managed seats; a host env move needs a respawn.
+  'EMBEDDING_API_BASE_URLS',
+  'EMBEDDING_NEGATIVE_CACHE_MS',
+  'EMBEDDING_QUERY_ATTEMPT_TIMEOUT_MS',
+  'EMBEDDING_QUERY_BUDGET_MS',
   'EMBEDDING_MODEL',
   'EMBEDDING_DIMENSIONS',
   'EMBEDDING_TIMEOUT_MS',
@@ -79,8 +85,16 @@ export type ReloadableEnvKey = typeof RELOADABLE_ENV_KEYS[number];
 
 /** Which reloadable keys each lazy singleton derives its configuration from. */
 const CLIENT_DEPENDENCIES: Record<string, readonly string[]> = {
-  embeddingClient: ['EMBEDDING_API_KEY', 'OPENAI_API_KEY', 'EMBEDDING_API_BASE_URL', 'EMBEDDING_TIMEOUT_MS'],
-  codebaseEmbeddingClient: ['EMBEDDING_API_KEY', 'OPENAI_API_KEY', 'EMBEDDING_API_BASE_URL', 'EMBEDDING_TIMEOUT_MS'],
+  embeddingClient: [
+    'EMBEDDING_API_KEY', 'OPENAI_API_KEY', 'EMBEDDING_API_BASE_URL', 'EMBEDDING_API_BASE_URLS',
+    'EMBEDDING_TIMEOUT_MS', 'EMBEDDING_QUERY_ATTEMPT_TIMEOUT_MS', 'EMBEDDING_QUERY_BUDGET_MS',
+    'EMBEDDING_NEGATIVE_CACHE_MS', 'EMBEDDING_DIMENSIONS',
+  ],
+  codebaseEmbeddingClient: [
+    'EMBEDDING_API_KEY', 'OPENAI_API_KEY', 'EMBEDDING_API_BASE_URL', 'EMBEDDING_API_BASE_URLS',
+    'EMBEDDING_TIMEOUT_MS', 'EMBEDDING_QUERY_ATTEMPT_TIMEOUT_MS', 'EMBEDDING_QUERY_BUDGET_MS',
+    'EMBEDDING_NEGATIVE_CACHE_MS', 'EMBEDDING_DIMENSIONS',
+  ],
   chatClient: ['VLLM_API_KEY_MEDIUM', 'OPENAI_API_KEY', 'OPENAI_BASE_URL'],
   fallbackChatClient: ['ZAI_API_KEY', 'FALLBACK_API_KEY', 'ZAI_BASE_URL', 'FALLBACK_BASE_URL', 'FALLBACK_TIMEOUT_MS'],
   qdrantClient: ['QDRANT_URL', 'QDRANT_API_KEY', 'QDRANT_TIMEOUT_MS'],

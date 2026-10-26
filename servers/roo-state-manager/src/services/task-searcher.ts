@@ -1,5 +1,5 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
-import getOpenAIClient, { getEmbeddingModel } from './openai.js';
+import { getEmbeddingModel, getEmbeddingQueryClient } from './openai.js';
 import { getQdrantClient } from './qdrant.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { promises as fs } from 'fs';
@@ -163,7 +163,7 @@ export async function searchTasks(
   } = {}
 ): Promise<ContextWindow[]> {
 
-  const openai = getOpenAIClient();
+  const openai = getEmbeddingQueryClient();
   const qdrant = getQdrantClient();
   const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
   const limit = options.limit || 5;

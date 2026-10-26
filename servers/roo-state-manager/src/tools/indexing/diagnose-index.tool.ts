@@ -15,7 +15,7 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { getQdrantClient } from '../../services/qdrant.js';
-import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
+import { getEmbeddingModel, getEmbeddingQueryClient } from '../../services/openai.js';
 
 // #1275: Cache embedding connectivity check to avoid consuming API credits on every diagnose call.
 // TTL: 5 minutes (same as circuit breaker pattern).
@@ -331,7 +331,7 @@ export async function handleDiagnoseSemanticIndex(
         }
     } else {
         try {
-            const openai = getOpenAIClient();
+            const openai = getEmbeddingQueryClient();
             const testEmbedding = await openai.embeddings.create({
                 model: getEmbeddingModel(),
                 input: 'test connectivity',

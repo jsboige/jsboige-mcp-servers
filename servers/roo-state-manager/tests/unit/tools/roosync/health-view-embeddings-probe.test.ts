@@ -30,6 +30,12 @@ vi.mock('../../../../src/services/openai.js', () => ({
     if (ctorThrows) throw new Error('StateManagerError: EMBEDDING_API_KEY not set');
     return { embeddings: { create: mockEmbeddingsCreate } };
   },
+  // #4352 (a5): the embeddings probe uses the interactive (query) client, so the
+  // unconfigured-seat case must throw from here too.
+  getEmbeddingQueryClient: () => {
+    if (ctorThrows) throw new Error('StateManagerError: EMBEDDING_API_KEY not set');
+    return { embeddings: { create: mockEmbeddingsCreate } };
+  },
   getEmbeddingModel: () => 'test-embed-model',
 }));
 

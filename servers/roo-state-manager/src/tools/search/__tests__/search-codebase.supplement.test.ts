@@ -64,6 +64,9 @@ vi.mock('../../../services/qdrant.js', () => ({
 
 vi.mock('../../../services/code-index/embedding-client.js', () => ({
 	getCodebaseEmbeddingClient: () => ({ embeddings: { create: mockEmbeddingCreate } }),
+	// #4352 (a5): the search path reads through the interactive (query) client;
+	// the writer keeps the index client. Same fake create() for both.
+	getCodebaseEmbeddingQueryClient: () => ({ embeddings: { create: mockEmbeddingCreate } }),
 	getCodebaseEmbeddingModel: () => 'text-embedding-3-small',
 	resetCodebaseEmbeddingClient: vi.fn(),
 }));

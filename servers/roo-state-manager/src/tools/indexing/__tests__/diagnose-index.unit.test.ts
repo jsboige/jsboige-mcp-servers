@@ -40,6 +40,8 @@ vi.mock('../../../services/qdrant.js', () => ({
 // the test only needs it to return a value, not to track calls to it
 vi.mock('../../../services/openai.js', () => ({
 	default: () => mockOpenAIClient,
+	// #4352 (a5): the live probe uses the interactive (query) client.
+	getEmbeddingQueryClient: () => mockOpenAIClient,
 	getChatOpenAIClient: vi.fn(),
 	getEmbeddingModel: () => 'text-embedding-3-small',
 	getEmbeddingDimensions: vi.fn(() => 1536)
