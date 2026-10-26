@@ -14,7 +14,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 
 // Import des handlers existants
-import { searchTasksByContentTool, SearchTasksByContentArgs } from './search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, extractSemanticErrorMode, INFRASTRUCTURE_ERROR_MODES } from './search-semantic.tool.js';
 import { handleSearchTasksSemanticFallback, SearchFallbackArgs } from './search-fallback.tool.js';
 
 /**
@@ -66,7 +66,7 @@ export interface RooSyncSearchArgs {
     end_date?: string;
 
     // #636 Phase 3: Convenience filter
-    /** Exclude tool_interaction chunks, returning only message_exchange chunks */
+    /** Exclude tool calls and tool results, including those stored as message_exchange. */
     exclude_tool_results?: boolean;
 
     /** #2634: Reset the embeddings circuit breaker if armed (diagnose action only) */
@@ -144,7 +144,7 @@ export const roosyncSearchTool: Tool = {
             },
             exclude_tool_results: {
                 type: 'boolean',
-                description: 'Exclude tool_interaction chunks'
+                description: 'Exclude tool calls and tool results, including tool output stored as message_exchange'
             },
             reset_circuit_breaker: {
                 type: 'boolean',
@@ -241,9 +241,13 @@ export async function handleRooSyncSearch(
             );
 
             // #249: If semantic succeeded, return as-is
-            if (!semanticResult.isError) {
-                return semanticResult;
-            }
+            if (!semanticResult.isError) return semanticResult;
+
+            // #249 keeps the fallback for EVERY semantic failure (an agent must
+            // still get an answer), but the classified mode travels with the
+            // degraded payload: `unknown` means a non-attributable failure, which
+            // the eval harness grades FAIL instead of INCONCLUSIVE.
+            const semanticErrorMode = extractSemanticErrorMode(semanticResult);
 
             // #249: Semantic failed after retry — auto-fallback to text search with warning
             console.warn(`[WARN] #249: Semantic search failed, auto-falling back to text search`);
@@ -277,34 +281,35 @@ export async function handleRooSyncSearch(
             // block 0 = human-readable warning, block 1 = structured payload so JSON
             // consumers keep parsing content[1] with the #1496 metadata intact.
             const degradedWarning =
-                '⚠️ SEMANTIC DEGRADED — embedding backend unreachable: results are TEXT search only. ' +
-                'Run roosync_search(action: "diagnose") to inspect the embedding endpoint.';
+                (semanticErrorMode === null || INFRASTRUCTURE_ERROR_MODES.has(semanticErrorMode))
+                    ? '⚠️ SEMANTIC DEGRADED — embedding backend unreachable: results are TEXT search only. ' +
+                      'Run roosync_search(action: "diagnose") to inspect the embedding endpoint.'
+                    : `⚠️ SEMANTIC DEGRADED — semantic search failed with an UNCLASSIFIED error (${semanticErrorMode}): ` +
+                      'results are TEXT search only and the failure is NOT attributable to a backend outage. ' +
+                      'Run roosync_search(action: "diagnose") and report the mode.';
 
-            // Inject semantic degraded warning + #1496 fallback metadata into text results
-            try {
-                const parsed = JSON.parse((textResult.content?.[0] as any)?.text || '{}');
+            // Enrich the structured block wherever a fallback warning placed it.
+            const content = [...(textResult.content ?? [])];
+            const payloadIndex = content.findIndex(item => {
+                if (!('text' in item) || typeof item.text !== 'string') return false;
+                try { JSON.parse(item.text); return true; } catch { return false; }
+            });
+            if (payloadIndex >= 0) {
+                const block = content[payloadIndex] as { type: 'text'; text: string };
+                const parsed = JSON.parse(block.text);
                 parsed.semantic_degraded = true;
                 parsed.semantic_error = 'Semantic search failed after retry — results are from text search only. Run roosync_search(action: "diagnose") to check backend state.';
-                // #1496: Structured fallback metadata for programmatic consumers
                 parsed.fallback_used = true;
                 parsed.fallback_reason = 'embedding_api_error';
                 parsed.original_search_mode = 'semantic';
                 parsed.actual_search_mode = 'text';
-                return {
-                    content: [
-                        { type: 'text', text: degradedWarning },
-                        { type: 'text', text: JSON.stringify(parsed, null, 2) }
-                    ]
-                };
-            } catch {
-                // If JSON parse fails, still lead with the warning before the raw payload
-                return {
-                    content: [
-                        { type: 'text', text: degradedWarning },
-                        ...(textResult.content ?? [])
-                    ]
-                };
+                if (semanticErrorMode !== null) parsed.semantic_error_mode = semanticErrorMode;
+                content[payloadIndex] = { type: 'text', text: JSON.stringify(parsed, null, 2) };
             }
+            return {
+                ...textResult,
+                content: [{ type: 'text', text: degradedWarning }, ...content]
+            };
         }
 
         case 'text': {

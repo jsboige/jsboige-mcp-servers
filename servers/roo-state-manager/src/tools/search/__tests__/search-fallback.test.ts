@@ -547,13 +547,13 @@ describe('search-fallback (text search)', () => {
 			expect(parsed.warnings.join(' ')).toContain('start_date="last tuesday"');
 		});
 
-		test('filters_requested names only the non-applicable filters', async () => {
+		test('filters_requested names the filters that text search ignores', async () => {
 			const parsed = parseResult(await searchFallbackTool(
 				{ query: 'indexing', filters_requested: true }, cache
 			));
 			const w = parsed.warnings.join(' ');
 			expect(w).toContain('chunk_type');
-			expect(w).toContain('not applicable');
+			expect(w).toContain('NOT APPLIED');
 			// The three now-applied filters must not appear in the "not applied" list.
 			expect(w).not.toContain('has_errors,');
 			expect(w).not.toContain('start_date,');

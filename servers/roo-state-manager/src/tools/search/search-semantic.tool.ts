@@ -9,7 +9,7 @@ import { toUnifiedTask } from '../../types/unified-task.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
 import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
-import { getHostIdentifier } from '../../services/task-indexer/ChunkExtractor.js';
+import { getHostIdentifier, splitChunkId } from '../../services/task-indexer/ChunkExtractor.js';
 import { resetEmbeddingCircuitBreaker as resetWriteCircuitBreaker } from '../../services/task-indexer/VectorIndexer.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
 import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
@@ -33,26 +33,58 @@ type FallbackReason =
  * When semantic search falls back to text, agents need to know so they don't
  * treat text results as semantic (cf #1407, #1451 — regressions masked for days).
  */
+/**
+ * Enrich the structured fallback payload with the #1496 metadata. The payload is
+ * not always the FIRST block: a readable warning can precede it (#4287), and
+ * rewriting the whole content would erase that warning — so the JSON block is
+ * located by parsing and replaced in place, the other blocks are preserved.
+ */
 function injectFallbackMeta(result: CallToolResult, reason: FallbackReason): CallToolResult {
+    const content = [...(result.content ?? [])];
+    const payloadIndex = content.findIndex(item => {
+        if (!('text' in item) || typeof item.text !== 'string') return false;
+        try { JSON.parse(item.text); return true; } catch { return false; }
+    });
+    if (payloadIndex < 0) return result;
     try {
-        const text = result.content?.[0] && 'text' in result.content[0]
-            ? (result.content[0] as { text: string }).text
-            : '';
-        const parsed = JSON.parse(text);
+        const block = content[payloadIndex] as { type: 'text'; text: string };
         const enriched = {
-            ...parsed,
+            ...JSON.parse(block.text),
             fallback_used: true,
             fallback_reason: reason,
             original_search_mode: 'semantic',
             actual_search_mode: 'text',
         };
-        return {
-            ...result,
-            content: [{ type: 'text' as const, text: JSON.stringify(enriched, null, 2) }]
-        };
+        content[payloadIndex] = { type: 'text' as const, text: JSON.stringify(enriched, null, 2) };
+        return { ...result, content };
     } catch {
         return result;
     }
+}
+
+export const INFRASTRUCTURE_ERROR_MODES = new Set([
+    'embedding_unreachable', 'embedding_timeout', 'qdrant_unreachable',
+    'qdrant_client_failure', 'qdrant_proxy_drop', 'qdrant_backend_slow',
+    'qdrant_collection_missing', 'auth_failed', 'resource_exhausted',
+]);
+
+/**
+ * The classified failure mode a strict-mode semantic error carries on its first
+ * line (`formatClassifiedError`). `unknown` is the classifier's catch-all and
+ * means the failure is NOT attributable to a known backend outage.
+ */
+export function extractSemanticErrorMode(result: CallToolResult): string | null {
+    for (const item of result.content ?? []) {
+        if (!('text' in item) || typeof item.text !== 'string') continue;
+        const match = /^Semantic search failed: (\w+)$/m.exec(item.text);
+        if (match) return match[1];
+    }
+    return null;
+}
+
+export function isClassifiedInfrastructureError(result: CallToolResult): boolean {
+    const mode = extractSemanticErrorMode(result);
+    return mode !== null && INFRASTRUCTURE_ERROR_MODES.has(mode);
 }
 
 // #249/#2167: Retry configuration for transient failures
@@ -254,7 +286,7 @@ export interface SearchTasksByContentArgs {
     start_date?: string;
     end_date?: string;
     // #636 Phase 3: Convenience filter
-    /** Exclude tool_interaction chunks, returning only message_exchange chunks */
+    /** Exclude tool calls and tool results, including those stored as message_exchange. */
     exclude_tool_results?: boolean;
     // #1496: When true, propagate semantic errors instead of silently falling
     // back to text search. Used by `roosync_search(action: "semantic")` so the
@@ -414,6 +446,12 @@ function formatRelativeTime(timestamp: string | undefined): string {
 interface RawSearchResult {
     taskId: string;
     score: number;
+    machineOutputKind?: MachineOutputKind | null;
+    machineMalusApplied?: boolean;
+    /** Set only on split continuations (part > 1); absent means the chunk is whole. */
+    toolContinuationStatus?: 'tool_result' | 'not_tool_result' | 'unknown';
+    originalChunkId?: string;
+    chunkIndex?: number;
     content: string;
     snippet: string;
     relevance: string;
@@ -515,6 +553,8 @@ interface GroupedTask {
         score: number;
         relevance: string;
         snippet: string;
+        machine_output_kind?: MachineOutputKind | null;
+        tool_continuation_status?: RawSearchResult['toolContinuationStatus'];
         chunk_type: string | undefined;
         role: string | undefined;
         relative_time: string;
@@ -531,6 +571,59 @@ interface GroupedTask {
     }>;
 }
 
+interface ToolContinuationDiagnostics {
+    classified: number;
+    unresolved: string[];
+}
+
+async function classifyToolContinuations(
+    results: RawSearchResult[], qdrant: any, collectionName: string
+): Promise<ToolContinuationDiagnostics> {
+    const candidates = results.filter(r =>
+        r.originalChunkId && (r.chunkIndex ?? 1) > 1
+        && r.metadata.chunk_type !== 'tool_interaction'
+        && !r.machineOutputKind
+    );
+    const diagnostics: ToolContinuationDiagnostics = { classified: 0, unresolved: [] };
+    if (candidates.length === 0) return diagnostics;
+
+    const parents = new Map<string, RawSearchResult[]>();
+    for (const result of candidates) {
+        const parentId = splitChunkId(result.originalChunkId!, 1);
+        const siblings = parents.get(parentId) ?? [];
+        siblings.push(result);
+        parents.set(parentId, siblings);
+    }
+
+    try {
+        const points = await qdrant.retrieve(collectionName, {
+            ids: [...parents.keys()],
+            with_payload: { include: ['content', 'content_summary', 'chunk_index'] },
+            with_vector: false,
+        });
+        for (const point of points ?? []) {
+            if (point.payload?.chunk_index !== 1) continue;
+            const original = String(point.payload?.content ?? point.payload?.content_summary ?? '');
+            const status = TOOL_RESULT_MARKER.test(original) ? 'tool_result' : 'not_tool_result';
+            for (const result of parents.get(String(point.id)) ?? []) {
+                result.toolContinuationStatus = status;
+                if (status === 'tool_result') result.machineOutputKind = 'tool_result';
+                diagnostics.classified++;
+            }
+        }
+    } catch (error) {
+        console.warn('[WARN] #2609: tool-output continuation provenance unavailable:', error instanceof Error ? error.message : String(error));
+    }
+
+    for (const result of candidates) {
+        if (!result.toolContinuationStatus) {
+            result.toolContinuationStatus = 'unknown';
+            diagnostics.unresolved.push(result.metadata.chunk_id ?? result.originalChunkId ?? result.taskId);
+        }
+    }
+    return diagnostics;
+}
+
 /**
  * Deduplicate and group results by task_id, keeping the best-scoring chunks per task.
  */
@@ -544,6 +637,8 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                 score: r.score,
                 relevance: r.relevance,
                 snippet: r.snippet,
+                ...(r.machineOutputKind ? { machine_output_kind: r.machineOutputKind } : {}),
+                ...(r.toolContinuationStatus ? { tool_continuation_status: r.toolContinuationStatus } : {}),
                 chunk_type: r.metadata.chunk_type,
                 role: r.metadata.role,
                 relative_time: r.metadata.relative_time,
@@ -571,6 +666,8 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
                     score: r.score,
                     relevance: r.relevance,
                     snippet: r.snippet,
+                    ...(r.machineOutputKind ? { machine_output_kind: r.machineOutputKind } : {}),
+                    ...(r.toolContinuationStatus ? { tool_continuation_status: r.toolContinuationStatus } : {}),
                     chunk_type: r.metadata.chunk_type,
                     role: r.metadata.role,
                     relative_time: r.metadata.relative_time,
@@ -584,6 +681,12 @@ function groupResultsByTask(results: RawSearchResult[]): GroupedTask[] {
         }
     }
 
+    // Align chunks with the group's adjusted best_score: the first chunk is the
+    // handle rendered by consumers, so ANN arrival order must not hide the best
+    // passage behind a same-task fragment or machine output.
+    for (const group of taskMap.values()) {
+        group.chunks.sort((a, b) => b.score - a.score);
+    }
     // Sort tasks by best score descending
     return Array.from(taskMap.values()).sort((a, b) => b.best_score - a.best_score);
 }
@@ -1122,7 +1225,7 @@ export const searchTasksByContentTool = {
             // by DIVERSIFY_OVERFETCH so that grouping + per-task cap can surface >=3
             // unique_tasks even when one task dominates the Qdrant ranking.
             const effectiveMaxResults = max_results || 10;
-            const diversifyLimit = effectiveMaxResults * DIVERSIFY_OVERFETCH;
+            const diversifyLimit = effectiveMaxResults * (exclude_tool_results ? 5 : DIVERSIFY_OVERFETCH);
             // #936: offset passthrough — pagination cursor for broad queries on the
             // 14M+ vector collection. Sent only when strictly positive so the
             // historical no-offset request shape (and its tests) stay unchanged.
@@ -1133,7 +1236,7 @@ export const searchTasksByContentTool = {
                 ...(effectiveOffset > 0 ? { offset: effectiveOffset } : {}),
                 filter: filter,
                 params: {
-                    hnsw_ef: 128,
+                    hnsw_ef: Math.max(128, diversifyLimit),
                     exact: false,
                     quantization: { rescore: true }
                 },
@@ -1141,7 +1244,7 @@ export const searchTasksByContentTool = {
                     // #2426 follow-up: 'host_os' must be in the include whitelist, otherwise
                     // cross_machine_analysis.machines_found is always ['unknown'] (the payload
                     // field exists but is never retrieved).
-                    include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error', 'host_os', 'message_index', 'total_messages']
+                    include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error', 'host_os', 'message_index', 'total_messages', 'original_chunk_id', 'chunk_index']
                 },
                 timeout: searchTimeoutSec,
             }));
@@ -1159,7 +1262,7 @@ export const searchTasksByContentTool = {
             let fragmentMalusApplied = 0;
             const machineOutputByKind: Partial<Record<MachineOutputKind, number>> = {};
             let machineOutputApplied = 0;
-            const results: RawSearchResult[] = rawPoints.map((result: any) => {
+            const results: RawSearchResult[] = rawPoints.map((result: any): RawSearchResult | null => {
                 // #982 FIX: Prefer full content for snippet extraction (content_summary is only 200 chars)
                 const fullContent = String(result.payload?.content || result.payload?.content_summary || '');
                 const content = String(result.payload?.content_summary || result.payload?.content || '');
@@ -1171,11 +1274,14 @@ export const searchTasksByContentTool = {
                 if (malus.applied) fragmentMalusApplied++;
                 // #4352: machine-output de-rank, same single-helper contract.
                 const machine = applyMachineOutputMalus(malus.score, result.payload?.chunk_type, fullContent);
+                if (exclude_tool_results && chunk_type !== 'tool_interaction'
+                    && classifyMachineOutput(result.payload?.chunk_type, fullContent)) return null;
                 if (machine.kind) {
                     machineOutputApplied++;
                     machineOutputByKind[machine.kind] = (machineOutputByKind[machine.kind] || 0) + 1;
                 }
                 const score = machine.score;
+                const machineKind = machine.kind ?? classifyMachineOutput(result.payload?.chunk_type, fullContent);
                 // #2609 V3: raw ints for the handle — message_position is a display
                 // string and cannot drive a conversation_browser re-expansion.
                 const messageIndex = typeof result.payload?.message_index === 'number'
@@ -1187,6 +1293,11 @@ export const searchTasksByContentTool = {
                 return {
                     taskId: result.payload?.task_id || 'unknown',
                     score,
+                    machineOutputKind: machineKind,
+                    machineMalusApplied: !!machine.kind,
+                    originalChunkId: typeof result.payload?.original_chunk_id === 'string'
+                        ? result.payload.original_chunk_id : undefined,
+                    chunkIndex: typeof result.payload?.chunk_index === 'number' ? result.payload.chunk_index : undefined,
                     content: truncateMessage(content, 5),
                     snippet: extractSnippet(fullContent, search_query),
                     relevance: interpretScore(score),
@@ -1212,6 +1323,27 @@ export const searchTasksByContentTool = {
                         has_error: result.payload?.has_error,
                     }
                 };
+            }).filter((result: RawSearchResult | null): result is RawSearchResult => result !== null);
+
+            const continuationDiagnostics = (exclude_tool_results || isMachineOutputMalusEnabled())
+                ? await classifyToolContinuations(results, qdrant, collectionName)
+                : { classified: 0, unresolved: [] };
+            const adjustedResults = results.filter(result => {
+                // Provenance can reveal tool output that a fragment alone could not
+                // (a mid-JSON split loses the marker). The malus and its counter are
+                // applied at most once per result: when the map already classified the
+                // fragment, the score was already de-ranked.
+                if (result.machineOutputKind === 'tool_result' && result.toolContinuationStatus === 'tool_result'
+                    && !result.machineMalusApplied) {
+                    if (isMachineOutputMalusEnabled()) {
+                        result.score *= MACHINE_OUTPUT_MALUS_FACTOR;
+                        result.relevance = interpretScore(result.score);
+                        result.machineMalusApplied = true;
+                        machineOutputApplied++;
+                        machineOutputByKind.tool_result = (machineOutputByKind.tool_result ?? 0) + 1;
+                    }
+                }
+                return !(exclude_tool_results && chunk_type !== 'tool_interaction' && result.machineOutputKind);
             });
 
             // #1244 Couche 1.3 — Filtre temporel : double-couche
@@ -1222,8 +1354,8 @@ export const searchTasksByContentTool = {
             //   Avant ce double-niveau, le filtre etait UNIQUEMENT post-Qdrant et apres `limit`,
             //   ce qui pouvait masquer des matches en position > max_results (bug originel #1244).
             const filteredResults = (parsedStartDateForQdrant || parsedEndDateForQdrant)
-                ? results.filter(r => isWithinDateRange(r.metadata.timestamp, parsedStartDateForQdrant, parsedEndDateForQdrant))
-                : results;
+                ? adjustedResults.filter(r => isWithinDateRange(r.metadata.timestamp, parsedStartDateForQdrant, parsedEndDateForQdrant))
+                : adjustedResults;
 
             // Group by task_id: deduplicate multiple chunks from the same conversation
             let groupedResults = groupResultsByTask(filteredResults);
@@ -1326,6 +1458,15 @@ export const searchTasksByContentTool = {
                     query: search_query,
                     results_count: filteredResults.length,
                     unique_tasks: groupedResults.length,
+                    ...(continuationDiagnostics.classified > 0 || continuationDiagnostics.unresolved.length > 0 ? {
+                        tool_continuations: {
+                            classified: continuationDiagnostics.classified,
+                            unresolved_count: continuationDiagnostics.unresolved.length,
+                            ...(continuationDiagnostics.unresolved.length > 0 ? {
+                                warning: `${continuationDiagnostics.unresolved.length} continuation(s) have unverified provenance and are not certified human-authored.`,
+                            } : {}),
+                        }
+                    } : {}),
                     // #936: echo the effective offset so callers can chain pages
                     ...(effectiveOffset > 0 ? { offset: effectiveOffset } : {}),
                     // #636 Phase 2 + #1244 Couche 1.3: temporal filter info

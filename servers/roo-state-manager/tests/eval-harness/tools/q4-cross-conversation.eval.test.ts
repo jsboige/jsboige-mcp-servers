@@ -11,9 +11,7 @@
  *   (cross)  ≥2 distinct conversations (unique_tasks) across ≥2 workspaces
  *   (b)      handle — drill_down on the best chunk of each top group
  *   (d)      metadata — relative_time and/or conversation_stats.last_activity
- *   (a)      decision-bearing passage in top-3 (recorded, not gated: which
- *            chunks the index holds is data-dependent; the fragment de-rank
- *            lever moves it, the harness names it when it fails)
+ *   (a)      >=2 human-authored decision passages across >=2 top-3 conversations
  *
  * exclude_tool_results=true is the best measured lever for decision-content
  * queries (live 2026-10-05: 5/7 top slots were tool_interaction JSON fragments
@@ -30,6 +28,7 @@ import { handleRooSyncSearch } from '../../../src/tools/search/roosync-search.to
 import { handleDiagnoseSemanticIndex } from '../../../src/tools/indexing/diagnose-index.tool.js';
 import { handleSearchTasksSemanticFallback } from '../../../src/tools/search/search-fallback.tool.js';
 import type { ConversationSkeleton } from '../../../src/types/conversation.js';
+import { classifyMachineOutput, isClassifiedInfrastructureError, INFRASTRUCTURE_ERROR_MODES } from '../../../src/tools/search/search-semantic.tool.js';
 
 // Fleet evergreen: "open arbitrations" is core coordination vocabulary, present
 // in every era of the corpus (verified 2026-10-05: 24 results / 7 unique tasks /
@@ -64,15 +63,36 @@ describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis
     );
     const latencyMs = Date.now() - startMs;
 
-    const rawText = result.content?.[0] && 'text' in result.content[0]
-      ? (result.content[0] as { text: string }).text
-      : '';
-    const parsed = JSON.parse(rawText);
+    const parsed = (result.content ?? []).reduce<any>((payload, item) => {
+      if (payload || !('text' in item)) return payload;
+      try { return JSON.parse(item.text); } catch { return null; }
+    }, null) ?? {};
     const checks: CheckResult[] = [];
 
     // ---- #637 detector (same as scenarios 1-3) ----
     const noFallback = parsed.fallback_used !== true;
     checks.push({ name: 'fallback_used !== true (#637)', ok: noFallback, observed: String(parsed.fallback_used) });
+    if (result.isError && isClassifiedInfrastructureError(result)) {
+      console.log(`[INCONCLUSIVE] classified infrastructure error: ${result.content?.find((c: any) => 'text' in c)?.text ?? 'unknown'}`);
+      expect(isClassifiedInfrastructureError(result)).toBe(true);
+      return;
+    }
+    if (result.isError) {
+      console.log(`[roosync_search] verdict=FAIL latency=${latencyMs}ms functional_error=${result.content?.find((c: any) => 'text' in c)?.text ?? 'unknown'}`);
+      expect(result.isError, 'unclassified semantic errors are functional failures, not INCONCLUSIVE').not.toBe(true);
+      return;
+    }
+    if (parsed.semantic_degraded === true && typeof parsed.semantic_error_mode === 'string'
+      && !INFRASTRUCTURE_ERROR_MODES.has(parsed.semantic_error_mode)) {
+      console.log(`[roosync_search] verdict=FAIL latency=${latencyMs}ms unclassified_semantic_error=${parsed.semantic_error_mode}`);
+      expect(false, `degraded fallback caused by an unclassified semantic error (${parsed.semantic_error_mode}) is a functional failure`).toBe(true);
+      return;
+    }
+    if (parsed.semantic_degraded === true || parsed.fallback_used === true) {
+      console.log(`[INCONCLUSIVE] semantic search degraded: ${parsed.semantic_error ?? parsed.fallback_reason ?? 'unknown'}`);
+      expect(parsed.semantic_degraded === true || parsed.fallback_used === true).toBe(true);
+      return;
+    }
 
     // ---- presence ----
     const hasResults = Array.isArray(parsed.results) && parsed.results.length > 0;
@@ -114,17 +134,23 @@ describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis
       observed: top.map((r: any) => r?.chunks?.[0]?.relative_time || r?.conversation_stats?.last_activity || 'NONE').join(' | '),
     });
 
-    // ---- rubric (a): decision-bearing passage in top-3 (recorded, not gated) ----
-    // A question ("REdétaille les arbitrages stp") matches the vocabulary but is
-    // not a decision passage; the fragment de-rank moves sub-40-char chunks down,
-    // it does not make questions into answers. Named here so the residual gap
-    // stays visible instead of being averaged away.
+    // A sub-sentence or machine-output fragment is not the answer even if its
+    // handle and metadata are perfect; that is precisely the Epic baseline.
     const top3 = (parsed.results ?? []).slice(0, 3);
-    const passageInTop3 = top3.some((r: any) => (r?.chunks?.[0]?.snippet?.length ?? 0) >= 100);
+    const humanPassages = top3.filter((r: any) => {
+      const c = r?.chunks?.[0];
+      return (c?.snippet?.length ?? 0) >= 100
+        && (c?.machine_output_kind ?? classifyMachineOutput(c?.chunk_type, c?.snippet ?? '')) === null
+        && c?.tool_continuation_status !== 'unknown'
+        && /arbitrage|décision|decision|en attente|pending|ouverte?/i.test(c?.snippet ?? '')
+        && !/redétaille|redetaille|détaille les arbitrages|detaille les arbitrages/i.test(c?.snippet ?? '');
+    });
+    const passageInTop3 = humanPassages.length >= 2
+      && new Set(humanPassages.map((r: any) => r.taskId)).size >= 2;
     checks.push({
-      name: 'rubric(a): >=1 passage >= 100 chars in top-3 (informational)',
+      name: 'rubric(a): >=2 human-authored decision passages across >=2 top-3 conversations',
       ok: passageInTop3,
-      observed: top3.map((r: any) => `${r?.chunks?.[0]?.snippet?.length ?? 0}c`).join(', '),
+      observed: top3.map((r: any) => `${r?.chunks?.[0]?.snippet?.length ?? 0}c/${classifyMachineOutput(r?.chunks?.[0]?.chunk_type, r?.chunks?.[0]?.snippet ?? '') ?? 'prose'}`).join(', '),
     });
 
     // ---- observability of the fragment de-rank lever (informational) ----
@@ -147,14 +173,18 @@ describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis
     }
     console.log('checks:', JSON.stringify(checks.map(c => ({ n: c.name, ok: c.ok }))));
 
-    // Hard gates: structural synthesis contract (data-shape, not corpus luck).
-    // rubric (a) passage depth is NOT gated: which chunks the index holds is
-    // data-dependent — absence degrades the synthesis, never breaks the scaffold.
+    const allPass = checks.every(c => c.ok);
+    console.log(`[roosync_search] verdict=${allPass ? 'PASS' : 'FAIL'} latency=${latencyMs}ms`);
+    for (const c of checks) console.log(`[${c.ok ? 'OK' : 'FAIL'}] ${c.name}${c.observed !== undefined ? ` -> ${c.observed}` : ''}`);
+
+    // Every rubric is gated: coherent human passages, not only handles and
+    // conversation counts, are what make the synthesis scaffold exploitable.
     expect(noFallback).toBe(true);
     expect(hasResults).toBe(true);
     expect(crossTasksOk).toBe(true);
     expect(crossWorkspaceOk).toBe(true);
     expect(handlesOk).toBe(true);
     expect(metadataOk).toBe(true);
+    expect(passageInTop3).toBe(true);
   });
 });

@@ -33,7 +33,8 @@ vi.mock('../../../../src/services/task-indexer.js', () => ({
   getHostIdentifier: vi.fn(() => 'test-host-os')
 }));
 
-vi.mock('../../../../src/services/task-indexer/ChunkExtractor.js', () => ({
+vi.mock('../../../../src/services/task-indexer/ChunkExtractor.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../../../src/services/task-indexer/ChunkExtractor.js')>()),
   getHostIdentifier: vi.fn(() => 'test-host-os')
 }));
 

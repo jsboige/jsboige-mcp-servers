@@ -19,7 +19,22 @@ vi.mock('../search-semantic.tool.js', () => ({
 		handler: mockSemanticHandler
 	},
 	// Re-export the type stub
-	SearchTasksByContentArgs: {}
+	SearchTasksByContentArgs: {},
+	// Real classifier helpers drive the degraded-warning wording; only the
+	// semantic handler itself is mocked here.
+	extractSemanticErrorMode: (result: any) => {
+		for (const item of result?.content ?? []) {
+			if (typeof item?.text !== 'string') continue;
+			const match = /^Semantic search failed: (\w+)$/m.exec(item.text);
+			if (match) return match[1];
+		}
+		return null;
+	},
+	INFRASTRUCTURE_ERROR_MODES: new Set([
+		'embedding_unreachable', 'embedding_timeout', 'qdrant_unreachable',
+		'qdrant_client_failure', 'qdrant_proxy_drop', 'qdrant_backend_slow',
+		'qdrant_collection_missing', 'auth_failed', 'resource_exhausted',
+	]),
 }));
 
 // Mock fallback search

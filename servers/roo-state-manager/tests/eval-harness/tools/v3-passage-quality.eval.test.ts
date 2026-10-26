@@ -34,6 +34,7 @@ import { handleDiagnoseSemanticIndex } from '../../../src/tools/indexing/diagnos
 import { handleSearchTasksSemanticFallback } from '../../../src/tools/search/search-fallback.tool.js';
 import type { ConversationSkeleton } from '../../../src/types/conversation.js';
 import { gradeSnippetBoundary } from '../../../src/utils/snippet-boundary.js';
+import { classifyMachineOutput, isClassifiedInfrastructureError, INFRASTRUCTURE_ERROR_MODES } from '../../../src/tools/search/search-semantic.tool.js';
 
 // Epic #2609 baseline query, verbatim (2026-06-16 live measurement)
 const SCENARIO_2_ARGS = {
@@ -41,6 +42,7 @@ const SCENARIO_2_ARGS = {
   search_query: 'coordinator cron cadence decision 3h deep dispatch',
   workspace: 'all',
   max_results: 5,
+  exclude_tool_results: true,
 } as const;
 
 beforeAll(async () => {
@@ -71,15 +73,39 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
     );
     const latencyMs = Date.now() - startMs;
 
-    const rawText = result.content?.[0] && 'text' in result.content[0]
-      ? (result.content[0] as { text: string }).text
-      : '';
-    const parsed = JSON.parse(rawText);
+    const parsed = (result.content ?? []).reduce<any>((payload, item) => {
+      if (payload || !('text' in item)) return payload;
+      try { return JSON.parse(item.text); } catch { return null; }
+    }, null) ?? {};
     const checks: CheckResult[] = [];
 
     // ---- #637 detector (unchanged from V1) ----
     const noFallback = parsed.fallback_used !== true;
     checks.push({ name: 'fallback_used !== true (#637)', ok: noFallback, observed: String(parsed.fallback_used) });
+    if (result.isError && isClassifiedInfrastructureError(result)) {
+      console.log(`[INCONCLUSIVE] classified infrastructure error: ${result.content?.find((c: any) => 'text' in c)?.text ?? 'unknown'}`);
+      expect(isClassifiedInfrastructureError(result)).toBe(true);
+      return;
+    }
+    if (result.isError) {
+      console.log(`[roosync_search] verdict=FAIL latency=${latencyMs}ms functional_error=${result.content?.find((c: any) => 'text' in c)?.text ?? 'unknown'}`);
+      expect(result.isError, 'unclassified semantic errors are functional failures, not INCONCLUSIVE').not.toBe(true);
+      return;
+    }
+    if (parsed.semantic_degraded === true && typeof parsed.semantic_error_mode === 'string'
+      && !INFRASTRUCTURE_ERROR_MODES.has(parsed.semantic_error_mode)) {
+      // The text fallback fires on every semantic failure (#249), so the mode is
+      // what separates an outage from a defect: an UNCLASSIFIED mode is a
+      // functional failure, not an unmeasured run.
+      console.log(`[roosync_search] verdict=FAIL latency=${latencyMs}ms unclassified_semantic_error=${parsed.semantic_error_mode}`);
+      expect(false, `degraded fallback caused by an unclassified semantic error (${parsed.semantic_error_mode}) is a functional failure`).toBe(true);
+      return;
+    }
+    if (parsed.semantic_degraded === true || parsed.fallback_used === true) {
+      console.log(`[INCONCLUSIVE] semantic search degraded: ${parsed.semantic_error ?? parsed.fallback_reason ?? 'unknown'}`);
+      expect(parsed.semantic_degraded === true || parsed.fallback_used === true).toBe(true);
+      return;
+    }
 
     // ---- presence ----
     const hasResults = Array.isArray(parsed.results) && parsed.results.length > 0;
@@ -87,6 +113,15 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
 
     const best = hasResults ? parsed.results[0] : null;
     const bestChunk = best?.chunks?.[0];
+    const machineKind = bestChunk?.machine_output_kind ?? classifyMachineOutput(bestChunk?.chunk_type, bestChunk?.snippet ?? '');
+    const humanPassageOk = machineKind === null && bestChunk?.tool_continuation_status !== 'unknown';
+    checks.push({ name: 'rubric(a): best passage is human-authored prose, not machine output', ok: humanPassageOk, observed: machineKind ?? 'prose' });
+    const cadenceDecisionOk = /cadence|cron|coordinateur|coordinator|dispatch/i.test(bestChunk?.snippet ?? '')
+      && /(?:\d+\s*(?:h|min|heure)|every\s+\d+|toutes?\s+les\s+\d+)/i.test(bestChunk?.snippet ?? '');
+    checks.push({ name: 'known-answer: passage states the coordinator cadence decision', ok: cadenceDecisionOk, observed: cadenceDecisionOk ? 'cadence + interval' : 'decision vocabulary or interval missing' });
+    const decisionEvidence = [bestChunk?.snippet, best?.conversation_context?.before_turn?.excerpt, best?.conversation_context?.after_turn?.excerpt].filter(Boolean).join('\n');
+    const rationaleOk = /parce que|because|pourquoi|afin de|pour éviter|to avoid|so that|raison|coût|charge|latence/i.test(decisionEvidence);
+    checks.push({ name: 'known-answer: passage or adjacent turns carry the decision rationale', ok: rationaleOk, observed: rationaleOk ? 'rationale present' : 'no reasoning in passage/context' });
 
     // ---- rubric (a): coherent passage ----
     const snippet: string = bestChunk?.snippet ?? '';
@@ -139,11 +174,17 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
     }
     console.log('checks:', JSON.stringify(checks.map(c => ({ n: c.name, ok: c.ok }))));
 
-    // Hard gates: structural contracts only (data-independent).
-    // rubric(c) is NOT gated: it depends on which points the index happens to
-    // hold message_index for — absence degrades the result, never breaks it.
+    const allPass = checks.filter(c => !c.name.includes('informational')).every(c => c.ok);
+    console.log(`[roosync_search] verdict=${allPass ? 'PASS' : 'FAIL'} latency=${latencyMs}ms`);
+    for (const c of checks) console.log(`[${c.ok ? 'OK' : 'FAIL'}] ${c.name}${c.observed !== undefined ? ` -> ${c.observed}` : ''}`);
+
+    // Adjacent turns are recorded but corpus-dependent; every other rubric is
+    // a hard gate, including human-authored content on the cadence decision.
     expect(noFallback).toBe(true);
     expect(hasResults).toBe(true);
+    expect(humanPassageOk).toBe(true);
+    expect(cadenceDecisionOk).toBe(true);
+    expect(rationaleOk).toBe(true);
     expect(passageOk).toBe(true);
     expect(sentenceEndOk).toBe(true);
     expect(drillOk).toBe(true);

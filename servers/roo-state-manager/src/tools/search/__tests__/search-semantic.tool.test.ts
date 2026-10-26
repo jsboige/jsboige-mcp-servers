@@ -20,7 +20,8 @@ const { mockQdrantClient, mockOpenAIClient, mockGetEmbeddingModel } = vi.hoisted
 		search: vi.fn(),
 		getCollection: vi.fn(),
 		// #2609 V3: context expansion scrolls adjacent turns
-		scroll: vi.fn()
+		scroll: vi.fn(),
+		retrieve: vi.fn().mockResolvedValue([])
 	},
 	mockOpenAIClient: {
 		embeddings: {
@@ -66,7 +67,8 @@ vi.mock('../../../services/task-indexer.js', () => ({
 	getHostIdentifier: () => mockGetHostIdentifier()
 }));
 
-vi.mock('../../../services/task-indexer/ChunkExtractor.js', () => ({
+vi.mock('../../../services/task-indexer/ChunkExtractor.js', async (importOriginal) => ({
+	...(await importOriginal<typeof import('../../../services/task-indexer/ChunkExtractor.js')>()),
 	getHostIdentifier: () => mockGetHostIdentifier()
 }));
 
@@ -80,6 +82,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 
 import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput } from '../search-semantic.tool.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
+import { splitChunkId } from '../../../services/task-indexer/ChunkExtractor.js';
 
 // ─────────────────── helpers ───────────────────
 
@@ -110,6 +113,7 @@ beforeEach(() => {
 	// return values, so reassert defaults here to prevent cross-test leakage.
 	mockUnifiedStoreReader.isNull.mockReturnValue(true);
 	mockUnifiedStoreReader.joinFromQdrant.mockResolvedValue([]);
+	mockQdrantClient.retrieve.mockResolvedValue([]);
 	delete process.env.QDRANT_COLLECTION_NAME;
 });
 
@@ -873,6 +877,7 @@ describe('helper functions (indirect via handler)', () => {
 		expect(parsed.results[1].taskId).toBe('task-b');
 		expect(parsed.results[1].chunks).toHaveLength(2);
 		expect(parsed.results[1].best_score).toBe(0.7);
+		expect(parsed.results[1].chunks[0].snippet).toContain('b2 substantive');
 	});
 
 	// ============================================================
@@ -1289,16 +1294,14 @@ describe('helper functions (indirect via handler)', () => {
 			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-1', 'task-2']);
 		});
 
-		test('applies Postgres ranking when the store DOES return rows', async () => {
-			// When Postgres is populated, the JOIN still filters + re-ranks (intended #2426 behavior).
+		test('Postgres receives the content-adjusted scores for confirmation', async () => {
+			// A raw-ranked fragment falls behind the longer prose passage after the
+			// fragment malus; PG must confirm that adjusted order, not the raw ANN one.
 			mockUnifiedStoreReader.isNull.mockReturnValue(false);
-			mockUnifiedStoreReader.joinFromQdrant.mockResolvedValue([
-				{ task_id: 'task-2', score: 0.99 },
-				{ task_id: 'task-1', score: 0.50 },
-			]);
+			mockUnifiedStoreReader.joinFromQdrant.mockImplementation(async (hits: Array<{ task_id: string; score: number }>) => hits);
 			mockQdrantClient.search.mockResolvedValue([
 				{ score: 0.82, payload: { task_id: 'task-1', content: 'a', host_os: 'win32' } },
-				{ score: 0.71, payload: { task_id: 'task-2', content: 'b', host_os: 'win32' } },
+				{ score: 0.71, payload: { task_id: 'task-2', content: 'a complete prose passage with enough context to remain useful', host_os: 'win32' } },
 			]);
 
 			const result = await searchTasksByContentTool.handler(
@@ -1310,6 +1313,10 @@ describe('helper functions (indirect via handler)', () => {
 
 			const parsed = JSON.parse(getTextContent(result));
 			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-2', 'task-1']);
+			expect(mockUnifiedStoreReader.joinFromQdrant).toHaveBeenCalledWith([
+				{ task_id: 'task-2', score: 0.71 },
+				{ task_id: 'task-1', score: 0.82 * 0.85 },
+			], expect.any(Object));
 		});
 
 		test('requests host_os in the Qdrant payload include (machines_found populated)', async () => {
@@ -1538,6 +1545,7 @@ describe('helper functions (indirect via handler)', () => {
 			mockOpenAIClient.embeddings.create.mockResolvedValue({
 				data: [{ embedding: [0.1, 0.2, 0.3] }]
 			});
+			delete process.env.SEMANTIC_MACHINE_OUTPUT_MALUS;
 		});
 
 		test('exclude_tool_results=true adds chunk_type=message_exchange filter to Qdrant query', async () => {
@@ -1623,8 +1631,139 @@ describe('helper functions (indirect via handler)', () => {
 			// The filter was sent to Qdrant correctly (verified in separate test)
 			// Result structure should still be valid
 			const parsed = JSON.parse(getTextContent(result));
-			expect(parsed.results).toBeDefined();
-			expect(Array.isArray(parsed.results)).toBe(true);
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-1']);
+		});
+
+		test('exclude_tool_results=true filters tool output even when its ranking malus is disabled', async () => {
+			process.env.SEMANTIC_MACHINE_OUTPUT_MALUS = '0';
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-tool', content: '[tool_result] Result: {"ok":true}', host_os: 'h1', chunk_type: 'message_exchange' } },
+				{ score: 0.8, payload: { task_id: 'task-prose', content: 'La décision et son contexte restent disponibles.', host_os: 'h1', chunk_type: 'message_exchange' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'décision', exclude_tool_results: true },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-prose']);
+			expect(parsed.current_machine.machine_output_malus?.enabled ?? true).toBe(false);
+		});
+
+		test('exclude_tool_results=true overfetches so filtered output does not consume the result budget', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+			await searchTasksByContentTool.handler(
+				{ search_query: 'décision', max_results: 4, exclude_tool_results: true },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+			expect(mockQdrantClient.search.mock.calls[0][1].limit).toBe(20);
+		});
+
+		test('exclude_tool_results=true rejects tool output stored as message_exchange', async () => {
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-tool', content: '[tool_result] Result: {"ok":true}', host_os: 'h1', chunk_type: 'message_exchange' } },
+				{ score: 0.8, payload: { task_id: 'task-prose', content: 'La décision et son contexte restent disponibles.', host_os: 'h1', chunk_type: 'message_exchange' } },
+			]);
+
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'décision', exclude_tool_results: true },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-prose']);
+			expect(parsed.results[0].chunks[0].snippet).toContain('La décision');
+		});
+
+		test('exclude_tool_results=true excludes a continuation whose parent is proven tool output', async () => {
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-tool', chunk_id: 'tool-part-2', original_chunk_id: 'tool-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'La décision est détaillée dans ce passage de sortie outil apparemment rédigé.', host_os: 'h1' } },
+				{ score: 0.8, payload: { task_id: 'task-prose', content: 'La décision humaine et son contexte restent disponibles pour la synthèse.', host_os: 'h1', chunk_type: 'message_exchange' } },
+			]);
+			mockQdrantClient.retrieve.mockResolvedValue([
+				{ id: splitChunkId('tool-original', 1), payload: { chunk_index: 1, content: '[tool_result] Result: long command output' } },
+			]);
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'décision', exclude_tool_results: true },
+				makeCache(), mockEnsureCache, defaultFallback
+			);
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-prose']);
+			expect(mockQdrantClient.retrieve).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ ids: [splitChunkId('tool-original', 1)], with_vector: false }));
+		});
+
+		test('a split human message is preserved and distinguished from tool output', async () => {
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-human', original_chunk_id: 'human-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'La cadence reste à trois heures parce que cette décision réduit la charge de coordination.', host_os: 'h1' } },
+				{ score: 0.8, payload: { task_id: 'task-tool', original_chunk_id: 'tool-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'La cadence est détaillée dans ce résultat de commande.', host_os: 'h1' } },
+			]);
+			mockQdrantClient.retrieve.mockImplementation(async (_collection: string, args: any) => args.ids.map((id: string) => ({
+				id,
+				payload: {
+					chunk_index: 1,
+					content: id === splitChunkId('tool-original', 1)
+						? '[tool_result] Result: output'
+						: 'Décision humaine sur la cadence, avec le raisonnement complet.',
+				},
+			})));
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'cadence', exclude_tool_results: true },
+				makeCache(), mockEnsureCache, defaultFallback
+			);
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-human']);
+			expect(parsed.results[0].chunks[0].tool_continuation_status).toBe('not_tool_result');
+		});
+
+		test('unresolved continuation provenance stays visible instead of being called prose', async () => {
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-unknown', original_chunk_id: 'missing-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'Un fragment de provenance inconnue reste consultable mais non certifié.', host_os: 'h1' } },
+			]);
+			mockQdrantClient.retrieve.mockResolvedValue([]);
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'fragment', exclude_tool_results: true },
+				makeCache(), mockEnsureCache, defaultFallback
+			);
+			const parsed = JSON.parse(getTextContent(result));
+			expect(parsed.results[0].chunks[0].tool_continuation_status).toBe('unknown');
+			expect(parsed.current_machine.tool_continuations.unresolved_count).toBe(1);
+		});
+
+		test('a self-classified tool fragment is de-ranked once, not twice, when provenance confirms it', async () => {
+			const toolContent = '[tool_result] Result: ' + 'ligne de sortie de commande volumineuse et repetitive '.repeat(5);
+			mockQdrantClient.search.mockResolvedValue([
+				{ score: 0.9, payload: { task_id: 'task-both', original_chunk_id: 'both-original', chunk_index: 2, chunk_type: 'message_exchange', content: toolContent, host_os: 'h1' } },
+			]);
+			mockQdrantClient.retrieve.mockResolvedValue([
+				{ id: splitChunkId('both-original', 1), payload: { chunk_index: 1, content: '[tool_result] Result: ' + toolContent } },
+			]);
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'commande' },
+				makeCache(), mockEnsureCache, defaultFallback
+			);
+			const parsed = JSON.parse(getTextContent(result));
+			const chunk = parsed.results[0].chunks[0];
+			expect(chunk.machine_output_kind).toBe('tool_result');
+			expect(chunk.score).toBeCloseTo(0.9 * 0.85, 6);
+			expect(parsed.current_machine.machine_output_malus.applied).toBe(1);
+		});
+
+		test('maximum filtered overfetch also widens the ANN candidate budget', async () => {
+			mockQdrantClient.search.mockResolvedValue([]);
+			await searchTasksByContentTool.handler(
+				{ search_query: 'décision', max_results: 100, exclude_tool_results: true },
+				makeCache(), mockEnsureCache, defaultFallback
+			);
+			const args = mockQdrantClient.search.mock.calls[0][1];
+			expect(args.limit).toBe(500);
+			expect(args.params.hnsw_ef).toBe(500);
 		});
 	});
 
@@ -2014,6 +2153,33 @@ describe('helper functions (indirect via handler)', () => {
 				expect(parsed.actual_search_mode).toBe('text');
 			});
 
+			test('enriches a fallback payload that is not the first block, without erasing the warning', async () => {
+				vi.useRealTimers();
+				_resetEmbeddingCircuitBreaker();
+				const warningFirstFallback = vi.fn().mockResolvedValue({
+					content: [
+						{ type: 'text', text: 'Filters chunk_type are NOT APPLIED in text fallback mode.' },
+						{ type: 'text', text: JSON.stringify({ results: [], searchType: 'text' }) },
+					],
+				});
+				const err = Object.assign(new Error('Service Unavailable'), {
+					response: { status: 503, statusText: 'Service Unavailable', data: {} }
+				});
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(err);
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(err);
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(err);
+
+				const result = await searchTasksByContentTool.handler({
+					search_query: 'warning then payload',
+				}, makeCache(), mockEnsureCache, warningFirstFallback);
+
+				expect(result.content).toHaveLength(2);
+				expect((result.content[0] as any).text).toContain('NOT APPLIED');
+				const parsed = JSON.parse((result.content[1] as any).text);
+				expect(parsed.fallback_used).toBe(true);
+				expect(parsed.actual_search_mode).toBe('text');
+			});
+
 			test('successful semantic search has fallback_used=false', async () => {
 				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
 					data: [{ embedding: new Array(1536).fill(0.1) }]
@@ -2360,6 +2526,10 @@ describe('#2609 V3 result quality', () => {
 		const include: string[] = call[1].with_payload.include;
 		expect(include).toContain('message_index');
 		expect(include).toContain('total_messages');
+		// #2609 continuation provenance: without these two the split-part link is
+		// invisible on live results and every continuation reads as a whole chunk.
+		expect(include).toContain('original_chunk_id');
+		expect(include).toContain('chunk_index');
 	});
 
 	test('conversation_context: adjacent turns attached, same-message pages collapsed (rubric (c))', async () => {

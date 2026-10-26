@@ -215,7 +215,7 @@ export async function searchFallbackTool(
     // Qdrant chunk index, not of a cached task skeleton — "not applicable" here,
     // which is a different statement from "not applied".
     if (filters_requested) {
-      warnings.push('Filters chunk_type, role, tool_name, model and exclude_tool_results are not applicable in text fallback mode (they are properties of the semantic chunk index, not of the task cache). Any of them that were requested are absent from these results.');
+      warnings.push('Filters chunk_type, role, tool_name, model and exclude_tool_results are NOT APPLIED in text fallback mode (they are properties of the semantic chunk index, not of the task cache). Requested filters among them are ignored in these results.');
     }
     // #2920: applied filters are stated explicitly so the caller can tell an
     // honestly-filtered empty set from an unfiltered one.

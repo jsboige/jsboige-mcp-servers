@@ -768,6 +768,10 @@ export async function extractChunksFromTask(taskId: string, taskPath: string): P
     return chunks.sort((a, b) => a.sequence_order - b.sequence_order);
 }
 
+export function splitChunkId(originalChunkId: string, chunkIndex: number): string {
+    return uuidv5(`${originalChunkId}_part_${chunkIndex}`, UUID_NAMESPACE);
+}
+
 export function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
     if (!chunk.content || chunk.content.length <= maxSize) {
         // Chunk unique, on ajoute les métadonnées de traçabilité
@@ -793,8 +797,7 @@ export function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
 
         // #2018: chunk.chunk_id is now deterministic upstream (computeChunkId),
         // so the split parts inherit determinism: same input → same UUIDs.
-        const compositeId = `${chunk.chunk_id}_part_${chunkIndex}`;
-        const deterministicUuid = uuidv5(compositeId, UUID_NAMESPACE);
+        const deterministicUuid = splitChunkId(chunk.chunk_id, chunkIndex);
 
         subChunks.push({
             ...chunk,
