@@ -192,7 +192,10 @@ const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
 // (classified 'network_timeout') while the network itself measured 3-5ms. Sustained throughput is
 // ~1.5 req/s, not 6. Default 10 -> 12 instances x 10 = 120/min ~= 2/s, sized on the measured figure.
 // Override via env to accelerate once the cache is warm (steady-state sees high cache hits).
-const MAX_OPERATIONS_PER_WINDOW = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE || '10', 10);
+const parsedOpsPerMinute = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE || '10', 10);
+// #4352 (a6): a non-numeric value gives NaN, and every NaN comparison in acquireEmbeddingSlot()
+// is false: the window would read "full" forever and the indexer would spin on 1 ms timers.
+const MAX_OPERATIONS_PER_WINDOW = Number.isFinite(parsedOpsPerMinute) ? parsedOpsPerMinute : 10;
 // #2194: Batch size for embedding API calls. 1 = legacy single-input (backward compat).
 // Batch 16-32 yields ~3-5x throughput by amortizing HTTP round-trips.
 const EMBEDDING_BATCH_SIZE = parseInt(process.env.EMBEDDING_BATCH_SIZE || '16', 10);

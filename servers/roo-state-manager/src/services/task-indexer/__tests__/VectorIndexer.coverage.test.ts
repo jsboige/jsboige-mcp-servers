@@ -411,6 +411,18 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 				await expect(runs).resolves.toEqual([expect.any(Array), expect.any(Array)]);
 			});
 
+			test('a non-numeric EMBEDDING_OPS_PER_MINUTE falls back to the default instead of spinning', async () => {
+				process.env.EMBEDDING_OPS_PER_MINUTE = 'ten';
+				vi.resetModules();
+				const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+				resetCircuitBreakerForTest();
+				mockExtractTask.mockResolvedValue([heavy('n1'), heavy('n2'), heavy('n3')]);
+
+				// 3 requests, under the default budget of 10: no wait at all.
+				await expect(indexTask('t-nan-budget', '/p')).resolves.toHaveLength(3);
+				expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(3);
+			});
+
 			test('EMBEDDING_OPS_PER_MINUTE=0 disables the pacing', async () => {
 				process.env.EMBEDDING_OPS_PER_MINUTE = '0';
 				vi.resetModules();

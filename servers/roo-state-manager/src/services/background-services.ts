@@ -1247,8 +1247,9 @@ async function scanForOutdatedQdrantIndex(state: ServerState): Promise<void> {
     if (totalToProcess > 1000) {
         console.log(`⚠️  Queue importante détectée: ${totalToProcess} tâches à traiter`);
         const opsPerMin = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE || '10', 10);
-        console.log(`💡 Traitement progressif avec rate limiting intelligent (${opsPerMin} ops/min)`);
-        console.log(`⏱️  Temps estimé: ${Math.ceil(totalToProcess / opsPerMin)} minutes`);
+        console.log(`💡 Traitement progressif avec rate limiting intelligent (${opsPerMin} requêtes d'embeddings/min)`);
+        // #4352 (a6): the limit counts embedding requests, and a task sends one or more of them.
+        console.log(`⏱️  Temps estimé: au moins ${Math.ceil(totalToProcess / opsPerMin)} minutes (1 requête par tâche)`);
     }
 
     // Estimation de la bande passante économisée
