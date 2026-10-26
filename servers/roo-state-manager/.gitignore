@@ -104,3 +104,6 @@ roo-config/
 # Worker-generated audit reports (one-time outputs, don't belong in repo)
 AUDIT-REPORT-*.md
 analyze-coverage.*
+
+# Eval verdict artifacts (#2609 review: structured golden-gate verdicts)
+.eval-verdicts/

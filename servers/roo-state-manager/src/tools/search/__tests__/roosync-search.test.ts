@@ -13,14 +13,19 @@ const { mockSemanticHandler, mockFallbackHandler } = vi.hoisted(() => ({
 	mockFallbackHandler: vi.fn()
 }));
 
-// Mock semantic search tool
-vi.mock('../search-semantic.tool.js', () => ({
-	searchTasksByContentTool: {
-		handler: mockSemanticHandler
-	},
-	// Re-export the type stub
-	SearchTasksByContentArgs: {}
-}));
+// Mock semantic search tool — ONLY the handler is faked. The classifier
+// helpers (extractSemanticErrorMode / INFRASTRUCTURE_ERROR_MODES) are pulled
+// from the REAL module: a hand-copied re-implementation in the factory could
+// silently diverge from the code that decides the degraded wording (#2609 D3).
+vi.mock('../search-semantic.tool.js', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../search-semantic.tool.js')>();
+	return {
+		...actual,
+		searchTasksByContentTool: {
+			handler: mockSemanticHandler
+		},
+	};
+});
 
 // Mock fallback search
 vi.mock('../search-fallback.tool.js', () => ({
@@ -279,7 +284,11 @@ describe('roosync_search', () => {
 			const payload = JSON.parse(getTextContent(result, 1));
 			expect(payload.semantic_degraded).toBe(true);
 			expect(payload.fallback_used).toBe(true);
-			expect(payload.fallback_reason).toBe('embedding_api_error');
+			// #2609 D1/D2: the mock text carries NO classified mode (null), so no
+			// backend outage may be claimed and the reason is "unclassified".
+			expect(first).not.toMatch(/embedding backend unreachable/i);
+			expect(payload.fallback_reason).toBe('semantic_error_unclassified');
+			expect(payload.semantic_error_mode).toBeUndefined();
 			expect(payload.original_search_mode).toBe('semantic');
 			expect(payload.actual_search_mode).toBe('text');
 			expect(payload.results).toEqual([{ id: 'r1' }]);
@@ -303,6 +312,47 @@ describe('roosync_search', () => {
 
 			expect(getTextContent(result, 0)).toMatch(/SEMANTIC DEGRADED/i);
 			expect(getTextContent(result, 1)).toBe('plain text results');
+		});
+
+		test('#2609 D1/D2: a classified NON-infrastructure mode is reported as itself, never as an API outage', async () => {
+			mockSemanticHandler.mockResolvedValue({
+				isError: true,
+				content: [{ type: 'text', text: 'Semantic search failed: unknown' }]
+			});
+			mockFallbackHandler.mockResolvedValue({
+				content: [{ type: 'text', text: JSON.stringify({ results: [{ id: 'r1' }], total: 1 }) }]
+			});
+			const result = await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'q', workspace: 'ws' },
+				mockCache, mockEnsureCache, mockFallbackHandler, mockDiagnoseHandler
+			);
+			const first = getTextContent(result, 0);
+			expect(first).toMatch(/UNCLASSIFIED/i);
+			expect(first).not.toMatch(/embedding backend unreachable/i);
+			const payload = JSON.parse(getTextContent(result, 1));
+			expect(payload.semantic_error_mode).toBe('unknown');
+			// the reason is the REAL mode, not the hardcoded outage token
+			expect(payload.fallback_reason).toBe('unknown');
+			expect(payload.fallback_reason).not.toBe('embedding_api_error');
+		});
+
+		test('#2609 D1/D2: a known INFRASTRUCTURE mode keeps the backend-outage reason', async () => {
+			mockSemanticHandler.mockResolvedValue({
+				isError: true,
+				content: [{ type: 'text', text: 'Semantic search failed: embedding_unreachable' }]
+			});
+			mockFallbackHandler.mockResolvedValue({
+				content: [{ type: 'text', text: JSON.stringify({ results: [{ id: 'r1' }], total: 1 }) }]
+			});
+			const result = await handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'q', workspace: 'ws' },
+				mockCache, mockEnsureCache, mockFallbackHandler, mockDiagnoseHandler
+			);
+			const first = getTextContent(result, 0);
+			expect(first).toMatch(/embedding backend unreachable/i);
+			const payload = JSON.parse(getTextContent(result, 1));
+			expect(payload.semantic_error_mode).toBe('embedding_unreachable');
+			expect(payload.fallback_reason).toBe('embedding_api_error');
 		});
 	});
 

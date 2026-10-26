@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { splitChunk, getHostIdentifier, computeChunkId, MAX_SUBCHUNKS_PER_CHUNK, isCodeCitation, Chunk } from '../ChunkExtractor.js';
+import { splitChunk, splitChunkId, getHostIdentifier, computeChunkId, MAX_SUBCHUNKS_PER_CHUNK, isCodeCitation, Chunk } from '../ChunkExtractor.js';
 
 // Reset uuid mock and use real implementation
 vi.mock('uuid', () => vi.importActual('uuid'));
@@ -121,6 +121,16 @@ describe('ChunkExtractor', () => {
       result.forEach(c => {
         expect(c.chunk_id).toMatch(uuidPattern);
       });
+    });
+
+    it('derives each written part id from the shared split identity', () => {
+      const chunk = createChunk('x'.repeat(250), { chunk_id: 'original-id-123' });
+      const result = splitChunk(chunk, 100);
+      expect(result.map(c => c.chunk_id)).toEqual([
+        splitChunkId('original-id-123', 1),
+        splitChunkId('original-id-123', 2),
+        splitChunkId('original-id-123', 3),
+      ]);
     });
 
     it('should preserve other chunk properties', () => {

@@ -8,7 +8,7 @@
  */
 
 import { roosyncSearchTool, handleRooSyncSearch } from '../../../../src/tools/search/roosync-search.tool.js';
-import { _resetEmbeddingCircuitBreaker } from '../../../../src/tools/search/search-semantic.tool.js';
+import { _resetEmbeddingCircuitBreaker, INFRASTRUCTURE_ERROR_MODES } from '../../../../src/tools/search/search-semantic.tool.js';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
@@ -41,6 +41,22 @@ vi.mock('../../../../src/services/task-indexer.js', () => ({
     getHostIdentifier: vi.fn(() => 'test-host-os')
 }));
 
+vi.mock('../../../../src/services/task-indexer/ChunkExtractor.js', async (importOriginal) => ({
+    ...(await importOriginal<typeof import('../../../../src/services/task-indexer/ChunkExtractor.js')>()),
+    getHostIdentifier: vi.fn(() => 'test-host-os')
+}));
+
+const mockTextFallback = vi.hoisted(() => vi.fn());
+// Captured at module-mock time; re-applied in beforeEach because the CI config
+// sets mockReset:true, which wipes any implementation installed here.
+const actualFallbackRef = vi.hoisted(() => ({ current: null as null | ((args: any, cache: any) => Promise<any>) }));
+
+vi.mock('../../../../src/tools/search/search-fallback.tool.js', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../../../../src/tools/search/search-fallback.tool.js')>();
+    actualFallbackRef.current = actual.handleSearchTasksSemanticFallback as any;
+    return { ...actual, handleSearchTasksSemanticFallback: mockTextFallback };
+});
+
 describe('roosync_search - CONS-11', () => {
     let conversationCache: Map<string, any>;
     let ensureCacheFreshCallback: any;
@@ -58,6 +74,9 @@ describe('roosync_search - CONS-11', () => {
         });
 
         vi.clearAllMocks();
+        // mockReset:true wipes factory-time implementations — delegate to the real
+        // fallback handler unless a test overrides it.
+        mockTextFallback.mockImplementation((...args: any[]) => (actualFallbackRef.current as any)(...args));
 
         // #2167: Reset circuit breaker + query embedding cache between tests
         _resetEmbeddingCircuitBreaker();
@@ -243,6 +262,58 @@ describe('roosync_search - CONS-11', () => {
             // Must include semantic_degraded flag so agents know results are from text fallback
             expect(parsed.semantic_degraded).toBe(true);
             expect(parsed.semantic_error).toContain('Semantic search failed');
+        });
+
+        it('enriches a structured fallback payload even when a warning precedes it', async () => {
+            mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('fetch failed'));
+            mockTextFallback.mockResolvedValue({
+                content: [
+                    { type: 'text', text: 'Filters chunk_type are NOT APPLIED in text fallback mode.' },
+                    { type: 'text', text: JSON.stringify({ results: [], warnings: ['Filters chunk_type are NOT APPLIED'] }) },
+                ],
+            } as CallToolResult);
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query', exclude_tool_results: true },
+                conversationCache, ensureCacheFreshCallback, fallbackHandler
+            );
+            const parsed = JSON.parse((result.content[2] as any).text);
+            expect(parsed.semantic_degraded).toBe(true);
+            expect(parsed.fallback_used).toBe(true);
+            expect(parsed.warnings[0]).toContain('NOT APPLIED');
+            expect((result.content[1] as any).text).toContain('NOT APPLIED');
+        });
+
+        it('flags an unclassified functional error instead of calling it a backend outage', async () => {
+            mockQdrantClient.search.mockRejectedValue(new Error('TypeError: malformed production payload'));
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query' },
+                conversationCache, ensureCacheFreshCallback, fallbackHandler
+            );
+            // #249 keeps the text fallback for every semantic failure, but the
+            // classified mode must travel with it: `unknown` is not an outage.
+            expect(result.isError).toBeUndefined();
+            expect((result.content[0] as any).text).toContain('UNCLASSIFIED');
+            const parsed = JSON.parse((result.content[1] as any).text);
+            expect(parsed.semantic_degraded).toBe(true);
+            expect(parsed.semantic_error_mode).toBe('unknown');
+            // #2609 D1: the reason is the REAL mode, not the hardcoded outage token;
+            // #2609 D2: `unknown` is not an outage, so no backend claim is made.
+            expect(parsed.fallback_reason).toBe('unknown');
+            expect(parsed.fallback_reason).not.toBe('embedding_api_error');
+            expect((result.content[0] as any).text).not.toContain('embedding backend unreachable');
+        });
+
+        it('#2609 D1/D2: a known INFRASTRUCTURE mode keeps the backend-outage reason', async () => {
+            mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('fetch failed'));
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query' },
+                conversationCache, ensureCacheFreshCallback, fallbackHandler
+            );
+            const warning = (result.content[0] as any).text;
+            expect(warning).toContain('embedding backend unreachable');
+            const parsed = JSON.parse((result.content[1] as any).text);
+            expect(INFRASTRUCTURE_ERROR_MODES.has(parsed.semantic_error_mode)).toBe(true);
+            expect(parsed.fallback_reason).toBe('embedding_api_error');
         });
     });
 

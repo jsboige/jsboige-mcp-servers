@@ -33,6 +33,7 @@
     "test:watch": "vitest watch",
     "test:hierarchy": "vitest run tests/unit/services/hierarchy-reconstruction-engine.test.ts",
     "eval:harness": "vitest run --config vitest.config.eval-harness.ts",
+    "eval:qualify": "tsx tests/eval-harness/qualify-verdicts.ts",
     "postinstall": "node scripts/patch-pathe.mjs"
   },
   "keywords": [
