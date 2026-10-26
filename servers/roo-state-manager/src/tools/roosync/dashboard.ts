@@ -748,7 +748,17 @@ function getFallbackModelChain(): string[] {
 async function cloudCondenseWithRetry(
   systemPrompt: string,
   userPrompt: string,
-  opts: { maxTokens: number; temperature: number; passDeadlineMs?: number },
+  opts: {
+    maxTokens: number;
+    temperature: number;
+    passDeadlineMs?: number;
+    // #3962 grain (h) (ai-01 dispatch 25/10): optional content guard, run per model
+    // INSIDE the chain. Returns a rejection reason, or null for accepted content.
+    // Guard-rejected content is a NON-RETRYABLE per-model failure — the chain moves
+    // to the next model instead of the pass ending in truncation while a working
+    // rescue model sits untried behind it.
+    validate?: (content: string) => string | null;
+  },
 ): Promise<{ content: string; elapsedMs: number; model: string } | { error: string; attempts: number } | null> {
   const modelErrors: string[] = [];
   let attempts = 0;
@@ -769,7 +779,28 @@ async function cloudCondenseWithRetry(
       }
       const result = await cloudCondenseOnce(systemPrompt, userPrompt, opts, fbModel, attemptTimeoutMs);
       if (result === null) return null; // unconfigured (empty content is a stamped non-retryable error since the #2719 discriminant fix)
-      if (result.ok) return result; // success
+      if (result.ok) {
+        // #3962 grain (h): an HTTP-200 content the caller's guard will reject must be
+        // treated as a per-model FAILURE here, while the next model in the chain is
+        // still reachable. Incident 25/10 22:03Z: the status guard ran only after the
+        // chain returned, rejected deepseek-v4-flash's 347-char status (vs 15,437
+        // previous) and the pass truncated — claude-sonnet-5-5, second in
+        // FALLBACK_LLM_MODEL_ID, was never tried. Non-retryable, same regime as
+        // empty-content: the model chose this content, a backoff won't change it.
+        const guardReason = opts.validate ? opts.validate(result.content) : null;
+        if (guardReason !== null) {
+          attempts++;
+          lastError = `guard-rejected (${guardReason})`;
+          logger.warn('#3962 cloud fallback content rejected by the caller guard — moving to the next model', {
+            model: result.model,
+            reason: guardReason,
+            contentLength: result.content.length,
+            elapsed: `${result.elapsedMs}ms`,
+          });
+          break; // the chain is the retry
+        }
+        return result; // success
+      }
       attempts++;
       lastError = result.error;
       if (!result.retryable || attempt >= maxAttempts) break;
@@ -800,7 +831,7 @@ async function cloudCondenseWithRetry(
 async function tryCloudCondenseFallback(
   systemPrompt: string,
   userPrompt: string,
-  opts: { maxTokens: number; temperature: number; passDeadlineMs?: number },
+  opts: { maxTokens: number; temperature: number; passDeadlineMs?: number; validate?: (content: string) => string | null },
   stats: LLMCallStats,
   callStart: number,
 ): Promise<LLMCallResult | null> {
@@ -3917,11 +3948,26 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
   const callStart = Date.now();
   const stats: LLMCallStats = emptyLLMStats('null');
 
+  // #3962 grain (h): the status guard runs INSIDE the cloud chain (cloudCondenseWithRetry)
+  // — a guard-rejected cloud content is a per-model failure that moves to the next model,
+  // not a pass-level truncation. The summary leg passes no validator: its content has no
+  // retention doctrine to protect.
+  const statusGuardValidator = (content: string): string | null => {
+    const verdict = isModelFailureStatus(content, previousStatus);
+    return verdict.failed ? verdict.reason : null;
+  };
+  const cloudFallbackOpts = {
+    maxTokens: CONDENSE_LLM_MAX_TOKENS,
+    temperature: 0.3,
+    passDeadlineMs: opts?.passDeadlineMs,
+    validate: statusGuardValidator,
+  };
+
   // #2719 (22/09): the primary's circuit breaker is OPEN — skip the primary, but the
   // cloud tier is an independent provider: try it before resigning to truncation.
   if (opts?.skipPrimary) {
     stats.finalOutcome = 'circuit-open';
-    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, cloudFallbackOpts, stats, callStart);
     return fb ?? circuitOpenFailure(stats, callStart);
   }
 
@@ -3937,7 +3983,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
     stats.finalOutcome = 'client-init-failed';
     stats.lastError = truncateError(errStr);
     stats.elapsedMs = Date.now() - callStart;
-    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, cloudFallbackOpts, stats, callStart);
     return fb ?? { content: null, stats };
   }
   const modelId = getLLMModelId();
@@ -3953,7 +3999,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       logger.warn('Primary status attempt refused — pass deadline reached the cloud reserve (#3962)', {
         attempt, remainingMs: opts?.passDeadlineMs !== undefined ? opts.passDeadlineMs - Date.now() : undefined,
       });
-      const fbBudget = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+      const fbBudget = await tryCloudCondenseFallback(systemPrompt, userPrompt, cloudFallbackOpts, stats, callStart);
       return fbBudget ?? { content: null, stats };
     }
     stats.attempts = attempt;
@@ -3989,7 +4035,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
         stats.elapsedMs = Date.now() - callStart;
         stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=${CONDENSE_LLM_MAX_TOKENS})`;
         // #2719: primary exhausted with null content (likely thinking-loop) → cloud fallback
-        const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+        const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, cloudFallbackOpts, stats, callStart);
         if (fbNull) return fbNull;
         return { content: null, stats };
       }
@@ -4025,7 +4071,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       stats.elapsedMs = Date.now() - callStart;
       stats.lastError = describeLLMError(error, { isTimeout, timeoutMs: attemptTimeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
       // #2719: primary endpoint failed (down/timeout) → cloud fallback before giving up
-      const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+      const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, cloudFallbackOpts, stats, callStart);
       if (fbErr) return fbErr;
       return { content: null, stats };
     }
