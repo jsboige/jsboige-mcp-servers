@@ -192,7 +192,10 @@ const RATE_LIMIT_WINDOW = 60 * 1000; // 1 minute
 // (classified 'network_timeout') while the network itself measured 3-5ms. Sustained throughput is
 // ~1.5 req/s, not 6. Default 10 -> 12 instances x 10 = 120/min ~= 2/s, sized on the measured figure.
 // Override via env to accelerate once the cache is warm (steady-state sees high cache hits).
-const MAX_OPERATIONS_PER_WINDOW = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE || '10', 10);
+const parsedOpsPerMinute = parseInt(process.env.EMBEDDING_OPS_PER_MINUTE || '10', 10);
+// #4352 (a6): a non-numeric value gives NaN, and every NaN comparison in acquireEmbeddingSlot()
+// is false: the window would read "full" forever and the indexer would spin on 1 ms timers.
+const MAX_OPERATIONS_PER_WINDOW = Number.isFinite(parsedOpsPerMinute) ? parsedOpsPerMinute : 10;
 // #2194: Batch size for embedding API calls. 1 = legacy single-input (backward compat).
 // Batch 16-32 yields ~3-5x throughput by amortizing HTTP round-trips.
 const EMBEDDING_BATCH_SIZE = parseInt(process.env.EMBEDDING_BATCH_SIZE || '16', 10);
@@ -201,6 +204,34 @@ const EMBEDDING_BATCH_MAX_TOKENS = parseInt(process.env.EMBEDDING_BATCH_MAX_TOKE
 // #4352: sub-chunks embedded then upserted together, so a task timeout keeps every finished window.
 const UPSERT_WINDOW_SUBCHUNKS = 256;
 let operationTimestamps: number[] = [];
+
+// #4352 (a6): the window above used to be checked ONCE per task, before its first batch, and
+// then every batch of the task went out unpaced (300 sub-chunks = 19 requests back to back;
+// the repair path runs 5 tasks at once). Under the 25/10 backfill the embeddings vhost
+// answered in ~63 s while its backend answered in 34 ms. Each request now waits for room in
+// the sliding window and reserves its slot BEFORE it is sent, so the concurrent tasks of this
+// process share one budget and a failed request counts too. Counted per REQUEST, the unit the
+// default above was sized in (req/s): per embedding (#2194), a default batch of 16 would be
+// held below one request per minute. <= 0 disables the pacing.
+async function acquireEmbeddingSlot(): Promise<void> {
+    if (MAX_OPERATIONS_PER_WINDOW <= 0) return;
+    let waited = false;
+    for (;;) {
+        const t = Date.now();
+        // ts <= t: a clock set back must not hold the window full until it catches up.
+        operationTimestamps = operationTimestamps.filter(ts => ts <= t && t - ts < RATE_LIMIT_WINDOW);
+        if (operationTimestamps.length < MAX_OPERATIONS_PER_WINDOW) {
+            operationTimestamps.push(t);
+            return;
+        }
+        if (!waited) {
+            waited = true;
+            _metrics.embeddings_rate_limit_waited_total++;
+        }
+        const untilOldestLeaves = operationTimestamps[0] + RATE_LIMIT_WINDOW - t;
+        await new Promise(resolve => setTimeout(resolve, Math.max(1, untilOldestLeaves)));
+    }
+}
 
 const MAX_CHUNK_SIZE = 800; // Approx. 200-400 tokens, ultra-conservative safety margin below 8192 limit for text-embedding-3-small
 
@@ -891,6 +922,7 @@ async function embedSingle(
     expectedDims: number,
     now: number
 ): Promise<number[] | null> {
+    await acquireEmbeddingSlot();
     const embeddingResponse = await getOpenAIClient().embeddings.create({
         model,
         input: subChunk.content,
@@ -909,7 +941,6 @@ async function embedSingle(
     }
 
     cacheEmbedding(contentHash, vector, now);
-    operationTimestamps.push(now);
     return vector;
 }
 
@@ -939,9 +970,9 @@ async function embedBatch(
     if (batch.length === 1) {
         // Single item — try once, return null on failure
         try {
+            await acquireEmbeddingSlot();
             const resp = await getOpenAIClient().embeddings.create({ model, input: batch[0].chunk.content });
             _metrics.embeddings_called_total++;
-            operationTimestamps.push(now);
             const vector = resp.data[0]?.embedding;
             if (vector && Array.isArray(vector) && vector.length === expectedDims) {
                 cacheEmbedding(batch[0].contentHash, vector, now);
@@ -966,12 +997,9 @@ async function embedBatch(
     // Multi-item batch — try full batch, split on failure
     try {
         const inputs = batch.map(e => e.chunk.content);
+        await acquireEmbeddingSlot();
         const resp = await getOpenAIClient().embeddings.create({ model, input: inputs });
         _metrics.embeddings_called_total += batch.length;
-        // #2194 fix: rate limit counts per embedding, not per batch
-        for (let i = 0; i < batch.length; i++) {
-            operationTimestamps.push(now);
-        }
 
         const results: Array<number[] | null> = new Array(batch.length).fill(null);
         for (let i = 0; i < batch.length; i++) {
@@ -1130,16 +1158,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             }
         }
 
-        // Stage 2: Rate-limit check before batch processing (once per task, as before #4352)
-        if (uncached.length > 0) {
-            operationTimestamps = operationTimestamps.filter(ts => now - ts < RATE_LIMIT_WINDOW);
-            if (operationTimestamps.length >= MAX_OPERATIONS_PER_WINDOW) {
-                _metrics.embeddings_rate_limit_waited_total++;
-                console.warn(`[RATE-LIMIT] Trop d'opérations récentes (${operationTimestamps.length}/${MAX_OPERATIONS_PER_WINDOW}). Attente...`);
-                await new Promise(resolve => setTimeout(resolve, RATE_LIMIT_WINDOW));
-                operationTimestamps = [];
-            }
-        }
+        // Stage 2: rate limiting is per request, in embedSingle/embedBatch (#4352 a6).
 
         // #4352: embed, build and upsert UPSERT_WINDOW_SUBCHUNKS sub-chunks at a time. With a
         // single upsert at the end, a session that hit the task timeout mid-embedding kept
