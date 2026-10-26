@@ -724,6 +724,98 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     expect(markdown).not.toContain('lastCondense: fallback-truncated');
     expect(markdown).toContain('All nominal');
   });
+
+  // #3962 grain (h) (ai-01 dispatch 25/10 22:35Z — incident 22:03Z): the status guard
+  // ran only AFTER the cloud chain returned, so a guard-rejected cloud status ended the
+  // whole pass in truncation while the next model in the chain was never tried. The
+  // validator now runs INSIDE the chain: guard-rejected content is a per-model,
+  // non-retryable failure and the chain moves on.
+  it('(q) #3962 guard in the chain: first model too short → second model salvages the status', { timeout: 60000 }, async () => {
+    // Long previous status so the retention guard bites: ~1,000 chars previous → any
+    // candidate under 200 chars (floor 0.2) is 'too-short' — the incident's signature
+    // (347 chars against 15,437, scaled down).
+    await roosyncDashboard({ action: 'write', type: 'global', content: `# Statut\n\n${'S'.repeat(1000)}` });
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockFallbackModelId.mockImplementation(() => 'deepseek-v4-flash,claude-sonnet-5-5');
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    const shortStatus = `## Statut cloud trop court\n\n${'c'.repeat(60)}`; // ~84 chars < 200 floor
+    const validStatus = `## Statut\n\n${'v'.repeat(600)}`; // 600 chars ≥ 200 floor
+    mockFallbackCreate.mockImplementation(async (req: any) => req.model === 'deepseek-v4-flash'
+      ? { choices: [{ message: { content: shortStatus } }] }
+      : { choices: [{ message: { content: validStatus } }] });
+
+    const filler = 'X'.repeat(3000);
+    let condensedResult: any = null;
+    for (let i = 0; i < 20; i++) {
+      const result = await roosyncDashboard({
+        action: 'append', type: 'global', content: `${filler} message-${i}`,
+      });
+      if ((result as any).condensed && !condensedResult) condensedResult = result;
+    }
+    expect(condensedResult).not.toBeNull();
+
+    const cloudPasses = condensedResult.condenseDiagnostic!.filter((d: any) => d.outcome === 'fallback-cloud');
+    expect(cloudPasses.length).toBeGreaterThanOrEqual(1);
+    const statusLeg = cloudPasses[0].llm.status;
+    // Bite-test (mutation, ai-01 spec #3): with `validate` removed from cloudFallbackOpts,
+    // deepseek's 84-char content is accepted by the chain, the post-chain guard rejects
+    // it, the pass truncates and this assertion fails (no fallback-cloud pass — verified
+    // pre-fix on this branch). The validator is what makes the chain move.
+    expect(statusLeg.finalOutcome).toBe('ok-with-fallback');
+    expect(statusLeg.fallbackModel).toBe('claude-sonnet-5-5');
+    // Chain order faithful: the rejected model was asked first, the rescuer second.
+    const models = mockFallbackCreate.mock.calls.map((c: any[]) => c[0].model);
+    expect(models.indexOf('deepseek-v4-flash')).toBeGreaterThanOrEqual(0);
+    expect(models.indexOf('deepseek-v4-flash')).toBeLessThan(models.indexOf('claude-sonnet-5-5'));
+  });
+
+  it('(r) #3962 every model guard-rejected → truncation names each model, summary leg untouched', { timeout: 60000 }, async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: `# Statut\n\n${'S'.repeat(1000)}` });
+    mockGetPrimaryClient.mockReturnValue({
+      chat: { completions: { create: mockPrimaryCreate } },
+    });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockFallbackModelId.mockImplementation(() => 'deepseek-v4-flash,claude-sonnet-5-5');
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+    });
+    // Both models answer 200 with content far under the 20% retention floor.
+    mockFallbackCreate.mockImplementation(async (req: any) => ({
+      choices: [{ message: { content: `## Court (${req.model})\n\n${'c'.repeat(40)}` } }],
+    }));
+
+    const filler = 'X'.repeat(3000);
+    let condensedResult: any = null;
+    for (let i = 0; i < 20; i++) {
+      const result = await roosyncDashboard({
+        action: 'append', type: 'global', content: `${filler} message-${i}`,
+      });
+      if ((result as any).condensed && !condensedResult) condensedResult = result;
+    }
+    expect(condensedResult).not.toBeNull();
+
+    const truncatedPasses = condensedResult.condenseDiagnostic!.filter((d: any) => d.outcome === 'fallback-truncated');
+    expect(truncatedPasses.length).toBeGreaterThanOrEqual(1);
+
+    const archiveFiles = await readdir(path.join(tmpDir, 'dashboards', 'archive'));
+    const fallbackArchives = archiveFiles.filter(f => f.endsWith('-fallback.md'));
+    expect(fallbackArchives.length).toBeGreaterThanOrEqual(1);
+    const archiveContent = await readFile(path.join(tmpDir, 'dashboards', 'archive', fallbackArchives[0]), 'utf8');
+    // yaml.dump folds long scalars across lines — compare the unfolded text (mirror of (l)).
+    const unfolded = archiveContent.replace(/\n\s+/g, ' ');
+    // Per-model guard errors: both chain models tried and named, 'too-short' reason kept.
+    expect(unfolded).toContain('deepseek-v4-flash: guard-rejected (too-short) | claude-sonnet-5-5: guard-rejected (too-short)');
+    // Per-leg outcomes (ms#1501): the status leg died in the chain while the summary leg
+    // — which carries no validator — was salvaged by the FIRST model, unchanged.
+    expect(unfolded).toContain('statusOutcome: error');
+    expect(unfolded).toContain('summaryOutcome: ok-with-fallback');
+    expect(unfolded).toContain('summaryFallbackModel: deepseek-v4-flash');
+  });
 });
 
 // #3011: Direct classification tests. The integration test (g) proves end-to-end
