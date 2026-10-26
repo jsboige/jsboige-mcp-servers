@@ -18,6 +18,7 @@ import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, Indexin
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 import { isLocallyIndexable } from './task-partition.js';
 import { dualWriteConversationToStore } from './unified-store/dual-write.js';
+import { isMeteredConnection } from './metered-connection.js';
 // #3661: Worker A election lives in its own dependency-free module so the
 // N-process acceptance test can spawn contenders that run the PRODUCTION
 // primitive instead of a copy of it.
@@ -1518,6 +1519,18 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
                 `🚫 [Qdrant-Worker] Circuit breaker OPEN — skipping indexing cycle ` +
                 `(${state.qdrantIndexQueue.size} tasks queued, retry in ~${Math.round(snap.msUntilHalfOpen / 1000)}s). ` +
                 `No embeddings computed this cycle.`
+            );
+            return;
+        }
+
+        // Bandwidth leak 26/10: ROO_INDEXING_ENABLED is set by hand at boot, so a
+        // laptop moved onto a phone hotspot kept indexing over the billed link.
+        // Pause while Windows reports the link as metered; the queue stays intact
+        // and drains once the machine is back on an unmetered link.
+        if (await isMeteredConnection()) {
+            console.warn(
+                `📵 [Qdrant-Worker] Metered connection — skipping indexing cycle ` +
+                `(${state.qdrantIndexQueue.size} tasks queued). Override: ROO_INDEXING_ON_METERED=true.`
             );
             return;
         }

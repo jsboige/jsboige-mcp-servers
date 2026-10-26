@@ -86,6 +86,11 @@ vi.mock('../unified-store/writer-factory.js', () => {
   };
 });
 
+// The real probe spawns powershell.exe on Windows; Worker B ticks under fake
+// timers must not wait on a child process. Default: unmetered link.
+const meteredSpy = vi.hoisted(() => vi.fn(async () => false));
+vi.mock('../metered-connection.js', () => ({ isMeteredConnection: meteredSpy }));
+
 import {
   loadSkeletonsFromDisk,
   startProactiveMetadataRepair,
@@ -602,6 +607,27 @@ describe('background-services', () => {
       await vi.runOnlyPendingTimersAsync();
 
       expect(mockIndexTask).not.toHaveBeenCalled();
+    });
+
+    it('should skip the cycle and keep the queue on a metered connection', async () => {
+      const state = createMockState();
+      state.isQdrantIndexingEnabled = true;
+      state.qdrantIndexQueue.add('task-001');
+      state.conversationCache.set('task-001', createMockSkeleton('task-001'));
+      // Every tick of this test sees the metered link (advance + pending = 2 ticks).
+      meteredSpy.mockResolvedValue(true);
+      try {
+        startQdrantIndexingBackgroundProcess(state);
+
+        vi.advanceTimersByTime(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
+        await vi.runOnlyPendingTimersAsync();
+
+        expect(meteredSpy).toHaveBeenCalled();
+        expect(state.qdrantIndexQueue.has('task-001')).toBe(true);
+        expect(TaskIndexerSpies.indexTask).not.toHaveBeenCalled();
+      } finally {
+        meteredSpy.mockResolvedValue(false);
+      }
     });
 
     it('should process tasks from queue one at a time', async () => {
