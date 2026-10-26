@@ -29,6 +29,8 @@ vi.mock('../../../../src/services/qdrant.js', () => ({
 vi.mock('../../../../src/services/openai.js', () => ({
     default: mockGetOpenAIClient,
     getOpenAIClient: mockGetOpenAIClient,
+    // #4352 (a5): the live probe uses the interactive (query) client.
+    getEmbeddingQueryClient: mockGetOpenAIClient,
     getEmbeddingModel: mockGetEmbeddingModel
 }));
 

@@ -17,7 +17,7 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
 import { basename, dirname, extname, isAbsolute, join, resolve, sep } from 'path';
 import { ZOO_ELIGIBLE_EXTENSIONS, classifyZooPath, isZooSkippedDir } from '../../services/code-index/zoo-eligibility.js';
 import {
-	getCodebaseEmbeddingClient,
+	getCodebaseEmbeddingQueryClient,
 	getCodebaseEmbeddingModel,
 	resetCodebaseEmbeddingClient,
 } from '../../services/code-index/embedding-client.js';
@@ -1699,7 +1699,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			return buildBreakerOpenResponse(query, workspace);
 		}
 
-		const embeddingClient = getCodebaseEmbeddingClient();
+		const embeddingClient = getCodebaseEmbeddingQueryClient();
 		const embeddingModel = getCodebaseEmbeddingModel();
 
 		let queryVector: number[];

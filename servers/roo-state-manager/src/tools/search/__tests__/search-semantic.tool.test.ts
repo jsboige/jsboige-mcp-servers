@@ -58,6 +58,8 @@ vi.mock('../../../services/qdrant.js', () => ({
 
 vi.mock('../../../services/openai.js', () => ({
 	default: () => mockOpenAIClient,
+	// #4352 (a5): the semantic query reads through the interactive (query) client.
+	getEmbeddingQueryClient: () => mockOpenAIClient,
 	getEmbeddingModel: () => mockGetEmbeddingModel()
 }));
 

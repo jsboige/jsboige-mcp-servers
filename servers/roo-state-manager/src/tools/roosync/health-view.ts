@@ -345,9 +345,8 @@ export type EmbeddingProbeResult = {
  */
 export async function probeEmbeddingBackend(): Promise<EmbeddingProbeResult> {
   try {
-    const getOpenAIClient = (await import('../../services/openai.js')).default;
-    const { getEmbeddingModel } = await import('../../services/openai.js');
-    const openai = getOpenAIClient();
+    const { getEmbeddingModel, getEmbeddingQueryClient } = await import('../../services/openai.js');
+    const openai = getEmbeddingQueryClient();
     const timeoutMs = parseInt(process.env.EMBEDDINGS_HEALTH_PROBE_TIMEOUT_MS || '8000', 10);
     const controller = new AbortController();
     // Deterministic cause classification: the SDK's abort error shape varies across

@@ -4,8 +4,13 @@ import { StateManagerError } from '../types/errors.js';
 import { createLogger, Logger } from '../utils/logger.js';
 import { refreshChatKeyEnvIfChanged } from './chat-key-refresh.js';
 import { resolveChatApiKey } from './chat-key.js';
+import { getEmbeddingClientTimeoutMs, getEmbeddingEndpointPlan } from './embedding-endpoints.js';
 
 let openai: OpenAI | null = null;
+// #4352 (a5): interactive queries get their own singleton so their short
+// per-endpoint timeout and total budget cannot shorten a background indexing
+// call that legitimately takes 45+ s on a loaded backend.
+let embeddingQueryOpenai: OpenAI | null = null;
 let chatOpenai: OpenAI | null = null;
 let fallbackChatOpenai: OpenAI | null = null;
 
@@ -60,31 +65,56 @@ export function getEmbeddingDimensions(): number {
  * falls back to OPENAI_API_KEY for backward compatibility.
  * Both task-level semantic search and codebase_search use the same embedding infra.
  */
-function getOpenAIClient(): OpenAI {
-  if (!openai) {
-    const apiKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      throw new StateManagerError(
-        'No embedding API key configured. Set EMBEDDING_API_KEY (preferred) or OPENAI_API_KEY.',
-        'EMBEDDING_API_KEY_MISSING',
-        'OpenAIClient',
-        { envVar: 'EMBEDDING_API_KEY' }
-      );
-    }
-    openai = new OpenAI({
-      apiKey,
-      baseURL: process.env.EMBEDDING_API_BASE_URL || undefined,
-      // #1232: Reduce timeout and retries to prevent MCP Connection closed
-      // Default OpenAI SDK retries 2x with backoff = 90s+ on 502/503.
-      // With maxRetries=1 and timeout=60s, worst case = ~120s (2 attempts × 60s), which stays
-      // under the 180s codebase_search budget in config/tool-timeouts.ts.
-      // Raised from 15s on 2026-08-25: under load the embedder answers 200 after 45.8s, so the
-      // former ~30s ceiling turned a LATENCY regime into a reported outage naming a false cause.
-      timeout: parseInt(process.env.EMBEDDING_TIMEOUT_MS || '60000'),
-      maxRetries: 1,
-    });
+function buildEmbeddingOpenAIClient(mode: 'index' | 'query'): OpenAI {
+  const apiKey = process.env.EMBEDDING_API_KEY || process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    throw new StateManagerError(
+      'No embedding API key configured. Set EMBEDDING_API_KEY (preferred) or OPENAI_API_KEY.',
+      'EMBEDDING_API_KEY_MISSING',
+      'OpenAIClient',
+      { envVar: 'EMBEDDING_API_KEY' }
+    );
   }
+
+  // #4352 (a5): `EMBEDDING_API_BASE_URLS` unset leaves the previous single-base
+  // client untouched (plan.fetch is undefined). With a list, the first entry is
+  // the canonical baseURL and the shared wrapper fails over in order.
+  const plan = getEmbeddingEndpointPlan(mode);
+  const failoverActive = plan.endpoints.length > 1;
+
+  return new OpenAI({
+    apiKey,
+    baseURL: plan.baseURL,
+    // #1232: Reduce timeout and retries to prevent MCP Connection closed
+    // Default OpenAI SDK retries 2x with backoff = 90s+ on 502/503.
+    // With maxRetries=1 and timeout=60s, worst case = ~120s (2 attempts × 60s), which stays
+    // under the 180s codebase_search budget in config/tool-timeouts.ts.
+    // Raised from 15s on 2026-08-25: under load the embedder answers 200 after 45.8s, so the
+    // former ~30s ceiling turned a LATENCY regime into a reported outage naming a false cause.
+    timeout: failoverActive
+      ? getEmbeddingClientTimeoutMs(mode, plan.endpoints.length)
+      : parseInt(process.env.EMBEDDING_TIMEOUT_MS || '60000'),
+    // Interactive clients must respect their total failover budget: an SDK-level
+    // retry after the wrapper exhausted every endpoint would double the wait.
+    maxRetries: mode === 'query' && failoverActive ? 0 : 1,
+    ...(plan.fetch ? { fetch: plan.fetch } : {}),
+  });
+}
+
+function getOpenAIClient(): OpenAI {
+  if (!openai) openai = buildEmbeddingOpenAIClient('index');
   return openai;
+}
+
+/**
+ * #4352 (a5): embedding client for interactive query paths (`roosync_search
+ * semantic`, `codebase_search`, diagnose/health probes). Same key, model,
+ * canonical endpoint and failover wrapper as the indexer, but a 6 s per-attempt
+ * ceiling and a 12 s total budget so a dead vhost degrades visibly in seconds.
+ */
+export function getEmbeddingQueryClient(): OpenAI {
+  if (!embeddingQueryOpenai) embeddingQueryOpenai = buildEmbeddingOpenAIClient('query');
+  return embeddingQueryOpenai;
 }
 
 /**
@@ -257,6 +287,7 @@ export function resetChatOpenAIClient(): void {
  */
 export function resetEmbeddingOpenAIClient(): void {
   openai = null;
+  embeddingQueryOpenai = null;
 }
 
 // === #4095 lever 2 — served-fingerprint probe ===

@@ -7,7 +7,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { toUnifiedTask } from '../../types/unified-task.js';
 import { getQdrantClient } from '../../services/qdrant.js';
-import getOpenAIClient, { getEmbeddingModel } from '../../services/openai.js';
+import { getEmbeddingQueryClient, getEmbeddingModel } from '../../services/openai.js';
 import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 import { getHostIdentifier } from '../../services/task-indexer/ChunkExtractor.js';
 import { resetEmbeddingCircuitBreaker as resetWriteCircuitBreaker } from '../../services/task-indexer/VectorIndexer.js';
@@ -984,7 +984,7 @@ export const searchTasksByContentTool = {
         // Tentative de recherche sémantique via Qdrant/OpenAI
         try {
             const qdrant = getQdrantClient();
-            const openai = getOpenAIClient();
+            const openai = getEmbeddingQueryClient();
 
             // #2167: Check query embedding cache before calling the API
             let queryVector = getCachedQueryEmbedding(search_query);

@@ -1,0 +1,434 @@
+/**
+ * #4352 (a5): ordered embedding endpoints with transport-only failover.
+ *
+ * One vhost outage (embeddings.myia.io, 25/10 16:10Z) removed semantic search
+ * fleet-wide for six hours while the LAN backend kept answering. The SDK had a
+ * single base URL and a 60 s timeout with one retry, so every call waited the
+ * outage out before degrading. This module is the failover layer both embedding
+ * factories share — the task indexer (`services/openai.ts`) and the codebase
+ * indexer/search (`services/code-index/embedding-client.ts`).
+ *
+ * Contract:
+ *  - `EMBEDDING_API_BASE_URLS` is an ordered, comma-separated list of
+ *    OpenAI-compatible base URLs. The FIRST entry is canonical: it is the
+ *    `baseURL` the SDK builds requests for, and its host is what the supplement
+ *    sentinel fingerprints. Failover must never look like a model switch.
+ *  - When the list is unset the factories keep their previous single-endpoint
+ *    behaviour byte for byte: no wrapper, no new timeout, no new retry.
+ *  - Failover happens on transport failures (connection refused/reset, DNS,
+ *    timeout) and HTTP 5xx. A 4xx is the endpoint ANSWERING — a bad key, a bad
+ *    model, a malformed request — and must surface immediately, never be hidden
+ *    by a second endpoint that happens to accept it.
+ *  - A failed endpoint is negative-cached for a short TTL, so an outage costs
+ *    seconds on the first call and almost nothing afterwards.
+ *  - Interactive query clients get a shorter per-attempt timeout and a total
+ *    budget; background indexing keeps the long 60 s ceiling it needs.
+ *  - Every endpoint must produce the configured embedding dimension. A mismatch
+ *    refuses that endpoint (and, if every endpoint mismatches, the call) rather
+ *    than mixing two vector spaces in one collection.
+ *
+ * The variable is host-owned (`~/.claude.json` MCP env): `roosync_diagnose
+ * reload` cannot change it, so a change needs a respawn.
+ */
+
+/** Minimal fetch shape, so tests can inject a fake without a network. */
+export type EmbeddingFetch = typeof fetch;
+
+export interface EmbeddingEndpointPlan {
+	/** Ordered, normalised endpoints. Empty means "SDK default, unchanged". */
+	endpoints: string[];
+	/** Endpoint handed to the OpenAI SDK as `baseURL`. */
+	baseURL: string | undefined;
+	/** Custom fetch when failover is active; undefined preserves legacy behaviour. */
+	fetch: EmbeddingFetch | undefined;
+}
+
+export type EmbeddingClientMode = 'index' | 'query';
+
+interface EndpointState {
+	url: string;
+	label: string;
+	/** Epoch ms before which this endpoint is skipped after a transport/5xx failure. */
+	disabledUntil: number;
+	/** Permanent for the process: the endpoint serves another vector space. */
+	incompatible: string | null;
+	lastError: string | null;
+}
+
+export interface EmbeddingFailoverOptions {
+	endpoints: string[];
+	/** The first list entry. Requests for this base are rewritten per attempt. */
+	canonicalBaseURL: string;
+	/** Ceiling for ONE endpoint attempt. */
+	perAttemptTimeoutMs: number;
+	/** Total ceiling across all endpoint attempts (interactive clients). */
+	totalBudgetMs?: number;
+	/** How long a transport/5xx failure keeps an endpoint out of rotation. */
+	negativeCacheMs?: number;
+	/** The dimension every endpoint must return. */
+	expectedDimensions: number;
+	/** Test seam; defaults to globalThis.fetch. */
+	fetchImpl?: EmbeddingFetch;
+	/** Test seam; defaults to Date.now. */
+	now?: () => number;
+	/** Test seam; defaults to console.warn. */
+	warn?: (message: string) => void;
+}
+
+export class EmbeddingEndpointsUnavailableError extends Error {
+	readonly endpointErrors: Array<{ endpoint: string; error: string }>;
+
+	constructor(message: string, endpointErrors: Array<{ endpoint: string; error: string }>) {
+		super(message);
+		this.name = 'EmbeddingEndpointsUnavailableError';
+		this.endpointErrors = endpointErrors;
+	}
+}
+
+const DEFAULT_TIMEOUT_MS = 60000;
+const DEFAULT_QUERY_ATTEMPT_TIMEOUT_MS = 6000;
+const DEFAULT_QUERY_BUDGET_MS = 12000;
+const DEFAULT_NEGATIVE_CACHE_MS = 30000;
+
+function parseIntOr(value: string | undefined, fallback: number): number {
+	const parsed = parseInt(value ?? '', 10);
+	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/** Parse the dimension env the same way `getEmbeddingDimensions()` does. */
+export function getEmbeddingDimensionSetting(env: NodeJS.ProcessEnv = process.env): number {
+	return parseIntOr(env.EMBEDDING_DIMENSIONS, 1536);
+}
+
+function normaliseEndpoint(raw: string): string {
+	const trimmed = raw.trim();
+	if (!trimmed) throw new Error('EMBEDDING_API_BASE_URLS contains an empty endpoint');
+	let url: URL;
+	try {
+		url = new URL(trimmed);
+	} catch {
+		throw new Error(`Invalid embedding endpoint in EMBEDDING_API_BASE_URLS: ${trimmed}`);
+	}
+	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
+		throw new Error(`Embedding endpoint must be http(s): ${trimmed}`);
+	}
+	return trimmed.replace(/\/+$/, '');
+}
+
+/**
+ * Ordered endpoint list. `EMBEDDING_API_BASE_URLS` wins when set; the legacy
+ * single `EMBEDDING_API_BASE_URL` is the one-entry form. An unset/empty list
+ * returns `[]`, which the factories map to "unchanged".
+ */
+export function parseEmbeddingEndpoints(env: NodeJS.ProcessEnv = process.env): string[] {
+	const rawList = env.EMBEDDING_API_BASE_URLS;
+	if (rawList !== undefined && rawList.trim() !== '') {
+		const seen = new Set<string>();
+		const endpoints: string[] = [];
+		for (const part of rawList.split(',')) {
+			if (!part.trim()) continue;
+			const endpoint = normaliseEndpoint(part);
+			if (seen.has(endpoint)) continue;
+			seen.add(endpoint);
+			endpoints.push(endpoint);
+		}
+		if (endpoints.length === 0) {
+			throw new Error('EMBEDDING_API_BASE_URLS is set but contains no usable endpoint');
+		}
+		return endpoints;
+	}
+	const legacy = env.EMBEDDING_API_BASE_URL;
+	if (legacy && legacy.trim()) return [normaliseEndpoint(legacy)];
+	return [];
+}
+
+/** Host-only label: safe to log, and enough to name which endpoint failed. */
+function endpointLabel(endpoint: string): string {
+	try {
+		return new URL(endpoint).host;
+	} catch {
+		return 'invalid-endpoint';
+	}
+}
+
+/** Host of the canonical endpoint, for the supplement sentinel fingerprint. */
+export function getCanonicalEmbeddingBaseUrl(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	const endpoints = parseEmbeddingEndpoints(env);
+	return endpoints[0];
+}
+
+export function getEmbeddingClientModeSettings(
+	mode: EmbeddingClientMode,
+	env: NodeJS.ProcessEnv = process.env,
+): { perAttemptTimeoutMs: number; totalBudgetMs?: number; negativeCacheMs: number } {
+	const negativeCacheMs = parseIntOr(env.EMBEDDING_NEGATIVE_CACHE_MS, DEFAULT_NEGATIVE_CACHE_MS);
+	if (mode === 'query') {
+		return {
+			perAttemptTimeoutMs: parseIntOr(env.EMBEDDING_QUERY_ATTEMPT_TIMEOUT_MS, DEFAULT_QUERY_ATTEMPT_TIMEOUT_MS),
+			totalBudgetMs: parseIntOr(env.EMBEDDING_QUERY_BUDGET_MS, DEFAULT_QUERY_BUDGET_MS),
+			negativeCacheMs,
+		};
+	}
+	return {
+		perAttemptTimeoutMs: parseIntOr(env.EMBEDDING_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
+		negativeCacheMs,
+	};
+}
+
+/** SDK-level timeout: must outlive every endpoint attempt, or the second never runs. */
+export function getEmbeddingClientTimeoutMs(
+	mode: EmbeddingClientMode,
+	endpointCount: number,
+	env: NodeJS.ProcessEnv = process.env,
+): number {
+	const settings = getEmbeddingClientModeSettings(mode, env);
+	if (mode === 'query') return (settings.totalBudgetMs ?? settings.perAttemptTimeoutMs) + 2000;
+	return settings.perAttemptTimeoutMs * Math.max(1, endpointCount) + 5000;
+}
+
+/**
+ * Plan consumed by both factories. `fetch` is only attached when there is more
+ * than one endpoint: a one-entry list is the legacy base URL with extra config,
+ * not a reason to change timeout or retry semantics.
+ */
+export function getEmbeddingEndpointPlan(
+	mode: EmbeddingClientMode,
+	env: NodeJS.ProcessEnv = process.env,
+): EmbeddingEndpointPlan {
+	const endpoints = parseEmbeddingEndpoints(env);
+	if (endpoints.length === 0) {
+		return { endpoints, baseURL: undefined, fetch: undefined };
+	}
+	const canonical = endpoints[0];
+	if (endpoints.length === 1) {
+		return { endpoints, baseURL: canonical, fetch: undefined };
+	}
+	const settings = getEmbeddingClientModeSettings(mode, env);
+	return {
+		endpoints,
+		baseURL: canonical,
+		fetch: createEmbeddingFailoverFetch({
+			endpoints,
+			canonicalBaseURL: canonical,
+			perAttemptTimeoutMs: settings.perAttemptTimeoutMs,
+			totalBudgetMs: settings.totalBudgetMs,
+			negativeCacheMs: settings.negativeCacheMs,
+			expectedDimensions: getEmbeddingDimensionSetting(env),
+		}),
+	};
+}
+
+/** Rewrite the canonical base prefix to another endpoint, preserving path/query. */
+function rewriteEndpoint(requestUrl: string, fromBase: string, toBase: string): string {
+	const from = new URL(fromBase);
+	const to = new URL(toBase);
+	const url = new URL(requestUrl);
+	const fromPath = from.pathname.replace(/\/+$/, '');
+	const toPath = to.pathname.replace(/\/+$/, '');
+	if (url.origin !== from.origin || !url.pathname.startsWith(fromPath)) {
+		// The SDK built a URL from something other than the canonical base. Do not
+		// guess: keep it as-is for this endpoint attempt.
+		return requestUrl;
+	}
+	url.protocol = to.protocol;
+	// Hostname and port are set SEPARATELY on purpose: assigning `url.host` left the
+	// source port in place when the target URL had none (`lan:8004` → `proxy:8004`,
+	// measured), which would send every failover to the wrong port.
+	url.hostname = to.hostname;
+	url.port = to.port;
+	url.pathname = `${toPath}${url.pathname.slice(fromPath.length)}` || '/';
+	return url.toString();
+}
+
+function requestUrlOf(input: string | URL | Request): string {
+	if (typeof input === 'string') return input;
+	if (input instanceof URL) return input.toString();
+	return input.url;
+}
+
+function describeError(error: unknown): string {
+	if (error instanceof Error) return error.message || error.name;
+	if (typeof error === 'string') return error;
+	try {
+		return JSON.stringify(error);
+	} catch {
+		return 'unknown error';
+	}
+}
+
+function hasCallerAborted(signal: AbortSignal | null | undefined): boolean {
+	return Boolean(signal?.aborted);
+}
+
+interface AttemptResult {
+	response?: Response;
+	error?: unknown;
+	timedOut: boolean;
+}
+
+async function fetchOneEndpoint(
+	url: string,
+	init: RequestInit,
+	timeoutMs: number,
+	fetchImpl: EmbeddingFetch,
+): Promise<AttemptResult> {
+	const controller = new AbortController();
+	let timedOut = false;
+	const callerSignal = init.signal ?? undefined;
+	const onCallerAbort = () => controller.abort();
+	if (callerSignal) {
+		if (callerSignal.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+		callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+	}
+	const timer = setTimeout(() => {
+		timedOut = true;
+		controller.abort();
+	}, timeoutMs);
+	try {
+		const response = await fetchImpl(url, { ...init, signal: controller.signal });
+		return { response, timedOut: false };
+	} catch (error) {
+		if (hasCallerAborted(callerSignal)) throw error;
+		return { error, timedOut };
+	} finally {
+		clearTimeout(timer);
+		callerSignal?.removeEventListener('abort', onCallerAbort);
+	}
+}
+
+/**
+ * Close a discarded response body. Not awaiting it keeps failover latency down;
+ * the rejection is swallowed because the endpoint is already being abandoned.
+ */
+function discardResponse(response: Response): void {
+	try {
+		void response.body?.cancel().catch(() => undefined);
+	} catch {
+		/* body already consumed or locked — nothing to release */
+	}
+}
+
+/** True only when another endpoint is worth trying. 4xx never is. */
+function shouldFailOver(response: Response): boolean {
+	return response.status >= 500;
+}
+
+async function dimensionOf(response: Response): Promise<number | null> {
+	try {
+		const payload = await response.clone().json() as { data?: Array<{ embedding?: unknown }> };
+		const first = payload?.data?.[0]?.embedding;
+		return Array.isArray(first) ? first.length : null;
+	} catch {
+		// The SDK will report a malformed body; failover cannot classify it.
+		return null;
+	}
+}
+
+/**
+ * Build the failover fetch. Exported for tests and for both factories, so the
+ * two cannot drift on ordering, classification or negative-cache semantics.
+ */
+export function createEmbeddingFailoverFetch(options: EmbeddingFailoverOptions): EmbeddingFetch {
+	const fetchImpl = options.fetchImpl ?? globalThis.fetch;
+	if (typeof fetchImpl !== 'function') {
+		throw new Error('No fetch implementation available for embedding failover');
+	}
+	const now = options.now ?? Date.now;
+	const warn = options.warn ?? ((message: string) => console.warn(message));
+	const negativeCacheMs = options.negativeCacheMs ?? DEFAULT_NEGATIVE_CACHE_MS;
+	const states: EndpointState[] = options.endpoints.map((url) => ({
+		url,
+		label: endpointLabel(url),
+		disabledUntil: 0,
+		incompatible: null,
+		lastError: null,
+	}));
+
+	return async function embeddingFailoverFetch(input, init = {}): Promise<Response> {
+		const originalUrl = requestUrlOf(input);
+		const startedAt = now();
+		const endpointErrors: Array<{ endpoint: string; error: string }> = [];
+		const skipped: string[] = [];
+
+		for (const state of states) {
+			if (state.incompatible) {
+				skipped.push(`${state.label} (incompatible: ${state.incompatible})`);
+				continue;
+			}
+			const current = now();
+			if (state.disabledUntil > current) {
+				skipped.push(`${state.label} (negative-cached ${Math.ceil((state.disabledUntil - current) / 1000)}s)`);
+				continue;
+			}
+
+			const elapsed = current - startedAt;
+			const remaining = options.totalBudgetMs === undefined
+				? Number.POSITIVE_INFINITY
+				: options.totalBudgetMs - elapsed;
+			if (remaining <= 0) {
+				skipped.push(`${state.label} (query budget exhausted)`);
+				break;
+			}
+			const attemptTimeout = Math.max(1, Math.min(options.perAttemptTimeoutMs, remaining));
+			const targetUrl = rewriteEndpoint(originalUrl, options.canonicalBaseURL, state.url);
+
+			let result: AttemptResult;
+			try {
+				result = await fetchOneEndpoint(targetUrl, init, attemptTimeout, fetchImpl);
+			} catch (error) {
+				// Caller abort: never start another endpoint behind the caller's back.
+				if (hasCallerAborted(init.signal)) throw error;
+				result = { error, timedOut: false };
+			}
+
+			if (result.response) {
+				const response = result.response;
+				if (shouldFailOver(response)) {
+					state.lastError = `HTTP ${response.status}`;
+					state.disabledUntil = now() + negativeCacheMs;
+					discardResponse(response);
+					endpointErrors.push({ endpoint: state.label, error: state.lastError });
+					warn(`[embedding-failover] ${state.label} answered ${response.status}; trying the next endpoint`);
+					continue;
+				}
+				if (response.status >= 400) {
+					// 4xx is an answer about the request/key, not an outage.
+					state.lastError = null;
+					state.disabledUntil = 0;
+					return response;
+				}
+
+				const dimension = await dimensionOf(response);
+				if (dimension !== null && dimension !== options.expectedDimensions) {
+					const mismatch = `dimension ${dimension} != ${options.expectedDimensions}`;
+					state.incompatible = mismatch;
+					state.lastError = mismatch;
+					discardResponse(response);
+					endpointErrors.push({ endpoint: state.label, error: mismatch });
+					warn(`[embedding-failover] ${state.label} serves ${mismatch}; refusing it (vector space guard)`);
+					continue;
+				}
+
+				state.lastError = null;
+				state.disabledUntil = 0;
+				return response;
+			}
+
+			const message = result.timedOut
+				? `timeout after ${attemptTimeout}ms`
+				: describeError(result.error);
+			state.lastError = message;
+			state.disabledUntil = now() + negativeCacheMs;
+			endpointErrors.push({ endpoint: state.label, error: message });
+			warn(`[embedding-failover] ${state.label} failed (${message}); trying the next endpoint`);
+		}
+
+		const detail = endpointErrors.length > 0
+			? endpointErrors.map((e) => `${e.endpoint}: ${e.error}`).join('; ')
+			: skipped.join('; ') || 'no endpoint configured';
+		throw new EmbeddingEndpointsUnavailableError(
+			`All embedding endpoints unavailable (${detail})`,
+			endpointErrors.length > 0 ? endpointErrors : [{ endpoint: 'all', error: detail }],
+		);
+	};
+}

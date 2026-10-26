@@ -45,6 +45,10 @@ vi.mock('../../../services/qdrant.js', () => ({
 vi.mock('../../../services/openai.js', () => ({
   default: vi.fn(() => mockOpenAIClient),
   getOpenAIClient: vi.fn(() => mockOpenAIClient),
+  // #4352 (a5): the diagnostic probe now asks the interactive (query) client for
+  // its short failover budget. Same mock instance: the assertions are about the
+  // call reaching the embedder, not about which mode built the client.
+  getEmbeddingQueryClient: vi.fn(() => mockOpenAIClient),
   getEmbeddingModel: vi.fn(() => 'text-embedding-3-small')
 }));
 
