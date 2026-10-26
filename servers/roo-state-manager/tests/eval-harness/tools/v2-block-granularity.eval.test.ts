@@ -51,6 +51,7 @@ import { fileURLToPath } from 'node:url';
 import { STORM_ACTIVE, STORM_GUARD_RESULT, runStormGuard } from '../storm-guard.js';
 import { assessIndexFreshness } from '../anchor-probe.js';
 import type { CheckResult } from '../verdict.js';
+import { writeVerdictArtifact } from '../verdict-artifact.js';
 import { handleCodebaseSearch } from '../../../src/tools/search/search-codebase.tool.js';
 
 /**
@@ -126,6 +127,15 @@ beforeAll(async () => {
 describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => {
 	it('renders exploitable source blocks against the live index', async () => {
 		if (STORM_ACTIVE) {
+			writeVerdictArtifact({
+				tool: 'codebase_search',
+				scenario: 'scenario-3-block-granularity',
+				verdict: 'INCONCLUSIVE',
+				reason: `storm guard active: ${STORM_GUARD_RESULT.reason}`,
+				checks: [],
+				latency_ms: 0,
+				timestamp: new Date().toISOString(),
+			});
 			console.log(`[INCONCLUSIVE] Storm guard active: ${STORM_GUARD_RESULT.reason}`);
 			expect(STORM_GUARD_RESULT.active).toBe(true);
 			return;
@@ -133,6 +143,15 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 
 		if (SCENARIO_3_WORKSPACE === null) {
 			console.log('[INCONCLUSIVE] harness is not running inside a roo-extensions checkout — no workspace to probe, the V2 contract is unmeasured on this run');
+			writeVerdictArtifact({
+				tool: 'codebase_search',
+				scenario: 'scenario-3-block-granularity',
+				verdict: 'INCONCLUSIVE',
+				reason: 'no workspace to probe: the V2 contract is unmeasured on this run',
+				checks: [],
+				latency_ms: 0,
+				timestamp: new Date().toISOString(),
+			});
 			expect(SCENARIO_3_WORKSPACE).toBeNull();
 			return;
 		}
@@ -167,6 +186,15 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 		if (parsed.status !== 'success') {
 			if (ENVIRONMENT_STATUS_MODES.has(parsed.status)) {
 				console.log(`[INCONCLUSIVE] status=${parsed.status} for workspace '${SCENARIO_3_WORKSPACE}' — environment shape, the V2 contract is unmeasured on this run`);
+				writeVerdictArtifact({
+					tool: 'codebase_search',
+					scenario: 'scenario-3-block-granularity',
+					verdict: 'INCONCLUSIVE',
+					reason: `status=${parsed.status}: environment shape, the V2 contract is unmeasured on this run`,
+					checks: [],
+					latency_ms: latencyMs,
+					timestamp: new Date().toISOString(),
+				});
 				expect(parsed.status).not.toBe('success');
 				return;
 			}
@@ -174,6 +202,15 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 		}
 		if (parsed.fallback_used === true) {
 			console.log(`[INCONCLUSIVE] codebase_search answered from the text fallback (fallback_used=true, fallback_reason=${parsed.fallback_reason}) — the V2 block contract does not apply to that path`);
+			writeVerdictArtifact({
+				tool: 'codebase_search',
+				scenario: 'scenario-3-block-granularity',
+				verdict: 'INCONCLUSIVE',
+				reason: 'codebase_search answered from the text fallback: the V2 block contract does not apply to that path',
+				checks: [],
+				latency_ms: latencyMs,
+				timestamp: new Date().toISOString(),
+			});
 			expect(parsed.fallback_used).toBe(true);
 			return;
 		}
@@ -229,6 +266,15 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 			expect(hasResults).toBe(true);
 			expect(hasSourceClassHit).toBe(true);
 			console.log(`[INCONCLUSIVE] ${assessment.report.line} — every failing source-class hit is PROVEN stale-anchor and no valid-anchor hit exists: the V2 contract is unmeasured on this run (never PASS, garde-fou 2)`);
+			writeVerdictArtifact({
+				tool: 'codebase_search',
+				scenario: 'scenario-3-block-granularity',
+				verdict: 'INCONCLUSIVE',
+				reason: `${assessment.report.line} - every failing source-class hit is PROVEN stale-anchor: the V2 contract is unmeasured on this run`,
+				checks: checks,
+				latency_ms: latencyMs,
+				timestamp: new Date().toISOString(),
+			});
 			expect(assessment.report.rendered).toBe(0);
 			return;
 		}
@@ -283,6 +329,16 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 
 		console.log('=== V2 scenario-3 live evidence ===');
 		console.log(`latency_ms=${latencyMs}, results=${parsed.results_count}, block_expansion_applied=${parsed.block_expansion_applied}, build_dir_malus_applied=${parsed.build_dir_malus_applied}`);
+		const allPass = checks.every(c => c.ok);
+		writeVerdictArtifact({
+			tool: 'codebase_search',
+			scenario: 'scenario-3-block-granularity',
+			verdict: allPass ? 'PASS' : 'FAIL',
+			reason: allPass ? 'all gates measured and passed' : 'one or more gates failed',
+			checks: checks,
+			latency_ms: latencyMs,
+			timestamp: new Date().toISOString(),
+		});
 		console.log('checks:', JSON.stringify(checks.map(c => ({ n: c.name, ok: c.ok }))));
 
 		// Hard gates: presence + the freshness-aware rubric contract. After the

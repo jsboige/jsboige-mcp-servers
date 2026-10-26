@@ -29,6 +29,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { STORM_ACTIVE, STORM_GUARD_RESULT, runStormGuard } from '../storm-guard.js';
 import type { CheckResult } from '../verdict.js';
+import { writeVerdictArtifact } from '../verdict-artifact.js';
 import { handleRooSyncSearch } from '../../../src/tools/search/roosync-search.tool.js';
 import { handleDiagnoseSemanticIndex } from '../../../src/tools/indexing/diagnose-index.tool.js';
 import { handleSearchTasksSemanticFallback } from '../../../src/tools/search/search-fallback.tool.js';
@@ -52,6 +53,15 @@ beforeAll(async () => {
 describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
   it('returns an exploitable decision passage against live engines', async () => {
     if (STORM_ACTIVE) {
+      writeVerdictArtifact({
+        tool: 'roosync_search',
+        scenario: 'scenario-2-decision-passage',
+        verdict: 'INCONCLUSIVE',
+        reason: `storm guard active: ${STORM_GUARD_RESULT.reason}`,
+        checks: [],
+        latency_ms: 0,
+        timestamp: new Date().toISOString(),
+      });
       console.log(`[INCONCLUSIVE] Storm guard active: ${STORM_GUARD_RESULT.reason}`);
       expect(STORM_GUARD_RESULT.active).toBe(true);
       return;
@@ -83,11 +93,29 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
     const noFallback = parsed.fallback_used !== true;
     checks.push({ name: 'fallback_used !== true (#637)', ok: noFallback, observed: String(parsed.fallback_used) });
     if (result.isError && isClassifiedInfrastructureError(result)) {
+      writeVerdictArtifact({
+        tool: 'roosync_search',
+        scenario: 'scenario-2-decision-passage',
+        verdict: 'INCONCLUSIVE',
+        reason: 'classified infrastructure error',
+        checks: [],
+        latency_ms: latencyMs,
+        timestamp: new Date().toISOString(),
+      });
       console.log(`[INCONCLUSIVE] classified infrastructure error: ${result.content?.find((c: any) => 'text' in c)?.text ?? 'unknown'}`);
       expect(isClassifiedInfrastructureError(result)).toBe(true);
       return;
     }
     if (result.isError) {
+      writeVerdictArtifact({
+        tool: 'roosync_search',
+        scenario: 'scenario-2-decision-passage',
+        verdict: 'FAIL',
+        reason: 'unclassified semantic error: functional failure',
+        checks: checks,
+        latency_ms: latencyMs,
+        timestamp: new Date().toISOString(),
+      });
       console.log(`[roosync_search] verdict=FAIL latency=${latencyMs}ms functional_error=${result.content?.find((c: any) => 'text' in c)?.text ?? 'unknown'}`);
       expect(result.isError, 'unclassified semantic errors are functional failures, not INCONCLUSIVE').not.toBe(true);
       return;
@@ -97,11 +125,29 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
       // The text fallback fires on every semantic failure (#249), so the mode is
       // what separates an outage from a defect: an UNCLASSIFIED mode is a
       // functional failure, not an unmeasured run.
+      writeVerdictArtifact({
+        tool: 'roosync_search',
+        scenario: 'scenario-2-decision-passage',
+        verdict: 'FAIL',
+        reason: `unclassified semantic error mode: ${parsed.semantic_error_mode}`,
+        checks: checks,
+        latency_ms: latencyMs,
+        timestamp: new Date().toISOString(),
+      });
       console.log(`[roosync_search] verdict=FAIL latency=${latencyMs}ms unclassified_semantic_error=${parsed.semantic_error_mode}`);
       expect(false, `degraded fallback caused by an unclassified semantic error (${parsed.semantic_error_mode}) is a functional failure`).toBe(true);
       return;
     }
     if (parsed.semantic_degraded === true || parsed.fallback_used === true) {
+      writeVerdictArtifact({
+        tool: 'roosync_search',
+        scenario: 'scenario-2-decision-passage',
+        verdict: 'INCONCLUSIVE',
+        reason: `semantic search degraded: ${parsed.semantic_error ?? parsed.fallback_reason ?? 'unknown'}`,
+        checks: [],
+        latency_ms: latencyMs,
+        timestamp: new Date().toISOString(),
+      });
       console.log(`[INCONCLUSIVE] semantic search degraded: ${parsed.semantic_error ?? parsed.fallback_reason ?? 'unknown'}`);
       expect(parsed.semantic_degraded === true || parsed.fallback_used === true).toBe(true);
       return;
@@ -175,6 +221,15 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
     console.log('checks:', JSON.stringify(checks.map(c => ({ n: c.name, ok: c.ok }))));
 
     const allPass = checks.filter(c => !c.name.includes('informational')).every(c => c.ok);
+    writeVerdictArtifact({
+      tool: 'roosync_search',
+      scenario: 'scenario-2-decision-passage',
+      verdict: allPass ? 'PASS' : 'FAIL',
+      reason: allPass ? 'all gates measured and passed' : 'one or more gates failed',
+      checks: checks,
+      latency_ms: latencyMs,
+      timestamp: new Date().toISOString(),
+    });
     console.log(`[roosync_search] verdict=${allPass ? 'PASS' : 'FAIL'} latency=${latencyMs}ms`);
     for (const c of checks) console.log(`[${c.ok ? 'OK' : 'FAIL'}] ${c.name}${c.observed !== undefined ? ` -> ${c.observed}` : ''}`);
 

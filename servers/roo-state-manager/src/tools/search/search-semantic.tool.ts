@@ -448,7 +448,13 @@ interface RawSearchResult {
     score: number;
     machineOutputKind?: MachineOutputKind | null;
     machineMalusApplied?: boolean;
-    /** Set only on split continuations (part > 1); absent means the chunk is whole. */
+    /**
+     * Set only on split continuations (part > 1); absent means the chunk is whole.
+     * 'tool_result' = the parent chunk IS machine output (any recognised kind -
+     * the exact kind travels in machineOutputKind); 'not_tool_result' = the parent
+     * is PROVEN prose (the classifier returned null); 'unknown' = provenance
+     * unresolved (fail-closed, never certified human).
+     */
     toolContinuationStatus?: 'tool_result' | 'not_tool_result' | 'unknown';
     originalChunkId?: string;
     chunkIndex?: number;
@@ -598,16 +604,28 @@ async function classifyToolContinuations(
     try {
         const points = await qdrant.retrieve(collectionName, {
             ids: [...parents.keys()],
-            with_payload: { include: ['content', 'content_summary', 'chunk_index'] },
+            // #2609 review (MAJOR 1): 'chunk_type' is required to classify the
+            // parent with the SAME classifier as every other chunk.
+            with_payload: { include: ['content', 'content_summary', 'chunk_index', 'chunk_type'] },
             with_vector: false,
         });
         for (const point of points ?? []) {
             if (point.payload?.chunk_index !== 1) continue;
             const original = String(point.payload?.content ?? point.payload?.content_summary ?? '');
-            const status = TOOL_RESULT_MARKER.test(original) ? 'tool_result' : 'not_tool_result';
+            // #2609 review (MAJOR 1): the parent is classified with the SAME
+            // classifier as any other chunk. The marker-only test could not see a
+            // dense JSON parent nor an <environment_details> block, so those
+            // continuations were certified 'not_tool_result' (i.e. human) and the
+            // golden gates counted them as human-authored passages. An empty parent
+            // proves nothing: it stays unresolved ('unknown', fail-closed).
+            const parentKind = original ? classifyMachineOutput(point.payload?.chunk_type, original) : null;
             for (const result of parents.get(String(point.id)) ?? []) {
-                result.toolContinuationStatus = status;
-                if (status === 'tool_result') result.machineOutputKind = 'tool_result';
+                if (!original) continue;
+                // 'not_tool_result' is reserved for a PROVEN non-machine parent
+                // (the classifier returned null). Any recognised machine output is
+                // 'tool_result'; its exact kind travels in machineOutputKind.
+                result.toolContinuationStatus = parentKind === null ? 'not_tool_result' : 'tool_result';
+                if (parentKind) result.machineOutputKind = parentKind;
                 diagnostics.classified++;
             }
         }
@@ -1226,6 +1244,17 @@ export const searchTasksByContentTool = {
             // unique_tasks even when one task dominates the Qdrant ranking.
             const effectiveMaxResults = max_results || 10;
             const diversifyLimit = effectiveMaxResults * (exclude_tool_results ? 5 : DIVERSIFY_OVERFETCH);
+            // #2609 review (MAJOR 2): the over-fetch factor is applied BEFORE the
+            // machine-output filter, so a full ANN window can be exhausted by filtered
+            // candidates while eligible prose sits further out. The repair is a BOUNDED
+            // number of extra ANN windows (ANN_REFILL_MAX_ROUNDS): the collection holds
+            // ~14M points, so a blind factor increase is a cost, not a recall fix. The
+            // residual is measured (current_machine.recall_budget), not assumed.
+            const ANN_REFILL_MAX_ROUNDS = 1;
+            const ANN_MAX_OFFSET = 10000;
+            // Payload whitelist shared by the first window and the refill windows, so both
+            // read exactly the same fields.
+            const ANN_PAYLOAD_INCLUDE = ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error', 'host_os', 'message_index', 'total_messages', 'original_chunk_id', 'chunk_index'];
             // #936: offset passthrough — pagination cursor for broad queries on the
             // 14M+ vector collection. Sent only when strictly positive so the
             // historical no-offset request shape (and its tests) stay unchanged.
@@ -1244,7 +1273,7 @@ export const searchTasksByContentTool = {
                     // #2426 follow-up: 'host_os' must be in the include whitelist, otherwise
                     // cross_machine_analysis.machines_found is always ['unknown'] (the payload
                     // field exists but is never retrieved).
-                    include: ['task_id', 'timestamp', 'chunk_type', 'content', 'content_summary', 'workspace', 'workspace_name', 'source', 'chunk_id', 'task_title', 'role', 'model', 'tool_name', 'has_error', 'host_os', 'message_index', 'total_messages', 'original_chunk_id', 'chunk_index']
+                    include: ANN_PAYLOAD_INCLUDE
                 },
                 timeout: searchTimeoutSec,
             }));
@@ -1258,11 +1287,55 @@ export const searchTasksByContentTool = {
                 ? searchResults
                 : (searchResults as any).result || (searchResults as any).points || [];
 
+            // #2609 review (MAJOR 2): measure the residual the machine-output filter
+            // leaves behind and, when the requested budget cannot be filled from the
+            // window just fetched, repair it with a BOUNDED number of extra ANN windows
+            // (ANN_REFILL_MAX_ROUNDS). The pre-pass below uses the SAME classifier as the
+            // mapping phase, so the measured residual and the applied filter cannot
+            // diverge.
+            const countSurvivingCandidates = (points: any[]): any[] => points.filter(p =>
+                !(exclude_tool_results && chunk_type !== 'tool_interaction'
+                    && classifyMachineOutput(p.payload?.chunk_type, String(p.payload?.content || p.payload?.content_summary || '')))
+            );
+            let rawPointsAll = rawPoints;
+            let candidatesFetched = rawPoints.length;
+            let refillWindows = 0;
+            for (let round = 0; round < ANN_REFILL_MAX_ROUNDS; round++) {
+                const surviving = countSurvivingCandidates(rawPointsAll);
+                const distinctTasks = new Set(surviving.map(p => String(p.payload?.task_id ?? 'unknown'))).size;
+                const budgetShort = distinctTasks < effectiveMaxResults;
+                const windowExhausted = candidatesFetched >= diversifyLimit;
+                const filterConsumed = surviving.length < candidatesFetched;
+                const refillOffset = effectiveOffset + candidatesFetched;
+                if (!budgetShort || !windowExhausted || !filterConsumed) break;
+                if (refillOffset > ANN_MAX_OFFSET) break;
+                const refillRaw = await withRetry(() => qdrant.search(collectionName, {
+                    vector: queryVector,
+                    limit: diversifyLimit,
+                    offset: refillOffset,
+                    filter: filter,
+                    params: {
+                        hnsw_ef: Math.max(128, diversifyLimit + refillOffset),
+                        exact: false,
+                        quantization: { rescore: true }
+                    },
+                    with_payload: { include: ANN_PAYLOAD_INCLUDE },
+                    timeout: searchTimeoutSec,
+                }));
+                const refillPoints = Array.isArray(refillRaw)
+                    ? refillRaw
+                    : (refillRaw as any).result || (refillRaw as any).points || [];
+                if (refillPoints.length === 0) break;
+                refillWindows++;
+                candidatesFetched += refillPoints.length;
+                rawPointsAll = rawPointsAll.concat(refillPoints);
+            }
+
             // Phase 2: Enriched results with snippets, score interpretation, deduplication
             let fragmentMalusApplied = 0;
             const machineOutputByKind: Partial<Record<MachineOutputKind, number>> = {};
             let machineOutputApplied = 0;
-            const results: RawSearchResult[] = rawPoints.map((result: any): RawSearchResult | null => {
+            const results: RawSearchResult[] = rawPointsAll.map((result: any): RawSearchResult | null => {
                 // #982 FIX: Prefer full content for snippet extraction (content_summary is only 200 chars)
                 const fullContent = String(result.payload?.content || result.payload?.content_summary || '');
                 const content = String(result.payload?.content_summary || result.payload?.content || '');
@@ -1333,18 +1406,23 @@ export const searchTasksByContentTool = {
                 // (a mid-JSON split loses the marker). The malus and its counter are
                 // applied at most once per result: when the map already classified the
                 // fragment, the score was already de-ranked.
-                if (result.machineOutputKind === 'tool_result' && result.toolContinuationStatus === 'tool_result'
+                if (result.toolContinuationStatus === 'tool_result' && result.machineOutputKind
                     && !result.machineMalusApplied) {
                     if (isMachineOutputMalusEnabled()) {
                         result.score *= MACHINE_OUTPUT_MALUS_FACTOR;
                         result.relevance = interpretScore(result.score);
                         result.machineMalusApplied = true;
                         machineOutputApplied++;
-                        machineOutputByKind.tool_result = (machineOutputByKind.tool_result ?? 0) + 1;
+                        machineOutputByKind[result.machineOutputKind] = (machineOutputByKind[result.machineOutputKind] ?? 0) + 1;
                     }
                 }
                 return !(exclude_tool_results && chunk_type !== 'tool_interaction' && result.machineOutputKind);
             });
+            // #2609 review (MAJOR 2): the residual the filter leaves behind, measured on
+            // both exclusion stages (mapping-level machine output, provenance-level
+            // continuation output).
+            const excludedByMachineOutput = rawPointsAll.length - results.length;
+            const excludedByProvenance = results.length - adjustedResults.length;
 
             // #1244 Couche 1.3 — Filtre temporel : double-couche
             //   (a) Push dans Qdrant en amont (range filter sur 'timestamp', cf. l. 477-495)
@@ -1521,6 +1599,22 @@ export const searchTasksByContentTool = {
                             by_kind: machineOutputByKind,
                             factor: MACHINE_OUTPUT_MALUS_FACTOR,
                             enabled: process.env.SEMANTIC_MACHINE_OUTPUT_MALUS !== '0',
+                        }
+                    } : {}),
+                    // #2609 review (MAJOR 2): the residual between the requested budget and what
+                    // the filter left is measured, not assumed. Emitted only when the filter
+                    // consumed candidates or a refill window was spent - quiet for the common
+                    // query, same convention as dedup/diversify above.
+                    ...(excludedByMachineOutput > 0 || excludedByProvenance > 0 || refillWindows > 0 ? {
+                        recall_budget: {
+                            requested_groups: effectiveMaxResults,
+                            returned_groups: groupedResults.length,
+                            candidates_fetched: candidatesFetched,
+                            candidates_after_filter: filteredResults.length,
+                            excluded_by_machine_output: excludedByMachineOutput,
+                            excluded_by_provenance: excludedByProvenance,
+                            refill_windows: refillWindows,
+                            budget_filled: groupedResults.length >= effectiveMaxResults,
                         }
                     } : {}),
                     // #2609 V3 (rubric (c)): context-expansion observability. Emitted
