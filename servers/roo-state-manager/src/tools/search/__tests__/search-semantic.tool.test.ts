@@ -1900,6 +1900,37 @@ describe('helper functions (indirect via handler)', () => {
 			expect(parsed.current_machine.recall_budget.refill_windows).toBe(1);
 		});
 
+		test('the refill window is mandatory when the filter leaves the budget short', async () => {
+			const toolOutputSample = '[tool_result] Result: ' + JSON.stringify({ ok: true });
+			const machineOutput = Array.from({ length: 10 }, (_unused, i) => ({
+				score: 0.9 - i * 0.001,
+				payload: { task_id: 'task-tool-' + i, chunk_type: 'message_exchange', content: toolOutputSample, host_os: 'h1' },
+			}));
+			const prose = [
+				{ score: 0.5, payload: { task_id: 'task-prose-a', chunk_type: 'message_exchange', content: 'The human decision about the coordination cadence stays available for the synthesis.', host_os: 'h1' } },
+				{ score: 0.49, payload: { task_id: 'task-prose-b', chunk_type: 'message_exchange', content: 'Another human decision about the coordination load is recorded in this passage.', host_os: 'h1' } },
+			];
+			mockQdrantClient.search
+				.mockResolvedValueOnce(machineOutput)
+				.mockResolvedValueOnce(prose)
+				.mockResolvedValue([]);
+			const result = await searchTasksByContentTool.handler(
+				{ search_query: 'cadence', max_results: 2, exclude_tool_results: true },
+				makeCache(), mockEnsureCache, defaultFallback
+			);
+			const parsed = JSON.parse(getTextContent(result));
+			const budget = parsed.current_machine.recall_budget;
+			// The measured residual is what makes the refill MANDATORY: 10 candidates
+			// fetched, all 10 consumed by the machine-output filter, 0 groups left, so
+			// the budget (2) can only be filled by one extra window.
+			expect(budget.candidates_fetched).toBe(12);
+			expect(budget.excluded_by_machine_output).toBe(10);
+			expect(budget.refill_windows).toBe(1);
+			expect(budget.budget_filled).toBe(true);
+			expect(budget.returned_groups).toBe(2);
+			expect(parsed.results).toHaveLength(2);
+		});
+
 		test('no refill window is spent when the first window was not exhausted', async () => {
 			const toolOutputSample = '[tool_result] Result: ' + JSON.stringify({ ok: true });
 			mockQdrantClient.search.mockResolvedValue([

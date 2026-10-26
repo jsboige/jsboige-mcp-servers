@@ -280,13 +280,18 @@ export async function handleRooSyncSearch(
             // fallback itself stays (deliberate choice, #249); only the surface changes:
             // block 0 = human-readable warning, block 1 = structured payload so JSON
             // consumers keep parsing content[1] with the #1496 metadata intact.
-            const degradedWarning =
-                (semanticErrorMode === null || INFRASTRUCTURE_ERROR_MODES.has(semanticErrorMode))
-                    ? '⚠️ SEMANTIC DEGRADED — embedding backend unreachable: results are TEXT search only. ' +
-                      'Run roosync_search(action: "diagnose") to inspect the embedding endpoint.'
-                    : `⚠️ SEMANTIC DEGRADED — semantic search failed with an UNCLASSIFIED error (${semanticErrorMode}): ` +
-                      'results are TEXT search only and the failure is NOT attributable to a backend outage. ' +
-                      'Run roosync_search(action: "diagnose") and report the mode.';
+            // #2609 review (D2): a `null` mode means the failure was NOT classified —
+            // it is NOT evidence of a backend outage. Only a KNOWN infrastructure mode
+            // attributes the failure to the embedding backend; every other case (null,
+            // or a classified non-infrastructure mode such as `unknown`) states no cause.
+            const isInfrastructureMode = semanticErrorMode !== null
+                && INFRASTRUCTURE_ERROR_MODES.has(semanticErrorMode);
+            const degradedWarning = isInfrastructureMode
+                ? '⚠️ SEMANTIC DEGRADED — embedding backend unreachable: results are TEXT search only. ' +
+                  'Run roosync_search(action: "diagnose") to inspect the embedding endpoint.'
+                : `⚠️ SEMANTIC DEGRADED — semantic search failed with an UNCLASSIFIED error (${semanticErrorMode ?? 'unknown mode'}): ` +
+                  'results are TEXT search only and the failure is NOT attributable to a backend outage. ' +
+                  'Run roosync_search(action: "diagnose") and report the mode.';
 
             // Enrich the structured block wherever a fallback warning placed it.
             const content = [...(textResult.content ?? [])];
@@ -300,7 +305,11 @@ export async function handleRooSyncSearch(
                 parsed.semantic_degraded = true;
                 parsed.semantic_error = 'Semantic search failed after retry — results are from text search only. Run roosync_search(action: "diagnose") to check backend state.';
                 parsed.fallback_used = true;
-                parsed.fallback_reason = 'embedding_api_error';
+                // #2609 review (D1): the reason is DERIVED from the classified mode —
+                // the payload may not assert a cause the human warning denies.
+                parsed.fallback_reason = semanticErrorMode === null
+                    ? 'semantic_error_unclassified'
+                    : (INFRASTRUCTURE_ERROR_MODES.has(semanticErrorMode) ? 'embedding_api_error' : semanticErrorMode);
                 parsed.original_search_mode = 'semantic';
                 parsed.actual_search_mode = 'text';
                 if (semanticErrorMode !== null) parsed.semantic_error_mode = semanticErrorMode;

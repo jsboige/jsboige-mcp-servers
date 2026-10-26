@@ -8,7 +8,7 @@
  */
 
 import { roosyncSearchTool, handleRooSyncSearch } from '../../../../src/tools/search/roosync-search.tool.js';
-import { _resetEmbeddingCircuitBreaker } from '../../../../src/tools/search/search-semantic.tool.js';
+import { _resetEmbeddingCircuitBreaker, INFRASTRUCTURE_ERROR_MODES } from '../../../../src/tools/search/search-semantic.tool.js';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
@@ -296,6 +296,24 @@ describe('roosync_search - CONS-11', () => {
             const parsed = JSON.parse((result.content[1] as any).text);
             expect(parsed.semantic_degraded).toBe(true);
             expect(parsed.semantic_error_mode).toBe('unknown');
+            // #2609 D1: the reason is the REAL mode, not the hardcoded outage token;
+            // #2609 D2: `unknown` is not an outage, so no backend claim is made.
+            expect(parsed.fallback_reason).toBe('unknown');
+            expect(parsed.fallback_reason).not.toBe('embedding_api_error');
+            expect((result.content[0] as any).text).not.toContain('embedding backend unreachable');
+        });
+
+        it('#2609 D1/D2: a known INFRASTRUCTURE mode keeps the backend-outage reason', async () => {
+            mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('fetch failed'));
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query' },
+                conversationCache, ensureCacheFreshCallback, fallbackHandler
+            );
+            const warning = (result.content[0] as any).text;
+            expect(warning).toContain('embedding backend unreachable');
+            const parsed = JSON.parse((result.content[1] as any).text);
+            expect(INFRASTRUCTURE_ERROR_MODES.has(parsed.semantic_error_mode)).toBe(true);
+            expect(parsed.fallback_reason).toBe('embedding_api_error');
         });
     });
 
