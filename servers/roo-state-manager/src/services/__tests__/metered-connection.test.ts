@@ -6,7 +6,22 @@ import {
 	resetMeteredConnectionCache,
 	runPowerShellProbe,
 	METERED_CHECK_TTL_MS,
+	PROBE_SCRIPT,
 } from '../metered-connection.js';
+
+// CI runs on Linux, where the execution test below is skipped: this static
+// check is the only guard there against a probe edit that breaks the field
+// order parseConnectionCost relies on (a broken probe fails open, silently).
+describe('PROBE_SCRIPT', () => {
+	it('loads the WinRT type and prints the five fields in parse order', () => {
+		expect(PROBE_SCRIPT).toContain('ContentType=WindowsRuntime');
+		expect(PROBE_SCRIPT).toContain('GetInternetConnectionProfile()');
+		expect(PROBE_SCRIPT).toContain('"NONE"');
+		expect(PROBE_SCRIPT).toContain(
+			'"{0}|{1}|{2}|{3}|{4}" -f $c.NetworkCostType,$c.Roaming,$c.ApproachingDataLimit,$c.OverDataLimit,$p.ProfileName',
+		);
+	});
+});
 
 describe('parseConnectionCost', () => {
 	it('reads the probe line, profile names may contain the separator', () => {

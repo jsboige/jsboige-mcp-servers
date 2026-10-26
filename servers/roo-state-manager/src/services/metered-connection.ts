@@ -27,7 +27,7 @@ export interface ConnectionCost {
 export const METERED_CHECK_TTL_MS = 4 * 60 * 1000;
 
 // Windows PowerShell 5.1 only: the WinRT type accelerator does not exist in pwsh 7.
-const PROBE_SCRIPT = [
+export const PROBE_SCRIPT = [
 	'$null=[Windows.Networking.Connectivity.NetworkInformation,Windows.Networking.Connectivity,ContentType=WindowsRuntime]',
 	'$p=[Windows.Networking.Connectivity.NetworkInformation]::GetInternetConnectionProfile()',
 	'if(-not $p){"NONE"}else{$c=$p.GetConnectionCost();"{0}|{1}|{2}|{3}|{4}" -f $c.NetworkCostType,$c.Roaming,$c.ApproachingDataLimit,$c.OverDataLimit,$p.ProfileName}',
@@ -51,7 +51,11 @@ export function parseConnectionCost(stdout: string): ConnectionCost | null {
 	};
 }
 
-/** `Fixed` and `Variable` are billed by volume; roaming and data-limit flags are too. */
+/**
+ * `Fixed` and `Variable` are billed by volume; roaming and data-limit flags are too.
+ * `Unknown` stays unmetered on purpose: a desktop seat answering Unknown would
+ * otherwise stop indexing fleet-wide, silently, while every link is fibre.
+ */
 export function isMeteredCost(cost: ConnectionCost | null): boolean {
 	if (!cost) return false;
 	return cost.costType === 'Fixed'
