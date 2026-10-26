@@ -32,6 +32,16 @@ function embeddingResponse(dimension = 4, status = 200): Response {
 	});
 }
 
+/** The SDK's default wire shape: float32 bytes encoded as base64. */
+function base64EmbeddingResponse(dimension: number): Response {
+	const vector = new Float32Array(dimension).fill(0.1);
+	const embedding = Buffer.from(vector.buffer).toString('base64');
+	return new Response(JSON.stringify({ data: [{ embedding }] }), {
+		status: 200,
+		headers: { 'content-type': 'application/json' },
+	});
+}
+
 function failover(options: Partial<Parameters<typeof createEmbeddingFailoverFetch>[0]> = {}) {
 	return createEmbeddingFailoverFetch({
 		endpoints: ['http://lan:8004/v1', 'https://proxy.example/v1'],
@@ -62,6 +72,30 @@ describe('#4352 (a5) endpoint configuration', () => {
 	it('fails loud on an invalid list instead of silently falling back', () => {
 		expect(() => parseEmbeddingEndpoints(env({ EMBEDDING_API_BASE_URLS: 'not-a-url' }))).toThrow(/Invalid embedding endpoint/);
 		expect(() => parseEmbeddingEndpoints(env({ EMBEDDING_API_BASE_URLS: 'ftp://example/v1' }))).toThrow(/http\(s\)/);
+	});
+
+	it('rejects URL userinfo and never echoes endpoint secrets in parse errors', () => {
+		const secrets = ['s3cr3t', 'p4ssw0rd'];
+		const invalidEndpoints = [
+			'https://alice:s3cr3t@lan.example/v1',
+			'https://p4ssw0rd@lan.example/v1',
+			'ftp://alice:s3cr3t@lan.example/v1',
+			'http://alice:p4ssw0rd@/v1',
+		];
+		for (const endpoint of invalidEndpoints) {
+			let message = '';
+			try {
+				parseEmbeddingEndpoints(env({ EMBEDDING_API_BASE_URLS: endpoint }));
+			} catch (error) {
+				message = (error as Error).message;
+			}
+			expect(message, `endpoint ${endpoint} must be rejected`).not.toBe('');
+			expect(message).not.toContain(endpoint);
+			for (const secret of secrets) expect(message).not.toContain(secret);
+		}
+		expect(() => parseEmbeddingEndpoints(env({
+			EMBEDDING_API_BASE_URLS: 'https://alice:s3cr3t@lan.example/v1',
+		}))).toThrow(/must not carry URL userinfo/);
 	});
 
 	it('leaves the client byte-for-byte unchanged when the list is unset', () => {
@@ -206,5 +240,37 @@ describe('#4352 (a5) vector-space guard', () => {
 			expectedDimensions: 4,
 		})('http://lan:8004/v1/embeddings', { method: 'POST', body: '{}' }))
 			.rejects.toThrow(/all embedding endpoints unavailable/i);
+	});
+
+	it('enforces the dimension guard on the SDK default base64 wire shape', async () => {
+		const calls: string[] = [];
+		const fetcher = vi.fn(async (url: string | URL | Request) => {
+			calls.push(String(url));
+			return base64EmbeddingResponse(String(url).startsWith('http://lan') ? 3 : 4);
+		});
+		const fetchWithFailover = failover({
+			fetchImpl: fetcher as typeof fetch,
+			expectedDimensions: 4,
+		}) as typeof fetch;
+
+		const response = await fetchWithFailover('http://lan:8004/v1/embeddings', { method: 'POST', body: '{}' });
+		expect(response.status).toBe(200);
+		expect(calls).toEqual([
+			'http://lan:8004/v1/embeddings',
+			'https://proxy.example/v1/embeddings',
+		]);
+		const payload = await response.json() as { data: Array<{ embedding: string }> };
+		const bytes = Buffer.from(payload.data[0].embedding, 'base64');
+		const decoded = new Float32Array(bytes.buffer, bytes.byteOffset, bytes.byteLength / Float32Array.BYTES_PER_ELEMENT);
+		expect(decoded).toHaveLength(4);
+
+		// A base64 mismatch alone is rejected: this failed under the previous
+		// array-only guard, which returned the first response without failing over.
+		const wrongDimension = vi.fn(async () => base64EmbeddingResponse(3));
+		await expect(failover({
+			fetchImpl: wrongDimension as typeof fetch,
+			expectedDimensions: 4,
+		})('http://lan:8004/v1/embeddings', { method: 'POST', body: '{}' }))
+			.rejects.toThrow(/dimension 3 != 4/i);
 	});
 });

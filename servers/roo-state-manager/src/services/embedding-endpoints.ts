@@ -107,10 +107,19 @@ function normaliseEndpoint(raw: string): string {
 	try {
 		url = new URL(trimmed);
 	} catch {
-		throw new Error(`Invalid embedding endpoint in EMBEDDING_API_BASE_URLS: ${trimmed}`);
+		// Never echo the raw value: a malformed endpoint could still carry credentials.
+		throw new Error('Invalid embedding endpoint in EMBEDDING_API_BASE_URLS (must be a valid http(s) URL; value redacted)');
 	}
 	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-		throw new Error(`Embedding endpoint must be http(s): ${trimmed}`);
+		throw new Error(`Embedding endpoint must be http(s), got protocol ${url.protocol} for host ${url.host || '(unparseable)'}`);
+	}
+	// #4352 review (ai-01 06:26Z): refuse URL userinfo outright. Otherwise the
+	// canonical `https://user:secret@host-A` credentials would be replayed to the
+	// failover host B (rewriteEndpoint only rewrites protocol/host/port/path), and
+	// B's own userinfo would be dropped. The fleet passes keys via EMBEDDING_API_KEY
+	// (bearer), so there is no legitimate userinfo use to preserve. Host-only message.
+	if (url.username || url.password) {
+		throw new Error(`Embedding endpoint must not carry URL userinfo (use EMBEDDING_API_KEY bearer auth instead): ${url.host}`);
 	}
 	return trimmed.replace(/\/+$/, '');
 }
@@ -313,11 +322,35 @@ function shouldFailOver(response: Response): boolean {
 	return response.status >= 500;
 }
 
+/**
+ * Decode `data[0].embedding` into a dimension, for BOTH wire shapes.
+ *
+ * #4352 review (ai-01 06:03Z): the OpenAI SDK sends `encoding_format: 'base64'`
+ * by default and only decodes AFTER this wrapper returns the response, so on
+ * the real production path `data[0].embedding` is a base64 **string**, not a
+ * float array — `Array.isArray(first)` was always false and the dimension guard
+ * never fired. Measured on embeddings.myia.io: base64 → String of 13,656 chars
+ * (10,240 bytes / 4 = 2,560 = EMBEDDING_DIMENSIONS), float → Array of 2,560.
+ * base64 length decodes as bytes/4 (float32). Anything else stays unclassified
+ * (null) and is left to the SDK/VectorIndexer's own dimension checks.
+ */
+function dimensionFromEmbedding(embedding: unknown): number | null {
+	if (Array.isArray(embedding)) return embedding.length;
+	if (typeof embedding === 'string' && embedding.length > 0) {
+		try {
+			const bytes = Buffer.from(embedding, 'base64').byteLength;
+			if (bytes % 4 === 0) return bytes / 4;
+		} catch {
+			return null;
+		}
+	}
+	return null;
+}
+
 async function dimensionOf(response: Response): Promise<number | null> {
 	try {
 		const payload = await response.clone().json() as { data?: Array<{ embedding?: unknown }> };
-		const first = payload?.data?.[0]?.embedding;
-		return Array.isArray(first) ? first.length : null;
+		return dimensionFromEmbedding(payload?.data?.[0]?.embedding);
 	} catch {
 		// The SDK will report a malformed body; failover cannot classify it.
 		return null;
