@@ -98,6 +98,57 @@ describe('garbage-scanner', () => {
 			expect(result.by_category.death_spiral).toBe(1);
 		});
 
+		test('a UUID fragment containing 502 is not an error turn (#4352 g2)', async () => {
+			// The scanner used to call `content.includes('502')`, so a task id such as
+			// `e4d502c6` inside an ordinary message counted every turn as an error.
+			// ms#1534 fixed the same trap in the indexing classifier; this locks the
+			// scanner onto the shared boundary-aware helper.
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('uuid-502-task', {
+				taskId: 'uuid-502-task',
+				metadata: {
+					messageCount: 20,
+					actionCount: 10,
+					totalSize: 5000,
+					machineId: 'test-machine',
+					createdAt: '2024-01-01T00:00:00Z'
+				},
+				sequence: Array(15).fill(null).map(() => ({
+					role: 'assistant',
+					content: 'Indexed chunk e4d502c6 and segment -502fe026 without incident'
+				}))
+			});
+
+			const result = await scanForGarbage(cache, { category: 'all', min_messages: 10 });
+
+			// Under the old substring match this was a 15-message death spiral.
+			expect(result.flagged).toHaveLength(0);
+			expect(result.by_category.death_spiral).toBe(0);
+		});
+
+		test('a bare 502 still counts as an error turn', async () => {
+			const cache = new Map<string, ConversationSkeleton>();
+			cache.set('bare-502-task', {
+				taskId: 'bare-502-task',
+				metadata: {
+					messageCount: 20,
+					actionCount: 10,
+					totalSize: 5000,
+					machineId: 'test-machine',
+					createdAt: '2024-01-01T00:00:00Z'
+				},
+				sequence: Array(15).fill(null).map(() => ({
+					role: 'assistant',
+					content: 'Error: 502'
+				}))
+			});
+
+			const result = await scanForGarbage(cache, { category: 'death_spiral', min_messages: 10 });
+
+			expect(result.flagged).toHaveLength(1);
+			expect(result.flagged[0].details.error_message_count).toBe(15);
+		});
+
 		test('detects repeated timeout errors', async () => {
 			const cache = new Map<string, ConversationSkeleton>();
 			cache.set('timeout-spiral', {

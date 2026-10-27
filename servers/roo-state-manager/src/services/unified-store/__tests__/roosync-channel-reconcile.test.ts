@@ -111,7 +111,11 @@ describe('roosync-channel-reconcile (#3292)', () => {
 
   describe('env gate', () => {
     test('skips without touching the writer or the filesystem when dual-write is off', async () => {
-      delete process.env.UNIFIED_STORE_DUAL_WRITE;
+      // #4131: "dual-write off" is the explicit kill-switch now — the ABSENCE
+      // of the flag means "follow the default", i.e. armed when a PG URL is
+      // configured. This test also drops the URL, so BOTH conditions hold.
+      process.env.UNIFIED_STORE_DUAL_WRITE = '0';
+      delete process.env.UNIFIED_STORE_PG_URL;
       expect(isChannelDualWriteArmed()).toBe(false);
 
       const result = await run();

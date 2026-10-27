@@ -160,7 +160,10 @@ describe('roosync-dashboard-reconcile (#3151 Phase C)', () => {
   });
 
   test('not armed → skipped-not-armed, zero IO', async () => {
-    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    // #4131: "not armed" is now the explicit kill-switch — the ABSENCE of the
+    // flag means "follow the default", i.e. armed when a PG URL is configured.
+    process.env.UNIFIED_STORE_DUAL_WRITE = '0';
+    delete process.env.UNIFIED_STORE_PG_URL;
     expect(isDashboardReconcileArmed()).toBe(false);
     writeFileSync(join(dashboardsDir, 'workspace-a.md'), fixture('workspace-a', ['id-1']));
     const result = await reconcileDashboardsFromGDrive({

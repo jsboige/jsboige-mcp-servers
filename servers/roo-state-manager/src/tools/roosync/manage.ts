@@ -20,6 +20,7 @@ import {
   perReaderStatus
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
+import { isPgFlagOn } from '../../services/unified-store/pg-flags.js';
 
 // Logger instance for manage tool
 const logger: Logger = createLogger('RooSyncManageTool');
@@ -569,7 +570,7 @@ async function showStats(
 
   const reconcileLine = reconcile.config
     ? `${reconcile.running ? '✅ actif' : '⚠️ inactif'} — lookback ${reconcile.config.lookbackDays} j, toutes les ${reconcile.config.intervalHours} h`
-    : process.env.UNIFIED_STORE_DUAL_WRITE === '1' && process.env.UNIFIED_STORE_PG_URL
+    : isPgFlagOn('UNIFIED_STORE_DUAL_WRITE') && process.env.UNIFIED_STORE_PG_URL
       ? '⚠️ jamais démarré sur ce process (dual-write armé — attendu sur un process non redémarré)'
       : '— (dual-write désarmé sur ce process)';
   const reconcileLastRunLine = reconcile.lastRun

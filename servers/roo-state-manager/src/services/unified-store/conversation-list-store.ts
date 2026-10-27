@@ -42,6 +42,7 @@ import type {
 } from './UnifiedStoreReader.js';
 import type { MessageRow } from './types.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
+import { isPgFlagOn } from './pg-flags.js';
 import { createLogger } from '../../utils/logger.js';
 
 /**
@@ -75,7 +76,7 @@ const LABEL_MAX = 200;
  * without a process restart — same as getDashboardPgReader.
  */
 export function getConversationListPgReader(): IUnifiedStoreReader | null {
-  if (process.env.UNIFIED_STORE_CONVERSATION_READ_PG !== '1') return null;
+  if (!isPgFlagOn('UNIFIED_STORE_CONVERSATION_READ_PG')) return null;
   if (!process.env.UNIFIED_STORE_PG_URL) return null;
   const reader = getUnifiedStoreReader();
   if (reader.isNull()) return null;

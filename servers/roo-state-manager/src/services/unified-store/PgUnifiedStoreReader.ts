@@ -102,6 +102,26 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     }
   }
 
+  /**
+   * #4131 (migrations/012) — read one key of `roosync_store_meta`.
+   *
+   * Carries the backfill completeness markers. Throws when the table does
+   * not exist yet (the migration was never applied on this store) or the
+   * store is unreachable — the caller treats both as "no proof of
+   * completeness" and keeps the GDrive path.
+   */
+  async getStoreMeta(key: string): Promise<string | null> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+    const result = await this.pool.query(
+      'SELECT value FROM roosync_store_meta WHERE key = $1',
+      [key]
+    );
+    if (result.rows.length === 0) return null;
+    const value = result.rows[0].value;
+    return typeof value === 'string' ? value : String(value ?? '');
+  }
+
   isNull(): boolean { return false; }
 
   // ─── RooSync channel reads (#3151 Phase B) ─────────────────────

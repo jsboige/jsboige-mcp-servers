@@ -12,6 +12,7 @@
  */
 
 import { ConversationSkeleton, SkeletonHeader, MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
+import { matchesPattern } from '../../utils/matches-pattern.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
@@ -84,6 +85,22 @@ function isMessageSkeleton(item: MessageSkeleton | ActionMetadata): item is Mess
 }
 
 /**
+ * Markers that make an assistant turn an error turn.
+ *
+ * `502` is matched on a word boundary, not as a substring: the scanner used to
+ * call `content.includes('502')` directly, so a UUID segment such as `e4d502c6`
+ * counted an ordinary assistant message as an error — the same trap ms#1534
+ * fixed in the indexing error classifier (#4352 g2). Both now go through the
+ * shared helper so they cannot drift apart.
+ */
+const ERROR_MARKERS = ['error', '502', 'timeout', 'failed', 'bad gateway'];
+
+/** `content` must already be lowercased by the caller. */
+function isErrorContent(content: string): boolean {
+    return ERROR_MARKERS.some(marker => matchesPattern(content, marker));
+}
+
+/**
  * Detect death spirals: same error message repeated N+ times consecutively
  */
 function detectDeathSpiral(skeleton: ConversationSkeleton): { detected: boolean; error?: string; count: number } {
@@ -96,9 +113,7 @@ function detectDeathSpiral(skeleton: ConversationSkeleton): { detected: boolean;
     for (const item of sequence) {
         if (isMessageSkeleton(item) && item.role === 'assistant') {
             const content = (item.content || '').toLowerCase();
-            const isError = content.includes('error') || content.includes('502') ||
-                content.includes('timeout') || content.includes('failed') ||
-                content.includes('bad gateway');
+            const isError = isErrorContent(content);
 
             if (isError) {
                 // Normalize error for comparison (strip timestamps, counts)
@@ -155,9 +170,7 @@ function computeRatios(skeleton: ConversationSkeleton): {
             if (item.role === 'assistant') {
                 assistantCount++;
                 const content = (item.content || '').toLowerCase();
-                if (content.includes('error') || content.includes('502') ||
-                    content.includes('timeout') || content.includes('failed') ||
-                    content.includes('bad gateway')) {
+                if (isErrorContent(content)) {
                     errorCount++;
                 }
             }

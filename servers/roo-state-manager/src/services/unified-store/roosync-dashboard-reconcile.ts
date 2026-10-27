@@ -80,6 +80,7 @@ import type { IUnifiedStoreWriter, RooSyncLockAcquireStatus } from './UnifiedSto
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
+import { isPgFlagOn } from './pg-flags.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-dashboard-reconcile');
@@ -160,7 +161,7 @@ export interface DashboardReconcileOptions {
 
 /** Same gate as the channel reconcile — mirrors writer-factory's arming. */
 export function isDashboardReconcileArmed(): boolean {
-  return process.env.UNIFIED_STORE_DUAL_WRITE === '1' && !!process.env.UNIFIED_STORE_PG_URL;
+  return isPgFlagOn('UNIFIED_STORE_DUAL_WRITE') && !!process.env.UNIFIED_STORE_PG_URL;
 }
 
 /** Archival pass kill-switch — '0' restores the insert-only reconcile. */

@@ -91,46 +91,19 @@ vi.mock('../cleanup-orphans.js', () => ({
 // #2766 S2+ P1 follow-up — mock the static imports for classifier + dead-letter bookkeeping.
 // The dispatcher imports `classifyIndexingError` at module load for status fallback AND
 // cleanup_failed, so this must be a static (hoisted) vi.mock — not just for dynamic imports.
-vi.mock('../../../services/background-services.js', () => ({
-	// Sync inline classifier mirroring the real ERROR_PATTERNS contract from
-	// background-services.ts:1420. We deliberately don't `vi.importActual` here
-	// because that's async and the dispatcher consumes the function synchronously
-	// from the static import. Substring match on lowercased message.
-	classifyIndexingError: (error: any) => {
-		const msg = String(error?.message ?? '').toLowerCase();
-		if (!msg) return { isPermanent: false, errorClass: 'unknown' };
-		if (msg.includes('claude code session') || msg.includes('claude session')) {
-			return { isPermanent: true, errorClass: 'claude_session_not_found' };
-		}
-		if (msg.includes('file not found') || msg.includes('enoent')) {
-			return { isPermanent: true, errorClass: 'file_not_found' };
-		}
-		if (msg.includes('authentication failed') || msg.includes('401') || msg.includes('unauthorized') || msg.includes('invalid api key')) {
-			return { isPermanent: true, errorClass: 'auth_failed' };
-		}
-		if (msg.includes('rate limit') || msg.includes('429') || msg.includes('too many requests')) {
-			return { isPermanent: false, errorClass: 'rate_limit' };
-		}
-		if (msg.includes('service unavailable') || msg.includes('503') || msg.includes('502') || msg.includes('500 internal')) {
-			return { isPermanent: false, errorClass: 'service_503' };
-		}
-		if (msg.includes('network error') || msg.includes('connection timeout') || msg.includes('network timeout')) {
-			return { isPermanent: false, errorClass: 'network_timeout' };
-		}
-		if (msg.includes('econnreset') || msg.includes('connection reset')) {
-			return { isPermanent: false, errorClass: 'connection_reset' };
-		}
-		if (msg.includes('enotfound') || msg.includes('getaddrinfo')) {
-			return { isPermanent: false, errorClass: 'dns_failure' };
-		}
-		if (msg.includes('indexing timeout') || msg.includes('embedding timeout') || msg.includes('timeout waiting') || msg.includes('task timeout')) {
-			return { isPermanent: false, errorClass: 'embedding_timeout' };
-		}
-		return { isPermanent: false, errorClass: 'unknown' };
-	},
-	// #3014: readLeaderLockInfo is now imported by the status handler.
-	readLeaderLockInfo: mockReadLeaderLockInfo,
-}));
+// #4352 g2: the factory used to hand-write the classifier, which kept the OLD substring
+// semantics alive in the tests and hid the ms#1534 fix (`msg.includes('502')` matches the
+// `502` inside a UUID segment). We now spread the real module and override only the one
+// symbol the dispatcher needs stubbed. An async factory is supported by vitest, so
+// `importOriginal` is available despite the previous comment claiming otherwise.
+vi.mock('../../../services/background-services.js', async (importOriginal) => {
+	const actual = await importOriginal() as Record<string, unknown>;
+	return {
+		...actual,
+		// #3014: readLeaderLockInfo is now imported by the status handler.
+		readLeaderLockInfo: mockReadLeaderLockInfo,
+	};
+});
 vi.mock('../../../services/indexing-decision.js', () => ({
 	IndexingDecisionService: class {
 		resetIndexingState = mockResetIndexingState;

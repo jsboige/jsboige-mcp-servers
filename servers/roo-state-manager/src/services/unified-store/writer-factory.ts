@@ -5,7 +5,9 @@
  * @issue #2426 Phase B (Epic #2191 unified store)
  *
  * Env-gate logic:
- *   - UNIFIED_STORE_DUAL_WRITE=1 + UNIFIED_STORE_PG_URL set → PgUnifiedStoreWriter
+ *   - a PG URL is set → PgUnifiedStoreWriter (the PG cutover is the DEFAULT
+ *     path, #4131 — UNIFIED_STORE_DUAL_WRITE only remains as a kill-switch:
+ *     '0'/'false' restores the Null writer)
  *   - Otherwise → NullUnifiedStoreWriter (no-op, zero overhead)
  *
  * The factory is idempotent: repeated calls return the same instance
@@ -15,6 +17,7 @@
 import type { IUnifiedStoreWriter } from './UnifiedStoreWriter.js';
 import { NullUnifiedStoreWriter } from './UnifiedStoreWriter.js';
 import { PgUnifiedStoreWriter } from './PgUnifiedStoreWriter.js';
+import { isPgFlagOn } from './pg-flags.js';
 
 let instance: IUnifiedStoreWriter | null = null;
 
@@ -28,10 +31,9 @@ let instance: IUnifiedStoreWriter | null = null;
 export function getUnifiedStoreWriter(): IUnifiedStoreWriter {
   if (instance) return instance;
 
-  const dualWrite = process.env.UNIFIED_STORE_DUAL_WRITE;
   const pgUrl = process.env.UNIFIED_STORE_PG_URL;
 
-  if (dualWrite === '1' && pgUrl) {
+  if (pgUrl && isPgFlagOn('UNIFIED_STORE_DUAL_WRITE')) {
     console.error(
       `[UnifiedStore] Dual-write ENABLED — connecting to ${maskConnectionString(pgUrl)}`
     );

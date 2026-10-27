@@ -49,6 +49,7 @@ vi.mock('../../../../src/utils/logger.js', () => ({
 }));
 
 import { readCliInboxFromPg } from '../../../../src/services/unified-store/roosync-channel-read.js';
+import { setBackfillMarkerState } from '../../../../src/services/unified-store/pg-backfill-marker.js';
 
 const MACHINE = 'myia-po-2024';
 
@@ -75,11 +76,16 @@ function row(overrides: Partial<RooSyncMessageRow> & Pick<RooSyncMessageRow, 'id
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // Marqueur de backfill : état FRAIS (jamais 'unknown') pour qu'aucune
+  // consultation PG ne parte pendant le test (le helper CLI attend le
+  // marqueur avant de décider).
+  setBackfillMarkerState('channel', 'absent');
   process.env.UNIFIED_STORE_CHANNEL_READ_PG = '1';
   process.env.UNIFIED_STORE_PG_URL = 'postgresql://test/test';
 });
 
 afterEach(() => {
+  setBackfillMarkerState('channel', 'absent');
   delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
   delete process.env.UNIFIED_STORE_PG_URL;
   delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;

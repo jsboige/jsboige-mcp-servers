@@ -92,7 +92,16 @@ describe('isValidDashboardKeyShape', () => {
 
 describe('listRooSyncDashboardKeysFromPg', () => {
   test('gate off → null, reader never called (GDrive listing stands)', async () => {
+    // #4131: "gate off" is now the explicit kill-switch — the ABSENCE of the
+    // flag means "follow the default", i.e. ON when a PG URL is configured.
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '0';
+    await expect(listRooSyncDashboardKeysFromPg()).resolves.toBeNull();
+    expect(mockListRooSyncDashboardKeys).not.toHaveBeenCalled();
+  });
+
+  test('gate unset + no PG URL → null, reader never called (a seat without PG sees no change)', async () => {
     delete process.env.UNIFIED_STORE_DASHBOARD_READ_PG;
+    delete process.env.UNIFIED_STORE_PG_URL;
     await expect(listRooSyncDashboardKeysFromPg()).resolves.toBeNull();
     expect(mockListRooSyncDashboardKeys).not.toHaveBeenCalled();
   });

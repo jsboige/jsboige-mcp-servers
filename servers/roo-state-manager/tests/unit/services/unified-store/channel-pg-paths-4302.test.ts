@@ -101,6 +101,14 @@ beforeEach(() => {
   cacheSpy = vi.spyOn(mm as unknown as { ensureInboxCache: () => unknown }, 'ensureInboxCache');
   process.env.UNIFIED_STORE_CHANNEL_READ_PG = '1';
   process.env.UNIFIED_STORE_PG_URL = 'postgresql://fake-4302';
+  // #4131: the PG-PRIMARY gate now DEFAULTS ON wherever a PG URL is
+  // configured. This file pins the OTHER contract — the READ_PG seat whose
+  // per-call GDrive fallback is the designed degradation ("falls back to the
+  // GDrive cache when PG errors"). Under PG_PRIMARY that fallback is FORBIDDEN
+  // by design (#4131 B16: fail closed, no GDrive fan-out) — a different
+  // contract, pinned by MessageManager.b16-pg-primary-no-gdrive-fanout.test.ts.
+  // The kill-switch pins this file to the READ_PG contract explicitly.
+  process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '0';
   process.env.ROOSYNC_WORKSPACE_ID = WS;
   // Factory mock present by default (gate ON); PG-error cases flip the
   // mailbox/pool mocks to rejecting — the reader is still non-Null there.
@@ -109,6 +117,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
+  delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
   delete process.env.UNIFIED_STORE_PG_URL;
   delete process.env.ROOSYNC_WORKSPACE_ID;
   rmSync(sharedRoot, { recursive: true, force: true });
