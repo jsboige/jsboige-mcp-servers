@@ -43,6 +43,27 @@ import {
 	type QdrantLike,
 } from '../supplement-index.js';
 
+// ── Lone-surrogate detector (#4352 g1) ──────────────────────────────────────
+// Returns a description of the first unpaired surrogate, or null. A high half is legal
+// only when a low half follows it; a low half is legal only right after one.
+function loneSurrogateIn(s: string): string | null {
+	for (let i = 0; i < s.length; i++) {
+		const code = s.charCodeAt(i);
+		if (code >= 0xd800 && code <= 0xdbff) {
+			const next = i + 1 < s.length ? s.charCodeAt(i + 1) : -1;
+			if (next >= 0xdc00 && next <= 0xdfff) {
+				i++; // a whole pair: legal, skip its low half
+				continue;
+			}
+			return `lone high surrogate \\u${code.toString(16)} at ${i}`;
+		}
+		if (code >= 0xdc00 && code <= 0xdfff) {
+			return `orphaned low surrogate \\u${code.toString(16)} at ${i}`;
+		}
+	}
+	return null;
+}
+
 // ── A minimal in-memory Qdrant, enough for every call this module makes ──────
 
 class FakeQdrant implements QdrantLike {
@@ -245,6 +266,32 @@ describe('chunkTextByLines — Zoo fallback chunker fidelity (#4352 a3)', () => 
 		expect(a.map((c) => c.segmentHash)).toEqual(b.map((c) => c.segmentHash));
 		// Same text at a different place is a different segment (the hash carries the lines).
 		expect(chunkTextByLines(`${line}\n${line}`, 'd.ps1')).toEqual([]);
+	});
+
+	// #4352 g1: cutting an oversized line by UTF-16 index splits an emoji in two, and the
+	// orphaned half makes Qdrant reject the whole upsert window
+	// (`400 ... unexpected end of hex escape`, probed on ai-01 in ms#1535).
+	// Mutation: put `substring(0, MAX_BLOCK_CHARS)` back and the first segment ends with a
+	// lone \ud83d -- the first assertion below fails.
+	test('an emoji straddling the MAX_BLOCK_CHARS boundary is never split', () => {
+		// The pair occupies units 999 and 1000: a naive cut keeps the high half only.
+		const content = `${'a'.repeat(MAX_BLOCK_CHARS - 1)}\u{1F4E6}${'b'.repeat(MAX_BLOCK_CHARS * 2)}`;
+
+		const chunks = chunkTextByLines(content, 'emoji.ps1');
+
+		expect(chunks.length).toBeGreaterThan(1);
+		for (const c of chunks) {
+			expect(loneSurrogateIn(c.content)).toBeNull();
+		}
+		// Nothing lost and nothing duplicated across the segments.
+		expect(chunks.map((c) => c.content).join('')).toBe(content);
+	});
+
+	test('a line with no astral character still cuts at exactly MAX_BLOCK_CHARS', () => {
+		// Guards the opposite mutant: a cut that always shrinks by one would still be
+		// valid UTF-16, so only the exact length pins "shrink only when needed".
+		const chunks = chunkTextByLines('a'.repeat(MAX_BLOCK_CHARS * 2 + 5), 'plain.ps1');
+		expect(chunks.map((c) => c.content.length)).toEqual([MAX_BLOCK_CHARS, MAX_BLOCK_CHARS, 5]);
 	});
 });
 
