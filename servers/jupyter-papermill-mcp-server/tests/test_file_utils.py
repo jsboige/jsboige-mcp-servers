@@ -3,6 +3,7 @@ Tests for file utilities.
 """
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -130,6 +131,62 @@ class TestFileUtils:
             assert len(read_notebook.cells) == 1
             assert read_notebook.cells[0].cell_type == "code"
             assert read_notebook.cells[0].source == "print('test')"
+
+    def test_write_notebook_interrupted_serialization_keeps_original(self, monkeypatch):
+        """An interrupted write must not truncate the existing notebook (27/10: 0-byte file)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            notebook_path = Path(temp_dir) / "keep.ipynb"
+            original = FileUtils.add_cell(FileUtils.create_empty_notebook(), "code", "x = 1")
+            FileUtils.write_notebook(original, notebook_path)
+            before = notebook_path.read_bytes()
+
+            def boom(*args, **kwargs):
+                raise RuntimeError("interrupted")
+
+            monkeypatch.setattr(nbformat, "writes", boom)
+            changed = FileUtils.add_cell(FileUtils.create_empty_notebook(), "code", "x = 2")
+            with pytest.raises(RuntimeError):
+                FileUtils.write_notebook(changed, notebook_path)
+
+            assert notebook_path.read_bytes() == before
+            assert [p.name for p in Path(temp_dir).iterdir()] == ["keep.ipynb"]
+
+    def test_write_notebook_cancelled_mid_write_leaves_no_temp(self, monkeypatch):
+        """A cancellation after the temp file is written keeps the original and cleans up."""
+        import asyncio
+        import os
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            notebook_path = Path(temp_dir) / "keep.ipynb"
+            original = FileUtils.add_cell(FileUtils.create_empty_notebook(), "code", "x = 1")
+            FileUtils.write_notebook(original, notebook_path)
+            before = notebook_path.read_bytes()
+
+            def cancelled(*args, **kwargs):
+                raise asyncio.CancelledError()
+
+            monkeypatch.setattr(os, "fsync", cancelled)
+            changed = FileUtils.add_cell(FileUtils.create_empty_notebook(), "code", "x = 2")
+            with pytest.raises(asyncio.CancelledError):
+                FileUtils.write_notebook(changed, notebook_path)
+
+            assert notebook_path.read_bytes() == before
+            assert [p.name for p in Path(temp_dir).iterdir()] == ["keep.ipynb"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    def test_write_notebook_keeps_file_mode(self):
+        """The temp-file swap must not narrow an existing 0644 notebook to mkstemp's 0600."""
+        import os
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            notebook_path = Path(temp_dir) / "mode.ipynb"
+            notebook = FileUtils.create_empty_notebook()
+            FileUtils.write_notebook(notebook, notebook_path)
+            os.chmod(notebook_path, 0o644)
+
+            FileUtils.write_notebook(notebook, notebook_path)
+
+            assert notebook_path.stat().st_mode & 0o777 == 0o644
 
     def test_read_nonexistent_notebook(self):
         """Test reading non-existent notebook."""

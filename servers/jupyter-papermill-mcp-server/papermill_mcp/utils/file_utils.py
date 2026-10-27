@@ -6,6 +6,7 @@ Provides helper functions for notebook file manipulation.
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 
@@ -93,8 +94,36 @@ class FileUtils:
         # Validate notebook before writing
         nbformat.validate(notebook)
 
-        with open(path, "w", encoding="utf-8") as f:
-            nbformat.write(notebook, f)
+        # Atomic write: serialize first, write a sibling temp file, then swap it in.
+        # open(path, "w") truncated the target before writing, so an interrupted
+        # call (an update_cell cancelled at its 900 s timeout, 27/10) left a
+        # 0-byte notebook. The temp file sits in the same directory so that
+        # os.replace stays a same-volume rename.
+        content = nbformat.writes(notebook)
+        if not content.endswith("\n"):
+            content += "\n"
+        # mkstemp creates the file 0600; keep the mode open() would have given
+        # (the existing file's, else 0666 minus umask) or the swap narrows it.
+        try:
+            mode = path.stat().st_mode & 0o777
+        except FileNotFoundError:
+            umask = os.umask(0)
+            os.umask(umask)
+            mode = 0o666 & ~umask
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp_name, mode)
+            os.replace(tmp_name, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
 
         return path
 
