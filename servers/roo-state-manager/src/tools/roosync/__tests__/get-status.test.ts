@@ -44,7 +44,7 @@ vi.mock('../../../services/MessageManager.js', () => ({
 // #1953 / #2318: Mock dashboard-activity utils.
 // extractMachineActivity returns machines that appear on dashboards.
 // Tests can override via mockExtractMachineActivity.mockReturnValue(...)
-const { mockExtractMachineActivity, mockIsRecentlyActive } = vi.hoisted(() => ({
+const { mockExtractMachineActivity, mockIsRecentlyActive, mockLookupMachineActivityInArchives } = vi.hoisted(() => ({
   mockExtractMachineActivity: vi.fn(() => {
     // Default: all 6 fleet machines are "seen" on dashboard (online)
     const map = new Map<string, string>();
@@ -57,7 +57,11 @@ const { mockExtractMachineActivity, mockIsRecentlyActive } = vi.hoisted(() => ({
     map.set('myia-web1', now);
     return map;
   }),
-  mockIsRecentlyActive: vi.fn(() => true)
+  mockIsRecentlyActive: vi.fn(() => true),
+  // #3695: real archive lookup never fires here (mock activity returns every
+  // registry machine) — stub keeps the mocked module shape complete. Named
+  // so the #4344 wiring (whole registry + floors) can be pinned.
+  mockLookupMachineActivityInArchives: vi.fn(() => new Map())
 }));
 
 vi.mock('../../../utils/dashboard-activity.js', () => ({
@@ -67,9 +71,7 @@ vi.mock('../../../utils/dashboard-activity.js', () => ({
   })),
   extractMachineActivity: mockExtractMachineActivity,
   isRecentlyActive: mockIsRecentlyActive,
-  // #3695: real archive lookup never fires here (mock activity returns every
-  // registry machine) — stub keeps the mocked module shape complete.
-  lookupMachineActivityInArchives: vi.fn(() => new Map())
+  lookupMachineActivityInArchives: mockLookupMachineActivityInArchives
 }));
 
 describe('get-status (Option B)', () => {
@@ -418,6 +420,15 @@ describe('get-status (Option B)', () => {
       expect(result.machineLastSeen!['myia-web1']).toBe(t);
       expect(result.machineLastSeen!['myia-po-2023']).toBeNull();
       expect(result.machineLastSeen!['myia-po-2026']).toBeNull();
+
+      // #4344 (review ms#1532 INFO) : le lookup d'archives est consulté pour
+      // TOUT le registre, planché par les valeurs vivantes — câblage 3 args
+      // épinglé ici aussi, pas seulement dans inventory.test.ts.
+      expect(mockLookupMachineActivityInArchives).toHaveBeenCalledWith(
+        expect.any(String),
+        ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'],
+        new Map([['myia-ai-01', t], ['myia-web1', t]])
+      );
     });
 
     test('marks a machine as null when it drives an UNKNOWN flag', async () => {

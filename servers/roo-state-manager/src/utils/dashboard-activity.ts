@@ -212,9 +212,27 @@ export function crossCheckWithDashboard(
  * Callers therefore pass `floors` (each machine's live timestamp). An archive
  * file can only carry messages older than its own condensation date, so a
  * machine whose best timestamp already reaches the current file's date is
- * resolved and dropped. That bounds the widening: nothing is read while the
+ * resolved and dropped. That bounds the widening: no FILE is read while the
  * live values beat the newest archive, and the scan stops as soon as every
- * machine is resolved — the cost the RX123 archive-cap was about.
+ * machine is resolved.
+ *
+ * Honest residuals (review ms#1532), both owned by the future RX123 cap:
+ * - the archive DIRECTORY LISTING is now paid on every call (the guard went
+ *   from "some machine missing from live" to "registry non-empty") — zero
+ *   file read is not zero cost, only the cheapest possible probe;
+ * - a machine PRESENT in live (has a floor) but appearing in NO archive is
+ *   never resolved by the date rule and scans to the bottom on every call:
+ *   the date bound can only prove "nothing newer exists above the floor", it
+ *   cannot prove "nothing anywhere below" without reading. Only a truly
+ *   never-seen machine used to pay that price (#3695); a quiet-but-present
+ *   machine whose messages were never condensed now pays it too.
+ *
+ * Phantom headers: bodies quoting a `### [ts] machine|ws` line are escaped by
+ * the writers (FIX #1123 live, #4344 archive) so the header regex below never
+ * matches them. Archives written BEFORE the archive-side escape may still
+ * carry unescaped quotes — that pre-existing exposure is amplified by this
+ * widening (any registry machine, not just missing ones) and is also left to
+ * the RX123 cap: the parser cannot tell a quoted header from a real one.
  *
  * @param dashboardsDir - The dashboards/ directory (archive/ lives inside it).
  * @param machineIds - Machine IDs to look for (case-insensitive).

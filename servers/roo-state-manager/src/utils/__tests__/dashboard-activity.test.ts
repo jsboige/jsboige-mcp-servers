@@ -135,6 +135,47 @@ describe('dashboard-activity', () => {
 			expect(found.get('myia-web2')).toBe('2026-10-26T19:00:00.000Z');
 		});
 
+		it('#4344 — a quoted header ESCAPED by the archive writer is not parsed as activity (no phantom)', () => {
+			// Post-fix shape: the body quotes a dashboard line, the writer
+			// escapes it (FIX #1123 idiom, extended to archives by ms#1532).
+			// The quoted machine (po-2026, silent, stale floor) must NOT be
+			// resurrected by the quote — the mirror image of the #4344 freeze.
+			archive(
+				'workspace-ws-2026-10-26T21-00-00.md',
+				'### [2026-10-26T20:00:00.000Z] myia-web2|roo-extensions\n' +
+					'[msg: msg-quote-1]\n\n' +
+					'incident report, citing:\n' +
+					'\\#\\#\\# [2026-10-26T20:45:00.000Z] myia-po-2026|CoursIA\n' +
+					'end of quote.'
+			);
+			const floors = new Map([['myia-po-2026', '2026-10-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-po-2026'], floors);
+
+			expect(found.has('myia-po-2026')).toBe(false);
+		});
+
+		it('#4344 — legacy archive with an UNESCAPED quoted header still yields the phantom (documented exposure)', () => {
+			// Pre-fix archives (written before the archive-side escape) keep
+			// raw quoted headers; the parser cannot tell a quote from a real
+			// header. This pins TODAY'S honest behaviour on legacy files: the
+			// phantom IS attributed — the reason the writers escape, and the
+			// residual the future RX123 archive cap owns (see the util's doc).
+			archive(
+				'workspace-ws-2026-10-26T21-00-00.md',
+				'### [2026-10-26T20:00:00.000Z] myia-web2|roo-extensions\n' +
+					'[msg: msg-quote-2]\n\n' +
+					'incident report, citing:\n' +
+					'### [2026-10-26T20:45:00.000Z] myia-po-2026|CoursIA\n' +
+					'end of quote.'
+			);
+			const floors = new Map([['myia-po-2026', '2026-10-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-po-2026'], floors);
+
+			expect(found.get('myia-po-2026')).toBe('2026-10-26T20:45:00.000Z');
+		});
+
 		it('buildArchiveFloors equivalent: only machines with a live value get a floor', () => {
 			const floors = new Map<string, string>();
 			const activity = new Map([['myia-web2', '2026-10-20T19:17:13.000Z']]);
