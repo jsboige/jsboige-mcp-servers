@@ -71,6 +71,7 @@ import {
   purgeArchivedChannelMessages,
 } from '../roosync-channel-write.js';
 import { getChannelPgReader } from '../roosync-channel-read.js';
+import { setBackfillMarkerState } from '../pg-backfill-marker.js';
 import { PgUnifiedStoreWriter } from '../PgUnifiedStoreWriter.js';
 import { MessageManager } from '../../MessageManager.js';
 
@@ -126,11 +127,45 @@ describe('isChannelPgPrimary (env gate)', () => {
   afterEach(() => {
     delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
     delete process.env.UNIFIED_STORE_PG_URL;
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    // A fresh 'absent' state (never 'unknown') so no gate call in the next
+    // test triggers a live marker lookup.
+    setBackfillMarkerState('channel', 'absent');
   });
 
   test('flag off → false', () => {
-    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+    // #4131: "flag off" is the explicit kill-switch now — the ABSENCE of the
+    // flag means "follow the default", i.e. ON when a PG URL is configured.
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '0';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '0';
     expect(isChannelPgPrimary()).toBe(false);
+  });
+
+  test('flag unset + no PG URL → false (a seat without PG sees no change)', () => {
+    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+    delete process.env.UNIFIED_STORE_PG_URL;
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    expect(isChannelPgPrimary()).toBe(false);
+  });
+
+  test('flag unset + PG URL + NO backfill marker → false (GDrive path, under-show protection)', () => {
+    // #4131 + review ms#1540: PG may only become the primary surface once the
+    // backfill wrote its completeness marker — otherwise a PG-primary seat
+    // stops writing GDrive while its history is still only in GDrive, and
+    // those messages become invisible to every reader.
+    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    setBackfillMarkerState('channel', 'absent');
+    expect(isChannelPgPrimary()).toBe(false);
+  });
+
+  test('flag unset + PG URL + backfill marker → true (default-on, gated on DATA)', () => {
+    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    setBackfillMarkerState('channel', 'complete');
+    expect(isChannelPgPrimary()).toBe(true);
   });
 
   test('flag on without PG URL → false', () => {
@@ -150,10 +185,12 @@ describe('isChannelPgPrimary (env gate)', () => {
   // DUAL_WRITE hands back the Null writer, whose writes are silent no-ops.
   // That config must NOT activate the PG-primary path (it would skip GDrive
   // and lose the message with zero signal).
-  test('flag on + URL but DUAL_WRITE unset (Null writer) → false', () => {
+  // #4131: DUAL_WRITE now DEFAULTS ON wherever a PG URL is configured, so
+  // the Null-writer config is expressed by the explicit kill-switch '0'.
+  test('flag on + URL but DUAL_WRITE killed (Null writer) → false', () => {
     process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
-    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    process.env.UNIFIED_STORE_DUAL_WRITE = '0';
     expect(isChannelPgPrimary()).toBe(false);
   });
 

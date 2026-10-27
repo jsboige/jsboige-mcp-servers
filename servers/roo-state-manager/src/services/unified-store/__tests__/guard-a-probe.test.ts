@@ -73,7 +73,9 @@ describe('probeDashboardJournalForHydration (#3782 guard a)', () => {
   });
 
   it('pg-off quand le dual-write est inactif — aucun appel reader', async () => {
-    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    // #4131: "dual-write off" is the explicit kill-switch now — the ABSENCE of
+    // the flag means "follow the default", i.e. armed when a PG URL is set.
+    process.env.UNIFIED_STORE_DUAL_WRITE = '0';
     const result = await probeDashboardJournalForHydration('workspace-probe');
     expect(result).toEqual({ kind: 'pg-off' });
     expect(mockGetRooSyncDashboard).not.toHaveBeenCalled();

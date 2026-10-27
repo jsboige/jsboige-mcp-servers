@@ -39,6 +39,11 @@ import { getUnifiedStoreReader } from './reader-factory.js';
 import { PgUnifiedStoreReader } from './PgUnifiedStoreReader.js';
 import { withColdPoolResume } from './pg-cold-pool-resume.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
+import { isPgFlagOn } from './pg-flags.js';
+import {
+  isDashboardPgPrimaryEnabled,
+  isDashboardReadPgEnabled,
+} from './pg-read-gates.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-dashboard-store');
@@ -48,9 +53,17 @@ const logger = createLogger('roosync-dashboard-store');
  *
  * Read at call time (not import time) so tests and config reloads can toggle
  * it without a process restart — same as getChannelPgReader.
+ *
+ * #4131 + review ms#1540 — the gate is resolved by `pg-read-gates.ts`: the
+ * DEFAULT is gated on DATA — the dashboard backfill's completeness marker in
+ * PG (`roosync_store_meta`, migrations/012). A store that was never
+ * imported would otherwise answer a dashboard key with an EMPTY dashboard
+ * (a row with no journal) instead of falling back to the GDrive file — the
+ * dashboard flavour of under-show. An explicit `'1'` still forces PG on; an
+ * explicit `'0'` turns it off at call time.
  */
 export function getDashboardPgReader(): IUnifiedStoreReader | null {
-  if (process.env.UNIFIED_STORE_DASHBOARD_READ_PG !== '1') return null;
+  if (!isDashboardReadPgEnabled()) return null;
   if (!process.env.UNIFIED_STORE_PG_URL) return null;
   const reader = getUnifiedStoreReader();
   if (reader.isNull()) return null;
@@ -62,15 +75,20 @@ export function getDashboardPgReader(): IUnifiedStoreReader | null {
  * written FIRST and the GDrive file becomes a bounded best-effort mirror.
  *
  * Mirrors isChannelPgPrimary (roosync-channel-write.ts) exactly, including the
- * Null-writer guard: UNIFIED_STORE_DUAL_WRITE=1 is required because
+ * Null-writer guard: UNIFIED_STORE_DUAL_WRITE is required because
  * writer-factory only builds a real PgUnifiedStoreWriter under that flag —
  * without it the writer is the Null writer whose syncRooSyncDashboard is a
  * silent no-op, a PG_PRIMARY gate on it would report success while nothing
  * landed (review #1030, same trap as the channel).
+ *
+ * #4131 + review ms#1540 — the DEFAULT is gated on the dashboard backfill's
+ * completeness marker: PG may only become the primary surface once the
+ * dashboard history is in PG, otherwise the file half (which is then only a
+ * bounded mirror) would be the only place the old content lives.
  */
 export function isDashboardPgPrimary(): boolean {
-  return process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY === '1'
-    && process.env.UNIFIED_STORE_DUAL_WRITE === '1'
+  return isDashboardPgPrimaryEnabled()
+    && isPgFlagOn('UNIFIED_STORE_DUAL_WRITE')
     && !!process.env.UNIFIED_STORE_PG_URL;
 }
 
@@ -277,7 +295,7 @@ const GUARD_A_PROBE_TIMEOUT_MS = 3000;
 const GUARD_A_RECENCY_MS = 6 * 3600 * 1000;
 
 export async function probeDashboardJournalForHydration(key: string): Promise<GuardAProbe> {
-  if (process.env.UNIFIED_STORE_DUAL_WRITE !== '1' || !process.env.UNIFIED_STORE_PG_URL) {
+  if (!isPgFlagOn('UNIFIED_STORE_DUAL_WRITE') || !process.env.UNIFIED_STORE_PG_URL) {
     return { kind: 'pg-off' };
   }
   const reader = getUnifiedStoreReader();

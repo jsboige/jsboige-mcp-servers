@@ -18,12 +18,20 @@
  * cannot tolerate (under-show). The write side (UNIFIED_STORE_DUAL_WRITE)
  * fills PG going forward; this flag turns the read side on once the store is
  * complete.
+ *
+ * #4131 + review ms#1540 — the gate is now resolved by `pg-read-gates.ts`:
+ * the DEFAULT (flag unset) is gated on DATA — the backfill's completeness
+ * marker in PG (`roosync_store_meta`, migrations/012) — so a seat that holds
+ * a PG URL but never imported the history keeps reading GDrive. An explicit
+ * `'1'` still forces PG on; an explicit `'0'` turns it off at call time.
  */
 
 import type { Message, MessageListItem } from '../MessageManager.js';
 import type { RooSyncMessageRow, RooSyncMessageUpdate } from './types.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
+import { isChannelReadPgEnabled } from './pg-read-gates.js';
+import { ensureBackfillMarkersFresh } from './pg-backfill-marker.js';
 import { withColdPoolResume } from './pg-cold-pool-resume.js';
 import { parseMachineWorkspace, matchesRecipient, perReaderStatus, isMachineWideTarget } from '../../utils/message-helpers.js';
 import { applyReadTracking } from '../../utils/read-tracking.js';
@@ -41,14 +49,19 @@ const logger = createLogger('roosync-channel-read');
  * reading it as primary, or sends from PG-primary machines would be invisible
  * to it.
  *
+ * The gate itself is resolved by `pg-read-gates.ts` (#4131, review ms#1540):
+ * the DEFAULT is gated on DATA — the backfill must have written its
+ * completeness marker in PG — so a seat that holds a PG URL but whose
+ * channel history was never imported keeps reading GDrive instead of
+ * serving an empty mailbox. An explicit `'1'` still forces PG on; an
+ * explicit `'0'` (on the read flag, the primary flag or the shared
+ * dual-write flag) turns PG reads off at CALL time.
+ *
  * Read at call time (not import time) so tests and config reloads can toggle
  * it without a process restart.
  */
 export function getChannelPgReader(): IUnifiedStoreReader | null {
-  if (
-    process.env.UNIFIED_STORE_CHANNEL_READ_PG !== '1' &&
-    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY !== '1'
-  ) return null;
+  if (!isChannelReadPgEnabled()) return null;
   if (!process.env.UNIFIED_STORE_PG_URL) return null;
   const reader = getUnifiedStoreReader();
   if (reader.isNull()) return null;
@@ -372,6 +385,12 @@ export async function readCliInboxFromPg(
   const machine = parsedCaller.machineId;
   const workspace = workspaceId ?? parsedCaller.workspaceId;
 
+  // #4131 + review ms#1540 — the default read is gated on the backfill
+  // marker; a CLI process starts with an UNRESOLVED marker ('unknown' ⇒
+  // GDrive), which on a PG-primary seat would answer an empty inbox. This
+  // helper CAN await: resolve the marker before deciding (one bounded query).
+  await ensureBackfillMarkersFresh();
+
   const reader = getChannelPgReader();
   if (!reader) return { source: 'file', reason: 'gate-off' };
 
@@ -437,6 +456,10 @@ export async function markCliMessageReadInPg(
   const machine = parsedCaller.machineId;
   const workspace = workspaceId ?? parsedCaller.workspaceId;
   const readerId = workspace ? `${machine}:${workspace}` : machine;
+
+  // Same marker resolution as readCliInboxFromPg — a CLI process starts with
+  // an unresolved marker, which would answer 'gate-off' on a PG-primary seat.
+  await ensureBackfillMarkersFresh();
 
   const reader = getChannelPgReader();
   if (!reader) return { source: 'file', reason: 'gate-off' };

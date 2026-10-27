@@ -173,7 +173,7 @@ describe('reader-factory — singleton behavior', () => {
   });
 });
 
-describe('reader-factory — env-var edge cases', () => {
+describe('reader-factory — env-var edge cases (#4131 default-on)', () => {
   beforeEach(() => {
     resetReaderInstance();
     vi.unstubAllEnvs();
@@ -185,25 +185,42 @@ describe('reader-factory — env-var edge cases', () => {
     resetReaderInstance();
   });
 
-  test('UNIFIED_STORE_DUAL_WRITE="true" (truthy non-"1") does NOT enable (strict equality)', () => {
-    // Factory uses `=== '1'` so any other truthy value falls through.
+  test('UNIFIED_STORE_DUAL_WRITE="true" DOES enable (explicit values are honoured)', () => {
+    // #4131: the gate is no longer a strict `=== '1'` — 'true' is an accepted
+    // explicit ON (the resolver normalizes case/whitespace). The OLD strict
+    // equality silently fell through to the Null reader here.
     vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', 'true');
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
     const reader = getUnifiedStoreReader();
-    expect(reader).toBeInstanceOf(NullUnifiedStoreReader);
+    expect(reader).toBeInstanceOf(PgUnifiedStoreReader);
   });
 
-  test('UNIFIED_STORE_DUAL_WRITE="1 " (trailing whitespace) does NOT enable', () => {
+  test('UNIFIED_STORE_DUAL_WRITE="1 " (trailing whitespace) DOES enable', () => {
     vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', '1 ');
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
     const reader = getUnifiedStoreReader();
-    expect(reader).toBeInstanceOf(NullUnifiedStoreReader);
+    expect(reader).toBeInstanceOf(PgUnifiedStoreReader);
   });
 
-  test('UNIFIED_STORE_DUAL_WRITE=" 1" (leading whitespace) does NOT enable', () => {
+  test('UNIFIED_STORE_DUAL_WRITE=" 1" (leading whitespace) DOES enable', () => {
     vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', ' 1');
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
     const reader = getUnifiedStoreReader();
+    expect(reader).toBeInstanceOf(PgUnifiedStoreReader);
+  });
+
+  test('UNIFIED_STORE_DUAL_WRITE="false" does NOT enable (kill-switch)', () => {
+    vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', 'false');
+    vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
+    const reader = getUnifiedStoreReader();
     expect(reader).toBeInstanceOf(NullUnifiedStoreReader);
+  });
+
+  test('UNIFIED_STORE_DUAL_WRITE unset + a PG URL → the reader is ENABLED (default-on)', () => {
+    // #4131 — the whole point: a seat that holds a PG URL is on PG without
+    // anyone editing its .env by hand.
+    vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
+    const reader = getUnifiedStoreReader();
+    expect(reader).toBeInstanceOf(PgUnifiedStoreReader);
   });
 });

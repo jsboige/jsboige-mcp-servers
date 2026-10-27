@@ -220,6 +220,22 @@ export interface IUnifiedStoreReader {
    * scan), newest first.
    */
   scanRooSyncAttachments(messageId?: string): Promise<RooSyncAttachmentMetadataRow[]>;
+
+  // ─── Store meta (#4131, migrations/012) ──────────────────────────
+
+  /**
+   * One key of the PG side table `roosync_store_meta`, or null when the key
+   * is absent.
+   *
+   * The table carries the BACKFILL COMPLETENESS MARKERS: the default PG
+   * read resolves only when the backfill wrote its marker (see
+   * pg-backfill-marker.ts) — a default gated on DATA, not on a human flag.
+   *
+   * Throws when the store is unreachable or the table does not exist yet
+   * (migrations/012 not applied): the caller treats a failure as "no proof
+   * of completeness" and keeps the GDrive path.
+   */
+  getStoreMeta(key: string): Promise<string | null>;
 }
 
 /** Null object for opt-out read path. */
@@ -251,4 +267,5 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   async getRooSyncAttachmentById(_id: string): Promise<(RooSyncAttachmentMetadataRow & { payload: Buffer }) | null> { return null; }
   async listRooSyncAttachmentMetadata(_uuids: string[]): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
   async scanRooSyncAttachments(_messageId?: string): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
+  async getStoreMeta(_key: string): Promise<string | null> { return null; }
 }

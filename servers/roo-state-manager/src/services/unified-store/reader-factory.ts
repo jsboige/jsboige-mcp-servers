@@ -5,7 +5,9 @@
  * @issue #2426 Phase C (Epic #2191 unified store)
  *
  * Env-gate logic:
- *   - UNIFIED_STORE_DUAL_WRITE=1 + UNIFIED_STORE_PG_URL set → PgUnifiedStoreReader
+ *   - a PG URL is set → PgUnifiedStoreReader (the PG cutover is the DEFAULT
+ *     path, #4131 — UNIFIED_STORE_DUAL_WRITE only remains as a kill-switch:
+ *     '0'/'false' restores the Null reader)
  *   - Otherwise → NullUnifiedStoreReader (no-op, zero overhead)
  *
  * Reuses the same env vars as the writer (UNIFIED_STORE_DUAL_WRITE + UNIFIED_STORE_PG_URL).
@@ -15,6 +17,7 @@
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { NullUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { PgUnifiedStoreReader } from './PgUnifiedStoreReader.js';
+import { isPgFlagOn } from './pg-flags.js';
 
 let instance: IUnifiedStoreReader | null = null;
 
@@ -24,10 +27,9 @@ let instance: IUnifiedStoreReader | null = null;
 export function getUnifiedStoreReader(): IUnifiedStoreReader {
   if (instance) return instance;
 
-  const dualWrite = process.env.UNIFIED_STORE_DUAL_WRITE;
   const pgUrl = process.env.UNIFIED_STORE_PG_URL;
 
-  if (dualWrite === '1' && pgUrl) {
+  if (pgUrl && isPgFlagOn('UNIFIED_STORE_DUAL_WRITE')) {
     console.error('[UnifiedStore] Reader ENABLED — connecting to Postgres');
     instance = new PgUnifiedStoreReader({
       connectionString: pgUrl,

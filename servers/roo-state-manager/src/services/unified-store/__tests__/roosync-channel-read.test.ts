@@ -73,6 +73,7 @@ import {
   getChannelMessageFromPg,
 } from '../roosync-channel-read.js';
 import { mapMessageToRow } from '../roosync-channel-dual-write.js';
+import { setBackfillMarkerState } from '../pg-backfill-marker.js';
 import { MessageManager } from '../../MessageManager.js';
 
 vi.unmock('fs');
@@ -103,14 +104,25 @@ function sampleRow(overrides?: Partial<RooSyncMessageRow>): RooSyncMessageRow {
   };
 }
 
+/**
+ * Arms the channel READ gate for a PG-reading (non-primary) seat.
+ *
+ * #4131: the CHANNEL_PG_PRIMARY gate now DEFAULTS ON wherever a PG URL is
+ * configured, so this helper pins it OFF explicitly. These tests exercise the
+ * READ_PG contract — the per-call GDrive fallback that a non-primary seat
+ * keeps — and the write-primary contract has its own file
+ * (MessageManager.b16-pg-primary-no-gdrive-fanout.test.ts).
+ */
 function withReadGate(fn: () => void | Promise<void>): () => Promise<void> {
   return async () => {
     process.env.UNIFIED_STORE_CHANNEL_READ_PG = '1';
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '0';
     process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
     try {
       await fn();
     } finally {
       delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
+      delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
     }
   };
 }
@@ -175,12 +187,52 @@ describe('row → Message mapping (full-fidelity round-trip)', () => {
 describe('getChannelPgReader (env gate)', () => {
   afterEach(() => {
     delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
+    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
     delete process.env.UNIFIED_STORE_PG_URL;
+    // A fresh 'absent' state (never 'unknown') so no gate call in the next
+    // test triggers a live marker lookup.
+    setBackfillMarkerState('channel', 'absent');
   });
 
   test('flag off → null (GDrive path, zero PG calls)', () => {
-    delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
+    // #4131: "flag off" is the explicit kill-switch now — the ABSENCE of the
+    // flag means "follow the default", i.e. the marker decides.
+    process.env.UNIFIED_STORE_CHANNEL_READ_PG = '0';
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '0';
     expect(getChannelPgReader()).toBeNull();
+  });
+
+  test('flag unset + no PG URL → null (a seat without PG sees no change)', () => {
+    delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
+    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+    delete process.env.UNIFIED_STORE_PG_URL;
+    expect(getChannelPgReader()).toBeNull();
+  });
+
+  test('flag unset + PG URL + NO backfill marker → null (GDrive path, under-show protection)', () => {
+    // #4131 + review ms#1540: the default read is gated on DATA. A store
+    // that was never imported would answer an EMPTY mailbox — no error, no
+    // breaker trip, no GDrive fallback.
+    delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
+    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    setBackfillMarkerState('channel', 'absent');
+    expect(getChannelPgReader()).toBeNull();
+  });
+
+  test('flag unset + PG URL + backfill marker → reader (default-on, gated on DATA)', () => {
+    delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
+    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    setBackfillMarkerState('channel', 'complete');
+    expect(getChannelPgReader()).not.toBeNull();
+  });
+
+  test('flag explicitly on + NO marker → reader (the operator forced it)', () => {
+    process.env.UNIFIED_STORE_CHANNEL_READ_PG = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    setBackfillMarkerState('channel', 'absent');
+    expect(getChannelPgReader()).not.toBeNull();
   });
 
   test('flag on without PG URL → null', () => {
@@ -482,7 +534,10 @@ describe('MessageManager PG-first reads (#3151 Phase B)', () => {
   );
 
   test('flag off → GDrive path only, zero reader calls', async () => {
-    delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
+    // #4131: "flag off" is the explicit kill-switch now — the ABSENCE of the
+    // flag means "follow the default", i.e. ON when a PG URL is configured.
+    process.env.UNIFIED_STORE_CHANNEL_READ_PG = '0';
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '0';
     writeInboxFile({
       id: 'g-3',
       from: 'myia-po-2023:roo-extensions',

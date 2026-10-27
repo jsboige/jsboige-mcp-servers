@@ -521,8 +521,12 @@ describe('action merge — gardes d’intégrité (revue #1134)', () => {
   it('hôte qui dual-écrit PG sans le lire → REFUS (union aveugle, écrasement du journal PG)', async () => {
     // Asymétrie exacte : writer armé, porte de lecture fermée. La garde lit
     // l'env (miroir du writer-factory) — aucun writer n’est instantié ici.
+    // #4131: la porte de lecture est fermée par le kill-switch explicite
+    // '0' — son ABSENCE ne la ferme plus (le défaut suit la présence d'une
+    // URL PG, donc le siège serait PG-lecteur).
     process.env.UNIFIED_STORE_DUAL_WRITE = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgres://test:test@localhost:5432/test';
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '0';
     seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z', [M.m3]);
 
     const result = await roosyncDashboard({
