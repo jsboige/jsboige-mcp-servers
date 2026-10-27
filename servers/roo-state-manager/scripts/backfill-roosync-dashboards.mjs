@@ -26,6 +26,11 @@
  *
  * Prerequisite: migrations/002 + migrations/006 applied.
  * The .env at servers/roo-state-manager/.env is auto-loaded.
+ *
+ * #4131 + review ms#1540 — the COMPLETENESS MARKER (`roosync_store_meta`,
+ * migrations/012) opens the default PG read fleet-wide, so it is written ONLY
+ * by a FULL-SCOPE live run (no --limit, no --key) that finished without
+ * error. Any subset run says so and writes nothing.
  */
 
 import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
@@ -93,7 +98,7 @@ if (DRY_RUN) {
 }
 
 const buildUrl = (rel) => pathToFileURL(path.join(resolveBuildDir(RSM_ROOT), rel)).href;
-const [{ getSharedStatePath }, { parseDashboardMarkdown, extractPersistedMessageIds }, { backfillDashboardToStore }, { getUnifiedStoreWriter }, { DASHBOARD_BACKFILL_META_KEY }] =
+const [{ getSharedStatePath }, { parseDashboardMarkdown, extractPersistedMessageIds }, { backfillDashboardToStore }, { getUnifiedStoreWriter }, { DASHBOARD_BACKFILL_META_KEY }, { evaluateDashboardScope, decideMarkerWrite }] =
   await Promise.all([
     import(buildUrl('utils/shared-state-path.js')),
     // Dependency-light parser — importing the full dashboard tool module would
@@ -104,7 +109,14 @@ const [{ getSharedStatePath }, { parseDashboardMarkdown, extractPersistedMessage
     // #4131 + review ms#1540 — the meta key of the completeness marker the
     // default PG read is gated on (single source of truth with the runtime).
     import(buildUrl('services/unified-store/pg-backfill-marker.js')),
+    // #4131 + review ms#1540 RE2 — full-scope verdict (pure, unit-tested).
+    import(buildUrl('services/unified-store/backfill-scope.js')),
   ]);
+
+// #4131 + review ms#1540 RE2 (CRITICAL) — the completeness marker opens the
+// DEFAULT PG read fleet-wide, so it may only be written by a run that covered
+// the WHOLE scope (no --limit, no --key filter).
+const scope = evaluateDashboardScope({ limit: LIMIT, keyFilter: KEY_FILTER });
 
 const writer = getUnifiedStoreWriter();
 const writerKind = writer.constructor?.name ?? 'unknown';
@@ -115,6 +127,10 @@ console.log(`Mode: ${liveMode ? 'LIVE (PgUnifiedStoreWriter)' : 'DRY RUN (NullUn
 console.log(`.env: ${envLoaded ? 'loaded' : 'not found'} (${path.join(RSM_ROOT, '.env')})`);
 if (KEY_FILTER) console.log(`Key filter: ${KEY_FILTER}`);
 if (LIMIT) console.log(`Limit: ${LIMIT} dashboards`);
+console.log(
+  `Scope: ${scope.fullScope ? 'FULL (every dashboard, no limit)' : 'SUBSET — the completeness marker will NOT be written'}`,
+);
+for (const reason of scope.reasons) console.log(`  - ${reason}`);
 console.log('');
 
 const sharedStatePath = getSharedStatePath();
@@ -217,7 +233,17 @@ if (!liveMode) {
 // backfillé » le renverrait à tort vers le fichier GDrive, qui n'existe pas
 // pour une clé née en PG. Le marqueur répond à la VRAIE question (« l'arbre
 // GDrive a-t-il été importé ? »), pas à un proxy.
-if (liveMode && errors === 0) {
+//
+// FULL SCOPE (review ms#1540 RE2, CRITICAL) : un `--limit` ou un `--key`
+// laisse l'arbre incomplet ; le marqueur n'est écrit que par une exécution
+// LIVE qui a couvert TOUTE la portée et terminé sans erreur.
+const markerDecision = decideMarkerWrite({ liveMode, errors, scope });
+if (!markerDecision.write) {
+  console.log('');
+  console.log(`  marker:    NOT written — ${markerDecision.reason}.`);
+  console.log('             The default PG read stays OFF (GDrive keeps serving) until a clean');
+  console.log('             FULL-SCOPE live run writes the marker.');
+} else {
   try {
     await writer.setStoreMeta(DASHBOARD_BACKFILL_META_KEY, new Date().toISOString());
     console.log('');

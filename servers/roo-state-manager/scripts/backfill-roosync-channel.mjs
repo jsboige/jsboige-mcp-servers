@@ -29,6 +29,16 @@
  * counted and named ("foreign") — they do not gate the INCOMPLETE exit. An
  * unreadable/empty metadata.json inside a real uuid dir remains an ERROR:
  * that is exactly the truncation the gate exists to catch.
+ *
+ * Same rule in the messages phase: a file that is NOT named `msg-*.json` is a
+ * foreign artifact (consumed markers, hand-dropped evidence files) — it is
+ * counted, named, and does NOT gate the exit. A genuine `msg-*.json` that
+ * fails to read/parse/insert remains an ERROR.
+ *
+ * #4131 + review ms#1540 — the COMPLETENESS MARKER (`roosync_store_meta`,
+ * migrations/012) opens the default PG read fleet-wide, so it is written ONLY
+ * by a FULL-SCOPE live run (no --limit, every default dir, every phase) that
+ * finished without error. Any subset run says so and writes nothing.
  */
 
 import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
@@ -106,7 +116,7 @@ if (DRY_RUN) {
 }
 
 const buildUrl = (rel) => pathToFileURL(path.join(resolveBuildDir(RSM_ROOT), rel)).href;
-const [{ getSharedStatePath }, { mapMessageToRow }, { getUnifiedStoreWriter }, { CHANNEL_BACKFILL_META_KEY }] =
+const [{ getSharedStatePath }, { mapMessageToRow }, { getUnifiedStoreWriter }, { CHANNEL_BACKFILL_META_KEY }, { evaluateChannelScope, isForeignMessageFileName, decideMarkerWrite }] =
   await Promise.all([
     import(buildUrl('utils/shared-state-path.js')),
     import(buildUrl('services/unified-store/roosync-channel-dual-write.js')),
@@ -114,7 +124,16 @@ const [{ getSharedStatePath }, { mapMessageToRow }, { getUnifiedStoreWriter }, {
     // #4131 + review ms#1540 — the meta key of the completeness marker the
     // default PG read is gated on (single source of truth with the runtime).
     import(buildUrl('services/unified-store/pg-backfill-marker.js')),
+    // #4131 + review ms#1540 RE2 — full-scope verdict + foreign-file
+    // classification (pure helpers, unit-tested).
+    import(buildUrl('services/unified-store/backfill-scope.js')),
   ]);
+
+// #4131 + review ms#1540 RE2 (CRITICAL) — the completeness marker opens the
+// DEFAULT PG read fleet-wide, so it may only be written by a run that covered
+// the WHOLE scope. A `--limit` smoke test, a `--dirs inbox` subset or an
+// `--only attachments` run leaves the store incomplete.
+const scope = evaluateChannelScope({ limit: LIMIT, dirs: DIRS, phases: PHASES });
 
 const writer = getUnifiedStoreWriter();
 const writerKind = writer.constructor?.name ?? 'unknown';
@@ -126,6 +145,10 @@ console.log(`.env: ${envLoaded ? 'loaded' : 'not found'} (${path.join(RSM_ROOT, 
 console.log(`Phases: ${PHASES.join(', ')}`);
 console.log(`Dirs: ${DIRS.join(', ')}`);
 if (LIMIT) console.log(`Limit: ${LIMIT} items per phase`);
+console.log(
+  `Scope: ${scope.fullScope ? 'FULL (every dir, every phase, no limit)' : 'SUBSET — the completeness marker will NOT be written'}`,
+);
+for (const reason of scope.reasons) console.log(`  - ${reason}`);
 console.log('');
 
 const sharedStatePath = getSharedStatePath();
@@ -141,6 +164,8 @@ let total = 0;
 let processed = 0;
 let skipped = 0;
 let applied = 0;
+// Foreign files: not channel data, listed, and NOT gating the marker.
+const foreignFiles = [];
 if (PHASES.includes('messages')) {
 // Which files failed, not just how many. A count alone cannot tell the operator
 // whether the store is complete, and "complete" is the precondition for turning
@@ -163,10 +188,27 @@ outer: for (const dir of DIRS) {
   for (const file of jsonFiles) {
     total++;
     if (LIMIT && applied >= LIMIT) break outer;
+    // #4131 + review ms#1540 RE2 (WARNING) — the shared tree also holds
+    // FOREIGN artifacts (consumed markers, hand-dropped evidence files — ~1 034
+    // on ai-01). They are not channel data: a malformed one must not gate the
+    // completeness marker forever (the default PG read would never open). A
+    // genuine `msg-*.json` that fails to read/parse stays an ERROR — that is
+    // the truncation the marker exists to catch.
+    let message;
     try {
       let content = await readFile(path.join(dirPath, file), 'utf-8');
       if (content.charCodeAt(0) === 0xfeff) content = content.slice(1); // strip UTF-8 BOM
-      const message = JSON.parse(content);
+      message = JSON.parse(content);
+    } catch (err) {
+      if (isForeignMessageFileName(file)) {
+        foreignFiles.push(`${dir}/${file}: ${err?.message ?? String(err)}`);
+        continue; // listed, NOT gating
+      }
+      errors++;
+      failures.push(`${dir}/${file}: ${err?.message ?? String(err)}`);
+      continue;
+    }
+    try {
       if (!message || !message.id) {
         skipped++;
         continue;
@@ -181,6 +223,8 @@ outer: for (const dir of DIRS) {
       processed++;
       applied++;
     } catch (err) {
+      // An INSERT failure is never foreign: it is a store-side failure and it
+      // gates the marker like any other error.
       errors++;
       failures.push(`${dir}/${file}: ${err?.message ?? String(err)}`);
     }
@@ -192,6 +236,11 @@ console.log('=== Messages result ===');
 console.log(`  total:     ${total}`);
 console.log(`  processed: ${processed}`);
 console.log(`  skipped:   ${skipped}  (no id / name-id mismatch)`);
+if (foreignFiles.length > 0) {
+  console.log(`  foreign:   ${foreignFiles.length}  (not msg-*.json — not channel data, listed, NOT gating)`);
+  for (const f of foreignFiles.slice(0, 20)) console.log(`    - ${f}`);
+  if (foreignFiles.length > 20) console.log(`    ... and ${foreignFiles.length - 20} more`);
+}
 } // end messages phase
 
 // ─── Attachments phase (#3151 §7.5.2) ───────────────────────────────────────
@@ -335,10 +384,19 @@ if (failures.length > 0) {
 // en charge — un store jamais importé ne doit JAMAIS présenter une boîte vide
 // (under-show).
 //
-// Le marqueur n'est écrit que si le backfill a terminé SANS ERREUR. Il est
-// idempotent (UPSERT) : rejouer le backfill rafraîchit l'horodatage, ne
-// duplique rien.
-if (liveMode && errors === 0) {
+// Le marqueur n'est écrit que si le backfill a terminé SANS ERREUR **ET** a
+// couvert TOUTE la portée (review ms#1540 RE2, CRITICAL) : un `--limit`, un
+// `--dirs` restreint ou un `--only` laissent le store incomplet, et un
+// marqueur écrit sur ce store ouvrirait la lecture PG par défaut sur un store
+// jamais importé. Il est idempotent (UPSERT) : rejouer le backfill rafraîchit
+// l'horodatage, ne duplique rien.
+const markerDecision = decideMarkerWrite({ liveMode, errors, scope });
+if (!markerDecision.write) {
+  console.log('');
+  console.log(`  marker:    NOT written — ${markerDecision.reason}.`);
+  console.log('             The default PG read stays OFF (GDrive keeps serving) until a clean');
+  console.log('             FULL-SCOPE live run writes the marker.');
+} else {
   try {
     await writer.setStoreMeta(CHANNEL_BACKFILL_META_KEY, new Date().toISOString());
     console.log('');
