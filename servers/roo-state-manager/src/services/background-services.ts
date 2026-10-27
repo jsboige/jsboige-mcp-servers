@@ -15,6 +15,7 @@ import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics } from './task-indexer/VectorIndexer.js';
 import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass } from '../types/indexing.js';
+import { matchesPattern } from '../utils/matches-pattern.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 import { isLocallyIndexable } from './task-partition.js';
 import { dualWriteConversationToStore } from './unified-store/dual-write.js';
@@ -1926,19 +1927,6 @@ const PERMANENT_ERROR_CLASSES: ReadonlySet<IndexingErrorClass> = new Set<Indexin
     'quota_exceeded',
     'auth_failed',
 ]);
-
-/**
- * A bare status code ('401', '503'...) must stand alone: indexing messages quote
- * the task id, and a UUID segment such as `e4d401c6` or `-401fe026` would match
- * '401' as a substring (#4352: three indexing timeouts and one IIS 502 were
- * dead-lettered as auth_failed). Textual patterns keep the substring match.
- */
-function matchesPattern(message: string, pattern: string): boolean {
-    if (/^\d+$/.test(pattern)) {
-        return new RegExp(`(?<![0-9a-z])${pattern}(?![0-9a-z])`).test(message);
-    }
-    return message.includes(pattern);
-}
 
 /**
  * #2766 S2+ — Classify an indexing error.
