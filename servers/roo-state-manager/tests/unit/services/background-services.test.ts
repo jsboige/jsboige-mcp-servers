@@ -724,6 +724,30 @@ describe('classifyIndexingError', () => {
     }
   });
 
+  it('does not read a status code inside a quoted task id (#4352)', () => {
+    // Messages measured on ai-01 27/10: the UUID segments e4d401c6, 140124cc,
+    // -4018- and -401fe026 contain '401' and were dead-lettered as auth_failed.
+    const cases: Array<{ message: string; expectedClass: string }> = [
+      { message: 'Indexing timeout for claude-d--roo-extensions--e4d401c6-ca38-4164-862a-2443320c8de9 after 600000ms — session too large or embedding backlog', expectedClass: 'embedding_timeout' },
+      { message: 'Indexing timeout for claude-d--claudish--140124cc-d264-4f10-a8db-db023e420aa8 after 600000ms', expectedClass: 'embedding_timeout' },
+      { message: 'Indexing timeout for claude-d--2025-Epita-Intelligence-Symbolique--4f0d04f2-9fbe-4018-906d-cba5a303b1b0 after 600000ms', expectedClass: 'embedding_timeout' },
+      { message: 'Embedding incomplete for task claude-d--roo-extensions--1a5a32e7-d5d7-48bc-94eb-401fe026a068: 63/63 sub-chunks without a vector — last embedding error: 502 <!DOCTYPE html', expectedClass: 'service_503' },
+      { message: 'Embedding incomplete for task claude-d--x--aa503bb1-0000-4000-8000-000000000000: last embedding error: Connection error.', expectedClass: 'unknown' },
+      // Code at the END of a segment: only the lookbehind keeps it out.
+      { message: 'Indexing timeout for claude-d--x--0000aaaa-bbbb-4ccc-8ddd-abcdef12e401 after 600000ms', expectedClass: 'embedding_timeout' },
+    ];
+
+    for (const { message, expectedClass } of cases) {
+      const result = classifyIndexingError(new Error(message));
+      expect(result.errorClass).toBe(expectedClass);
+      expect(result.isPermanent).toBe(false);
+    }
+
+    // A standalone code still classifies.
+    expect(classifyIndexingError(new Error('HTTP 401: invalid key'))).toEqual({ isPermanent: true, errorClass: 'auth_failed' });
+    expect(classifyIndexingError(new Error('service unavailable (503)')).errorClass).toBe('service_503');
+  });
+
   it('should default to { isPermanent: false, errorClass: "unknown" } for unrecognized errors', () => {
     const unknown = classifyIndexingError(new Error('something unexpected'));
     expect(unknown.isPermanent).toBe(false);

@@ -1921,6 +1921,19 @@ const PERMANENT_ERROR_CLASSES: ReadonlySet<IndexingErrorClass> = new Set<Indexin
 ]);
 
 /**
+ * A bare status code ('401', '503'...) must stand alone: indexing messages quote
+ * the task id, and a UUID segment such as `e4d401c6` or `-401fe026` would match
+ * '401' as a substring (#4352: three indexing timeouts and one IIS 502 were
+ * dead-lettered as auth_failed). Textual patterns keep the substring match.
+ */
+function matchesPattern(message: string, pattern: string): boolean {
+    if (/^\d+$/.test(pattern)) {
+        return new RegExp(`(?<![0-9a-z])${pattern}(?![0-9a-z])`).test(message);
+    }
+    return message.includes(pattern);
+}
+
+/**
  * #2766 S2+ — Classify an indexing error.
  *
  * Returns `{ isPermanent, errorClass }` so callers can both gate retries AND
@@ -1937,7 +1950,7 @@ export function classifyIndexingError(error: any): IndexingErrorClassification {
     }
 
     for (const { errorClass, patterns } of ERROR_PATTERNS) {
-        if (patterns.some(pat => errorMessage.includes(pat.toLowerCase()))) {
+        if (patterns.some(pat => matchesPattern(errorMessage, pat.toLowerCase()))) {
             return {
                 isPermanent: PERMANENT_ERROR_CLASSES.has(errorClass),
                 errorClass,
