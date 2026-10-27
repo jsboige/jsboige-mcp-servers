@@ -75,5 +75,12 @@ export function gradeSnippetBoundary(snippet: string): { ok: boolean; kind: Snip
 		const ok = /\n\s*$/.test(body) || /[,;}\])]\s*$/.test(body);
 		return { ok, kind: shape };
 	}
-	return { ok: /[.!?]["')]?\s*$/.test(body.trim()), kind: 'prose' };
+	const trimmed = body.trim();
+	// A fence line is a COMPLETE line: a passage that ends there was not cut
+	// mid-sentence, even though its last character is a backtick and not a full
+	// stop (measured 27/10 on the cadence passage: "…(cron-driven).\n```").
+	// Prose that merely EMBEDS a fenced block still has to end on the fence —
+	// the anti-vacuity case (prose cut mid-sentence) is unaffected.
+	if (/(^|\n)\s*```\s*$/.test(trimmed)) return { ok: true, kind: 'prose' };
+	return { ok: /[.!?]["')]?\s*$/.test(trimmed), kind: 'prose' };
 }

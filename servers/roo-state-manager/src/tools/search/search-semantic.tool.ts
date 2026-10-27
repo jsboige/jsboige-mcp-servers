@@ -585,8 +585,12 @@ interface ToolContinuationDiagnostics {
 async function classifyToolContinuations(
     results: RawSearchResult[], qdrant: any, collectionName: string
 ): Promise<ToolContinuationDiagnostics> {
+    // #2609 V3: page 1 of a split chunk is included too — its parent id IS its
+    // own id, so the batched retrieve resolves it from its own head without an
+    // extra call. Excluding it left the first page of every split message
+    // 'unknown' whenever no later page surfaced.
     const candidates = results.filter(r =>
-        r.originalChunkId && (r.chunkIndex ?? 1) > 1
+        r.originalChunkId
         && r.metadata.chunk_type !== 'tool_interaction'
         && !r.machineOutputKind
     );
@@ -1363,13 +1367,26 @@ export const searchTasksByContentTool = {
                 const totalMessages = typeof result.payload?.total_messages === 'number'
                     ? result.payload.total_messages
                     : undefined;
+                const originalChunkId = typeof result.payload?.original_chunk_id === 'string'
+                    ? result.payload.original_chunk_id : undefined;
+                // #2609 V3 (rubric (a)): an UNSPLIT chunk is its own parent — its
+                // provenance is classifiable from its own content with the same
+                // classifier the split-parent branch uses. Without this, every
+                // unsplit chunk fell through to the 'unknown' fallback (the split
+                // loop below only sees original_chunk_id), and the V3 golden gate
+                // read plain prose as unprovenanced (measured 27/10: the cadence
+                // passage came back 'unknown' with machineKind null).
+                const toolContinuationStatus: RawSearchResult['toolContinuationStatus'] =
+                    originalChunkId === undefined && machineKind === null
+                        ? 'not_tool_result'
+                        : originalChunkId === undefined ? 'tool_result' : undefined;
                 return {
                     taskId: result.payload?.task_id || 'unknown',
                     score,
                     machineOutputKind: machineKind,
                     machineMalusApplied: !!machine.kind,
-                    originalChunkId: typeof result.payload?.original_chunk_id === 'string'
-                        ? result.payload.original_chunk_id : undefined,
+                    toolContinuationStatus,
+                    originalChunkId,
                     chunkIndex: typeof result.payload?.chunk_index === 'number' ? result.payload.chunk_index : undefined,
                     content: truncateMessage(content, 5),
                     snippet: extractSnippet(fullContent, search_query),

@@ -91,6 +91,28 @@ describe('snippet boundary classifier (rubric (a) anti-vacuity, pure unit)', () 
 		expect(g.ok).toBe(false);
 	});
 
+	it('prose: a cut landing on a fence line is accepted (complete line, 27/10 live datum)', () => {
+		// Verbatim shape of the V3 cadence passage: prose, then a completed
+		// fenced block, then the truncation marker. The last character is a
+		// backtick, so the sentence-end predicate alone read FAIL even though
+		// the cut respected a complete line.
+		const snippet =
+			"Cadence 12h (job session-only, auto-expire 7j) : pas de tir groupe aux heures communes.\n```\nCronCreate(cron: \"23 */12 * * *\", prompt: \"/coordinate\", recurring: true)\n```...";
+		expect(classifySnippetShape(snippet)).toBe('prose');
+		const g = gradeSnippetBoundary(snippet);
+		expect(g.kind).toBe('prose');
+		expect(g.ok).toBe(true);
+	});
+
+	it('prose: an embedded fenced block does NOT rescue a mid-sentence cut', () => {
+		// The fence relaxation is about WHERE the cut lands, never a pass-partout.
+		const snippet =
+			"La cadence retenue est de 12 heures.\n```\nCronCreate(cron: \"23 */12 * * *\")\n```\nPuis le coordinateur reprend la main sur les lanes et déc...";
+		const g = gradeSnippetBoundary(snippet);
+		expect(g.kind).toBe('prose');
+		expect(g.ok).toBe(false);
+	});
+
 	it('not-truncated snippets are exempt (unchanged behavior)', () => {
 		const g = gradeSnippetBoundary('Un passage complet, sans troncature, qui se termine proprement.');
 		expect(g.kind).toBe('not-truncated');
