@@ -243,8 +243,17 @@ describe('SKELETON_PREWARM — le prechauffage est optionnel, les tiers ne le so
         else process.env[ENV_VAR] = originalIndexing;
     });
 
-    it('defaut (variable absente) : le prechauffage a lieu — la flotte est inchangee', async () => {
+    it('defaut (variable absente) : AUCUN prechauffage — 3,2 Go par hote sinon', async () => {
+        // po-2023 27/10 : 11 hotes a 3,5-3,9 Go, famine memoire, VM WSL tombee.
         delete process.env[PREWARM];
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).not.toHaveBeenCalled();
+    });
+
+    it("SKELETON_PREWARM='true' : le prechauffage a lieu (opt-in machine)", async () => {
+        process.env[PREWARM] = 'true';
 
         await initializeBackgroundServices(new StateManager().getState());
 
@@ -272,14 +281,13 @@ describe('SKELETON_PREWARM — le prechauffage est optionnel, les tiers ne le so
         });
     });
 
-    it("seule la chaine exacte 'false' desactive le prechauffage", async () => {
-        // Meme convention que SKELETON_*_TIER et ROO_INDEXING_ENABLED : une valeur
-        // inattendue ne doit pas eteindre silencieusement une optimisation.
-        process.env[PREWARM] = '0';
+    it("seule la chaine exacte 'true' active le prechauffage", async () => {
+        // Une valeur inattendue ne doit pas allumer 3,2 Go par hote en silence.
+        process.env[PREWARM] = '1';
 
         await initializeBackgroundServices(new StateManager().getState());
 
-        expect(skeletonCache.warmCache).toHaveBeenCalledTimes(1);
+        expect(skeletonCache.warmCache).not.toHaveBeenCalled();
     });
 });
 
@@ -315,12 +323,12 @@ describe('SKELETON_PREWARM — ROO_AUTO_DISABLE_PREWARM (#3661)', () => {
         else process.env[ENV_VAR] = originalIndexing;
     });
 
-    it("ROO_AUTO_DISABLE_PREWARM absent + SKELETON_PREWARM absent : prechauffage ON (defaut inchange)", async () => {
+    it("ROO_AUTO_DISABLE_PREWARM absent + SKELETON_PREWARM absent : prechauffage OFF (defaut)", async () => {
         delete process.env[AUTO];
 
         await initializeBackgroundServices(new StateManager().getState());
 
-        expect(skeletonCache.warmCache).toHaveBeenCalledTimes(1);
+        expect(skeletonCache.warmCache).not.toHaveBeenCalled();
         // Tiers restent allumes (#1747 preserve)
         expect(skeletonCache.configure).toHaveBeenCalledWith({
             enableClaudeTier: true,
@@ -344,10 +352,11 @@ describe('SKELETON_PREWARM — ROO_AUTO_DISABLE_PREWARM (#3661)', () => {
         expect(skeletonCache.warmCache).not.toHaveBeenCalled();
     });
 
-    it("ROO_AUTO_DISABLE_PREWARM=0 : prechauffage ON (valeur inattendue ne coupe pas)", async () => {
-        // Convention coherente avec SKELETON_PREWARM : seule la chaine exacte
-        // 'false'/'1'/'true' coupe. Une valeur inattendue preserve le defaut ON.
+    it("ROO_AUTO_DISABLE_PREWARM=0 + SKELETON_PREWARM=true : prechauffage ON (valeur inattendue ne coupe pas)", async () => {
+        // Seules les chaines exactes '1'/'true' coupent : une valeur inattendue laisse
+        // l'opt-in de la machine en place.
         process.env[AUTO] = '0';
+        process.env[PREWARM] = 'true';
 
         await initializeBackgroundServices(new StateManager().getState());
 
@@ -363,6 +372,15 @@ describe('SKELETON_PREWARM — ROO_AUTO_DISABLE_PREWARM (#3661)', () => {
             enableClaudeTier: true,
             enableArchiveTier: true,
         });
+    });
+
+    it("SKELETON_PREWARM=true + ROO_AUTO_DISABLE_PREWARM=1 : le kill-switch l'emporte sur l'opt-in", async () => {
+        process.env[PREWARM] = 'true';
+        process.env[AUTO] = '1';
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).not.toHaveBeenCalled();
     });
 
     it("SKELETON_PREWARM=false + ROO_AUTO_DISABLE_PREWARM=1 : prechauffage coupe (les deux flags disent off)", async () => {

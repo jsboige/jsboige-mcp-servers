@@ -840,21 +840,24 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // Default ON; rollback via SKELETON_CLAUDE_TIER=false / SKELETON_ARCHIVE_TIER=false in .env.
         const enableClaudeTier = process.env.SKELETON_CLAUDE_TIER !== 'false';
         const enableArchiveTier = process.env.SKELETON_ARCHIVE_TIER !== 'false';
-        // #3661 — Effective prewarm decision: explicit kill-switch `SKELETON_PREWARM=false`
-        // OR `ROO_AUTO_DISABLE_PREWARM=1` opt-in for high-multiplicity machines. The latter is
-        // a per-machine flag set at deploy time, NOT a runtime auto-detect (lesson #3661 §5
-        // — operational decision, not algorithmic). Tiers stay enabled either way; prewarm
-        // only controls the eager hydration. Lazy access to Tier 2/3 remains via
-        // awaitFreshnessWithBudget (graceful degrade to local results + notice).
+        // #3661 — Effective prewarm decision. Default OFF: a host pre-warms only when the
+        // machine opts in with `SKELETON_PREWARM=true`, and `ROO_AUTO_DISABLE_PREWARM=1`
+        // still forces it off. The opt-out was per machine and never reached the seats:
+        // po-2023 ran 11 hosts at 3.5-3.9 GB each (27/10), and the memory starvation took
+        // its WSL VM down. Tiers stay enabled either way; prewarm only controls the eager
+        // hydration. Lazy access to Tier 2/3 remains via awaitFreshnessWithBudget
+        // (graceful degrade to local results + notice).
         const explicitPrewarm = process.env.SKELETON_PREWARM;
         const autoDisable = process.env.ROO_AUTO_DISABLE_PREWARM === '1' || process.env.ROO_AUTO_DISABLE_PREWARM === 'true';
-        const enablePrewarm = explicitPrewarm !== 'false' && !autoDisable;
+        const enablePrewarm = explicitPrewarm === 'true' && !autoDisable;
         SkeletonCacheService.configure({ enableClaudeTier, enableArchiveTier });
-        const prewarmReason = explicitPrewarm === 'false'
-            ? 'SKELETON_PREWARM=false'
-            : autoDisable
-                ? 'ROO_AUTO_DISABLE_PREWARM=1'
-                : 'default-ON';
+        const prewarmReason = autoDisable
+            ? 'ROO_AUTO_DISABLE_PREWARM=1'
+            : explicitPrewarm === 'true'
+                ? 'SKELETON_PREWARM=true'
+                : explicitPrewarm === 'false'
+                    ? 'SKELETON_PREWARM=false'
+                    : 'default-OFF';
         console.log(`🗂️  Skeleton cache tiers: Tier1=ON Tier2=${enableClaudeTier ? 'ON' : 'OFF'} Tier3=${enableArchiveTier ? 'ON' : 'OFF'} prewarm=${enablePrewarm ? 'ON' : 'OFF'} (reason: ${prewarmReason})`);
 
         // #3661 — Boot instrumentation: emits a single-line JSON snapshot of boot decisions
@@ -900,8 +903,8 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // SKELETON_PREWARM=false skips ONLY the eager hydration. The tiers stay ENABLED --
         // configure() above is untouched, so the #1747 visibility fix is preserved -- and
         // load lazily on first use via awaitFreshnessWithBudget, which degrades to local
-        // results + notice rather than failing. Default is ON: behaviour is unchanged
-        // unless a machine opts out.
+        // results + notice rather than failing. Default is OFF: a machine opts in with
+        // SKELETON_PREWARM=true.
         if (enablePrewarm) {
             SkeletonCacheService.getInstance().warmCache().catch((err: any) => {
                 console.warn('[Skeleton-Worker] Skeleton cache pre-warm failed (non-blocking):', err?.message || err);

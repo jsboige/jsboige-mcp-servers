@@ -163,7 +163,17 @@ describe('initializeBackgroundServices — porte prewarm sur la sweep Claude (#3
 		expect(mockClaudeDetect).not.toHaveBeenCalled();
 	});
 
-	it('prewarm ON (défaut) → la sweep eager tourne (détecteur Claude appelé)', async () => {
+	it('défaut (aucune variable) → sweep SAUTÉE : le prewarm est opt-in', async () => {
+		const state = createMockState();
+
+		await initializeBackgroundServices(state);
+		await settleBackgroundChain();
+
+		expect(mockClaudeDetect).not.toHaveBeenCalled();
+	});
+
+	it('SKELETON_PREWARM=true (opt-in) → la sweep eager tourne (détecteur Claude appelé)', async () => {
+		process.env.SKELETON_PREWARM = 'true';
 		const state = createMockState();
 
 		await initializeBackgroundServices(state);
