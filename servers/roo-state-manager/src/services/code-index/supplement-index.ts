@@ -149,6 +149,31 @@ export interface SupplementChunk {
  * cannot be traded for bug-for-bug parity — and there is nothing to be compatible
  * with: Zoo never chunks these files at all. The exhaustive-window test pins it.
  */
+/**
+ * Cut a block of at most `maxUnits` UTF-16 units WITHOUT splitting a surrogate pair
+ * (#4352 g1, the same defect ms#1535 fixed in `sanitizePayload`).
+ *
+ * `substring` cuts by UTF-16 index, so an emoji straddling the boundary leaves a lone
+ * high surrogate at the end of one segment and its orphaned low half at the start of
+ * the next. Qdrant's JSON parser rejects such a payload with
+ * `400 Format error in JSON body: unexpected end of hex escape`, and one rejected point
+ * fails the WHOLE upsert window -- the task then lands in "circuit breaker". Moving the
+ * boundary back by one unit costs at most one character and keeps every block valid
+ * UTF-16. Whole pairs are untouched, so an ASCII line cuts exactly as before.
+ */
+function takeBlockChars(text: string, maxUnits: number): { block: string; rest: string } {
+	let end = Math.min(maxUnits, text.length);
+	// A high surrogate at the last kept unit belongs with the low half that starts the
+	// remainder; `end > 1` keeps the shrink from ever producing an empty block.
+	if (end > 1 && end < text.length) {
+		const code = text.charCodeAt(end - 1);
+		if (code >= 0xd800 && code <= 0xdbff) {
+			end -= 1;
+		}
+	}
+	return { block: text.substring(0, end), rest: text.substring(end) };
+}
+
 export function chunkTextByLines(
 	content: string,
 	filePath: string,
@@ -210,10 +235,14 @@ export function chunkTextByLines(
 			let remainingLineContent = line;
 			let currentSegmentStartChar = 0;
 			while (remainingLineContent.length > 0) {
-				const segment = remainingLineContent.substring(0, MAX_BLOCK_CHARS);
-				remainingLineContent = remainingLineContent.substring(MAX_BLOCK_CHARS);
-				createSegmentBlock(segment, originalLineNumber, currentSegmentStartChar);
-				currentSegmentStartChar += MAX_BLOCK_CHARS;
+				// #4352 g1: never cut through a surrogate pair -- see takeBlockChars.
+				const { block, rest } = takeBlockChars(remainingLineContent, MAX_BLOCK_CHARS);
+				createSegmentBlock(block, originalLineNumber, currentSegmentStartChar);
+				// Consume what the block ACTUALLY took: a boundary moved back by one unit
+				// must shift the start-char index with it, or the segment hashes reuse a
+				// position that no longer matches the text.
+				currentSegmentStartChar += block.length;
+				remainingLineContent = rest;
 			}
 			chunkStartLineIndex = i + 1;
 			continue;
