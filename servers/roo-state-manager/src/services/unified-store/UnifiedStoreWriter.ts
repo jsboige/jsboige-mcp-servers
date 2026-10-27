@@ -191,6 +191,21 @@ export interface IUnifiedStoreWriter {
   readRooSyncDashboardLock(lockKey: string): Promise<{ holder: unknown; acquiredAt: string } | null>;
   /** Health probe (SELECT 1). */
   ping(): Promise<boolean>;
+
+  /**
+   * #4131 (migrations/012) — write one key of the PG side table
+   * `roosync_store_meta` (UPSERT).
+   *
+   * The table carries the BACKFILL COMPLETENESS MARKERS: the backfill
+   * scripts write their marker here when they finish without errors, and the
+   * default PG read resolves only when the marker is present (see
+   * pg-backfill-marker.ts) — a default gated on DATA, not on a human flag.
+   *
+   * Throws on failure: a marker that was not written is a marker that does
+   * not exist, and the caller MUST say so rather than pretend the backfill
+   * is complete.
+   */
+  setStoreMeta(key: string, value: string): Promise<void>;
 }
 
 /**
@@ -281,4 +296,5 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
     return null;
   }
   async ping(): Promise<boolean> { return false; }
+  async setStoreMeta(_key: string, _value: string): Promise<void> {}
 }

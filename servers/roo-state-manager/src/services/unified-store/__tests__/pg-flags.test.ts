@@ -18,7 +18,13 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
-import { isPgFlagOn, hasPgUrl } from '../pg-flags.js';
+import {
+  isPgFlagOn,
+  hasPgUrl,
+  pgFlagState,
+  isPgFlagExplicitlyOn,
+  isPgFlagExplicitlyOff,
+} from '../pg-flags.js';
 
 const FLAG = 'UNIFIED_STORE_DUAL_WRITE';
 
@@ -121,5 +127,58 @@ describe('pg-flags — hasPgUrl', () => {
   test('false when the PG URL is an empty string', () => {
     vi.stubEnv('UNIFIED_STORE_PG_URL', '');
     expect(hasPgUrl()).toBe(false);
+  });
+});
+
+describe('pg-flags — pgFlagState (three states)', () => {
+  beforeEach(() => {
+    vi.unstubAllEnvs();
+    clearEnv();
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    clearEnv();
+  });
+
+  // The READ gates need to tell an EXPLICIT '1' (the operator forced it) from
+  // the DEFAULT (unset → the backfill marker decides) — review ms#1540.
+
+  test("'1' and 'true' resolve to the explicit ON state", () => {
+    vi.stubEnv(FLAG, '1');
+    expect(pgFlagState(FLAG)).toBe('on');
+    expect(isPgFlagExplicitlyOn(FLAG)).toBe(true);
+    expect(isPgFlagExplicitlyOff(FLAG)).toBe(false);
+
+    vi.stubEnv(FLAG, 'true');
+    expect(pgFlagState(FLAG)).toBe('on');
+  });
+
+  test("'0' and 'false' resolve to the explicit OFF state", () => {
+    vi.stubEnv(FLAG, '0');
+    expect(pgFlagState(FLAG)).toBe('off');
+    expect(isPgFlagExplicitlyOff(FLAG)).toBe(true);
+    expect(isPgFlagExplicitlyOn(FLAG)).toBe(false);
+
+    vi.stubEnv(FLAG, 'false');
+    expect(pgFlagState(FLAG)).toBe('off');
+  });
+
+  test('an unset flag resolves to the DEFAULT state', () => {
+    expect(pgFlagState(FLAG)).toBe('default');
+    expect(isPgFlagExplicitlyOn(FLAG)).toBe(false);
+    expect(isPgFlagExplicitlyOff(FLAG)).toBe(false);
+  });
+
+  test('an unrecognised value resolves to the DEFAULT state', () => {
+    vi.stubEnv(FLAG, 'maybe');
+    expect(pgFlagState(FLAG)).toBe('default');
+  });
+
+  test('case and whitespace are tolerated on both explicit states', () => {
+    vi.stubEnv(FLAG, ' TRUE ');
+    expect(pgFlagState(FLAG)).toBe('on');
+    vi.stubEnv(FLAG, ' False ');
+    expect(pgFlagState(FLAG)).toBe('off');
   });
 });

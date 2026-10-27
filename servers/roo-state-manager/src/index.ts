@@ -324,6 +324,16 @@ class RooStateManagerServer {
         // UNIFIED_STORE_DASHBOARD_READ_PG (#3230).
         await this.initializeDashboardReconcile();
 
+        // #4131 + review ms#1540 — the backfill COMPLETENESS MARKERS decide
+        // whether the DEFAULT read surface is PG or GDrive (a default gated on
+        // DATA, not on a human flag). Awaited: the tool handlers wait on
+        // `_initPromise`, so the FIRST request already sees a resolved marker
+        // (an unresolved marker means "unknown" ⇒ GDrive path, and on a
+        // PG-primary seat that would be an empty inbox for that one read).
+        // Bounded (3 s connect timeout) and non-fatal: a store that is down
+        // leaves the GDrive path in charge, which is the safe answer anyway.
+        await this.initializeBackfillMarkers();
+
         // Initialize notification system (deferred — pulls in MessageManager 3.8s)
         await this.initializeNotificationSystem();
 
@@ -540,8 +550,30 @@ class RooStateManagerServer {
     /**
      * Initialise le système de notifications push (lazy)
      */
-    private async initializeNotificationSystem(): Promise<void> {
+    /**
+     * #4131 + review ms#1540 — lit les marqueurs de complétude du backfill
+     * (channel + dashboards) dans PG.
+     *
+     * Le marqueur décide si la LECTURE par défaut se fait sur PG ou sur
+     * GDrive : un défaut conditionné à la DONNÉE (le store est-il complet ?),
+     * pas à un drapeau humain. Un seul tour de lecture, borné par le TTL du
+     * cache (pg-backfill-marker.ts) — jamais une requête par appel.
+     *
+     * Non bloquant pour le démarrage : un store injoignable laisse la voie
+     * GDrive en charge, qui est de toute façon la réponse sûre.
+     */
+    private async initializeBackfillMarkers(): Promise<void> {
         try {
+            const { refreshBackfillMarkers } = await import(
+                './services/unified-store/pg-backfill-marker.js'
+            );
+            await refreshBackfillMarkers();
+        } catch (error) {
+            console.error('[backfill-marker] marker refresh failed — PG reads stay on GDrive:', error);
+        }
+    }
+
+    private async initializeNotificationSystem(): Promise<void> {        try {
             const notificationsEnabled = process.env.NOTIFICATIONS_ENABLED !== 'false';
             if (!notificationsEnabled) {
                 logger.info('📴 [Notifications] Système désactivé via NOTIFICATIONS_ENABLED=false');

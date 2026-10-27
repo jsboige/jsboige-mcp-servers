@@ -30,6 +30,7 @@ import type { RooSyncMessageUpdate } from './types.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { mapMessageToRow } from './roosync-channel-dual-write.js';
 import { isPgFlagOn } from './pg-flags.js';
+import { isChannelPgPrimaryEnabled } from './pg-read-gates.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-channel-write');
@@ -56,12 +57,21 @@ export function isChannelPgWritable(): boolean {
 /**
  * True when the Phase D write-primary gate is on. Read at call time so tests
  * and config reloads can toggle it without a process restart.
+ *
+ * #4131 + review ms#1540 — the DEFAULT (flag unset) is gated on DATA: PG
+ * may only become the primary surface once the backfill wrote its
+ * completeness marker in PG (`roosync_store_meta`, migrations/012).
+ * Otherwise a PG-primary seat would stop writing GDrive while its history
+ * was still only in GDrive — the messages would be invisible to every
+ * reader. An explicit `'1'` still forces PG on (a seat that was already
+ * PG-primary keeps working without the marker); an explicit `'0'` turns it
+ * off at call time.
  */
 export function isChannelPgPrimary(): boolean {
   // A PG_PRIMARY gate on the Null writer reports success, skips the GDrive
   // fallback, and loses the message with no signal (review #1030) — hence the
   // writability precondition.
-  return isPgFlagOn('UNIFIED_STORE_CHANNEL_PG_PRIMARY')
+  return isChannelPgPrimaryEnabled()
     && isChannelPgWritable();
 }
 

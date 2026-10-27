@@ -93,7 +93,7 @@ if (DRY_RUN) {
 }
 
 const buildUrl = (rel) => pathToFileURL(path.join(resolveBuildDir(RSM_ROOT), rel)).href;
-const [{ getSharedStatePath }, { parseDashboardMarkdown, extractPersistedMessageIds }, { backfillDashboardToStore }, { getUnifiedStoreWriter }] =
+const [{ getSharedStatePath }, { parseDashboardMarkdown, extractPersistedMessageIds }, { backfillDashboardToStore }, { getUnifiedStoreWriter }, { DASHBOARD_BACKFILL_META_KEY }] =
   await Promise.all([
     import(buildUrl('utils/shared-state-path.js')),
     // Dependency-light parser — importing the full dashboard tool module would
@@ -101,6 +101,9 @@ const [{ getSharedStatePath }, { parseDashboardMarkdown, extractPersistedMessage
     import(buildUrl('tools/roosync/dashboard-markdown.js')),
     import(buildUrl('services/unified-store/roosync-dashboard-store.js')),
     import(buildUrl('services/unified-store/writer-factory.js')),
+    // #4131 + review ms#1540 — the meta key of the completeness marker the
+    // default PG read is gated on (single source of truth with the runtime).
+    import(buildUrl('services/unified-store/pg-backfill-marker.js')),
   ]);
 
 const writer = getUnifiedStoreWriter();
@@ -199,7 +202,33 @@ if (!liveMode) {
   console.log('LIVE backfill complete (INSERT DO NOTHING — existing PG rows untouched).');
   console.log('Validate: psql -c "SELECT type, count(*) FROM roosync_dashboards GROUP BY type;"');
   console.log('          psql -c "SELECT count(*) FROM roosync_dashboard_messages WHERE archived_at IS NULL;"');
-  console.log('Only after the store is complete, enable UNIFIED_STORE_DASHBOARD_READ_PG=1.');
+  console.log('The default PG read opens on its own once the marker is in PG — no flag to flip.');
+}
+
+// #4131 + review ms#1540 — MARQUEUR DE COMPLÉTUDE (dashboards).
+//
+// Même contrat que le canal : le défaut « PG par défaut » est conditionné à la
+// DONNÉE. Le marqueur n'est écrit que si le backfill a terminé SANS ERREUR,
+// et il est idempotent (UPSERT).
+//
+// CHOIX — marqueur plutôt que « une ligne à 0 message = pas backfillé » :
+// un dashboard legitimement vide (clé créée par l'outil, aucun message
+// d'intercom) a une ligne PG à 0 messages — le traiter comme « pas
+// backfillé » le renverrait à tort vers le fichier GDrive, qui n'existe pas
+// pour une clé née en PG. Le marqueur répond à la VRAIE question (« l'arbre
+// GDrive a-t-il été importé ? »), pas à un proxy.
+if (liveMode && errors === 0) {
+  try {
+    await writer.setStoreMeta(DASHBOARD_BACKFILL_META_KEY, new Date().toISOString());
+    console.log('');
+    console.log(`  marker:    ${DASHBOARD_BACKFILL_META_KEY} written — the default PG read may now open on this store.`);
+  } catch (err) {
+    console.log('');
+    console.log(`  marker:    FAILED (${err?.message ?? String(err)})`);
+    console.log('             migrations/012 not applied on this store? The default PG read stays OFF');
+    console.log('             (GDrive keeps serving) until the marker is written — re-run after the migration.');
+    errors++;
+  }
 }
 
 // Exit non-zero on any failure so an incomplete backfill cannot be mistaken

@@ -23,6 +23,12 @@
  * Every read is at CALL time (not import time) so a config reload or a test
  * toggles the gate without a process restart — the invariant the existing
  * call sites already carry.
+ *
+ * SCOPE — this module answers the WRITE gates and the plain defaults. The
+ * READ gates (`*_READ_PG` / `*_PG_PRIMARY`) have one extra rule: their
+ * default is gated on the backfill completeness marker in PG, not on the
+ * presence of a URL — see `pg-read-gates.ts` (#4131, review ms#1540). A PG
+ * URL alone is not proof that the store was imported.
  */
 
 /** Name of the env var that holds the PostgreSQL connection string. */
@@ -39,6 +45,51 @@ export function hasPgUrl(): boolean {
 }
 
 /**
+ * The three states a PG cutover flag can be in.
+ *
+ * - `'on'`     — the operator wrote an explicit ON value (`'1'` / `'true'`).
+ * - `'off'`    — the operator wrote an explicit OFF value (`'0'` / `'false'`),
+ *                i.e. the emergency kill-switch.
+ * - `'default'`— the flag is unset (or holds an unrecognised value): the
+ *                behaviour is the DEFAULT, resolved by the caller.
+ *
+ * The distinction matters for the READ gates (review ms#1540): the default
+ * read is gated on DATA (a completed backfill), while an explicit `'1'`
+ * still forces the read on — an operator who wrote it meant it.
+ */
+export type PgFlagState = 'on' | 'off' | 'default';
+
+/**
+ * Resolve a PG cutover flag to its three states.
+ *
+ * @param name - the env var name, e.g. `UNIFIED_STORE_DUAL_WRITE`.
+ */
+export function pgFlagState(name: string): PgFlagState {
+  const raw = process.env[name];
+  if (raw !== undefined) {
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === '1' || normalized === 'true') return 'on';
+    if (normalized === '0' || normalized === 'false') return 'off';
+  }
+  return 'default';
+}
+
+/** True when the operator explicitly turned the flag ON (`'1'` / `'true'`). */
+export function isPgFlagExplicitlyOn(name: string): boolean {
+  return pgFlagState(name) === 'on';
+}
+
+/**
+ * True when the operator explicitly turned the flag OFF (`'0'` / `'false'`).
+ *
+ * This is the emergency kill-switch, and it is honoured at CALL time: a seat
+ * can be flipped back to the GDrive-only behaviour without a restart.
+ */
+export function isPgFlagExplicitlyOff(name: string): boolean {
+  return pgFlagState(name) === 'off';
+}
+
+/**
  * Resolve a PG cutover flag.
  *
  * @param name - the env var name, e.g. `UNIFIED_STORE_DUAL_WRITE`.
@@ -47,11 +98,8 @@ export function hasPgUrl(): boolean {
  *   on iff this host holds a PG URL.
  */
 export function isPgFlagOn(name: string): boolean {
-  const raw = process.env[name];
-  if (raw !== undefined) {
-    const normalized = raw.trim().toLowerCase();
-    if (normalized === '1' || normalized === 'true') return true;
-    if (normalized === '0' || normalized === 'false') return false;
-  }
+  const state = pgFlagState(name);
+  if (state === 'on') return true;
+  if (state === 'off') return false;
   return hasPgUrl();
 }

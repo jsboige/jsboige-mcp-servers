@@ -76,7 +76,8 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
 }));
 
 import { roosyncDashboard, getAppendLockPath } from '../dashboard.js';
-import { isPgFlagOn } from '@/services/unified-store/pg-flags';
+import { isDashboardReadPgEnabled } from '@/services/unified-store/pg-read-gates';
+import { setBackfillMarkerState } from '@/services/unified-store/pg-backfill-marker';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-pg-primary-');
 
@@ -94,7 +95,10 @@ const testTmpBase = path.join(os.tmpdir(), 'dashboard-pg-primary-');
  */
 const setPgView = (view: unknown): void => {
   mockReadDashboardFromPg.mockImplementation(async () => {
-    const readGateOpen = isPgFlagOn('UNIFIED_STORE_DASHBOARD_READ_PG');
+    // #4131 + review ms#1540 — la porte de lecture se résout par
+    // `isDashboardReadPgEnabled()` : ouverte sur '1' explicite, fermée par le
+    // kill-switch '0', et — à défaut — conditionnée au MARQUEUR de backfill.
+    const readGateOpen = isDashboardReadPgEnabled();
     const storeUrlPresent = !!process.env.UNIFIED_STORE_PG_URL;
     return readGateOpen && storeUrlPresent ? view : null;
   });
@@ -135,6 +139,10 @@ describe('PG-premier, GDrive miroir borné (#4131 G-B lot 2)', () => {
     process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS = '150';
     delete process.env.UNIFIED_STORE_DASHBOARD_READ_PG;
     delete process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY;
+    // Marqueur de backfill dashboards : absent par défaut (store non
+    // importé ⇒ GDrive reste en charge). Un état FRAIS (jamais 'unknown')
+    // évite toute consultation PG parasite pendant les tests.
+    setBackfillMarkerState('dashboard', 'absent');
   });
 
   afterEach(async () => {
@@ -147,6 +155,7 @@ describe('PG-premier, GDrive miroir borné (#4131 G-B lot 2)', () => {
     delete process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY;
     delete process.env.UNIFIED_STORE_DUAL_WRITE;
     delete process.env.UNIFIED_STORE_PG_URL;
+    setBackfillMarkerState('dashboard', 'absent');
   });
 
   it('gate : PG_PRIMARY exige DUAL_WRITE + PG_URL (Null-writer guard, pattern canal #1030)', async () => {
@@ -163,10 +172,15 @@ describe('PG-premier, GDrive miroir borné (#4131 G-B lot 2)', () => {
     expect(actual.isDashboardPgPrimary()).toBe(false); // PG_URL manque
     process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
     expect(actual.isDashboardPgPrimary()).toBe(true);
-    // #4131: the PG_PRIMARY gate itself is now OFF-by-default-when-unset only
-    // if there is no PG URL — with a URL, its ABSENCE means ON. The kill-switch
-    // '0' is what closes it.
+    // #4131 + review ms#1540 — le DÉFAUT de la porte PG_PRIMARY est
+    // conditionné à la DONNÉE : sans le marqueur de backfill dashboards, le
+    // store n'est pas complet (un dashboard importé à moitié se lirait VIDE
+    // au lieu de retomber sur le fichier GDrive). Un '1' explicite force
+    // toujours la porte ouverte ; le kill-switch '0' la ferme.
     delete process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY;
+    setBackfillMarkerState('dashboard', 'absent');
+    expect(actual.isDashboardPgPrimary()).toBe(false);
+    setBackfillMarkerState('dashboard', 'complete');
     expect(actual.isDashboardPgPrimary()).toBe(true);
     process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY = '0';
     expect(actual.isDashboardPgPrimary()).toBe(false);

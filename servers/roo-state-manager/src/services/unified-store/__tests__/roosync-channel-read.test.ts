@@ -73,6 +73,7 @@ import {
   getChannelMessageFromPg,
 } from '../roosync-channel-read.js';
 import { mapMessageToRow } from '../roosync-channel-dual-write.js';
+import { setBackfillMarkerState } from '../pg-backfill-marker.js';
 import { MessageManager } from '../../MessageManager.js';
 
 vi.unmock('fs');
@@ -188,11 +189,14 @@ describe('getChannelPgReader (env gate)', () => {
     delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
     delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
     delete process.env.UNIFIED_STORE_PG_URL;
+    // A fresh 'absent' state (never 'unknown') so no gate call in the next
+    // test triggers a live marker lookup.
+    setBackfillMarkerState('channel', 'absent');
   });
 
   test('flag off → null (GDrive path, zero PG calls)', () => {
     // #4131: "flag off" is the explicit kill-switch now — the ABSENCE of the
-    // flag means "follow the default", i.e. ON when a PG URL is configured.
+    // flag means "follow the default", i.e. the marker decides.
     process.env.UNIFIED_STORE_CHANNEL_READ_PG = '0';
     process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '0';
     expect(getChannelPgReader()).toBeNull();
@@ -205,10 +209,29 @@ describe('getChannelPgReader (env gate)', () => {
     expect(getChannelPgReader()).toBeNull();
   });
 
-  test('flag unset + PG URL → reader (default-on, #4131)', () => {
+  test('flag unset + PG URL + NO backfill marker → null (GDrive path, under-show protection)', () => {
+    // #4131 + review ms#1540: the default read is gated on DATA. A store
+    // that was never imported would answer an EMPTY mailbox — no error, no
+    // breaker trip, no GDrive fallback.
     delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
     delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
     process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    setBackfillMarkerState('channel', 'absent');
+    expect(getChannelPgReader()).toBeNull();
+  });
+
+  test('flag unset + PG URL + backfill marker → reader (default-on, gated on DATA)', () => {
+    delete process.env.UNIFIED_STORE_CHANNEL_READ_PG;
+    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    setBackfillMarkerState('channel', 'complete');
+    expect(getChannelPgReader()).not.toBeNull();
+  });
+
+  test('flag explicitly on + NO marker → reader (the operator forced it)', () => {
+    process.env.UNIFIED_STORE_CHANNEL_READ_PG = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    setBackfillMarkerState('channel', 'absent');
     expect(getChannelPgReader()).not.toBeNull();
   });
 

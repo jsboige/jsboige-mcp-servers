@@ -171,7 +171,7 @@ Un dashboard RooSync vit dans **deux artefacts co-égaux**, dont aucun ne dériv
 |---|---|---|
 | **Écriture** | `tmp → rename` sur le `.md` GDrive (garde anti-fork #3482), **puis** `dualWriteDashboardSync` vers `roosync_dashboards` + `roosync_dashboard_messages` | `dashboard.ts` (writeDashboardFile) puis `roosync-dashboard-store.ts` |
 | **Lecture** | **PG d'abord**, fichier GDrive en **repli** — sur échec PG *ou clé absente* (protection anti-sous-affichage) | `readDashboardFile` → `readDashboardFromPg` / `readDashboardFromGdrive` |
-| **La porte** | `UNIFIED_STORE_DASHBOARD_READ_PG` — **ON par défaut** dès que `UNIFIED_STORE_PG_URL` est posé (#4131) ; `=0`/`false` = kill-switch vers la lecture fichier uniquement | `roosync-dashboard-store.ts` (`getDashboardPgReader` via `pg-flags.ts`) |
+| **La porte** | `UNIFIED_STORE_DASHBOARD_READ_PG` — **ON par défaut** dès que le **marqueur de backfill dashboards** est présent dans PG (`roosync_store_meta`, migrations/012) ; `=1` force ON, `=0`/`false` = kill-switch vers la lecture fichier uniquement | `roosync-dashboard-store.ts` (`getDashboardPgReader` via `pg-read-gates.ts`) |
 
 **Il n'y a PAS de source de vérité globale** : elle dépend du `.env` de chaque hôte. Un hôte à porte PG ouverte lit PG (et verra la divergence fichier↔PG), un hôte à porte fermée lit le fichier. C'est pourquoi deux fichiers byte-identiques peuvent rendre deux lectures différentes selon la clé interrogée, et pourquoi aucune des deux ne correspond forcément au disque.
 

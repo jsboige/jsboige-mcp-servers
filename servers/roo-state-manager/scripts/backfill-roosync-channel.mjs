@@ -106,11 +106,14 @@ if (DRY_RUN) {
 }
 
 const buildUrl = (rel) => pathToFileURL(path.join(resolveBuildDir(RSM_ROOT), rel)).href;
-const [{ getSharedStatePath }, { mapMessageToRow }, { getUnifiedStoreWriter }] =
+const [{ getSharedStatePath }, { mapMessageToRow }, { getUnifiedStoreWriter }, { CHANNEL_BACKFILL_META_KEY }] =
   await Promise.all([
     import(buildUrl('utils/shared-state-path.js')),
     import(buildUrl('services/unified-store/roosync-channel-dual-write.js')),
     import(buildUrl('services/unified-store/writer-factory.js')),
+    // #4131 + review ms#1540 — the meta key of the completeness marker the
+    // default PG read is gated on (single source of truth with the runtime).
+    import(buildUrl('services/unified-store/pg-backfill-marker.js')),
   ]);
 
 const writer = getUnifiedStoreWriter();
@@ -323,6 +326,32 @@ if (failures.length > 0) {
   for (const f of failures.slice(0, 50)) console.log(`    - ${f}`);
   if (failures.length > 50) console.log(`    ... and ${failures.length - 50} more`);
 }
+
+// #4131 + review ms#1540 — MARQUEUR DE COMPLÉTUDE.
+//
+// Le défaut « PG par défaut » est conditionné à la DONNÉE : la lecture PG par
+// défaut ne s'ouvre que si le backfill a écrit son marqueur dans PG
+// (`roosync_store_meta`, migrations/012). Sans marqueur, la voie GDrive reste
+// en charge — un store jamais importé ne doit JAMAIS présenter une boîte vide
+// (under-show).
+//
+// Le marqueur n'est écrit que si le backfill a terminé SANS ERREUR. Il est
+// idempotent (UPSERT) : rejouer le backfill rafraîchit l'horodatage, ne
+// duplique rien.
+if (liveMode && errors === 0) {
+  try {
+    await writer.setStoreMeta(CHANNEL_BACKFILL_META_KEY, new Date().toISOString());
+    console.log('');
+    console.log(`  marker:    ${CHANNEL_BACKFILL_META_KEY} written — the default PG read may now open on this store.`);
+  } catch (err) {
+    console.log('');
+    console.log(`  marker:    FAILED (${err?.message ?? String(err)})`);
+    console.log('             migrations/012 not applied on this store? The default PG read stays OFF');
+    console.log('             (GDrive keeps serving) until the marker is written — re-run after the migration.');
+    errors++;
+  }
+}
+
 console.log('');
 if (!liveMode) {
   console.log('DRY RUN complete — 0 rows persisted (NullUnifiedStoreWriter).');
@@ -331,7 +360,7 @@ if (!liveMode) {
   console.log('LIVE backfill complete (messages: ON CONFLICT DO NOTHING — existing PG rows untouched).');
   console.log('Validate: psql -c "SELECT status, count(*) FROM roosync_messages GROUP BY status;"');
   console.log('         psql -c "SELECT count(*) FILTER (WHERE uploader_machine IS NULL) AS legacy, count(*) AS total FROM roosync_attachments;"');
-  console.log('Only after the store is complete, enable UNIFIED_STORE_CHANNEL_READ_PG=1.');
+  console.log('The default PG read opens on its own once the marker is in PG — no flag to flip.');
 }
 
 // Exit non-zero on any failure so an incomplete backfill cannot be mistaken for

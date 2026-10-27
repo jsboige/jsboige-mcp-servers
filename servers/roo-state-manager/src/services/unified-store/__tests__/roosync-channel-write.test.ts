@@ -71,6 +71,7 @@ import {
   purgeArchivedChannelMessages,
 } from '../roosync-channel-write.js';
 import { getChannelPgReader } from '../roosync-channel-read.js';
+import { setBackfillMarkerState } from '../pg-backfill-marker.js';
 import { PgUnifiedStoreWriter } from '../PgUnifiedStoreWriter.js';
 import { MessageManager } from '../../MessageManager.js';
 
@@ -127,6 +128,9 @@ describe('isChannelPgPrimary (env gate)', () => {
     delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
     delete process.env.UNIFIED_STORE_PG_URL;
     delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    // A fresh 'absent' state (never 'unknown') so no gate call in the next
+    // test triggers a live marker lookup.
+    setBackfillMarkerState('channel', 'absent');
   });
 
   test('flag off → false', () => {
@@ -144,10 +148,23 @@ describe('isChannelPgPrimary (env gate)', () => {
     expect(isChannelPgPrimary()).toBe(false);
   });
 
-  test('flag unset + PG URL → true (default-on, #4131)', () => {
+  test('flag unset + PG URL + NO backfill marker → false (GDrive path, under-show protection)', () => {
+    // #4131 + review ms#1540: PG may only become the primary surface once the
+    // backfill wrote its completeness marker — otherwise a PG-primary seat
+    // stops writing GDrive while its history is still only in GDrive, and
+    // those messages become invisible to every reader.
     delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
     process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
     delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    setBackfillMarkerState('channel', 'absent');
+    expect(isChannelPgPrimary()).toBe(false);
+  });
+
+  test('flag unset + PG URL + backfill marker → true (default-on, gated on DATA)', () => {
+    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    setBackfillMarkerState('channel', 'complete');
     expect(isChannelPgPrimary()).toBe(true);
   });
 

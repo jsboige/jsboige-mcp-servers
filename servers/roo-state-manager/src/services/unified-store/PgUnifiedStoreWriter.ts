@@ -186,6 +186,25 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     }
   }
 
+  /**
+   * #4131 (migrations/012) — UPSERT one key of `roosync_store_meta`.
+   *
+   * Idempotent: re-running a backfill refreshes the marker's timestamp, it
+   * never duplicates the row. Throws on failure — a marker that was not
+   * written is a marker that does not exist.
+   */
+  async setStoreMeta(key: string, value: string): Promise<void> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+    await this.pool.query(
+      `INSERT INTO roosync_store_meta (key, value, updated_at)
+       VALUES ($1, $2, now())
+       ON CONFLICT (key) DO UPDATE
+         SET value = EXCLUDED.value, updated_at = now()`,
+      [key, value]
+    );
+  }
+
   // ─── Upsert Operations ────────────────────────────────────────
 
   async upsertConversation(bundle: ConversationBundle): Promise<void> {

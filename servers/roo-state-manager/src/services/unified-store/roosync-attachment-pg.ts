@@ -40,7 +40,7 @@ import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { isChannelPgPrimary } from './roosync-channel-write.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
-import { isPgFlagOn } from './pg-flags.js';
+import { isChannelReadPgEnabled } from './pg-read-gates.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-attachment-pg');
@@ -53,12 +53,16 @@ export function isAttachmentPgPrimary(): boolean {
 /**
  * Returns the reader when the attachment read gate is on, else null — the
  * same cascade as `getChannelPgReader` (Phase B), applied to attachments.
+ *
+ * #4131 + review ms#1540 — the gate is resolved by `pg-read-gates.ts`: the
+ * default is gated on the channel backfill's completeness marker, an
+ * explicit `'1'` forces PG on, an explicit `'0'` turns it off at call time.
+ * Attachments follow the CHANNEL marker on purpose: an attachment is only
+ * reachable through the message that carries it, so the channel history and
+ * the attachment payloads are imported by the same backfill run.
  */
 export function getAttachmentPgReader(): IUnifiedStoreReader | null {
-  if (
-    !isPgFlagOn('UNIFIED_STORE_CHANNEL_READ_PG')
-    && !isPgFlagOn('UNIFIED_STORE_CHANNEL_PG_PRIMARY')
-  ) return null;
+  if (!isChannelReadPgEnabled()) return null;
   if (!process.env.UNIFIED_STORE_PG_URL) return null;
   const reader = getUnifiedStoreReader();
   if (reader.isNull()) return null;
