@@ -134,10 +134,14 @@ describe('backfill completeness marker (#4131)', () => {
     process.env.UNIFIED_STORE_BACKFILL_MARKER_TTL_MS = '1';
     await refreshBackfillMarkers(true);
     const before = mocks.query.mock.calls.length;
+    // Let the 1 ms TTL expire — deterministic, not a race with the clock.
+    await new Promise((resolve) => setTimeout(resolve, 10));
     getBackfillMarkerState('channel');
     getBackfillMarkerState('channel');
     getBackfillMarkerState('dashboard');
     await new Promise((resolve) => setTimeout(resolve, 20));
+    // One refresh for the three consultations (the in-flight guard suppresses
+    // the other two).
     expect(mocks.query.mock.calls.length).toBe(before + 1);
   });
 
