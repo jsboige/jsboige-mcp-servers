@@ -12,8 +12,17 @@
 
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
 
-const { mockClaudeDetect } = vi.hoisted(() => ({
-	mockClaudeDetect: vi.fn(() => Promise.resolve([]))
+const { mockClaudeDetect, workerALeader } = vi.hoisted(() => ({
+	mockClaudeDetect: vi.fn(() => Promise.resolve([])),
+	workerALeader: { value: false },
+}));
+
+// The election uses node:fs (not mocked here) and a lock shared with live hosts:
+// pin it so each case states which role it exercises.
+vi.mock('../worker-a-lock.js', async (importOriginal) => ({
+	...(await importOriginal<typeof import('../worker-a-lock.js')>()),
+	tryAcquireWorkerALeaderLock: vi.fn(async () => workerALeader.value),
+	ensureWorkerALeadershipForTick: vi.fn(async () => workerALeader.value),
 }));
 
 vi.mock('fs', async () => {
@@ -124,6 +133,7 @@ const savedEnv = new Map<string, string | undefined>();
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	workerALeader.value = false;
 	for (const key of ENV_KEYS) {
 		if (!savedEnv.has(key)) savedEnv.set(key, process.env[key]);
 		delete process.env[key];
@@ -163,13 +173,23 @@ describe('initializeBackgroundServices — porte prewarm sur la sweep Claude (#3
 		expect(mockClaudeDetect).not.toHaveBeenCalled();
 	});
 
-	it('défaut (aucune variable) → sweep SAUTÉE : le prewarm est opt-in', async () => {
+	it('défaut (aucune variable), follower → sweep SAUTÉE : le prewarm est opt-in', async () => {
 		const state = createMockState();
 
 		await initializeBackgroundServices(state);
 		await settleBackgroundChain();
 
 		expect(mockClaudeDetect).not.toHaveBeenCalled();
+	});
+
+	it('défaut (aucune variable), leader Worker A → la sweep tourne (rattrapage Qdrant au boot)', async () => {
+		workerALeader.value = true;
+		const state = createMockState();
+
+		await initializeBackgroundServices(state);
+		await settleBackgroundChain();
+
+		expect(mockClaudeDetect).toHaveBeenCalled();
 	});
 
 	it('SKELETON_PREWARM=true (opt-in) → la sweep eager tourne (détecteur Claude appelé)', async () => {

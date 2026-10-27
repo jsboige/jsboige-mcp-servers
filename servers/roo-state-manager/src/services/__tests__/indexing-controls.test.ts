@@ -281,9 +281,17 @@ describe('SKELETON_PREWARM — le prechauffage est optionnel, les tiers ne le so
         });
     });
 
-    it("seule la chaine exacte 'true' active le prechauffage", async () => {
-        // Une valeur inattendue ne doit pas allumer 3,2 Go par hote en silence.
+    it("SKELETON_PREWARM='1' : le prechauffage a lieu (meme convention que les kill-switch)", async () => {
         process.env[PREWARM] = '1';
+
+        await initializeBackgroundServices(new StateManager().getState());
+
+        expect(skeletonCache.warmCache).toHaveBeenCalledTimes(1);
+    });
+
+    it("une valeur inattendue n'active pas le prechauffage", async () => {
+        // Une valeur inattendue ne doit pas allumer 3,2 Go par hote en silence.
+        process.env[PREWARM] = 'yes';
 
         await initializeBackgroundServices(new StateManager().getState());
 

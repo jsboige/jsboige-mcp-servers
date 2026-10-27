@@ -849,12 +849,13 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
         // (graceful degrade to local results + notice).
         const explicitPrewarm = process.env.SKELETON_PREWARM;
         const autoDisable = process.env.ROO_AUTO_DISABLE_PREWARM === '1' || process.env.ROO_AUTO_DISABLE_PREWARM === 'true';
-        const enablePrewarm = explicitPrewarm === 'true' && !autoDisable;
+        const prewarmOptIn = explicitPrewarm === 'true' || explicitPrewarm === '1';
+        const enablePrewarm = prewarmOptIn && !autoDisable;
         SkeletonCacheService.configure({ enableClaudeTier, enableArchiveTier });
         const prewarmReason = autoDisable
             ? 'ROO_AUTO_DISABLE_PREWARM=1'
-            : explicitPrewarm === 'true'
-                ? 'SKELETON_PREWARM=true'
+            : prewarmOptIn
+                ? `SKELETON_PREWARM=${explicitPrewarm}`
                 : explicitPrewarm === 'false'
                     ? 'SKELETON_PREWARM=false'
                     : 'default-OFF';
@@ -993,8 +994,11 @@ export async function initializeBackgroundServices(state: ServerState): Promise<
             // la visibilité Tier 2 reste assurée par les lectures lazy
             // (#1752 view/view_task_details via findConversationById) et par
             // scanClaudeSessions (list source=claude, TTL 5 min).
-            if (!enablePrewarm) {
-                console.log('[Startup] Claude session sweep skipped (prewarm disabled — Tier 2 lazy reads preserved)');
+            // The Worker A leader still sweeps: the boot catch-up of Claude sessions
+            // into Qdrant (scanForOutdatedQdrantIndex, leader-only) iterates this cache,
+            // so one host per machine pays the sweep instead of none.
+            if (!enablePrewarm && !state.isWorkerALeader) {
+                console.log('[Startup] Claude session sweep skipped (prewarm disabled, follower — the Worker A leader carries it; Tier 2 lazy reads preserved)');
                 return;
             }
             return loadClaudeCodeSessions(state.conversationCache);
