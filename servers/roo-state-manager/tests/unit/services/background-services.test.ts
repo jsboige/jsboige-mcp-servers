@@ -733,6 +733,8 @@ describe('classifyIndexingError', () => {
       { message: 'Indexing timeout for claude-d--2025-Epita-Intelligence-Symbolique--4f0d04f2-9fbe-4018-906d-cba5a303b1b0 after 600000ms', expectedClass: 'embedding_timeout' },
       { message: 'Embedding incomplete for task claude-d--roo-extensions--1a5a32e7-d5d7-48bc-94eb-401fe026a068: 63/63 sub-chunks without a vector — last embedding error: 502 <!DOCTYPE html', expectedClass: 'service_503' },
       { message: 'Embedding incomplete for task claude-d--x--aa503bb1-0000-4000-8000-000000000000: last embedding error: Connection error.', expectedClass: 'unknown' },
+      // Code at the END of a segment: only the lookbehind keeps it out.
+      { message: 'Indexing timeout for claude-d--x--0000aaaa-bbbb-4ccc-8ddd-abcdef12e401 after 600000ms', expectedClass: 'embedding_timeout' },
     ];
 
     for (const { message, expectedClass } of cases) {
