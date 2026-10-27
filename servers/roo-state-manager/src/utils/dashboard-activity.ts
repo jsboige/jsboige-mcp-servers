@@ -11,6 +11,8 @@
  * Message format: ### [2026-05-03T20:08:15.436Z] myia-po-2024|roo-extensions
  *
  * @module utils/dashboard-activity
+ * @version 3.2.0 (#4344: archive recovery widened beyond fully-archived
+ *               machines, bounded by each machine's live lastSeen)
  * @version 3.1.0 (#3695: machine-id normalization for old `machine:workspace|path`
  *               headers + lazy archive lookup for fully-archived machines)
  */
@@ -204,13 +206,27 @@ export function crossCheckWithDashboard(
  * machine truly never seen still ends at the honest `null` of #3160 after a
  * full scan (the pathological case only — it means "verify your mirror").
  *
+ * #4344: recovery must not be limited to machines missing from the live files.
+ * ONE old live line used to freeze `lastSeen` while the machine kept posting —
+ * newer messages were already condensed into `archive/` and never consulted.
+ * Callers therefore pass `floors` (each machine's live timestamp). An archive
+ * file can only carry messages older than its own condensation date, so a
+ * machine whose best timestamp already reaches the current file's date is
+ * resolved and dropped. That bounds the widening: nothing is read while the
+ * live values beat the newest archive, and the scan stops as soon as every
+ * machine is resolved — the cost the RX123 archive-cap was about.
+ *
  * @param dashboardsDir - The dashboards/ directory (archive/ lives inside it).
  * @param machineIds - Machine IDs to look for (case-insensitive).
+ * @param floors - Optional machineId (lowercase) -> live timestamp already
+ *                 known: only an archived timestamp above it is worth a read.
+ *                 Absent/empty means "recover from scratch" (#3695 behaviour).
  * @returns Map of machineId (lowercase) -> most recent ISO timestamp found in archives.
  */
 export function lookupMachineActivityInArchives(
 	dashboardsDir: string,
-	machineIds: string[]
+	machineIds: string[],
+	floors?: ReadonlyMap<string, string>
 ): Map<string, string> {
 	const wanted = new Set(machineIds.map(m => m.toLowerCase()));
 	const found = new Map<string, string>();
@@ -235,8 +251,28 @@ export function lookupMachineActivityInArchives(
 	};
 	archiveFiles.sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
 
+	// Archive names embed the ISO condensation date with `:` replaced by `-`.
+	const isoOf = (name: string): string => {
+		const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})$/.exec(dateOf(name));
+		return m ? `${m[1]}T${m[2]}:${m[3]}:${m[4]}Z` : '';
+	};
+
 	for (const file of archiveFiles) {
 		if (wanted.size === 0) break;
+
+		// #4344: an archive file carries only messages older than its own
+		// condensation date. Resolve (and stop tracking) every machine whose
+		// best timestamp — live floor or already-found — reaches that date.
+		const fileIso = isoOf(file);
+		if (fileIso) {
+			for (const machineId of [...wanted]) {
+				const floor = floors?.get(machineId) ?? '';
+				const best = (found.get(machineId) ?? '') > floor ? found.get(machineId)! : floor;
+				if (best && best >= fileIso) wanted.delete(machineId);
+			}
+			if (wanted.size === 0) break;
+		}
+
 		let content: string;
 		try {
 			content = readFileSync(join(dashboardsDir, 'archive', file), 'utf-8');
@@ -247,9 +283,6 @@ export function lookupMachineActivityInArchives(
 			if (!wanted.has(machineId)) continue;
 			const existing = found.get(machineId);
 			if (!existing || ts > existing) found.set(machineId, ts);
-		}
-		for (const machineId of found.keys()) {
-			wanted.delete(machineId);
 		}
 	}
 	return found;

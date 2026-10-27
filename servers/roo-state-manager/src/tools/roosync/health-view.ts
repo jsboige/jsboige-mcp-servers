@@ -227,14 +227,23 @@ async function collectSystemHealth(): Promise<{
       registryMachineIds = ['myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1'];
     }
 
-    // #3695: a machine whose every message was archived out of the current
-    // files by auto-condensation vanishes from the activity map (lastSeen
-    // regressing to null → false SYNC_STALE "never seen"). Archives preserve
-    // the message headers — recover the lastSeen lazily, only for registry
-    // machines missing from current files (never scan 8k+ archives eagerly).
-    const missingFromCurrent = registryMachineIds.filter(mid => !activity.has(mid.toLowerCase()));
-    if (missingFromCurrent.length > 0) {
-      for (const [mid, ts] of lookupMachineActivityInArchives(dashboardsDir, missingFromCurrent)) {
+    // #4344: a single stale live line used to freeze lastSeen while the
+    // machine kept posting — newer messages were already condensed into
+    // archive/ and never consulted. Archives are now consulted for EVERY
+    // registry machine, floored by its live timestamp (an archive file only
+    // carries older messages, so nothing older than the best value is read);
+    // the #3695 recovery still covers machines absent from the live files.
+    const archiveFloors = new Map<string, string>();
+    for (const mid of registryMachineIds) {
+      const live = activity.get(mid.toLowerCase());
+      if (live) archiveFloors.set(mid.toLowerCase(), live);
+    }
+    if (registryMachineIds.length > 0) {
+      for (const [mid, ts] of lookupMachineActivityInArchives(
+        dashboardsDir,
+        registryMachineIds,
+        archiveFloors
+      )) {
         const existing = activity.get(mid);
         if (!existing || ts > existing) activity.set(mid, ts);
       }

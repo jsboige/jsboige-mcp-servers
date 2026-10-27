@@ -340,12 +340,22 @@ export const inventoryTool: UnifiedToolContract = {
             await import('../../utils/dashboard-activity.js');
           const activity = extractMachineActivity(dashboardContents);
 
-          // #3695: machines archived out of the live files by auto-condensation
-          // vanish from the activity map — recover their lastSeen lazily from
-          // archives (same as get-status).
-          const missingFromCurrent = registryMachineIds.filter(mid => !activity.has(mid.toLowerCase()));
-          if (missingFromCurrent.length > 0) {
-            for (const [mid, ts] of lookupMachineActivityInArchives(dashboardsDir, missingFromCurrent)) {
+          // #4344: a single stale live line used to freeze lastSeen while the
+          // machine kept posting — newer messages were already condensed into
+          // archive/ and never consulted. Look in the archives for EVERY
+          // registry machine, floored by its live timestamp (nothing older is
+          // read); the #3695 recovery is kept for machines absent from live.
+          const archiveFloors = new Map<string, string>();
+          for (const mid of registryMachineIds) {
+            const live = activity.get(mid.toLowerCase());
+            if (live) archiveFloors.set(mid.toLowerCase(), live);
+          }
+          if (registryMachineIds.length > 0) {
+            for (const [mid, ts] of lookupMachineActivityInArchives(
+              dashboardsDir,
+              registryMachineIds,
+              archiveFloors
+            )) {
               const existing = activity.get(mid);
               if (!existing || ts > existing) activity.set(mid, ts);
             }

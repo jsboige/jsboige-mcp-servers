@@ -3,7 +3,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, DEFAULT_ACTIVITY_THRESHOLD_MS } from '../dashboard-activity.js';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, lookupMachineActivityInArchives, DEFAULT_ACTIVITY_THRESHOLD_MS } from '../dashboard-activity.js';
 
 describe('dashboard-activity', () => {
 	describe('extractMachineActivity', () => {
@@ -64,6 +67,83 @@ describe('dashboard-activity', () => {
 			expect(activity.size).toBe(2);
 			expect(activity.get('myia-po-2024')).toBe('2026-05-03T20:00:00.000Z');
 			expect(activity.get('myia-web1')).toBe('2026-05-03T20:01:00.000Z');
+		});
+	});
+
+	describe('lookupMachineActivityInArchives + floors (#4344)', () => {
+		let tmpDir: string;
+		let dashboardsDir: string;
+		let archiveDir: string;
+
+		const archive = (name: string, body: string) =>
+			writeFileSync(join(archiveDir, name), body, 'utf-8');
+
+		beforeEach(() => {
+			tmpDir = mkdtempSync(join(tmpdir(), 'archives-4344-'));
+			dashboardsDir = join(tmpDir, 'dashboards');
+			archiveDir = join(dashboardsDir, 'archive');
+			mkdirSync(archiveDir, { recursive: true });
+		});
+
+		afterEach(() => {
+			rmSync(tmpDir, { recursive: true, force: true });
+		});
+
+		it('recovers a machine whose every message was archived (regression #3695, no floor)', () => {
+			archive('workspace-ws-2026-09-10T10-00-00.md', '### [2026-09-10T09:00:00.000Z] myia-silent-01|ws\nmsg');
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-silent-01']);
+			expect(found.get('myia-silent-01')).toBe('2026-09-10T09:00:00.000Z');
+		});
+
+		it('beats a stale live lastSeen when a newer message sits in an archive (#4344)', () => {
+			// The live dashboard still carries one old line (20/10 19:17Z) — the
+			// exact web2 shape; newer [DONE]s were condensed away.
+			archive('workspace-ws-2026-10-26T21-07-47.md', '### [2026-10-26T20:30:00.000Z] myia-web2|roo-extensions\nDONE');
+			const floors = new Map([['myia-web2', '2026-10-20T19:17:13.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-web2'], floors);
+
+			expect(found.get('myia-web2')).toBe('2026-10-26T20:30:00.000Z');
+		});
+
+		it('reads nothing when the live timestamp already beats the newest archive', () => {
+			archive('workspace-ws-2026-09-10T10-00-00.md', '### [2026-09-10T09:00:00.000Z] myia-web2|ws\nold');
+			const floors = new Map([['myia-web2', '2026-10-27T08:00:00.000Z']]);
+
+			expect(lookupMachineActivityInArchives(dashboardsDir, ['myia-web2'], floors).size).toBe(0);
+		});
+
+		it('does not look below the floor: an older archive cannot improve the live value', () => {
+			archive('workspace-ws-2026-10-20T18-00-00.md', '### [2026-10-20T17:00:00.000Z] myia-web2|ws\nolder than live');
+			archive('workspace-ws-2026-10-26T21-00-00.md', '### [2026-10-26T20:00:00.000Z] myia-other-01|ws\nother machine');
+			const floors = new Map([['myia-web2', '2026-10-20T19:17:13.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-web2'], floors);
+
+			expect(found.has('myia-web2')).toBe(false);
+		});
+
+		it('keeps scanning while an older file can still beat the best found so far', () => {
+			// Newest file carries an OLD message for the machine; the next one
+			// carries a newer one — a first-hit-wins scan would under-report.
+			archive('workspace-ws-2026-10-27T06-00-00.md', '### [2026-10-21T08:00:00.000Z] myia-web2|ws\nlate-archived old msg');
+			archive('workspace-ws-2026-10-26T20-00-00.md', '### [2026-10-26T19:00:00.000Z] myia-web2|ws\nreal newest');
+			const floors = new Map([['myia-web2', '2026-10-20T19:17:13.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-web2'], floors);
+
+			expect(found.get('myia-web2')).toBe('2026-10-26T19:00:00.000Z');
+		});
+
+		it('buildArchiveFloors equivalent: only machines with a live value get a floor', () => {
+			const floors = new Map<string, string>();
+			const activity = new Map([['myia-web2', '2026-10-20T19:17:13.000Z']]);
+			for (const mid of ['myia-web2', 'myia-silent-01']) {
+				const live = activity.get(mid.toLowerCase());
+				if (live) floors.set(mid.toLowerCase(), live);
+			}
+			expect(floors.get('myia-web2')).toBe('2026-10-20T19:17:13.000Z');
+			expect(floors.has('myia-silent-01')).toBe(false);
 		});
 	});
 

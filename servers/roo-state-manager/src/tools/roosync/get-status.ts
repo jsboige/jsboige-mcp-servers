@@ -348,17 +348,21 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       const { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchives } = await import('../../utils/dashboard-activity.js');
       const activity = extractMachineActivity(dashboardContents);
 
-      // #3695: a machine whose every message was archived out of the current
-      // files by auto-condensation vanishes from the activity map (lastSeen
-      // regressing to null). Archives preserve the message headers — recover
-      // the lastSeen lazily, only for registry machines missing from current
-      // files (8k+ archive files on prod: never scanned eagerly).
+      // #4344: a single stale live line used to freeze lastSeen while the
+      // machine kept posting. Archives are now consulted for EVERY registry
+      // machine, floored by its live timestamp (nothing older is read); the
+      // #3695 recovery still covers machines absent from the live files.
       const registryMachineIds = service.getKnownMachineIds().filter(isKnownMachine);
-      const missingFromCurrent = registryMachineIds.filter(mid => !activity.has(mid.toLowerCase()));
-      if (missingFromCurrent.length > 0) {
+      const archiveFloors = new Map<string, string>();
+      for (const mid of registryMachineIds) {
+        const live = activity.get(mid.toLowerCase());
+        if (live) archiveFloors.set(mid.toLowerCase(), live);
+      }
+      if (registryMachineIds.length > 0) {
         for (const [mid, ts] of lookupMachineActivityInArchives(
           join(getSharedStatePath(), 'dashboards'),
-          missingFromCurrent
+          registryMachineIds,
+          archiveFloors
         )) {
           const existing = activity.get(mid);
           if (!existing || ts > existing) activity.set(mid, ts);
