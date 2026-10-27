@@ -18,12 +18,29 @@
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+
+const logged: { message: string; meta: unknown }[] = [];
+
+// The logger is mocked so the "logged ONCE, value NEVER printed" contract of
+// the ignored-PG-URL warning can be asserted (review NanoClaw, C2).
+vi.mock('../../../utils/logger.js', () => ({
+  createLogger: () => ({
+    warn: (message: string, meta?: unknown) => {
+      logged.push({ message, meta });
+    },
+    info: () => {},
+    error: () => {},
+    debug: () => {},
+  }),
+}));
+
 import {
   isPgFlagOn,
   hasPgUrl,
   pgFlagState,
   isPgFlagExplicitlyOn,
   isPgFlagExplicitlyOff,
+  resetIgnoredPgUrlWarning,
 } from '../pg-flags.js';
 
 const FLAG = 'UNIFIED_STORE_DUAL_WRITE';
@@ -84,12 +101,50 @@ describe('pg-flags — isPgFlagOn', () => {
   test('an unrecognised value falls back to the default (ON with a PG URL)', () => {
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host:5432/db');
     vi.stubEnv(FLAG, 'yes-please');
+    expect(pgFlagState(FLAG)).toBe('default');
     expect(isPgFlagOn(FLAG)).toBe(true);
   });
 
   test('an unrecognised value falls back to the default (OFF without a PG URL)', () => {
     vi.stubEnv(FLAG, 'yes-please');
     expect(isPgFlagOn(FLAG)).toBe(false);
+  });
+
+  // --- NanoClaw C1: the kill-switch is not '0'-only.
+  //
+  // An operator who writes "off", "no", "n", "disable" or "disabled" MEANS
+  // "stop". Before this change those values fell through to the DEFAULT,
+  // which ARMS the cutover when a PG URL is present — the exact opposite of
+  // the intent. Every recognised "no" spelling is now an explicit OFF.
+  test.each(['off', 'no', 'n', 'disable', 'disabled'])(
+    "'%s' is an explicit OFF (the kill-switch is not 0-only)",
+    (value) => {
+      vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host:5432/db');
+      vi.stubEnv(FLAG, value);
+      expect(pgFlagState(FLAG)).toBe('off');
+      expect(isPgFlagExplicitlyOff(FLAG)).toBe(true);
+      expect(isPgFlagExplicitlyOn(FLAG)).toBe(false);
+      // The decisive one: with a PG URL present, the flag must NOT arm.
+      expect(isPgFlagOn(FLAG)).toBe(false);
+    },
+  );
+
+  test('the kill-switch spellings are case- and whitespace-insensitive', () => {
+    vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host:5432/db');
+    for (const value of [' OFF ', 'No', 'DISABLED', ' Disable ']) {
+      vi.stubEnv(FLAG, value);
+      expect(pgFlagState(FLAG)).toBe('off');
+      expect(isPgFlagOn(FLAG)).toBe(false);
+    }
+  });
+
+  test('an unknown value does NOT fail closed — it keeps the default', () => {
+    vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host:5432/db');
+    for (const value of ['maybe', 'yes', '2', 'enabled', 'on']) {
+      vi.stubEnv(FLAG, value);
+      expect(pgFlagState(FLAG)).toBe('default');
+      expect(isPgFlagOn(FLAG)).toBe(true);
+    }
   });
 
   test("case and surrounding whitespace are tolerated (' TRUE ' → ON)", () => {
@@ -108,6 +163,8 @@ describe('pg-flags — hasPgUrl', () => {
   beforeEach(() => {
     vi.unstubAllEnvs();
     clearEnv();
+    logged.length = 0;
+    resetIgnoredPgUrlWarning();
   });
 
   afterEach(() => {
@@ -127,6 +184,53 @@ describe('pg-flags — hasPgUrl', () => {
   test('false when the PG URL is an empty string', () => {
     vi.stubEnv('UNIFIED_STORE_PG_URL', '');
     expect(hasPgUrl()).toBe(false);
+  });
+
+  // --- NanoClaw C2: a placeholder URL must not arm the dual-write.
+  test.each([
+    'none',
+    'None',
+    'changeme',
+    'postgres:/u:p@host:5432/db',
+    'postgresql:/u:p@host',
+    'mysql://u:p@host:3306/db',
+    'http://host:5432/db',
+    'localhost:5432',
+  ])('false for the non-postgres placeholder %s', (value) => {
+    vi.stubEnv('UNIFIED_STORE_PG_URL', value);
+    expect(hasPgUrl()).toBe(false);
+    // And the gate it feeds must NOT be armed by a placeholder.
+    expect(isPgFlagOn(FLAG)).toBe(false);
+  });
+
+  test.each([
+    'postgres://u:p@host:5432/db',
+    'postgresql://u:p@host:5432/db',
+    'POSTGRES://u:p@host:5432/db',
+    'PostgreSQL://u:p@host:5432/db',
+    '  postgres://u:p@host:5432/db  ',
+  ])('true for the real postgres URL %s', (value) => {
+    vi.stubEnv('UNIFIED_STORE_PG_URL', value);
+    expect(hasPgUrl()).toBe(true);
+  });
+
+  test('an ignored placeholder is logged ONCE, and the value is never printed', () => {
+    vi.stubEnv('UNIFIED_STORE_PG_URL', 'none');
+    expect(hasPgUrl()).toBe(false);
+    expect(hasPgUrl()).toBe(false);
+    expect(hasPgUrl()).toBe(false);
+    expect(logged).toHaveLength(1);
+    expect(logged[0].message).toContain('UNIFIED_STORE_PG_URL');
+    const serialized = `${logged[0].message} ${JSON.stringify(logged[0].meta)}`;
+    expect(serialized).not.toContain('none');
+    // The name is named, the value is masked.
+    expect(JSON.stringify(logged[0].meta)).toContain('<redacted:UNIFIED_STORE_PG_URL>');
+  });
+
+  test('a real PG URL logs nothing', () => {
+    vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host:5432/db');
+    expect(hasPgUrl()).toBe(true);
+    expect(logged).toHaveLength(0);
   });
 });
 
