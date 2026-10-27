@@ -223,10 +223,13 @@ describe('roosync_inventory tool', () => {
             expect(result.data.onlineMachines).toEqual(expect.arrayContaining(['myia-po-2024', 'myia-po-2027']));
             // ai-01 est absente des fichiers courants ET des archives simulées → unknown
             expect(result.data.unknownMachines).toEqual(['myia-ai-01']);
-            // Le lookup archives n'est demandé QUE pour les machines absentes des fichiers courants
+            // #4344 : le lookup couvre désormais TOUT le registre, planché par
+            // le lastSeen vivant — une seule vieille ligne ne gèle plus la
+            // valeur (l'ancien contrat ne passait que les machines absentes).
             expect(mockLookupMachineActivityInArchives).toHaveBeenCalledWith(
                 expect.any(String),
-                ['myia-ai-01', 'myia-po-2027']
+                ['myia-ai-01', 'myia-po-2024', 'myia-po-2027'],
+                new Map([['myia-po-2024', NOW]])
             );
         });
 
