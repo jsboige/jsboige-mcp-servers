@@ -57,6 +57,18 @@ describe('EmbeddingValidator', () => {
       expect(cleaned).not.toHaveProperty('c');
     });
 
+    it('replaces a lone surrogate left by a split emoji, keeps whole pairs (#4352)', () => {
+      // '📦' is 📦: a split at UTF-16 index leaves one half on each side.
+      const emoji = '📦';
+      const payload = { content: 'ok ' + emoji[0], content_summary: emoji[1] + ' tail', title: 'box ' + emoji };
+      const cleaned = sanitizePayload(payload);
+      expect(cleaned.content).toBe('ok �');
+      expect(cleaned.content_summary).toBe('� tail');
+      expect(cleaned.title).toBe('box ' + emoji);
+      // What Qdrant's JSON parser receives must hold no lone \\ud8xx escape.
+      expect(JSON.stringify(cleaned)).not.toMatch(/\\ud[89ab][0-9a-f]{2}/i);
+    });
+
     it('should keep valid values', () => {
       const payload = { a: 1, b: 'string', c: true, d: [1, 2], e: { f: 'g' } };
       const cleaned = sanitizePayload(payload);

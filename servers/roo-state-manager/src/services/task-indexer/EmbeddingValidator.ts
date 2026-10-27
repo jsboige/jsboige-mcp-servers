@@ -112,6 +112,8 @@ export function resetKnownValueMaskerCache(): void {
     cachedKnownValueMasker = null;
 }
 
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
 export function sanitizePayload(payload: any): any {
     const cleaned = { ...payload };
 
@@ -128,6 +130,10 @@ export function sanitizePayload(payload: any): any {
             // forme d'abord (motifs auto-descriptifs), valeur connue ensuite.
             if (!cachedKnownValueMasker) cachedKnownValueMasker = createKnownValueMasker();
             cleaned[key] = cachedKnownValueMasker(redactSecrets(cleaned[key]));
+            // splitChunk and the content_summary truncations cut by UTF-16 index and can
+            // split an emoji's surrogate pair; Qdrant rejects the lone half with a 400 and
+            // the whole upsert window fails (#4352, 27/10). Replace it with U+FFFD.
+            cleaned[key] = cleaned[key].replace(LONE_SURROGATE, '�');
             // S'assurer que les strings ne sont pas vides
             if (cleaned[key].trim() === '') {
                 delete cleaned[key];
