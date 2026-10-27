@@ -3,6 +3,7 @@ Tests for file utilities.
 """
 
 import json
+import sys
 import tempfile
 from pathlib import Path
 
@@ -171,6 +172,21 @@ class TestFileUtils:
 
             assert notebook_path.read_bytes() == before
             assert [p.name for p in Path(temp_dir).iterdir()] == ["keep.ipynb"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+    def test_write_notebook_keeps_file_mode(self):
+        """The temp-file swap must not narrow an existing 0644 notebook to mkstemp's 0600."""
+        import os
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            notebook_path = Path(temp_dir) / "mode.ipynb"
+            notebook = FileUtils.create_empty_notebook()
+            FileUtils.write_notebook(notebook, notebook_path)
+            os.chmod(notebook_path, 0o644)
+
+            FileUtils.write_notebook(notebook, notebook_path)
+
+            assert notebook_path.stat().st_mode & 0o777 == 0o644
 
     def test_read_nonexistent_notebook(self):
         """Test reading non-existent notebook."""
