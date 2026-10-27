@@ -11,6 +11,9 @@
  * Message format: ### [2026-05-03T20:08:15.436Z] myia-po-2024|roo-extensions
  *
  * @module utils/dashboard-activity
+ * @version 3.3.0 (#4344 re-review, ms#1532: per-call ceiling on archive file
+ *               reads — G: is the fleet SPOF (#4131), per-request tool paths
+ *               must not spend unbounded seconds in the archive walk)
  * @version 3.2.0 (#4344: archive recovery widened beyond fully-archived
  *               machines, bounded by each machine's live lastSeen)
  * @version 3.1.0 (#3695: machine-id normalization for old `machine:workspace|path`
@@ -24,6 +27,23 @@ import { join } from 'path';
 const logger = createLogger('DashboardActivity');
 
 const DASHBOARD_MSG_PATTERN = /^###\s*\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\]\s*(\S+)/gm;
+
+/**
+ * #4344 re-review (ms#1532): per-call ceiling on archive FILE reads in
+ * `lookupMachineActivityInArchives`, as the DEFAULT — no opt-in flag.
+ *
+ * The lookup runs from 3 per-request tool paths (get-status, inventory,
+ * health-view). Measured on the prod mirror (2026-10-27): 12,748 archives,
+ * one stale-floor machine had 1,915 files newer than its floor ≈ 65 s of
+ * serial G: reads on a single call — and GDrive is the fleet's measured
+ * single point of failure this week (#4131). The walk is NEWEST FIRST, so
+ * this bound only ever drops the oldest tail: the typical recovery (a
+ * machine whose recent messages were just condensed) resolves within a
+ * handful of files, while a machine offline for weeks keeps its bounded
+ * best — the stale live floor, an honest lower bound (#3160) — instead of
+ * spending unbounded seconds.
+ */
+export const MAX_ARCHIVE_READS_PER_CALL = 200;
 
 /**
  * Default activity threshold (8 hours).
@@ -216,16 +236,17 @@ export function crossCheckWithDashboard(
  * live values beat the newest archive, and the scan stops as soon as every
  * machine is resolved.
  *
- * Honest residuals (review ms#1532), both owned by the future RX123 cap:
+ * Honest residuals (review ms#1532), owned by the future RX123 cap:
  * - the archive DIRECTORY LISTING is now paid on every call (the guard went
  *   from "some machine missing from live" to "registry non-empty") — zero
  *   file read is not zero cost, only the cheapest possible probe;
  * - a machine PRESENT in live (has a floor) but appearing in NO archive is
- *   never resolved by the date rule and scans to the bottom on every call:
- *   the date bound can only prove "nothing newer exists above the floor", it
- *   cannot prove "nothing anywhere below" without reading. Only a truly
- *   never-seen machine used to pay that price (#3695); a quiet-but-present
- *   machine whose messages were never condensed now pays it too.
+ *   never resolved by the date rule and reads until the per-call budget
+ *   (MAX_ARCHIVE_READS_PER_CALL) cuts the walk: the date bound can only
+ *   prove "nothing newer exists above the floor", it cannot prove "nothing
+ *   anywhere below" without reading. When the budget cuts, the machine
+ *   keeps its bounded best (the stale live floor, an honest lower bound
+ *   #3160) — never unbounded G: seconds on a per-request path.
  *
  * Phantom headers: bodies quoting a `### [ts] machine|ws` line are escaped by
  * the writers (FIX #1123 live, #4344 archive) so the header regex below never
@@ -275,6 +296,7 @@ export function lookupMachineActivityInArchives(
 		return m ? `${m[1]}T${m[2]}:${m[3]}:${m[4]}Z` : '';
 	};
 
+	let filesRead = 0;
 	for (const file of archiveFiles) {
 		if (wanted.size === 0) break;
 
@@ -291,12 +313,23 @@ export function lookupMachineActivityInArchives(
 			if (wanted.size === 0) break;
 		}
 
+		// #4344 re-review (ms#1532): per-call read ceiling, default behaviour.
+		// Newest-first, so hitting it only drops the OLDEST tail (see
+		// MAX_ARCHIVE_READS_PER_CALL).
+		if (filesRead >= MAX_ARCHIVE_READS_PER_CALL) {
+			logger.warn(
+				`Archive lookup hit its read budget (${MAX_ARCHIVE_READS_PER_CALL} files) with ${wanted.size} machine(s) unresolved - keeping their bounded best (#4344, cf. #4131)`
+			);
+			break;
+		}
+
 		let content: string;
 		try {
 			content = readFileSync(join(dashboardsDir, 'archive', file), 'utf-8');
 		} catch {
 			continue;
 		}
+		filesRead++;
 		for (const [machineId, ts] of extractMachineActivity(content)) {
 			if (!wanted.has(machineId)) continue;
 			const existing = found.get(machineId);

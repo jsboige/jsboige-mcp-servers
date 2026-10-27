@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, lookupMachineActivityInArchives, DEFAULT_ACTIVITY_THRESHOLD_MS } from '../dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, lookupMachineActivityInArchives, DEFAULT_ACTIVITY_THRESHOLD_MS, MAX_ARCHIVE_READS_PER_CALL } from '../dashboard-activity.js';
 
 describe('dashboard-activity', () => {
 	describe('extractMachineActivity', () => {
@@ -174,6 +174,71 @@ describe('dashboard-activity', () => {
 			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-po-2026'], floors);
 
 			expect(found.get('myia-po-2026')).toBe('2026-10-26T20:45:00.000Z');
+		});
+
+		it('#4344 re-review — per-call read bound: realistic mirror, machine beyond the budget is NOT recovered', () => {
+			// Shape measured on the prod mirror (ms#1532 re-review): thousands
+			// of archives, one machine with a weeks-old floor whose only
+			// message sits DEEP (position ~bound+2300 by newness) — it would
+			// be found by an unbounded walk (1,915 reads / ~65 s measured on
+			// po-2026). The default budget must cut the walk long before:
+			// the deep machine keeps its stale floor (not found), while a
+			// machine in the newest files is still recovered.
+			const N = MAX_ARCHIVE_READS_PER_CALL;
+			const total = N + 2_300;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			for (let i = 0; i < total; i++) {
+				if (i === 2) {
+					// Third-newest file: the typical #4344 recovery.
+					const ts = new Date(condenseAt(i).getTime() - 60_000).toISOString();
+					archive(nameOf(i), `### [${ts}] myia-fresh-01|ws\njust condensed [DONE]`);
+				} else if (i === N + 2_300 - 1) {
+					// Oldest file: deep machine's only message (newer than its
+					// weeks-old floor, older than its file's condensation date).
+					const ts = new Date(condenseAt(i).getTime() - 60_000).toISOString();
+					archive(nameOf(i), `### [${ts}] myia-deep-01|ws\nlast message before weeks of silence`);
+				} else {
+					archive(nameOf(i), 'condensed bodies, no machine headers');
+				}
+			}
+			const floors = new Map([['myia-deep-01', '2026-09-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-deep-01', 'myia-fresh-01'], floors);
+
+			// Inside the budget: recovered.
+			const freshTs = new Date(condenseAt(2).getTime() - 60_000).toISOString();
+			expect(found.get('myia-fresh-01')).toBe(freshTs);
+			// Beyond the budget: the walk stopped, the stale floor stands.
+			expect(found.has('myia-deep-01')).toBe(false);
+		});
+
+		it('#4344 re-review — the budget reads UP TO its ceiling: a message just inside the bound is found', () => {
+			// Boundary pinned on both sides: the message sits 10 files INSIDE
+			// MAX_ARCHIVE_READS_PER_CALL among thousands — it must be found,
+			// proving the walk reads up to the ceiling, not less.
+			const N = MAX_ARCHIVE_READS_PER_CALL;
+			const total = N + 500;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			const insideIdx = N - 10;
+			const deepTs = new Date(condenseAt(insideIdx).getTime() - 60_000).toISOString();
+			for (let i = 0; i < total; i++) {
+				if (i === insideIdx) {
+					archive(nameOf(i), `### [${deepTs}] myia-deep-01|ws\njust inside the budget`);
+				} else {
+					archive(nameOf(i), 'condensed bodies, no machine headers');
+				}
+			}
+			const floors = new Map([['myia-deep-01', '2026-09-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-deep-01'], floors);
+
+			expect(found.get('myia-deep-01')).toBe(deepTs);
 		});
 
 		it('buildArchiveFloors equivalent: only machines with a live value get a floor', () => {
