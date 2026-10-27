@@ -113,6 +113,43 @@ describe('snippet boundary classifier (rubric (a) anti-vacuity, pure unit)', () 
 		expect(g.ok).toBe(false);
 	});
 
+	it('prose: a dangling OPENING fence is a mid-passage cut, not a boundary (ai-01 review ms#1538)', () => {
+		// The block the fence opens was cut away: the passage ends on "```" with
+		// nothing after. A complete line, but the start of a block, not its end.
+		const snippet =
+			"Cadence 12h (job session-only, auto-expire 7j), et voici la commande qui arme le cron du coordinateur :\n```\n...";
+		const g = gradeSnippetBoundary(snippet);
+		expect(g.kind).toBe('prose');
+		expect(g.ok).toBe(false);
+	});
+
+	it('prose: a language-tagged block closed by its fence is accepted; a dangling tagged opener is not', () => {
+		const closed =
+			"Cadence 12h (job session-only, auto-expire 7j) : pas de tir groupe aux heures communes.\n```ts\nCronCreate({ cron: \"23 */12 * * *\" })\n```...";
+		expect(classifySnippetShape(closed)).toBe('prose');
+		expect(gradeSnippetBoundary(closed)).toEqual({ ok: true, kind: 'prose' });
+
+		const dangling =
+			"Cadence 12h (job session-only, auto-expire 7j), et voici la commande qui arme le cron du coordinateur :\n```ts...";
+		expect(gradeSnippetBoundary(dangling)).toEqual({ ok: false, kind: 'prose' });
+	});
+
+	it('prose: the live window that STARTS inside a block and ends on its closing fence is accepted (27/10 eval datum)', () => {
+		// Verbatim from the live V3 eval run: the opener lies before the snippet
+		// window, so the window holds ONE fence — the closer. Odd parity alone
+		// cannot tell it from a dangling opener; the block-shaped lines can.
+		const snippet =
+			"teur — cadence 12h (job session-only, auto-expire 7j) :\n# minute 23 : hors :00/:30, et hors du :41 des executeurs — pas de tir groupe aux heures communes.\nCronCreate(cron: \"23 */12 * * *\", prompt: \"/coordinate\", recurring: true)\n# NE PAS re-armer un ScheduleWakeup par-dessus (cron-driven).\n```...";
+		expect(snippet.length).toBe(297);
+		expect(gradeSnippetBoundary(snippet)).toEqual({ ok: true, kind: 'prose' });
+	});
+
+	it('prose: a lone opener after a closed block is still a dangling cut (odd parity, prose lead-in)', () => {
+		const snippet =
+			"La cadence retenue est de 12 heures.\n```\nCronCreate(cron: \"23 */12 * * *\")\n```\nEt voici la seconde commande, celle qui arme le cron des executeurs :\n```...";
+		expect(gradeSnippetBoundary(snippet)).toEqual({ ok: false, kind: 'prose' });
+	});
+
 	it('not-truncated snippets are exempt (unchanged behavior)', () => {
 		const g = gradeSnippetBoundary('Un passage complet, sans troncature, qui se termine proprement.');
 		expect(g.kind).toBe('not-truncated');

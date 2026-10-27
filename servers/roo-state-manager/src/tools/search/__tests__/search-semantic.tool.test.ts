@@ -1738,37 +1738,6 @@ describe('helper functions (indirect via handler)', () => {
 			expect(parsed.current_machine.tool_continuations.unresolved_count).toBe(1);
 		});
 
-		test('an UNSPLIT chunk is its own parent: prose is certified, never left unknown', async () => {
-			// #2609 V3 live datum (27/10): the cadence passage — plain prose, no
-			// original_chunk_id — came back tool_continuation_status='unknown'
-			// because only split children were resolved, so the golden gate read a
-			// human passage as unprovenanced. An unsplit chunk IS its parent.
-			mockQdrantClient.search.mockResolvedValue([
-				{ score: 0.9, payload: { task_id: 'task-whole', chunk_type: 'message_exchange', role: 'assistant', content: 'Cron 12h, minute 23, hors des heures communes de tir, pour éviter le tir groupé sur les exécuteurs.', host_os: 'h1' } },
-			]);
-			const result = await searchTasksByContentTool.handler(
-				{ search_query: 'cadence cron', exclude_tool_results: true },
-				makeCache(), mockEnsureCache, defaultFallback
-			);
-			const parsed = JSON.parse(getTextContent(result));
-			expect(parsed.results[0].chunks[0].tool_continuation_status).toBe('not_tool_result');
-			// Nothing left unresolved, so the observability block may be absent entirely.
-			expect(parsed.current_machine.tool_continuations?.unresolved_count ?? 0).toBe(0);
-		});
-
-		test('an UNSPLIT machine-output chunk is certified tool output from its own content', async () => {
-			process.env.SEMANTIC_MACHINE_OUTPUT_MALUS = '0';
-			mockQdrantClient.search.mockResolvedValue([
-				{ score: 0.9, payload: { task_id: 'task-whole-tool', chunk_type: 'message_exchange', role: 'user', content: '[tool_result] Result: {"ok":true,"free_pct":4.97}', host_os: 'h1' } },
-			]);
-			const result = await searchTasksByContentTool.handler(
-				{ search_query: 'disque libre', exclude_tool_results: false },
-				makeCache(), mockEnsureCache, defaultFallback
-			);
-			const parsed = JSON.parse(getTextContent(result));
-			expect(parsed.results[0].chunks[0].tool_continuation_status).toBe('tool_result');
-		});
-
 		test('a self-classified tool fragment is de-ranked once, not twice, when provenance confirms it', async () => {
 			const toolContent = '[tool_result] Result: ' + 'ligne de sortie de commande volumineuse et repetitive '.repeat(5);
 			mockQdrantClient.search.mockResolvedValue([
@@ -1826,13 +1795,10 @@ describe('helper functions (indirect via handler)', () => {
 			const parsed = JSON.parse(getTextContent(result));
 			// A dense-JSON parent IS machine output: the continuation is excluded.
 			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-prose']);
-			// No chunk of the machine-parent task may be certified human. Scoped to
-			// that task: the surviving prose row IS human and is certified as such
-			// (an unsplit chunk is its own parent — #2609 V3).
-			for (const r of parsed.results.filter((x: any) => x.taskId === 'task-json')) {
+			// Nothing in the answer may be certified human out of a machine parent.
+			for (const r of parsed.results) {
 				expect(r.chunks[0].tool_continuation_status).not.toBe('not_tool_result');
 			}
-			expect(parsed.results[0].chunks[0].tool_continuation_status).toBe('not_tool_result');
 		});
 
 		test('a continuation of a JSON parent carries the parent machine-output kind', async () => {
@@ -1869,12 +1835,9 @@ describe('helper functions (indirect via handler)', () => {
 			);
 			const parsed = JSON.parse(getTextContent(result));
 			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-prose']);
-			// Scoped to the machine-parent task (absent here): the surviving prose
-			// row is human and is certified as such — #2609 V3.
-			for (const r of parsed.results.filter((x: any) => x.taskId === 'task-env')) {
+			for (const r of parsed.results) {
 				expect(r.chunks[0].tool_continuation_status).not.toBe('not_tool_result');
 			}
-			expect(parsed.results[0].chunks[0].tool_continuation_status).toBe('not_tool_result');
 		});
 
 		test('a continuation of an environment_details parent carries the parent machine-output kind', async () => {

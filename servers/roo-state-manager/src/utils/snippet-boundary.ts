@@ -81,6 +81,41 @@ export function gradeSnippetBoundary(snippet: string): { ok: boolean; kind: Snip
 	// stop (measured 27/10 on the cadence passage: "…(cron-driven).\n```").
 	// Prose that merely EMBEDS a fenced block still has to end on the fence —
 	// the anti-vacuity case (prose cut mid-sentence) is unaffected.
-	if (/(^|\n)\s*```\s*$/.test(trimmed)) return { ok: true, kind: 'prose' };
+	if (endsOnClosingFence(trimmed)) return { ok: true, kind: 'prose' };
 	return { ok: /[.!?]["')]?\s*$/.test(trimmed), kind: 'prose' };
+}
+
+/** A backtick fence line; an opening fence may carry an info string (```ts). */
+const FENCE_LINE_RE = /^\s*```[^`\n]*$/;
+
+/**
+ * Line shaped like fenced-block content rather than prose: a code line
+ * (CODE_LINE_RE), a `#` / `//` comment, or a bare call `Name(...)`.
+ */
+const BLOCK_LINE_RE = /^\s*(#|\/\/)|^\s*[\w.$]+\(.*\)\s*;?\s*$/;
+
+/**
+ * True only when the text ends on the fence that CLOSES a block (ai-01 review
+ * on ms#1538): a dangling OPENING fence ("…\n```" with the block cut away)
+ * is a cut in the middle of the passage, not a complete line.
+ *   - A closing fence carries no info string (CommonMark), so a trailing
+ *     ```ts is always an opener.
+ *   - Even fence count: the trailing bare ``` pairs with an earlier opener.
+ *   - Odd fence count: the snippet window may START inside a block whose
+ *     opener lies before the cut — the 27/10 live datum is exactly that
+ *     ("teur — cadence 12h…:\n# minute 23…\nCronCreate(…)\n# NE PAS…\n```").
+ *     The trailing fence is then read as a closer only when most lines since
+ *     the previous fence (or the snippet start) are block-shaped; prose
+ *     followed by a lone fence is the dangling-opener shape and fails.
+ */
+function endsOnClosingFence(text: string): boolean {
+	const lines = text.split('\n');
+	if (!/^\s*```\s*$/.test(lines[lines.length - 1])) return false;
+	const fenceIdx = lines.flatMap((l, i) => (FENCE_LINE_RE.test(l) ? [i] : []));
+	if (fenceIdx.length % 2 === 0) return true;
+	const prevFence = fenceIdx.length > 1 ? fenceIdx[fenceIdx.length - 2] : -1;
+	const segment = lines.slice(prevFence + 1, -1).filter((l) => l.trim().length > 0);
+	if (segment.length === 0) return false;
+	const blockShaped = segment.filter((l) => BLOCK_LINE_RE.test(l) || CODE_LINE_RE.test(l)).length;
+	return blockShaped * 2 > segment.length;
 }
