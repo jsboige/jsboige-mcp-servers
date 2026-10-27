@@ -79,6 +79,12 @@ function fakeReader(overrides: Record<string, unknown> = {}) {
     isNull: () => false,
     getRooSyncMailbox: vi.fn().mockResolvedValue([sampleRow()]),
     getRooSyncMessageById: vi.fn().mockResolvedValue(sampleRow()),
+    // #4131: the PG-PRIMARY gate now DEFAULTS ON wherever a PG URL is
+    // configured, so the pre-listing sweeps (auto-archive / cleanup /
+    // reminders) take their PG branch on this seat. The fake must answer the
+    // whole-channel pool too, else those sweeps see a thrown TypeError and
+    // the read fails for the wrong reason.
+    getRooSyncChannelMessages: vi.fn().mockResolvedValue([sampleRow()]),
     ...overrides,
   };
 }

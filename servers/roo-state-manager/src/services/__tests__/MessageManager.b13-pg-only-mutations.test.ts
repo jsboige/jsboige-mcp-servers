@@ -132,7 +132,11 @@ describe('B13 — PG-only row mutations on a READ_PG + DUAL_WRITE host', () => {
     process.env.ROOSYNC_MACHINE_ID = MACHINE;
     process.env.ROOSYNC_WORKSPACE_ID = WORKSPACE;
     process.env.UNIFIED_STORE_CHANNEL_READ_PG = '1';
-    delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+    // #4131: this file pins the READ_PG + DUAL_WRITE host (a NON-primary
+    // seat, where the GDrive file stays the authoritative surface when it
+    // exists). The PG-PRIMARY gate now DEFAULTS ON wherever a PG URL is
+    // configured — the kill-switch '0' is what keeps this host non-primary.
+    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '0';
     process.env.UNIFIED_STORE_DUAL_WRITE = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgres://unit-test.invalid:5432/rsm';
 
@@ -149,7 +153,9 @@ describe('B13 — PG-only row mutations on a READ_PG + DUAL_WRITE host', () => {
   });
 
   test('markAsRead commits the row update (no GDrive file exists)', async () => {
-    expect(process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY).toBeUndefined();
+    // #4131: the non-primary host is pinned by the explicit kill-switch '0'
+    // (the ABSENCE of the flag would now mean "primary" on a PG-URL seat).
+    expect(process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY).toBe('0');
 
     const ok = await manager.markAsRead('msg-b13-row');
 

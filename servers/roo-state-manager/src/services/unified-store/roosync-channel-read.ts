@@ -24,6 +24,7 @@ import type { Message, MessageListItem } from '../MessageManager.js';
 import type { RooSyncMessageRow, RooSyncMessageUpdate } from './types.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
+import { isPgFlagOn } from './pg-flags.js';
 import { withColdPoolResume } from './pg-cold-pool-resume.js';
 import { parseMachineWorkspace, matchesRecipient, perReaderStatus, isMachineWideTarget } from '../../utils/message-helpers.js';
 import { applyReadTracking } from '../../utils/read-tracking.js';
@@ -46,8 +47,8 @@ const logger = createLogger('roosync-channel-read');
  */
 export function getChannelPgReader(): IUnifiedStoreReader | null {
   if (
-    process.env.UNIFIED_STORE_CHANNEL_READ_PG !== '1' &&
-    process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY !== '1'
+    !isPgFlagOn('UNIFIED_STORE_CHANNEL_READ_PG') &&
+    !isPgFlagOn('UNIFIED_STORE_CHANNEL_PG_PRIMARY')
   ) return null;
   if (!process.env.UNIFIED_STORE_PG_URL) return null;
   const reader = getUnifiedStoreReader();

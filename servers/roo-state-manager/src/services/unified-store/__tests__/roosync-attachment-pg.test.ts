@@ -111,6 +111,11 @@ const PRIMARY_ENV = {
 /** Read gate only (dual-write machine). */
 const READ_ENV = {
   UNIFIED_STORE_CHANNEL_READ_PG: '1',
+  // #4131: the PG-PRIMARY gate now DEFAULTS ON wherever a PG URL is
+  // configured — a READ_PG-only host is pinned by the explicit kill-switch
+  // '0'. (Its ABSENCE would make this host primary, and the attachment
+  // surface would then follow the primary contract, not the READ one.)
+  UNIFIED_STORE_CHANNEL_PG_PRIMARY: '0',
   UNIFIED_STORE_DUAL_WRITE: '1',
   UNIFIED_STORE_PG_URL: 'postgres://t:t@localhost:5432/x',
 } as const;
@@ -448,7 +453,14 @@ describe('#3151 §7.5.2 AttachmentManager wiring', () => {
   });
 
   test('upload gate off: GDrive path as before, dual-write now carries metadata', async () => {
-    await withEnv({ UNIFIED_STORE_DUAL_WRITE: '1', UNIFIED_STORE_PG_URL: 'postgres://t:t@localhost:5432/x' }, async () => {
+    // #4131: the upload gate is the PG_PRIMARY one — its ABSENCE now means
+    // "primary" on a PG-URL seat. The kill-switch '0' is what keeps the
+    // GDrive path (the machine still writes GDrive).
+    await withEnv({
+      UNIFIED_STORE_DUAL_WRITE: '1',
+      UNIFIED_STORE_PG_URL: 'postgres://t:t@localhost:5432/x',
+      UNIFIED_STORE_CHANNEL_PG_PRIMARY: '0',
+    }, async () => {
       const ref = await manager.uploadAttachment(makeSource('legacy path'), 'myia-po-2023', undefined, 'msg-pg-3');
       expect(existsSync(join(sharedStateDir, 'attachments', ref.uuid, 'src.txt'))).toBe(true);
       // Dual-write mirror is fire-and-forget — wait for it.

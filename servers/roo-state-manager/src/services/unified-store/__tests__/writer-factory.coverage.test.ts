@@ -249,7 +249,7 @@ describe('writer-factory — stderr emission with credential masking', () => {
   });
 });
 
-describe('writer-factory — env-var edge cases', () => {
+describe('writer-factory — env-var edge cases (#4131 default-on)', () => {
   beforeEach(() => {
     resetWriterInstance();
     vi.unstubAllEnvs();
@@ -263,15 +263,31 @@ describe('writer-factory — env-var edge cases', () => {
     resetWriterInstance();
   });
 
-  test('UNIFIED_STORE_DUAL_WRITE="true" (truthy non-"1") does NOT enable', () => {
+  test('UNIFIED_STORE_DUAL_WRITE="true" DOES enable (explicit values are honoured)', () => {
+    // #4131: the gate is no longer a strict `=== '1'` — 'true' is an accepted
+    // explicit ON (the resolver normalizes case/whitespace). The OLD strict
+    // equality silently fell through to the Null writer here.
     vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', 'true');
+    vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
+    expect(getUnifiedStoreWriter()).toBeInstanceOf(PgUnifiedStoreWriter);
+  });
+
+  test('UNIFIED_STORE_DUAL_WRITE="1 " (trailing whitespace) DOES enable', () => {
+    vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', '1 ');
+    vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
+    expect(getUnifiedStoreWriter()).toBeInstanceOf(PgUnifiedStoreWriter);
+  });
+
+  test('UNIFIED_STORE_DUAL_WRITE="false" does NOT enable (kill-switch)', () => {
+    vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', 'false');
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
     expect(getUnifiedStoreWriter()).toBeInstanceOf(NullUnifiedStoreWriter);
   });
 
-  test('UNIFIED_STORE_DUAL_WRITE="1 " (trailing whitespace) does NOT enable', () => {
-    vi.stubEnv('UNIFIED_STORE_DUAL_WRITE', '1 ');
+  test('UNIFIED_STORE_DUAL_WRITE unset + a PG URL → the writer is ENABLED (default-on)', () => {
+    // #4131 — the whole point: a seat that holds a PG URL is on PG without
+    // anyone editing its .env by hand.
     vi.stubEnv('UNIFIED_STORE_PG_URL', 'postgres://u:p@host/db');
-    expect(getUnifiedStoreWriter()).toBeInstanceOf(NullUnifiedStoreWriter);
+    expect(getUnifiedStoreWriter()).toBeInstanceOf(PgUnifiedStoreWriter);
   });
 });

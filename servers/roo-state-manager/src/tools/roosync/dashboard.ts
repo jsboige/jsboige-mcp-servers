@@ -75,6 +75,7 @@ import {
   readDashboardSharedLock,
   isDashboardPgPrimary,
 } from '../../services/unified-store/roosync-dashboard-store.js';
+import { isPgFlagOn } from '../../services/unified-store/pg-flags.js';
 // #3782: journal-level retirement mark (mark, never DELETE — gel des purges)
 import type { DashboardRetirementMark } from '../../services/unified-store/types.js';
 // #3482-follow: the fork predicate + root recovery live in the reconcile
@@ -379,7 +380,7 @@ const appendLockAcquireBudgetMs = (): number => Number(process.env.APPEND_LOCK_A
  * effect without a process restart.
  */
 export function isDashboardViewPgDerived(): boolean {
-  return process.env.UNIFIED_STORE_DASHBOARD_READ_PG === '1' || isDashboardPgPrimary();
+  return isPgFlagOn('UNIFIED_STORE_DASHBOARD_READ_PG') || isDashboardPgPrimary();
 }
 
 /**
@@ -400,7 +401,7 @@ export function isDashboardViewPgDerived(): boolean {
  */
 function isDashboardFileMirrorDeferrable(): boolean {
   const pgCanCarryWrite =
-    process.env.UNIFIED_STORE_DUAL_WRITE === '1' && !!process.env.UNIFIED_STORE_PG_URL;
+    isPgFlagOn('UNIFIED_STORE_DUAL_WRITE') && !!process.env.UNIFIED_STORE_PG_URL;
   if (!pgCanCarryWrite) return false;
   return isDashboardViewPgDerived();
 }
@@ -6994,7 +6995,7 @@ async function handleAppend(
   // moitié PG va bien. L'append continue, l'écriture fichier se dégrade en
   // miroir-seul au lieu de tuer le canal.
   let storeMissing = false;
-  if (isSharedPathAccessible() || process.env.UNIFIED_STORE_DASHBOARD_READ_PG !== '1') {
+  if (isSharedPathAccessible() || !isPgFlagOn('UNIFIED_STORE_DASHBOARD_READ_PG')) {
     try {
       assertSharedStoreAccessible();
     } catch (err) {
@@ -8234,7 +8235,7 @@ function mergeGuardRefusal(
   // writer-factory, sans l'instantier) : refuser l'asymétrie écrit-sans-lire ;
   // un monde sans PG du tout reste légitime (rien à écraser).
   const pgReadable = getDashboardPgReader() !== null;
-  const pgWritable = process.env.UNIFIED_STORE_DUAL_WRITE === '1' && !!process.env.UNIFIED_STORE_PG_URL;
+  const pgWritable = isPgFlagOn('UNIFIED_STORE_DUAL_WRITE') && !!process.env.UNIFIED_STORE_PG_URL;
   if (pgWritable && !pgReadable) {
     return {
       ...base,

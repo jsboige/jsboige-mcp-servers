@@ -29,6 +29,7 @@ import type { Message } from '../MessageManager.js';
 import type { RooSyncMessageUpdate } from './types.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { mapMessageToRow } from './roosync-channel-dual-write.js';
+import { isPgFlagOn } from './pg-flags.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-channel-write');
@@ -43,11 +44,12 @@ const logger = createLogger('roosync-channel-write');
  * report nothing archived while the served mailbox never shrinks.
  */
 export function isChannelPgWritable(): boolean {
-  // DUAL_WRITE=1 is required because writer-factory only builds a real
+  // DUAL_WRITE is required because writer-factory only builds a real
   // PgUnifiedStoreWriter under that flag — without it the writer is the Null
   // writer, whose insert/update/delete are no-ops that resolve without
-  // throwing.
-  return process.env.UNIFIED_STORE_DUAL_WRITE === '1'
+  // throwing. #4131: the flag now DEFAULTS ON on a host with a PG URL;
+  // '0'/'false' remains the kill-switch back to the Null writer.
+  return isPgFlagOn('UNIFIED_STORE_DUAL_WRITE')
     && !!process.env.UNIFIED_STORE_PG_URL;
 }
 
@@ -59,7 +61,7 @@ export function isChannelPgPrimary(): boolean {
   // A PG_PRIMARY gate on the Null writer reports success, skips the GDrive
   // fallback, and loses the message with no signal (review #1030) — hence the
   // writability precondition.
-  return process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY === '1'
+  return isPgFlagOn('UNIFIED_STORE_CHANNEL_PG_PRIMARY')
     && isChannelPgWritable();
 }
 

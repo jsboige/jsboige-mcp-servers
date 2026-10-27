@@ -33,6 +33,7 @@ import path from 'path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createRequire } from 'module';
 import { captureHostEnvKeys, applyEnvFileForNonHostKeys } from './services/host-env-snapshot.js';
+import { isPgFlagOn } from './services/unified-store/pg-flags.js';
 
 // Obtenir le répertoire du fichier actuel
 const __filename = fileURLToPath(import.meta.url);
@@ -493,7 +494,7 @@ class RooStateManagerServer {
             logger.info('📴 [ChannelReconcile] Désactivé via UNIFIED_STORE_CHANNEL_RECONCILE_ENABLED=false');
             return;
         }
-        if (process.env.UNIFIED_STORE_DUAL_WRITE !== '1' || !process.env.UNIFIED_STORE_PG_URL) {
+        if (!isPgFlagOn('UNIFIED_STORE_DUAL_WRITE')) {
             logger.info('📴 [ChannelReconcile] Dual-write non armé — daemon non démarré');
             return;
         }
@@ -517,7 +518,7 @@ class RooStateManagerServer {
             logger.info('📴 [DashboardReconcile] Désactivé via UNIFIED_STORE_DASHBOARD_RECONCILE_ENABLED=false');
             return;
         }
-        if (process.env.UNIFIED_STORE_DUAL_WRITE !== '1' || !process.env.UNIFIED_STORE_PG_URL) {
+        if (!isPgFlagOn('UNIFIED_STORE_DUAL_WRITE')) {
             logger.info('📴 [DashboardReconcile] Dual-write non armé — daemon non démarré');
             return;
         }

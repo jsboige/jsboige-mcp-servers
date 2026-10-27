@@ -40,6 +40,7 @@ import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { isChannelPgPrimary } from './roosync-channel-write.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
+import { isPgFlagOn } from './pg-flags.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-attachment-pg');
@@ -55,8 +56,8 @@ export function isAttachmentPgPrimary(): boolean {
  */
 export function getAttachmentPgReader(): IUnifiedStoreReader | null {
   if (
-    process.env.UNIFIED_STORE_CHANNEL_READ_PG !== '1'
-    && process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY !== '1'
+    !isPgFlagOn('UNIFIED_STORE_CHANNEL_READ_PG')
+    && !isPgFlagOn('UNIFIED_STORE_CHANNEL_PG_PRIMARY')
   ) return null;
   if (!process.env.UNIFIED_STORE_PG_URL) return null;
   const reader = getUnifiedStoreReader();

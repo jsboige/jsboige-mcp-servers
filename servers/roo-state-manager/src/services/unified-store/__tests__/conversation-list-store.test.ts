@@ -121,13 +121,28 @@ afterEach(() => {
 // ─── Gate ───────────────────────────────────────────────────────────
 
 describe('getConversationListPgReader — the gate', () => {
-  test('returns null when the flag is unset (default: this tier is OFF)', () => {
+  test('returns null when the flag is unset AND no PG URL is configured', () => {
+    // #4131: with the flag unset the tier follows the DEFAULT — ON iff the
+    // host holds a PG URL. No URL, no tier: a seat without PG sees no change.
     delete process.env.UNIFIED_STORE_CONVERSATION_READ_PG;
+    delete process.env.UNIFIED_STORE_PG_URL;
     expect(getConversationListPgReader()).toBeNull();
   });
 
-  test('returns null when the flag is any value other than "1"', () => {
-    process.env.UNIFIED_STORE_CONVERSATION_READ_PG = 'true';
+  test('returns the reader when the flag is unset but a PG URL is configured (default-on)', () => {
+    // #4131: the whole point — a seat that holds a PG URL is on PG without
+    // anyone editing its .env by hand.
+    delete process.env.UNIFIED_STORE_CONVERSATION_READ_PG;
+    expect(getConversationListPgReader()).not.toBeNull();
+  });
+
+  test('returns null when the flag is the kill-switch "0"', () => {
+    process.env.UNIFIED_STORE_CONVERSATION_READ_PG = '0';
+    expect(getConversationListPgReader()).toBeNull();
+  });
+
+  test('returns null when the flag is the kill-switch "false"', () => {
+    process.env.UNIFIED_STORE_CONVERSATION_READ_PG = 'false';
     expect(getConversationListPgReader()).toBeNull();
   });
 
@@ -147,7 +162,7 @@ describe('getConversationListPgReader — the gate', () => {
 
   test('is read at CALL time, not import time (togglable without a restart)', () => {
     expect(getConversationListPgReader()).not.toBeNull();
-    delete process.env.UNIFIED_STORE_CONVERSATION_READ_PG;
+    process.env.UNIFIED_STORE_CONVERSATION_READ_PG = '0';
     expect(getConversationListPgReader()).toBeNull();
     process.env.UNIFIED_STORE_CONVERSATION_READ_PG = '1';
     expect(getConversationListPgReader()).not.toBeNull();
@@ -298,7 +313,9 @@ describe('loadPgConversationTier', () => {
   });
 
   test('returns an empty ready result when the gate is off', async () => {
-    delete process.env.UNIFIED_STORE_CONVERSATION_READ_PG;
+    // #4131: "gate off" is now the explicit kill-switch, not the absence of
+    // the flag (the absence means "follow the default", i.e. ON with a URL).
+    process.env.UNIFIED_STORE_CONVERSATION_READ_PG = '0';
     const result = await loadPgConversationTier({}, new Set());
     expect(result).toEqual({ status: 'ready', rows_read: 0, truncated: false, skeletons: [] });
     expect(mockListConversations).not.toHaveBeenCalled();
@@ -338,7 +355,9 @@ function msg(seq: number, overrides: Partial<MessageRow> = {}): MessageRow {
 
 describe('loadPgConversationSkeleton', () => {
   test('returns null without touching the reader when the gate is off', async () => {
-    delete process.env.UNIFIED_STORE_CONVERSATION_READ_PG;
+    // #4131: "gate off" is now the explicit kill-switch, not the absence of
+    // the flag (the absence means "follow the default", i.e. ON with a URL).
+    process.env.UNIFIED_STORE_CONVERSATION_READ_PG = '0';
     expect(await loadPgConversationSkeleton('any')).toBeNull();
     expect(mockInit).not.toHaveBeenCalled();
     expect(mockGetConversation).not.toHaveBeenCalled();

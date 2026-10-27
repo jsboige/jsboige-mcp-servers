@@ -49,6 +49,7 @@ import type { Message } from '../MessageManager.js';
 import type { IUnifiedStoreWriter } from './UnifiedStoreWriter.js';
 import { mapMessageToRow } from './roosync-channel-dual-write.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
+import { isPgFlagOn } from './pg-flags.js';
 import { acquireGdriveScanLock } from '../gdrive-scan-lock.js';
 import { createLogger } from '../../utils/logger.js';
 
@@ -113,7 +114,7 @@ export interface ChannelReconcileOptions {
  * and config reloads can toggle without a restart.
  */
 export function isChannelDualWriteArmed(): boolean {
-  return process.env.UNIFIED_STORE_DUAL_WRITE === '1' && !!process.env.UNIFIED_STORE_PG_URL;
+  return isPgFlagOn('UNIFIED_STORE_DUAL_WRITE') && !!process.env.UNIFIED_STORE_PG_URL;
 }
 
 /**

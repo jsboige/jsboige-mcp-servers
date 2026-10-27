@@ -39,6 +39,7 @@ import { getUnifiedStoreReader } from './reader-factory.js';
 import { PgUnifiedStoreReader } from './PgUnifiedStoreReader.js';
 import { withColdPoolResume } from './pg-cold-pool-resume.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
+import { isPgFlagOn } from './pg-flags.js';
 import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-dashboard-store');
@@ -50,7 +51,7 @@ const logger = createLogger('roosync-dashboard-store');
  * it without a process restart — same as getChannelPgReader.
  */
 export function getDashboardPgReader(): IUnifiedStoreReader | null {
-  if (process.env.UNIFIED_STORE_DASHBOARD_READ_PG !== '1') return null;
+  if (!isPgFlagOn('UNIFIED_STORE_DASHBOARD_READ_PG')) return null;
   if (!process.env.UNIFIED_STORE_PG_URL) return null;
   const reader = getUnifiedStoreReader();
   if (reader.isNull()) return null;
@@ -62,15 +63,15 @@ export function getDashboardPgReader(): IUnifiedStoreReader | null {
  * written FIRST and the GDrive file becomes a bounded best-effort mirror.
  *
  * Mirrors isChannelPgPrimary (roosync-channel-write.ts) exactly, including the
- * Null-writer guard: UNIFIED_STORE_DUAL_WRITE=1 is required because
+ * Null-writer guard: UNIFIED_STORE_DUAL_WRITE is required because
  * writer-factory only builds a real PgUnifiedStoreWriter under that flag —
  * without it the writer is the Null writer whose syncRooSyncDashboard is a
  * silent no-op, a PG_PRIMARY gate on it would report success while nothing
  * landed (review #1030, same trap as the channel).
  */
 export function isDashboardPgPrimary(): boolean {
-  return process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY === '1'
-    && process.env.UNIFIED_STORE_DUAL_WRITE === '1'
+  return isPgFlagOn('UNIFIED_STORE_DASHBOARD_PG_PRIMARY')
+    && isPgFlagOn('UNIFIED_STORE_DUAL_WRITE')
     && !!process.env.UNIFIED_STORE_PG_URL;
 }
 
@@ -277,7 +278,7 @@ const GUARD_A_PROBE_TIMEOUT_MS = 3000;
 const GUARD_A_RECENCY_MS = 6 * 3600 * 1000;
 
 export async function probeDashboardJournalForHydration(key: string): Promise<GuardAProbe> {
-  if (process.env.UNIFIED_STORE_DUAL_WRITE !== '1' || !process.env.UNIFIED_STORE_PG_URL) {
+  if (!isPgFlagOn('UNIFIED_STORE_DUAL_WRITE') || !process.env.UNIFIED_STORE_PG_URL) {
     return { kind: 'pg-off' };
   }
   const reader = getUnifiedStoreReader();
