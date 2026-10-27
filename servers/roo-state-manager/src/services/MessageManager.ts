@@ -426,6 +426,20 @@ export class MessageManager {
    */
   private static readonly READ_CONCURRENCY = deriveReadConcurrency();
   /**
+   * Pause between rebuild chunks after a failed read (#4131 B18(b)).
+   *
+   * The concurrency cap bounds the number of SIMULTANEOUS G: reads; it does not
+   * pace them. A cold DriveFS under pressure rejects a whole chunk, and the old
+   * loop immediately enqueued the next one — the measured 230+ timeout storm.
+   * A short pause after any failure lets the share drain, and the delay doubles
+   * (capped) while failures persist. A clean chunk resets both the delay and
+   * one step of concurrency, so a healthy pass pays nothing.
+   */
+  private static readonly REBUILD_BACKOFF_BASE_MS = 25;
+  private static readonly REBUILD_BACKOFF_MAX_MS = 500;
+  /** Floor for the adaptive chunk size — never serialize the whole pass. */
+  private static readonly REBUILD_MIN_CONCURRENCY = 2;
+  /**
    * Per-file read timeout during inbox cache build (ms).
    *
    * `Promise.allSettled` waits for every file in a chunk; a single cloud-only
@@ -454,6 +468,8 @@ export class MessageManager {
   private readonly negativeCacheTtlMs: number;
   /** Rebuild budget (overridable for tests; production = INBOX_REBUILD_BUDGET_MS) */
   private readonly rebuildBudgetMs: number;
+  /** Base inter-chunk pause after a failed read (#4131 B18(b); tests use 0/fast). */
+  private readonly rebuildBackoffMs: number;
   /** Last known file count in inbox dir (cheap invalidation check) */
   private lastInboxFileCount: number = -1;
   /** Files that failed to read during a cache build, mapped to their last failure
@@ -574,12 +590,14 @@ export class MessageManager {
     negativeCacheTtlMs: number = MessageManager.NEGATIVE_CACHE_TTL_MS,
     rebuildBudgetMs: number = MessageManager.INBOX_REBUILD_BUDGET_MS,
     deadFileTtlMs: number = MessageManager.DEAD_FILE_TTL_MS,
+    rebuildBackoffMs: number = MessageManager.REBUILD_BACKOFF_BASE_MS,
   ) {
     this.sharedStatePath = sharedStatePath;
     this.readTimeoutMs = readTimeoutMs;
     this.negativeCacheTtlMs = negativeCacheTtlMs;
     this.rebuildBudgetMs = rebuildBudgetMs;
     this.deadFileTtlMs = deadFileTtlMs;
+    this.rebuildBackoffMs = rebuildBackoffMs;
     this.messagesPath = join(sharedStatePath, 'messages');
     this.inboxPath = join(this.messagesPath, 'inbox');
     this.sentPath = join(this.messagesPath, 'sent');
@@ -1200,14 +1218,27 @@ export class MessageManager {
     const full = new Map<string, Message>();
     let truncated = false;
 
-    // Parallel chunked reads — 50 concurrent instead of serial (84s → ~2s on GDrive)
-    for (let i = 0; i < readableFiles.length; i += MessageManager.READ_CONCURRENCY) {
+    // Parallel chunked reads — the cap is derived from the threadpool
+    // (#4131 B11(b)), then ADAPTED here: a chunk that fails at least half its
+    // reads halves the batch and doubles the pause until the share recovers
+    // (#4131 B18(b)). Without this, a rejected chunk was followed immediately
+    // by another full-width one — the measured 230+ timeout storm.
+    let index = 0;
+    const initialConcurrency = MessageManager.READ_CONCURRENCY;
+    let concurrency = initialConcurrency;
+    // Starts at ZERO: a healthy pass must never pause. The base pause is
+    // armed by the first failing chunk, not by the configuration.
+    let backoffMs = 0;
+    let downgradeLogged = false;
+
+    while (index < readableFiles.length) {
       if (Date.now() >= deadline) {
         truncated = true;
-        logger.warn(`Inbox cache rebuild hit its budget after ${i}/${readableFiles.length} files - returning early (#3205)`);
+        logger.warn(`Inbox cache rebuild hit its budget after ${index}/${readableFiles.length} files - returning early (#3205/#4131 B18)`);
         break;
       }
-      const chunk = readableFiles.slice(i, i + MessageManager.READ_CONCURRENCY);
+      const chunk = readableFiles.slice(index, index + concurrency);
+      index += chunk.length;
       const results = await Promise.allSettled(
         chunk.map(async file => {
           // Bound each read against GDrive cloud-only hangs: allSettled waits
@@ -1243,6 +1274,7 @@ export class MessageManager {
           return message;
         })
       );
+      let chunkFailures = 0;
       for (let r = 0; r < results.length; r++) {
         const result = results[r];
         if (result.status === 'fulfilled') {
@@ -1264,6 +1296,7 @@ export class MessageManager {
           full.set(message.id, message);
           items.push(toInboxListItem(message));
         } else {
+          chunkFailures++;
           const failedFile = chunk[r] ? join(this.inboxPath, chunk[r]) : 'unknown';
           // Record the read failure so the file is skipped on subsequent rebuilds
           // until the window elapses (or it reads successfully), #3205.
@@ -1271,6 +1304,46 @@ export class MessageManager {
             this.noteReadFailure(chunk[r]);
           }
           logger.error(`Error reading message file during parallel cache build: ${failedFile}`, result.reason);
+        }
+      }
+
+      // Adapt the batch width and pace to what the share actually returned.
+      // Half-or-more failures = the share is refusing the current pressure:
+      // shrink the batch and pause before the next one. A clean chunk resets
+      // the pause and recovers one step of width, so a healthy pass pays nothing
+      // and a recovered share returns to full speed quickly.
+      if (chunkFailures > 0) {
+        const majorityFailed = chunkFailures * 2 >= chunk.length;
+        if (majorityFailed && concurrency > MessageManager.REBUILD_MIN_CONCURRENCY) {
+          const next = Math.max(
+            MessageManager.REBUILD_MIN_CONCURRENCY,
+            Math.floor(concurrency / 2),
+          );
+          if (next < concurrency) {
+            concurrency = next;
+            if (!downgradeLogged) {
+              downgradeLogged = true;
+              logger.warn(`Inbox cache rebuild backing off: ${chunkFailures}/${chunk.length} reads failed, batch width now ${concurrency} (#4131 B18)`);
+            }
+          }
+        }
+        backoffMs = Math.min(
+          MessageManager.REBUILD_BACKOFF_MAX_MS,
+          Math.max(this.rebuildBackoffMs, backoffMs * 2),
+        );
+      } else {
+        backoffMs = 0;
+        if (concurrency < initialConcurrency) concurrency++;
+      }
+
+      if (index < readableFiles.length) {
+        if (Date.now() + backoffMs >= deadline) {
+          truncated = true;
+          logger.warn(`Inbox cache rebuild hit its budget after ${index}/${readableFiles.length} files (no time left for the next batch) - returning early (#3205/#4131 B18)`);
+          break;
+        }
+        if (backoffMs > 0) {
+          await new Promise(resolve => setTimeout(resolve, backoffMs));
         }
       }
     }
