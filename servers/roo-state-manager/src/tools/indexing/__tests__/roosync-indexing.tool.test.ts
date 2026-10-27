@@ -393,6 +393,137 @@ describe('roosyncIndexingTool', () => {
 });
 
 // ============================================================
+// index action — queued mode (#4352 g3)
+// ============================================================
+
+describe('roosync_indexing index action — queued mode (#4352 g3)', () => {
+	const ensureFresh = vi.fn().mockResolvedValue(true);
+	const saveSkeleton = vi.fn().mockResolvedValue(undefined);
+	const setEnabled = vi.fn();
+	const mockRebuildHandler = vi.fn();
+
+	const deadLetterEntry = {
+		taskId: 'big-1', error: 'embedding timeout', errorClass: 'embedding_timeout',
+		retryCount: 3, lastAttempt: '2026-10-27T00:00:00.000Z', movedAt: '2026-10-27T00:00:00.000Z'
+	};
+
+	/** Skeleton "grosse session" en échec permanent — le cas g3 canonical. */
+	const makeCache = () => new Map([
+		['big-1', {
+			taskId: 'big-1',
+			metadata: { indexingState: { indexStatus: 'failed', indexError: 'embedding timeout', errorClass: 'embedding_timeout' } }
+		} as any],
+	]);
+
+	const makeIndexingState = (queue: Set<string>, overrides: Record<string, unknown> = {}) => ({
+		qdrantIndexQueue: queue,
+		qdrantIndexInterval: {} as NodeJS.Timeout,
+		isQdrantIndexingEnabled: true,
+		isIndexLeader: true,
+		indexingMetrics: { totalTasks: 1, skippedTasks: 0, indexedTasks: 0, failedTasks: 1, retryTasks: 0, bandwidthSaved: 0 },
+		deadLetterQueue: new Set(['big-1']),
+		deadLetterDetails: new Map([['big-1', deadLetterEntry]]),
+		...overrides,
+	});
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	test('queued=true enqueues, resets state, clears dead-letter and never touches the inline indexer', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+		const cache = makeCache();
+		const queue = new Set<string>();
+		const state = makeIndexingState(queue);
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', queued: true } as any,
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			state
+		);
+
+		expect((result as any).isError).toBeUndefined();
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.queued).toBe(true);
+		expect(parsed.task_id).toBe('big-1');
+		expect(parsed.was_failed).toBe(true);
+		expect(parsed.worker_running).toBe(true);
+		expect(parsed.queue_size).toBe(1);
+		expect(parsed.queue_size_scope).toBe('this-process');
+		expect(parsed.hints).toEqual([]);
+
+		// La chaîne de mutation a tourné : reset + save + dead-letter levée + enqueue.
+		expect(mockResetIndexingState).toHaveBeenCalledTimes(1);
+		expect(saveSkeleton).toHaveBeenCalledTimes(1);
+		expect(state.deadLetterQueue!.has('big-1')).toBe(false);
+		expect(state.deadLetterDetails!.has('big-1')).toBe(false);
+		expect(queue.has('big-1')).toBe(true);
+		expect(setEnabled).toHaveBeenCalledWith(true);
+		// …et le chemin inline (celui qui meurt au timeout 300 s) n'a PAS servi.
+		expect(mockIndexHandler).not.toHaveBeenCalled();
+	});
+
+	test('queued=true without indexingState refuses with isError (no silent inline fallback)', async () => {
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', queued: true } as any,
+			makeCache(), ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect((result as any).isError).toBe(true);
+		expect(result.content[0].text).toContain('indexingState');
+		expect(mockIndexHandler).not.toHaveBeenCalled();
+		expect(mockResetIndexingState).not.toHaveBeenCalled();
+	});
+
+	test('queued=true on unknown task_id returns isError and leaves the queue untouched (cache-miss mutant)', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+		const queue = new Set<string>();
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'ghost', queued: true } as any,
+			new Map(), ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			makeIndexingState(queue)
+		);
+
+		expect((result as any).isError).toBe(true);
+		expect(result.content[0].text).toContain('ghost');
+		expect(queue.size).toBe(0);
+		expect(mockResetIndexingState).not.toHaveBeenCalled();
+		expect(saveSkeleton).not.toHaveBeenCalled();
+		expect(mockIndexHandler).not.toHaveBeenCalled();
+	});
+
+	test('hints expose kill-switch, absent worker and follower; kill-switch clamps setEnabled', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'false');
+		const cache = makeCache();
+		const queue = new Set<string>();
+		const state = makeIndexingState(queue, { qdrantIndexInterval: null, isIndexLeader: false });
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', queued: true } as any,
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			state
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.queued).toBe(true);
+		expect(parsed.worker_running).toBe(false);
+		expect(parsed.hints).toHaveLength(3);
+		expect(parsed.hints[0]).toContain('ROO_INDEXING_ENABLED');
+		expect(parsed.hints[1]).toContain('worker');
+		expect(parsed.hints[2]).toContain('leader');
+		// Clamp env : le kill-switch posé, on ne réactive pas le service.
+		expect(setEnabled).not.toHaveBeenCalled();
+		// L'enqueue lui-même reste fait — la file drainera au retrait du switch.
+		expect(queue.has('big-1')).toBe(true);
+	});
+});
+
+// ============================================================
 // status action
 // ============================================================
 
@@ -466,6 +597,31 @@ describe('roosync_indexing status action', () => {
 		expect(result.isError).toBe(false);
 		const parsed = JSON.parse(result.content[0].text);
 		expect(parsed.background_indexer.queue_size).toBe(1);
+	});
+
+	// #4352 g3 — la file devient OBSERVABLE : un opérateur qui vient de poser
+	// queued=true voit le task_id entrer dans cette liste puis la quitter.
+	test('#4352 g3: status exposes queued_task_ids, bounded at 25 with a truncation flag', async () => {
+		const ids = Array.from({ length: 30 }, (_, i) => `t${i}`);
+		const indexingState = {
+			qdrantIndexQueue: new Set(ids),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 30, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 }
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.background_indexer.queue_size).toBe(30);
+		expect(parsed.background_indexer.queued_task_ids).toHaveLength(25);
+		expect(parsed.background_indexer.queued_task_ids[0]).toBe('t0');
+		expect(parsed.background_indexer.queued_task_ids[24]).toBe('t24');
+		expect(parsed.background_indexer.queued_task_ids_truncated).toBe(true);
 	});
 
 	// #3014: the diagnostic trap. Two materially different states — a healthy

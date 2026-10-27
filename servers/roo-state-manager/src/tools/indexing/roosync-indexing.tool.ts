@@ -478,6 +478,15 @@ export interface RooSyncIndexingArgs {
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
 
+    /**
+     * #4352 g3 — action=index: mettre la tâche en file d'indexation et rendre
+     * la main immédiatement au lieu d'indexer en ligne (une session de 5,5 Mo
+     * mesurée meurt au timeout outil de 300 s). La progression se lit via
+     * action=status (queue_size, queued_task_ids); un échec atterrit dans le
+     * rapport dead-letter. Défaut: false (indexation en ligne, inchangée).
+     */
+    queued?: boolean;
+
     /** Confirmation pour reset (requis pour action=reset) */
     confirm?: boolean;
 
@@ -592,6 +601,11 @@ export const roosyncIndexingTool: Tool = {
             task_id: {
                 type: 'string',
                 description: 'Task ID to index (required for action=index)'
+            },
+            queued: {
+                type: 'boolean',
+                description: 'For action=index (#4352 g3): enqueue the task on the background indexing queue and return immediately instead of indexing inline (large sessions die at the 300s tool timeout). Resets the task indexing state and dead-letter entry first so the worker re-indexes it. Progress via action=status (queue_size, queued_task_ids); failures land in the dead-letter report. Default: false (inline).',
+                default: false
             },
             confirm: {
                 type: 'boolean',
@@ -826,6 +840,79 @@ export async function handleRooSyncIndexing(
                 return {
                     isError: true,
                     content: [{ type: 'text', text: 'Le paramètre "task_id" est requis pour action=index' }]
+                };
+            }
+            // #4352 g3 — queued mode: index a LARGE session without dying at the
+            // 300 s tool timeout. Reuses the exact machinery a collection reset
+            // uses (reset-collection.tool.ts): reset the skeleton's indexing
+            // state, drop any dead-letter entry, enqueue on the per-process
+            // background queue and let the interval worker drain it. Returns at
+            // once; progress is readable through action=status.
+            if (args.queued) {
+                if (!indexingState) {
+                    return {
+                        isError: true,
+                        content: [{ type: 'text', text: 'queued=true exige le state du processus hôte (indexingState) — indisponible dans ce contexte. Utilisez l\'indexation en ligne (queued absent).' }]
+                    };
+                }
+                const refreshed = await ensureCacheFreshCallback();
+                const skeleton = conversationCache.get(args.task_id);
+                if (!skeleton) {
+                    return {
+                        isError: true,
+                        content: [{ type: 'text', text: `Tâche ${args.task_id} absente du cache ${refreshed ? 'après rafraîchissement' : '(rafraîchissement impossible)'} — vérifiez task_id.` }]
+                    };
+                }
+                const wasFailed = skeleton.metadata?.indexingState?.indexStatus === 'failed';
+                const { IndexingDecisionService } = await import('../../services/indexing-decision.js');
+                // Instance fraîche légitime : le service est stateless côté
+                // décisions (constructor = lectures env figées) et
+                // resetIndexingState écrit dans le skeleton, état partagé.
+                const decisionService = new IndexingDecisionService();
+                decisionService.resetIndexingState(skeleton);
+                await saveSkeletonCallback(skeleton);
+                // Un dead-letter épinglé ferait re-skiper la tâche au prochain
+                // cycle du worker (background-services #2766 S2+) — lever l'épingle.
+                indexingState.deadLetterQueue?.delete(args.task_id);
+                indexingState.deadLetterDetails?.delete(args.task_id);
+                qdrantIndexQueue.add(args.task_id);
+                // Réactiver le service s'il était désactivé — clamp à l'env,
+                // même garde que reset-collection (#985 review finding 2).
+                if (process.env.ROO_INDEXING_ENABLED !== 'false') {
+                    setQdrantIndexingEnabled(true);
+                }
+                // Le worker de fond vit sur le ServerState réel et démarre au
+                // boot (background-services initializeQdrantIndexingService) ;
+                // la file passée ici EST sa file (même référence Set) — il la
+                // draine. On ne le (re)démarre JAMAIS depuis le tool :
+                // indexingState est un littéral par-appel (registry.ts), un
+                // interval posé dessus serait orphelin et fuirait à chaque appel.
+                const hints: string[] = [];
+                if (process.env.ROO_INDEXING_ENABLED === 'false') {
+                    hints.push('Kill-switch ROO_INDEXING_ENABLED=false — la file ne drainera pas tant qu\'il est posé.');
+                }
+                if (!indexingState.qdrantIndexInterval) {
+                    hints.push('Aucun worker d\'indexation détecté sur ce processus (initialisation boot incomplète) — la file ne drainera pas d\'elle-même.');
+                }
+                if (!indexingState.isIndexLeader) {
+                    hints.push('Ce processus n\'est pas le leader d\'indexation de la machine (#2352) — la file est drainée par le processus leader.');
+                }
+                return {
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            queued: true,
+                            task_id: args.task_id,
+                            reset_indexing_state: true,
+                            was_failed: wasFailed,
+                            dead_letter_entry_removed: true,
+                            queue_size: qdrantIndexQueue.size,
+                            queue_size_scope: 'this-process',
+                            worker_running: Boolean(indexingState.qdrantIndexInterval),
+                            hints,
+                            next: 'roosync_indexing(action:"status") — queue_size, queued_task_ids, metrics.failed; échec visible dans le dead-letter.'
+                        }, null, 2)
+                    }]
                 };
             }
             return await indexTaskSemanticTool.handler(
@@ -1198,6 +1285,12 @@ export async function handleRooSyncIndexing(
                     pid: process.pid,
                     queue_size: state.qdrantIndexQueue.size,
                     queue_size_scope: 'this-process',
+                    // #4352 g3 — the queue CONTENT makes queued re-indexing
+                    // observable: an operator watching action=index (queued=true)
+                    // sees the task_id sit in this list, then leave it. Bounded
+                    // so a fleet-wide reset can't blow the payload.
+                    queued_task_ids: Array.from(state.qdrantIndexQueue.values()).slice(0, 25),
+                    queued_task_ids_truncated: state.qdrantIndexQueue.size > 25,
                     metrics_scope: 'this-process',
                     // #2766 S2+: dead-letter size is exposed at the top level
                     // so dashboards can chart the separation. Operators who
