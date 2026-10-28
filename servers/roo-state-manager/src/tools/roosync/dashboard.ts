@@ -2544,6 +2544,43 @@ async function runGdriveFullWriteHalf(
 }
 
 /**
+ * #4131 demande 2 — répare le MIROIR fichier depuis le store PG.
+ *
+ * Sous `isDashboardPgPrimary()`, PG est la surface primaire et le fichier n'est
+ * qu'un export borné : quand la moitié GDrive d'une écriture expire (mesuré
+ * 28/10 sur ai-01 : deux `GDRIVE-BOUNDED`), le message vit dans PG et le
+ * fichier reste derrière POUR TOUJOURS — rien ne le rattrape, `G:` cesse donc
+ * d'être une sauvegarde fiable. Cette fonction réécrit le fichier depuis la vue
+ * PG sous le verrou append (même sérialisation qu'un append local) et ne
+ * re-passe PAS par la porte PG (`pgPrimaryPreWritten`) : la vue vient d'y être
+ * lue, un second upsert n'ajouterait qu'un risque de throw mensonger.
+ *
+ * Ce n'est pas un chemin d'écriture de plus : c'est la seule façon dont une
+ * moitié GDrive ratée redevient réparable.
+ */
+export async function repairDashboardMirrorFromPg(
+  key: string,
+  dashboard: Dashboard
+): Promise<void> {
+  const holder: CondenseLockInfo = {
+    machineId: process.env.ROOSYNC_MACHINE_ID || 'unknown',
+    workspace: 'mirror-repair',
+    pid: process.pid,
+    acquiredAt: new Date().toISOString()
+  };
+  await withAppendLock(key, holder, async () => {
+    const wv = await writeDashboardFile(key, dashboard, undefined, { pgPrimaryPreWritten: true });
+    // `writeDashboardFile` does not throw when the GDrive half degrades (by
+    // design: PG is primary and the caller's write stands). Here the file IS the
+    // deliverable, so a degraded half is a failed repair — reporting it as
+    // repaired would be exactly the phony count this epic keeps paying for.
+    if (wv.gdriveDegraded) {
+      throw new Error(`moitié GDrive dégradée à la réparation du miroir : ${wv.gdriveDegraded}`);
+    }
+  });
+}
+
+/**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
 async function writeDashboardFile(
