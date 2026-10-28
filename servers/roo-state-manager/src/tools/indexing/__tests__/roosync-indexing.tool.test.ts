@@ -22,7 +22,7 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockArchiveTask, mockArchiveClaudeCodeSessions, mockListArchivedTasks, mockFindConversationById,
 	mockDetectStorageLocations, mockFsReadDir, mockFsReadFile, mockFsStat,
 	mockCleanupOldVectors, mockDetectAndCleanupOrphans,
-	mockResetIndexingState, mockClassifyIndexingError, mockReadLeaderLockInfo, mockRequestQueuedIndex
+	mockResetIndexingState, mockClassifyIndexingError, mockReadLeaderLockInfo, mockRequestQueuedIndex, mockRequestQueuedIndexBatch
 } = vi.hoisted(() => ({
 	mockIndexHandler: vi.fn(),
 	mockResetHandler: vi.fn(),
@@ -41,7 +41,8 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockResetIndexingState: vi.fn(),
 	mockClassifyIndexingError: vi.fn(),
 	mockReadLeaderLockInfo: vi.fn(),
-	mockRequestQueuedIndex: vi.fn()
+	mockRequestQueuedIndex: vi.fn(),
+	mockRequestQueuedIndexBatch: vi.fn()
 }));
 
 // Default mock for shared-state-path — returns '' unless a test sets the holder.
@@ -106,6 +107,8 @@ vi.mock('../../../services/background-services.js', async (importOriginal) => {
 		// #4352 g3: the follower path persists the request; stub it so the tool
 		// test never touches the real machine-local request file.
 		requestQueuedIndex: mockRequestQueuedIndex,
+		// #4352 g6: same for the cleanup_failed batch flavour (one append per run).
+		requestQueuedIndexBatch: mockRequestQueuedIndexBatch,
 	};
 });
 vi.mock('../../../services/indexing-decision.js', () => ({
@@ -1957,6 +1960,13 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 		expect(parsed.mode).toBe('executed');
 		expect(parsed.reset_count).toBe(1);
 		expect(parsed.reset_task_ids).toEqual(['f-1']);
+		// #4352 g6: the reset is ALSO persisted as a request for the leader —
+		// the local cache reset alone is lost to the leader's index rewrite.
+		expect(parsed.persistence_mode).toBe('request-file');
+		expect(parsed.persisted).toBe(1);
+		expect(parsed.not_persisted).toBe(0);
+		expect(result.isError).toBeFalsy();
+		expect(mockRequestQueuedIndexBatch).toHaveBeenCalledWith(['f-1'], 'local', 'reset');
 		// resetIndexingState must have been called.
 		expect(mockResetIndexingState).toHaveBeenCalledTimes(1);
 		// saveSkeleton callback must have been called (NOT direct disk write).
@@ -2067,6 +2077,66 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 		// #2766 S3: rate_limit is transient → NOT parked in dead-letter.
 		expect(deadLetterQueue.has('t-1')).toBe(false);
 		expect(deadLetterDetails.has('t-1')).toBe(false);
+	});
+
+	// ============================================================
+	// #4352 g6 — the reset must REACH the leader, and the receipt must
+	// say so (measured 28/10, ai-01: [EXECUTED] reset=100, only 1 retried).
+	// ============================================================
+	test('cleanup_failed g6: request-file append failure reports not_persisted + isError (no lying [EXECUTED])', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['f-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'rate limit exceeded',
+				indexRetryCount: 3,
+				errorClass: 'rate_limit',
+			})],
+		]);
+		const indexingState = {
+			machineId: 'myia-test',
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 },
+			deadLetterQueue: new Set<string>(),
+			deadLetterDetails: new Map<string, any>(),
+		};
+		mockRequestQueuedIndexBatch.mockRejectedValueOnce(new Error('EACCES: permission denied'));
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', dry_run: false } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(result.isError).toBe(true);
+		expect(parsed.reset_count).toBe(1);          // local cache WAS reset…
+		expect(parsed.persisted).toBe(0);            // …but nothing durable left the process
+		expect(parsed.not_persisted).toBe(1);
+		expect(parsed.summary).toContain('NON persistés');
+		expect(mockRequestQueuedIndexBatch).toHaveBeenCalledWith(['f-1'], 'myia-test', 'reset');
+	});
+
+	test('cleanup_failed g6: without host-process state the reset cannot persist — honest isError, no silent in-memory-only [EXECUTED]', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['f-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'rate limit exceeded',
+				indexRetryCount: 3,
+				errorClass: 'rate_limit',
+			})],
+		]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', dry_run: false } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+			// NO indexingState — no machineId to key the request file, no leader
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(result.isError).toBe(true);
+		expect(parsed.persistence_mode).toBe('unavailable');
+		expect(parsed.not_persisted).toBe(1);
+		expect(mockRequestQueuedIndexBatch).not.toHaveBeenCalled();
 	});
 
 	test('cleanup_failed #2766 S3: mixed permanent + transient splits dead-letter vs reset-for-retry', async () => {
