@@ -15,8 +15,7 @@ import {
     cleanupOldVectors as cleanupOldVectorsVector,
     updateSkeletonIndexTimestamp,
     upsertPointsBatch,
-    qdrantRateLimiter
-} from './task-indexer/VectorIndexer.js';
+    qdrantRateLimiter, IndexTaskProgressOptions } from './task-indexer/VectorIndexer.js';
 
 type PointStruct = Schemas['PointStruct'];
 
@@ -30,8 +29,8 @@ export { getHostIdentifier };
  * @param taskPath Le chemin complet vers le répertoire de la tâche.
  * @param source Source de la tâche ('roo' ou 'claude-code'), défaut: 'roo'
  */
-export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }): Promise<PointStruct[]> {
-    return indexTaskVector(taskId, taskPath, source, metadata);
+export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }, options?: IndexTaskProgressOptions): Promise<PointStruct[]> {
+    return indexTaskVector(taskId, taskPath, source, metadata, options);
 }
 
 /**
@@ -95,7 +94,7 @@ export class TaskIndexer {
     /**
      * Indexe une tâche à partir de son ID (trouve automatiquement le chemin)
      */
-    async indexTask(taskId: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }): Promise<PointStruct[]> {
+    async indexTask(taskId: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }, options?: IndexTaskProgressOptions): Promise<PointStruct[]> {
         try {
             // #604/#937: For Claude Code sessions, resolve path via ClaudeStorageDetector
             // Supports two taskId formats:
@@ -109,7 +108,7 @@ export class TaskIndexer {
                     const basename = path.basename(loc.projectPath);
                     if (basename === suffix) {
                         // Per-project taskId (legacy): index entire project directory
-                        const points = await indexTask(taskId, loc.projectPath, source, metadata);
+                        const points = await indexTask(taskId, loc.projectPath, source, metadata, options);
                         return points;
                     }
                     // #937: Per-session taskId — match project dir prefix, resolve specific JSONL file
@@ -127,7 +126,7 @@ export class TaskIndexer {
                         }
                         if (present) {
                             // Pass the specific file — extractChunksFromClaudeSession() handles single files
-                            return await indexTask(taskId, sessionFile, source, metadata);
+                            return await indexTask(taskId, sessionFile, source, metadata, options);
                         }
                     }
                 }
@@ -153,7 +152,7 @@ export class TaskIndexer {
                     present = false; // Tâche pas dans ce location, on continue
                 }
                 if (present) {
-                    const points = await indexTask(taskId, taskPath, source, metadata);
+                    const points = await indexTask(taskId, taskPath, source, metadata, options);
 
                     // FIX ARCHITECTURAL: Mettre à jour le squelette ICI, pas dans index.ts
                     await this.updateSkeletonIndexTimestamp(taskId, location);

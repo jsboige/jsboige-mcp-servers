@@ -1681,6 +1681,82 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
 }
 
 /**
+ * #4352 g5: run one indexing task under an INACTIVITY watchdog instead of a
+ * wall-clock total.
+ *
+ * The legacy cap (`INDEX_TASK_TIMEOUT_MS`, default 300 s) measured TOTAL time:
+ * a monolithic session in steady progress still died at the cap — 16 sessions
+ * expired at 600 s on 27/10 while their batches kept landing — and the
+ * `Promise.race` loser kept running: the orphan went on embedding in the
+ * background while the task was already marked failed, so the retry raced a
+ * second run of the same task.
+ *
+ * The default now fails a task only when NO batch has been acknowledged for
+ * `INDEX_TASK_INACTIVITY_MS` (default 180 s). A session that keeps progressing
+ * never times out, whatever its total size. When the watchdog fires it also
+ * ABORTS the run, so the orphan fences itself at its next checkpoint instead of
+ * competing with the retry; the windows already written are kept and the
+ * pre-flight dedup makes the next attempt resume after them (a4/a6).
+ *
+ * Kill-switch: `INDEX_TASK_INACTIVITY_MS=0` restores the legacy wall-clock race
+ * (which does not abort its loser — exactly the old behaviour, including its
+ * known defect).
+ */
+export async function runIndexingWithInactivityWatchdog<T>(
+    taskId: string,
+    start: (options: { signal: AbortSignal; onProgress: () => void }) => Promise<T>,
+): Promise<T> {
+    const inactivityMs = Number.parseInt(process.env.INDEX_TASK_INACTIVITY_MS ?? '180000', 10);
+    if (!Number.isFinite(inactivityMs) || inactivityMs <= 0) {
+        // Kill-switch: legacy wall-clock race, unchanged (no abort — the orphan
+        // keeps running; that defect is the reason g5 exists).
+        const taskTimeoutMs = parseInt(process.env.INDEX_TASK_TIMEOUT_MS || '300', 10) * 1000;
+        const controller = new AbortController();
+        const run = start({ signal: controller.signal, onProgress: () => {} });
+        run.catch(() => {});
+        await Promise.race([
+            run,
+            new Promise<never>((_, reject) =>
+                setTimeout(() => reject(new Error(
+                    `Indexing timeout for ${taskId} after ${taskTimeoutMs}ms — session too large or embedding backlog`
+                )), taskTimeoutMs).unref()
+            ),
+        ]);
+        return await run;
+    }
+    const controller = new AbortController();
+    let deadline = Date.now() + inactivityMs;
+    const onProgress = () => { deadline = Date.now() + inactivityMs; };
+    let watchdog: ReturnType<typeof setInterval> | undefined;
+    try {
+        const run = start({ signal: controller.signal, onProgress });
+        // After the watchdog fires, the aborted run is EXPECTED to reject at its
+        // next checkpoint; handle that late rejection here so it does not surface
+        // as an unhandled error on a promise the race already abandoned.
+        run.catch(() => {});
+        await Promise.race([
+            run,
+            new Promise<never>((_, reject) => {
+                watchdog = setInterval(() => {
+                    if (Date.now() >= deadline) {
+                        const err = new Error(
+                            `Indexing timeout for ${taskId} — no batch acknowledged for ${inactivityMs}ms ` +
+                            `(inactivity watchdog #4352 g5; windows already written are kept, the retry resumes after them)`
+                        );
+                        controller.abort(err);
+                        reject(err);
+                    }
+                }, Math.max(1000, Math.min(15000, Math.floor(inactivityMs / 4))));
+                watchdog.unref?.();
+            }),
+        ]);
+        return await run;
+    } finally {
+        if (watchdog) clearInterval(watchdog);
+    }
+}
+
+/**
  * Indexe une tâche spécifique dans Qdrant
  */
 export async function indexTaskInQdrant(taskId: string, state: ServerState): Promise<void> {
@@ -1745,15 +1821,9 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
         const indexingMetadata = (source === 'claude-code' && skeleton.metadata)
             ? { workspace: skeleton.metadata.workspace, title: skeleton.metadata.title }
             : undefined;
-        const TASK_TIMEOUT_MS = parseInt(process.env.INDEX_TASK_TIMEOUT_MS || '300', 10) * 1000;
-        await Promise.race([
-            taskIndexer.indexTask(taskId, source, indexingMetadata),
-            new Promise((_, reject) =>
-                setTimeout(() => reject(new Error(
-                    `Indexing timeout for ${taskId} after ${TASK_TIMEOUT_MS}ms — session too large or embedding backlog`
-                )), TASK_TIMEOUT_MS).unref()
-            ),
-        ]);
+        // #4352 g5: inactivity watchdog (default) — see runIndexingWithInactivityWatchdog.
+        await runIndexingWithInactivityWatchdog(taskId, (options) =>
+            taskIndexer.indexTask(taskId, source, indexingMetadata, options));
 
         state.indexingDecisionService.markIndexingSuccess(skeleton);
         await saveSkeletonToDisk(skeleton);

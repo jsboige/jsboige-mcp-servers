@@ -85,7 +85,8 @@ describe('TaskIndexer.indexTask — Claude Code branch resolution (coverage #833
 
         expect(points).toBe(FAKE_POINTS);
         // Legacy per-project path: delegates with the PROJECT dir, source preserved (L112).
-        expect(indexTaskVector).toHaveBeenCalledWith(taskId, projectDir, 'claude-code', undefined);
+        // #4352 g5: the 5th arg (progress/abort options) is threaded through — undefined when the caller passes none.
+        expect(indexTaskVector).toHaveBeenCalledWith(taskId, projectDir, 'claude-code', undefined, undefined);
     });
 
     test('per-session taskId (#937, suffix startsWith basename + "--") resolves the single .jsonl file (src L116-123)', async () => {
@@ -104,7 +105,7 @@ describe('TaskIndexer.indexTask — Claude Code branch resolution (coverage #833
         expect(points).toBe(FAKE_POINTS);
         // #937 fix: delegates with the SPECIFIC session file (L118/L122), not the dir,
         // and forwards metadata through the façade.
-        expect(indexTaskVector).toHaveBeenCalledWith(taskId, sessionFile, 'claude-code', meta);
+        expect(indexTaskVector).toHaveBeenCalledWith(taskId, sessionFile, 'claude-code', meta, undefined);
     });
 
     test('per-session taskId whose .jsonl is absent falls through and throws not-found (src L124-134)', async () => {

@@ -1043,7 +1043,36 @@ async function embedBatch(
  * @param taskId L'ID de la tâche à indexer.
  * @param taskPath Le chemin complet vers le répertoire de la tâche.
  */
-export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }): Promise<PointStruct[]> {
+/**
+ * #4352 g5: progress + abort contract between the indexing caller and the run.
+ * `onProgress` fires after each acknowledged batch/upsert — the caller's
+ * inactivity watchdog resets its deadline on it. `signal` is aborted by that
+ * watchdog when no batch has been acknowledged for N ms: the run then fences
+ * itself at its next checkpoint, keeping every window already written.
+ */
+export interface IndexTaskProgressOptions {
+    signal?: AbortSignal;
+    onProgress?: () => void;
+}
+
+/**
+ * #4352 g5: checkpoint guard. Throws the watchdog's own error (it carries the
+ * "Indexing timeout" wording classifyIndexingError maps to the retryable
+ * `embedding_timeout` class) so a fenced run fails exactly like a timed-out one
+ * instead of racing the retry.
+ */
+export function throwIfIndexingAborted(options: IndexTaskProgressOptions | undefined, taskId: string): void {
+    if (!options?.signal?.aborted) return;
+    const reason = options.signal.reason;
+    if (reason instanceof Error) throw reason;
+    throw new GenericError(
+        `Indexing timeout for ${taskId} — inactivity watchdog aborted the run (#4352 g5); windows already written are kept`,
+        GenericErrorCode.NETWORK_ERROR,
+        { taskId, service: 'VectorIndexer.indexTask' }
+    );
+}
+
+export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }, options?: IndexTaskProgressOptions): Promise<PointStruct[]> {
     console.log(`Starting granular indexing for task: ${taskId} (source: ${source})`);
 
     try {
@@ -1171,6 +1200,8 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         const embedFailures: EmbedFailures = { lastError: null, transport: false };
         let missingVectors = 0;
         for (let start = 0; start < subChunksToEmbed.length; start += UPSERT_WINDOW_SUBCHUNKS) {
+            // #4352 g5: a fenced run stops here — before embedding a new window.
+            throwIfIndexingAborted(options, taskId);
             const window = subChunksToEmbed.slice(start, start + UPSERT_WINDOW_SUBCHUNKS);
             const toEmbed = window.filter(entry => !cachedResults.has(entry.contentHash));
 
@@ -1182,6 +1213,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                         const vector = await embedSingle(subChunk, contentHash, embeddingModel, expectedDims, now);
                         if (vector) {
                             cachedResults.set(contentHash, vector);
+                            options?.onProgress?.(); // #4352 g5: legacy single-input path
                         }
                     }
                 } else {
@@ -1191,7 +1223,10 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                         // #4352 (a4): the backend is failing — stop calling it for this task.
                         // The retry (with backoff) resumes after what this attempt wrote.
                         if (embedFailures.transport) break;
+                        // #4352 g5: fence between batches of the same window too.
+                        throwIfIndexingAborted(options, taskId);
                         const batchVectors = await embedBatch(batch, embeddingModel, expectedDims, now, embedFailures);
+                        options?.onProgress?.(); // #4352 g5: one more acknowledged batch
                         for (let i = 0; i < batch.length; i++) {
                             if (batchVectors[i]) {
                                 cachedResults.set(batch[i].contentHash, batchVectors[i]!);
@@ -1251,6 +1286,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                     );
                 }
                 indexedPoints.push(...pointsToIndex);
+                options?.onProgress?.(); // #4352 g5: one more acknowledged window
             }
         }
 
