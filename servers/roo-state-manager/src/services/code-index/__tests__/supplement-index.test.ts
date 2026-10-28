@@ -593,16 +593,51 @@ describe('runSupplementIndex (#4352 a3)', () => {
 		expect(embedCalls).toHaveLength(0);
 	});
 
-	test('a misaligned embedding response aborts instead of writing a shifted batch', async () => {
+	test('a misaligned embedding response is charged to its batch, and that batch is never written', async () => {
 		const dir = repoWithFiles();
 		const client = new FakeQdrant({ 'ws-served': { points: 100 } });
 		const shortEmbed = async (texts: string[]) => texts.slice(1).map(() => [0.1, 0.2, 0.3, 0.4]);
-		await expect(runSupplementIndex({
+		// #4352 g1 follow-up: this used to reject. A misaligned batch is a per-batch
+		// failure now, so the invariant to keep is "the shifted batch never lands", not
+		// "the whole run dies".
+		const report = await runSupplementIndex({
 			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
 			embed: shortEmbed, dryRun: false, batchSize: 100, throttleMs: 0,
-		})).rejects.toThrow(/misaligned|returned \d+ vectors/);
-		const written = client.pointsOf(`sup-${'0'.repeat(16)}`);
+		});
+		expect(report.batches_failed).toBe(1);
+		expect(report.points_written).toBe(0);
+		expect(report.warnings.join('\n')).toMatch(/misaligned|returned \d+ vectors/);
+		const written = client.pointsOf(report.collection).filter(([id]) => id !== SUPPLEMENT_SENTINEL_ID);
 		expect(written).toHaveLength(0);
+	});
+
+	test('one failing batch does not cost the run — the batches around it still land (#4352 g1)', async () => {
+		const dir = makeRepo();
+		for (const name of ['a.ps1', 'b.ps1', 'c.ps1', 'd.ps1']) {
+			writeFileSync(join(dir, name), `# ${name}\n` + 'Write-Host "step one"\n'.repeat(60));
+		}
+		execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: 'ignore' });
+
+		const client = new FakeQdrant({ 'ws-served': { points: 100, size: 4 } });
+		let call = 0;
+		const flakyEmbed = async (texts: string[]) => {
+			call += 1;
+			if (call === 2) throw new Error('embedding API 503 — upstream unavailable');
+			return texts.map(() => [0.1, 0.2, 0.3, 0.4]);
+		};
+
+		const report = await runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'web2:fixture', templateCollection: 'ws-served',
+			embed: flakyEmbed, dryRun: false, batchSize: 1, throttleMs: 0,
+		});
+
+		expect(report.status).toBe('success');
+		expect(report.batches_failed).toBe(1);
+		// the batches after the failed one ran: a single 503 used to discard them all
+		expect(report.batches).toBeGreaterThanOrEqual(2);
+		expect(report.points_written).toBeGreaterThan(0);
+		expect(report.chunks_embedded).toBe(report.points_written);
+		expect(report.warnings.join('\n')).toMatch(/batch 2\/\d+ failed \(embedding API 503/);
 	});
 
 	// ── review ms#1514, fix 2: the embedding-space fingerprint ────────────────
