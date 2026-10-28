@@ -1494,18 +1494,27 @@ export async function getIndexRequestsPath(machineId: string): Promise<string> {
  * so nothing ever reached the leader's rewrite of `_skeleton_index.json`.
  * One request type serves both `index` (re-index from a follower) and
  * `cleanup_failed` (reset + retry in one request).
+ *
+ * g8: a request may carry `repair:"headless"` — for a task the g7 scan named
+ * (missing head pages), the consumer arms the one-shot bypass of the
+ * success/TTL/unchanged skips instead of the failed/retry reset, so a
+ * `success` task with a hole can actually be re-indexed (measured 28/10: the
+ * skips made the requeue a no-op on 2/5 sample tasks).
  */
-export async function requestQueuedIndex(taskId: string, machineId: string): Promise<void> {
-    await requestQueuedIndexBatch([taskId], machineId);
+export async function requestQueuedIndex(taskId: string, machineId: string, repair?: 'headless'): Promise<void> {
+    await requestQueuedIndexBatch([taskId], machineId, repair);
 }
 
 /** #4352 g6 — batch flavour: one append for a whole run (N tasks, 1 write). */
-export async function requestQueuedIndexBatch(taskIds: string[], machineId: string): Promise<void> {
+export async function requestQueuedIndexBatch(taskIds: string[], machineId: string, repair?: 'headless'): Promise<void> {
     if (taskIds.length === 0) return;
     const requestsPath = await getIndexRequestsPath(machineId);
     const requestedAt = Date.now();
     const body = taskIds
-        .map(taskId => JSON.stringify({ taskId, requestedAt, requestedByPid: process.pid }))
+        .map(taskId => JSON.stringify({
+            taskId, requestedAt, requestedByPid: process.pid,
+            ...(repair !== undefined ? { repair } : {}),
+        }))
         .join('\n') + '\n';
     await fs.appendFile(requestsPath, body);
 }
@@ -1557,6 +1566,7 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
     const consumed: string[] = [];
     const deferred: any[] = [];
     let consumedResets = 0;
+    let consumedRepairs = 0;
     let dropped = 0;
     try {
         const content = await fs.readFile(consumedPath, 'utf-8');
@@ -1591,13 +1601,24 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
                 const { IndexingDecisionService } = await import('./indexing-decision.js');
                 new IndexingDecisionService().resetIndexingState(skeleton);
                 consumedResets++;
+            } else if (parsed?.repair === 'headless') {
+                // #4352 g8: a `success` task (or a legacy/absent state) named by
+                // the g7 scan gets the one-shot bypass armed — NOT a reset, which
+                // the ms#1546 review guard deliberately withholds from healthy
+                // tasks. Without this arm, shouldIndex skips the task on
+                // TTL/unchanged-content and the headless hole is permanent.
+                const { IndexingDecisionService } = await import('./indexing-decision.js');
+                new IndexingDecisionService().armHeadlessRepair(skeleton);
+                consumedRepairs++;
             }
             state.qdrantIndexQueue.add(taskId);
             if (!consumed.includes(taskId)) consumed.push(taskId);
         }
-        if (consumedResets > 0) {
+        if (consumedResets > 0 || consumedRepairs > 0) {
             // Persist BEFORE the unlink (see doc comment). saveSkeletonIndex
-            // never throws — it catches internally and logs.
+            // never throws — it catches internally and logs. g8: an armed
+            // repair marker must reach disk with the same guarantee as a reset,
+            // or a crash between consume and drain loses the bypass.
             await saveSkeletonIndex(state.conversationCache);
         }
     } catch (error: any) {
@@ -1616,7 +1637,7 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
         console.warn(`⚠️ [#4352 g6b] Dropped ${dropped} request(s) after ${MAX_INDEX_REQUEST_ATTEMPTS} attempts — the task never appeared in the cache`);
     }
     if (consumed.length > 0) {
-        console.log(`📨 [#4352 g3/g6] Leader consumed ${consumed.length} request(s)${consumedResets > 0 ? ` (${consumedResets} reset before requeue)` : ''}: ${consumed.join(', ')}`);
+        console.log(`📨 [#4352 g3/g6/g8] Leader consumed ${consumed.length} request(s)${consumedResets > 0 ? ` (${consumedResets} reset before requeue)` : ''}${consumedRepairs > 0 ? ` (${consumedRepairs} headless repair armed)` : ''}: ${consumed.join(', ')}`);
     }
     return consumed;
 }
