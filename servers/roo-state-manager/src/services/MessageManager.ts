@@ -2102,27 +2102,68 @@ export class MessageManager {
       join(this.archivePath, `${messageId}.json`)
     ];
 
+    // #3230 — the G: probe on a PG miss is BOUNDED.
+    //
+    // #4131 B16 forbade the GDrive fan-out under `CHANNEL_PG_PRIMARY` and the
+    // inbox surfaces honour it; this lookup did not: a miss fell through to
+    // three `existsSync` + `readFile` on G: with NO deadline, so a wedged
+    // DriveFS held the tool call — and one libuv thread — indefinitely. The
+    // bulk-scan path already bounds its per-file read
+    // (`AbortSignal.timeout(this.readTimeoutMs)`, cache rebuild); this applies
+    // the same convention, one signal for the whole probe so its total budget
+    // is `readTimeoutMs`, not three times that.
+    //
+    // The probe itself is kept: a message PG never received (sent by a
+    // non-PG seat, or before this seat's cutover) is still legitimately
+    // readable from the legacy archive. Only its COST is bounded.
+    //
+    // Kill-switch — `UNIFIED_STORE_CHANNEL_MISS_PROBE_ABORT=0` restores the
+    // pre-#3230 unbounded read, for a seat that must never abandon a slow
+    // DriveFS fetch. Read at CALL time, like every other gate in this codebase.
+    const missProbeSignal = (): AbortSignal | undefined => {
+      const raw = (process.env.UNIFIED_STORE_CHANNEL_MISS_PROBE_ABORT ?? '').trim().toLowerCase();
+      if (['0', 'false', 'off', 'no', 'n', 'disable', 'disabled'].includes(raw)) return undefined;
+      return AbortSignal.timeout(this.readTimeoutMs);
+    };
+    const probeSignal = missProbeSignal();
+
     for (const filePath of searchPaths) {
-      if (existsSync(filePath)) {
-        try {
-          const content = await fs.readFile(filePath, 'utf-8');
-          const message: Message = JSON.parse(content);
-          logger.info(`Message found in: ${filePath}`);
+      try {
+        // No `existsSync` first: that stat is itself unbounded on a stalled
+        // DriveFS and it doubles the probe's filesystem calls. A missing file
+        // answers ENOENT, handled below exactly like the old `false`.
+        const content = await fs.readFile(
+          filePath,
+          probeSignal ? { encoding: 'utf-8', signal: probeSignal } : 'utf-8'
+        );
+        const message: Message = JSON.parse(content);
+        logger.info(`Message found in: ${filePath}`);
 
-          // #2287: Verify workspace access — allow if caller is recipient OR sender
-          const verdict = this.messageAccessVerdict(message, callerId, accessScope);
-          if (verdict === 'denied') {
-            logger.warn(`Access denied: message ${messageId} targets ${message.to}, caller is ${callerId}`);
-            throw this.accessDeniedError(messageId, message, callerId!);
-          }
-
-          return applyAccessVerdict(message, verdict);
-        } catch (error) {
-          // po-2024: the access-denied throw above is a protocol error, not a
-          // filesystem error — never swallow it into "try the next path".
-          if (error instanceof MessageManagerError) throw error;
-          logger.error(`Error reading message from ${filePath}`, error);
+        // #2287: Verify workspace access — allow if caller is recipient OR sender
+        const verdict = this.messageAccessVerdict(message, callerId, accessScope);
+        if (verdict === 'denied') {
+          logger.warn(`Access denied: message ${messageId} targets ${message.to}, caller is ${callerId}`);
+          throw this.accessDeniedError(messageId, message, callerId!);
         }
+
+        return applyAccessVerdict(message, verdict);
+      } catch (error) {
+        // po-2024: the access-denied throw above is a protocol error, not a
+        // filesystem error — never swallow it into "try the next path".
+        if (error instanceof MessageManagerError) throw error;
+        // Miss at this location — the same silent skip `existsSync` gave.
+        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+        if (probeSignal?.aborted) {
+          // Deadline spent: the volume is not answering. Probing the two
+          // remaining paths on the SAME volume would only multiply the wait.
+          logger.warn(
+            `[channel-pg] G: miss probe abandoned after ${this.readTimeoutMs}ms — ` +
+            `DriveFS not answering (${messageId}) (#3230)`
+          );
+          break;
+        }
+        logger.error(`Error reading message from ${filePath}`, error);
       }
     }
 
