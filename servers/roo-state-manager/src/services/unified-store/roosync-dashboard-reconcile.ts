@@ -64,6 +64,20 @@
  * pool), so a pass is one readdir + one parse per file + one PG read per
  * divergent key. No lookback window needed.
  *
+ * MIRROR repair (PG → file, #4131 demande 2 — the direction that was missing).
+ * Every pass above reads the FILE and heals PG: that is the pre-cutover
+ * direction. Once `isDashboardPgPrimary()` holds, PG is the truth and the file
+ * is only a bounded best-effort export — whose GDrive half is ALLOWED to expire
+ * (`GDRIVE-BOUNDED`, measured twice on ai-01 28/10). Nothing ever repaired it:
+ * the message lived in PG, the file never showed it again, and `G:` stopped
+ * being a usable backup. This pass rewrites the file from the PG view, under
+ * the append lock, ONLY when the file is behind (a file AHEAD of PG carries
+ * content no other surface holds yet — that direction is the insert pass's).
+ * Guarded by a fleet lock (one repairer per cluster), a per-pass write budget
+ * (`ROOSYNC_DASHBOARD_MIRROR_REPAIR_MAX`, default 10) and a kill-switch
+ * (`ROOSYNC_DASHBOARD_MIRROR_REPAIR=0`). Scoped to keys that still have a file:
+ * a key present in PG with NO file at all is not materialised here.
+ *
  * Env-gate: same flags as the dual-write (UNIFIED_STORE_DUAL_WRITE=1 +
  * UNIFIED_STORE_PG_URL) — reconciling into a Null writer is pure GDrive IO.
  */
@@ -74,7 +88,12 @@ import {
   parseDashboardMarkdown,
   extractPersistedMessageIds,
 } from '../../tools/roosync/dashboard-markdown.js';
-import { mapDashboardToRows, fetchArchivedDashboardMessageIds } from './roosync-dashboard-store.js';
+import {
+  mapDashboardToRows,
+  mapRowsToDashboard,
+  fetchArchivedDashboardMessageIds,
+  isDashboardPgPrimary,
+} from './roosync-dashboard-store.js';
 import type { Dashboard, IntercomMessage } from '../../tools/roosync/dashboard-schemas.js';
 import type { IUnifiedStoreWriter, RooSyncLockAcquireStatus } from './UnifiedStoreWriter.js';
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
@@ -91,6 +110,12 @@ const logger = createLogger('roosync-dashboard-reconcile');
  * so 13-15 RSM hosts do not each re-print the same line every 6 h (#4131).
  */
 let lastSourceErrorLogged: string | null = null;
+
+/**
+ * Last `failures` detail this process logged — same dedupe intent as
+ * `lastSourceErrorLogged`, for the per-file error list (#4131).
+ */
+let lastFailureDetailLogged: string | null = null;
 
 export interface DashboardReconcileResult {
   /**
@@ -152,6 +177,38 @@ export interface DashboardReconcileResult {
    * Absent = the scan ran (or had nothing to do).
    */
   archiveScanSkipped?: 'disabled' | 'lock-held';
+  // ─── Mirror repair (PG → file, #4131 demande 2) ────────────────────────
+  /**
+   * Why the mirror repair did not run this pass. `'not-pg-primary'` = the file
+   * is still the truth on this seat (repairing it from PG would be backwards);
+   * `'no-writer'` = no `writeMirror` seam was injected; `'disabled'` = the
+   * ROOSYNC_DASHBOARD_MIRROR_REPAIR=0 kill-switch; `'lock-held'` = another
+   * process of the fleet holds the repair lock; `'lock-degraded'` = the lock
+   * acquire THREW and the repair (a write) refuses to run unlocked. Absent =
+   * it ran.
+   */
+  mirrorRepairSkipped?:
+    | 'not-pg-primary'
+    | 'no-writer'
+    | 'disabled'
+    | 'lock-held'
+    | 'lock-degraded';
+  /** Keys whose mirror was compared against PG this pass. */
+  mirrorChecked: number;
+  /** Keys whose file was rewritten from PG (file was behind). */
+  mirrorRepaired: number;
+  /** Keys skipped because the WRITE budget for this pass was spent. */
+  mirrorRepairDeferred: number;
+  /** Rewrites that threw (counted, never thrown). */
+  mirrorRepairFailed: number;
+  /**
+   * Keys whose repair was HELD: the file holds id-less messages (watchdog
+   * blocks) that exist on no other surface — rewriting from PG would erase
+   * them (#4131 review).
+   */
+  mirrorIdlessHeldKeys: number;
+  /** Files AHEAD of PG — file-only content, owned by the insert pass, never rewritten. */
+  mirrorAheadKeys: string[];
   durationMs: number;
 }
 
@@ -176,6 +233,13 @@ export interface DashboardReconcileOptions {
    * (fail-open null → treated as "unknown", inserts stay DO NOTHING-safe).
    */
   fetchArchivedIds?: (key: string) => Promise<Set<string> | null>;
+  /**
+   * Mirror-repair seam (#4131 demande 2). Injected by the daemon starter from
+   * `tools/roosync/dashboard.ts` — this module cannot import that file, it
+   * already imports FORK_FILE_RE from here (a cycle). Absent = repair skipped
+   * with `mirrorRepairSkipped: 'no-writer'`.
+   */
+  writeMirror?: (key: string, dashboard: Dashboard) => Promise<void>;
 }
 
 /** Same gate as the channel reconcile — mirrors writer-factory's arming. */
@@ -193,6 +257,31 @@ export function archiveMinAgeHours(): number {
   const v = Number(process.env.ROOSYNC_DASHBOARD_ARCHIVE_MIN_AGE_H);
   return Number.isFinite(v) && v > 0 ? v : 24;
 }
+
+// ─── Mirror repair (PG → file) — #4131 demande 2 ──────────────────────────
+
+/**
+ * Mirror-repair kill-switch. Default ON (`!== '0'`) — unlike the archive scan,
+ * this pass writes ONE small file per lagging key, not thousands of reads: a
+ * bounded write that only ever ADDS what PG already holds. Measured need
+ * (ai-01, 28/10): two `GDRIVE-BOUNDED` appends left three keys with a message
+ * PG holds and the file does not, and an empty mirror on `machine-myia-po-2025`
+ * (0 ids on disk, 22 in PG). Nothing repaired them — the file stopped being a
+ * backup the day a DriveFS write expired.
+ */
+export function isMirrorRepairEnabled(): boolean {
+  return process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR !== '0';
+}
+
+/** Max files this pass will rewrite. Bounds G: writes during a DriveFS episode. */
+export function mirrorRepairMaxPerPass(): number {
+  const v = Number(process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR_MAX);
+  return Number.isFinite(v) && v > 0 ? Math.floor(v) : 10;
+}
+
+/** PG lock row key + TTL — one repairing process per cluster, same as the scan. */
+export const MIRROR_REPAIR_LOCK_KEY = 'dashboard-mirror-repair';
+export const MIRROR_REPAIR_LOCK_TTL_MS = 30 * 60_000;
 
 /**
  * GDrive conflict copies — "name (N).md" forks, merge remedy, never archived.
@@ -447,6 +536,12 @@ export async function reconcileDashboardsFromGDrive(
     archiveIdsSeen: 0,
     archiveIdlessSkipped: 0,
     archiveHealed: 0,
+    mirrorChecked: 0,
+    mirrorRepaired: 0,
+    mirrorRepairDeferred: 0,
+    mirrorRepairFailed: 0,
+    mirrorIdlessHeldKeys: 0,
+    mirrorAheadKeys: [],
     durationMs: 0,
   };
 
@@ -483,6 +578,55 @@ export async function reconcileDashboardsFromGDrive(
   lastSourceErrorLogged = null;
   const keyed = files.filter(isKeyedDashboardFile);
   result.filesScanned = keyed.length;
+
+  // ─── Mirror-repair arming (PG → file, #4131 demande 2) ──────────────────
+  // Only on a PG-primary seat: elsewhere the FILE is the truth and rewriting it
+  // from PG would invert the direction this whole module protects.
+  let mirrorArmed = false;
+  let mirrorLockHolder: string | null = null;
+  if (!isMirrorRepairEnabled()) {
+    result.mirrorRepairSkipped = 'disabled';
+  } else if (!isDashboardPgPrimary()) {
+    result.mirrorRepairSkipped = 'not-pg-primary';
+  } else if (typeof options.writeMirror !== 'function') {
+    result.mirrorRepairSkipped = 'no-writer';
+  } else {
+    const holderJson = JSON.stringify({
+      machine: process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? 'unknown',
+      pid: process.pid,
+      at: new Date().toISOString(),
+    });
+    let lockStatus: RooSyncLockAcquireStatus = 'unavailable';
+    let lockAcquireThrew = false;
+    if (typeof writer.tryAcquireRooSyncDashboardLock === 'function') {
+      try {
+        lockStatus = await writer.tryAcquireRooSyncDashboardLock(
+          MIRROR_REPAIR_LOCK_KEY,
+          holderJson,
+          MIRROR_REPAIR_LOCK_TTL_MS
+        );
+      } catch (error) {
+        // #4131 review (minor 2): the repair is a WRITE — running it without
+        // the fleet lock (fail-open) let two seats rewrite the same file at
+        // once. The PASS survives a degraded lock; the repair alone is held.
+        lockAcquireThrew = true;
+        logger.warn(
+          `[dashboard-reconcile] Mirror-repair lock acquire failed (${String(error)}) — repair held this pass`
+        );
+      }
+    }
+    if (lockAcquireThrew) {
+      result.mirrorRepairSkipped = 'lock-degraded';
+    } else if (lockStatus === 'held') {
+      result.mirrorRepairSkipped = 'lock-held';
+      logger.info(
+        '[dashboard-reconcile] Mirror repair skipped this pass: another process holds the fleet lock'
+      );
+    } else {
+      if (lockStatus === 'acquired') mirrorLockHolder = holderJson;
+      mirrorArmed = true;
+    }
+  }
 
   // Archive-scan heal: one readdir of the archive dir for the whole pass,
   // grouped by owning key (lookback-bounded, forks skipped at indexing).
@@ -548,21 +692,74 @@ export async function reconcileDashboardsFromGDrive(
 
       // Fingerprintable messages only — id-less ones are skipped by design.
       const messages = dashboard.intercom.messages.filter((m) => persisted.has(m.id));
+
+      // Active PG journal for the key. Also fetched when the mirror repair is
+      // armed and the file has NO fingerprinted message at all: an EMPTY mirror
+      // is the worst lag, not a reason to skip (measured 28/10 on
+      // `machine-myia-po-2025` — 0 ids on disk, 22 rows in PG).
+      let existing: Awaited<ReturnType<IUnifiedStoreReader['getRooSyncDashboard']>> = null;
+      if (messages.length > 0 || mirrorArmed) {
+        try {
+          existing = await reader.getRooSyncDashboard(key);
+        } catch (error) {
+          // Cannot list this key → do not blind-import it. Next pass retries.
+          result.errors++;
+          result.failures.push(`${file}: PG read failed — ${String(error)}`);
+          continue;
+        }
+      }
+
+      // ─── Mirror repair (PG → file, #4131 demande 2) ──────────────────────
+      // PG is the truth on this seat, so a file behind it is a stale BACKUP.
+      // The comparison is on message timestamps, and only the "file is behind"
+      // direction is written: a file AHEAD of PG holds content no other surface
+      // has yet, and that direction belongs to the insert pass below.
+      //
+      // Disjoint from the archival pass by construction: repair needs
+      // `pgMax > fileMax` (or a file with no timestamp at all), and those are
+      // exactly the keys the archival pass classifies `staleFileKeys` and never
+      // archives — so a repaired key can never lose a row in the same pass.
+      if (mirrorArmed && existing) {
+        result.mirrorChecked++;
+        const pgMaxMs = maxTimestampMs(existing.messages.map((m) => m.created_at));
+        const fileMaxMs = maxTimestampMs(dashboard.intercom.messages.map((m) => m.timestamp));
+        const fileAhead = pgMaxMs !== null && fileMaxMs !== null && fileMaxMs > pgMaxMs;
+        const behind = pgMaxMs !== null && (fileMaxMs === null || pgMaxMs > fileMaxMs);
+        if (fileAhead) {
+          result.mirrorAheadKeys.push(file);
+        } else if (behind && !isGdriveConflictCopyFile(file)) {
+          // #4131 review (blocker): id-less blocks (watchdog `### [ts]
+          // machine|workspace` lines) never enter PG — the `persisted.has(m.id)`
+          // filter below skips them BY DESIGN, so the PG view does not contain
+          // them. A wholesale rewrite from PG would erase them from their only
+          // surface. HOLD the key; the next append with an id (or a merge by
+          // fingerprint, not attempted here) is what can carry them forward.
+          const idlessInFile = dashboard.intercom.messages.length - persisted.size;
+          if (idlessInFile > 0) {
+            result.mirrorIdlessHeldKeys++;
+            logger.warn(
+              `[dashboard-reconcile] Mirror repair held for ${file}: ${idlessInFile} id-less ` +
+                `message(s) exist only in the file — rewriting from PG would erase them`
+            );
+          } else if (result.mirrorRepaired + result.mirrorRepairFailed >= mirrorRepairMaxPerPass()) {
+            result.mirrorRepairDeferred++;
+          } else {
+            try {
+              await options.writeMirror!(
+                key,
+                mapRowsToDashboard(existing.dashboard, existing.messages)
+              );
+              result.mirrorRepaired++;
+            } catch (error) {
+              result.mirrorRepairFailed++;
+              result.failures.push(`${file}: mirror repair failed — ${String(error)}`);
+            }
+          }
+        }
+      }
+
       if (messages.length === 0) continue;
 
-      // Active PG journal for the key. Key miss (null) = never backfilled —
-      // every persisted id is a gap, which imports the file as-is. The
-      // snapshot is kept for the archival pass below (pre-insert view: rows
-      // PG already held, absent from the fresh file).
-      let existing: Awaited<ReturnType<IUnifiedStoreReader['getRooSyncDashboard']>> = null;
-      try {
-        existing = await reader.getRooSyncDashboard(key);
-      } catch (error) {
-        // Cannot list this key → do not blind-import it. Next pass retries.
-        result.errors++;
-        result.failures.push(`${file}: PG read failed — ${String(error)}`);
-        continue;
-      }
       const pgIds = new Set(
         (existing?.messages ?? []).map((m) => m.message_id).filter((id): id is string => !!id)
       );
@@ -728,6 +925,49 @@ export async function reconcileDashboardsFromGDrive(
   }
 
   result.durationMs = Date.now() - startedAt;
+
+  // #4131 demande 2 — report the mirror's health, not just when it was healed.
+  // A key whose file is AHEAD of PG is the transition state the insert pass
+  // owns; a key DEFERRED by the per-pass write budget is work the next pass
+  // picks up. Both were silent before, which is how a mirror can rot for days
+  // while every pass still reports "ok".
+  if (
+    result.mirrorRepaired > 0 ||
+    result.mirrorRepairFailed > 0 ||
+    result.mirrorRepairDeferred > 0 ||
+    result.mirrorIdlessHeldKeys > 0
+  ) {
+    logger.info(
+      `[dashboard-reconcile] Mirror repaired from PG on ${result.mirrorRepaired}/${result.mirrorChecked} key(s) ` +
+        `(${result.mirrorRepairDeferred} deferred by the per-pass budget, ${result.mirrorRepairFailed} failed, ` +
+        `${result.mirrorIdlessHeldKeys} held for id-less file-only messages)`
+    );
+  }
+  if (result.mirrorAheadKeys.length > 0) {
+    logger.warn(
+      `[dashboard-reconcile] ${result.mirrorAheadKeys.length} file(s) AHEAD of PG — left untouched, ` +
+        `the insert pass owns that direction: ${result.mirrorAheadKeys.slice(0, 5).join(', ')}`
+    );
+  }
+
+  // #4131 — the failure REASONS, not just their count. `2 error(s)` on a live
+  // pass is undiagnosable: the operator got a number for a day while 11
+  // messages sat unreconciled (measured ai-01 28/10). Bounded and deduped per
+  // process for the same reason as the source-unreadable WARN — 13-15 RSM hosts
+  // per machine would otherwise print the same list every 6 h.
+  if (result.failures.length > 0) {
+    const SHOWN = 10;
+    const detail =
+      result.failures.slice(0, SHOWN).join(' | ') +
+      (result.failures.length > SHOWN ? ` | (+${result.failures.length - SHOWN} more)` : '');
+    if (lastFailureDetailLogged !== detail) {
+      lastFailureDetailLogged = detail;
+      logger.warn(`[dashboard-reconcile] ${result.failures.length} error(s) this pass: ${detail}`);
+    }
+  } else {
+    lastFailureDetailLogged = null;
+  }
+
   if (result.keysWithGap > 0) {
     logger.info(
       `[dashboard-reconcile] Reconciled ${result.reconciled}/${result.gapMessages} message(s) ` +
@@ -781,6 +1021,16 @@ export async function reconcileDashboardsFromGDrive(
       );
     }
   }
+  if (mirrorLockHolder !== null) {
+    try {
+      await writer.releaseRooSyncDashboardLock?.(MIRROR_REPAIR_LOCK_KEY, mirrorLockHolder);
+    } catch (error) {
+      // Same TTL backstop as the archive-scan lock.
+      logger.warn(
+        `[dashboard-reconcile] Mirror-repair lock release failed (${String(error)}) — the TTL will reap it`
+      );
+    }
+  }
   return result;
 }
 
@@ -802,6 +1052,12 @@ let dashboardReconcileLastRun: {
 export function startDashboardReconcileDaemon(opts: {
   dashboardsDir: string;
   intervalHours?: number;
+  /**
+   * #4131 demande 2 — mirror-repair seam, injected by the caller because this
+   * module cannot import `tools/roosync/dashboard.ts` (that file imports
+   * FORK_FILE_RE from here). Absent = repair reported as `no-writer`.
+   */
+  writeMirror?: (key: string, dashboard: Dashboard) => Promise<void>;
 }): void {
   if (dashboardReconcileTimer !== null) {
     logger.warn('[dashboard-reconcile] daemon already running, ignoring duplicate start');
@@ -811,7 +1067,10 @@ export function startDashboardReconcileDaemon(opts: {
   const runOnce = async () => {
     const at = new Date().toISOString();
     try {
-      const result = await reconcileDashboardsFromGDrive({ dashboardsDir: opts.dashboardsDir });
+      const result = await reconcileDashboardsFromGDrive({
+        dashboardsDir: opts.dashboardsDir,
+        writeMirror: opts.writeMirror,
+      });
       dashboardReconcileLastRun = { at, result };
     } catch (error) {
       dashboardReconcileLastRun = {
