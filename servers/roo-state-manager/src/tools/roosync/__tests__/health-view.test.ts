@@ -460,4 +460,38 @@ describe('roosyncHealthView orchestration + scoring', () => {
     expect(offlineRec).toContain('stale GDrive mirror');
     expect(offlineRec).not.toContain('machine(s) offline');
   });
+
+  it('#4344: a newer message sitting in archive/ beats the stale live line (real archive path)', async () => {
+    // health-view runs the REAL dashboard-activity (no mock): the widened
+    // archive lookup is pinned end-to-end here. po-2025's live line is 28h
+    // old, but a message archived 2h ago (condensed 1h ago) carries a fresher
+    // timestamp — the exact web2 shape the issue reported.
+    const dir = mkdtempSync(tmpdir() + '/health-view-4344-');
+    tempDashboardsDir = dir;
+    mkdirSync(dir + '/dashboards/archive', { recursive: true });
+    const stale = new Date(Date.now() - 28 * 3600 * 1000);
+    const archived = new Date(Date.now() - 2 * 3600 * 1000);
+    const condensed = new Date(Date.now() - 1 * 3600 * 1000);
+    writeFileSync(dir + '/dashboards/workspace-test.md',
+      `## Intercom\n### [${stale.toISOString()}] myia-po-2025|roo-extensions\nstale live line\n`);
+    // Archive names embed the condensation date, `:` replaced by `-`, seconds
+    // precision — the shape `dateOf`/`isoOf` parse.
+    const fname = 'workspace-test-' + condensed.toISOString().slice(0, 19).replace(/:/g, '-') + '.md';
+    writeFileSync(dir + '/dashboards/archive/' + fname,
+      `### [${archived.toISOString()}] myia-po-2025|roo-extensions\narchived [DONE]\n`);
+    mockGetSharedStatePath.mockReturnValue(dir);
+    mockGetRooSyncService.mockResolvedValue({
+      getKnownMachineIds: () => ['myia-po-2025'],
+    });
+    mockFetch.mockResolvedValue({ ok: true });
+    mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+
+    const result = await roosyncHealthView({});
+
+    // The archived timestamp beats the stale live floor: recovered lastSeen,
+    // machine online again — the freeze is gone.
+    expect(result.systemHealth.lastSeenByMachine['myia-po-2025']).toBe(archived.toISOString());
+    expect(result.systemHealth.machinesOnline).toBe(1);
+    expect(result.systemHealth.machinesUnknown).toBe(0);
+  });
 });

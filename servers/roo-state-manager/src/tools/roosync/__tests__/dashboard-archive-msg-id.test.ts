@@ -15,12 +15,12 @@ import { describe, it, expect } from 'vitest';
 import { buildArchiveMessagesMarkdown } from '../dashboard.js';
 import type { IntercomMessage } from '../dashboard-schemas.js';
 
-function msg(id: string, ts = '2026-10-07T23-05-18.000Z'): IntercomMessage {
+function msg(id: string, ts = '2026-10-07T23-05-18.000Z', content = 'corps du message'): IntercomMessage {
   return {
     id,
     timestamp: ts,
     author: { machineId: 'myia-po-2025', workspace: 'Maintenance' },
-    content: 'corps du message',
+    content,
   };
 }
 
@@ -50,6 +50,24 @@ describe('buildArchiveMessagesMarkdown (#3151 Phase C — [msg:] dans les archiv
     for (const [i, id] of ['id-a', 'id-b'].entries()) {
       expect(blocks[i]).toContain(`[msg: ${id}]`);
     }
+  });
+
+  it('#4344 — échappe un « ### [ » cité en début de ligne du corps (même règle que le writer vivant #1123)', () => {
+    // Un rapport d'incident qui CITE une ligne de dashboard embarque un faux
+    // header. Non échappé, il serait re-parsé comme activité réelle par la
+    // lecture d'archives élargie (#4344) — fantôme de liveness.
+    const quoted =
+      'constat ce cycle :\n' +
+      '### [2026-10-26T20:30:00.000Z] myia-po-2026|CoursIA\n' +
+      'message cité tel quel.';
+    const out = buildArchiveMessagesMarkdown([msg('id-quote', '2026-10-27T10:00:00.000Z', quoted)]);
+    // Le VRAI header du message reste intact (première ligne)…
+    expect(out.split('\n')[0]).toBe('### [2026-10-27T10:00:00.000Z] myia-po-2025|Maintenance');
+    // …et la citation est échappée : plus aucune ligne ne commence par « ### [ »
+    // en dehors du header du bloc.
+    const bodyLines = out.split('\n').slice(1);
+    expect(bodyLines.some(l => /^### \[/.test(l))).toBe(false);
+    expect(out).toContain('\\#\\#\\# [2026-10-26T20:30:00.000Z] myia-po-2026|CoursIA');
   });
 
   it('round-trip avec le parseur archive-scan du reconcile (parseArchiveIdBearingMessages)', async () => {

@@ -3,7 +3,10 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, DEFAULT_ACTIVITY_THRESHOLD_MS } from '../dashboard-activity.js';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { tmpdir } from 'os';
+import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, lookupMachineActivityInArchives, DEFAULT_ACTIVITY_THRESHOLD_MS, MAX_ARCHIVE_READS_PER_CALL } from '../dashboard-activity.js';
 
 describe('dashboard-activity', () => {
 	describe('extractMachineActivity', () => {
@@ -64,6 +67,223 @@ describe('dashboard-activity', () => {
 			expect(activity.size).toBe(2);
 			expect(activity.get('myia-po-2024')).toBe('2026-05-03T20:00:00.000Z');
 			expect(activity.get('myia-web1')).toBe('2026-05-03T20:01:00.000Z');
+		});
+	});
+
+	describe('lookupMachineActivityInArchives + floors (#4344)', () => {
+		let tmpDir: string;
+		let dashboardsDir: string;
+		let archiveDir: string;
+
+		const archive = (name: string, body: string) =>
+			writeFileSync(join(archiveDir, name), body, 'utf-8');
+
+		beforeEach(() => {
+			tmpDir = mkdtempSync(join(tmpdir(), 'archives-4344-'));
+			dashboardsDir = join(tmpDir, 'dashboards');
+			archiveDir = join(dashboardsDir, 'archive');
+			mkdirSync(archiveDir, { recursive: true });
+		});
+
+		afterEach(() => {
+			rmSync(tmpDir, { recursive: true, force: true });
+		});
+
+		it('recovers a machine whose every message was archived (regression #3695, no floor)', () => {
+			archive('workspace-ws-2026-09-10T10-00-00.md', '### [2026-09-10T09:00:00.000Z] myia-silent-01|ws\nmsg');
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-silent-01']);
+			expect(found.get('myia-silent-01')).toBe('2026-09-10T09:00:00.000Z');
+		});
+
+		it('beats a stale live lastSeen when a newer message sits in an archive (#4344)', () => {
+			// The live dashboard still carries one old line (20/10 19:17Z) — the
+			// exact web2 shape; newer [DONE]s were condensed away.
+			archive('workspace-ws-2026-10-26T21-07-47.md', '### [2026-10-26T20:30:00.000Z] myia-web2|roo-extensions\nDONE');
+			const floors = new Map([['myia-web2', '2026-10-20T19:17:13.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-web2'], floors);
+
+			expect(found.get('myia-web2')).toBe('2026-10-26T20:30:00.000Z');
+		});
+
+		it('reads nothing when the live timestamp already beats the newest archive', () => {
+			archive('workspace-ws-2026-09-10T10-00-00.md', '### [2026-09-10T09:00:00.000Z] myia-web2|ws\nold');
+			const floors = new Map([['myia-web2', '2026-10-27T08:00:00.000Z']]);
+
+			expect(lookupMachineActivityInArchives(dashboardsDir, ['myia-web2'], floors).size).toBe(0);
+		});
+
+		it('does not look below the floor: an older archive cannot improve the live value', () => {
+			archive('workspace-ws-2026-10-20T18-00-00.md', '### [2026-10-20T17:00:00.000Z] myia-web2|ws\nolder than live');
+			archive('workspace-ws-2026-10-26T21-00-00.md', '### [2026-10-26T20:00:00.000Z] myia-other-01|ws\nother machine');
+			const floors = new Map([['myia-web2', '2026-10-20T19:17:13.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-web2'], floors);
+
+			expect(found.has('myia-web2')).toBe(false);
+		});
+
+		it('keeps scanning while an older file can still beat the best found so far', () => {
+			// Newest file carries an OLD message for the machine; the next one
+			// carries a newer one — a first-hit-wins scan would under-report.
+			archive('workspace-ws-2026-10-27T06-00-00.md', '### [2026-10-21T08:00:00.000Z] myia-web2|ws\nlate-archived old msg');
+			archive('workspace-ws-2026-10-26T20-00-00.md', '### [2026-10-26T19:00:00.000Z] myia-web2|ws\nreal newest');
+			const floors = new Map([['myia-web2', '2026-10-20T19:17:13.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-web2'], floors);
+
+			expect(found.get('myia-web2')).toBe('2026-10-26T19:00:00.000Z');
+		});
+
+		it('#4344 — a quoted header ESCAPED by the archive writer is not parsed as activity (no phantom)', () => {
+			// Post-fix shape: the body quotes a dashboard line, the writer
+			// escapes it (FIX #1123 idiom, extended to archives by ms#1532).
+			// The quoted machine (po-2026, silent, stale floor) must NOT be
+			// resurrected by the quote — the mirror image of the #4344 freeze.
+			archive(
+				'workspace-ws-2026-10-26T21-00-00.md',
+				'### [2026-10-26T20:00:00.000Z] myia-web2|roo-extensions\n' +
+					'[msg: msg-quote-1]\n\n' +
+					'incident report, citing:\n' +
+					'\\#\\#\\# [2026-10-26T20:45:00.000Z] myia-po-2026|CoursIA\n' +
+					'end of quote.'
+			);
+			const floors = new Map([['myia-po-2026', '2026-10-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-po-2026'], floors);
+
+			expect(found.has('myia-po-2026')).toBe(false);
+		});
+
+		it('#4344 — legacy archive with an UNESCAPED quoted header still yields the phantom (documented exposure)', () => {
+			// Pre-fix archives (written before the archive-side escape) keep
+			// raw quoted headers; the parser cannot tell a quote from a real
+			// header. This pins TODAY'S honest behaviour on legacy files: the
+			// phantom IS attributed — the reason the writers escape, and the
+			// residual the future RX123 archive cap owns (see the util's doc).
+			archive(
+				'workspace-ws-2026-10-26T21-00-00.md',
+				'### [2026-10-26T20:00:00.000Z] myia-web2|roo-extensions\n' +
+					'[msg: msg-quote-2]\n\n' +
+					'incident report, citing:\n' +
+					'### [2026-10-26T20:45:00.000Z] myia-po-2026|CoursIA\n' +
+					'end of quote.'
+			);
+			const floors = new Map([['myia-po-2026', '2026-10-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-po-2026'], floors);
+
+			expect(found.get('myia-po-2026')).toBe('2026-10-26T20:45:00.000Z');
+		});
+
+		it('#4344 re-review — per-call read bound: realistic mirror, machine beyond the budget is NOT recovered', () => {
+			// Shape measured on the prod mirror (ms#1532 re-review): thousands
+			// of archives, one machine with a weeks-old floor whose only
+			// message sits DEEP (position ~bound+2300 by newness) — it would
+			// be found by an unbounded walk (1,915 reads / ~65 s measured on
+			// po-2026). The default budget must cut the walk long before:
+			// the deep machine keeps its stale floor (not found), while a
+			// machine in the newest files is still recovered.
+			const N = MAX_ARCHIVE_READS_PER_CALL;
+			const total = N + 2_300;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			for (let i = 0; i < total; i++) {
+				if (i === 2) {
+					// Third-newest file: the typical #4344 recovery.
+					const ts = new Date(condenseAt(i).getTime() - 60_000).toISOString();
+					archive(nameOf(i), `### [${ts}] myia-fresh-01|ws\njust condensed [DONE]`);
+				} else if (i === N + 2_300 - 1) {
+					// Oldest file: deep machine's only message (newer than its
+					// weeks-old floor, older than its file's condensation date).
+					const ts = new Date(condenseAt(i).getTime() - 60_000).toISOString();
+					archive(nameOf(i), `### [${ts}] myia-deep-01|ws\nlast message before weeks of silence`);
+				} else {
+					archive(nameOf(i), 'condensed bodies, no machine headers');
+				}
+			}
+			const floors = new Map([['myia-deep-01', '2026-09-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-deep-01', 'myia-fresh-01'], floors);
+
+			// Inside the budget: recovered.
+			const freshTs = new Date(condenseAt(2).getTime() - 60_000).toISOString();
+			expect(found.get('myia-fresh-01')).toBe(freshTs);
+			// Beyond the budget: the walk stopped, the stale floor stands.
+			expect(found.has('myia-deep-01')).toBe(false);
+		});
+
+		it('#4344 re-review — the budget reads UP TO its ceiling: a message just inside the bound is found', () => {
+			// Boundary pinned on both sides: the message sits 10 files INSIDE
+			// MAX_ARCHIVE_READS_PER_CALL among thousands — it must be found,
+			// proving the walk reads up to the ceiling, not less.
+			const N = MAX_ARCHIVE_READS_PER_CALL;
+			const total = N + 500;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			const insideIdx = N - 10;
+			const deepTs = new Date(condenseAt(insideIdx).getTime() - 60_000).toISOString();
+			for (let i = 0; i < total; i++) {
+				if (i === insideIdx) {
+					archive(nameOf(i), `### [${deepTs}] myia-deep-01|ws\njust inside the budget`);
+				} else {
+					archive(nameOf(i), 'condensed bodies, no machine headers');
+				}
+			}
+			const floors = new Map([['myia-deep-01', '2026-09-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-deep-01'], floors);
+
+			expect(found.get('myia-deep-01')).toBe(deepTs);
+		});
+
+		it('#4344 re-review r3 — the budget counts ATTEMPTS: 2 500 unreadable entries stop the walk at 200', () => {
+			// ms#1532 r3: a throwing read used to `continue` BEFORE filesRead++,
+			// so an unreadable archive directory (unstable G:, #4131) left the
+			// counter at 0 and walked all ~12.7k entries on every call. Shape
+			// here: entries that LOOK like archives but are directories, so
+			// readFileSync throws EISDIR; a REAL file carrying the machine's
+			// message sits at position 201. With attempts counted, the budget
+			// is exhausted by the 200 unreadable entries and that file is never
+			// opened; if only successes were counted, the walk would sail past
+			// all of them and find the message.
+			const N = MAX_ARCHIVE_READS_PER_CALL;
+			const total = 2_500;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			const deepTs = new Date(condenseAt(N).getTime() - 60_000).toISOString();
+			for (let i = 0; i < total; i++) {
+				if (i === N) {
+					// 201st entry: a readable archive that WOULD resolve the machine.
+					archive(nameOf(i), `### [${deepTs}] myia-unreachable-01|ws\nafter the budget`);
+				} else {
+					// Unreadable: a directory where an archive file is expected.
+					mkdirSync(join(archiveDir, nameOf(i)));
+				}
+			}
+			const floors = new Map([['myia-unreachable-01', '2026-09-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-unreachable-01'], floors);
+
+			// The 201st attempt never happens: attempts — not successes — exhausted the budget.
+			expect(found.has('myia-unreachable-01')).toBe(false);
+		});
+
+		it('buildArchiveFloors equivalent: only machines with a live value get a floor', () => {
+			const floors = new Map<string, string>();
+			const activity = new Map([['myia-web2', '2026-10-20T19:17:13.000Z']]);
+			for (const mid of ['myia-web2', 'myia-silent-01']) {
+				const live = activity.get(mid.toLowerCase());
+				if (live) floors.set(mid.toLowerCase(), live);
+			}
+			expect(floors.get('myia-web2')).toBe('2026-10-20T19:17:13.000Z');
+			expect(floors.has('myia-silent-01')).toBe(false);
 		});
 	});
 

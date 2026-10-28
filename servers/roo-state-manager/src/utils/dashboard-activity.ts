@@ -11,6 +11,11 @@
  * Message format: ### [2026-05-03T20:08:15.436Z] myia-po-2024|roo-extensions
  *
  * @module utils/dashboard-activity
+ * @version 3.3.0 (#4344 re-review, ms#1532: per-call ceiling on archive file
+ *               reads — G: is the fleet SPOF (#4131), per-request tool paths
+ *               must not spend unbounded seconds in the archive walk)
+ * @version 3.2.0 (#4344: archive recovery widened beyond fully-archived
+ *               machines, bounded by each machine's live lastSeen)
  * @version 3.1.0 (#3695: machine-id normalization for old `machine:workspace|path`
  *               headers + lazy archive lookup for fully-archived machines)
  */
@@ -22,6 +27,26 @@ import { join } from 'path';
 const logger = createLogger('DashboardActivity');
 
 const DASHBOARD_MSG_PATTERN = /^###\s*\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\]\s*(\S+)/gm;
+
+/**
+ * #4344 re-review (ms#1532): per-call ceiling on archive FILE reads in
+ * `lookupMachineActivityInArchives`, as the DEFAULT — no opt-in flag.
+ *
+ * The lookup runs from 3 per-request tool paths (get-status, inventory,
+ * health-view). Measured on the prod mirror (2026-10-27): 12,748 archives,
+ * one stale-floor machine had 1,915 files newer than its floor ≈ 65 s of
+ * serial G: reads on a single call — and GDrive is the fleet's measured
+ * single point of failure this week (#4131). The walk is NEWEST FIRST, so
+ * this bound only ever drops the oldest tail: the typical recovery (a
+ * machine whose recent messages were just condensed) resolves within a
+ * handful of files, while a machine offline for weeks keeps its bounded
+ * best — the stale live floor, an honest lower bound (#3160) — instead of
+ * spending unbounded seconds.
+ *
+ * The budget counts ATTEMPTS, not successes (ms#1532 r3): a read that throws
+ * consumes one unit, so an unreadable archive directory cannot re-arm the walk.
+ */
+export const MAX_ARCHIVE_READS_PER_CALL = 200;
 
 /**
  * Default activity threshold (8 hours).
@@ -204,13 +229,46 @@ export function crossCheckWithDashboard(
  * machine truly never seen still ends at the honest `null` of #3160 after a
  * full scan (the pathological case only — it means "verify your mirror").
  *
+ * #4344: recovery must not be limited to machines missing from the live files.
+ * ONE old live line used to freeze `lastSeen` while the machine kept posting —
+ * newer messages were already condensed into `archive/` and never consulted.
+ * Callers therefore pass `floors` (each machine's live timestamp). An archive
+ * file can only carry messages older than its own condensation date, so a
+ * machine whose best timestamp already reaches the current file's date is
+ * resolved and dropped. That bounds the widening: no FILE is read while the
+ * live values beat the newest archive, and the scan stops as soon as every
+ * machine is resolved.
+ *
+ * Honest residuals (review ms#1532), owned by the future RX123 cap:
+ * - the archive DIRECTORY LISTING is now paid on every call (the guard went
+ *   from "some machine missing from live" to "registry non-empty") — zero
+ *   file read is not zero cost, only the cheapest possible probe;
+ * - a machine PRESENT in live (has a floor) but appearing in NO archive is
+ *   never resolved by the date rule and reads until the per-call budget
+ *   (MAX_ARCHIVE_READS_PER_CALL) cuts the walk: the date bound can only
+ *   prove "nothing newer exists above the floor", it cannot prove "nothing
+ *   anywhere below" without reading. When the budget cuts, the machine
+ *   keeps its bounded best (the stale live floor, an honest lower bound
+ *   #3160) — never unbounded G: seconds on a per-request path.
+ *
+ * Phantom headers: bodies quoting a `### [ts] machine|ws` line are escaped by
+ * the writers (FIX #1123 live, #4344 archive) so the header regex below never
+ * matches them. Archives written BEFORE the archive-side escape may still
+ * carry unescaped quotes — that pre-existing exposure is amplified by this
+ * widening (any registry machine, not just missing ones) and is also left to
+ * the RX123 cap: the parser cannot tell a quoted header from a real one.
+ *
  * @param dashboardsDir - The dashboards/ directory (archive/ lives inside it).
  * @param machineIds - Machine IDs to look for (case-insensitive).
+ * @param floors - Optional machineId (lowercase) -> live timestamp already
+ *                 known: only an archived timestamp above it is worth a read.
+ *                 Absent/empty means "recover from scratch" (#3695 behaviour).
  * @returns Map of machineId (lowercase) -> most recent ISO timestamp found in archives.
  */
 export function lookupMachineActivityInArchives(
 	dashboardsDir: string,
-	machineIds: string[]
+	machineIds: string[],
+	floors?: ReadonlyMap<string, string>
 ): Map<string, string> {
 	const wanted = new Set(machineIds.map(m => m.toLowerCase()));
 	const found = new Map<string, string>();
@@ -235,8 +293,45 @@ export function lookupMachineActivityInArchives(
 	};
 	archiveFiles.sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
 
+	// Archive names embed the ISO condensation date with `:` replaced by `-`.
+	const isoOf = (name: string): string => {
+		const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})$/.exec(dateOf(name));
+		return m ? `${m[1]}T${m[2]}:${m[3]}:${m[4]}Z` : '';
+	};
+
+	let filesRead = 0;
 	for (const file of archiveFiles) {
 		if (wanted.size === 0) break;
+
+		// #4344: an archive file carries only messages older than its own
+		// condensation date. Resolve (and stop tracking) every machine whose
+		// best timestamp — live floor or already-found — reaches that date.
+		const fileIso = isoOf(file);
+		if (fileIso) {
+			for (const machineId of [...wanted]) {
+				const floor = floors?.get(machineId) ?? '';
+				const best = (found.get(machineId) ?? '') > floor ? found.get(machineId)! : floor;
+				if (best && best >= fileIso) wanted.delete(machineId);
+			}
+			if (wanted.size === 0) break;
+		}
+
+		// #4344 re-review (ms#1532): per-call read ceiling, default behaviour.
+		// Newest-first, so hitting it only drops the OLDEST tail (see
+		// MAX_ARCHIVE_READS_PER_CALL).
+		if (filesRead >= MAX_ARCHIVE_READS_PER_CALL) {
+			logger.warn(
+				`Archive lookup hit its read budget (${MAX_ARCHIVE_READS_PER_CALL} files) with ${wanted.size} machine(s) unresolved - keeping their bounded best (#4344, cf. #4131)`
+			);
+			break;
+		}
+
+		// Count the ATTEMPT, not the successful read (ms#1532 r3). A throwing
+		// read — unstable G:, the very failure mode the budget exists for
+		// (#4131) — must consume one attempt: counting only successes left
+		// `filesRead` at 0 while every failure `continue`d, so an unreadable
+		// archive directory re-armed the full ~12.7k-open walk on every call.
+		filesRead++;
 		let content: string;
 		try {
 			content = readFileSync(join(dashboardsDir, 'archive', file), 'utf-8');
@@ -247,9 +342,6 @@ export function lookupMachineActivityInArchives(
 			if (!wanted.has(machineId)) continue;
 			const existing = found.get(machineId);
 			if (!existing || ts > existing) found.set(machineId, ts);
-		}
-		for (const machineId of found.keys()) {
-			wanted.delete(machineId);
 		}
 	}
 	return found;

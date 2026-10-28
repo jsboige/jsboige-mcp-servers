@@ -1292,12 +1292,20 @@ function getArchiveDir(): string {
  * comprend [msg:] depuis #1363 ; seul l'écrivain ne l'émettait pas, et la
  * perte mesurée (id ni dans le canon, ni dans PG, ni identifiable dans aucune
  * des 5 316 archives CoursIA-2) est la conséquence directe de ce trou.
+ *
+ * #4344 (review ms#1532, bloquant) : le CORPS doit être échappé exactement
+ * comme le writer vivant (FIX #1123, `buildDashboardMarkdown`) — un « ### [ »
+ * en début de ligne d'un corps cité (fréquent dans les rapports d'incident qui
+ * citent le dashboard) serait sinon re-parsé comme un vrai header par la
+ * lecture d'archives élargie (`lookupMachineActivityInArchives`), fabriquant
+ * une activité fantôme capable de fausser `lastSeen` de n'importe quelle
+ * machine du registre.
  */
 export function buildArchiveMessagesMarkdown(messages: IntercomMessage[]): string {
   return messages
     .map(
       (msg) =>
-        `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]\n\n${msg.content}`
+        `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]\n\n${msg.content.replace(/^### \[/gm, '\\#\\#\\# [')}`
     )
     .join('\n\n---\n\n');
 }
