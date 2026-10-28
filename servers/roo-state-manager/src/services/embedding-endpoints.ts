@@ -90,6 +90,13 @@ const DEFAULT_QUERY_ATTEMPT_TIMEOUT_MS = 6000;
 const DEFAULT_QUERY_BUDGET_MS = 12000;
 const DEFAULT_NEGATIVE_CACHE_MS = 30000;
 
+// #4395 (RX126): LAN-direct defaults. The fleet's canonical embedding endpoint
+// is the public vhost, whose IIS hop carries the whole indexing load against a
+// Windows 11 Pro 10-connection cap (41-51 s vs 14-33 ms direct, RX126). The
+// LAN backend the vhost forwards to is tried FIRST; the vhost stays canonical.
+const PUBLIC_VHOST_HOST = 'embeddings.myia.io';
+const DEFAULT_LAN_DIRECT_URL = 'http://myia-po-2023:8004/v1';
+
 function parseIntOr(value: string | undefined, fallback: number): number {
 	const parsed = parseInt(value ?? '', 10);
 	return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -195,20 +202,67 @@ export function getEmbeddingClientTimeoutMs(
 	return settings.perAttemptTimeoutMs * Math.max(1, endpointCount) + 5000;
 }
 
+/** True when the endpoint's host is the public vhost the fleet embeds through. */
+function isPublicVhostEndpoint(endpoint: string): boolean {
+	try {
+		return new URL(endpoint).hostname === PUBLIC_VHOST_HOST;
+	} catch {
+		return false;
+	}
+}
+
+/** `EMBEDDING_LAN_DIRECT=0` is the only kill-switch; any other value is on. */
+function isLanDirectDisabled(env: NodeJS.ProcessEnv): boolean {
+	return env.EMBEDDING_LAN_DIRECT === '0';
+}
+
+/** `EMBEDDING_LAN_DIRECT_URL` overrides the default LAN target; validated like a list entry. */
+function resolveLanDirectUrl(env: NodeJS.ProcessEnv): string {
+	const override = env.EMBEDDING_LAN_DIRECT_URL;
+	if (override && override.trim()) return normaliseEndpoint(override);
+	return DEFAULT_LAN_DIRECT_URL;
+}
+
+/**
+ * #4395 (RX126): when the CANONICAL endpoint is the public vhost, put the
+ * LAN-direct backend FIRST in the try order. The insertion is transport-only:
+ * the caller keeps `canonical` as the SDK `baseURL` and the fingerprint, so no
+ * collection is rebuilt. A list that already carries the LAN target keeps its
+ * own order (no duplicate); any other canonical is left untouched. Returns a
+ * new array — the configured list is never mutated.
+ */
+function withLanDirectFirst(
+	configured: string[],
+	canonical: string,
+	env: NodeJS.ProcessEnv,
+): string[] {
+	if (isLanDirectDisabled(env)) return configured;
+	if (!isPublicVhostEndpoint(canonical)) return configured;
+	const lan = resolveLanDirectUrl(env);
+	if (configured.includes(lan)) return configured;
+	return [lan, ...configured];
+}
+
 /**
  * Plan consumed by both factories. `fetch` is only attached when there is more
  * than one endpoint: a one-entry list is the legacy base URL with extra config,
  * not a reason to change timeout or retry semantics.
+ *
+ * #4395 (RX126): the SDK `baseURL` and the supplement fingerprint are named by
+ * the CANONICAL entry of the CONFIGURED list. The LAN-direct insertion may put
+ * a LAN entry first in the try order, but it must never move the canonical —
+ * that is what keeps an existing collection's vector space valid.
  */
 export function getEmbeddingEndpointPlan(
 	mode: EmbeddingClientMode,
 	env: NodeJS.ProcessEnv = process.env,
 ): EmbeddingEndpointPlan {
-	const endpoints = parseEmbeddingEndpoints(env);
-	if (endpoints.length === 0) {
-		return { endpoints, baseURL: undefined, fetch: undefined };
+	const configured = parseEmbeddingEndpoints(env);
+	if (configured.length === 0) {
+		return { endpoints: configured, baseURL: undefined, fetch: undefined };
 	}
-	const canonical = endpoints[0];
+	const canonical = configured[0];
+	const endpoints = withLanDirectFirst(configured, canonical, env);
 	if (endpoints.length === 1) {
 		return { endpoints, baseURL: canonical, fetch: undefined };
 	}
@@ -376,6 +430,9 @@ export function createEmbeddingFailoverFetch(options: EmbeddingFailoverOptions):
 		incompatible: null,
 		lastError: null,
 	}));
+	// #4395 (RX126): the acceptance line each LAN seat posts names which
+	// endpoint served. Logged once per client, on the first successful call.
+	let servedLogged = false;
 
 	return async function embeddingFailoverFetch(input, init = {}): Promise<Response> {
 		const originalUrl = requestUrlOf(input);
@@ -444,6 +501,12 @@ export function createEmbeddingFailoverFetch(options: EmbeddingFailoverOptions):
 
 				state.lastError = null;
 				state.disabledUntil = 0;
+				// #4395 (RX126): name which endpoint served the first successful
+				// call, once per client. Host only — never a key.
+				if (!servedLogged) {
+					servedLogged = true;
+					warn(`[embedding-failover] first successful call served by ${state.label}`);
+				}
 				return response;
 			}
 
