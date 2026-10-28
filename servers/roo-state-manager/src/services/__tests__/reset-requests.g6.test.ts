@@ -247,6 +247,93 @@ describe('#4352 g6 — delegated reset+requeue via the request file (follower �
         expect(typeof kept.metadata.indexingState.lastResetAt).toBe('string');
     });
 
+    test('TWO WRITERS (ms#1546 r2): a stale FAILED with a FUTURE nextReindexAfter must not outrank the reset', async () => {
+        // Review 5680632352: a failure spreads the previous state
+        // (indexing-decision.ts:219-234), so a stale `failed` carries the
+        // `nextReindexAfter` of the last success — a deadline in the FUTURE.
+        // Counting it let the stale entry outrank `lastResetAt: now`, and the
+        // reset was undone on the next Worker A save (the exact shape of the
+        // 03:47Z incident on ai-01's live index).
+        await requestQueuedIndexBatch(['big-1'], MACHINE_ID);
+        const cacheA = leaderState();
+        await consumePendingIndexRequests(cacheA);
+
+        const indexPath = path.join(TEST_DIR, 'tasks', '.skeletons', '_skeleton_index.json');
+        await vi.waitFor(async () => {
+            const index = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+            const entry = index.entries.find((e: any) => e.taskId === 'big-1');
+            expect(entry?.metadata?.indexingState?.indexStatus).toBeUndefined();
+        });
+
+        const staleB = new Map<string, any>([
+            ['big-1', {
+                taskId: 'big-1',
+                metadata: {
+                    indexingState: {
+                        indexStatus: 'failed',
+                        indexError: 'Indexing timeout after 300000ms',
+                        errorClass: 'embedding_timeout',
+                        indexRetryCount: 6,
+                        lastIndexAttempt: '2026-10-25T10:00:00.000Z',
+                        // Deadline inherited from the last success: 6 days in the FUTURE.
+                        nextReindexAfter: new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString(),
+                    },
+                },
+                sequence: [],
+            }],
+        ]);
+        await saveSkeletonIndex(staleB);
+
+        const after = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+        const kept = after.entries.find((e: any) => e.taskId === 'big-1');
+        expect(kept.metadata.indexingState.indexStatus).toBeUndefined();
+        expect(typeof kept.metadata.indexingState.lastResetAt).toBe('string');
+    });
+
+    test('TWO WRITERS (ms#1546 r2): a stale SUCCESS with a FUTURE nextReindexAfter must not undo a collection reset', async () => {
+        // Review 5680632352: 727/946 successes on ai-01's live index carry a
+        // future `nextReindexAfter`, so reset_collection's `lastResetAt: now`
+        // stamp was inert for them — the next Worker A save restored the
+        // success state from its own cache. The disk side here is exactly what
+        // reset_collection leaves behind: `{ indexVersion, lastResetAt }`.
+        const indexPath = path.join(TEST_DIR, 'tasks', '.skeletons', '_skeleton_index.json');
+        const resetCache = new Map<string, any>([
+            ['big-1', {
+                taskId: 'big-1',
+                metadata: {
+                    indexingState: {
+                        indexVersion: '1.0',
+                        lastResetAt: new Date().toISOString(),
+                    },
+                },
+                sequence: [],
+            }],
+        ]);
+        await saveSkeletonIndex(resetCache);
+
+        const staleB = new Map<string, any>([
+            ['big-1', {
+                taskId: 'big-1',
+                metadata: {
+                    indexingState: {
+                        indexStatus: 'success',
+                        lastIndexedAt: '2026-10-27T09:00:00.000Z',
+                        lastIndexAttempt: '2026-10-27T09:00:00.000Z',
+                        // Stamped at the last success (yesterday): +7d is still future.
+                        nextReindexAfter: new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString(),
+                    },
+                },
+                sequence: [],
+            }],
+        ]);
+        await saveSkeletonIndex(staleB);
+
+        const after = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+        const kept = after.entries.find((e: any) => e.taskId === 'big-1');
+        expect(kept.metadata.indexingState.indexStatus).toBeUndefined();
+        expect(typeof kept.metadata.indexingState.lastResetAt).toBe('string');
+    });
+
     test('the batch flavour writes N lines in ONE append (cleanup_failed of 100 must not do 100 writes)', async () => {
         await requestQueuedIndexBatch(['r-1', 'r-2', 'r-3'], MACHINE_ID);
         const content = await fs.promises.readFile(requestsPath, 'utf8');

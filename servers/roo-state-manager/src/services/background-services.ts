@@ -180,12 +180,21 @@ export async function loadFullSkeleton(
 
 /**
  * #4352 g6b — recency of an indexingState, for the two-writer merge.
- * A reset strips every timestamp except `lastResetAt`, so all of them count.
+ * A reset strips every timestamp except `lastResetAt`, so all of them count —
+ * EXCEPT `nextReindexAfter`: it is a deadline in the FUTURE, not the time of
+ * a write. A success stamps `lastIndexedAt: now` AND `nextReindexAfter:
+ * now+7d` (indexing-decision.ts:190), and a failure spreads the previous
+ * state, so a stale `failed`/`success` carries a future deadline that would
+ * outrank any reset stamped `lastResetAt: now` — the reset would be undone
+ * on the next Worker A save (ms#1546 r2: 727/946 successes on ai-01's live
+ * index carry a future `nextReindexAfter`). A genuinely newer success still
+ * wins the merge through `lastIndexedAt`/`lastIndexAttempt`, which ARE write
+ * times.
  */
 function indexingStateRecency(state: any): number {
     if (!state || typeof state !== 'object') return 0;
     let newest = 0;
-    for (const field of ['lastResetAt', 'lastIndexAttempt', 'lastErrorAt', 'lastIndexedAt', 'nextReindexAfter']) {
+    for (const field of ['lastResetAt', 'lastIndexAttempt', 'lastErrorAt', 'lastIndexedAt']) {
         const value = state[field];
         if (typeof value !== 'string') continue;
         const parsed = Date.parse(value);
