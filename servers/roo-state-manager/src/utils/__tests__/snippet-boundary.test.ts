@@ -150,6 +150,28 @@ describe('snippet boundary classifier (rubric (a) anti-vacuity, pure unit)', () 
 		expect(gradeSnippetBoundary(snippet)).toEqual({ ok: false, kind: 'prose' });
 	});
 
+	it('prose: heading-led prose followed by a lone opener is a dangling cut (ai-01 re-review ms#1538)', () => {
+		// `# Title` has the shape of a shell comment. Without a code line, the
+		// segment cannot be read as block content, so the lone fence is an opener.
+		const snippet =
+			"et la suite du guide de déploiement explique la cadence :\n# Cadence du coordinateur\n# Cadence des executeurs\nLe coordinateur tire toutes les douze heures, les executeurs toutes les quatre.\n```...";
+		expect(gradeSnippetBoundary(snippet)).toEqual({ ok: false, kind: 'prose' });
+
+		const headingsOnly = "et voici les deux sections du guide, dans l'ordre du deploiement :\n# Cadence du coordinateur\n# Cadence des executeurs\n```...";
+		expect(gradeSnippetBoundary(headingsOnly)).toEqual({ ok: false, kind: 'prose' });
+	});
+
+	it('prose: a block closed by a ```` or ~~~ fence is accepted; mismatched or shorter closers are not', () => {
+		const lead = 'Cadence 12h (job session-only, auto-expire 7j) : pas de tir groupe aux heures communes.\n';
+		const call = 'CronCreate(cron: "23 */12 * * *", prompt: "/coordinate", recurring: true)\n';
+		expect(gradeSnippetBoundary(`${lead}~~~\n${call}~~~...`)).toEqual({ ok: true, kind: 'prose' });
+		expect(gradeSnippetBoundary(`${lead}\`\`\`\`\n${call}\`\`\`\`...`)).toEqual({ ok: true, kind: 'prose' });
+		// A ``` cannot close a ```` block (CommonMark: the closer is at least as long).
+		expect(gradeSnippetBoundary(`${lead}\`\`\`\`\n${call}\`\`\`...`)).toEqual({ ok: false, kind: 'prose' });
+		// ~~~ does not pair with ```: the trailing ~~~ is a lone opener after prose.
+		expect(gradeSnippetBoundary(`${lead}\`\`\`\n${call}\`\`\`\nEt la suite du guide, qui reprend la cadence des executeurs :\n~~~...`)).toEqual({ ok: false, kind: 'prose' });
+	});
+
 	it('not-truncated snippets are exempt (unchanged behavior)', () => {
 		const g = gradeSnippetBoundary('Un passage complet, sans troncature, qui se termine proprement.');
 		expect(g.kind).toBe('not-truncated');
