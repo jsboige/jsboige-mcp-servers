@@ -623,7 +623,7 @@ export const listConversationsTool = {
         // pre-#3255 behavior — for callers who need archives in THIS response.
         // Either way the response carries a deterministic tier3 status instead
         // of the old "Retry shortly" advice with nothing to retry against.
-        let tier3Info: { status: 'ready' | 'loading' | 'failed'; cache_age_ms: number | null } | undefined;
+        let tier3Info: { status: 'ready' | 'loading' | 'failed'; cache_age_ms: number | null; source?: 'gdrive' | 'pg' } | undefined;
         if (args.includeArchives) {
             let tier3Status: 'ready' | 'loading' | 'failed' = 'failed';
             let cacheAgeMs: number | null = null;
@@ -705,6 +705,7 @@ export const listConversationsTool = {
             contributed: number;
             truncated: boolean;
             duration_ms: number;
+            epoch1970_filtered?: number;
             error?: string;
         } | undefined;
         if (getConversationListPgReader()) {
@@ -746,8 +747,38 @@ export const listConversationsTool = {
                 contributed: pgResult.skeletons.length,
                 truncated: pgResult.truncated,
                 duration_ms: pgDuration,
+                ...(pgResult.epoch1970_filtered > 0 ? { epoch1970_filtered: pgResult.epoch1970_filtered } : {}),
                 ...(pgResult.error ? { error: pgResult.error } : {}),
             };
+        }
+
+        // #4151 S1 — statut honnête : quand le tier PG a servi la couverture
+        // cross-machine, la réponse le DIT au lieu de prescrire un re-call G:
+        // que le warm-up ne convergera jamais à servir (mesuré 27/10 : G: 32,1 s
+        // vs PG 14 ms ; le warm-up tier3 n'aboutit pas sur les sièges Claude-only,
+        // corroboré 09/10→15/10). Aucune donnée nouvelle : c'est la sémantique du
+        // statut rendu qui devient honnête. Les deux branches :
+        //  - PG a contribué (status=ready, contribution > 0) → tier3 rendu
+        //    ready/source=pg, la notice de repli G: est REMPLACÉE ;
+        //  - aucune couverture cross-machine (tier3 G: loading/failed ET aucune
+        //    contribution PG) → la notice le nomme en clair (« flotte partielle »)
+        //    au lieu de laisser croire que la liste est la flotte entière.
+        if (args.includeArchives) {
+            // Valeurs dérivées avant les branches : le narrowing par alias ne
+            // traverse pas la réassignation de archiveNotice ci-dessous.
+            const pgContributed = pgTierInfo !== undefined && pgTierInfo.status === 'ready'
+                ? pgTierInfo.contributed
+                : 0;
+            const pgTruncated = pgTierInfo?.truncated ?? false;
+            if (pgContributed > 0 && tier3Info && tier3Info.status !== 'ready') {
+                tier3Info = { ...tier3Info, status: 'ready', source: 'pg' };
+                archiveNotice = `tier3_status=ready (source=pg): cross-machine coverage served by the PG conversation tier (${pgContributed} conversations contributed${pgTruncated ? ', list capped — see pg_tier.truncated' : ''}); no GDrive warm-up required.`;
+            } else if (pgContributed === 0 && tier3Info && tier3Info.status !== 'ready') {
+                const distinctMachines = new Set(
+                    allSkeletons.map(s => s.metadata?.machineId).filter((m): m is string => typeof m === 'string' && m.length > 0)
+                ).size;
+                archiveNotice = `${archiveNotice ?? ''} Couverture cross-machine non servie : flotte partielle (${distinctMachines} machine${distinctMachines === 1 ? '' : 's'} dans les résultats, sources locales seules).`;
+            }
         }
 
         // #1394 (Phase 4 #1360) — Filtres de niveau header + tri via la projection

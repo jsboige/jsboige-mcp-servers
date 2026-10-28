@@ -924,6 +924,34 @@ export class SkeletonCacheService {
     private async hydrateTier3Entry(taskId: string): Promise<boolean> {
         const entry = this.cache.get(taskId);
         if (!entry) return false;
+
+        // #4151 S2 — ordre local → PG → G: paresseux : le corps est d'abord
+        // demandé au store PG (siège backfillé, même gate que le tier LIST lue
+        // à l'appel) ; l'archive G: n'est lue que pour une conversation que PG
+        // ne sert pas (antérieure au backfill, ou siège sans PG). Sur un siège
+        // sans URL PG, loadPgConversationSkeleton rend null avant toute requête
+        // et le chemin G: ci-dessous est inchangé, byte pour byte.
+        try {
+            const { loadPgConversationSkeleton } = await import('./unified-store/conversation-list-store.js');
+            const pgSkeleton = await loadPgConversationSkeleton(taskId);
+            if (pgSkeleton && pgSkeleton.sequence.length > 0) {
+                entry.sequence = pgSkeleton.sequence;
+                entry.metadata.hydrated = true;
+                // Le messageCount du store fait foi sur le repli du stub.
+                const pgMessageCount = pgSkeleton.metadata?.messageCount;
+                if (typeof pgMessageCount === 'number' && pgMessageCount > 0) {
+                    entry.metadata.messageCount = pgMessageCount;
+                }
+                const bodyBytes = JSON.stringify(entry.sequence).length;
+                this.tier3HydratedBytes.set(taskId, bodyBytes);
+                this.tier3HydratedTicks.set(taskId, ++this.tier3LruCounter);
+                this.enforceTier3Cap(taskId);
+                return true;
+            }
+        } catch {
+            // PG indisponible pour CE corps : repli G: inchangé ci-dessous.
+        }
+
         const filePath = entry.metadata?.archiveFilePath ?? this.tier3Index.get(taskId)?.filePath;
         if (!filePath) return false;
         try {
