@@ -2824,8 +2824,10 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 
 	test('calibration: the factor is graded by words, not switched by a char constant', () => {
 		// The whole point of V3: the penalty is a function of how thin the chunk
-		// is. A 2-word fragment pays the full floor; a 6-word one pays less; a
-		// 9-word one pays almost nothing; a passage pays nothing at all.
+		// is. A 2-word fragment pays 0.88 — near the floor but graded (only an
+		// empty chunk reaches 0.85, the price of a scale instead of a constant);
+		// a 6-word one pays less; a 9-word one pays almost nothing; a passage
+		// pays nothing at all.
 		expect(passageQualityFactor(' est close.').factor).toBeCloseTo(0.85 + 0.15 * (2 / 10), 8);
 		expect(passageQualityFactor('a one two three four five').factor).toBeCloseTo(0.85 + 0.15 * (6 / 10), 8);
 		expect(passageQualityFactor('one two three four five six seven eight nine').factor).toBeCloseTo(0.85 + 0.15 * (9 / 10), 8);
@@ -2833,6 +2835,32 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 		// Monotonic in thinness — a longer chunk is never punished harder.
 		const ramp = [0, 2, 4, 6, 8, 9, 10].map((w) => passageQualityFactor('w '.repeat(w).trim()).factor);
 		expect([...ramp].sort((a, b) => a - b)).toEqual(ramp);
+	});
+
+	test('r2 — BOTH bars: word-count spam cannot dodge the malus the legacy rule taxed', () => {
+		// Review pt 4, second hole: `1 2 3 … 11` is 11 "words" in 23 chars.
+		// The word bar alone exempted it; the legacy rule (< 40 chars) taxed it
+		// at the full floor. The factor now ramps on the missed char bar.
+		const digits = '1 2 3 4 5 6 7 8 9 10 11';
+		expect(digits.trim().length).toBeLessThan(40);
+		const q = passageQualityFactor(digits);
+		expect(q.applied).toBe(true);
+		expect(q.factor).toBeCloseTo(0.85 + 0.15 * (23 / 40), 3);
+	});
+
+	test('r2 — CJK code points count as words: a Han passage is not a fragment', () => {
+		// Review pt 4, first hole: the Latin regex saw a 200-char Han passage
+		// as 1-2 "words" and taxed it at 0.88 where legacy left >= 40 chars
+		// alone. Each CJK code point is a word now.
+		const cjkPassage = 'モデルが期待どおりに推論を完了したことが、この会話の決定事項として記録されています。';
+		const long = cjkPassage.repeat(2); // ~56 CJK chars — a real passage
+		expect(passageQualityFactor(long)).toEqual({ factor: 1, applied: false });
+		// A genuinely short CJK snippet still pays, graded on its thinnest bar.
+		const snippet = '推論を開始'; // 5 CJK chars → 5 "words", 5 chars
+		const q = passageQualityFactor(snippet);
+		expect(q.applied).toBe(true);
+		expect(q.factor).toBeGreaterThan(0.85);
+		expect(q.factor).toBeLessThan(0.9);
 	});
 
 	test('thin chunk de-ranked below a substantive passage', async () => {
@@ -2860,9 +2888,12 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 		expect(parsed.current_machine.fragment_malus).toEqual({
 			applied: 1,
 			signal: 'passage-quality',
-			min_chars: 40,
-			factor: 0.85,
+			// r2: no single `factor` on the default arm — the chunks that paid
+			// each paid their own, so the block reports min/mean of what was
+			// actually applied (here one chunk at 0.88).
 			min_words: 10,
+			min_factor: 0.88,
+			mean_factor: 0.88,
 			enabled: true
 		});
 	});
@@ -2931,9 +2962,13 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 		// content below 40 chars pays the full 0.85, whatever its word count.
 		process.env.SEMANTIC_FRAGMENT_MALUS = 'legacy';
 		const fortyChars = 'x'.repeat(40); // one "word", but 40 chars → untouched by legacy
+		const cjkLong = 'モデルが期待どおりに推論を完了したことが、この会話の決定事項として記録されています。'.repeat(2);
 		mockQdrantClient.search.mockResolvedValue([
 			{ score: 0.9, payload: { task_id: 'task-under', content: 'a one two three four five', host_os: 'h1' } },
 			{ score: 0.9, payload: { task_id: 'task-over', content: fortyChars, host_os: 'h1' } },
+			// r2: the CJK word counting must not shift the legacy arm — a
+			// >= 40-char Han passage was untouched before and stays untouched.
+			{ score: 0.9, payload: { task_id: 'task-cjk', content: cjkLong, host_os: 'h1' } },
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -2946,8 +2981,10 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 		const parsed = JSON.parse(getTextContent(result));
 		const under = parsed.results.find((r: any) => r.taskId === 'task-under');
 		const over = parsed.results.find((r: any) => r.taskId === 'task-over');
+		const cjk = parsed.results.find((r: any) => r.taskId === 'task-cjk');
 		expect(under.best_score).toBeCloseTo(0.9 * 0.85, 8); // 26 chars → floor
 		expect(over.best_score).toBe(0.9);                    // 40 chars → untouched
+		expect(cjk.best_score).toBe(0.9);                     // >= 40 chars → untouched, arm unshifted
 		expect(parsed.current_machine.fragment_malus).toMatchObject({
 			signal: 'legacy',
 			min_chars: 40,
@@ -3049,7 +3086,10 @@ describe('#4352 machine-output de-rank', () => {
 		expect(parsed.current_machine.machine_output_malus).toBeUndefined();
 	});
 
-	test('stacks with the fragment malus on a short tool call', async () => {
+	test('r2 — a short machine output pays exactly ONE factor: the machine ×0.85, never the ramp on top', async () => {
+		// Review pt 1: `Bash: ls` is 2 "words" — r1 stacked the thinness ramp
+		// (0.88) UNDER the machine ×0.85, taxing the same defect twice against
+		// the PR's own doc block. The ramp now skips classified machine output.
 		mockQdrantClient.search.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 'task-call', chunk_type: 'tool_interaction', content: 'Bash: ls', host_os: 'h1' } }
 		]);
@@ -3062,7 +3102,9 @@ describe('#4352 machine-output de-rank', () => {
 		);
 
 		const parsed = JSON.parse(getTextContent(result));
-		expect(parsed.results[0].best_score).toBeCloseTo(0.8 * passageQualityFactor('Bash: ls').factor * 0.85, 8);
+		expect(parsed.results[0].best_score).toBeCloseTo(0.8 * 0.85, 8);
+		// The ramp did not fire on machine output — quiet, exactly one scale.
+		expect(parsed.current_machine.fragment_malus).toBeUndefined();
 		expect(parsed.current_machine.machine_output_malus.by_kind).toEqual({ tool_call: 1 });
 	});
 
