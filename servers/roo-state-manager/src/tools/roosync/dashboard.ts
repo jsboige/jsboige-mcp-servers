@@ -2546,7 +2546,7 @@ async function runGdriveFullWriteHalf(
 /**
  * #4131 demande 2 — répare le MIROIR fichier depuis le store PG.
  *
- * Sous `isDashboardPgPrimary()`, PG est la surface primaire et le fichier n'est
+ * Sous la porte PG-primaire, PG est la surface primaire et le fichier n'est
  * qu'un export borné : quand la moitié GDrive d'une écriture expire (mesuré
  * 28/10 sur ai-01 : deux `GDRIVE-BOUNDED`), le message vit dans PG et le
  * fichier reste derrière POUR TOUJOURS — rien ne le rattrape, `G:` cesse donc
