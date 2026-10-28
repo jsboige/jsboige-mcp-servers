@@ -2102,28 +2102,100 @@ export class MessageManager {
       join(this.archivePath, `${messageId}.json`)
     ];
 
+    // #3230 — the G: probe on a PG miss is BOUNDED (r2, review 5680631607).
+    //
+    // #4131 B16 forbade the GDrive fan-out under `CHANNEL_PG_PRIMARY` and the
+    // inbox surfaces honour it; this lookup did not: a miss fell through to
+    // three `existsSync` + `readFile` on G: with NO deadline, so a wedged
+    // DriveFS held the tool call — and one libuv thread — indefinitely. The
+    // bulk-scan path already bounds its per-file read
+    // (`AbortSignal.timeout(this.readTimeoutMs)` inside `withReadTimeout`,
+    // cache rebuild :1263); this applies the SAME convention, both halves of
+    // it: one signal for the whole probe (budget `readTimeoutMs`, not 3×) AND
+    // the `withReadTimeout(…, readTimeoutMs + READ_ABORT_GRACE_MS)` backstop —
+    // the grace exists precisely for a wedged native read that never observes
+    // the abort (:455-463), which is the case this probe names.
+    //
+    // Scope — PG-PRIMARY read path only (r2): classic G: seats and the five
+    // no-callerId entry points keep the pre-#3230 unbounded read there; on a
+    // classic seat G: is the primary surface, and a slow volume must not turn
+    // a readable message into an error.
+    //
+    // The probe itself is kept: a message PG never received (sent by a
+    // non-PG seat, or before this seat's cutover) is still legitimately
+    // readable from the legacy archive. Only its COST is bounded.
+    //
+    // An abandoned probe is NOT a "message not found" (r2): the file half
+    // could not be consulted at all, which is exactly what #4293 decided
+    // twelve lines above must fail closed — `SharedStoreInaccessibleError`,
+    // never a `null` an agent reads as "this message never existed".
+    //
+    // Kill-switch — `UNIFIED_STORE_CHANNEL_MISS_PROBE_ABORT=0` restores the
+    // pre-#3230 unbounded read, for a seat that must never abandon a slow
+    // DriveFS fetch. Read at CALL time, like every other gate in this codebase.
+    const missProbeSignal = (): AbortSignal | undefined => {
+      const raw = (process.env.UNIFIED_STORE_CHANNEL_MISS_PROBE_ABORT ?? '').trim().toLowerCase();
+      if (['0', 'false', 'off', 'no', 'n', 'disable', 'disabled'].includes(raw)) return undefined;
+      return AbortSignal.timeout(this.readTimeoutMs);
+    };
+    const probeSignal = isChannelPgPrimary() ? missProbeSignal() : undefined;
+    let probeAbandoned = false;
+
     for (const filePath of searchPaths) {
-      if (existsSync(filePath)) {
-        try {
-          const content = await fs.readFile(filePath, 'utf-8');
-          const message: Message = JSON.parse(content);
-          logger.info(`Message found in: ${filePath}`);
-
-          // #2287: Verify workspace access — allow if caller is recipient OR sender
-          const verdict = this.messageAccessVerdict(message, callerId, accessScope);
-          if (verdict === 'denied') {
-            logger.warn(`Access denied: message ${messageId} targets ${message.to}, caller is ${callerId}`);
-            throw this.accessDeniedError(messageId, message, callerId!);
-          }
-
-          return applyAccessVerdict(message, verdict);
-        } catch (error) {
-          // po-2024: the access-denied throw above is a protocol error, not a
-          // filesystem error — never swallow it into "try the next path".
-          if (error instanceof MessageManagerError) throw error;
-          logger.error(`Error reading message from ${filePath}`, error);
+      try {
+        // No `existsSync` first: that stat is itself unbounded on a stalled
+        // DriveFS and it doubles the probe's filesystem calls. A missing file
+        // answers ENOENT, handled below exactly like the old `false`.
+        const read = fs.readFile(
+          filePath,
+          probeSignal ? { encoding: 'utf-8', signal: probeSignal } : 'utf-8'
+        );
+        // Backstop: a wedged native read ignores the abort — bound the wait
+        // itself, exactly like the bulk path (:1263). `null` = neither the
+        // read nor the signal answered within the grace.
+        const content = probeSignal
+          ? await withReadTimeout(read, this.readTimeoutMs + MessageManager.READ_ABORT_GRACE_MS)
+          : await read;
+        if (content === null) {
+          probeAbandoned = true;
+          break;
         }
+        const message: Message = JSON.parse(content);
+        logger.info(`Message found in: ${filePath}`);
+
+        // #2287: Verify workspace access — allow if caller is recipient OR sender
+        const verdict = this.messageAccessVerdict(message, callerId, accessScope);
+        if (verdict === 'denied') {
+          logger.warn(`Access denied: message ${messageId} targets ${message.to}, caller is ${callerId}`);
+          throw this.accessDeniedError(messageId, message, callerId!);
+        }
+
+        return applyAccessVerdict(message, verdict);
+      } catch (error) {
+        // po-2024: the access-denied throw above is a protocol error, not a
+        // filesystem error — never swallow it into "try the next path".
+        if (error instanceof MessageManagerError) throw error;
+        // Miss at this location — the same silent skip `existsSync` gave.
+        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        if (code === 'ENOENT' || code === 'ENOTDIR') continue;
+        if (probeSignal?.aborted) {
+          // Deadline spent: the volume is not answering. Probing the two
+          // remaining paths on the SAME volume would only multiply the wait.
+          probeAbandoned = true;
+          break;
+        }
+        logger.error(`Error reading message from ${filePath}`, error);
       }
+    }
+
+    if (probeAbandoned) {
+      logger.warn(
+        `[channel-pg] G: miss probe abandoned after ${this.readTimeoutMs}ms (+grace) — ` +
+        `DriveFS not answering (${messageId}) (#3230)`
+      );
+      // #4293 kin: the file half could not be consulted — fail closed, never
+      // report "not found" for a volume that simply did not answer.
+      throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
     }
 
     logger.warn(`Message not found: ${messageId}`);
