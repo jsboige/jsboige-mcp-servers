@@ -12,30 +12,25 @@
  * suppression invitait le refill — une clé absente n'est pas host-owned
  * (host-env-snapshot.ts), donc applyEnvFileForNonHostKeys la re-remplissait
  * avec la valeur RÉELLE du siège à l'import. Deux couches ferment la classe :
- * le bloc `env` des configs vitest (documentation + ??=) et l'épinglage `''`
- * inconditionnel de jest.setup.js (même liste) — dotenv n'écrase jamais une
+ * le bloc `env` des configs vitest (assignation pure, avant tout import) et
+ * l'épinglage `''` inconditionnel de jest.setup.js — dotenv n'écrase jamais une
  * clé existante et une clé présente est host-owned, donc aucun des vecteurs
- * (setup-env, index.ts:49, applyEnvFileForNonHostKeys) ne peut re-remplir.
+ * (setup-env, index.ts:49, applyEnvFileForNonHostKeys) ne peut re-remplir. Les
+ * deux couches lisent la MÊME liste, `tests/setup/test-env-pins.js`.
  *
  * Ce fichier est le fil trip : il importe l'entrée (déclenchant les appels
- * dotenv de :49) puis vérifie que les clés épinglées tiennent. Les assertions
- * ne comparent que des BOOLEENS — une clé fuillée porte une chaîne de
- * connexion avec son mot de passe, et un diff d'assertion l'imprimerait.
+ * dotenv de :49) puis vérifie que les clés épinglées tiennent, que les quatre
+ * gates résolvent OFF, et que la liste couvre encore TOUTES les gates du
+ * module (une gate future non épinglée rougit ici). Les assertions ne
+ * comparent que des BOOLEENS et des NOMS de clés — une valeur fuitée porte une
+ * chaîne de connexion avec son mot de passe, et un diff d'assertion
+ * l'imprimerait.
  */
 
-import { describe, test, expect } from 'vitest';
+import { describe, test, expect, vi } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { PG_URL_ENV } from '../services/unified-store/pg-flags.js';
-
-/** Les clés épinglées par le bloc `env` des configs vitest — même liste, un seul endroit de vérité : les configs. */
-const PINNED_EMPTY = [
-  PG_URL_ENV,
-  'UNIFIED_STORE_DUAL_WRITE',
-  'UNIFIED_STORE_CHANNEL_READ_PG',
-  'UNIFIED_STORE_CHANNEL_PG_PRIMARY',
-  'UNIFIED_STORE_DASHBOARD_READ_PG',
-  'UNIFIED_STORE_DASHBOARD_PG_PRIMARY',
-  'EMBEDDING_OPS_PER_MINUTE',
-] as const;
+import { PINNED_TEST_ENV_KEYS } from '../../tests/setup/test-env-pins.js';
 
 describe('#4131 (A) — default-deny : le `.env` du siège n\'atteint plus un fichier de test', () => {
   test("l'import de l'entrée serveur ne peut pas faire fuiter le `.env` du siège", async () => {
@@ -49,9 +44,9 @@ describe('#4131 (A) — default-deny : le `.env` du siège n\'atteint plus un fi
     // is a live connection string with its password, and an assertion diff would
     // print it straight into the test output.
     const stillPinned = Object.fromEntries(
-      PINNED_EMPTY.map((key) => [key, (process.env[key] ?? '') === ''])
+      PINNED_TEST_ENV_KEYS.map((key) => [key, (process.env[key] ?? '') === ''])
     );
-    const expected = Object.fromEntries(PINNED_EMPTY.map((key) => [key, true]));
+    const expected = Object.fromEntries(PINNED_TEST_ENV_KEYS.map((key) => [key, true]));
     expect(stillPinned).toEqual(expected);
   });
 
@@ -61,5 +56,50 @@ describe('#4131 (A) — default-deny : le `.env` du siège n\'atteint plus un fi
     expect(gates.isDashboardPgPrimaryEnabled()).toBe(false);
     expect(gates.isDashboardReadPgEnabled()).toBe(false);
     expect(gates.isChannelReadPgEnabled()).toBe(false);
+    // Revue ms#1558, point 2 : les deux gates qui manquaient au trip.
+    expect(gates.isChannelPgPrimaryEnabled()).toBe(false);
+    // Un siège qui porte DUAL_WRITE=0 armerait le kill-switch dans les tests :
+    // la clé épinglée est la chaîne vide, donc « explicitly off » doit rester faux.
+    expect(gates.isDualWriteExplicitlyOff()).toBe(false);
+  });
+});
+
+describe('#4131 (A) — garde de dérive : la liste épinglée couvre les gates', () => {
+  test('chaque drapeau lu par pg-read-gates.ts est épinglé (une gate future rougit ici)', async () => {
+    // Lecture du SOURCE, pas du module évalué : les drapeaux sont des littéraux
+    // à l'intérieur des fonctions, aucun export ne les énumère. jest.setup.js
+    // mocke `fs` — on prend l'implémentation réelle pour cet import.
+    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    const gatesPath = fileURLToPath(
+      new URL('../services/unified-store/pg-read-gates.ts', import.meta.url)
+    );
+    const source = realFs.readFileSync(gatesPath, 'utf8');
+
+    // La prose ne lit aucun drapeau : sans ce retrait, un nom cité dans un
+    // commentaire (« NOT GATED HERE — …CONVERSATION_READ_PG ») serait exigé
+    // épinglé et la garde mordrait un commentaire au lieu du code.
+    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    const gateFlags = [...new Set(code.match(/UNIFIED_STORE_[A-Z0-9_]+/g) ?? [])].sort();
+
+    // Contrôle de l'instrument AVANT le verdict : un parseur cassé rendrait un
+    // ensemble vide, et « tout est épinglé » serait vrai par vacuité.
+    expect(gateFlags.length).toBeGreaterThanOrEqual(5);
+    expect(gateFlags).toEqual(
+      expect.arrayContaining([
+        'UNIFIED_STORE_DUAL_WRITE',
+        'UNIFIED_STORE_CHANNEL_PG_PRIMARY',
+        'UNIFIED_STORE_DASHBOARD_PG_PRIMARY',
+      ])
+    );
+
+    const unpinned = gateFlags.filter((flag) => !PINNED_TEST_ENV_KEYS.includes(flag));
+    // Noms de drapeaux seulement — jamais de valeur.
+    expect(unpinned).toEqual([]);
+  });
+
+  test('la clé racine est épinglée — sans elle, tous les défauts ON se réarment', () => {
+    // hasPgUrl() est la racine de tous les défauts « ON » de pg-flags.ts : une
+    // URL de siège qui passerait rendrait chaque gate par défaut active.
+    expect(PINNED_TEST_ENV_KEYS).toContain(PG_URL_ENV);
   });
 });

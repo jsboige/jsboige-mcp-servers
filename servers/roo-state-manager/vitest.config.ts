@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitest/config'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { pinnedTestEnvEmpty } from './tests/setup/test-env-pins.js'
 
 // Obtenir le chemin du fichier courant (ESM)
 const __filename = fileURLToPath(import.meta.url)
@@ -74,21 +75,16 @@ export default defineConfig({
     // AUCUN fichier de test. Deux vecteurs le chargent (src/index.ts:49 à
     // l'import de l'entrée, tests/setup-env.ts pour les clés manquantes) ;
     // dotenv n'écrase jamais une clé existante, donc l'épingler ici AVANT tout
-    // import ferme les deux. Clés = l'ensemble des read-gates PG
-    // (pg-read-gates.ts) + le pacer capturé au chargement de module
-    // (VectorIndexer.ts:195). Mesuré 28/10 (ms#1553) : dashboard-key-listing et
-    // dashboard-merge rouges sur un siège portant PG_PRIMARY=1, verts en CI.
-    // Un fichier qui VEUT tester un chemin gaté pose SA valeur (pin file-scope,
-    // ms#1551) — ce bloc ne refuse que l'HÉRITAGE des valeurs de siège.
-    env: {
-      UNIFIED_STORE_PG_URL: '',
-      UNIFIED_STORE_DUAL_WRITE: '',
-      UNIFIED_STORE_CHANNEL_READ_PG: '',
-      UNIFIED_STORE_CHANNEL_PG_PRIMARY: '',
-      UNIFIED_STORE_DASHBOARD_READ_PG: '',
-      UNIFIED_STORE_DASHBOARD_PG_PRIMARY: '',
-      EMBEDDING_OPS_PER_MINUTE: '',
-    },
+    // import ferme les deux. La liste vit dans UN seul endroit
+    // (tests/setup/test-env-pins.js) — copiée ici, dans le config unit, dans
+    // jest.setup.js et dans le tripwire jusqu'à la revue ms#1558, elle pouvait
+    // dériver de `pg-read-gates.ts` sans que rien ne rougisse ; le test de
+    // couverture du tripwire le vérifie désormais. Mesuré 28/10 (ms#1553) :
+    // dashboard-key-listing et dashboard-merge rouges sur un siège portant
+    // PG_PRIMARY=1, verts en CI. Un fichier qui VEUT tester un chemin gaté pose
+    // SA valeur (pin file-scope, ms#1551) — ce bloc ne refuse que l'HÉRITAGE
+    // des valeurs de siège.
+    env: pinnedTestEnvEmpty(),
 
     // Pool configuration - forks is faster for isolated tests with heavy setup
     pool: 'forks',
