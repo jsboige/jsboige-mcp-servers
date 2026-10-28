@@ -231,7 +231,8 @@ describe('resetQdrantCollectionTool', () => {
 		);
 
 		expect(saveCallback).toHaveBeenCalledWith(skeleton);
-		expect(skeleton.metadata.indexingState).toEqual({ indexVersion: '1.0' });
+		expect(skeleton.metadata.indexingState).toMatchObject({ indexVersion: '1.0' });
+		expect((skeleton.metadata.indexingState as any).lastResetAt).toEqual(expect.any(String));
 		expect(indexQueue.has('task-modern')).toBe(true);
 	});
 
@@ -261,6 +262,7 @@ describe('resetQdrantCollectionTool', () => {
 		);
 
 		expect(skeleton.metadata.qdrantIndexedAt).toBeUndefined();
-		expect(skeleton.metadata.indexingState).toEqual({ indexVersion: '1.0' });
+		expect(skeleton.metadata.indexingState).toMatchObject({ indexVersion: '1.0' });
+		expect((skeleton.metadata.indexingState as any).lastResetAt).toEqual(expect.any(String));
 	});
 });

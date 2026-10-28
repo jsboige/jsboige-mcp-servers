@@ -1799,7 +1799,15 @@ export async function handleRooSyncIndexing(
                 let reset = 0;
                 let deadLettered = 0;
                 let resetForRetry = 0;
+                // #4352 g6b (ms#1546 review): two distinct lists. `resetIds` is
+                // what we DELEGATE to the leader (transient classes only — a
+                // parked task must not be requeued). `locallyResetIds` is what
+                // this call actually reset in its own cache, which is what the
+                // receipt's `reset_task_ids` reports (permanent classes are
+                // reset AND parked, so they are not delegated but they ARE
+                // reset).
                 const resetIds: string[] = [];
+                const locallyResetIds: string[] = [];
                 if (!isDryRun && candidates.length > 0) {
                     for (const c of candidates) {
                         const skeleton = conversationCache.get(c.task_id);
@@ -1823,28 +1831,71 @@ export async function handleRooSyncIndexing(
                                 movedAt: new Date().toISOString(),
                             });
                             deadLettered++;
+                            // #4352 g6b (ms#1546 review): a parked task is NOT
+                            // handed to the leader — the leader would lift its
+                            // pin and requeue it, defeating the #2766 S3
+                            // parking for auth_failed / file_not_found. Only
+                            // transient classes go into resetIds below.
                         } else {
                             resetForRetry++;
+                            resetIds.push(c.task_id);
                         }
                         // Persist the reset so the next MCP host restart still sees
                         // the dead-letter state. Save through the callback (the
                         // registry wires this to saveSkeletonToDisk) — direct disk
                         // I/O would bypass the cache freshness protocol.
+                        // NOTE #4352 g6: for claude-* skeletons this callback
+                        // SILENTLY NO-OPS (guard #1325: header-only skeleton, no
+                        // per-task file on disk) — the durable path for those is
+                        // the request-file append below.
                         await saveSkeletonCallback(skeleton);
-                        resetIds.push(c.task_id);
                         reset++;
+                        locallyResetIds.push(c.task_id);
+                    }
+                }
+
+                // #4352 g6 — make the reset REACH THE LEADER. The loop above only
+                // mutated THIS process's cache; the leader rewrites
+                // `_skeleton_index.json` from ITS OWN cache, where these tasks are
+                // still `failed` (measured 28/10, ai-01 c.6460088328: [EXECUTED]
+                // reset=100, only 1 retried, retry_count stuck at 3-6). The resets
+                // are therefore ALSO persisted as requests in the machine-local
+                // request file (same transport and same request type as g3 index
+                // requests): the leader's tick consumes each one, resets its OWN
+                // cache copy, persists, and enqueues the retry. When the requests
+                // cannot be persisted, the receipt reports `not_persisted`
+                // instead of a clean [EXECUTED].
+                let notPersisted = 0;
+                let persisted = 0;
+                let persistenceMode: 'request-file' | 'unavailable' = 'request-file';
+                if (!isDryRun && resetIds.length > 0) {
+                    if (!indexingState) {
+                        // No host-process state: no machineId to key the request
+                        // file, no leadership to fall back on — the reset lives in
+                        // this process's memory only, exactly the g6 defect.
+                        persistenceMode = 'unavailable';
+                        notPersisted = resetIds.length;
+                    } else {
+                        try {
+                            const { requestQueuedIndexBatch } = await import('../../services/background-services.js');
+                            const machineId = indexingState.machineId ?? 'local';
+                            await requestQueuedIndexBatch(resetIds, machineId);
+                            persisted = resetIds.length;
+                        } catch {
+                            notPersisted = resetIds.length;
+                        }
                     }
                 }
 
                 const permanentCandidateCount = candidates.filter(c => c.is_permanent).length;
                 const transientCandidateCount = candidates.length - permanentCandidateCount;
-                const mode = isDryRun ? '[DRY RUN]' : '[EXECUTED]';
+                const mode = isDryRun ? '[DRY RUN]' : (notPersisted > 0 ? '[EXECUTED — NOT PERSISTED]' : '[EXECUTED]');
                 const summary = isDryRun
                     ? `${mode} ${candidates.length} candidats détectés pour cleanup_failed (error_class=${errorClassFilter}, max=${maxCleanup}, ${permanentCandidateCount} permanent / ${transientCandidateCount} transient). Lancez avec dry_run=false pour exécuter.`
-                    : `${mode} ${reset}/${candidates.length} squelettes réinitialisés (${deadLettered} dead-letterés permanent, ${resetForRetry} reset pour retry transient) (error_class=${errorClassFilter}).`;
+                    : `${mode} ${reset}/${candidates.length} squelettes réinitialisés (${deadLettered} dead-letterés permanent, ${resetForRetry} reset pour retry transient) (error_class=${errorClassFilter})${notPersisted > 0 ? ` — ⚠️ ${notPersisted} reset NON persistés (fichier de requêtes indisponible) : le leader ne les verra pas.` : ` — ${persisted} reset+retry délégués au leader (consommés à son prochain tick, ≤ 5 min).`}`;
 
                 return {
-                    isError: false,
+                    isError: !isDryRun && notPersisted > 0,
                     content: [{
                         type: 'text',
                         text: JSON.stringify({
@@ -1859,7 +1910,10 @@ export async function handleRooSyncIndexing(
                             reset_count: isDryRun ? 0 : reset,
                             dead_lettered_count: isDryRun ? 0 : deadLettered,
                             reset_for_retry_count: isDryRun ? 0 : resetForRetry,
-                            reset_task_ids: isDryRun ? undefined : (resetIds.length > 0 ? resetIds : undefined),
+                            persistence_mode: isDryRun ? undefined : persistenceMode,
+                            persisted: isDryRun ? undefined : persisted,
+                            not_persisted: isDryRun ? undefined : notPersisted,
+                            reset_task_ids: isDryRun ? undefined : (locallyResetIds.length > 0 ? locallyResetIds : undefined),
                             note: errorClassFilter === 'auth_failed' && !isDryRun
                                 ? 'auth_failed tasks were reset. They will re-fail until the API key is fixed — rotate the key BEFORE running cleanup_failed error_class=auth_failed to avoid churn.'
                                 : undefined,

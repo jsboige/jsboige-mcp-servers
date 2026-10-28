@@ -251,7 +251,10 @@ export class IndexingDecisionService {
         if (!skeleton.metadata) return;
         if (skeleton.metadata.indexingState) {
             skeleton.metadata.indexingState = {
-                indexVersion: this.indexVersion
+                indexVersion: this.indexVersion,
+                // #4352 g6b: the reset must be provably newer than a stale
+                // writer's `failed` — see saveSkeletonIndex's read-modify-write.
+                lastResetAt: new Date().toISOString()
             };
         }
         if (skeleton.metadata.qdrantIndexedAt) {

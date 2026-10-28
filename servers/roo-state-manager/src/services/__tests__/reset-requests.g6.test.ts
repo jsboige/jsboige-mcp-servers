@@ -1,0 +1,349 @@
+/**
+ * #4352 g6 — delegated resets must reach the leader (extended, c.6460303351).
+ *
+ * Measured defect (ai-01, 28/10, c.6460088328): a cleanup_failed reset lived
+ * only in the memory of the process that ran it. `saveSkeletonToDisk` returns
+ * silently for claude-* skeletons (guard #1325 — header-only, no per-task
+ * file), and the leader rewrites `_skeleton_index.json` from ITS OWN cache,
+ * where the task is still `failed`. The requeue of 01:43Z reported
+ * `[EXECUTED] reset=100`; only 1 of 100 was retried, retry_count stayed 3-6.
+ *
+ * Extension (c.6460303351): the DELEGATED INDEX path had the same hole. A
+ * follower `index` on a failed session consumed the request and enqueued the
+ * task, but the leader's decision skips every `failed` task
+ * (indexing-decision.ts:72-77) — 6/6 sessions still `failed` 15 min later.
+ *
+ * The fix rides the g3 transport with ONE request type: the leader's tick
+ * consumes each request, resets ITS OWN cache copy, persists the reset into
+ * `_skeleton_index.json` (direct saveSkeletonIndex — the refresh-path save is
+ * conditional on updatedCount>0 and cannot be waited on), lifts ITS OWN
+ * dead-letter pin, and only then enqueues. `index` from a follower and
+ * `cleanup_failed` use the same request type.
+ *
+ * This test runs the REAL follower→leader path against real files — no mocked
+ * saveSkeletonCallback, no mocked request primitives — and asserts the END
+ * STATE the dispatch asked for: the leader's cache is reset, the pin is
+ * lifted, the task is enqueued, the index file on disk carries the reset.
+ */
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import {
+    getIndexRequestsPath,
+    requestQueuedIndex,
+    requestQueuedIndexBatch,
+    hasPendingIndexRequests,
+    consumePendingIndexRequests,
+    saveSkeletonIndex,
+} from '../background-services.js';
+
+// The leader-side reset persists via the REAL saveSkeletonIndex. Point the
+// storage detector at a per-run tmpdir so the test (a) never touches this
+// machine's real _skeleton_index.json, and (b) can assert the index file
+// content itself — the end of the chain the defect broke.
+const TEST_DIR = fs.mkdtempSync(path.join(os.tmpdir(), `g6-reset-${process.pid}-`));
+vi.mock('../../utils/roo-storage-detector.js', () => ({
+    RooStorageDetector: {
+        detectStorageLocations: async () => [TEST_DIR],
+    },
+}));
+
+// Unique per run → no residue from a previous run, no cross-run interference.
+const MACHINE_ID = `g6-test-${process.pid}`;
+
+const failedSkeleton = (taskId: string) => ({
+    taskId,
+    metadata: {
+        indexingState: {
+            indexStatus: 'failed',
+            indexError: 'Indexing timeout after 300000ms — session too large',
+            errorClass: 'embedding_timeout',
+            indexRetryCount: 6,
+            lastErrorAt: '2026-10-25T15:47:00.345Z',
+        },
+    },
+    sequence: [],
+});
+
+const leaderState = () => ({
+    machineId: MACHINE_ID,
+    conversationCache: new Map<string, any>([
+        ['big-1', failedSkeleton('big-1')],
+        ['unrelated', failedSkeleton('unrelated')],
+    ]),
+    qdrantIndexQueue: new Set<string>(),
+    deadLetterQueue: new Set<string>(['big-1', 'other']),
+    deadLetterDetails: new Map([
+        ['big-1', { taskId: 'big-1', error: 'embedding timeout', errorClass: 'embedding_timeout', retryCount: 6 }],
+        ['other', { taskId: 'other', error: 'x', errorClass: 'unknown', retryCount: 3 }],
+    ]),
+});
+
+describe('#4352 g6 — delegated reset+requeue via the request file (follower → leader)', () => {
+    let requestsPath: string;
+
+    beforeEach(async () => {
+        requestsPath = await getIndexRequestsPath(MACHINE_ID);
+        await fs.promises.unlink(requestsPath).catch(() => {});
+    });
+
+    afterEach(async () => {
+        await fs.promises.unlink(requestsPath).catch(() => {});
+        const dir = path.dirname(requestsPath);
+        const base = path.basename(requestsPath);
+        for (const f of await fs.promises.readdir(dir)) {
+            if (f.startsWith(`${base}.consuming-`)) {
+                await fs.promises.unlink(path.join(dir, f)).catch(() => {});
+            }
+        }
+    });
+
+    test('END STATE: leader cache reset, pin lifted, enqueued, reset persisted into _skeleton_index.json', async () => {
+        // 1. Follower (another process) persists the request — the batch
+        //    flavour one cleanup_failed actually uses.
+        await requestQueuedIndexBatch(['big-1'], MACHINE_ID);
+        expect(await hasPendingIndexRequests(MACHINE_ID)).toBe(true);
+
+        // 2. Leader tick consumes.
+        const state = leaderState();
+        const consumed = await consumePendingIndexRequests(state);
+
+        expect(consumed).toEqual(['big-1']);
+        // Leader's OWN cache copy is reset: no status, no error, no retry count.
+        const reset = (state.conversationCache.get('big-1') as any).metadata.indexingState;
+        expect(reset.indexStatus).toBeUndefined();
+        expect(reset.indexError).toBeUndefined();
+        expect(reset.indexRetryCount).toBeUndefined();
+        // The pin is lifted on the leader; the unrelated one survives.
+        expect(state.deadLetterQueue.has('big-1')).toBe(false);
+        expect(state.deadLetterDetails.has('big-1')).toBe(false);
+        expect(state.deadLetterQueue.has('other')).toBe(true);
+        // Reset BEFORE enqueue: without the reset, the leader's decision drops
+        // the task as `failed` (indexing-decision.ts:72-77) — the hole g6b
+        // measured (6/6 sessions still failed 15 min after a delegated index).
+        expect(state.qdrantIndexQueue.has('big-1')).toBe(true);
+        expect(state.qdrantIndexQueue.size).toBe(1);
+        // The request file is gone.
+        expect(await hasPendingIndexRequests(MACHINE_ID)).toBe(false);
+
+        // 3. The reset reached `_skeleton_index.json` — the leader's cache is
+        //    what gets rewritten there, and it now carries the reset. The save
+        //    is fire-and-forget inside the consumer, so wait briefly for it.
+        const indexPath = path.join(TEST_DIR, 'tasks', '.skeletons', '_skeleton_index.json');
+        await vi.waitFor(async () => {
+            const raw = await fs.promises.readFile(indexPath, 'utf8');
+            const index = JSON.parse(raw);
+            const entry = index.entries.find((e: any) => e.taskId === 'big-1');
+            expect(entry).toBeDefined();
+            expect(entry.metadata.indexingState.indexStatus).toBeUndefined();
+            expect(entry.metadata.indexingState.indexRetryCount).toBeUndefined();
+        });
+    });
+
+    test('a line for a task ALREADY healthy (no indexingState) is a plain requeue', async () => {
+        const state = {
+            ...leaderState(),
+            conversationCache: new Map<string, any>([['clean-1', { taskId: 'clean-1', metadata: {}, sequence: [] }]]),
+        };
+        await requestQueuedIndex('clean-1', MACHINE_ID);
+
+        const consumed = await consumePendingIndexRequests(state);
+
+        expect(consumed).toEqual(['clean-1']);
+        expect(state.qdrantIndexQueue.has('clean-1')).toBe(true);
+        // No indexingState → nothing to reset, and the (absent) state must not
+        // be invented.
+        expect((state.conversationCache.get('clean-1') as any).metadata.indexingState).toBeUndefined();
+    });
+
+    test('a request for a task absent from the leader cache is KEPT (bounded), not lost', async () => {
+        await requestQueuedIndex('ghost-1', MACHINE_ID);
+
+        const state = leaderState();
+        const consumed = await consumePendingIndexRequests(state);
+
+        // #4352 g6b (ms#1546 review): the worker skips absent tasks with no
+        // retry, so consuming the line here would lose it for good.
+        expect(consumed).toEqual([]);
+        expect(state.qdrantIndexQueue.size).toBe(0);
+        expect(state.deadLetterQueue.has('big-1')).toBe(true); // unrelated pin intact
+        // The line survives, stamped with one attempt.
+        expect(await hasPendingIndexRequests(MACHINE_ID)).toBe(true);
+        const lines = (await fs.promises.readFile(requestsPath, 'utf8')).trim().split('\n');
+        expect(lines).toHaveLength(1);
+        const parsed = JSON.parse(lines[0]);
+        expect(parsed.taskId).toBe('ghost-1');
+        expect(parsed.attempts).toBe(1);
+    });
+
+    test('a delegated index on a healthy task enqueues WITHOUT wiping its success state', async () => {
+        const state = {
+            ...leaderState(),
+            conversationCache: new Map<string, any>([['ok-1', {
+                taskId: 'ok-1',
+                metadata: {
+                    indexingState: {
+                        indexStatus: 'success',
+                        lastIndexedAt: '2026-10-27T09:00:00.000Z',
+                        lastIndexAttempt: '2026-10-27T09:00:00.000Z',
+                    },
+                },
+                sequence: [],
+            }]]),
+        };
+        await requestQueuedIndex('ok-1', MACHINE_ID);
+
+        const consumed = await consumePendingIndexRequests(state);
+
+        expect(consumed).toEqual(['ok-1']);
+        expect(state.qdrantIndexQueue.has('ok-1')).toBe(true);
+        // #4352 g6b (ms#1546 review): reset only failed/retry.
+        const st = (state.conversationCache.get('ok-1') as any).metadata.indexingState;
+        expect(st.indexStatus).toBe('success');
+        expect(st.lastIndexedAt).toBe('2026-10-27T09:00:00.000Z');
+        expect(st.lastResetAt).toBeUndefined();
+    });
+
+    test('TWO WRITERS: a stale cache saving AFTER the reset must not undo it on disk', async () => {
+        // 1. Cache A (the indexing leader) consumes the reset and persists it.
+        await requestQueuedIndexBatch(['big-1'], MACHINE_ID);
+        const cacheA = leaderState();
+        await consumePendingIndexRequests(cacheA);
+
+        const indexPath = path.join(TEST_DIR, 'tasks', '.skeletons', '_skeleton_index.json');
+        await vi.waitFor(async () => {
+            const index = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+            const entry = index.entries.find((e: any) => e.taskId === 'big-1');
+            expect(entry?.metadata?.indexingState?.indexStatus).toBeUndefined();
+        });
+
+        // 2. Cache B (the Worker A leader) still holds the OLD failed state and
+        //    saves the whole file from its own cache — the exact second-writer
+        //    clobber measured on ai-01 (03:47:48Z: 6/6 back to failed).
+        const staleB = new Map<string, any>([
+            ['big-1', {
+                taskId: 'big-1',
+                metadata: {
+                    indexingState: {
+                        indexStatus: 'failed',
+                        indexError: 'Indexing timeout after 300000ms',
+                        errorClass: 'embedding_timeout',
+                        indexRetryCount: 6,
+                        lastIndexAttempt: '2026-10-25T10:00:00.000Z',
+                    },
+                },
+                sequence: [],
+            }],
+        ]);
+        await saveSkeletonIndex(staleB);
+
+        // 3. The reset survived: the on-disk state is newer than B's cache.
+        const after = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+        const kept = after.entries.find((e: any) => e.taskId === 'big-1');
+        expect(kept).toBeDefined();
+        expect(kept.metadata.indexingState.indexStatus).toBeUndefined();
+        expect(kept.metadata.indexingState.indexRetryCount).toBeUndefined();
+        expect(typeof kept.metadata.indexingState.lastResetAt).toBe('string');
+    });
+
+    test('TWO WRITERS (ms#1546 r2): a stale FAILED with a FUTURE nextReindexAfter must not outrank the reset', async () => {
+        // Review 5680632352: a failure spreads the previous state
+        // (indexing-decision.ts:219-234), so a stale `failed` carries the
+        // `nextReindexAfter` of the last success — a deadline in the FUTURE.
+        // Counting it let the stale entry outrank `lastResetAt: now`, and the
+        // reset was undone on the next Worker A save (the exact shape of the
+        // 03:47Z incident on ai-01's live index).
+        await requestQueuedIndexBatch(['big-1'], MACHINE_ID);
+        const cacheA = leaderState();
+        await consumePendingIndexRequests(cacheA);
+
+        const indexPath = path.join(TEST_DIR, 'tasks', '.skeletons', '_skeleton_index.json');
+        await vi.waitFor(async () => {
+            const index = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+            const entry = index.entries.find((e: any) => e.taskId === 'big-1');
+            expect(entry?.metadata?.indexingState?.indexStatus).toBeUndefined();
+        });
+
+        const staleB = new Map<string, any>([
+            ['big-1', {
+                taskId: 'big-1',
+                metadata: {
+                    indexingState: {
+                        indexStatus: 'failed',
+                        indexError: 'Indexing timeout after 300000ms',
+                        errorClass: 'embedding_timeout',
+                        indexRetryCount: 6,
+                        lastIndexAttempt: '2026-10-25T10:00:00.000Z',
+                        // Deadline inherited from the last success: 6 days in the FUTURE.
+                        nextReindexAfter: new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString(),
+                    },
+                },
+                sequence: [],
+            }],
+        ]);
+        await saveSkeletonIndex(staleB);
+
+        const after = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+        const kept = after.entries.find((e: any) => e.taskId === 'big-1');
+        expect(kept.metadata.indexingState.indexStatus).toBeUndefined();
+        expect(typeof kept.metadata.indexingState.lastResetAt).toBe('string');
+    });
+
+    test('TWO WRITERS (ms#1546 r2): a stale SUCCESS with a FUTURE nextReindexAfter must not undo a collection reset', async () => {
+        // Review 5680632352: 727/946 successes on ai-01's live index carry a
+        // future `nextReindexAfter`, so reset_collection's `lastResetAt: now`
+        // stamp was inert for them — the next Worker A save restored the
+        // success state from its own cache. The disk side here is exactly what
+        // reset_collection leaves behind: `{ indexVersion, lastResetAt }`.
+        const indexPath = path.join(TEST_DIR, 'tasks', '.skeletons', '_skeleton_index.json');
+        const resetCache = new Map<string, any>([
+            ['big-1', {
+                taskId: 'big-1',
+                metadata: {
+                    indexingState: {
+                        indexVersion: '1.0',
+                        lastResetAt: new Date().toISOString(),
+                    },
+                },
+                sequence: [],
+            }],
+        ]);
+        await saveSkeletonIndex(resetCache);
+
+        const staleB = new Map<string, any>([
+            ['big-1', {
+                taskId: 'big-1',
+                metadata: {
+                    indexingState: {
+                        indexStatus: 'success',
+                        lastIndexedAt: '2026-10-27T09:00:00.000Z',
+                        lastIndexAttempt: '2026-10-27T09:00:00.000Z',
+                        // Stamped at the last success (yesterday): +7d is still future.
+                        nextReindexAfter: new Date(Date.now() + 6 * 24 * 3600 * 1000).toISOString(),
+                    },
+                },
+                sequence: [],
+            }],
+        ]);
+        await saveSkeletonIndex(staleB);
+
+        const after = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+        const kept = after.entries.find((e: any) => e.taskId === 'big-1');
+        expect(kept.metadata.indexingState.indexStatus).toBeUndefined();
+        expect(typeof kept.metadata.indexingState.lastResetAt).toBe('string');
+    });
+
+    test('the batch flavour writes N lines in ONE append (cleanup_failed of 100 must not do 100 writes)', async () => {
+        await requestQueuedIndexBatch(['r-1', 'r-2', 'r-3'], MACHINE_ID);
+        const content = await fs.promises.readFile(requestsPath, 'utf8');
+        const lines = content.trim().split('\n');
+        expect(lines).toHaveLength(3);
+        for (const line of lines) {
+            const parsed = JSON.parse(line);
+            expect(typeof parsed.taskId).toBe('string');
+            expect(typeof parsed.requestedAt).toBe('number');
+            expect(typeof parsed.requestedByPid).toBe('number');
+        }
+    });
+});
