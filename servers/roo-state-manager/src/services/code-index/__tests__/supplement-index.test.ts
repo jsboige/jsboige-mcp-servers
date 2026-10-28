@@ -606,6 +606,7 @@ describe('runSupplementIndex (#4352 a3)', () => {
 		});
 		expect(report.batches_failed).toBe(1);
 		expect(report.points_written).toBe(0);
+		expect(report.status).toBe('failed');
 		expect(report.warnings.join('\n')).toMatch(/misaligned|returned \d+ vectors/);
 		const written = client.pointsOf(report.collection).filter(([id]) => id !== SUPPLEMENT_SENTINEL_ID);
 		expect(written).toHaveLength(0);
@@ -631,13 +632,42 @@ describe('runSupplementIndex (#4352 a3)', () => {
 			embed: flakyEmbed, dryRun: false, batchSize: 1, throttleMs: 0,
 		});
 
-		expect(report.status).toBe('success');
+		expect(report.status).toBe('partial');
 		expect(report.batches_failed).toBe(1);
 		// the batches after the failed one ran: a single 503 used to discard them all
 		expect(report.batches).toBeGreaterThanOrEqual(2);
 		expect(report.points_written).toBeGreaterThan(0);
 		expect(report.chunks_embedded).toBe(report.points_written);
 		expect(report.warnings.join('\n')).toMatch(/batch 2\/\d+ failed \(embedding API 503/);
+	});
+
+	test('a run where EVERY batch fails reports failed, not success (review ms#1545 CHANGES)', async () => {
+		// The masked error the review cited: batches_failed === batches, zero
+		// points written — and the run used to answer status:'success', which the
+		// tool layer relayed as isError:false. A caller reading one field saw a
+		// healthy run over a total failure.
+		const dir = makeRepo();
+		for (const name of ['a.ps1', 'b.ps1', 'c.ps1']) {
+			writeFileSync(join(dir, name), `# ${name}\n` + 'Write-Host "step one"\n'.repeat(60));
+		}
+		execFileSync('git', ['-C', dir, 'add', '-A'], { stdio: 'ignore' });
+
+		const client = new FakeQdrant({ 'ws-served': { points: 100, size: 4 } });
+		const deadEmbed = async () => {
+			throw new Error('embedding API 503 — upstream unavailable');
+		};
+
+		const report = await runSupplementIndex({
+			client, workspaceRoot: dir, writer: 'po-2023:fixture', templateCollection: 'ws-served',
+			embed: deadEmbed, dryRun: false, batchSize: 1, throttleMs: 0,
+		});
+
+		expect(report.batches).toBe(0);
+		// every batch that ran, failed — the exact count follows chunking, not intent
+		expect(report.batches_failed).toBeGreaterThan(0);
+		expect(report.points_written).toBe(0);
+		expect(report.status).toBe('failed');
+		expect(report.warnings.join('\n')).toMatch(/batch 1\/\d+ failed \(embedding API 503/);
 	});
 
 	// ── review ms#1514, fix 2: the embedding-space fingerprint ────────────────

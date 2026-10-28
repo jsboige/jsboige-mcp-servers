@@ -674,7 +674,13 @@ export async function searchSupplement(
 // ── Index run ────────────────────────────────────────────────────────────────
 
 export interface SupplementIndexReport {
-	status: 'success' | 'dry_run';
+	/**
+	 * What actually landed (review ms#1545 CHANGES): 'success' = every batch that
+	 * ran succeeded (including a run with nothing to write); 'partial' = some
+	 * batches failed, some points are in; 'failed' = batches ran, none landed;
+	 * 'dry_run' = planned only.
+	 */
+	status: 'success' | 'partial' | 'failed' | 'dry_run';
 	collection: string;
 	remote: string;
 	writer: string;
@@ -1020,6 +1026,14 @@ export async function runSupplementIndex(deps: SupplementIndexDeps): Promise<Sup
 	}
 	report.points_written = written;
 	report.files_indexed = filesWritten.size;
+	// Review ms#1545 CHANGES: a run whose batches ALL failed used to report
+	// status:'success' with zero points — a total failure read as a healthy run.
+	// 'failed' requires batches to have run and failed; a run with nothing to
+	// write (all files unchanged, no pending chunks) keeps 'success': no batch
+	// failed, nothing is missing.
+	if (report.batches_failed > 0) {
+		report.status = report.points_written > 0 ? 'partial' : 'failed';
+	}
 	report.elapsed_ms = Date.now() - startedAt;
 	return report;
 }
