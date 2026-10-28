@@ -43,8 +43,13 @@ describe('#4131 (A) — default-deny : le `.env` du siège n\'atteint plus un fi
     // Booleans only — NEVER the values themselves: a leaked UNIFIED_STORE_PG_URL
     // is a live connection string with its password, and an assertion diff would
     // print it straight into the test output.
+    //
+    // Review ms#1559 (ai-01, 28/10) : `?? ''` laissait passer une clé ABSENTE —
+    // c'est-à-dire l'ancien défaut #2957 (`delete`), celui qu'applyEnvFileForNonHostKeys
+    // re-remplit avec la valeur RÉELLE du siège. Le pin doit être PRÉSENTE et VIDE :
+    // une clé absente rougit le fil trip même en forme CI, sans `.env` pour la remplir.
     const stillPinned = Object.fromEntries(
-      PINNED_TEST_ENV_KEYS.map((key) => [key, (process.env[key] ?? '') === ''])
+      PINNED_TEST_ENV_KEYS.map((key) => [key, key in process.env && process.env[key] === ''])
     );
     const expected = Object.fromEntries(PINNED_TEST_ENV_KEYS.map((key) => [key, true]));
     expect(stillPinned).toEqual(expected);
@@ -77,8 +82,13 @@ describe('#4131 (A) — garde de dérive : la liste épinglée couvre les gates'
 
     // La prose ne lit aucun drapeau : sans ce retrait, un nom cité dans un
     // commentaire (« NOT GATED HERE — …CONVERSATION_READ_PG ») serait exigé
-    // épinglé et la garde mordrait un commentaire au lieu du code.
-    const code = source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
+    // épinglé et la garde mordrait un commentaire au lieu du code. Les trois
+    // formes y passent : blocs /* */, `//` en début de ligne, et `//` en fin de
+    // ligne (🟡2 de la revue) — la classe `[^:]` épargne les `://` de protocole.
+    const code = source
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/^\s*\/\/.*$/gm, '')
+      .replace(/([^:])\/\/.*$/gm, '$1');
     const gateFlags = [...new Set(code.match(/UNIFIED_STORE_[A-Z0-9_]+/g) ?? [])].sort();
 
     // Contrôle de l'instrument AVANT le verdict : un parseur cassé rendrait un
