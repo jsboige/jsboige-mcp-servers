@@ -9,6 +9,7 @@ import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 import { formatErrorForResponse } from '../../utils/error-format.js';
+import type { IndexTaskStats } from '../../services/task-indexer/VectorIndexer.js';
 
 export interface IndexTaskSemanticArgs {
     task_id: string;
@@ -98,14 +99,46 @@ export const indexTaskSemanticTool = {
 
             console.log(`[DEBUG] Attempting to import indexTask from task-indexer.js`);
             const { indexTask } = await import('../../services/task-indexer.js');
+            const { describeIndexOutcome } = await import('../../services/task-indexer/VectorIndexer.js');
             console.log(`[DEBUG] Import successful, calling indexTask with taskId=${task_id}, taskPath=${taskPath}, source=${source}`);
-            const indexedPoints = await indexTask(task_id, taskPath, source);
+            // #4352 crit.4 (ai-01 queue 20261028g): the counters are collected by the
+            // run itself, so `0` stops being ambiguous. Before this, « Chunks indexés: 0 »
+            // covered four different situations — nothing extracted, nothing non-empty
+            // after split, everything already indexed for this task (ms#1557 dedup), or
+            // every embedding failed — and neither a human nor the crit.4 probe could
+            // tell them apart. Measured on ai-01 at 28/10 ~13:50Z: the probe read that
+            // 0 as an indexing FAILURE and exited 2 with nothing measured.
+            const stats: IndexTaskStats = {
+                chunksExtracted: 0,
+                subChunksBuilt: 0,
+                dedupSkipped: 0,
+                pointsIndexed: 0,
+                missingVectors: 0
+            };
+            const indexedPoints = await indexTask(task_id, taskPath, source, undefined, { stats });
             console.log(`[DEBUG] indexTask completed, returned ${indexedPoints.length} points`);
+
+            // The reason is emitted in BOTH forms on purpose: prose for the human
+            // reading the tool result, and an embedded JSON block for the probes and
+            // wrappers that need to assert on it (the crit.4 probe parses the JSON,
+            // with the Markdown path kept as a fallback for older servers).
+            const reason = describeIndexOutcome(stats);
+            const machineReadable = JSON.stringify({
+                success: true,
+                task_id,
+                source,
+                chunksExtracted: stats.chunksExtracted,
+                subChunksBuilt: stats.subChunksBuilt,
+                dedupSkipped: stats.dedupSkipped,
+                chunksIndexed: indexedPoints.length,
+                missingVectors: stats.missingVectors,
+                reason
+            });
 
             return {
                 content: [{
                     type: "text",
-                    text: `# Indexation sémantique terminée\n\n**Tâche:** ${task_id}\n**Source:** ${source}\n**Chemin:** ${taskPath}\n**Chunks indexés:** ${indexedPoints.length}\n\n**Variables d'env:**\n- EMBEDDING_API_KEY: ${embeddingKey ? 'SET' : 'MISSING'}\n- QDRANT_URL: ${qdrantUrl || 'MISSING'}\n- QDRANT_COLLECTION: ${qdrantCollection || 'MISSING'}`
+                    text: `# Indexation sémantique terminée\n\n**Tâche:** ${task_id}\n**Source:** ${source}\n**Chemin:** ${taskPath}\n**Chunks indexés:** ${indexedPoints.length}\n**Raison:** ${reason}\n**Chunks extraits:** ${stats.chunksExtracted}\n**Sous-chunks construits:** ${stats.subChunksBuilt}\n**Sous-chunks dédupliqués:** ${stats.dedupSkipped}\n\n**Variables d'env:**\n- EMBEDDING_API_KEY: ${embeddingKey ? 'SET' : 'MISSING'}\n- QDRANT_URL: ${qdrantUrl || 'MISSING'}\n- QDRANT_COLLECTION: ${qdrantCollection || 'MISSING'}\n\n\`\`\`json\n${machineReadable}\n\`\`\``
                 }]
             };
         } catch (error) {

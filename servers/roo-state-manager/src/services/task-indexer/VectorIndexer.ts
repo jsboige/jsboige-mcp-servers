@@ -1114,6 +1114,66 @@ async function embedBatch(
 export interface IndexTaskProgressOptions {
     signal?: AbortSignal;
     onProgress?: () => void;
+    /**
+     * #4352 crit.4 (ai-01 queue 20261028g): WHERE the sub-chunks went. An empty
+     * return value used to be the only signal a caller got, and it means four
+     * different things — nothing extracted, everything still empty after split,
+     * everything already indexed for this task (ms#1557 dedup), or every
+     * embedding failed. `**Chunks indexés:** 0` could not tell them apart, so
+     * neither the probe nor a human reading the answer could.
+     *
+     * Filled IN PLACE (the object is mutated, not returned): the counters are
+     * the run's own measurements and the caller owns the reference, so a throw
+     * still leaves the caller with what the attempt actually did.
+     */
+    stats?: IndexTaskStats;
+}
+
+/** Counters of one indexTask() attempt. See `IndexTaskProgressOptions.stats`. */
+export interface IndexTaskStats {
+    /** Chunks the extractor returned (0 = the session yielded nothing). */
+    chunksExtracted: number;
+    /** Non-empty sub-chunks built from them (after split, blanks dropped). */
+    subChunksBuilt: number;
+    /** Sub-chunks not embedded because Qdrant already held them (either dedup). */
+    dedupSkipped: number;
+    /** Points actually written to Qdrant in this attempt. */
+    pointsIndexed: number;
+    /** Sub-chunks that got no vector (embedding failure) — run fails when > 0. */
+    missingVectors: number;
+}
+
+function emptyStats(): IndexTaskStats {
+    return {
+        chunksExtracted: 0,
+        subChunksBuilt: 0,
+        dedupSkipped: 0,
+        pointsIndexed: 0,
+        missingVectors: 0
+    };
+}
+
+/**
+ * Human-readable reason for a pass that wrote nothing — the wording the tool
+ * embeds in its answer so `0` stops being ambiguous (#4352 crit.4).
+ */
+export function describeIndexOutcome(stats: IndexTaskStats): string {
+    if (stats.pointsIndexed > 0) {
+        return `${stats.pointsIndexed} point(s) écrit(s)`;
+    }
+    if (stats.missingVectors > 0) {
+        return `${stats.missingVectors} sous-chunk(s) sans vecteur — embeddings échoués`;
+    }
+    if (stats.chunksExtracted === 0) {
+        return "aucun chunk extrait de la session (fichier vide, illisible, ou format non reconnu)";
+    }
+    if (stats.subChunksBuilt === 0) {
+        return `${stats.chunksExtracted} chunk(s) extrait(s) mais aucun contenu non vide à indexer`;
+    }
+    if (stats.dedupSkipped >= stats.subChunksBuilt) {
+        return `tout était déjà indexé pour cette tâche (dédup) : ${stats.dedupSkipped}/${stats.subChunksBuilt} sous-chunk(s) écarté(s) avant embedding`;
+    }
+    return `aucun point écrit : ${stats.dedupSkipped}/${stats.subChunksBuilt} sous-chunk(s) dédupliqué(s)`;
 }
 
 /**
@@ -1157,6 +1217,15 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
     // failure mode the breaker exists for, never debited it.
     const embedFailures: EmbedFailures = { lastError: null, transport: false };
 
+    // #4352 crit.4: the run's own counters. When the caller handed us an object we
+    // RESET and mutate it, so a reused reference can never report a previous
+    // attempt's numbers — and a throw still leaves the caller holding what this
+    // attempt measured.
+    const stats: IndexTaskStats = options?.stats ?? emptyStats();
+    if (options?.stats) {
+        Object.assign(options.stats, emptyStats());
+    }
+
     try {
         // #4352 g5 (review ms#1548): fence at ENTRY as well. A signal already
         // aborted when the run starts must not pay for extraction and two preflight
@@ -1196,6 +1265,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             console.log(`No chunks found for task ${taskId}. Skipping.`);
             return [];
         }
+        stats.chunksExtracted = chunks.length;
         options?.onProgress?.(); // #4352 g5: extraction done — progress, not silence
 
         // #2825 (volet A / G2): no silent drop at the indexer stage. The old behavior
@@ -1227,11 +1297,15 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         // Phase B: #2018 Phase 2 — Pre-flight dedup by chunk_id (skip already-indexed chunks BEFORE embeddings)
         const preflight = await preflightDedupByChunkId(allSubChunks, options?.onProgress);
         let subChunksToEmbed = preflight.subChunks;
+        stats.subChunksBuilt = allSubChunks.length;
+        stats.dedupSkipped += allSubChunks.length - subChunksToEmbed.length;
 
         // Phase B2: #2369 — Pre-flight dedup by contentHash (catches split sub-chunks
         // with new UUIDs that bypassed chunk_id preflight but whose content already exists)
         if (subChunksToEmbed.length > 0) {
+            const beforeContentHashDedup = subChunksToEmbed.length;
             subChunksToEmbed = await preflightDedupByContentHash(subChunksToEmbed);
+            stats.dedupSkipped += beforeContentHashDedup - subChunksToEmbed.length;
         }
 
         // #2165: If the pre-flight dedup could not reach Qdrant, the "needs embedding"
@@ -1361,6 +1435,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                 if (deduplicated.length < pointsToIndex.length) {
                     console.log(`[#1985] Dedup: ${pointsToIndex.length - deduplicated.length}/${pointsToIndex.length} points already indexed, indexing ${deduplicated.length} new`);
                 }
+                stats.dedupSkipped += pointsToIndex.length - deduplicated.length;
                 pointsToIndex = deduplicated;
             }
 
@@ -1386,6 +1461,10 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         // attempt embed only the missing sub-chunks. When `embedFailures.transport` is set
         // this throw carries it (`transport: true`) — the g5 follow-up case is the fence
         // firing BEFORE this line and hiding that signal.
+        // #4352 crit.4: record the counters BEFORE the throw — the caller's stats object
+        // must describe a failed attempt too, not only a successful one.
+        stats.pointsIndexed = indexedPoints.length;
+        stats.missingVectors = missingVectors;
         if (missingVectors > 0) {
             throw new GenericError(
                 `Embedding incomplete for task ${taskId}: ${missingVectors}/${subChunksToEmbed.length} sub-chunks without a vector ` +
