@@ -133,9 +133,22 @@ export function loadRooSyncConfig(): RooSyncConfig {
 
   const resolvedPath = resolve(sharedPath);
   if (!existsSync(resolvedPath)) {
-    throw new RooSyncConfigError(
-      `Le chemin ROOSYNC_SHARED_PATH n'existe pas: ${resolvedPath}`
-    );
+    // #4131 Phase D — le bloquant du 03/11 : l'absence du montage GDrive ne
+    // coupe plus le service QUAND le store PG est configuré. Mesuré 28/10
+    // (table Phase D, ligne 10) : ce throw couchait 18 outils via
+    // getRooSyncService(), et le registre dégradait en silence derrière.
+    // Le défaut reste fail-closed : sans PG, l'absence du chemin reste une
+    // erreur de configuration bruyante, inchangée.
+    if (process.env.UNIFIED_STORE_PG_URL && process.env.UNIFIED_STORE_PG_URL.trim().length > 0) {
+      logger.warn(
+        `[config] chemin partagé absent (${resolvedPath}) — mode PG-primaire, ` +
+        'le service démarre sans GDrive (#4131 Phase D)'
+      );
+    } else {
+      throw new RooSyncConfigError(
+        `Le chemin ROOSYNC_SHARED_PATH n'existe pas: ${resolvedPath}`
+      );
+    }
   }
 
   // 3. Valider machineId avec validation renforcée
