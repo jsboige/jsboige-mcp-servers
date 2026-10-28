@@ -69,6 +69,18 @@ vi.mock('../task-archiver/index.js', () => ({
 	}
 }));
 
+// #4151 S2 — hydrateTier3Entry demande le corps au store PG AVANT l'archive
+// G:. Import dynamique intercepté par vi.mock ; défaut null = siège sans PG
+// (loadPgConversationSkeleton rend null avant toute requête réelle), le
+// chemin G: reste alors l'unique source, byte pour byte.
+const { mockLoadPgConversationSkeleton } = vi.hoisted(() => ({
+	mockLoadPgConversationSkeleton: vi.fn((): Promise<null> => Promise.resolve(null)),
+}));
+
+vi.mock('../unified-store/conversation-list-store.js', () => ({
+	loadPgConversationSkeleton: mockLoadPgConversationSkeleton,
+}));
+
 import { SkeletonCacheService } from '../skeleton-cache.service.js';
 
 describe('SkeletonCacheService', () => {
@@ -902,6 +914,59 @@ describe('SkeletonCacheService', () => {
 			expect(cache.get('arch-1')!.metadata.hydrated).toBe(false);
 		});
 
+		test('#4151 S2 — PG sert le corps : hydraté depuis PG, archive G: JAMAIS lue', async () => {
+			setupArchiveHost([{ taskId: 't-pg', machineId: LOCAL_MACHINE, content: 'gdrive-body' }]);
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+			await service.getCache();
+
+			mockLoadPgConversationSkeleton.mockResolvedValueOnce({
+				taskId: 't-pg',
+				metadata: { messageCount: 7 },
+				sequence: [{ role: 'user', content: 'pg-body', timestamp: '2026-10-01T00:00:00Z', isTruncated: false }],
+			} as any);
+
+			const readsBefore = mockReadArchivedTaskFromPath.mock.calls.length;
+			expect(await service.ensureConversationHydrated('t-pg')).toBe(true);
+			const cache = await service.getCache();
+			expect(cache.get('t-pg')!.metadata.hydrated).toBe(true);
+			expect(cache.get('t-pg')!.sequence[0]).toMatchObject({ role: 'user', content: 'pg-body' });
+			// Le messageCount du store fait foi sur le repli du stub.
+			expect(cache.get('t-pg')!.metadata.messageCount).toBe(7);
+			// Provenance du corps (ms#1549 review) : 'gdrive-archive' comme
+			// dataSource serait un mensonge — le corps vient du store PG.
+			expect(cache.get('t-pg')!.metadata.hydratedFrom).toBe('pg');
+			expect(cache.get('t-pg')!.metadata.dataSource).toBe('gdrive-archive'); // discriminant de tier inchangé
+			// G: pas lu pour ce corps : c'est le contrat S2 (lazy G:).
+			expect(mockReadArchivedTaskFromPath.mock.calls.length).toBe(readsBefore);
+		});
+
+		test('#4151 S2 — PG ne sert pas (null) : repli archive G: inchangé', async () => {
+			setupArchiveHost([{ taskId: 't-gd', machineId: LOCAL_MACHINE, content: 'needle-in-archive' }]);
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+			await service.getCache();
+
+			mockLoadPgConversationSkeleton.mockResolvedValueOnce(null);
+			expect(await service.ensureConversationHydrated('t-gd')).toBe(true);
+			const cache = await service.getCache();
+			expect(cache.get('t-gd')!.sequence[0]).toMatchObject({ role: 'user', content: 'needle-in-archive' });
+			expect(cache.get('t-gd')!.metadata.hydratedFrom).toBe('gdrive');
+			expect(mockReadArchivedTaskFromPath).toHaveBeenCalled();
+		});
+
+		test('#4151 S2 — erreur PG : le repli G: absorbe (jamais un échec silencieux en true)', async () => {
+			setupArchiveHost([{ taskId: 't-err', machineId: LOCAL_MACHINE, content: 'gdrive-body' }]);
+			SkeletonCacheService.configure({ enableArchiveTier: true });
+			const service = SkeletonCacheService.getInstance();
+			await service.getCache();
+
+			mockLoadPgConversationSkeleton.mockRejectedValueOnce(new Error('pool exhausted'));
+			expect(await service.ensureConversationHydrated('t-err')).toBe(true);
+			const cache = await service.getCache();
+			expect(cache.get('t-err')!.sequence[0]).toMatchObject({ role: 'user', content: 'gdrive-body' });
+		});
+
 		test('tier3KnowsMachine — case-insensitive match, unknown machine → false', async () => {
 			setupArchiveHost([{ taskId: 't1', machineId: 'myia-web1' }]);
 			SkeletonCacheService.configure({ enableArchiveTier: true });
@@ -933,6 +998,9 @@ describe('SkeletonCacheService', () => {
 			// ~1,4 Mo > 1 Mo → local-big (le moins récent) est DÉSHYDRATÉ…
 			expect(cache.get('local-big')!.metadata.hydrated).toBe(false);
 			expect(cache.get('local-big')!.sequence).toEqual([]);
+			// La provenance décrit le corps présent : elle part avec lui (garde
+			// sanitiseur — un hydratedFrom orphelin dérive la signature snapshot).
+			expect(cache.get('local-big')!.metadata.hydratedFrom).toBeUndefined();
 			// …mais le STUB reste : l'entrée n'a pas quitté le cache.
 			expect(cache.get('local-big')!.metadata.dataSource).toBe('gdrive-archive');
 			expect(cache.get('web1-big')!.metadata.hydrated).toBe(true);

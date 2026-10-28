@@ -818,8 +818,12 @@ export class SkeletonCacheService {
                 if (this.cache.has(taskId)) continue;
                 if (stub.metadata.hydrated === true || (stub.sequence?.length ?? 0) > 0) {
                     // Invariant : le cache résident ne retient pas de corps au seed.
+                    // hydratedFrom part avec le corps : un stub déshydraté n'a plus
+                    // de provenance à revendiquer (sinon la signature du snapshot
+                    // dérive et force une réécriture à chaque passe).
                     stub.sequence = [];
                     stub.metadata.hydrated = false;
+                    delete stub.metadata.hydratedFrom;
                 }
                 this.cache.set(taskId, stub);
                 this.tier3Index.set(taskId, {
@@ -855,11 +859,14 @@ export class SkeletonCacheService {
             for (const skeleton of this.cache.values()) {
                 if ((skeleton as any).metadata?.dataSource !== 'gdrive-archive') continue;
                 if (skeleton.metadata?.hydrated === true || (skeleton.sequence?.length ?? 0) > 0) {
+                    // Même règle que le seed : hydratedFrom décrit le corps présent,
+                    // il est retiré avec lui pour garder la signature stable.
                     const sanitized = {
                         ...skeleton,
                         sequence: [],
                         metadata: { ...skeleton.metadata, hydrated: false },
                     } as ConversationSkeleton;
+                    delete sanitized.metadata.hydratedFrom;
                     stubs.push(sanitized);
                 } else {
                     stubs.push(skeleton);
@@ -924,6 +931,40 @@ export class SkeletonCacheService {
     private async hydrateTier3Entry(taskId: string): Promise<boolean> {
         const entry = this.cache.get(taskId);
         if (!entry) return false;
+
+        // #4151 S2 — ordre local → PG → G: paresseux : le corps est d'abord
+        // demandé au store PG (siège backfillé, même gate que le tier LIST lue
+        // à l'appel) ; l'archive G: n'est lue que pour une conversation que PG
+        // ne sert pas (antérieure au backfill, ou siège sans PG). Sur un siège
+        // sans URL PG, loadPgConversationSkeleton rend null avant toute requête
+        // et le chemin G: ci-dessous est inchangé, byte pour byte.
+        try {
+            const { loadPgConversationSkeleton } = await import('./unified-store/conversation-list-store.js');
+            const pgSkeleton = await loadPgConversationSkeleton(taskId);
+            if (pgSkeleton && pgSkeleton.sequence.length > 0) {
+                entry.sequence = pgSkeleton.sequence;
+                entry.metadata.hydrated = true;
+                // Provenance du corps (ms#1549 review) : dataSource reste le
+                // discriminant de tier ('gdrive-archive'), hydratedFrom dit quel
+                // store a réellement servi — 'gdrive-archive' serait un mensonge ici.
+                entry.metadata.hydratedFrom = 'pg';
+                // Le messageCount du store fait foi sur le repli du stub.
+                const pgMessageCount = pgSkeleton.metadata?.messageCount;
+                if (typeof pgMessageCount === 'number' && pgMessageCount > 0) {
+                    entry.metadata.messageCount = pgMessageCount;
+                }
+                const bodyBytes = JSON.stringify(entry.sequence).length;
+                this.tier3HydratedBytes.set(taskId, bodyBytes);
+                this.tier3HydratedTicks.set(taskId, ++this.tier3LruCounter);
+                this.enforceTier3Cap(taskId);
+                return true;
+            }
+        } catch (error) {
+            // PG indisponible pour CE corps : repli G: ci-dessous. Silencieux =
+            // invisible en diagnostic (ms#1549 review) — trace au niveau debug.
+            console.debug(`[SkeletonCacheService] Tier 3: PG body unavailable for ${taskId}, falling back to GDrive:`, error instanceof Error ? error.message : error);
+        }
+
         const filePath = entry.metadata?.archiveFilePath ?? this.tier3Index.get(taskId)?.filePath;
         if (!filePath) return false;
         try {
@@ -934,6 +975,7 @@ export class SkeletonCacheService {
             const skeleton = archiveToSkeleton(archive);
             entry.sequence = skeleton.sequence;
             entry.metadata.hydrated = true;
+            entry.metadata.hydratedFrom = 'gdrive';
             // La metadata du stub peut avoir un messageCount de repli ; celle
             // de l'archive complete fait foi.
             entry.metadata.messageCount = skeleton.metadata?.messageCount ?? entry.metadata.messageCount;
@@ -1014,6 +1056,7 @@ export class SkeletonCacheService {
         if (skeleton && skeleton.metadata?.dataSource === 'gdrive-archive') {
             skeleton.sequence = [];
             skeleton.metadata.hydrated = false;
+            delete skeleton.metadata.hydratedFrom;
         }
         this.tier3HydratedBytes.delete(taskId);
         this.tier3HydratedTicks.delete(taskId);

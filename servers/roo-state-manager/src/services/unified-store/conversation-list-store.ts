@@ -125,6 +125,31 @@ function stringOrUndefined(value: unknown): string | undefined {
 }
 
 /**
+ * #4151 risque 2 — epoch-1970 timestamps are junk, not dates.
+ *
+ * The store carries at least one `first_ts` at the epoch (backfill artefact),
+ * which would both anchor the date-coverage at 1970 and win no sort it should
+ * win. The value is FILTERED AT READ (never used as lastActivity/createdAt)
+ * and the row COUNTED, so the response can say how many were masked. Absent
+ * values (null/undefined/'') are not junk — the caller's coalescing owns them.
+ */
+const EPOCH_JUNK_CUTOFF_MS = Date.UTC(1971, 0, 1);
+
+export function isEpochJunkTimestamp(value: unknown): boolean {
+  if (value instanceof Date) return value.getTime() < EPOCH_JUNK_CUTOFF_MS;
+  if (typeof value !== 'string' || value.length === 0) return false;
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) return false;
+  return parsed < EPOCH_JUNK_CUTOFF_MS;
+}
+
+/** `value` unless it is an epoch-junk timestamp, else undefined (falls through the coalescing). */
+function notEpochJunk<T>(value: T | null | undefined): T | undefined {
+  if (value === null || value === undefined) return undefined;
+  return isEpochJunkTimestamp(value) ? undefined : (value as T);
+}
+
+/**
  * Map a PG row to the skeleton shape the list tool consumes.
  *
  * `sequence` is intentionally EMPTY: this tier lists conversations, it does not
@@ -140,9 +165,12 @@ function stringOrUndefined(value: unknown): string | undefined {
  */
 export function mapRowToSkeleton(row: ConversationListRow): ConversationSkeleton {
   const meta = row.metadata ?? {};
+  // #4151 risque 2 — epoch-junk timestamps never feed lastActivity/createdAt:
+  // the coalescing skips them exactly like an absent value.
   const lastActivity =
-    row.last_ts ?? stringOrUndefined(meta.lastActivity) ?? row.first_ts ?? row.ingested_at ?? '';
-  const createdAt = row.first_ts ?? stringOrUndefined(meta.createdAt) ?? lastActivity;
+    notEpochJunk(row.last_ts) ?? stringOrUndefined(meta.lastActivity)
+    ?? notEpochJunk(row.first_ts) ?? notEpochJunk(row.ingested_at) ?? '';
+  const createdAt = notEpochJunk(row.first_ts) ?? stringOrUndefined(meta.createdAt) ?? lastActivity;
   const label = resolveLabel(row);
   const source = harnessToSource(row.harness);
   const mode = stringOrUndefined(meta.mode);
@@ -180,6 +208,8 @@ export interface PgConversationTierResult {
   truncated: boolean;
   /** Skeletons contributed, i.e. rows whose taskId no earlier tier had produced. */
   skeletons: ConversationSkeleton[];
+  /** #4151 risque 2 — rows whose first_ts/last_ts was epoch-junk (masked at read, data intact). */
+  epoch1970_filtered: number;
   /** Present only when status === 'failed'. */
   error?: string;
 }
@@ -202,14 +232,16 @@ export async function loadPgConversationTier(
   if (!reader) {
     // Unreachable via the tool, which checks the gate first. Kept so the
     // function is safe to call directly.
-    return { status: 'ready', rows_read: 0, truncated: false, skeletons: [] };
+    return { status: 'ready', rows_read: 0, truncated: false, skeletons: [], epoch1970_filtered: 0 };
   }
 
   const limit = filters.limit ?? DEFAULT_PG_LIST_LIMIT;
   try {
     const rows = await reader.listConversations({ ...filters, limit });
     const skeletons: ConversationSkeleton[] = [];
+    let epoch1970Filtered = 0;
     for (const row of rows) {
+      if (isEpochJunkTimestamp(row.first_ts) || isEpochJunkTimestamp(row.last_ts)) epoch1970Filtered++;
       if (alreadyPresent.has(row.task_id)) continue;
       skeletons.push(mapRowToSkeleton(row));
     }
@@ -218,11 +250,12 @@ export async function loadPgConversationTier(
       rows_read: rows.length,
       truncated: rows.length >= limit,
       skeletons,
+      epoch1970_filtered: epoch1970Filtered,
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     getLogger().warn('[conversation-pg] read failed — rendering local tiers only', { error: message });
-    return { status: 'failed', rows_read: 0, truncated: false, skeletons: [], error: message };
+    return { status: 'failed', rows_read: 0, truncated: false, skeletons: [], epoch1970_filtered: 0, error: message };
   }
 }
 

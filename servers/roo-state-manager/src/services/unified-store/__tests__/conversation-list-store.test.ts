@@ -236,6 +236,31 @@ describe('mapRowToSkeleton', () => {
     expect(s.metadata.lastActivity).toBe('2026-01-01T00:00:00Z');
   });
 
+  // #4151 risque 2 — epoch-1970 timestamps are junk, not dates: they never
+  // feed lastActivity/createdAt (the coalescing skips them like an absent
+  // value), and the row itself survives untouched.
+  test('an epoch-1970 first_ts never anchors createdAt (masked at read, row kept)', () => {
+    const s = mapRowToSkeleton(row({ first_ts: '1970-01-01T00:00:00.000Z' }));
+    expect(s.metadata.createdAt).toBe('2026-09-06T03:37:15.817Z'); // falls to lastActivity
+    expect(s.metadata.lastActivity).toBe('2026-09-06T03:37:15.817Z');
+    expect(s.taskId).toBe('task-1'); // the row is NOT dropped
+  });
+
+  test('an epoch-1970 last_ts falls through to metadata.lastActivity, not to 1970', () => {
+    const s = mapRowToSkeleton(row({ last_ts: '1970-01-01T00:00:01.000Z', metadata: { lastActivity: '2026-02-02T00:00:00Z' } }));
+    expect(s.metadata.lastActivity).toBe('2026-02-02T00:00:00Z');
+  });
+
+  test('a Date object before 1971 is junk too (node-pg TIMESTAMPTZ hands back Dates)', () => {
+    const s = mapRowToSkeleton(row({ first_ts: new Date('1970-06-15T00:00:00Z') as unknown as string }));
+    expect(s.metadata.createdAt).toBe('2026-09-06T03:37:15.817Z');
+  });
+
+  test('a real 1971+ timestamp is NOT junk (cutoff is strictly pre-1971)', () => {
+    const s = mapRowToSkeleton(row({ first_ts: '1971-01-01T00:00:00.000Z' }));
+    expect(s.metadata.createdAt).toBe('1971-01-01T00:00:00.000Z');
+  });
+
   test.each([
     ['roo', 'roo'],
     ['zoo', 'zoo-code'],
@@ -297,6 +322,24 @@ describe('loadPgConversationTier', () => {
     expect(result.truncated).toBe(true);
   });
 
+  test('#4151 risque 2 — counts epoch-junk rows without dropping them', async () => {
+    mockListConversations.mockResolvedValue([
+      row({ task_id: 'clean' }),
+      row({ task_id: 'junk-first', first_ts: '1970-01-01T00:00:00.000Z' }),
+      row({ task_id: 'junk-last', last_ts: new Date('1970-03-03T00:00:00Z') as unknown as string }),
+    ]);
+    const result = await loadPgConversationTier({}, new Set());
+    expect(result.epoch1970_filtered).toBe(2);
+    // The junk rows are still contributed — masked at read, never dropped.
+    expect(result.skeletons.map(s => s.taskId)).toEqual(['clean', 'junk-first', 'junk-last']);
+  });
+
+  test('#4151 risque 2 — zero junk rows reports 0', async () => {
+    mockListConversations.mockResolvedValue([row({ task_id: 'a' })]);
+    const result = await loadPgConversationTier({}, new Set());
+    expect(result.epoch1970_filtered).toBe(0);
+  });
+
   test('does not report truncated below the cap', async () => {
     mockListConversations.mockResolvedValue([row({ task_id: 'a' })]);
     const result = await loadPgConversationTier({ limit: 2 }, new Set());
@@ -317,7 +360,7 @@ describe('loadPgConversationTier', () => {
     // the flag (the absence means "follow the default", i.e. ON with a URL).
     process.env.UNIFIED_STORE_CONVERSATION_READ_PG = '0';
     const result = await loadPgConversationTier({}, new Set());
-    expect(result).toEqual({ status: 'ready', rows_read: 0, truncated: false, skeletons: [] });
+    expect(result).toEqual({ status: 'ready', rows_read: 0, truncated: false, skeletons: [], epoch1970_filtered: 0 });
     expect(mockListConversations).not.toHaveBeenCalled();
   });
 });

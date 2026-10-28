@@ -1,4 +1,5 @@
 import { vi, beforeEach } from 'vitest';
+import { PINNED_TEST_ENV_KEYS } from './test-env-pins.js';
 // dotenv already loaded by setup-env.ts (setupFiles order)
 
 // Configuration globale des mocks pour la console
@@ -48,19 +49,12 @@ process.env.ROOSYNC_MACHINE_ID = 'ci-test-machine';
 // dashboard-merge red on such a seat, green in CI. Pin to the EMPTY STRING
 // instead: same isolation (hasPgUrl() false, dual-write off, Null writer), and
 // both dotenv (never overrides an existing key) and the host snapshot (present
-// keys are host-owned) hold it against every refill vector. Same list as the
-// `env` block of vitest.config.ts / vitest.config.unit.ts — the read-gates of
-// pg-read-gates.ts plus the module-load-captured pacer (VectorIndexer.ts:195);
-// the tripwire is src/__tests__/vitest-env-default-deny.test.ts.
-for (const pinnedEnvKey of [
-  'UNIFIED_STORE_PG_URL',
-  'UNIFIED_STORE_DUAL_WRITE',
-  'UNIFIED_STORE_CHANNEL_READ_PG',
-  'UNIFIED_STORE_CHANNEL_PG_PRIMARY',
-  'UNIFIED_STORE_DASHBOARD_READ_PG',
-  'UNIFIED_STORE_DASHBOARD_PG_PRIMARY',
-  'EMBEDDING_OPS_PER_MINUTE',
-]) {
+// keys are host-owned) hold it against every refill vector. The list is the
+// single source tests/setup/test-env-pins.js — same constant as the `env` block
+// of vitest.config.ts / vitest.config.unit.ts; the tripwire is
+// src/__tests__/vitest-env-default-deny.test.ts, which also asserts that the
+// list still covers every flag pg-read-gates.ts reads.
+for (const pinnedEnvKey of PINNED_TEST_ENV_KEYS) {
   process.env[pinnedEnvKey] = '';
 }
 

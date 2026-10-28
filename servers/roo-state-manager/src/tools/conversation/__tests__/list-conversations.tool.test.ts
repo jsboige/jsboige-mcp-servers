@@ -105,6 +105,22 @@ vi.mock('../../../services/skeleton-cache.service.js', () => ({
 	}
 }));
 
+// #4151 S1 — the PG conversation tier is mocked so tests can make PG "serve
+// the list" without a store. Defaults reproduce the no-PG seat exactly:
+// reader null → the tool's PG block is skipped (single gate read), and the
+// tier3/notice behavior of every other describe is unchanged.
+const { mockGetConversationListPgReader, mockLoadPgConversationTier } = vi.hoisted(() => ({
+	mockGetConversationListPgReader: vi.fn((): null => null),
+	mockLoadPgConversationTier: vi.fn(async () => ({
+		status: 'ready', rows_read: 0, truncated: false, skeletons: [], epoch1970_filtered: 0,
+	})),
+}));
+
+vi.mock('../../../services/unified-store/conversation-list-store.js', () => ({
+	getConversationListPgReader: mockGetConversationListPgReader,
+	loadPgConversationTier: mockLoadPgConversationTier,
+}));
+
 import * as fs from 'fs/promises';
 const mockedFs = vi.mocked(fs);
 
@@ -1015,6 +1031,9 @@ describe('list-conversations', () => {
 
         expect(_response.tier3.status).toBe('ready');
         expect(_response.tier3.cache_age_ms).toBe(4321);
+        // #4151 (ms#1549 review) — the G: archive scan served: source is set,
+        // not just declared. 'gdrive' was previously never emitted.
+        expect(_response.tier3.source).toBe('gdrive');
         const parsed = _response.conversations ?? _response;
         expect(parsed.find((c: any) => c.taskId === 'ready-archive-task')).toBeDefined();
       });
@@ -1043,6 +1062,188 @@ describe('list-conversations', () => {
         const parsed = _response.conversations ?? _response;
         expect(parsed.find((c: any) => c.taskId === 'survivor-task')).toBeDefined();
       });
+    });
+  });
+
+  // ============================================================
+  // #4151 S1 — tier3 honest status. When the PG conversation tier has
+  // served the cross-machine coverage, the response SAYS so (tier3
+  // ready/source=pg, no GDrive re-call prescription) instead of rendering
+  // the structurally-non-converging "loading" advice. When nothing serves
+  // cross-machine, the notice names the partial fleet in plain words.
+  // ============================================================
+  describe('handler - tier3 honest status (#4151 S1)', () => {
+    const pgRowSkeleton = (taskId: string, machineId: string) => ({
+      taskId,
+      metadata: {
+        lastActivity: '2026-10-01T10:00:00.000Z',
+        createdAt: '2026-10-01T09:00:00.000Z',
+        messageCount: 3,
+        actionCount: 0,
+        totalSize: 100,
+        machineId,
+        dataSource: 'unified-store-pg',
+      },
+      sequence: [],
+    });
+
+    beforeEach(() => {
+      // Deterministic tier3 G: state for this describe: budget exhausted with
+      // a load running → 'loading' (the #4151 starting point), unless a test
+      // overrides. PG mocks re-armed to the no-PG default so nothing leaks in
+      // or out (clearAllMocks does not undo mockReturnValue/mockResolvedValue).
+      mockAwaitFreshness.mockResolvedValue(false);
+      mockIsLoadInProgress.mockReturnValue(true);
+      mockGetConversationListPgReader.mockReturnValue(null);
+      mockLoadPgConversationTier.mockReset();
+      mockLoadPgConversationTier.mockResolvedValue({
+        status: 'ready', rows_read: 0, truncated: false, skeletons: [], epoch1970_filtered: 0,
+      });
+    });
+
+    afterEach(() => {
+      mockGetConversationListPgReader.mockReturnValue(null);
+    });
+
+    it('PG served the list (ready, contributed > 0) while tier3 G: is loading → tier3 ready/source=pg, no GDrive re-call advice', async () => {
+      mockGetConversationListPgReader.mockReturnValue({ isNull: () => false } as any);
+      mockLoadPgConversationTier.mockResolvedValue({
+        status: 'ready',
+        rows_read: 2,
+        truncated: false,
+        skeletons: [pgRowSkeleton('pg-task-1', 'myia-ai-01'), pgRowSkeleton('pg-task-2', 'myia-po-2025')],
+        epoch1970_filtered: 0,
+      });
+
+      const result = await listConversationsTool.handler({ includeArchives: true }, new Map());
+      const _response = JSON.parse(result.content[0].text as string);
+
+      expect(_response.tier3.status).toBe('ready');
+      expect(_response.tier3.source).toBe('pg');
+      // ms#1549 review pt 3 — the G: diagnosis survives the overlay.
+      expect(_response.tier3.archive_status).toBe('loading');
+      expect(_response.tier3).toHaveProperty('cache_age_ms');
+      expect(_response.notice).toContain('source=pg');
+      expect(_response.notice).toContain('gdrive=loading');
+      // The original G: reason is appended, not replaced.
+      expect(_response.notice).toContain('GDrive archive cache still warming');
+      // The prescription that never converges is GONE.
+      expect(_response.notice).not.toContain('re-call once tier3.status=ready');
+      expect(_response.notice).not.toContain('waitForArchives=true');
+      expect(_response.pg_tier.contributed).toBe(2);
+      const parsed = _response.conversations ?? _response;
+      expect(parsed.find((c: any) => c.taskId === 'pg-task-1')).toBeDefined();
+    });
+
+    it('ms#1549 review pt 1 — contentPattern drops every PG row → no coverage claim, tier3 NOT rewritten, filters named', async () => {
+      mockGetConversationListPgReader.mockReturnValue({ isNull: () => false } as any);
+      mockLoadPgConversationTier.mockResolvedValue({
+        status: 'ready',
+        rows_read: 1,
+        truncated: false,
+        skeletons: [pgRowSkeleton('pg-dropped', 'myia-ai-01')],
+        epoch1970_filtered: 0,
+      });
+
+      // pg rows carry an empty sequence: the content filter drops them all.
+      const result = await listConversationsTool.handler(
+        { includeArchives: true, contentPattern: 'needle-not-in-pg-rows' },
+        new Map()
+      );
+      const _response = JSON.parse(result.content[0].text as string);
+
+      // Contribution is counted on what SURVIVES the filters → 0 → no overlay.
+      expect(_response.tier3.status).toBe('loading');
+      expect(_response.tier3.source).toBeUndefined();
+      expect(_response.notice).not.toContain('cross-machine coverage served');
+      expect(_response.notice).toContain(`none of its rows survive this query's filters`);
+      expect(_response.notice).toContain('contributed before filters');
+    });
+
+    it('ms#1549 review pt 2 — scoped machineId query → no « flotte partielle » sentence', async () => {
+      mockGetConversationListPgReader.mockReturnValue({ isNull: () => false } as any);
+
+      const localOnly = new Map([['local-task', {
+        taskId: 'local-task',
+        metadata: {
+          lastActivity: '2026-10-02T10:00:00.000Z',
+          createdAt: '2026-10-02T09:00:00.000Z',
+          messageCount: 1,
+          totalSize: 10,
+          machineId: 'myia-po-204',
+          workspace: 'w',
+        },
+      }]]);
+
+      const result = await listConversationsTool.handler(
+        { includeArchives: true, machineId: 'myia-po-204' },
+        localOnly
+      );
+      const _response = JSON.parse(result.content[0].text as string);
+
+      expect(_response.tier3.status).toBe('loading');
+      // A scoped query did not ask for fleet coverage: the partial-fleet
+      // sentence would describe a question nobody asked.
+      expect(_response.notice).not.toContain('flotte partielle');
+    });
+
+    it('no cross-machine coverage at all (G: loading, PG contributes 0) → the notice names the partial fleet', async () => {
+      mockGetConversationListPgReader.mockReturnValue({ isNull: () => false } as any);
+
+      const localOnly = new Map([['local-task', {
+        taskId: 'local-task',
+        metadata: {
+          lastActivity: '2026-10-02T10:00:00.000Z',
+          createdAt: '2026-10-02T09:00:00.000Z',
+          messageCount: 1,
+          totalSize: 10,
+          machineId: 'myia-po-2024',
+          workspace: 'w',
+        },
+      }]]);
+
+      const result = await listConversationsTool.handler({ includeArchives: true }, localOnly);
+      const _response = JSON.parse(result.content[0].text as string);
+
+      expect(_response.tier3.status).toBe('loading');
+      expect(_response.notice).toContain('flotte partielle');
+      expect(_response.notice).toContain('1 machine');
+      // The G: deterministic options stay visible (nothing was masked).
+      expect(_response.notice).toContain('waitForArchives=true');
+    });
+
+    it('epoch-junk rows are counted in the response (pg_tier.epoch1970_filtered)', async () => {
+      mockGetConversationListPgReader.mockReturnValue({ isNull: () => false } as any);
+      mockLoadPgConversationTier.mockResolvedValue({
+        status: 'ready',
+        rows_read: 1,
+        truncated: false,
+        skeletons: [pgRowSkeleton('pg-junk-row', 'myia-ai-01')],
+        epoch1970_filtered: 1,
+      });
+
+      const result = await listConversationsTool.handler({ includeArchives: true }, new Map());
+      const _response = JSON.parse(result.content[0].text as string);
+
+      expect(_response.pg_tier.epoch1970_filtered).toBe(1);
+    });
+
+    it('without includeArchives the S1 block stays inert (no tier3 info, no notice rewrite)', async () => {
+      mockGetConversationListPgReader.mockReturnValue({ isNull: () => false } as any);
+      mockLoadPgConversationTier.mockResolvedValue({
+        status: 'ready',
+        rows_read: 1,
+        truncated: false,
+        skeletons: [pgRowSkeleton('pg-noarchive', 'myia-ai-01')],
+        epoch1970_filtered: 0,
+      });
+
+      const result = await listConversationsTool.handler({}, new Map());
+      const _response = JSON.parse(result.content[0].text as string);
+
+      expect(_response.tier3).toBeUndefined();
+      expect(_response.notice).toBeUndefined();
+      expect(_response.pg_tier.contributed).toBe(1);
     });
   });
 
