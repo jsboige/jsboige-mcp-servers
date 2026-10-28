@@ -75,5 +75,69 @@ export function gradeSnippetBoundary(snippet: string): { ok: boolean; kind: Snip
 		const ok = /\n\s*$/.test(body) || /[,;}\])]\s*$/.test(body);
 		return { ok, kind: shape };
 	}
-	return { ok: /[.!?]["')]?\s*$/.test(body.trim()), kind: 'prose' };
+	const trimmed = body.trim();
+	// A fence line is a COMPLETE line: a passage that ends there was not cut
+	// mid-sentence, even though its last character is a backtick and not a full
+	// stop (measured 27/10 on the cadence passage: "…(cron-driven).\n```").
+	// Prose that merely EMBEDS a fenced block still has to end on the fence —
+	// the anti-vacuity case (prose cut mid-sentence) is unaffected.
+	if (endsOnClosingFence(trimmed)) return { ok: true, kind: 'prose' };
+	return { ok: /[.!?]["')]?\s*$/.test(trimmed), kind: 'prose' };
+}
+
+/**
+ * A fence line: 3+ backticks or 3+ tildes (CommonMark). An opening fence may
+ * carry an info string (```ts); a backtick info string holds no backtick.
+ */
+const FENCE_LINE_RE = /^\s*(?:`{3,}[^`\n]*|~{3,}[^\n]*)$/;
+
+/** A bare fence line (no info string): the only shape a closing fence can take. */
+const BARE_FENCE_RE = /^\s*(`{3,}|~{3,})\s*$/;
+
+/** A `#` / `//` comment line. A markdown heading has the same shape (`# Title`). */
+const COMMENT_LINE_RE = /^\s*(#|\/\/)/;
+
+/** A bare call `Name(...)`, the other non-keyword code shape. */
+const CALL_LINE_RE = /^\s*[\w.$]+\(.*\)\s*;?\s*$/;
+
+/**
+ * True only when the text ends on the fence that CLOSES a block (ai-01 review
+ * on ms#1538): a dangling OPENING fence ("…\n```" with the block cut away)
+ * is a cut in the middle of the passage, not a complete line.
+ *   - A closing fence carries no info string (CommonMark), so a trailing
+ *     ```ts is always an opener.
+ *   - Even fence count: the trailing bare ``` pairs with an earlier opener.
+ *   - Odd fence count: the snippet window may START inside a block whose
+ *     opener lies before the cut — the 27/10 live datum is exactly that
+ *     ("teur — cadence 12h…:\n# minute 23…\nCronCreate(…)\n# NE PAS…\n```").
+ *     The trailing fence is then read as a closer only when most lines since
+ *     the previous fence (or the snippet start) are block-shaped AND at least
+ *     one of them is code, not a comment: a `#` line alone cannot tell a shell
+ *     comment from a markdown heading, so heading-led prose followed by a lone
+ *     fence stays the dangling-opener shape and fails. (The datum's source is
+ *     `.claude/commands/coordinate.md:614-619` in roo-extensions: its trailing
+ *     fence closes the block opened at :614, and its `#` lines are comments.)
+ *   - Fences pair only with fences of the same character (``` vs ~~~), and a
+ *     closer is at least as long as its opener.
+ */
+function endsOnClosingFence(text: string): boolean {
+	const lines = text.split('\n');
+	const closer = BARE_FENCE_RE.exec(lines[lines.length - 1]);
+	if (!closer) return false;
+	const fenceChar = closer[1][0];
+	const fenceIdx = lines.flatMap((l, i) =>
+		FENCE_LINE_RE.test(l) && l.trim()[0] === fenceChar ? [i] : [],
+	);
+	if (fenceIdx.length % 2 === 0) {
+		const opener = lines[fenceIdx[fenceIdx.length - 2]].trim();
+		const openerLen = opener.length - opener.replace(/^[`~]+/, '').length;
+		return closer[1].length >= openerLen;
+	}
+	const prevFence = fenceIdx.length > 1 ? fenceIdx[fenceIdx.length - 2] : -1;
+	const segment = lines.slice(prevFence + 1, -1).filter((l) => l.trim().length > 0);
+	if (segment.length === 0) return false;
+	const isCode = (l: string) => CALL_LINE_RE.test(l) || CODE_LINE_RE.test(l);
+	if (!segment.some(isCode)) return false;
+	const blockShaped = segment.filter((l) => COMMENT_LINE_RE.test(l) || isCode(l)).length;
+	return blockShaped * 2 > segment.length;
 }
