@@ -658,13 +658,29 @@ export async function collectExistingContentHashes(
     qdrant: { scroll: (collection: string, params: any) => Promise<any> },
     batch: string[],
     existingHashes: Set<string>,
+    /**
+     * #4352 g7: scope the match to ONE task. The scroll filter was global, so
+     * any point in the collection carrying the hash — including every OTHER
+     * task with the same (heavily duplicated) head content — suppressed this
+     * task's own point. Measured 28/10 by po-2027's detector (#4405): 172,324
+     * head pages missing over 16,498 groups, and a re-filed task reproduced
+     * the same bounds pass after pass, because the skip decision is stable in
+     * the content. The dedup only ever wanted same-task resumes (#1985) and
+     * same-task re-split chunks (#2369) — for which `task_id` scoping is the
+     * exact predicate. Optional: callers that pass none keep the legacy
+     * global filter (the exported regression contract).
+     */
+    taskId?: string,
 ): Promise<void> {
-    const filter = {
+    const filter: any = {
         should: batch.map(hash => ({
             key: 'contentHash',
             match: { value: hash },
         })),
     };
+    if (taskId !== undefined) {
+        filter.must = [{ key: 'task_id', match: { value: taskId } }];
+    }
 
     let offset: unknown = undefined;
     do {
@@ -703,29 +719,49 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
     try {
         const qdrant = getQdrantClient();
 
-        const uniqueHashes = [...new Set(contentHashes)];
-        const existingHashes = new Set<string>();
+        // #4352 g7: same per-task scoping as the preflight — the drop decision
+        // reads the point's OWN task_id, so a hash already indexed for a
+        // DIFFERENT task no longer suppresses this task's point. Points without
+        // a task_id (no known emitter produces one — Chunk guarantees the
+        // field) keep the legacy global filter under the '' key.
+        const byTask = new Map<string, PointStruct[]>();
+        for (const p of points) {
+            const tid = ((p.payload as any)?.task_id as string | undefined) ?? '';
+            const list = byTask.get(tid);
+            if (list) list.push(p);
+            else byTask.set(tid, [p]);
+        }
 
+        const kept: PointStruct[] = [];
+        let dropped = 0;
         const BATCH_SIZE = 100;
-        for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
-            const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
-            try {
-                await collectExistingContentHashes(qdrant, batch, existingHashes);
-            } catch (scrollError: any) {
-                console.warn(`[#1985] Dedup scroll failed for batch ${i}: ${scrollError?.message || scrollError}`);
+        for (const [taskId, group] of byTask) {
+            const uniqueHashes = [...new Set(group
+                .map(p => (p.payload as any)?.contentHash as string | undefined)
+                .filter((h): h is string => !!h))];
+
+            const existingHashes = new Set<string>();
+            for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
+                const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
+                try {
+                    await collectExistingContentHashes(qdrant, batch, existingHashes, taskId === '' ? undefined : taskId);
+                } catch (scrollError: any) {
+                    console.warn(`[#1985] Dedup scroll failed for batch ${i}: ${scrollError?.message || scrollError}`);
+                }
+            }
+
+            for (const p of group) {
+                const hash = (p.payload as any)?.contentHash as string | undefined;
+                if (hash && existingHashes.has(hash)) dropped++;
+                else kept.push(p);
             }
         }
 
-        if (existingHashes.size === 0) return points;
-
-        const before = points.length;
-        const filtered = points.filter(p => {
-            const hash = (p.payload as any)?.contentHash as string | undefined;
-            return !hash || !existingHashes.has(hash);
-        });
-        console.log(`[#1985] Content-hash dedup: ${before - filtered.length}/${before} points already in Qdrant`);
-        _metrics.embeddings_post_dedup_skipped_total += (before - filtered.length);
-        return filtered;
+        if (dropped > 0) {
+            console.log(`[#1985] Content-hash dedup: ${dropped}/${points.length} points already in Qdrant`);
+            _metrics.embeddings_post_dedup_skipped_total += dropped;
+        }
+        return kept;
     } catch (error: any) {
         console.warn(`[#1985] Dedup check failed (non-blocking): ${error?.message || error}`);
         return points;
@@ -860,34 +896,47 @@ async function preflightDedupByContentHash(
 ): Promise<Array<{ chunk: Chunk; contentHash: string }>> {
     if (subChunks.length === 0) return subChunks;
 
-    const contentHashes = subChunks.map(sc => sc.contentHash);
-    const uniqueHashes = [...new Set(contentHashes)];
-    const existingHashes = new Set<string>();
-
     try {
         const qdrant = getQdrantClient();
         const BATCH_SIZE = 100;
 
-        for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
-            const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
-            try {
-                await collectExistingContentHashes(qdrant, batch, existingHashes);
-            } catch (scrollError: any) {
-                console.warn(`[#2369] Preflight contentHash scroll failed for batch ${i}: ${scrollError?.message || scrollError}`);
-                // Non-blocking: on failure, keep chunks (will be caught by post-index dedup)
+        // #4352 g7: group by the sub-chunk's OWN task_id — overflow child units
+        // carry synthetic `taskId#unit-N` ids, and a unit's chunks must dedup
+        // against that unit's points only — and collect a PER-TASK hash set, so
+        // a hash present for one task can never suppress a different task's
+        // chunk (the global scroll is what starved head pages fleet-wide).
+        const byTask = new Map<string, Array<{ chunk: Chunk; contentHash: string }>>();
+        for (const sc of subChunks) {
+            const list = byTask.get(sc.chunk.task_id);
+            if (list) list.push(sc);
+            else byTask.set(sc.chunk.task_id, [sc]);
+        }
+
+        const kept: Array<{ chunk: Chunk; contentHash: string }> = [];
+        let skipped = 0;
+        for (const [taskId, entries] of byTask) {
+            const uniqueHashes = [...new Set(entries.map(sc => sc.contentHash))];
+            const existingHashes = new Set<string>();
+            for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
+                const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
+                try {
+                    await collectExistingContentHashes(qdrant, batch, existingHashes, taskId);
+                } catch (scrollError: any) {
+                    console.warn(`[#2369] Preflight contentHash scroll failed for batch ${i} of task ${taskId}: ${scrollError?.message || scrollError}`);
+                    // Non-blocking: on failure, keep chunks (will be caught by post-index dedup)
+                }
+            }
+            for (const sc of entries) {
+                if (existingHashes.has(sc.contentHash)) skipped++;
+                else kept.push(sc);
             }
         }
 
-        if (existingHashes.size === 0) return subChunks;
-
-        const before = subChunks.length;
-        const filtered = subChunks.filter(sc => !existingHashes.has(sc.contentHash));
-        const skipped = before - filtered.length;
-        _metrics.embeddings_preflight_skipped_total += skipped;
         if (skipped > 0) {
-            console.log(`[#2369] Preflight contentHash dedup: ${skipped}/${before} sub-chunks already in Qdrant — skipped before embedding`);
+            console.log(`[#2369] Preflight contentHash dedup: ${skipped}/${subChunks.length} sub-chunks already in Qdrant for their own task — skipped before embedding`);
         }
-        return filtered;
+        _metrics.embeddings_preflight_skipped_total += skipped;
+        return kept;
     } catch (error: any) {
         console.warn(`[#2369] Preflight contentHash dedup failed (non-blocking): ${error?.message || error}`);
         return subChunks;
