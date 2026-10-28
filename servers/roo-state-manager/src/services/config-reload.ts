@@ -24,6 +24,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 
 import { resetEmbeddingOpenAIClient, resetChatOpenAIClient, resetFallbackChatOpenAIClient } from './openai.js';
+import { recordEmbeddingFileConfig } from './embedding-endpoints.js';
 import { resetQdrantClient } from './qdrant.js';
 import { resetCodebaseEmbeddingClient } from '../tools/search/search-codebase.tool.js';
 
@@ -237,6 +238,9 @@ export function reloadConfig(envPath: string = resolveEnvPath()): ConfigReloadRe
   }
 
   const parsed = dotenv.parse(raw);
+  // #4352 (deadep): the file canonical must follow a `.env` edit on reload too —
+  // the plan builder reads it when a rebuilt client re-arms the failover order.
+  recordEmbeddingFileConfig(parsed);
   const allowed = new Set<string>(RELOADABLE_ENV_KEYS);
 
   report.skippedKeys = Object.keys(parsed).filter((k) => !allowed.has(k)).sort();

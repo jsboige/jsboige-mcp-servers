@@ -31,6 +31,8 @@
  * reload` cannot change it, so a change needs a respawn.
  */
 
+import { getHostEnvKeys } from './host-env-snapshot.js';
+
 /** Minimal fetch shape, so tests can inject a fake without a network. */
 export type EmbeddingFetch = typeof fetch;
 
@@ -176,6 +178,90 @@ export function getCanonicalEmbeddingBaseUrl(env: NodeJS.ProcessEnv = process.en
 	return endpoints[0];
 }
 
+/**
+ * #4352 (deadep): the endpoints the `.env` FILE names, as opposed to whatever the
+ * host process shadows them with. index.ts records them at startup and the hot
+ * reload re-records them on every `.env` re-parse. Endpoints only — a key or any
+ * other secret is never captured here.
+ *
+ * Measured on ai-01 (c.6478415645): the VS Code host carried
+ * `EMBEDDING_API_BASE_URL=http://192.168.0.51:8004/v1` — po-2026's dead LAN
+ * address — while User scope and both `.env` files said the public vhost. dotenv
+ * never overrides (#2719, on purpose), so the dead value won, the plan had ONE
+ * endpoint, no failover wrapper was armed, and every child of that host indexed
+ * nothing (`263/263 sub-chunks without a vector — Connection error`).
+ */
+let embeddingFileEndpoints: string[] | null = null;
+
+/** Record what the `.env` file says. A malformed value clears the record: the
+ * effective env still rules, there is simply no canonical to fall back to. */
+export function recordEmbeddingFileConfig(parsed: Record<string, string> | undefined): void {
+	if (!parsed) return;
+	try {
+		embeddingFileEndpoints = parseEmbeddingEndpoints(parsed as NodeJS.ProcessEnv);
+	} catch {
+		embeddingFileEndpoints = null;
+	}
+}
+
+/** Test-only: forget the file record and the once-per-episode warn state. */
+export function resetEmbeddingFileConfigForTest(): void {
+	embeddingFileEndpoints = null;
+	lastShadowWarnKey = null;
+}
+
+const EMBEDDING_ENDPOINT_VARS = ['EMBEDDING_API_BASE_URLS', 'EMBEDDING_API_BASE_URL'] as const;
+
+/**
+ * Name the layer the shadowing value came from, as far as the child can tell.
+ * `RSM_HOST_ENV_KEYS` (#2719) says the host set the name; process inheritance,
+ * a User scope and the MCP `env` block are indistinguishable from inside the
+ * child, and the message says so instead of guessing one.
+ */
+function describeShadowingLayer(env: NodeJS.ProcessEnv): string {
+	const hostKeys = getHostEnvKeys();
+	const sources = EMBEDDING_ENDPOINT_VARS.filter((name) => env[name] !== undefined && hostKeys?.has(name));
+	if (sources.length > 0) {
+		return `the host process env (${sources.join(', ')} — process, User scope and MCP env block are indistinguishable from the child; not the .env)`;
+	}
+	return 'a non-.env source (the value differs and no host-set marker was recorded)';
+}
+
+/** Once per shadowing episode: re-arms when the configured/file pair changes. */
+let lastShadowWarnKey: string | null = null;
+
+function warnShadowingOnce(configured: string[], fileCanonical: string, env: NodeJS.ProcessEnv): void {
+	const key = `${configured.join('|')}=>${fileCanonical}`;
+	if (lastShadowWarnKey === key) return;
+	lastShadowWarnKey = key;
+	console.warn(
+		`[embedding-endpoints] configured endpoint differs from the .env canonical (${endpointLabel(fileCanonical)}); shadowed by ${describeShadowingLayer(env)}. `
+		+ `The .env canonical is armed as the LAST failover entry: a connection-level failure on the configured endpoint falls back to it (#4352).`,
+	);
+}
+
+/** Health-view signal: the endpoint gap, or null when nothing is shadowed. */
+export interface EmbeddingShadowingStatus {
+	/** Host-only labels — never a full URL. */
+	configuredHost: string;
+	fileCanonicalHost: string;
+	/** Where the shadowing value came from, as far as the child can tell. */
+	layer: string;
+}
+
+export function getEmbeddingShadowingStatus(env: NodeJS.ProcessEnv = process.env): EmbeddingShadowingStatus | null {
+	const configured = parseEmbeddingEndpoints(env);
+	const fileCanonical = embeddingFileEndpoints?.[0];
+	if (configured.length === 0 || fileCanonical === undefined || configured.includes(fileCanonical)) {
+		return null;
+	}
+	return {
+		configuredHost: endpointLabel(configured[0]),
+		fileCanonicalHost: endpointLabel(fileCanonical),
+		layer: describeShadowingLayer(env),
+	};
+}
+
 export function getEmbeddingClientModeSettings(
 	mode: EmbeddingClientMode,
 	env: NodeJS.ProcessEnv = process.env,
@@ -273,8 +359,22 @@ export function getEmbeddingEndpointPlan(
 	if (configured.length === 0) {
 		return { endpoints: configured, baseURL: undefined, fetch: undefined };
 	}
+	// #4352 (deadep): a host-set endpoint can shadow the `.env` canonical (dotenv
+	// never overrides — #2719, deliberately). When the configured list does not
+	// carry the file canonical, append it as the LAST failover entry: a
+	// transport-level failure on the shadowing endpoint (the ai-01 case: a dead
+	// LAN address inherited from the VS Code host, single endpoint, no wrapper)
+	// then reaches the canonical instead of indexing nothing. A HEALTHY
+	// configured endpoint answers first and is never replaced; a 4xx from it is
+	// an answer and surfaces, per the a5 contract above.
+	const fileCanonical = embeddingFileEndpoints?.[0];
+	let tryOrder = configured;
+	if (fileCanonical !== undefined && !configured.includes(fileCanonical)) {
+		tryOrder = [...configured, fileCanonical];
+		warnShadowingOnce(configured, fileCanonical, env);
+	}
 	const canonical = configured[0];
-	const endpoints = withLanDirectFirst(configured, canonical, env);
+	const endpoints = withLanDirectFirst(tryOrder, canonical, env);
 	if (endpoints.length === 1) {
 		return { endpoints, baseURL: canonical, fetch: undefined };
 	}
