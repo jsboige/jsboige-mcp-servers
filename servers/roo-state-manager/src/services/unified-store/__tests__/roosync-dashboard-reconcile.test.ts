@@ -18,6 +18,7 @@ import {
   startDashboardReconcileDaemon,
   stopDashboardReconcileDaemon,
   getDashboardReconcileStatus,
+  shouldLogSourceError,
 } from '../roosync-dashboard-reconcile.js';
 import { extractPersistedMessageIds } from '../../../tools/roosync/dashboard-markdown.js';
 import type { RooSyncDashboardRow, RooSyncDashboardMessageRow } from '../types.js';
@@ -466,7 +467,7 @@ describe('roosync-dashboard-reconcile — unreadable source (#4131)', () => {
     expect(writerCalls).toHaveLength(0);
   });
 
-  test('two consecutive unreadable passes both report the skip (log dedupe hides the line, never the status)', async () => {
+  test('two consecutive unreadable passes report the skip and build a streak', async () => {
     const missing = join(dataDir, 'reconcile-missing-twice-4131');
     if (existsSync(missing)) rmSync(missing, { recursive: true, force: true });
     const first = await reconcileDashboardsFromGDrive({
@@ -480,6 +481,20 @@ describe('roosync-dashboard-reconcile — unreadable source (#4131)', () => {
     expect(first.status).toBe('skipped-source-unreadable');
     expect(second.status).toBe('skipped-source-unreadable');
     expect(second.sourceError).toBe(first.sourceError);
+    // The streak is what tells a hiccup from "no G: for a week" (ms#1550 review
+    // reserve 2). Relative assertion: the module counter is process-wide.
+    expect(second.sourceUnavailable!.consecutivePasses).toBe(
+      first.sourceUnavailable!.consecutivePasses + 1
+    );
+    expect(second.sourceUnavailable!.since).toBe(first.sourceUnavailable!.since);
+  });
+
+  test('shouldLogSourceError: one WARN per distinct reason, per process', () => {
+    // The dedupe used to be a comment nothing asserted (ms#1550 review,
+    // reserve 1) — it is now a pure function with its own guard.
+    expect(shouldLogSourceError('G: gone', null)).toBe(true);
+    expect(shouldLogSourceError('G: gone', 'G: gone')).toBe(false);
+    expect(shouldLogSourceError('G: other failure', 'G: gone')).toBe(true);
   });
 
   test('source readable again after a skip → the pass runs normally (no sticky skip)', async () => {
@@ -501,6 +516,7 @@ describe('roosync-dashboard-reconcile — unreadable source (#4131)', () => {
     });
     expect(result.status).toBe('ok');
     expect(result.sourceError).toBeUndefined();
+    expect(result.sourceUnavailable).toBeUndefined(); // streak reset
     expect(result.filesScanned).toBe(0);
   });
 });
