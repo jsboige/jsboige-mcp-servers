@@ -10,6 +10,7 @@
 import { defineConfig } from 'vitest/config'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { pinnedTestEnvEmpty } from './tests/setup/test-env-pins.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -48,17 +49,10 @@ export default defineConfig({
     hookTimeout: 30000,
 
     // #4131 item 3 (A) — default-deny : voir vitest.config.ts (même bloc, même
-    // raison). Ce fichier est la BASE de vitest.config.ci.ts (mergeConfig) —
-    // la CI hérite donc du pin sans le répéter.
-    env: {
-      UNIFIED_STORE_PG_URL: '',
-      UNIFIED_STORE_DUAL_WRITE: '',
-      UNIFIED_STORE_CHANNEL_READ_PG: '',
-      UNIFIED_STORE_CHANNEL_PG_PRIMARY: '',
-      UNIFIED_STORE_DASHBOARD_READ_PG: '',
-      UNIFIED_STORE_DASHBOARD_PG_PRIMARY: '',
-      EMBEDDING_OPS_PER_MINUTE: '',
-    },
+    // raison, même source unique : tests/setup/test-env-pins.js). Ce fichier est
+    // la BASE de vitest.config.ci.ts (mergeConfig) — la CI hérite donc du pin
+    // sans le répéter.
+    env: pinnedTestEnvEmpty(),
 
     pool: 'forks',
     poolOptions: {
