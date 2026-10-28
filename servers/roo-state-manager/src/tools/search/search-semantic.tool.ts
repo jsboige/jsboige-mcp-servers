@@ -133,21 +133,115 @@ const DIVERSIFY_MAX_CHUNKS_PER_TASK = 2;
 // #2609 q4 (cross-conversation synthesis): a chunk whose ENTIRE content is a
 // sub-sentence fragment (" est close.", "it sous decide ?") can match query
 // tokens strongly yet never satisfy rubric (a) — a coherent passage. It is
-// de-ranked (×0.85), not removed: for an exact-lookup query a short chunk can
-// still be the right answer, and with nothing better above it the malus does
-// not hide it (same degradé-pas-supprimé contract as the codebase malus family).
-// Rollback / A-B: SEMANTIC_FRAGMENT_MALUS=0 (same convention as SEARCH_CONTEXT_EXPANSION).
+// de-ranked, not removed: for an exact-lookup query a short chunk can still be
+// the right answer, and with nothing better above it the penalty does not hide
+// it (same degradé-pas-supprimé contract as the codebase malus family).
+//
+// #2609 V3 (28/10) — the penalty stopped being a CONSTANT. Measured 27/10 on
+// the scenario-2 golden query: the top-1 was a 57-char assistant TITLE (0.700)
+// ahead of a 412-char decision PASSAGE (0.698). The old rule was one threshold
+// — anything >= 40 chars escaped it — so raising that floor to 120 would demote
+// the title but promote a JSON blob to top-1 (0.698): one non-passage swapped
+// for another, the exact false green this Epic exists to kill.
+//
+// The signal is now a GRADED thinness ramp. The floor of the scale (0.85) is
+// unchanged, but only an empty chunk reaches it: the #2609 class itself
+// (« est close. », 2 words) now pays 0.88 — 3.5% less demotion than the
+// legacy constant paid it. That is the price of being graded instead of
+// binary, and it is stated rather than papered over: the ramp buys WHO pays
+// being a property of the passage, at the cost of the thinnest class paying
+// slightly less.
+//
+//   thinness — a chunk must clear BOTH bars: PASSAGE_MIN_WORDS words AND
+//              FRAGMENT_MALUS_MIN_CHARS chars. The factor ramps linearly on
+//              whichever bar is missed the most (the min of the two ratios),
+//              from 0.85 (empty) to 1.0. The word bar is deliberately LOW —
+//              the line under which a chunk cannot be a coherent passage at
+//              all, not a preference for long ones; a complete sentence IS a
+//              passage and must not pay a tax for being concise. The char bar
+//              is the legacy one, kept so no chunk the old rule taxed can
+//              escape the new one (`1 2 3 … 11` is 11 "words" in 23 chars).
+//
+// Two candidate signals were written and DROPPED on measurement (#1936
+// chirurgical — a ranking signal must not punish the class it is supposed to
+// lift):
+//
+//   * "cut mid-sentence" for long passages — moved the score of every long
+//     chunk whose last line happens to stop short; the ending is already graded
+//     where it belongs (snippet-boundary, context expansion).
+//   * "title shape" (single line, < 15 words, no sentence-final punctuation,
+//     ×0.95) — +0.72% corpus coverage, false-positived on ordinary short
+//     excerpts that simply lack a final period, and on the live q4 replay it
+//     RE-PROMOTED an 8-word chunk to top-1 over an 11-word one. The class it
+//     targeted is already caught by thinness.
+//
+// Measured on the live corpus (4 000 sampled chunks, 28/10): the legacy binary
+// rule taxes 1.32% of chunks, all at the full 0.85 floor; the graded ramp taxes
+// 3.55% with mean factor 0.9979 — the same total tax mass, redistributed.
+//
+// Machine output is NOT handled here: it already pays its own ×0.85 (#4352) and
+// a second scale on the same defect would bury legitimate short tool answers.
+//
+// Rollback / A-B: SEMANTIC_FRAGMENT_MALUS=0 disables the signal; the value
+// `legacy` restores the pre-V3 binary 40-char rule verbatim, which is the arm
+// the A/B measured against.
 const FRAGMENT_MALUS_MIN_CHARS = 40;
 const FRAGMENT_MALUS_FACTOR = 0.85;
+// #2609 V3 — the graded passage-quality signal (default).
+const PASSAGE_MIN_WORDS = 10;
 
 function isFragmentMalusEnabled(): boolean {
     return process.env.SEMANTIC_FRAGMENT_MALUS !== '0';
 }
 
-function applyFragmentMalus(score: number, content: string): { score: number; applied: boolean } {
-    if (!isFragmentMalusEnabled()) return { score, applied: false };
-    if (content.trim().length >= FRAGMENT_MALUS_MIN_CHARS) return { score, applied: false };
-    return { score: score * FRAGMENT_MALUS_FACTOR, applied: true };
+/** Legacy arm (A/B reference): the pre-#2609-V3 binary 40-char rule. */
+function isLegacyFragmentRule(): boolean {
+    return (process.env.SEMANTIC_FRAGMENT_MALUS ?? '').trim().toLowerCase() === 'legacy';
+}
+
+// #2609 V3 r2 (review pt 4): the Latin word regex is blind to CJK — a
+// 200-char Han passage counts as 1-2 "words" and was taxed at 0.88 where the
+// legacy rule left anything >= 40 chars alone (the corpus holds GLM/Qwen
+// conversations). Each CJK code point now counts as one word, and the CJK
+// code points are stripped before the token count so nothing double-counts.
+const CJK_CODE_POINT = /[\u{3400}-\u{4DBF}\u{4E00}-\u{9FFF}\u{F900}-\u{FAFF}\u{3040}-\u{30FF}\u{31F0}-\u{31FF}\u{AC00}-\u{D7AF}\u{FF66}-\u{FF9D}]/gu;
+
+function wordCount(text: string): number {
+    const cjk = (text.match(CJK_CODE_POINT) || []).length;
+    const tokens = (text.replace(CJK_CODE_POINT, ' ').match(/[\p{L}\p{N}][\p{L}\p{N}'’_-]*/gu) || []).length;
+    return tokens + cjk;
+}
+
+/**
+ * #2609 V3 — graded passage-quality factor for ONE chunk's full content.
+ *
+ * Exported for the A/B instrument and for tests: ranking and the rendered
+ * `score` both go through `applyFragmentMalus`, which is the only caller in
+ * production code (single-helper contract, same as the malus family).
+ */
+export function passageQualityFactor(content: string): { factor: number; applied: boolean } {
+    const text = content.trim();
+    // r2: BOTH bars (words AND chars) — words alone let `1 2 3 … 11`
+    // (11 "words", 23 chars) escape where legacy taxed it. The factor ramps
+    // on the thinnest dimension, so a chunk gaming one bar still pays.
+    const thinness = Math.min(wordCount(text) / PASSAGE_MIN_WORDS, text.length / FRAGMENT_MALUS_MIN_CHARS);
+    if (thinness >= 1) {
+        return { factor: 1, applied: false };
+    }
+    const factor = FRAGMENT_MALUS_FACTOR
+        + (1 - FRAGMENT_MALUS_FACTOR) * thinness;
+    return { factor: Math.round(factor * 10000) / 10000, applied: true };
+}
+
+function applyFragmentMalus(score: number, content: string): { score: number; applied: boolean; factor: number } {
+    if (!isFragmentMalusEnabled()) return { score, applied: false, factor: 1 };
+    if (isLegacyFragmentRule()) {
+        if (content.trim().length >= FRAGMENT_MALUS_MIN_CHARS) return { score, applied: false, factor: 1 };
+        return { score: score * FRAGMENT_MALUS_FACTOR, applied: true, factor: FRAGMENT_MALUS_FACTOR };
+    }
+    const quality = passageQualityFactor(content);
+    if (!quality.applied) return { score, applied: false, factor: 1 };
+    return { score: score * quality.factor, applied: true, factor: quality.factor };
 }
 
 // #4352 (user 25/10, search tools mandate): tool output is indexed as ordinary
@@ -1333,28 +1427,40 @@ export const searchTasksByContentTool = {
 
             // Phase 2: Enriched results with snippets, score interpretation, deduplication
             let fragmentMalusApplied = 0;
+            let fragmentFactorMin = 1;
+            let fragmentFactorSum = 0;
             const machineOutputByKind: Partial<Record<MachineOutputKind, number>> = {};
             let machineOutputApplied = 0;
             const results: RawSearchResult[] = rawPointsAll.map((result: any): RawSearchResult | null => {
                 // #982 FIX: Prefer full content for snippet extraction (content_summary is only 200 chars)
                 const fullContent = String(result.payload?.content || result.payload?.content_summary || '');
                 const content = String(result.payload?.content_summary || result.payload?.content || '');
+                // #4352/#2609 V3 r2 (review pt 1): classify ONCE, before both
+                // scales. Machine output already pays its own ×0.85 (#4352) and
+                // SKIPS the thinness ramp — a second scale on the same defect
+                // would bury legitimate short tool answers. The doc block above
+                // promised exactly this; now a line implements it.
+                const machineKind = classifyMachineOutput(result.payload?.chunk_type, fullContent);
                 // #2609 q4: fragment de-rank — one helper feeds ranking AND rendered
                 // score so the two cannot diverge (same contract as the #1180
                 // codebase malus family). Applies to the chunk's full content,
                 // never to the display snippet.
-                const malus = applyFragmentMalus(result.score || 0, fullContent);
-                if (malus.applied) fragmentMalusApplied++;
+                const malus = machineKind
+                    ? { score: result.score || 0, applied: false, factor: 1 }
+                    : applyFragmentMalus(result.score || 0, fullContent);
+                if (malus.applied) {
+                    fragmentMalusApplied++;
+                    fragmentFactorMin = Math.min(fragmentFactorMin, malus.factor);
+                    fragmentFactorSum += malus.factor;
+                }
                 // #4352: machine-output de-rank, same single-helper contract.
                 const machine = applyMachineOutputMalus(malus.score, result.payload?.chunk_type, fullContent);
-                if (exclude_tool_results && chunk_type !== 'tool_interaction'
-                    && classifyMachineOutput(result.payload?.chunk_type, fullContent)) return null;
+                if (exclude_tool_results && chunk_type !== 'tool_interaction' && machineKind) return null;
                 if (machine.kind) {
                     machineOutputApplied++;
                     machineOutputByKind[machine.kind] = (machineOutputByKind[machine.kind] || 0) + 1;
                 }
                 const score = machine.score;
-                const machineKind = machine.kind ?? classifyMachineOutput(result.payload?.chunk_type, fullContent);
                 // #2609 V3: raw ints for the handle — message_position is a display
                 // string and cannot drive a conversation_browser re-expansion.
                 const messageIndex = typeof result.payload?.message_index === 'number'
@@ -1587,8 +1693,21 @@ export const searchTasksByContentTool = {
                     ...(fragmentMalusApplied > 0 || process.env.SEMANTIC_FRAGMENT_MALUS === '0' ? {
                         fragment_malus: {
                             applied: fragmentMalusApplied,
-                            min_chars: FRAGMENT_MALUS_MIN_CHARS,
-                            factor: FRAGMENT_MALUS_FACTOR,
+                            // #2609 V3 r2 (review pt 2): on the default arm NO single
+                            // factor is applied — each taxed chunk pays its own. `factor`
+                            // is a legacy-arm field again (where it is exact), and the
+                            // default arm reports the min/mean of what it actually
+                            // applied, so a dashboard never reads 0.85 as "the" factor.
+                            signal: isLegacyFragmentRule() ? 'legacy' : 'passage-quality',
+                            ...(isLegacyFragmentRule()
+                                ? { min_chars: FRAGMENT_MALUS_MIN_CHARS, factor: FRAGMENT_MALUS_FACTOR }
+                                : {
+                                    min_words: PASSAGE_MIN_WORDS,
+                                    ...(fragmentMalusApplied > 0 ? {
+                                        min_factor: fragmentFactorMin,
+                                        mean_factor: Math.round((fragmentFactorSum / fragmentMalusApplied) * 10000) / 10000,
+                                    } : {}),
+                                }),
                             enabled: process.env.SEMANTIC_FRAGMENT_MALUS !== '0',
                         }
                     } : {}),

@@ -82,7 +82,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 	getUnifiedStoreReader: () => mockUnifiedStoreReader
 }));
 
-import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput } from '../search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, passageQualityFactor } from '../search-semantic.tool.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 import { splitChunkId } from '../../../services/task-indexer/ChunkExtractor.js';
 
@@ -465,9 +465,10 @@ describe('searchTasksByContentTool', () => {
 					score: 0.85,
 					payload: {
 						task_id: 'task-1',
-						// #2609 q4 : contenu >= 40 chars — ce test cible le groupement
-						// cross-machine, pas le fragment de-rank (voir son describe dédié).
-						content: 'Rate limiting implementation for the coordinator dashboard',
+						// #2609 q4/V3 : contenu >= PASSAGE_MIN_WORDS (10 mots) — ce test
+						// cible le groupement cross-machine, pas le fragment de-rank,
+						// donc la fixture doit être un passage et non un titre.
+						content: 'Rate limiting implementation decisions for the coordinator dashboard and its dispatch loop',
 						task_title: 'Fix rate limiter',
 						workspace: 'ws1',
 						host_os: 'machine-a',
@@ -479,7 +480,7 @@ describe('searchTasksByContentTool', () => {
 					score: 0.70,
 					payload: {
 						task_id: 'task-2',
-						content: 'Another substantive result about rate limiting choices',
+						content: 'Another substantive result describing the rate limiting choices made on this machine',
 						task_title: 'Other task',
 						workspace: 'ws1',
 						host_os: 'machine-b',
@@ -508,13 +509,13 @@ describe('searchTasksByContentTool', () => {
 		test('deduplicates multiple chunks from same task', async () => {
 			mockQdrantClient.search.mockResolvedValue([
 				{
-					// #2609 q4 : contenu >= 40 chars (fragment de-rank, describe dédié)
+					// #2609 V3 : contenu >= PASSAGE_MIN_WORDS (fragment de-rank, describe dédié)
 					score: 0.9,
-					payload: { task_id: 'task-1', content: 'First chunk of the rate limiting decision passage', task_title: 'Task', host_os: 'h1' }
+					payload: { task_id: 'task-1', content: 'First chunk of the rate limiting decision passage, kept whole for dedup', task_title: 'Task', host_os: 'h1' }
 				},
 				{
 					score: 0.7,
-					payload: { task_id: 'task-1', content: 'Second chunk with different substantive content here', task_title: 'Task', host_os: 'h1' }
+					payload: { task_id: 'task-1', content: 'Second chunk carrying different substantive content used by the dedup fixture', task_title: 'Task', host_os: 'h1' }
 				}
 			]);
 
@@ -776,7 +777,7 @@ describe('helper functions (indirect via handler)', () => {
 
 	test('interpretScore: excellent for score >= 0.9', async () => {
 		mockQdrantClient.search.mockResolvedValue([
-			{ score: 0.95, payload: { task_id: 't1', content: 'substantive passage content for label mapping', host_os: 'h1' } }
+			{ score: 0.95, payload: { task_id: 't1', content: 'A substantive passage of content used to pin the relevance label mapping', host_os: 'h1' } }
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -792,7 +793,7 @@ describe('helper functions (indirect via handler)', () => {
 
 	test('interpretScore: good for score >= 0.75', async () => {
 		mockQdrantClient.search.mockResolvedValue([
-			{ score: 0.78, payload: { task_id: 't1', content: 'substantive passage content for label mapping', host_os: 'h1' } }
+			{ score: 0.78, payload: { task_id: 't1', content: 'A substantive passage of content used to pin the relevance label mapping', host_os: 'h1' } }
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -808,7 +809,7 @@ describe('helper functions (indirect via handler)', () => {
 
 	test('interpretScore: moderate for score >= 0.6', async () => {
 		mockQdrantClient.search.mockResolvedValue([
-			{ score: 0.65, payload: { task_id: 't1', content: 'substantive passage content for label mapping', host_os: 'h1' } }
+			{ score: 0.65, payload: { task_id: 't1', content: 'A substantive passage of content used to pin the relevance label mapping', host_os: 'h1' } }
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -824,7 +825,7 @@ describe('helper functions (indirect via handler)', () => {
 
 	test('interpretScore: weak for score >= 0.4', async () => {
 		mockQdrantClient.search.mockResolvedValue([
-			{ score: 0.45, payload: { task_id: 't1', content: 'substantive passage content for label mapping', host_os: 'h1' } }
+			{ score: 0.45, payload: { task_id: 't1', content: 'A substantive passage of content used to pin the relevance label mapping', host_os: 'h1' } }
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -861,9 +862,9 @@ describe('helper functions (indirect via handler)', () => {
 		mockQdrantClient.search.mockResolvedValue([
 			// #2766: content DISTINCT per task — identical cross-task content is now
 			// collapsed by dedupGroupedChunksByContent (covered in its own describe block).
-			{ score: 0.6, payload: { task_id: 'task-b', content: 'grouping fixture chunk b1 substantive content', host_os: 'h1' } },
-			{ score: 0.9, payload: { task_id: 'task-a', content: 'grouping fixture chunk a1 substantive content', host_os: 'h1' } },
-			{ score: 0.7, payload: { task_id: 'task-b', content: 'grouping fixture chunk b2 substantive content', host_os: 'h1' } },
+			{ score: 0.6, payload: { task_id: 'task-b', content: 'grouping fixture chunk b1 substantive content used to pin the sort order', host_os: 'h1' } },
+			{ score: 0.9, payload: { task_id: 'task-a', content: 'grouping fixture chunk a1 substantive content used to pin the sort order', host_os: 'h1' } },
+			{ score: 0.7, payload: { task_id: 'task-b', content: 'grouping fixture chunk b2 substantive content used to pin the sort order', host_os: 'h1' } },
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -1315,9 +1316,12 @@ describe('helper functions (indirect via handler)', () => {
 
 			const parsed = JSON.parse(getTextContent(result));
 			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-2', 'task-1']);
+			// The expected score comes from the single helper, not a literal: the
+			// calibration is pinned once in the #2609 V3 describe, and this test
+			// stays about "PG confirms the ADJUSTED order, not the raw ANN one".
 			expect(mockUnifiedStoreReader.joinFromQdrant).toHaveBeenCalledWith([
 				{ task_id: 'task-2', score: 0.71 },
-				{ task_id: 'task-1', score: 0.82 * 0.85 },
+				{ task_id: 'task-1', score: 0.82 * passageQualityFactor('a').factor },
 			], expect.any(Object));
 		});
 
@@ -2808,7 +2812,7 @@ describe('#2609 V3 result quality', () => {
 	});
 });
 
-describe('#2609 q4 cross-conversation quality — fragment de-rank', () => {
+describe('#2609 V3 cross-conversation quality — graded passage de-rank', () => {
 	const PASSAGE = 'Arbitrage : option (b) — run apparié, GO budget. Cap 15 dollars, seuil limit_remaining < 60 dollars, triplet avant/après à poster sur le dashboard global.';
 
 	beforeEach(() => {
@@ -2818,9 +2822,50 @@ describe('#2609 q4 cross-conversation quality — fragment de-rank', () => {
 		delete process.env.SEMANTIC_FRAGMENT_MALUS;
 	});
 
-	test('fragment chunk (sub-40-char content) de-ranked below a substantive passage', async () => {
+	test('calibration: the factor is graded by words, not switched by a char constant', () => {
+		// The whole point of V3: the penalty is a function of how thin the chunk
+		// is. A 2-word fragment pays 0.88 — near the floor but graded (only an
+		// empty chunk reaches 0.85, the price of a scale instead of a constant);
+		// a 6-word one pays less; a 9-word one pays almost nothing; a passage
+		// pays nothing at all.
+		expect(passageQualityFactor(' est close.').factor).toBeCloseTo(0.85 + 0.15 * (2 / 10), 8);
+		expect(passageQualityFactor('a one two three four five').factor).toBeCloseTo(0.85 + 0.15 * (6 / 10), 8);
+		expect(passageQualityFactor('one two three four five six seven eight nine').factor).toBeCloseTo(0.85 + 0.15 * (9 / 10), 8);
+		expect(passageQualityFactor(PASSAGE)).toEqual({ factor: 1, applied: false });
+		// Monotonic in thinness — a longer chunk is never punished harder.
+		const ramp = [0, 2, 4, 6, 8, 9, 10].map((w) => passageQualityFactor('w '.repeat(w).trim()).factor);
+		expect([...ramp].sort((a, b) => a - b)).toEqual(ramp);
+	});
+
+	test('r2 — BOTH bars: word-count spam cannot dodge the malus the legacy rule taxed', () => {
+		// Review pt 4, second hole: `1 2 3 … 11` is 11 "words" in 23 chars.
+		// The word bar alone exempted it; the legacy rule (< 40 chars) taxed it
+		// at the full floor. The factor now ramps on the missed char bar.
+		const digits = '1 2 3 4 5 6 7 8 9 10 11';
+		expect(digits.trim().length).toBeLessThan(40);
+		const q = passageQualityFactor(digits);
+		expect(q.applied).toBe(true);
+		expect(q.factor).toBeCloseTo(0.85 + 0.15 * (23 / 40), 3);
+	});
+
+	test('r2 — CJK code points count as words: a Han passage is not a fragment', () => {
+		// Review pt 4, first hole: the Latin regex saw a 200-char Han passage
+		// as 1-2 "words" and taxed it at 0.88 where legacy left >= 40 chars
+		// alone. Each CJK code point is a word now.
+		const cjkPassage = 'モデルが期待どおりに推論を完了したことが、この会話の決定事項として記録されています。';
+		const long = cjkPassage.repeat(2); // ~56 CJK chars — a real passage
+		expect(passageQualityFactor(long)).toEqual({ factor: 1, applied: false });
+		// A genuinely short CJK snippet still pays, graded on its thinnest bar.
+		const snippet = '推論を開始'; // 5 CJK chars → 5 "words", 5 chars
+		const q = passageQualityFactor(snippet);
+		expect(q.applied).toBe(true);
+		expect(q.factor).toBeGreaterThan(0.85);
+		expect(q.factor).toBeLessThan(0.9);
+	});
+
+	test('thin chunk de-ranked below a substantive passage', async () => {
 		// Raw ANN order: the fragment OUTSCORES the passage on token overlap —
-		// exactly the live q4 measurement (\" est close.\" at rank 4, 0.705, above
+		// exactly the live q4 measurement (" est close." at rank 4, 0.705, above
 		// substantive passages). The malus must flip the task order.
 		mockQdrantClient.search.mockResolvedValue([
 			{ score: 0.83, payload: { task_id: 'task-fragment', content: ' est close.', host_os: 'h1' } },
@@ -2838,21 +2883,27 @@ describe('#2609 q4 cross-conversation quality — fragment de-rank', () => {
 		expect(parsed.results[0].taskId).toBe('task-passage');
 		expect(parsed.results[1].taskId).toBe('task-fragment');
 		// One helper feeds ranking AND rendered score — no divergence (#1180 contract)
-		expect(parsed.results[1].best_score).toBeCloseTo(0.83 * 0.85, 8);
+		expect(parsed.results[1].best_score).toBeCloseTo(0.83 * passageQualityFactor(' est close.').factor, 8);
 		expect(parsed.results[0].best_score).toBe(0.78);
 		expect(parsed.current_machine.fragment_malus).toEqual({
 			applied: 1,
-			min_chars: 40,
-			factor: 0.85,
+			signal: 'passage-quality',
+			// r2: no single `factor` on the default arm — the chunks that paid
+			// each paid their own, so the block reports min/mean of what was
+			// actually applied (here one chunk at 0.88).
+			min_words: 10,
+			min_factor: 0.88,
+			mean_factor: 0.88,
 			enabled: true
 		});
 	});
 
-	test('chunk at/above the threshold is untouched and observability stays quiet', async () => {
-		// Exactly 40 chars (trimmed) = passage floor, not a fragment
-		const fortyChars = 'x'.repeat(40);
+	test('a passage at/above PASSAGE_MIN_WORDS words is untouched and observability stays quiet', async () => {
+		// Ten words is the floor; this chunk is exactly at it.
+		const tenWords = 'one two three four five six seven eight nine ten';
+		expect(passageQualityFactor(tenWords).applied).toBe(false);
 		mockQdrantClient.search.mockResolvedValue([
-			{ score: 0.8, payload: { task_id: 'task-ok', content: fortyChars, host_os: 'h1' } }
+			{ score: 0.8, payload: { task_id: 'task-ok', content: tenWords, host_os: 'h1' } }
 		]);
 
 		const result = await searchTasksByContentTool.handler(
@@ -2867,8 +2918,9 @@ describe('#2609 q4 cross-conversation quality — fragment de-rank', () => {
 		expect(parsed.current_machine.fragment_malus).toBeUndefined();
 	});
 
-	test('threshold measured on trimmed content (padding cannot dodge the malus)', async () => {
-		// 10 chars of text + 40 chars of whitespace → still a fragment
+	test('word count is measured on trimmed content (padding cannot dodge the malus)', async () => {
+		// The text is a 2-word fragment padded with whitespace — trimming is what
+		// keeps the measurement about the passage, not about the padding.
 		mockQdrantClient.search.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 'task-pad', content: ' est close.'.padEnd(50, ' '), host_os: 'h1' } }
 		]);
@@ -2881,7 +2933,7 @@ describe('#2609 q4 cross-conversation quality — fragment de-rank', () => {
 		);
 
 		const parsed = JSON.parse(getTextContent(result));
-		expect(parsed.results[0].best_score).toBeCloseTo(0.8 * 0.85, 8);
+		expect(parsed.results[0].best_score).toBeCloseTo(0.8 * passageQualityFactor(' est close.').factor, 8);
 		expect(parsed.current_machine.fragment_malus.applied).toBe(1);
 	});
 
@@ -2904,6 +2956,47 @@ describe('#2609 q4 cross-conversation quality — fragment de-rank', () => {
 		expect(parsed.current_machine.fragment_malus).toMatchObject({ applied: 0, enabled: false });
 	});
 
+	test('A/B arm: SEMANTIC_FRAGMENT_MALUS=legacy restores the pre-V3 binary 40-char rule verbatim', async () => {
+		// The arm the A/B measured against must stay reproducible, otherwise the
+		// comparison dies with the code it compared to. Binary rule: ANY trimmed
+		// content below 40 chars pays the full 0.85, whatever its word count.
+		process.env.SEMANTIC_FRAGMENT_MALUS = 'legacy';
+		const fortyChars = 'x'.repeat(40); // one "word", but 40 chars → untouched by legacy
+		const cjkLong = 'モデルが期待どおりに推論を完了したことが、この会話の決定事項として記録されています。'.repeat(2);
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.9, payload: { task_id: 'task-under', content: 'a one two three four five', host_os: 'h1' } },
+			{ score: 0.9, payload: { task_id: 'task-over', content: fortyChars, host_os: 'h1' } },
+			// r2: the CJK word counting must not shift the legacy arm — a
+			// >= 40-char Han passage was untouched before and stays untouched.
+			{ score: 0.9, payload: { task_id: 'task-cjk', content: cjkLong, host_os: 'h1' } },
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		const under = parsed.results.find((r: any) => r.taskId === 'task-under');
+		const over = parsed.results.find((r: any) => r.taskId === 'task-over');
+		const cjk = parsed.results.find((r: any) => r.taskId === 'task-cjk');
+		expect(under.best_score).toBeCloseTo(0.9 * 0.85, 8); // 26 chars → floor
+		expect(over.best_score).toBe(0.9);                    // 40 chars → untouched
+		expect(cjk.best_score).toBe(0.9);                     // >= 40 chars → untouched, arm unshifted
+		expect(parsed.current_machine.fragment_malus).toMatchObject({
+			signal: 'legacy',
+			min_chars: 40,
+			factor: 0.85,
+			enabled: true,
+		});
+		// Proof the arms really differ: V3 (default) leaves the 40-char run alone
+		// too, but taxes the 6-word phrase only partially.
+		expect(passageQualityFactor('a one two three four five').factor).toBeLessThan(1);
+		expect(passageQualityFactor('a one two three four five').factor).toBeGreaterThan(0.85);
+	});
+
 	test('fragment is de-ranked, never hidden — sole hit still returned', async () => {
 		mockQdrantClient.search.mockResolvedValue([
 			{ score: 0.9, payload: { task_id: 'task-only', content: ' oui.', host_os: 'h1' } }
@@ -2918,9 +3011,9 @@ describe('#2609 q4 cross-conversation quality — fragment de-rank', () => {
 
 		const parsed = JSON.parse(getTextContent(result));
 		expect(parsed.results).toHaveLength(1);
-		expect(parsed.results[0].best_score).toBeCloseTo(0.9 * 0.85, 8);
-		// Relevance is reinterpreted from the adjusted score (0.765 stays 'good',
-		// but a 0.78 fragment would read 'moderate' — label follows rendered score)
+		expect(parsed.results[0].best_score).toBeCloseTo(0.9 * passageQualityFactor(' oui.').factor, 8);
+		// Relevance is reinterpreted from the adjusted score (label follows the
+		// rendered score, never the raw ANN one).
 		expect(parsed.results[0].relevance).toBe('good');
 	});
 });
@@ -2993,7 +3086,10 @@ describe('#4352 machine-output de-rank', () => {
 		expect(parsed.current_machine.machine_output_malus).toBeUndefined();
 	});
 
-	test('stacks with the fragment malus on a short tool call', async () => {
+	test('r2 — a short machine output pays exactly ONE factor: the machine ×0.85, never the ramp on top', async () => {
+		// Review pt 1: `Bash: ls` is 2 "words" — r1 stacked the thinness ramp
+		// (0.88) UNDER the machine ×0.85, taxing the same defect twice against
+		// the PR's own doc block. The ramp now skips classified machine output.
 		mockQdrantClient.search.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 'task-call', chunk_type: 'tool_interaction', content: 'Bash: ls', host_os: 'h1' } }
 		]);
@@ -3006,7 +3102,9 @@ describe('#4352 machine-output de-rank', () => {
 		);
 
 		const parsed = JSON.parse(getTextContent(result));
-		expect(parsed.results[0].best_score).toBeCloseTo(0.8 * 0.85 * 0.85, 8);
+		expect(parsed.results[0].best_score).toBeCloseTo(0.8 * 0.85, 8);
+		// The ramp did not fire on machine output — quiet, exactly one scale.
+		expect(parsed.current_machine.fragment_malus).toBeUndefined();
 		expect(parsed.current_machine.machine_output_malus.by_kind).toEqual({ tool_call: 1 });
 	});
 
