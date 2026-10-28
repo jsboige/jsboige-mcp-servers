@@ -11,6 +11,9 @@
  * Message format: ### [2026-05-03T20:08:15.436Z] myia-po-2024|roo-extensions
  *
  * @module utils/dashboard-activity
+ * @version 3.4.0 (#4344 residual: per-machine attempt ceilings — one dead
+ *               machine no longer taxes every health call, a no-live-line
+ *               machine is concluded fast instead of paying the whole budget)
  * @version 3.3.0 (#4344 re-review, ms#1532: per-call ceiling on archive file
  *               reads — G: is the fleet SPOF (#4131), per-request tool paths
  *               must not spend unbounded seconds in the archive walk)
@@ -47,6 +50,28 @@ const DASHBOARD_MSG_PATTERN = /^###\s*\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\]\s*(\S+)/g
  * consumes one unit, so an unreadable archive directory cannot re-arm the walk.
  */
 export const MAX_ARCHIVE_READS_PER_CALL = 200;
+
+/**
+ * #4344 residual (dispatch ai-01 28/10, from po-2027's cost verdict): the
+ * per-call ceiling alone let ONE dead machine tax every health call. Two
+ * per-machine DEFAULTS now bound the walk for each machine independently:
+ *
+ * - a machine WITH a live floor (e.g. myia-po-2026, floor 09/10, dead since)
+ *   walks at most MAX_ARCHIVE_READS_PER_MACHINE files newer than its floor —
+ *   measured ~11.7 s burned per health call on that machine alone, every call;
+ * - a machine with NO live line can only ever be resolved by a HIT (the date
+ *   rule needs a `best`, which is empty), so it paid the ENTIRE per-call
+ *   budget before the honest #3160 null — 108 s measured. The typical #3695
+ *   recovery (recently condensed out while alive) sits in the newest handful
+ *   of files, so MAX_ARCHIVE_READS_NO_FLOOR newest-first attempts cover it;
+ *   beyond that its lastSeen predates every actionable threshold anyway.
+ *
+ * Like the per-call ceiling, these count ATTEMPTS, not successes (ms#1532 r3).
+ * A machine dropped at its ceiling keeps its bounded best (#3160) — the stale
+ * live floor for a floor-carrying machine, the honest null for a no-floor one.
+ */
+export const MAX_ARCHIVE_READS_PER_MACHINE = 50;
+export const MAX_ARCHIVE_READS_NO_FLOOR = 25;
 
 /**
  * Default activity threshold (8 hours).
@@ -239,17 +264,21 @@ export function crossCheckWithDashboard(
  * live values beat the newest archive, and the scan stops as soon as every
  * machine is resolved.
  *
- * Honest residuals (review ms#1532), owned by the future RX123 cap:
+ * Honest residuals (review ms#1532 + #4344 residual fix, 28/10):
  * - the archive DIRECTORY LISTING is now paid on every call (the guard went
  *   from "some machine missing from live" to "registry non-empty") — zero
  *   file read is not zero cost, only the cheapest possible probe;
  * - a machine PRESENT in live (has a floor) but appearing in NO archive is
- *   never resolved by the date rule and reads until the per-call budget
- *   (MAX_ARCHIVE_READS_PER_CALL) cuts the walk: the date bound can only
- *   prove "nothing newer exists above the floor", it cannot prove "nothing
- *   anywhere below" without reading. When the budget cuts, the machine
- *   keeps its bounded best (the stale live floor, an honest lower bound
- *   #3160) — never unbounded G: seconds on a per-request path.
+ *   never resolved by the date rule: the date bound can only prove "nothing
+ *   newer exists above the floor", it cannot prove "nothing anywhere below"
+ *   without reading. Its walk is now cut at its OWN ceiling
+ *   (MAX_ARCHIVE_READS_PER_MACHINE), not the per-call budget — one dead
+ *   machine cannot tax the whole call — and it keeps its bounded best (the
+ *   stale live floor, an honest lower bound #3160). A machine with NO live
+ *   line, resolvable only by a hit, is concluded after
+ *   MAX_ARCHIVE_READS_NO_FLOOR attempts (the typical #3695 recovery sits in
+ *   the newest handful of files) — never unbounded G: seconds on a
+ *   per-request path.
  *
  * Phantom headers: bodies quoting a `### [ts] machine|ws` line are escaped by
  * the writers (FIX #1123 live, #4344 archive) so the header regex below never
@@ -300,6 +329,21 @@ export function lookupMachineActivityInArchives(
 	};
 
 	let filesRead = 0;
+	// #4344 residual (dispatch 28/10): the budget is bounded PER MACHINE. A
+	// single dead machine (stale floor, ~1 900 archives newer than it) used to
+	// consume the whole per-call budget on every health call (~11.7 s measured),
+	// and a machine with NO live line — resolvable only by a hit, since the
+	// date rule needs a `best` — paid the entire budget before the honest
+	// #3160 null (108 s measured). Each machine now gets its own attempt
+	// ceiling: MAX_ARCHIVE_READS_PER_MACHINE when it carries a live floor,
+	// MAX_ARCHIVE_READS_NO_FLOOR when it does not (the typical #3695 recovery
+	// sits in the newest handful of files). Attempts count (ms#1532 r3), so an
+	// unreadable G: cannot re-arm a machine's walk either. A dropped machine
+	// keeps its bounded best; the walk continues for the others.
+	const attemptsPerMachine = new Map<string, number>();
+	const machineBudget = (machineId: string): number =>
+		floors?.get(machineId) ? MAX_ARCHIVE_READS_PER_MACHINE : MAX_ARCHIVE_READS_NO_FLOOR;
+
 	for (const file of archiveFiles) {
 		if (wanted.size === 0) break;
 
@@ -325,6 +369,22 @@ export function lookupMachineActivityInArchives(
 			);
 			break;
 		}
+
+		// #4344 residual: spend this attempt on every still-wanted machine and
+		// drop each one whose OWN ceiling is exhausted — before the fold, so a
+		// dropped machine cannot benefit from the read that dropped it.
+		for (const machineId of [...wanted]) {
+			const spent = (attemptsPerMachine.get(machineId) ?? 0) + 1;
+			attemptsPerMachine.set(machineId, spent);
+			const budget = machineBudget(machineId);
+			if (spent > budget) {
+				wanted.delete(machineId);
+				logger.warn(
+					`Archive lookup exhausted the per-machine read budget (${budget} files) for ${machineId} - keeping its bounded best (#4344)`
+				);
+			}
+		}
+		if (wanted.size === 0) break;
 
 		// Count the ATTEMPT, not the successful read (ms#1532 r3). A throwing
 		// read — unstable G:, the very failure mode the budget exists for
