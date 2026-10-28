@@ -46,6 +46,20 @@ export default defineConfig({
     globalSetup: './tests/config/globalSetup.ts',
     testTimeout: 15000,
     hookTimeout: 30000,
+
+    // #4131 item 3 (A) — default-deny : voir vitest.config.ts (même bloc, même
+    // raison). Ce fichier est la BASE de vitest.config.ci.ts (mergeConfig) —
+    // la CI hérite donc du pin sans le répéter.
+    env: {
+      UNIFIED_STORE_PG_URL: '',
+      UNIFIED_STORE_DUAL_WRITE: '',
+      UNIFIED_STORE_CHANNEL_READ_PG: '',
+      UNIFIED_STORE_CHANNEL_PG_PRIMARY: '',
+      UNIFIED_STORE_DASHBOARD_READ_PG: '',
+      UNIFIED_STORE_DASHBOARD_PG_PRIMARY: '',
+      EMBEDDING_OPS_PER_MINUTE: '',
+    },
+
     pool: 'forks',
     poolOptions: {
       forks: {

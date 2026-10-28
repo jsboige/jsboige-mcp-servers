@@ -73,8 +73,15 @@ const MKDTEMP_CALL = /mkdtemp\w*\s*\(/;
  * contenu des chaînes et gabarits (un `/tmp/` dans un gabarit est un vrai
  * chemin). Scan à états : aperçu simple, pas un parseur — les limites sont
  * énumérées dans l'en-tête du fichier.
+ *
+ * `blankStrings` (revue ms#1547) : remplace le CONTENU des chaînes et gabarits
+ * par des espaces (guillemets et `${…}` conservés, longueur et lignes
+ * identiques). Pour `parenBalance` : une parenthèse DANS un littéral
+ * (`'str('`) ne doit pas compter — sans cela, la ligne suivante était
+ * exemptée comme « continuation » d'un appel qui n'en était pas un.
  */
-function stripComments(source: string): string {
+function stripComments(source: string, opts?: { blankStrings?: boolean }): string {
+    const blank = opts?.blankStrings === true;
     let out = '';
     let i = 0;
     const n = source.length;
@@ -118,16 +125,25 @@ function stripComments(source: string): string {
 
         if (state === 'single' || state === 'double') {
             const quote = state === 'single' ? "'" : '"';
-            if (c === '\\') { out += c + next; i += 2; continue; }
+            // Échappement : le `next` reste VERBATIM même en blanking — un
+            // `\<newline>` (continuation de ligne) doit garder son retour à la
+            // ligne, sinon les deux passes n'ont plus le même nombre de lignes.
+            if (c === '\\') { out += (blank ? ' ' : c) + next; i += 2; continue; }
             if (c === quote) state = 'code';
-            out += c; i++; continue;
+            // Jamais blanker un '\n' (chaîne non fermée sur la ligne) : les deux
+            // passes doivent garder le MÊME nombre de lignes.
+            out += blank && c !== quote && c !== '\n' ? ' ' : c; i++; continue;
         }
 
         // state === 'template' — contenu verbatim (un chemin peut y vivre).
-        if (c === '\\') { out += c + next; i += 2; continue; }
+        if (c === '\\') { out += (blank ? ' ' : c) + next; i += 2; continue; }
         if (c === '`') { state = 'code'; out += c; i++; continue; }
-        if (c === '$' && next === '{') { templateStack.push(braceDepth); state = 'code'; out += '${'; i += 2; continue; }
-        out += c; i++;
+        // `${` consomme une accolade : sans le `++`, le `}` fermant décrémentait
+        // sous la valeur poussée, le pop ne se déclenchait jamais et le scanner
+        // restait en état code — le reste du gabarit était alors traité comme du
+        // code (parenthèses comptées, contenu non blanké).
+        if (c === '$' && next === '{') { templateStack.push(braceDepth); braceDepth++; state = 'code'; out += '${'; i += 2; continue; }
+        out += blank && c !== '\n' ? ' ' : c; i++;
     }
     return out;
 }
@@ -150,18 +166,24 @@ function parenBalance(text: string): number {
  */
 function offendingLines(source: string): number[] {
     const lines = stripComments(source).split('\n');
+    // Revue ms#1547 : le solde de parenthèses se calcule sur le source sans le
+    // CONTENU des chaînes — une `'('` dans un littéral n'ouvre rien. Les
+    // détections (base, jeton, appel) restent sur `lines` : les chemins fautifs
+    // vivent précisément dans ces chaînes.
+    const linesNoStrings = stripComments(source, { blankStrings: true }).split('\n');
     const offenders: number[] = [];
     let openCallDepth = 0;
 
     for (let i = 0; i < lines.length; i++) {
         const line = lines[i];
+        const lineNoStrings = linesNoStrings[i];
         const continuesCall = openCallDepth > 0;
         const callAt = line.search(MKDTEMP_CALL);
 
         if (continuesCall) {
-            openCallDepth = Math.max(0, openCallDepth + parenBalance(line));
+            openCallDepth = Math.max(0, openCallDepth + parenBalance(lineNoStrings));
         } else if (callAt >= 0) {
-            openCallDepth = Math.max(0, parenBalance(line.slice(callAt)));
+            openCallDepth = Math.max(0, parenBalance(lineNoStrings.slice(callAt)));
         }
 
         const exempt = continuesCall || callAt >= 0;
@@ -313,6 +335,21 @@ describe('ms#1539 — prédicat : chemin temporaire unique fait main', () => {
     it('une continuation multi-ligne d\'un appel mkdtemp est dispensée', () => {
         const multiline = 'const d = await mkdtemp(\n  join(tmpdir(), `cont-${Date.now()}`)\n);';
         expect(isViolation(multiline)).toBe(false);
+    });
+
+    it('W4 (revue ms#1547) — une parenthèse DANS une chaîne de l\'appel mkdtemp ne crée plus de continuation fantôme', () => {
+        // La fuite : le littéral `'x('` laissait le solde de l'appel à +1 après
+        // sa dernière vraie parenthèse fermante — la ligne FAUTIVE suivante
+        // était exemptée comme « continuation » d'un appel déjà refermé.
+        const sneaky = "const d = await mkdtemp(join(tmpdir(), 'x('));\nconst bad = join(tmpdir(), `ghost-${randomUUID()}`);";
+        expect(isViolation(sneaky)).toBe(true);
+    });
+
+    it('W4 (revue ms#1547) — une parenthèse dans un GABARIT de la continuation non plus', () => {
+        // Forme multi-ligne de la même fuite : le ` (unclosed` du gabarit
+        // laisse le solde à 1 après la fermeture réelle de l'appel.
+        const sneakyTpl = 'const d = await mkdtemp(\n  join(tmpdir(), `staging-${Date.now()} (unclosed`)\n);\nconst bad = join(tmpdir(), `ghost-${randomUUID()}`);';
+        expect(isViolation(sneakyTpl)).toBe(true);
     });
 
     it('jeton d\'unicité seul, sans base temporaire sur la ligne : permis', () => {
