@@ -50,6 +50,8 @@ export interface SkeletonMetadata {
     machineId?: string;
     qdrantIndexedAt?: string; // DEPRECATED - utiliser indexingState.lastIndexedAt
     dataSource?: string;
+    /** #4151 — quel store a servi le corps hydraté. `dataSource` reste le discriminant de TIER ('gdrive-archive'), ceci est la provenance du CORPS (ms#1549 review). */
+    hydratedFrom?: 'pg' | 'gdrive';
     /** #3661 — Tier 3 stub: sequence vide, corps chargé à la demande. */
     hydrated?: boolean;
     /** #3661 — Tier 3 stub: fichier archive GDrive backing cette entrée. */

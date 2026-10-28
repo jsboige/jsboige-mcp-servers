@@ -933,6 +933,10 @@ describe('SkeletonCacheService', () => {
 			expect(cache.get('t-pg')!.sequence[0]).toMatchObject({ role: 'user', content: 'pg-body' });
 			// Le messageCount du store fait foi sur le repli du stub.
 			expect(cache.get('t-pg')!.metadata.messageCount).toBe(7);
+			// Provenance du corps (ms#1549 review) : 'gdrive-archive' comme
+			// dataSource serait un mensonge — le corps vient du store PG.
+			expect(cache.get('t-pg')!.metadata.hydratedFrom).toBe('pg');
+			expect(cache.get('t-pg')!.metadata.dataSource).toBe('gdrive-archive'); // discriminant de tier inchangé
 			// G: pas lu pour ce corps : c'est le contrat S2 (lazy G:).
 			expect(mockReadArchivedTaskFromPath.mock.calls.length).toBe(readsBefore);
 		});
@@ -947,6 +951,7 @@ describe('SkeletonCacheService', () => {
 			expect(await service.ensureConversationHydrated('t-gd')).toBe(true);
 			const cache = await service.getCache();
 			expect(cache.get('t-gd')!.sequence[0]).toMatchObject({ role: 'user', content: 'needle-in-archive' });
+			expect(cache.get('t-gd')!.metadata.hydratedFrom).toBe('gdrive');
 			expect(mockReadArchivedTaskFromPath).toHaveBeenCalled();
 		});
 

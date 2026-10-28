@@ -937,6 +937,10 @@ export class SkeletonCacheService {
             if (pgSkeleton && pgSkeleton.sequence.length > 0) {
                 entry.sequence = pgSkeleton.sequence;
                 entry.metadata.hydrated = true;
+                // Provenance du corps (ms#1549 review) : dataSource reste le
+                // discriminant de tier ('gdrive-archive'), hydratedFrom dit quel
+                // store a réellement servi — 'gdrive-archive' serait un mensonge ici.
+                entry.metadata.hydratedFrom = 'pg';
                 // Le messageCount du store fait foi sur le repli du stub.
                 const pgMessageCount = pgSkeleton.metadata?.messageCount;
                 if (typeof pgMessageCount === 'number' && pgMessageCount > 0) {
@@ -948,8 +952,10 @@ export class SkeletonCacheService {
                 this.enforceTier3Cap(taskId);
                 return true;
             }
-        } catch {
-            // PG indisponible pour CE corps : repli G: inchangé ci-dessous.
+        } catch (error) {
+            // PG indisponible pour CE corps : repli G: ci-dessous. Silencieux =
+            // invisible en diagnostic (ms#1549 review) — trace au niveau debug.
+            console.debug(`[SkeletonCacheService] Tier 3: PG body unavailable for ${taskId}, falling back to GDrive:`, error instanceof Error ? error.message : error);
         }
 
         const filePath = entry.metadata?.archiveFilePath ?? this.tier3Index.get(taskId)?.filePath;
@@ -962,6 +968,7 @@ export class SkeletonCacheService {
             const skeleton = archiveToSkeleton(archive);
             entry.sequence = skeleton.sequence;
             entry.metadata.hydrated = true;
+            entry.metadata.hydratedFrom = 'gdrive';
             // La metadata du stub peut avoir un messageCount de repli ; celle
             // de l'archive complete fait foi.
             entry.metadata.messageCount = skeleton.metadata?.messageCount ?? entry.metadata.messageCount;

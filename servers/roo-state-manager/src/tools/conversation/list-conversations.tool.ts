@@ -520,7 +520,7 @@ export const listConversationsTool = {
                 },
                 waitForArchives: {
                     type: 'boolean',
-                    description: '#3255 — Si true, attend le chargement Tier 3 (budget borne 45s). Default: false = rendu local immediat, archives servies seulement si le cache est deja frais (reponse porte tier3.status=loading sinon). Clé camelCase sur le wire, comme includeArchives.'
+                    description: '#3255 — Si true, attend le chargement Tier 3 (budget borne 45s). Default: false = rendu local immediat, archives servies seulement si le cache est deja frais. #4151 : sur un siege PG, la couverture cross-machine peut venir du tier conversation PG — la réponse porte alors tier3.status=ready avec tier3.source=\'pg\' (et tier3.archive_status = l\'état GDrive d\'origine), même si tier3 G: est loading. Clé camelCase sur le wire, comme includeArchives.'
                 },
             },
         },
@@ -623,7 +623,14 @@ export const listConversationsTool = {
         // pre-#3255 behavior — for callers who need archives in THIS response.
         // Either way the response carries a deterministic tier3 status instead
         // of the old "Retry shortly" advice with nothing to retry against.
-        let tier3Info: { status: 'ready' | 'loading' | 'failed'; cache_age_ms: number | null; source?: 'gdrive' | 'pg' } | undefined;
+        let tier3Info: {
+            status: 'ready' | 'loading' | 'failed';
+            cache_age_ms: number | null;
+            /** Which store actually served the cross-machine coverage this response relies on. */
+            source?: 'gdrive' | 'pg';
+            /** GDrive archive tier state BEFORE the PG overlay — kept when source='pg' so the G: diagnosis (loading vs failed) is not erased (ms#1549 review pt 3). */
+            archive_status?: 'loading' | 'failed';
+        } | undefined;
         if (args.includeArchives) {
             let tier3Status: 'ready' | 'loading' | 'failed' = 'failed';
             let cacheAgeMs: number | null = null;
@@ -684,7 +691,13 @@ export const listConversationsTool = {
                 archiveNotice = `tier3_status=failed: ${archiveError instanceof Error ? archiveError.message : archiveError} (showing local results only)`;
                 console.warn('⚠️ list_conversations: Archive tier read failed (continuing without archives):', archiveError instanceof Error ? archiveError.message : archiveError);
             }
-            tier3Info = { status: tier3Status, cache_age_ms: cacheAgeMs };
+            tier3Info = {
+                status: tier3Status,
+                cache_age_ms: cacheAgeMs,
+                // The G: archive scan IS the source when it is the one that served
+                // — 'gdrive' was declared but never emitted before (ms#1549 review).
+                ...(tier3Status === 'ready' ? { source: 'gdrive' as const } : {}),
+            };
         }
 
         // Tier PG (unified store) — opt-in behind UNIFIED_STORE_CONVERSATION_READ_PG.
@@ -708,6 +721,9 @@ export const listConversationsTool = {
             epoch1970_filtered?: number;
             error?: string;
         } | undefined;
+        // #4151 S1 (review pt 1): contribution asserted AFTER the filters — the
+        // taskIds the PG tier contributed are captured here, before they run.
+        const pgTaskIds = new Set<string>();
         if (getConversationListPgReader()) {
             // Dedup against EVERY tier already loaded (Roo cache + Claude + archives),
             // not just conversationCache: a local skeleton always wins over its PG row,
@@ -737,6 +753,7 @@ export const listConversationsTool = {
                 alreadyPresent,
             );
             const pgDuration = Date.now() - pgStart;
+            for (const s of pgResult.skeletons) pgTaskIds.add(s.taskId);
             if (pgResult.skeletons.length > 0) {
                 allSkeletons = allSkeletons.concat(pgResult.skeletons);
                 console.log(`[list_conversations] PG tier contributed ${pgResult.skeletons.length} conversations (${pgResult.rows_read} rows read, ${pgDuration}ms)`);
@@ -752,34 +769,8 @@ export const listConversationsTool = {
             };
         }
 
-        // #4151 S1 — statut honnête : quand le tier PG a servi la couverture
-        // cross-machine, la réponse le DIT au lieu de prescrire un re-call G:
-        // que le warm-up ne convergera jamais à servir (mesuré 27/10 : G: 32,1 s
-        // vs PG 14 ms ; le warm-up tier3 n'aboutit pas sur les sièges Claude-only,
-        // corroboré 09/10→15/10). Aucune donnée nouvelle : c'est la sémantique du
-        // statut rendu qui devient honnête. Les deux branches :
-        //  - PG a contribué (status=ready, contribution > 0) → tier3 rendu
-        //    ready/source=pg, la notice de repli G: est REMPLACÉE ;
-        //  - aucune couverture cross-machine (tier3 G: loading/failed ET aucune
-        //    contribution PG) → la notice le nomme en clair (« flotte partielle »)
-        //    au lieu de laisser croire que la liste est la flotte entière.
-        if (args.includeArchives) {
-            // Valeurs dérivées avant les branches : le narrowing par alias ne
-            // traverse pas la réassignation de archiveNotice ci-dessous.
-            const pgContributed = pgTierInfo !== undefined && pgTierInfo.status === 'ready'
-                ? pgTierInfo.contributed
-                : 0;
-            const pgTruncated = pgTierInfo?.truncated ?? false;
-            if (pgContributed > 0 && tier3Info && tier3Info.status !== 'ready') {
-                tier3Info = { ...tier3Info, status: 'ready', source: 'pg' };
-                archiveNotice = `tier3_status=ready (source=pg): cross-machine coverage served by the PG conversation tier (${pgContributed} conversations contributed${pgTruncated ? ', list capped — see pg_tier.truncated' : ''}); no GDrive warm-up required.`;
-            } else if (pgContributed === 0 && tier3Info && tier3Info.status !== 'ready') {
-                const distinctMachines = new Set(
-                    allSkeletons.map(s => s.metadata?.machineId).filter((m): m is string => typeof m === 'string' && m.length > 0)
-                ).size;
-                archiveNotice = `${archiveNotice ?? ''} Couverture cross-machine non servie : flotte partielle (${distinctMachines} machine${distinctMachines === 1 ? '' : 's'} dans les résultats, sources locales seules).`;
-            }
-        }
+        // #4151 S1 — l'overlay honnête est appliqué APRÈS les filtres (review
+        // pts 1-2) : voir le bloc dédié sous le filtre contentPattern.
 
         // #1394 (Phase 4 #1360) — Filtres de niveau header + tri via la projection
         // UnifiedTask. Parité comportementale avec l'implémentation legacy assertée
@@ -856,6 +847,57 @@ export const listConversationsTool = {
             }
 
             allSkeletons = matchingTasks;
+        }
+
+        // #4151 S1 — statut honnête, calculé sur ce qui SURVIT aux filtres
+        // (review pts 1-3). Le warm-up G: ne convergera jamais à servir la
+        // couverture cross-machine sur un siège PG (mesuré 27/10 : G: 32,1 s
+        // vs PG 14 ms) ; la réponse doit le dire — sans effacer le diagnostic
+        // G: (loading vs failed) ni annoncer une couverture que les filtres
+        // viennent de vider.
+        if (args.includeArchives && tier3Info && tier3Info.status !== 'ready') {
+            const pgServedCount = pgTierInfo?.status === 'ready'
+                ? allSkeletons.filter(s => pgTaskIds.has(s.taskId)).length
+                : 0;
+            const pgTierReady = pgTierInfo !== undefined && pgTierInfo.status === 'ready';
+            const pgTruncated = pgTierInfo?.truncated ?? false;
+            // Review pt 2 : sur une requête SCOPÉE (machineId/workspace/
+            // contentPattern), personne n'a demandé la couverture flotte —
+            // la phrase « flotte partielle » n'y décrit pas la réponse.
+            const scopedQuery = Boolean(
+                (args.machineId && args.machineId.trim().length > 0) ||
+                (args.workspace && args.workspace.trim().length > 0) ||
+                (args.contentPattern && args.contentPattern.trim().length > 0)
+            );
+            if (pgTierReady && pgServedCount > 0) {
+                // Review pt 3 : le statut G: d'origine (loading|failed) est
+                // conservé dans archive_status, le DIAGNOSTIC G: survit en
+                // suffixe — mais sa PRESCRIPTION (« re-call once ready », qui ne
+                // converge jamais sur un siège PG) est amputée, c'était le cœur
+                // du défaut initial.
+                tier3Info = { ...tier3Info, status: 'ready', source: 'pg', archive_status: tier3Info.status };
+                const gdriveDiagnosis = (archiveNotice ?? '')
+                    .split(' Deterministic options:')[0]
+                    .trim();
+                archiveNotice =
+                    `tier3_status=ready (source=pg; gdrive=${tier3Info.archive_status}): cross-machine coverage served by the PG conversation tier ` +
+                    `(${pgServedCount} in this response${pgTierInfo!.contributed !== pgServedCount ? `, ${pgTierInfo!.contributed} before filters` : ''}` +
+                    `${pgTruncated ? ', list capped — see pg_tier.truncated' : ''}); no GDrive warm-up required.` +
+                    (gdriveDiagnosis ? ` gdrive: ${gdriveDiagnosis}` : '');
+            } else if (pgTierReady && pgTierInfo!.contributed > 0) {
+                // PG a contribué mais AUCUNE de ses lignes ne survit aux filtres
+                // (review pt 1) : ne pas réclamer une couverture servie, ne pas
+                // non plus crier « flotte partielle » — dire ce qui s'est passé.
+                archiveNotice = `${archiveNotice ?? ''} PG tier ready (${pgTierInfo!.contributed} contributed before filters); none of its rows survive this query's filters.`;
+            } else if (!scopedQuery && pgServedCount === 0) {
+                // Aucune couverture cross-machine servie (G: loading/failed ET
+                // aucune ligne PG dans la réponse), requête non scopée :
+                // compter les machines sur les résultats FILTRÉS (review pt 2).
+                const distinctMachines = new Set(
+                    allSkeletons.map(s => s.metadata?.machineId).filter((m): m is string => typeof m === 'string' && m.length > 0)
+                ).size;
+                archiveNotice = `${archiveNotice ?? ''} Couverture cross-machine non servie : flotte partielle (${distinctMachines} machine${distinctMachines === 1 ? '' : 's'} dans les résultats, sources locales seules).`;
+            }
         }
 
         // Tri — appliqué par applyUnifiedHeaderFiltersAndSort (#1394) sur la
