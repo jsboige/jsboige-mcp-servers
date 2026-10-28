@@ -1412,26 +1412,27 @@ export async function getIndexRequestsPath(machineId: string): Promise<string> {
  * #4352 g3/g6 — persist an index request for the machine's indexing leader.
  * Safe from a follower: the leader's tick consumes it (≤ one interval).
  *
- * g6 adds the `reset` kind: a `cleanup_failed` reset must reach the leader,
- * because `saveSkeletonToDisk` silently returns for claude-* skeletons (guard
- * #1325 — header-only, no per-task file on disk) and the leader rewrites
- * `_skeleton_index.json` from ITS OWN cache, where the task is still `failed`.
- * A line without `kind` (pre-g6 format, possibly in flight during the rollout)
- * is consumed as an `index` request — backward compatible by construction.
+ * g6 (extended, c.6460303351): the leader resets the skeleton's indexingState
+ * in ITS OWN cache when it consumes a request, persists, and only then
+ * enqueues. Without the reset the leader's decision drops the task as `failed`
+ * (indexing-decision.ts:72-77) and the delegated request is a no-op — the
+ * follower printed `reset_indexing_state:true` in its own memory only, and
+ * `saveSkeletonToDisk` silently returns for claude-* skeletons (guard #1325),
+ * so nothing ever reached the leader's rewrite of `_skeleton_index.json`.
+ * One request type serves both `index` (re-index from a follower) and
+ * `cleanup_failed` (reset + retry in one request).
  */
-export type IndexRequestKind = 'index' | 'reset';
-
-export async function requestQueuedIndex(taskId: string, machineId: string, kind: IndexRequestKind = 'index'): Promise<void> {
-    await requestQueuedIndexBatch([taskId], machineId, kind);
+export async function requestQueuedIndex(taskId: string, machineId: string): Promise<void> {
+    await requestQueuedIndexBatch([taskId], machineId);
 }
 
-/** #4352 g6 — batch flavour: one append for a cleanup_failed run (N resets, 1 write). */
-export async function requestQueuedIndexBatch(taskIds: string[], machineId: string, kind: IndexRequestKind = 'index'): Promise<void> {
+/** #4352 g6 — batch flavour: one append for a whole run (N tasks, 1 write). */
+export async function requestQueuedIndexBatch(taskIds: string[], machineId: string): Promise<void> {
     if (taskIds.length === 0) return;
     const requestsPath = await getIndexRequestsPath(machineId);
     const requestedAt = Date.now();
     const body = taskIds
-        .map(taskId => JSON.stringify({ kind, taskId, requestedAt, requestedByPid: process.pid }))
+        .map(taskId => JSON.stringify({ taskId, requestedAt, requestedByPid: process.pid }))
         .join('\n') + '\n';
     await fs.appendFile(requestsPath, body);
 }
@@ -1452,12 +1453,14 @@ export async function hasPendingIndexRequests(machineId: string): Promise<boolea
  * a corrupt request file — a bad line is skipped, the rest still applies).
  * Returns the task ids actually consumed.
  *
- * g6 `reset` requests: reset the skeleton's indexingState in the LEADER's cache
- * (the only cache whose rewrite reaches `_skeleton_index.json`) and lift the
- * dead-letter pin, WITHOUT enqueueing — matching cleanup_failed semantics, the
- * refresh scan requeues transient classes on its own cadence. The consumed
- * resets are persisted immediately via saveSkeletonIndex (the refresh-path save
- * is conditional on updatedCount>0, so waiting for it could lose the reset).
+ * g6 (extended): each consumed request resets the skeleton's indexingState in
+ * the LEADER's cache — the only cache whose rewrite reaches
+ * `_skeleton_index.json` — lifts the dead-letter pin, and enqueues for the
+ * retry, in that order. The reset must happen BEFORE the enqueue, else the
+ * leader's decision drops the task as `failed` (indexing-decision.ts:72-77).
+ * The consumed resets are persisted immediately via saveSkeletonIndex (the
+ * refresh-path save is conditional on updatedCount>0, so waiting for it could
+ * lose the reset).
  */
 export async function consumePendingIndexRequests(state: ServerState): Promise<string[]> {
     const requestsPath = await getIndexRequestsPath(state.machineId);
@@ -1471,7 +1474,6 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
     }
     const consumed: string[] = [];
     let consumedResets = 0;
-    let unappliedResets = 0;
     try {
         const content = await fs.readFile(consumedPath, 'utf-8');
         for (const line of content.split('\n')) {
@@ -1487,23 +1489,18 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
             if (!taskId) continue;
             state.deadLetterQueue?.delete(taskId);
             state.deadLetterDetails?.delete(taskId);
-            // g6: a reset line only resets + unpins; only an index line enqueues.
-            // A missing `kind` is a pre-g6 line — index (backward compatible).
-            if (parsed?.kind === 'reset') {
-                const skeleton = state.conversationCache?.get(taskId);
-                if (skeleton?.metadata?.indexingState) {
-                    const { IndexingDecisionService } = await import('./indexing-decision.js');
-                    new IndexingDecisionService().resetIndexingState(skeleton);
-                    consumedResets++;
-                } else {
-                    // Not in the leader's cache (or nothing to reset): nothing to
-                    // apply — the task won't be in the leader's index rewrite
-                    // either. Counted, logged, never thrown.
-                    unappliedResets++;
-                }
-            } else {
-                state.qdrantIndexQueue.add(taskId);
+            // g6: reset in the leader's own cache BEFORE enqueuing — mirror of
+            // the follower's synchronous path (`reset_indexing_state:true`),
+            // which until now never reached the leader. A task absent from the
+            // cache (or without indexingState) has nothing to reset: enqueue
+            // alone, never thrown.
+            const skeleton = state.conversationCache?.get(taskId);
+            if (skeleton?.metadata?.indexingState) {
+                const { IndexingDecisionService } = await import('./indexing-decision.js');
+                new IndexingDecisionService().resetIndexingState(skeleton);
+                consumedResets++;
             }
+            state.qdrantIndexQueue.add(taskId);
             if (!consumed.includes(taskId)) consumed.push(taskId);
         }
     } catch (error: any) {
@@ -1519,7 +1516,7 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
         });
     }
     if (consumed.length > 0) {
-        console.log(`📨 [#4352 g3/g6] Leader consumed ${consumed.length} request(s)${consumedResets > 0 ? ` (${consumedResets} reset, ${unappliedResets} reset-unapplied)` : ''}: ${consumed.join(', ')}`);
+        console.log(`📨 [#4352 g3/g6] Leader consumed ${consumed.length} request(s)${consumedResets > 0 ? ` (${consumedResets} reset before requeue)` : ''}: ${consumed.join(', ')}`);
     }
     return consumed;
 }

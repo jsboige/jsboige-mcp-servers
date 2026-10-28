@@ -1966,7 +1966,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 		expect(parsed.persisted).toBe(1);
 		expect(parsed.not_persisted).toBe(0);
 		expect(result.isError).toBeFalsy();
-		expect(mockRequestQueuedIndexBatch).toHaveBeenCalledWith(['f-1'], 'local', 'reset');
+		expect(mockRequestQueuedIndexBatch).toHaveBeenCalledWith(['f-1'], 'local');
 		// resetIndexingState must have been called.
 		expect(mockResetIndexingState).toHaveBeenCalledTimes(1);
 		// saveSkeleton callback must have been called (NOT direct disk write).
@@ -2114,7 +2114,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 		expect(parsed.persisted).toBe(0);            // …but nothing durable left the process
 		expect(parsed.not_persisted).toBe(1);
 		expect(parsed.summary).toContain('NON persistés');
-		expect(mockRequestQueuedIndexBatch).toHaveBeenCalledWith(['f-1'], 'myia-test', 'reset');
+		expect(mockRequestQueuedIndexBatch).toHaveBeenCalledWith(['f-1'], 'myia-test');
 	});
 
 	test('cleanup_failed g6: without host-process state the reset cannot persist — honest isError, no silent in-memory-only [EXECUTED]', async () => {

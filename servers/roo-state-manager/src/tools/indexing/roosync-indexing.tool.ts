@@ -1841,11 +1841,12 @@ export async function handleRooSyncIndexing(
                 // `_skeleton_index.json` from ITS OWN cache, where these tasks are
                 // still `failed` (measured 28/10, ai-01 c.6460088328: [EXECUTED]
                 // reset=100, only 1 retried, retry_count stuck at 3-6). The resets
-                // are therefore ALSO persisted as `reset` requests in the
-                // machine-local request file (same transport as g3 index requests):
-                // the leader's tick consumes them, resets its own cache copies, and
-                // saves the index. When the requests cannot be persisted, the
-                // receipt reports `not_persisted` instead of a clean [EXECUTED].
+                // are therefore ALSO persisted as requests in the machine-local
+                // request file (same transport and same request type as g3 index
+                // requests): the leader's tick consumes each one, resets its OWN
+                // cache copy, persists, and enqueues the retry. When the requests
+                // cannot be persisted, the receipt reports `not_persisted`
+                // instead of a clean [EXECUTED].
                 let notPersisted = 0;
                 let persisted = 0;
                 let persistenceMode: 'request-file' | 'unavailable' = 'request-file';
@@ -1860,7 +1861,7 @@ export async function handleRooSyncIndexing(
                         try {
                             const { requestQueuedIndexBatch } = await import('../../services/background-services.js');
                             const machineId = indexingState.machineId ?? 'local';
-                            await requestQueuedIndexBatch(resetIds, machineId, 'reset');
+                            await requestQueuedIndexBatch(resetIds, machineId);
                             persisted = resetIds.length;
                         } catch {
                             notPersisted = resetIds.length;
@@ -1873,7 +1874,7 @@ export async function handleRooSyncIndexing(
                 const mode = isDryRun ? '[DRY RUN]' : (notPersisted > 0 ? '[EXECUTED — NOT PERSISTED]' : '[EXECUTED]');
                 const summary = isDryRun
                     ? `${mode} ${candidates.length} candidats détectés pour cleanup_failed (error_class=${errorClassFilter}, max=${maxCleanup}, ${permanentCandidateCount} permanent / ${transientCandidateCount} transient). Lancez avec dry_run=false pour exécuter.`
-                    : `${mode} ${reset}/${candidates.length} squelettes réinitialisés (${deadLettered} dead-letterés permanent, ${resetForRetry} reset pour retry transient) (error_class=${errorClassFilter})${notPersisted > 0 ? ` — ⚠️ ${notPersisted} reset NON persistés (fichier de requêtes indisponible) : le leader ne les verra pas.` : ` — ${persisted} reset persistés pour le leader (consommés à son prochain tick, ≤ 5 min).`}`;
+                    : `${mode} ${reset}/${candidates.length} squelettes réinitialisés (${deadLettered} dead-letterés permanent, ${resetForRetry} reset pour retry transient) (error_class=${errorClassFilter})${notPersisted > 0 ? ` — ⚠️ ${notPersisted} reset NON persistés (fichier de requêtes indisponible) : le leader ne les verra pas.` : ` — ${persisted} reset+retry délégués au leader (consommés à son prochain tick, ≤ 5 min).`}`;
 
                 return {
                     isError: !isDryRun && notPersisted > 0,
