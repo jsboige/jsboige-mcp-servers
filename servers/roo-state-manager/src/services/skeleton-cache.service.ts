@@ -818,8 +818,12 @@ export class SkeletonCacheService {
                 if (this.cache.has(taskId)) continue;
                 if (stub.metadata.hydrated === true || (stub.sequence?.length ?? 0) > 0) {
                     // Invariant : le cache résident ne retient pas de corps au seed.
+                    // hydratedFrom part avec le corps : un stub déshydraté n'a plus
+                    // de provenance à revendiquer (sinon la signature du snapshot
+                    // dérive et force une réécriture à chaque passe).
                     stub.sequence = [];
                     stub.metadata.hydrated = false;
+                    delete stub.metadata.hydratedFrom;
                 }
                 this.cache.set(taskId, stub);
                 this.tier3Index.set(taskId, {
@@ -855,11 +859,14 @@ export class SkeletonCacheService {
             for (const skeleton of this.cache.values()) {
                 if ((skeleton as any).metadata?.dataSource !== 'gdrive-archive') continue;
                 if (skeleton.metadata?.hydrated === true || (skeleton.sequence?.length ?? 0) > 0) {
+                    // Même règle que le seed : hydratedFrom décrit le corps présent,
+                    // il est retiré avec lui pour garder la signature stable.
                     const sanitized = {
                         ...skeleton,
                         sequence: [],
                         metadata: { ...skeleton.metadata, hydrated: false },
                     } as ConversationSkeleton;
+                    delete sanitized.metadata.hydratedFrom;
                     stubs.push(sanitized);
                 } else {
                     stubs.push(skeleton);
@@ -1049,6 +1056,7 @@ export class SkeletonCacheService {
         if (skeleton && skeleton.metadata?.dataSource === 'gdrive-archive') {
             skeleton.sequence = [];
             skeleton.metadata.hydrated = false;
+            delete skeleton.metadata.hydratedFrom;
         }
         this.tier3HydratedBytes.delete(taskId);
         this.tier3HydratedTicks.delete(taskId);

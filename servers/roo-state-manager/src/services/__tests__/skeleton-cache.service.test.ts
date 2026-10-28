@@ -998,6 +998,9 @@ describe('SkeletonCacheService', () => {
 			// ~1,4 Mo > 1 Mo → local-big (le moins récent) est DÉSHYDRATÉ…
 			expect(cache.get('local-big')!.metadata.hydrated).toBe(false);
 			expect(cache.get('local-big')!.sequence).toEqual([]);
+			// La provenance décrit le corps présent : elle part avec lui (garde
+			// sanitiseur — un hydratedFrom orphelin dérive la signature snapshot).
+			expect(cache.get('local-big')!.metadata.hydratedFrom).toBeUndefined();
 			// …mais le STUB reste : l'entrée n'a pas quitté le cache.
 			expect(cache.get('local-big')!.metadata.dataSource).toBe('gdrive-archive');
 			expect(cache.get('web1-big')!.metadata.hydrated).toBe(true);
