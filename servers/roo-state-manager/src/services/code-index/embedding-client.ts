@@ -35,13 +35,17 @@ function buildCodebaseEmbeddingClient(mode: 'index' | 'query'): OpenAI {
 		apiKey,
 		baseURL: plan.baseURL,
 		// #1232: short timeout + few retries so a dead endpoint cannot hold the MCP
-		// host. 60s (not 15s) since 2026-08-25: measured 45.8s under load;
-		// maxRetries=1 → ~120s worst case, under the 180s codebase_search budget.
+		// host. 60 s (not 15 s) since 2026-08-25: measured 45.8 s under load. With
+		// failover active the SDK timeout is ONE wrapper pass: index = 60 s × 2
+		// endpoints + 5 s = 125 s, × (1 + maxRetries=1) → ~250 s worst case — a
+		// BACKGROUND call, not bound by the 180 s tool budget. The 180 s
+		// codebase_search budget applies to the QUERY path: 12 s + 2 s = 14 s,
+		// maxRetries=0.
 		timeout: failoverActive
 			? getEmbeddingClientTimeoutMs(mode, plan.endpoints.length)
 			: parseInt(process.env.EMBEDDING_TIMEOUT_MS || '60000'),
 		// The query wrapper already spent its whole budget; an SDK retry would
-		// double a wait the acceptance criterion bounds at 15 s.
+		// double a wait the acceptance criterion bounds at 14 s.
 		maxRetries: mode === 'query' && failoverActive ? 0 : 1,
 		...(plan.fetch ? { fetch: plan.fetch } : {}),
 	});

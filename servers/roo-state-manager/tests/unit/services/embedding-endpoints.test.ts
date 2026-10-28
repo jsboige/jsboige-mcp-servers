@@ -20,6 +20,7 @@ import {
 	getEmbeddingEndpointPlan,
 	parseEmbeddingEndpoints,
 } from '../../../src/services/embedding-endpoints.js';
+import { getCodebaseEmbeddingEndpoint } from '../../../src/services/code-index/embedding-client.js';
 
 function env(values: Record<string, string>): NodeJS.ProcessEnv {
 	return { ...values } as NodeJS.ProcessEnv;
@@ -98,12 +99,14 @@ describe('#4352 (a5) endpoint configuration', () => {
 		}))).toThrow(/must not carry URL userinfo/);
 	});
 
-	it('leaves the client byte-for-byte unchanged when the list is unset', () => {
+	it('leaves the client byte-for-byte unchanged when the list is unset or non-public', () => {
 		const plan = getEmbeddingEndpointPlan('index', env({}));
 		expect(plan).toEqual({ endpoints: [], baseURL: undefined, fetch: undefined });
 
-		const legacy = getEmbeddingEndpointPlan('index', env({ EMBEDDING_API_BASE_URL: 'https://embeddings.myia.io/v1' }));
-		expect(legacy.baseURL).toBe('https://embeddings.myia.io/v1');
+		// A NON-public single base stays a plain single-endpoint client (no
+		// wrapper). The public-vhost case now gains the LAN-direct entry — see #4395.
+		const legacy = getEmbeddingEndpointPlan('index', env({ EMBEDDING_API_BASE_URL: 'http://localhost:8080/v1' }));
+		expect(legacy.baseURL).toBe('http://localhost:8080/v1');
 		expect(legacy.fetch).toBeUndefined();
 	});
 
@@ -272,5 +275,133 @@ describe('#4352 (a5) vector-space guard', () => {
 			expectedDimensions: 4,
 		})('http://lan:8004/v1/embeddings', { method: 'POST', body: '{}' }))
 			.rejects.toThrow(/dimension 3 != 4/i);
+	});
+});
+
+describe('#4395 (RX126) LAN-direct default', () => {
+	// The public vhost the fleet embeds through, and the LAN backend it hides.
+	const PUBLIC = 'https://embeddings.myia.io/v1';
+	const LAN = 'http://myia-po-2023:8004/v1';
+
+	it('public canonical → try order [LAN, public]; baseURL/canonical/fingerprint stay the vhost', () => {
+		const e = env({ EMBEDDING_API_BASE_URL: PUBLIC, EMBEDDING_DIMENSIONS: '4' });
+		const plan = getEmbeddingEndpointPlan('index', e);
+		expect(plan.endpoints).toEqual([LAN, PUBLIC]);
+		// The SDK base and the canonical are the vhost, NOT the LAN entry.
+		expect(plan.baseURL).toBe(PUBLIC);
+		expect(plan.fetch).toBeDefined();
+		// The supplement sentinel fingerprint stays the vhost host → no rebuild.
+		expect(getCanonicalEmbeddingBaseUrl(e)).toBe(PUBLIC);
+	});
+
+	it('keeps the vhost host in getCodebaseEmbeddingEndpoint() under LAN-direct', () => {
+		const prev = process.env.EMBEDDING_API_BASE_URL;
+		process.env.EMBEDDING_API_BASE_URL = PUBLIC;
+		try {
+			expect(getCodebaseEmbeddingEndpoint()).toBe('embeddings.myia.io');
+		} finally {
+			if (prev === undefined) delete process.env.EMBEDDING_API_BASE_URL;
+			else process.env.EMBEDDING_API_BASE_URL = prev;
+		}
+	});
+
+	it('a refused LAN (ECONNREFUSED/DNS) fails over to the public vhost, in order, /v1 kept', async () => {
+		const calls: string[] = [];
+		const fetcher = vi.fn(async (url: string | URL | Request) => {
+			const text = String(url);
+			calls.push(text);
+			if (text.startsWith(LAN)) {
+				const err = new TypeError('fetch failed');
+				(err as { code?: string }).code = 'ECONNREFUSED';
+				throw err;
+			}
+			return embeddingResponse(4);
+		});
+		vi.spyOn(globalThis, 'fetch').mockImplementation(fetcher as typeof fetch);
+		try {
+			const plan = getEmbeddingEndpointPlan('index', env({ EMBEDDING_API_BASE_URL: PUBLIC, EMBEDDING_DIMENSIONS: '4' }));
+			// The SDK builds the request from the canonical (public) base.
+			const response = await plan.fetch!(
+				`${PUBLIC}/embeddings`,
+				{ method: 'POST', body: '{"input":"x"}' },
+			);
+			expect(response.status).toBe(200);
+			// LAN tried FIRST, then the public vhost — and /v1 preserved on both.
+			expect(calls).toEqual([`${LAN}/embeddings`, `${PUBLIC}/embeddings`]);
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
+
+	it('EMBEDDING_LAN_DIRECT=0 → public only, no fetch (legacy byte-for-byte)', () => {
+		const plan = getEmbeddingEndpointPlan('index', env({
+			EMBEDDING_API_BASE_URL: PUBLIC,
+			EMBEDDING_LAN_DIRECT: '0',
+		}));
+		expect(plan.endpoints).toEqual([PUBLIC]);
+		expect(plan.baseURL).toBe(PUBLIC);
+		expect(plan.fetch).toBeUndefined();
+	});
+
+	it('a non-public canonical (custom URL) is left unchanged', () => {
+		const plan = getEmbeddingEndpointPlan('index', env({
+			EMBEDDING_API_BASE_URL: 'http://localhost:8080/v1',
+		}));
+		expect(plan.endpoints).toEqual(['http://localhost:8080/v1']);
+		expect(plan.baseURL).toBe('http://localhost:8080/v1');
+		expect(plan.fetch).toBeUndefined();
+	});
+
+	it('explicit list, public first → LAN inserted first; no duplicate if LAN already listed', () => {
+		// Public vhost first, LAN not listed → LAN inserted at the front.
+		const inserted = getEmbeddingEndpointPlan('index', env({
+			EMBEDDING_API_BASE_URLS: `${PUBLIC},https://backup.example/v1`,
+		}));
+		expect(inserted.endpoints).toEqual([LAN, PUBLIC, 'https://backup.example/v1']);
+		expect(inserted.baseURL).toBe(PUBLIC);
+
+		// LAN already in the list → kept, not duplicated, order preserved.
+		const noDup = getEmbeddingEndpointPlan('index', env({
+			EMBEDDING_API_BASE_URLS: `${PUBLIC},${LAN}`,
+		}));
+		expect(noDup.endpoints).toEqual([PUBLIC, LAN]);
+		expect(noDup.baseURL).toBe(PUBLIC);
+	});
+
+	it('EMBEDDING_LAN_DIRECT_URL overrides the default LAN target', () => {
+		const plan = getEmbeddingEndpointPlan('index', env({
+			EMBEDDING_API_BASE_URL: PUBLIC,
+			EMBEDDING_LAN_DIRECT_URL: 'http://10.0.0.7:9001/v1/',
+		}));
+		expect(plan.endpoints).toEqual(['http://10.0.0.7:9001/v1', PUBLIC]);
+		expect(plan.baseURL).toBe(PUBLIC);
+	});
+
+	it('a malformed EMBEDDING_LAN_DIRECT_URL falls back to the default LAN and still serves', async () => {
+		const calls: string[] = [];
+		const fetcher = vi.fn(async (url: string | URL | Request) => {
+			calls.push(String(url));
+			return embeddingResponse(4);
+		});
+		vi.spyOn(globalThis, 'fetch').mockImplementation(fetcher as typeof fetch);
+		const warn = vi.spyOn(console, 'warn');
+		try {
+			const plan = getEmbeddingEndpointPlan('index', env({
+				EMBEDDING_API_BASE_URL: PUBLIC,
+				EMBEDDING_LAN_DIRECT_URL: 'not-a-valid-url',
+				EMBEDDING_DIMENSIONS: '4',
+			}));
+			// Falls back to the DEFAULT LAN target (NOT public-only); vhost stays canonical.
+			expect(plan.endpoints).toEqual([LAN, PUBLIC]);
+			expect(plan.baseURL).toBe(PUBLIC);
+			// ...and it still serves: the call goes out and comes back 200.
+			const response = await plan.fetch!(`${PUBLIC}/embeddings`, { method: 'POST', body: '{}' });
+			expect(response.status).toBe(200);
+			expect(calls).toHaveLength(1);
+			// The fallback names the variable in its warn.
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining('EMBEDDING_LAN_DIRECT_URL'));
+		} finally {
+			vi.restoreAllMocks();
+		}
 	});
 });
