@@ -1097,6 +1097,17 @@ export function throwIfIndexingAborted(options: IndexTaskProgressOptions | undef
 export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }, options?: IndexTaskProgressOptions): Promise<PointStruct[]> {
     console.log(`Starting granular indexing for task: ${taskId} (source: ${source})`);
 
+    // #4352 g5 follow-up (ai-01 queue 20261028f): hoisted OUT of the try so the
+    // catch can read it. A backend that hangs past the 180 s inactivity budget
+    // makes the watchdog abort the run; the pending call then fails as a
+    // TRANSPORT error, the batch loop breaks on it (L1254) and the next
+    // window's fence (L1233) throws the marked watchdog error BEFORE the
+    // `missingVectors` throw (L1326) could carry `transport: true`. Without
+    // this hoist the catch cannot tell a fenced-healthy run from a fenced
+    // run whose backend was already failing — and the hung-backend case, the
+    // failure mode the breaker exists for, never debited it.
+    const embedFailures: EmbedFailures = { lastError: null, transport: false };
+
     try {
         // #4352 g5 (review ms#1548): fence at ENTRY as well. A signal already
         // aborted when the run starts must not pay for extraction and two preflight
@@ -1226,7 +1237,9 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         const indexedPoints: PointStruct[] = [];
         // #4352 (a4): sub-chunks left without a vector. They used to be skipped silently and
         // the task resolved — then marked indexed by the caller, holes included, never retried.
-        const embedFailures: EmbedFailures = { lastError: null, transport: false };
+        // (`embedFailures` itself is declared at function scope — see the g5 follow-up note
+        // at the top of indexTask: the catch must see `transport` when a fence preempts
+        // this throw.)
         let missingVectors = 0;
         for (let start = 0; start < subChunksToEmbed.length; start += UPSERT_WINDOW_SUBCHUNKS) {
             // #4352 g5: a fenced run stops here — before embedding a new window.
@@ -1321,7 +1334,9 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
 
         // #4352 (a4): a task with holes is not indexed. Fail it (transient: the caller retries
         // with backoff) after writing what was obtained; the pre-flight dedup makes the next
-        // attempt embed only the missing sub-chunks.
+        // attempt embed only the missing sub-chunks. When `embedFailures.transport` is set
+        // this throw carries it (`transport: true`) — the g5 follow-up case is the fence
+        // firing BEFORE this line and hiding that signal.
         if (missingVectors > 0) {
             throw new GenericError(
                 `Embedding incomplete for task ${taskId}: ${missingVectors}/${subChunksToEmbed.length} sub-chunks without a vector ` +
@@ -1366,7 +1381,15 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         // of 27/10 are exactly that regime. A fence blocks nothing downstream: the
         // windows already written are kept and the retry resumes after them.
         const watchdogFenced = error instanceof GenericError
-            && error.details?.watchdogAbort === true;
+            && error.details?.watchdogAbort === true
+            // #4352 g5 follow-up (ai-01 queue 20261028f): …UNLESS the embedding transport
+            // was already failing when the fence fired. A backend that hangs past the
+            // inactivity budget is the failure mode the breaker exists for — the fence is
+            // then a symptom of the sick backend, not an independent scheduling decision,
+            // and must still debit it. Without this arm the hung-backend case NEVER opened
+            // the breaker (the fence error carries no `missingVectors`/`transport`), so
+            // every task on the seat kept paying the full 180 s budget against it.
+            && !embedFailures.transport;
         const contentOnlyIncomplete = error instanceof GenericError
             && error.details?.missingVectors !== undefined && error.details?.transport === false;
         if (!contentOnlyIncomplete && !watchdogFenced) {
