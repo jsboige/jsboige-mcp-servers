@@ -9,11 +9,20 @@
  *   2. a silent run fails with the inactivity wording (embedding_timeout class);
  *   3. the watchdog ABORTS the orphan, which fences itself at its checkpoint;
  *   4. INDEX_TASK_INACTIVITY_MS=0 (kill-switch) restores the legacy wall clock,
- *      including its no-abort behaviour.
+ *      including its no-abort behaviour;
+ *   5. a fence fails its OWN task but never debits the seat-wide breaker
+ *      (review ms#1548 B2 — three fences used to OPEN it and defer every task).
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import * as os from 'os';
+import * as path from 'path';
 import { runIndexingWithInactivityWatchdog } from '../background-services.js';
-import { throwIfIndexingAborted } from '../task-indexer/VectorIndexer.js';
+import {
+    throwIfIndexingAborted,
+    getCircuitBreakerState,
+    isCircuitBreakerBlocking,
+    indexTask,
+} from '../task-indexer/VectorIndexer.js';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -82,18 +91,63 @@ describe('runIndexingWithInactivityWatchdog (#4352 g5)', () => {
         expect(orphanOutcome).toBe('fenced');
     });
 
-    it('throwIfIndexingAborted: an Error reason is rethrown as-is, anything else still throws with the classifiable wording', async () => {
+    it('throwIfIndexingAborted: always throws a MARKED GenericError (watchdogAbort), keeping the classifiable wording', async () => {
+        // Review ms#1548 B2: the mark is what keeps a fence out of the breaker, so
+        // it must be present on EVERY abort path — the Error-reason path (the one
+        // the watchdog actually produces) and the non-Error fallback.
         const controller = new AbortController();
         const reason = new Error('Indexing timeout for t — no batch acknowledged for 80ms (inactivity watchdog #4352 g5)');
         controller.abort(reason);
-        expect(() => throwIfIndexingAborted({ signal: controller.signal }, 't')).toThrow(reason);
-        // non-Error reason: the guard still throws, with "Indexing timeout" in the message
+        let thrown: any = null;
+        try { throwIfIndexingAborted({ signal: controller.signal }, 't'); } catch (e) { thrown = e; }
+        expect(thrown).not.toBeNull();
+        expect(thrown.message).toBe(reason.message);
+        expect(thrown.details?.watchdogAbort).toBe(true);
+
+        // non-Error reason: still marked, still classifiable
         const controller2 = new AbortController();
         controller2.abort('boom');
-        expect(() => throwIfIndexingAborted({ signal: controller2.signal }, 't')).toThrow(/Indexing timeout for t — inactivity watchdog/);
+        let thrown2: any = null;
+        try { throwIfIndexingAborted({ signal: controller2.signal }, 't'); } catch (e) { thrown2 = e; }
+        expect(thrown2.details?.watchdogAbort).toBe(true);
+        expect(thrown2.message).toMatch(/Indexing timeout for t — inactivity watchdog/);
+
         // not aborted / no options: no-op
         expect(() => throwIfIndexingAborted({ signal: new AbortController().signal }, 't')).not.toThrow();
         expect(() => throwIfIndexingAborted(undefined, 't')).not.toThrow();
+    });
+
+    it('three watchdog fences in a row leave the seat breaker CLOSED — a fence is not a backend failure (review ms#1548 B2)', async () => {
+        const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+        const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+        try {
+            const before = getCircuitBreakerState();
+            const taskPath = path.join(os.tmpdir(), 'never-extracted');
+
+            for (let i = 1; i <= 3; i++) {
+                const controller = new AbortController();
+                controller.abort(new Error(
+                    `Indexing timeout for task-fence-${i} — no batch acknowledged for 180000ms (inactivity watchdog #4352 g5)`
+                ));
+                const err: any = await indexTask(`task-fence-${i}`, taskPath, 'roo', undefined, { signal: controller.signal })
+                    .then(() => null, (e: unknown) => e);
+
+                // the fence still FAILS the task (retryable embedding_timeout class)…
+                expect(err).not.toBeNull();
+                expect(err.message).toMatch(/Indexing timeout for task-fence-/);
+                expect(err.details?.watchdogAbort).toBe(true);
+                // …but costs the fleet nothing: no debit per fence
+                expect(getCircuitBreakerState().failureCount).toBe(before.failureCount);
+            }
+
+            const after = getCircuitBreakerState();
+            expect(after.failureCount).toBe(before.failureCount);
+            expect(after.state).toBe('CLOSED');
+            expect(isCircuitBreakerBlocking()).toBe(false);
+        } finally {
+            errorSpy.mockRestore();
+            logSpy.mockRestore();
+        }
     });
 
     it('kill-switch INDEX_TASK_INACTIVITY_MS=0 restores the legacy wall clock — and does NOT abort its loser', async () => {
