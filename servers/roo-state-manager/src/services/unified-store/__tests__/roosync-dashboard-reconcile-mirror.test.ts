@@ -11,7 +11,7 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, rmSync, writeFileSync, mkdtempSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync, mkdtempSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { reconcileDashboardsFromGDrive } from '../roosync-dashboard-reconcile.js';
@@ -52,6 +52,7 @@ describe('dashboard reconcile — mirror repair (#4131 demande 2)', () => {
   let writeMirrorCalls: { key: string; ids: string[] }[];
   let archiveCalls: { key: string; ids: string[] }[];
   let lockStatus: 'acquired' | 'held' | 'unavailable';
+  let lockThrows: boolean;
   let mirrorThrows: Set<string>;
 
   const rowOf = (key: string, count: number): RooSyncDashboardRow => ({
@@ -103,6 +104,7 @@ describe('dashboard reconcile — mirror repair (#4131 demande 2)', () => {
     },
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
     async tryAcquireRooSyncDashboardLock(_key: string, _holder: string, _ttl: number) {
+      if (lockThrows) throw new Error('lock backend unreachable');
       return lockStatus;
     },
     async releaseRooSyncDashboardLock() {
@@ -137,6 +139,7 @@ describe('dashboard reconcile — mirror repair (#4131 demande 2)', () => {
     writeMirrorCalls = [];
     archiveCalls = [];
     lockStatus = 'unavailable';
+    lockThrows = false;
     mirrorThrows = new Set();
   });
 
@@ -241,6 +244,47 @@ describe('dashboard reconcile — mirror repair (#4131 demande 2)', () => {
 
     expect(result.mirrorRepairSkipped).toBe('lock-held');
     expect(writeMirrorCalls).toHaveLength(0);
+  });
+
+  test('a lock acquire that THROWS holds the repair, never runs it unlocked (#4131 review minor 2)', async () => {
+    // The repair is a WRITE: fail-open on the lock let two seats rewrite the
+    // same file at once. The PASS survives a degraded lock backend; only the
+    // repair is held for the next pass.
+    lockThrows = true;
+    write('workspace-a.md', fixture('workspace-a', []));
+    pgRows.set('workspace-a', [{ id: 'x', createdAt: '2026-09-17T10:00:00Z' }]);
+
+    const result = await run();
+
+    expect(result.mirrorRepairSkipped).toBe('lock-degraded');
+    expect(result.mirrorRepaired).toBe(0);
+    expect(writeMirrorCalls).toHaveLength(0);
+    expect(result.status).toBe('ok');
+  });
+
+  test('HOLDS the repair when the file holds id-less messages PG does not have (#4131 review blocker)', async () => {
+    // A watchdog block (`### [ts] machine|workspace` with NO [msg:] line)
+    // never enters PG — the `persisted.has(m.id)` filter skips it by design —
+    // so the PG view does not contain it. Rewriting the file from that view
+    // would erase it from its only surface. The key is held, never rewritten.
+    // The id-less block is stamped BETWEEN the file id and pgMax so the file
+    // still reads as BEHIND (a newer id-less block would make it "ahead").
+    const idlessBlock =
+      '### [2026-09-17T10:05:00Z] watch|vllm\nwatchdog heartbeat, no [msg:] line\n\n---\n';
+    write('workspace-a.md', fixture('workspace-a', ['old']) + idlessBlock);
+    pgRows.set('workspace-a', [
+      { id: 'old', createdAt: '2026-09-17T10:00:00Z' },
+      { id: 'newer', createdAt: '2026-09-20T00:00:00Z' },
+    ]);
+
+    const result = await run();
+
+    expect(result.mirrorIdlessHeldKeys).toBe(1);
+    expect(result.mirrorRepaired).toBe(0);
+    expect(result.mirrorRepairDeferred).toBe(0);
+    expect(writeMirrorCalls).toHaveLength(0);
+    // The id-less block survives on disk — the file was never rewritten.
+    expect(readFileSync(join(dir, 'workspace-a.md'), 'utf8')).toContain('watchdog heartbeat');
   });
 
   test('honours the per-pass write budget and reports what it deferred', async () => {
