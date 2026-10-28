@@ -17,6 +17,27 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
+/**
+ * Pin the PG half OFF before the first import of the production module.
+ *
+ * `src/index.ts` runs `dotenv.config({ path: '.env' })` at import time (index.ts:49),
+ * so on a production seat this suite silently loads that seat's `.env` — PG URL and
+ * `UNIFIED_STORE_DUAL_WRITE=1` included. The gate then turns on two awaited steps
+ * that do REAL work inside the unit test: `initializeDashboardReconcile` (real
+ * `roosync-dashboard-reconcile` import + `getSharedStatePath()` on the G: drive) and
+ * `initializeBackfillMarkers` (a PG round-trip). Measured on po-2025, 28/10:
+ * `initializeAsync` totals 277 ms with the seat `.env` vs 34 ms with this pin — the
+ * difference is the SEAT's I/O, not the code under test, and it is unbounded (a cold
+ * DriveFS stalls those reads past the 3 s anti-deadlock budget below, which is how
+ * this file went red on the seat while staying green in CI, where no `.env` exists).
+ *
+ * These tests are about the retry / anti-re-entrance semantics of
+ * `ensureInitialized()`; they must not measure the seat. dotenv never overrides a key
+ * already present in `process.env`, so a pinned value wins over the file.
+ */
+process.env.UNIFIED_STORE_PG_URL = '';
+process.env.UNIFIED_STORE_DUAL_WRITE = '0';
+
 // -- Neutralize process.exit / global handlers from the production module ---------------
 // index.ts registers process-level handlers (uncaughtException, unhandledRejection) that
 // call process.exit(1) for non-I/O errors. In tests, we mock process.exit to prevent the

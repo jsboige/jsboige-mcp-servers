@@ -29,6 +29,23 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as crypto from 'crypto';
 
+/**
+ * Pin the seat-independent value BEFORE the first `import('../VectorIndexer.js')`.
+ *
+ * `MAX_OPERATIONS_PER_WINDOW` is read ONCE at module load (VectorIndexer.ts:195), so
+ * whatever the process environment carries at that instant decides the pacer. In CI
+ * that is the default (10/min). On a production seat, `.env` sets
+ * `EMBEDDING_OPS_PER_MINUTE=2` — and `src/index.ts` loads `.env` with dotenv at import
+ * time, so a suite run on a seat throttles every un-pinned test here to one request
+ * per 30 s and blows the 15 s per-test timeout (*splits a content-attributable
+ * (HTTP 400) batch failure into halves*) — measured 28/10: red with `.env`, 44/44
+ * green without it.
+ *
+ * `0` disables the pacing (VectorIndexer.ts:217). The pacing itself stays covered by
+ * the `#4352 (a6)` block below, which sets its own value and resets the module graph.
+ */
+process.env.EMBEDDING_OPS_PER_MINUTE = '0';
+
 const { mockGetCollections, mockCreateCollection, mockCreatePayloadIndex, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll, mockDelete } = vi.hoisted(() => ({
 	mockGetCollections: vi.fn(),
 	mockCreateCollection: vi.fn(),
@@ -370,7 +387,10 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 		// went out unpaced. Token-heavy chunks give one request each, so N chunks = N requests.
 		describe('#4352 (a6): per-request pacing, one sliding window per process', () => {
 			const prev = process.env.EMBEDDING_OPS_PER_MINUTE;
-			afterEach(() => { if (prev === undefined) delete process.env.EMBEDDING_OPS_PER_MINUTE; else process.env.EMBEDDING_OPS_PER_MINUTE = prev; });
+			// Restore the env AND drop the module graph: these tests import VectorIndexer
+			// under their own window ('2'), and a later un-pinned test would otherwise
+			// inherit that already-loaded window instead of the file-scope '0'.
+			afterEach(() => { if (prev === undefined) delete process.env.EMBEDDING_OPS_PER_MINUTE; else process.env.EMBEDDING_OPS_PER_MINUTE = prev; vi.resetModules(); });
 			const heavy = (id: string) => chunk(id, 'z'.repeat(30000) + id);
 
 			test('a request past the budget waits until the oldest slot leaves the window', async () => {
