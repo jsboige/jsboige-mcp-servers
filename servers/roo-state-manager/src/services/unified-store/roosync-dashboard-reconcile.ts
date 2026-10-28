@@ -92,6 +92,25 @@ const logger = createLogger('roosync-dashboard-reconcile');
  */
 let lastSourceErrorLogged: string | null = null;
 
+/**
+ * Consecutive passes skipped for an unreadable source, and when the streak
+ * started. Reset by the first readable pass. Reported in the result so a
+ * monitor can distinguish a transient DriveFS hiccup from a seat that has had
+ * no `G:` for days (ms#1550 review, reserve 2).
+ */
+let consecutiveSourceSkips = 0;
+let sourceUnavailableSince: string | null = null;
+
+/**
+ * Should this pass emit the unreadable-source WARN? One line per distinct
+ * reason per process (13-15 RSM hosts per machine would otherwise each
+ * re-print it every pass). Pure, so the dedupe itself is assertable instead
+ * of only described in a comment (ms#1550 review, reserve 1).
+ */
+export function shouldLogSourceError(reason: string, previous: string | null): boolean {
+  return reason !== previous;
+}
+
 export interface DashboardReconcileResult {
   /**
    * 'skipped-not-armed' = dual-write off on this process — nothing was done.
@@ -107,6 +126,13 @@ export interface DashboardReconcileResult {
    * have none, and a DriveFS outage is transient — neither is a config error).
    */
   sourceError?: string;
+  /**
+   * How long this process has been unable to read the source: the streak length
+   * and its start. Present only with `status: 'skipped-source-unreadable'`, reset
+   * by the first readable pass. Lets a monitor tell a hiccup from a mount that
+   * has been gone for days (ms#1550 review).
+   */
+  sourceUnavailable?: { consecutivePasses: number; since: string };
   /** Keyed .md files seen in the dashboards dir. */
   filesScanned: number;
   /** Keys whose parse succeeded. */
@@ -455,9 +481,6 @@ export async function reconcileDashboardsFromGDrive(
     result.durationMs = Date.now() - startedAt;
     return result;
   }
-  const reader = options.reader ?? getUnifiedStoreReader();
-  const writer = options.writer ?? getUnifiedStoreWriter();
-  const fetchArchivedIds = options.fetchArchivedIds ?? fetchArchivedDashboardMessageIds;
 
   let files: string[];
   try {
@@ -472,15 +495,34 @@ export async function reconcileDashboardsFromGDrive(
     result.status = 'skipped-source-unreadable';
     result.sourceError = reason;
     result.durationMs = Date.now() - startedAt;
+    consecutiveSourceSkips += 1;
+    if (sourceUnavailableSince === null) sourceUnavailableSince = new Date().toISOString();
+    // `since` + `consecutivePasses` are what a monitor needs to tell a DriveFS
+    // hiccup from "no G: for a week" — the ambiguity this PR removes from the
+    // log must not reappear at the observability layer (ms#1550 review).
+    result.sourceUnavailable = {
+      consecutivePasses: consecutiveSourceSkips,
+      since: sourceUnavailableSince,
+    };
     // One WARN per distinct reason per process: a dead mount would otherwise
     // emit one line per host per pass (13-15 hosts measured per machine).
-    if (lastSourceErrorLogged !== reason) {
+    if (shouldLogSourceError(reason, lastSourceErrorLogged)) {
       lastSourceErrorLogged = reason;
       logger.warn(`[dashboard-reconcile] source unreadable, pass skipped: ${reason}`);
     }
     return result;
   }
   lastSourceErrorLogged = null;
+  consecutiveSourceSkips = 0;
+  sourceUnavailableSince = null;
+
+  // Resolved only once the source is readable: a seat with no dashboards dir
+  // must not pay a store connection for a pass that cannot do any work
+  // (ms#1550 review, reserve 3).
+  const reader = options.reader ?? getUnifiedStoreReader();
+  const writer = options.writer ?? getUnifiedStoreWriter();
+  const fetchArchivedIds = options.fetchArchivedIds ?? fetchArchivedDashboardMessageIds;
+
   const keyed = files.filter(isKeyedDashboardFile);
   result.filesScanned = keyed.length;
 
