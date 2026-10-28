@@ -376,4 +376,32 @@ describe('#4395 (RX126) LAN-direct default', () => {
 		expect(plan.endpoints).toEqual(['http://10.0.0.7:9001/v1', PUBLIC]);
 		expect(plan.baseURL).toBe(PUBLIC);
 	});
+
+	it('a malformed EMBEDDING_LAN_DIRECT_URL falls back to the default LAN and still serves', async () => {
+		const calls: string[] = [];
+		const fetcher = vi.fn(async (url: string | URL | Request) => {
+			calls.push(String(url));
+			return embeddingResponse(4);
+		});
+		vi.spyOn(globalThis, 'fetch').mockImplementation(fetcher as typeof fetch);
+		const warn = vi.spyOn(console, 'warn');
+		try {
+			const plan = getEmbeddingEndpointPlan('index', env({
+				EMBEDDING_API_BASE_URL: PUBLIC,
+				EMBEDDING_LAN_DIRECT_URL: 'not-a-valid-url',
+				EMBEDDING_DIMENSIONS: '4',
+			}));
+			// Falls back to the DEFAULT LAN target (NOT public-only); vhost stays canonical.
+			expect(plan.endpoints).toEqual([LAN, PUBLIC]);
+			expect(plan.baseURL).toBe(PUBLIC);
+			// ...and it still serves: the call goes out and comes back 200.
+			const response = await plan.fetch!(`${PUBLIC}/embeddings`, { method: 'POST', body: '{}' });
+			expect(response.status).toBe(200);
+			expect(calls).toHaveLength(1);
+			// The fallback names the variable in its warn.
+			expect(warn).toHaveBeenCalledWith(expect.stringContaining('EMBEDDING_LAN_DIRECT_URL'));
+		} finally {
+			vi.restoreAllMocks();
+		}
+	});
 });

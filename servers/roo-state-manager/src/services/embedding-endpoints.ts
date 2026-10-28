@@ -73,6 +73,9 @@ export interface EmbeddingFailoverOptions {
 	now?: () => number;
 	/** Test seam; defaults to console.warn. */
 	warn?: (message: string) => void;
+	/** Test seam; defaults to console.info. Info-level (not warn) so the fleet log
+	 *  scanners do not turn a routine success line into a spawned agent (#4395 I2). */
+	info?: (message: string) => void;
 }
 
 export class EmbeddingEndpointsUnavailableError extends Error {
@@ -107,18 +110,18 @@ export function getEmbeddingDimensionSetting(env: NodeJS.ProcessEnv = process.en
 	return parseIntOr(env.EMBEDDING_DIMENSIONS, 1536);
 }
 
-function normaliseEndpoint(raw: string): string {
+function normaliseEndpoint(raw: string, source = 'EMBEDDING_API_BASE_URLS'): string {
 	const trimmed = raw.trim();
-	if (!trimmed) throw new Error('EMBEDDING_API_BASE_URLS contains an empty endpoint');
+	if (!trimmed) throw new Error(`${source} contains an empty endpoint`);
 	let url: URL;
 	try {
 		url = new URL(trimmed);
 	} catch {
 		// Never echo the raw value: a malformed endpoint could still carry credentials.
-		throw new Error('Invalid embedding endpoint in EMBEDDING_API_BASE_URLS (must be a valid http(s) URL; value redacted)');
+		throw new Error(`Invalid embedding endpoint in ${source} (must be a valid http(s) URL; value redacted)`);
 	}
 	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-		throw new Error(`Embedding endpoint must be http(s), got protocol ${url.protocol} for host ${url.host || '(unparseable)'}`);
+		throw new Error(`Embedding endpoint in ${source} must be http(s), got protocol ${url.protocol} for host ${url.host || '(unparseable)'}`);
 	}
 	// #4352 review (ai-01 06:26Z): refuse URL userinfo outright. Otherwise the
 	// canonical `https://user:secret@host-A` credentials would be replayed to the
@@ -126,7 +129,7 @@ function normaliseEndpoint(raw: string): string {
 	// B's own userinfo would be dropped. The fleet passes keys via EMBEDDING_API_KEY
 	// (bearer), so there is no legitimate userinfo use to preserve. Host-only message.
 	if (url.username || url.password) {
-		throw new Error(`Embedding endpoint must not carry URL userinfo (use EMBEDDING_API_KEY bearer auth instead): ${url.host}`);
+		throw new Error(`Embedding endpoint in ${source} must not carry URL userinfo (use EMBEDDING_API_KEY bearer auth instead): ${url.host}`);
 	}
 	return trimmed.replace(/\/+$/, '');
 }
@@ -216,11 +219,20 @@ function isLanDirectDisabled(env: NodeJS.ProcessEnv): boolean {
 	return env.EMBEDDING_LAN_DIRECT === '0';
 }
 
-/** `EMBEDDING_LAN_DIRECT_URL` overrides the default LAN target; validated like a list entry. */
+/**
+ * `EMBEDDING_LAN_DIRECT_URL` overrides the default LAN target. A malformed
+ * override must NOT take down the vhost path: it is caught and the default LAN
+ * target is used instead (NOT public-only), with a warn naming the variable.
+ */
 function resolveLanDirectUrl(env: NodeJS.ProcessEnv): string {
 	const override = env.EMBEDDING_LAN_DIRECT_URL;
-	if (override && override.trim()) return normaliseEndpoint(override);
-	return DEFAULT_LAN_DIRECT_URL;
+	if (!override || !override.trim()) return DEFAULT_LAN_DIRECT_URL;
+	try {
+		return normaliseEndpoint(override, 'EMBEDDING_LAN_DIRECT_URL');
+	} catch {
+		console.warn('[embedding-endpoints] EMBEDDING_LAN_DIRECT_URL is invalid; falling back to the default LAN target');
+		return DEFAULT_LAN_DIRECT_URL;
+	}
 }
 
 /**
@@ -422,6 +434,7 @@ export function createEmbeddingFailoverFetch(options: EmbeddingFailoverOptions):
 	}
 	const now = options.now ?? Date.now;
 	const warn = options.warn ?? ((message: string) => console.warn(message));
+	const info = options.info ?? ((message: string) => console.info(message));
 	const negativeCacheMs = options.negativeCacheMs ?? DEFAULT_NEGATIVE_CACHE_MS;
 	const states: EndpointState[] = options.endpoints.map((url) => ({
 		url,
@@ -502,10 +515,12 @@ export function createEmbeddingFailoverFetch(options: EmbeddingFailoverOptions):
 				state.lastError = null;
 				state.disabledUntil = 0;
 				// #4395 (RX126): name which endpoint served the first successful
-				// call, once per client. Host only — never a key.
+				// call, once per client. Host only — never a key. Emitted at INFO,
+				// not warn: a routine success line must not become a spawned agent
+				// in the fleet log scanners (#4395 I2).
 				if (!servedLogged) {
 					servedLogged = true;
-					warn(`[embedding-failover] first successful call served by ${state.label}`);
+					info(`[embedding-failover] first successful call served by ${state.label}`);
 				}
 				return response;
 			}

@@ -57,6 +57,10 @@ export const RELOADABLE_ENV_KEYS = [
   // #4352 (a5): ordered list + failover timing. Host-owned in practice (MCP env),
   // so this reload path is for .env-managed seats; a host env move needs a respawn.
   'EMBEDDING_API_BASE_URLS',
+  // #4395: LAN-direct default + kill-switch. Read lazily by getEmbeddingEndpointPlan
+  // at each client build, so a reload re-plans (public-only when the kill-switch flips).
+  'EMBEDDING_LAN_DIRECT',
+  'EMBEDDING_LAN_DIRECT_URL',
   'EMBEDDING_NEGATIVE_CACHE_MS',
   'EMBEDDING_QUERY_ATTEMPT_TIMEOUT_MS',
   'EMBEDDING_QUERY_BUDGET_MS',
@@ -87,11 +91,13 @@ export type ReloadableEnvKey = typeof RELOADABLE_ENV_KEYS[number];
 const CLIENT_DEPENDENCIES: Record<string, readonly string[]> = {
   embeddingClient: [
     'EMBEDDING_API_KEY', 'OPENAI_API_KEY', 'EMBEDDING_API_BASE_URL', 'EMBEDDING_API_BASE_URLS',
+    'EMBEDDING_LAN_DIRECT', 'EMBEDDING_LAN_DIRECT_URL',
     'EMBEDDING_TIMEOUT_MS', 'EMBEDDING_QUERY_ATTEMPT_TIMEOUT_MS', 'EMBEDDING_QUERY_BUDGET_MS',
     'EMBEDDING_NEGATIVE_CACHE_MS', 'EMBEDDING_DIMENSIONS',
   ],
   codebaseEmbeddingClient: [
     'EMBEDDING_API_KEY', 'OPENAI_API_KEY', 'EMBEDDING_API_BASE_URL', 'EMBEDDING_API_BASE_URLS',
+    'EMBEDDING_LAN_DIRECT', 'EMBEDDING_LAN_DIRECT_URL',
     'EMBEDDING_TIMEOUT_MS', 'EMBEDDING_QUERY_ATTEMPT_TIMEOUT_MS', 'EMBEDDING_QUERY_BUDGET_MS',
     'EMBEDDING_NEGATIVE_CACHE_MS', 'EMBEDDING_DIMENSIONS',
   ],

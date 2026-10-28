@@ -85,12 +85,15 @@ function buildEmbeddingOpenAIClient(mode: 'index' | 'query'): OpenAI {
   return new OpenAI({
     apiKey,
     baseURL: plan.baseURL,
-    // #1232: Reduce timeout and retries to prevent MCP Connection closed
-    // Default OpenAI SDK retries 2x with backoff = 90s+ on 502/503.
-    // With maxRetries=1 and timeout=60s, worst case = ~120s (2 attempts × 60s), which stays
-    // under the 180s codebase_search budget in config/tool-timeouts.ts.
-    // Raised from 15s on 2026-08-25: under load the embedder answers 200 after 45.8s, so the
-    // former ~30s ceiling turned a LATENCY regime into a reported outage naming a false cause.
+    // #1232: Reduce timeout and retries to prevent MCP Connection closed.
+    // With failover active, `timeout` is the ceiling for ONE wrapper pass: the index
+    // path is 60 s × 2 endpoints + 5 s = 125 s, and the SDK retries it (maxRetries=1)
+    // → ~250 s worst case. That is a BACKGROUND indexing call, NOT bound by the 180 s
+    // interactive tool budget. The 180 s codebase_search budget (config/tool-timeouts.ts)
+    // applies to the QUERY path: 12 s budget + 2 s = 14 s, maxRetries=0 → 14 s, well under
+    // 180 s. (Per-attempt ceiling raised from 15 s on 2026-08-25: under load the embedder
+    // answers 200 after 45.8 s, so the former ~30 s ceiling turned a LATENCY regime into a
+    // reported outage naming a false cause.)
     timeout: failoverActive
       ? getEmbeddingClientTimeoutMs(mode, plan.endpoints.length)
       : parseInt(process.env.EMBEDDING_TIMEOUT_MS || '60000'),

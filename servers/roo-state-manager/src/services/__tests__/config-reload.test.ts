@@ -34,6 +34,7 @@ const savedEnv: Record<string, string | undefined> = {};
 const TOUCHED = [
   'OPENAI_API_KEY', 'EMBEDDING_API_KEY', 'VLLM_API_KEY_MEDIUM', 'QDRANT_URL', 'QDRANT_API_KEY',
   'ZAI_API_KEY', 'FALLBACK_API_KEY', 'EMBEDDING_MODEL', 'QDRANT_COLLECTION_NAME', 'EMBEDDING_API_BASE_URL',
+  'EMBEDDING_LAN_DIRECT', 'EMBEDDING_LAN_DIRECT_URL',
   'ROOSYNC_SHARED_PATH', 'NODE_ENV', 'EMBEDDING_BATCH_SIZE', 'RSM_HOST_ENV_KEYS',
   'CONDENSE_CLOUD_RESERVE_MS',
 ];
@@ -101,6 +102,26 @@ describe('reloadConfig — client invalidation follows the keys that changed', (
     expect(resetQdrantClient).toHaveBeenCalledTimes(1);
     // The chat key did not move, so its client must survive.
     expect(resetChatOpenAIClient).not.toHaveBeenCalled();
+  });
+
+  it('a flipped EMBEDDING_LAN_DIRECT rebuilds BOTH embedding clients (kill-switch reloadable, #4395)', () => {
+    // The LAN-direct flag feeds getEmbeddingEndpointPlan at each client build.
+    // Flipping the kill-switch in .env must reset both embedding clients so the
+    // next call re-reads it and plans public-only.
+    process.env.EMBEDDING_LAN_DIRECT = '1'; // LAN-direct on
+    writeEnv('EMBEDDING_LAN_DIRECT=0\n');   // operator flips the kill-switch
+
+    const report = reloadConfig(envPath);
+
+    expect(process.env.EMBEDDING_LAN_DIRECT).toBe('0');
+    expect(report.changed.map((c) => c.key)).toEqual(['EMBEDDING_LAN_DIRECT']);
+    expect(report.clientsReset).toEqual(['codebaseEmbeddingClient', 'embeddingClient']);
+    expect(resetEmbeddingOpenAIClient).toHaveBeenCalledTimes(1);
+    expect(resetCodebaseEmbeddingClient).toHaveBeenCalledTimes(1);
+    // Nothing else derives from the flag.
+    expect(resetChatOpenAIClient).not.toHaveBeenCalled();
+    expect(resetFallbackChatOpenAIClient).not.toHaveBeenCalled();
+    expect(resetQdrantClient).not.toHaveBeenCalled();
   });
 
   it('resets every client sharing a changed key (a rotated OPENAI_API_KEY hits three)', () => {
