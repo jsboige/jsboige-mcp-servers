@@ -179,9 +179,51 @@ export async function loadFullSkeleton(
 }
 
 /**
+ * #4352 g6b — recency of an indexingState, for the two-writer merge.
+ * A reset strips every timestamp except `lastResetAt`, so all of them count.
+ */
+function indexingStateRecency(state: any): number {
+    if (!state || typeof state !== 'object') return 0;
+    let newest = 0;
+    for (const field of ['lastResetAt', 'lastIndexAttempt', 'lastErrorAt', 'lastIndexedAt', 'nextReindexAfter']) {
+        const value = state[field];
+        if (typeof value !== 'string') continue;
+        const parsed = Date.parse(value);
+        if (Number.isFinite(parsed) && parsed > newest) newest = parsed;
+    }
+    return newest;
+}
+
+/**
+ * #4352 g6b — read the on-disk index entries by taskId (empty map on absence
+ * or corruption: a bad file must not block a save).
+ */
+async function readSkeletonIndexEntries(indexPath: string): Promise<Map<string, any>> {
+    const byTaskId = new Map<string, any>();
+    try {
+        const raw = await fs.readFile(indexPath, 'utf8');
+        const parsed = JSON.parse(raw);
+        for (const entry of parsed?.entries ?? []) {
+            if (entry?.taskId) byTaskId.set(entry.taskId, entry);
+        }
+    } catch {
+        // absent / unreadable / not yet written — nothing to merge from
+    }
+    return byTaskId;
+}
+
+/**
  * Generate or update the skeleton index file from current cache.
  * #1984: Uses proper-lockfile + atomic rename to prevent race conditions
  * between 12+ concurrent MCP instances.
+ *
+ * #4352 g6b: the write is a read-modify-write on `indexingState`. The file has
+ * TWO elected writers (Worker A leader on refresh, indexing leader on request
+ * consumption) and each writes from its OWN cache. A stale worker's full
+ * overwrite used to undo a reset the other writer had just persisted (measured
+ * ai-01 03:47:48Z: 6/6 back to `failed` right after the requests). The on-disk
+ * `indexingState` therefore wins whenever it is newer than the one being
+ * written — only that field; entry presence still follows the caller's cache.
  */
 export async function saveSkeletonIndex(
     conversationCache: Map<string, SkeletonHeader>
@@ -197,15 +239,6 @@ export async function saveSkeletonIndex(
         // Cache already contains SkeletonHeaders — serialize directly
         const entries = Array.from(conversationCache.values());
 
-        const index: SkeletonIndex = {
-            version: 1,
-            generatedAt: new Date().toISOString(),
-            count: entries.length,
-            entries,
-        };
-
-        const content = JSON.stringify(index);
-
         // #1984: Acquire file lock before writing to prevent concurrent writes
         let release: (() => Promise<void>) | undefined;
         try {
@@ -218,11 +251,42 @@ export async function saveSkeletonIndex(
         }
 
         try {
+            // #4352 g6b: merge the newer on-disk `indexingState` into what we
+            // are about to write (read under the same lock as the write).
+            const diskEntries = await readSkeletonIndexEntries(indexPath);
+            const mergedEntries = entries.map((entry: any) => {
+                const disk = entry?.taskId ? diskEntries.get(entry.taskId) : undefined;
+                const diskState = disk?.metadata?.indexingState;
+                if (!diskState) return entry;
+                const cacheState = entry?.metadata?.indexingState;
+                if (!cacheState) return entry;
+                if (indexingStateRecency(diskState) <= indexingStateRecency(cacheState)) return entry;
+                const kept: any = {
+                    ...entry,
+                    metadata: { ...entry.metadata, indexingState: diskState },
+                };
+                if (disk.metadata.qdrantIndexedAt === undefined) {
+                    delete kept.metadata.qdrantIndexedAt;
+                } else {
+                    kept.metadata.qdrantIndexedAt = disk.metadata.qdrantIndexedAt;
+                }
+                return kept;
+            });
+
+            const index: SkeletonIndex = {
+                version: 1,
+                generatedAt: new Date().toISOString(),
+                count: mergedEntries.length,
+                entries: mergedEntries as any,
+            };
+
+            const content = JSON.stringify(index);
+
             // #1984: Atomic write via temp file + rename
             const tmpPath = path.join(skeletonsCacheDir, `${SKELETON_INDEX_FILENAME}.tmp-${process.pid}`);
             await fs.writeFile(tmpPath, content, 'utf8');
             await fs.rename(tmpPath, indexPath);
-            console.log(`[Index] Saved skeleton index (atomic): ${entries.length} entries (${Math.round(content.length / 1024)}KB)`);
+            console.log(`[Index] Saved skeleton index (atomic): ${mergedEntries.length} entries (${Math.round(content.length / 1024)}KB)`);
         } finally {
             if (release) {
                 try { await release(); } catch { /* ignore unlock errors */ }
@@ -1460,8 +1524,17 @@ export async function hasPendingIndexRequests(machineId: string): Promise<boolea
  * leader's decision drops the task as `failed` (indexing-decision.ts:72-77).
  * The consumed resets are persisted immediately via saveSkeletonIndex (the
  * refresh-path save is conditional on updatedCount>0, so waiting for it could
- * lose the reset).
+ * lose the reset) and AWAITED before the consumed file is unlinked — a crash
+ * in between must not consume the request without persisting it.
+ *
+ * Review guards (ai-01, ms#1546 CHANGES):
+ * - reset only `failed`/`retry` — a delegated index on a healthy task must not
+ *   wipe its success state;
+ * - a task absent from this cache keeps its line (bounded re-queue) instead of
+ *   being dropped — the worker skips absent tasks and nothing would retry.
  */
+export const MAX_INDEX_REQUEST_ATTEMPTS = 20;
+
 export async function consumePendingIndexRequests(state: ServerState): Promise<string[]> {
     const requestsPath = await getIndexRequestsPath(state.machineId);
     const consumedPath = `${requestsPath}.consuming-${process.pid}-${Date.now()}`;
@@ -1473,7 +1546,9 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
         return [];
     }
     const consumed: string[] = [];
+    const deferred: any[] = [];
     let consumedResets = 0;
+    let dropped = 0;
     try {
         const content = await fs.readFile(consumedPath, 'utf-8');
         for (const line of content.split('\n')) {
@@ -1487,15 +1562,23 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
             }
             const taskId = typeof parsed?.taskId === 'string' ? parsed.taskId : '';
             if (!taskId) continue;
+            const skeleton = state.conversationCache?.get(taskId);
+            if (!skeleton) {
+                // Keep the line until the task is known (bounded): the worker
+                // skips absent tasks with no retry, so dropping it here would
+                // lose a request for a session the scan cursor has not reached.
+                const attempts = (typeof parsed?.attempts === 'number' ? parsed.attempts : 0) + 1;
+                if (attempts > MAX_INDEX_REQUEST_ATTEMPTS) dropped++;
+                else deferred.push({ ...parsed, attempts });
+                continue;
+            }
             state.deadLetterQueue?.delete(taskId);
             state.deadLetterDetails?.delete(taskId);
-            // g6: reset in the leader's own cache BEFORE enqueuing — mirror of
-            // the follower's synchronous path (`reset_indexing_state:true`),
-            // which until now never reached the leader. A task absent from the
-            // cache (or without indexingState) has nothing to reset: enqueue
-            // alone, never thrown.
-            const skeleton = state.conversationCache?.get(taskId);
-            if (skeleton?.metadata?.indexingState) {
+            // Reset in the leader's own cache BEFORE enqueuing — mirror of the
+            // follower's synchronous path (`reset_indexing_state:true`), which
+            // until now never reached the leader.
+            const indexingState = (skeleton.metadata as any)?.indexingState;
+            if (indexingState && (indexingState.indexStatus === 'failed' || indexingState.indexStatus === 'retry')) {
                 const { IndexingDecisionService } = await import('./indexing-decision.js');
                 new IndexingDecisionService().resetIndexingState(skeleton);
                 consumedResets++;
@@ -1503,17 +1586,25 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
             state.qdrantIndexQueue.add(taskId);
             if (!consumed.includes(taskId)) consumed.push(taskId);
         }
+        if (consumedResets > 0) {
+            // Persist BEFORE the unlink (see doc comment). saveSkeletonIndex
+            // never throws — it catches internally and logs.
+            await saveSkeletonIndex(state.conversationCache);
+        }
     } catch (error: any) {
         console.warn(`⚠️ [#4352 g3] Unable to read consumed index requests: ${error?.message ?? error}`);
     } finally {
         await fs.unlink(consumedPath).catch(() => {});
     }
-    if (consumedResets > 0) {
-        // Persist the resets now — do not wait for the conditional
-        // refresh-path save (see doc comment). Lock-guarded (#1984).
-        saveSkeletonIndex(state.conversationCache).catch((err: any) => {
-            console.warn(`⚠️ [#4352 g6] Reset consumed but index save failed (next tick retries): ${err?.message ?? err}`);
+    if (deferred.length > 0) {
+        const body = deferred.map(request => JSON.stringify(request)).join('\n') + '\n';
+        await fs.appendFile(requestsPath, body).catch((err: any) => {
+            console.warn(`⚠️ [#4352 g6b] Unable to re-queue ${deferred.length} deferred request(s): ${err?.message ?? err}`);
         });
+        console.log(`⏳ [#4352 g6b] Deferred ${deferred.length} request(s) — task not yet in the leader's cache`);
+    }
+    if (dropped > 0) {
+        console.warn(`⚠️ [#4352 g6b] Dropped ${dropped} request(s) after ${MAX_INDEX_REQUEST_ATTEMPTS} attempts — the task never appeared in the cache`);
     }
     if (consumed.length > 0) {
         console.log(`📨 [#4352 g3/g6] Leader consumed ${consumed.length} request(s)${consumedResets > 0 ? ` (${consumedResets} reset before requeue)` : ''}: ${consumed.join(', ')}`);

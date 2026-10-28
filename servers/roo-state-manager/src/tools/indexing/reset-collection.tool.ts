@@ -87,6 +87,9 @@ export const resetQdrantCollectionTool = {
                 if (skeleton.metadata.indexingState) {
                     skeleton.metadata.indexingState = {
                         indexVersion: skeleton.metadata.indexingState.indexVersion,
+                        // #4352 g6b: stamp the reset so saveSkeletonIndex's
+                        // read-modify-write keeps it over a stale writer's state.
+                        lastResetAt: new Date().toISOString(),
                     };
                     modified = true;
                 }

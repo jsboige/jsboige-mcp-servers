@@ -30,6 +30,18 @@ const MACHINE_ID = `g3-test-${process.pid}`;
 
 const leaderState = (): any => ({
     machineId: MACHINE_ID,
+    // #4352 g6b (ms#1546 review): the consumer now DEFERS a line whose task is
+    // absent from the leader's cache instead of losing it (the indexing worker
+    // skips absent tasks with no retry). The leader in this scenario holds the
+    // tasks — their skeletons are deliberately state-less (`metadata: {}`) so
+    // the status guard never fires: this suite is about TRANSPORT, and a
+    // failed state would trigger a real saveSkeletonIndex (the storage
+    // detector is not mocked here). Deferral itself is covered by
+    // reset-requests.g6.test.ts.
+    conversationCache: new Map<string, any>([
+        ['big-1', { taskId: 'big-1', metadata: {}, sequence: [] }],
+        ['other', { taskId: 'other', metadata: {}, sequence: [] }],
+    ]),
     qdrantIndexQueue: new Set<string>(),
     deadLetterQueue: new Set<string>(['big-1', 'other']),
     deadLetterDetails: new Map([[

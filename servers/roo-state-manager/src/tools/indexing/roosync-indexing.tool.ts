@@ -1795,7 +1795,15 @@ export async function handleRooSyncIndexing(
                 let reset = 0;
                 let deadLettered = 0;
                 let resetForRetry = 0;
+                // #4352 g6b (ms#1546 review): two distinct lists. `resetIds` is
+                // what we DELEGATE to the leader (transient classes only — a
+                // parked task must not be requeued). `locallyResetIds` is what
+                // this call actually reset in its own cache, which is what the
+                // receipt's `reset_task_ids` reports (permanent classes are
+                // reset AND parked, so they are not delegated but they ARE
+                // reset).
                 const resetIds: string[] = [];
+                const locallyResetIds: string[] = [];
                 if (!isDryRun && candidates.length > 0) {
                     for (const c of candidates) {
                         const skeleton = conversationCache.get(c.task_id);
@@ -1819,8 +1827,14 @@ export async function handleRooSyncIndexing(
                                 movedAt: new Date().toISOString(),
                             });
                             deadLettered++;
+                            // #4352 g6b (ms#1546 review): a parked task is NOT
+                            // handed to the leader — the leader would lift its
+                            // pin and requeue it, defeating the #2766 S3
+                            // parking for auth_failed / file_not_found. Only
+                            // transient classes go into resetIds below.
                         } else {
                             resetForRetry++;
+                            resetIds.push(c.task_id);
                         }
                         // Persist the reset so the next MCP host restart still sees
                         // the dead-letter state. Save through the callback (the
@@ -1831,8 +1845,8 @@ export async function handleRooSyncIndexing(
                         // per-task file on disk) — the durable path for those is
                         // the request-file append below.
                         await saveSkeletonCallback(skeleton);
-                        resetIds.push(c.task_id);
                         reset++;
+                        locallyResetIds.push(c.task_id);
                     }
                 }
 
@@ -1895,7 +1909,7 @@ export async function handleRooSyncIndexing(
                             persistence_mode: isDryRun ? undefined : persistenceMode,
                             persisted: isDryRun ? undefined : persisted,
                             not_persisted: isDryRun ? undefined : notPersisted,
-                            reset_task_ids: isDryRun ? undefined : (resetIds.length > 0 ? resetIds : undefined),
+                            reset_task_ids: isDryRun ? undefined : (locallyResetIds.length > 0 ? locallyResetIds : undefined),
                             note: errorClassFilter === 'auth_failed' && !isDryRun
                                 ? 'auth_failed tasks were reset. They will re-fail until the API key is fixed — rotate the key BEFORE running cleanup_failed error_class=auth_failed to avoid churn.'
                                 : undefined,

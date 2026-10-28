@@ -1960,13 +1960,14 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 		expect(parsed.mode).toBe('executed');
 		expect(parsed.reset_count).toBe(1);
 		expect(parsed.reset_task_ids).toEqual(['f-1']);
-		// #4352 g6: the reset is ALSO persisted as a request for the leader —
-		// the local cache reset alone is lost to the leader's index rewrite.
+		// #4352 g6b (ms#1546 review): a PERMANENT class is parked, NOT handed to
+		// the leader — the leader would lift its pin and requeue it, defeating the
+		// #2766 S3 parking. Nothing was attempted, so the receipt stays clean.
 		expect(parsed.persistence_mode).toBe('request-file');
-		expect(parsed.persisted).toBe(1);
+		expect(parsed.persisted).toBe(0);
 		expect(parsed.not_persisted).toBe(0);
 		expect(result.isError).toBeFalsy();
-		expect(mockRequestQueuedIndexBatch).toHaveBeenCalledWith(['f-1'], 'local');
+		expect(mockRequestQueuedIndexBatch).not.toHaveBeenCalled();
 		// resetIndexingState must have been called.
 		expect(mockResetIndexingState).toHaveBeenCalledTimes(1);
 		// saveSkeleton callback must have been called (NOT direct disk write).
@@ -1974,6 +1975,44 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 		// Dead-letter bookkeeping was mirrored.
 		expect(deadLetterQueue.has('f-1')).toBe(true);
 		expect(deadLetterDetails.has('f-1')).toBe(true);
+	});
+
+	test('cleanup_failed g6b: a TRANSIENT class is handed to the leader and NOT parked', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['e-1', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'Indexing timeout after 300000ms',
+				indexRetryCount: 3,
+				errorClass: 'embedding_timeout',
+			})],
+		]);
+		const deadLetterQueue = new Set<string>();
+		const deadLetterDetails = new Map<string, any>();
+		const indexingState = {
+			machineId: 'local',
+			qdrantIndexQueue: new Set<string>(),
+			qdrantIndexInterval: null,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 0, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 },
+			deadLetterQueue,
+			deadLetterDetails,
+		};
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', dry_run: false } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.mode).toBe('executed');
+		expect(parsed.persisted).toBe(1);
+		expect(parsed.not_persisted).toBe(0);
+		expect(result.isError).toBeFalsy();
+		// The transient task reaches the leader as a reset+retry request…
+		expect(mockRequestQueuedIndexBatch).toHaveBeenCalledWith(['e-1'], 'local');
+		// …and stays OUT of the dead-letter parking.
+		expect(deadLetterQueue.has('e-1')).toBe(false);
+		expect(deadLetterDetails.has('e-1')).toBe(false);
 	});
 
 	test('cleanup_failed skips non-failed and non-stuck-retry tasks', async () => {

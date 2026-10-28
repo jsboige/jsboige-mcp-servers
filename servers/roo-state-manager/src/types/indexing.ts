@@ -54,6 +54,14 @@ export interface IndexingState {
     nextReindexAfter?: string;     // ISO datetime pour TTL/rafraîchissement
     indexRetryCount?: number;      // Compteur de tentatives pour backoff
     lastIndexAttempt?: string;     // ISO datetime de dernière tentative (réussie ou non)
+    /**
+     * #4352 g6b — ISO datetime of the reset that cleared this state.
+     * A reset strips every other timestamp, so without it `saveSkeletonIndex`
+     * cannot tell which of two writers (Worker A leader vs indexing leader)
+     * holds the newer state — and a full overwrite from a stale cache would
+     * undo the reset on disk.
+     */
+    lastResetAt?: string;
 }
 
 export interface IndexingDecision {
