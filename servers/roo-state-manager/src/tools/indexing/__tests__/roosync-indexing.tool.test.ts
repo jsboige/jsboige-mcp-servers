@@ -22,7 +22,7 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockArchiveTask, mockArchiveClaudeCodeSessions, mockListArchivedTasks, mockFindConversationById,
 	mockDetectStorageLocations, mockFsReadDir, mockFsReadFile, mockFsStat,
 	mockCleanupOldVectors, mockDetectAndCleanupOrphans,
-	mockResetIndexingState, mockClassifyIndexingError, mockReadLeaderLockInfo
+	mockResetIndexingState, mockClassifyIndexingError, mockReadLeaderLockInfo, mockRequestQueuedIndex
 } = vi.hoisted(() => ({
 	mockIndexHandler: vi.fn(),
 	mockResetHandler: vi.fn(),
@@ -40,7 +40,8 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockDetectAndCleanupOrphans: vi.fn(),
 	mockResetIndexingState: vi.fn(),
 	mockClassifyIndexingError: vi.fn(),
-	mockReadLeaderLockInfo: vi.fn()
+	mockReadLeaderLockInfo: vi.fn(),
+	mockRequestQueuedIndex: vi.fn()
 }));
 
 // Default mock for shared-state-path — returns '' unless a test sets the holder.
@@ -102,6 +103,9 @@ vi.mock('../../../services/background-services.js', async (importOriginal) => {
 		...actual,
 		// #3014: readLeaderLockInfo is now imported by the status handler.
 		readLeaderLockInfo: mockReadLeaderLockInfo,
+		// #4352 g3: the follower path persists the request; stub it so the tool
+		// test never touches the real machine-local request file.
+		requestQueuedIndex: mockRequestQueuedIndex,
 	};
 });
 vi.mock('../../../services/indexing-decision.js', () => ({
@@ -179,12 +183,12 @@ describe('roosyncIndexingTool', () => {
 		expect(result.content[0].text).toContain('task_id');
 	});
 
-	test('index action delegates to indexTaskSemanticTool', async () => {
+	test('index action delegates to indexTaskSemanticTool when queued:false (kill-switch, #4352 g3 default is queued)', async () => {
 		const expected = { content: [{ type: 'text', text: 'indexed' }] };
 		mockIndexHandler.mockResolvedValue(expected);
 
 		const result = await handleRooSyncIndexing(
-			{ action: 'index', task_id: 'abc-123' },
+			{ action: 'index', task_id: 'abc-123', queued: false } as any,
 			cache, ensureFresh, saveSkeleton, indexQueue, setEnabled, mockRebuildHandler
 		);
 
@@ -366,6 +370,248 @@ describe('roosyncIndexingTool', () => {
 });
 
 // ============================================================
+// index action — queued mode (#4352 g3)
+// ============================================================
+
+describe('roosync_indexing index action — queued mode (#4352 g3)', () => {
+	const ensureFresh = vi.fn().mockResolvedValue(true);
+	const saveSkeleton = vi.fn().mockResolvedValue(undefined);
+	const setEnabled = vi.fn();
+	const mockRebuildHandler = vi.fn();
+
+	const deadLetterEntry = {
+		taskId: 'big-1', error: 'embedding timeout', errorClass: 'embedding_timeout',
+		retryCount: 3, lastAttempt: '2026-10-27T00:00:00.000Z', movedAt: '2026-10-27T00:00:00.000Z'
+	};
+
+	/** Skeleton "grosse session" en échec permanent — le cas g3 canonical. */
+	const makeCache = () => new Map([
+		['big-1', {
+			taskId: 'big-1',
+			metadata: { indexingState: { indexStatus: 'failed', indexError: 'embedding timeout', errorClass: 'embedding_timeout' } }
+		} as any],
+	]);
+
+	const makeIndexingState = (queue: Set<string>, overrides: Record<string, unknown> = {}) => ({
+		qdrantIndexQueue: queue,
+		qdrantIndexInterval: {} as NodeJS.Timeout,
+		isQdrantIndexingEnabled: true,
+		isIndexLeader: true,
+		indexingMetrics: { totalTasks: 1, skippedTasks: 0, indexedTasks: 0, failedTasks: 1, retryTasks: 0, bandwidthSaved: 0 },
+		deadLetterQueue: new Set(['big-1']),
+		deadLetterDetails: new Map([['big-1', deadLetterEntry]]),
+		...overrides,
+	});
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	test('queued=true (leader) enqueues, resets state, clears dead-letter and never touches the inline indexer', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+		const cache = makeCache();
+		const queue = new Set<string>();
+		const state = makeIndexingState(queue);
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', queued: true } as any,
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			state
+		);
+
+		expect((result as any).isError).toBeUndefined();
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.queued).toBe(true);
+		expect(parsed.mode).toBe('in-process');
+		expect(parsed.task_id).toBe('big-1');
+		expect(parsed.was_failed).toBe(true);
+		expect(parsed.dead_letter_entry_removed).toBe(true); // pin réellement présent → true réel
+		expect(parsed.leader_pid).toBeNull();
+		expect(parsed.worker_running).toBe(true);
+		expect(parsed.queue_size).toBe(1);
+		expect(parsed.queue_size_scope).toBe('this-process');
+		expect(parsed.hints).toEqual([]);
+
+		// La chaîne de mutation a tourné : reset + save + dead-letter levée + enqueue.
+		expect(mockResetIndexingState).toHaveBeenCalledTimes(1);
+		expect(saveSkeleton).toHaveBeenCalledTimes(1);
+		expect(state.deadLetterQueue!.has('big-1')).toBe(false);
+		expect(state.deadLetterDetails!.has('big-1')).toBe(false);
+		expect(queue.has('big-1')).toBe(true);
+		expect(setEnabled).toHaveBeenCalledWith(true);
+		// …et le chemin inline (celui qui meurt au timeout 300 s) n'a PAS servi.
+		expect(mockIndexHandler).not.toHaveBeenCalled();
+		expect(mockRequestQueuedIndex).not.toHaveBeenCalled();
+	});
+
+	test('queued is the DEFAULT: an index call without the flag takes the queued path (#4352 g3 user rule)', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+		const cache = makeCache();
+		const queue = new Set<string>();
+		const state = makeIndexingState(queue);
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1' } as any,
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			state
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.queued).toBe(true);
+		expect(parsed.mode).toBe('in-process');
+		expect(queue.has('big-1')).toBe(true);
+		expect(mockIndexHandler).not.toHaveBeenCalled();
+	});
+
+	test('FOLLOWER: the request is persisted for the leader, never enqueued on the undrained local queue', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+		mockReadLeaderLockInfo.mockResolvedValue({ leaderPid: 4242, lockAgeMs: 1000, claudeIndexing: null });
+		const cache = makeCache();
+		const queue = new Set<string>();
+		const state = makeIndexingState(queue, { isIndexLeader: false, machineId: 'myia-test' });
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', queued: true } as any,
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			state
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.queued).toBe(true);
+		expect(parsed.mode).toBe('delegated-to-leader');
+		expect(parsed.leader_pid).toBe(4242);
+		// non-observable d'ici : c'est la dead-letter du LEADER qui sera levée.
+		expect(parsed.dead_letter_entry_removed).toBeNull();
+		expect(parsed.hints.some((h: string) => h.includes('4242'))).toBe(true);
+
+		// La requête est PERSISTÉE pour le leader…
+		expect(mockRequestQueuedIndex).toHaveBeenCalledWith('big-1', 'myia-test');
+		// …et surtout PAS enqueueée sur une file que personne ne draine (le défaut de la review).
+		expect(queue.has('big-1')).toBe(false);
+		expect(state.deadLetterQueue!.has('big-1')).toBe(true);
+		// Le reset du skeleton reste fait : c'est de l'état partagé (cache + disque).
+		expect(mockResetIndexingState).toHaveBeenCalledTimes(1);
+		expect(saveSkeleton).toHaveBeenCalledTimes(1);
+		expect(mockIndexHandler).not.toHaveBeenCalled();
+	});
+
+	test('FOLLOWER without a readable leader lock: request still persisted, hint says it waits for a leader', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+		mockReadLeaderLockInfo.mockResolvedValue(null);
+		const cache = makeCache();
+		const queue = new Set<string>();
+		const state = makeIndexingState(queue, { isIndexLeader: false, machineId: 'myia-test' });
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', queued: true } as any,
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			state
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.mode).toBe('delegated-to-leader');
+		expect(parsed.leader_pid).toBeNull();
+		expect(parsed.hints.some((h: string) => h.includes('aucun leader'))).toBe(true);
+		expect(mockRequestQueuedIndex).toHaveBeenCalledWith('big-1', 'myia-test');
+	});
+
+	test('dead_letter_entry_removed reports the REAL delete() return (no pin → false)', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+		const cache = makeCache();
+		const queue = new Set<string>();
+		// Pin absent : le Set existe mais ne contient pas la tâche.
+		const state = makeIndexingState(queue, { deadLetterQueue: new Set<string>(), deadLetterDetails: new Map() });
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', queued: true } as any,
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			state
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.dead_letter_entry_removed).toBe(false);
+		expect(queue.has('big-1')).toBe(true);
+	});
+
+	test('queued=true without indexingState refuses with isError (no silent inline fallback)', async () => {
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', queued: true } as any,
+			makeCache(), ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+
+		expect((result as any).isError).toBe(true);
+		expect(result.content[0].text).toContain('indexingState');
+		expect(mockIndexHandler).not.toHaveBeenCalled();
+		expect(mockResetIndexingState).not.toHaveBeenCalled();
+	});
+
+	test('queued on unknown task_id returns isError and leaves the queue untouched (cache-miss mutant)', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+		const queue = new Set<string>();
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'ghost', queued: true } as any,
+			new Map(), ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			makeIndexingState(queue)
+		);
+
+		expect((result as any).isError).toBe(true);
+		expect(result.content[0].text).toContain('ghost');
+		expect(queue.size).toBe(0);
+		expect(mockResetIndexingState).not.toHaveBeenCalled();
+		expect(saveSkeleton).not.toHaveBeenCalled();
+		expect(mockIndexHandler).not.toHaveBeenCalled();
+		expect(mockRequestQueuedIndex).not.toHaveBeenCalled();
+	});
+
+	test('kill-switch queued:false restores the inline path (no queue, no receipt)', async () => {
+		const expected = { content: [{ type: 'text', text: 'indexed' }] };
+		mockIndexHandler.mockResolvedValue(expected);
+		const queue = new Set<string>();
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', queued: false } as any,
+			makeCache(), ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			makeIndexingState(queue)
+		);
+
+		expect(result).toBe(expected);
+		expect(mockIndexHandler).toHaveBeenCalledTimes(1);
+		expect(queue.size).toBe(0);
+		expect(mockRequestQueuedIndex).not.toHaveBeenCalled();
+	});
+
+	test('in-process hints expose kill-switch and absent worker; kill-switch clamps setEnabled', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'false');
+		const cache = makeCache();
+		const queue = new Set<string>();
+		const state = makeIndexingState(queue, { qdrantIndexInterval: null });
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', queued: true } as any,
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			state
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.queued).toBe(true);
+		expect(parsed.mode).toBe('in-process');
+		expect(parsed.worker_running).toBe(false);
+		expect(parsed.hints).toHaveLength(2);
+		expect(parsed.hints[0]).toContain('worker');
+		expect(parsed.hints[1]).toContain('ROO_INDEXING_ENABLED');
+		// Clamp env : le kill-switch posé, on ne réactive pas le service.
+		expect(setEnabled).not.toHaveBeenCalled();
+		// L'enqueue lui-même reste fait — la file drainera au retrait du switch.
+		expect(queue.has('big-1')).toBe(true);
+	});
+});
+
+// ============================================================
 // status action
 // ============================================================
 
@@ -439,6 +685,31 @@ describe('roosync_indexing status action', () => {
 		expect(result.isError).toBe(false);
 		const parsed = JSON.parse(result.content[0].text);
 		expect(parsed.background_indexer.queue_size).toBe(1);
+	});
+
+	// #4352 g3 — la file devient OBSERVABLE : un opérateur qui vient de poser
+	// queued=true voit le task_id entrer dans cette liste puis la quitter.
+	test('#4352 g3: status exposes queued_task_ids, bounded at 25 with a truncation flag', async () => {
+		const ids = Array.from({ length: 30 }, (_, i) => `t${i}`);
+		const indexingState = {
+			qdrantIndexQueue: new Set(ids),
+			qdrantIndexInterval: {} as NodeJS.Timeout,
+			isQdrantIndexingEnabled: true,
+			indexingMetrics: { totalTasks: 30, skippedTasks: 0, indexedTasks: 0, failedTasks: 0, retryTasks: 0, bandwidthSaved: 0 }
+		};
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'status' },
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler,
+			indexingState
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.background_indexer.queue_size).toBe(30);
+		expect(parsed.background_indexer.queued_task_ids).toHaveLength(25);
+		expect(parsed.background_indexer.queued_task_ids[0]).toBe('t0');
+		expect(parsed.background_indexer.queued_task_ids[24]).toBe('t24');
+		expect(parsed.background_indexer.queued_task_ids_truncated).toBe(true);
 	});
 
 	// #3014: the diagnostic trap. Two materially different states — a healthy
