@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, lookupMachineActivityInArchives, DEFAULT_ACTIVITY_THRESHOLD_MS, MAX_ARCHIVE_READS_PER_CALL } from '../dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, lookupMachineActivityInArchives, DEFAULT_ACTIVITY_THRESHOLD_MS, MAX_ARCHIVE_READS_PER_CALL, MAX_ARCHIVE_READS_PER_MACHINE, MAX_ARCHIVE_READS_NO_FLOOR } from '../dashboard-activity.js';
 
 describe('dashboard-activity', () => {
 	describe('extractMachineActivity', () => {
@@ -215,17 +215,20 @@ describe('dashboard-activity', () => {
 			expect(found.has('myia-deep-01')).toBe(false);
 		});
 
-		it('#4344 re-review — the budget reads UP TO its ceiling: a message just inside the bound is found', () => {
-			// Boundary pinned on both sides: the message sits 10 files INSIDE
-			// MAX_ARCHIVE_READS_PER_CALL among thousands — it must be found,
-			// proving the walk reads up to the ceiling, not less.
-			const N = MAX_ARCHIVE_READS_PER_CALL;
-			const total = N + 500;
+		it('#4344 residual — the walk reads UP TO the MACHINE ceiling: a message just inside is found', () => {
+			// Re-pinned 28/10 (dispatch ai-01): the binding ceiling for a
+			// floor-carrying machine is now MAX_ARCHIVE_READS_PER_MACHINE, not
+			// MAX_ARCHIVE_READS_PER_CALL — one dead machine must not tax the
+			// whole call (measured ~11.7 s/health call on myia-po-2026). The
+			// original ms#1532 intent (the walk reads up to the ceiling, not
+			// less) is preserved at the new boundary.
+			const M = MAX_ARCHIVE_READS_PER_MACHINE;
+			const total = M + 500;
 			const base = Date.parse('2026-10-27T00:00:00Z');
 			const condenseAt = (i: number) => new Date(base - i * 61_000);
 			const nameOf = (i: number) =>
 				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
-			const insideIdx = N - 10;
+			const insideIdx = M - 10;
 			const deepTs = new Date(condenseAt(insideIdx).getTime() - 60_000).toISOString();
 			for (let i = 0; i < total; i++) {
 				if (i === insideIdx) {
@@ -273,6 +276,140 @@ describe('dashboard-activity', () => {
 
 			// The 201st attempt never happens: attempts — not successes — exhausted the budget.
 			expect(found.has('myia-unreachable-01')).toBe(false);
+		});
+
+		it('#4344 residual — per-machine budget: a floor-carrying machine is dropped at its OWN ceiling', () => {
+			// myia-po-2026 shape (po-2027 cost verdict, 28/10): floor 09/10,
+			// dead since — every archive is NEWER than the floor, so the date
+			// rule can never resolve it, and under the per-call-only budget it
+			// burned the full 200 reads (~11.7 s) on EVERY health call. The
+			// walk now drops it at MAX_ARCHIVE_READS_PER_MACHINE attempts: a
+			// message at position M+10 — inside the per-call budget, beyond
+			// the machine's own — is not chased.
+			const M = MAX_ARCHIVE_READS_PER_MACHINE;
+			const total = M + 500;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			const hitIdx = M + 10;
+			const lateTs = new Date(condenseAt(hitIdx).getTime() - 60_000).toISOString();
+			for (let i = 0; i < total; i++) {
+				if (i === hitIdx) {
+					archive(nameOf(i), `### [${lateTs}] myia-late-01|ws\nmessage beyond the machine ceiling`);
+				} else {
+					archive(nameOf(i), 'condensed bodies, no machine headers');
+				}
+			}
+			const floors = new Map([['myia-late-01', '2026-09-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-late-01'], floors);
+
+			expect(found.has('myia-late-01')).toBe(false);
+		});
+
+		it('#4344 residual — per-machine budget: a message just inside the machine ceiling is still found', () => {
+			// Companion boundary: the machine keeps the full benefit of its
+			// own 50 attempts — a hit 5 files inside the ceiling resolves it.
+			const M = MAX_ARCHIVE_READS_PER_MACHINE;
+			const total = M + 500;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			const hitIdx = M - 5;
+			const lateTs = new Date(condenseAt(hitIdx).getTime() - 60_000).toISOString();
+			for (let i = 0; i < total; i++) {
+				if (i === hitIdx) {
+					archive(nameOf(i), `### [${lateTs}] myia-late-01|ws\nmessage inside the machine ceiling`);
+				} else {
+					archive(nameOf(i), 'condensed bodies, no machine headers');
+				}
+			}
+			const floors = new Map([['myia-late-01', '2026-09-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-late-01'], floors);
+
+			expect(found.get('myia-late-01')).toBe(lateTs);
+		});
+
+		it('#4344 residual — no live line: concluded fast, without waiting for the call budget', () => {
+			// A machine absent from every live file can ONLY be resolved by a
+			// hit (the date rule needs a best, which is empty). Under the
+			// per-call-only budget it walked all 200 files before the honest
+			// #3160 null — 108 s measured (po-2027 verdict). It now gets
+			// MAX_ARCHIVE_READS_NO_FLOOR newest-first attempts — the typical
+			// #3695 recovery sits in the newest handful of files — and is
+			// concluded beyond that.
+			const F = MAX_ARCHIVE_READS_NO_FLOOR;
+			const total = 100;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			const hitIdx = F + 5;
+			const absentTs = new Date(condenseAt(hitIdx).getTime() - 60_000).toISOString();
+			for (let i = 0; i < total; i++) {
+				if (i === hitIdx) {
+					archive(nameOf(i), `### [${absentTs}] myia-absent-01|ws\nburied too deep for a no-floor lookup`);
+				} else {
+					archive(nameOf(i), 'condensed bodies, no machine headers');
+				}
+			}
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-absent-01']);
+
+			expect(found.has('myia-absent-01')).toBe(false);
+		});
+
+		it('#4344 residual — no live line: the #3695 recovery near the head is unaffected', () => {
+			// Companion boundary: a fully-archived machine whose newest
+			// message sits a handful of files deep is still recovered — the
+			// no-floor budget must not regress #3695's use case.
+			const F = MAX_ARCHIVE_READS_NO_FLOOR;
+			const total = 100;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			const hitIdx = F - 5;
+			const silentTs = new Date(condenseAt(hitIdx).getTime() - 60_000).toISOString();
+			for (let i = 0; i < total; i++) {
+				if (i === hitIdx) {
+					archive(nameOf(i), `### [${silentTs}] myia-silent-01|ws\njust condensed [DONE]`);
+				} else {
+					archive(nameOf(i), 'condensed bodies, no machine headers');
+				}
+			}
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-silent-01']);
+
+			expect(found.get('myia-silent-01')).toBe(silentTs);
+		});
+
+		it('#4344 residual — one dead machine hitting its ceiling does not take the others down', () => {
+			// DEAD (floor-carrying, never present) exhausts its per-machine
+			// budget mid-walk; FRESH (no floor, hit at position 3) must still
+			// be recovered — a per-machine drop is not a global abort.
+			const total = 100;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			const freshTs = new Date(condenseAt(3).getTime() - 60_000).toISOString();
+			for (let i = 0; i < total; i++) {
+				if (i === 3) {
+					archive(nameOf(i), `### [${freshTs}] myia-fresh-01|ws\njust condensed [DONE]`);
+				} else {
+					archive(nameOf(i), 'condensed bodies, no machine headers');
+				}
+			}
+			const floors = new Map([['myia-dead-01', '2026-09-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-dead-01', 'myia-fresh-01'], floors);
+
+			expect(found.get('myia-fresh-01')).toBe(freshTs);
+			expect(found.has('myia-dead-01')).toBe(false);
 		});
 
 		it('buildArchiveFloors equivalent: only machines with a live value get a floor', () => {
