@@ -178,7 +178,9 @@ describe('roosync_indexing - CONS-11', () => {
             } as ConversationSkeleton);
 
             const result = await handleRooSyncIndexing(
-                { action: 'index', task_id: 'task-123' },
+                // #4352 g3: queued is the DEFAULT (user rule 27/10) — this test
+                // covers the legacy inline path, which is now the kill-switch.
+                { action: 'index', task_id: 'task-123', queued: false } as any,
                 conversationCache,
                 ensureCacheFreshCallback,
                 saveSkeletonCallback,

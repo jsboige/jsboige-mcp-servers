@@ -483,7 +483,12 @@ export interface RooSyncIndexingArgs {
      * la main immédiatement au lieu d'indexer en ligne (une session de 5,5 Mo
      * mesurée meurt au timeout outil de 300 s). La progression se lit via
      * action=status (queue_size, queued_task_ids); un échec atterrit dans le
-     * rapport dead-letter. Défaut: false (indexation en ligne, inchangée).
+     * rapport dead-letter.
+     *
+     * Défaut: **true** (règle user 27/10 : le correctif est le défaut, le flag
+     * n'est qu'un kill-switch). `queued: false` restaure le chemin en ligne.
+     * Sur un processus suiveur, la requête est persistée et consommée par le
+     * tick du leader (mode "delegated-to-leader").
      */
     queued?: boolean;
 
@@ -604,8 +609,8 @@ export const roosyncIndexingTool: Tool = {
             },
             queued: {
                 type: 'boolean',
-                description: 'For action=index (#4352 g3): enqueue the task on the background indexing queue and return immediately instead of indexing inline (large sessions die at the 300s tool timeout). Resets the task indexing state and dead-letter entry first so the worker re-indexes it. Progress via action=status (queue_size, queued_task_ids); failures land in the dead-letter report. Default: false (inline).',
-                default: false
+                description: 'For action=index (#4352 g3): enqueue the task on the background indexing queue and return immediately instead of indexing inline (large sessions die at the 300s tool timeout). Resets the task indexing state and dead-letter entry first so the worker re-indexes it. On a non-leader process the request is persisted and consumed by the leader\'s tick (mode: delegated-to-leader). Progress via action=status (queue_size, queued_task_ids); failures land in the dead-letter report. Default: true — this IS the fix, the flag is only a kill-switch: pass false to restore the legacy inline path.',
+                default: true
             },
             confirm: {
                 type: 'boolean',
@@ -842,17 +847,28 @@ export async function handleRooSyncIndexing(
                     content: [{ type: 'text', text: 'Le paramètre "task_id" est requis pour action=index' }]
                 };
             }
-            // #4352 g3 — queued mode: index a LARGE session without dying at the
-            // 300 s tool timeout. Reuses the exact machinery a collection reset
+            // #4352 g3 — queued mode (DEFAULT): index a LARGE session without
+            // dying at the 300 s tool timeout. Same machinery a collection reset
             // uses (reset-collection.tool.ts): reset the skeleton's indexing
-            // state, drop any dead-letter entry, enqueue on the per-process
-            // background queue and let the interval worker drain it. Returns at
-            // once; progress is readable through action=status.
-            if (args.queued) {
+            // state, drop any dead-letter entry, enqueue on the background queue
+            // and let the interval worker drain it. Returns at once; progress is
+            // readable through action=status. Kill-switch: queued=false restores
+            // the legacy inline path.
+            //
+            // FOLLOWER path (g3 review, ai-01 27/10): the queue and dead-letter
+            // are per-process in-memory Sets and ONLY the leader drains. A
+            // follower enqueueing locally lies to the caller — its delete() empties
+            // a Set the leader never reads, the leader's pin survives, and the
+            // task is never indexed. So a follower PERSISTS the request
+            // (requestQueuedIndex, machine-local file next to the leader lock) and
+            // the leader's tick consumes it: it lifts ITS pin and enqueues on the
+            // queue it actually drains. The skeleton reset above is shared state
+            // (cache + disk), correct from any process.
+            if (args.queued !== false) {
                 if (!indexingState) {
                     return {
                         isError: true,
-                        content: [{ type: 'text', text: 'queued=true exige le state du processus hôte (indexingState) — indisponible dans ce contexte. Utilisez l\'indexation en ligne (queued absent).' }]
+                        content: [{ type: 'text', text: 'queued (défaut) exige le state du processus hôte (indexingState) — indisponible dans ce contexte. Utilisez l\'indexation en ligne (queued=false).' }]
                     };
                 }
                 const refreshed = await ensureCacheFreshCallback();
@@ -871,41 +887,63 @@ export async function handleRooSyncIndexing(
                 const decisionService = new IndexingDecisionService();
                 decisionService.resetIndexingState(skeleton);
                 await saveSkeletonCallback(skeleton);
-                // Un dead-letter épinglé ferait re-skiper la tâche au prochain
-                // cycle du worker (background-services #2766 S2+) — lever l'épingle.
-                indexingState.deadLetterQueue?.delete(args.task_id);
-                indexingState.deadLetterDetails?.delete(args.task_id);
-                qdrantIndexQueue.add(args.task_id);
-                // Réactiver le service s'il était désactivé — clamp à l'env,
-                // même garde que reset-collection (#985 review finding 2).
-                if (process.env.ROO_INDEXING_ENABLED !== 'false') {
-                    setQdrantIndexingEnabled(true);
-                }
-                // Le worker de fond vit sur le ServerState réel et démarre au
-                // boot (background-services initializeQdrantIndexingService) ;
-                // la file passée ici EST sa file (même référence Set) — il la
-                // draine. On ne le (re)démarre JAMAIS depuis le tool :
-                // indexingState est un littéral par-appel (registry.ts), un
-                // interval posé dessus serait orphelin et fuirait à chaque appel.
                 const hints: string[] = [];
+                // Suiveur : seule une requête persistée atteindra le leader.
+                const isFollower = indexingState.isIndexLeader === false;
+                let mode: 'in-process' | 'delegated-to-leader' = 'in-process';
+                let deadLetterRemoved: boolean | null = null;
+                let leaderPid: number | null = null;
+                if (isFollower) {
+                    const { requestQueuedIndex, readLeaderLockInfo } = await import('../../services/background-services.js');
+                    const machineId = indexingState.machineId ?? 'local';
+                    await requestQueuedIndex(args.task_id, machineId);
+                    mode = 'delegated-to-leader';
+                    const lock = await readLeaderLockInfo(machineId);
+                    leaderPid = lock?.leaderPid ?? null;
+                    if (leaderPid !== null) {
+                        hints.push(`Requête persistée pour le leader d'indexation (PID ${leaderPid}) — consommée à son prochain tick (≤ 5 min).`);
+                    } else {
+                        hints.push('Requête persistée ; aucun leader lisible pour l\'instant — elle sera consommée dès qu\'un processus prend le leadership.');
+                    }
+                } else {
+                    // Un dead-letter épinglé ferait re-skiper la tâche au prochain
+                    // cycle du worker (background-services #2766 S2+) — lever l'épingle,
+                    // et rapporter le retour RÉEL de delete() (review ai-01 : pas de
+                    // true codé en dur).
+                    deadLetterRemoved = indexingState.deadLetterQueue?.delete(args.task_id) ?? false;
+                    indexingState.deadLetterDetails?.delete(args.task_id);
+                    qdrantIndexQueue.add(args.task_id);
+                    // Réactiver le service s'il était désactivé — clamp à l'env,
+                    // même garde que reset-collection (#985 review finding 2).
+                    if (process.env.ROO_INDEXING_ENABLED !== 'false') {
+                        setQdrantIndexingEnabled(true);
+                    }
+                    // Le worker de fond vit sur le ServerState réel et démarre au
+                    // boot (background-services initializeQdrantIndexingService) ;
+                    // la file passée ici EST sa file (même référence Set) — il la
+                    // draine. On ne le (re)démarre JAMAIS depuis le tool :
+                    // indexingState est un littéral par-appel (registry.ts), un
+                    // interval posé dessus serait orphelin et fuirait à chaque appel.
+                    if (!indexingState.qdrantIndexInterval) {
+                        hints.push('Aucun worker d\'indexation détecté sur ce processus (initialisation boot incomplète) — la file ne drainera pas d\'elle-même.');
+                    }
+                }
                 if (process.env.ROO_INDEXING_ENABLED === 'false') {
                     hints.push('Kill-switch ROO_INDEXING_ENABLED=false — la file ne drainera pas tant qu\'il est posé.');
-                }
-                if (!indexingState.qdrantIndexInterval) {
-                    hints.push('Aucun worker d\'indexation détecté sur ce processus (initialisation boot incomplète) — la file ne drainera pas d\'elle-même.');
-                }
-                if (!indexingState.isIndexLeader) {
-                    hints.push('Ce processus n\'est pas le leader d\'indexation de la machine (#2352) — la file est drainée par le processus leader.');
                 }
                 return {
                     content: [{
                         type: 'text',
                         text: JSON.stringify({
                             queued: true,
+                            mode,
                             task_id: args.task_id,
                             reset_indexing_state: true,
                             was_failed: wasFailed,
-                            dead_letter_entry_removed: true,
+                            // null = délégué : c'est la dead-letter du LEADER qui est
+                            // levée à la consommation, non observable d'ici.
+                            dead_letter_entry_removed: deadLetterRemoved,
+                            leader_pid: leaderPid,
                             queue_size: qdrantIndexQueue.size,
                             queue_size_scope: 'this-process',
                             worker_running: Boolean(indexingState.qdrantIndexInterval),
@@ -1844,7 +1882,13 @@ export async function handleRooSyncIndexing(
                 // Resolve date range
                 const endDate = args.end_date ? new Date(args.end_date) : new Date();
                 const defaultStart = new Date(endDate);
-                defaultStart.setDate(defaultStart.getDate() - 28); // 4 weeks
+                // UTC arithmetic, matching the UTC formatting below
+                // (toISOString().slice(0,10)). Local setDate() here produced a
+                // 29-day window whenever the span straddled a DST transition and
+                // the call ran before the local/UTC day boundary agreed — the
+                // start formatted one UTC day earlier (CI red on 28/10, 01:0x
+                // local, window 30/09→28/10).
+                defaultStart.setUTCDate(defaultStart.getUTCDate() - 28); // 4 weeks
                 const startDate = args.start_date ? new Date(args.start_date) : defaultStart;
 
                 if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {

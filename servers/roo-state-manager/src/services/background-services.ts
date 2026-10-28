@@ -1386,6 +1386,95 @@ export async function getLeaderLockPath(machineId: string): Promise<string> {
 }
 
 /**
+ * #4352 g3 — cross-process queueing of "index this task" requests.
+ *
+ * `qdrantIndexQueue` and `deadLetterQueue` are IN-MEMORY Sets, per process, and
+ * only the leader drains (the interval returns early on a follower). A follower
+ * that enqueued locally would hand the task to a queue nobody drains, and its
+ * `deadLetterQueue.delete()` would empty a Set the leader never reads — a lying
+ * success receipt (g3 review, ai-01 27/10). The request is therefore PERSISTED
+ * in a machine-local file next to the leader lock (same keying, same reason:
+ * os.tmpdir() is machine-local and never GDrive-synced) and the leader's
+ * interval consumes it: it lifts ITS OWN dead-letter pin and enqueues on the
+ * queue it actually drains.
+ *
+ * Append-only JSONL: concurrent followers never rewrite the file, so there is
+ * no cross-process read-modify-write. The consumer renames the file away before
+ * reading (unique destination per consumer), so appends landing in the same
+ * instant go to a fresh file instead of being lost.
+ */
+export async function getIndexRequestsPath(machineId: string): Promise<string> {
+    const safeId = (machineId || 'local').replace(/[^a-z0-9-]/gi, '-').toLowerCase();
+    return path.join(os.tmpdir(), `roosync-index-requests-${safeId}.jsonl`);
+}
+
+/**
+ * #4352 g3 — persist an index request for the machine's indexing leader.
+ * Safe from a follower: the leader's tick consumes it (≤ one interval).
+ */
+export async function requestQueuedIndex(taskId: string, machineId: string): Promise<void> {
+    const requestsPath = await getIndexRequestsPath(machineId);
+    const line = JSON.stringify({ taskId, requestedAt: Date.now(), requestedByPid: process.pid }) + '\n';
+    await fs.appendFile(requestsPath, line);
+}
+
+/** #4352 g3 — does a request file exist? Wakes leadership acquisition (#2352 gap). */
+export async function hasPendingIndexRequests(machineId: string): Promise<boolean> {
+    try {
+        await fs.access(await getIndexRequestsPath(machineId));
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+/**
+ * #4352 g3 — leader-side consumption: lift LOCAL dead-letter pins, enqueue on
+ * the LOCAL queue, clear the request file. Never throws (a tick must not die on
+ * a corrupt request file — a bad line is skipped, the rest still applies).
+ * Returns the task ids actually consumed.
+ */
+export async function consumePendingIndexRequests(state: ServerState): Promise<string[]> {
+    const requestsPath = await getIndexRequestsPath(state.machineId);
+    const consumedPath = `${requestsPath}.consuming-${process.pid}-${Date.now()}`;
+    try {
+        await fs.rename(requestsPath, consumedPath);
+    } catch (error: any) {
+        if (error?.code === 'ENOENT') return []; // nothing pending
+        console.warn(`⚠️ [#4352 g3] Unable to claim pending index requests: ${error?.message ?? error}`);
+        return [];
+    }
+    const consumed: string[] = [];
+    try {
+        const content = await fs.readFile(consumedPath, 'utf-8');
+        for (const line of content.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed) continue;
+            let parsed: any;
+            try {
+                parsed = JSON.parse(trimmed);
+            } catch {
+                continue; // corrupt line — skip, keep consuming the rest
+            }
+            const taskId = typeof parsed?.taskId === 'string' ? parsed.taskId : '';
+            if (!taskId) continue;
+            state.deadLetterQueue?.delete(taskId);
+            state.deadLetterDetails?.delete(taskId);
+            state.qdrantIndexQueue.add(taskId);
+            if (!consumed.includes(taskId)) consumed.push(taskId);
+        }
+    } catch (error: any) {
+        console.warn(`⚠️ [#4352 g3] Unable to read consumed index requests: ${error?.message ?? error}`);
+    } finally {
+        await fs.unlink(consumedPath).catch(() => {});
+    }
+    if (consumed.length > 0) {
+        console.log(`📨 [#4352 g3] Leader consumed ${consumed.length} queued index request(s): ${consumed.join(', ')}`);
+    }
+    return consumed;
+}
+
+/**
  * #3014: Read-only inspection of the leader lock. Returns the PID holding the
  * lock and the lock's age, WITHOUT attempting to acquire/renew it. Used by the
  * status tool to distinguish a healthy non-leader (queue plateau is normal —
@@ -1491,6 +1580,24 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             `preflight_fail=${m.preflight_batches_qdrant_unreachable_total} ` +
             `cache_size=${m.embeddings_cache_size}`
         );
+
+        // #4352 g3: consume index requests persisted by FOLLOWERS. This must run
+        // BEFORE the empty-queue early return: a pending request IS the work, and
+        // on an all-idle fleet no process would ever reach the leader election
+        // below (it only runs when this process has local work) — the request
+        // would sleep forever. A pending request therefore wakes acquisition.
+        if (await hasPendingIndexRequests(state.machineId)) {
+            if (!state.isIndexLeader) {
+                const won = await tryAcquireLeaderLock(state.machineId);
+                if (won) {
+                    state.isIndexLeader = true;
+                    console.log(`🔑 [Leader-Election] PID ${process.pid} became indexing leader to serve a queued request`);
+                }
+            }
+            if (state.isIndexLeader) {
+                await consumePendingIndexRequests(state);
+            }
+        }
 
         if (!state.isQdrantIndexingEnabled || state.qdrantIndexQueue.size === 0) {
             return;
