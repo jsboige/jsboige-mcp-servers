@@ -133,21 +133,95 @@ const DIVERSIFY_MAX_CHUNKS_PER_TASK = 2;
 // #2609 q4 (cross-conversation synthesis): a chunk whose ENTIRE content is a
 // sub-sentence fragment (" est close.", "it sous decide ?") can match query
 // tokens strongly yet never satisfy rubric (a) — a coherent passage. It is
-// de-ranked (×0.85), not removed: for an exact-lookup query a short chunk can
-// still be the right answer, and with nothing better above it the malus does
-// not hide it (same degradé-pas-supprimé contract as the codebase malus family).
-// Rollback / A-B: SEMANTIC_FRAGMENT_MALUS=0 (same convention as SEARCH_CONTEXT_EXPANSION).
+// de-ranked, not removed: for an exact-lookup query a short chunk can still be
+// the right answer, and with nothing better above it the penalty does not hide
+// it (same degradé-pas-supprimé contract as the codebase malus family).
+//
+// #2609 V3 (28/10) — the penalty stopped being a CONSTANT. Measured 27/10 on
+// the scenario-2 golden query: the top-1 was a 57-char assistant TITLE (0.700)
+// ahead of a 412-char decision PASSAGE (0.698). The old rule was one threshold
+// — anything >= 40 chars escaped it — so raising that floor to 120 would demote
+// the title but promote a JSON blob to top-1 (0.698): one non-passage swapped
+// for another, the exact false green this Epic exists to kill.
+//
+// The signal is now a GRADED thinness ramp; the floor (0.85) is unchanged, so
+// the scale of the demotion is what it always was — only WHO pays it, and how
+// much, became a property of the passage instead of a length constant.
+//
+//   thinness — below PASSAGE_MIN_WORDS words the factor ramps linearly from
+//              0.85 (0 words) to 1.0. The bar is deliberately LOW: it is the
+//              line under which a chunk cannot be a coherent passage at all,
+//              not a preference for long ones. A complete 22-word sentence IS a
+//              passage and must not pay a tax for being concise.
+//
+// Two candidate signals were written and DROPPED on measurement (#1936
+// chirurgical — a ranking signal must not punish the class it is supposed to
+// lift):
+//
+//   * "cut mid-sentence" for long passages — moved the score of every long
+//     chunk whose last line happens to stop short; the ending is already graded
+//     where it belongs (snippet-boundary, context expansion).
+//   * "title shape" (single line, < 15 words, no sentence-final punctuation,
+//     ×0.95) — +0.72% corpus coverage, false-positived on ordinary short
+//     excerpts that simply lack a final period, and on the live q4 replay it
+//     RE-PROMOTED an 8-word chunk to top-1 over an 11-word one. The class it
+//     targeted is already caught by thinness.
+//
+// Measured on the live corpus (4 000 sampled chunks, 28/10): the legacy binary
+// rule taxes 1.32% of chunks, all at the full 0.85 floor; the graded ramp taxes
+// 3.55% with mean factor 0.9979 — the same total tax mass, redistributed.
+//
+// Machine output is NOT handled here: it already pays its own ×0.85 (#4352) and
+// a second scale on the same defect would bury legitimate short tool answers.
+//
+// Rollback / A-B: SEMANTIC_FRAGMENT_MALUS=0 disables the signal; the value
+// `legacy` restores the pre-V3 binary 40-char rule verbatim, which is the arm
+// the A/B measured against.
 const FRAGMENT_MALUS_MIN_CHARS = 40;
 const FRAGMENT_MALUS_FACTOR = 0.85;
+// #2609 V3 — the graded passage-quality signal (default).
+const PASSAGE_MIN_WORDS = 10;
 
 function isFragmentMalusEnabled(): boolean {
     return process.env.SEMANTIC_FRAGMENT_MALUS !== '0';
 }
 
+/** Legacy arm (A/B reference): the pre-#2609-V3 binary 40-char rule. */
+function isLegacyFragmentRule(): boolean {
+    return (process.env.SEMANTIC_FRAGMENT_MALUS ?? '').trim().toLowerCase() === 'legacy';
+}
+
+function wordCount(text: string): number {
+    return (text.match(/[\p{L}\p{N}][\p{L}\p{N}'’_-]*/gu) || []).length;
+}
+
+/**
+ * #2609 V3 — graded passage-quality factor for ONE chunk's full content.
+ *
+ * Exported for the A/B instrument and for tests: ranking and the rendered
+ * `score` both go through `applyFragmentMalus`, which is the only caller in
+ * production code (single-helper contract, same as the malus family).
+ */
+export function passageQualityFactor(content: string): { factor: number; applied: boolean } {
+    const text = content.trim();
+    const words = wordCount(text);
+    if (words >= PASSAGE_MIN_WORDS) {
+        return { factor: 1, applied: false };
+    }
+    const factor = FRAGMENT_MALUS_FACTOR
+        + (1 - FRAGMENT_MALUS_FACTOR) * (words / PASSAGE_MIN_WORDS);
+    return { factor: Math.round(factor * 10000) / 10000, applied: true };
+}
+
 function applyFragmentMalus(score: number, content: string): { score: number; applied: boolean } {
     if (!isFragmentMalusEnabled()) return { score, applied: false };
-    if (content.trim().length >= FRAGMENT_MALUS_MIN_CHARS) return { score, applied: false };
-    return { score: score * FRAGMENT_MALUS_FACTOR, applied: true };
+    if (isLegacyFragmentRule()) {
+        if (content.trim().length >= FRAGMENT_MALUS_MIN_CHARS) return { score, applied: false };
+        return { score: score * FRAGMENT_MALUS_FACTOR, applied: true };
+    }
+    const quality = passageQualityFactor(content);
+    if (!quality.applied) return { score, applied: false };
+    return { score: score * quality.factor, applied: true };
 }
 
 // #4352 (user 25/10, search tools mandate): tool output is indexed as ordinary
@@ -1587,8 +1661,16 @@ export const searchTasksByContentTool = {
                     ...(fragmentMalusApplied > 0 || process.env.SEMANTIC_FRAGMENT_MALUS === '0' ? {
                         fragment_malus: {
                             applied: fragmentMalusApplied,
+                            // #2609 V3: `signal: 'passage-quality'` is the default since
+                            // 28/10; `legacy` is the binary 40-char arm the A/B measured
+                            // against. `min_chars`/`factor` are only meaningful on that arm
+                            // — kept so a rollback report reads exactly like the pre-V3 one.
+                            signal: isLegacyFragmentRule() ? 'legacy' : 'passage-quality',
                             min_chars: FRAGMENT_MALUS_MIN_CHARS,
                             factor: FRAGMENT_MALUS_FACTOR,
+                            ...(isLegacyFragmentRule() ? {} : {
+                                min_words: PASSAGE_MIN_WORDS,
+                            }),
                             enabled: process.env.SEMANTIC_FRAGMENT_MALUS !== '0',
                         }
                     } : {}),
