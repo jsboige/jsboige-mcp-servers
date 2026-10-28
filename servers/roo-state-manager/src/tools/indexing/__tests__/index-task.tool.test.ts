@@ -8,10 +8,19 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
-const { mockDetectRooStorage, mockFindConversationById, mockClaudeFindConversationById } = vi.hoisted(() => ({
+const { mockDetectRooStorage, mockFindConversationById, mockClaudeFindConversationById, mockIndexTask } = vi.hoisted(() => ({
 	mockDetectRooStorage: vi.fn(),
 	mockFindConversationById: vi.fn(),
-	mockClaudeFindConversationById: vi.fn()
+	mockClaudeFindConversationById: vi.fn(),
+	mockIndexTask: vi.fn()
+}));
+
+// #4352 crit.4: the success answer carries an embedded JSON built from the run's
+// own counters. Mocking the indexing service lets the test drive those counters
+// without Qdrant/embeddings, and assertions stay on the ANSWER — the thing the
+// crit.4 probe parses.
+vi.mock('../../../services/task-indexer.js', () => ({
+	indexTask: mockIndexTask
 }));
 
 vi.mock('../../../utils/roo-storage-detector.js', () => ({
@@ -244,5 +253,67 @@ describe('indexTaskSemanticTool', () => {
 
 		expect(mockFindConversationById).toHaveBeenCalledWith('test-1');
 		expect(mockClaudeFindConversationById).not.toHaveBeenCalled();
+	});
+
+	// ============================================================
+	// Handler - success answer is machine-readable (#4352 crit.4)
+	// ============================================================
+
+	test('success answer embeds a JSON block the probe can parse, with the counters', async () => {
+		mockClaudeFindConversationById.mockResolvedValue({
+			metadata: { dataSource: '/tmp/claude-projects/session-xyz.jsonl' }
+		});
+		mockIndexTask.mockImplementation(async (_id: string, _path: string, _src: string, _meta: any, options: any) => {
+			// The run owns the counters — the caller's object is mutated in place.
+			Object.assign(options.stats, {
+				chunksExtracted: 12, subChunksBuilt: 30, dedupSkipped: 30, pointsIndexed: 0, missingVectors: 0
+			});
+			return [];
+		});
+
+		const cache = new Map();
+		const ensureFresh = vi.fn().mockResolvedValue(true);
+
+		const result = await indexTaskSemanticTool.handler(
+			{ task_id: 'claude-session', source: 'claude-code' },
+			cache,
+			ensureFresh
+		);
+
+		const text = result.content[0].text as string;
+		expect(result.isError).toBeFalsy();
+		expect(text).toContain('# Indexation sémantique terminée');
+		// Human side: the reason names the case instead of a bare 0.
+		expect(text).toContain('déjà indexé');
+		// Machine side: everything a wrapper needs, in one parseable object.
+		const parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+		expect(parsed.success).toBe(true);
+		expect(parsed.chunksExtracted).toBe(12);
+		expect(parsed.subChunksBuilt).toBe(30);
+		expect(parsed.dedupSkipped).toBe(30);
+		expect(parsed.chunksIndexed).toBe(0);
+		expect(parsed.reason).toMatch(/déjà indexé/);
+	});
+
+	test('an all-empty extraction says so instead of "0 chunks indexed" alone', async () => {
+		mockClaudeFindConversationById.mockResolvedValue({
+			metadata: { dataSource: '/tmp/claude-projects/empty.jsonl' }
+		});
+		mockIndexTask.mockResolvedValue([]); // stats left at zero, as a real empty session would
+
+		const cache = new Map();
+		const ensureFresh = vi.fn().mockResolvedValue(true);
+
+		const result = await indexTaskSemanticTool.handler(
+			{ task_id: 'claude-empty', source: 'claude-code' },
+			cache,
+			ensureFresh
+		);
+
+		const text = result.content[0].text as string;
+		expect(text).toContain('aucun chunk extrait');
+		const parsed = JSON.parse(text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1));
+		expect(parsed.chunksIndexed).toBe(0);
+		expect(parsed.chunksExtracted).toBe(0);
 	});
 });
