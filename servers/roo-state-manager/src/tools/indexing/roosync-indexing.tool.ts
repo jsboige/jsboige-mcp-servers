@@ -1034,7 +1034,11 @@ export async function handleRooSyncIndexing(
                     maxFiles: args.max_files,
                 });
                 return {
-                    isError: false,
+                    // Review ms#1545 CHANGES: a run where every batch failed used to
+                    // come back isError:false with zero points — the caller read a
+                    // total failure as a healthy run. 'failed' (and only it) is an
+                    // error; 'partial' still returns data that landed.
+                    isError: report.status === 'failed',
                     content: [{
                         type: 'text',
                         text: JSON.stringify({

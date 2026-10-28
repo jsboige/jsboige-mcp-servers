@@ -174,6 +174,30 @@ function takeBlockChars(text: string, maxUnits: number): { block: string; rest: 
 	return { block: text.substring(0, end), rest: text.substring(end) };
 }
 
+/**
+ * Splits file content into line-aligned chunks of at most
+ * `MAX_BLOCK_CHARS * MAX_CHARS_TOLERANCE_FACTOR` characters.
+ *
+ * What a caller may rely on:
+ *  - **Line-aligned.** A chunk is a run of whole lines; `startLine`/`endLine` are
+ *    1-based and inclusive, so a search hit can be quoted with its exact range.
+ *  - **An oversized line is blocked, never cut through a surrogate pair.** A single
+ *    line above the budget is emitted as consecutive character segments via
+ *    `takeBlockChars`, which moves the boundary back one unit instead of splitting a
+ *    pair -- a lone half makes the embedding API reject the whole upsert window
+ *    (#4352 g1). `startCharIndex` follows the text the block ACTUALLY took.
+ *  - **No duplicates.** Chunks are deduplicated on a hash of (file, start line, end
+ *    line, length, content preview), so re-chunking a file cannot produce two points
+ *    for the same bytes.
+ *  - **No lost tail.** When a split has to be re-balanced, the remainder is kept at or
+ *    above `MIN_CHUNK_REMAINDER_CHARS` and the scan restarts at the new chunk start --
+ *    deliberately diverging from Zoo, which drops every line between the split point
+ *    and the current line.
+ *
+ * Chunks below `MIN_BLOCK_CHARS` are dropped rather than embedded: too little signal to
+ * be worth a vector. Lengths are UTF-16 code units (`String#length`), not bytes and not
+ * code points.
+ */
 export function chunkTextByLines(
 	content: string,
 	filePath: string,
@@ -650,7 +674,13 @@ export async function searchSupplement(
 // ── Index run ────────────────────────────────────────────────────────────────
 
 export interface SupplementIndexReport {
-	status: 'success' | 'dry_run';
+	/**
+	 * What actually landed (review ms#1545 CHANGES): 'success' = every batch that
+	 * ran succeeded (including a run with nothing to write); 'partial' = some
+	 * batches failed, some points are in; 'failed' = batches ran, none landed;
+	 * 'dry_run' = planned only.
+	 */
+	status: 'success' | 'partial' | 'failed' | 'dry_run';
 	collection: string;
 	remote: string;
 	writer: string;
@@ -670,6 +700,8 @@ export interface SupplementIndexReport {
 	chunks_embedded: number;
 	points_written: number;
 	batches: number;
+	/** Batches that failed and were skipped; the run continued past them (#4352 g1). */
+	batches_failed: number;
 	truncated: boolean;
 	elapsed_ms: number;
 	warnings: string[];
@@ -838,6 +870,7 @@ export async function runSupplementIndex(deps: SupplementIndexDeps): Promise<Sup
 		chunks_embedded: 0,
 		points_written: 0,
 		batches: 0,
+		batches_failed: 0,
 		truncated: false,
 		elapsed_ms: 0,
 		warnings,
@@ -933,43 +966,74 @@ export async function runSupplementIndex(deps: SupplementIndexDeps): Promise<Sup
 
 	let written = 0;
 	const filesWritten = new Set<string>();
+	const batchTotal = Math.ceil(pending.length / batchSize);
 	for (let i = 0; i < pending.length; i += batchSize) {
 		const batch = pending.slice(i, i + batchSize);
-		const vectors = await deps.embed(batch.map((b) => b.chunk.content));
-		if (vectors.length !== batch.length) {
-			throw new Error(
-				`embedding returned ${vectors.length} vectors for ${batch.length} chunks — refusing to write a ` +
-				`misaligned batch (chunk/vector mismatch silently corrupts the index)`
+		const batchNo = Math.floor(i / batchSize) + 1;
+		// One bad batch must not cost the whole run (#4352 g1 follow-up). The embedder can
+		// answer short (a misaligned vector list silently corrupts the index, so that batch
+		// is never written) and an upsert can reject a single oversized payload. Before,
+		// either one threw out of the loop and the caller got a failed run whose already
+		// written points were missing from the report -- work that had landed, reported as
+		// if it had not. The failure is now charged to its batch and the run continues.
+		try {
+			const vectors = await deps.embed(batch.map((b) => b.chunk.content));
+			if (vectors.length !== batch.length) {
+				throw new Error(
+					`embedding returned ${vectors.length} vectors for ${batch.length} chunks — refusing to write a ` +
+					`misaligned batch (chunk/vector mismatch silently corrupts the index)`
+				);
+			}
+			if (!deps.client.upsert) throw new Error('qdrant client has no upsert');
+			await deps.client.upsert(collection, {
+				wait: true,
+				points: batch.map((b, index) => ({
+					id: b.id,
+					vector: vectors[index],
+					payload: {
+						filePath: b.relPath,
+						codeChunk: b.chunk.content,
+						startLine: b.chunk.startLine,
+						endLine: b.chunk.endLine,
+						segmentHash: b.chunk.segmentHash,
+						pathSegments: pathSegmentsOf(b.relPath),
+						fileHash: b.fileHash,
+						writer: deps.writer,
+						source: 'rsm-supplement',
+						type: b.chunk.type,
+					},
+				})),
+			});
+			report.batches++;
+			report.chunks_embedded += batch.length;
+			written += batch.length;
+			for (const b of batch) filesWritten.add(b.relPath);
+		} catch (error) {
+			// Recorded, not swallowed: the batch is numbered, the files are named, and the
+			// remaining batches still run. `batches_failed` makes a partial run legible to a
+			// caller that reads one number; the warning says which work is missing.
+			const message = error instanceof Error ? error.message : String(error);
+			report.batches_failed++;
+			const affected = Array.from(new Set(batch.map((b) => b.relPath)));
+			const preview =
+				affected.slice(0, 3).join(', ') + (affected.length > 3 ? `, +${affected.length - 3} more` : '');
+			warnings.push(
+				`batch ${batchNo}/${batchTotal} failed (${message}) — ${batch.length} chunk(s) across ` +
+					`${affected.length} file(s) not written: ${preview}`
 			);
 		}
-		if (!deps.client.upsert) throw new Error('qdrant client has no upsert');
-		await deps.client.upsert(collection, {
-			wait: true,
-			points: batch.map((b, index) => ({
-				id: b.id,
-				vector: vectors[index],
-				payload: {
-					filePath: b.relPath,
-					codeChunk: b.chunk.content,
-					startLine: b.chunk.startLine,
-					endLine: b.chunk.endLine,
-					segmentHash: b.chunk.segmentHash,
-					pathSegments: pathSegmentsOf(b.relPath),
-					fileHash: b.fileHash,
-					writer: deps.writer,
-					source: 'rsm-supplement',
-					type: b.chunk.type,
-				},
-			})),
-		});
-		report.batches++;
-		report.chunks_embedded += batch.length;
-		written += batch.length;
-		for (const b of batch) filesWritten.add(b.relPath);
 		if (throttleMs > 0 && i + batchSize < pending.length) await sleep(throttleMs);
 	}
 	report.points_written = written;
 	report.files_indexed = filesWritten.size;
+	// Review ms#1545 CHANGES: a run whose batches ALL failed used to report
+	// status:'success' with zero points — a total failure read as a healthy run.
+	// 'failed' requires batches to have run and failed; a run with nothing to
+	// write (all files unchanged, no pending chunks) keeps 'success': no batch
+	// failed, nothing is missing.
+	if (report.batches_failed > 0) {
+		report.status = report.points_written > 0 ? 'partial' : 'failed';
+	}
 	report.elapsed_ms = Date.now() - startedAt;
 	return report;
 }
