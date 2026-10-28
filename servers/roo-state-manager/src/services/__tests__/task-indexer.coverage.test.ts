@@ -227,8 +227,10 @@ describe('TaskIndexer.indexTask — Roo standard path resolution (coverage L141-
         const points = await indexer.indexTask('roo-task-1', 'roo');
 
         expect(points).toBe(FAKE_POINTS);
-        // L145: delegates with the resolved task dir, source preserved, no metadata.
-        expect(indexTaskVector).toHaveBeenCalledWith('roo-task-1', taskDir, 'roo', undefined);
+        // L145: delegates with the resolved task dir, source preserved, no metadata,
+        // and the #4352 g5 progress options (5th argument, undefined when the caller
+        // passes none) — this assertion was the only red check of run 40634211141.
+        expect(indexTaskVector).toHaveBeenCalledWith('roo-task-1', taskDir, 'roo', undefined, undefined);
         // L148: skeleton timestamp updated with (taskId, location) AFTER indexing.
         expect(updateSkeletonIndexTimestampVector).toHaveBeenCalledWith('roo-task-1', tmpDir);
     });

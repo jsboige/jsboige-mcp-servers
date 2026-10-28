@@ -754,7 +754,15 @@ interface PreflightDedupResult {
 }
 
 async function preflightDedupByChunkId(
-    subChunks: Array<{ chunk: Chunk; contentHash: string }>
+    subChunks: Array<{ chunk: Chunk; contentHash: string }>,
+    /**
+     * #4352 g5 (review ms#1548): progress outside phase C. Preflight retrieves 100
+     * ids per call with a 5 s race each: on a slow Qdrant a 5 000-chunk session
+     * spends minutes here computing nothing visible to the inactivity watchdog, and
+     * was fenced at 180 s with zero work lost — a false `embedding_timeout` on a
+     * healthy run. Each answered batch now acknowledges.
+     */
+    onProgress?: () => void
 ): Promise<PreflightDedupResult> {
     if (subChunks.length === 0) return { subChunks, qdrantReachable: true };
 
@@ -798,6 +806,7 @@ async function preflightDedupByChunkId(
                     const hash = (point.payload as any)?.contentHash as string | undefined;
                     if (hash) existingContentHashes.set(point.id as string, hash);
                 }
+                onProgress?.(); // #4352 g5: an answered preflight batch IS progress
             } catch (retrieveError: any) {
                 _metrics.preflight_batches_qdrant_unreachable_total++;
                 const isTimeout = retrieveError?.message?.includes('timeout');
@@ -1043,10 +1052,58 @@ async function embedBatch(
  * @param taskId L'ID de la tâche à indexer.
  * @param taskPath Le chemin complet vers le répertoire de la tâche.
  */
-export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }): Promise<PointStruct[]> {
+/**
+ * #4352 g5: progress + abort contract between the indexing caller and the run.
+ * `onProgress` fires after each acknowledged batch/upsert — the caller's
+ * inactivity watchdog resets its deadline on it. Review ms#1548: it also fires
+ * after extraction and after every answered preflight batch, because all three
+ * original sites sat in phase C and a slow-Qdrant preflight was fenced as if the
+ * run had stalled. `signal` is aborted by that watchdog when no batch has been
+ * acknowledged for N ms: the run then fences itself at its next checkpoint,
+ * keeping every window already written.
+ */
+export interface IndexTaskProgressOptions {
+    signal?: AbortSignal;
+    onProgress?: () => void;
+}
+
+/**
+ * #4352 g5: checkpoint guard. Throws the watchdog's own error (it carries the
+ * "Indexing timeout" wording classifyIndexingError maps to the retryable
+ * `embedding_timeout` class) so a fenced run fails exactly like a timed-out one
+ * instead of racing the retry.
+ *
+ * Review ms#1548 (B2): the thrown error ALWAYS carries
+ * `details.watchdogAbort = true`, whatever the abort reason was. A fence is a
+ * per-task scheduling decision, not a backend failure: without that mark the
+ * caller's catch debits the seat-wide embedding breaker, three slow-but-healthy
+ * sessions end up OPENing it, and every other task on the seat is deferred —
+ * the a4 class reopened from the scheduling side.
+ */
+export function throwIfIndexingAborted(options: IndexTaskProgressOptions | undefined, taskId: string): void {
+    if (!options?.signal?.aborted) return;
+    const reason = options.signal.reason;
+    const message = reason instanceof Error && reason.message
+        ? reason.message
+        : `Indexing timeout for ${taskId} — inactivity watchdog aborted the run (#4352 g5); windows already written are kept`;
+    throw new GenericError(
+        message,
+        GenericErrorCode.NETWORK_ERROR,
+        { taskId, service: 'VectorIndexer.indexTask', watchdogAbort: true },
+        reason instanceof Error ? reason : undefined
+    );
+}
+
+export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }, options?: IndexTaskProgressOptions): Promise<PointStruct[]> {
     console.log(`Starting granular indexing for task: ${taskId} (source: ${source})`);
 
     try {
+        // #4352 g5 (review ms#1548): fence at ENTRY as well. A signal already
+        // aborted when the run starts must not pay for extraction and two preflight
+        // passes it can never use. It also gives the fence path a Qdrant-free
+        // entry point, which is what the three-fence breaker test exercises.
+        throwIfIndexingAborted(options, taskId);
+
         // #2165: ROOT-CAUSE FIX for embedding-server hammering.
         // Previously, indexTask() extracted chunks, computed ALL embeddings, THEN
         // discovered the Qdrant circuit breaker was OPEN and threw. Under sustained
@@ -1079,6 +1136,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             console.log(`No chunks found for task ${taskId}. Skipping.`);
             return [];
         }
+        options?.onProgress?.(); // #4352 g5: extraction done — progress, not silence
 
         // #2825 (volet A / G2): no silent drop at the indexer stage. The old behavior
         // truncated `chunks.length = MAX_CHUNKS_PER_TASK` after extracting — meaning
@@ -1107,7 +1165,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         }
 
         // Phase B: #2018 Phase 2 — Pre-flight dedup by chunk_id (skip already-indexed chunks BEFORE embeddings)
-        const preflight = await preflightDedupByChunkId(allSubChunks);
+        const preflight = await preflightDedupByChunkId(allSubChunks, options?.onProgress);
         let subChunksToEmbed = preflight.subChunks;
 
         // Phase B2: #2369 — Pre-flight dedup by contentHash (catches split sub-chunks
@@ -1171,6 +1229,8 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         const embedFailures: EmbedFailures = { lastError: null, transport: false };
         let missingVectors = 0;
         for (let start = 0; start < subChunksToEmbed.length; start += UPSERT_WINDOW_SUBCHUNKS) {
+            // #4352 g5: a fenced run stops here — before embedding a new window.
+            throwIfIndexingAborted(options, taskId);
             const window = subChunksToEmbed.slice(start, start + UPSERT_WINDOW_SUBCHUNKS);
             const toEmbed = window.filter(entry => !cachedResults.has(entry.contentHash));
 
@@ -1182,6 +1242,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                         const vector = await embedSingle(subChunk, contentHash, embeddingModel, expectedDims, now);
                         if (vector) {
                             cachedResults.set(contentHash, vector);
+                            options?.onProgress?.(); // #4352 g5: legacy single-input path
                         }
                     }
                 } else {
@@ -1191,7 +1252,10 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                         // #4352 (a4): the backend is failing — stop calling it for this task.
                         // The retry (with backoff) resumes after what this attempt wrote.
                         if (embedFailures.transport) break;
+                        // #4352 g5: fence between batches of the same window too.
+                        throwIfIndexingAborted(options, taskId);
                         const batchVectors = await embedBatch(batch, embeddingModel, expectedDims, now, embedFailures);
+                        options?.onProgress?.(); // #4352 g5: one more acknowledged batch
                         for (let i = 0; i < batch.length; i++) {
                             if (batchVectors[i]) {
                                 cachedResults.set(batch[i].contentHash, batchVectors[i]!);
@@ -1251,6 +1315,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                     );
                 }
                 indexedPoints.push(...pointsToIndex);
+                options?.onProgress?.(); // #4352 g5: one more acknowledged window
             }
         }
 
@@ -1294,9 +1359,17 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         // #4352 (a4): a task left incomplete by its content alone (HTTP 400/413/422, a wrong-dimension
         // or malformed vector in an answered call) says nothing about the backends' health — it fails
         // the task but must not open the breaker and defer healthy tasks. A transport failure counts.
+        // Review ms#1548 (B2): a watchdog fence says nothing about the backends'
+        // health either. Before this carve-out each fence debited the seat-wide
+        // breaker, so three fenced-but-healthy sessions DEFERRED every task on the
+        // seat (`recordFailure` at MAX_RETRY_ATTEMPTS=3 ⇒ OPEN) — the 16 sessions
+        // of 27/10 are exactly that regime. A fence blocks nothing downstream: the
+        // windows already written are kept and the retry resumes after them.
+        const watchdogFenced = error instanceof GenericError
+            && error.details?.watchdogAbort === true;
         const contentOnlyIncomplete = error instanceof GenericError
             && error.details?.missingVectors !== undefined && error.details?.transport === false;
-        if (!contentOnlyIncomplete) {
+        if (!contentOnlyIncomplete && !watchdogFenced) {
             recordFailure();
         }
 
