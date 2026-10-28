@@ -241,6 +241,40 @@ describe('dashboard-activity', () => {
 			expect(found.get('myia-deep-01')).toBe(deepTs);
 		});
 
+		it('#4344 re-review r3 — the budget counts ATTEMPTS: 2 500 unreadable entries stop the walk at 200', () => {
+			// ms#1532 r3: a throwing read used to `continue` BEFORE filesRead++,
+			// so an unreadable archive directory (unstable G:, #4131) left the
+			// counter at 0 and walked all ~12.7k entries on every call. Shape
+			// here: entries that LOOK like archives but are directories, so
+			// readFileSync throws EISDIR; a REAL file carrying the machine's
+			// message sits at position 201. With attempts counted, the budget
+			// is exhausted by the 200 unreadable entries and that file is never
+			// opened; if only successes were counted, the walk would sail past
+			// all of them and find the message.
+			const N = MAX_ARCHIVE_READS_PER_CALL;
+			const total = 2_500;
+			const base = Date.parse('2026-10-27T00:00:00Z');
+			const condenseAt = (i: number) => new Date(base - i * 61_000);
+			const nameOf = (i: number) =>
+				`workspace-ws-${condenseAt(i).toISOString().slice(0, 19).replace(/:/g, '-')}.md`;
+			const deepTs = new Date(condenseAt(N).getTime() - 60_000).toISOString();
+			for (let i = 0; i < total; i++) {
+				if (i === N) {
+					// 201st entry: a readable archive that WOULD resolve the machine.
+					archive(nameOf(i), `### [${deepTs}] myia-unreachable-01|ws\nafter the budget`);
+				} else {
+					// Unreadable: a directory where an archive file is expected.
+					mkdirSync(join(archiveDir, nameOf(i)));
+				}
+			}
+			const floors = new Map([['myia-unreachable-01', '2026-09-01T00:00:00.000Z']]);
+
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-unreachable-01'], floors);
+
+			// The 201st attempt never happens: attempts — not successes — exhausted the budget.
+			expect(found.has('myia-unreachable-01')).toBe(false);
+		});
+
 		it('buildArchiveFloors equivalent: only machines with a live value get a floor', () => {
 			const floors = new Map<string, string>();
 			const activity = new Map([['myia-web2', '2026-10-20T19:17:13.000Z']]);

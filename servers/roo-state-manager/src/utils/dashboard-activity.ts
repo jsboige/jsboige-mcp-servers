@@ -42,6 +42,9 @@ const DASHBOARD_MSG_PATTERN = /^###\s*\[(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\]\s*(\S+)/g
  * handful of files, while a machine offline for weeks keeps its bounded
  * best — the stale live floor, an honest lower bound (#3160) — instead of
  * spending unbounded seconds.
+ *
+ * The budget counts ATTEMPTS, not successes (ms#1532 r3): a read that throws
+ * consumes one unit, so an unreadable archive directory cannot re-arm the walk.
  */
 export const MAX_ARCHIVE_READS_PER_CALL = 200;
 
@@ -323,13 +326,18 @@ export function lookupMachineActivityInArchives(
 			break;
 		}
 
+		// Count the ATTEMPT, not the successful read (ms#1532 r3). A throwing
+		// read — unstable G:, the very failure mode the budget exists for
+		// (#4131) — must consume one attempt: counting only successes left
+		// `filesRead` at 0 while every failure `continue`d, so an unreadable
+		// archive directory re-armed the full ~12.7k-open walk on every call.
+		filesRead++;
 		let content: string;
 		try {
 			content = readFileSync(join(dashboardsDir, 'archive', file), 'utf-8');
 		} catch {
 			continue;
 		}
-		filesRead++;
 		for (const [machineId, ts] of extractMachineActivity(content)) {
 			if (!wanted.has(machineId)) continue;
 			const existing = found.get(machineId);
