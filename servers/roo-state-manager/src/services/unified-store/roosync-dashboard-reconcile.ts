@@ -85,9 +85,28 @@ import { createLogger } from '../../utils/logger.js';
 
 const logger = createLogger('roosync-dashboard-reconcile');
 
+/**
+ * Last source-unreadable reason this process logged. A dead G: mount is
+ * retried every pass by design; the WARN is emitted once per distinct reason
+ * so 13-15 RSM hosts do not each re-print the same line every 6 h (#4131).
+ */
+let lastSourceErrorLogged: string | null = null;
+
 export interface DashboardReconcileResult {
-  /** 'skipped-not-armed' = dual-write off on this process — nothing was done. */
-  status: 'ok' | 'skipped-not-armed';
+  /**
+   * 'skipped-not-armed' = dual-write off on this process — nothing was done.
+   * 'skipped-source-unreadable' = the dashboards dir could not be listed (no
+   * G: mount, DriveFS outage) — this pass had no source to diff FROM, and
+   * nothing was written. See `sourceError` for the measured reason.
+   */
+  status: 'ok' | 'skipped-not-armed' | 'skipped-source-unreadable';
+  /**
+   * Why the pass was skipped for an unreadable source: `<dir> — <errno text>`.
+   * Present only with `status: 'skipped-source-unreadable'` (#4131: the G:
+   * file is an export/backup source now; a PG-primary seat can legitimately
+   * have none, and a DriveFS outage is transient — neither is a config error).
+   */
+  sourceError?: string;
   /** Keyed .md files seen in the dashboards dir. */
   filesScanned: number;
   /** Keys whose parse succeeded. */
@@ -398,8 +417,10 @@ function isKeyedDashboardFile(name: string): boolean {
  * One reconcile pass: per keyed .md file, diff persisted message ids against
  * the active PG journal and backfill-insert the missing rows.
  *
- * Throws only when the initial readdir fails (wrong dir = config error worth
- * surfacing). Everything per-file/per-key is counted, never thrown.
+ * Nothing is thrown: an unreadable dashboards dir (no G: mount on a
+ * PG-primary seat, or a DriveFS outage) returns
+ * `status: 'skipped-source-unreadable'` with the measured reason in
+ * `sourceError`. Everything per-file/per-key is counted, never thrown either.
  */
 export async function reconcileDashboardsFromGDrive(
   options: DashboardReconcileOptions
@@ -442,8 +463,24 @@ export async function reconcileDashboardsFromGDrive(
   try {
     files = await readdir(options.dashboardsDir);
   } catch (error) {
-    throw new Error(`dashboards directory unreadable: ${options.dashboardsDir} — ${String(error)}`);
+    // #4131: G: is an export/backup source now, not the truth. A seat without
+    // it (PG-primary), or a DriveFS outage (measured 28/10: "UNKNOWN: unknown
+    // error, scandir"), has nothing to diff FROM — but that is a skip, not a
+    // broken pass. Throwing here failed the whole run every 6 h on every RSM
+    // host of the machine, with no way to tell "no source" from a real bug.
+    const reason = `${options.dashboardsDir} — ${String(error)}`;
+    result.status = 'skipped-source-unreadable';
+    result.sourceError = reason;
+    result.durationMs = Date.now() - startedAt;
+    // One WARN per distinct reason per process: a dead mount would otherwise
+    // emit one line per host per pass (13-15 hosts measured per machine).
+    if (lastSourceErrorLogged !== reason) {
+      lastSourceErrorLogged = reason;
+      logger.warn(`[dashboard-reconcile] source unreadable, pass skipped: ${reason}`);
+    }
+    return result;
   }
+  lastSourceErrorLogged = null;
   const keyed = files.filter(isKeyedDashboardFile);
   result.filesScanned = keyed.length;
 

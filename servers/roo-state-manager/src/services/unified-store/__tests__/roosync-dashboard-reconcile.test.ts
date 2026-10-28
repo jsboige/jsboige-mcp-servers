@@ -406,6 +406,105 @@ describe('roosync-dashboard-reconcile (#3151 Phase C)', () => {
   });
 });
 
+describe('roosync-dashboard-reconcile — unreadable source (#4131)', () => {
+  // Measured 28/10 on this fleet: `dashboards directory unreadable … UNKNOWN:
+  // unknown error, scandir 'G:\…'` failed the WHOLE run every 6 h on every RSM
+  // host of a machine. G: is an export/backup source now: a seat without it
+  // has nothing to diff FROM, and a DriveFS outage is transient. Both must be
+  // a typed skip that says why — never a thrown run.
+
+  let savedDualWrite: string | undefined;
+  let savedPgUrl: string | undefined;
+  let writerCalls: string[];
+  const writerDouble = {
+    syncRooSyncDashboard: async (key: string) => {
+      writerCalls.push(key);
+    },
+    archiveRooSyncDashboardMessages: async () => {},
+  };
+  const dataDir = join(__dirname, '../../../__test-data__');
+
+  beforeEach(() => {
+    savedDualWrite = process.env.UNIFIED_STORE_DUAL_WRITE;
+    savedPgUrl = process.env.UNIFIED_STORE_PG_URL;
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://user:pass@pg.test:5432/store';
+    writerCalls = [];
+    mkdirSync(dataDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    process.env.UNIFIED_STORE_DUAL_WRITE = savedDualWrite;
+    process.env.UNIFIED_STORE_PG_URL = savedPgUrl;
+    stopDashboardReconcileDaemon();
+  });
+
+  test('absent dashboards dir (no G: mount) → typed skip, nothing written, no throw', async () => {
+    const missing = join(dataDir, 'reconcile-missing-4131');
+    if (existsSync(missing)) rmSync(missing, { recursive: true, force: true });
+    const result = await reconcileDashboardsFromGDrive({
+      dashboardsDir: missing,
+      writer: writerDouble as never,
+    });
+    expect(result.status).toBe('skipped-source-unreadable');
+    expect(result.sourceError).toContain('reconcile-missing-4131');
+    expect(result.filesScanned).toBe(0);
+    expect(result.parsedKeys).toBe(0);
+    expect(typeof result.durationMs).toBe('number');
+    expect(writerCalls).toHaveLength(0);
+  });
+
+  test('a FILE at the dashboards path (ENOTDIR) → same typed skip', async () => {
+    const asFile = join(dataDir, 'reconcile-not-a-dir-4131.md');
+    writeFileSync(asFile, 'not a dashboard dir');
+    const result = await reconcileDashboardsFromGDrive({
+      dashboardsDir: asFile,
+      writer: writerDouble as never,
+    });
+    expect(result.status).toBe('skipped-source-unreadable');
+    expect(result.sourceError).toContain('reconcile-not-a-dir-4131.md');
+    expect(writerCalls).toHaveLength(0);
+  });
+
+  test('two consecutive unreadable passes both report the skip (log dedupe hides the line, never the status)', async () => {
+    const missing = join(dataDir, 'reconcile-missing-twice-4131');
+    if (existsSync(missing)) rmSync(missing, { recursive: true, force: true });
+    const first = await reconcileDashboardsFromGDrive({
+      dashboardsDir: missing,
+      writer: writerDouble as never,
+    });
+    const second = await reconcileDashboardsFromGDrive({
+      dashboardsDir: missing,
+      writer: writerDouble as never,
+    });
+    expect(first.status).toBe('skipped-source-unreadable');
+    expect(second.status).toBe('skipped-source-unreadable');
+    expect(second.sourceError).toBe(first.sourceError);
+  });
+
+  test('source readable again after a skip → the pass runs normally (no sticky skip)', async () => {
+    const dir = join(dataDir, 'reconcile-recovered-4131');
+    const missing = join(dataDir, 'reconcile-recovered-4131-absent');
+    if (existsSync(dir)) rmSync(dir, { recursive: true, force: true });
+    if (existsSync(missing)) rmSync(missing, { recursive: true, force: true });
+    // 1) skip while the source is absent
+    const skipped = await reconcileDashboardsFromGDrive({
+      dashboardsDir: missing,
+      writer: writerDouble as never,
+    });
+    expect(skipped.status).toBe('skipped-source-unreadable');
+    // 2) the mount comes back — the same process must reconcile again
+    mkdirSync(dir, { recursive: true });
+    const result = await reconcileDashboardsFromGDrive({
+      dashboardsDir: dir,
+      writer: writerDouble as never,
+    });
+    expect(result.status).toBe('ok');
+    expect(result.sourceError).toBeUndefined();
+    expect(result.filesScanned).toBe(0);
+  });
+});
+
 describe('extractPersistedMessageIds', () => {
   test('collects [msg:] ids only — [reply-to:] and bare headers excluded', () => {
     const content = [
