@@ -39,8 +39,30 @@ process.env.ROOSYNC_MACHINE_ID = 'ci-test-machine';
 // build-skeleton-cache, …) inherit this global isolation. Force the env-gate OFF so every
 // test starts with the Null writer; tests that exercise the enabled branch stubEnv it
 // explicitly (writer-factory/reader-factory.coverage.test.ts).
-delete process.env.UNIFIED_STORE_DUAL_WRITE;
-delete process.env.UNIFIED_STORE_PG_URL;
+//
+// #4131 item 3 (A) — the original form DELETED the two keys. Deletion stopped
+// being enough when src/index.ts began re-loading the seat `.env` at import:
+// an absent key is not host-owned (host-env-snapshot.ts), so
+// applyEnvFileForNonHostKeys re-filled the deleted keys with the seat's REAL
+// values and armed the PG gates — ms#1553 measured dashboard-key-listing and
+// dashboard-merge red on such a seat, green in CI. Pin to the EMPTY STRING
+// instead: same isolation (hasPgUrl() false, dual-write off, Null writer), and
+// both dotenv (never overrides an existing key) and the host snapshot (present
+// keys are host-owned) hold it against every refill vector. Same list as the
+// `env` block of vitest.config.ts / vitest.config.unit.ts — the read-gates of
+// pg-read-gates.ts plus the module-load-captured pacer (VectorIndexer.ts:195);
+// the tripwire is src/__tests__/vitest-env-default-deny.test.ts.
+for (const pinnedEnvKey of [
+  'UNIFIED_STORE_PG_URL',
+  'UNIFIED_STORE_DUAL_WRITE',
+  'UNIFIED_STORE_CHANNEL_READ_PG',
+  'UNIFIED_STORE_CHANNEL_PG_PRIMARY',
+  'UNIFIED_STORE_DASHBOARD_READ_PG',
+  'UNIFIED_STORE_DASHBOARD_PG_PRIMARY',
+  'EMBEDDING_OPS_PER_MINUTE',
+]) {
+  process.env[pinnedEnvKey] = '';
+}
 
 // Mock des APIs externes
 vi.mock('openai', () => ({
