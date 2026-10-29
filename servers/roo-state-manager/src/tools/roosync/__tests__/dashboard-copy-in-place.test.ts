@@ -109,8 +109,13 @@ describe('dashboard copy-in-place #3782', () => {
     // sites go through the one helper, and the #4003 sweep recognises both
     // shapes (`\.md\.(\d+)(?:\.\d+)?\.tmp$` — see the sweep tests).
     expect(src.match(/fs\.copyFile\(tmpPath, filePath\)/g)?.length).toBe(2);
-    expect(src.match(/nextDashboardStagingPath\(filePath\)/g)?.length).toBe(2);
-    expect(src).toContain('`${filePath}.${process.pid}.${++dashboardStagingSeq}.tmp`');
+    // `await` — the helper is async (it mkdirs the out-of-tree staging dir).
+    expect(src.match(/await nextDashboardStagingPath\(filePath\)/g)?.length).toBe(2);
+    // Drive-root fix (#4003/#3782): the staging is OUT of the synced store, in
+    // the machine-local tmpdir, with the dashboard basename kept in the name so
+    // the #4003 sweep still recognises it.
+    expect(src).toContain("path.join(os.tmpdir(), 'rsm-dashboard-staging')");
+    expect(src).toContain('`${path.basename(filePath)}.${process.pid}.${++dashboardStagingSeq}.tmp`');
 
     // The only rename left in the store layer is the archive move (new path,
     // not rename-over-existing) — assert it stays the sole one.
