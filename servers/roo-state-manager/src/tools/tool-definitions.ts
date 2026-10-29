@@ -171,7 +171,7 @@ export const roosyncSearchDefinition = {
             model: { type: 'string' },
             start_date: { type: 'string', description: 'ISO 8601 or YYYY-MM-DD' },
             end_date: { type: 'string', description: 'ISO 8601 or YYYY-MM-DD' },
-            exclude_tool_results: { type: 'boolean', description: 'default true; pass false (or chunk_type:"tool_interaction") to include tool results' },
+            exclude_tool_results: { type: 'boolean', description: 'default true (semantic action only; ignored in text mode): excludes tool_interaction chunks via must_not — pass false, or chunk_type:"tool_interaction", to include tool results' },
             reset_circuit_breaker: { type: 'boolean', description: '#2634: Reset embeddings circuit breaker if armed (diagnose action only)' }
         },
         required: ['action'],

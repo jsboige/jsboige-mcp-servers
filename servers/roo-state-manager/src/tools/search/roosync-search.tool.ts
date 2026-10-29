@@ -144,7 +144,11 @@ export const roosyncSearchTool: Tool = {
             },
             exclude_tool_results: {
                 type: 'boolean',
-                description: 'Exclude tool calls and tool results, including tool output stored as message_exchange'
+                // ONE canonical string, duplicated verbatim in `tool-definitions.ts`
+                // (the copy served over ListTools) and asserted EQUAL by the parity
+                // test — two copies that merely agree in spirit are how ms#1564's
+                // repair:"headless" shipped a wire that lied (ms#1568 review, info).
+                description: 'default true (semantic action only; ignored in text mode): excludes tool_interaction chunks via must_not — pass false, or chunk_type:"tool_interaction", to include tool results'
             },
             reset_circuit_breaker: {
                 type: 'boolean',

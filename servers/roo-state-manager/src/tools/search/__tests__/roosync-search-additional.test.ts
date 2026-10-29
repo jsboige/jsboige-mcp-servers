@@ -31,7 +31,7 @@ vi.mock('../search-fallback.tool.js', () => ({
   SearchFallbackArgs: {}
 }));
 
-import { handleRooSyncSearch, RooSyncSearchArgs } from '../roosync-search.tool.js';
+import { handleRooSyncSearch, RooSyncSearchArgs, roosyncSearchTool } from '../roosync-search.tool.js';
 import { allToolDefinitions } from '../../tool-definitions.js';
 import type { ConversationSkeleton } from '../../../types/index.js';
 
@@ -236,6 +236,18 @@ describe('roosync_search additional coverage', () => {
       expect(prop.type).toBe('boolean');
       expect(prop.description).toContain('default true');
       expect(prop.description).toContain('tool_interaction');
+      // The wire legitimately names its scope: `exclude_tool_results` only exists
+      // on the semantic action (the text fallback ignores it), and ai-01's info on
+      // ms#1568 was exactly that the two copies diverged on this qualifier.
+      expect(prop.description).toContain('semantic');
+      // Drift guard on the DUPLICATE itself: `tool-definitions.ts` is the copy that
+      // ships, `roosync-search.tool.ts` is the one a maintainer edits. Two strings
+      // that merely agree in spirit are how the wire ends up lying, so they are
+      // compared as VALUES.
+      const local = roosyncSearchTool.inputSchema.properties!.exclude_tool_results as {
+        description?: string;
+      };
+      expect(local.description).toBe(prop.description);
 
       await handleRooSyncSearch(
         { action: 'semantic', search_query: 'parity check' },
