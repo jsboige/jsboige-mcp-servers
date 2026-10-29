@@ -16,6 +16,11 @@ vi.mock('../search-semantic.tool.js', () => ({
   searchTasksByContentTool: {
     handler: mockSemanticHandler
   },
+  // Needed by the degraded-fallback branch (#249): the handler classifies the
+  // semantic failure. Stubbed as an unattributable mode — the tests here assert
+  // what reaches the fallback, not how the mode is derived.
+  extractSemanticErrorMode: () => 'unknown',
+  INFRASTRUCTURE_ERROR_MODES: new Set<string>(['embedding_api_error', 'qdrant_unreachable']),
   // Re-export the type stub
   SearchTasksByContentArgs: {}
 }));
@@ -27,6 +32,7 @@ vi.mock('../search-fallback.tool.js', () => ({
 }));
 
 import { handleRooSyncSearch, RooSyncSearchArgs } from '../roosync-search.tool.js';
+import { allToolDefinitions } from '../../tool-definitions.js';
 import type { ConversationSkeleton } from '../../../types/index.js';
 
 // Helpers
@@ -113,6 +119,132 @@ describe('roosync_search additional coverage', () => {
       expect(callArgs.exclude_tool_results).toBe(true);
       expect(callArgs.workspace).toBeUndefined();
       expect(callArgs.diagnose_index).toBe(false);
+    });
+
+    test('#2609 default — exclude_tool_results is true when OMITTED on the semantic path', async () => {
+      // Measured live 2026-10-28 (web1): without the flag, tool-result echoes of the
+      // query took ranks 1-3 despite the 0.85 machine-output malus; with it, real
+      // decision passages with drill-down handles. The default must now protect the
+      // call that passes NO flag at all — an explicit false opts back out.
+      await handleRooSyncSearch(
+        {
+          action: 'semantic',
+          search_query: 'coordinator cron cadence decision'
+        },
+        mockCache,
+        mockEnsureCache,
+        mockSemanticHandler,
+        mockFallbackHandler
+      );
+
+      expect(mockSemanticHandler).toHaveBeenCalled();
+      const callArgs = mockSemanticHandler.mock.calls[0][0];
+      expect(callArgs.exclude_tool_results).toBe(true);
+    });
+
+    test('#2609 opt-out — an explicit exclude_tool_results:false reaches the semantic handler', async () => {
+      await handleRooSyncSearch(
+        {
+          action: 'semantic',
+          search_query: 'include tool outputs this time',
+          exclude_tool_results: false
+        },
+        mockCache,
+        mockEnsureCache,
+        mockSemanticHandler,
+        mockFallbackHandler
+      );
+
+      expect(mockSemanticHandler).toHaveBeenCalled();
+      const callArgs = mockSemanticHandler.mock.calls[0][0];
+      expect(callArgs.exclude_tool_results).toBe(false);
+    });
+
+    test('#2609 null is NOT overwritten — an explicit exclude_tool_results:null stays unfiltered', async () => {
+      // `??` treats null like undefined, so the default silently turned an explicit
+      // null into true. JSON callers can send null, and the semantic handler reads
+      // the flag by truthiness — null must reach it unchanged (ms#1568 review, item 2).
+      await handleRooSyncSearch(
+        {
+          action: 'semantic',
+          search_query: 'legacy unfiltered output',
+          exclude_tool_results: null as unknown as boolean
+        },
+        mockCache,
+        mockEnsureCache,
+        mockSemanticHandler,
+        mockFallbackHandler
+      );
+
+      expect(mockSemanticHandler).toHaveBeenCalled();
+      const callArgs = mockSemanticHandler.mock.calls[0][0];
+      expect(callArgs.exclude_tool_results).toBeNull();
+      expect(callArgs.exclude_tool_results).not.toBe(true);
+    });
+
+    test('#2609 degraded-text warning follows the SAME null rule, not just the forwarding site', async () => {
+      // The degraded fallback flags `exclude_tool_results` as "requested but not
+      // evaluable in text mode". If that site kept `??`, an explicit null would
+      // raise a warning about a filter the caller did not ask for — the mirror of
+      // the bug above, one branch away. Both directions are pinned here.
+      mockSemanticHandler.mockResolvedValue({
+        isError: true,
+        content: [{ type: 'text', text: 'semantic down' }]
+      });
+
+      await handleRooSyncSearch(
+        {
+          action: 'semantic',
+          search_query: 'legacy unfiltered output',
+          exclude_tool_results: null as unknown as boolean
+        },
+        mockCache,
+        mockEnsureCache,
+        mockSemanticHandler,
+        mockFallbackHandler
+      );
+      expect(mockFallbackHandler).toHaveBeenCalled();
+      expect(mockFallbackHandler.mock.calls[0][0].filters_requested).toBe(false);
+
+      // And an OMITTED flag must still raise it: the default is in force.
+      mockSemanticHandler.mockResolvedValue({
+        isError: true,
+        content: [{ type: 'text', text: 'semantic down' }]
+      });
+      mockFallbackHandler.mockClear();
+      await handleRooSyncSearch(
+        { action: 'semantic', search_query: 'default in force' },
+        mockCache,
+        mockEnsureCache,
+        mockSemanticHandler,
+        mockFallbackHandler
+      );
+      expect(mockFallbackHandler.mock.calls[0][0].filters_requested).toBe(true);
+    });
+
+    test('#2609 served-schema parity — the wire definition states the default the handler applies', async () => {
+      // Agents only ever see ListTools (allToolDefinitions). Documenting the default
+      // in the handler alone leaves the wire lying, which is how ms#1564's
+      // repair:"headless" shipped. The two assertions live in ONE test on purpose:
+      // the description and the behaviour cannot drift apart without this going red.
+      const def = allToolDefinitions.find(d => d.name === 'roosync_search');
+      expect(def).toBeDefined();
+      const prop = def!.inputSchema.properties!.exclude_tool_results as {
+        type?: string;
+        description?: string;
+      };
+      expect(prop.type).toBe('boolean');
+      expect(prop.description).toContain('default true');
+      expect(prop.description).toContain('tool_interaction');
+
+      await handleRooSyncSearch(
+        { action: 'semantic', search_query: 'parity check' },
+        mockCache,
+        mockEnsureCache,
+        mockSemanticHandler,
+        mockFallbackHandler
+      );
+      expect(mockSemanticHandler.mock.calls[0][0].exclude_tool_results).toBe(true);
     });
 
     test('includes chunk_type filter in semantic search', async () => {
