@@ -190,6 +190,7 @@ export const roosyncIndexingDefinition = {
         properties: {
             action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'repair_workspace', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, repair_workspace=backfill workspace_name on existing points, cleanup=old vectors, garbage_scan=junk detection, cleanup_orphans=purge, cleanup_failed=operator dead-letter by error class, tool_usage_stats=usage aggregation, save_snapshot=persist weekly stats to shared storage, trend_report=compare snapshots with ↑/↓ trend arrows (fleet=true: fleet-wide aggregate across machines)' },
             task_id: { type: 'string', description: 'Required for action=index' },
+            repair: { type: 'string', enum: ['headless'], description: "For action=index (#4352 g8): arm the one-shot headless-repair bypass for a task the g7 scan named (missing head pages, min(chunk_index)>1). A plain requeue is a NO-OP on a success task — shouldIndex skips it on TTL/unchanged-content — so the consumer arms repair:'headless' instead of resetting: the task keeps its success state, the skips are bypassed exactly once, and the marker is deleted on completion (success OR failure). Only for scan-named tasks; never a global force." },
             confirm: { type: 'boolean', description: 'Required for action=reset', default: false },
             force: { type: 'boolean', description: 'For action=reset. Wipe even a populated collection above the safety floor, or when the point count cannot be determined (transient Qdrant error). Default: false.', default: false },
             workspace_filter: { type: 'string', description: 'Workspace filter (for rebuild)' },
@@ -221,7 +222,7 @@ export const roosyncIndexingDefinition = {
             fleet: { type: 'boolean', description: 'For action=trend_report. Fleet-wide aggregate: per-machine cycle-over-cycle table PLUS a merged fleet view (only machines with ≥2 snapshots contribute to deltas). Default: false (single-machine comparison).', default: false }
         },
         required: ['action'],
-        additionalProperties: false // #4005 item 3 — key parity with handler verified (31/31 args.* incl. confirm_auth_failed_reset #3984)
+        additionalProperties: false // #4005 item 3 — key parity with handler verified (32/32 args.* incl. confirm_auth_failed_reset #3984, repair #4352 g8)
     }
 };
 

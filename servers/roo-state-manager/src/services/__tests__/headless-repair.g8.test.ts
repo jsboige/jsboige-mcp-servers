@@ -266,5 +266,47 @@ describe('#4352 g8 — headless repair marker (decision + consume + two writers)
             expect(kept.metadata.indexingState.repair).toBeUndefined();
             expect(kept.metadata.indexingState.indexStatus).toBe('success');
         });
+
+        // ai-01 CHANGES (28/10): the test above re-reads the file it just saved —
+        // it never exercises a stale writer that CARRIES the marker re-saving
+        // after completion. This is that direction: Worker B still holds the
+        // armed copy, completion already won on disk, B saves last — recency
+        // (not write order) must keep the consumed state.
+        test('no resurrection, REAL direction: a stale writer still carrying the armed marker saves AFTER completion', async () => {
+            // 1. Arm on disk and snapshot the armed entry — Worker B's cache.
+            await requestQueuedIndex('head-1', MACHINE_ID, 'headless');
+            const cacheA = leaderState();
+            await consumePendingIndexRequests(cacheA);
+            const indexPath = path.join(TEST_DIR, 'tasks', '.skeletons', '_skeleton_index.json');
+            await vi.waitFor(async () => {
+                const index = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+                expect(index.entries.find((e: any) => e.taskId === 'head-1')?.metadata?.indexingState?.repair).toBe('headless');
+            });
+            const workerBCache = new Map<string, any>([
+                ['head-1', JSON.parse(JSON.stringify(cacheA.conversationCache.get('head-1')))],
+            ]);
+            // Determinism, not realism surgery: a stale writer's state is
+            // definitionally OLDER, but the ISO stamps are millisecond-granular
+            // and arm→complete can land in the same ms (the merge then keeps
+            // the writer's own copy by the `<=` branch). Backdating B's stamps
+            // by 1s pins the race direction the invariant is about.
+            const bState = workerBCache.get('head-1').metadata.indexingState;
+            bState.lastResetAt = new Date(Date.parse(bState.lastResetAt) - 1000).toISOString();
+
+            // 2. Completion consumes the marker and persists (recency = now).
+            const completed = cacheA.conversationCache.get('head-1') as any;
+            new IndexingDecisionService().markIndexingSuccess(completed);
+            await saveSkeletonIndex(cacheA.conversationCache);
+            const afterCompletion = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+            expect(afterCompletion.entries.find((e: any) => e.taskId === 'head-1')?.metadata?.indexingState?.repair).toBeUndefined();
+
+            // 3. Worker B re-saves its armed copy LAST — the marker must not
+            //    come back: the on-disk completed state is strictly newer.
+            await saveSkeletonIndex(workerBCache);
+            const final = JSON.parse(await fs.promises.readFile(indexPath, 'utf8'));
+            const kept = final.entries.find((e: any) => e.taskId === 'head-1');
+            expect(kept.metadata.indexingState.repair).toBeUndefined();
+            expect(kept.metadata.indexingState.indexStatus).toBe('success');
+        });
     });
 });
