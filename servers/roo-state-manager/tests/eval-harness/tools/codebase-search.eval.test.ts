@@ -18,6 +18,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { STORM_ACTIVE, STORM_GUARD_RESULT, runStormGuard } from '../storm-guard.js';
 import { CODEBASE_SEARCH_QUERY } from '../golden-queries.js';
+import { resolveScenarioWorkspace } from '../resolve-workspace.js';
 import type { ToolVerdict, CheckResult } from '../verdict.js';
 import { handleCodebaseSearch } from '../../../src/tools/search/search-codebase.tool.js';
 
@@ -36,6 +37,30 @@ describe('codebase_search — golden query eval', () => {
       return;
     }
 
+    // Seat-portable workspace (po-2023, file 20261029a): the golden's
+    // 2026-06 baseline spelling 'd:/roo-extensions' only resolves on the seat
+    // that indexed under it — here it answers collection_not_found and the
+    // golden FAILs for an environment reason. The query stays verbatim; the
+    // workspace resolves from the running checkout (same rule as the V2
+    // scenario since the #4105 triage).
+    const seatWorkspace = resolveScenarioWorkspace();
+    if (!seatWorkspace) {
+      console.log('[INCONCLUSIVE] harness is not running inside a roo-extensions checkout — no workspace to probe, the golden presence contract is unmeasured on this run');
+      const toolVerdict: ToolVerdict = {
+        tool: 'codebase_search',
+        query: CODEBASE_SEARCH_QUERY.args,
+        verdict: 'INCONCLUSIVE',
+        reason: 'no workspace to probe: the golden presence contract is unmeasured on this run',
+        latency_ms: 0,
+        checks: [],
+        timestamp: new Date().toISOString(),
+      };
+      verdicts.push(toolVerdict);
+      expect(seatWorkspace).toBeNull();
+      return;
+    }
+    const goldenArgs = { ...CODEBASE_SEARCH_QUERY.args, workspace: seatWorkspace };
+
     const startMs = Date.now();
     const checks: CheckResult[] = [];
 
@@ -43,7 +68,7 @@ describe('codebase_search — golden query eval', () => {
     let callError: Error | undefined;
 
     try {
-      const result = await handleCodebaseSearch(CODEBASE_SEARCH_QUERY.args as any);
+      const result = await handleCodebaseSearch(goldenArgs as any);
       const rawItem = result.content?.[0];
       const rawText: string = (rawItem && 'text' in rawItem) ? (rawItem as { text: string }).text : '';
       try {
