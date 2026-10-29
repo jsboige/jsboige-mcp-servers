@@ -15,7 +15,7 @@ import { createLogger } from '../../utils/logger.js';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchives, renderDashboardActivityMarkdown } from '../../utils/dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive, isStaleMachine, lookupMachineActivityInArchives, renderDashboardActivityMarkdown } from '../../utils/dashboard-activity.js';
 import { listRooSyncDashboardKeysFromPg, readDashboardFromPg } from '../../services/unified-store/roosync-dashboard-store.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import * as os from 'os';
@@ -60,6 +60,9 @@ export interface HealthViewResult {
   systemHealth: {
     machinesOnline: number;
     machinesUnknown: number;
+    /** #4344 residual: concluded absent >7d (STALE_MACHINE_MS) — parked. */
+    machinesStale: number;
+    staleMachines: string[];
     machinesTotal: number;
     flags: string[];
     /**
@@ -159,6 +162,8 @@ async function collectDashboardContentsFromPg(): Promise<string[] | null> {
 async function collectSystemHealth(): Promise<{
   onlineCount: number;
   unknownCount: number;
+  // #4344 residual: concluded absent >7d — parked, zero archive reads.
+  staleCount: number;
   totalCount: number;
   flags: string[];
   // #3160: last dashboard append seen per machine, from THIS observer's GDrive mirror.
@@ -167,6 +172,8 @@ async function collectSystemHealth(): Promise<{
   lastSeenByMachine: Record<string, string | null>;
   // #3160: registry machines NOT counted online — the ones behind UNKNOWN flags.
   unknownMachines: string[];
+  // #4344 residual: the machines behind STALE flags.
+  staleMachines: string[];
 }> {
   // #2546: Unified machine presence — uses the same dashboard-activity utilities
   // and thresholds as get-status.ts to eliminate contradictory readings.
@@ -175,8 +182,10 @@ async function collectSystemHealth(): Promise<{
   const sharedPath = getSharedStatePath();
   let onlineCount = 0;
   let unknownCount = 0;
+  let staleCount = 0;
   const flags: string[] = [];
   const unknownMachines: string[] = [];
+  const staleMachines: string[] = [];
   // #3160: raw per-machine lastSeen, populated in the try block below.
   const lastSeenByMachine: Record<string, string | null> = {};
   const ONE_DAY = 24 * 60 * 60 * 1000;
@@ -197,8 +206,8 @@ async function collectSystemHealth(): Promise<{
     } else {
       if (!existsSync(dashboardsDir)) {
         return {
-          onlineCount: 0, unknownCount: 0, totalCount: 0,
-          flags: ['DASHBOARDS_DIR_MISSING'], lastSeenByMachine: {}, unknownMachines: [],
+          onlineCount: 0, unknownCount: 0, staleCount: 0, totalCount: 0,
+          flags: ['DASHBOARDS_DIR_MISSING'], lastSeenByMachine: {}, unknownMachines: [], staleMachines: [],
         };
       }
 
@@ -250,6 +259,7 @@ async function collectSystemHealth(): Promise<{
     }
 
     const onlineMachines: string[] = [];
+    const staleMachinesList: string[] = [];
     for (const [machineId, lastSeenStr] of activity) {
       const id = machineId.toLowerCase();
       if (!isKnownMachine(id)) continue;
@@ -257,10 +267,13 @@ async function collectSystemHealth(): Promise<{
       if (isRecentlyActive(lastSeenStr)) {
         onlineCount++;
         onlineMachines.push(id);
+      } else if (isStaleMachine(lastSeenStr)) {
+        // #4344 residual: concluded absent >7d — parked, zero archive reads.
+        staleMachinesList.push(id);
       }
-      // Machines with stale dashboard activity (>8h) are not counted as online
-      // but are also NOT double-counted as unknown — they'll be caught by the
-      // registry check below if they haven't posted at all.
+      // Machines with stale dashboard activity (>8h, <7d) are not counted as
+      // online but are also NOT double-counted as unknown — they'll be caught
+      // by the registry check below if they haven't posted at all.
     }
 
     const seenSet = new Set(onlineMachines.map(m => m.toLowerCase()));
@@ -269,6 +282,14 @@ async function collectSystemHealth(): Promise<{
       const lastSeen = activity.get(mid.toLowerCase());
       lastSeenByMachine[mid] = lastSeen ?? null;
       if (!seenSet.has(mid.toLowerCase())) {
+        if (isStaleMachine(lastSeen)) {
+          // #4344 residual: 7-day absence is a STRONGER statement than the
+          // 1-day SYNC_STALE blip — parked, not an incident signal.
+          flags.push(`STALE:${mid}`);
+          staleCount++;
+          staleMachinesList.push(mid);
+          continue;
+        }
         // Check if this machine has ANY dashboard activity at all (even stale)
         if (lastSeen) {
           const lastSeenMs = new Date(lastSeen).getTime();
@@ -299,10 +320,12 @@ async function collectSystemHealth(): Promise<{
   return {
     onlineCount,
     unknownCount,
-    totalCount: onlineCount + unknownCount,
+    staleCount,
+    totalCount: onlineCount + unknownCount + staleCount,
     flags,
     lastSeenByMachine,
     unknownMachines,
+    staleMachines,
   };
 }
 
@@ -840,6 +863,10 @@ export async function roosyncHealthView(args: HealthViewArgs): Promise<HealthVie
     systemHealth: {
       machinesOnline: systemHealth.onlineCount,
       machinesUnknown: systemHealth.unknownCount,
+      // #4344 residual: concluded absent >7d — parked (zero archive reads),
+      // distinct from unknown (no signal in the 8h window).
+      machinesStale: systemHealth.staleCount,
+      staleMachines: systemHealth.staleMachines,
       machinesTotal: systemHealth.totalCount,
       flags: systemHealth.flags,
       lastSeenByMachine: systemHealth.lastSeenByMachine,

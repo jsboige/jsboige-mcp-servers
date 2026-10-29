@@ -63,8 +63,12 @@ export const GetStatusResultSchema = z.object({
   machines: z.object({
     online: z.number(),
     unknown: z.number(),
+    // #4344 residual: concluded absent >7d (STALE_MACHINE_MS) — listed only
+    // when non-empty, with staleMachines carrying the ids.
+    stale: z.number().optional(),
+    staleMachines: z.array(z.string()).optional(),
     total: z.number()
-  }).describe('Compteurs machines par état'),
+  }).describe('Compteurs machines par état (stale = absence conclue >7j, #4344 — parqué, zéro lecture d\'archive, WARNING pas CRITICAL)'),
 
   inbox: z.object({
     unread: z.number(),
@@ -113,7 +117,7 @@ export const GetStatusResultSchema = z.object({
   })).describe('Per-machine scheduler execution metrics (#1442)').optional(),
 
   flags: z.array(z.string())
-    .describe('Flags actionnables. UNKNOWN:<mid> = aucun append dashboard de <mid> vu par CET observateur depuis 8h — absence de signal observée, PAS une panne confirmée (croiser machineLastSeen + listener heartbeats avant toute escalade, #3160)'),
+    .describe('Flags actionnables. UNKNOWN:<mid> = aucun append dashboard de <mid> vu par CET observateur depuis 8h — absence de signal observée, PAS une panne confirmée (croiser machineLastSeen + listener heartbeats avant toute escalade, #3160). STALE:<mid> = lastSeen conclu plus vieux que 7j (#4344) — état parqué, jamais CRITICAL à lui seul'),
 
   // #3160: provenance for presence flags. An UNKNOWN:<mid> flag means "this
   // observer's dashboards show no append from <mid> within 8h" — which can be a
@@ -156,7 +160,7 @@ export type GetStatusResult = z.infer<typeof GetStatusResultSchema>;
  * Génère les flags actionnables à partir des données collectées
  */
 function buildFlags(
-  heartbeatState: { onlineMachines: string[]; unknownMachines: string[]; idleMachines: string[] },
+  heartbeatState: { onlineMachines: string[]; unknownMachines: string[]; staleMachines?: string[]; idleMachines: string[] },
   inboxStats: { unread: number; urgent_unread: number },
   pendingDecisions: number
 ): string[] {
@@ -165,6 +169,14 @@ function buildFlags(
   // Unknown machines (ADR 008 terminology)
   for (const machineId of heartbeatState.unknownMachines) {
     flags.push(`UNKNOWN:${machineId}`);
+  }
+
+  // #4344 residual: concluded absent >7d — a distinct, stronger statement
+  // than UNKNOWN (8h window). Replaces the UNKNOWN:<mid> flag for those
+  // machines: the same "not online" escalation signal, without pretending
+  // an 8h-window blip and a 7-day absence are one class.
+  for (const machineId of heartbeatState.staleMachines ?? []) {
+    flags.push(`STALE:${machineId}`);
   }
 
   // Idle machines (ADR 008 terminology)
@@ -339,13 +351,14 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     // No heartbeat blind seed — dashboard timestamps are the sole source of truth.
     let filteredOnlineMachines: string[] = [];
     let filteredUnknownMachines: string[] = [];
+    let filteredStaleMachines: string[] = [];
     let filteredIdleMachines: string[] = [];
     let dashboardOverrides: string[] = [];
     // #3160: last dashboard append seen per machine, from THIS observer's GDrive mirror.
     const machineLastSeen: Record<string, string | null> = {};
 
     try {
-      const { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchives } = await import('../../utils/dashboard-activity.js');
+      const { extractMachineActivity, isRecentlyActive, isStaleMachine, lookupMachineActivityInArchives } = await import('../../utils/dashboard-activity.js');
       const activity = extractMachineActivity(dashboardContents);
 
       // #4344: a single stale live line used to freeze lastSeen while the
@@ -379,10 +392,18 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
         // (they simply don't appear — no false "unknown" from heartbeat blind spots)
       }
 
-      // Known machine IDs from registry that weren't seen on any dashboard
+      // Known machine IDs from registry that weren't seen on any dashboard.
+      // #4344 residual: a machine whose concluded lastSeen is older than the
+      // STALE threshold (7d) is STALE — a stronger statement than UNKNOWN
+      // (concluded long absence, not just "no signal in 8h"). The archive walk
+      // above already skips concluded-stale machines, so classifying them
+      // costs nothing.
       const seenSet = new Set(filteredOnlineMachines.map(m => m.toLowerCase()));
       for (const mid of registryMachineIds) {
-        if (!seenSet.has(mid.toLowerCase())) {
+        if (seenSet.has(mid.toLowerCase())) continue;
+        if (isStaleMachine(activity.get(mid.toLowerCase()))) {
+          filteredStaleMachines.push(mid);
+        } else {
           filteredUnknownMachines.push(mid);
         }
       }
@@ -396,6 +417,11 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       for (const [mid, lastSeen] of activity.entries()) {
         if (isKnownMachine(mid) && !(mid in machineLastSeen)) {
           machineLastSeen[mid] = lastSeen;
+          // #4344 residual: machines seen on dashboards but outside the
+          // registry (e.g. the -win32-x64 ghost on mirrors where the shared
+          // registry does not carry it) are classified from their own
+          // lastSeen — a 52-day-old one is STALE, not invisible.
+          if (isStaleMachine(lastSeen)) filteredStaleMachines.push(mid);
         }
       }
     } catch (err) {
@@ -421,6 +447,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       {
         onlineMachines: filteredOnlineMachines,
         unknownMachines: filteredUnknownMachines,
+        staleMachines: filteredStaleMachines,
         idleMachines: filteredIdleMachines
       },
       inboxStats,
@@ -431,10 +458,12 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     let status: 'HEALTHY' | 'WARNING' | 'CRITICAL' = 'HEALTHY';
     // #1159: CRITICAL on UNREAD urgent only — read URGENT messages no longer
     // hold the coordination channel in permanent CRITICAL (status/health agreement, #2546).
+    // #4344 residual: STALE machines do NOT drive CRITICAL — a machine
+    // concluded absent for >7d is a known, parked state, not an incident.
     if (filteredUnknownMachines.length > 0 || inboxStats.urgent_unread > 0) {
       status = 'CRITICAL';
-    } else if (inboxStats.unread > 5 || filteredIdleMachines.length > 0) {
-      // WARNING if: high unread count OR heartbeat idle machines (but no unknown)
+    } else if (inboxStats.unread > 5 || filteredIdleMachines.length > 0 || filteredStaleMachines.length > 0) {
+      // WARNING if: high unread count OR heartbeat idle machines OR stale (but no unknown)
       status = 'WARNING';
     }
 
@@ -442,7 +471,8 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     if (args.machineFilter) {
       const machineExists = filteredDashboardMachines.some(m => m.id === args.machineFilter) ||
         filteredOnlineMachines.includes(args.machineFilter) ||
-        filteredUnknownMachines.includes(args.machineFilter);
+        filteredUnknownMachines.includes(args.machineFilter) ||
+        filteredStaleMachines.includes(args.machineFilter);
 
       if (!machineExists) {
         throw new RooSyncServiceError(
@@ -471,6 +501,9 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       machines: {
         online: filteredOnlineMachines.length,
         unknown: filteredUnknownMachines.length,
+        // #4344 residual: concluded absent >7d (STALE_MACHINE_MS) — parked,
+        // pays zero archive reads, WARNING not CRITICAL.
+        ...(filteredStaleMachines.length > 0 ? { stale: filteredStaleMachines.length, staleMachines: filteredStaleMachines } : {}),
         total: totalMachines,
         ...(dashboardOverrides.length > 0 ? { dashboardOverrides } : {})
       },
