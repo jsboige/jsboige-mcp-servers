@@ -102,7 +102,7 @@ const { mockGetCache, mockImmediateCache, mockGetInstance, mockAwaitFreshness, m
     mockGetCacheAge: ageFn,
     mockIsLoadInProgress: loadInProgressFn,
     mockTier3KnowsMachine: knowsMachineFn,
-    mockGetInstance: vi.fn(() => ({ getCache: cacheFn, getCacheImmediate: immediateFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn, tier3KnowsMachine: knowsMachineFn })),
+    mockGetInstance: vi.fn(() => ({ getCache: cacheFn, getCacheImmediate: immediateFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn, tier3KnowsMachine: knowsMachineFn, isCacheFreshWithoutLoad: vi.fn(() => false), triggerBackgroundRefresh: vi.fn(() => undefined) })),
   };
 });
 vi.mock('../../../services/skeleton-cache.service.js', () => ({

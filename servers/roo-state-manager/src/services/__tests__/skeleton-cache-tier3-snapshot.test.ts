@@ -275,6 +275,49 @@ describe('SkeletonCacheService — Tier 3 stub snapshot (#1747 E)', () => {
 		expect(stats.tier3_snapshot.entries).toBe(0);
 	});
 
+	test('#4151 S3 — isCacheFreshWithoutLoad() ne déclenche AUCUN load ; le probe budget 0, si', async () => {
+		configureBareHost();
+
+		const instance = SkeletonCacheService.getInstance();
+		// Instrument direct du déclencheur : `ensureFreshCache` est ce que le
+		// probe budget 0 appelle (course contre un timer 0 ms) — sur un hôte
+		// réel, c'est le scan de ~11k archives / ~2,1 Go PAR HÔTE.
+		const ensureSpy = vi.spyOn(instance as any, 'ensureFreshCache');
+
+		// Hôte froid : pas frais, rien de semé.
+		expect(instance.isCacheFreshWithoutLoad()).toBe(false);
+		// C'est TOUT l'objet du correctif : constater la fraîcheur ne doit pas
+		// lancer le load. Mutant : appeler ensureFreshCache() ici fait tomber
+		// cette assertion.
+		expect(ensureSpy).not.toHaveBeenCalled();
+
+		// Le probe historique, lui, EST le déclencheur — c'est bien lui que le
+		// chemin PG-first ne doit plus emprunter.
+		expect(await instance.awaitFreshnessWithBudget(0)).toBe(false);
+		expect(ensureSpy).toHaveBeenCalledTimes(1);
+
+		ensureSpy.mockRestore();
+	});
+
+	test('#4151 S3 — après seed du snapshot, la sonde sans load rend true (pas de régression #1747 E)', async () => {
+		configureBareHost();
+		const stubs = [makeStub('task-a', 'myia-po-2025')];
+		mockReadFile.mockImplementation(async (p: string) => {
+			if (p === SNAPSHOT_PATH) return snapshotPayload(stubs);
+			throw new Error(`unexpected read: ${p}`);
+		});
+		mockListArchivedTaskFiles.mockImplementation(() => new Promise(() => { }));
+
+		const instance = SkeletonCacheService.getInstance();
+		const warming = instance.warmCache();
+		await new Promise(r => setTimeout(r, 50));
+
+		// Chemin PG-first : la couverture locale doit être servie sans load.
+		expect(instance.isCacheFreshWithoutLoad()).toBe(true);
+		expect(instance.getCacheImmediate().size).toBe(1);
+		void warming;
+	});
+
 	test('SKELETON_TIER3_SNAPSHOT vide : snapshot désactivé (comportement pré-E)', async () => {
 		process.env.SKELETON_TIER3_SNAPSHOT = '';
 		configureBareHost();

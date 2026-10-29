@@ -520,7 +520,7 @@ export const listConversationsTool = {
                 },
                 waitForArchives: {
                     type: 'boolean',
-                    description: '#3255 — Si true, attend le chargement Tier 3 (budget borne 45s). Default: false = rendu local immediat, archives servies seulement si le cache est deja frais. #4151 : sur un siege PG, la couverture cross-machine peut venir du tier conversation PG — la réponse porte alors tier3.status=ready avec tier3.source=\'pg\' (et tier3.archive_status = l\'état GDrive d\'origine), même si tier3 G: est loading. Clé camelCase sur le wire, comme includeArchives.'
+                    description: '#3255 — Si true, attend le chargement Tier 3 (budget borne 45s). Default: false = rendu local immediat, archives servies seulement si le cache est deja frais. #4151 S3 : sur un siege PG-first, ce prechargement n\'est plus declenche en side-effect — les archives ne sont lues que si le cache est deja frais, et l\'etat rendu est alors tier3.status=deferred (ni loading, ni failed). waitForArchives=true reste le SEUL moyen explicite de lancer le chargement G:. #4151 : sur un siege PG, la couverture cross-machine peut venir du tier conversation PG — la réponse porte alors tier3.status=ready avec tier3.source=\'pg\' (et tier3.archive_status = l\'état GDrive d\'origine), même si tier3 G: est loading. Clé camelCase sur le wire, comme includeArchives.'
                 },
             },
         },
@@ -624,21 +624,37 @@ export const listConversationsTool = {
         // Either way the response carries a deterministic tier3 status instead
         // of the old "Retry shortly" advice with nothing to retry against.
         let tier3Info: {
-            status: 'ready' | 'loading' | 'failed';
+            status: 'ready' | 'loading' | 'failed' | 'deferred';
             cache_age_ms: number | null;
             /** Which store actually served the cross-machine coverage this response relies on. */
             source?: 'gdrive' | 'pg';
-            /** GDrive archive tier state BEFORE the PG overlay — kept when source='pg' so the G: diagnosis (loading vs failed) is not erased (ms#1549 review pt 3). */
-            archive_status?: 'loading' | 'failed';
+            /** GDrive archive tier state BEFORE the PG overlay — kept when source='pg' so the G: diagnosis (loading vs failed) is not erased (ms#1549 review pt 3). #4151 S3 adds 'deferred': on a PG-first seat the load is not started, so 'failed' ("archives unreachable") would be a lie. */
+            archive_status?: 'loading' | 'failed' | 'deferred';
         } | undefined;
+        // #4151 S3 — set when the archive read was a PEEK (PG-first seat, no explicit
+        // `waitForArchives`): the load is not started here, and the kick-off is
+        // deferred to just after the PG tier, so it only happens when G: is still the
+        // only cross-machine source.
+        let archivePeekOnly = false;
         if (args.includeArchives) {
-            let tier3Status: 'ready' | 'loading' | 'failed' = 'failed';
+            let tier3Status: 'ready' | 'loading' | 'failed' | 'deferred' = 'failed';
             let cacheAgeMs: number | null = null;
             try {
                 const scsInstance = SkeletonCacheService.getInstance();
                 const ARCHIVE_READY_BUDGET_MS = 45000;
                 const waitBudgetMs = args.waitForArchives ? ARCHIVE_READY_BUDGET_MS : 0;
-                const archiveReady = await scsInstance.awaitFreshnessWithBudget(waitBudgetMs);
+                // #4151 S3 — PG-first seats no longer preload G: as a side effect.
+                // `awaitFreshnessWithBudget(0)` is not a probe: it races
+                // `ensureFreshCache()` against a 0 ms timer, so the ~11k-archive GDrive
+                // scan STARTED on every `includeArchives:true` call even with a zero
+                // budget — per host, for a tier the PG conversation tier (S1) already
+                // supersedes. Here G: is peeked and never triggered; an explicit
+                // `waitForArchives:true` remains the documented way to force the load.
+                const archivePeek = getConversationListPgReader() !== null && !args.waitForArchives;
+                archivePeekOnly = archivePeek;
+                const archiveReady = archivePeek
+                    ? scsInstance.isCacheFreshWithoutLoad()
+                    : await scsInstance.awaitFreshnessWithBudget(waitBudgetMs);
                 cacheAgeMs = scsInstance.getCacheAgeMs();
                 if (archiveReady) {
                     tier3Status = 'ready';
@@ -680,10 +696,15 @@ export const listConversationsTool = {
                     // unconditional 'loading' was a measured lie on po-204 — budget
                     // exhausted, no load running, agent told to "re-call once ready".
                     const loadInProgress = scsInstance.isLoadInProgress();
-                    tier3Status = loadInProgress ? 'loading' : 'failed';
+                    // #4151 S3 — a peek that found nothing is NOT "unreachable": the
+                    // load was never started. Saying 'failed' there would replace one
+                    // measured lie with another, so it gets its own state.
+                    tier3Status = loadInProgress ? 'loading' : archivePeek ? 'deferred' : 'failed';
                     archiveNotice = loadInProgress
                         ? `tier3_status=loading: GDrive archive cache still warming in background; showing local results only. Deterministic options: waitForArchives=true blocks until ready (budget ${ARCHIVE_READY_BUDGET_MS}ms), or re-call once tier3.status=ready.`
-                        : `tier3_status=failed: no archive load in progress and cache not fresh (empty cache or archives unreachable); showing local results only. waitForArchives=true retries a full load within its budget.`;
+                        : archivePeek
+                            ? `tier3_status=deferred: GDrive archive load not started (PG-first seat: it is no longer preloaded as a side effect, and a warm-up converges far too slowly to serve cross-machine coverage — G: 32.1s vs PG 14ms). Archives are served from G: only when already fresh. Deterministic option: waitForArchives=true starts the load within the ${ARCHIVE_READY_BUDGET_MS}ms budget.`
+                            : `tier3_status=failed: no archive load in progress and cache not fresh (empty cache or archives unreachable); showing local results only. waitForArchives=true retries a full load within its budget.`;
                     console.warn(`[list_conversations] ${archiveNotice}`);
                 }
             } catch (archiveError) {
@@ -767,6 +788,16 @@ export const listConversationsTool = {
                 ...(pgResult.epoch1970_filtered > 0 ? { epoch1970_filtered: pgResult.epoch1970_filtered } : {}),
                 ...(pgResult.error ? { error: pgResult.error } : {}),
             };
+        }
+
+        // #4151 S3 — deferred G: kick-off. On a PG-first seat the freshness probe
+        // above only PEEKS, so the ~11k-archive load is no longer a side effect of
+        // asking for archives. It is started HERE, and only when the PG tier did not
+        // contribute: G: is then the sole cross-machine source, which is exactly the
+        // case the historical warm-up existed for. Fire-and-forget (the caller does
+        // not wait), dedups through the service's own loadPromise.
+        if (archivePeekOnly && !(pgTierInfo?.status === 'ready' && pgTierInfo.contributed > 0)) {
+            SkeletonCacheService.getInstance().triggerBackgroundRefresh();
         }
 
         // #4151 S1 — l'overlay honnête est appliqué APRÈS les filtres (review

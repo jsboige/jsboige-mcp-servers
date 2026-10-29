@@ -361,16 +361,7 @@ export class SkeletonCacheService {
      */
     public async awaitFreshnessWithBudget(timeoutMs: number): Promise<boolean> {
         try {
-            const now = Date.now();
-            if ((now - this.lastRefreshTime) <= this.CACHE_VALIDITY_MS && this.cache.size > 0) {
-                return true;
-            }
-            // #1747 E — cache semé depuis le snapshot local Tier 3 : les stubs sont
-            // des données réelles (le corpus GDrive au moment du dernier load
-            // persisté). Servir immédiatement plutôt que de rendre 0 pendant que
-            // le scan GDrive de rattrapage tourne en arrière-plan ; la fraîcheur
-            // réelle reste visible via getCacheTierStats().tier3_snapshot.
-            if (this.tier3SnapshotSeededAt !== null && this.cache.size > 0) {
+            if (this.isCacheFreshWithoutLoad()) {
                 return true;
             }
             // ensureFreshCache dedups via loadPromise (boot pre-warm reuse). Race it
@@ -380,11 +371,54 @@ export class SkeletonCacheService {
                 this.ensureFreshCache(),
                 new Promise<void>(resolve => setTimeout(resolve, timeoutMs)),
             ]);
-            const ageAfter = Date.now() - this.lastRefreshTime;
-            return ageAfter <= this.CACHE_VALIDITY_MS && this.cache.size > 0;
+            return this.isCacheFreshWithoutLoad();
         } catch {
             return false;
         }
+    }
+
+    /**
+     * #4151 S3 — freshness probe with NO side effect.
+     *
+     * `awaitFreshnessWithBudget(0)` is NOT a probe: it races `ensureFreshCache()`
+     * against a 0 ms timer, so the GDrive archive scan STARTS as a side effect
+     * even when the caller only wanted "serve the archives if they happen to be
+     * warm". On a PG-first seat that kick-off buys nothing — the PG conversation
+     * tier already serves the cross-machine coverage (S1) — and costs a full
+     * ~11k-archive load per host (~2.1 GB private commit, measured on ai-01).
+     *
+     * Same two accept conditions as `awaitFreshnessWithBudget` (the latter now
+     * delegates here, so the two can never drift):
+     *  - a fresh cache, or
+     *  - a cache seeded from the local Tier 3 snapshot.
+     *
+     * #1747 E — cache semé depuis le snapshot local Tier 3 : les stubs sont
+     * des données réelles (le corpus GDrive au moment du dernier load
+     * persisté). Servir immédiatement plutôt que de rendre 0 pendant que
+     * le scan GDrive de rattrapage tourne en arrière-plan ; la fraîcheur
+     * réelle reste visible via getCacheTierStats().tier3_snapshot.
+     */
+    public isCacheFreshWithoutLoad(): boolean {
+        if (this.cache.size === 0) {
+            return false;
+        }
+        if (this.tier3SnapshotSeededAt !== null) {
+            return true;
+        }
+        return (Date.now() - this.lastRefreshTime) <= this.CACHE_VALIDITY_MS;
+    }
+
+    /**
+     * #4151 S3 — start the archive load WITHOUT waiting for it.
+     *
+     * Named so the implicit kick-off is a deliberate call rather than the side
+     * effect of asking for a freshness verdict. Dedups through the same
+     * `loadPromise` as the boot pre-warm and `awaitFreshnessWithBudget`.
+     */
+    public triggerBackgroundRefresh(): void {
+        this.ensureFreshCache().catch((err: any) => {
+            console.warn('[Skeleton-Cache] background refresh failed (non-blocking):', err?.message || err);
+        });
     }
 
     /**

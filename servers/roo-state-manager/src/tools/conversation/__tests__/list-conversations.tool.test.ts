@@ -78,7 +78,7 @@ vi.mock('../../../services/task-archiver/index.js', () => ({
 // Both functions hoisted so vi.restoreAllMocks() in afterEach can be safely reset.
 // #1747 D: isLoadInProgress defaults to true — an elapsed budget with a load
 // running stays 'loading'; tests opt into false to pin the 'failed' arm.
-const { mockGetCache, mockImmediateCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge, mockIsLoadInProgress, mockTier3KnowsMachine } = vi.hoisted(() => {
+const { mockGetCache, mockImmediateCache, mockGetInstance, mockAwaitFreshness, mockGetCacheAge, mockIsLoadInProgress, mockTier3KnowsMachine, mockIsCacheFreshWithoutLoad, mockTriggerBackgroundRefresh } = vi.hoisted(() => {
 	const cacheFn = vi.fn(() => Promise.resolve(new Map()));
 	// #1747 E — le Tier 3 lit le cache en IMMÉDIAT (sync) après le probe de
 	// fraîcheur ; les tests configurent la même Map sur les deux accès.
@@ -88,6 +88,10 @@ const { mockGetCache, mockImmediateCache, mockGetInstance, mockAwaitFreshness, m
 	const loadInProgressFn = vi.fn(() => true);
 	// #3661 (stubs) — default: l'index connaît la machine (pas de notice).
 	const knowsMachineFn = vi.fn(() => true);
+	// #4151 S3 — sonde sans effet de bord. Défaut false : rien de frais, donc
+	// l'état rendu reste celui que les describes antérieurs attendent.
+	const freshWithoutLoadFn = vi.fn(() => false);
+	const triggerRefreshFn = vi.fn(() => undefined);
 	return {
 		mockGetCache: cacheFn,
 		mockImmediateCache: immediateFn,
@@ -95,7 +99,9 @@ const { mockGetCache, mockImmediateCache, mockGetInstance, mockAwaitFreshness, m
 		mockGetCacheAge: ageFn,
 		mockIsLoadInProgress: loadInProgressFn,
 		mockTier3KnowsMachine: knowsMachineFn,
-		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, getCacheImmediate: immediateFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn, tier3KnowsMachine: knowsMachineFn }))
+		mockIsCacheFreshWithoutLoad: freshWithoutLoadFn,
+		mockTriggerBackgroundRefresh: triggerRefreshFn,
+		mockGetInstance: vi.fn(() => ({ getCache: cacheFn, getCacheImmediate: immediateFn, awaitFreshnessWithBudget: awaitFn, getCacheAgeMs: ageFn, isLoadInProgress: loadInProgressFn, tier3KnowsMachine: knowsMachineFn, isCacheFreshWithoutLoad: freshWithoutLoadFn, triggerBackgroundRefresh: triggerRefreshFn }))
 	};
 });
 
@@ -1255,6 +1261,117 @@ describe('list-conversations', () => {
   // The field had NO test coverage before this block — the threshold and the wording
   // were both free to drift silently.
   // ============================================================
+  // ============================================================
+  // #4151 S3 — PG-first seats must not PRELOAD the GDrive archive tier as a
+  // side effect of asking for archives. The discriminating assertion is that
+  // `awaitFreshnessWithBudget` is NOT called on that path: it is not a probe,
+  // it kicks `ensureFreshCache()` off (race against a 0 ms timer), i.e. the
+  // ~11k-archive load per host that S1 already supersedes.
+  // ============================================================
+  describe('handler - PG-first does not preload G: (#4151 S3)', () => {
+    const pgRowSkeleton = (taskId: string, machineId: string) => ({
+      taskId,
+      metadata: {
+        lastActivity: '2026-10-01T10:00:00.000Z',
+        createdAt: '2026-10-01T09:00:00.000Z',
+        messageCount: 3,
+        actionCount: 0,
+        totalSize: 100,
+        machineId,
+        dataSource: 'unified-store-pg',
+      },
+      sequence: [],
+    });
+
+    beforeEach(() => {
+      mockGetConversationListPgReader.mockReturnValue({ isNull: () => false } as any);
+      mockAwaitFreshness.mockResolvedValue(false);
+      mockIsCacheFreshWithoutLoad.mockReturnValue(false);
+      mockIsLoadInProgress.mockReturnValue(false);
+      mockLoadPgConversationTier.mockReset();
+      mockLoadPgConversationTier.mockResolvedValue({
+        status: 'ready', rows_read: 0, truncated: false, skeletons: [], epoch1970_filtered: 0,
+      });
+    });
+
+    afterEach(() => {
+      mockGetConversationListPgReader.mockReturnValue(null);
+      mockIsLoadInProgress.mockReturnValue(true);
+    });
+
+    it('PG served the coverage → G: is peeked, never triggered, and PG contributing costs no background load', async () => {
+      mockLoadPgConversationTier.mockResolvedValue({
+        status: 'ready',
+        rows_read: 1,
+        truncated: false,
+        skeletons: [pgRowSkeleton('pg-task-s3', 'myia-ai-01')],
+        epoch1970_filtered: 0,
+      });
+
+      const result = await listConversationsTool.handler({ includeArchives: true }, new Map());
+      const response = JSON.parse(result.content[0].text as string);
+
+      // The load-triggering probe is what we removed from this path.
+      expect(mockAwaitFreshness).not.toHaveBeenCalled();
+      expect(mockIsCacheFreshWithoutLoad).toHaveBeenCalled();
+      // PG served → G: would buy nothing → no kick-off at all.
+      expect(mockTriggerBackgroundRefresh).not.toHaveBeenCalled();
+      expect(response.tier3.status).toBe('ready');
+      expect(response.tier3.source).toBe('pg');
+      // 'failed' would claim "archives unreachable"; we never tried.
+      expect(response.tier3.archive_status).toBe('deferred');
+      expect(response.notice).toContain('source=pg');
+      expect(response.notice).toContain('gdrive=deferred');
+    });
+
+    it('PG contributed nothing → the kick-off is DEFERRED, not dropped (G: is then the only cross-machine source)', async () => {
+      // PG gate open but the tier failed: G: must still be able to warm up.
+      mockLoadPgConversationTier.mockResolvedValue({
+        status: 'failed', rows_read: 0, truncated: false, skeletons: [], epoch1970_filtered: 0,
+        error: 'pg down',
+      });
+
+      const result = await listConversationsTool.handler({ includeArchives: true }, new Map());
+      const response = JSON.parse(result.content[0].text as string);
+
+      expect(mockAwaitFreshness).not.toHaveBeenCalled();
+      expect(mockTriggerBackgroundRefresh).toHaveBeenCalledTimes(1);
+      expect(response.tier3.status).toBe('deferred');
+      expect(response.tier3.source).toBeUndefined();
+      expect(response.notice).toContain('tier3_status=deferred');
+      // Honest about WHAT was not done, and names the explicit lever.
+      expect(response.notice).toContain('not started');
+      expect(response.notice).toContain('waitForArchives=true');
+    });
+
+    it('explicit waitForArchives:true keeps the historical load path (the documented G: fallback)', async () => {
+      mockAwaitFreshness.mockResolvedValue(true);
+
+      const result = await listConversationsTool.handler(
+        { includeArchives: true, waitForArchives: true },
+        new Map()
+      );
+      const response = JSON.parse(result.content[0].text as string);
+
+      // Explicit opt-in → the real probe, with the 45 s budget.
+      expect(mockAwaitFreshness).toHaveBeenCalledWith(45000);
+      expect(mockIsCacheFreshWithoutLoad).not.toHaveBeenCalled();
+      expect(mockTriggerBackgroundRefresh).not.toHaveBeenCalled();
+      expect(response.tier3.status).toBe('ready');
+      expect(response.tier3.source).toBe('gdrive');
+    });
+
+    it('no PG seat (reader null) → unchanged pre-#4151 behaviour: budget-0 probe still runs', async () => {
+      mockGetConversationListPgReader.mockReturnValue(null);
+
+      await listConversationsTool.handler({ includeArchives: true }, new Map());
+
+      expect(mockAwaitFreshness).toHaveBeenCalledWith(0);
+      expect(mockIsCacheFreshWithoutLoad).not.toHaveBeenCalled();
+      expect(mockTriggerBackgroundRefresh).not.toHaveBeenCalled();
+    });
+  });
+
   describe('handler - sizeWarning (#3174)', () => {
     const bigSession = (totalSize: number) => new Map<string, any>([
       ['task-big', {
