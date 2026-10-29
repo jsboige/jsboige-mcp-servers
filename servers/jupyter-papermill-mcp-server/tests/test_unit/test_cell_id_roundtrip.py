@@ -53,3 +53,39 @@ async def test_missing_ids_are_generated_and_update_add_preserve_existing_ids(tm
     assert [cell.id for cell in after.cells[:2]] == ids
     assert after.cells[1].source == "updated"
     assert after.cells[2].id not in ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["single", "range", "all", "list"])
+async def test_read_cells_preserves_ids(tmp_path, mode):
+    service = NotebookCRUDService(workspace_dir=str(tmp_path))
+    content = {
+        "nbformat": 4,
+        "nbformat_minor": 5,
+        "cells": [
+            {"cell_type": kind, "source": kind, "id": cid}
+            for kind, cid in [("code", "code0001"), ("markdown", "md000002"), ("raw", "raw00003")]
+        ],
+    }
+    await service.write_notebook("cells.ipynb", content)
+    args = {"index": 1} if mode == "single" else {"start_index": 0} if mode == "range" else {}
+    result = await service.read_cells("cells.ipynb", mode=mode, **args)
+    cells = [result["cell"]] if mode == "single" else result["cells"]
+    expected = ["md000002"] if mode == "single" else ["code0001", "md000002", "raw00003"]
+    assert [cell["id"] for cell in cells] == expected
+    if mode != "list":
+        await service.write_notebook("cells.ipynb", {"cells": cells})
+        actual = nbformat.read(tmp_path / "cells.ipynb", as_version=4)
+        nbformat.validate(actual)
+        assert [cell.id for cell in actual.cells] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_id", [None, "", "bad id!", "a" * 65])
+async def test_invalid_id_rejected_without_overwriting_existing_notebook(tmp_path, invalid_id):
+    service = NotebookCRUDService(workspace_dir=str(tmp_path))
+    await service.write_notebook("safe.ipynb", {"cells": [{"cell_type": "code", "source": "safe", "id": "original"}]})
+    before = (tmp_path / "safe.ipynb").read_bytes()
+    with pytest.raises(nbformat.ValidationError):
+        await service.write_notebook("safe.ipynb", {"cells": [{"cell_type": "code", "source": "bad", "id": invalid_id}]})
+    assert (tmp_path / "safe.ipynb").read_bytes() == before
