@@ -21,6 +21,10 @@ const KEYS = {
   LOG: 'ROOSYNC_LOG_LEVEL',
   PG: 'UNIFIED_STORE_PG_URL',
   DW: 'UNIFIED_STORE_DUAL_WRITE',
+  // A seat exporting its real roster rejects 'test-machine' before the gate
+  // under test (po-2028, 29/10: 2 failures, CI green because the runner has no
+  // roster). Saved and scrubbed like every other key.
+  ROSTER: 'ROO_FLEET_ROSTER',
 } as const;
 
 const SAVED: Record<string, string | undefined> = {};
@@ -43,7 +47,7 @@ function setEnv(overrides: Record<string, string | undefined>): void {
   // reaches the existsSync gate — the blocker lives in the production branch.
   SAVED['NODE_ENV'] = process.env.NODE_ENV;
   process.env.NODE_ENV = 'production';
-  for (const [key, value] of Object.entries({ ...base, ...overrides })) {
+  for (const [key, value] of Object.entries({ [KEYS.ROSTER]: undefined, ...base, ...overrides })) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
