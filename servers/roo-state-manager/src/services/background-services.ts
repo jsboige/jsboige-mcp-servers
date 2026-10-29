@@ -1744,7 +1744,8 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             // #4352 g6 (ai-01 review 29/10): `called` counts SUB-CHUNKS (batch path:
             // `+= batch.length`), the pacer counts REQUESTS. Without this counter a
             // bounded-pass check built on `called` is up to 16x too generous, i.e.
-            // blind. Same boot-cumulative semantics — subtract two snapshots.
+            // blind. `requests` counts ATTEMPTS (a rejected call consumed its slot
+            // all the same). Same boot-cumulative semantics — subtract two snapshots.
             `requests=${m.embeddings_requests_total} ` +
             `cached=${m.embeddings_cached_hit_total} ` +
             `preflight_skipped=${m.embeddings_preflight_skipped_total} ` +

@@ -320,6 +320,56 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			expect(m.embeddings_called_total).not.toBe(m.embeddings_requests_total);
 		});
 
+		test('#4352 g6 (CHANGES 29/10): a REJECTED call still counts as a request — the slot was consumed', async () => {
+			vi.resetModules();
+			const { indexTask, resetCircuitBreakerForTest, getEmbeddingMetrics, resetEmbeddingMetricsForTest } =
+				await import('../VectorIndexer.js');
+			resetCircuitBreakerForTest();
+			resetEmbeddingMetricsForTest();
+			mockExtractTask.mockResolvedValue([chunk('rj1', 'rejected one'), chunk('rj2', 'rejected two')]);
+			// Transport error (no status): the batch is NOT bisected, the task fails.
+			mockEmbeddingsCreate.mockRejectedValue(new Error('Connection error.'));
+
+			// Before the fix, `requests++` sat after the `await` and a throw skipped it:
+			// the pacer had consumed a slot while `requests` stayed 0 — the g6 consumer
+			// then read the pacing time of the failed attempt as a bound violation.
+			await expect(indexTask('t-rejected-request', '/p')).rejects.toThrow(/2\/2 sub-chunks without a vector/);
+
+			expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(1);
+			const m = getEmbeddingMetrics();
+			expect(m.embeddings_requests_total).toBe(1); // the ATTEMPT counts
+			expect(m.embeddings_called_total).toBe(0); // no completed work
+		});
+
+		test('#4352 g6 (CHANGES 29/10): bisect fallback — every attempted call counts, `called` excludes the failed batch', async () => {
+			vi.resetModules();
+			const { indexTask, resetCircuitBreakerForTest, getEmbeddingMetrics, resetEmbeddingMetricsForTest } =
+				await import('../VectorIndexer.js');
+			resetCircuitBreakerForTest();
+			resetEmbeddingMetricsForTest();
+			mockExtractTask.mockResolvedValue([
+				chunk('bs1', 'bisect one'), chunk('bs2', 'bisect two'),
+				chunk('bs3', 'bisect three'), chunk('bs4', 'bisect four'),
+			]);
+			// Batches bigger than 2 fail with a content-attributable 400 → bisected;
+			// the two halves of 2 succeed.
+			mockEmbeddingsCreate.mockImplementation(({ input }: any) => {
+				if (Array.isArray(input) && input.length > 2) {
+					return Promise.reject(Object.assign(new Error('batch too big'), { status: 400 }));
+				}
+				return embedOk()({ input });
+			});
+
+			const result = await indexTask('t-bisect-requests', '/p');
+
+			expect(result.length).toBe(4);
+			// 1 failed full-batch attempt + 2 successful halves = 3 HTTP attempts.
+			expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(3);
+			const m = getEmbeddingMetrics();
+			expect(m.embeddings_requests_total).toBe(3); // failed attempt included
+			expect(m.embeddings_called_total).toBe(4); // only the halves' work: 2 + 2
+		});
+
 		test('#4352 (a4): a wrong-dimension batch item fails the task after writing the valid one (L921-924)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest, getCircuitBreakerState } = await import('../VectorIndexer.js');

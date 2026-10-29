@@ -110,10 +110,15 @@ export interface EmbeddingMetrics {
      */
     embeddings_called_total: number;
     /**
-     * Embeddings HTTP requests actually sent — the unit the pacer counts
-     * (acquireEmbeddingSlot, one slot per request). Added for #4352 g6: the pass
-     * bound is derived from `Δrequests × 60 000 / EMBEDDING_OPS_PER_MINUTE`, and
-     * reading it off `called` inflated the allowance up to 16x on the batch path.
+     * Embeddings HTTP requests ATTEMPTED — the unit the pacer counts
+     * (acquireEmbeddingSlot, one slot per request). Incremented between the
+     * successful slot acquisition and the call, so a REJECTED request still
+     * counts: the pacer keeps the slot consumed on failure, and the g6 pass
+     * bound (#4352) derives its allowance from this counter — counting only
+     * successes would falsely attribute the pacing time of errored/fallback
+     * attempts to a bound violation. `called` stays the completed-work
+     * counter; reading the bound off `called` instead inflated the allowance
+     * up to 16x on the batch path (`+= batch.length` at the default size).
      */
     embeddings_requests_total: number;
     embeddings_cached_hit_total: number;
@@ -1002,12 +1007,15 @@ async function embedSingle(
     now: number
 ): Promise<number[] | null> {
     await acquireEmbeddingSlot();
+    // Counted between the slot and the call: the slot above is consumed whether
+    // the request succeeds or fails (#4352 g6 review 29/10) — `requests` counts
+    // ATTEMPTS, `called` below counts completed work.
+    _metrics.embeddings_requests_total++;
     const embeddingResponse = await getOpenAIClient().embeddings.create({
         model,
         input: subChunk.content,
     });
     _metrics.embeddings_called_total++;
-    _metrics.embeddings_requests_total++;
     const vector = embeddingResponse.data[0].embedding;
 
     if (!vector || !Array.isArray(vector)) {
@@ -1051,9 +1059,11 @@ async function embedBatch(
         // Single item — try once, return null on failure
         try {
             await acquireEmbeddingSlot();
+            // Attempt counted before the call (see embedSingle): a rejected call
+            // still consumed the slot above.
+            _metrics.embeddings_requests_total++;
             const resp = await getOpenAIClient().embeddings.create({ model, input: batch[0].chunk.content });
             _metrics.embeddings_called_total++;
-            _metrics.embeddings_requests_total++;
             const vector = resp.data[0]?.embedding;
             if (vector && Array.isArray(vector) && vector.length === expectedDims) {
                 cacheEmbedding(batch[0].contentHash, vector, now);
@@ -1079,10 +1089,12 @@ async function embedBatch(
     try {
         const inputs = batch.map(e => e.chunk.content);
         await acquireEmbeddingSlot();
+        // One HTTP ATTEMPT, N sub-chunks: the pacer reserved one slot above and
+        // keeps it consumed even if this call throws (and a bisected batch pays
+        // one attempt per half, each with its own slot) — count before the call.
+        _metrics.embeddings_requests_total++;
         const resp = await getOpenAIClient().embeddings.create({ model, input: inputs });
         _metrics.embeddings_called_total += batch.length;
-        // One HTTP request, N sub-chunks: the pacer reserved ONE slot for it above.
-        _metrics.embeddings_requests_total++;
 
         const results: Array<number[] | null> = new Array(batch.length).fill(null);
         for (let i = 0; i < batch.length; i++) {
