@@ -10,8 +10,10 @@
 import { getMessageManager } from '../../services/MessageManager.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
+import os from 'os';
 import { createLogger, Logger } from '../../utils/logger.js';
-import { getLocalWorkspaceId, getLocalMachineId } from '../../utils/message-helpers.js';
+import { getLocalWorkspaceId } from '../../utils/message-helpers.js';
+import { getCallerContext } from '../../transport/caller-context.js';
 
 // Logger instance for read_inbox tool
 const logger: Logger = createLogger('ReadInboxTool');
@@ -28,9 +30,19 @@ interface ReadInboxArgs {
 }
 
 /**
- * #4149 F2 : identité machine via le helper partagé (message-helpers), qui lit
- * l'identité de la REQUÊTE courante (daemon HTTP) avant le hostname du process.
+ * #4149 F2 : sur le transport HTTP (daemon), l'identité machine vient de la
+ * REQUÊTE courante (en-tête `x-roosync-as`), portée par l'AsyncLocalStorage.
+ * Le repli local reste celui de ce fichier (hostname) — le helper partagé
+ * message-helpers lit `ROOSYNC_MACHINE_ID` en priorité, ce qui changeait le
+ * comportement historique de cet outil (lecture d'inbox par hostname).
  */
+function getLocalMachineId(): string {
+    const caller = getCallerContext();
+    if (caller?.machineId) {
+        return caller.machineId.toLowerCase();
+    }
+    return os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+}
 
 /**
  * Formatte la date en format français lisible
