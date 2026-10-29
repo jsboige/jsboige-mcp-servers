@@ -26,7 +26,7 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { resolveCallerIdentity } from '../utils/message-helpers.js';
+import { resolveCallerIdentity, normalizeWorkspaceId } from '../utils/message-helpers.js';
 import { runWithCallerContext, type CallerContext } from './caller-context.js';
 
 /** Hôtes acceptés pour le bind — loopback strict (amendement ai-01). */
@@ -70,48 +70,181 @@ export interface HttpTransportHandle {
     close(): Promise<void>;
 }
 
-/**
- * Actions d'écriture refusées sans identité assertée.
+/* ------------------------------------------------------------------ *
+ * Classification lecture / écriture du gate HTTP — DEFAULT-DENY.
  *
- * La liste est explicite (amendement 3 d'ai-01) : append, send, reply, amend,
- * claim, mark_read — plus les actions de gestion qui écrivent (archive,
- * bulk_*, cleanup, delete, merge, scrub).
- */
-const DASHBOARD_WRITE_ACTIONS = new Set(['write', 'append', 'update', 'delete', 'merge', 'scrub']);
-const MESSAGES_WRITE_ACTIONS = new Set([
-    'send', 'reply', 'amend',
-    'mark_read', 'archive', 'bulk_mark_read', 'bulk_archive', 'cleanup',
-    'attachments_delete',
-]);
-const MANAGE_WRITE_ACTIONS = new Set(['mark_read', 'archive']);
+ * Revue ai-01 du 29/10 (bloquant 1) : la version précédente listait les
+ * *actions d'écriture* et laissait passer tout le reste. Deux trous
+ * concrets : les outils ABSENTS de la table (roosync_harmonization,
+ * roosync_indexing — qui ont des actions mutantes) passaient la porte,
+ * et les actions non listées de roosync_manage (bulk_mark_read,
+ * bulk_archive, cleanup) passaient aussi.
+ *
+ * Le défaut est donc INVERSÉ : on n'autorise SANS identité que ce qui est
+ * explicitement une lecture. Tout le reste — écriture, outil inconnu,
+ * action inconnue — exige une identité assertée et trustée. Un outil
+ * ajouté demain est refusé par défaut, pas accepté par omission.
+ *
+ * La surface ci-dessous est la surface RÉELLE du registre
+ * (`src/tools/registry.ts`, 47 outils) — vérifiée sur les switchs
+ * d'actions de chaque outil. Le test de complétude
+ * (`__tests__/http-transport.surface.test.ts`) échoue si un outil du
+ * registre n'est pas classifié ici : aucune écriture ne peut rester
+ * « non classifiée ».
+ * ------------------------------------------------------------------ */
 
 /**
- * La requête appelle-t-elle une écriture ?
- *
- * Le transport connaît les noms d'outils et leurs actions : c'est le seul point
- * où l'on peut refuser AVANT le dispatch, sans laisser un chemin d'écriture
- * contournable (six outils write distincts, plusieurs actions).
+ * Outils dont TOUTES les actions sont en lecture seule (pas de notion
+ * d'action mutante). La surface a été relue outil par outil.
  */
-export function isWriteCall(body: unknown): boolean {
-    if (!body || typeof body !== 'object') return false;
-    const rpc = body as { method?: string; params?: { name?: string; arguments?: Record<string, unknown> } };
-    if (rpc.method !== 'tools/call') return false;
-    const name = rpc.params?.name;
-    const action = String(rpc.params?.arguments?.action ?? '');
-    switch (name) {
-        case 'roosync_dashboard':
-            return DASHBOARD_WRITE_ACTIONS.has(action);
-        case 'roosync_messages':
-            return MESSAGES_WRITE_ACTIONS.has(action);
-        case 'roosync_manage':
-            return MANAGE_WRITE_ACTIONS.has(action);
-        case 'roosync_claim':
-        case 'roosync_send':
-            return true;
-        default:
-            return false;
-    }
+const READ_ONLY_TOOLS = new Set([
+    'storage_info',
+    'task_export',
+    'view_task_details',
+    'codebase_search',
+    'debug_analyze_conversation',
+    'read_vscode_logs',
+    'claudish_traffic',
+    'get_mcp_best_practices',
+    'diagnose_conversation_bom',
+    'export_data',
+    'get_raw_conversation',
+    'analyze_roosync_problems',
+    'roosync_get_status',
+    'roosync_health_view',
+    'roosync_compare_config',
+    'roosync_list_diffs',
+    'roosync_inventory',
+    'roosync_read',
+    'roosync_refresh_dashboard',
+    'roosync_claim',
+]);
+
+/**
+ * Outils MIXTES : seules les actions listées ici sont des lectures.
+ * TOUTE autre action (y compris une action inconnue) est une écriture.
+ */
+const READ_ONLY_ACTIONS: Record<string, ReadonlySet<string>> = {
+    roosync_search: new Set(['semantic', 'text', 'diagnose']),
+    conversation_browser: new Set(['current', 'list', 'summarize', 'tree', 'view']),
+    export_config: new Set(['get']),
+    roosync_dashboard: new Set(['read', 'read_overview', 'list', 'read_archive', 'refresh']),
+    roosync_messages: new Set(['inbox', 'message', 'stats', 'attachments_list', 'attachments_get']),
+    roosync_manage: new Set(['stats']),
+    roosync_attachments: new Set(['list', 'get']),
+    roosync_storage_management: new Set(['storage']),
+    roosync_harmonization: new Set(['status', 'list']),
+    roosync_diagnose: new Set(['analyze', 'health', 'env', 'debug', 'test']),
+    roosync_baseline: new Set(['list_versions', 'current_version', 'export']),
+    roosync_config: new Set(['collect']),
+    roosync_indexing: new Set(['status', 'diagnose', 'tool_usage_stats', 'trend_report']),
+};
+
+/**
+ * Outils d'écriture pure — listés pour la complétude de surface (le test
+ * de surface exige que TOOLUT outil du registre soit classifié).
+ */
+const WRITE_ONLY_TOOLS = new Set([
+    'touch_mcp_settings',
+    'maintenance',
+    'manage_mcp_settings',
+    'index_task_semantic',
+    'reset_qdrant_collection',
+    'rebuild_and_restart_mcp',
+    'rebuild_task_index',
+    'repair_conversation_bom',
+    'roosync_init',
+    'roosync_report_lifecycle',
+    'roosync_send',
+    'roosync_update_dashboard',
+    'roosync_sync_event',
+    'roosync_mcp_management',
+]);
+
+/**
+ * Flags mutateurs : une lecture qui porte l'un d'eux EST une écriture.
+ *
+ * Exemple vérifié : `roosync_inventory` (lecture) accepte `resetCache`
+ * qui vide le cache — sans identité, la requête ne doit pas l'atteindre.
+ */
+const MUTATING_ARG_FLAGS = new Set([
+    'resetCache', 'reset_cache', 'clearCache',
+    'rebuild', 'rebuildIndex', 'rebuild_index', 'repair', 'repair_bom',
+    'apply', 'apply_profile', 'publish', 'publishTo',
+    'write', 'scrub', 'delete', 'remove', 'cleanup', 'purge',
+    'overwrite', 'migrate', 'restore', 'inject', 'set', 'update', 'create', 'save',
+]);
+
+/** Résultat de la classification d'un appel d'outil. */
+export interface CallClassification {
+    /** Nom de l'outil appelé (vide si ce n'est pas un tools/call). */
+    tool: string;
+    /** Action demandée (vide si l'appelant n'en fournit pas). */
+    action: string;
+    /** true = lecture pure, autorisée sans identité assertée. */
+    readOnly: boolean;
 }
+
+function hasMutatingFlag(args: Record<string, unknown>): boolean {
+    for (const key of Object.keys(args)) {
+        if (MUTATING_ARG_FLAGS.has(key)) {
+            const value = args[key];
+            // Un flag explicitement faux n'est pas une mutation.
+            if (value === false || value === undefined || value === null) continue;
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Classe un appel d'outil : lecture pure ou écriture.
+ *
+ * Règle unique : **une lecture doit être explicitement listée**. Tout le
+ * reste est écriture (default-deny).
+ */
+export function classifyCall(body: unknown): CallClassification {
+    if (!body || typeof body !== 'object') return { tool: '', action: '', readOnly: true };
+    const rpc = body as { method?: string; params?: { name?: string; arguments?: Record<string, unknown> } };
+    // Ce n'est pas un appel d'outil (initialize, tools/list, notifications) :
+    // rien à protéger ici — la porte d'identité ne s'applique qu'aux outils.
+    if (rpc.method !== 'tools/call') return { tool: '', action: '', readOnly: true };
+
+    const tool = String(rpc.params?.name ?? '');
+    const args = (rpc.params?.arguments ?? {}) as Record<string, unknown>;
+    const action = typeof args.action === 'string' ? args.action : '';
+
+    if (READ_ONLY_TOOLS.has(tool)) {
+        // Outil sans notion d'action mutante : lecture, sauf flag mutateur.
+        return { tool, action, readOnly: !hasMutatingFlag(args) };
+    }
+    const readActions = READ_ONLY_ACTIONS[tool];
+    if (readActions) {
+        // Action absente ou inconnue => écriture (default-deny).
+        const readOnly = action !== '' && readActions.has(action) && !hasMutatingFlag(args);
+        return { tool, action, readOnly };
+    }
+    // Outil d'écriture explicite, ou outil INCONNU : écriture dans les deux cas.
+    return { tool, action, readOnly: false };
+}
+
+/**
+ * Cette requête exige-t-elle une identité assertée ?
+ *
+ * Inverse de `classifyCall(...).readOnly` — le nom dit ce que la porte
+ * fait : tout ce qui n'est pas une lecture explicitement listée passe par
+ * la porte d'identité.
+ */
+export function requiresIdentity(body: unknown): boolean {
+    return !classifyCall(body).readOnly;
+}
+
+/** Surface classified — exportée pour le test de complétude. */
+export const CLASSIFIED_TOOLS = {
+    readOnly: READ_ONLY_TOOLS,
+    mixed: READ_ONLY_ACTIONS,
+    writeOnly: WRITE_ONLY_TOOLS,
+};
 
 /** Comparaison à temps constant de deux chaînes de même longueur. */
 function safeEqual(a: string, b: string): boolean {
@@ -239,9 +372,25 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
             if (assertedValue?.trim()) {
                 try {
                     const identity = resolveCallerIdentity(assertedValue.trim());
+                    // Identité CANONIQUE (revue ai-01 du 29/10, bloquant 2) :
+                    // `resolveCallerIdentity` compare la confiance sur une forme
+                    // normalisée (machine en minuscule, workspace en basename
+                    // normalisé) mais RETOURNE la forme brute. Installer la
+                    // forme brute ici faisait diverger la clé de dashboard et
+                    // l'identité `from` d'un simple changement de casse
+                    // (`web2:ROO-EXTENSIONS` vs `web2:roo-extensions`) : deux
+                    // clés pour un même workspace, donc deux writers.
+                    // On installe donc la MÊME forme que celle sur laquelle
+                    // la confiance a été décidée — la sémantique canonique du
+                    // dépôt (`normalizeWorkspaceId`), pas un lowercase
+                    // maison.
                     context.machineId = identity.machineId.toLowerCase();
-                    context.workspaceId = identity.workspaceId;
-                    context.fullId = identity.fullId;
+                    context.workspaceId = identity.workspaceId
+                        ? normalizeWorkspaceId(identity.workspaceId) || undefined
+                        : undefined;
+                    context.fullId = context.workspaceId
+                        ? `${context.machineId}:${context.workspaceId}`
+                        : context.machineId;
                 } catch (err) {
                     // Identité assertée mais non trustée → refus bruyant, JAMAIS un repli silencieux.
                     sendJsonError(res, 403, 'identity_refused', err instanceof Error ? err.message : String(err));
@@ -249,8 +398,8 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
                 }
             }
 
-            // --- Écriture sans identité (amendement 3) ------------------------
-            if (!context.machineId && isWriteCall(parsed)) {
+            // --- Écriture sans identité (amendement 3, default-deny) ---------
+            if (!context.machineId && requiresIdentity(parsed)) {
                 sendJsonError(
                     res,
                     403,
@@ -259,7 +408,9 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
                     'Sur le transport HTTP (daemon multi-clients), la résolution locale (cwd/env du daemon) ' +
                     'désigne le DAEMON, pas le client : une écriture sans identité se stamped au mauvais nom. ' +
                     `Rejouez avec l'en-tête « ${CALLER_IDENTITY_HEADER}: machine:workspace » (identité trustée ` +
-                    'via ROOSYNC_TRUSTED_CALLER_IDS). #4149 F2, amendement 3.'
+                    'via ROOSYNC_TRUSTED_CALLER_IDS). #4149 F2, amendement 3. ' +
+                    'La porte est en default-deny : tout appel qui n\'est pas une lecture explicitement ' +
+                    'listée (outil inconnu, action inconnue, flag mutateur) exige une identité.'
                 );
                 return;
             }
@@ -290,7 +441,16 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
         port,
         url: `http://${bindHost}:${port}${mcpPath}`,
         close: async () => {
+            // Le listener HTTP d'abord, puis le transport du SDK : le daemon
+            // possède les DEUX ressources, et laisser le transport ouvert
+            // garderait des handles (et le routeur de requêtes) après l'arrêt
+            // — un rebind sur le même port ne serait alors pas propre.
+            // Pas de closeAllConnections() : le contrat d'arrêt réellement
+            // exercé est « fermer le listener puis le transport », pas une
+            // supposition sur la gestion des connexions inactives (revue
+            // ai-01 du 29/10).
             await new Promise<void>((resolve) => server.close(() => resolve()));
+            await transport.close();
         },
     };
 }
