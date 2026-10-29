@@ -492,6 +492,16 @@ export interface RooSyncIndexingArgs {
      */
     queued?: boolean;
 
+    /**
+     * #4352 g8 — action=index + repair:"headless": armer le bypass une-fois des
+     * sauts success/TTL/inchangé pour une tâche nommée par le scan g7 (têtes
+     * manquantes). Sans lui, la remise en file d'une tâche `success` est un
+     * NO-OP mesuré (les 2 tâches `was_failed:false` de l'échantillon 28/10
+     * n'ont pas bougé d'un point). Le marqueur est consommé à la complétion,
+     * succès OU échec.
+     */
+    repair?: 'headless';
+
     /** Confirmation pour reset (requis pour action=reset) */
     confirm?: boolean;
 
@@ -611,6 +621,11 @@ export const roosyncIndexingTool: Tool = {
                 type: 'boolean',
                 description: 'For action=index (#4352 g3): enqueue the task on the background indexing queue and return immediately instead of indexing inline (large sessions die at the 300s tool timeout). Resets the task indexing state and dead-letter entry first so the worker re-indexes it. On a non-leader process the request is persisted and consumed by the leader\'s tick (mode: delegated-to-leader). Progress via action=status (queue_size, queued_task_ids); failures land in the dead-letter report. Default: true — this IS the fix, the flag is only a kill-switch: pass false to restore the legacy inline path.',
                 default: true
+            },
+            repair: {
+                type: 'string',
+                enum: ['headless'],
+                description: 'For action=index (#4352 g8): arm the one-shot headless-repair bypass for a task the g7 scan named (missing head pages, min(chunk_index)>1). A plain requeue is a NO-OP on a success task — shouldIndex skips it on TTL/unchanged-content — so the consumer arms repair:\'headless\' instead of resetting: the task keeps its success state, the skips are bypassed exactly once, and the marker is deleted on completion (success OR failure). Only for scan-named tasks; never a global force.'
             },
             confirm: {
                 type: 'boolean',
@@ -885,7 +900,16 @@ export async function handleRooSyncIndexing(
                 // décisions (constructor = lectures env figées) et
                 // resetIndexingState écrit dans le skeleton, état partagé.
                 const decisionService = new IndexingDecisionService();
-                decisionService.resetIndexingState(skeleton);
+                // #4352 g8: a headless repair ARMS the one-shot bypass instead of
+                // resetting — the task keeps its success state (the ms#1546
+                // review guard deliberately withholds resets from healthy tasks),
+                // and the marker rides the request line so the LEADER's consume
+                // arms its own cache too (same hole g6 fixed for failed tasks).
+                if (args.repair === 'headless') {
+                    decisionService.armHeadlessRepair(skeleton);
+                } else {
+                    decisionService.resetIndexingState(skeleton);
+                }
                 await saveSkeletonCallback(skeleton);
                 const hints: string[] = [];
                 // Suiveur : seule une requête persistée atteindra le leader.
@@ -896,7 +920,13 @@ export async function handleRooSyncIndexing(
                 if (isFollower) {
                     const { requestQueuedIndex, readLeaderLockInfo } = await import('../../services/background-services.js');
                     const machineId = indexingState.machineId ?? 'local';
-                    await requestQueuedIndex(args.task_id, machineId);
+                    // 2-arg shape preserved for the unmarked case: the line
+                    // contract is what existing callers and tests pin.
+                    if (args.repair === 'headless') {
+                        await requestQueuedIndex(args.task_id, machineId, 'headless');
+                    } else {
+                        await requestQueuedIndex(args.task_id, machineId);
+                    }
                     mode = 'delegated-to-leader';
                     const lock = await readLeaderLockInfo(machineId);
                     leaderPid = lock?.leaderPid ?? null;
@@ -938,7 +968,11 @@ export async function handleRooSyncIndexing(
                             queued: true,
                             mode,
                             task_id: args.task_id,
-                            reset_indexing_state: true,
+                            // g8: with repair:"headless" nothing is reset — the
+                            // one-shot bypass is ARMED and the success state kept.
+                            reset_indexing_state: args.repair !== 'headless',
+                            repair: args.repair ?? null,
+                            repair_armed: args.repair === 'headless',
                             was_failed: wasFailed,
                             // null = délégué : c'est la dead-letter du LEADER qui est
                             // levée à la consommation, non observable d'ici.

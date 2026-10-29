@@ -22,7 +22,8 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockArchiveTask, mockArchiveClaudeCodeSessions, mockListArchivedTasks, mockFindConversationById,
 	mockDetectStorageLocations, mockFsReadDir, mockFsReadFile, mockFsStat,
 	mockCleanupOldVectors, mockDetectAndCleanupOrphans,
-	mockResetIndexingState, mockClassifyIndexingError, mockReadLeaderLockInfo, mockRequestQueuedIndex, mockRequestQueuedIndexBatch
+	mockResetIndexingState, mockClassifyIndexingError, mockReadLeaderLockInfo, mockRequestQueuedIndex, mockRequestQueuedIndexBatch,
+	mockArmHeadlessRepair
 } = vi.hoisted(() => ({
 	mockIndexHandler: vi.fn(),
 	mockResetHandler: vi.fn(),
@@ -42,7 +43,8 @@ const { mockIndexHandler, mockResetHandler, mockDiagnoseHandler, mockRebuildHand
 	mockClassifyIndexingError: vi.fn(),
 	mockReadLeaderLockInfo: vi.fn(),
 	mockRequestQueuedIndex: vi.fn(),
-	mockRequestQueuedIndexBatch: vi.fn()
+	mockRequestQueuedIndexBatch: vi.fn(),
+	mockArmHeadlessRepair: vi.fn()
 }));
 
 // Default mock for shared-state-path — returns '' unless a test sets the holder.
@@ -114,6 +116,8 @@ vi.mock('../../../services/background-services.js', async (importOriginal) => {
 vi.mock('../../../services/indexing-decision.js', () => ({
 	IndexingDecisionService: class {
 		resetIndexingState = mockResetIndexingState;
+		// #4352 g8: the headless-repair entry arms instead of resetting.
+		armHeadlessRepair = mockArmHeadlessRepair;
 	},
 }));
 
@@ -520,6 +524,59 @@ describe('roosync_indexing index action — queued mode (#4352 g3)', () => {
 		expect(parsed.leader_pid).toBeNull();
 		expect(parsed.hints.some((h: string) => h.includes('aucun leader'))).toBe(true);
 		expect(mockRequestQueuedIndex).toHaveBeenCalledWith('big-1', 'myia-test');
+	});
+
+	// #4352 g8 (ai-01 CHANGES 28/10): the tool → request path was never
+	// exercised — the g8 suite called requestQueuedIndex directly. These two
+	// pin the handler contract: arm (never reset) + the 3-arg request line
+	// carrying the marker.
+	test('#4352 g8 FOLLOWER: repair:"headless" arms (no reset) and the marker rides the persisted request line', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+		mockReadLeaderLockInfo.mockResolvedValue({ leaderPid: 4242, lockAgeMs: 1000, claudeIndexing: null });
+		const cache = makeCache();
+		const queue = new Set<string>();
+		const state = makeIndexingState(queue, { isIndexLeader: false, machineId: 'myia-test' });
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', repair: 'headless' } as any,
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			state
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.repair).toBe('headless');
+		expect(parsed.repair_armed).toBe(true);
+		expect(parsed.reset_indexing_state).toBe(false);
+		// The anti-reset property at the handler seam: armed, never reset.
+		expect(mockArmHeadlessRepair).toHaveBeenCalledTimes(1);
+		expect(mockResetIndexingState).not.toHaveBeenCalled();
+		// The EXACT line the leader consumes — 3-arg form WITH the marker,
+		// and no unmarked 2-arg twin anywhere.
+		expect(mockRequestQueuedIndex).toHaveBeenCalledTimes(1);
+		expect(mockRequestQueuedIndex).toHaveBeenCalledWith('big-1', 'myia-test', 'headless');
+	});
+
+	test('#4352 g8 LEADER: repair arms instead of resetting and reaches the drained queue', async () => {
+		vi.stubEnv('ROO_INDEXING_ENABLED', 'true');
+		const cache = makeCache();
+		const queue = new Set<string>();
+		const state = makeIndexingState(queue);
+
+		const result = await handleRooSyncIndexing(
+			{ action: 'index', task_id: 'big-1', repair: 'headless' } as any,
+			cache, ensureFresh, saveSkeleton, queue, setEnabled, mockRebuildHandler,
+			state
+		);
+
+		const parsed = JSON.parse(result.content[0].text);
+		expect(parsed.mode).toBe('in-process');
+		expect(parsed.repair_armed).toBe(true);
+		expect(parsed.reset_indexing_state).toBe(false);
+		expect(mockArmHeadlessRepair).toHaveBeenCalledTimes(1);
+		expect(mockResetIndexingState).not.toHaveBeenCalled();
+		expect(queue.has('big-1')).toBe(true);
+		// A leader never persists a request for a task it drains itself.
+		expect(mockRequestQueuedIndex).not.toHaveBeenCalled();
 	});
 
 	test('dead_letter_entry_removed reports the REAL delete() return (no pin → false)', async () => {

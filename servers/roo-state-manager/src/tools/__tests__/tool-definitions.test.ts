@@ -590,5 +590,17 @@ describe('tool-definitions.ts — Schema Validation', () => {
             const fleet = props.fleet as { type?: string };
             expect(fleet?.type).toBe('boolean');
         });
+
+        // 7th occurrence (ai-01 CHANGES on ms#1564, 28/10): the g8 marker
+        // `repair:"headless"` shipped on the tool-module schema only — the
+        // served definition never exposed it, so the live AFTER arming through
+        // MCP would have been stripped before the handler. Enum pinned to the
+        // single admitted value: a free string would invite "force"-style misuse.
+        it('roosync_indexing must expose the g8 repair param (marker reachable on the wire)', () => {
+            const props = roosyncIndexingDefinition.inputSchema.properties as Record<string, { enum?: string[]; type?: string }>;
+            expect(props).toHaveProperty('repair');
+            expect(props.repair?.type).toBe('string');
+            expect(props.repair?.enum).toEqual(['headless']);
+        });
     });
 });

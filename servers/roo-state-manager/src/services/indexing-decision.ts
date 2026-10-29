@@ -68,6 +68,23 @@ export class IndexingDecisionService {
             };
         }
 
+        // #4352 g8: a headless-repair marker bypasses the skip rules ONCE. The
+        // marker is armed by the consumer of a `repair:"headless"` index request
+        // (background-services) on a task the g7 scan named — a `success` task
+        // whose head pages never reached Qdrant. Without the bypass, the very
+        // skips below (TTL actif / contenu inchangé / legacy) make the requeue a
+        // no-op and the hole is permanent (measured 28/10: 2/5 sample tasks did
+        // not move a point). The bypass is task-scoped, never a global flag
+        // (ROO_INDEX_FORCE re-embeds the whole fleet), and one-shot: both
+        // markIndexingSuccess and markIndexingFailure delete the marker.
+        if (indexingState.repair === 'headless') {
+            return {
+                shouldIndex: true,
+                reason: 'g8 repair (headless) : bypass une fois des sauts success/TTL/inchangé',
+                action: 'index'
+            };
+        }
+
         // SKIP : Échecs permanents (jusqu'à action manuelle)
         if (indexingState.indexStatus === 'failed') {
             return {
@@ -191,7 +208,11 @@ export class IndexingDecisionService {
             lastIndexAttempt: now,
             // Nettoyer les champs d'erreur/retry
             indexError: undefined,
-            indexRetryCount: undefined
+            indexRetryCount: undefined,
+            // #4352 g8: the headless-repair marker is one-shot — consumed by
+            // this very completion. Leaving it in place (the spread above would)
+            // would re-bypass the skips on every later drain.
+            repair: undefined
         };
 
         // Migration : nettoyer l'ancien champ
@@ -220,7 +241,10 @@ export class IndexingDecisionService {
                 indexStatus: 'failed',
                 indexError: error,
                 lastIndexAttempt: now,
-                indexRetryCount: currentRetryCount + 1
+                indexRetryCount: currentRetryCount + 1,
+                // #4352 g8: one-shot marker — an attempted repair is spent even
+                // when it fails (a second drain goes through the normal rules).
+                repair: undefined
             };
         } else {
             // Échec temporaire, programmer un retry
@@ -229,7 +253,8 @@ export class IndexingDecisionService {
                 indexStatus: 'retry',
                 indexError: error,
                 lastIndexAttempt: now,
-                indexRetryCount: currentRetryCount + 1
+                indexRetryCount: currentRetryCount + 1,
+                repair: undefined
             };
         }
     }
@@ -257,6 +282,33 @@ export class IndexingDecisionService {
                 lastResetAt: new Date().toISOString()
             };
         }
+        if (skeleton.metadata.qdrantIndexedAt) {
+            delete skeleton.metadata.qdrantIndexedAt;
+        }
+    }
+
+    /**
+     * #4352 g8 — arm the one-shot headless-repair bypass.
+     *
+     * Called by the consumer of a `repair:"headless"` index request on a task
+     * the g7 scan named (missing head pages under `min(chunk_index)==1`). Unlike
+     * resetIndexingState it does NOT wipe the state: the task keeps its
+     * `success` (and its lastIndexed semantics — markIndexingSuccess restores
+     * them on completion), and gains `repair:'headless'` which shouldIndex
+     * honours exactly once. `lastResetAt` rides along so the armed state is
+     * provably newer than a stale writer's, the same two-writer arbitration g6
+     * relies on in saveSkeletonIndex.
+     */
+    public armHeadlessRepair(skeleton: SkeletonHeader): void {
+        if (!skeleton.metadata) return;
+        if (!skeleton.metadata.indexingState) {
+            skeleton.metadata.indexingState = {};
+        }
+        skeleton.metadata.indexingState = {
+            ...skeleton.metadata.indexingState,
+            repair: 'headless',
+            lastResetAt: new Date().toISOString()
+        };
         if (skeleton.metadata.qdrantIndexedAt) {
             delete skeleton.metadata.qdrantIndexedAt;
         }

@@ -62,6 +62,14 @@ export interface IndexingState {
      * undo the reset on disk.
      */
     lastResetAt?: string;
+    /**
+     * #4352 g8 — one-shot headless-repair bypass. Armed by the consumer of a
+     * `repair:"headless"` index request on a task the g7 scan named; shouldIndex
+     * honours it exactly once (both completion markers delete it). Task-scoped
+     * alternative to ROO_INDEX_FORCE, which is global and would re-embed the
+     * whole fleet.
+     */
+    repair?: 'headless';
 }
 
 export interface IndexingDecision {
