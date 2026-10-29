@@ -13,6 +13,7 @@ import { existsSync } from 'fs';
 import { resolve, isAbsolute } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { parseFleetRoster } from '../services/task-partition.js';
+import { storeMetaUrl } from '../services/unified-store/store-meta.js';
 
 const logger = createLogger('RooSyncConfig');
 
@@ -139,7 +140,9 @@ export function loadRooSyncConfig(): RooSyncConfig {
     // getRooSyncService(), et le registre dégradait en silence derrière.
     // Le défaut reste fail-closed : sans PG, l'absence du chemin reste une
     // erreur de configuration bruyante, inchangée.
-    if (process.env.UNIFIED_STORE_PG_URL && process.env.UNIFIED_STORE_PG_URL.trim().length > 0) {
+    // Même porte que store-meta : sous le kill-switch UNIFIED_STORE_DUAL_WRITE=0,
+    // le siège est revenu au GDrive seul — un montage absent redevient bloquant.
+    if (storeMetaUrl() !== null) {
       logger.warn(
         `[config] chemin partagé absent (${resolvedPath}) — mode PG-primaire, ` +
         'le service démarre sans GDrive (#4131 Phase D)'
