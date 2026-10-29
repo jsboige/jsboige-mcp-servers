@@ -235,6 +235,13 @@ async function acquireEmbeddingSlot(): Promise<void> {
 
 const MAX_CHUNK_SIZE = 800; // Approx. 200-400 tokens, ultra-conservative safety margin below 8192 limit for text-embedding-3-small
 
+// #4352 (TextEncodeInput): an unpaired UTF-16 surrogate (a split emoji, or one
+// carried by the source value) cannot survive the embedding round-trip — the
+// request body escapes it as "\udXXX" and the server rejects the input with
+// `400 TextEncodeInput must be Union[…]`, deterministically, so the task loops
+// in retry forever.
+const UNPAIRED_SURROGATES_RE = /(?:[\uD800-\uDBFF](?![\uDC00-\uDFFF]))|(?:(?<![\uD800-\uDBFF])[\uDC00-\uDFFF])/g;
+
 /**
  * ✅ CORRECTION P0 (2025-10-15)
  * Rate Limiter pour protéger Qdrant des surcharges
@@ -1288,6 +1295,17 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                 const subChunks = splitChunk(chunk, MAX_CHUNK_SIZE);
                 for (const subChunk of subChunks) {
                     if (!subChunk.content || subChunk.content.trim() === '') continue;
+                    // #4352 (TextEncodeInput): strip unpaired surrogates before hashing —
+                    // the server rejects them (400, deterministic: the task dead-letters
+                    // and retries the same input forever). splitChunk no longer creates
+                    // them at the cut, but a value can still carry one from the session
+                    // file itself. The hash must describe what is actually sent.
+                    const cleanContent = subChunk.content.replace(UNPAIRED_SURROGATES_RE, '');
+                    if (cleanContent !== subChunk.content) {
+                        console.warn(`⚠️ [indexTask] chunk ${subChunk.chunk_id} carried unpaired surrogate(s) — stripped before embedding (#4352 TextEncodeInput)`);
+                        subChunk.content = cleanContent;
+                        if (!subChunk.content || subChunk.content.trim() === '') continue;
+                    }
                     const contentHash = crypto.createHash('sha256').update(subChunk.content).digest('hex');
                     allSubChunks.push({ chunk: subChunk, contentHash });
                 }
