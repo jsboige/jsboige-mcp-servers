@@ -97,6 +97,9 @@ class NotebookCRUDService:
                     "metadata": dict(cell.metadata),
                 }
 
+                if "id" in cell:
+                    cell_dict["id"] = cell["id"]
+
                 # Add execution-specific fields for code cells
                 if cell.cell_type == "code":
                     cell_dict["execution_count"] = getattr(
@@ -172,6 +175,8 @@ class NotebookCRUDService:
                 else:
                     raise ValueError(f"Unknown cell type: {cell_type}")
 
+                if "id" in cell_data:
+                    cell["id"] = cell_data["id"]
                 notebook.cells.append(cell)
 
             # Write notebook using FileUtils
