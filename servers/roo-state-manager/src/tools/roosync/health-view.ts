@@ -19,7 +19,7 @@ import { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchiv
 import { listRooSyncDashboardKeysFromPg, readDashboardFromPg } from '../../services/unified-store/roosync-dashboard-store.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { getEmbeddingShadowingStatus, type EmbeddingShadowingStatus } from '../../services/embedding-endpoints.js';
-import * as os from 'os';
+import { getLocalMachineId } from '../../utils/message-helpers.js';
 
 const logger = createLogger('HealthView');
 
@@ -139,9 +139,10 @@ function isKnownMachine(machineId: string): boolean {
   return machineId.toLowerCase().startsWith('myia-');
 }
 
-function getLocalMachineId(): string {
-  return os.hostname().toLowerCase();
-}
+/**
+ * #4149 F2 : identité machine via le helper partagé (message-helpers), qui lit
+ * l'identité de la REQUÊTE courante (daemon HTTP) avant le hostname du process.
+ */
 
 /**
  * #4131 G-B lot 2 (B4) — dashboard contents from PG for the presence view:

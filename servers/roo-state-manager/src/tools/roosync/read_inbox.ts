@@ -10,9 +10,8 @@
 import { getMessageManager } from '../../services/MessageManager.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import os from 'os';
 import { createLogger, Logger } from '../../utils/logger.js';
-import { getLocalWorkspaceId } from '../../utils/message-helpers.js';
+import { getLocalWorkspaceId, getLocalMachineId } from '../../utils/message-helpers.js';
 
 // Logger instance for read_inbox tool
 const logger: Logger = createLogger('ReadInboxTool');
@@ -29,13 +28,9 @@ interface ReadInboxArgs {
 }
 
 /**
- * Récupère l'ID de la machine locale depuis le hostname OS
- *
- * @returns ID de la machine locale (hostname normalisé)
+ * #4149 F2 : identité machine via le helper partagé (message-helpers), qui lit
+ * l'identité de la REQUÊTE courante (daemon HTTP) avant le hostname du process.
  */
-function getLocalMachineId(): string {
-  return os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '-');
-}
 
 /**
  * Formatte la date en format français lisible

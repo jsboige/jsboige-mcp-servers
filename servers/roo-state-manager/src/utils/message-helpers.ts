@@ -8,9 +8,17 @@
 import os from 'os';
 import path from 'path';
 import { StateManagerError } from '../types/errors.js';
+import { getCallerContext } from '../transport/caller-context.js';
 
 /**
  * Récupère l'ID de la machine locale depuis le hostname OS
+ *
+ * #4149 F2 (amendement 1 d'ai-01) : sur le transport HTTP (daemon), l'identité
+ * vient de la REQUÊTE (en-tête `x-roosync-as`), pas du process — la requête
+ * est prioritaire sur l'env et sur le hostname. Le point d'injection est ici,
+ * et non dans `resolveCallerIdentity` : une vingtaine de fichiers lisent ces
+ * deux helpers directement (dashboard, MessageManager, claims, health-view…),
+ * et tous doivent suivre l'identité du client.
  *
  * @returns ID de la machine locale (hostname normalisé)
  *
@@ -21,6 +29,12 @@ import { StateManagerError } from '../types/errors.js';
  * ```
  */
 export function getLocalMachineId(): string {
+  // #4149 F2 : identité de la requête courante (daemon HTTP) — prioritaire.
+  const caller = getCallerContext();
+  if (caller?.machineId) {
+    return caller.machineId.toLowerCase();
+  }
+
   // Priorité à la variable d'environnement (pour les tests)
   // Normalisation lowercase pour cohérence (évite doublons case-sensitive)
   if (process.env.ROOSYNC_MACHINE_ID) {
@@ -55,6 +69,15 @@ export function getLocalMachineId(): string {
  * ```
  */
 export function getLocalWorkspaceId(): string {
+  // 0. #4149 F2 : identité de la requête courante (daemon HTTP) — prioritaire.
+  //    Le workspace asserté par le client (`x-roosync-as: machine:workspace`)
+  //    prime sur l'env et sur le cwd : sur un daemon, le cwd est celui du
+  //    daemon, pas celui du client.
+  const caller = getCallerContext();
+  if (caller?.workspaceId) {
+    return caller.workspaceId;
+  }
+
   // 1. Override manuel via env var (pour tests ou cas spéciaux)
   if (process.env.ROOSYNC_WORKSPACE_ID) {
     return process.env.ROOSYNC_WORKSPACE_ID;

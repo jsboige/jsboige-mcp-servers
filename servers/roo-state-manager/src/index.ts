@@ -202,6 +202,8 @@ async function getBackgroundServices() {
  */
 class RooStateManagerServer {
     private server: ReturnType<typeof createMcpServer>;
+    // #4149 F2 : handle du transport HTTP (daemon) — null en mode stdio.
+    private httpTransport: import('./transport/http-transport.js').HttpTransportHandle | null = null;
     private stateManager: import('./services/state-manager.service.js').StateManager | null = null;
     private toolInterceptor: import('./notifications/ToolUsageInterceptor.js').ToolUsageInterceptor | null = null;
     // #883: Throttle cache freshness checks to avoid repeated I/O scans
@@ -864,9 +866,32 @@ class RooStateManagerServer {
         await this.registerHandlersAsync();
         logger.info(`[#1894] Handler registration: ${Date.now() - t0}ms`);
 
-        const transport = new StdioServerTransport();
-        await this.server.connect(transport);
-        logger.info(`Roo State Manager Server started - v${packageJson.version} (${Date.now() - t0}ms total)`);
+        // #4149 F2 : deux modes de service, choisis par l'env.
+        //  - `ROOSYNC_HTTP_PORT` défini → daemon HTTP (loopback + clé bearer) :
+        //    plusieurs clients (workspaces) partagent UN process, chacun portant
+        //    son identité dans l'en-tête `x-roosync-as` (résolue par requête).
+        //  - sinon → stdio, comportement historique inchangé.
+        const httpPortRaw = process.env.ROOSYNC_HTTP_PORT;
+        if (httpPortRaw !== undefined && httpPortRaw.trim() !== '') {
+            const httpPort = Number(httpPortRaw);
+            if (!Number.isInteger(httpPort) || httpPort < 0 || httpPort > 65535) {
+                throw new Error(`ROOSYNC_HTTP_PORT invalide : « ${httpPortRaw} » (entier 0-65535 attendu).`);
+            }
+            // startHttpTransport refuse de démarrer sans clé bearer ou sur un
+            // bind non-loopback (fail-closed) : pas de daemon en clair.
+            const { startHttpTransport } = await import('./transport/http-transport.js');
+            this.httpTransport = await startHttpTransport({
+                server: this.server,
+                port: httpPort,
+                bindHost: process.env.ROOSYNC_HTTP_HOST ?? '127.0.0.1',
+                apiKey: process.env.ROOSYNC_HTTP_API_KEY ?? '',
+            });
+            logger.info(`Roo State Manager Server started (HTTP) - ${this.httpTransport.url} - v${packageJson.version} (${Date.now() - t0}ms total)`);
+        } else {
+            const transport = new StdioServerTransport();
+            await this.server.connect(transport);
+            logger.info(`Roo State Manager Server started - v${packageJson.version} (${Date.now() - t0}ms total)`);
+        }
 
         // 511396f0: Start heavy initialization AFTER MCP handshake completes.
         // server.oninitialized fires after client confirms connection.
@@ -877,6 +902,11 @@ class RooStateManagerServer {
      * Arrête le serveur
      */
     async stop(): Promise<void> {
+        // #4149 F2 : ferme le daemon HTTP (le cas stdio passe par le transport).
+        if (this.httpTransport) {
+            await this.httpTransport.close();
+            this.httpTransport = null;
+        }
         if (this.stateManager) {
             const state = this.stateManager.getState();
             if (state.qdrantIndexInterval) {
