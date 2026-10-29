@@ -44,7 +44,7 @@ vi.mock('../../../services/MessageManager.js', () => ({
 // #1953 / #2318: Mock dashboard-activity utils.
 // extractMachineActivity returns machines that appear on dashboards.
 // Tests can override via mockExtractMachineActivity.mockReturnValue(...)
-const { mockExtractMachineActivity, mockIsRecentlyActive, mockLookupMachineActivityInArchives } = vi.hoisted(() => ({
+const { mockExtractMachineActivity, mockIsRecentlyActive, mockIsStaleMachine, mockLookupMachineActivityInArchives } = vi.hoisted(() => ({
   mockExtractMachineActivity: vi.fn(() => {
     // Default: all 6 fleet machines are "seen" on dashboard (online)
     const map = new Map<string, string>();
@@ -58,6 +58,9 @@ const { mockExtractMachineActivity, mockIsRecentlyActive, mockLookupMachineActiv
     return map;
   }),
   mockIsRecentlyActive: vi.fn(() => true),
+  // #4344 residual: get-status now imports isStaleMachine — must be mocked or
+  // the whole-module mock leaves it undefined (classification try/catch).
+  mockIsStaleMachine: vi.fn(() => false),
   // #3695: real archive lookup never fires here (mock activity returns every
   // registry machine) — stub keeps the mocked module shape complete. Named
   // so the #4344 wiring (whole registry + floors) can be pinned.
@@ -71,6 +74,7 @@ vi.mock('../../../utils/dashboard-activity.js', () => ({
   })),
   extractMachineActivity: mockExtractMachineActivity,
   isRecentlyActive: mockIsRecentlyActive,
+  isStaleMachine: mockIsStaleMachine,
   lookupMachineActivityInArchives: mockLookupMachineActivityInArchives
 }));
 
