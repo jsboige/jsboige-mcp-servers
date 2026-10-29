@@ -233,6 +233,46 @@ describe('ChunkExtractor', () => {
       expect(result[1].content.startsWith('📋')).toBe(true);
     });
 
+    it('#4352 review ms#1566: maxSize=1 keeps the pair whole instead of stalling on empty parts', () => {
+      // Reproduced at head c3acbc6b (ai-01 review 29/10): splitChunk('a😀b', 1)
+      // returned ['a','','',''] — take-- reached 0, the loop pushed empty parts
+      // without consuming input, and the residual pair+tail was dropped at the
+      // totalChunks cap (silent content loss for indexTask, which skips empties).
+      const content = 'a' + '😀' + 'b';
+      const chunk: Chunk = {
+        chunk_id: '1',
+        task_id: 't1',
+        parent_task_id: null,
+        root_task_id: null,
+        chunk_type: 'message_exchange',
+        sequence_order: 1,
+        timestamp: '2023-01-01',
+        indexed: true,
+        content
+      };
+
+      const result = splitChunk(chunk, 1);
+
+      // No empty parts, no unpaired surrogate anywhere, nothing lost.
+      expect(result.length).toBeGreaterThan(0);
+      for (const part of result) {
+        expect(part.content.length).toBeGreaterThanOrEqual(1);
+      }
+      expect(result.map(p => p.content).join('')).toBe(content);
+      for (const part of result) {
+        for (let i = 0; i < part.content.length; i++) {
+          const c = part.content.charCodeAt(i);
+          if (c >= 0xD800 && c <= 0xDBFF) {
+            const n = part.content.charCodeAt(i + 1);
+            expect(n >= 0xDC00 && n <= 0xDFFF).toBe(true);
+          } else if (c >= 0xDC00 && c <= 0xDFFF) {
+            const p = part.content.charCodeAt(i - 1);
+            expect(p >= 0xD800 && p <= 0xDBFF).toBe(true);
+          }
+        }
+      }
+    });
+
     it('should split chunk if content is larger than maxSize', () => {
       const chunk: Chunk = {
         chunk_id: '1',

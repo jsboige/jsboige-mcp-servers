@@ -803,7 +803,12 @@ export function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
         const lastUnit = content.charCodeAt(take - 1);
         const nextUnit = content.charCodeAt(take);
         if (take > 0 && lastUnit >= 0xD800 && lastUnit <= 0xDBFF && nextUnit >= 0xDC00 && nextUnit <= 0xDFFF) {
-            take--;
+            // Review ms#1566: at take===1 the naive `take--` would reach 0 — the
+            // loop then pushes empty parts without consuming input and the
+            // residual is dropped at the totalChunks cap (splitChunk('a😀b', 1)
+            // → ['a','','',''], silent loss). Keep the pair whole instead: one
+            // part may exceed maxSize by a single code unit.
+            take = take > 1 ? take - 1 : Math.min(2, content.length);
         }
         const contentPart = content.substring(0, take);
         content = content.substring(take);
