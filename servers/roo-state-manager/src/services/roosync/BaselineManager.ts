@@ -31,7 +31,12 @@ interface MachineRegistry {
     machineId: string;
     firstSeen: string;
     lastSeen: string;
-    source: 'dashboard' | 'presence' | 'baseline' | 'config';
+    // 'service' = source historique du fichier .machine-registry.json, celle
+    // qu'écrit `registerMachineId` au démarrage. L'inscription au boot doit la
+    // RÉUTILISER : `validateMachineUniqueness` refuse toute source différente
+    // sur un machineId déjà présent (conflit d'identité), donc une source neuve
+    // ferait rejeter chaque siège déjà semé par le fichier (#4131).
+    source: 'dashboard' | 'presence' | 'baseline' | 'config' | 'service';
     status: 'online' | 'offline' | 'conflict';
   }>;
 
@@ -111,6 +116,206 @@ export class BaselineManager {
    */
   async waitForRegistry(): Promise<void> {
     await this.registryInitPromise;
+  }
+
+  /**
+   * Inscrire CE siège dans le registre machines au démarrage, PG d'abord.
+   *
+   * #4131 — arbitrage ai-01 (a), message `c.6490889143` : « auto-enregistrement
+   * au boot PG-first comme nouveau défaut ; le semis manuel est rejeté ».
+   *
+   * Le trou mesuré le 29/10 : `addMachineToRegistry` n'avait que deux
+   * appelants, tous deux dans `loadDashboard` — or les flux PG-first
+   * (inventory, dashboard-pg, channel-pg) ne passent jamais par
+   * `loadDashboard`. Chaque siège écrivait donc bien SA ligne d'inventaire,
+   * mais la ligne PARTAGÉE `machine_registry` restait au semis d'une seule
+   * machine, et un registre à une entrée est indistinguable d'une flotte à
+   * une machine (#3459).
+   *
+   * Trois propriétés, chacune verrouillée par un test :
+   *
+   *  - **fusion, jamais remplacement** : la ligne partagée est relue juste
+   *    avant l'écriture et son contenu est UNIONNÉ à la mémoire. Écrire la
+   *    carte chargée au boot écraserait les sièges inscrits entre-temps ;
+   *  - **vérification après écriture** : deux sièges qui démarrent ensemble
+   *    peuvent encore s'écraser mutuellement ; la perte est détectée par une
+   *    relecture et réparée dans le MÊME boot (3 essais bornés) ;
+   *  - **jamais d'écriture aveugle** : ligne illisible ⇒ aucune écriture, une
+   *    ligne d'erreur qui nomme la cause (garde ms#1563 conservée). Un siège
+   *    déjà présent et à jour ne réécrit rien (#2121b).
+   *
+   * @returns true si la ligne partagée liste ce siège à la sortie.
+   */
+  public async registerLocalMachineFromBoot(): Promise<boolean> {
+    await this.waitForRegistry();
+
+    const machineId = this.config.machineId.toLowerCase();
+    const source = 'service' as const;
+
+    if (this.registryPersistence === 'refused-blind') {
+      this.logger.error(
+        `[registry] inscription de ${machineId} REFUSÉE — le chargement n'a pu lire aucune source : ` +
+        'écrire ferait de ce registre partiel la vérité durable (#4131, famille #3459)'
+      );
+      return false;
+    }
+
+    const pgAvailable = Boolean(storeMetaUrl());
+    const maxAttempts = pgAvailable ? 3 : 1;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const now = new Date().toISOString();
+
+      if (pgAvailable) {
+        const row = await this.readSharedRegistryRow();
+        if (row === null) {
+          this.logger.error(
+            `[registry] inscription de ${machineId} NON TENTÉE — la ligne partagée est illisible : ` +
+            'aucune écriture (une ligne existait peut-être, l\'écraser perdrait la flotte — #4131, famille #3459)'
+          );
+          return false;
+        }
+        // attempt > 1 : la relecture de vérification a montré que notre entrée
+        // avait été écrasée → on réécrit même si rien n'a changé en mémoire.
+        const merged = this.mergeSharedRegistry(row.machines, machineId, source, now);
+        if (!merged && attempt === 1) {
+          // Nous y sommes déjà, et la ligne ne contient rien que nous ignorions.
+          this.logger.info(
+            `[registry] ${machineId} déjà inscrit dans la ligne partagée — aucune réécriture (#2121b)`
+          );
+          return true;
+        }
+      } else if (!this.addLocalMachineInMemory(machineId, source, now) && attempt === 1) {
+        return true;
+      }
+
+      await this.saveMachineRegistry();
+
+      if (!pgAvailable) {
+        return true;
+      }
+
+      const verified = await this.readSharedRegistryRow();
+      if (verified && verified.machines[machineId]) {
+        this.logger.info(
+          `[registry] ${machineId} inscrit dans la ligne partagée: ` +
+          `${Object.keys(verified.machines).length} machines (#4131, essai ${attempt})`
+        );
+        return true;
+      }
+
+      this.logger.warn(
+        `[registry] inscription de ${machineId} perdue (écriture concurrente) — ` +
+        `nouvel essai ${attempt}/${maxAttempts} (#4131)`
+      );
+    }
+
+    this.logger.error(
+      `[registry] inscription de ${machineId} NON VÉRIFIÉE après ${maxAttempts} essais — ` +
+      'la ligne partagée ne le liste toujours pas (#4131)'
+    );
+    return false;
+  }
+
+  /**
+   * Relire la ligne partagée du registre.
+   * @returns `{ machines }` si la lecture aboutit (objet vide = ligne absente,
+   *          création légitime), `null` si la lecture ÉCHOUE — distinct de
+   *          « absent » : sur un échec on n'écrit pas (famille #3459).
+   */
+  private async readSharedRegistryRow(): Promise<{ machines: Record<string, any> } | null> {
+    try {
+      const raw = await readStoreMetaValue(MACHINE_REGISTRY_META_KEY);
+      if (raw === null) {
+        return { machines: {} };
+      }
+      const parsed = JSON.parse(raw);
+      return { machines: (parsed && parsed.machines) || {} };
+    } catch (error) {
+      this.logger.warn('[registry] relecture de la ligne partagée impossible', { error: String(error) });
+      return null;
+    }
+  }
+
+  /**
+   * Unionner la ligne partagée dans la carte mémoire, puis (ré)inscrire ce siège.
+   * @returns true si quelque chose doit être écrit.
+   */
+  private mergeSharedRegistry(
+    rowMachines: Record<string, any>,
+    machineId: string,
+    source: 'service',
+    now: string
+  ): boolean {
+    let changed = false;
+
+    // Les sièges inscrits par d'autres process depuis notre chargement entrent
+    // en mémoire AVANT toute écriture : sans cette union, sauvegarder la carte
+    // du boot remplacerait leur inscription par la nôtre (perte silencieuse).
+    for (const [id, entry] of Object.entries(rowMachines)) {
+      const key = id.toLowerCase();
+      if (!this.machineRegistry.machines.has(key)) {
+        this.machineRegistry.machines.set(key, { ...(entry as any), machineId: key });
+        changed = true;
+      }
+    }
+
+    const own = this.machineRegistry.machines.get(machineId);
+    if (!own) {
+      this.machineRegistry.machines.set(machineId, {
+        machineId,
+        firstSeen: now,
+        lastSeen: now,
+        source,
+        status: 'online'
+      });
+      return true;
+    }
+
+    if (own.source !== source) {
+      // La source est write-once par design (validateMachineUniqueness) : une
+      // divergence se NOMME, elle ne se réécrit pas.
+      this.logger.warn(
+        `[registry] ${machineId} porte déjà la source '${own.source}' — inscription au boot '${source}' ` +
+        'non appliquée (source write-once, #4131)'
+      );
+      return changed;
+    }
+
+    if (own.status !== 'online') {
+      // Auto-guérison : un siège qui démarre est en ligne.
+      own.status = 'online';
+      own.lastSeen = now;
+      return true;
+    }
+
+    return changed;
+  }
+
+  /**
+   * Variante sans PG (surface fichier seule) : (ré)inscrire le siège en mémoire.
+   * @returns true si une écriture est nécessaire.
+   */
+  private addLocalMachineInMemory(machineId: string, source: 'service', now: string): boolean {
+    const own = this.machineRegistry.machines.get(machineId);
+    if (!own) {
+      this.machineRegistry.machines.set(machineId, {
+        machineId,
+        firstSeen: now,
+        lastSeen: now,
+        source,
+        status: 'online'
+      });
+      return true;
+    }
+    if (own.source === source && own.status === 'online') {
+      return false;
+    }
+    if (own.source === source) {
+      own.status = 'online';
+      own.lastSeen = now;
+    }
+    return own.source === source;
   }
 
   /**
@@ -311,6 +516,29 @@ export class BaselineManager {
       };
     }
 
+    // #4131 (a) — le siège s'inscrit désormais AU BOOT (source `service`, celle
+    // du fichier `.machine-registry.json` historique), et `loadDashboard`
+    // l'injecte ensuite depuis le canal `dashboard`. Ces deux déclarations sont
+    // la MÊME machine qui se présente par deux canaux du même service : les
+    // tenir pour un conflit d'identité faisait refuser l'injection et
+    // `getStatus` levait MACHINE_NOT_FOUND (régression e2e mesurée le 29/10).
+    // L'exception est bornée à ce couple : une entrée `config`/`baseline`/
+    // `presence` reste un conflit (garde #1409 conservée, cf.
+    // BaselineManager.gap.test.ts), et un machineId étranger reste strict.
+    const bootToDashboard =
+      existingMachine.source === 'service' && source === 'dashboard';
+
+    if (bootToDashboard) {
+      this.logger.info(
+        `Machine ${machineId} déjà inscrite au boot (source 'service') — déclaration 'dashboard' ` +
+        'traitée comme la même machine (#4131)'
+      );
+      return {
+        isValid: true,
+        conflictDetected: false
+      };
+    }
+
     // Conflit détecté : même machineId depuis des sources différentes
     const warningMessage = `⚠️ CONFLIT D'IDENTITÉ DÉTECTÉ: MachineId "${machineId}" déjà utilisé par la source "${existingMachine.source}" (première vue: ${existingMachine.firstSeen}). Tentative d'ajout depuis la source "${source}".`;
 
@@ -330,7 +558,7 @@ export class BaselineManager {
    */
   private async addMachineToRegistry(
     machineId: string,
-    source: 'dashboard' | 'presence' | 'baseline' | 'config',
+    source: 'dashboard' | 'presence' | 'baseline' | 'config' | 'service',
     status: 'online' | 'offline' | 'conflict' = 'online'
   ): Promise<UniquenessValidationResult> {
     machineId = machineId.toLowerCase();
