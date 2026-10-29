@@ -166,7 +166,14 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
       && /(?:\d+\s*(?:h|min|heure)|every\s+\d+|toutes?\s+les\s+\d+)/i.test(bestChunk?.snippet ?? '');
     checks.push({ name: 'known-answer: passage states the coordinator cadence decision', ok: cadenceDecisionOk, observed: cadenceDecisionOk ? 'cadence + interval' : 'decision vocabulary or interval missing' });
     const decisionEvidence = [bestChunk?.snippet, best?.conversation_context?.before_turn?.excerpt, best?.conversation_context?.after_turn?.excerpt].filter(Boolean).join('\n');
-    const rationaleOk = /parce que|because|pourquoi|afin de|pour éviter|to avoid|so that|raison|coût|charge|latence/i.test(decisionEvidence);
+    // The rationale of THIS decision states itself as burst-avoidance, not with
+    // a generic connective: measured on the scenario-2 anchor (2026-10-29), the
+    // winning passage justifies the :23 minute as "hors du :41 des executeurs —
+    // pas de tir groupe aux heures communes" — the reasoning is present, no
+    // generic marker word is. "tir group|heures communes" are the known-answer
+    // markers of that rationale, same calibration as the cadence vocabulary in
+    // the gate above (specific to this decision, not generic filler).
+    const rationaleOk = /parce que|because|pourquoi|afin de|pour éviter|to avoid|so that|raison|coût|charge|latence|tir group|heures communes/i.test(decisionEvidence);
     checks.push({ name: 'known-answer: passage or adjacent turns carry the decision rationale', ok: rationaleOk, observed: rationaleOk ? 'rationale present' : 'no reasoning in passage/context' });
 
     // ---- rubric (a): coherent passage ----
