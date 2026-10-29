@@ -1942,6 +1942,21 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// budget). Keep this pattern and capKeyOf's below identical.
 		const BUILD_DIR_RE = /(^|[\\/])build(-[a-f0-9]{8,}|-out)?[\\/]/i;
 		const BUILD_DIR_MALUS = 0.7;
+		// #2609 (web1 c.715) — locale-file malus (×0.7) + locales-FAMILY cap key (capKeyOf
+		//     below). Measured live 2026-10-28, semantic mode, golden scenario 3: the top-5
+		//     was five `zoo-code/webview-ui/src/i18n/locales/{pt-BR,ko,fr,pl,es}/settings.json`
+		//     one-liners — the SAME UI key in five languages, five near-identical copies of
+		//     one logical string — with data_file_malus_applied: 5 and ZERO hit on the
+		//     source implementing the query. A translation quotes the query vocabulary
+		//     verbatim ("Qdrant") in N path-distinct files; the implementing code carries
+		//     syntactic noise that dilutes the signal. Same family as #3172/#1180/#2609-V2:
+		//     a derivative is never the actionable answer to "find the code that does X".
+		//     PRECEDENCE over data (a locale file is first a translation), never compounded
+		//     to 0.7 × 0.75. Degraded, not removed — a "where is the German string" query
+		//     still finds its file. Directory vocabulary: i18n/locales/lang/languages/
+		//     translations; extension list covers data formats AND typed locales (fr.ts).
+		const LOCALE_FILE_RE = /(^|[\\/])(i18n|locales|lang|languages|translations)[\\/].+\.(json|jsonc|json5|ya?ml|csv|tsv|po|pot|ts|js|mjs)$/i;
+		const LOCALE_FILE_MALUS = 0.7;
 		const MAX_CHUNKS_PER_FILE = 2;
 
 		// Single source of truth for the malus: ranking and the rendered `score` MUST agree.
@@ -1952,13 +1967,15 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			const isFixtureFile = FIXTURE_FILE_RE.test(fp);
 			const isArchiveFile = ARCHIVE_FILE_RE.test(fp);
 			const isBuildDirFile = BUILD_DIR_RE.test(fp);
-			const isDataFile = !isTestFile && !isFixtureFile && !isArchiveFile && !isBuildDirFile && DATA_FILE_RE.test(fp);
+			const isLocaleFile = !isTestFile && !isFixtureFile && !isArchiveFile && !isBuildDirFile && LOCALE_FILE_RE.test(fp);
+			const isDataFile = !isTestFile && !isFixtureFile && !isArchiveFile && !isBuildDirFile && !isLocaleFile && DATA_FILE_RE.test(fp);
 			const factor = (isTestFile ? TEST_FILE_MALUS : 1)
 				* (isFixtureFile ? FIXTURE_FILE_MALUS : 1)
 				* (isArchiveFile ? ARCHIVE_FILE_MALUS : 1)
 				* (isBuildDirFile ? BUILD_DIR_MALUS : 1)
+				* (isLocaleFile ? LOCALE_FILE_MALUS : 1)
 				* (isDataFile ? DATA_FILE_MALUS : 1);
-			return { isTestFile, isFixtureFile, isArchiveFile, isBuildDirFile, isDataFile, factor };
+			return { isTestFile, isFixtureFile, isArchiveFile, isBuildDirFile, isLocaleFile, isDataFile, factor };
 		};
 
 		const adjusted: { point: any; score: number }[] = finalHits
@@ -1981,7 +1998,25 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// existed as 4 path-distinct copies (3 vintages + staging) and occupied up to 6 of
 		// 15 slots, each with its own cap budget. Keyed on the LOGICAL file, the compiled
 		// copies share one budget and the freed slots backfill with distinct files.
-		const capKeyOf = (fp: string) => fp.replace(/(^|[\\/])build(-[a-f0-9]{8,}|-out)?[\\/]/ig, '');
+		// #2609 (web1 c.715): TWO keys, two roles. mergeKeyOf (the historical build-strip)
+		// feeds the overlap/identical merges: a locale sibling fr/ja/de of the same line is
+		// DIFFERENT logical content — merging across languages would remove the German file
+		// from a "where is the German string" query's recall entirely (measured in test:
+		// same-range siblings collapsed to 1 result). capKeyOf additionally collapses the
+		// locales FAMILY: measured live 2026-10-28, the five `i18n/locales/{pt-BR,ko,fr,pl,es}/
+		// settings.json` copies each had their own cap budget and took 5 of 5 slots; keyed on
+		// the locales ROOT the whole language family shares ONE MAX_CHUNKS_PER_FILE budget,
+		// the freed slots backfill with distinct files, and the leftovers loop keeps the
+		// siblings reachable when nothing else fills the limit (degraded, not removed).
+		const mergeKeyOf = (fp: string) => fp.replace(/(^|[\\/])build(-[a-f0-9]{8,}|-out)?[\\/]/ig, '');
+		const capKeyOf = (fp: string) => {
+			const stripped = mergeKeyOf(fp);
+			const m = stripped.match(/(^|[\\/])(i18n|locales|lang|languages|translations)[\\/]/i);
+			if (m && m.index !== undefined) {
+				return stripped.slice(0, m.index + m[0].length) + '<locales-family>';
+			}
+			return stripped;
+		};
 		// #2609 V2(a): per-call cache of file contents read for block expansion
 		// (multiple hits in one file must not re-read it). null = unreadable/skipped.
 		const fileLinesCache = new Map<string, string[] | null>();
@@ -1995,8 +2030,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// the over-fetch pool (fetchLimit = 3 × limit), file reads cached per file.
 		const withRanges = adjusted.map((a: { point: any; score: number }) => {
 			const fp = String(a.point.payload.filePath || '');
-			const { isFixtureFile, isArchiveFile, isDataFile } = classifyFilePath(fp);
-			const expandable = !isFixtureFile && !isArchiveFile && !isDataFile
+			const { isFixtureFile, isArchiveFile, isDataFile, isLocaleFile } = classifyFilePath(fp);
+			const expandable = !isFixtureFile && !isArchiveFile && !isDataFile && !isLocaleFile
 				&& BLOCK_EXPANSION_SOURCE_RE.test(fp)
 				&& typeof a.point.payload.startLine === 'number';
 			const expanded = expandable
@@ -2008,8 +2043,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				: (typeof a.point.payload.endLine === 'number' ? a.point.payload.endLine : null);
 			return { point: a.point, score: a.score, expanded, range: (s !== null && e !== null) ? { s, e } : null };
 		});
-		const { kept: windowDeduped, merged: overlappingChunksMerged } = dropOverlappingWindows(withRanges, capKeyOf);
-		const { kept: dedupedAdjusted, merged: identicalChunksMerged } = dropIdenticalChunks(windowDeduped, capKeyOf);
+		const { kept: windowDeduped, merged: overlappingChunksMerged } = dropOverlappingWindows(withRanges, mergeKeyOf);
+		const { kept: dedupedAdjusted, merged: identicalChunksMerged } = dropIdenticalChunks(windowDeduped, mergeKeyOf);
 		const perFileCount = new Map<string, number>();
 		const picked: { point: any; score: number; expanded: any }[] = [];
 		const leftovers: { point: any; score: number; expanded: any }[] = [];
@@ -2033,18 +2068,20 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		let dataFileMalusApplied = 0;
 		let archiveMalusApplied = 0;
 		let buildDirMalusApplied = 0;
+		let localeFileMalusApplied = 0;
 		let blockExpansionApplied = 0;
 		let staleAnchorsRelocated = 0;
 
 		const results = rankedHits.map((hit) => {
 			const point = hit.point;
 			const fp = String(point.payload.filePath || '');
-			const { isTestFile, isFixtureFile, isDataFile, isArchiveFile, isBuildDirFile, factor } = classifyFilePath(fp);
+			const { isTestFile, isFixtureFile, isDataFile, isArchiveFile, isBuildDirFile, isLocaleFile, factor } = classifyFilePath(fp);
 			if (isTestFile) testFileMalusApplied++;
 			if (isFixtureFile) fixtureMalusApplied++;
 			if (isDataFile) dataFileMalusApplied++;
 			if (isArchiveFile) archiveMalusApplied++;
 			if (isBuildDirFile) buildDirMalusApplied++;
+			if (isLocaleFile) localeFileMalusApplied++;
 			// Expose the adjusted (post-malus) score so the value matches the rank order;
 			// an unadjusted test at 0.72 ranked below a source at 0.68 would otherwise read
 			// as a contradiction. The raw cosine is not surfaced (the order is the signal).
@@ -2178,6 +2215,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			...(archiveMalusApplied > 0 ? { archive_malus_applied: archiveMalusApplied } : {}),
 			// #2609 V2(a): compiled-build malus observability — hits from build(-<hash>)/** demoted ×0.7.
 			...(buildDirMalusApplied > 0 ? { build_dir_malus_applied: buildDirMalusApplied } : {}),
+			// #2609 (web1 c.715): locale-file malus observability — hits from i18n/locales/**
+			// demoted ×0.7 and capped as one locales-family budget (capKeyOf).
+			...(localeFileMalusApplied > 0 ? { locale_file_malus_applied: localeFileMalusApplied } : {}),
 			// #2609 V2(a): block-expansion observability — how many hits were rendered as
 			// their enclosing declaration block (snippet = block, start/end_line = block
 			// range, match_lines = the lines the vector matched). Rollback:

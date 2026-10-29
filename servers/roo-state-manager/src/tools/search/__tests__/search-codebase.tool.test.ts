@@ -1113,6 +1113,126 @@ describe('search-codebase.tool', () => {
 			});
 		});
 
+		describe('handleCodebaseSearch - locale-file re-ranking + family cap (#2609, web1 c.715)', () => {
+			test('repro — five identical i18n locales siblings no longer take 5 slots; source leads', async () => {
+				// Exact shape of the live measurement (web1 2026-10-28, semantic mode,
+				// golden scenario 3): top-5 = five i18n/locales/<lang>/settings.json one-liners
+				// — the same UI key in five languages — zero hit on the implementing source.
+				// Two levers assert here: (1) the ×0.7 locale malus sinks each sibling under
+				// the source; (2) the locales-FAMILY cap key gives all five ONE budget of
+				// MAX_CHUNKS_PER_FILE=2, so at most 2 occupy the top ranks and the freed
+				// slots backfill with the source files.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.76, payload: { filePath: 'zoo-code\\webview-ui\\src\\i18n\\locales\\pt-BR\\settings.json', codeChunk: '"qdrantApiKeyPlaceholder": "Chave de API do Qdrant"', startLine: 118, endLine: 118 } },
+						{ score: 0.76, payload: { filePath: 'zoo-code\\webview-ui\\src\\i18n\\locales\\ko\\settings.json', codeChunk: '"qdrantApiKeyPlaceholder": "Qdrant API 키"', startLine: 118, endLine: 118 } },
+						{ score: 0.76, payload: { filePath: 'zoo-code\\webview-ui\\src\\i18n\\locales\\fr\\settings.json', codeChunk: '"qdrantApiKeyPlaceholder": "Clé API Qdrant"', startLine: 118, endLine: 118 } },
+						{ score: 0.76, payload: { filePath: 'zoo-code\\webview-ui\\src\\i18n\\locales\\pl\\settings.json', codeChunk: '"qdrantApiKeyPlaceholder": "Klucz API Qdrant"', startLine: 118, endLine: 118 } },
+						{ score: 0.76, payload: { filePath: 'zoo-code\\webview-ui\\src\\i18n\\locales\\es\\settings.json', codeChunk: '"qdrantApiKeyPlaceholder": "Clave API de Qdrant"', startLine: 118, endLine: 118 } },
+						{ score: 0.71, payload: { filePath: 'mcps\\internal\\servers\\roo-state-manager\\src\\tools\\search\\search-semantic.tool.ts', codeChunk: 'searchSemantic query Qdrant filter', startLine: 40, endLine: 52 } },
+						{ score: 0.70, payload: { filePath: 'src\\services\\unified-store\\store.ts', codeChunk: 'unified store join filters', startLine: 10, endLine: 22 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({
+					query: 'unified store Postgres join filters Qdrant semantic search results',
+					workspace: '/ws',
+					limit: 5
+				});
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.status).toBe('success');
+				const paths = parsed.results.map((r: any) => r.file_path);
+
+				// Both sources lead — before the fix they were not in the top-5 at all.
+				expect(paths[0]).toBe('mcps\\internal\\servers\\roo-state-manager\\src\\tools\\search\\search-semantic.tool.ts');
+				expect(paths[1]).toBe('src\\services\\unified-store\\store.ts');
+
+				// Family cap: at most MAX_CHUNKS_PER_FILE (2) locale siblings in the PRIMARY
+				// picks + backfill of the 5th slot (only siblings remain in the pool) —
+				// 3 locales max in the window instead of the measured 5-of-5, and the
+				// siblings keep their OWN identities (fr/ja/de never merged away).
+				const localeCount = paths.filter((p: string) => p.includes('i18n\\locales')).length;
+				expect(localeCount).toBeLessThanOrEqual(3);
+
+				// Malus: the surviving sibling carries ×0.7 (0.76 × 0.7 = 0.532), not the
+				// data ×0.75 and not the compound.
+				const sibling = parsed.results.find((r: any) => String(r.file_path).includes('i18n\\locales'));
+				expect(sibling.score).toBeCloseTo(0.76 * 0.7, 5);
+				expect(parsed.locale_file_malus_applied).toBe(3);
+				// Precedence: locale wins over data — data_file_malus_applied must NOT
+				// count the locale siblings it already demoted.
+				expect(parsed.data_file_malus_applied).toBeUndefined();
+			});
+
+			test('family cap — leftovers backfill keeps locale files reachable when nothing else fills the limit', async () => {
+				// Degraded, not removed: with ONLY locale hits in the pool, the family cap
+				// releases the leftovers into the window — a "where is the German string"
+				// query still finds its file at the requested limit.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.8, payload: { filePath: 'webview-ui\\src\\i18n\\locales\\de\\chat.json', codeChunk: '"noResults": "Keine Ergebnisse"', startLine: 12, endLine: 12 } },
+						{ score: 0.78, payload: { filePath: 'webview-ui\\src\\i18n\\locales\\ja\\chat.json', codeChunk: '"noResults": "結果なし"', startLine: 12, endLine: 12 } },
+						{ score: 0.76, payload: { filePath: 'webview-ui\\src\\i18n\\locales\\it\\chat.json', codeChunk: '"noResults": "Nessun risultato"', startLine: 12, endLine: 12 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'noResults German', workspace: '/ws', limit: 3, min_score: 0.3 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.results_count).toBe(3);
+				expect(parsed.locale_file_malus_applied).toBe(3);
+			});
+
+			test('family cap discriminates where the malus alone does not — many weak sources', async () => {
+				// Red-first driver: with five locale siblings at raw 0.9 and five weak but
+				// legitimate sources at raw 0.6, the ×0.7 malus leaves siblings (0.63) ABOVE
+				// every source (0.60) — no malus alone can put a source in the top-3. Only the
+				// locales-FAMILY cap budget (2 primary picks) + backfill lets weak-but-relevant
+				// sources surface. This is exactly the golden-q3 shape at weaker source scores.
+				const locale = (lang: string, score: number) => ({ score, payload: { filePath: `webview-ui\\src\\i18n\\locales\\${lang}\\settings.json`, codeChunk: `"qdrantApiKeyPlaceholder": "Qdrant (${lang})"`, startLine: 118, endLine: 118 } });
+				const source = (name: string, score: number) => ({ score, payload: { filePath: `src\\services\\${name}.ts`, codeChunk: `unified store ${name}`, startLine: 1, endLine: 9 } });
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						locale('pt-BR', 0.9), locale('ko', 0.9), locale('fr', 0.9), locale('pl', 0.9), locale('es', 0.9),
+						source('alpha', 0.6), source('beta', 0.6), source('gamma', 0.6), source('delta', 0.6), source('epsilon', 0.6)
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'qdrant', workspace: '/ws', limit: 5, min_score: 0.3 });
+				const parsed = JSON.parse(result.content[0].text);
+				const paths = parsed.results.map((r: any) => r.file_path);
+
+				// Primary picks (top of window): exactly the 2-sibling family budget, then
+				// weak-but-distinct sources. WITHOUT the family cap (mutant: cap key off)
+				// the first three slots are pt-BR/ko/fr — a source never leads.
+				expect(paths[0]).toContain('locales');
+				expect(paths[1]).toContain('locales');
+				expect(paths[2]).toBe('src\\services\\alpha.ts');
+				expect(paths[3]).toBe('src\\services\\beta.ts');
+				expect(paths[4]).toBe('src\\services\\gamma.ts');
+			});
+
+			test('scope — a plain data file keeps ×0.75; a typed locale fr.ts takes the locale class', async () => {
+				// Precedence boundaries: (a) `roo-config/baselines/*.json` has no locale
+				// directory component → stays data ×0.75; (b) `locales/fr.ts` is a typed
+				// translation → locale ×0.7, not data, and despite a source extension it
+				// is NOT block-expanded (it is content, not code).
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.8, payload: { filePath: 'roo-config\\baselines\\myia-web1-settings-baseline.json', codeChunk: '"codebaseIndexQdrantUrl": "https://qdrant.myia.io"', startLine: 891, endLine: 891 } },
+						{ score: 0.8, payload: { filePath: 'webview-ui\\src\\locales\\fr.ts', codeChunk: 'export const fr = { settings: { qdrantApiKey: "Clé" } }', startLine: 1, endLine: 3 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'qdrant api key', workspace: '/ws', limit: 2, min_score: 0.3 });
+				const parsed = JSON.parse(result.content[0].text);
+				const byPath = Object.fromEntries(parsed.results.map((r: any) => [r.file_path, r.score]));
+				expect(byPath['roo-config\\baselines\\myia-web1-settings-baseline.json']).toBeCloseTo(0.8 * 0.75, 5);
+				expect(byPath['webview-ui\\src\\locales\\fr.ts']).toBeCloseTo(0.8 * 0.7, 5);
+				expect(parsed.data_file_malus_applied).toBe(1);
+				expect(parsed.locale_file_malus_applied).toBe(1);
+			});
+		});
+
 		describe('handleCodebaseSearch - archive-file re-ranking (#3174 defect 3)', () => {
 			test('repro — archived reports outranking the source sink below it after the malus, staying visible', async () => {
 				// Shape of the po-2025 22/09 probe: two docs/archive/reports/** hits above
