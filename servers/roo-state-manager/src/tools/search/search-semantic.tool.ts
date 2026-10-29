@@ -951,6 +951,16 @@ function excerptFromStart(content: string, maxChars: number): string {
  * the local engine — milliseconds); points paginated over several chunk_index
  * within the SAME message are collapsed to their first page.
  *
+ * The scroll matches the two adjacent indexes EXACTLY (should: anchor-1,
+ * anchor+1) instead of a range window: a range over [anchor-1, anchor+1] with
+ * a page limit saturates on the anchor itself when the anchor message is
+ * heavily chunked — measured #2609 (2026-10-29, scenario 2): anchor at
+ * message_index 2 carried 63 chunks, the 12-point first page came back 12/12
+ * at the anchor, both adjacent turns (1 point each, verified by exact count)
+ * stayed invisible and the context silently attached to nothing. An exact
+ * should-match never fetches anchor chunks, so the page limit cannot starve
+ * the neighbors regardless of how many chunks the anchor spans.
+ *
  * Non-blocking by design: any failure leaves the group without context —
  * search results are never dropped or delayed by context expansion.
  * Rollback / A-B: SEARCH_CONTEXT_EXPANSION=0 (same convention as SEARCH_DEDUP_ENABLED).
@@ -967,9 +977,16 @@ async function attachConversationContext(groups: GroupedTask[], qdrant: any, col
         try {
             const scrollResult: any = await qdrant.scroll(collectionName, {
                 filter: {
+                    // Exact match on the two neighbors only (see function doc):
+                    // must(task) + at-least-one(should) — the anchor's own
+                    // chunks are never fetched, so a heavily chunked anchor
+                    // cannot saturate the page before the neighbors show up.
                     must: [
                         { key: 'task_id', match: { value: group.taskId } },
-                        { key: 'message_index', range: { gte: anchor - 1, lte: anchor + 1 } },
+                    ],
+                    should: [
+                        { key: 'message_index', match: { value: anchor - 1 } },
+                        { key: 'message_index', match: { value: anchor + 1 } },
                     ],
                 },
                 limit: 12,

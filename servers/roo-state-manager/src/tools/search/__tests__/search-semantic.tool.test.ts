@@ -2754,6 +2754,84 @@ describe('#2609 V3 result quality', () => {
 		expect(parsed.current_machine.context_expansion).toMatchObject({ attached_groups: 1, enabled: true });
 	});
 
+	test('conversation_context: scroll matches the two neighbors exactly, never a range window (regression #2609)', async () => {
+		// A range over [anchor-1, anchor+1] with a page limit saturates on the
+		// anchor itself when the anchor message is heavily chunked (measured:
+		// 63 anchor chunks, first 12-point page 12/12 at the anchor, both
+		// neighbors invisible). The filter must therefore match the neighbors
+		// EXACTLY via should, and must not carry any message_index range.
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.85, payload: { task_id: 'task-sat', content: 'the cadence decision passage', host_os: 'h1', message_index: 2, total_messages: 9 } }
+		]);
+		mockQdrantClient.scroll.mockResolvedValue({ points: [
+			{ payload: { message_index: 1, role: 'user', content: 'turn before', timestamp: '2026-10-23T08:17:00Z', chunk_index: 1 } },
+			{ payload: { message_index: 3, role: 'assistant', content: 'turn after', timestamp: '2026-10-23T08:17:02Z', chunk_index: 1 } }
+		] });
+
+		await searchTasksByContentTool.handler(
+			{ search_query: 'cadence decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		expect(mockQdrantClient.scroll).toHaveBeenCalled();
+		const scrollFilter = mockQdrantClient.scroll.mock.calls[0][1].filter;
+		expect(scrollFilter.must).toEqual([
+			{ key: 'task_id', match: { value: 'task-sat' } }
+		]);
+		const indexFilters = [...(scrollFilter.must ?? []), ...(scrollFilter.should ?? [])]
+			.filter((c: any) => c.key === 'message_index');
+		expect(indexFilters).toHaveLength(2);
+		for (const c of indexFilters) {
+			expect(c.match).toEqual({ value: expect.any(Number) });
+			expect(c.range).toBeUndefined();
+		}
+		const matched = indexFilters.map((c: any) => c.match.value).sort();
+		expect(matched).toEqual([1, 3]);
+	});
+
+	test('conversation_context: heavily chunked anchor cannot starve the neighbors (live shape #2609)', async () => {
+		// Simulates Qdrant honoring the filter shape: whatever the request, a
+		// range window would return anchor chunks first (12/12 at anchor, page
+		// exhausted) while an exact should-match returns only the neighbors.
+		// The scroll mock replays the measured live behavior for BOTH shapes
+		// and asserts the handler still attaches context under the fixed one.
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.85, payload: { task_id: 'task-live', content: 'the cadence decision passage', host_os: 'h1', message_index: 2, total_messages: 4210 } }
+		]);
+		mockQdrantClient.scroll.mockImplementation(async (_col: string, opts: any) => {
+			const f = opts.filter;
+			const hasRange = JSON.stringify(f).includes('"range"');
+			if (hasRange) {
+				// Range window over [1,3]: 65 candidate points (63 anchor chunks
+				// + 2 neighbors); the first page of 12 comes back all-anchor,
+				// next_page_offset never followed — the pre-fix live failure.
+				return { points: Array.from({ length: 12 }, (_, i) => ({
+					payload: { message_index: 2, role: 'user', content: `anchor chunk ${i}`, chunk_index: i + 1 }
+				})) };
+			}
+			// Exact should-match: only the neighbors match the filter.
+			return { points: [
+				{ payload: { message_index: 1, role: 'user', content: 'Pour quelle cadence avons-nous tranche ?', timestamp: '2026-10-23T08:17:00Z', chunk_index: 1 } },
+				{ payload: { message_index: 3, role: 'assistant', content: 'Je lis la fiche de passation, puis j\'arme le cron.', timestamp: '2026-10-23T08:17:02Z', chunk_index: 1 } }
+			] };
+		});
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'cadence decision' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		const ctx = parsed.results[0].conversation_context;
+		expect(ctx).toBeDefined();
+		expect(ctx.before_turn).toMatchObject({ role: 'user', message_index: 1 });
+		expect(ctx.after_turn).toMatchObject({ role: 'assistant', message_index: 3 });
+	});
+
 	test('scroll failure is non-blocking: results survive without context', async () => {
 		mockQdrantClient.search.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 't1', content: 'passage', host_os: 'h1', message_index: 3 } }
