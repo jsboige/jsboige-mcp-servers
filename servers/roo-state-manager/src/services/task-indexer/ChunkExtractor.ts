@@ -792,8 +792,21 @@ export function splitChunk(chunk: Chunk, maxSize: number): Chunk[] {
     let chunkIndex = 1;
 
     while (content.length > 0 && chunkIndex <= totalChunks) {
-        const contentPart = content.substring(0, maxSize);
-        content = content.substring(maxSize);
+        // #4352 (TextEncodeInput): never cut inside a UTF-16 surrogate pair. A
+        // pair split across two parts leaves an unpaired surrogate in BOTH, the
+        // request body carries it as a "\udXXX" escape, and the embedding server
+        // rejects each half with `400 TextEncodeInput must be Union[…]` — a
+        // deterministic failure the retry loop can never outrun (4 sub-chunks
+        // measured stuck that way on po-2028, 29/10). Nudge the cut back one
+        // char so the pair stays whole in the next part.
+        let take = Math.min(maxSize, content.length);
+        const lastUnit = content.charCodeAt(take - 1);
+        const nextUnit = content.charCodeAt(take);
+        if (take > 0 && lastUnit >= 0xD800 && lastUnit <= 0xDBFF && nextUnit >= 0xDC00 && nextUnit <= 0xDFFF) {
+            take--;
+        }
+        const contentPart = content.substring(0, take);
+        content = content.substring(take);
 
         // #2018: chunk.chunk_id is now deterministic upstream (computeChunkId),
         // so the split parts inherit determinism: same input → same UUIDs.

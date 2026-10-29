@@ -191,6 +191,48 @@ describe('ChunkExtractor', () => {
       expect(result[0].total_chunks).toBe(1);
     });
 
+    it('#4352 TextEncodeInput: never cuts inside a surrogate pair — both halves stay valid', () => {
+      const hasUnpaired = (s: string): boolean => {
+        for (let i = 0; i < s.length; i++) {
+          const c = s.charCodeAt(i);
+          if (c >= 0xD800 && c <= 0xDBFF) {
+            const n = s.charCodeAt(i + 1);
+            if (!(n >= 0xDC00 && n <= 0xDFFF)) return true;
+          } else if (c >= 0xDC00 && c <= 0xDFFF) {
+            const p = s.charCodeAt(i - 1);
+            if (!(p >= 0xD800 && p <= 0xDBFF)) return true;
+          }
+        }
+        return false;
+      };
+      // 799 chars + a 2-unit emoji + more: the cut at maxSize=800 lands BETWEEN
+      // the surrogate halves — measured live as `400 TextEncodeInput must be
+      // Union[…]` on BOTH parts, the task looping in retry (po-2028, 29/10:
+      // eb1d74c4 ends U+D83D, cea8f544 starts U+DD34 — one emoji, two halves).
+      const content = 'a'.repeat(799) + '📋' + 'b'.repeat(50);
+      const chunk: Chunk = {
+        chunk_id: '1',
+        task_id: 't1',
+        parent_task_id: null,
+        root_task_id: null,
+        chunk_type: 'message_exchange',
+        sequence_order: 1,
+        timestamp: '2023-01-01',
+        indexed: true,
+        content
+      };
+
+      const result = splitChunk(chunk, 800);
+
+      expect(result.length).toBe(2);
+      for (const part of result) {
+        expect(hasUnpaired(part.content)).toBe(false);
+      }
+      // The pair moved whole into the second part.
+      expect(result[0].content).toHaveLength(799);
+      expect(result[1].content.startsWith('📋')).toBe(true);
+    });
+
     it('should split chunk if content is larger than maxSize', () => {
       const chunk: Chunk = {
         chunk_id: '1',

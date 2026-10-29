@@ -1104,4 +1104,74 @@ describe('VectorIndexer', () => {
 		});
 	});
 
+	describe('#4352 TextEncodeInput — unpaired surrogates never reach the embeddings input', () => {
+		test('strips them at pipeline entry with a warn naming the chunk; the task completes', async () => {
+			vi.useRealTimers();
+			vi.resetModules();
+			const { indexTask } = await import('../VectorIndexer.js');
+			const { extractChunksFromTask } = await import('../ChunkExtractor.js');
+			const { splitChunk } = await import('../ChunkExtractor.js');
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+			// The server, faithfully: transformers rejects any input element holding
+			// an unpaired surrogate — dead-lettered live as `400 TextEncodeInput must
+			// be Union[TextInputSequence, Tuple[InputSequence, InputSequence]]`
+			// (po-2028, 29/10: 2 tasks × 2 sub-chunks looping in retry).
+			const hasUnpaired = (s: string): boolean => {
+				for (let i = 0; i < s.length; i++) {
+					const c = s.charCodeAt(i);
+					if (c >= 0xD800 && c <= 0xDBFF) {
+						const n = s.charCodeAt(i + 1);
+						if (!(n >= 0xDC00 && n <= 0xDFFF)) return true;
+					} else if (c >= 0xDC00 && c <= 0xDFFF) {
+						const p = s.charCodeAt(i - 1);
+						if (!(p >= 0xD800 && p <= 0xDBFF)) return true;
+					}
+				}
+				return false;
+			};
+			setupEmbeddingMock();
+			mockEmbeddingsCreate.mockImplementation(async ({ input }: any) => {
+				const items = Array.isArray(input) ? input : [input];
+				if (items.some((i: any) => typeof i !== 'string' || hasUnpaired(i))) {
+					const err: any = new Error('400 TextEncodeInput must be Union[TextInputSequence, Tuple[InputSequence, InputSequence]]');
+					err.status = 400;
+					throw err;
+				}
+				return { data: items.map((_: any, i: number) => ({ index: i, embedding: new Array(1536).fill(0.1) })) };
+			});
+
+			(extractChunksFromTask as any).mockResolvedValue([
+				{
+					chunk_id: 'clean-1', content: 'Clean content', indexed: true,
+					sequence_order: 0, chunk_type: 'message_exchange', role: 'user',
+					total_chunks: 1, chunk_index: 0
+				},
+				{
+					// A lone high surrogate — the exact shape a source value can carry
+					// (splitChunk no longer creates them at the cut, this is the belt
+					// for the source itself).
+					chunk_id: 'broken-1', content: 'Broken \uD800 half', indexed: true,
+					sequence_order: 1, chunk_type: 'message_exchange', role: 'user',
+					total_chunks: 1, chunk_index: 0
+				},
+			]);
+			(splitChunk as any).mockImplementation((c: any) => [c]);
+
+			mockGetCollections.mockResolvedValue({ collections: [{ name: expectedCollection }] });
+			mockRetrieve.mockResolvedValue([]);
+
+			const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { });
+			try {
+				const result = await indexTask('task-textencode-1', '/fake/path');
+
+				expect(result.length).toBeGreaterThan(0);
+				expect(mockUpsert).toHaveBeenCalled();
+				expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('broken-1'));
+			} finally {
+				warnSpy.mockRestore();
+			}
+		});
+	});
+
 });
