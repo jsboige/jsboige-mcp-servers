@@ -113,6 +113,7 @@ export function parseCascadeCanon(text: string): { payload: CascadePayload | nul
     const errors: string[] = [];
     const roles: Partial<Record<CascadeRoleName, { refs: string[]; labels: string[]; directions: string[]; notes: string[]; reset: string }>> = {};
     const scalars: Record<string, string> = {};
+    let lastScalarKey: string | null = null;
 
     for (const rawLine of text.split(/\r?\n/)) {
         const line = rawLine.trim();
@@ -131,12 +132,16 @@ export function parseCascadeCanon(text: string): { payload: CascadePayload | nul
             const entry = roles[owner as CascadeRoleName]!;
             if (key === 'RESET') {
                 entry.reset = value;
-            } else if (key === 'LABEL') {
-                entry.labels = value.split('>').map(s => s.trim()).filter(s => s.length > 0);
-            } else if (key === 'DIRECTION') {
-                entry.directions = value.split('>').map(s => s.trim()).filter(s => s.length > 0);
             } else {
-                entry.notes = value.split('>').map(s => s.trim()).filter(s => s.length > 0);
+                // `>>>>` en fin de NOTE colle au texte du dernier barreau : la
+                // découpe sur '>' produit des fragments vides de QUEUE qu'on
+                // retire (ils viennent du marqueur, pas de barreaux manquants).
+                const parts = value.split('>').map(s => s.trim());
+                while (parts.length > 0 && parts[parts.length - 1] === '') parts.pop();
+                const filtered = parts.filter(s => s.length > 0);
+                if (key === 'LABEL') entry.labels = filtered;
+                else if (key === 'DIRECTION') entry.directions = filtered;
+                else entry.notes = filtered;
             }
             continue;
         }
@@ -145,20 +150,39 @@ export function parseCascadeCanon(text: string): { payload: CascadePayload | nul
         const scalar = line.match(/^(STEP_EXCLUDE|ACTIVE|AUTO|ROLE_MODELS|QWEN_THINKING)\s*=\s*(.*)$/);
         if (scalar) {
             scalars[scalar[1]] = scalar[2].trim();
+            lastScalarKey = scalar[1];
             continue;
         }
 
-        // Déclaration de rôle : `ROLE = ref > ref > ...`.
-        const roleDecl = line.match(/^([A-Z]+)\s*=\s*(.+)$/);
+        // Continuation de scalaire : le canon publié wrappe les valeurs longues
+        // (ROLE_MODELS sur deux lignes, virgule finale en fin de première).
+        // Une ligne sans `=` à valeur continuée est concaténée, pas rejetée.
+        if (lastScalarKey && !line.includes('=') && /^[A-Za-z0-9@:._\-+,!/ ]+$/.test(line)) {
+            scalars[lastScalarKey] = `${scalars[lastScalarKey]},${line}`.replace(/,\s*,/g, ',');
+            continue;
+        }
+        lastScalarKey = null;
+
+        // Déclaration de rôle : `ROLE = ref > ref > ...` avec directions
+        // INLINE optionnelles entre parenthèses en fin de ligne — forme des
+        // rôles courts du canon réel (mesure po-2025 29/10) :
+        //   `HAIKU = vllm-myia@swift-1.5-27b!own > role:sonnet   (degraded>improved)`
+        const roleDecl = line.match(/^([A-Z]+)\s*=\s*([^(]*?)\s*(?:\(([^)]*)\))?$/);
         if (roleDecl) {
             const name = roleDecl[1].toUpperCase();
             if (!(CASCADE_ROLE_NAMES as readonly string[]).includes(name)) {
                 errors.push(`rôle inconnu « ${name} »`);
                 continue;
             }
+            const refs = roleDecl[2].split('>').map(s => s.trim()).filter(s => s.length > 0);
+            const inlineDirections = (roleDecl[3] ?? '')
+                .split('>').map(s => s.trim()).filter(s => s.length > 0);
             roles[name as CascadeRoleName] = {
-                refs: roleDecl[2].split('>').map(s => s.trim()).filter(s => s.length > 0),
-                labels: [], directions: [], notes: [], reset: '',
+                refs,
+                labels: [],
+                directions: inlineDirections,
+                notes: [],
+                reset: '',
             };
             continue;
         }
@@ -181,11 +205,29 @@ export function parseCascadeCanon(text: string): { payload: CascadePayload | nul
     for (const name of CASCADE_ROLE_NAMES) {
         const entry = roles[name];
         if (!entry) continue;
+        // #4427 « reject inconsistent lengths before write » : chaque bloc
+        // positionnel déclaré doit couvrir EXACTEMENT la chaîne (longueur
+        // égale) OU être un scalaire partagé (longueur 1, diffusé à tous les
+        // barreaux — forme du NOTE réel du canon : une note commune + RESET).
+        for (const [field, values] of [
+            ['LABEL', entry.labels],
+            ['DIRECTION', entry.directions],
+            ['NOTE', entry.notes],
+        ] as const) {
+            if (values.length === 0) continue; // absent (directions inline p.ex.)
+            if (values.length !== entry.refs.length && values.length !== 1) {
+                errors.push(
+                    `rôle ${name} : ${field} a ${values.length} entrées pour ${entry.refs.length} barreaux`,
+                );
+            }
+        }
         const steps: CascadeStep[] = entry.refs.map((ref, i) => ({
             ref,
-            label: entry.labels[i] ?? '',
-            direction: (entry.directions[i] ?? 'lateral') as CascadeDirection,
-            note: entry.notes[i] ?? '',
+            label: entry.labels.length === 1 ? entry.labels[0] : entry.labels[i] ?? '',
+            direction: (entry.directions.length === 1
+                ? entry.directions[0]
+                : entry.directions[i] ?? 'lateral') as CascadeDirection,
+            note: entry.notes.length === 1 ? entry.notes[0] : entry.notes[i] ?? '',
         }));
         payload.roles[name] = { steps, reset: entry.reset };
     }
@@ -244,6 +286,17 @@ const ALLOWED_TOP_LEVEL = new Set([
 const DIRECTION_SET = new Set(['lateral', 'degraded', 'improved']);
 
 /**
+ * Ref de barreau valide — trois formes mesurées dans le canon live :
+ *  - `provider@model`            (mistral@zai-glm-5-3)
+ *  - `provider@model!own`        (vllm-myia@swift-1.5-27b!own — ressource propre)
+ *  - `role:<rôle>`               (role:sonnet — indirection vers une autre chaîne)
+ */
+export const STEP_REF_RE = /^(?:[^@\s]+@[^@\s]+!own|[^@\s]+@[^@\s]+|role:[a-z]+)$/;
+
+/** Nom de machine flotte — `myia-*`. */
+export const MACHINE_RE = /^myia-[a-z0-9-]+$/i;
+
+/**
  * Valide un payload complet. Pur : aucune IO. Le hash canonique est RECALCULÉ
  * puis comparé au hash revendiqué (H1) — jamais l'inverse.
  */
@@ -289,8 +342,8 @@ export function validateCascadePayload(payload: unknown): CascadeValidationResul
         }
         const seen = new Set<string>();
         for (const step of chain.steps) {
-            if (!step?.ref || !/^[^@\s]+@[^@\s]+$/.test(step.ref)) {
-                errors.push(`rôle ${name} : ref de barreau invalide « ${String(step?.ref)} » (attendu provider@model)`);
+            if (!step?.ref || !STEP_REF_RE.test(step.ref)) {
+                errors.push(`rôle ${name} : ref de barreau invalide « ${String(step?.ref)} » (attendu provider@model, provider@model!own ou role:<rôle>)`);
             }
             if (seen.has(step.ref)) {
                 errors.push(`rôle ${name} : barreau dupliqué « ${step.ref} »`);
@@ -300,30 +353,45 @@ export function validateCascadePayload(payload: unknown): CascadeValidationResul
                 errors.push(`rôle ${name} : direction inconnue « ${String(step.direction)} »`);
             }
         }
-        if (!chain.reset) {
-            errors.push(`rôle ${name} : RESET absent`);
-        }
+        // RESET : mesuré dans le canon live, SEUL le bloc SONNET étendu porte
+        // un RESET — les rôles courts (OPUS/FABLE/HAIKU) n'en ont pas. Le
+        // marqueur est capturé quand présent, jamais exigé.
     }
     if (!anyRole) errors.push('aucun rôle déclaré (SONNET/OPUS/FABLE/HAIKU)');
 
-    // STEP_EXCLUDE : `provider@model:machine` avec UN SEUL `:` (C2).
+    // STEP_EXCLUDE : deux formes mesurées dans le canon réel (po-2025 29/10) —
+    // `provider@model:machine` (saut du barreau pour la machine, UN SEUL `:`
+    // — C2) ou machine nue (la machine saute le barreau du contexte, p.ex.
+    // `myia-po-2028` sous `vllm-myia@…`). Plus d'un `:` = refus : la ligne
+    // écrite serait ambigüe pour le consommateur.
+    // Graphe — ensemble des barreaux, en ref COMPLÈTE et en ref BASE (sans le
+    // suffixe `!own`) : le canon réel cite `vllm-myia@swift-1.5-27b` dans
+    // STEP_EXCLUDE alors que le barreau déclaré est `…!own` — les deux formes
+    // désignent le même barreau.
     const allRefs = new Set<string>();
     for (const name of CASCADE_ROLE_NAMES) {
-        for (const s of roles[name]?.steps ?? []) allRefs.add(s.ref);
+        for (const s of roles[name]?.steps ?? []) {
+            allRefs.add(s.ref);
+            if (s.ref.endsWith('!own')) allRefs.add(s.ref.slice(0, -'!own'.length));
+        }
     }
     const stepExclude = (p.stepExclude ?? []) as string[];
     for (const entry of stepExclude) {
         const colons = (entry.match(/:/g) ?? []).length;
-        if (colons !== 1) {
-            errors.push(`STEP_EXCLUDE « ${entry} » : ${colons} « : » (exactement 1 attendu — C2)`);
+        if (colons > 1) {
+            errors.push(`STEP_EXCLUDE « ${entry} » : ${colons} « : » (0 ou 1 attendu — C2)`);
             continue;
         }
-        const [ref, machine] = entry.split(':');
-        if (!allRefs.has(ref)) {
-            errors.push(`STEP_EXCLUDE « ${entry} » : barreau « ${ref} » inconnu des rôles`);
-        }
-        if (!machine || !/^myia-[a-z0-9-]+$/i.test(machine)) {
-            errors.push(`STEP_EXCLUDE « ${entry} » : machine « ${String(machine)} » invalide`);
+        if (colons === 1) {
+            const [ref, machine] = entry.split(':');
+            if (!allRefs.has(ref)) {
+                errors.push(`STEP_EXCLUDE « ${entry} » : barreau « ${ref} » inconnu des rôles`);
+            }
+            if (!machine || !MACHINE_RE.test(machine)) {
+                errors.push(`STEP_EXCLUDE « ${entry} » : machine « ${String(machine)} » invalide`);
+            }
+        } else if (!MACHINE_RE.test(entry)) {
+            errors.push(`STEP_EXCLUDE « ${entry} » : ni provider@model:machine ni machine nue valide`);
         }
     }
 
@@ -349,6 +417,11 @@ export function validateCascadePayload(payload: unknown): CascadeValidationResul
         }
     }
 
+    // AUTO : 0/1 entier (drapeau du canon).
+    if (typeof p.auto !== 'number' || !Number.isInteger(p.auto) || p.auto < 0 || p.auto > 1) {
+        errors.push(`auto doit être 0 ou 1 (reçu : ${String(p.auto)})`);
+    }
+
     // Exceptions par siège : chacune DOIT porter une raison (documentée ou rien).
     const exceptions = (p.exceptions ?? []) as CascadeSeatException[];
     for (const ex of exceptions) {
@@ -367,7 +440,7 @@ export function validateCascadePayload(payload: unknown): CascadeValidationResul
     let canonicalHash: string | undefined;
     if (errors.length === 0) {
         canonicalHash = computeCanonicalHash(p as unknown as CascadePayload);
-        if (prov.snapshotHash && prov.snapshotHash !== canonicalHash) {
+        if (prov?.snapshotHash && prov.snapshotHash !== canonicalHash) {
             errors.push(`snapshotHash revendiqué ≠ hash canonique recalculé (H1 : un hash revendiqué ne confirme jamais)`);
         }
     }
@@ -407,7 +480,9 @@ function scanForSecrets(node: unknown, path: string, errors: string[]): void {
 export function computeCanonicalHash(payload: CascadePayload): string {
     const canonical = canonicalizeForHash(payload);
     const text = JSON.stringify(canonical);
-    return fnv1a32hex(fnv1a32hex(fnv1a32hex(fnv1a32hex(text))));
+    // Quatre tours SALÉS concaténés (4 × 32 bits) : les collisions FNV sur des
+    // documents courts ne surviennent que tour par tour, pas sur les quatre.
+    return [1, 2, 3, 4].map(i => fnv1a32hex(`${i}:${text}`)).join('');
 }
 
 function canonicalizeForHash(payload: CascadePayload): unknown {
