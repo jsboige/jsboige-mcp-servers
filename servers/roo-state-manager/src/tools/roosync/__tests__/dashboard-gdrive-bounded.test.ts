@@ -7,7 +7,7 @@
  * asymétrique acceptable plutôt que hang symétrique).
  *
  * Ce fichier épingle les trois comportements du lot 1 :
- *  1. un writeFile qui ne rend jamais la main ne pend PLUS l'append — la
+ *  1. un copyFile staging→store qui ne rend jamais la main ne pend PLUS l'append — la
  *     moitié GDrive est bornée, le message est publié sur le miroir PG seul,
  *     et la réponse porte la dégradation ;
  *  2. un échec fs rapide (store injoignable) avec PG vivant → même contrat ;
@@ -26,6 +26,7 @@ import type { Dashboard } from '../dashboard-schemas.js';
 // Le vrai writeFile — récupéré via importActual, JAMAIS via l'import du module
 // mocké (qui résoudrait vers le mock et récursionnerait à l'infini).
 let fsWriteFileReal: typeof import('fs/promises')['writeFile'];
+let fsCopyFileReal: typeof import('fs/promises')['copyFile'];
 
 const {
   mockReadDashboardFromPg,
@@ -34,6 +35,7 @@ const {
   mockDualWriteSyncChecked,
   mockDualWriteDelete,
   mockWriteFile,
+  mockCopyFile,
   mockIsDashboardPgPrimary,
   mockReadDashboardFromPgUngated,
 } = vi.hoisted(() => ({
@@ -43,6 +45,7 @@ const {
   mockDualWriteSyncChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
   mockDualWriteDelete: vi.fn().mockResolvedValue(undefined),
   mockWriteFile: vi.fn(),
+  mockCopyFile: vi.fn(),
   // #4131 G-B lot 2 — la porte write-primary, off par défaut (les tests du
   // lot 1 épingle le chemin GDrive-first ; le lot 2 a son propre fichier).
   mockIsDashboardPgPrimary: vi.fn().mockReturnValue(false),
@@ -53,7 +56,7 @@ const {
 // (tout le reste — mkdtemp, readFile, unlink… — reste réel).
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
-  return { ...actual, writeFile: mockWriteFile };
+  return { ...actual, writeFile: mockWriteFile, copyFile: mockCopyFile };
 });
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
@@ -107,10 +110,13 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
     tmpDir = await mkdtemp(testTmpBase);
     const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
     fsWriteFileReal = actual.writeFile;
-    // writeFile réel par défaut : chaque test qui veut le faire échouer le
-    // reprogramme explicitement.
+    fsCopyFileReal = actual.copyFile;
+    // writeFile/copyFile réels par défaut : chaque test qui veut faire
+    // échouer/pendre la moitié GDrive le reprogramme explicitement.
     mockWriteFile.mockImplementation(((file: unknown, data: unknown, opts: unknown) =>
       fsWriteFileReal(file as string, data as string, opts as undefined)) as typeof fsWriteFileReal);
+    mockCopyFile.mockImplementation(((src: unknown, dest: unknown) =>
+      fsCopyFileReal(src as string, dest as string)) as typeof fsCopyFileReal);
     mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
     mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
     mockDualWriteSync.mockClear().mockResolvedValue(undefined);
@@ -135,17 +141,18 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
     delete process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY;
   });
 
-  it('un writeFile qui ne rend jamais la main : append borné, publié sur PG seul, dégradation visible', async () => {
-    // DriveFS hangé sur le STAGING du dashboard uniquement — le reste (verrou
-    // append en tmpdir, heartbeats…) écrit normalement, sinon le mock pend
-    // l'acquisition du verrou elle-même et le test mesure autre chose.
-    mockWriteFile.mockImplementation(((file: unknown, data: unknown, opts: unknown) => {
-      const f = String(file);
-      if (f.includes('dashboards') && f.endsWith('.tmp')) {
+  it('un copyFile staging→store qui ne rend jamais la main : append borné, publié sur PG seul, dégradation visible', async () => {
+    // DriveFS hangé sur la COPIE vers le store (staging hors-arbre → dashboards/)
+    // — le staging vit maintenant dans le tmpdir local, seul le copyFile vers
+    // le store peut pendre. Le reste (verrou append en tmpdir, heartbeats…)
+    // écrit normalement, sinon le mock pend l'acquisition du verrou elle-même
+    // et le test mesure autre chose.
+    mockCopyFile.mockImplementation(((src: unknown, dest: unknown) => {
+      if (String(dest).includes('dashboards')) {
         return new Promise(() => { /* DriveFS hangé */ });
       }
-      return fsWriteFileReal(f, data as string, opts as undefined);
-    }) as typeof fsWriteFileReal);
+      return fsCopyFileReal(src as string, dest as string);
+    }) as typeof fsCopyFileReal);
 
     const result = await roosyncDashboard({
       action: 'append',
@@ -165,7 +172,7 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
 
   it('échec fs rapide (racine du store non réplicable) + PG vivant : succès dégradé, miroir écrit', async () => {
     // La racine du store est un FICHIER : existsSync passe, mais ni mkdir du
-    // sous-répertoire ni writeFile ne peuvent réussir — échec GDrive immédiat.
+    // sous-répertoire ni copyFile vers le store ne peuvent réussir — échec GDrive immédiat.
     // La lecture est armée côté PG (même patron que le test B2 ci-dessous) :
     // sous cette racine-fichier, le READ GDrive rend ENOTDIR sous Linux
     // (rethrow après retries → l'append meurt AVANT la moitié écriture, cf. CI

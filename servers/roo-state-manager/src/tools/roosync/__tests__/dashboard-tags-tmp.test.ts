@@ -60,6 +60,10 @@ describe('dashboard #4003 — tmp staging hygiene', () => {
     process.env.ROOSYNC_SHARED_PATH = tmpDir;
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';
     process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    // Isolation : le sweep couvre AUSSI le répertoire de staging hors-arbre —
+    // le pointer vers un sous-répertoire du tmpDir de test, sinon les staging
+    // d'autres fichiers de tests (même machine) contamineraient skipped/swept.
+    process.env.ROOSYNC_DASHBOARD_STAGING_DIR = path.join(tmpDir, 'staging');
     delete process.env.OPENAI_API_KEY;
     delete process.env.OPENAI_BASE_URL;
     delete process.env.OPENAI_CHAT_MODEL_ID;
@@ -72,6 +76,7 @@ describe('dashboard #4003 — tmp staging hygiene', () => {
     delete process.env.ROOSYNC_SHARED_PATH;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
+    delete process.env.ROOSYNC_DASHBOARD_STAGING_DIR;
   });
 
   it('static drift-guard: both staging write sites unlink the tmp in a finally', async () => {
@@ -119,6 +124,26 @@ describe('dashboard #4003 — tmp staging hygiene', () => {
     const result = await sweepOrphanDashboardTmpFiles();
     expect(result.swept).toEqual([]);
     expect(result.skipped).toEqual([]);
+  });
+
+  it('sweep also covers the out-of-tree staging dir (same age + dead-PID rules)', async () => {
+    const stagingDir = path.join(tmpDir, 'staging');
+    await mkdir(stagingDir, { recursive: true });
+    const pid = await deadPid();
+    const old = new Date(Date.now() - 20 * 60_000);
+
+    const deadOld = `workspace-w.md.${pid}.3.tmp`;   // out-of-tree, old + dead → swept
+    const deadYoung = `workspace-w.md.${pid + 1}.4.tmp`; // too young → kept
+    await writeFile(path.join(stagingDir, deadOld), 'stale');
+    await writeFile(path.join(stagingDir, deadYoung), 'fresh');
+    await utimes(path.join(stagingDir, deadOld), old, old);
+
+    const result = await sweepOrphanDashboardTmpFiles();
+
+    expect(result.swept).toEqual([deadOld]);
+    expect(result.skipped).toEqual([deadYoung]);
+    const remaining = await readdir(stagingDir);
+    expect(remaining).toEqual([deadYoung]);
   });
 
   /**

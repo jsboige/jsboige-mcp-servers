@@ -31,6 +31,7 @@ import * as os from 'os';
 // Le vrai writeFile — récupéré via importActual, JAMAIS via l'import du module
 // mocké (qui résoudrait vers le mock et récursionnerait à l'infini).
 let fsWriteFileReal: typeof import('fs/promises')['writeFile'];
+let fsCopyFileReal: typeof import('fs/promises')['copyFile'];
 
 const {
   mockReadDashboardFromPg,
@@ -39,6 +40,7 @@ const {
   mockDualWriteSync,
   mockDualWriteSyncChecked,
   mockWriteFile,
+  mockCopyFile,
   mockIsDashboardPgPrimary,
 } = vi.hoisted(() => ({
   mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
@@ -47,6 +49,7 @@ const {
   mockDualWriteSync: vi.fn().mockResolvedValue(undefined),
   mockDualWriteSyncChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
   mockWriteFile: vi.fn(),
+  mockCopyFile: vi.fn(),
   mockIsDashboardPgPrimary: vi.fn().mockReturnValue(false),
 }));
 
@@ -54,7 +57,7 @@ const {
 // le réel (chaque test le reprogramme explicitement pour faire échouer/pendre).
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
-  return { ...actual, writeFile: mockWriteFile };
+  return { ...actual, writeFile: mockWriteFile, copyFile: mockCopyFile };
 });
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
@@ -123,8 +126,11 @@ describe('PG-premier, GDrive miroir borné (#4131 G-B lot 2)', () => {
     tmpDir = await mkdtemp(testTmpBase);
     const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
     fsWriteFileReal = actual.writeFile;
+    fsCopyFileReal = actual.copyFile;
     mockWriteFile.mockImplementation(((file: unknown, data: unknown, opts: unknown) =>
       fsWriteFileReal(file as string, data as string, opts as undefined)) as typeof fsWriteFileReal);
+    mockCopyFile.mockImplementation(((src: unknown, dest: unknown) =>
+      fsCopyFileReal(src as string, dest as string)) as typeof fsCopyFileReal);
     mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
     mockReadDashboardFromPgUngated.mockReset().mockResolvedValue(null);
     mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
@@ -250,14 +256,14 @@ describe('PG-premier, GDrive miroir borné (#4131 G-B lot 2)', () => {
       status: { markdown: '' },
       intercom: { messages: [], totalMessages: 0 },
     });
-    // DriveFS hangé sur le staging du dashboard uniquement (verrou en tmpdir OK).
-    mockWriteFile.mockImplementation(((file: unknown, data: unknown, opts: unknown) => {
-      const f = String(file);
-      if (f.includes('dashboards') && f.endsWith('.tmp')) {
+    // DriveFS hangé sur la COPIE vers le store (staging hors-arbre → dashboards/ ;
+    // verrou en tmpdir OK).
+    mockCopyFile.mockImplementation(((src: unknown, dest: unknown) => {
+      if (String(dest).includes('dashboards')) {
         return new Promise(() => { /* DriveFS hangé */ });
       }
-      return fsWriteFileReal(f, data as string, opts as undefined);
-    }) as typeof fsWriteFileReal);
+      return fsCopyFileReal(src as string, dest as string);
+    }) as typeof fsCopyFileReal);
 
     const result = await roosyncDashboard({
       action: 'append',
@@ -299,14 +305,13 @@ describe('PG-premier, GDrive miroir borné (#4131 G-B lot 2)', () => {
   it('PG en échec + GDrive en échec : échec TOTAL — aucune surface ne porte le message', async () => {
     mockIsDashboardPgPrimary.mockReturnValue(true);
     mockDualWriteSyncChecked.mockResolvedValue({ ok: false, reason: 'exhausted' });
-    // DriveFS hangé sur le staging : la moitié GDrive du repli expirera.
-    mockWriteFile.mockImplementation(((file: unknown, data: unknown, opts: unknown) => {
-      const f = String(file);
-      if (f.includes('dashboards') && f.endsWith('.tmp')) {
+    // DriveFS hangé sur la copie vers le store : la moitié GDrive du repli expirera.
+    mockCopyFile.mockImplementation(((src: unknown, dest: unknown) => {
+      if (String(dest).includes('dashboards')) {
         return new Promise(() => { /* DriveFS hangé */ });
       }
-      return fsWriteFileReal(f, data as string, opts as undefined);
-    }) as typeof fsWriteFileReal);
+      return fsCopyFileReal(src as string, dest as string);
+    }) as typeof fsCopyFileReal);
 
     await expect(roosyncDashboard({
       action: 'append',
@@ -433,8 +438,11 @@ describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
     tmpDir = await mkdtemp(testTmpBase);
     const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
     fsWriteFileReal = actual.writeFile;
+    fsCopyFileReal = actual.copyFile;
     mockWriteFile.mockReset().mockImplementation(((file: unknown, data: unknown, opts: unknown) =>
       fsWriteFileReal(file as string, data as string, opts as undefined)) as typeof fsWriteFileReal);
+    mockCopyFile.mockReset().mockImplementation(((src: unknown, dest: unknown) =>
+      fsCopyFileReal(src as string, dest as string)) as typeof fsCopyFileReal);
     mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
     mockReadDashboardFromPgUngated.mockReset().mockResolvedValue(null);
     mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
@@ -466,18 +474,18 @@ describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
     process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
     setPgView(pgView());
 
-    // Une porte que le test ouvre lui-même : l'écriture du staging reste
+    // Une porte que le test ouvre lui-même : la COPIE staging→store reste
     // bloquée tant qu'elle est fermée — c'est le DriveFS qui rampe, en
-    // contrôlable.
+    // contrôlable (le staging vit hors-arbre : seule la copie vers le store
+    // peut pendre).
     let openGate!: () => void;
     const gate = new Promise<void>((resolve) => { openGate = resolve; });
-    mockWriteFile.mockImplementation(((file: unknown, data: unknown, opts: unknown) => {
-      const f = String(file);
-      if (f.includes('dashboards') && f.endsWith('.tmp')) {
-        return gate.then(() => fsWriteFileReal(f, data as string, opts as undefined));
+    mockCopyFile.mockImplementation(((src: unknown, dest: unknown) => {
+      if (String(dest).includes('dashboards')) {
+        return gate.then(() => fsCopyFileReal(src as string, dest as string));
       }
-      return fsWriteFileReal(file as string, data as string, opts as unknown as undefined);
-    }) as typeof fsWriteFileReal);
+      return fsCopyFileReal(src as string, dest as string);
+    }) as typeof fsCopyFileReal);
 
     const t0 = Date.now();
     const result = await withTimeout(
@@ -726,20 +734,20 @@ message présent seulement sur le fichier
       .mockResolvedValueOnce({ ok: true, reason: 'written' })
       .mockResolvedValue({ ok: false, reason: 'exhausted' });
 
-    // Rejet franc sur le staging (pas un hang) : c'est le rejet que le `.catch`
-    // du miroir détaché doit avaler. On en profite pour CAPTURER l'état du
-    // verrou à l'instant de l'écriture du miroir : c'est la preuve qu'il était
-    // tenu pendant le travail de fond (finding 3 de la pré-revue #4286).
+    // Rejet franc sur la COPIE vers le store (pas un hang) : c'est le rejet
+    // que le `.catch` du miroir détaché doit avaler. On en profite pour
+    // CAPTURER l'état du verrou à l'instant de l'écriture du miroir : c'est
+    // la preuve qu'il était tenu pendant le travail de fond (finding 3 de la
+    // pré-revue #4286).
     const lockPath = getAppendLockPath('workspace-test-workspace');
     let lockHeldDuringMirror: boolean | null = null;
-    mockWriteFile.mockImplementation(((file: unknown, data: unknown, opts: unknown) => {
-      const f = String(file);
-      if (f.includes('dashboards') && f.endsWith('.tmp')) {
+    mockCopyFile.mockImplementation(((src: unknown, dest: unknown) => {
+      if (String(dest).includes('dashboards')) {
         lockHeldDuringMirror = existsSync(lockPath);
         return Promise.reject(new Error('DriveFS indisponible (test .catch #4286)'));
       }
-      return fsWriteFileReal(file as string, data as string, opts as undefined);
-    }) as typeof fsWriteFileReal);
+      return fsCopyFileReal(src as string, dest as string);
+    }) as typeof fsCopyFileReal);
 
     const logged: string[] = [];
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(((...args: unknown[]) => {

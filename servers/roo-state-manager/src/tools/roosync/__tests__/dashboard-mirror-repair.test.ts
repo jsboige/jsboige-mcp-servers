@@ -18,6 +18,7 @@ import type { Dashboard } from '../dashboard-schemas.js';
 // Le vrai writeFile — récupéré via importActual, JAMAIS via l'import du module
 // mocké (qui résoudrait vers le mock et récursionnerait à l'infini).
 let fsWriteFileReal: typeof import('fs/promises')['writeFile'];
+let fsCopyFileReal: typeof import('fs/promises')['copyFile'];
 
 const {
   mockReadDashboardFromPg,
@@ -26,6 +27,7 @@ const {
   mockDualWriteSyncChecked,
   mockDualWriteDelete,
   mockWriteFile,
+  mockCopyFile,
   mockIsDashboardPgPrimary,
   mockReadDashboardFromPgUngated,
 } = vi.hoisted(() => ({
@@ -35,15 +37,16 @@ const {
   mockDualWriteSyncChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
   mockDualWriteDelete: vi.fn().mockResolvedValue(undefined),
   mockWriteFile: vi.fn(),
+  mockCopyFile: vi.fn(),
   mockIsDashboardPgPrimary: vi.fn().mockReturnValue(true),
   mockReadDashboardFromPgUngated: vi.fn().mockResolvedValue(null),
 }));
 
-// La moitié GDrive passe par fs/promises — le mock ne remplace QUE writeFile
-// (tout le reste — mkdtemp, readFile, unlink, copyFile… — reste réel).
+// La moitié GDrive passe par fs/promises — le mock remplace writeFile ET
+// copyFile (tout le reste — mkdtemp, readFile, unlink… — reste réel).
 vi.mock('fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs/promises')>();
-  return { ...actual, writeFile: mockWriteFile };
+  return { ...actual, writeFile: mockWriteFile, copyFile: mockCopyFile };
 });
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
@@ -96,10 +99,16 @@ describe('repairDashboardMirrorFromPg (#4131 review minor 1)', () => {
     tmpDir = await mkdtemp(testTmpBase);
     const actual = await vi.importActual<typeof import('fs/promises')>('fs/promises');
     fsWriteFileReal = actual.writeFile;
-    // writeFile réel par défaut : seul le test dégradé le reprogramme.
+    fsCopyFileReal = actual.copyFile;
+    // writeFile/copyFile réels par défaut : seul le test dégradé reprogramme
+    // la copie vers le store.
     mockWriteFile.mockImplementation(
       ((...args: Parameters<typeof fsWriteFileReal>) =>
         fsWriteFileReal(...args)) as typeof fsWriteFileReal
+    );
+    mockCopyFile.mockImplementation(
+      ((...args: Parameters<typeof fsCopyFileReal>) =>
+        fsCopyFileReal(...args)) as typeof fsCopyFileReal
     );
     mockReadDashboardFromPg.mockReset().mockResolvedValue(null);
     mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
@@ -124,18 +133,17 @@ describe('repairDashboardMirrorFromPg (#4131 review minor 1)', () => {
   });
 
   it('une moitié GDrive dégradée est un ÉCHEC : throw, jamais un « réparé »', async () => {
-    // Le store fichier est injoignable : l'écriture du miroir (le livrable
+    // Le store fichier est injoignable : la COPIE staging→store (le livrable
     // même de la réparation) échoue. La fonction doit le DIRE, pas rendre.
-    mockWriteFile.mockImplementation(
-      ((file: unknown, data: unknown, opts: unknown) => {
-        const f = String(file);
-        if (f.includes('dashboards')) {
+    // Le staging vit hors-arbre (os.tmpdir) : le writeFile de staging est réel
+    // et la copie vers le store est l'unique opération qui peut échouer.
+    mockCopyFile.mockImplementation(
+      ((src: unknown, dest: unknown) => {
+        if (String(dest).includes('dashboards')) {
           return Promise.reject(new Error('store injoignable'));
         }
-        // heartbeats du verrou append et autres fichiers hors dashboards :
-        // réels, sinon le mock pend l'acquisition du verrou elle-même.
-        return fsWriteFileReal(f, data as string, opts as undefined);
-      }) as typeof fsWriteFileReal
+        return fsCopyFileReal(src as string, dest as string);
+      }) as typeof fsCopyFileReal
     );
 
     await expect(repairDashboardMirrorFromPg('workspace-a', pgDashboard('workspace-a'))).rejects.toThrow(

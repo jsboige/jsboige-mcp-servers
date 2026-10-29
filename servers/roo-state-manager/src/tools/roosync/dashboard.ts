@@ -1326,10 +1326,30 @@ export function buildArchiveMessagesMarkdown(messages: IntercomMessage[]): strin
  * Changé AVEC la regex du sweep ci-dessous (`.<pid>.<seq>.tmp` la reconnaît,
  * comme l'ancien `.<pid>.tmp`) : changer le suffixe seul orphelinerait les
  * staging futurs du sweep.
+ *
+ * DEPUIS le fix racine-Drive (#4003/#3782) : le staging vit HORS de l'arbre
+ * synchronisé, dans `os.tmpdir()/rsm-dashboard-staging/`. Un staging créé
+ * dans `dashboards/` était uploadé par DriveFS puis orpheliné quand le
+ * writer l'unlinkait (hypothèse, cohérente avec le manifeste
+ * ZZ-debris-racine-2026-10-28 : 44 fichiers `<dashboard>.md.<pid>[.<seq>].tmp`
+ * — mostly 0 bytes, bursts seconde-à-seconde — parqués à la RACINE du Drive
+ * personnel, émetteur encore vivant au 28/10 22:11). Le copy-in-place
+ * (`copyFile`) ne requiert pas le même volume : un staging local ne change
+ * rien au contrat d'écriture. Le nommage `<basename>.<pid>.<seq>.tmp` est
+ * CONSERVÉ : le sweep ci-dessous le reconnaît tel quel, y compris dans le
+ * répertoire de staging.
  */
 let dashboardStagingSeq = 0;
-function nextDashboardStagingPath(filePath: string): string {
-  return `${filePath}.${process.pid}.${++dashboardStagingSeq}.tmp`;
+export function getDashboardStagingDir(): string {
+  // Override par env pour les tests (isolation par test) ; défaut production
+  // = tmpdir machine-local.
+  return process.env.ROOSYNC_DASHBOARD_STAGING_DIR
+    ?? path.join(os.tmpdir(), 'rsm-dashboard-staging');
+}
+async function nextDashboardStagingPath(filePath: string): Promise<string> {
+  const dir = getDashboardStagingDir();
+  await fs.mkdir(dir, { recursive: true });
+  return path.join(dir, `${path.basename(filePath)}.${process.pid}.${++dashboardStagingSeq}.tmp`);
 }
 
 /** #4003 — un tmp plus jeune que ce seuil est présumé in-flight et laissé en place. */
@@ -1346,7 +1366,7 @@ function isPidAlive(pid: number): boolean {
 }
 
 /**
- * #4003 — sweep des staging `*.md.<pid>[.<seq>].tmp` orphelins de dashboards/.
+ * #4003 — sweep des staging `*.md.<pid>[.<seq>].tmp` orphelins de dashboards/ (legacy) et du répertoire de staging hors-arbre.
  *
  * Les chemins d'écriture (#3782, complétés #4286) staged chaque write dans
  * `<fichier>.<pid>.<seq>.tmp` (anciennement `.<pid>.tmp`) puis copy-in-place +
@@ -1368,40 +1388,44 @@ function isPidAlive(pid: number): boolean {
 export async function sweepOrphanDashboardTmpFiles(
   opts?: { minAgeMs?: number }
 ): Promise<{ swept: string[]; skipped: string[] }> {
-  const dir = getDashboardsDir();
   const minAge = opts?.minAgeMs ?? TMP_SWEEP_MIN_AGE_MS;
   const swept: string[] = [];
   const skipped: string[] = [];
-  let entries: string[];
-  try {
-    entries = await fs.readdir(dir);
-  } catch {
-    return { swept, skipped }; // store absent/illisible — rien à sweeper
-  }
+  // Le store (staging déjà sur disque d'avant le fix racine-Drive) ET le
+  // répertoire de staging hors-arbre : mêmes règles âge + PID mort dans
+  // les deux lieux.
   const now = Date.now();
-  for (const entry of entries) {
-    // #4286 — deux formes reconnues, le PID reste le groupe 1 : le staging
-    // per-appel `.<pid>.<seq>.tmp` ET l'ancien `.<pid>.tmp` (les fichiers déjà
-    // sur disque d'avant la PR). Changer le suffixe sans cette regex
-    // orphelinerait les staging futurs du sweep.
-    const m = entry.match(/\.md\.(\d+)(?:\.\d+)?\.tmp$/);
-    if (!m) continue;
-    const pid = parseInt(m[1], 10);
-    const full = path.join(dir, entry);
+  for (const dir of [getDashboardsDir(), getDashboardStagingDir()]) {
+    let entries: string[];
     try {
-      const st = await fs.stat(full);
-      if (now - st.mtimeMs < minAge || pid === process.pid || isPidAlive(pid)) {
-        skipped.push(entry);
-        continue;
-      }
-      await fs.unlink(full);
-      swept.push(entry);
+      entries = await fs.readdir(dir);
     } catch {
-      skipped.push(entry);
+      continue; // store absent/illisible — rien à sweeper ici
+    }
+    for (const entry of entries) {
+      // #4286 — deux formes reconnues, le PID reste le groupe 1 : le staging
+      // per-appel `.<pid>.<seq>.tmp` ET l'ancien `.<pid>.tmp` (les fichiers déjà
+      // sur disque d'avant la PR). Changer le suffixe sans cette regex
+      // orphelinerait les staging futurs du sweep.
+      const m = entry.match(/\.md\.(\d+)(?:\.\d+)?\.tmp$/);
+      if (!m) continue;
+      const pid = parseInt(m[1], 10);
+      const full = path.join(dir, entry);
+      try {
+        const st = await fs.stat(full);
+        if (now - st.mtimeMs < minAge || pid === process.pid || isPidAlive(pid)) {
+          skipped.push(entry);
+          continue;
+        }
+        await fs.unlink(full);
+        swept.push(entry);
+      } catch {
+        skipped.push(entry);
+      }
     }
   }
   if (swept.length > 0) {
-    logger.info('[TmpSweep #4003] staging orphelins supprimés', { dir, count: swept.length, swept });
+    logger.info('[TmpSweep #4003] staging orphelins supprimés', { count: swept.length, swept });
   }
   return { swept, skipped };
 }
@@ -2607,7 +2631,7 @@ async function writeDashboardFile(
   // leur staging (le `.tmp` nu était une collision supplémentaire sous
   // contention). #4286 — pid + séquence d'appel : deux writers du MÊME
   // processus (miroir différé + condensation) ne partagent plus le staging.
-  const tmpPath = nextDashboardStagingPath(filePath);
+  const tmpPath = await nextDashboardStagingPath(filePath);
 
   // #3774 — jeton d'atterrissage : l'id du DERNIER message de l'instantané écrit.
   // Pour un APPEND il est neuf par construction (produit par ce process, absent
@@ -2862,7 +2886,7 @@ async function appendDashboardIncremental(
 ): Promise<WriteVerifyResult> {
   const dir = getDashboardsDir();
   const filePath = getDashboardPath(key);
-  const tmpPath = nextDashboardStagingPath(filePath); // #3782/#4286 — cf. writeDashboardFile
+  const tmpPath = await nextDashboardStagingPath(filePath); // #3782/#4286 — cf. writeDashboardFile
   // #4131 G-B lot 1 — même borne que writeDashboardFile : la lecture-modification-
   // écriture ci-dessous tient le verrou append (couche PG + fichier local) pendant
   // qu'elle touche G:. Un DriveFS qui rampe étirait la détention du verrou sur
