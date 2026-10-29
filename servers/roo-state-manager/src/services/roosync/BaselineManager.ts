@@ -14,6 +14,13 @@ import { RooSyncServiceError } from '../../types/errors.js';
 import type { RooSyncDashboard } from '../../utils/roosync-parsers.js';
 import { createLogger } from '../../utils/logger.js';
 import { ensureStoreSubdir } from '../../utils/shared-state-path.js';
+// #4131 Phase D — registre PG-premier (roosync_store_meta, migrations/012)
+import {
+  MACHINE_REGISTRY_META_KEY,
+  readStoreMetaValue,
+  upsertStoreMetaValue,
+  storeMetaUrl
+} from '../unified-store/store-meta.js';
 
 /**
  * Registre central des machines pour éviter les conflits d'identité
@@ -63,6 +70,14 @@ export interface RollbackRestoreResult {
 export class BaselineManager {
   private logger = createLogger('BaselineManager');
   private machineRegistry: MachineRegistry;
+  // #4131 Phase D (review ms#1563, Hermes 🟠) : état de persistance hérité du
+  // chargement. 'refused-blind' = une source EXISTAIT mais était illisible au
+  // chargement (fichier EBUSY, ligne PG corrompue) : persister maintenant
+  // écrirait le registre partiel en mémoire COMME vérité durable — et la
+  // ligne PG, une fois écrite, masquerait pour toujours le fichier redevenu
+  // sain au démarrage suivant. On refuse, bruyamment. Une installation neuve
+  // (aucune source nulle part) reste 'allowed' : c'est ainsi que le registre naît.
+  private registryPersistence: 'allowed' | 'refused-blind' = 'allowed';
   // #2267: registry init promise — avoids blocking constructor on GDrive readFileSync
   private registryInitPromise: Promise<void>;
 
@@ -99,10 +114,52 @@ export class BaselineManager {
   }
 
   /**
-   * Charger le registre des machines depuis le disque
-   * #2267: Converted from sync to async to avoid blocking Node.js event loop on GDrive reads.
+   * Charger le registre des machines — PG d'abord, fichier GDrive en repli.
+   *
+   * #4131 Phase D (bloqueur 03/11) : le registre était lu UNIQUEMENT sur
+   * GDrive (87/87 démarrages mesurés le 28/10) et dégradait EN SILENCE en
+   * Map vide quand la lecture échouait — un registre vide était
+   * indistinguable de « la flotte n'a pas de machines ». Le nouveau défaut :
+   * la ligne PG (`roosync_store_meta`, clé `machine_registry`) est la
+   * surface ; le fichier GDrive ne sert que lorsque la ligne est absente,
+   * et son chargement SEED alors PG — le registre est une donnée dérivée
+   * (chaque machine se ré-enregistre), le seed rend la bascule
+   * auto-réparante sans script de migration. Aucune source lisible =
+   * une ligne d'erreur qui NOMME les deux causes : registre vide ≠ flotte
+   * vide (famille #3459).
+   *
+   * #2267: async depuis l'origine — les blocages FUSE GDrive ne gèlent pas
+   * l'event loop.
    */
   private async loadMachineRegistry(): Promise<void> {
+    let pgState = 'absent (pas d\'URL PG)';
+
+    if (storeMetaUrl()) {
+      try {
+        const raw = await readStoreMetaValue(MACHINE_REGISTRY_META_KEY);
+        if (raw !== null) {
+          const registryData = JSON.parse(raw);
+          this.machineRegistry.machines = new Map(
+            Object.entries(registryData.machines || {}).map(
+              ([key, value]) => [key.toLowerCase(), value as any]
+            )
+          );
+          this.logger.info(
+            `[registry] chargé depuis PG: ${this.machineRegistry.machines.size} machines (#4131)`
+          );
+          this.registryPersistence = 'allowed';
+          return;
+        }
+        pgState = 'ligne absente';
+      } catch (error) {
+        pgState = 'lecture PG en échec';
+        this.logger.warn('[registry] lecture PG impossible — repli sur le fichier GDrive', { error: String(error) });
+      }
+    }
+
+    // Repli/seed : le fichier GDrive reste la surface tant que la ligne PG
+    // n'existe pas (contrat migration-012 : la DONNÉE décide, pas un drapeau).
+    let fileState = 'absent';
     try {
       if (existsSync(this.machineRegistry.registryPath)) {
         // #2267: async read replaces readFileSync — GDrive FUSE stalls no longer block event loop
@@ -116,34 +173,119 @@ export class BaselineManager {
           )
         );
 
-        this.logger.info(`Registre des machines chargé: ${this.machineRegistry.machines.size} machines`);
+        this.logger.info(
+          `[registry] chargé depuis le fichier GDrive: ${this.machineRegistry.machines.size} machines`
+        );
+        fileState = `lu (${this.machineRegistry.machines.size} machines)`;
+        this.registryPersistence = 'allowed';
+
+        // Seed : première lecture d'un registre qui n'existe pas encore en PG
+        // → la donnée migre elle-même, une fois, sans script (#4131 Phase D).
+        if (storeMetaUrl() && pgState === 'ligne absente' && this.machineRegistry.machines.size > 0) {
+          try {
+            await upsertStoreMetaValue(
+              MACHINE_REGISTRY_META_KEY,
+              JSON.stringify({
+                machines: Object.fromEntries(this.machineRegistry.machines),
+                lastUpdated: new Date().toISOString()
+              })
+            );
+            this.logger.info(
+              `[registry] PG seedé depuis le fichier GDrive (${this.machineRegistry.machines.size} machines, #4131)`
+            );
+          } catch (error) {
+            // Non-fatal : la ligne sera seedée à la prochaine lecture réussie.
+            this.logger.warn('[registry] seed PG impossible (reprise à la prochaine lecture)', {
+              error: String(error)
+            });
+          }
+        }
+        return;
       }
     } catch (error) {
+      fileState = 'lecture en échec';
       this.logger.warn('Erreur chargement registre des machines:', { error });
-      // Continuer avec un registre vide
-      this.machineRegistry.machines = new Map();
+    }
+
+    // Aucune source : registre vide MAIS dit et daté dans le journal —
+    // jamais silencieux (l'ancien `catch → new Map()` sans condition).
+    this.machineRegistry.machines = new Map();
+    // Review ms#1563 (Hermes 🟠) : distinguer « rien n'existe » (installation
+    // neuve — la persistance crée le registre) de « quelque chose existe mais
+    // est illisible » (aveugle — persister écraserait la vérité). pgState ne
+    // dit « ligne absente » que si PG a RÉPONDU ; fileState ne dit « lecture
+    // en échec » que si le fichier existait.
+    const blindLoad =
+      pgState === 'lecture PG en échec' ||
+      fileState === 'lecture en échec';
+    this.registryPersistence = blindLoad ? 'refused-blind' : 'allowed';
+    this.logger.error(
+      `[registry] VIDE — aucune source lisible (pg: ${pgState}, fichier: ${fileState}) — ` +
+      'registre vide ≠ flotte vide (#4131, famille #3459)'
+    );
+    if (blindLoad) {
+      this.logger.error(
+        '[registry] PERSISTANCE REFUSÉE pour cette session — une source existait mais était ' +
+        'illisible au chargement : écrire maintenant ferait du registre partiel en mémoire la ' +
+        'vérité durable, même après retour du montage (#4131, famille #3459)'
+      );
     }
   }
 
   /**
-   * Sauvegarder le registre des machines sur le disque
+   * Sauvegarder le registre des machines — PG d'abord, miroir fichier GDrive.
+   *
+   * #4131 Phase D : la ligne PG est la surface ; l'écriture fichier devient
+   * un miroir meilleur-effort (échec toléré et journalisé), symétrique du
+   * miroir dashboards hors chemin critique. Les DEUX en échec = une ligne
+   * d'erreur, jamais un silence.
    */
   private async saveMachineRegistry(): Promise<void> {
-    try {
-      const registryData = {
-        machines: Object.fromEntries(this.machineRegistry.machines),
-        lastUpdated: new Date().toISOString()
-      };
+    // Review ms#1563 (Hermes 🟠) : un chargement aveugle ne devient jamais la
+    // vérité durable — le refus est une ligne d'erreur, pas un silence.
+    if (this.registryPersistence === 'refused-blind') {
+      this.logger.error(
+        `[registry] sauvegarde REFUSÉE (${this.machineRegistry.machines.size} machines en mémoire) — ` +
+        'aucune source n\'était lisible au chargement : persister ferait de ce registre partiel ' +
+        'la vérité durable (#4131, famille #3459)'
+      );
+      return;
+    }
+    const registryData = {
+      machines: Object.fromEntries(this.machineRegistry.machines),
+      lastUpdated: new Date().toISOString()
+    };
 
+    let pgSaved = false;
+    if (storeMetaUrl()) {
+      try {
+        await upsertStoreMetaValue(
+          MACHINE_REGISTRY_META_KEY,
+          JSON.stringify(registryData)
+        );
+        pgSaved = true;
+        this.logger.info(
+          `[registry] sauvegardé dans PG: ${this.machineRegistry.machines.size} machines (#4131)`
+        );
+      } catch (error) {
+        this.logger.error('[registry] sauvegarde PG impossible', { error: String(error) });
+      }
+    }
+
+    let mirrorSaved = false;
+    try {
       await fs.writeFile(
         this.machineRegistry.registryPath,
         JSON.stringify(registryData, null, 2),
         'utf-8'
       );
-
-      this.logger.info('Registre des machines sauvegardé');
+      mirrorSaved = true;
     } catch (error) {
-      this.logger.error('Erreur sauvegarde registre des machines:', error);
+      this.logger.warn('[registry] écriture miroir GDrive impossible (toléré)', { error: String(error) });
+    }
+
+    if (!pgSaved && !mirrorSaved) {
+      this.logger.error('[registry] AUCUNE sauvegarde réussie (PG et GDrive en échec)');
     }
   }
 

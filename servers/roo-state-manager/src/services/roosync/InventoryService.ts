@@ -11,6 +11,26 @@ import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-
 import { maskSecretTextForPublication } from '../../utils/secret-redaction.js';
 import { getActiveMcpSettingsPath } from '../../utils/extension-paths.js';
 import { findRooExtensionsRoot as findRepoRoot } from '../../utils/repo-root.js';
+// #4131 Phase D — inventaires PG-premier (roosync_store_meta, migrations/012)
+import {
+  inventoryMetaKey,
+  readStoreMetaValue,
+  upsertStoreMetaValue,
+  storeMetaUrl
+} from '../unified-store/store-meta.js';
+import { createLogger } from '../../utils/logger.js';
+
+/**
+ * Lazy logger — ce module est importé par des tests qui mockent `fs` avec un
+ * double partiel, et `createLogger` touche le système de fichiers dans son
+ * constructeur (même raison que conversation-list-store.ts). Les lignes
+ * PG/miroir passent par le journal RSM (mesurables, #4131 Phase D).
+ */
+let cachedInvLogger: ReturnType<typeof createLogger> | null = null;
+function invLogger(): ReturnType<typeof createLogger> {
+  if (!cachedInvLogger) cachedInvLogger = createLogger('InventoryService');
+  return cachedInvLogger;
+}
 
 // #3975: promisify paresseux — des tests mockent child_process avec execSync seul
 // (export exec absent) ; un promisify(exec) top-level y explose au chargement module.
@@ -143,6 +163,55 @@ export class InventoryService {
  */
 private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
   const sharedPath = process.env.ROOSYNC_SHARED_PATH;
+
+  // #4131 Phase D (bloqueur 03/11) : la ligne PG (`roosync_store_meta`,
+  // clé `inventory:{machineId}`) est la nouvelle surface ; le fichier
+  // GDrive ne sert que lorsque la ligne est absente (contrat migration-012 :
+  // la DONNÉE décide). Une ligne PG corrompue est une erreur TYPIÉE, jamais
+  // un repli silencieux vers un fichier périmé. Review ms#1563 (Hermes 🟡) :
+  // la branche PG passe AVANT la garde ROOSYNC_SHARED_PATH — « le service
+  // démarre sans GDrive » (03/11) doit tenir même si l'exploitant retire la
+  // variable en même temps que le montage, pas seulement le répertoire.
+  if (storeMetaUrl()) {
+    try {
+      const raw = await readStoreMetaValue(inventoryMetaKey(machineId));
+      if (raw !== null) {
+        let inventory: FullInventory;
+        try {
+          inventory = JSON.parse(raw) as FullInventory;
+        } catch {
+          // Review ms#1563 (Hermes 🟡) : une ligne EXISTANTE mais illisible
+          // n'est pas une absence — le repli fichier servirait un inventaire
+          // périmé à la place d'une vérité endommagée, en silence.
+          throw new InventoryCollectorError(
+            `Ligne PG inventory:${machineId} illisible (JSON invalide) — pas de repli fichier`,
+            InventoryCollectorErrorCode.INVENTORY_PARSE_FAILED,
+            { machineId, rawPreview: String(raw).slice(0, 80) }
+          );
+        }
+        if (inventory.machineId !== machineId) {
+          throw new InventoryCollectorError(
+            `Incohérence dans l'inventaire (PG): machineId de la ligne (${inventory.machineId}) ` +
+            `diffère du machineId demandé (${machineId})`,
+            InventoryCollectorErrorCode.INVENTORY_PARSE_FAILED,
+            { requestedMachineId: machineId, actualMachineId: inventory.machineId }
+          );
+        }
+        invLogger().info(`[inventory] '${machineId}' servi depuis PG (#4131)`);
+        return inventory;
+      }
+      invLogger().info(`[inventory] '${machineId}' absent de PG — repli fichier GDrive`);
+    } catch (error: any) {
+      if (error instanceof InventoryCollectorError) {
+        throw error;
+      }
+      // PG injoignable : repli fichier si configuré, dit dans le journal.
+      invLogger().warn('[inventory] lecture PG impossible — repli fichier GDrive', {
+        machineId,
+        error: String(error)
+      });
+    }
+  }
 
   if (!sharedPath) {
     throw new InventoryCollectorError(
@@ -415,8 +484,30 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
   /**
    * CORRECTION #322: Sauvegarde l'inventaire dans le shared state pour permettre à compare_config de fonctionner
    * @param inventory - L'inventaire à sauvegarder
+   *
+   * #4131 Phase D : la ligne PG (`inventory:{machineId}`) est la surface ;
+   * le fichier GDrive devient un miroir meilleur-effort (échec toléré et
+   * journalisé, symétrique du miroir dashboards). Les DEUX en échec = une
+   * ligne d'erreur, jamais un silence.
    */
   private async saveToSharedState(inventory: FullInventory): Promise<void> {
+    const masked = maskSecretTextForPublication(JSON.stringify(inventory, null, 2));
+
+    let pgSaved = false;
+    if (storeMetaUrl()) {
+      try {
+        await upsertStoreMetaValue(inventoryMetaKey(inventory.machineId), masked);
+        pgSaved = true;
+        invLogger().info(`[inventory] '${inventory.machineId}' sauvegardé dans PG (#4131)`);
+      } catch (error) {
+        invLogger().error('[inventory] sauvegarde PG impossible', {
+          machineId: inventory.machineId,
+          error: String(error)
+        });
+      }
+    }
+
+    let mirrorSaved = false;
     try {
       const sharedStatePath = getSharedStatePath();
       const inventoriesDir = path.join(sharedStatePath, 'inventories');
@@ -434,12 +525,20 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
       // même frontière que dashboard/messages — URI à credentials (#3545 §5.1)
       // et valeurs connues masquées par le masque CANONIQUE (#3584), jamais une
       // copie locale. L'URL sans userinfo et le reste du JSON passent intacts.
-      await fs.writeFile(filepath, maskSecretTextForPublication(JSON.stringify(inventory, null, 2)), 'utf-8');
-      console.log(`[InventoryService] 💾 Inventaire sauvegardé: ${filepath}`);
-
+      await fs.writeFile(filepath, masked, 'utf-8');
+      mirrorSaved = true;
     } catch (error) {
       // Non-bloquant : on log mais on ne throw pas
-      console.warn(`[InventoryService] ⚠️ Impossible de sauvegarder dans .shared-state:`, error);
+      invLogger().warn('[inventory] écriture miroir GDrive impossible (toléré)', {
+        machineId: inventory.machineId,
+        error: String(error)
+      });
+    }
+
+    if (!pgSaved && !mirrorSaved) {
+      invLogger().error(
+        `[inventory] AUCUNE sauvegarde réussie pour '${inventory.machineId}' (PG et GDrive en échec)`
+      );
     }
   }
 }
