@@ -24,6 +24,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 
 import { resetEmbeddingOpenAIClient, resetChatOpenAIClient, resetFallbackChatOpenAIClient } from './openai.js';
+import { recordEmbeddingFileConfig } from './embedding-endpoints.js';
 import { resetQdrantClient } from './qdrant.js';
 import { resetCodebaseEmbeddingClient } from '../tools/search/search-codebase.tool.js';
 
@@ -237,6 +238,13 @@ export function reloadConfig(envPath: string = resolveEnvPath()): ConfigReloadRe
   }
 
   const parsed = dotenv.parse(raw);
+  // #4352 (deadep): the file canonical must follow a `.env` edit on reload too —
+  // the plan builder reads it when a rebuilt client re-arms the failover order.
+  // Review ai-01 28/10: the return says whether the record (endpoints or key)
+  // CHANGED — under host shadowing no allowlisted process.env key moves when the
+  // `.env` does, so the file record is the only signal that the fallback order
+  // and its key changed, and the embedding clients must rebuild on it.
+  const embeddingFileRecordChanged = recordEmbeddingFileConfig(parsed);
   const allowed = new Set<string>(RELOADABLE_ENV_KEYS);
 
   report.skippedKeys = Object.keys(parsed).filter((k) => !allowed.has(k)).sort();
@@ -282,6 +290,18 @@ export function reloadConfig(envPath: string = resolveEnvPath()): ConfigReloadRe
     if (deps.some((d) => changedKeys.has(d))) {
       RESETTERS[client]();
       report.clientsReset.push(client);
+    }
+  }
+  // #4352 review (ai-01, 28/10): a `.env` edit that changes the FILE record
+  // (shadowing canonical, or its key) re-arms the fallback order inside the
+  // embedding clients — without this reset they keep the old plan until some
+  // allowlisted env key happens to move, which under host shadowing it never does.
+  if (embeddingFileRecordChanged) {
+    for (const client of ['embeddingClient', 'codebaseEmbeddingClient'] as const) {
+      if (!report.clientsReset.includes(client)) {
+        RESETTERS[client]();
+        report.clientsReset.push(client);
+      }
     }
   }
   report.clientsReset.sort();

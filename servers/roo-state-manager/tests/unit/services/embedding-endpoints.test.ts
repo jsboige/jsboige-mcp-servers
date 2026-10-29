@@ -18,8 +18,12 @@ import {
 	getEmbeddingClientModeSettings,
 	getEmbeddingClientTimeoutMs,
 	getEmbeddingEndpointPlan,
+	getEmbeddingShadowingStatus,
 	parseEmbeddingEndpoints,
+	recordEmbeddingFileConfig,
+	resetEmbeddingFileConfigForTest,
 } from '../../../src/services/embedding-endpoints.js';
+import { captureHostEnvKeys, resetHostEnvKeysForTest } from '../../../src/services/host-env-snapshot.js';
 import { getCodebaseEmbeddingEndpoint } from '../../../src/services/code-index/embedding-client.js';
 
 function env(values: Record<string, string>): NodeJS.ProcessEnv {
@@ -403,5 +407,188 @@ describe('#4395 (RX126) LAN-direct default', () => {
 		} finally {
 			vi.restoreAllMocks();
 		}
+	});
+});
+
+describe('#4352 (deadep) host-dead configured endpoint falls back to the .env canonical', () => {
+	// The ai-01 measurement (c.6478415645): the VS Code host carried po-2026's dead
+	// LAN address while the `.env` said the public vhost; a shadowed SINGLE endpoint
+	// armed no wrapper and indexed nothing.
+	const FILE_CANONICAL = 'https://embeddings.myia.io/v1';
+	const DEAD_HOST = 'http://192.168.0.51:8004/v1';
+
+	afterEach(() => {
+		resetEmbeddingFileConfigForTest();
+		resetHostEnvKeysForTest();
+		vi.restoreAllMocks();
+	});
+
+	it('a dead configured endpoint + healthy .env canonical → the call succeeds', async () => {
+		recordEmbeddingFileConfig({ EMBEDDING_API_BASE_URL: FILE_CANONICAL });
+		const calls: string[] = [];
+		const fetcher = vi.fn(async (url: string | URL | Request) => {
+			const text = String(url);
+			calls.push(text);
+			if (text.startsWith(DEAD_HOST)) {
+				const err = new TypeError('fetch failed');
+				(err as { code?: string }).code = 'ECONNREFUSED';
+				throw err;
+			}
+			return embeddingResponse(4);
+		});
+		vi.spyOn(globalThis, 'fetch').mockImplementation(fetcher as typeof fetch);
+		const plan = getEmbeddingEndpointPlan('index', env({
+			EMBEDDING_API_BASE_URL: DEAD_HOST,
+			EMBEDDING_DIMENSIONS: '4',
+		}));
+		// The wrapper IS armed: the shadowed single endpoint is no longer alone.
+		expect(plan.fetch).toBeDefined();
+		const response = await plan.fetch!(`${DEAD_HOST}/embeddings`, { method: 'POST', body: '{}' });
+		expect(response.status).toBe(200);
+		// Dead host tried first, then the .env canonical — /v1 preserved on both.
+		expect(calls).toEqual([`${DEAD_HOST}/embeddings`, `${FILE_CANONICAL}/embeddings`]);
+	});
+
+	it('the fallback attempt carries the FILE key, not the client key (review ai-01 28/10)', async () => {
+		// Key A on the configured (host) client, key B in the `.env` record: the
+		// appended canonical must be reached with B — A there is a fabricated 401
+		// (or a Bearer handed to a service it was never issued for).
+		recordEmbeddingFileConfig({ EMBEDDING_API_BASE_URL: FILE_CANONICAL, EMBEDDING_API_KEY: 'key-B' });
+		const auths: Array<{ url: string; authorization: string | null }> = [];
+		const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const text = String(url);
+			auths.push({ url: text, authorization: new Headers(init?.headers).get('authorization') });
+			if (text.startsWith(DEAD_HOST)) {
+				const err = new TypeError('fetch failed');
+				(err as { code?: string }).code = 'ECONNREFUSED';
+				throw err;
+			}
+			return embeddingResponse(4);
+		});
+		vi.spyOn(globalThis, 'fetch').mockImplementation(fetcher as typeof fetch);
+		const plan = getEmbeddingEndpointPlan('index', env({
+			EMBEDDING_API_BASE_URL: DEAD_HOST,
+			EMBEDDING_DIMENSIONS: '4',
+		}));
+		// The SDK built this request with the HOST key.
+		await plan.fetch!(`${DEAD_HOST}/embeddings`, {
+			method: 'POST',
+			body: '{}',
+			headers: { Authorization: 'Bearer key-A' },
+		});
+		// The configured endpoint keeps the caller's Authorization; the appended
+		// canonical is attempted with ITS OWN `.env` key.
+		expect(auths).toEqual([
+			{ url: `${DEAD_HOST}/embeddings`, authorization: 'Bearer key-A' },
+			{ url: `${FILE_CANONICAL}/embeddings`, authorization: 'Bearer key-B' },
+		]);
+	});
+
+	it('no file key recorded → the fallback keeps the caller Authorization', async () => {
+		// The `.env` names the canonical but no key: nothing to substitute, the
+		// attempt goes out exactly as the SDK built it.
+		recordEmbeddingFileConfig({ EMBEDDING_API_BASE_URL: FILE_CANONICAL });
+		const auths: string[] = [];
+		const fetcher = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			auths.push(new Headers(init?.headers).get('authorization') ?? '(none)');
+			if (String(url).startsWith(DEAD_HOST)) {
+				const err = new TypeError('fetch failed');
+				(err as { code?: string }).code = 'ECONNREFUSED';
+				throw err;
+			}
+			return embeddingResponse(4);
+		});
+		vi.spyOn(globalThis, 'fetch').mockImplementation(fetcher as typeof fetch);
+		const plan = getEmbeddingEndpointPlan('index', env({
+			EMBEDDING_API_BASE_URL: DEAD_HOST,
+			EMBEDDING_DIMENSIONS: '4',
+		}));
+		await plan.fetch!(`${DEAD_HOST}/embeddings`, {
+			method: 'POST',
+			body: '{}',
+			headers: { Authorization: 'Bearer key-A' },
+		});
+		expect(auths).toEqual(['Bearer key-A', 'Bearer key-A']);
+	});
+
+	it('a HEALTHY configured endpoint answers and is never replaced (negative control)', async () => {
+		recordEmbeddingFileConfig({ EMBEDDING_API_BASE_URL: FILE_CANONICAL });
+		const calls: string[] = [];
+		const fetcher = async (url: string | URL | Request) => {
+			calls.push(String(url));
+			return embeddingResponse(4);
+		};
+		vi.spyOn(globalThis, 'fetch').mockImplementation(fetcher as typeof fetch);
+		const plan = getEmbeddingEndpointPlan('index', env({
+			EMBEDDING_API_BASE_URL: 'http://healthy-host:8004/v1',
+			EMBEDDING_DIMENSIONS: '4',
+		}));
+		const response = await plan.fetch!('http://healthy-host:8004/v1/embeddings', { method: 'POST', body: '{}' });
+		expect(response.status).toBe(200);
+		// Served by the configured endpoint; the canonical was never contacted.
+		expect(calls).toEqual(['http://healthy-host:8004/v1/embeddings']);
+	});
+
+	it('appends the file canonical but keeps the configured endpoint as SDK baseURL', () => {
+		recordEmbeddingFileConfig({ EMBEDDING_API_BASE_URL: FILE_CANONICAL });
+		const plan = getEmbeddingEndpointPlan('index', env({ EMBEDDING_API_BASE_URL: DEAD_HOST }));
+		expect(plan.endpoints).toEqual([DEAD_HOST, FILE_CANONICAL]);
+		// The SDK base (and the supplement fingerprint) stays the CONFIGURED value:
+		// the fallback must not look like an endpoint switch for the collection.
+		expect(plan.baseURL).toBe(DEAD_HOST);
+	});
+
+	it('warns once per shadowing episode, naming BOTH hosts and the masking layer (review ai-01 28/10)', () => {
+		recordEmbeddingFileConfig({ EMBEDDING_API_BASE_URL: FILE_CANONICAL });
+		captureHostEnvKeys({ RSM_HOST_ENV_KEYS: 'EMBEDDING_API_BASE_URL' } as NodeJS.ProcessEnv);
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+		getEmbeddingEndpointPlan('index', env({ EMBEDDING_API_BASE_URL: DEAD_HOST }));
+		getEmbeddingEndpointPlan('query', env({ EMBEDDING_API_BASE_URL: DEAD_HOST }));
+		// Same configured/file pair → one warn, not one per client build.
+		expect(warn).toHaveBeenCalledTimes(1);
+		const message = warn.mock.calls[0][0];
+		// Both labels are named: which configured endpoint, which canonical.
+		expect(message).toContain('192.168.0.51:8004');
+		expect(message).toContain('embeddings.myia.io');
+		expect(message).toContain('host process env');
+		// A different pair re-arms the episode.
+		getEmbeddingEndpointPlan('index', env({ EMBEDDING_API_BASE_URL: 'http://other:8004/v1' }));
+		expect(warn).toHaveBeenCalledTimes(2);
+	});
+
+	it('no shadowing (file canonical == configured) → nothing appended', () => {
+		// Non-vhost canonical on purpose: the vhost form arms LAN-direct (#4395),
+		// which is a different (and already pinned) try-order change.
+		recordEmbeddingFileConfig({ EMBEDDING_API_BASE_URL: 'http://custom:8004/v1' });
+		const plan = getEmbeddingEndpointPlan('index', env({ EMBEDDING_API_BASE_URL: 'http://custom:8004/v1' }));
+		expect(plan.endpoints).toEqual(['http://custom:8004/v1']);
+		expect(plan.fetch).toBeUndefined();
+	});
+
+	it('no file record → unchanged single-endpoint plan', () => {
+		const plan = getEmbeddingEndpointPlan('index', env({ EMBEDDING_API_BASE_URL: DEAD_HOST }));
+		expect(plan.endpoints).toEqual([DEAD_HOST]);
+		expect(plan.fetch).toBeUndefined();
+	});
+
+	it('a malformed file value is ignored, not fatal', () => {
+		recordEmbeddingFileConfig({ EMBEDDING_API_BASE_URL: 'not-a-url' });
+		const plan = getEmbeddingEndpointPlan('index', env({ EMBEDDING_API_BASE_URL: DEAD_HOST }));
+		expect(plan.endpoints).toEqual([DEAD_HOST]);
+		expect(plan.fetch).toBeUndefined();
+	});
+
+	it('getEmbeddingShadowingStatus names both hosts, or null when aligned', () => {
+		// No file record → nothing to compare → null.
+		expect(getEmbeddingShadowingStatus(env({ EMBEDDING_API_BASE_URL: DEAD_HOST }))).toBeNull();
+		recordEmbeddingFileConfig({ EMBEDDING_API_BASE_URL: FILE_CANONICAL });
+		captureHostEnvKeys({ RSM_HOST_ENV_KEYS: 'EMBEDDING_API_BASE_URL' } as NodeJS.ProcessEnv);
+		expect(getEmbeddingShadowingStatus(env({ EMBEDDING_API_BASE_URL: DEAD_HOST }))).toEqual({
+			configuredHost: '192.168.0.51:8004',
+			fileCanonicalHost: 'embeddings.myia.io',
+			layer: expect.stringContaining('host process env'),
+		});
+		// Aligned (configured == file canonical) → null.
+		expect(getEmbeddingShadowingStatus(env({ EMBEDDING_API_BASE_URL: FILE_CANONICAL }))).toBeNull();
 	});
 });

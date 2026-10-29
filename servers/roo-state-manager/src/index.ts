@@ -33,6 +33,7 @@ import path from 'path';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { createRequire } from 'module';
 import { captureHostEnvKeys, applyEnvFileForNonHostKeys } from './services/host-env-snapshot.js';
+import { recordEmbeddingFileConfig } from './services/embedding-endpoints.js';
 import { isPgFlagOn } from './services/unified-store/pg-flags.js';
 
 // Obtenir le répertoire du fichier actuel
@@ -56,6 +57,10 @@ const envRefreshed = applyEnvFileForNonHostKeys(envResult.parsed);
 if (envRefreshed.length > 0) {
   console.error(`🔧 .env re-applied over the wrapper's older copy: ${envRefreshed.join(', ')}`);
 }
+// #4352 (deadep): remember what the `.env` FILE names for embedding endpoints, so
+// the plan builder can arm the file canonical as failover when a host-set value
+// (dead LAN address inherited from the VS Code host) shadows it.
+recordEmbeddingFileConfig(envResult.parsed);
 
 // #1635: Resilient env validation — degrade instead of crash.
 // Missing env vars are tracked as degraded capabilities; tools return errors instead.

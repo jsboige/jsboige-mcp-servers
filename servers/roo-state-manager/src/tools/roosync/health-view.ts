@@ -18,6 +18,7 @@ import { getSharedStatePath } from '../../utils/shared-state-path.js';
 import { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchives, renderDashboardActivityMarkdown } from '../../utils/dashboard-activity.js';
 import { listRooSyncDashboardKeysFromPg, readDashboardFromPg } from '../../services/unified-store/roosync-dashboard-store.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
+import { getEmbeddingShadowingStatus, type EmbeddingShadowingStatus } from '../../services/embedding-endpoints.js';
 import * as os from 'os';
 
 const logger = createLogger('HealthView');
@@ -85,6 +86,13 @@ export interface HealthViewResult {
      * retained for consumers that only read the bool.
      */
     embeddingsProbe?: EmbeddingProbeResult;
+    /**
+     * #4352 (deadep): the configured embedding endpoint differs from the `.env`
+     * canonical (host-set value shadowing the file). Present only when shadowed —
+     * the failover layer arms the `.env` canonical as last resort; this field is
+     * what makes the gap visible from the health check.
+     */
+    embeddingsShadowed?: EmbeddingShadowingStatus;
     /**
      * #2628: Same distinction for Qdrant. `qdrant` above checks env-var presence only;
      * this field reflects an actual bounded authenticated GET /collections round-trip.
@@ -312,6 +320,7 @@ function collectCapabilities(): {
   embeddings: boolean;
   embeddingsReachable?: boolean;
   qdrantReachable?: boolean;
+  embeddingsShadowed?: EmbeddingShadowingStatus;
 } {
   const caps = getServerCapabilities();
   const embeddingsConfigured = caps.isAvailable('embeddings');
@@ -323,6 +332,8 @@ function collectCapabilities(): {
     sharedPath: caps.isAvailable('sharedPath'),
     qdrant: caps.isAvailable('qdrant'),
     embeddings: embeddingsConfigured,
+    // #4352 (deadep): synchronous — the shadowing check reads recorded state, no probe.
+    embeddingsShadowed: getEmbeddingShadowingStatus() ?? undefined,
   };
 }
 
@@ -729,6 +740,13 @@ export function formatMarkdown(result: HealthViewResult): string {
     : result.capabilities.embeddingsReachable === false ? `DEGRADED (configured but unreachable${embFailCause ? ` — ${embFailCause}` : ''})`
     : 'OK (configured)';
   lines.push(`- Embeddings: ${embStatus}`);
+  // #4352 (deadep): surface the endpoint gap — a host-set value shadowing the
+  // `.env` canonical. The failover layer arms the canonical as last resort; this
+  // line names both hosts and the layer so the operator can fix the host env.
+  const embShadow = result.capabilities.embeddingsShadowed;
+  if (embShadow) {
+    lines.push(`- Embeddings endpoint shadowed: configured ${embShadow.configuredHost} != .env canonical ${embShadow.fileCanonicalHost} (shadowed by ${embShadow.layer}); .env canonical armed as failover`);
+  }
   lines.push('');
 
   lines.push('## Config Drift');

@@ -31,6 +31,8 @@
  * reload` cannot change it, so a change needs a respawn.
  */
 
+import { getHostEnvKeys } from './host-env-snapshot.js';
+
 /** Minimal fetch shape, so tests can inject a fake without a network. */
 export type EmbeddingFetch = typeof fetch;
 
@@ -65,6 +67,14 @@ export interface EmbeddingFailoverOptions {
 	totalBudgetMs?: number;
 	/** How long a transport/5xx failure keeps an endpoint out of rotation. */
 	negativeCacheMs?: number;
+	/**
+	 * #4352 review (ai-01, 28/10): per-endpoint bearer key (endpoint URL → key).
+	 * An entry present here replaces the client's Authorization on THAT attempt
+	 * only — the appended `.env` canonical must be reached with the `.env` key,
+	 * not the host key the SDK built the request with. Entries absent from the
+	 * map (and the map itself) keep the caller's Authorization unchanged.
+	 */
+	apiKeyByEndpoint?: Record<string, string>;
 	/** The dimension every endpoint must return. */
 	expectedDimensions: number;
 	/** Test seam; defaults to globalThis.fetch. */
@@ -176,6 +186,130 @@ export function getCanonicalEmbeddingBaseUrl(env: NodeJS.ProcessEnv = process.en
 	return endpoints[0];
 }
 
+/**
+ * #4352 (deadep): the endpoints the `.env` FILE names, as opposed to whatever the
+ * host process shadows them with. index.ts records them at startup and the hot
+ * reload re-records them on every `.env` re-parse.
+ *
+ * Measured on ai-01 (c.6478415645): the VS Code host carried
+ * `EMBEDDING_API_BASE_URL=http://192.168.0.51:8004/v1` — po-2026's dead LAN
+ * address — while User scope and both `.env` files said the public vhost. dotenv
+ * never overrides (#2719, on purpose), so the dead value won, the plan had ONE
+ * endpoint, no failover wrapper was armed, and every child of that host indexed
+ * nothing (`263/263 sub-chunks without a vector — Connection error`).
+ */
+let embeddingFileEndpoints: string[] | null = null;
+/**
+ * #4352 review (ai-01, 28/10): the appended canonical must carry ITS key, read in
+ * the same `.env` — the client's (host) Authorization sent to the `.env` canonical
+ * is a fabricated 401, or a Bearer handed to a service it was never issued for.
+ * The record therefore holds the file's embedding key (same precedence as the
+ * factories: `EMBEDDING_API_KEY` then `OPENAI_API_KEY`). Memory only: never
+ * logged, never fingerprinted, and no getter exposes it — the only reader is the
+ * failover attempt on the appended entry itself.
+ */
+let embeddingFileApiKey: string | undefined;
+
+/**
+ * Record what the `.env` file says. A malformed endpoint value clears the record:
+ * the effective env still rules, there is simply no canonical to fall back to.
+ * Returns whether the change reaches the PLAN — config-reload uses that to
+ * rebuild the embedding clients even when no allowlisted process.env key moved
+ * (under host shadowing, the file record is exactly what the fallback serves
+ * from). The record reaches the plan only through the appended canonical and,
+ * on that appended entry, ITS key: a canonical move always rewrites the plan
+ * (the fallback target moves, or vanishes when it merges into the configured
+ * endpoints), while a key move matters only while the append is live. Anything
+ * else the file says (an OPENAI_API_KEY with no endpoint in the file, for
+ * instance) leaves the plan untouched — resetting clients for it would break
+ * the reload contract the config-reload tests pin: only the clients whose
+ * configuration moved.
+ */
+export function recordEmbeddingFileConfig(parsed: Record<string, string> | undefined): boolean {
+	if (!parsed) return false;
+	let endpoints: string[] | null;
+	try {
+		endpoints = parseEmbeddingEndpoints(parsed as NodeJS.ProcessEnv);
+	} catch {
+		endpoints = null;
+	}
+	const key = endpoints === null ? undefined : (parsed.EMBEDDING_API_KEY || parsed.OPENAI_API_KEY);
+	const prevCanonical = embeddingFileEndpoints === null ? undefined : embeddingFileEndpoints[0];
+	const canonical = endpoints === null ? undefined : endpoints[0];
+	let configuredNow: string[] = [];
+	try {
+		configuredNow = parseEmbeddingEndpoints(process.env);
+	} catch {
+		configuredNow = [];
+	}
+	const appendLive = canonical !== undefined && !configuredNow.includes(canonical);
+	const changed = prevCanonical !== canonical || (appendLive && key !== embeddingFileApiKey);
+	embeddingFileEndpoints = endpoints;
+	embeddingFileApiKey = key;
+	return changed;
+}
+
+/** Test-only: forget the file record and the once-per-episode warn state. */
+export function resetEmbeddingFileConfigForTest(): void {
+	embeddingFileEndpoints = null;
+	embeddingFileApiKey = undefined;
+	lastShadowWarnKey = null;
+}
+
+const EMBEDDING_ENDPOINT_VARS = ['EMBEDDING_API_BASE_URLS', 'EMBEDDING_API_BASE_URL'] as const;
+
+/**
+ * Name the layer the shadowing value came from, as far as the child can tell.
+ * `RSM_HOST_ENV_KEYS` (#2719) says the host set the name; process inheritance,
+ * a User scope and the MCP `env` block are indistinguishable from inside the
+ * child, and the message says so instead of guessing one.
+ */
+function describeShadowingLayer(env: NodeJS.ProcessEnv): string {
+	const hostKeys = getHostEnvKeys();
+	const sources = EMBEDDING_ENDPOINT_VARS.filter((name) => env[name] !== undefined && hostKeys?.has(name));
+	if (sources.length > 0) {
+		return `the host process env (${sources.join(', ')} — process, User scope and MCP env block are indistinguishable from the child; not the .env)`;
+	}
+	return 'a non-.env source (the value differs and no host-set marker was recorded)';
+}
+
+/** Once per shadowing episode: re-arms when the configured/file pair changes. */
+let lastShadowWarnKey: string | null = null;
+
+function warnShadowingOnce(configured: string[], fileCanonical: string, env: NodeJS.ProcessEnv): void {
+	const key = `${configured.join('|')}=>${fileCanonical}`;
+	if (lastShadowWarnKey === key) return;
+	lastShadowWarnKey = key;
+	// #4352 review (ai-01, 28/10): name BOTH hosts — a warn that only names the
+	// canonical leaves the reader guessing which configured endpoint is shadowed.
+	console.warn(
+		`[embedding-endpoints] configured endpoint ${configured.map(endpointLabel).join(', ')} differs from the .env canonical ${endpointLabel(fileCanonical)}; shadowed by ${describeShadowingLayer(env)}. `
+		+ `The .env canonical is armed as the LAST failover entry: a connection-level failure on the configured endpoint falls back to it (#4352).`,
+	);
+}
+
+/** Health-view signal: the endpoint gap, or null when nothing is shadowed. */
+export interface EmbeddingShadowingStatus {
+	/** Host-only labels — never a full URL. */
+	configuredHost: string;
+	fileCanonicalHost: string;
+	/** Where the shadowing value came from, as far as the child can tell. */
+	layer: string;
+}
+
+export function getEmbeddingShadowingStatus(env: NodeJS.ProcessEnv = process.env): EmbeddingShadowingStatus | null {
+	const configured = parseEmbeddingEndpoints(env);
+	const fileCanonical = embeddingFileEndpoints?.[0];
+	if (configured.length === 0 || fileCanonical === undefined || configured.includes(fileCanonical)) {
+		return null;
+	}
+	return {
+		configuredHost: endpointLabel(configured[0]),
+		fileCanonicalHost: endpointLabel(fileCanonical),
+		layer: describeShadowingLayer(env),
+	};
+}
+
 export function getEmbeddingClientModeSettings(
 	mode: EmbeddingClientMode,
 	env: NodeJS.ProcessEnv = process.env,
@@ -273,8 +407,30 @@ export function getEmbeddingEndpointPlan(
 	if (configured.length === 0) {
 		return { endpoints: configured, baseURL: undefined, fetch: undefined };
 	}
+	// #4352 (deadep): a host-set endpoint can shadow the `.env` canonical (dotenv
+	// never overrides — #2719, deliberately). When the configured list does not
+	// carry the file canonical, append it as the LAST failover entry: a
+	// transport-level failure on the shadowing endpoint (the ai-01 case: a dead
+	// LAN address inherited from the VS Code host, single endpoint, no wrapper)
+	// then reaches the canonical instead of indexing nothing. A HEALTHY
+	// configured endpoint answers first and is never replaced; a 4xx from it is
+	// an answer and surfaces, per the a5 contract above.
+	const fileCanonical = embeddingFileEndpoints?.[0];
+	let tryOrder = configured;
+	let apiKeyByEndpoint: Record<string, string> | undefined;
+	if (fileCanonical !== undefined && !configured.includes(fileCanonical)) {
+		tryOrder = [...configured, fileCanonical];
+		// #4352 review (ai-01, 28/10): the appended entry carries ITS key — the
+		// factories built the client with the host key, which the `.env` canonical
+		// would reject as a fabricated 401 (or which no service but its issuer
+		// should ever see). No file key recorded → the attempt keeps the default.
+		if (embeddingFileApiKey !== undefined) {
+			apiKeyByEndpoint = { [fileCanonical]: embeddingFileApiKey };
+		}
+		warnShadowingOnce(configured, fileCanonical, env);
+	}
 	const canonical = configured[0];
-	const endpoints = withLanDirectFirst(configured, canonical, env);
+	const endpoints = withLanDirectFirst(tryOrder, canonical, env);
 	if (endpoints.length === 1) {
 		return { endpoints, baseURL: canonical, fetch: undefined };
 	}
@@ -288,6 +444,7 @@ export function getEmbeddingEndpointPlan(
 			perAttemptTimeoutMs: settings.perAttemptTimeoutMs,
 			totalBudgetMs: settings.totalBudgetMs,
 			negativeCacheMs: settings.negativeCacheMs,
+			...(apiKeyByEndpoint ? { apiKeyByEndpoint } : {}),
 			expectedDimensions: getEmbeddingDimensionSetting(env),
 		}),
 	};
@@ -389,6 +546,19 @@ function shouldFailOver(response: Response): boolean {
 }
 
 /**
+ * #4352 review (ai-01, 28/10): attempt an endpoint with ITS OWN bearer key. The
+ * map only ever carries the appended `.env` canonical; every other attempt keeps
+ * the Authorization the SDK built. `new Headers(init.headers)` copies (never
+ * mutates the caller's object) and accepts every init.headers shape, including
+ * undefined.
+ */
+function withBearerAuth(init: RequestInit, key: string): RequestInit {
+	const headers = new Headers(init.headers);
+	headers.set('Authorization', `Bearer ${key}`);
+	return { ...init, headers };
+}
+
+/**
  * Decode `data[0].embedding` into a dimension, for BOTH wire shapes.
  *
  * #4352 review (ai-01 06:03Z): the OpenAI SDK sends `encoding_format: 'base64'`
@@ -474,10 +644,14 @@ export function createEmbeddingFailoverFetch(options: EmbeddingFailoverOptions):
 			}
 			const attemptTimeout = Math.max(1, Math.min(options.perAttemptTimeoutMs, remaining));
 			const targetUrl = rewriteEndpoint(originalUrl, options.canonicalBaseURL, state.url);
+			// #4352 review (ai-01, 28/10): an endpoint that carries its own key is
+			// attempted with it — only the appended `.env` canonical ever does.
+			const attemptKey = options.apiKeyByEndpoint?.[state.url];
+			const attemptInit = attemptKey === undefined ? init : withBearerAuth(init, attemptKey);
 
 			let result: AttemptResult;
 			try {
-				result = await fetchOneEndpoint(targetUrl, init, attemptTimeout, fetchImpl);
+				result = await fetchOneEndpoint(targetUrl, attemptInit, attemptTimeout, fetchImpl);
 			} catch (error) {
 				// Caller abort: never start another endpoint behind the caller's back.
 				if (hasCallerAborted(init.signal)) throw error;
