@@ -294,6 +294,32 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			expect(mockUpsert).toHaveBeenCalled();
 		});
 
+		test('#4352 g6 (ai-01 review): `requests` counts HTTP calls, `called` counts sub-chunks', async () => {
+			vi.resetModules();
+			const { indexTask, resetCircuitBreakerForTest, getEmbeddingMetrics, resetEmbeddingMetricsForTest } =
+				await import('../VectorIndexer.js');
+			resetCircuitBreakerForTest();
+			resetEmbeddingMetricsForTest();
+			// 3 chunks -> ONE batched request at the default EMBEDDING_BATCH_SIZE of 16.
+			mockExtractTask.mockResolvedValue([
+				chunk('rq1', 'request one'),
+				chunk('rq2', 'request two'),
+				chunk('rq3', 'request three'),
+			]);
+
+			await indexTask('t-requests-vs-called', '/p');
+
+			expect(mockEmbeddingsCreate).toHaveBeenCalledTimes(1);
+			const m = getEmbeddingMetrics();
+			// the unit of WORK — one per sub-chunk (L1067 `+= batch.length`)
+			expect(m.embeddings_called_total).toBe(3);
+			// the unit the PACER counts — one per request. Deriving the g6 pass bound
+			// from `called` inflates the allowance by the batch size (16x at the
+			// default), which is the defect ai-01 found in #4422: a stall passes.
+			expect(m.embeddings_requests_total).toBe(1);
+			expect(m.embeddings_called_total).not.toBe(m.embeddings_requests_total);
+		});
+
 		test('#4352 (a4): a wrong-dimension batch item fails the task after writing the valid one (L921-924)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest, getCircuitBreakerState } = await import('../VectorIndexer.js');

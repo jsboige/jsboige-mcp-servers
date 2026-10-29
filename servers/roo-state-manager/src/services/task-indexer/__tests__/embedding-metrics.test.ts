@@ -36,18 +36,21 @@ describe('EmbeddingMetrics', () => {
         }
     });
 
-    it('should have exactly 11 counters (+1 gauge, #4153)', () => {
+    it('should have exactly 12 counters (+1 gauge, #4153; +requests, #4352 g6)', () => {
         const metrics = getEmbeddingMetrics();
         const keys = Object.keys(metrics);
-        // 11 cumulative counters + embeddings_cache_size, a live gauge (not a counter)
+        // 12 cumulative counters + embeddings_cache_size, a live gauge (not a counter)
         // added by #4153 to make the embedding-cache cap observable on seat.
-        expect(keys.length).toBe(12);
+        // `embeddings_requests_total` joined the counters for #4352 g6: `called`
+        // counts sub-chunks, the pacer counts requests.
+        expect(keys.length).toBe(13);
     });
 
     it('should contain all expected counter names', () => {
         const metrics = getEmbeddingMetrics();
         const expected = [
             'embeddings_called_total',
+            'embeddings_requests_total',
             'embeddings_cached_hit_total',
             'embeddings_preflight_skipped_total',
             'embeddings_post_dedup_skipped_total',

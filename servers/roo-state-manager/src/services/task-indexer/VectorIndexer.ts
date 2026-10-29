@@ -102,7 +102,20 @@ export function resetEmbeddingCircuitBreaker(): CircuitBreakerSnapshot {
 
 // #2195: Per-cycle embedding metrics — in-process counters since MCP boot
 export interface EmbeddingMetrics {
+    /**
+     * Sub-chunks embedded — the unit of WORK. `+= batch.length` on the batched path
+     * (see :1067), so it is NOT a request count and must never be divided by a
+     * per-request rate: at the default EMBEDDING_BATCH_SIZE of 16 the two differ
+     * by a factor of 16 (ai-01 review #4352 g6, 29/10).
+     */
     embeddings_called_total: number;
+    /**
+     * Embeddings HTTP requests actually sent — the unit the pacer counts
+     * (acquireEmbeddingSlot, one slot per request). Added for #4352 g6: the pass
+     * bound is derived from `Δrequests × 60 000 / EMBEDDING_OPS_PER_MINUTE`, and
+     * reading it off `called` inflated the allowance up to 16x on the batch path.
+     */
+    embeddings_requests_total: number;
     embeddings_cached_hit_total: number;
     embeddings_preflight_skipped_total: number;
     embeddings_post_dedup_skipped_total: number;
@@ -124,6 +137,7 @@ export interface EmbeddingMetrics {
 
 const _metrics: EmbeddingMetrics = {
     embeddings_called_total: 0,
+    embeddings_requests_total: 0,
     embeddings_cached_hit_total: 0,
     embeddings_preflight_skipped_total: 0,
     embeddings_post_dedup_skipped_total: 0,
@@ -993,6 +1007,7 @@ async function embedSingle(
         input: subChunk.content,
     });
     _metrics.embeddings_called_total++;
+    _metrics.embeddings_requests_total++;
     const vector = embeddingResponse.data[0].embedding;
 
     if (!vector || !Array.isArray(vector)) {
@@ -1038,6 +1053,7 @@ async function embedBatch(
             await acquireEmbeddingSlot();
             const resp = await getOpenAIClient().embeddings.create({ model, input: batch[0].chunk.content });
             _metrics.embeddings_called_total++;
+            _metrics.embeddings_requests_total++;
             const vector = resp.data[0]?.embedding;
             if (vector && Array.isArray(vector) && vector.length === expectedDims) {
                 cacheEmbedding(batch[0].contentHash, vector, now);
@@ -1065,6 +1081,8 @@ async function embedBatch(
         await acquireEmbeddingSlot();
         const resp = await getOpenAIClient().embeddings.create({ model, input: inputs });
         _metrics.embeddings_called_total += batch.length;
+        // One HTTP request, N sub-chunks: the pacer reserved ONE slot for it above.
+        _metrics.embeddings_requests_total++;
 
         const results: Array<number[] | null> = new Array(batch.length).fill(null);
         for (let i = 0; i < batch.length; i++) {
