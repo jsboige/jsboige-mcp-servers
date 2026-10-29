@@ -1746,6 +1746,10 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             `post_skipped=${m.embeddings_post_dedup_skipped_total} ` +
             `breaker_blocked=${m.embeddings_circuit_breaker_blocked_total} ` +
             `preflight_fail=${m.preflight_batches_qdrant_unreachable_total} ` +
+            // #4352 g6 (feu vert ai-01 29/10): a long pass is the pacer, not a
+            // stall — but only `rate_limited=` makes that visible per cycle,
+            // instead of inferring it from `called` deltas after the fact.
+            `rate_limited=${m.embeddings_rate_limit_waited_total} ` +
             `cache_size=${m.embeddings_cache_size}`
         );
 
@@ -1820,6 +1824,12 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
 
         // Traiter un batch de tâches par intervalle (au lieu d'une seule)
         const taskIds = Array.from(state.qdrantIndexQueue.values()).slice(0, QDRANT_INDEX_BATCH_SIZE);
+        // #4352 g6 (feu vert ai-01 29/10): the tick is occupied for the whole
+        // batch (sequential `await`), and its duration is governed by the
+        // embedding pacer — a 10 min pass is the pacer, not a stall. Making the
+        // pass duration explicit per tick turns g6 from guesswork into a
+        // subtraction: pass_ms vs (ops × 6s) at EMBEDDING_OPS_PER_MINUTE=10.
+        const passStartedAt = Date.now();
         for (const taskId of taskIds) {
             // #2766 S2+ Dead-letter guard: skip tasks that are already in the
             // dead-letter. Belt-and-braces against the refresh worker briefly
@@ -1842,6 +1852,9 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
                 console.warn(`🚫 [Qdrant-Worker] Circuit breaker opened mid-batch — aborting remaining ${taskIds.length - taskIds.indexOf(taskId) - 1} task(s) this cycle.`);
                 break;
             }
+        }
+        if (taskIds.length > 0) {
+            console.log(`⏱️ [Qdrant-Worker] pass done: ${taskIds.length} task(s) in ${Date.now() - passStartedAt}ms`);
         }
     }, ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
 

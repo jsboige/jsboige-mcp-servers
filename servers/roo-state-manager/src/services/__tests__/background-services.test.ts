@@ -766,7 +766,9 @@ describe('background-services', () => {
       expect(metricsLogs.length).toBeGreaterThanOrEqual(1);
 
       // Format spec from issue #2195: called=N cached=N preflight_skipped=N post_skipped=N
-      // breaker_blocked=N preflight_fail=N
+      // breaker_blocked=N preflight_fail=N rate_limited=N (the pacer counter,
+      // #4352 g6 — the metric flows from the real getEmbeddingMetrics(), so this
+      // exercises the emitted line, not a string constant).
       const line = metricsLogs[0];
       expect(line).toMatch(/called=\d+/);
       expect(line).toMatch(/cached=\d+/);
@@ -774,6 +776,60 @@ describe('background-services', () => {
       expect(line).toMatch(/post_skipped=\d+/);
       expect(line).toMatch(/breaker_blocked=\d+/);
       expect(line).toMatch(/preflight_fail=\d+/);
+      expect(line).toMatch(/rate_limited=\d+/);
+
+      // #4352 g6: an empty/disabled cycle must NOT emit a pass-done line — the
+      // per-cycle heartbeat is EMB-METRICS, pass-done is only real work.
+      const passDoneLogs = logSpy.mock.calls
+        .map(call => String(call[0] ?? ''))
+        .filter(s => s.includes('pass done:'));
+      expect(passDoneLogs.length).toBe(0);
+
+      logSpy.mockRestore();
+    });
+
+    // #4352 g6 (feu vert ai-01 29/10): one pass-done line per cycle that
+    // actually processed tasks, so a long pass is readable as (tasks, duration)
+    // against the pacer bound instead of inferred from log silence.
+    it('should log "pass done: N task(s) in Xms" after processing a batch', async () => {
+      const state = createMockState();
+      state.isQdrantIndexingEnabled = true;
+      state.qdrantIndexQueue.add('task-001');
+
+      const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+      };
+      state.conversationCache.set('task-001', skeleton);
+
+      state.indexingDecisionService.shouldIndex.mockReturnValue({
+        shouldIndex: true,
+        reason: 'test',
+        action: 'index',
+        requiresSave: false,
+      });
+
+      const mockIndexTask = TaskIndexerSpies.indexTask;
+      mockIndexTask.mockResolvedValue(undefined);
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      startQdrantIndexingBackgroundProcess(state);
+
+      vi.advanceTimersByTime(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
+      await vi.runOnlyPendingTimersAsync();
+
+      // The task really went through the batch loop before asserting the line.
+      expect(mockIndexTask.mock.calls.some(call => call[0] === 'task-001')).toBe(true);
+      const passDoneLogs = logSpy.mock.calls
+        .map(call => String(call[0] ?? ''))
+        .filter(s => s.includes('pass done:'));
+      expect(passDoneLogs.length).toBeGreaterThanOrEqual(1);
+      expect(passDoneLogs[0]).toMatch(/pass done: 1 task\(s\) in \d+ms/);
 
       logSpy.mockRestore();
     });
