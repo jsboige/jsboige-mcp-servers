@@ -20,6 +20,7 @@ const KEYS = {
   CONFLICT: 'ROOSYNC_CONFLICT_STRATEGY',
   LOG: 'ROOSYNC_LOG_LEVEL',
   PG: 'UNIFIED_STORE_PG_URL',
+  DW: 'UNIFIED_STORE_DUAL_WRITE',
 } as const;
 
 const SAVED: Record<string, string | undefined> = {};
@@ -75,6 +76,11 @@ describe('#4131 Phase D — config gate: absent shared path × PG presence', () 
     // on the Ubuntu runner).
     expect(config.sharedPath).toBe(path.resolve('/__no_such_mount__/shared-state'));
     expect(config.machineId).toBe('test-machine');
+  });
+
+  it('PG URL present but kill-switch UNIFIED_STORE_DUAL_WRITE=0 → throws again (GDrive-only)', () => {
+    setEnv({ [KEYS.PG]: 'postgresql://user:pass@host:5432/db', [KEYS.DW]: '0' });
+    expect(() => loadRooSyncConfig()).toThrow(/n'existe pas/);
   });
 
   it('an EXISTING shared path keeps loading exactly as before, PG or not', () => {

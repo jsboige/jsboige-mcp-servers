@@ -28,6 +28,7 @@
  */
 
 import { createLogger } from '../../utils/logger.js';
+import { isPgFlagOn } from './pg-flags.js';
 
 /**
  * Lazy logger — same reason as conversation-list-store.ts: this module is
@@ -51,8 +52,15 @@ export function inventoryMetaKey(machineId: string): string {
 /** Connect / statement timeout of the meta access, in ms (mirrors the marker). */
 const META_TIMEOUT_MS = 3_000;
 
-/** The store URL, or null when this host has no PG store configured. */
+/**
+ * The store URL, or null when this host has no usable PG store — no URL, a
+ * placeholder URL, or the emergency kill-switch `UNIFIED_STORE_DUAL_WRITE=0`.
+ * Same gate as every other PG surface: with the URL as the only test, a seat
+ * flipped back to GDrive-only still read and wrote its registry/inventory rows
+ * in PG (review ms#1563).
+ */
 export function storeMetaUrl(): string | null {
+  if (!isPgFlagOn('UNIFIED_STORE_DUAL_WRITE')) return null;
   const url = process.env.UNIFIED_STORE_PG_URL;
   return url && url.trim().length > 0 ? url : null;
 }
@@ -91,7 +99,7 @@ export async function readStoreMetaValue(key: string): Promise<string | null> {
 export async function upsertStoreMetaValue(key: string, value: string): Promise<void> {
   const url = storeMetaUrl();
   if (!url) {
-    throw new Error('store-meta: UNIFIED_STORE_PG_URL absent — no PG store to write to');
+    throw new Error('store-meta: no PG store to write to (UNIFIED_STORE_PG_URL absent, or kill-switch UNIFIED_STORE_DUAL_WRITE off)');
   }
   const { default: pg } = await import('pg');
   const client = new pg.Client({
