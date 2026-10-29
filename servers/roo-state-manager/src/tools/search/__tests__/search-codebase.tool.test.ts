@@ -1261,6 +1261,39 @@ describe('search-codebase.tool', () => {
 				expect(parsed.results_count).toBe(3);
 			});
 
+			test('scope — FOUR runtime modules under i18n/ keep four slots, against weak sources (capKeyOf gate)', async () => {
+				// ms#1568 review, item 3: the three-module negative above proves the malus,
+				// not the cap gate — with nothing else in the pool the leftovers backfill
+				// puts the third module back anyway, so a mutant that removes the
+				// `isLocaleFilePath()` gate on capKeyOf SURVIVES it (measured).
+				// Four candidates + weaker non-locale competitors make the gate observable:
+				// with the gate, the four runtime modules hold the four primary slots;
+				// without it they collapse into ONE `<locales-family>` budget of
+				// MAX_CHUNKS_PER_FILE=2 and two weak services take ranks 3-4.
+				// `ui.ts` is also the exact case of the restricted LOCALE_TAG_RE: a
+				// two-letter basename that is NOT a language code (ms#1568 review, item 4).
+				const module = (name: string) => ({ score: 0.9, payload: { filePath: `src\\i18n\\${name}.ts`, codeChunk: `export const ${name} = (locale: string) => locale;`, startLine: 1, endLine: 4 } });
+				const weak = (name: string) => ({ score: 0.6, payload: { filePath: `src\\services\\${name}.ts`, codeChunk: `unified store ${name}`, startLine: 1, endLine: 6 } });
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						module('index'), module('setup'), module('hooks'), module('ui'),
+						weak('alpha'), weak('beta'), weak('gamma')
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'i18n locale setup', workspace: '/ws', limit: 4, min_score: 0.3 });
+				const parsed = JSON.parse(result.content[0].text);
+				const paths = parsed.results.map((r: any) => r.file_path);
+				const byPath = Object.fromEntries(parsed.results.map((r: any) => [r.file_path, r.score]));
+
+				// The gate: four runtime modules, four primary slots — no family budget.
+				expect(paths).toHaveLength(4);
+				for (const p of paths) expect(String(p)).toContain('i18n');
+				// No malus of any class, and `ui.ts` in particular (not a language code).
+				expect(parsed.locale_file_malus_applied).toBeUndefined();
+				expect(byPath['src\\i18n\\ui.ts']).toBeCloseTo(0.9, 5);
+			});
+
 			test('scope — the recognisable translation shapes still take the locale class', async () => {
 				// The other half of the boundary: restricting the class must not lose the
 				// shapes it exists for — a `locales/` leaf, a locale-code basename, and a
