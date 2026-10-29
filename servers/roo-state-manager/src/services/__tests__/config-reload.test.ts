@@ -360,8 +360,12 @@ describe('reloadConfig — startup precedence (host env > .env) survives a reloa
     expect(process.env.EMBEDDING_API_BASE_URL).toBe('http://192.168.0.51:8004/v1');
     expect(report.hostOwnedKeys).toEqual(['EMBEDDING_API_BASE_URL']);
     expect(report.changed.map((c) => c.key)).toEqual(['ZAI_API_KEY']);
-    // The embedding clients were not touched: their configuration did not move.
-    expect(report.clientsReset).toEqual(['fallbackChatClient']);
+    // #4352 (ms#1562 review): a previous reload in this file recorded
+    // https://file.example/v1 as the .env canonical, and the host still shadows
+    // the endpoint — the appended fallback entry IS part of the embedding
+    // clients' plan, so that plan moved and they rebuild alongside the chat
+    // fallback. The host process.env key itself never moved (it is host-owned).
+    expect(report.clientsReset).toEqual(['codebaseEmbeddingClient', 'embeddingClient', 'fallbackChatClient']);
   });
 
   it('without a startup snapshot, keeps the historical behaviour (every allowlisted key reloads)', () => {
