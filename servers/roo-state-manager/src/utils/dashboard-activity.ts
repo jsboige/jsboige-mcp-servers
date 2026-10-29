@@ -409,6 +409,7 @@ export function lookupMachineActivityInArchives(
 	// with fresh truth sitting in the archives; only a concluded verdict can
 	// skip, and a machine back live refreshes its floor past the threshold on
 	// this very call (no skip, normal walk).
+	const skipped = new Set<string>();
 	for (const id of [...wanted]) {
 		const verdict = machineVerdicts.get(id);
 		if (!verdict) continue;
@@ -419,6 +420,11 @@ export function lookupMachineActivityInArchives(
 		if (age >= STALE_MACHINE_MS && now - verdict.concludedAt < STALE_VERDICT_REVERIFY_MS) {
 			found.set(id, best);
 			wanted.delete(id);
+			// #1569: a skipped machine was NOT walked on this call. It must not
+			// renew the very window that allows the skip, or the walk never
+			// returns — `concludedAt` keeps the stamp of the walk that produced
+			// this verdict (see recordVerdicts).
+			skipped.add(id);
 			logger.debug(
 				`Archive lookup skipped ${id} (STALE verdict ${best}, re-verified in ${Math.round((STALE_VERDICT_REVERIFY_MS - (now - verdict.concludedAt)) / 60000)} min) - zero reads (#4344)`
 			);
@@ -426,7 +432,7 @@ export function lookupMachineActivityInArchives(
 	}
 	if (wanted.size === 0) {
 		emitGhostResults(ghostToHost, walkFloors, found);
-		recordVerdicts(requested, ghostToHost, walkFloors, found, now);
+		recordVerdicts(requested, ghostToHost, walkFloors, found, now, skipped);
 		return found;
 	}
 
@@ -435,7 +441,7 @@ export function lookupMachineActivityInArchives(
 		archiveFiles = readdirSync(join(dashboardsDir, 'archive')).filter(f => f.endsWith('.md'));
 	} catch {
 		emitGhostResults(ghostToHost, walkFloors, found);
-		recordVerdicts(requested, ghostToHost, walkFloors, found, now);
+		recordVerdicts(requested, ghostToHost, walkFloors, found, now, skipped);
 		return found; // no archive dir yet — nothing was ever condensed
 	}
 
@@ -537,7 +543,7 @@ export function lookupMachineActivityInArchives(
 	}
 
 	emitGhostResults(ghostToHost, walkFloors, found);
-	recordVerdicts(requested, ghostToHost, walkFloors, found, now);
+	recordVerdicts(requested, ghostToHost, walkFloors, found, now, skipped);
 	return found;
 }
 
@@ -559,13 +565,20 @@ function emitGhostResults(
  * on a best older than the threshold; recording it means a machine that goes
  * quiet starts skipping reads 24h after its best crossed the threshold,
  * without any first-call tax change.
+ *
+ * #1569: `skipped` carries the machines the STALE gate served from the cache
+ * instead of walking them. Those were NOT re-verified on this call, so their
+ * `concludedAt` must keep the stamp of the walk that produced the verdict —
+ * refreshing it here renewed the 24h window on every call, so the walk could
+ * never come back and the archives were never re-read.
  */
 function recordVerdicts(
 	requested: readonly string[],
 	ghostToHost: ReadonlyMap<string, string>,
 	floors: ReadonlyMap<string, string>,
 	found: ReadonlyMap<string, string>,
-	now: number
+	now: number,
+	skipped: ReadonlySet<string>
 ): void {
 	for (const id of requested) {
 		if (ghostToHost.has(id)) continue; // attached ghosts never walk, never verdict
@@ -574,9 +587,16 @@ function recordVerdicts(
 		const best = hit > floor ? hit : floor;
 		if (!best) continue; // honest #3160 null — nothing to conclude
 		const previous = machineVerdicts.get(id);
+		const skippedThisCall = skipped.has(id);
 		if (!previous || best > previous.best) {
-			machineVerdicts.set(id, { best, concludedAt: now });
-		} else {
+			// A skipped machine's `best` came from the cache (or a stale floor),
+			// not from a walk: record the improved best but keep the walk stamp,
+			// so the next call is free to verify it.
+			machineVerdicts.set(id, {
+				best,
+				concludedAt: skippedThisCall && previous ? previous.concludedAt : now,
+			});
+		} else if (!skippedThisCall) {
 			previous.concludedAt = now; // same best re-concluded: refresh the re-verify window
 		}
 	}

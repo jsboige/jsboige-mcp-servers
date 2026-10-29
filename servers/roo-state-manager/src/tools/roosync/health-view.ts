@@ -183,6 +183,9 @@ async function collectSystemHealth(): Promise<{
   let onlineCount = 0;
   let unknownCount = 0;
   let staleCount = 0;
+  // #4344 review (ms#1569): the subset of `staleCount` that the REGISTRY knows —
+  // the only part that may enter `totalCount` (see the assignment below).
+  let registryStaleCount = 0;
   const flags: string[] = [];
   const unknownMachines: string[] = [];
   const staleMachines: string[] = [];
@@ -290,7 +293,11 @@ async function collectSystemHealth(): Promise<{
           // #4344 residual: 7-day absence is a STRONGER statement than the
           // 1-day SYNC_STALE blip — parked, not an incident signal. The flag and
           // the count are emitted once, from the canonical set, after this loop.
-          if (!staleIds.has(mid.toLowerCase())) staleIds.set(mid.toLowerCase(), mid);
+          // ms#1569: the REGISTRY spelling always wins the display slot — the
+          // activity loop below may have stored the lowercase activity key
+          // first, and get-status pushes registry ids, so both tools must name
+          // the machine the same way.
+          staleIds.set(mid.toLowerCase(), mid);
           continue;
         }
         // Check if this machine has ANY dashboard activity at all (even stale)
@@ -318,6 +325,17 @@ async function collectSystemHealth(): Promise<{
     }
     staleCount = staleIds.size;
 
+    // #4344 review (ms#1569): the ghost is OBSERVABILITY, not a fleet member.
+    // It keeps its entry in `staleMachines` and its `STALE:` flag — that is the
+    // tell #4344 asks for — but it must not enter the TOTAL: `machinesTotal` is
+    // registry-based, the same basis as get-status' `total` (known registry
+    // machines, #2318). Counting an activity-only id here made the fleet
+    // denominator grow by a machine the registry does not have.
+    const registrySet = new Set(registryMachineIds.map(m => m.toLowerCase()));
+    for (const key of staleIds.keys()) {
+      if (registrySet.has(key)) registryStaleCount++;
+    }
+
     // Machines with dashboard activity but outside the registry (test artifacts,
     // retired machines) don't get a verdict — still surfaced for observability.
     for (const [machineId, lastSeen] of activity.entries()) {
@@ -334,7 +352,7 @@ async function collectSystemHealth(): Promise<{
     onlineCount,
     unknownCount,
     staleCount,
-    totalCount: onlineCount + unknownCount + staleCount,
+    totalCount: onlineCount + unknownCount + registryStaleCount,
     flags,
     lastSeenByMachine,
     unknownMachines,

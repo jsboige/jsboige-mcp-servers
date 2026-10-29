@@ -81,6 +81,8 @@ vi.mock('os', async (importOriginal) => {
 // early before touching those, so they need no mock.
 
 import { probeQdrantBackend, formatMarkdown, roosyncHealthView, type HealthViewResult } from '../health-view.js';
+// ms#1569: parity assertion — the two presence tools must agree on the total.
+import { roosyncGetStatus } from '../get-status.js';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -543,6 +545,84 @@ describe('roosyncHealthView orchestration + scoring', () => {
     // Presence arithmetic stays coherent: 1 online, 0 unknown, 2 stale.
     expect(result.systemHealth.machinesOnline).toBe(1);
     expect(result.systemHealth.machinesUnknown).toBe(0);
-    expect(result.systemHealth.machinesTotal).toBe(3);
+    // ms#1569 blocking point 2: the ghost is observability, not a fleet member.
+    // Two registry machines -> the total is 2, NOT 3. It was 3 before this fix:
+    // the activity-only ghost inflated the denominator while `machinesStale`
+    // (correctly) counted it, so `total !== online + unknown + stale`.
+    expect(result.systemHealth.machinesTotal).toBe(2);
+  });
+
+  it('ms#1569: machinesTotal is registry-based — parity with get-status.total on the ghost case', async () => {
+    // The same fixture the coordinator flagged: 2 registry machines plus one
+    // activity-only -win32-x64 ghost. Both tools must report the SAME total
+    // (the registry), even though both surface the ghost as stale.
+    const dir = mkdtempSync(tmpdir() + '/health-view-4344-parity-');
+    tempDashboardsDir = dir;
+    mkdirSync(dir + '/dashboards', { recursive: true });
+    const fresh = new Date().toISOString();
+    const nineDays = new Date(Date.now() - 9 * 24 * 3600 * 1000).toISOString();
+    const thirtyDays = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+    writeFileSync(dir + '/dashboards/workspace-test.md',
+      `## Intercom\n` +
+      `### [${fresh}] myia-ai-01|roo-extensions\nfresh message\n` +
+      `### [${nineDays}] myia-po-2026|roo-extensions\nnine days silent\n`
+    );
+    writeFileSync(dir + '/dashboards/workspace-ghost.md',
+      `## Intercom\n### [${thirtyDays}] myia-po-2025-win32-x64|roo-extensions\nghost line\n`
+    );
+    const registry = ['myia-ai-01', 'myia-po-2026'];
+    mockGetSharedStatePath.mockReturnValue(dir);
+    mockGetRooSyncService.mockResolvedValue({
+      getKnownMachineIds: () => registry,
+      // get-status reads these; both are .catch()-guarded but must exist.
+      loadDashboard: async () => null,
+      loadPendingDecisions: async () => [],
+      getConfig: () => ({ machineId: 'myia-test-machine' }),
+      getHeartbeatService: () => ({ getAllSchedulerMetrics: () => new Map() }),
+    });
+    mockFetch.mockResolvedValue({ ok: true });
+    mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+
+    const health = await roosyncHealthView({});
+    const status = await roosyncGetStatus({});
+
+    expect(health.systemHealth.machinesTotal).toBe(registry.length);
+    expect(status.machines.total).toBe(registry.length);
+    expect(health.systemHealth.machinesTotal).toBe(status.machines.total);
+    // ...while both still name the ghost as stale (the #4344 observability ask).
+    expect(health.systemHealth.staleMachines).toContain('myia-po-2025-win32-x64');
+    expect(status.machines.staleMachines).toContain('myia-po-2025-win32-x64');
+  });
+
+  it('ms#1569: a stale machine is named with the REGISTRY spelling in both tools', async () => {
+    // Only reachable when the two spellings differ: the activity key is always
+    // lowercase, the registry id keeps whatever was written. Before the fix,
+    // health-view kept the lowercase activity key (stored first) while
+    // get-status kept the registry id — same machine, two names in the fleet.
+    const dir = mkdtempSync(tmpdir() + '/health-view-4344-case-');
+    tempDashboardsDir = dir;
+    mkdirSync(dir + '/dashboards', { recursive: true });
+    const nineDays = new Date(Date.now() - 9 * 24 * 3600 * 1000).toISOString();
+    writeFileSync(dir + '/dashboards/workspace-test.md',
+      `## Intercom\n### [${nineDays}] myia-po-2026|roo-extensions\nnine days silent\n`
+    );
+    const registry = ['MyIA-Po-2026'];
+    mockGetSharedStatePath.mockReturnValue(dir);
+    mockGetRooSyncService.mockResolvedValue({
+      getKnownMachineIds: () => registry,
+      loadDashboard: async () => null,
+      loadPendingDecisions: async () => [],
+      getConfig: () => ({ machineId: 'myia-test-machine' }),
+      getHeartbeatService: () => ({ getAllSchedulerMetrics: () => new Map() }),
+    });
+    mockFetch.mockResolvedValue({ ok: true });
+    mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+
+    const health = await roosyncHealthView({});
+    const status = await roosyncGetStatus({});
+
+    expect(health.systemHealth.staleMachines).toEqual(['MyIA-Po-2026']);
+    expect(health.systemHealth.flags).toContain('STALE:MyIA-Po-2026');
+    expect(status.machines.staleMachines).toEqual(['MyIA-Po-2026']);
   });
 });

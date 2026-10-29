@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, lookupMachineActivityInArchives, isStaleMachine, machineBaseId, clearMachineVerdictsForTests, DEFAULT_ACTIVITY_THRESHOLD_MS, MAX_ARCHIVE_READS_PER_CALL, MAX_ARCHIVE_READS_PER_MACHINE, MAX_ARCHIVE_READS_NO_FLOOR } from '../dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, lookupMachineActivityInArchives, isStaleMachine, machineBaseId, clearMachineVerdictsForTests, DEFAULT_ACTIVITY_THRESHOLD_MS, MAX_ARCHIVE_READS_PER_CALL, MAX_ARCHIVE_READS_PER_MACHINE, MAX_ARCHIVE_READS_NO_FLOOR, STALE_VERDICT_REVERIFY_MS } from '../dashboard-activity.js';
 
 describe('dashboard-activity', () => {
 	describe('extractMachineActivity', () => {
@@ -89,6 +89,9 @@ describe('dashboard-activity', () => {
 		});
 
 		afterEach(() => {
+			// ms#1569: the verdict cache is module-level — a test that leaves a
+			// verdict behind would silently change the next file's measurements.
+			clearMachineVerdictsForTests();
 			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
@@ -444,6 +447,9 @@ describe('dashboard-activity', () => {
 		});
 
 		afterEach(() => {
+			// ms#1569: the verdict cache is module-level — a test that leaves a
+			// verdict behind would silently change the next file's measurements.
+			clearMachineVerdictsForTests();
 			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
@@ -498,6 +504,39 @@ describe('dashboard-activity', () => {
 			archive('workspace-ws-2020-06-01T00-00-00.md', '### [2020-06-01T00:00:00.000Z] myia-dead-01|ws\nnewer ancient');
 			const second = lookupMachineActivityInArchives(dashboardsDir, ['myia-dead-01'], floors);
 			expect(second.get('myia-dead-01')).toBe('2020-01-01T00:00:00.000Z');
+		});
+
+		it('the STALE skip does NOT renew its own window — the walk returns after 24h (#1569)', () => {
+			// Injected clock: without it this defect is invisible, because the
+			// refreshed `concludedAt` always looks like "just re-verified".
+			archive('workspace-ws-2020-01-01T00-00-00.md', '### [2020-01-01T00:00:00.000Z] myia-dead-02|ws\nold');
+			const floors = new Map([['myia-dead-02', '2020-01-01T00:00:00.000Z']]);
+			vi.useFakeTimers();
+			try {
+				const t0 = new Date('2026-10-29T00:00:00.000Z').getTime();
+				vi.setSystemTime(t0);
+
+				// Call 1: walks (no verdict yet) and concludes 2020-01-01.
+				const first = lookupMachineActivityInArchives(dashboardsDir, ['myia-dead-02'], floors);
+				expect(first.get('myia-dead-02')).toBe('2020-01-01T00:00:00.000Z');
+
+				// Newer — still stale — truth lands in the archives. Only a walk
+				// can see it, so the returned value measures "did a read happen".
+				archive('workspace-ws-2020-06-01T00-00-00.md', '### [2020-06-01T00:00:00.000Z] myia-dead-02|ws\nnewer ancient');
+
+				// Call 2 at T+1h: served from the verdict, zero reads.
+				vi.setSystemTime(t0 + 60 * 60 * 1000);
+				const second = lookupMachineActivityInArchives(dashboardsDir, ['myia-dead-02'], floors);
+				expect(second.get('myia-dead-02')).toBe('2020-01-01T00:00:00.000Z');
+
+				// Call 3 at T+24h+1min: the window counts from the WALK (T), not
+				// from the skip, so it has expired and the walk happens again.
+				vi.setSystemTime(t0 + STALE_VERDICT_REVERIFY_MS + 60 * 1000);
+				const third = lookupMachineActivityInArchives(dashboardsDir, ['myia-dead-02'], floors);
+				expect(third.get('myia-dead-02')).toBe('2020-06-01T00:00:00.000Z');
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 
 		it('NEGATIVE: a fresh machine resolves normally on both calls (no verdict skip)', () => {
