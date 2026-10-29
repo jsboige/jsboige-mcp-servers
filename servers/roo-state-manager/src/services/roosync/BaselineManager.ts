@@ -17,6 +17,7 @@ import { ensureStoreSubdir } from '../../utils/shared-state-path.js';
 // #4131 Phase D — registre PG-premier (roosync_store_meta, migrations/012)
 import {
   MACHINE_REGISTRY_META_KEY,
+  mergeStoreMetaJsonMap,
   readStoreMetaValue,
   upsertStoreMetaValue,
   storeMetaUrl
@@ -132,17 +133,28 @@ export class BaselineManager {
    * machine, et un registre à une entrée est indistinguable d'une flotte à
    * une machine (#3459).
    *
-   * Trois propriétés, chacune verrouillée par un test :
+   * Quatre propriétés, chacune verrouillée par un test (review ms#1576) :
    *
-   *  - **fusion, jamais remplacement** : la ligne partagée est relue juste
-   *    avant l'écriture et son contenu est UNIONNÉ à la mémoire. Écrire la
-   *    carte chargée au boot écraserait les sièges inscrits entre-temps ;
-   *  - **vérification après écriture** : deux sièges qui démarrent ensemble
-   *    peuvent encore s'écraser mutuellement ; la perte est détectée par une
-   *    relecture et réparée dans le MÊME boot (3 essais bornés) ;
+   *  - **l'appartenance se lit sur la LIGNE, jamais en mémoire** : décider
+   *    « déjà inscrit » depuis `this.machineRegistry` renvoyait `true` sans
+   *    écrire quand la mémoire portait une entrée venue du fichier et que la
+   *    ligne PG ne la portait pas — l'invariant « true ⇔ la ligne me liste »
+   *    était donc faux (bloquant #1 ai-01) ;
+   *  - **union atomique côté stockage** : l'écriture est une fusion `jsonb`
+   *    dans la même instruction (`mergeStoreMetaJsonMap`), pas un
+   *    remplacement de ligne. Deux sièges qui démarrent ensemble et se
+   *    sérialisent sur le verrou de ligne s'unionnent au lieu de s'écraser
+   *    (bloquant #2 ; ai-01 a retiré son propre remède « délai aléatoire +
+   *    vérification de surensemble » comme non prouvé, c.6495611063) ;
+   *  - **vérification en SURSENSEMBLE** : ce qui sort du stockage doit
+   *    contenir notre id ET tous les ids vus avant l'écriture. C'est un
+   *    contrôle de l'invariant, pas le mécanisme de sûreté — celui-ci est
+   *    l'atomicité ci-dessus ;
    *  - **jamais d'écriture aveugle** : ligne illisible ⇒ aucune écriture, une
    *    ligne d'erreur qui nomme la cause (garde ms#1563 conservée). Un siège
-   *    déjà présent et à jour ne réécrit rien (#2121b).
+   *    déjà présent et en ligne ne réécrit rien (#2121b).
+   *
+   * Sans URL PG, la surface fichier reste seule en charge (inchangé).
    *
    * @returns true si la ligne partagée liste ce siège à la sortie.
    */
@@ -160,52 +172,97 @@ export class BaselineManager {
       return false;
     }
 
-    const pgAvailable = Boolean(storeMetaUrl());
-    const maxAttempts = pgAvailable ? 3 : 1;
+    if (!storeMetaUrl()) {
+      // Surface fichier seule : la décision se prend sur la mémoire, faute de
+      // ligne partagée à interroger — c'est le seul cas où c'est légitime.
+      if (!this.addLocalMachineInMemory(machineId, source, new Date().toISOString())) {
+        return true;
+      }
+      await this.saveMachineRegistry();
+      return true;
+    }
+
+    const maxAttempts = 3;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const now = new Date().toISOString();
 
-      if (pgAvailable) {
-        const row = await this.readSharedRegistryRow();
-        if (row === null) {
-          this.logger.error(
-            `[registry] inscription de ${machineId} NON TENTÉE — la ligne partagée est illisible : ` +
-            'aucune écriture (une ligne existait peut-être, l\'écraser perdrait la flotte — #4131, famille #3459)'
-          );
-          return false;
-        }
-        // attempt > 1 : la relecture de vérification a montré que notre entrée
-        // avait été écrasée → on réécrit même si rien n'a changé en mémoire.
-        const merged = this.mergeSharedRegistry(row.machines, machineId, source, now);
-        if (!merged && attempt === 1) {
-          // Nous y sommes déjà, et la ligne ne contient rien que nous ignorions.
-          this.logger.info(
-            `[registry] ${machineId} déjà inscrit dans la ligne partagée — aucune réécriture (#2121b)`
-          );
-          return true;
-        }
-      } else if (!this.addLocalMachineInMemory(machineId, source, now) && attempt === 1) {
-        return true;
+      const row = await this.readSharedRegistryRow();
+      if (row === null) {
+        // Une LECTURE peut être retentée sans rien risquer : on ne réessaie que
+        // le fait de lire, jamais d'écrire à l'aveugle. Sans ce retry, un blip
+        // PG au démarrage laissait le siège absent jusqu'au redémarrage suivant
+        // (point non bloquant #3 de la review ms#1576). Un délai différé
+        // (T+60 s) n'est PAS implémenté : un timer de service pour un cas que
+        // trois tentatives immédiates couvrent déjà n'achète rien ici.
+        this.logger.warn(
+          `[registry] ligne partagée illisible (essai ${attempt}/${maxAttempts}) — ` +
+          'aucune écriture (une ligne existait peut-être, l\'écraser perdrait la flotte — #4131, famille #3459)'
+        );
+        if (attempt < maxAttempts) continue;
+        this.logger.error(
+          `[registry] inscription de ${machineId} NON TENTÉE — la ligne partagée reste illisible ` +
+          `après ${maxAttempts} lectures : aucune écriture (#4131, famille #3459)`
+        );
+        return false;
       }
 
-      await this.saveMachineRegistry();
-
-      if (!pgAvailable) {
-        return true;
-      }
-
-      const verified = await this.readSharedRegistryRow();
-      if (verified && verified.machines[machineId]) {
+      // Bloquant #1 : la décision se prend sur CE QUE LA LIGNE PORTE.
+      const inRow = row.machines[machineId];
+      if (!this.needsRegistryWrite(inRow)) {
+        this.adoptRow(row.machines);
         this.logger.info(
-          `[registry] ${machineId} inscrit dans la ligne partagée: ` +
-          `${Object.keys(verified.machines).length} machines (#4131, essai ${attempt})`
+          `[registry] ${machineId} déjà inscrit dans la ligne partagée — aucune réécriture (#2121b)`
         );
         return true;
       }
 
+      const knownIds = Object.keys(row.machines).map((id) => id.toLowerCase());
+      const entry = inRow
+        // Entrée existante : on rafraîchit lastSeen/status mais la SOURCE est
+        // write-once (validateMachineUniqueness) — une divergence ne se réécrit pas.
+        ? { ...(inRow as any), machineId, lastSeen: now, status: 'online' }
+        : { machineId, firstSeen: now, lastSeen: now, source, status: 'online' };
+
+      let post: { machines: Record<string, any> } | null = null;
+      try {
+        const raw = await mergeStoreMetaJsonMap(
+          MACHINE_REGISTRY_META_KEY,
+          'machines',
+          JSON.stringify({ machines: { [machineId]: entry }, lastUpdated: now })
+        );
+        post = this.parseRegistryDocument(raw);
+      } catch (error) {
+        this.logger.error(
+          `[registry] fusion atomique de ${machineId} impossible (essai ${attempt}/${maxAttempts})`,
+          { error: String(error) }
+        );
+      }
+
+      if (post === null) {
+        this.logger.warn(
+          `[registry] inscription de ${machineId} non confirmée — nouvel essai ${attempt}/${maxAttempts} (#4131)`
+        );
+        continue;
+      }
+
+      this.adoptRow(post.machines);
+
+      // Sursensemble : notre id ET tout id vu avant l'écriture doivent sortir.
+      // Avec l'union atomique, un manquant signale une fusion qui n'a pas eu
+      // lieu — on le dit, on ne le tait pas.
+      const missing = [machineId, ...knownIds].filter((id) => !post!.machines[id]);
+      if (missing.length === 0) {
+        this.logger.info(
+          `[registry] ${machineId} inscrit dans la ligne partagée: ` +
+          `${Object.keys(post.machines).length} machines (#4131, essai ${attempt})`
+        );
+        await this.writeRegistryMirror();
+        return true;
+      }
+
       this.logger.warn(
-        `[registry] inscription de ${machineId} perdue (écriture concurrente) — ` +
+        `[registry] fusion de ${machineId} incomplète — absents: ${missing.join(', ')} — ` +
         `nouvel essai ${attempt}/${maxAttempts} (#4131)`
       );
     }
@@ -215,6 +272,18 @@ export class BaselineManager {
       'la ligne partagée ne le liste toujours pas (#4131)'
     );
     return false;
+  }
+
+  /**
+   * Faut-il écrire l'entrée de ce siège ?
+   *
+   * Décide sur l'entrée de la LIGNE (bloquant #1 de la review ms#1576) :
+   * absent de la ligne ⇒ on écrit, quoi que dise la mémoire ; présent mais
+   * pas `online` ⇒ auto-guérison ; présent et en ligne ⇒ rien (#2121b).
+   */
+  private needsRegistryWrite(inRow: Record<string, any> | undefined): boolean {
+    if (!inRow) return true;
+    return inRow.status !== 'online';
   }
 
   /**
@@ -229,8 +298,7 @@ export class BaselineManager {
       if (raw === null) {
         return { machines: {} };
       }
-      const parsed = JSON.parse(raw);
-      return { machines: (parsed && parsed.machines) || {} };
+      return this.parseRegistryDocument(raw);
     } catch (error) {
       this.logger.warn('[registry] relecture de la ligne partagée impossible', { error: String(error) });
       return null;
@@ -238,58 +306,58 @@ export class BaselineManager {
   }
 
   /**
-   * Unionner la ligne partagée dans la carte mémoire, puis (ré)inscrire ce siège.
-   * @returns true si quelque chose doit être écrit.
+   * Parser un document registre (`{ machines: {...} }`).
+   * @returns `null` si le document n'est pas exploitable — l'appelant traite
+   *          alors la lecture/l'écriture comme non aboutie, jamais comme vide.
    */
-  private mergeSharedRegistry(
-    rowMachines: Record<string, any>,
-    machineId: string,
-    source: 'service',
-    now: string
-  ): boolean {
-    let changed = false;
+  private parseRegistryDocument(raw: string): { machines: Record<string, any> } | null {
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      const machines = parsed.machines;
+      if (machines && typeof machines === 'object') {
+        return { machines: machines as Record<string, any> };
+      }
+      return { machines: {} };
+    } catch {
+      return null;
+    }
+  }
 
-    // Les sièges inscrits par d'autres process depuis notre chargement entrent
-    // en mémoire AVANT toute écriture : sans cette union, sauvegarder la carte
-    // du boot remplacerait leur inscription par la nôtre (perte silencieuse).
+  /**
+   * Adopter le contenu de la ligne partagée comme carte mémoire (PG fait foi).
+   * Aucune suppression : une entrée de mémoire absente de la ligne est
+   * conservée (une écriture partielle ne doit jamais effacer).
+   */
+  private adoptRow(rowMachines: Record<string, any>): void {
     for (const [id, entry] of Object.entries(rowMachines)) {
       const key = id.toLowerCase();
-      if (!this.machineRegistry.machines.has(key)) {
-        this.machineRegistry.machines.set(key, { ...(entry as any), machineId: key });
-        changed = true;
-      }
+      this.machineRegistry.machines.set(key, { ...(entry as any), machineId: key });
     }
+  }
 
-    const own = this.machineRegistry.machines.get(machineId);
-    if (!own) {
-      this.machineRegistry.machines.set(machineId, {
-        machineId,
-        firstSeen: now,
-        lastSeen: now,
-        source,
-        status: 'online'
-      });
-      return true;
-    }
-
-    if (own.source !== source) {
-      // La source est write-once par design (validateMachineUniqueness) : une
-      // divergence se NOMME, elle ne se réécrit pas.
-      this.logger.warn(
-        `[registry] ${machineId} porte déjà la source '${own.source}' — inscription au boot '${source}' ` +
-        'non appliquée (source write-once, #4131)'
+  /**
+   * Miroir GDrive seul — la ligne PG est écrite par la fusion atomique, on ne
+   * la réécrit donc PAS ici (un `upsert` plein écraserait les sièges arrivés
+   * entre-temps : exactement le défaut du bloquant #2).
+   */
+  private async writeRegistryMirror(): Promise<void> {
+    try {
+      await fs.writeFile(
+        this.machineRegistry.registryPath,
+        JSON.stringify(
+          {
+            machines: Object.fromEntries(this.machineRegistry.machines),
+            lastUpdated: new Date().toISOString()
+          },
+          null,
+          2
+        ),
+        'utf-8'
       );
-      return changed;
+    } catch (error) {
+      this.logger.warn('[registry] écriture miroir GDrive impossible (toléré)', { error: String(error) });
     }
-
-    if (own.status !== 'online') {
-      // Auto-guérison : un siège qui démarre est en ligne.
-      own.status = 'online';
-      own.lastSeen = now;
-      return true;
-    }
-
-    return changed;
   }
 
   /**
@@ -525,6 +593,13 @@ export class BaselineManager {
     // L'exception est bornée à ce couple : une entrée `config`/`baseline`/
     // `presence` reste un conflit (garde #1409 conservée, cf.
     // BaselineManager.gap.test.ts), et un machineId étranger reste strict.
+    //
+    // INVARIANT dont dépend cette exemption (review ms#1576, point #4) : ses
+    // deux seuls appelants, dans `loadDashboard`, passent
+    // `this.config.machineId` — l'id LOCAL. La garde repose sur le fait que
+    // `dashboard` ne désigne jamais une machine tierce depuis ce chemin : tout
+    // futur appelant qui passerait un id arbitraire DOIT revisiter cette
+    // exemption et la re-clé sur l'id local, pas sur la seule paire de sources.
     const bootToDashboard =
       existingMachine.source === 'service' && source === 'dashboard';
 
