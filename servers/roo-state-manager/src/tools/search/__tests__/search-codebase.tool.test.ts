@@ -1231,6 +1231,57 @@ describe('search-codebase.tool', () => {
 				expect(parsed.data_file_malus_applied).toBe(1);
 				expect(parsed.locale_file_malus_applied).toBe(1);
 			});
+
+			test('scope — a runtime module under i18n/ keeps normal source treatment (negative)', async () => {
+				// Driver of the ai-01 review on 11a102e0: `src/i18n/index.ts` and
+				// `src/i18n/setup.ts` are runtime modules that merely live in a localization
+				// directory. Classifying them as translations applied the ×0.7 malus, removed
+				// block expansion and made them SHARE the family cap budget — a recall
+				// regression on exactly the code people search for.
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.8, payload: { filePath: 'src\\i18n\\index.ts', codeChunk: 'export function setupI18n(locale: string) {', startLine: 10, endLine: 14 } },
+						{ score: 0.8, payload: { filePath: 'src\\i18n\\setup.ts', codeChunk: 'initI18n();', startLine: 1, endLine: 3 } },
+						{ score: 0.8, payload: { filePath: 'src\\i18n\\hooks.ts', codeChunk: 'export const useTranslation = () => {', startLine: 5, endLine: 9 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'setup i18n locale', workspace: '/ws', limit: 3, min_score: 0.3 });
+				const parsed = JSON.parse(result.content[0].text);
+				const byPath = Object.fromEntries(parsed.results.map((r: any) => [r.file_path, r.score]));
+
+				// No malus of ANY class — these are ordinary sources, not translations.
+				expect(byPath['src\\i18n\\index.ts']).toBeCloseTo(0.8, 5);
+				expect(byPath['src\\i18n\\setup.ts']).toBeCloseTo(0.8, 5);
+				expect(byPath['src\\i18n\\hooks.ts']).toBeCloseTo(0.8, 5);
+				expect(parsed.locale_file_malus_applied).toBeUndefined();
+				// ... AND capKeyOf uses the same class: three runtime modules, three slots.
+				// Before the fix all three collapsed into ONE `<locales-family>` budget
+				// (MAX_CHUNKS_PER_FILE = 2), so the third was pushed to the leftovers.
+				expect(parsed.results_count).toBe(3);
+			});
+
+			test('scope — the recognisable translation shapes still take the locale class', async () => {
+				// The other half of the boundary: restricting the class must not lose the
+				// shapes it exists for — a `locales/` leaf, a locale-code basename, and a
+				// gettext file (a .po/.pot is a translation whatever its basename).
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.9, payload: { filePath: 'webview-ui\\src\\i18n\\locales\\de-DE\\settings.json', codeChunk: '"qdrant": "Qdrant"', startLine: 3, endLine: 3 } },
+						{ score: 0.9, payload: { filePath: 'webview-ui\\src\\i18n\\zh_CN.po', codeChunk: 'msgid "qdrant"', startLine: 1, endLine: 4 } },
+						{ score: 0.9, payload: { filePath: 'webview-ui\\src\\i18n\\messages.po', codeChunk: 'msgid "settings"', startLine: 1, endLine: 2 } },
+						{ score: 0.9, payload: { filePath: 'webview-ui\\src\\i18n\\de-DE.json', codeChunk: '{"settings": "Einstellungen"}', startLine: 1, endLine: 1 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'qdrant settings', workspace: '/ws', limit: 4, min_score: 0.3 });
+				const parsed = JSON.parse(result.content[0].text);
+				expect(parsed.locale_file_malus_applied).toBe(4);
+				expect(parsed.results_count).toBe(4);
+				for (const r of parsed.results) {
+					expect(r.score).toBeCloseTo(0.9 * 0.7, 5);
+				}
+			});
 		});
 
 		describe('handleCodebaseSearch - archive-file re-ranking (#3174 defect 3)', () => {

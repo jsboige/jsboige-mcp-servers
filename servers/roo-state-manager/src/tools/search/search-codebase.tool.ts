@@ -1952,10 +1952,41 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		//     syntactic noise that dilutes the signal. Same family as #3172/#1180/#2609-V2:
 		//     a derivative is never the actionable answer to "find the code that does X".
 		//     PRECEDENCE over data (a locale file is first a translation), never compounded
-		//     to 0.7 × 0.75. Degraded, not removed — a "where is the German string" query
-		//     still finds its file. Directory vocabulary: i18n/locales/lang/languages/
-		//     translations; extension list covers data formats AND typed locales (fr.ts).
-		const LOCALE_FILE_RE = /(^|[\\/])(i18n|locales|lang|languages|translations)[\\/].+\.(json|jsonc|json5|ya?ml|csv|tsv|po|pot|ts|js|mjs)$/i;
+		//     to 0.7 × 0.75.
+		//     CONTRACT (corrigé, review ai-01 sur 11a102e0) : le facteur ×0.7 s'applique au
+		//     score ajusté, qui est ENSUITE re-filtré contre min_score. Au défaut 0.5, un
+		//     hit brut de [0.5 ; 0.714[ est donc RETIRÉ, et un hit >= 0.715 survit dégradé.
+		//     Ce n'est pas « degraded, not removed » — c'est une démotion avec un plancher.
+		//     CLASS (review ai-01 sur 11a102e0, bloquant) : le seul vocabulaire de DOSSIER
+		//     était trop large — `src/i18n/index.ts` et `src/i18n/setup.ts` sont des modules
+		//     d'exécution, et les classer en traduction leur appliquait le malus, leur
+		//     retirait l'expansion de bloc et les faisait partager le budget famille : une
+		//     régression de rappel sur exactement le code qu'on cherche. Un chemin est un
+		//     fichier de locale si les DEUX tiennent : (1) il vit sous une racine de
+		//     localisation (i18n|locales|lang|languages|translations) ; (2) sa FORME est
+		//     reconnaissable comme une traduction — un segment `locales/` quelque part
+		//     (répertoire de localisation explicite), une extension gettext (.po/.pot),
+		//     ou un basename de code de langue (fr.ts, de-DE.json, zh_CN.po).
+		//     capKeyOf utilise LE MÊME prédicat : il ne doit jamais replier un module
+		//     d'exécution dans le budget d'une famille.
+		const LOCALE_ROOTS = new Set(['i18n', 'locales', 'lang', 'languages', 'translations']);
+		const LOCALE_TAG_RE = /^[a-z]{2}(?:[-_][a-z0-9]{2,4})?$/i;
+		const TRANSLATION_FILE_RE = /\.(json|jsonc|json5|ya?ml|csv|tsv|po|pot|ts|js|mjs)$/i;
+		const isLocaleFilePath = (fp: string): boolean => {
+			const segments = String(fp).replace(/\\/g, '/').split('/');
+			const file = segments.pop() || '';
+			const dirs = segments.map(seg => seg.toLowerCase());
+			if (!TRANSLATION_FILE_RE.test(file)) return false;
+			// (1) hors d'une racine de localisation, aucun fichier n'est une traduction.
+			if (!dirs.some(dir => LOCALE_ROOTS.has(dir))) return false;
+			// (2a) répertoire `locales/` explicite : tout son sous-arbre est du contenu.
+			if (dirs.some(dir => dir === 'locales')) return true;
+			// (2b) gettext : un .po/.pot est une traduction par nature, quel que soit
+			// son basename (`i18n/messages.po`).
+			if (/\.pot?$/i.test(file)) return true;
+			// (2c) basename de code de langue : fr.ts, de-DE.json, zh_CN.po.
+			return LOCALE_TAG_RE.test(file.replace(TRANSLATION_FILE_RE, ''));
+		};
 		const LOCALE_FILE_MALUS = 0.7;
 		const MAX_CHUNKS_PER_FILE = 2;
 
@@ -1967,7 +1998,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			const isFixtureFile = FIXTURE_FILE_RE.test(fp);
 			const isArchiveFile = ARCHIVE_FILE_RE.test(fp);
 			const isBuildDirFile = BUILD_DIR_RE.test(fp);
-			const isLocaleFile = !isTestFile && !isFixtureFile && !isArchiveFile && !isBuildDirFile && LOCALE_FILE_RE.test(fp);
+			const isLocaleFile = !isTestFile && !isFixtureFile && !isArchiveFile && !isBuildDirFile && isLocaleFilePath(fp);
 			const isDataFile = !isTestFile && !isFixtureFile && !isArchiveFile && !isBuildDirFile && !isLocaleFile && DATA_FILE_RE.test(fp);
 			const factor = (isTestFile ? TEST_FILE_MALUS : 1)
 				* (isFixtureFile ? FIXTURE_FILE_MALUS : 1)
@@ -2011,6 +2042,10 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		const mergeKeyOf = (fp: string) => fp.replace(/(^|[\\/])build(-[a-f0-9]{8,}|-out)?[\\/]/ig, '');
 		const capKeyOf = (fp: string) => {
 			const stripped = mergeKeyOf(fp);
+			// MÊME classe que le malus (review ai-01 sur 11a102e0) : replier TOUT ce qui
+			// vit sous `i18n/` faisait partager un budget à `src/i18n/index.ts` et
+			// `setup.ts` — la moitié « cap » de la régression de rappel.
+			if (!isLocaleFilePath(stripped)) return stripped;
 			const m = stripped.match(/(^|[\\/])(i18n|locales|lang|languages|translations)[\\/]/i);
 			if (m && m.index !== undefined) {
 				return stripped.slice(0, m.index + m[0].length) + '<locales-family>';
