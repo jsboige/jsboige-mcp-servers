@@ -164,24 +164,31 @@ export class InventoryService {
 private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
   const sharedPath = process.env.ROOSYNC_SHARED_PATH;
 
-  if (!sharedPath) {
-    throw new InventoryCollectorError(
-      'ROOSYNC_SHARED_PATH n\'est pas configuré. Impossible de charger l\'inventaire distant.',
-      InventoryCollectorErrorCode.SHARED_STATE_NOT_ACCESSIBLE,
-      { machineId, method: 'loadRemoteInventory' }
-    );
-  }
-
   // #4131 Phase D (bloqueur 03/11) : la ligne PG (`roosync_store_meta`,
   // clé `inventory:{machineId}`) est la nouvelle surface ; le fichier
   // GDrive ne sert que lorsque la ligne est absente (contrat migration-012 :
   // la DONNÉE décide). Une ligne PG corrompue est une erreur TYPIÉE, jamais
-  // un repli silencieux vers un fichier périmé.
+  // un repli silencieux vers un fichier périmé. Review ms#1563 (Hermes 🟡) :
+  // la branche PG passe AVANT la garde ROOSYNC_SHARED_PATH — « le service
+  // démarre sans GDrive » (03/11) doit tenir même si l'exploitant retire la
+  // variable en même temps que le montage, pas seulement le répertoire.
   if (storeMetaUrl()) {
     try {
       const raw = await readStoreMetaValue(inventoryMetaKey(machineId));
       if (raw !== null) {
-        const inventory = JSON.parse(raw) as FullInventory;
+        let inventory: FullInventory;
+        try {
+          inventory = JSON.parse(raw) as FullInventory;
+        } catch {
+          // Review ms#1563 (Hermes 🟡) : une ligne EXISTANTE mais illisible
+          // n'est pas une absence — le repli fichier servirait un inventaire
+          // périmé à la place d'une vérité endommagée, en silence.
+          throw new InventoryCollectorError(
+            `Ligne PG inventory:${machineId} illisible (JSON invalide) — pas de repli fichier`,
+            InventoryCollectorErrorCode.INVENTORY_PARSE_FAILED,
+            { machineId, rawPreview: String(raw).slice(0, 80) }
+          );
+        }
         if (inventory.machineId !== machineId) {
           throw new InventoryCollectorError(
             `Incohérence dans l'inventaire (PG): machineId de la ligne (${inventory.machineId}) ` +
@@ -198,12 +205,20 @@ private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
       if (error instanceof InventoryCollectorError) {
         throw error;
       }
-      // PG injoignable/ligne illisible : repli fichier, dit dans le journal.
+      // PG injoignable : repli fichier si configuré, dit dans le journal.
       invLogger().warn('[inventory] lecture PG impossible — repli fichier GDrive', {
         machineId,
         error: String(error)
       });
     }
+  }
+
+  if (!sharedPath) {
+    throw new InventoryCollectorError(
+      'ROOSYNC_SHARED_PATH n\'est pas configuré. Impossible de charger l\'inventaire distant.',
+      InventoryCollectorErrorCode.SHARED_STATE_NOT_ACCESSIBLE,
+      { machineId, method: 'loadRemoteInventory' }
+    );
   }
 
   // CORRECTION #340 : Utiliser le nouveau format {machineId}.json (aligné avec InventoryCollector)

@@ -10,6 +10,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import * as os from 'node:os';
+import * as path from 'node:path';
 import { loadRooSyncConfig, RooSyncConfigError } from '../roosync-config.js';
 
 const KEYS = {
@@ -25,7 +26,10 @@ const SAVED: Record<string, string | undefined> = {};
 
 function setEnv(overrides: Record<string, string | undefined>): void {
   const base: Record<string, string> = {
-    [KEYS.SHARED]: 'C:\\__no_such_mount__\\shared-state',
+    // POSIX form: the Ubuntu runner's path.isAbsolute() is posix.isAbsolute(),
+    // for which 'C:\...' is NOT absolute — the test would die one branch above
+    // the gate under test ("must be an absolute path"). Hermes ms#1563 review.
+    [KEYS.SHARED]: '/__no_such_mount__/shared-state',
     [KEYS.MACHINE]: 'test-machine',
     [KEYS.AUTO]: 'true',
     [KEYS.CONFLICT]: 'manual',
@@ -66,7 +70,10 @@ describe('#4131 Phase D — config gate: absent shared path × PG presence', () 
   it('PG URL present → loads, sharedPath kept verbatim (PG-primary mode)', () => {
     setEnv({ [KEYS.PG]: 'postgresql://user:pass@host:5432/db' });
     const config = loadRooSyncConfig();
-    expect(config.sharedPath).toBe('C:\\__no_such_mount__\\shared-state');
+    // loadRooSyncConfig resolves the path — compare the resolved form, which
+    // stays platform-independent ('D:\__no_such...' on Windows, '/__no_such...'
+    // on the Ubuntu runner).
+    expect(config.sharedPath).toBe(path.resolve('/__no_such_mount__/shared-state'));
     expect(config.machineId).toBe('test-machine');
   });
 

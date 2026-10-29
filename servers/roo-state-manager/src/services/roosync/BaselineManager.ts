@@ -70,6 +70,14 @@ export interface RollbackRestoreResult {
 export class BaselineManager {
   private logger = createLogger('BaselineManager');
   private machineRegistry: MachineRegistry;
+  // #4131 Phase D (review ms#1563, Hermes 🟠) : état de persistance hérité du
+  // chargement. 'refused-blind' = une source EXISTAIT mais était illisible au
+  // chargement (fichier EBUSY, ligne PG corrompue) : persister maintenant
+  // écrirait le registre partiel en mémoire COMME vérité durable — et la
+  // ligne PG, une fois écrite, masquerait pour toujours le fichier redevenu
+  // sain au démarrage suivant. On refuse, bruyamment. Une installation neuve
+  // (aucune source nulle part) reste 'allowed' : c'est ainsi que le registre naît.
+  private registryPersistence: 'allowed' | 'refused-blind' = 'allowed';
   // #2267: registry init promise — avoids blocking constructor on GDrive readFileSync
   private registryInitPromise: Promise<void>;
 
@@ -139,6 +147,7 @@ export class BaselineManager {
           this.logger.info(
             `[registry] chargé depuis PG: ${this.machineRegistry.machines.size} machines (#4131)`
           );
+          this.registryPersistence = 'allowed';
           return;
         }
         pgState = 'ligne absente';
@@ -168,6 +177,7 @@ export class BaselineManager {
           `[registry] chargé depuis le fichier GDrive: ${this.machineRegistry.machines.size} machines`
         );
         fileState = `lu (${this.machineRegistry.machines.size} machines)`;
+        this.registryPersistence = 'allowed';
 
         // Seed : première lecture d'un registre qui n'existe pas encore en PG
         // → la donnée migre elle-même, une fois, sans script (#4131 Phase D).
@@ -200,10 +210,26 @@ export class BaselineManager {
     // Aucune source : registre vide MAIS dit et daté dans le journal —
     // jamais silencieux (l'ancien `catch → new Map()` sans condition).
     this.machineRegistry.machines = new Map();
+    // Review ms#1563 (Hermes 🟠) : distinguer « rien n'existe » (installation
+    // neuve — la persistance crée le registre) de « quelque chose existe mais
+    // est illisible » (aveugle — persister écraserait la vérité). pgState ne
+    // dit « ligne absente » que si PG a RÉPONDU ; fileState ne dit « lecture
+    // en échec » que si le fichier existait.
+    const blindLoad =
+      pgState === 'lecture PG en échec' ||
+      fileState === 'lecture en échec';
+    this.registryPersistence = blindLoad ? 'refused-blind' : 'allowed';
     this.logger.error(
       `[registry] VIDE — aucune source lisible (pg: ${pgState}, fichier: ${fileState}) — ` +
       'registre vide ≠ flotte vide (#4131, famille #3459)'
     );
+    if (blindLoad) {
+      this.logger.error(
+        '[registry] PERSISTANCE REFUSÉE pour cette session — une source existait mais était ' +
+        'illisible au chargement : écrire maintenant ferait du registre partiel en mémoire la ' +
+        'vérité durable, même après retour du montage (#4131, famille #3459)'
+      );
+    }
   }
 
   /**
@@ -215,6 +241,16 @@ export class BaselineManager {
    * d'erreur, jamais un silence.
    */
   private async saveMachineRegistry(): Promise<void> {
+    // Review ms#1563 (Hermes 🟠) : un chargement aveugle ne devient jamais la
+    // vérité durable — le refus est une ligne d'erreur, pas un silence.
+    if (this.registryPersistence === 'refused-blind') {
+      this.logger.error(
+        `[registry] sauvegarde REFUSÉE (${this.machineRegistry.machines.size} machines en mémoire) — ` +
+        'aucune source n\'était lisible au chargement : persister ferait de ce registre partiel ' +
+        'la vérité durable (#4131, famille #3459)'
+      );
+      return;
+    }
     const registryData = {
       machines: Object.fromEntries(this.machineRegistry.machines),
       lastUpdated: new Date().toISOString()

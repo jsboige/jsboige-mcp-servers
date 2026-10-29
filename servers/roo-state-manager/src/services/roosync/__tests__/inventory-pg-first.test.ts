@@ -136,6 +136,29 @@ describe('#4131 Phase D — loadRemoteInventory, PG-first', () => {
   });
 });
 
+describe('#4131 Phase D — review ms#1563 (Hermes 🟡) : ligne PG corrompue et ordre des gardes', () => {
+  it('corrupt PG row (JSON invalide) → erreur TYPIÉE, PAS de repli fichier', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue('{not json at all');
+    const svc = InventoryService.getInstance();
+
+    await expect((svc as any).loadRemoteInventory('myia-a')).rejects.toBeInstanceOf(
+      InventoryCollectorError
+    );
+    expect(readJSONFileWithoutBOM).not.toHaveBeenCalled();
+  });
+
+  it('ligne PG présente + ROOSYNC_SHARED_PATH absent → servi depuis PG quand même', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(JSON.stringify(inventoryFor('myia-a')));
+    delete process.env.ROOSYNC_SHARED_PATH;
+    const svc = InventoryService.getInstance();
+
+    const inv = await (svc as any).loadRemoteInventory('myia-a');
+
+    expect(inv.machineId).toBe('myia-a');
+    expect(readJSONFileWithoutBOM).not.toHaveBeenCalled();
+  });
+});
+
 describe('#4131 Phase D — saveToSharedState, PG-first with tolerated mirror', () => {
   it('upserts PG with the masked JSON, then writes the file mirror', async () => {
     const svc = InventoryService.getInstance();

@@ -63,7 +63,9 @@ function pgRow(machines: Record<string, unknown>): string {
 
 async function makeManager(): Promise<BaselineManager> {
   const mgr = new BaselineManager(
-    { machineId: 'test-machine', sharedPath: 'C:\\__no_such_mount__\\shared-state' } as any,
+    // POSIX literal (never validated by isAbsolute here, but normalized so the
+    // suite cannot grow a platform dependency — Hermes ms#1563 review).
+    { machineId: 'test-machine', sharedPath: '/__no_such_mount__/shared-state' } as any,
     { loadBaseline: vi.fn() },
     { listDiffs: vi.fn() }
   );
@@ -143,6 +145,47 @@ describe('#4131 Phase D — registry load, PG-first', () => {
     const lines = errorCalls(mgr).filter((l) => l.includes('[registry] VIDE'));
     expect(lines).toHaveLength(1);
     expect(lines[0]).toContain("pg: absent (pas d'URL PG)");
+  });
+});
+
+describe('#4131 Phase D — review ms#1563 (Hermes 🟠) : un chargement aveugle ne devient jamais la vérité durable', () => {
+  it('file read fails (EBUSY) + PG row absent → save REFUSED, nothing written', async () => {
+    mockExistsSync.mockReturnValue(true);
+    mockFs.readFile.mockRejectedValue(Object.assign(new Error('EBUSY: resource busy'), { code: 'EBUSY' }));
+    const mgr = await makeManager();
+    vi.clearAllMocks();
+
+    await (mgr as any).addMachineToRegistry('myia-new', 'dashboard');
+
+    expect(mockStoreMeta.upsertStoreMetaValue).not.toHaveBeenCalled();
+    expect(mockFs.writeFile).not.toHaveBeenCalled();
+    const lines = errorCalls(mgr).filter((l) => l.includes('sauvegarde REFUSÉE'));
+    expect(lines).toHaveLength(1);
+  });
+
+  it('T2 (G: redevenu sain) → le fichier sert toujours la flotte, rien n\'a été écrasé', async () => {
+    // T1 : chargement aveugle + une écriture refusée
+    mockExistsSync.mockReturnValue(true);
+    mockFs.readFile.mockRejectedValueOnce(Object.assign(new Error('EBUSY'), { code: 'EBUSY' }));
+    const t1 = await makeManager();
+    await (t1 as any).addMachineToRegistry('myia-new', 'dashboard');
+    expect(mockStoreMeta.upsertStoreMetaValue).not.toHaveBeenCalled();
+
+    // T2 : démarrage suivant, le fichier est lisible — il sert TOUTE la flotte
+    mockFs.readFile.mockResolvedValue(JSON.stringify(REGISTRY_FILE));
+    const t2 = await makeManager();
+    expect(t2.getKnownMachineIds().sort()).toEqual(['myia-a', 'myia-b']);
+  });
+
+  it('installation neuve (ni ligne PG ni fichier) → save ALLOWED, le registre naît', async () => {
+    mockExistsSync.mockReturnValue(false);
+    const mgr = await makeManager();
+    vi.clearAllMocks();
+
+    await (mgr as any).addMachineToRegistry('myia-first', 'dashboard');
+
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledTimes(1);
+    expect(mockFs.writeFile).toHaveBeenCalledTimes(1);
   });
 });
 
