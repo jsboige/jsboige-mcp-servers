@@ -352,6 +352,16 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
     let filteredOnlineMachines: string[] = [];
     let filteredUnknownMachines: string[] = [];
     let filteredStaleMachines: string[] = [];
+    // #4344 review: activity keys are lowercase while registry ids keep their
+    // written case, so the same machine could be pushed twice. One lowercase-keyed
+    // set keeps the stale list exact — and it is the same key health-view uses.
+    const staleSeenIds = new Set<string>();
+    const pushStaleMachine = (mid: string): void => {
+      const key = mid.toLowerCase();
+      if (staleSeenIds.has(key)) return;
+      staleSeenIds.add(key);
+      filteredStaleMachines.push(mid);
+    };
     let filteredIdleMachines: string[] = [];
     let dashboardOverrides: string[] = [];
     // #3160: last dashboard append seen per machine, from THIS observer's GDrive mirror.
@@ -402,7 +412,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
       for (const mid of registryMachineIds) {
         if (seenSet.has(mid.toLowerCase())) continue;
         if (isStaleMachine(activity.get(mid.toLowerCase()))) {
-          filteredStaleMachines.push(mid);
+          pushStaleMachine(mid);
         } else {
           filteredUnknownMachines.push(mid);
         }
@@ -421,7 +431,7 @@ export async function roosyncGetStatus(args: GetStatusArgs): Promise<GetStatusRe
           // registry (e.g. the -win32-x64 ghost on mirrors where the shared
           // registry does not carry it) are classified from their own
           // lastSeen — a 52-day-old one is STALE, not invisible.
-          if (isStaleMachine(lastSeen)) filteredStaleMachines.push(mid);
+          if (isStaleMachine(lastSeen)) pushStaleMachine(mid);
         }
       }
     } catch (err) {

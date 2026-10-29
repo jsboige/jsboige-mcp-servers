@@ -494,4 +494,55 @@ describe('roosyncHealthView orchestration + scoring', () => {
     expect(result.systemHealth.machinesOnline).toBe(1);
     expect(result.systemHealth.machinesUnknown).toBe(0);
   });
+
+  it('#4344 review: count, list and flags derive from one canonical stale set', async () => {
+    // Two stale machines, one on each side of the registry boundary — the shape
+    // the coordinator flagged: `machinesStale: 2` with `staleMachines: []`.
+    //  - myia-po-2026: listed in the registry, last activity 9 days old, so it is
+    //    classified by the registry loop.
+    //  - myia-po-2025-win32-x64: activity-only ghost, 30 days old, ABSENT from the
+    //    registry, so only the activity loop can see it.
+    const dir = mkdtempSync(tmpdir() + '/health-view-4344-set-');
+    tempDashboardsDir = dir;
+    mkdirSync(dir + '/dashboards', { recursive: true });
+    const fresh = new Date().toISOString();
+    const nineDays = new Date(Date.now() - 9 * 24 * 3600 * 1000).toISOString();
+    const thirtyDays = new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString();
+    writeFileSync(dir + '/dashboards/workspace-test.md',
+      `## Intercom\n` +
+      `### [${fresh}] myia-ai-01|roo-extensions\nfresh message\n` +
+      `### [${nineDays}] myia-po-2026|roo-extensions\nnine days silent\n`
+    );
+    writeFileSync(dir + '/dashboards/workspace-ghost.md',
+      `## Intercom\n### [${thirtyDays}] myia-po-2025-win32-x64|roo-extensions\nghost line\n`
+    );
+    mockGetSharedStatePath.mockReturnValue(dir);
+    mockGetRooSyncService.mockResolvedValue({
+      getKnownMachineIds: () => ['myia-ai-01', 'myia-po-2026'],
+    });
+    mockFetch.mockResolvedValue({ ok: true });
+    mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+
+    const result = await roosyncHealthView({});
+
+    // The structured list names exactly what the count counts — the contract the
+    // coordinator asked for (it was `machinesStale: 2, staleMachines: []`).
+    expect(result.systemHealth.machinesStale).toBe(2);
+    expect(result.systemHealth.staleMachines).toHaveLength(2);
+    expect(result.systemHealth.machinesStale).toBe(result.systemHealth.staleMachines.length);
+    expect(result.systemHealth.staleMachines).toEqual(
+      expect.arrayContaining(['myia-po-2026', 'myia-po-2025-win32-x64'])
+    );
+    // Exactly one STALE: flag per member — the activity-only ghost included,
+    // because get-status flags it and the two tools must agree (#2546).
+    const staleFlags = result.systemHealth.flags.filter(f => f.startsWith('STALE:'));
+    expect(staleFlags).toHaveLength(2);
+    expect(staleFlags).toEqual(
+      expect.arrayContaining(['STALE:myia-po-2026', 'STALE:myia-po-2025-win32-x64'])
+    );
+    // Presence arithmetic stays coherent: 1 online, 0 unknown, 2 stale.
+    expect(result.systemHealth.machinesOnline).toBe(1);
+    expect(result.systemHealth.machinesUnknown).toBe(0);
+    expect(result.systemHealth.machinesTotal).toBe(3);
+  });
 });

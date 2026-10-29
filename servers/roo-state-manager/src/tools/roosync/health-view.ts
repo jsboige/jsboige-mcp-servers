@@ -186,6 +186,11 @@ async function collectSystemHealth(): Promise<{
   const flags: string[] = [];
   const unknownMachines: string[] = [];
   const staleMachines: string[] = [];
+  // #4344 review: one canonical stale set, keyed on the lowercase id so a machine
+  // written in two cases (activity key vs registry id) is counted once. The list,
+  // the count and the STALE: flags all derive from it below — get-status and
+  // health-view must not disagree on which machines are stale (#2546 contract).
+  const staleIds = new Map<string, string>();
   // #3160: raw per-machine lastSeen, populated in the try block below.
   const lastSeenByMachine: Record<string, string | null> = {};
   const ONE_DAY = 24 * 60 * 60 * 1000;
@@ -259,7 +264,6 @@ async function collectSystemHealth(): Promise<{
     }
 
     const onlineMachines: string[] = [];
-    const staleMachinesList: string[] = [];
     for (const [machineId, lastSeenStr] of activity) {
       const id = machineId.toLowerCase();
       if (!isKnownMachine(id)) continue;
@@ -269,7 +273,7 @@ async function collectSystemHealth(): Promise<{
         onlineMachines.push(id);
       } else if (isStaleMachine(lastSeenStr)) {
         // #4344 residual: concluded absent >7d — parked, zero archive reads.
-        staleMachinesList.push(id);
+        if (!staleIds.has(id)) staleIds.set(id, id);
       }
       // Machines with stale dashboard activity (>8h, <7d) are not counted as
       // online but are also NOT double-counted as unknown — they'll be caught
@@ -284,10 +288,9 @@ async function collectSystemHealth(): Promise<{
       if (!seenSet.has(mid.toLowerCase())) {
         if (isStaleMachine(lastSeen)) {
           // #4344 residual: 7-day absence is a STRONGER statement than the
-          // 1-day SYNC_STALE blip — parked, not an incident signal.
-          flags.push(`STALE:${mid}`);
-          staleCount++;
-          staleMachinesList.push(mid);
+          // 1-day SYNC_STALE blip — parked, not an incident signal. The flag and
+          // the count are emitted once, from the canonical set, after this loop.
+          if (!staleIds.has(mid.toLowerCase())) staleIds.set(mid.toLowerCase(), mid);
           continue;
         }
         // Check if this machine has ANY dashboard activity at all (even stale)
@@ -304,6 +307,16 @@ async function collectSystemHealth(): Promise<{
         unknownMachines.push(mid);
       }
     }
+
+    // #4344 review: the structured observability fields derive from the single
+    // canonical set, so `machinesStale === staleMachines.length` always holds and
+    // every stale machine carries exactly one STALE: flag — including an
+    // activity-only ghost the registry does not list.
+    for (const displayId of staleIds.values()) {
+      staleMachines.push(displayId);
+      flags.push(`STALE:${displayId}`);
+    }
+    staleCount = staleIds.size;
 
     // Machines with dashboard activity but outside the registry (test artifacts,
     // retired machines) don't get a verdict — still surfaced for observability.
