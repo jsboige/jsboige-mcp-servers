@@ -45,42 +45,19 @@
  */
 
 import { describe, it, expect, beforeAll } from 'vitest';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, isAbsolute, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+import { isAbsolute, join } from 'node:path';
 import { STORM_ACTIVE, STORM_GUARD_RESULT, runStormGuard } from '../storm-guard.js';
 import { assessIndexFreshness } from '../anchor-probe.js';
+import { resolveScenarioWorkspace } from '../resolve-workspace.js';
 import type { CheckResult } from '../verdict.js';
 import { writeVerdictArtifact } from '../verdict-artifact.js';
 import { handleCodebaseSearch } from '../../../src/tools/search/search-codebase.tool.js';
 
-/**
- * Resolve the scenario workspace from the CURRENT checkout instead of the
- * hard-coded 2026-06 baseline path `d:/roo-extensions` (ai-01 triage on
- * #4105, 2026-10-07). The collection name is path-derived (ws-<sha256(path)>),
- * so the baseline spelling can only ever reach a seat that indexed under that
- * exact path — every other seat gets collection_not_found and the V2 contract
- * is graded FAIL for an environment reason. Walking up from this test file to
- * the enclosing roo-extensions checkout makes each seat probe the collection
- * of the checkout the harness actually runs from. Returns null when the walk
- * up finds no enclosing checkout (e.g. a bare submodule worktree outside any
- * roo-extensions clone): the scenario then records INCONCLUSIVE, never a
- * crash. A worktree NESTED under a roo-extensions checkout resolves to that
- * worktree's own root (its git dir satisfies the walk-up) — same safe
- * outcome, precise wording (ai-01 review on ms#1404).
- */
-function resolveScenarioWorkspace(): string | null {
-	let dir = dirname(fileURLToPath(import.meta.url));
-	for (let i = 0; i < 12; i++) {
-		if (existsSync(join(dir, 'mcps', 'internal')) && existsSync(join(dir, '.git'))) {
-			return dir;
-		}
-		const parent = dirname(dir);
-		if (parent === dir) break;
-		dir = parent;
-	}
-	return null;
-}
+// resolveScenarioWorkspace: extracted to ../resolve-workspace.ts (po-2023,
+// file 20261029a) so the codebase_search golden query resolves its workspace
+// from the running checkout too — same rule, one home. History and rationale
+// (ai-01 triage #4105, worktree wording ms#1404) live in that module.
 
 // Epic #2609 baseline query, verbatim (2026-06-16 live measurement) — the
 // query is verbatim; the workspace now resolves from the running checkout.
