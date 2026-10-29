@@ -26,7 +26,7 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { resolveCallerIdentity, normalizeWorkspaceId } from '../utils/message-helpers.js';
+import { resolveCallerIdentity, canonicalWorkspaceLabel } from '../utils/message-helpers.js';
 import { runWithCallerContext, type CallerContext } from './caller-context.js';
 
 /** Hôtes acceptés pour le bind — loopback strict (amendement ai-01). */
@@ -117,7 +117,6 @@ const READ_ONLY_TOOLS = new Set([
     'roosync_inventory',
     'roosync_read',
     'roosync_refresh_dashboard',
-    'roosync_claim',
 ]);
 
 /**
@@ -138,6 +137,10 @@ const READ_ONLY_ACTIONS: Record<string, ReadonlySet<string>> = {
     roosync_baseline: new Set(['list_versions', 'current_version', 'export']),
     roosync_config: new Set(['collect']),
     roosync_indexing: new Set(['status', 'diagnose', 'tool_usage_stats', 'trend_report']),
+    // claim/release/extend écrivent active-claims.json (claims/claim.tool.ts:52) :
+    // seule la lecture (list/check) passe sans identité (revue ms#1578, défaut 1 —
+    // l'outil était classé pure-read en bloc).
+    roosync_claim: new Set(['list', 'check']),
 };
 
 /**
@@ -166,6 +169,11 @@ const WRITE_ONLY_TOOLS = new Set([
  *
  * Exemple vérifié : `roosync_inventory` (lecture) accepte `resetCache`
  * qui vide le cache — sans identité, la requête ne doit pas l'atteindre.
+ *
+ * `markAsRead`/`mark_as_read` : `roosync_messages(action:"message")` est une
+ * lecture, mais `mark_as_read:true` mute l'état du message (revue ms#1578,
+ * défaut 2 — la mutation passait comme lecture). `false`/null reste une
+ * lecture : le flag absent ou inactif ne mute rien.
  */
 const MUTATING_ARG_FLAGS = new Set([
     'resetCache', 'reset_cache', 'clearCache',
@@ -173,6 +181,7 @@ const MUTATING_ARG_FLAGS = new Set([
     'apply', 'apply_profile', 'publish', 'publishTo',
     'write', 'scrub', 'delete', 'remove', 'cleanup', 'purge',
     'overwrite', 'migrate', 'restore', 'inject', 'set', 'update', 'create', 'save',
+    'markAsRead', 'mark_as_read',
 ]);
 
 /** Résultat de la classification d'un appel d'outil. */
@@ -372,21 +381,25 @@ export async function startHttpTransport(options: HttpTransportOptions): Promise
             if (assertedValue?.trim()) {
                 try {
                     const identity = resolveCallerIdentity(assertedValue.trim());
-                    // Identité CANONIQUE (revue ai-01 du 29/10, bloquant 2) :
-                    // `resolveCallerIdentity` compare la confiance sur une forme
-                    // normalisée (machine en minuscule, workspace en basename
-                    // normalisé) mais RETOURNE la forme brute. Installer la
-                    // forme brute ici faisait diverger la clé de dashboard et
-                    // l'identité `from` d'un simple changement de casse
-                    // (`web2:ROO-EXTENSIONS` vs `web2:roo-extensions`) : deux
-                    // clés pour un même workspace, donc deux writers.
-                    // On installe donc la MÊME forme que celle sur laquelle
-                    // la confiance a été décidée — la sémantique canonique du
-                    // dépôt (`normalizeWorkspaceId`), pas un lowercase
-                    // maison.
+                    // Identité CANONIQUE (revue ai-01 du 29/10, bloquant 2, puis
+                    // ms#1578 défaut 3) : `resolveCallerIdentity` décide la
+                    // confiance sur des formes normalisées (comparaisons en
+                    // minuscules) mais RETOURNE désormais l'orthographe
+                    // canonique du dépôt — entrée lane : graphie ENREGISTRÉE
+                    // dans ROOSYNC_TRUSTED_CALLER_IDS ; entrée machine : basename
+                    // de l'assertion, casse préservée. C'est exactement la
+                    // sémantique de destination de `buildDashboardKey`
+                    // (basename, casse préservée — les clés existantes
+                    // `workspace-CoursIA` en dépendent) : on installe cette
+                    // valeur TELLE QUELLE. Un lowercasing ici (l'ancien
+                    // `normalizeWorkspaceId`) fourquait `CoursIA` asserté
+                    // `coursia` vers la clé fantôme `workspace-coursia`.
+                    // `canonicalWorkspaceLabel` en double garde : repli de
+                    // chemin seul, si un futur appelant de `resolveCallerIdentity`
+                    // rendait une forme non repliée.
                     context.machineId = identity.machineId.toLowerCase();
                     context.workspaceId = identity.workspaceId
-                        ? normalizeWorkspaceId(identity.workspaceId) || undefined
+                        ? canonicalWorkspaceLabel(identity.workspaceId) || undefined
                         : undefined;
                     context.fullId = context.workspaceId
                         ? `${context.machineId}:${context.workspaceId}`

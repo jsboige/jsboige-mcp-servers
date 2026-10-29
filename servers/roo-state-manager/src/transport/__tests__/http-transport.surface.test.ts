@@ -51,6 +51,9 @@ const MUTATING_ACTIONS = new Set([
     'close', 'lifecycle', 'recovery', 'reload', 'execute', 'run', 'import',
     'download', 'upload', 'load', 'garbage_scan', 'cleanup_orphans',
     'cleanup_failed', 'version',
+    // roosync_claim écrit active-claims.json (claims/claim.tool.ts:52) —
+    // revue ms#1578, défaut 1 : l'outil était classé pure-read EN BLOC.
+    'claim', 'release', 'extend',
 ]);
 
 describe('#4149 F2 — complétude de la surface du gate HTTP', () => {
@@ -104,12 +107,15 @@ describe('#4149 F2 — complétude de la surface du gate HTTP', () => {
         // l'ancienne table d'actions d'écriture : leurs actions mutantes
         // passaient sans identité. roosync_manage classait seulement
         // mark_read/archive — bulk_*/cleanup passaient aussi.
+        // roosync_claim : revue ms#1578 défaut 1 — claim/release/extend
+        // écrivent active-claims.json, seule la lecture (list/check) passe.
         const pureRead = CLASSIFIED_TOOLS.readOnly;
         expect(pureRead.has('roosync_harmonization')).toBe(false);
         expect(pureRead.has('roosync_indexing')).toBe(false);
         expect(pureRead.has('roosync_manage')).toBe(false);
         expect(pureRead.has('roosync_messages')).toBe(false);
         expect(pureRead.has('roosync_dashboard')).toBe(false);
+        expect(pureRead.has('roosync_claim')).toBe(false);
     });
 
     it('les actions mutantes nommées par la revue exigent une identité', () => {
@@ -130,6 +136,10 @@ describe('#4149 F2 — complétude de la surface du gate HTTP', () => {
             ['roosync_baseline', { action: 'restore' }],
             ['roosync_storage_management', { action: 'maintenance' }],
             ['roosync_attachments', { action: 'delete' }],
+            // ms#1578 défaut 1 : le verrou de claim est une écriture.
+            ['roosync_claim', { action: 'claim', issue: 4149 }],
+            ['roosync_claim', { action: 'release', issue: 4149 }],
+            ['roosync_claim', { action: 'extend', issue: 4149 }],
         ];
         for (const [tool, args] of cases) {
             const body = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } };
@@ -156,6 +166,13 @@ describe('#4149 F2 — complétude de la surface du gate HTTP', () => {
             ['roosync_baseline', { action: 'list_versions' }],
             ['roosync_config', { action: 'collect' }],
             ['export_config', { action: 'get' }],
+            // ms#1578 : la LECTURE d'un claim passe sans identité.
+            ['roosync_claim', { action: 'list' }],
+            ['roosync_claim', { action: 'check', issue: 4149 }],
+            // ms#1578 défaut 2 : lire un message SANS mutation reste une
+            // lecture — le flag absent ou explicitement faux ne mute rien.
+            ['roosync_messages', { action: 'message', message_id: 'm-1' }],
+            ['roosync_messages', { action: 'message', message_id: 'm-1', mark_as_read: false }],
         ];
         for (const [tool, args] of cases) {
             const body = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } };
@@ -168,6 +185,11 @@ describe('#4149 F2 — complétude de la surface du gate HTTP', () => {
             ['roosync_inventory', { type: 'status', resetCache: true }],
             ['roosync_get_status', { resetCache: true }],
             ['roosync_diagnose', { action: 'health', clearCache: true }],
+            // ms#1578 défaut 2 : mark_as_read:true mute l'état du message —
+            // les DEUX graphies du flag, sur l'outil mixte ET le legacy.
+            ['roosync_messages', { action: 'message', message_id: 'm-1', mark_as_read: true }],
+            ['roosync_messages', { action: 'message', message_id: 'm-1', markAsRead: true }],
+            ['roosync_read', { mode: 'message', message_id: 'm-1', mark_as_read: true }],
         ];
         for (const [tool, args] of cases) {
             const body = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } };

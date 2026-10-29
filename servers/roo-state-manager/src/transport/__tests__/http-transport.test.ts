@@ -17,9 +17,17 @@
  * l'action inconnue, et vérifient que la requête refusée **n'est jamais
  * dispatchée** (handler témoin, aucune écriture partagée).
  *
- * Revue ai-01 du 29/10 (bloquant 2) — **identité canonique** : deux
- * graphies acceptées du même workspace doivent produire la MÊME destination
- * (clé de dashboard / identité `from`), et rester isolées en concurrence.
+ * Revue ai-01 du 29/10 (bloquant 2) puis ms#1578 (défaut 3) — **identité
+ * canonique** : les graphies acceptées d'un même workspace doivent produire
+ * la MÊME destination (clé de dashboard / identité `from`), et rester isolées
+ * en concurrence. La sémantique de référence est celle de la DESTINATION du
+ * dépôt : `buildDashboardKey` préserve la casse (`workspace-CoursIA`), une
+ * entrée lane de ROOSYNC_TRUSTED_CALLER_IDS en est la graphie enregistrée.
+ *
+ * Revue ms#1578 (défauts 1 et 2) : `roosync_claim` n'est plus pure-read
+ * (claim/release/extend écrivent active-claims.json) et
+ * `roosync_messages(action:"message", mark_as_read:true)` mute l'état du
+ * message — les deux passent par la porte d'identité.
  */
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
@@ -27,6 +35,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { startHttpTransport, type HttpTransportHandle } from '../http-transport.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
+import { buildDashboardKey } from '../../tools/roosync/dashboard.js';
 
 const API_KEY = 'test-key-4149';
 const MCP_PATH = '/mcp';
@@ -122,7 +131,11 @@ function identityOf(res: { json: any }): { machineId: string; workspaceId: strin
 
 describe('#4149 F2 — transport HTTP du daemon RSM', () => {
     beforeAll(async () => {
-        process.env.ROOSYNC_TRUSTED_CALLER_IDS = 'myia-web2,myia-po-2024';
+        // myia-web3 n'a qu'une entrée LANE ("myia-web3:CoursIA") : c'est ce
+        // qui permet de tester l'épinglage de la graphie ENREGISTRÉE — une
+        // entrée machine matcherait toujours en premier et masquerait le
+        // comportement lane (ms#1578, défaut 3).
+        process.env.ROOSYNC_TRUSTED_CALLER_IDS = 'myia-web2,myia-po-2024,myia-web3:CoursIA';
         handle = await startHttpTransport({
             server: buildServer(),
             port: 0, // port libre
@@ -277,6 +290,87 @@ describe('#4149 F2 — transport HTTP du daemon RSM', () => {
             expect(dispatched).toHaveLength(0);
         });
 
+        // -------------------------------------------------------------- *
+        // ms#1578, défaut 1 : roosync_claim n'est plus pure-read.
+        // claim/release/extend écrivent active-claims.json — le verrou
+        // d'issue est une écriture partagée, elle exige une identité.
+        // -------------------------------------------------------------- *
+        for (const action of ['claim', 'release', 'extend'] as const) {
+            it(`refuse roosync_claim(action=${action}) sans identité et ne le dispatche pas`, async () => {
+                const res = await post(toolCall('roosync_claim', { action, issue: 4149 }), { as: null });
+                expect(res.status).toBe(403);
+                expect(res.json?.error).toBe('identity_required');
+                expect(dispatched).toHaveLength(0);
+            });
+        }
+
+        it('roosync_claim(list) et roosync_claim(check) restent des lectures sans identité', async () => {
+            const list = await post(toolCall('roosync_claim', { action: 'list' }), { as: null });
+            expect(list.status).toBe(200);
+            const check = await post(toolCall('roosync_claim', { action: 'check', issue: 4149 }), { as: null });
+            expect(check.status).toBe(200);
+            expect(dispatched).toHaveLength(2);
+            expect(dispatched.map((d) => d.args.action)).toEqual(['list', 'check']);
+        });
+
+        it('une identité trustée suffit pour roosync_claim(action=claim)', async () => {
+            const res = await post(toolCall('roosync_claim', { action: 'claim', issue: 4149 }), { as: 'myia-web2:roo-extensions' });
+            expect(res.status).toBe(200);
+            expect(dispatched).toHaveLength(1);
+            expect(dispatched[0].name).toBe('roosync_claim');
+        });
+
+        // -------------------------------------------------------------- *
+        // ms#1578, défaut 2 : mark_as_read:true mute l'état du message.
+        // `roosync_messages(action:"message")` est une lecture, mais le
+        // flag en fait une écriture — idem sur le legacy roosync_read.
+        // -------------------------------------------------------------- *
+        it('refuse roosync_messages(action=message, mark_as_read=true) sans identité', async () => {
+            const res = await post(
+                toolCall('roosync_messages', { action: 'message', message_id: 'm-1', mark_as_read: true }),
+                { as: null }
+            );
+            expect(res.status).toBe(403);
+            expect(res.json?.error).toBe('identity_required');
+            expect(dispatched).toHaveLength(0);
+        });
+
+        it('refuse la graphie camelCase markAsRead=true et le legacy roosync_read', async () => {
+            const camel = await post(
+                toolCall('roosync_messages', { action: 'message', message_id: 'm-1', markAsRead: true }),
+                { as: null }
+            );
+            expect(camel.status).toBe(403);
+            expect(camel.json?.error).toBe('identity_required');
+            const legacy = await post(
+                toolCall('roosync_read', { mode: 'message', message_id: 'm-1', mark_as_read: true }),
+                { as: null }
+            );
+            expect(legacy.status).toBe(403);
+            expect(legacy.json?.error).toBe('identity_required');
+            expect(dispatched).toHaveLength(0);
+        });
+
+        it('roosync_messages(action=message) sans mark_as_read reste une lecture sans identité', async () => {
+            const absent = await post(toolCall('roosync_messages', { action: 'message', message_id: 'm-1' }), { as: null });
+            expect(absent.status).toBe(200);
+            const inactive = await post(
+                toolCall('roosync_messages', { action: 'message', message_id: 'm-1', mark_as_read: false }),
+                { as: null }
+            );
+            expect(inactive.status).toBe(200);
+            expect(dispatched).toHaveLength(2);
+        });
+
+        it('une identité trustée suffit pour mark_as_read=true (le garde est la porte, pas l\'outil)', async () => {
+            const res = await post(
+                toolCall('roosync_messages', { action: 'message', message_id: 'm-1', mark_as_read: true }),
+                { as: 'myia-web2:roo-extensions' }
+            );
+            expect(res.status).toBe(200);
+            expect(dispatched).toHaveLength(1);
+        });
+
         it('laisse passer une lecture supportée sans identité', async () => {
             const res = await post(toolCall('roosync_inventory', { type: 'status' }), { as: null });
             expect(res.status).toBe(200);
@@ -300,46 +394,76 @@ describe('#4149 F2 — transport HTTP du daemon RSM', () => {
     });
 
     // ------------------------------------------------------------------ *
-    // Bloquant 2 de la revue ai-01 (29/10) : identité canonique.
+    // Bloquant 2 de la revue ai-01 (29/10), précisé par ms#1578 (défaut 3) :
+    // identité canonique. La sémantique de référence est la DESTINATION du
+    // dépôt — buildDashboardKey préserve la casse (workspace-CoursIA) — et
+    // non plus une forme lowercasée.
     // ------------------------------------------------------------------ *
     describe('identité canonique — même destination quelle que soit la graphie', () => {
-        it('normalise la casse du workspace asserté', async () => {
-            const res = await post(toolCall('roosync_inventory', { type: 'status' }), { as: 'myia-web2:ROO-EXTENSIONS' });
+        it('une entrée LANE épingle la graphie ENREGISTRÉE, même assertée en minuscules', async () => {
+            // Env de confiance : "myia-web3:CoursIA" (graphie enregistrée).
+            const res = await post(toolCall('roosync_inventory', { type: 'status' }), { as: 'myia-web3:coursia' });
             expect(res.status).toBe(200);
-            expect(identityOf(res).workspaceId).toBe('roo-extensions');
+            const payload = identityOf(res);
+            expect(payload.workspaceId).toBe('CoursIA');
+            expect(payload.fullId).toBe('myia-web3:CoursIA');
         });
 
-        it('normalise un workspace écrit en chemin', async () => {
-            const res = await post(toolCall('roosync_inventory', { type: 'status' }), { as: 'myia-web2:C:\\dev\\roo-extensions' });
+        it('une entrée LANE épingle la graphie enregistrée aussi en forme chemin', async () => {
+            const res = await post(toolCall('roosync_inventory', { type: 'status' }), { as: 'myia-web3:c:\\dev\\coursia' });
             expect(res.status).toBe(200);
-            expect(identityOf(res).workspaceId).toBe('roo-extensions');
+            expect(identityOf(res).workspaceId).toBe('CoursIA');
         });
 
-        it('les trois graphies produisent la MÊME destination (clé de dashboard / from)', async () => {
+        it('les trois graphies produisent la MÊME destination RÉELLE (buildDashboardKey du dépôt)', async () => {
             const spellings = [
-                'myia-web2:roo-extensions',
-                'myia-web2:ROO-EXTENSIONS',
-                'myia-web2:C:\\dev\\roo-extensions',
+                'myia-web3:CoursIA',
+                'myia-web3:coursia',
+                'myia-web3:c:\\dev\\coursia',
             ];
-            const payloads = [];
+            const keys: string[] = [];
             for (const as of spellings) {
                 const res = await post(toolCall('roosync_inventory', { type: 'status' }), { as });
                 expect(res.status).toBe(200);
-                payloads.push(identityOf(res));
+                const payload = identityOf(res);
+                expect(payload.fullId).toBe('myia-web3:CoursIA');
+                // Destination calculée par la VRAIE fonction du dépôt — pas
+                // une copie du présumé : c'est elle qui décide où l'identité
+                // atterrit (l'ancien lowercasing installait `coursia` et la
+                // fourquait vers workspace-coursia, une clé fantôme).
+                keys.push(buildDashboardKey('workspace', payload.machineId, payload.workspaceId));
             }
-            expect(payloads[1].fullId).toBe(payloads[0].fullId);
-            expect(payloads[2].fullId).toBe(payloads[0].fullId);
-            expect(payloads[1].workspaceId).toBe(payloads[0].workspaceId);
-            expect(payloads[2].workspaceId).toBe(payloads[0].workspaceId);
+            expect(keys).toEqual(['workspace-CoursIA', 'workspace-CoursIA', 'workspace-CoursIA']);
+        });
+
+        it('une entrée MACHINE installe le basename de l\'assertion, casse préservée', async () => {
+            const res = await post(toolCall('roosync_inventory', { type: 'status' }), { as: 'myia-web2:C:\\dev\\roo-extensions' });
+            expect(res.status).toBe(200);
+            const payload = identityOf(res);
+            expect(payload.workspaceId).toBe('roo-extensions');
+            expect(buildDashboardKey('workspace', payload.machineId, payload.workspaceId)).toBe('workspace-roo-extensions');
+        });
+
+        it('entrée MACHINE : la casse assertée est installée telle quelle — l\'épinglage est le rôle de l\'entrée lane', async () => {
+            // myia-po-2024 est une entrée MACHINE (toute lane de la machine
+            // passe) : sans entrée lane, la graphie assertée fait foi. C'est
+            // le levier opérateur documenté — pour une destination à casse
+            // significative, enregistrer l'entrée lane "machine:CoursIA",
+            // qui épingle la graphie pour toutes les assertions.
+            const res = await post(toolCall('roosync_inventory', { type: 'status' }), { as: 'myia-po-2024:COURSIA' });
+            expect(res.status).toBe(200);
+            expect(identityOf(res).workspaceId).toBe('COURSIA');
         });
 
         it('deux identités canoniques concurrentes restent isolées', async () => {
             const [first, second] = await Promise.all([
                 post(toolCall('roosync_inventory', { type: 'status' }, 21), { as: 'myia-web2:ROO-EXTENSIONS' }),
-                post(toolCall('roosync_inventory', { type: 'status' }, 22), { as: 'myia-po-2024:COURSIA' }),
+                post(toolCall('roosync_inventory', { type: 'status' }, 22), { as: 'myia-web3:coursia' }),
             ]);
-            expect(identityOf(first).fullId).toBe('myia-web2:roo-extensions');
-            expect(identityOf(second).fullId).toBe('myia-po-2024:coursia');
+            // myia-web2 = entrée machine : basename de l'assertion, casse
+            // préservée. myia-web3 = entrée lane : graphie enregistrée.
+            expect(identityOf(first).fullId).toBe('myia-web2:ROO-EXTENSIONS');
+            expect(identityOf(second).fullId).toBe('myia-web3:CoursIA');
         });
     });
 
