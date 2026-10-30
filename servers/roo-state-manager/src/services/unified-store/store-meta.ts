@@ -121,6 +121,69 @@ export async function upsertStoreMetaValue(key: string, value: string): Promise<
 }
 
 /**
+ * Atomically union ONE map field of a JSON document with `patch`, server-side.
+ *
+ * Review ms#1576 (ai-01, blocking #2, then its own correction c.6495611063):
+ * the plain upsert replaces the whole `value`, so two seats booting together
+ * both read the pre-state, both write, and the first one's entry is gone —
+ * its own verification can have already returned `true`. A read-merge-write
+ * can never close that window, and ai-01 explicitly withdrew the "random
+ * delay + superset check" remedy as unproven. The union therefore happens
+ * inside the statement: `INSERT … ON CONFLICT DO UPDATE` takes a row lock,
+ * and on READ COMMITTED the DO UPDATE branch re-reads the version the
+ * concurrent writer just committed, so the merge applies ON TOP of it
+ * instead of over it.
+ *
+ *   R = jsonb_set(E || I, ARRAY[field], (E#>ARRAY[field]) || (I#>ARRAY[field]))
+ *
+ * `E` = existing value, `I` = incoming document (EXCLUDED). Scalar top-level
+ * keys take the incoming value (`E || I`), exactly like the plain upsert; only
+ * the map field is unioned, incoming winning on a key it carries (a seat
+ * refreshes its OWN entry and cannot touch anyone else's).
+ *
+ * @returns the post-state document, as the caller's proof of what landed.
+ *          A row that is not valid JSON makes the cast throw — the caller
+ *          then treats the write as failed rather than overwrite blind
+ *          (same family as the `refused-blind` guard).
+ */
+export async function mergeStoreMetaJsonMap(
+  key: string,
+  field: string,
+  incomingDocument: string
+): Promise<string> {
+  const url = storeMetaUrl();
+  if (!url) {
+    throw new Error('store-meta: no PG store to merge into (UNIFIED_STORE_PG_URL absent, or kill-switch UNIFIED_STORE_DUAL_WRITE off)');
+  }
+  const { default: pg } = await import('pg');
+  const client = new pg.Client({
+    connectionString: url,
+    connectionTimeoutMillis: META_TIMEOUT_MS,
+    statement_timeout: META_TIMEOUT_MS,
+  });
+  try {
+    await client.connect();
+    const result = await client.query(
+      `INSERT INTO roosync_store_meta (key, value, updated_at)
+       VALUES ($1, $3, now())
+       ON CONFLICT (key) DO UPDATE SET value = jsonb_set(
+         roosync_store_meta.value::jsonb || EXCLUDED.value::jsonb,
+         ARRAY[$2::text],
+         COALESCE(roosync_store_meta.value::jsonb #> ARRAY[$2::text], '{}'::jsonb)
+           || COALESCE(EXCLUDED.value::jsonb #> ARRAY[$2::text], '{}'::jsonb),
+         true
+       )::text,
+       updated_at = now()
+       RETURNING value`,
+      [key, field, incomingDocument]
+    );
+    return String(result.rows[0].value);
+  } finally {
+    await client.end().catch(() => {});
+  }
+}
+
+/**
  * Delete one meta value. Test/probe hygiene only — production writers never
  * delete (the registry and inventories are upserted). Resolves false when the
  * row was already absent.

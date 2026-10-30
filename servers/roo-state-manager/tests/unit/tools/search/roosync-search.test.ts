@@ -317,6 +317,41 @@ describe('roosync_search - CONS-11', () => {
             expect(INFRASTRUCTURE_ERROR_MODES.has(parsed.semantic_error_mode)).toBe(true);
             expect(parsed.fallback_reason).toBe('embedding_api_error');
         });
+
+        // #4438: the degraded banner must name the component that ACTUALLY
+        // failed. The embedding call and the Qdrant search share ONE try block:
+        // without stage-aware classification, an embeddings outage was
+        // classified as a qdrant mode (and the reverse), so the banner sent the
+        // operator to the wrong backend. These two tests pin BOTH directions
+        // end to end (real classifier, not an injected mode).
+        it('#4438: an EMBEDDINGS outage still names the embedding backend', async () => {
+            mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('fetch failed'));
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query' },
+                conversationCache, ensureCacheFreshCallback, fallbackHandler
+            );
+            const warning = (result.content[0] as any).text;
+            expect(warning).toContain('embedding backend unreachable');
+            expect(warning).not.toMatch(/qdrant/i);
+            const parsed = JSON.parse((result.content[1] as any).text);
+            expect(parsed.semantic_error_mode).toBe('embedding_unreachable');
+            expect(parsed.fallback_reason).toBe('embedding_api_error');
+        });
+
+        it('#4438: a QDRANT outage names qdrant, not the embedding backend', async () => {
+            mockQdrantClient.search.mockRejectedValue(new Error('fetch failed'));
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query' },
+                conversationCache, ensureCacheFreshCallback, fallbackHandler
+            );
+            const warning = (result.content[0] as any).text;
+            expect(warning).toMatch(/qdrant/i);
+            expect(warning).not.toContain('embedding backend unreachable');
+            const parsed = JSON.parse((result.content[1] as any).text);
+            expect(INFRASTRUCTURE_ERROR_MODES.has(parsed.semantic_error_mode)).toBe(true);
+            expect(parsed.semantic_error_mode).toMatch(/^qdrant_/);
+            expect(parsed.fallback_reason).toBe('qdrant_api_error');
+        });
     });
 
     // ============================================================
@@ -439,9 +474,16 @@ describe('roosync_search - CONS-11', () => {
     // ============================================================
 
     describe('#2473 max_results clamp', () => {
+        // Opt-out explicite sur les trois cas : leur objet est le CLAMP, pas la
+        // constante d'over-fetch du chemin filtré. Avec le défaut
+        // `exclude_tool_results: true` (ms#1568), le chemin exclu sur-échantillonne
+        // ×5 et ces fixtures mesureraient 10×5 au lieu de 10×3 — elles rougiraient
+        // pour une raison qui n'est pas la leur (mesuré en CI, tête `64fc8a29` :
+        // 250 reçu contre 150 attendu). Le ×5 du chemin filtré est couvert là où il
+        // vit, dans `src/tools/search/__tests__`.
         it('should clamp max_results > 100 to 100', async () => {
             const result = await handleRooSyncSearch(
-                { action: 'semantic', search_query: 'test query', max_results: 500, workspace: 'd:\\test-workspace' },
+                { action: 'semantic', search_query: 'test query', max_results: 500, workspace: 'd:\\test-workspace', exclude_tool_results: false },
                 conversationCache,
                 ensureCacheFreshCallback,
                 fallbackHandler
@@ -456,7 +498,7 @@ describe('roosync_search - CONS-11', () => {
 
         it('should clamp max_results < 1 to 1', async () => {
             const result = await handleRooSyncSearch(
-                { action: 'semantic', search_query: 'test query', max_results: 0, workspace: 'd:\\test-workspace' },
+                { action: 'semantic', search_query: 'test query', max_results: 0, workspace: 'd:\\test-workspace', exclude_tool_results: false },
                 conversationCache,
                 ensureCacheFreshCallback,
                 fallbackHandler
@@ -471,7 +513,7 @@ describe('roosync_search - CONS-11', () => {
 
         it('should preserve max_results within [1, 100]', async () => {
             const result = await handleRooSyncSearch(
-                { action: 'semantic', search_query: 'test query', max_results: 50, workspace: 'd:\\test-workspace' },
+                { action: 'semantic', search_query: 'test query', max_results: 50, workspace: 'd:\\test-workspace', exclude_tool_results: false },
                 conversationCache,
                 ensureCacheFreshCallback,
                 fallbackHandler

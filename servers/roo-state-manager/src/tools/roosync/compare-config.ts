@@ -30,6 +30,7 @@ import { HarmonizationCampaignService } from '../../services/HarmonizationCampai
 import { promises as fsPromises } from 'fs';
 import { existsSync } from 'fs';
 import { join } from 'path';
+import { readMachineRegistryFile } from '../../utils/machine-registry-file.js';
 
 /**
  * #3044 — VibeSync: surface source/target values for each diff so the caller
@@ -1928,12 +1929,16 @@ async function withRosterCheck(
  */
 async function loadRegistryMachines(sharedPath: string | undefined): Promise<{ machines: string[]; updated?: string } | null> {
   if (!sharedPath) return null;
-  const registryPath = join(sharedPath, '.machine-registry.json');
   try {
-    if (!existsSync(registryPath)) return null;
-    const data = JSON.parse(await fsPromises.readFile(registryPath, 'utf-8'));
-    const machines = [...new Set(Object.keys(data?.machines || {}).map(k => k.toLowerCase()))].sort();
-    return machines.length > 0 ? { machines, updated: data?.lastUpdated } : null;
+    // #2570 (récidive) : le registre est forké par DriveFS (`.machine-registry
+    // (N).json`) et le nom canonique peut être ABSENT — la lecture se fait
+    // alors sur l'UNION des copies, jamais sur le seul nom canonique.
+    const registryRead = await readMachineRegistryFile(sharedPath);
+    if (!registryRead.data) return null;
+    const machines = [
+      ...new Set(Object.keys(registryRead.data?.machines || {}).map(k => k.toLowerCase()))
+    ].sort();
+    return machines.length > 0 ? { machines, updated: registryRead.data?.lastUpdated } : null;
   } catch {
     return null;
   }

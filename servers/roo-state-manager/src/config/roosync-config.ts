@@ -14,6 +14,7 @@ import { resolve, isAbsolute } from 'path';
 import { createLogger } from '../utils/logger.js';
 import { parseFleetRoster } from '../services/task-partition.js';
 import { storeMetaUrl } from '../services/unified-store/store-meta.js';
+import { readMachineRegistryFile } from '../utils/machine-registry-file.js';
 
 const logger = createLogger('RooSyncConfig');
 
@@ -290,18 +291,21 @@ export async function validateMachineIdUniqueness(
   warningMessage?: string;
   existingEntry?: MachineRegistryEntry;
 }> {
-  const { existsSync, readFileSync } = await import('fs');
-  const { join } = await import('path');
-
-  const registryPath = join(sharedPath, '.machine-registry.json');
-
   try {
-    if (existsSync(registryPath)) {
-      const registryContent = readFileSync(registryPath, 'utf-8');
-      const registryData = JSON.parse(registryContent);
-      const machines = registryData.machines || {};
+    // #2570 (récidive) : le registre est forké par DriveFS et le nom canonique
+    // peut être ABSENT — lire l'UNION des copies, sinon un machineId déjà
+    // inscrit dans un jumeau passerait pour neuf.
+    const registryRead = await readMachineRegistryFile(sharedPath);
+    if (registryRead.unreadableSources.length > 0) {
+      logger.warn(
+        '[roosync-config] registre des machines illisible — unicité vérifiée sur les copies lisibles seulement',
+        { unreadable: registryRead.unreadableSources }
+      );
+    }
+    if (registryRead.data) {
+      const machines = registryRead.data.machines || {};
 
-      const existingEntry = machines[machineId];
+      const existingEntry = machines[machineId] ?? machines[String(machineId).toLowerCase()];
       if (existingEntry) {
         const warningMessage = `⚠️ CONFLIT D'IDENTITÉ: MachineId "${machineId}" déjà utilisé dans le registre (première vue: ${existingEntry.firstSeen}, source: ${existingEntry.source})`;
 
@@ -309,7 +313,9 @@ export async function validateMachineIdUniqueness(
           isValid: false,
           conflictDetected: true,
           warningMessage,
-          existingEntry
+          // Le registre est un JSON libre : l'entrée est castée vers la forme
+          // nominale du registre (champs présents en pratique).
+          existingEntry: existingEntry as MachineRegistryEntry
         };
       }
     }
@@ -359,7 +365,7 @@ export async function registerMachineId(
   sharedPath: string,
   source: string = 'config'
 ): Promise<boolean> {
-  const { promises: fs, existsSync, readFileSync } = await import('fs');
+  const { promises: fs, existsSync } = await import('fs');
   const { join } = await import('path');
 
   const registryPath = join(sharedPath, '.machine-registry.json');
@@ -380,15 +386,27 @@ export async function registerMachineId(
   try {
     let registryData: any = { machines: {} };
 
-    // Charger le registre existant
-    if (existsSync(registryPath)) {
-      const registryContent = readFileSync(registryPath, 'utf-8');
-      registryData = JSON.parse(registryContent);
+    // Charger le registre existant — #2570 (récidive) : lecture de l'UNION des
+    // copies DriveFS (le nom canonique peut être absent, le contenu vivant
+    // être dans `.machine-registry (N).json`). L'écriture, elle, repart TOUJOURS
+    // sur le nom canonique : le recréer en fait la sentinelle que les lecteurs
+    // qui ne connaissent que ce nom retrouvent. Aucun jumeau n'est supprimé.
+    const registryRead = await readMachineRegistryFile(sharedPath);
+    if (registryRead.canonicalUnreadable) {
+      // Le canonique existe et n'a pas pu être lu : l'écrire reviendrait à
+      // remplacer une vérité qu'on n'a pas su lire (ms#1563). On refuse —
+      // l'erreur remonte au catch, qui journalise et rend `false`.
+      throw new Error(
+        `registre canonique illisible (${registryRead.unreadableSources.join(', ')}) — écriture refusée`
+      );
+    }
+    if (registryRead.data) {
+      registryData = registryRead.data;
     }
 
     // Ajouter ou mettre à jour la machine
     const now = new Date().toISOString();
-    const existing = registryData.machines[machineId];
+    const existing = registryData.machines[machineId] ?? registryData.machines[String(machineId).toLowerCase()];
 
     // #2121(b) debounce : stamp mémoire inconditionnel, écriture seulement si
     // l'entrée change matériellement. Status 'offline'/'conflict' posé ailleurs

@@ -1741,6 +1741,12 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
         const m = getEmbeddingMetrics();
         console.log(
             `[EMB-METRICS] called=${m.embeddings_called_total} ` +
+            // #4352 g6 (ai-01 review 29/10): `called` counts SUB-CHUNKS (batch path:
+            // `+= batch.length`), the pacer counts REQUESTS. Without this counter a
+            // bounded-pass check built on `called` is up to 16x too generous, i.e.
+            // blind. `requests` counts ATTEMPTS (a rejected call consumed its slot
+            // all the same). Same boot-cumulative semantics — subtract two snapshots.
+            `requests=${m.embeddings_requests_total} ` +
             `cached=${m.embeddings_cached_hit_total} ` +
             `preflight_skipped=${m.embeddings_preflight_skipped_total} ` +
             `post_skipped=${m.embeddings_post_dedup_skipped_total} ` +
@@ -2109,9 +2115,11 @@ export function registerDeadLetter(
     }
 
     const idx = skeleton.metadata?.indexingState;
+    // #4440: this fallback used to trust `idx?.errorClass`, which belongs to an
+    // EARLIER attempt whenever the message was rewritten without a class —
+    // reconcile against the message instead of letting the older value win.
     const errorClass = explicitErrorClass
-        ?? idx?.errorClass
-        ?? 'unknown';
+        ?? reconcileErrorClass(errorMessage, idx?.errorClass).errorClass;
     const movedAt = new Date().toISOString();
     state.deadLetterQueue.add(taskId);
     state.deadLetterDetails.set(taskId, {
@@ -2312,6 +2320,35 @@ export function classifyIndexingError(error: any): IndexingErrorClassification {
     }
 
     return { isPermanent: false, errorClass: 'unknown' };
+}
+
+/**
+ * #4440 — reconcile a STORED error class with the message stored BESIDE it.
+ *
+ * `markIndexingFailure()` rewrites `indexError` on every attempt, so the pair
+ * (`indexError`, `indexingState.errorClass`) only describes the same failure
+ * when the class is rewritten too. Reading `errorClass ?? classify(message)`
+ * therefore hands the verdict to whichever value is OLDER — measured on web1:
+ * 9 of 115 dead-letter rows carried `auth_failed`, `rate_limit` or
+ * `service_503` beside a message saying "Indexing timeout … after 300000ms".
+ *
+ * A timeout is the one case that precedence cannot settle: it names no HTTP
+ * cause, so no HTTP class can legitimately be attached to it. The message
+ * wins, and the divergence is REPORTED through `repairedFrom` rather than
+ * silently overwritten — a repair nobody can see is a repair nobody can audit.
+ */
+export function reconcileErrorClass(
+    message: string,
+    storedClass?: string | null,
+): { errorClass: IndexingErrorClass; repairedFrom?: string } {
+    const derivedFromMessage = classifyIndexingError({ message }).errorClass;
+    const stored = storedClass ?? undefined;
+
+    if (stored && stored !== derivedFromMessage && derivedFromMessage === 'embedding_timeout') {
+        return { errorClass: 'embedding_timeout', repairedFrom: stored };
+    }
+
+    return { errorClass: (stored as IndexingErrorClass | undefined) ?? derivedFromMessage };
 }
 
 /**

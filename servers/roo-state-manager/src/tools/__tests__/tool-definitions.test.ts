@@ -32,6 +32,7 @@ import {
     roosyncBaselineDefinition,
     roosyncConfigDefinition,
     roosyncHarmonizationDefinition, // #3545 — campagne d'harmonisation flotte
+    roosyncClaudishCascadeDefinition, // #4427 PR3 — cascade Claudish (canon publié, apply du .env du siège)
     roosyncInventoryDefinition,
     // #1320: Lifecycle re-câblé comme action de roosync_diagnose (#512 arbitrage A). Pas de définition standalone.
     // #1609: roosyncHeartbeatDefinition removed — auto-heartbeat on any tool call
@@ -56,7 +57,7 @@ import { MessagesArgsSchema } from '../roosync/messages.js';
 import { StorageManagementArgsSchema } from '../roosync/storage-management.js';
 import { conversationBrowserTool } from '../conversation/conversation-browser.js';
 
-const EXPECTED_TOOL_COUNT = 17; // #3391: claudish_traffic (15 → 16) ; #3545: roosync_harmonization (16 → 17)
+const EXPECTED_TOOL_COUNT = 18; // #3391: claudish_traffic (15 → 16) ; #3545: roosync_harmonization (16 → 17) ; #4427: roosync_claudish_cascade (17 → 18)
 
 // Order MUST mirror allToolDefinitions in tool-definitions.ts.
 // CONS-8 #603: 4 dead tools removed from allToolDefinitions (init, claim, decision, list_diffs)
@@ -76,6 +77,8 @@ const allDefinitions = [
     roosyncConfigDefinition,
     // #3545 — campagne d'harmonisation flotte (canon + confirmations + relances)
     roosyncHarmonizationDefinition,
+    // #4427 PR3 — cascade Claudish (canon publié, comparaison par surface, apply du .env du siège)
+    roosyncClaudishCascadeDefinition,
     roosyncInventoryDefinition,
     // #1320: Lifecycle → re-câblé comme action de roosync_diagnose (#512 arbitrage A)
     roosyncMcpManagementDefinition,
@@ -89,7 +92,7 @@ const allDefinitions = [
 describe('tool-definitions.ts — Schema Validation', () => {
 
     describe('allToolDefinitions array', () => {
-        it('should have exactly 19 tool definitions', () => {
+        it('should have exactly the expected number of tool definitions', () => {
             expect(allToolDefinitions).toHaveLength(EXPECTED_TOOL_COUNT);
         });
 

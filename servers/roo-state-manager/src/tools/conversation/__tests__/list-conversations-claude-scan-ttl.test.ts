@@ -75,6 +75,11 @@ vi.mock('../../../services/skeleton-cache.service.js', () => ({
 			awaitFreshnessWithBudget: vi.fn(() => Promise.resolve(true)),
 			getCacheAgeMs: vi.fn(() => 1234),
 			isLoadInProgress: vi.fn(() => false),
+			// #4151 S3 — PG-first peek path: mirrors the service API.
+			isCacheFreshWithoutLoad: vi.fn(() => false),
+			triggerBackgroundRefresh: vi.fn(() => undefined),
+			isTier3IndexLoaded: vi.fn(() => true),
+			getLastBackgroundRefreshError: vi.fn(() => null), hasLoadAttempted: vi.fn(() => false),
 			tier3KnowsMachine: vi.fn(() => true)
 		}))
 	}

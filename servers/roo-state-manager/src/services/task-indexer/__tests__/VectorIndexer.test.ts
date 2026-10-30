@@ -907,13 +907,13 @@ describe('VectorIndexer', () => {
 				expect(m2.embeddings_called_total).toBe(0); // internal state unaffected
 			});
 
-			test('resetEmbeddingMetricsForTest zeroes all 11 counters (#4153: +1 gauge, excluded)', async () => {
+			test('resetEmbeddingMetricsForTest zeroes all 12 counters (#4153: +1 gauge, excluded)', async () => {
 				const { getEmbeddingMetrics, resetEmbeddingMetricsForTest } = await import('../VectorIndexer.js');
 				resetEmbeddingMetricsForTest();
 				const m = getEmbeddingMetrics();
-				// 11 cumulative counters + embeddings_cache_size, a live gauge (#4153)
+				// 12 cumulative counters + embeddings_cache_size, a live gauge (#4153)
 				// reflecting the cache size — not resettable, excluded from the zero loop.
-				expect(Object.keys(m)).toHaveLength(12);
+				expect(Object.keys(m)).toHaveLength(13);
 				for (const k of Object.keys(m)) {
 					if (k === 'embeddings_cache_size') continue;
 					expect((m as any)[k]).toBe(0);

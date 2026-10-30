@@ -63,10 +63,14 @@ vi.mock('../../../../src/services/lazy-roosync.js', () => ({
 // et du parsing (même pattern que get-status.test.ts ; le parsing regex vit
 // dans sa propre suite, ici on teste la CLASSIFICATION). vi.hoisted : la
 // factory de vi.mock est hoistée AVANT l'init des consts du module.
-const { mockSharedStatePath, mockExtractMachineActivity, mockIsRecentlyActive, mockLookupMachineActivityInArchives } = vi.hoisted(() => ({
+const { mockSharedStatePath, mockExtractMachineActivity, mockIsRecentlyActive, mockIsStaleMachine, mockLookupMachineActivityInArchives } = vi.hoisted(() => ({
     mockSharedStatePath: vi.fn(),
     mockExtractMachineActivity: vi.fn(),
     mockIsRecentlyActive: vi.fn(),
+    // #4344 residual: isStaleMachine is now imported by inventory.ts — it must
+    // be mocked too, or the whole-module mock leaves it undefined and the
+    // classification try/catch falls back to "registry = unknown, lastSeen null".
+    mockIsStaleMachine: vi.fn(() => false),
     mockLookupMachineActivityInArchives: vi.fn(),
 }));
 
@@ -77,6 +81,7 @@ vi.mock('../../../../src/utils/shared-state-path.js', () => ({
 vi.mock('../../../../src/utils/dashboard-activity.js', () => ({
     extractMachineActivity: mockExtractMachineActivity,
     isRecentlyActive: mockIsRecentlyActive,
+    isStaleMachine: mockIsStaleMachine,
     lookupMachineActivityInArchives: mockLookupMachineActivityInArchives,
 }));
 

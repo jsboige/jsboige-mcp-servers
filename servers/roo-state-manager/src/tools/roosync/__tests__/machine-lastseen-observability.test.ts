@@ -28,7 +28,8 @@ import { tmpdir } from 'os';
 import { roosyncDashboard } from '../dashboard.js';
 import {
   extractMachineActivity,
-  lookupMachineActivityInArchives
+  lookupMachineActivityInArchives,
+  clearMachineVerdictsForTests
 } from '../../../utils/dashboard-activity.js';
 import { resetChatOpenAIClient } from '@/services/openai';
 
@@ -84,6 +85,10 @@ describe('#3695 — machineLastSeen observability', () => {
     let archiveDir: string;
 
     beforeEach(() => {
+      // #4344 residual: the STALE verdict cache is process-global; these
+      // fixtures (2026-09-xx) conclude stale, which would skip the next test's
+      // walk. Reset per test.
+      clearMachineVerdictsForTests();
       tmpDir = mkdtempSync(join(tmpdir(), 'archives-3695-'));
       dashboardsDir = join(tmpDir, 'dashboards');
       archiveDir = join(dashboardsDir, 'archive');

@@ -6,7 +6,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, lookupMachineActivityInArchives, DEFAULT_ACTIVITY_THRESHOLD_MS, MAX_ARCHIVE_READS_PER_CALL, MAX_ARCHIVE_READS_PER_MACHINE, MAX_ARCHIVE_READS_NO_FLOOR } from '../dashboard-activity.js';
+import { extractMachineActivity, isRecentlyActive, crossCheckWithDashboard, renderDashboardActivityMarkdown, lookupMachineActivityInArchives, isStaleMachine, machineBaseId, clearMachineVerdictsForTests, DEFAULT_ACTIVITY_THRESHOLD_MS, MAX_ARCHIVE_READS_PER_CALL, MAX_ARCHIVE_READS_PER_MACHINE, MAX_ARCHIVE_READS_NO_FLOOR, STALE_VERDICT_REVERIFY_MS } from '../dashboard-activity.js';
 
 describe('dashboard-activity', () => {
 	describe('extractMachineActivity', () => {
@@ -79,6 +79,9 @@ describe('dashboard-activity', () => {
 			writeFileSync(join(archiveDir, name), body, 'utf-8');
 
 		beforeEach(() => {
+			// The STALE verdict cache is process-global; tests must not observe
+			// each other's concluded verdicts (fixtures dated >7d conclude stale).
+			clearMachineVerdictsForTests();
 			tmpDir = mkdtempSync(join(tmpdir(), 'archives-4344-'));
 			dashboardsDir = join(tmpDir, 'dashboards');
 			archiveDir = join(dashboardsDir, 'archive');
@@ -86,6 +89,9 @@ describe('dashboard-activity', () => {
 		});
 
 		afterEach(() => {
+			// ms#1569: the verdict cache is module-level — a test that leaves a
+			// verdict behind would silently change the next file's measurements.
+			clearMachineVerdictsForTests();
 			rmSync(tmpDir, { recursive: true, force: true });
 		});
 
@@ -421,6 +427,164 @@ describe('dashboard-activity', () => {
 			}
 			expect(floors.get('myia-web2')).toBe('2026-10-20T19:17:13.000Z');
 			expect(floors.has('myia-silent-01')).toBe(false);
+		});
+	});
+
+	describe('STALE verdict + -win32-x64 ghost (#4344 arbitration 28/10, code only)', () => {
+		let tmpDir: string;
+		let dashboardsDir: string;
+		let archiveDir: string;
+
+		const archive = (name: string, body: string) =>
+			writeFileSync(join(archiveDir, name), body, 'utf-8');
+
+		beforeEach(() => {
+			clearMachineVerdictsForTests();
+			tmpDir = mkdtempSync(join(tmpdir(), 'archives-stale-'));
+			dashboardsDir = join(tmpDir, 'dashboards');
+			archiveDir = join(dashboardsDir, 'archive');
+			mkdirSync(archiveDir, { recursive: true });
+		});
+
+		afterEach(() => {
+			// ms#1569: the verdict cache is module-level — a test that leaves a
+			// verdict behind would silently change the next file's measurements.
+			clearMachineVerdictsForTests();
+			rmSync(tmpDir, { recursive: true, force: true });
+		});
+
+		describe('isStaleMachine', () => {
+			it('is false for a fresh timestamp', () => {
+				expect(isStaleMachine(new Date().toISOString())).toBe(false);
+			});
+			it('is false for null/undefined (no value is not a stale value)', () => {
+				expect(isStaleMachine(null)).toBe(false);
+				expect(isStaleMachine(undefined)).toBe(false);
+			});
+			it('is false for an unparseable timestamp', () => {
+				expect(isStaleMachine('not-a-date')).toBe(false);
+			});
+			it('is false just below 7 days, true at/past 7 days', () => {
+				const justBelow = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000 - 1000)).toISOString();
+				const justPast = new Date(Date.now() - (7 * 24 * 60 * 60 * 1000 + 1000)).toISOString();
+				expect(isStaleMachine(justBelow)).toBe(false);
+				expect(isStaleMachine(justPast)).toBe(true);
+			});
+			it('a 2020-era timestamp is always stale (wall-clock independent)', () => {
+				expect(isStaleMachine('2020-01-01T00:00:00.000Z')).toBe(true);
+			});
+		});
+
+		describe('machineBaseId', () => {
+			it('strips -win32-x64 (the po-2025 ghost shape)', () => {
+				expect(machineBaseId('myia-po-2025-win32-x64')).toBe('myia-po-2025');
+			});
+			it('strips linux/darwin + arm64', () => {
+				expect(machineBaseId('myia-ai-01-linux-x64')).toBe('myia-ai-01');
+				expect(machineBaseId('host-darwin-arm64')).toBe('host');
+			});
+			it('leaves a plain machine id untouched', () => {
+				expect(machineBaseId('myia-po-2026')).toBe('myia-po-2026');
+			});
+			it('is case-insensitive on the id', () => {
+				expect(machineBaseId('MYIA-PO-2025-WIN32-X64')).toBe('myia-po-2025');
+			});
+		});
+
+		it('POSITIVE: a concluded-stale machine pays zero archive reads on the second call', () => {
+			// 2020-era fixture: always stale regardless of wall clock. First call
+			// walks (concludes stale). Second call must NOT read the newer file
+			// added in between — if it did, the result would change.
+			archive('workspace-ws-2020-01-01T00-00-00.md', '### [2020-01-01T00:00:00.000Z] myia-dead-01|ws\nold');
+			const floors = new Map([['myia-dead-01', '2020-01-01T00:00:00.000Z']]);
+			const first = lookupMachineActivityInArchives(dashboardsDir, ['myia-dead-01'], floors);
+			expect(first.get('myia-dead-01')).toBe('2020-01-01T00:00:00.000Z');
+
+			// A newer-but-still-ancient archive appears; a second walk would find it.
+			archive('workspace-ws-2020-06-01T00-00-00.md', '### [2020-06-01T00:00:00.000Z] myia-dead-01|ws\nnewer ancient');
+			const second = lookupMachineActivityInArchives(dashboardsDir, ['myia-dead-01'], floors);
+			expect(second.get('myia-dead-01')).toBe('2020-01-01T00:00:00.000Z');
+		});
+
+		it('the STALE skip does NOT renew its own window — the walk returns after 24h (#1569)', () => {
+			// Injected clock: without it this defect is invisible, because the
+			// refreshed `concludedAt` always looks like "just re-verified".
+			archive('workspace-ws-2020-01-01T00-00-00.md', '### [2020-01-01T00:00:00.000Z] myia-dead-02|ws\nold');
+			const floors = new Map([['myia-dead-02', '2020-01-01T00:00:00.000Z']]);
+			vi.useFakeTimers();
+			try {
+				const t0 = new Date('2026-10-29T00:00:00.000Z').getTime();
+				vi.setSystemTime(t0);
+
+				// Call 1: walks (no verdict yet) and concludes 2020-01-01.
+				const first = lookupMachineActivityInArchives(dashboardsDir, ['myia-dead-02'], floors);
+				expect(first.get('myia-dead-02')).toBe('2020-01-01T00:00:00.000Z');
+
+				// Newer — still stale — truth lands in the archives. Only a walk
+				// can see it, so the returned value measures "did a read happen".
+				archive('workspace-ws-2020-06-01T00-00-00.md', '### [2020-06-01T00:00:00.000Z] myia-dead-02|ws\nnewer ancient');
+
+				// Call 2 at T+1h: served from the verdict, zero reads.
+				vi.setSystemTime(t0 + 60 * 60 * 1000);
+				const second = lookupMachineActivityInArchives(dashboardsDir, ['myia-dead-02'], floors);
+				expect(second.get('myia-dead-02')).toBe('2020-01-01T00:00:00.000Z');
+
+				// Call 3 at T+24h+1min: the window counts from the WALK (T), not
+				// from the skip, so it has expired and the walk happens again.
+				vi.setSystemTime(t0 + STALE_VERDICT_REVERIFY_MS + 60 * 1000);
+				const third = lookupMachineActivityInArchives(dashboardsDir, ['myia-dead-02'], floors);
+				expect(third.get('myia-dead-02')).toBe('2020-06-01T00:00:00.000Z');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		it('NEGATIVE: a fresh machine resolves normally on both calls (no verdict skip)', () => {
+			const freshTs = new Date().toISOString();
+			const floors = new Map([['myia-fresh-01', freshTs]]);
+			const first = lookupMachineActivityInArchives(dashboardsDir, ['myia-fresh-01'], floors);
+			expect(first.size).toBe(0); // floor beats archives -> nothing to recover
+			const second = lookupMachineActivityInArchives(dashboardsDir, ['myia-fresh-01'], floors);
+			expect(second.size).toBe(0);
+		});
+
+		it('a stale live floor ALONE does not skip: fresh truth in archives is still recovered', () => {
+			// The founding frozen-floor case: live dashboard frozen 4-8 days, but
+			// archives carry a NEWER message. A floor-only skip would hide it.
+			// Old floor (2020) + newer archive hit (also 2020-era but newer) -> walk must find it.
+			archive('workspace-ws-2020-06-01T00-00-00.md', '### [2020-06-01T00:00:00.000Z] myia-frozen-01|ws\nreal newest');
+			const floors = new Map([['myia-frozen-01', '2020-01-01T00:00:00.000Z']]);
+			const found = lookupMachineActivityInArchives(dashboardsDir, ['myia-frozen-01'], floors);
+			expect(found.get('myia-frozen-01')).toBe('2020-06-01T00:00:00.000Z');
+		});
+
+		it('GHOST attach: -win32-x64 inherits the host result and never walks alone', () => {
+			const hostTs = new Date().toISOString();
+			// Host has a live floor; ghost is requested alongside. Ghost folds
+			// into host and inherits the host's (fresh) lastSeen.
+			const floors = new Map([
+				['myia-po-2025', hostTs],
+				['myia-po-2025-win32-x64', '2020-01-01T00:00:00.000Z'],
+			]);
+			const found = lookupMachineActivityInArchives(
+				dashboardsDir,
+				['myia-po-2025', 'myia-po-2025-win32-x64'],
+				floors
+			);
+			// Ghost inherits the host's best (the fresh floor).
+			expect(found.get('myia-po-2025-win32-x64')).toBe(hostTs);
+		});
+
+		it('GHOST without its host in the request walks once, then stale-gates like any machine', () => {
+			archive('workspace-ws-2020-01-01T00-00-00.md', '### [2020-01-01T00:00:00.000Z] myia-po-2025-win32-x64|ws\nghost old');
+			const floors = new Map([['myia-po-2025-win32-x64', '2020-01-01T00:00:00.000Z']]);
+			// Host NOT requested -> ghost walks alone.
+			const first = lookupMachineActivityInArchives(dashboardsDir, ['myia-po-2025-win32-x64'], floors);
+			expect(first.get('myia-po-2025-win32-x64')).toBe('2020-01-01T00:00:00.000Z');
+			// Concluded stale -> second call skips.
+			archive('workspace-ws-2020-06-01T00-00-00.md', '### [2020-06-01T00:00:00.000Z] myia-po-2025-win32-x64|ws\nnewer');
+			const second = lookupMachineActivityInArchives(dashboardsDir, ['myia-po-2025-win32-x64'], floors);
+			expect(second.get('myia-po-2025-win32-x64')).toBe('2020-01-01T00:00:00.000Z');
 		});
 	});
 

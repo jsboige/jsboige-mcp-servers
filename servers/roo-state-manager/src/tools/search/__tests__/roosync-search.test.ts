@@ -357,6 +357,78 @@ describe('roosync_search', () => {
 	});
 
 	// ============================================================
+	// #4438: the degraded warning names the component that FAILED
+	// ============================================================
+
+	describe('#4438: the degraded warning names the failing component, not always the embeddings', () => {
+		const degradeWithMode = async (mode: string) => {
+			mockSemanticHandler.mockResolvedValue({
+				isError: true,
+				content: [{ type: 'text', text: `Semantic search failed: ${mode}` }]
+			});
+			mockFallbackHandler.mockResolvedValue({
+				content: [{ type: 'text', text: JSON.stringify({ results: [{ id: 'r1' }], total: 1 }) }]
+			});
+			return handleRooSyncSearch(
+				{ action: 'semantic', search_query: 'q', workspace: 'ws' },
+				mockCache, mockEnsureCache, mockFallbackHandler, mockDiagnoseHandler
+			);
+		};
+
+		test('a Qdrant outage names qdrant, never the embedding backend', async () => {
+			const result = await degradeWithMode('qdrant_unreachable');
+			const first = getTextContent(result, 0);
+			expect(first).toMatch(/qdrant/i);
+			expect(first).not.toMatch(/embedding backend unreachable/i);
+			const payload = JSON.parse(getTextContent(result, 1));
+			expect(payload.semantic_error_mode).toBe('qdrant_unreachable');
+			// the machine-readable field carried the same misattribution
+			expect(payload.fallback_reason).toBe('qdrant_api_error');
+			expect(payload.fallback_reason).not.toBe('embedding_api_error');
+		});
+
+		test('EVERY qdrant_* mode names qdrant', async () => {
+			for (const mode of [
+				'qdrant_unreachable', 'qdrant_client_failure', 'qdrant_proxy_drop',
+				'qdrant_backend_slow', 'qdrant_collection_missing'
+			]) {
+				const result = await degradeWithMode(mode);
+				const first = getTextContent(result, 0);
+				expect(first).toMatch(/qdrant/i);
+				expect(first).not.toMatch(/embedding backend unreachable/i);
+			}
+		});
+
+		test('an embedding outage still names the embedding backend (unchanged)', async () => {
+			const result = await degradeWithMode('embedding_unreachable');
+			const first = getTextContent(result, 0);
+			expect(first).toMatch(/embedding backend unreachable/i);
+			expect(first).not.toMatch(/qdrant/i);
+			const payload = JSON.parse(getTextContent(result, 1));
+			expect(payload.fallback_reason).toBe('embedding_api_error');
+		});
+
+		test('an auth failure is not reported as an outage of some other component', async () => {
+			const result = await degradeWithMode('auth_failed');
+			const first = getTextContent(result, 0);
+			expect(first).toMatch(/authentication/i);
+			expect(first).not.toMatch(/embedding backend unreachable/i);
+			expect(first).not.toMatch(/qdrant/i);
+			const payload = JSON.parse(getTextContent(result, 1));
+			expect(payload.fallback_reason).toBe('auth_failed');
+		});
+
+		test('resource exhaustion names the host resources', async () => {
+			const result = await degradeWithMode('resource_exhausted');
+			const first = getTextContent(result, 0);
+			expect(first).toMatch(/resources exhausted/i);
+			expect(first).not.toMatch(/embedding backend unreachable/i);
+			const payload = JSON.parse(getTextContent(result, 1));
+			expect(payload.fallback_reason).toBe('resource_exhausted');
+		});
+	});
+
+	// ============================================================
 	// Action: text
 	// ============================================================
 

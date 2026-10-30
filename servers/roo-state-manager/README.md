@@ -310,9 +310,9 @@ Affiche les détails techniques complets (métadonnées des actions) pour une t�
 
 ---
 
-## 📋 Liste Complète des Outils MCP (17 outils)
+## 📋 Liste Complète des Outils MCP (18 outils)
 
-Le roo-state-manager propose **17 outils MCP consolidés** organisés en 10 catégories fonctionnelles (après consolidations CONS-1 à CONS-13 + claudish_traffic #3391 + roosync_harmonization #3545). Nomenclature des numéros CONS : [docs/CONS-CONSOLIDATION-HISTORY.md](docs/CONS-CONSOLIDATION-HISTORY.md).
+Le roo-state-manager propose **18 outils MCP consolidés** organisés en 11 catégories fonctionnelles (après consolidations CONS-1 à CONS-13 + claudish_traffic #3391 + roosync_harmonization #3545 + roosync_claudish_cascade #4427). Nomenclature des numéros CONS : [docs/CONS-CONSOLIDATION-HISTORY.md](docs/CONS-CONSOLIDATION-HISTORY.md).
 
 ### 💬 Conversations & Navigation (1 outil)
 | Outil | Description |
@@ -366,12 +366,17 @@ Le roo-state-manager propose **17 outils MCP consolidés** organisés en 10 cat�
 |-------|-------------|
 | `roosync_dashboard` | Shared dashboards (global/machine/workspace) with auto-condensation at 92% (actions: read, write, append, list, delete, read_archive, read_overview, refresh, update) |
 
+### 🌀 Cascade Claudish (1 outil)
+| Outil | Description |
+|-------|-------------|
+| `roosync_claudish_cascade` | Instrument de cascade Claudish : canon publié versionné (immuable, rétention 5), comparaison par SURFACE (INTENDED / WRITTEN / RUNNING / CONSUMER), `apply` du `.env` du siège en `dry_run` par défaut avec sauvegarde, `confirm` uniquement sur relecture live (un hash revendiqué ne confirme rien, un consommateur muet est « non couvert »). Ne choisit aucune politique, ne recrée aucun conteneur |
+
 ### 📈 Traffic Monitoring (1 outil)
 | Outil | Description |
 |-------|-------------|
 | `claudish_traffic` | Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme TOUJOURS rendu jusqu'à l'heure courante, split cron/interactif par machine, « GAP: traffic STOPPED at <ts> » déclaratif — répond « ce trafic persiste-t-il ? » sans second appel ni grep. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, pas une panne. Ne throw jamais |
 
-**Total : 17 outils MCP consolidés** organisés pour couvrir l'ensemble du cycle de vie de gestion des conversations Roo.
+**Total : 18 outils MCP consolidés** organisés pour couvrir l'ensemble du cycle de vie de gestion des conversations Roo.
 
 ---
 

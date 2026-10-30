@@ -16,6 +16,7 @@ const { stableMocks } = vi.hoisted(() => {
 	const stableMocks = {
 		existsSync: null as any,
 		readFileSync: null as any,
+		readFile: null as any,
 		writeFile: null as any,
 	};
 	return { stableMocks };
@@ -26,6 +27,9 @@ vi.mock('fs', async (importOriginal) => {
 
 	stableMocks.existsSync = vi.fn((...args: any[]) => realFs.existsSync(...args));
 	stableMocks.readFileSync = vi.fn((...args: any[]) => realFs.readFileSync(...args));
+	// #2570 : le registre est lu via l'API promise (union des copies DriveFS)
+	// — la surface contrôlée par les tests suit ce contrat.
+	stableMocks.readFile = vi.fn((...args: any[]) => realFs.promises.readFile(...args));
 	stableMocks.writeFile = vi.fn((...args: any[]) => realFs.promises.writeFile(...args));
 
 	return {
@@ -36,6 +40,7 @@ vi.mock('fs', async (importOriginal) => {
 			readFileSync: stableMocks.readFileSync,
 			promises: {
 				...realFs.promises,
+				readFile: stableMocks.readFile,
 				writeFile: stableMocks.writeFile,
 			},
 		},
@@ -43,6 +48,7 @@ vi.mock('fs', async (importOriginal) => {
 		readFileSync: stableMocks.readFileSync,
 		promises: {
 			...realFs.promises,
+			readFile: stableMocks.readFile,
 			writeFile: stableMocks.writeFile,
 		},
 	};
@@ -56,7 +62,7 @@ const T4H = new Date('2026-09-23T04:00:00.000Z');
 /** Racine présente ; le fichier registre existe (contenu fourni). */
 function seedRegistry(registry: unknown) {
 	stableMocks.existsSync.mockReturnValue(true);
-	stableMocks.readFileSync.mockReturnValue(JSON.stringify(registry));
+	stableMocks.readFile.mockResolvedValue(JSON.stringify(registry));
 	stableMocks.writeFile.mockResolvedValue(undefined);
 }
 

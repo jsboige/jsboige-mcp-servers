@@ -71,7 +71,7 @@ export const conversationBrowserDefinition = {
             machineId: { type: 'string', description: '[list] Filter by machine ID.' },
             includeArchives: { type: 'boolean', description: '[list] Include cross-machine GDrive archives (Tier 3).' },
             // #3255 — camelCase on the wire, like the adjacent includeArchives (registry dispatch passes raw args).
-            waitForArchives: { type: 'boolean', description: '[list] #3255 — Block until the Tier 3 archive cache is ready (bounded 45s). Default: false = local results render immediately; response carries tier3.status=loading otherwise.' },
+            waitForArchives: { type: 'boolean', description: '[list] #3255 — Block until the Tier 3 archive cache is ready (bounded 45s). Default: false = local results render immediately; the response then carries the real tier3.status: ready | loading | deferred | failed (#4151 S3 — a PG-first seat reports deferred, not "loading", when the archive tier is simply not served).' },
             // --- tree ---
             conversation_id: { type: 'string', description: '[tree] Conversation ID.' },
             max_depth: { type: 'number', description: '[tree] Max tree depth.' },
@@ -171,7 +171,7 @@ export const roosyncSearchDefinition = {
             model: { type: 'string' },
             start_date: { type: 'string', description: 'ISO 8601 or YYYY-MM-DD' },
             end_date: { type: 'string', description: 'ISO 8601 or YYYY-MM-DD' },
-            exclude_tool_results: { type: 'boolean' },
+            exclude_tool_results: { type: 'boolean', description: 'default true (semantic action only; ignored in text mode): excludes tool_interaction chunks via must_not — pass false, or chunk_type:"tool_interaction", to include tool results' },
             reset_circuit_breaker: { type: 'boolean', description: '#2634: Reset embeddings circuit breaker if armed (diagnose action only)' }
         },
         required: ['action'],
@@ -522,6 +522,28 @@ export const roosyncHarmonizationDefinition = {
     }
 };
 
+export const roosyncClaudishCascadeDefinition = {
+    name: 'roosync_claudish_cascade',
+    description: 'Claudish cascade synchronisation (#4427) — the INSTRUMENT, never the policy: it publishes, compares and applies the CLAUDISH_FAILOVER_* canon across the fleet. Three states are never merged: INTENDED (published canon), WRITTEN (the .env on disk — what compose will read at the next create), RUNNING (the env the container received) and CONSUMER (the [Failover] line its parser accepted — the only proof of acceptance). Actions: publish (validates, then writes an immutable versioned canon; republishing a version with DIFFERENT content is refused), list, compare (INTENDED vs WRITTEN vs RUNNING, concrete values, with coverage states), apply (writes the LOCAL .env line by line, everything else byte-for-byte; dry_run DEFAULTS TO TRUE — writing requires dry_run:false), collect (reads the container RUNNING env, allow-listed keys only — an unreadable container is a verdict, never an empty payload), confirm (LIVE re-read: a claimed hash never counts; a muted consumer is NOT covered), status. Never reads, publishes or writes credentials, proxy keys, relay upstreams, ports, binds or capture paths; only allow-listed cascade keys cross the boundary. Never restarts or recreates a container — deployment stays with the seat owner.',
+    inputSchema: {
+        type: 'object',
+        properties: {
+            action: { type: 'string', enum: ['collect', 'publish', 'compare', 'apply', 'confirm', 'status', 'list'] },
+            payload: { type: 'object', description: 'publish only. The cascade payload (schemaVersion 1, roles uppercase, provenance hub-live + readAt). Validated before any write; the canonical hash is recomputed.' },
+            version: { type: 'string', description: 'publish only. Version label. Omitted = content-addressed (h<hash8>). A published version is IMMUTABLE: same label with a different payload is refused.' },
+            env_path: { type: 'string', description: 'compare/status/apply. Path to the seat .env. Required — the tool never guesses a config file location.' },
+            container: { type: 'string', description: 'collect/confirm/status/compare. Container name, supplied by the caller — never read from the environment.' },
+            dry_run: { type: 'boolean', description: 'apply. Defaults to TRUE: no write, no backup. Writing the seat .env requires dry_run:false explicitly.' },
+            backup: { type: 'boolean', description: 'apply (real write). Default true: backs up the previous values of the keys the plan writes (never the whole .env).' },
+            max_age_ms: { type: 'number', description: 'Freshness policy for the published canon (default 24 h). A stale or unreadable canon is never read as fresh.' },
+            claimed_hash: { type: 'string', description: 'confirm. Accepted for compatibility, always IGNORED: only the live re-read counts.' },
+            now: { type: 'string', description: 'ISO 8601 clock override (tests).' }
+        },
+        required: ['action'],
+        additionalProperties: false
+    }
+};
+
 export const roosyncInventoryDefinition = {
     name: 'roosync_inventory',
     description: 'Machine inventory, heartbeat status, system snapshot, cluster health (drift/score/capabilities). type="status" for compact RooSync status. type="health" for unified CLUSTER health with score (#2224) — distinct from the skeleton-cache health of roosync_diagnose action "health". Gotcha: use includeDetails:true for full metrics including tool usage stats.',
@@ -548,7 +570,7 @@ export const roosyncInventoryDefinition = {
 // #1609: roosync_heartbeat retiré — auto-heartbeat now triggered on any tool call
 
 // #1320: Lifecycle state machine → re-câblé comme action de roosync_diagnose (#512 arbitrage A)
-// Standalone tool retiré — RSM sert 17 outils (16 + roosync_harmonization #3545).
+// Standalone tool retiré — RSM sert 18 outils (16 + roosync_harmonization #3545 + roosync_claudish_cascade #4427).
 
 export const roosyncMcpManagementDefinition = {
     name: 'roosync_mcp_management',
@@ -823,6 +845,8 @@ export const allToolDefinitions = [
     roosyncConfigDefinition,
     // #3545 — campagne d'harmonisation flotte (canon + confirmations + relances)
     roosyncHarmonizationDefinition,
+    // #4427 PR3 — cascade Claudish : canon publié, comparaison par surface, apply du .env du siège
+    roosyncClaudishCascadeDefinition,
     roosyncInventoryDefinition,
     // #1320: Lifecycle → re-câblé comme action de roosync_diagnose (#512 arbitrage A). Pas d'outil standalone.
     // #1609: roosyncHeartbeatDefinition retiré — auto-heartbeat on any tool call

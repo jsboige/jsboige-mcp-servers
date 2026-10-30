@@ -1127,8 +1127,14 @@ export const searchTasksByContentTool = {
             };
         }
 
-        // #636 Phase 3: resolve effective chunk_type (exclude_tool_results is a convenience alias)
-        const effectiveChunkType = chunk_type ?? (exclude_tool_results ? 'message_exchange' : undefined);
+        // #636 Phase 3: an explicit chunk_type is an equality filter. `exclude_tool_results`
+        // is NOT one: it means "drop tool outputs", so it is expressed as a must_not on
+        // `chunk_type = tool_interaction` (ms#1568 review, item 1). It used to be resolved
+        // into `chunk_type = message_exchange`, which is a DIFFERENT predicate — it also
+        // dropped every `code_citation` and `task_summary` chunk, i.e. content the caller
+        // never asked to exclude.
+        const effectiveChunkType = chunk_type;
+        const excludeToolInteraction = chunk_type === undefined && !!exclude_tool_results;
 
         // #883 P0: Skip cache refresh for semantic searches — the skeleton cache is NOT used
         // for Qdrant vector search, only for post-search enrichment. The ensureCacheFreshCallback
@@ -1214,13 +1220,23 @@ export const searchTasksByContentTool = {
         }
 
         // Tentative de recherche sémantique via Qdrant/OpenAI
+        // #4438: the failing STAGE decides the classified mode. The embedding
+        // call and the Qdrant search share ONE try block, so a single
+        // classifySearchError(error, 'search') labelled EVERY failure "qdrant" —
+        // including an embeddings outage. The degraded banner then named the
+        // wrong component (and the legacy #2609 test caught it). Same principle
+        // as codebase_search #3279, which routes an embedding error to the
+        // embedding branch.
+        let failedStage: 'embedding' | 'search' = 'search';
         try {
             const qdrant = getQdrantClient();
+            failedStage = 'embedding';
             const openai = getEmbeddingQueryClient();
 
             // #2167: Check query embedding cache before calling the API
             let queryVector = getCachedQueryEmbedding(search_query);
             if (!queryVector) {
+                failedStage = 'embedding';
                 // #249: Wrap embedding call with retry for transient failures
                 const embedding = await withRetry(() => openai.embeddings.create({
                     model: getEmbeddingModel(),
@@ -1231,11 +1247,15 @@ export const searchTasksByContentTool = {
             } else {
                 console.log(`[INFO] #2167: Query embedding cache hit for "${search_query.substring(0, 50)}..."`);
             }
+            failedStage = 'search';
             const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 
             // Configuration de la recherche selon conversation_id et workspace
             let filter;
             const filterConditions = [];
+            // must_not conditions — kept separate from `must` so a negation never turns into
+            // an equality (a `must` on `!=` would also drop points missing the field).
+            const filterMustNot = [];
 
             if (conversation_id && conversation_id !== 'undefined') {
                 filterConditions.push({
@@ -1279,6 +1299,16 @@ export const searchTasksByContentTool = {
                 filterConditions.push({
                     key: "chunk_type",
                     match: { value: effectiveChunkType }
+                });
+            }
+            // ms#1568 review, item 1: `exclude_tool_results` excludes ONE chunk type, it does
+            // not select one. As a `must_not`, every other chunk type (`message_exchange`,
+            // `code_citation`, `task_summary`) survives — the post-retrieval machine-output
+            // classifier then removes the tool *echoes* that live in message_exchange.
+            if (excludeToolInteraction) {
+                filterMustNot.push({
+                    key: "chunk_type",
+                    match: { value: "tool_interaction" }
                 });
             }
 
@@ -1335,8 +1365,11 @@ export const searchTasksByContentTool = {
                 });
             }
 
-            if (filterConditions.length > 0) {
-                filter = { must: filterConditions };
+            if (filterConditions.length > 0 || filterMustNot.length > 0) {
+                filter = {
+                    ...(filterConditions.length > 0 ? { must: filterConditions } : {}),
+                    ...(filterMustNot.length > 0 ? { must_not: filterMustNot } : {})
+                };
             } else {
                 filter = undefined;
             }
@@ -1789,7 +1822,7 @@ export const searchTasksByContentTool = {
             const semanticErrorMsg = semanticError instanceof Error ? semanticError.message : String(semanticError);
 
             // #2063 P1: Classify the error for actionable diagnostics
-            const classified = await classifySearchError(semanticError, 'search');
+            const classified = await classifySearchError(semanticError, failedStage);
 
             // #1496: Strict mode — propagate the classified error instead of silently
             // falling back to text. Callers that explicitly requested semantic
