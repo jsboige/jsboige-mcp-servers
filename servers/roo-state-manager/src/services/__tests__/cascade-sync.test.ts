@@ -130,6 +130,55 @@ describe('#4427 PR2 — assessCascadeSource (une lecture non fraîche n\'est PAS
         });
         expect(snap.coverage).toBe('stale');
     });
+
+    test('MUTANT — un VERIFIED illisible ne passe PAS pour une lecture fraîche', () => {
+        // La fraîcheur est fail-closed : un horodatage NON parsable ne vaut pas
+        // « frais par défaut ». Le mutant d'origine (`ageMs === null` ⇒ la
+        // garde de péremption ne se déclenche pas ⇒ lu frais) meurt ici.
+        const snap = assessCascadeSource({
+            source: 'hub po-2025',
+            text: CANON,
+            readAt: READ_AT,
+            verifiedAt: 'pas-une-date',
+            maxAgeMs: 3600 * 1000,
+            now: READ_AT,
+        });
+        expect(snap.covered).toBe(false);
+        expect(snap.coverage).toBe('invalid');
+        expect(snap.env).toEqual({});
+        expect(snap.provenance.ageMs).toBeNull();
+        expect(snap.detail).not.toBe('');
+    });
+
+    test('une lecture datée dans le futur, au-delà de la tolérance, est INVALIDE', () => {
+        // Une date future ne prouve PAS la fraîcheur : elle la contredit.
+        const snap = assessCascadeSource({
+            source: 'hub po-2025',
+            text: CANON,
+            readAt: READ_AT,
+            verifiedAt: '2026-10-30T09:30:00.000Z', // 5 h d'avance
+            maxAgeMs: 3600 * 1000,
+            now: READ_AT,
+        });
+        expect(snap.covered).toBe(false);
+        expect(snap.coverage).toBe('invalid');
+        expect(snap.env).toEqual({});
+        expect(snap.provenance.ageMs).toBeLessThan(0);
+    });
+
+    test('une dérive d\'horloge MINEURE reste tolérée (fraîcheur ≠ horloge parfaite)', () => {
+        // 60 s d'avance : NTP, arrondi — ce n'est pas un indice d'incohérence.
+        const snap = assessCascadeSource({
+            source: 'hub po-2025',
+            text: CANON,
+            readAt: READ_AT,
+            verifiedAt: '2026-10-30T04:31:00.000Z',
+            maxAgeMs: 3600 * 1000,
+            now: READ_AT,
+        });
+        expect(snap.covered).toBe(true);
+        expect(snap.coverage).toBe('ok');
+    });
 });
 
 describe('#4427 PR2 — rendu fidèle à la grammaire du runtime (failover.ts)', () => {
@@ -166,6 +215,18 @@ describe('#4427 PR2 — rendu fidèle à la grammaire du runtime (failover.ts)',
         expect(env[`${CASCADE_ENV_PREFIX}HAIKU_DIRECTION`]).toBeUndefined();
         expect(env[`${CASCADE_ENV_PREFIX}HAIKU_NOTE`]).toBeUndefined();
         expect(env[`${CASCADE_ENV_PREFIX}HAIKU_RESET`]).toBeUndefined();
+    });
+
+    test('une étiquette ABSENTE retombe sur la cible (jamais la chaîne « undefined »)', () => {
+        // Le runtime lit `labels[i] ?? target` : une étiquette manquante ne
+        // doit JAMAIS s'écrire « undefined » dans une variable de siège.
+        const snap = freshSource();
+        const steps = snap.payload!.roles.SONNET.steps;
+        (steps[0] as unknown as { label?: string }).label = undefined;
+        const env = renderCascadeEnv(snap.payload!);
+        const label = env[`${CASCADE_ENV_PREFIX}SONNET_LABEL`];
+        expect(label).toContain('mistral@zai-glm-5-3');
+        expect(label).not.toContain('undefined');
     });
 
     test('MUTANT - un rendu qui emet toujours _LABEL/_DIRECTION cree une diff fictive', () => {
@@ -296,6 +357,27 @@ describe('#4427 PR2 — plan d\'application (borné, non destructif)', () => {
         expect(write).toBeDefined();
         expect(write!.before).toBe('kc@k3 > mmc@MiniMax-M3.1-Flash');
         expect(write!.value).toBe('mistral@zai-glm-5-3>kc@k3');
+    });
+
+    test('MUTANT — une clé retirée par la source est RAPPORTÉE, jamais passée sous silence', () => {
+        // Le siège porte une clé de cascade que la source ne veut plus : la
+        // divergence est RÉELLE. Ce plan n'écrit que des valeurs, donc la
+        // suppression n'est pas planifiable — mais elle doit être NOMMÉE.
+        // Le mutant « `continue` silencieux » se lit « applicable:false,
+        // aucune raison » = « rien à faire » : ce test le tue.
+        const seat = {
+            ...parseCascadeEnv(SEAT_ENV_TEXT),
+            [`${CASCADE_ENV_PREFIX}HAIKU_NOTE`]: 'note du siège',
+        };
+        const plan = planCascadeApply(freshSource(), seat);
+        const removed = plan.changes.find((c) => c.kind === 'removed');
+        expect(removed).toBeDefined();
+        expect(removed!.key).toBe(`${CASCADE_ENV_PREFIX}HAIKU_NOTE`);
+        expect(plan.reasons.join(' ')).toContain(`${CASCADE_ENV_PREFIX}HAIKU_NOTE`);
+        expect(plan.reasons.join(' ')).toContain('non planifiable');
+        // La clé retirée ne doit PAS être écrite (une suppression n'est pas une
+        // écriture de valeur '') — elle est RAPPORTÉE, rien de plus.
+        expect(plan.writes.find((w) => w.key === `${CASCADE_ENV_PREFIX}HAIKU_NOTE`)).toBeUndefined();
     });
 });
 

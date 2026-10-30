@@ -64,6 +64,16 @@ const WRITABLE_KEY_SET = new Set(CASCADE_WRITABLE_KEYS);
 export const DEFAULT_CASCADE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /**
+ * Tolérance de dérive d'horloge (5 min).
+ *
+ * Une lecture datée LÉGÈREMENT dans le futur est tolérée (NTP, arrondi,
+ * saisies à la seconde) : ce n'est pas un indice d'incohérence. Au-delà, la
+ * date est INCRÉDIBLE — elle ne prouve pas la fraîcheur, elle la contredit :
+ * la lecture est alors `invalid`, donc NON harmonisée.
+ */
+export const CASCADE_CLOCK_SKEW_TOLERANCE_MS = 5 * 60 * 1000;
+
+/**
  * Motifs de clés préservées — #4427 AC : « Do not overwrite credentials,
  * proxy keys, client login, relay upstream, ports, binds, capture locations or
  * unrelated .env values ». Ces clés sont RAPPORTÉES (nom + motif), jamais
@@ -239,7 +249,7 @@ function sha256(text: string): string {
     return createHash('sha256').update(text, 'utf8').digest('hex');
 }
 
-function ageMsBetween(nowIso: string, thenIso: string | null): number | null {
+function ageMsBetween(nowIso: string, thenIso: string | null | undefined): number | null {
     if (!thenIso) return null;
     const now = Date.parse(nowIso);
     const then = Date.parse(thenIso);
@@ -308,10 +318,31 @@ export function assessCascadeSource(input: CascadeSourceInput): CascadeSourceSna
 
     const canonicalHash = validation.canonicalHash ?? computeCanonicalHash(payload);
     provenance.contentHash = sha256(input.text);
-    const ageMs = ageMsBetween(now, input.verifiedAt ?? input.readAt);
+
+    // La fraîcheur est un CONTRAT fail-closed : une lecture dont l'horodatage
+    // est illisible n'est PAS « fraîche par défaut » — elle est INVALIDE, donc
+    // non harmonisée. Un `verifiedAt` non parsable, un horodatage absent, ou une
+    // date dans le futur au-delà de la tolérance d'horloge rendent tous la
+    // lecture NON VÉRIFIABLE : la signaler vaut mieux que l'harmoniser.
+    const stampIso: string | null | undefined = input.verifiedAt ?? input.readAt;
+    const ageMs = ageMsBetween(now, stampIso);
     provenance.ageMs = ageMs;
 
-    if (ageMs !== null && ageMs > maxAgeMs) {
+    if (ageMs === null) {
+        return fail(
+            'invalid',
+            `horodatage illisible (${stampIso ?? 'absent'}) — la lecture n'est pas datable, donc pas vérifiable`,
+        );
+    }
+
+    if (ageMs < -CASCADE_CLOCK_SKEW_TOLERANCE_MS) {
+        return fail(
+            'invalid',
+            `lecture datée dans le futur (${stampIso}, ${Math.round(-ageMs / 1000)} s d'avance) — horloge non fiable`,
+        );
+    }
+
+    if (ageMs > maxAgeMs) {
         return {
             covered: false,
             coverage: 'stale',
@@ -356,7 +387,10 @@ export function renderCascadeEnv(payload: CascadePayload): Record<string, string
             .map((s) => (s.class === 'own' ? `${s.ref}!own` : s.ref))
             .join('>');
 
-        const labels = steps.map((s) => s.label);
+        // Le runtime retombe sur la CIBLE quand l'étiquette est absente
+        // (`labels[i] ?? target`) : un label manquant ne doit pas rendre la
+        // chaîne littérale « undefined » dans une variable d'environnement.
+        const labels = steps.map((s) => (typeof s.label === 'string' ? s.label : s.ref));
         if (labels.some((l, i) => l !== steps[i].ref)) {
             env[`${CASCADE_ENV_PREFIX}${role}_LABEL`] = labels.join('>');
         }
@@ -466,6 +500,12 @@ export function compareCascadeEnv(
  * Le plan n'écrit rien. Les écritures portent EXCLUSIVEMENT sur des clés de
  * cascade ; les credentials, clés de proxy, logins, upstreams, ports, binds et
  * emplacements de capture sont rapportés (nom + motif) et laissés intacts.
+ *
+ * Une divergence NON ÉCRIVABLE — une clé de cascade que la source retire —
+ * n'est jamais passée sous silence : elle est rendue dans `reasons`, avec la
+ * clé concernée. Un plan « non applicable, aucune raison » se lirait comme
+ * « rien à faire » alors que le siège porte une clé que la source ne veut
+ * plus.
  */
 export function planCascadeApply(
     source: CascadeSourceSnapshot,
@@ -492,7 +532,18 @@ export function planCascadeApply(
     const writes: CascadeWrite[] = [];
 
     for (const change of comparison.changes) {
-        if (change.kind === 'removed') continue; // une clé de cascade retirée = retrait demandé par la source
+        if (change.kind === 'removed') {
+            // Une clé retirée par la source EST une divergence réelle du siège.
+            // Ce plan n'écrit que des VALEURS (borné, non destructif) : la
+            // suppression n'est donc pas planifiable ici. Elle est RAPPORTÉE
+            // comme raison explicite — le silence la lirait comme « rien à
+            // faire » alors que le siège porte une clé que la source ne veut
+            // plus.
+            reasons.push(
+                `clé de cascade retirée par la source : ${change.key} — suppression non planifiable par ce plan (écriture de valeur uniquement) ; à traiter par le propriétaire du siège`,
+            );
+            continue;
+        }
         const value = change.after ?? '';
         if (!WRITABLE_KEY_SET.has(change.key)) continue; // garde : jamais une clé hors allow-list
         writes.push({ key: change.key, value, before: change.before });
