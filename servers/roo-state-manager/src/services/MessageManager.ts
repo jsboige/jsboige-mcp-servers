@@ -13,7 +13,7 @@ import { join, dirname, basename } from 'path';
 import { tmpdir } from 'os';
 import { createHash } from 'crypto';
 import { createLogger } from '../utils/logger.js';
-import { ensureStoreSubdir, isSharedPathAccessible, tryGetSharedStatePath, SharedStoreInaccessibleError } from '../utils/shared-state-path.js';
+import { ensureStoreSubdir, isSharedPathAccessible, tryGetSharedStatePath, SharedStoreInaccessibleError, type SharedStoreInaccessibleCause } from '../utils/shared-state-path.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
 import { parseMachineWorkspace, matchesRecipient, matchesMachineTarget, getLocalMachineId, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
@@ -80,6 +80,25 @@ import type { RooSyncMessageUpdate } from './unified-store/types.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 
 const logger = createLogger('MessageManager');
+
+/**
+ * #4293 follow-up (po-2028 + po-2023, 30/10) — the cause of a fail-closed
+ * raise is EVIDENCE-based, so the error never blames a store that is fine.
+ *
+ * The PG-primary routes below fail closed when PostgreSQL does not answer and
+ * the GDrive fallback is forbidden (#4131 B16). They used to raise an error
+ * stating the shared store was "absent du système de fichiers" WITHOUT ever
+ * checking it — measured 30/10 on po-2027: the store was readable and
+ * writable while the inbox read failed closed with that message, and two
+ * lanes on two seats nearly "repaired" a healthy DriveFS directory.
+ *
+ * Here the store is probed once (existsSync, milliseconds): readable → the
+ * PG half is the cause; unreadable → both halves are down, and the legacy
+ * wording (which is accurate in that case) is kept.
+ */
+function storeAbsentOrPgUnavailable(): SharedStoreInaccessibleCause {
+    return isSharedPathAccessible() ? 'pg-unavailable' : 'store-absent';
+}
 
 // #3654 — un messageId explicite devient un nom de fichier (`${id}.json`) :
 // jamais de séparateur de chemin ni de traversée, longueur bornée.
@@ -1104,7 +1123,7 @@ export class MessageManager {
         // PR head: two messages present, lock held by a neighbour → total=0,
         // unread=0, oldest_unread=null served in silence.
         logger.error('Inbox rebuild deferred by the host G: scan lock under CHANNEL_PG_PRIMARY with no warm cache — failing closed, no phony empty (#4131 B16)');
-        throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
+        throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true, 'scan-lock-contended');
       }
       // No cache and G: IS this seat's store (file backend / READ_PG fallback):
       // there is nothing else to serve. One foreground caller cannot storm
@@ -1699,7 +1718,7 @@ export class MessageManager {
       return 'cache-stale';
     }
     logger.warn(`[channel-pg] B16: ${context} (${cause}) — PG unavailable and no warm cache: failing closed, no GDrive fan-out under PG_PRIMARY (#4131)`);
-    throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
+    throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true, storeAbsentOrPgUnavailable());
   }
 
   /**
@@ -2195,7 +2214,7 @@ export class MessageManager {
       );
       // #4293 kin: the file half could not be consulted — fail closed, never
       // report "not found" for a volume that simply did not answer.
-      throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
+      throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true, 'store-unresponsive');
     }
 
     logger.warn(`Message not found: ${messageId}`);
@@ -3187,7 +3206,7 @@ export class MessageManager {
       // of the historical GDrive fan-out; non-primary seats keep the fallback.
       if (isChannelPgPrimary() && channelPgBreakerOpen()) {
         logger.warn(`[channel-pg] B16: bulk ${operation} (breaker-open) — PG unavailable under PG_PRIMARY, failing closed (#4131)`);
-        throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
+        throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true, storeAbsentOrPgUnavailable());
       } else {
         const pgMessages = await readChannelMailboxFromPg(pgReader, machineId, effectiveWorkspaceId);
         if (pgMessages !== null) {
@@ -3201,7 +3220,7 @@ export class MessageManager {
         noteChannelPgReadFailure();
         if (isChannelPgPrimary()) {
           logger.warn(`[channel-pg] B16: bulk ${operation} — PG enumeration failed under PG_PRIMARY, failing closed, no GDrive fan-out (#4131)`);
-          throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true);
+          throw new SharedStoreInaccessibleError(tryGetSharedStatePath(), true, storeAbsentOrPgUnavailable());
         }
         logger.warn('[channel-pg] PG mailbox enumeration failed — bulk falling back to GDrive');
       }

@@ -114,6 +114,80 @@ export function isSharedPathAccessible(): boolean {
 }
 
 /**
+ * #4293 follow-up (po-2028 + po-2023, 30/10) — WHICH half actually failed.
+ *
+ * The fail-closed error used to assert, in every case, that the shared store
+ * was "absent du système de fichiers" and to send the reader after the DriveFS
+ * mount. Two of its raise sites never checked the store at all: the PG-primary
+ * route (the PG half did not answer) and the host scan-lock contention (a
+ * neighbour process holds the G: scan lock). Measured 30/10 on po-2027: the
+ * store was readable and writable (`roosync_diagnose(env)` →
+ * `sharedState: {exists: true, writable: true}`) while the inbox read failed
+ * closed with that message — two lanes on two seats nearly "repaired" a
+ * healthy directory because of it.
+ *
+ * The cause is the truth the message is built from:
+ *   - `store-absent`         — the G: root really is unreadable (checked);
+ *   - `pg-unavailable`       — PostgreSQL did not answer, and under
+ *                               CHANNEL_PG_PRIMARY the G: fallback is forbidden
+ *                               (#4131 B16). The store is NOT the cause;
+ *   - `scan-lock-contended`  — a neighbouring RSM process holds the host G:
+ *                               scan lock and this seat has no warm cache.
+ */
+export type SharedStoreInaccessibleCause =
+    | 'store-absent'
+    | 'pg-unavailable'
+    | 'scan-lock-contended'
+    | 'store-unresponsive';
+
+/**
+ * Render the fail-closed message from the cause. Kept out of the constructor
+ * so the wording of each cause is testable on its own.
+ */
+function renderSharedStoreInaccessibleMessage(
+    storePath: string | null,
+    pgReadFailed: boolean,
+    cause: SharedStoreInaccessibleCause
+): string {
+    const pathLabel = storePath ? ` (${storePath})` : ' (variable non définie)';
+
+    if (cause === 'pg-unavailable') {
+        return (
+            `ROOSYNC_SHARED_PATH${pathLabel} : la moitié PostgreSQL n'a pas répondu et, sous CHANNEL_PG_PRIMARY, ` +
+            `le repli Google Drive est interdit (#4131 B16). Le store G: n'est PAS en cause — ne cherchez pas le montage du lecteur. ` +
+            `Toute lecture est interrompue (fail-closed).`
+        );
+    }
+
+    if (cause === 'scan-lock-contended') {
+        return (
+            `ROOSYNC_SHARED_PATH${pathLabel} : un autre processus RSM de ce poste tient le verrou de scan G: (inbox-pool) ` +
+            `et ce siège n'a pas de cache chaud. Le store G: n'est PAS en cause — ne cherchez pas le montage du lecteur. ` +
+            `Toute lecture est interrompue (fail-closed).`
+        );
+    }
+
+    if (cause === 'store-unresponsive') {
+        return (
+            `ROOSYNC_SHARED_PATH${pathLabel} : le store G: n'a pas répondu dans le délai imparti (volume muet) — ` +
+            `il n'est pas forcément absent, et son absence n'est pas établie. ` +
+            `Toute lecture est interrompue (fail-closed).`
+        );
+    }
+
+    return (
+        `ROOSYNC_SHARED_PATH inaccessible${pathLabel} : le magasin partagé RooSync est absent du système de fichiers. ` +
+        `Toute lecture est interrompue (fail-closed) — vérifiez le montage du lecteur.` +
+        (pgReadFailed
+            // #4293: the store was already absent, and the PG half did not
+            // serve the read either — both halves are down, so the caller
+            // must not read the result as "nothing to show".
+            ? ` La lecture PostgreSQL de secours n'a rien rendu non plus : aucune des deux moitiés du magasin ne peut servir cette lecture.`
+            : '')
+    );
+}
+
+/**
  * #3459: Signals that the RooSync shared store cannot be reached, so every
  * read must fail-closed instead of rendering an indistinguishable "empty".
  *
@@ -123,19 +197,12 @@ export function isSharedPathAccessible(): boolean {
  */
 export class SharedStoreInaccessibleError extends Error {
     readonly code = 'ROOSYNC_STORE_INACCESSIBLE';
-    constructor(readonly storePath: string | null, readonly pgReadFailed = false) {
-        super(
-            `ROOSYNC_SHARED_PATH inaccessible` +
-            (storePath ? ` (${storePath})` : ' (variable non définie)') +
-            ` : le magasin partagé RooSync est absent du système de fichiers. ` +
-            `Toute lecture est interrompue (fail-closed) — vérifiez le montage du lecteur.` +
-            (pgReadFailed
-                // #4293: the store was already absent, and the PG half did not
-                // serve the read either — both halves are down, so the caller
-                // must not read the result as "nothing to show".
-                ? ` La lecture PostgreSQL de secours n'a rien rendu non plus : aucune des deux moitiés du magasin ne peut servir cette lecture.`
-                : '')
-        );
+    constructor(
+        readonly storePath: string | null,
+        readonly pgReadFailed = false,
+        readonly cause: SharedStoreInaccessibleCause = 'store-absent'
+    ) {
+        super(renderSharedStoreInaccessibleMessage(storePath, pgReadFailed, cause));
         this.name = 'SharedStoreInaccessibleError';
     }
 }
