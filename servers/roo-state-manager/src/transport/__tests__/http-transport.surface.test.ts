@@ -54,6 +54,9 @@ const MUTATING_ACTIONS = new Set([
     // roosync_claim écrit active-claims.json (claims/claim.tool.ts:52) —
     // revue ms#1578, défaut 1 : l'outil était classé pure-read EN BLOC.
     'claim', 'release', 'extend',
+    // revue ms#1578, bloquant 2 : `refresh` régénère des fichiers dans le
+    // store partagé, `export` écrit un fichier au chemin de l'appelant.
+    'refresh', 'export',
 ]);
 
 describe('#4149 F2 — complétude de la surface du gate HTTP', () => {
@@ -116,6 +119,20 @@ describe('#4149 F2 — complétude de la surface du gate HTTP', () => {
         expect(pureRead.has('roosync_messages')).toBe(false);
         expect(pureRead.has('roosync_dashboard')).toBe(false);
         expect(pureRead.has('roosync_claim')).toBe(false);
+        // ms#1578, bloquant 2 : `roosync_refresh_dashboard` EXÉCUTE un script
+        // PowerShell qui écrit dans le store partagé — ce n'est pas une lecture.
+        expect(pureRead.has('roosync_refresh_dashboard')).toBe(false);
+    });
+
+    it('les quatre « lectures » qui écrivent ne sont plus classées en lecture (ms#1578, bloquant 2)', () => {
+        const mixed = CLASSIFIED_TOOLS.mixed;
+        expect(mixed.roosync_dashboard.has('refresh')).toBe(false);
+        expect(mixed.roosync_baseline.has('export')).toBe(false);
+        expect(mixed.roosync_attachments.has('get')).toBe(false);
+        // Les lectures légitimes de ces trois outils restent des lectures.
+        expect(mixed.roosync_dashboard.has('read')).toBe(true);
+        expect(mixed.roosync_baseline.has('list_versions')).toBe(true);
+        expect(mixed.roosync_attachments.has('list')).toBe(true);
     });
 
     it('les actions mutantes nommées par la revue exigent une identité', () => {
@@ -140,6 +157,11 @@ describe('#4149 F2 — complétude de la surface du gate HTTP', () => {
             ['roosync_claim', { action: 'claim', issue: 4149 }],
             ['roosync_claim', { action: 'release', issue: 4149 }],
             ['roosync_claim', { action: 'extend', issue: 4149 }],
+            // ms#1578, bloquant 2 : quatre « lectures » qui écrivent.
+            ['roosync_refresh_dashboard', { baseline: 'myia-ai-01' }],
+            ['roosync_dashboard', { action: 'refresh' }],
+            ['roosync_baseline', { action: 'export' }],
+            ['roosync_attachments', { action: 'get', uuid: 'x', targetPath: 'C:/tmp/x' }],
         ];
         for (const [tool, args] of cases) {
             const body = { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: tool, arguments: args } };

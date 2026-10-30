@@ -646,8 +646,8 @@ Aucune pièce jointe pour ce message.
 
   result += `\n---\n\n`;
   result += `**💡 Actions disponibles :**\n`;
-  result += `- 📥 **Télécharger** : Utilisez \`roosync_get_attachment\` avec l'UUID et un \`targetPath\`\n`;
-  result += `- 🗑️ **Supprimer** : Utilisez \`roosync_delete_attachment\` avec l'UUID\n`;
+  result += `- 📥 **Télécharger** : Utilisez \`roosync_attachments\` avec \`action: "get"\`, l'UUID et un \`targetPath\`\n`;
+  result += `- 🗑️ **Supprimer** : Utilisez \`roosync_attachments\` avec \`action: "delete"\` et l'UUID\n`;
   result += `- 📋 **Voir détails message** : Utilisez \`roosync_messages\` avec \`action: "message"\` et l'ID du message`;
 
   return result;

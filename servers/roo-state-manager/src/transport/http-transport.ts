@@ -91,6 +91,22 @@ export interface HttpTransportHandle {
  * (`__tests__/http-transport.surface.test.ts`) échoue si un outil du
  * registre n'est pas classifié ici : aucune écriture ne peut rester
  * « non classifiée ».
+ *
+ * Revue ms#1578 (bloquant 1) — **batch JSON-RPC** : un corps TABLEAU est
+ * accepté par le SDK (il dispatche chaque élément) et n'a pas de `.method` :
+ * il était donc classé « lecture » et la porte d'identité était sautée.
+ * Un batch est désormais classé élément par élément ; le lot exige une
+ * identité dès qu'un seul élément l'exige.
+ *
+ * Revue ms#1578 (bloquant 2) — **lectures qui écrivent** : quatre entrées
+ * passaient sans identité tout en écrivant réellement :
+ * `roosync_refresh_dashboard` et `roosync_dashboard(action="refresh")`
+ * (script PowerShell → fichiers dans le store partagé),
+ * `roosync_baseline(action="export")` (`writeFileSync` au chemin fourni par
+ * l'appelant) et `roosync_attachments(action="get")` (copie du fichier côté
+ * hôte vers `targetPath`). Les quatre sont désormais classées en ÉCRITURE :
+ * le default-deny porte sur le comportement réel, pas sur l'intitulé de
+ * l'action.
  * ------------------------------------------------------------------ */
 
 /**
@@ -116,7 +132,10 @@ const READ_ONLY_TOOLS = new Set([
     'roosync_list_diffs',
     'roosync_inventory',
     'roosync_read',
-    'roosync_refresh_dashboard',
+    // `roosync_refresh_dashboard` n'est PLUS ici : l'outil exécute un script
+    // PowerShell qui ÉCRIT des fichiers dans le store partagé (`outputDir`
+    // surchargeable par l'appelant) — une lecture apparente qui mute
+    // (revue ms#1578, bloquant 2). Classé en écriture plus bas.
 ]);
 
 /**
@@ -127,14 +146,23 @@ const READ_ONLY_ACTIONS: Record<string, ReadonlySet<string>> = {
     roosync_search: new Set(['semantic', 'text', 'diagnose']),
     conversation_browser: new Set(['current', 'list', 'summarize', 'tree', 'view']),
     export_config: new Set(['get']),
-    roosync_dashboard: new Set(['read', 'read_overview', 'list', 'read_archive', 'refresh']),
+    // `refresh` n'est PLUS une lecture : `roosync_dashboard(action="refresh")`
+    // Delegates à `roosyncRefreshDashboard`, qui écrit dans le store partagé
+    // (revue ms#1578, bloquant 2).
+    roosync_dashboard: new Set(['read', 'read_overview', 'list', 'read_archive']),
     roosync_messages: new Set(['inbox', 'message', 'stats', 'attachments_list', 'attachments_get']),
     roosync_manage: new Set(['stats']),
-    roosync_attachments: new Set(['list', 'get']),
+    // `get` n'est PLUS une lecture : `roosync_attachments(action="get")` copie
+    // le fichier côté HÔTE du daemon vers `targetPath` (fourni par l'appelant)
+    // — une écriture déguisée en lecture (revue ms#1578, bloquant 2).
+    roosync_attachments: new Set(['list']),
     roosync_storage_management: new Set(['storage']),
     roosync_harmonization: new Set(['status', 'list']),
     roosync_diagnose: new Set(['analyze', 'health', 'env', 'debug', 'test']),
-    roosync_baseline: new Set(['list_versions', 'current_version', 'export']),
+    // `export` n'est PLUS une lecture : `roosync_baseline(action="export")`
+    // fait un `writeFileSync(outputPath)` au chemin fourni par l'appelant —
+    // écriture arbitraire sur l'hôte (revue ms#1578, bloquant 2).
+    roosync_baseline: new Set(['list_versions', 'current_version']),
     roosync_config: new Set(['collect']),
     roosync_indexing: new Set(['status', 'diagnose', 'tool_usage_stats', 'trend_report']),
     // claim/release/extend écrivent active-claims.json (claims/claim.tool.ts:52) :
@@ -162,6 +190,9 @@ const WRITE_ONLY_TOOLS = new Set([
     'roosync_update_dashboard',
     'roosync_sync_event',
     'roosync_mcp_management',
+    // Écrit des fichiers dans le store partagé via un script PowerShell
+    // (`outputDir` surchargeable par l'appelant) — cf. READ_ONLY_TOOLS.
+    'roosync_refresh_dashboard',
 ]);
 
 /**
@@ -194,6 +225,16 @@ export interface CallClassification {
     readOnly: boolean;
 }
 
+/**
+ * Limite CONNUE du garde (revue ms#1578, non bloquant) : seul le premier
+ * niveau d'`arguments` est inspecté. Une mutation imbriquée (un flag
+ * mutateur dans un sous-objet) échapperait au classifieur. Aucun outil de
+ * la surface actuelle n'imbrique de flag mutateur ; ce n'est PAS corrigé
+ * par une récursion, qui transformerait des arguments en forme de données
+ * (filtres, contenu) en faux positifs sur des lectures légitimes. Si un
+ * outil imbrique un jour un flag, il faudra un test dédié et une décision
+ * explicite — pas une récursion générique.
+ */
 function hasMutatingFlag(args: Record<string, unknown>): boolean {
     for (const key of Object.keys(args)) {
         if (MUTATING_ARG_FLAGS.has(key)) {
@@ -213,6 +254,29 @@ function hasMutatingFlag(args: Record<string, unknown>): boolean {
  * reste est écriture (default-deny).
  */
 export function classifyCall(body: unknown): CallClassification {
+    // Batch JSON-RPC (corps = TABLEAU). Le SDK MCP accepte les tableaux et les
+    // dispatche élément par élément (streamableHttp.js : `Array.isArray(rawMessage)`
+    // → `messages.map(...)`). Un tableau n'a pas de `.method` : l'ancien code le
+    // classait « lecture » et la porte d'identité était SAUTÉE — un batch
+    // porteur du bearer, sans `x-roosync-as`, faisait passer des écritures à
+    // l'identité du daemon (revue ms#1578, bloquant 1).
+    // Default-deny : chaque élément est classé, et le LOT ENTIER exige une
+    // identité dès qu'un seul élément l'exige. Un batch de lectures pures
+    // passe ; un batch qui contient une écriture est refusé en entier.
+    if (Array.isArray(body)) {
+        for (const element of body) {
+            const classification = classifySingleCall(element);
+            if (!classification.readOnly) {
+                return { tool: classification.tool, action: classification.action, readOnly: false };
+            }
+        }
+        return { tool: '', action: '', readOnly: true };
+    }
+    return classifySingleCall(body);
+}
+
+/** Classe UN appel (objet JSON-RPC) — voir `classifyCall` pour le batch. */
+function classifySingleCall(body: unknown): CallClassification {
     if (!body || typeof body !== 'object') return { tool: '', action: '', readOnly: true };
     const rpc = body as { method?: string; params?: { name?: string; arguments?: Record<string, unknown> } };
     // Ce n'est pas un appel d'outil (initialize, tools/list, notifications) :

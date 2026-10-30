@@ -33,7 +33,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { startHttpTransport, type HttpTransportHandle } from '../http-transport.js';
+import { startHttpTransport, requiresIdentity, type HttpTransportHandle } from '../http-transport.js';
 import { getLocalMachineId, getLocalWorkspaceId } from '../../utils/message-helpers.js';
 import { buildDashboardKey } from '../../tools/roosync/dashboard.js';
 
@@ -399,6 +399,99 @@ describe('#4149 F2 — transport HTTP du daemon RSM', () => {
     // dépôt — buildDashboardKey préserve la casse (workspace-CoursIA) — et
     // non plus une forme lowercasée.
     // ------------------------------------------------------------------ *
+    // -------------------------------------------------------------- *
+    // ms#1578, bloquant 1 : le corps TABLEAU (batch JSON-RPC).
+    // Le SDK MCP accepte les tableaux et dispatche chaque élément ;
+    // un tableau n'a pas de `.method`, il était donc classé « lecture »
+    // et la porte d'identité était SAUTÉE (les écritures passaient à
+    // l'identité du daemon).
+    // -------------------------------------------------------------- *
+    describe('batch JSON-RPC — default-deny (revue ms#1578, bloquant 1)', () => {
+        it('classe un batch de lectures pures comme lecture (niveau classification)', () => {
+            expect(
+                requiresIdentity([
+                    toolCall('roosync_get_status', {}, 2),
+                    toolCall('roosync_claim', { action: 'list' }, 3),
+                ])
+            ).toBe(false);
+        });
+
+        it('classe un batch contenant une écriture comme ÉCRITURE (niveau classification)', () => {
+            expect(
+                requiresIdentity([
+                    toolCall('roosync_get_status', {}, 2),
+                    toolCall('roosync_dashboard', { action: 'append', type: 'workspace' }, 3),
+                ])
+            ).toBe(true);
+        });
+
+        it('un batch de lectures pures passe sans identité et dispatche chaque élément', async () => {
+            const res = await post(
+                [toolCall('roosync_get_status', {}, 2), toolCall('roosync_claim', { action: 'list' }, 3)],
+                { as: null }
+            );
+            expect(res.status).toBe(200);
+            expect(dispatched.map((d) => d.name)).toEqual(['roosync_get_status', 'roosync_claim']);
+        });
+
+        it('un batch contenant une écriture est refusé 403 et ne dispatche RIEN', async () => {
+            const res = await post(
+                [toolCall('roosync_get_status', {}, 2), toolCall('roosync_dashboard', { action: 'append', type: 'workspace' }, 3)],
+                { as: null }
+            );
+            expect(res.status).toBe(403);
+            expect(res.json?.error).toBe('identity_required');
+            expect(dispatched).toHaveLength(0);
+        });
+
+        it('un batch dont un élément est un outil inconnu est refusé 403 (zero dispatch)', async () => {
+            const res = await post(
+                [toolCall('roosync_outil_qui_nexiste_pas', { action: 'write' }, 2)],
+                { as: null }
+            );
+            expect(res.status).toBe(403);
+            expect(res.json?.error).toBe('identity_required');
+            expect(dispatched).toHaveLength(0);
+        });
+    });
+
+    // -------------------------------------------------------------- *
+    // ms#1578, bloquant 2 : quatre « lectures » écrivent réellement.
+    // Le default-deny porte sur le COMPORTEMENT, pas sur l'intitulé
+    // de l'action (revue po-2028 du 30/10).
+    // -------------------------------------------------------------- *
+    describe('lectures qui écrivent réellement (revue ms#1578, bloquant 2)', () => {
+        const writingReads: Array<[string, Record<string, unknown>]> = [
+            // refresh-dashboard.ts : exécute un script PowerShell qui écrit
+            // dans le store partagé (`outputDir` surchargeable par l'appelant).
+            ['roosync_refresh_dashboard', { baseline: 'myia-ai-01' }],
+            // dashboard.ts:6278 → handleRefresh → même script.
+            ['roosync_dashboard', { action: 'refresh' }],
+            // baseline.ts : writeFileSync(outputPath) au chemin de l'appelant.
+            ['roosync_baseline', { action: 'export' }],
+            // AttachmentManager.getAttachment : copie le fichier côté HÔTE
+            // vers `targetPath`.
+            ['roosync_attachments', { action: 'get', uuid: 'x', targetPath: 'C:/tmp/x' }],
+        ];
+
+        for (const [tool, args] of writingReads) {
+            it(`refuse ${tool} sans identité et ne le dispatche pas`, async () => {
+                const res = await post(toolCall(tool, args), { as: null });
+                expect(res.status).toBe(403);
+                expect(res.json?.error).toBe('identity_required');
+                expect(dispatched).toHaveLength(0);
+            });
+        }
+
+        it('une identité trustée suffit pour ces quatre écritures (le garde est la porte)', async () => {
+            for (const [tool, args] of writingReads) {
+                const res = await post(toolCall(tool, args), { as: 'myia-web2:roo-extensions' });
+                expect(res.status).toBe(200);
+            }
+            expect(dispatched.map((d) => d.name)).toEqual(writingReads.map(([t]) => t));
+        });
+    });
+
     describe('identité canonique — même destination quelle que soit la graphie', () => {
         it('une entrée LANE épingle la graphie ENREGISTRÉE, même assertée en minuscules', async () => {
             // Env de confiance : "myia-web3:CoursIA" (graphie enregistrée).
