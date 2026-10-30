@@ -86,7 +86,7 @@ export interface HttpTransportHandle {
  * ajouté demain est refusé par défaut, pas accepté par omission.
  *
  * La surface ci-dessous est la surface RÉELLE du registre
- * (`src/tools/registry.ts`, 47 outils) — vérifiée sur les switchs
+ * (`src/tools/registry.ts`, 48 outils) — vérifiée sur les switchs
  * d'actions de chaque outil. Le test de complétude
  * (`__tests__/http-transport.surface.test.ts`) échoue si un outil du
  * registre n'est pas classifié ici : aucune écriture ne peut rester
@@ -193,6 +193,12 @@ const WRITE_ONLY_TOOLS = new Set([
     // Écrit des fichiers dans le store partagé via un script PowerShell
     // (`outputDir` surchargeable par l'appelant) — cf. READ_ONLY_TOOLS.
     'roosync_refresh_dashboard',
+    // Ajouté par ms#1591 (#4427 PR3) après l'ouverture de cette PR : `publish`
+    // écrit le canon, `apply` réécrit le `.env` d'un siège, et même les
+    // lectures lancent `docker` sur l'hôte du daemon. Classé en bloc en
+    // écriture (le plus strict) ; un découpage lecture/écriture se fera sur
+    // une relecture outil par outil, pas à la fusion.
+    'roosync_claudish_cascade',
 ]);
 
 /**
