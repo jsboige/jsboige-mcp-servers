@@ -134,6 +134,31 @@ describe('cascade payload #4427 — parseCascadeCanon (fixture dorée = canon li
         expect(errors.some(e => e.includes('DIRECTION') && e.includes('2 entrées'))).toBe(true);
     });
 
+    test('B5 — un RESET dont la longueur diffère du nombre de barreaux : rejet', () => {
+        // Le RESET est positionnel comme les autres blocs : une longueur qui ne
+        // correspond pas est une INTENTION PERDUE, pas un détail.
+        const ok = ['SONNET = a@b > c@d', 'RESET = >2026-08-25T22:28:00Z'].join('\n');
+        expect(parseCascadeCanon(ok).errors).toEqual([]);
+
+        const bad = ['SONNET = a@b > c@d', 'RESET = >2026-08-25T22:28:00Z>2026-09-01T00:00:00Z'].join('\n');
+        const { errors } = parseCascadeCanon(bad);
+        expect(errors.some(e => e.includes('RESET') && e.includes('3 entrées'))).toBe(true);
+    });
+
+    test('B8 — un reset ILLISIBLE est un verdict, pas un reset absent', () => {
+        const canon = ['SONNET = a@b', 'RESET = pas-une-date'].join('\n');
+        const { payload, errors } = parseCascadeCanon(canon);
+        expect(payload).toBeNull();
+        expect(errors.some(e => e.includes('reset illisible'))).toBe(true);
+    });
+
+    test('DIRECTION en ligne ET bloc DIRECTION : refus (la seconde écraserait la première)', () => {
+        const canon = ['SONNET = a@b (lateral>lateral)', 'DIRECTION = degraded>degraded'].join('\n');
+        const { payload, errors } = parseCascadeCanon(canon);
+        expect(payload).toBeNull();
+        expect(errors.some(e => e.includes('DIRECTION en ligne'))).toBe(true);
+    });
+
     test('bloc positionnel avant tout rôle : rejet', () => {
         const { errors } = parseCascadeCanon('LABEL = a>b');
         expect(errors.some(e => e.includes('avant toute déclaration'))).toBe(true);
@@ -290,6 +315,22 @@ describe('cascade payload #4427 — validateCascadePayload', () => {
         const p = goldenPayload();
         p.stepExclude = [{ stepTarget: 'role:sonnet', machines: ['myia-po-2027'] }];
         expect(validateCascadePayload(p).errors.some(e => e.includes('inconnu des rôles'))).toBe(false);
+    });
+
+    test('B11 — une exclusion qui couvre TOUS les barreaux d\'un rôle : refus (il serait désactivé)', () => {
+        // Exclure tous les barreaux d'un rôle pour une machine = DÉSACTIVER ce
+        // rôle sur cette machine, en silence. Un rôle à moitié exclu reste
+        // accepté — la règle ne vise que la perte TOTALE de capacité.
+        const p = goldenPayload();
+        p.stepExclude = [
+            { stepTarget: 'vllm-myia@swift-1.5-27b', machines: ['myia-po-2027'] },
+            { stepTarget: 'role:sonnet', machines: ['myia-po-2027'] },
+        ];
+        expect(validateCascadePayload(p).errors.some(e => e.includes('INTÉGRALEMENT'))).toBe(true);
+
+        const q = goldenPayload();
+        q.stepExclude = [{ stepTarget: 'vllm-myia@swift-1.5-27b', machines: ['myia-po-2027'] }];
+        expect(validateCascadePayload(q).errors.some(e => e.includes('INTÉGRALEMENT'))).toBe(false);
     });
 
     test('ACTIVE : la machine est validée, et le rôle doit exister', () => {
