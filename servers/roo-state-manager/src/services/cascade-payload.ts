@@ -212,6 +212,16 @@ export function parseCascadeCanon(text: string): { payload: CascadePayload | nul
                 errors.push(`rôle ${owner} : bloc ${key} déclaré deux fois (la seconde valeur écraserait la première)`);
                 continue;
             }
+            // DIRECTION « en ligne » (parenthèses de la déclaration de rôle) ET
+            // bloc DIRECTION : le bloc écrasait les directions en ligne SANS
+            // le dire. On refuse — la direction écrite par l'opérateur ne se
+            // perd pas en silence (le runtime, lui, écrase et continue).
+            if (key === 'DIRECTION' && draft.directions.length > 0) {
+                errors.push(
+                    `rôle ${owner} : DIRECTION en ligne (parenthèses) ET bloc DIRECTION — la seconde valeur écraserait la première`,
+                );
+                continue;
+            }
             draft[flag] = true;
             if (key === 'RESET') {
                 // `parseStepResets` : les cases VIDES comptent (position), on ne
@@ -311,6 +321,7 @@ export function parseCascadeCanon(text: string): { payload: CascadePayload | nul
             ['LABEL', draft.labels],
             ['DIRECTION', draft.directions],
             ['NOTE', draft.notes],
+            ['RESET', draft.resets],
         ] as const) {
             if (values.length === 0) continue;
             if (values.length !== draft.refs.length && values.length !== 1) {
@@ -329,9 +340,18 @@ export function parseCascadeCanon(text: string): { payload: CascadePayload | nul
                 : DEFAULT_DIRECTION;
             const note = draft.notes[i];
             const rawReset = draft.resets[i];
-            const resetAt = rawReset && !Number.isNaN(Date.parse(rawReset))
-                ? new Date(rawReset).toISOString()
-                : undefined;
+            // B8 : un reset ILLISIBLE est un VERDICT, pas un reset absent. Le
+            // runtime, lui, tolère et REMPLIT ; nous refusons, pour que la date
+            // que l'opérateur a écrite ne se perde pas en silence.
+            let resetAt: string | undefined;
+            if (rawReset !== undefined && rawReset !== '') {
+                const parsedReset = Date.parse(rawReset);
+                if (Number.isNaN(parsedReset)) {
+                    errors.push(`rôle ${name} : reset illisible « ${rawReset} » (step ${i})`);
+                } else {
+                    resetAt = new Date(parsedReset).toISOString();
+                }
+            }
             return {
                 ref,
                 ...(draft.classes[i] ? { class: draft.classes[i] as 'own' } : {}),
@@ -625,6 +645,51 @@ export function validateCascadePayload(payload: unknown): CascadeValidationResul
                     if (typeof m !== 'string' || !MACHINE_RE.test(m)) {
                         errors.push(`STEP_EXCLUDE[${i}] : machine « ${String(m)} » invalide`);
                     }
+                }
+            }
+        }
+
+        // B11 : une exclusion qui couvre TOUS les barreaux d'un rôle pour une
+        // machine revient à DÉSACTIVER ce rôle — une perte de capacité
+        // silencieuse, qui se lirait « le rôle est là » alors qu'il ne l'est
+        // plus. On refuse.
+        const roleSteps = new Map<CascadeRoleName, string[]>();
+        for (const name of CASCADE_ROLE_NAMES) {
+            const chain = roles[name] as { steps?: Array<{ ref?: string }> } | undefined;
+            const refs: string[] = [];
+            for (const step of chain?.steps ?? []) {
+                if (typeof step?.ref === 'string') refs.push(step.ref.toLowerCase());
+            }
+            if (refs.length > 0) roleSteps.set(name, [...new Set(refs)]);
+        }
+        const excludedFor = new Map<string, Set<string>>();
+        for (const entryRaw of stepExcludeRaw) {
+            if (typeof entryRaw !== 'object' || entryRaw === null || Array.isArray(entryRaw)) continue;
+            const entry = entryRaw as Record<string, unknown>;
+            const target = typeof entry.stepTarget === 'string' ? entry.stepTarget.trim().toLowerCase() : '';
+            if (!target) continue;
+            const machines = Array.isArray(entry.machines)
+                ? entry.machines.filter((m): m is string => typeof m === 'string')
+                : [];
+            for (const [role, refs] of roleSteps) {
+                if (!refs.includes(target)) continue;
+                for (const machine of machines) {
+                    const key = `${role}|${machine}`;
+                    const set = excludedFor.get(key) ?? new Set<string>();
+                    set.add(target);
+                    excludedFor.set(key, set);
+                }
+            }
+        }
+        for (const [role, refs] of roleSteps) {
+            for (const [key, set] of excludedFor) {
+                const separator = key.indexOf('|');
+                if (key.slice(0, separator) !== role) continue;
+                if (set.size >= refs.length) {
+                    errors.push(
+                        `STEP_EXCLUDE : le rôle ${role} est exclu INTÉGRALEMENT sur ${key.slice(separator + 1)} — il serait désactivé`,
+                    );
+                    break;
                 }
             }
         }
