@@ -14,6 +14,7 @@ import { RooSyncServiceError } from '../../types/errors.js';
 import type { RooSyncDashboard } from '../../utils/roosync-parsers.js';
 import { createLogger } from '../../utils/logger.js';
 import { ensureStoreSubdir } from '../../utils/shared-state-path.js';
+import { readMachineRegistryFile } from '../../utils/machine-registry-file.js';
 // #4131 Phase D — registre PG-premier (roosync_store_meta, migrations/012)
 import {
   MACHINE_REGISTRY_META_KEY,
@@ -434,27 +435,58 @@ export class BaselineManager {
     // n'existe pas (contrat migration-012 : la DONNÉE décide, pas un drapeau).
     let fileState = 'absent';
     try {
-      if (existsSync(this.machineRegistry.registryPath)) {
-        // #2267: async read replaces readFileSync — GDrive FUSE stalls no longer block event loop
-        const registryContent = await fs.readFile(this.machineRegistry.registryPath, 'utf-8');
-        const registryData = JSON.parse(registryContent);
-
+      // #2570 (récidive) : le registre est écrit par TOUS les sièges — DriveFS le
+      // forke en `.machine-registry (N).json` et SUPPRIME le nom canonique. Lire
+      // le seul nom canonique faisait passer le registre pour ABSENT (30/10 :
+      // canonique absent, seul `(1).json` présent, 3 machines) ⇒ référence de
+      // flotte vide. La lecture est l'UNION des copies (registre add-only).
+      const registryRead = await readMachineRegistryFile(this.config.sharedPath);
+      if (registryRead.canonicalUnreadable) {
+        // Le canonique existe mais n'a pas pu être lu : l'écrire maintenant
+        // remplacerait une vérité qu'on n'a pas su lire (ms#1563). Les jumeaux,
+        // eux, restent une source lisible — on les charge, mais on n'écrase pas.
+        fileState = 'lecture en échec (canonique illisible)';
+        this.logger.warn(
+          '[registry] le registre canonique existe mais est ILLISIBLE — il ne sera pas écrasé',
+          { unreadable: registryRead.unreadableSources }
+        );
+      }
+      if (registryRead.data) {
         // Reconstruire la Map depuis les données JSON (normaliser les clés en lowercase)
         this.machineRegistry.machines = new Map(
-          Object.entries(registryData.machines || {}).map(
+          Object.entries(registryRead.data.machines || {}).map(
             ([key, value]) => [key.toLowerCase(), value as any]
           )
         );
 
         this.logger.info(
-          `[registry] chargé depuis le fichier GDrive: ${this.machineRegistry.machines.size} machines`
+          `[registry] chargé depuis le fichier GDrive: ${this.machineRegistry.machines.size} machines` +
+            (registryRead.sources.length > 1
+              ? ` (union de ${registryRead.sources.length} copies DriveFS)`
+              : '')
         );
+        if (registryRead.unreadableSources.length > 0) {
+          this.logger.warn(
+            `[registry] ${registryRead.unreadableSources.length} copie(s) de conflit illisible(s) ignorée(s)`,
+            { unreadable: registryRead.unreadableSources }
+          );
+        }
         fileState = `lu (${this.machineRegistry.machines.size} machines)`;
-        this.registryPersistence = 'allowed';
+        // Une source existait ET était illisible : la persistance est refusée
+        // pour cette session (ms#1563) — sauf si le canonique lui-même est
+        // lisible, auquel cas il ne serait pas écrasé par une lecture partielle.
+        this.registryPersistence = registryRead.canonicalUnreadable
+          ? 'refused-blind'
+          : 'allowed';
 
         // Seed : première lecture d'un registre qui n'existe pas encore en PG
         // → la donnée migre elle-même, une fois, sans script (#4131 Phase D).
-        if (storeMetaUrl() && pgState === 'ligne absente' && this.machineRegistry.machines.size > 0) {
+        if (
+          storeMetaUrl() &&
+          pgState === 'ligne absente' &&
+          this.machineRegistry.machines.size > 0 &&
+          this.registryPersistence === 'allowed'
+        ) {
           try {
             await upsertStoreMetaValue(
               MACHINE_REGISTRY_META_KEY,
@@ -474,6 +506,10 @@ export class BaselineManager {
           }
         }
         return;
+      }
+      if (registryRead.present) {
+        // Des copies existent, aucune n'a pu être lue.
+        fileState = 'lecture en échec';
       }
     } catch (error) {
       fileState = 'lecture en échec';
