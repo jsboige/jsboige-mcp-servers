@@ -659,6 +659,16 @@ export function registerCallToolHandler(
               }
               break;
           }
+          case 'roosync_claudish_cascade': {
+              try {
+                  const m = await import('./roosync/claudish-cascade.js');
+                  const cascadeResult = await m.roosyncClaudishCascade(args);
+                  result = { content: [{ type: 'text', text: JSON.stringify(cascadeResult, null, 2) }] };
+              } catch (error) {
+                  result = { content: [{ type: 'text', text: `Error: ${(error as Error).message}` }], isError: true };
+              }
+              break;
+          }
           case 'roosync_inventory': {
               try {
                   const m = await import('./roosync/inventory.js');
