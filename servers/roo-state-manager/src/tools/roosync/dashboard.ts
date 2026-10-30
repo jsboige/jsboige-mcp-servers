@@ -5479,16 +5479,21 @@ export type StatusGuardVerdict =
  * Would you like me to proceed on that basis…? » — 1,5 Ko, sous le plafond, donc
  * accepté ET écrit comme statut. Le statut réel, non archivé, est perdu.
  *
- * Ancres en DÉBUT DE LIGNE uniquement : un statut légitime qui CITE un refus en
- * milieu de ligne (« le condenseur a écrit « I cannot… » ») ne déclenche pas.
+ * Les deux règles ne lisent que la PREMIÈRE ligne non vide : un statut légitime qui
+ * CITE un refus (« le condenseur a écrit « I cannot… » »), ou qui restitue une
+ * question ouverte au user en cours de texte (forme mandatée par la flotte), ne
+ * déclenche pas. Testée sur tout le document, la question renvoyée rejetait 4/4
+ * statuts légitimes de cette forme (mesure po-2024, review ms#1589 30/10 20:16Z) ;
+ * la forme « contenu réel puis question renvoyée » n'est donc plus interceptée —
+ * elle est indiscernable d'un statut qui restitue une question.
  */
 export type ModelOutputArtifact = 'empty' | 'error-artifact' | 'refusal';
 
 // Ouverture de refus, testée sur la première ligne non vide (marqueurs markdown ôtés).
 // (Pas de `\b` après « é » : hors mode unicode, « é » n'est pas un caractère de mot.)
 const REFUSAL_OPENING = /^(?:i(?:\s+(?:cannot|can['’]t|can\s+not|am\s+unable|am\s+sorry|won['’]t)|['’]m\s+(?:unable|sorry))\b|sorry\b|unfortunately,?\s+i\b|as\s+an\s+ai\b|je\s+ne\s+peux\s+pas\b|je\s+ne\s+suis\s+pas\s+en\s+mesure\b|(?:je\s+suis\s+)?d[ée]sol[ée]|malheureusement,?\s+je\b)/i;
-// Question renvoyée au demandeur, en tête de n'importe quelle ligne.
-const ASK_BACK_LINE = /^[ \t]*(?:[-*>#_][ \t]*)*(?:would\s+you\s+like\s+me\s+to|do\s+you\s+want\s+me\s+to|shall\s+i\b|should\s+i\s+proceed|voulez-vous\s+que\s+je|souhaitez-vous\s+que\s+je|dois-je\s+(?:continuer|proc[ée]der))/im;
+// Question renvoyée au demandeur, testée comme l'ouverture : première ligne seulement.
+const ASK_BACK_OPENING = /^(?:would\s+you\s+like\s+me\s+to|do\s+you\s+want\s+me\s+to|shall\s+i\b|should\s+i\s+proceed|voulez-vous\s+que\s+je|souhaitez-vous\s+que\s+je|dois-je\s+(?:continuer|proc[ée]der))/i;
 
 export function detectModelOutputArtifact(candidate: string | null | undefined): ModelOutputArtifact | null {
   const trimmed = (candidate ?? '').trim();
@@ -5499,7 +5504,7 @@ export function detectModelOutputArtifact(candidate: string | null | undefined):
   // légitime (liste à puces) ne doit pas déclencher (anti-faux-positifs).
   if (/^\[?error:/i.test(trimmed)) return 'error-artifact';
   const firstLine = trimmed.split('\n', 1)[0].replace(/^[#>*_\s]+/, '');
-  if (REFUSAL_OPENING.test(firstLine) || ASK_BACK_LINE.test(trimmed)) return 'refusal';
+  if (REFUSAL_OPENING.test(firstLine) || ASK_BACK_OPENING.test(firstLine)) return 'refusal';
   return null;
 }
 

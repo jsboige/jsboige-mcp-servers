@@ -178,11 +178,12 @@ describe('isModelFailureStatus (#3962 — prédicat)', () => {
     }
   });
 
-  it('13. question renvoyée au demandeur en tête de ligne, même après un vrai contenu → refusal', () => {
+  it('13. question renvoyée au demandeur en PREMIÈRE ligne, marqueurs markdown tolérés → refusal', () => {
     for (const cand of [
-      '## Statut\n- point 1\n\nVoulez-vous que je poursuive sur cette base ?',
-      '## Statut\n- point 1\n> Souhaitez-vous que je fusionne les sections ?',
-      '## Statut\n- point 1\nShall I keep the superseded claims?',
+      'Voulez-vous que je poursuive sur cette base ?\n\n- point 1',
+      '> Souhaitez-vous que je fusionne les sections ?',
+      'Would you like me to condense the truncated text as is?',
+      '**Shall I** keep the superseded claims?',
     ]) {
       const v = isModelFailureStatus(cand, '');
       expect(v.failed, cand).toBe(true);
@@ -200,6 +201,22 @@ describe('isModelFailureStatus (#3962 — prédicat)', () => {
     ]) {
       const v = isModelFailureStatus(legit, 'x'.repeat(300));
       expect(v.failed, legit).toBe(false);
+    }
+  });
+
+  it('15. anti-faux-positifs : un statut qui restitue une question ouverte en DÉBUT de ligne, après le titre, passe', () => {
+    // La forme que la flotte écrit (mesure po-2024 sur ms#1589 : 4/4 rejetés quand la
+    // question renvoyée était testée sur tout le document). Sans statut précédent, pour
+    // que seule la règle de refus soit exercée, pas la rétention.
+    for (const legit of [
+      "# Statut — flotte\n- Voulez-vous que je produise l'essai à blanc avant tout geste ?",
+      '# Statut\n- Should I proceed with the cleanup?',
+      '## Statut\n### Questions\n  Voulez-vous que je relance le hub ?',
+      '## Statut\n- 3 PR ouvertes\n\nSouhaitez-vous que je fusionne les deux registres ?',
+      '## Statut\n- point 1\nShall I keep the superseded claims?',
+    ]) {
+      expect(detectModelOutputArtifact(legit), legit).toBeNull();
+      expect(isModelFailureStatus(legit, '').failed, legit).toBe(false);
     }
   });
 });
