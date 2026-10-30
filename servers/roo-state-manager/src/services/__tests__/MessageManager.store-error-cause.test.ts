@@ -151,6 +151,7 @@ describe('fail-closed error — the cause names the failing half (#4293 follow-u
         const typed = error as SharedStoreInaccessibleError;
         expect(typed.cause).toBe('pg-unavailable');
         expect(typed.message).toContain('PostgreSQL');
+        expect(typed.message).toContain('(cause=pg-unavailable)');
         expect(typed.message).not.toContain('absent du système de fichiers');
         expect(typed.message).not.toContain('vérifiez le montage du lecteur');
     });
