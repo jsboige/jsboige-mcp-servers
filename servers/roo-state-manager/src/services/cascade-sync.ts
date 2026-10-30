@@ -109,6 +109,29 @@ export interface CascadeSourceInput {
     now?: string;
 }
 
+/**
+ * Entrée de l'évaluation PAR PAYLOAD : même politique que la lecture textuelle,
+ * pour un canon déjà constitué (magasin partagé, capture enregistrée).
+ */
+export interface AssessCascadePayloadInput {
+    /** Étiquette de la source (ex. `canon v3`). */
+    source: string;
+    /** Payload brut — VALIDÉ ici, jamais fait confiance. */
+    payload: unknown;
+    /** ISO 8601 — quand la lecture a eu lieu (date de publication du canon). */
+    readAt: string;
+    /** ISO 8601 — le `VERIFIED` du canon lu (s'il y en a un). */
+    verifiedAt?: string | null;
+    /** instanceId du hub lu — non-secret, ancre la lecture. */
+    instanceId?: string;
+    /** Politique de fraîcheur (défaut 24 h). */
+    maxAgeMs?: number;
+    /** Horloge injectable (tests). */
+    now?: string;
+    /** Texte d'origine quand il existe : scelle `provenance.contentHash`. */
+    text?: string | null;
+}
+
 export interface CascadeSourceSnapshot {
     covered: boolean;
     coverage: CascadeCoverage;
@@ -258,6 +281,90 @@ function ageMsBetween(nowIso: string, thenIso: string | null | undefined): numbe
 }
 
 /**
+ * Évalue un PAYLOAD de cascade déjà constitué (canon publié, capture datée).
+ *
+ * Même politique que `assessCascadeSource` — fraîcheur fail-closed, skew
+ * d'horloge borné, valeurs rendues par `renderCascadeEnv` — mais sans passer par
+ * le parseur de texte : un canon stocké est un payload, pas un fragment à
+ * re-parser. Les deux entrées partagent CE corps, pour qu'il n'existe jamais
+ * deux politiques de fraîcheur qui dérivent l'une de l'autre.
+ */
+export function assessCascadePayload(input: AssessCascadePayloadInput): CascadeSourceSnapshot {
+    const now = input.now ?? new Date().toISOString();
+    const maxAgeMs = input.maxAgeMs ?? DEFAULT_CASCADE_MAX_AGE_MS;
+    const provenance = {
+        source: input.source,
+        readAt: input.readAt,
+        verifiedAt: input.verifiedAt ?? null,
+        instanceId: input.instanceId,
+        contentHash: input.text ? sha256(input.text) : null,
+        ageMs: null as number | null,
+    };
+
+    const fail = (coverage: CascadeCoverage, detail: string): CascadeSourceSnapshot => ({
+        covered: false,
+        coverage,
+        detail,
+        payload: null,
+        canonicalHash: null,
+        env: {},
+        provenance,
+    });
+
+    const validation = validateCascadePayload(input.payload);
+    if (!validation.ok) {
+        return fail('invalid', `canon invalide : ${validation.errors.join(' ; ')}`);
+    }
+    const payload = input.payload as CascadePayload;
+    const canonicalHash = validation.canonicalHash ?? computeCanonicalHash(payload);
+
+    // La fraîcheur est un CONTRAT fail-closed : une lecture dont l'horodatage
+    // est illisible n'est PAS « fraîche par défaut » — elle est INVALIDE, donc
+    // non harmonisée. Un `verifiedAt` non parsable, un horodatage absent, ou une
+    // date dans le futur au-delà de la tolérance d'horloge rendent tous la
+    // lecture NON VÉRIFIABLE : la signaler vaut mieux que l'harmoniser.
+    const stampIso: string | null | undefined = input.verifiedAt ?? input.readAt;
+    const ageMs = ageMsBetween(now, stampIso);
+    provenance.ageMs = ageMs;
+
+    if (ageMs === null) {
+        return fail(
+            'invalid',
+            `horodatage illisible (${stampIso ?? 'absent'}) — la lecture n'est pas datable, donc pas vérifiable`,
+        );
+    }
+
+    if (ageMs < -CASCADE_CLOCK_SKEW_TOLERANCE_MS) {
+        return fail(
+            'invalid',
+            `lecture datée dans le futur (${stampIso}, ${Math.round(-ageMs / 1000)} s d'avance) — horloge non fiable`,
+        );
+    }
+
+    if (ageMs > maxAgeMs) {
+        return {
+            covered: false,
+            coverage: 'stale',
+            detail: `lecture périmée (${Math.round(ageMs / 3600000)} h > ${Math.round(maxAgeMs / 3600000)} h max) pour la source « ${input.source} »`,
+            payload,
+            canonicalHash,
+            env: {},
+            provenance,
+        };
+    }
+
+    return {
+        covered: true,
+        coverage: 'ok',
+        detail: `lecture fraîche de la source « ${input.source} »`,
+        payload,
+        canonicalHash,
+        env: renderCascadeEnv(payload),
+        provenance,
+    };
+}
+
+/**
  * Évalue une lecture de cascade et rend les valeurs ATTENDUES.
  *
  * Un snapshot `missing` / `empty` / `stale` / `invalid` n'est PAS harmonisé :
@@ -311,58 +418,16 @@ export function assessCascadeSource(input: CascadeSourceInput): CascadeSourceSna
         },
     };
 
-    const validation = validateCascadePayload(payload);
-    if (!validation.ok) {
-        return fail('invalid', `canon invalide : ${validation.errors.join(' ; ')}`);
-    }
-
-    const canonicalHash = validation.canonicalHash ?? computeCanonicalHash(payload);
-    provenance.contentHash = sha256(input.text);
-
-    // La fraîcheur est un CONTRAT fail-closed : une lecture dont l'horodatage
-    // est illisible n'est PAS « fraîche par défaut » — elle est INVALIDE, donc
-    // non harmonisée. Un `verifiedAt` non parsable, un horodatage absent, ou une
-    // date dans le futur au-delà de la tolérance d'horloge rendent tous la
-    // lecture NON VÉRIFIABLE : la signaler vaut mieux que l'harmoniser.
-    const stampIso: string | null | undefined = input.verifiedAt ?? input.readAt;
-    const ageMs = ageMsBetween(now, stampIso);
-    provenance.ageMs = ageMs;
-
-    if (ageMs === null) {
-        return fail(
-            'invalid',
-            `horodatage illisible (${stampIso ?? 'absent'}) — la lecture n'est pas datable, donc pas vérifiable`,
-        );
-    }
-
-    if (ageMs < -CASCADE_CLOCK_SKEW_TOLERANCE_MS) {
-        return fail(
-            'invalid',
-            `lecture datée dans le futur (${stampIso}, ${Math.round(-ageMs / 1000)} s d'avance) — horloge non fiable`,
-        );
-    }
-
-    if (ageMs > maxAgeMs) {
-        return {
-            covered: false,
-            coverage: 'stale',
-            detail: `lecture périmée (${Math.round(ageMs / 3600000)} h > ${Math.round(maxAgeMs / 3600000)} h max) pour la source « ${input.source} »`,
-            payload,
-            canonicalHash,
-            env: {},
-            provenance,
-        };
-    }
-
-    return {
-        covered: true,
-        coverage: 'ok',
-        detail: `lecture fraîche de la source « ${input.source} »`,
+    return assessCascadePayload({
+        source: input.source,
         payload,
-        canonicalHash,
-        env: renderCascadeEnv(payload),
-        provenance,
-    };
+        readAt: input.readAt,
+        verifiedAt: input.verifiedAt ?? null,
+        instanceId: input.instanceId,
+        maxAgeMs,
+        now,
+        text: input.text,
+    });
 }
 
 /**
