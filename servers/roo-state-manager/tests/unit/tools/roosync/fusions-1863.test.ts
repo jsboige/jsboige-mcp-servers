@@ -226,7 +226,7 @@ describe('#1935 Fusion E: get_status → inventory(type: "status")', () => {
 // Cross-cutting: Definition count and deprecation removal verification
 // ============================================================
 describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
-  it('allToolDefinitions should contain 17 tools (#512 arbitrage A: lifecycle re-câblé comme action de diagnose)', () => {
+  it('allToolDefinitions should contain 18 tools (#512 arbitrage A: lifecycle re-câblé comme action de diagnose)', () => {
     // Before: 32 tools → #1922 Pass 4 removed 3 deprecated → 29
     // #1841 removed 6 low-usage → 23. allToolDefinitions baseline = 24.
     // Cluster D (#1935) fused analyze_roosync_problems → roosync_diagnose: 24 → 23
@@ -239,8 +239,10 @@ describe('#1863 Cross-cutting: tool count and deprecation markers', () => {
     // #3391 added claudish_traffic (proxy traces reading): 15 → 16
     // #3545 added roosync_harmonization (fleet harmonization campaign: canon, dispatch,
     //   live-read confirmations, idempotent reminders, drift re-detection): 16 → 17
+    // #4427 added roosync_claudish_cascade (cascade canon store, live container read,
+    //   seat .env rewrite): 17 → 18
     // Backward compat redirect handlers in registry.ts are preserved
-    expect(allToolDefinitions.length).toBe(17);
+    expect(allToolDefinitions.length).toBe(18);
   });
 
   it('deprecated tools should NOT be in allToolDefinitions', () => {
