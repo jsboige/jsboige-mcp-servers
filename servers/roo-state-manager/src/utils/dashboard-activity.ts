@@ -11,6 +11,10 @@
  * Message format: ### [2026-05-03T20:08:15.436Z] myia-po-2024|roo-extensions
  *
  * @module utils/dashboard-activity
+ * @version 3.5.0 (#4344 residual: STALE classification by code — a concluded
+ *               machine older than the STALE threshold pays ZERO archive
+ *               reads on later calls (verdict cache, 24h re-verify), and a
+ *               platform-suffixed ghost (-win32-x64) is attached to its host)
  * @version 3.4.0 (#4344 residual: per-machine attempt ceilings — one dead
  *               machine no longer taxes every health call, a no-live-line
  *               machine is concluded fast instead of paying the whole budget)
@@ -72,6 +76,67 @@ export const MAX_ARCHIVE_READS_PER_CALL = 200;
  */
 export const MAX_ARCHIVE_READS_PER_MACHINE = 50;
 export const MAX_ARCHIVE_READS_NO_FLOOR = 25;
+
+/**
+ * #4344 residual (arbitration ai-01 28/10, "STALE par le code"): a machine
+ * whose CONCLUDED best lastSeen (live floor ∪ archives, after a bounded walk)
+ * is older than this threshold is STALE — later calls pay ZERO archive reads
+ * for it instead of re-burning its per-machine budget on every health call.
+ *
+ * The threshold is deliberately far above the #4344 founding case (a live
+ * line frozen for 4-8 days while the machine kept posting, resolved by the
+ * archive walk): staleness NEVER gates the first walk, only the verdict cache
+ * does, and a machine coming back live refreshes its floor and clears the
+ * verdict on the same call. 7 days = a machine absent from live AND archives
+ * for a week while every fleet cadence is ≤12h.
+ */
+export const STALE_MACHINE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * #4344 residual: a STALE verdict is re-verified at most this often — the
+ * cache must not freeze forever (an eventually-consistent G: mirror could
+ * surface newer truth), but re-verifying a dead machine on every per-request
+ * call is exactly the tax this verdict exists to remove.
+ */
+export const STALE_VERDICT_REVERIFY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * #4344 residual: platform-suffixed roster ghosts (e.g. myia-po-2025-win32-x64,
+ * from a VS Code extension build registering a qualified machine id). The
+ * registry is shared state and is NOT edited here (arbitration) — the ghost
+ * is attached to its host by code: its activity is folded into the host's and
+ * it inherits the host's lastSeen.
+ */
+const PLATFORM_SUFFIX_RE = /-(win32|linux|darwin)-(x64|arm64)$/;
+
+export function machineBaseId(machineId: string): string {
+	return machineId.toLowerCase().replace(PLATFORM_SUFFIX_RE, '');
+}
+
+/**
+ * #4344 residual: the third classification bucket. Online = activity within
+ * the 8h window; STALE = a KNOWN (non-null) lastSeen older than
+ * STALE_MACHINE_MS; unknown = everything between (including the honest #3160
+ * null — absence of signal, never a confirmed outage).
+ */
+export function isStaleMachine(lastSeen: string | null | undefined): boolean {
+	if (!lastSeen) return false;
+	const ms = new Date(lastSeen).getTime();
+	if (isNaN(ms)) return false;
+	return Date.now() - ms >= STALE_MACHINE_MS;
+}
+
+/**
+ * #4344 residual: per-process verdict cache, machineId (lowercase) -> the
+ * concluded best of a past bounded walk. In-memory ONLY: no G: write, no
+ * registry edit (arbitration). `concludedAt` bounds how long a verdict skips
+ * reads; `best` older than STALE_MACHINE_MS is what makes it a STALE skip.
+ */
+const machineVerdicts = new Map<string, { best: string; concludedAt: number }>();
+
+export function clearMachineVerdictsForTests(): void {
+	machineVerdicts.clear();
+}
 
 /**
  * Default activity threshold (8 hours).
@@ -287,6 +352,16 @@ export function crossCheckWithDashboard(
  * widening (any registry machine, not just missing ones) and is also left to
  * the RX123 cap: the parser cannot tell a quoted header from a real one.
  *
+ * #4344 residual "STALE par le code" (arbitration ai-01 28/10): a machine
+ * whose CONCLUDED best (a past bounded walk's result, in the per-process
+ * verdict cache) is older than STALE_MACHINE_MS pays ZERO reads here, until
+ * the verdict is STALE_VERDICT_REVERIFY_MS old. The skip never triggers on a
+ * stale live floor ALONE — only a concluded verdict can skip, so the founding
+ * frozen-floor case (fresh truth in archives) keeps its walk. Platform-suffixed
+ * ghosts (-win32-x64) whose host is in the same request are attached to it:
+ * folded floor, headers credited to the host, host's result inherited, and
+ * they never walk on their own.
+ *
  * @param dashboardsDir - The dashboards/ directory (archive/ lives inside it).
  * @param machineIds - Machine IDs to look for (case-insensitive).
  * @param floors - Optional machineId (lowercase) -> live timestamp already
@@ -299,14 +374,74 @@ export function lookupMachineActivityInArchives(
 	machineIds: string[],
 	floors?: ReadonlyMap<string, string>
 ): Map<string, string> {
-	const wanted = new Set(machineIds.map(m => m.toLowerCase()));
+	const requested = machineIds.map(m => m.toLowerCase());
+	const wanted = new Set(requested);
 	const found = new Map<string, string>();
 	if (wanted.size === 0) return found;
+
+	const now = Date.now();
+	const walkFloors = new Map<string, string>(floors ?? []);
+
+	// #4344 residual (arbitration 28/10): platform-suffixed ghosts are
+	// ATTACHED TO THEIR HOST when the host is part of the same request — the
+	// ghost never walks on its own (it was paying 25 attempts per call on the
+	// prod mirror for a 52-day-old lastSeen). Its floor folds into the host's,
+	// its archived headers credit the host, and it inherits the host's result.
+	// A ghost whose host is NOT requested keeps walking alone (the host may
+	// simply be outside this request's scope) and is then subject to the same
+	// STALE verdict as any machine.
+	const ghostToHost = new Map<string, string>();
+	for (const id of [...wanted]) {
+		const base = machineBaseId(id);
+		if (base !== id && wanted.has(base)) {
+			ghostToHost.set(id, base);
+			wanted.delete(id);
+			const ghostFloor = walkFloors.get(id);
+			const hostFloor = walkFloors.get(base) ?? '';
+			if (ghostFloor && ghostFloor > hostFloor) walkFloors.set(base, ghostFloor);
+		}
+	}
+
+	// #4344 residual ("STALE par le code"): a machine whose CONCLUDED best
+	// (past walk) is older than STALE_MACHINE_MS pays ZERO reads now, provided
+	// the verdict is younger than STALE_VERDICT_REVERIFY_MS. Never skip on the
+	// stale floor ALONE — the founding case of this issue was a frozen floor
+	// with fresh truth sitting in the archives; only a concluded verdict can
+	// skip, and a machine back live refreshes its floor past the threshold on
+	// this very call (no skip, normal walk).
+	const skipped = new Set<string>();
+	for (const id of [...wanted]) {
+		const verdict = machineVerdicts.get(id);
+		if (!verdict) continue;
+		const floor = walkFloors.get(id) ?? '';
+		const best = verdict.best > floor ? verdict.best : floor;
+		if (!best) continue;
+		const age = now - new Date(best).getTime();
+		if (age >= STALE_MACHINE_MS && now - verdict.concludedAt < STALE_VERDICT_REVERIFY_MS) {
+			found.set(id, best);
+			wanted.delete(id);
+			// #1569: a skipped machine was NOT walked on this call. It must not
+			// renew the very window that allows the skip, or the walk never
+			// returns — `concludedAt` keeps the stamp of the walk that produced
+			// this verdict (see recordVerdicts).
+			skipped.add(id);
+			logger.debug(
+				`Archive lookup skipped ${id} (STALE verdict ${best}, re-verified in ${Math.round((STALE_VERDICT_REVERIFY_MS - (now - verdict.concludedAt)) / 60000)} min) - zero reads (#4344)`
+			);
+		}
+	}
+	if (wanted.size === 0) {
+		emitGhostResults(ghostToHost, walkFloors, found);
+		recordVerdicts(requested, ghostToHost, walkFloors, found, now, skipped);
+		return found;
+	}
 
 	let archiveFiles: string[];
 	try {
 		archiveFiles = readdirSync(join(dashboardsDir, 'archive')).filter(f => f.endsWith('.md'));
 	} catch {
+		emitGhostResults(ghostToHost, walkFloors, found);
+		recordVerdicts(requested, ghostToHost, walkFloors, found, now, skipped);
 		return found; // no archive dir yet — nothing was ever condensed
 	}
 
@@ -342,7 +477,7 @@ export function lookupMachineActivityInArchives(
 	// keeps its bounded best; the walk continues for the others.
 	const attemptsPerMachine = new Map<string, number>();
 	const machineBudget = (machineId: string): number =>
-		floors?.get(machineId) ? MAX_ARCHIVE_READS_PER_MACHINE : MAX_ARCHIVE_READS_NO_FLOOR;
+		walkFloors.get(machineId) ? MAX_ARCHIVE_READS_PER_MACHINE : MAX_ARCHIVE_READS_NO_FLOOR;
 
 	for (const file of archiveFiles) {
 		if (wanted.size === 0) break;
@@ -353,7 +488,7 @@ export function lookupMachineActivityInArchives(
 		const fileIso = isoOf(file);
 		if (fileIso) {
 			for (const machineId of [...wanted]) {
-				const floor = floors?.get(machineId) ?? '';
+				const floor = walkFloors.get(machineId) ?? '';
 				const best = (found.get(machineId) ?? '') > floor ? found.get(machineId)! : floor;
 				if (best && best >= fileIso) wanted.delete(machineId);
 			}
@@ -398,11 +533,71 @@ export function lookupMachineActivityInArchives(
 		} catch {
 			continue;
 		}
-		for (const [machineId, ts] of extractMachineActivity(content)) {
+		for (const [headerId, ts] of extractMachineActivity(content)) {
+			// #4344 residual: a ghost's archived headers credit its host.
+			const machineId = ghostToHost.get(headerId) ?? headerId;
 			if (!wanted.has(machineId)) continue;
 			const existing = found.get(machineId);
 			if (!existing || ts > existing) found.set(machineId, ts);
 		}
 	}
+
+	emitGhostResults(ghostToHost, walkFloors, found);
+	recordVerdicts(requested, ghostToHost, walkFloors, found, now, skipped);
 	return found;
+}
+
+/** #4344 residual: a ghost inherits its host's resolved best (attach). */
+function emitGhostResults(
+	ghostToHost: ReadonlyMap<string, string>,
+	floors: ReadonlyMap<string, string>,
+	found: Map<string, string>
+): void {
+	for (const [ghost, host] of ghostToHost) {
+		const hostBest = found.get(host) ?? floors.get(host) ?? '';
+		if (hostBest) found.set(ghost, hostBest);
+	}
+}
+
+/**
+ * #4344 residual: record each requested machine's concluded best as a verdict.
+ * Fresh machines get a verdict too — harmless, the STALE skip only triggers
+ * on a best older than the threshold; recording it means a machine that goes
+ * quiet starts skipping reads 24h after its best crossed the threshold,
+ * without any first-call tax change.
+ *
+ * #1569: `skipped` carries the machines the STALE gate served from the cache
+ * instead of walking them. Those were NOT re-verified on this call, so their
+ * `concludedAt` must keep the stamp of the walk that produced the verdict —
+ * refreshing it here renewed the 24h window on every call, so the walk could
+ * never come back and the archives were never re-read.
+ */
+function recordVerdicts(
+	requested: readonly string[],
+	ghostToHost: ReadonlyMap<string, string>,
+	floors: ReadonlyMap<string, string>,
+	found: ReadonlyMap<string, string>,
+	now: number,
+	skipped: ReadonlySet<string>
+): void {
+	for (const id of requested) {
+		if (ghostToHost.has(id)) continue; // attached ghosts never walk, never verdict
+		const floor = floors.get(id) ?? '';
+		const hit = found.get(id) ?? '';
+		const best = hit > floor ? hit : floor;
+		if (!best) continue; // honest #3160 null — nothing to conclude
+		const previous = machineVerdicts.get(id);
+		const skippedThisCall = skipped.has(id);
+		if (!previous || best > previous.best) {
+			// A skipped machine's `best` came from the cache (or a stale floor),
+			// not from a walk: record the improved best but keep the walk stamp,
+			// so the next call is free to verify it.
+			machineVerdicts.set(id, {
+				best,
+				concludedAt: skippedThisCall && previous ? previous.concludedAt : now,
+			});
+		} else if (!skippedThisCall) {
+			previous.concludedAt = now; // same best re-concluded: refresh the re-verify window
+		}
+	}
 }

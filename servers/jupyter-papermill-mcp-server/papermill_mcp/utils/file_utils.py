@@ -91,6 +91,15 @@ class FileUtils:
         # Ensure parent directory exists
         FileUtils.ensure_directory(path.parent)
 
+        # A cell 'id' only exists from nbformat 4.5, but nbformat.read(as_version=4)
+        # keeps the file's minor version AND the ids, so a 4.4 notebook that
+        # carries ids fails validation ("Additional properties are not allowed
+        # ('id' was unexpected)") on every write -- update_cell included.
+        # nbformat.v4.upgrade() would fix that but REGENERATES every id, so
+        # raise the minor ourselves and keep the identifiers untouched.
+        if notebook.nbformat_minor < 5 and any("id" in cell for cell in notebook.cells):
+            notebook.nbformat_minor = 5
+
         # Validate notebook before writing
         nbformat.validate(notebook)
 

@@ -317,6 +317,41 @@ describe('roosync_search - CONS-11', () => {
             expect(INFRASTRUCTURE_ERROR_MODES.has(parsed.semantic_error_mode)).toBe(true);
             expect(parsed.fallback_reason).toBe('embedding_api_error');
         });
+
+        // #4438: the degraded banner must name the component that ACTUALLY
+        // failed. The embedding call and the Qdrant search share ONE try block:
+        // without stage-aware classification, an embeddings outage was
+        // classified as a qdrant mode (and the reverse), so the banner sent the
+        // operator to the wrong backend. These two tests pin BOTH directions
+        // end to end (real classifier, not an injected mode).
+        it('#4438: an EMBEDDINGS outage still names the embedding backend', async () => {
+            mockOpenAIClient.embeddings.create.mockRejectedValue(new Error('fetch failed'));
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query' },
+                conversationCache, ensureCacheFreshCallback, fallbackHandler
+            );
+            const warning = (result.content[0] as any).text;
+            expect(warning).toContain('embedding backend unreachable');
+            expect(warning).not.toMatch(/qdrant/i);
+            const parsed = JSON.parse((result.content[1] as any).text);
+            expect(parsed.semantic_error_mode).toBe('embedding_unreachable');
+            expect(parsed.fallback_reason).toBe('embedding_api_error');
+        });
+
+        it('#4438: a QDRANT outage names qdrant, not the embedding backend', async () => {
+            mockQdrantClient.search.mockRejectedValue(new Error('fetch failed'));
+            const result = await handleRooSyncSearch(
+                { action: 'semantic', search_query: 'test query' },
+                conversationCache, ensureCacheFreshCallback, fallbackHandler
+            );
+            const warning = (result.content[0] as any).text;
+            expect(warning).toMatch(/qdrant/i);
+            expect(warning).not.toContain('embedding backend unreachable');
+            const parsed = JSON.parse((result.content[1] as any).text);
+            expect(INFRASTRUCTURE_ERROR_MODES.has(parsed.semantic_error_mode)).toBe(true);
+            expect(parsed.semantic_error_mode).toMatch(/^qdrant_/);
+            expect(parsed.fallback_reason).toBe('qdrant_api_error');
+        });
     });
 
     // ============================================================

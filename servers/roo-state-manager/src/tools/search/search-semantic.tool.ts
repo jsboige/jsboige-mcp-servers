@@ -1220,13 +1220,23 @@ export const searchTasksByContentTool = {
         }
 
         // Tentative de recherche sémantique via Qdrant/OpenAI
+        // #4438: the failing STAGE decides the classified mode. The embedding
+        // call and the Qdrant search share ONE try block, so a single
+        // classifySearchError(error, 'search') labelled EVERY failure "qdrant" —
+        // including an embeddings outage. The degraded banner then named the
+        // wrong component (and the legacy #2609 test caught it). Same principle
+        // as codebase_search #3279, which routes an embedding error to the
+        // embedding branch.
+        let failedStage: 'embedding' | 'search' = 'search';
         try {
             const qdrant = getQdrantClient();
+            failedStage = 'embedding';
             const openai = getEmbeddingQueryClient();
 
             // #2167: Check query embedding cache before calling the API
             let queryVector = getCachedQueryEmbedding(search_query);
             if (!queryVector) {
+                failedStage = 'embedding';
                 // #249: Wrap embedding call with retry for transient failures
                 const embedding = await withRetry(() => openai.embeddings.create({
                     model: getEmbeddingModel(),
@@ -1237,6 +1247,7 @@ export const searchTasksByContentTool = {
             } else {
                 console.log(`[INFO] #2167: Query embedding cache hit for "${search_query.substring(0, 50)}..."`);
             }
+            failedStage = 'search';
             const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
 
             // Configuration de la recherche selon conversation_id et workspace
@@ -1811,7 +1822,7 @@ export const searchTasksByContentTool = {
             const semanticErrorMsg = semanticError instanceof Error ? semanticError.message : String(semanticError);
 
             // #2063 P1: Classify the error for actionable diagnostics
-            const classified = await classifySearchError(semanticError, 'search');
+            const classified = await classifySearchError(semanticError, failedStage);
 
             // #1496: Strict mode — propagate the classified error instead of silently
             // falling back to text. Callers that explicitly requested semantic

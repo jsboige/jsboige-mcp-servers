@@ -24,6 +24,28 @@ export interface ClassifiedError {
 	hint: string;
 }
 
+/**
+ * #4438: which backend component a classified mode implicates.
+ *
+ * The degraded banner used to name ONE component for every infrastructure mode
+ * ("embedding backend unreachable"), so a Qdrant outage sent the operator to
+ * the embeddings lane — the wrong owner, on the wrong stage. `diagnose` already
+ * tells the two apart (`qdrant_connection` for Qdrant, `openai_connection` for
+ * the embeddings); this mapping is that same distinction, derived from the mode
+ * that the classifier produced. `null` = the mode implicates no known component
+ * (unclassified, or `unknown`): the caller must then assert NO cause.
+ */
+export type FailureComponent = 'qdrant' | 'embeddings' | 'auth' | 'resources';
+
+export function failureComponent(mode: FailureMode | string | null): FailureComponent | null {
+	if (mode === null) return null;
+	if (mode.startsWith('qdrant_')) return 'qdrant';
+	if (mode.startsWith('embedding_')) return 'embeddings';
+	if (mode === 'auth_failed') return 'auth';
+	if (mode === 'resource_exhausted') return 'resources';
+	return null;
+}
+
 /** Network error codes that indicate unreachable backend */
 const NETWORK_ERROR_PATTERNS = [
 	'ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'ETIMEDOUT',

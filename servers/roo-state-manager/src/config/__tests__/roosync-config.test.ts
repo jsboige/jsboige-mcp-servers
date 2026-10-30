@@ -18,6 +18,7 @@ const { stableMocks } = vi.hoisted(() => {
 	const stableMocks = {
 		existsSync: null as any,
 		readFileSync: null as any,
+		readFile: null as any,
 		writeFile: null as any,
 		realExistsSync: null as any,
 	};
@@ -36,6 +37,9 @@ vi.mock('fs', async (importOriginal) => {
 	// Create wrapper functions that delegate to mock or real
 	stableMocks.existsSync = vi.fn((...args: any[]) => realFs.existsSync(...args));
 	stableMocks.readFileSync = vi.fn((...args: any[]) => realFs.readFileSync(...args));
+	// #2570 : le registre est lu via l'API promise (union des copies DriveFS)
+	// — la surface contrôlée par les tests suit ce contrat.
+	stableMocks.readFile = vi.fn((...args: any[]) => realFs.promises.readFile(...args));
 	stableMocks.writeFile = vi.fn((...args: any[]) => realFs.promises.writeFile(...args));
 
 	return {
@@ -46,6 +50,7 @@ vi.mock('fs', async (importOriginal) => {
 			readFileSync: stableMocks.readFileSync,
 			promises: {
 				...realFs.promises,
+				readFile: stableMocks.readFile,
 				writeFile: stableMocks.writeFile,
 			},
 		},
@@ -53,6 +58,7 @@ vi.mock('fs', async (importOriginal) => {
 		readFileSync: stableMocks.readFileSync,
 		promises: {
 			...realFs.promises,
+			readFile: stableMocks.readFile,
 			writeFile: stableMocks.writeFile,
 		},
 	};
@@ -330,7 +336,7 @@ describe('roosync-config', () => {
 
 		test('returns valid when registry exists but machineId not found', async () => {
 			stableMocks.existsSync.mockReturnValue(true);
-			stableMocks.readFileSync.mockReturnValue(JSON.stringify({
+			stableMocks.readFile.mockResolvedValue(JSON.stringify({
 				machines: {
 					'other-machine': {
 						machineId: 'other-machine',
@@ -350,7 +356,7 @@ describe('roosync-config', () => {
 
 		test('returns conflict when machineId already exists', async () => {
 			stableMocks.existsSync.mockReturnValue(true);
-			stableMocks.readFileSync.mockReturnValue(JSON.stringify({
+			stableMocks.readFile.mockResolvedValue(JSON.stringify({
 				machines: {
 					'existing-machine': {
 						machineId: 'existing-machine',
@@ -374,7 +380,7 @@ describe('roosync-config', () => {
 
 		test('handles JSON parse error gracefully', async () => {
 			stableMocks.existsSync.mockReturnValue(true);
-			stableMocks.readFileSync.mockImplementation((() => { throw new SyntaxError('Unexpected token'); }) as any);
+			stableMocks.readFile.mockRejectedValue(new SyntaxError('Unexpected token'));
 
 			const result = await validateMachineIdUniqueness('test-machine', mockSharedPath);
 
@@ -408,7 +414,7 @@ describe('roosync-config', () => {
 
 		test('updates existing registry', async () => {
 			stableMocks.existsSync.mockReturnValue(true);
-			stableMocks.readFileSync.mockReturnValue(JSON.stringify({
+			stableMocks.readFile.mockResolvedValue(JSON.stringify({
 				machines: {
 					'existing-machine': {
 						machineId: 'existing-machine',

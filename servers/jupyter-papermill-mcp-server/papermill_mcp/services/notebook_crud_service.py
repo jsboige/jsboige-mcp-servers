@@ -97,6 +97,9 @@ class NotebookCRUDService:
                     "metadata": dict(cell.metadata),
                 }
 
+                if "id" in cell:
+                    cell_dict["id"] = cell["id"]
+
                 # Add execution-specific fields for code cells
                 if cell.cell_type == "code":
                     cell_dict["execution_count"] = getattr(
@@ -172,6 +175,8 @@ class NotebookCRUDService:
                 else:
                     raise ValueError(f"Unknown cell type: {cell_type}")
 
+                if "id" in cell_data:
+                    cell["id"] = cell_data["id"]
                 notebook.cells.append(cell)
 
             # Write notebook using FileUtils
@@ -478,6 +483,8 @@ class NotebookCRUDService:
                     "source": cell.source,
                     "metadata": dict(cell.metadata),
                 }
+                if "id" in cell:
+                    cell_data["id"] = cell["id"]
 
                 # Add execution info for code cells
                 if cell.cell_type == "code":
@@ -528,6 +535,8 @@ class NotebookCRUDService:
                         "source": cell.source,
                         "metadata": dict(cell.metadata),
                     }
+                    if "id" in cell:
+                        cell_data["id"] = cell["id"]
 
                     # Add execution info for code cells
                     if cell.cell_type == "code":
@@ -568,6 +577,9 @@ class NotebookCRUDService:
                         "cell_type": cell.cell_type,
                         "full_length": len(source_text),
                     }
+
+                    if "id" in cell:
+                        cell_info["id"] = cell["id"]
 
                     # Add preview if requested
                     if include_preview:
@@ -610,6 +622,8 @@ class NotebookCRUDService:
                         "source": cell.source,
                         "metadata": dict(cell.metadata),
                     }
+                    if "id" in cell:
+                        cell_data["id"] = cell["id"]
 
                     # Add execution info for code cells
                     if cell.cell_type == "code":

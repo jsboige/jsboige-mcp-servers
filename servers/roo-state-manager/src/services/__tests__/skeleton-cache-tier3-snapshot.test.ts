@@ -275,6 +275,99 @@ describe('SkeletonCacheService — Tier 3 stub snapshot (#1747 E)', () => {
 		expect(stats.tier3_snapshot.entries).toBe(0);
 	});
 
+	test('#4151 S3 — isCacheFreshWithoutLoad() ne déclenche AUCUN load ; le probe budget 0, si', async () => {
+		configureBareHost();
+
+		const instance = SkeletonCacheService.getInstance();
+		// Instrument direct du déclencheur : `ensureFreshCache` est ce que le
+		// probe budget 0 appelle (course contre un timer 0 ms) — sur un hôte
+		// réel, c'est le scan de ~11k archives / ~2,1 Go PAR HÔTE.
+		const ensureSpy = vi.spyOn(instance as any, 'ensureFreshCache');
+
+		// Hôte froid : pas frais, rien de semé.
+		expect(instance.isCacheFreshWithoutLoad()).toBe(false);
+		// C'est TOUT l'objet du correctif : constater la fraîcheur ne doit pas
+		// lancer le load. Mutant : appeler ensureFreshCache() ici fait tomber
+		// cette assertion.
+		expect(ensureSpy).not.toHaveBeenCalled();
+
+		// Le probe historique, lui, EST le déclencheur — c'est bien lui que le
+		// chemin PG-first ne doit plus emprunter.
+		expect(await instance.awaitFreshnessWithBudget(0)).toBe(false);
+		expect(ensureSpy).toHaveBeenCalledTimes(1);
+
+		ensureSpy.mockRestore();
+	});
+
+	test('#4151 S3 (B2) — isTier3IndexLoaded() : false sans load, false sur un corpus VIDE, true sur un index peuple', async () => {
+		configureBareHost();
+		mockReadFile.mockRejectedValue({ code: 'ENOENT' }); // pas de snapshot
+
+		const instance = SkeletonCacheService.getInstance();
+		// Aucun load : l'index est vide — la revendication « machine inconnue des
+		// archives » n'est PAS autorisee (elle serait fausse sur un siege PG-first).
+		expect(instance.isTier3IndexLoaded()).toBe(false);
+
+		// Un load qui NE trouve aucun corpus : l'index reste vide, la revendication
+		// reste interdite (un corpus vide ne prouve rien).
+		mockListArchivedTaskFiles.mockResolvedValue([]);
+		await instance.warmCache();
+		expect(instance.isTier3IndexLoaded()).toBe(false);
+
+		// Un load qui peuple REELLEMENT l'index : la revendication redevient
+		// autorisee, et l'index connait alors les machines qu'il contient.
+		mockListArchivedTaskFiles.mockResolvedValue([
+			{ taskId: 'task-x', filePath: 'G:/fake/task-archive/myia-po-2025/task-x.json.gz', machineId: 'myia-po-2025' },
+		]);
+		mockReadArchivedTaskFromPath.mockImplementation(async (p: string) => ({
+			taskId: 'task-x',
+			machineId: 'myia-po-2025',
+			archivedAt: '2026-09-28T00:00:00.000Z',
+			metadata: { title: 'arch', createdAt: '2026-09-01T00:00:00.000Z', lastActivity: '2026-09-02T00:00:00.000Z', messageCount: 1 },
+			messages: [{ role: 'user', content: 'hello', timestamp: '2026-09-01T00:00:00.000Z' }],
+		}));
+		await instance.warmCache();
+		expect(instance.isTier3IndexLoaded()).toBe(true);
+		expect(instance.tier3KnowsMachine('myia-po-2025')).toBe(true);
+		expect(instance.tier3KnowsMachine('myia-po-9999')).toBe(false);
+	});
+
+	test('#4151 S3 (N1) — hasLoadAttempted() : false avant, true après une tentative (le load avale ses erreurs)', async () => {
+		configureBareHost();
+		mockReadFile.mockRejectedValue({ code: 'ENOENT' });
+		mockListArchivedTaskFiles.mockRejectedValue(new Error('GDrive unreachable'));
+
+		const instance = SkeletonCacheService.getInstance();
+		// Jamais tenté : un statut « deferred » est alors licite.
+		expect(instance.hasLoadAttempted()).toBe(false);
+
+		instance.triggerBackgroundRefresh();
+		await new Promise(r => setTimeout(r, 20));
+
+		// Tenté — même si l'erreur interne est avalée par loadSkeletonsFromDisk,
+		// c'est la TENTATIVE qui distingue « tenté et échoué » de « jamais tenté ».
+		expect(instance.hasLoadAttempted()).toBe(true);
+	});
+
+	test('#4151 S3 — après seed du snapshot, la sonde sans load rend true (pas de régression #1747 E)', async () => {
+		configureBareHost();
+		const stubs = [makeStub('task-a', 'myia-po-2025')];
+		mockReadFile.mockImplementation(async (p: string) => {
+			if (p === SNAPSHOT_PATH) return snapshotPayload(stubs);
+			throw new Error(`unexpected read: ${p}`);
+		});
+		mockListArchivedTaskFiles.mockImplementation(() => new Promise(() => { }));
+
+		const instance = SkeletonCacheService.getInstance();
+		const warming = instance.warmCache();
+		await new Promise(r => setTimeout(r, 50));
+
+		// Chemin PG-first : la couverture locale doit être servie sans load.
+		expect(instance.isCacheFreshWithoutLoad()).toBe(true);
+		expect(instance.getCacheImmediate().size).toBe(1);
+		void warming;
+	});
+
 	test('SKELETON_TIER3_SNAPSHOT vide : snapshot désactivé (comportement pré-E)', async () => {
 		process.env.SKELETON_TIER3_SNAPSHOT = '';
 		configureBareHost();

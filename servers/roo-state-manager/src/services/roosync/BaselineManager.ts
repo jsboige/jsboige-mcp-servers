@@ -14,9 +14,11 @@ import { RooSyncServiceError } from '../../types/errors.js';
 import type { RooSyncDashboard } from '../../utils/roosync-parsers.js';
 import { createLogger } from '../../utils/logger.js';
 import { ensureStoreSubdir } from '../../utils/shared-state-path.js';
+import { readMachineRegistryFile } from '../../utils/machine-registry-file.js';
 // #4131 Phase D — registre PG-premier (roosync_store_meta, migrations/012)
 import {
   MACHINE_REGISTRY_META_KEY,
+  mergeStoreMetaJsonMap,
   readStoreMetaValue,
   upsertStoreMetaValue,
   storeMetaUrl
@@ -31,7 +33,12 @@ interface MachineRegistry {
     machineId: string;
     firstSeen: string;
     lastSeen: string;
-    source: 'dashboard' | 'presence' | 'baseline' | 'config';
+    // 'service' = source historique du fichier .machine-registry.json, celle
+    // qu'écrit `registerMachineId` au démarrage. L'inscription au boot doit la
+    // RÉUTILISER : `validateMachineUniqueness` refuse toute source différente
+    // sur un machineId déjà présent (conflit d'identité), donc une source neuve
+    // ferait rejeter chaque siège déjà semé par le fichier (#4131).
+    source: 'dashboard' | 'presence' | 'baseline' | 'config' | 'service';
     status: 'online' | 'offline' | 'conflict';
   }>;
 
@@ -114,6 +121,273 @@ export class BaselineManager {
   }
 
   /**
+   * Inscrire CE siège dans le registre machines au démarrage, PG d'abord.
+   *
+   * #4131 — arbitrage ai-01 (a), message `c.6490889143` : « auto-enregistrement
+   * au boot PG-first comme nouveau défaut ; le semis manuel est rejeté ».
+   *
+   * Le trou mesuré le 29/10 : `addMachineToRegistry` n'avait que deux
+   * appelants, tous deux dans `loadDashboard` — or les flux PG-first
+   * (inventory, dashboard-pg, channel-pg) ne passent jamais par
+   * `loadDashboard`. Chaque siège écrivait donc bien SA ligne d'inventaire,
+   * mais la ligne PARTAGÉE `machine_registry` restait au semis d'une seule
+   * machine, et un registre à une entrée est indistinguable d'une flotte à
+   * une machine (#3459).
+   *
+   * Quatre propriétés, chacune verrouillée par un test (review ms#1576) :
+   *
+   *  - **l'appartenance se lit sur la LIGNE, jamais en mémoire** : décider
+   *    « déjà inscrit » depuis `this.machineRegistry` renvoyait `true` sans
+   *    écrire quand la mémoire portait une entrée venue du fichier et que la
+   *    ligne PG ne la portait pas — l'invariant « true ⇔ la ligne me liste »
+   *    était donc faux (bloquant #1 ai-01) ;
+   *  - **union atomique côté stockage** : l'écriture est une fusion `jsonb`
+   *    dans la même instruction (`mergeStoreMetaJsonMap`), pas un
+   *    remplacement de ligne. Deux sièges qui démarrent ensemble et se
+   *    sérialisent sur le verrou de ligne s'unionnent au lieu de s'écraser
+   *    (bloquant #2 ; ai-01 a retiré son propre remède « délai aléatoire +
+   *    vérification de surensemble » comme non prouvé, c.6495611063) ;
+   *  - **vérification en SURSENSEMBLE** : ce qui sort du stockage doit
+   *    contenir notre id ET tous les ids vus avant l'écriture. C'est un
+   *    contrôle de l'invariant, pas le mécanisme de sûreté — celui-ci est
+   *    l'atomicité ci-dessus ;
+   *  - **jamais d'écriture aveugle** : ligne illisible ⇒ aucune écriture, une
+   *    ligne d'erreur qui nomme la cause (garde ms#1563 conservée). Un siège
+   *    déjà présent et en ligne ne réécrit rien (#2121b).
+   *
+   * Sans URL PG, la surface fichier reste seule en charge (inchangé).
+   *
+   * @returns true si la ligne partagée liste ce siège à la sortie.
+   */
+  public async registerLocalMachineFromBoot(): Promise<boolean> {
+    await this.waitForRegistry();
+
+    const machineId = this.config.machineId.toLowerCase();
+    const source = 'service' as const;
+
+    if (this.registryPersistence === 'refused-blind') {
+      this.logger.error(
+        `[registry] inscription de ${machineId} REFUSÉE — le chargement n'a pu lire aucune source : ` +
+        'écrire ferait de ce registre partiel la vérité durable (#4131, famille #3459)'
+      );
+      return false;
+    }
+
+    if (!storeMetaUrl()) {
+      // Surface fichier seule : la décision se prend sur la mémoire, faute de
+      // ligne partagée à interroger — c'est le seul cas où c'est légitime.
+      if (!this.addLocalMachineInMemory(machineId, source, new Date().toISOString())) {
+        return true;
+      }
+      await this.saveMachineRegistry();
+      return true;
+    }
+
+    const maxAttempts = 3;
+
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const now = new Date().toISOString();
+
+      const row = await this.readSharedRegistryRow();
+      if (row === null) {
+        // Une LECTURE peut être retentée sans rien risquer : on ne réessaie que
+        // le fait de lire, jamais d'écrire à l'aveugle. Sans ce retry, un blip
+        // PG au démarrage laissait le siège absent jusqu'au redémarrage suivant
+        // (point non bloquant #3 de la review ms#1576). Un délai différé
+        // (T+60 s) n'est PAS implémenté : un timer de service pour un cas que
+        // trois tentatives immédiates couvrent déjà n'achète rien ici.
+        this.logger.warn(
+          `[registry] ligne partagée illisible (essai ${attempt}/${maxAttempts}) — ` +
+          'aucune écriture (une ligne existait peut-être, l\'écraser perdrait la flotte — #4131, famille #3459)'
+        );
+        if (attempt < maxAttempts) continue;
+        this.logger.error(
+          `[registry] inscription de ${machineId} NON TENTÉE — la ligne partagée reste illisible ` +
+          `après ${maxAttempts} lectures : aucune écriture (#4131, famille #3459)`
+        );
+        return false;
+      }
+
+      // Bloquant #1 : la décision se prend sur CE QUE LA LIGNE PORTE.
+      const inRow = row.machines[machineId];
+      if (!this.needsRegistryWrite(inRow)) {
+        this.adoptRow(row.machines);
+        this.logger.info(
+          `[registry] ${machineId} déjà inscrit dans la ligne partagée — aucune réécriture (#2121b)`
+        );
+        return true;
+      }
+
+      const knownIds = Object.keys(row.machines).map((id) => id.toLowerCase());
+      const entry = inRow
+        // Entrée existante : on rafraîchit lastSeen/status mais la SOURCE est
+        // write-once (validateMachineUniqueness) — une divergence ne se réécrit pas.
+        ? { ...(inRow as any), machineId, lastSeen: now, status: 'online' }
+        : { machineId, firstSeen: now, lastSeen: now, source, status: 'online' };
+
+      let post: { machines: Record<string, any> } | null = null;
+      try {
+        const raw = await mergeStoreMetaJsonMap(
+          MACHINE_REGISTRY_META_KEY,
+          'machines',
+          JSON.stringify({ machines: { [machineId]: entry }, lastUpdated: now })
+        );
+        post = this.parseRegistryDocument(raw);
+      } catch (error) {
+        this.logger.error(
+          `[registry] fusion atomique de ${machineId} impossible (essai ${attempt}/${maxAttempts})`,
+          { error: String(error) }
+        );
+      }
+
+      if (post === null) {
+        this.logger.warn(
+          `[registry] inscription de ${machineId} non confirmée — nouvel essai ${attempt}/${maxAttempts} (#4131)`
+        );
+        continue;
+      }
+
+      this.adoptRow(post.machines);
+
+      // Sursensemble : notre id ET tout id vu avant l'écriture doivent sortir.
+      // Avec l'union atomique, un manquant signale une fusion qui n'a pas eu
+      // lieu — on le dit, on ne le tait pas.
+      const missing = [machineId, ...knownIds].filter((id) => !post!.machines[id]);
+      if (missing.length === 0) {
+        this.logger.info(
+          `[registry] ${machineId} inscrit dans la ligne partagée: ` +
+          `${Object.keys(post.machines).length} machines (#4131, essai ${attempt})`
+        );
+        await this.writeRegistryMirror();
+        return true;
+      }
+
+      this.logger.warn(
+        `[registry] fusion de ${machineId} incomplète — absents: ${missing.join(', ')} — ` +
+        `nouvel essai ${attempt}/${maxAttempts} (#4131)`
+      );
+    }
+
+    this.logger.error(
+      `[registry] inscription de ${machineId} NON VÉRIFIÉE après ${maxAttempts} essais — ` +
+      'la ligne partagée ne le liste toujours pas (#4131)'
+    );
+    return false;
+  }
+
+  /**
+   * Faut-il écrire l'entrée de ce siège ?
+   *
+   * Décide sur l'entrée de la LIGNE (bloquant #1 de la review ms#1576) :
+   * absent de la ligne ⇒ on écrit, quoi que dise la mémoire ; présent mais
+   * pas `online` ⇒ auto-guérison ; présent et en ligne ⇒ rien (#2121b).
+   */
+  private needsRegistryWrite(inRow: Record<string, any> | undefined): boolean {
+    if (!inRow) return true;
+    return inRow.status !== 'online';
+  }
+
+  /**
+   * Relire la ligne partagée du registre.
+   * @returns `{ machines }` si la lecture aboutit (objet vide = ligne absente,
+   *          création légitime), `null` si la lecture ÉCHOUE — distinct de
+   *          « absent » : sur un échec on n'écrit pas (famille #3459).
+   */
+  private async readSharedRegistryRow(): Promise<{ machines: Record<string, any> } | null> {
+    try {
+      const raw = await readStoreMetaValue(MACHINE_REGISTRY_META_KEY);
+      if (raw === null) {
+        return { machines: {} };
+      }
+      return this.parseRegistryDocument(raw);
+    } catch (error) {
+      this.logger.warn('[registry] relecture de la ligne partagée impossible', { error: String(error) });
+      return null;
+    }
+  }
+
+  /**
+   * Parser un document registre (`{ machines: {...} }`).
+   * @returns `null` si le document n'est pas exploitable — l'appelant traite
+   *          alors la lecture/l'écriture comme non aboutie, jamais comme vide.
+   */
+  private parseRegistryDocument(raw: string): { machines: Record<string, any> } | null {
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return null;
+      const machines = parsed.machines;
+      if (machines && typeof machines === 'object') {
+        return { machines: machines as Record<string, any> };
+      }
+      return { machines: {} };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Adopter le contenu de la ligne partagée comme carte mémoire (PG fait foi).
+   * Aucune suppression : une entrée de mémoire absente de la ligne est
+   * conservée (une écriture partielle ne doit jamais effacer).
+   */
+  private adoptRow(rowMachines: Record<string, any>): void {
+    for (const [id, entry] of Object.entries(rowMachines)) {
+      const key = id.toLowerCase();
+      this.machineRegistry.machines.set(key, { ...(entry as any), machineId: key });
+    }
+  }
+
+  /**
+   * Miroir GDrive seul — la ligne PG est écrite par la fusion atomique, on ne
+   * la réécrit donc PAS ici (un `upsert` plein écraserait les sièges arrivés
+   * entre-temps : exactement le défaut du bloquant #2).
+   */
+  private async writeRegistryMirror(): Promise<void> {
+    try {
+      await fs.writeFile(
+        this.machineRegistry.registryPath,
+        JSON.stringify(
+          {
+            machines: Object.fromEntries(this.machineRegistry.machines),
+            lastUpdated: new Date().toISOString()
+          },
+          null,
+          2
+        ),
+        'utf-8'
+      );
+    } catch (error) {
+      this.logger.warn('[registry] écriture miroir GDrive impossible (toléré)', { error: String(error) });
+    }
+  }
+
+  /**
+   * Variante sans PG (surface fichier seule) : (ré)inscrire le siège en mémoire.
+   * @returns true si une écriture est nécessaire.
+   */
+  private addLocalMachineInMemory(machineId: string, source: 'service', now: string): boolean {
+    const own = this.machineRegistry.machines.get(machineId);
+    if (!own) {
+      this.machineRegistry.machines.set(machineId, {
+        machineId,
+        firstSeen: now,
+        lastSeen: now,
+        source,
+        status: 'online'
+      });
+      return true;
+    }
+    if (own.source === source && own.status === 'online') {
+      return false;
+    }
+    if (own.source === source) {
+      own.status = 'online';
+      own.lastSeen = now;
+    }
+    return own.source === source;
+  }
+
+  /**
    * Charger le registre des machines — PG d'abord, fichier GDrive en repli.
    *
    * #4131 Phase D (bloqueur 03/11) : le registre était lu UNIQUEMENT sur
@@ -161,27 +435,58 @@ export class BaselineManager {
     // n'existe pas (contrat migration-012 : la DONNÉE décide, pas un drapeau).
     let fileState = 'absent';
     try {
-      if (existsSync(this.machineRegistry.registryPath)) {
-        // #2267: async read replaces readFileSync — GDrive FUSE stalls no longer block event loop
-        const registryContent = await fs.readFile(this.machineRegistry.registryPath, 'utf-8');
-        const registryData = JSON.parse(registryContent);
-
+      // #2570 (récidive) : le registre est écrit par TOUS les sièges — DriveFS le
+      // forke en `.machine-registry (N).json` et SUPPRIME le nom canonique. Lire
+      // le seul nom canonique faisait passer le registre pour ABSENT (30/10 :
+      // canonique absent, seul `(1).json` présent, 3 machines) ⇒ référence de
+      // flotte vide. La lecture est l'UNION des copies (registre add-only).
+      const registryRead = await readMachineRegistryFile(this.config.sharedPath);
+      if (registryRead.canonicalUnreadable) {
+        // Le canonique existe mais n'a pas pu être lu : l'écrire maintenant
+        // remplacerait une vérité qu'on n'a pas su lire (ms#1563). Les jumeaux,
+        // eux, restent une source lisible — on les charge, mais on n'écrase pas.
+        fileState = 'lecture en échec (canonique illisible)';
+        this.logger.warn(
+          '[registry] le registre canonique existe mais est ILLISIBLE — il ne sera pas écrasé',
+          { unreadable: registryRead.unreadableSources }
+        );
+      }
+      if (registryRead.data) {
         // Reconstruire la Map depuis les données JSON (normaliser les clés en lowercase)
         this.machineRegistry.machines = new Map(
-          Object.entries(registryData.machines || {}).map(
+          Object.entries(registryRead.data.machines || {}).map(
             ([key, value]) => [key.toLowerCase(), value as any]
           )
         );
 
         this.logger.info(
-          `[registry] chargé depuis le fichier GDrive: ${this.machineRegistry.machines.size} machines`
+          `[registry] chargé depuis le fichier GDrive: ${this.machineRegistry.machines.size} machines` +
+            (registryRead.sources.length > 1
+              ? ` (union de ${registryRead.sources.length} copies DriveFS)`
+              : '')
         );
+        if (registryRead.unreadableSources.length > 0) {
+          this.logger.warn(
+            `[registry] ${registryRead.unreadableSources.length} copie(s) de conflit illisible(s) ignorée(s)`,
+            { unreadable: registryRead.unreadableSources }
+          );
+        }
         fileState = `lu (${this.machineRegistry.machines.size} machines)`;
-        this.registryPersistence = 'allowed';
+        // Une source existait ET était illisible : la persistance est refusée
+        // pour cette session (ms#1563) — sauf si le canonique lui-même est
+        // lisible, auquel cas il ne serait pas écrasé par une lecture partielle.
+        this.registryPersistence = registryRead.canonicalUnreadable
+          ? 'refused-blind'
+          : 'allowed';
 
         // Seed : première lecture d'un registre qui n'existe pas encore en PG
         // → la donnée migre elle-même, une fois, sans script (#4131 Phase D).
-        if (storeMetaUrl() && pgState === 'ligne absente' && this.machineRegistry.machines.size > 0) {
+        if (
+          storeMetaUrl() &&
+          pgState === 'ligne absente' &&
+          this.machineRegistry.machines.size > 0 &&
+          this.registryPersistence === 'allowed'
+        ) {
           try {
             await upsertStoreMetaValue(
               MACHINE_REGISTRY_META_KEY,
@@ -201,6 +506,10 @@ export class BaselineManager {
           }
         }
         return;
+      }
+      if (registryRead.present) {
+        // Des copies existent, aucune n'a pu être lue.
+        fileState = 'lecture en échec';
       }
     } catch (error) {
       fileState = 'lecture en échec';
@@ -311,6 +620,36 @@ export class BaselineManager {
       };
     }
 
+    // #4131 (a) — le siège s'inscrit désormais AU BOOT (source `service`, celle
+    // du fichier `.machine-registry.json` historique), et `loadDashboard`
+    // l'injecte ensuite depuis le canal `dashboard`. Ces deux déclarations sont
+    // la MÊME machine qui se présente par deux canaux du même service : les
+    // tenir pour un conflit d'identité faisait refuser l'injection et
+    // `getStatus` levait MACHINE_NOT_FOUND (régression e2e mesurée le 29/10).
+    // L'exception est bornée à ce couple : une entrée `config`/`baseline`/
+    // `presence` reste un conflit (garde #1409 conservée, cf.
+    // BaselineManager.gap.test.ts), et un machineId étranger reste strict.
+    //
+    // INVARIANT dont dépend cette exemption (review ms#1576, point #4) : ses
+    // deux seuls appelants, dans `loadDashboard`, passent
+    // `this.config.machineId` — l'id LOCAL. La garde repose sur le fait que
+    // `dashboard` ne désigne jamais une machine tierce depuis ce chemin : tout
+    // futur appelant qui passerait un id arbitraire DOIT revisiter cette
+    // exemption et la re-clé sur l'id local, pas sur la seule paire de sources.
+    const bootToDashboard =
+      existingMachine.source === 'service' && source === 'dashboard';
+
+    if (bootToDashboard) {
+      this.logger.info(
+        `Machine ${machineId} déjà inscrite au boot (source 'service') — déclaration 'dashboard' ` +
+        'traitée comme la même machine (#4131)'
+      );
+      return {
+        isValid: true,
+        conflictDetected: false
+      };
+    }
+
     // Conflit détecté : même machineId depuis des sources différentes
     const warningMessage = `⚠️ CONFLIT D'IDENTITÉ DÉTECTÉ: MachineId "${machineId}" déjà utilisé par la source "${existingMachine.source}" (première vue: ${existingMachine.firstSeen}). Tentative d'ajout depuis la source "${source}".`;
 
@@ -330,7 +669,7 @@ export class BaselineManager {
    */
   private async addMachineToRegistry(
     machineId: string,
-    source: 'dashboard' | 'presence' | 'baseline' | 'config',
+    source: 'dashboard' | 'presence' | 'baseline' | 'config' | 'service',
     status: 'online' | 'offline' | 'conflict' = 'online'
   ): Promise<UniquenessValidationResult> {
     machineId = machineId.toLowerCase();

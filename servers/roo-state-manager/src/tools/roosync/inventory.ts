@@ -38,8 +38,8 @@ export const InventoryArgsSchema = z.object({
   includeHeartbeats: z.boolean().optional()
     .describe('Inclure les données de heartbeat de chaque machine (défaut: true)'),
   // Pour type="machines" (fused from roosync_machines)
-  status: z.enum(['unknown', 'idle', 'all']).optional()
-    .describe('Filter for type="machines": gates the unknown list ("unknown") — idle is vestigial and always empty (dashboard presence has no idle concept, #2318); onlineMachines is always returned'),
+  status: z.enum(['unknown', 'stale', 'idle', 'all']).optional()
+    .describe('Filter for type="machines": gates the unknown list ("unknown") and the stale list ("stale" — concluded absent >7d, #4344) — idle is vestigial and always empty (dashboard presence has no idle concept, #2318); onlineMachines is always returned'),
   includeDetails: z.boolean().optional()
     .describe('Inclure les détails complets des machines (type="machines") ou stats outil (type="status")'),
   summary: z.boolean().optional()
@@ -321,6 +321,7 @@ export const inventoryTool: UnifiedToolContract = {
 
         let online: string[] = [];
         let unknown: string[] = [];
+        let stale: string[] = [];
         const machineLastSeen: Record<string, string | null> = {};
 
         try {
@@ -336,7 +337,7 @@ export const inventoryTool: UnifiedToolContract = {
             }
           }
 
-          const { extractMachineActivity, isRecentlyActive, lookupMachineActivityInArchives } =
+          const { extractMachineActivity, isRecentlyActive, isStaleMachine, lookupMachineActivityInArchives } =
             await import('../../utils/dashboard-activity.js');
           const activity = extractMachineActivity(dashboardContents);
 
@@ -362,14 +363,19 @@ export const inventoryTool: UnifiedToolContract = {
           }
 
           // Classify: registry machines with recent dashboard activity are
-          // online; the rest are unknown (absence of signal, not a confirmed
-          // outage — same semantics as the UNKNOWN:<mid> flags, #3160).
+          // online; a concluded lastSeen older than STALE_MACHINE_MS is STALE
+          // (#4344 residual — parked, zero archive reads); the rest are
+          // unknown (absence of signal, not a confirmed outage — same
+          // semantics as the UNKNOWN:<mid> flags, #3160).
           const seen = new Set<string>();
           for (const mid of registryMachineIds) {
             const lastSeen = activity.get(mid.toLowerCase()) ?? null;
             machineLastSeen[mid] = lastSeen;
             if (lastSeen !== null && isRecentlyActive(lastSeen)) {
               online.push(mid);
+              seen.add(mid.toLowerCase());
+            } else if (isStaleMachine(lastSeen)) {
+              stale.push(mid);
               seen.add(mid.toLowerCase());
             }
           }
@@ -392,6 +398,11 @@ export const inventoryTool: UnifiedToolContract = {
           onlineCount: online.length,
           unknownMachines: withLastSeen(machinesStatus === 'unknown' || machinesStatus === 'all' ? unknown : []),
           unknownCount: unknown.length,
+          // #4344 residual: concluded absent >7d — parked machines that pay
+          // zero archive reads (STALE verdict cache). Same filter contract as
+          // unknownMachines: only honoured for status="stale"/"all".
+          staleMachines: withLastSeen(machinesStatus === 'stale' || machinesStatus === 'all' ? stale : []),
+          staleCount: stale.length,
           // Vestigial shape compat: dashboard-derived presence has no idle
           // concept (#2318) — the field stays, always empty.
           idleMachines: [] as string[],
@@ -434,7 +445,8 @@ export const inventoryTool: UnifiedToolContract = {
         }
 
         if (machinesData) {
-          lines.push(`**Machines (dashboard-derived):** online=${machinesData.onlineCount}, unknown=${machinesData.unknownCount}`);
+          lines.push(`**Machines (dashboard-derived):** online=${machinesData.onlineCount}, unknown=${machinesData.unknownCount}` +
+            (machinesData.staleCount ? `, stale=${machinesData.staleCount} (#4344, >7j conclus — parqués)` : ''));
           lines.push('');
         }
 

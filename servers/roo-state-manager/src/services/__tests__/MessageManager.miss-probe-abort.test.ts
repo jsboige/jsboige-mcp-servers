@@ -158,8 +158,12 @@ describe('#3230 — bounded G: miss probe under PG_PRIMARY', () => {
     const started = Date.now();
     // #4293 kin: an abandoned probe means the file half could not be
     // consulted — `null` here would read as "this message never existed".
-    await expect(manager.getMessage('msg-20260101T000000-miss2', CALLER))
-      .rejects.toBeInstanceOf(SharedStoreInaccessibleError);
+    const rejection = await manager.getMessage('msg-20260101T000000-miss2', CALLER)
+      .catch((e: unknown) => e);
+    expect(rejection).toBeInstanceOf(SharedStoreInaccessibleError);
+    // web1's surviving-mutant guard (30/10 audit §2): this site must raise
+    // store-unresponsive, not the default store-absent label.
+    expect((rejection as SharedStoreInaccessibleError).cause).toBe('store-unresponsive');
     const elapsed = Date.now() - started;
 
     // Bounded: the 50 ms budget, not an unbounded wait.
@@ -175,8 +179,12 @@ describe('#3230 — bounded G: miss probe under PG_PRIMARY', () => {
     })) as never);
 
     const started = Date.now();
-    await expect(manager.getMessage('msg-20260101T000000-miss4', CALLER))
-      .rejects.toBeInstanceOf(SharedStoreInaccessibleError);
+    const rejection = await manager.getMessage('msg-20260101T000000-miss4', CALLER)
+      .catch((e: unknown) => e);
+    expect(rejection).toBeInstanceOf(SharedStoreInaccessibleError);
+    // web1's surviving-mutant guard (30/10 audit §2): the backstop rejection
+    // must carry store-unresponsive, not the default store-absent label.
+    expect((rejection as SharedStoreInaccessibleError).cause).toBe('store-unresponsive');
     const elapsed = Date.now() - started;
 
     // 50 ms budget + 250 ms grace = 300 ms backstop; generous CI margin.

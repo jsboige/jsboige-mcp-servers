@@ -11,7 +11,7 @@
 import { existsSync, statSync } from 'fs';
 import { join, dirname } from 'path';
 import os from 'os';
-import { loadRooSyncConfig, RooSyncConfig, validateMachineIdUniqueness, registerMachineId } from '../config/roosync-config.js';
+import { loadRooSyncConfig, RooSyncConfig, validateMachineIdUniqueness } from '../config/roosync-config.js';
 import {
   type RooSyncDecision,
   type RooSyncDashboard
@@ -175,6 +175,20 @@ export class RooSyncService {
       this.identityManager = new IdentityManager(this.config, this.presenceManager, this.heartbeatService);
       this.nonNominativeBaselineService = new NonNominativeBaselineService(this.config.sharedPath);
 
+      // #4131 — auto-enregistrement du siège dans le registre machines partagé,
+      // au boot et PG-first (arbitrage ai-01 (a), c.6490889143 : « le semis
+      // manuel est rejeté »). Fire-and-forget et non fatal, même contrat que
+      // validateServiceStartup() : l'inscription ne doit jamais retenir le
+      // démarrage du service. Sans cet appel, `machine_registry` restait au
+      // semis d'origine — les flux PG-first ne passent pas par loadDashboard,
+      // seul détenteur des deux appelants d'addMachineToRegistry.
+      this.baselineManager.registerLocalMachineFromBoot().catch((error) => {
+        console.warn(
+          '[RooSyncService] Inscription au registre machines échouée (non bloquant):',
+          error instanceof Error ? error.message : String(error)
+        );
+      });
+
     } catch (error) {
       debugLog('ERREUR dans constructeur RooSyncService', {
         errorType: typeof error,
@@ -215,17 +229,12 @@ export class RooSyncService {
         console.log(`[RooSyncService] ✅ MachineId ${this.config.machineId} validé comme unique`);
         
         // Enregistrer la machine dans le registre
-        const registrationSuccess = await registerMachineId(
-          this.config.machineId,
-          this.config.sharedPath,
-          'service'
-        );
-        
-        if (registrationSuccess) {
-          console.log(`[RooSyncService] MachineId ${this.config.machineId} enregistré avec succès au démarrage`);
-        } else {
-          console.warn(`[RooSyncService] Échec d'enregistrement du machineId ${this.config.machineId} au démarrage`);
-        }
+        // #4131 — arbitrage ai-01 (a) : l'inscription au boot passe désormais par
+        // le registre PG-first de BaselineManager (voir la fin du constructeur).
+        // L'écriture fichier seule d'ici était le dernier écrivain qui ne
+        // connaissait pas la ligne partagée : chaque siège y réécrivait SA seule
+        // entrée (mesuré 28/10 23:57Z, `firstSeen == lastSeen`), ce qui gardait
+        // `machine_registry` à une machine. Un seul écrivain, une seule source.
       }
       
       // #2121 Phase 2.1: Presence now uses HeartbeatService (in-memory, no GDrive writes)

@@ -37,6 +37,7 @@ const { stableMocks, loggerStore } = vi.hoisted(() => {
 	const stableMocks = {
 		existsSync: null as any,
 		readFileSync: null as any,
+		readFile: null as any,
 		writeFile: null as any,
 		realExistsSync: null as any,
 	};
@@ -53,6 +54,9 @@ vi.mock('fs', async (importOriginal) => {
 	stableMocks.realExistsSync = realFs.existsSync;
 	stableMocks.existsSync = vi.fn((...args: any[]) => realFs.existsSync(...args));
 	stableMocks.readFileSync = vi.fn((...args: any[]) => realFs.readFileSync(...args));
+	// #2570 : le registre est lu via l'API promise (union des copies DriveFS)
+	// — la surface contrôlée par les tests suit ce contrat.
+	stableMocks.readFile = vi.fn((...args: any[]) => realFs.promises.readFile(...args));
 	stableMocks.writeFile = vi.fn((...args: any[]) => realFs.promises.writeFile(...args));
 	return {
 		...realFs,
@@ -60,11 +64,11 @@ vi.mock('fs', async (importOriginal) => {
 			...realFs,
 			existsSync: stableMocks.existsSync,
 			readFileSync: stableMocks.readFileSync,
-			promises: { ...realFs.promises, writeFile: stableMocks.writeFile },
+			promises: { ...realFs.promises, readFile: stableMocks.readFile, writeFile: stableMocks.writeFile },
 		},
 		existsSync: stableMocks.existsSync,
 		readFileSync: stableMocks.readFileSync,
-		promises: { ...realFs.promises, writeFile: stableMocks.writeFile },
+		promises: { ...realFs.promises, readFile: stableMocks.readFile, writeFile: stableMocks.writeFile },
 	};
 });
 
@@ -108,6 +112,7 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 		const fsReal = require('fs');
 		stableMocks.existsSync.mockImplementation((p: any) => fsReal.existsSync(p));
 		stableMocks.readFileSync.mockImplementation((p: any, enc: any) => fsReal.readFileSync(p, enc));
+		stableMocks.readFile.mockImplementation((p: any, enc: any) => fsReal.promises.readFile(p, enc));
 		stableMocks.writeFile.mockReset();
 
 		// Reset logger call history (instance is shared with the SUT)
@@ -438,7 +443,7 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 
 	test('L286: validateMachineIdUniqueness — registry without "machines" key → empty dict fallback', async () => {
 		stableMocks.existsSync.mockReturnValue(true);
-		stableMocks.readFileSync.mockReturnValue(JSON.stringify({ lastUpdated: '2026-01-01' /* no machines */ }));
+		stableMocks.readFile.mockResolvedValue(JSON.stringify({ lastUpdated: '2026-01-01' /* no machines */ }));
 		const result = await validateMachineIdUniqueness('new-machine', '/tmp/test-shared');
 		expect(result.isValid).toBe(true);
 		expect(result.conflictDetected).toBe(false);
@@ -446,7 +451,7 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 
 	test('L289 + L301-L304: validateMachineIdUniqueness — registry exists, requested machine absent → valid', async () => {
 		stableMocks.existsSync.mockReturnValue(true);
-		stableMocks.readFileSync.mockReturnValue(JSON.stringify({
+		stableMocks.readFile.mockResolvedValue(JSON.stringify({
 			machines: { 'unrelated-machine': { machineId: 'unrelated-machine' } }
 		}));
 		const result = await validateMachineIdUniqueness('absent-machine', '/tmp/test-shared');
@@ -469,7 +474,7 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 
 	test('L337-L340: registerMachineId handles existing registry JSON parse error gracefully', async () => {
 		stableMocks.existsSync.mockReturnValue(true);
-		stableMocks.readFileSync.mockImplementation((() => { throw new SyntaxError('bad json'); }) as any);
+		stableMocks.readFile.mockRejectedValue(new SyntaxError('bad json'));
 		stableMocks.writeFile.mockResolvedValue(undefined);
 		// JSON.parse throws → caught by outer catch (L364) → returns false
 		const result = await registerMachineId('new-machine', '/tmp/test-shared', 'test');
@@ -482,7 +487,7 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 	test('L344-L350: registerMachineId preserves firstSeen on re-registration', async () => {
 		const originalFirstSeen = '2026-01-01T00:00:00.000Z';
 		stableMocks.existsSync.mockReturnValue(true);
-		stableMocks.readFileSync.mockReturnValue(JSON.stringify({
+		stableMocks.readFile.mockResolvedValue(JSON.stringify({
 			machines: {
 				'my-machine': {
 					machineId: 'my-machine',
@@ -504,7 +509,7 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 
 	test('L346: registerMachineId firstSeen = now when entry absent (new registration)', async () => {
 		stableMocks.existsSync.mockReturnValue(true);
-		stableMocks.readFileSync.mockReturnValue(JSON.stringify({ machines: {} }));
+		stableMocks.readFile.mockResolvedValue(JSON.stringify({ machines: {} }));
 		stableMocks.writeFile.mockResolvedValue(undefined);
 
 		await registerMachineId('fresh-machine', '/tmp/test-shared', 'init');
