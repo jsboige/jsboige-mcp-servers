@@ -1970,7 +1970,23 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		//     capKeyOf utilise LE MÊME prédicat : il ne doit jamais replier un module
 		//     d'exécution dans le budget d'une famille.
 		const LOCALE_ROOTS = new Set(['i18n', 'locales', 'lang', 'languages', 'translations']);
-		const LOCALE_TAG_RE = /^[a-z]{2}(?:[-_][a-z0-9]{2,4})?$/i;
+		// (ms#1568 review, item 4 — the reserve Hermes filed on #4424) A bare
+		// `^[a-z]{2}$` shape accepts ANY two-letter basename, so `src/i18n/ui.ts` — a
+		// runtime module — took the ×0.7 malus, lost block expansion and joined the
+		// family budget: literally the `index.ts` regression, one notch narrower.
+		// A locale code is a FINITE, enumerable set (ISO 639-1), so membership is tested
+		// instead of shape. Deliberate asymmetry: a missed language (`fil.ts`, 639-2
+		// three-letter) loses only the ranking nicety and stays an ordinary source,
+		// while a false positive demotes real code — the safe direction is exclusivity.
+		const LANGUAGE_CODES = new Set((
+			'aa ab ae af ak am an ar as av ay az ba be bg bh bi bm bn bo br bs ca ce ch co cr cs cu cv cy ' +
+			'da de dv dz ee el en eo es et eu fa ff fi fj fo fr fy ga gd gl gn gu gv ha he hi ho hr ht hu hy hz ' +
+			'ia id ie ig ii ik io is it iu ja jv ka kg ki kj kk kl km kn ko kr ks ku kv kw ky la lb lg li ln lo lt lu lv ' +
+			'mg mh mi mk ml mn mr ms mt my na nb nd ne ng nl nn no nr nv ny oc oj om or os pa pi pl ps pt qu ' +
+			'rm rn ro ru rw sa sc sd se sg si sk sl sm sn so sq sr ss st su sv sw ta te tg th ti tk tl tn to tr ts tt tw ty ' +
+			'ug uk ur uz ve vi vo wa wo xh yi yo za zh zu'
+		).split(' '));
+		const LOCALE_TAG_RE = /^([a-z]{2})(?:[-_][a-z0-9]{2,4})?$/i;
 		const TRANSLATION_FILE_RE = /\.(json|jsonc|json5|ya?ml|csv|tsv|po|pot|ts|js|mjs)$/i;
 		const isLocaleFilePath = (fp: string): boolean => {
 			const segments = String(fp).replace(/\\/g, '/').split('/');
@@ -1984,8 +2000,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// (2b) gettext : un .po/.pot est une traduction par nature, quel que soit
 			// son basename (`i18n/messages.po`).
 			if (/\.pot?$/i.test(file)) return true;
-			// (2c) basename de code de langue : fr.ts, de-DE.json, zh_CN.po.
-			return LOCALE_TAG_RE.test(file.replace(TRANSLATION_FILE_RE, ''));
+			// (2c) basename de code de langue RÉEL : fr.ts, de-DE.json, pt_BR.json.
+			const tag = file.replace(TRANSLATION_FILE_RE, '').match(LOCALE_TAG_RE);
+			return tag !== null && LANGUAGE_CODES.has(tag[1].toLowerCase());
 		};
 		const LOCALE_FILE_MALUS = 0.7;
 		const MAX_CHUNKS_PER_FILE = 2;

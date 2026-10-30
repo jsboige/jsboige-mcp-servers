@@ -145,7 +145,11 @@ export const roosyncSearchTool: Tool = {
             },
             exclude_tool_results: {
                 type: 'boolean',
-                description: 'Exclude tool calls and tool results, including tool output stored as message_exchange'
+                // ONE canonical string, duplicated verbatim in `tool-definitions.ts`
+                // (the copy served over ListTools) and asserted EQUAL by the parity
+                // test — two copies that merely agree in spirit are how ms#1564's
+                // repair:"headless" shipped a wire that lied (ms#1568 review, info).
+                description: 'default true (semantic action only; ignored in text mode): excludes tool_interaction chunks via must_not — pass false, or chunk_type:"tool_interaction", to include tool results'
             },
             reset_circuit_breaker: {
                 type: 'boolean',
@@ -228,8 +232,18 @@ export async function handleRooSyncSearch(
                 // #636 Phase 2: Temporal filters
                 start_date: args.start_date,
                 end_date: args.end_date,
-                // #636 Phase 3: Convenience filter
-                exclude_tool_results: args.exclude_tool_results,
+                // #636 Phase 3: Convenience filter.
+                // #2609 (web1 c.715, measured live 2026-10-28): DEFAULT true on the
+                // semantic path — without the flag, tool-result echoes of the very
+                // query occupy ranks 1-3 (the 0.85 machine-output malus is not enough),
+                // while exclude_tool_results:true returns the actual decision passages
+                // (cadence arbitrations, with drill-down handles). An explicit false
+                // opts back into the unfiltered legacy behaviour.
+                // The test is `=== undefined`, NOT `??`: an explicit `null` reaches us
+                // through JSON and means "unfiltered" (the handler reads the flag by
+                // truthiness), so `??` would turn it on and change that behaviour
+                // (ms#1568 review, item 2). Only an ABSENT flag defaults.
+                exclude_tool_results: args.exclude_tool_results === undefined ? true : args.exclude_tool_results,
                 // #2634: Forward circuit-breaker reset so the agent-facing tool can trigger it
                 reset_circuit_breaker: args.reset_circuit_breaker,
             };
@@ -267,7 +281,9 @@ export async function handleRooSyncSearch(
                 // that were in fact applied.
                 filters_requested: !!(
                     args.chunk_type || args.role || args.tool_name ||
-                    args.model || args.exclude_tool_results
+                    // Same `=== undefined` rule as the forwarding site above: an explicit
+                    // null means unfiltered, so it must not raise this warning.
+                    args.model || (args.exclude_tool_results === undefined ? true : args.exclude_tool_results)
                 ),
                 // #2920: skeleton-derivable filters, applied in text mode.
                 has_errors: args.has_errors,

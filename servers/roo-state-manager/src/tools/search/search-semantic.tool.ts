@@ -1127,8 +1127,14 @@ export const searchTasksByContentTool = {
             };
         }
 
-        // #636 Phase 3: resolve effective chunk_type (exclude_tool_results is a convenience alias)
-        const effectiveChunkType = chunk_type ?? (exclude_tool_results ? 'message_exchange' : undefined);
+        // #636 Phase 3: an explicit chunk_type is an equality filter. `exclude_tool_results`
+        // is NOT one: it means "drop tool outputs", so it is expressed as a must_not on
+        // `chunk_type = tool_interaction` (ms#1568 review, item 1). It used to be resolved
+        // into `chunk_type = message_exchange`, which is a DIFFERENT predicate — it also
+        // dropped every `code_citation` and `task_summary` chunk, i.e. content the caller
+        // never asked to exclude.
+        const effectiveChunkType = chunk_type;
+        const excludeToolInteraction = chunk_type === undefined && !!exclude_tool_results;
 
         // #883 P0: Skip cache refresh for semantic searches — the skeleton cache is NOT used
         // for Qdrant vector search, only for post-search enrichment. The ensureCacheFreshCallback
@@ -1247,6 +1253,9 @@ export const searchTasksByContentTool = {
             // Configuration de la recherche selon conversation_id et workspace
             let filter;
             const filterConditions = [];
+            // must_not conditions — kept separate from `must` so a negation never turns into
+            // an equality (a `must` on `!=` would also drop points missing the field).
+            const filterMustNot = [];
 
             if (conversation_id && conversation_id !== 'undefined') {
                 filterConditions.push({
@@ -1290,6 +1299,16 @@ export const searchTasksByContentTool = {
                 filterConditions.push({
                     key: "chunk_type",
                     match: { value: effectiveChunkType }
+                });
+            }
+            // ms#1568 review, item 1: `exclude_tool_results` excludes ONE chunk type, it does
+            // not select one. As a `must_not`, every other chunk type (`message_exchange`,
+            // `code_citation`, `task_summary`) survives — the post-retrieval machine-output
+            // classifier then removes the tool *echoes* that live in message_exchange.
+            if (excludeToolInteraction) {
+                filterMustNot.push({
+                    key: "chunk_type",
+                    match: { value: "tool_interaction" }
                 });
             }
 
@@ -1346,8 +1365,11 @@ export const searchTasksByContentTool = {
                 });
             }
 
-            if (filterConditions.length > 0) {
-                filter = { must: filterConditions };
+            if (filterConditions.length > 0 || filterMustNot.length > 0) {
+                filter = {
+                    ...(filterConditions.length > 0 ? { must: filterConditions } : {}),
+                    ...(filterMustNot.length > 0 ? { must_not: filterMustNot } : {})
+                };
             } else {
                 filter = undefined;
             }

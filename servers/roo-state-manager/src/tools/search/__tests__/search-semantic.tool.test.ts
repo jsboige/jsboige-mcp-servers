@@ -1554,7 +1554,10 @@ describe('helper functions (indirect via handler)', () => {
 			delete process.env.SEMANTIC_MACHINE_OUTPUT_MALUS;
 		});
 
-		test('exclude_tool_results=true adds chunk_type=message_exchange filter to Qdrant query', async () => {
+		test('exclude_tool_results=true adds a must_not on chunk_type=tool_interaction, NOT an equality', async () => {
+			// ms#1568 review, item 1: the flag means "drop tool outputs", not "keep only
+			// message exchanges". As an equality it also dropped every `code_citation` and
+			// `task_summary` chunk — content the caller never asked to exclude.
 			mockQdrantClient.search.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
@@ -1564,16 +1567,34 @@ describe('helper functions (indirect via handler)', () => {
 				defaultFallback
 			);
 
-			expect(mockQdrantClient.search).toHaveBeenCalledWith(
-				expect.any(String),
-				expect.objectContaining({
-					filter: expect.objectContaining({
-						must: expect.arrayContaining([
-							{ key: 'chunk_type', match: { value: 'message_exchange' } }
-						])
-					})
-				})
+			const callArgs: any = (mockQdrantClient.search as any).mock.calls[0][1];
+			expect(callArgs.filter.must_not).toEqual([
+				{ key: 'chunk_type', match: { value: 'tool_interaction' } }
+			]);
+			// The bug was an equality in `must`: assert its ABSENCE, so a revert to
+			// `chunk_type = message_exchange` cannot pass this test again.
+			const mustKeys = (callArgs.filter.must || []).map((c: any) => c.key);
+			expect(mustKeys).not.toContain('chunk_type');
+		});
+
+		test('an explicit chunk_type still wins as an equality, and the must_not is not added', async () => {
+			// The other side of the same boundary: an explicit value selects one chunk type
+			// (that is what `chunk_type` means), so `exclude_tool_results` must not also
+			// negate a type the caller explicitly asked for.
+			mockQdrantClient.search.mockResolvedValue([]);
+
+			await searchTasksByContentTool.handler(
+				{ search_query: 'test', chunk_type: 'code_citation', exclude_tool_results: true },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
 			);
+
+			const callArgs: any = (mockQdrantClient.search as any).mock.calls[0][1];
+			expect(callArgs.filter.must).toEqual(
+				expect.arrayContaining([{ key: 'chunk_type', match: { value: 'code_citation' } }])
+			);
+			expect(callArgs.filter.must_not).toBeUndefined();
 		});
 
 		test('exclude_tool_results=false does not add chunk_type filter', async () => {
