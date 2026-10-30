@@ -4,8 +4,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { classifySearchError, formatClassifiedError, unwrapTransportCause } from '../search-error-classifier.js';
-import type { ClassifiedError } from '../search-error-classifier.js';
+import { classifySearchError, formatClassifiedError, unwrapTransportCause, failureComponent } from '../search-error-classifier.js';
+import type { ClassifiedError, FailureMode } from '../search-error-classifier.js';
 
 // Mock global.fetch for probeQdrantHealth tests
 const mockFetch = vi.fn();
@@ -396,5 +396,46 @@ describe('#3344 qdrant_client_failure vs qdrant_unreachable', () => {
 		const result = await classifySearchError(err, 'embedding');
 		expect(result.mode).toBe('embedding_unreachable');
 		expect(result.originalError).toContain('ENOTFOUND');
+	});
+});
+
+// ── #4438: which component a classified mode implicates ──
+
+describe('failureComponent (#4438)', () => {
+	it('maps the qdrant modes to qdrant', () => {
+		expect(failureComponent('qdrant_unreachable')).toBe('qdrant');
+		expect(failureComponent('qdrant_client_failure')).toBe('qdrant');
+		expect(failureComponent('qdrant_proxy_drop')).toBe('qdrant');
+		expect(failureComponent('qdrant_backend_slow')).toBe('qdrant');
+		expect(failureComponent('qdrant_collection_missing')).toBe('qdrant');
+	});
+
+	it('maps the embedding modes to embeddings', () => {
+		expect(failureComponent('embedding_unreachable')).toBe('embeddings');
+		expect(failureComponent('embedding_timeout')).toBe('embeddings');
+	});
+
+	it('maps the two non-component modes to their own component', () => {
+		expect(failureComponent('auth_failed')).toBe('auth');
+		expect(failureComponent('resource_exhausted')).toBe('resources');
+	});
+
+	it('claims NO component for null or unknown', () => {
+		expect(failureComponent(null)).toBeNull();
+		expect(failureComponent('unknown')).toBeNull();
+	});
+
+	it('claims a component for EVERY mode of the FailureMode union except unknown', () => {
+		// Add the new mode here when the union grows — a mode with no component
+		// would make the degraded banner assert an owner it cannot know (#4438).
+		const modes: FailureMode[] = [
+			'embedding_unreachable', 'embedding_timeout',
+			'qdrant_unreachable', 'qdrant_client_failure', 'qdrant_proxy_drop',
+			'qdrant_backend_slow', 'qdrant_collection_missing',
+			'auth_failed', 'resource_exhausted',
+		];
+		for (const mode of modes) {
+			expect(failureComponent(mode), mode).not.toBeNull();
+		}
 	});
 });

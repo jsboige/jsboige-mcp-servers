@@ -151,11 +151,17 @@ function renderSharedStoreInaccessibleMessage(
 ): string {
     const pathLabel = storePath ? ` (${storePath})` : ' (variable non définie)';
 
+    // #4293 follow-up (reviews 30/10): the message asserts only what the probe
+    // established — the store ROOT EXISTS (existsSync) — never that the volume
+    // is responsive; and every rendering ends with a machine-readable
+    // `(cause=…)` token so the discriminator crosses the MCP boundary without
+    // any agent having to parse French prose.
     if (cause === 'pg-unavailable') {
         return (
             `ROOSYNC_SHARED_PATH${pathLabel} : la moitié PostgreSQL n'a pas répondu et, sous CHANNEL_PG_PRIMARY, ` +
-            `le repli Google Drive est interdit (#4131 B16). Le store G: n'est PAS en cause — ne cherchez pas le montage du lecteur. ` +
-            `Toute lecture est interrompue (fail-closed).`
+            `le repli Google Drive est interdit (#4131 B16). La racine du store G: a été trouvée présente ` +
+            `(existence vérifiée à l'instant — sa réactivité n'a pas été mesurée) ; cette lecture ne l'a pas consultée. ` +
+            `Toute lecture est interrompue (fail-closed). (cause=pg-unavailable)`
         );
     }
 
@@ -163,7 +169,7 @@ function renderSharedStoreInaccessibleMessage(
         return (
             `ROOSYNC_SHARED_PATH${pathLabel} : un autre processus RSM de ce poste tient le verrou de scan G: (inbox-pool) ` +
             `et ce siège n'a pas de cache chaud. Le store G: n'est PAS en cause — ne cherchez pas le montage du lecteur. ` +
-            `Toute lecture est interrompue (fail-closed).`
+            `Toute lecture est interrompue (fail-closed). (cause=scan-lock-contended)`
         );
     }
 
@@ -171,7 +177,7 @@ function renderSharedStoreInaccessibleMessage(
         return (
             `ROOSYNC_SHARED_PATH${pathLabel} : le store G: n'a pas répondu dans le délai imparti (volume muet) — ` +
             `il n'est pas forcément absent, et son absence n'est pas établie. ` +
-            `Toute lecture est interrompue (fail-closed).`
+            `Toute lecture est interrompue (fail-closed). (cause=store-unresponsive)`
         );
     }
 
@@ -183,7 +189,8 @@ function renderSharedStoreInaccessibleMessage(
             // serve the read either — both halves are down, so the caller
             // must not read the result as "nothing to show".
             ? ` La lecture PostgreSQL de secours n'a rien rendu non plus : aucune des deux moitiés du magasin ne peut servir cette lecture.`
-            : '')
+            : '') +
+        ` (cause=store-absent)`
     );
 }
 

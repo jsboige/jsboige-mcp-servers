@@ -29,6 +29,7 @@ describe('SharedStoreInaccessibleError — the cause names the failing half', ()
         expect(err.cause).toBe('store-absent');
         expect(err.message).toContain(ABSENT_PHRASE);
         expect(err.message).toContain(MOUNT_ADVICE);
+        expect(err.message).toContain('(cause=store-absent)');
         expect(err.code).toBe('ROOSYNC_STORE_INACCESSIBLE');
     });
 
@@ -37,16 +38,22 @@ describe('SharedStoreInaccessibleError — the cause names the failing half', ()
         expect(err.cause).toBe('store-absent');
         expect(err.message).toContain(ABSENT_PHRASE);
         expect(err.message).toContain("La lecture PostgreSQL de secours n'a rien rendu non plus");
+        expect(err.message).toContain('(cause=store-absent)');
     });
 
-    test('pg-unavailable names PostgreSQL and does NOT blame the store', () => {
+    test('pg-unavailable asserts the evidence (root present), never a negative about the mount', () => {
         const err = new SharedStoreInaccessibleError(PATH, true, 'pg-unavailable');
         expect(err.cause).toBe('pg-unavailable');
         expect(err.message).toContain('PostgreSQL');
         expect(err.message).toContain('CHANNEL_PG_PRIMARY');
         expect(err.message).not.toContain(ABSENT_PHRASE);
         expect(err.message).not.toContain(MOUNT_ADVICE);
-        expect(err.message).toContain("Le store G: n'est PAS en cause");
+        // 30/10 review: the probe establishes EXISTENCE, not responsiveness —
+        // the wording must say exactly that, no more.
+        expect(err.message).toContain('existence vérifiée');
+        expect(err.message).toContain("sa réactivité n'a pas été mesurée");
+        expect(err.message).not.toContain("n'est PAS en cause");
+        expect(err.message).toContain('(cause=pg-unavailable)');
     });
 
     test('scan-lock-contended names the host scan lock, not the mount', () => {
@@ -55,6 +62,7 @@ describe('SharedStoreInaccessibleError — the cause names the failing half', ()
         expect(err.message).toContain('verrou de scan G:');
         expect(err.message).not.toContain(ABSENT_PHRASE);
         expect(err.message).not.toContain(MOUNT_ADVICE);
+        expect(err.message).toContain('(cause=scan-lock-contended)');
     });
 
     test('store-unresponsive says the volume did not answer, not that it is gone', () => {
@@ -63,6 +71,7 @@ describe('SharedStoreInaccessibleError — the cause names the failing half', ()
         expect(err.message).toContain("n'a pas répondu dans le délai imparti");
         expect(err.message).not.toContain(ABSENT_PHRASE);
         expect(err.message).not.toContain(MOUNT_ADVICE);
+        expect(err.message).toContain('(cause=store-unresponsive)');
     });
 
     test('an unset ROOSYNC_SHARED_PATH is reported as such, whatever the cause', () => {
