@@ -213,7 +213,43 @@ const MUTATING_ARG_FLAGS = new Set([
     'write', 'scrub', 'delete', 'remove', 'cleanup', 'purge',
     'overwrite', 'migrate', 'restore', 'inject', 'set', 'update', 'create', 'save',
     'markAsRead', 'mark_as_read',
+    // Re-review ms#1578 — ALIAS vers l'écriture que B2 venait de fermer :
+    // `roosync_messages(action:"attachments_get", targetPath)` forwarde
+    // VERBATIM vers `roosyncAttachments({ action:"get", targetPath })`
+    // (messages.ts:450) — le handler qui COPIE le fichier côté HÔTE du
+    // daemon vers un chemin fourni par l'appelant
+    // (roosync-attachments.tool.ts:291-305). La porte d'identité était
+    // contournée : bearer seul, sans `x-roosync-as`, écriture de fichier à
+    // un chemin arbitraire sur l'hôte. Sans `targetPath`, le même `get`
+    // reste en mode INLINE (contenu dans la réponse, aucune copie) — le
+    // flag porte donc sur la PRÉSENCE du chemin, pas sur l'action.
+    // `targetPath` n'est porté par AUCUN outil de lecture : ce flag ne peut
+    // pas sur-bloquer une lecture légitime.
+    'targetPath',
+    // Même classe (« lectures qui écrivent »), autres instances mesurées :
+    // `analyze_roosync_problems` RÉÉCRIT le fichier analysé sur place
+    // (`cleanupStale`, analyze_problems.ts:302) et ÉCRIT puis PURGE un
+    // rapport dans le STORE PARTAGÉ (`generateReport`, :333 et :347).
+    // Noms uniques dans la surface actuelle — aucun sur-blocage de lecture.
+    'cleanupStale', 'generateReport',
 ]);
+
+/**
+ * Flags mutateurs SPÉCIFIQUES à un outil — le même nom de flag n'a pas la
+ * même portée partout.
+ *
+ * `fix_found` : RÉÉCRIT les fichiers scannés pour
+ * `diagnose_conversation_bom` (il retire le BOM — diagnose-conversation-bom
+ * .tool.ts:68-76) ; l'outil est classé lecture pure, donc le flag doit
+ * fermer la porte d'identité. Pour `roosync_storage_management`, le flag
+ * n'est(relaye que par `action="maintenance"` (storage-management.ts:187) —
+ * et `maintenance` est déjà une ÉCRITURE (default-deny) ; l'action `storage`
+ * (détection) ne le lit pas. Un flag GLOBAL surchargerait la détection de
+ * stockage pour un appel sans effet de bord.
+ */
+const MUTATING_ARG_FLAGS_BY_TOOL: Record<string, ReadonlySet<string>> = {
+    diagnose_conversation_bom: new Set(['fix_found']),
+};
 
 /** Résultat de la classification d'un appel d'outil. */
 export interface CallClassification {
@@ -235,9 +271,10 @@ export interface CallClassification {
  * outil imbrique un jour un flag, il faudra un test dédié et une décision
  * explicite — pas une récursion générique.
  */
-function hasMutatingFlag(args: Record<string, unknown>): boolean {
+function hasMutatingFlag(args: Record<string, unknown>, tool: string): boolean {
+    const toolFlags = MUTATING_ARG_FLAGS_BY_TOOL[tool];
     for (const key of Object.keys(args)) {
-        if (MUTATING_ARG_FLAGS.has(key)) {
+        if (MUTATING_ARG_FLAGS.has(key) || (toolFlags !== undefined && toolFlags.has(key))) {
             const value = args[key];
             // Un flag explicitement faux n'est pas une mutation.
             if (value === false || value === undefined || value === null) continue;
@@ -289,12 +326,12 @@ function classifySingleCall(body: unknown): CallClassification {
 
     if (READ_ONLY_TOOLS.has(tool)) {
         // Outil sans notion d'action mutante : lecture, sauf flag mutateur.
-        return { tool, action, readOnly: !hasMutatingFlag(args) };
+        return { tool, action, readOnly: !hasMutatingFlag(args, tool) };
     }
     const readActions = READ_ONLY_ACTIONS[tool];
     if (readActions) {
         // Action absente ou inconnue => écriture (default-deny).
-        const readOnly = action !== '' && readActions.has(action) && !hasMutatingFlag(args);
+        const readOnly = action !== '' && readActions.has(action) && !hasMutatingFlag(args, tool);
         return { tool, action, readOnly };
     }
     // Outil d'écriture explicite, ou outil INCONNU : écriture dans les deux cas.

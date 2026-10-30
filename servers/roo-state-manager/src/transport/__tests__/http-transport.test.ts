@@ -492,6 +492,139 @@ describe('#4149 F2 — transport HTTP du daemon RSM', () => {
         });
     });
 
+    // Re-review ms#1578 (ai-01, 30/10 12:37Z) — **alias vers l'écriture** :
+    // `roosync_messages(action:"attachments_get")` forwarde VERBATIM vers
+    // `roosyncAttachments({action:"get", targetPath})` (messages.ts:450), le
+    // handler que B2 venait de reclasser en ÉCRITURE parce qu'il COPIE le
+    // fichier côté HÔTE du daemon vers un chemin fourni par l'appelant
+    // (roosync-attachments.tool.ts:291-305). `targetPath` n'étant pas dans
+    // `MUTATING_ARG_FLAGS`, une requête porteuse du bearer mais sans
+    // `x-roosync-as` écrivait un fichier à un chemin arbitraire sur l'hôte.
+    // -------------------------------------------------------------- *
+    describe('alias vers une écriture — la porte porte sur le CHEMIN, pas sur l\'intitulé', () => {
+        const ATTACHMENT_GET = {
+            action: 'attachments_get',
+            uuid: 'att-uuid',
+            targetPath: 'C:/tmp/attachment-copy.bin',
+        };
+
+        it('refuse roosync_messages(action=attachments_get, targetPath) sans identité et ne le dispatche pas', async () => {
+            const res = await post(toolCall('roosync_messages', ATTACHMENT_GET), { as: null });
+            expect(res.status).toBe(403);
+            expect(res.json?.error).toBe('identity_required');
+            expect(dispatched).toHaveLength(0);
+        });
+
+        it('une identité trustée suffit pour cet alias (le garde est la porte, pas l\'outil)', async () => {
+            const res = await post(toolCall('roosync_messages', ATTACHMENT_GET), {
+                as: 'myia-web2:roo-extensions',
+            });
+            expect(res.status).toBe(200);
+            expect(dispatched.map((d) => d.name)).toEqual(['roosync_messages']);
+        });
+
+        it('SANS targetPath, attachments_get reste une lecture (mode inline, aucune copie)', async () => {
+            // Frontière du correctif : sans `targetPath`, le handler renvoie
+            // le contenu DANS la réponse (roosync-attachments.tool.ts:285) —
+            // aucune écriture sur l'hôte. La lecture reste donc sans
+            // identité (le flag porte sur la PRÉSENCE du chemin).
+            const res = await post(
+                toolCall('roosync_messages', { action: 'attachments_get', uuid: 'att-uuid' }),
+                { as: null }
+            );
+            expect(res.status).toBe(200);
+            expect(dispatched).toHaveLength(1);
+        });
+
+        it('refuse analyze_roosync_problems(cleanupStale) sans identité et ne le dispatche pas', async () => {
+            // Réécrit le fichier analysé SUR PLACE (analyze_problems.ts:302).
+            const res = await post(
+                toolCall('analyze_roosync_problems', { cleanupStale: true }),
+                { as: null }
+            );
+            expect(res.status).toBe(403);
+            expect(res.json?.error).toBe('identity_required');
+            expect(dispatched).toHaveLength(0);
+        });
+
+        it('refuse analyze_roosync_problems(generateReport) sans identité et ne le dispatche pas', async () => {
+            // ÉCRIT un rapport dans le store partagé et PURGE les anciens
+            // (analyze_problems.ts:333 et :347).
+            const res = await post(
+                toolCall('analyze_roosync_problems', { generateReport: true }),
+                { as: null }
+            );
+            expect(res.status).toBe(403);
+            expect(res.json?.error).toBe('identity_required');
+            expect(dispatched).toHaveLength(0);
+        });
+
+        it('une identité trustée suffit pour ces deux écritures', async () => {
+            for (const args of [{ cleanupStale: true }, { generateReport: true }]) {
+                const res = await post(toolCall('analyze_roosync_problems', args), {
+                    as: 'myia-web2:roo-extensions',
+                });
+                expect(res.status).toBe(200);
+            }
+            expect(dispatched.map((d) => d.name)).toEqual([
+                'analyze_roosync_problems',
+                'analyze_roosync_problems',
+            ]);
+        });
+
+        // --- Même famille, AUTRE outillage : le flag est propre à l'outil ---
+        // `diagnose_conversation_bom` est classé lecture pure, mais
+        // `fix_found=true` RÉÉCRIT les fichiers scannés (retrait du BOM —
+        // diagnose-conversation-bom.tool.ts:68-76). Le flag est donc
+        // mutateur POUR CET OUTIL, et seulement pour lui.
+        it('refuse diagnose_conversation_bom(fix_found) sans identité et ne le dispatche pas', async () => {
+            const res = await post(
+                toolCall('diagnose_conversation_bom', { fix_found: true }),
+                { as: null }
+            );
+            expect(res.status).toBe(403);
+            expect(res.json?.error).toBe('identity_required');
+            expect(dispatched).toHaveLength(0);
+        });
+
+        it('diagnose_conversation_bom SANS flag reste une lecture sans identité', async () => {
+            const res = await post(toolCall('diagnose_conversation_bom', {}), { as: null });
+            expect(res.status).toBe(200);
+            expect(dispatched).toHaveLength(1);
+        });
+
+        it('diagnose_conversation_bom(fix_found=false) reste une lecture (flag inactif)', async () => {
+            const res = await post(
+                toolCall('diagnose_conversation_bom', { fix_found: false }),
+                { as: null }
+            );
+            expect(res.status).toBe(200);
+            expect(dispatched).toHaveLength(1);
+        });
+
+        it('une identité trustée suffit pour diagnose_conversation_bom(fix_found)', async () => {
+            const res = await post(toolCall('diagnose_conversation_bom', { fix_found: true }), {
+                as: 'myia-web2:roo-extensions',
+            });
+            expect(res.status).toBe(200);
+            expect(dispatched.map((d) => d.name)).toEqual(['diagnose_conversation_bom']);
+        });
+
+        it('NON-sur-blocage : fix_found reste inerte pour la détection de stockage', async () => {
+            // `roosync_storage_management(action="storage")` est une lecture :
+            // l'action ne relaie `fix_found` que via `action="maintenance"`
+            // (storage-management.ts:187), et `maintenance` est déjà en
+            // écriture (default-deny). Un flag GLOBAL aurait fait échouer
+            // cette détection en 403 — le map par outil l'évite.
+            const res = await post(
+                toolCall('roosync_storage_management', { action: 'storage', fix_found: true }),
+                { as: null }
+            );
+            expect(res.status).toBe(200);
+            expect(dispatched).toHaveLength(1);
+        });
+    });
+
     describe('identité canonique — même destination quelle que soit la graphie', () => {
         it('une entrée LANE épingle la graphie ENREGISTRÉE, même assertée en minuscules', async () => {
             // Env de confiance : "myia-web3:CoursIA" (graphie enregistrée).
