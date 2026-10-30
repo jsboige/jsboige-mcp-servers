@@ -333,6 +333,27 @@ describe('cascade payload #4427 — validateCascadePayload', () => {
         expect(validateCascadePayload(q).errors.some(e => e.includes('INTÉGRALEMENT'))).toBe(false);
     });
 
+    test('B11 — la CASSE de la machine ne permet pas d\'échapper au refus (MACHINE_RE est /i)', () => {
+        // La même machine écrite dans deux casses, chaque entrée couvrant une
+        // partie des barreaux : sans normalisation de la clé, deux ensembles
+        // distincts, chacun incomplet, aucun refus — et le rôle désactivé en
+        // silence. `MyIA-PO-2027` est un payload VALIDE (MACHINE_RE = /i).
+        const p = goldenPayload();
+        p.stepExclude = [
+            { stepTarget: 'vllm-myia@swift-1.5-27b', machines: ['MyIA-PO-2027'] },
+            { stepTarget: 'role:sonnet', machines: ['myia-po-2027'] },
+        ];
+        expect(validateCascadePayload(p).errors.some(e => e.includes('INTÉGRALEMENT'))).toBe(true);
+
+        // Contrôle négatif : une casse homogène et une couverture PARTIELLE
+        // restent acceptées — la normalisation ne doit pas élargir le refus.
+        const q = goldenPayload();
+        q.stepExclude = [
+            { stepTarget: 'vllm-myia@swift-1.5-27b', machines: ['MyIA-PO-2027'] },
+        ];
+        expect(validateCascadePayload(q).errors.some(e => e.includes('INTÉGRALEMENT'))).toBe(false);
+    });
+
     test('ACTIVE : la machine est validée, et le rôle doit exister', () => {
         const p = goldenPayload();
         p.active = ['haiku@not_a_machine!!'];
