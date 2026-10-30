@@ -323,6 +323,28 @@ describe('IndexingDecisionService', () => {
       service.markIndexingFailure(skeleton, 'error 2', false);
       expect(skeleton.metadata.indexingState!.indexRetryCount).toBe(2);
     });
+
+    // #4440: a new attempt invalidates the class recorded for the PREVIOUS one.
+    // Leaving it in place is what produced 9 web1 rows whose message said
+    // "Indexing timeout … after 300000ms" while their class said auth_failed.
+    it('should clear a stale errorClass left by an earlier attempt (#4440)', () => {
+      const skeleton = createSkeleton({
+        metadata: {
+          ...createSkeleton().metadata,
+          indexingState: {
+            indexStatus: 'failed',
+            indexError: 'HTTP 401: invalid api key',
+            errorClass: 'auth_failed',
+            indexRetryCount: 0,
+          },
+        },
+      });
+
+      service.markIndexingFailure(skeleton, 'Indexing timeout for t after 300000ms', false);
+
+      expect(skeleton.metadata.indexingState!.indexError).toBe('Indexing timeout for t after 300000ms');
+      expect(skeleton.metadata.indexingState!.errorClass).toBeUndefined();
+    });
   });
 
   // === resetIndexingState ===

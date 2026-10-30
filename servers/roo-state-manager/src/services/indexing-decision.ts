@@ -257,6 +257,15 @@ export class IndexingDecisionService {
                 repair: undefined
             };
         }
+
+        // #4440: a new failure invalidates the class recorded for the PREVIOUS
+        // one — the pair (indexError, errorClass) must always describe the same
+        // attempt. Leaving it in place is what let a "timeout … after 300000ms"
+        // message sit beside an `auth_failed` class (9/115 rows on web1).
+        // The caller re-attaches the fresh class from the error it just passed.
+        if (skeleton.metadata.indexingState) {
+            skeleton.metadata.indexingState.errorClass = undefined;
+        }
     }
 
     /**

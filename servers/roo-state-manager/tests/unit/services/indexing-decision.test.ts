@@ -231,10 +231,29 @@ describe('IndexingDecisionService', () => {
             mockSkeleton.metadata.indexingState = {
                 indexRetryCount: 2
             };
-            
+
             service.markIndexingFailure(mockSkeleton, 'Retry exhausted', false);
-            
+
             expect(mockSkeleton.metadata.indexingState!.indexStatus).toBe('failed');
+        });
+
+        // #4440 : une nouvelle tentative invalide la classe de la PRÉCÉDENTE.
+        // La laisser en place est ce qui a produit 9 lignes web1 « timeout 300 s »
+        // classées auth_failed : le message était réécrit, la classe survivait.
+        it('devrait effacer la classe d\'erreur d\'une tentative antérieure (#4440)', () => {
+            mockSkeleton.metadata.indexingState = {
+                indexStatus: 'failed',
+                indexError: 'HTTP 401: invalid api key',
+                errorClass: 'auth_failed',
+                indexRetryCount: 0
+            };
+
+            service.markIndexingFailure(mockSkeleton, 'Indexing timeout for t after 300000ms', false);
+
+            expect(mockSkeleton.metadata.indexingState!.indexError).toBe('Indexing timeout for t after 300000ms');
+            // La paire (indexError, errorClass) doit décrire la MÊME tentative :
+            // la classe est effacée, le classifieur d'appel la ré-attache.
+            expect(mockSkeleton.metadata.indexingState!.errorClass).toBeUndefined();
         });
     });
 

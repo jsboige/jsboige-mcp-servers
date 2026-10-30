@@ -20,7 +20,7 @@ import { createHash } from 'crypto';
 // failures from the pre-#886 era) and the cleanup_failed action. Imports stay
 // narrow to avoid pulling the entire background-services module into the tool
 // layer (registry.ts owns that wiring).
-import { classifyIndexingError, readLeaderLockInfo } from '../../services/background-services.js';
+import { classifyIndexingError, reconcileErrorClass, readLeaderLockInfo } from '../../services/background-services.js';
 import { isStuckRetry } from '../../types/indexing.js';
 import { sanitizeInt } from '../../utils/int-validator.js';
 
@@ -1203,6 +1203,10 @@ export async function handleRooSyncIndexing(
             // operator-visible failure list. Use the shared `isStuckRetry` helper so
             // the MAX_RETRY_ATTEMPTS threshold has a single source of truth.
             const failedTasks: Array<{ task_id: string; error: string; error_class: string; retry_count: number; last_attempt: string | undefined }> = [];
+            // #4440: rows whose stored class contradicted their message (a
+            // stale class from an earlier attempt). Counted so the repair is
+            // visible to the operator instead of silently applied.
+            let repairedClassCount = 0;
             for (const [taskId, skeleton] of conversationCache) {
                 const idx = skeleton.metadata?.indexingState;
                 const isFailed = idx?.indexStatus === 'failed';
@@ -1217,8 +1221,16 @@ export async function handleRooSyncIndexing(
                     // pattern (intentional, see ERROR_PATTERNS in
                     // background-services.ts).
                     const errorMessage = idx?.indexError || 'unknown error';
-                    const errorClass = idx?.errorClass
-                        ?? classifyIndexingError({ message: errorMessage }).errorClass;
+                    // #4440: `idx.errorClass` describes the message it was
+                    // written WITH — a stored class can survive a later attempt
+                    // that only rewrote `indexError`, so precedence must not be
+                    // "stored wins". reconcileErrorClass keeps a timeout from
+                    // inheriting an HTTP class it cannot have.
+                    const reconciled = reconcileErrorClass(errorMessage, idx?.errorClass);
+                    const errorClass = reconciled.errorClass;
+                    if (reconciled.repairedFrom) {
+                        repairedClassCount++;
+                    }
                     failedTasks.push({
                         task_id: taskId,
                         error: errorMessage,
@@ -1258,6 +1270,13 @@ export async function handleRooSyncIndexing(
 
             if (failedTasks.length > 0) {
                 hints.push(`${failedTasks.length} tâches en échec permanent (détails dans failed_task_details ci-dessous).`);
+            }
+            if (repairedClassCount > 0) {
+                // #4440: the class shown for these rows was DERIVED from their
+                // message, not the stale value persisted with an earlier
+                // attempt. Say it, so the operator does not re-triage rows that
+                // were already repaired on read.
+                hints.push(`${repairedClassCount} tâche(s) portaient une classe d'échec antérieure (ex. auth_failed) sous un message de délai — reclassée(s) embedding_timeout à la lecture (#4440).`);
             }
             if (deadLetterSize > 0) {
                 // Distinct hint so operators can spot dead-letter growth vs
@@ -1805,14 +1824,18 @@ export async function handleRooSyncIndexing(
                     if (!isFailed && !isStuck) continue;
 
                     const errorMessage = idx?.indexError || 'unknown error';
-                    // #2766 S3: classify the message → { errorClass, isPermanent }. The stored
-                    // idx.errorClass is itself produced by this same classifier on this same
-                    // message (background-services.ts:1261), so the two are consistent by
-                    // construction; we keep the idx.errorClass ?? classify precedence to match
-                    // the status retrofit above (line ~506), and derive isPermanent from the
-                    // classification. isPermanent gates the dead-letter mirror below.
+                    // #2766 S3: classify the message → { errorClass, isPermanent }.
+                    // #4440: the old comment here claimed `idx.errorClass` and the
+                    // message were "consistent by construction" — they are not:
+                    // `markIndexingFailure()` rewrote `indexError` on every attempt
+                    // while a class from an earlier failure could survive. The
+                    // `idx.errorClass ?? classify` precedence therefore let a
+                    // "timeout 300000ms" row be selected as `auth_failed` and
+                    // presented for a key rotation that cannot repair it. Reconcile
+                    // instead — isPermanent follows the MESSAGE, so a timeout never
+                    // enters the dead-letter as a permanent HTTP failure.
                     const messageClassification = classifyIndexingError({ message: errorMessage });
-                    const errorClass = idx?.errorClass ?? messageClassification.errorClass;
+                    const errorClass = reconcileErrorClass(errorMessage, idx?.errorClass).errorClass;
                     const isPermanent = messageClassification.isPermanent;
 
                     if (errorClassFilter !== 'all' && errorClass !== errorClassFilter) continue;

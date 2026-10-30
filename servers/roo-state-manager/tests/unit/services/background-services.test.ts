@@ -76,6 +76,7 @@ import {
   saveSkeletonIndex,
   loadFullSkeleton,
   classifyIndexingError,
+  reconcileErrorClass,
   isPermanentIndexingError,
   registerDeadLetter,
   shouldRequeueForRefresh,
@@ -746,6 +747,40 @@ describe('classifyIndexingError', () => {
     // A standalone code still classifies.
     expect(classifyIndexingError(new Error('HTTP 401: invalid key'))).toEqual({ isPermanent: true, errorClass: 'auth_failed' });
     expect(classifyIndexingError(new Error('service unavailable (503)')).errorClass).toBe('service_503');
+  });
+
+  // #4440 — the pair (indexError, errorClass) must describe the SAME attempt.
+  // `markIndexingFailure()` rewrote the message on every attempt while a class
+  // from an earlier failure could survive; reading `errorClass ?? classify()`
+  // then handed the verdict to the older value. Measured on web1: 9 of 115
+  // dead-letter rows carried an HTTP class beside a 300 s timeout message.
+  it('reconcileErrorClass: a timeout never inherits an HTTP class (#4440)', () => {
+    const timeoutMessages = [
+      'Indexing timeout for task-123 after 300000ms',
+      'Indexing timeout for claude-d--roo-extensions--e4d401c6-ca38-4164-862a-2443320c8de9 after 300000ms — session too large or embedding backlog',
+      'Indexing timeout for t — no batch acknowledged for 180000ms (inactivity watchdog #4352 g5)',
+    ];
+
+    for (const message of timeoutMessages) {
+      for (const staleClass of ['auth_failed', 'rate_limit', 'service_503']) {
+        const reconciled = reconcileErrorClass(message, staleClass);
+        expect(reconciled.errorClass).toBe('embedding_timeout');
+        // The repair is REPORTED, never silent — the operator can audit it.
+        expect(reconciled.repairedFrom).toBe(staleClass);
+      }
+    }
+  });
+
+  it('reconcileErrorClass: leaves a coherent pair untouched (#4440)', () => {
+    // Genuine auth failure: the stored class agrees with the message.
+    expect(reconcileErrorClass('HTTP 401: invalid api key', 'auth_failed'))
+      .toEqual({ errorClass: 'auth_failed' });
+    // Legacy row with no stored class — the message is the only source.
+    expect(reconcileErrorClass('Indexing timeout for task-123 after 300000ms'))
+      .toEqual({ errorClass: 'embedding_timeout' });
+    // A timeout already filed as embedding_timeout is not a repair.
+    expect(reconcileErrorClass('Indexing timeout for task-123 after 300000ms', 'embedding_timeout'))
+      .toEqual({ errorClass: 'embedding_timeout' });
   });
 
   it('should default to { isPermanent: false, errorClass: "unknown" } for unrecognized errors', () => {

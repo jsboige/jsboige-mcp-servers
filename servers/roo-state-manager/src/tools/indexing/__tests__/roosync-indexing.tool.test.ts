@@ -1873,6 +1873,63 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 		expect(parsed.failed_by_class).toEqual([{ error_class: 'claude_session_not_found', count: 1 }]);
 	});
 
+	// #4440 — a stored class must not outlive the message it was recorded with.
+	// `markIndexingFailure()` rewrites `indexError` on every attempt, so a class
+	// from an earlier failure could sit beside a later "timeout 300000ms"
+	// message. Measured on web1: 9 of 115 rows (7 auth_failed, 1 rate_limit,
+	// 1 service_503) all carried the same timeout message.
+	test('status: a stored HTTP class is repaired when the message is a timeout (#4440)', async () => {
+		const timeout = (id: string) =>
+			`Indexing timeout for claude-d--x--${id} after 300000ms — session too large or embedding backlog`;
+		const cache = new Map<string, ConversationSkeleton>([
+			['t-auth', makeSkeleton({ indexStatus: 'failed', indexError: timeout('e4d401c6'), indexRetryCount: 3, errorClass: 'auth_failed' })],
+			['t-rate', makeSkeleton({ indexStatus: 'failed', indexError: timeout('aaaa429b'), indexRetryCount: 3, errorClass: 'rate_limit' })],
+			['t-503', makeSkeleton({ indexStatus: 'failed', indexError: timeout('bbbb502c'), indexRetryCount: 3, errorClass: 'service_503' })],
+		]);
+
+		const result: any = await handleRooSyncIndexing(
+			{ action: 'status' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsed = JSON.parse(result.content[0].text);
+
+		expect(parsed.failed_task_details).toHaveLength(3);
+		for (const row of parsed.failed_task_details) {
+			expect(row.error_class).toBe('embedding_timeout');
+		}
+		expect(parsed.failed_by_class).toEqual([{ error_class: 'embedding_timeout', count: 3 }]);
+		// The repair is visible: the operator is told the class was derived on read.
+		expect(parsed.diagnostic_hints.join(' ')).toContain('#4440');
+	});
+
+	// #4440 closure criterion — cleanup_failed(error_class="auth_failed") must
+	// never present a row whose recorded message is a timeout: the operator would
+	// be asked to certify a key rotation (#3984 guard) that cannot repair it.
+	test('cleanup_failed: a timeout row is not selected as auth_failed (#4440)', async () => {
+		const cache = new Map<string, ConversationSkeleton>([
+			['t-timeout', makeSkeleton({
+				indexStatus: 'failed',
+				indexError: 'Indexing timeout for claude-d--x--e4d401c6 after 300000ms',
+				indexRetryCount: 3,
+				errorClass: 'auth_failed', // stale class from an earlier attempt
+			})],
+		]);
+
+		const asAuth: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', error_class: 'auth_failed' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		expect(JSON.parse(asAuth.content[0].text).candidates_count).toBe(0);
+
+		const asTimeout: any = await handleRooSyncIndexing(
+			{ action: 'cleanup_failed', error_class: 'embedding_timeout' } as any,
+			cache, ensureFresh, saveSkeleton, new Set(), setEnabled, mockRebuildHandler
+		);
+		const parsedTimeout = JSON.parse(asTimeout.content[0].text);
+		expect(parsedTimeout.candidates_count).toBe(1);
+		expect(parsedTimeout.by_class).toEqual({ embedding_timeout: 1 });
+	});
+
 	test('status surfaces stuck-retry tasks via isStuckRetry helper (pre-#886 livelock era)', async () => {
 		// Stuck retry: indexStatus='retry' AND retryCount >= MAX_RETRY_ATTEMPTS (3).
 		// These tasks pre-date #886 — they never flipped to 'failed' but the
