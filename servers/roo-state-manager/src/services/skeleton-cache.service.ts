@@ -88,6 +88,24 @@ export class SkeletonCacheService {
      * visible dans le cache.
      */
     private tier3Index: Map<string, { filePath: string; machineId: string }> = new Map();
+    /**
+     * #4151 S3 (B2) — instant du dernier index Tier 3 REELLEMENT peuple
+     * (null = jamais peuple, ou vide). Autorise la revendication « machineId
+     * inconnu des archives » ; sans lui, la revendication est un mensonge sur
+     * un siege PG-first qui ne charge jamais G:.
+     */
+    private tier3IndexLoadedAt: number | null = null;
+    /**
+     * #4151 S3 (N1) — dernier echec du warm-up lance en arriere-plan (null = pas
+     * d'echec). Distingue « warm-up jamais tente » de « tente et en echec ».
+     */
+    private lastBackgroundRefreshError: string | null = null;
+    /**
+     * #4151 S3 (N1) — instant de la dernière TENTATIVE de load (null = jamais).
+     * Le load avale ses erreurs internes : la tentative, pas l'exception,
+     * distingue « tenté et échoué » de « jamais tenté ».
+     */
+    private lastLoadAttemptedAt: number | null = null;
     private tier3HydratedTicks: Map<string, number> = new Map();
     private tier3HydratedBytes: Map<string, number> = new Map();
     private tier3HydrationPromises: Map<string, Promise<boolean>> = new Map();
@@ -318,6 +336,7 @@ export class SkeletonCacheService {
                 return;
             }
             console.log(`[SkeletonCacheService] Cache obsolète (âge: ${Math.round(cacheAge / 1000)}s), rafraîchissement...`);
+            this.lastLoadAttemptedAt = Date.now();
             this.loadPromise = this.loadSkeletonsFromDisk().finally(() => {
                 this.loadPromise = null;
             });
@@ -414,11 +433,50 @@ export class SkeletonCacheService {
      * Named so the implicit kick-off is a deliberate call rather than the side
      * effect of asking for a freshness verdict. Dedups through the same
      * `loadPromise` as the boot pre-warm and `awaitFreshnessWithBudget`.
+     *
+     * The failure is KEPT (N1): a `deferred` tier3 status must be able to
+     * distinguish "never attempted" from "attempted and failed" — otherwise a
+     * failed warm-up is reported as "not started" forever.
      */
     public triggerBackgroundRefresh(): void {
         this.ensureFreshCache().catch((err: any) => {
-            console.warn('[Skeleton-Cache] background refresh failed (non-blocking):', err?.message || err);
+            this.lastBackgroundRefreshError = err?.message || String(err);
+            console.warn('[Skeleton-Cache] background refresh failed (non-blocking):', this.lastBackgroundRefreshError);
         });
+    }
+
+    /**
+     * #4151 S3 (N1) — last background-warm-up failure, or null when none failed.
+     * The caller turns it into a `failed` tier3 status instead of claiming the
+     * load was "not started".
+     */
+    public getLastBackgroundRefreshError(): string | null {
+        return this.lastBackgroundRefreshError;
+    }
+
+    /**
+     * #4151 S3 (N1) — un load a-t-il déjà été TENTÉ dans ce processus ?
+     *
+     * `loadSkeletonsFromDisk` avale ses erreurs internes (il resolve même quand
+     * le corpus est injoignable) : l'exception ne distingue donc pas « tenté et
+     * échoué » de « jamais tenté ». La TENTATIVE, elle, est observable — et c'est
+     * elle qui autorise un statut `failed` plutôt qu'un `deferred`.
+     */
+    public hasLoadAttempted(): boolean {
+        return this.lastLoadAttemptedAt !== null;
+    }
+
+    /**
+     * #4151 S3 (B2) — was the Tier 3 index ACTUALLY populated by a load?
+     *
+     * The "machineId inconnu — frappe" notice is only truthful when the index
+     * was built: on a PG-first seat that never loads G:, the index is empty and
+     * every machineId would look unknown — a permanent false accusation. An
+     * EMPTY index does not authorize the claim either (a failed/offline corpus
+     * looks the same), so the flag is only set on a real, non-empty index.
+     */
+    public isTier3IndexLoaded(): boolean {
+        return this.tier3IndexLoadedAt !== null;
     }
 
     /**
@@ -722,8 +780,14 @@ export class SkeletonCacheService {
             // Phase 1: Index complet du corpus (listing seul — aucun payload lu).
             const allFiles = await TaskArchiver.listArchivedTaskFiles();
             this.tier3Index.clear();
+            // #4151 S3 (B2) — un index vide n'autorise PLUS aucune revendication
+            // « machineId inconnu » : on oublie l'instant de peuplement.
+            this.tier3IndexLoadedAt = null;
             for (const item of allFiles) {
                 this.tier3Index.set(item.taskId, { filePath: item.filePath, machineId: item.machineId });
+            }
+            if (this.tier3Index.size > 0) {
+                this.tier3IndexLoadedAt = Date.now();
             }
 
             if (this.tier3Index.size === 0) {

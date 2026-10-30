@@ -71,7 +71,7 @@ export const conversationBrowserDefinition = {
             machineId: { type: 'string', description: '[list] Filter by machine ID.' },
             includeArchives: { type: 'boolean', description: '[list] Include cross-machine GDrive archives (Tier 3).' },
             // #3255 — camelCase on the wire, like the adjacent includeArchives (registry dispatch passes raw args).
-            waitForArchives: { type: 'boolean', description: '[list] #3255 — Block until the Tier 3 archive cache is ready (bounded 45s). Default: false = local results render immediately; response carries tier3.status=loading otherwise.' },
+            waitForArchives: { type: 'boolean', description: '[list] #3255 — Block until the Tier 3 archive cache is ready (bounded 45s). Default: false = local results render immediately; the response then carries the real tier3.status: ready | loading | deferred | failed (#4151 S3 — a PG-first seat reports deferred, not "loading", when the archive tier is simply not served).' },
             // --- tree ---
             conversation_id: { type: 'string', description: '[tree] Conversation ID.' },
             max_depth: { type: 'number', description: '[tree] Max tree depth.' },

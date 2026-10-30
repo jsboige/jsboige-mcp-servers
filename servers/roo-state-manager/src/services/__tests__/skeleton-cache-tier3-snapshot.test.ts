@@ -299,6 +299,56 @@ describe('SkeletonCacheService — Tier 3 stub snapshot (#1747 E)', () => {
 		ensureSpy.mockRestore();
 	});
 
+	test('#4151 S3 (B2) — isTier3IndexLoaded() : false sans load, false sur un corpus VIDE, true sur un index peuple', async () => {
+		configureBareHost();
+		mockReadFile.mockRejectedValue({ code: 'ENOENT' }); // pas de snapshot
+
+		const instance = SkeletonCacheService.getInstance();
+		// Aucun load : l'index est vide — la revendication « machine inconnue des
+		// archives » n'est PAS autorisee (elle serait fausse sur un siege PG-first).
+		expect(instance.isTier3IndexLoaded()).toBe(false);
+
+		// Un load qui NE trouve aucun corpus : l'index reste vide, la revendication
+		// reste interdite (un corpus vide ne prouve rien).
+		mockListArchivedTaskFiles.mockResolvedValue([]);
+		await instance.warmCache();
+		expect(instance.isTier3IndexLoaded()).toBe(false);
+
+		// Un load qui peuple REELLEMENT l'index : la revendication redevient
+		// autorisee, et l'index connait alors les machines qu'il contient.
+		mockListArchivedTaskFiles.mockResolvedValue([
+			{ taskId: 'task-x', filePath: 'G:/fake/task-archive/myia-po-2025/task-x.json.gz', machineId: 'myia-po-2025' },
+		]);
+		mockReadArchivedTaskFromPath.mockImplementation(async (p: string) => ({
+			taskId: 'task-x',
+			machineId: 'myia-po-2025',
+			archivedAt: '2026-09-28T00:00:00.000Z',
+			metadata: { title: 'arch', createdAt: '2026-09-01T00:00:00.000Z', lastActivity: '2026-09-02T00:00:00.000Z', messageCount: 1 },
+			messages: [{ role: 'user', content: 'hello', timestamp: '2026-09-01T00:00:00.000Z' }],
+		}));
+		await instance.warmCache();
+		expect(instance.isTier3IndexLoaded()).toBe(true);
+		expect(instance.tier3KnowsMachine('myia-po-2025')).toBe(true);
+		expect(instance.tier3KnowsMachine('myia-po-9999')).toBe(false);
+	});
+
+	test('#4151 S3 (N1) — hasLoadAttempted() : false avant, true après une tentative (le load avale ses erreurs)', async () => {
+		configureBareHost();
+		mockReadFile.mockRejectedValue({ code: 'ENOENT' });
+		mockListArchivedTaskFiles.mockRejectedValue(new Error('GDrive unreachable'));
+
+		const instance = SkeletonCacheService.getInstance();
+		// Jamais tenté : un statut « deferred » est alors licite.
+		expect(instance.hasLoadAttempted()).toBe(false);
+
+		instance.triggerBackgroundRefresh();
+		await new Promise(r => setTimeout(r, 20));
+
+		// Tenté — même si l'erreur interne est avalée par loadSkeletonsFromDisk,
+		// c'est la TENTATIVE qui distingue « tenté et échoué » de « jamais tenté ».
+		expect(instance.hasLoadAttempted()).toBe(true);
+	});
+
 	test('#4151 S3 — après seed du snapshot, la sonde sans load rend true (pas de régression #1747 E)', async () => {
 		configureBareHost();
 		const stubs = [makeStub('task-a', 'myia-po-2025')];
