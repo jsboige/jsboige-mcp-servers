@@ -674,7 +674,14 @@ export function validateCascadePayload(payload: unknown): CascadeValidationResul
             for (const [role, refs] of roleSteps) {
                 if (!refs.includes(target)) continue;
                 for (const machine of machines) {
-                    const key = `${role}|${machine}`;
+                    // La machine est NORMALISÉE ici, comme `target` juste au-dessus
+                    // et comme `parseStepExcludeRaw` : `MACHINE_RE` porte le drapeau
+                    // `/i`, donc `MyIA-PO-2027` est un payload VALIDE. Sans cette
+                    // normalisation, la même machine écrite dans deux casses ouvre
+                    // deux clés distinctes, aucune n'atteint `refs.length`, et le
+                    // refus ne se déclenche pas — le rôle serait désactivé en
+                    // silence, exactement ce que B11 existe pour empêcher.
+                    const key = `${role}|${machine.toLowerCase()}`;
                     const set = excludedFor.get(key) ?? new Set<string>();
                     set.add(target);
                     excludedFor.set(key, set);
