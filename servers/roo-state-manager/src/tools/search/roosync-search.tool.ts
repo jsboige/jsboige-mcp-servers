@@ -16,6 +16,7 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 // Import des handlers existants
 import { searchTasksByContentTool, SearchTasksByContentArgs, extractSemanticErrorMode, INFRASTRUCTURE_ERROR_MODES } from './search-semantic.tool.js';
 import { handleSearchTasksSemanticFallback, SearchFallbackArgs } from './search-fallback.tool.js';
+import { failureComponent } from './search-error-classifier.js';
 
 /**
  * Arguments du tool roosync_search unifié
@@ -282,13 +283,30 @@ export async function handleRooSyncSearch(
             // consumers keep parsing content[1] with the #1496 metadata intact.
             // #2609 review (D2): a `null` mode means the failure was NOT classified —
             // it is NOT evidence of a backend outage. Only a KNOWN infrastructure mode
-            // attributes the failure to the embedding backend; every other case (null,
+            // attributes the failure to a backend; every other case (null,
             // or a classified non-infrastructure mode such as `unknown`) states no cause.
+            // #4438: a known infrastructure mode names the component that ACTUALLY
+            // failed — Qdrant is not the embeddings lane, and the banner must not send
+            // the operator there. Same distinction `diagnose` draws through
+            // `qdrant_connection` / `openai_connection`.
             const isInfrastructureMode = semanticErrorMode !== null
                 && INFRASTRUCTURE_ERROR_MODES.has(semanticErrorMode);
+            const failedComponent = failureComponent(semanticErrorMode);
             const degradedWarning = isInfrastructureMode
-                ? '⚠️ SEMANTIC DEGRADED — embedding backend unreachable: results are TEXT search only. ' +
-                  'Run roosync_search(action: "diagnose") to inspect the embedding endpoint.'
+                ? (failedComponent === 'qdrant'
+                    ? '⚠️ SEMANTIC DEGRADED — qdrant (vector store) unreachable: results are TEXT search only. ' +
+                      'Run roosync_search(action: "diagnose") to inspect the qdrant endpoint (QDRANT_URL / the public ingress).'
+                    : failedComponent === 'embeddings'
+                    ? '⚠️ SEMANTIC DEGRADED — embedding backend unreachable: results are TEXT search only. ' +
+                      'Run roosync_search(action: "diagnose") to inspect the embedding endpoint.'
+                    : failedComponent === 'auth'
+                    ? '⚠️ SEMANTIC DEGRADED — authentication with the search backend failed (401/403): results are TEXT search only. ' +
+                      'Run roosync_search(action: "diagnose") to inspect the backend credentials.'
+                    : failedComponent === 'resources'
+                    ? '⚠️ SEMANTIC DEGRADED — search backend resources exhausted (too many open files / out of memory): results are TEXT search only. ' +
+                      'Run roosync_search(action: "diagnose") to inspect the host resources.'
+                    : '⚠️ SEMANTIC DEGRADED — search backend unreachable: results are TEXT search only. ' +
+                      'Run roosync_search(action: "diagnose") to inspect the backend state.')
                 : `⚠️ SEMANTIC DEGRADED — semantic search failed with an UNCLASSIFIED error (${semanticErrorMode ?? 'unknown mode'}): ` +
                   'results are TEXT search only and the failure is NOT attributable to a backend outage. ' +
                   'Run roosync_search(action: "diagnose") and report the mode.';
@@ -307,9 +325,14 @@ export async function handleRooSyncSearch(
                 parsed.fallback_used = true;
                 // #2609 review (D1): the reason is DERIVED from the classified mode —
                 // the payload may not assert a cause the human warning denies.
+                // #4438: the reason names the component too — `embedding_api_error` on a
+                // Qdrant outage was the same misattribution as the banner, in the field
+                // the agents parse.
                 parsed.fallback_reason = semanticErrorMode === null
                     ? 'semantic_error_unclassified'
-                    : (INFRASTRUCTURE_ERROR_MODES.has(semanticErrorMode) ? 'embedding_api_error' : semanticErrorMode);
+                    : (failedComponent === 'embeddings'
+                        ? 'embedding_api_error'
+                        : (failedComponent === 'qdrant' ? 'qdrant_api_error' : semanticErrorMode));
                 parsed.original_search_mode = 'semantic';
                 parsed.actual_search_mode = 'text';
                 if (semanticErrorMode !== null) parsed.semantic_error_mode = semanticErrorMode;
