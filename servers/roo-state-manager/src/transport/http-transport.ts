@@ -232,6 +232,21 @@ const MUTATING_ARG_FLAGS = new Set([
     // rapport dans le STORE PARTAGÉ (`generateReport`, :333 et :347).
     // Noms uniques dans la surface actuelle — aucun sur-blocage de lecture.
     'cleanupStale', 'generateReport',
+    // §3c — ARBITRAGE du coordinateur (re-review du 30/10 17:51Z) : la prémisse
+    // du corps de PR était fausse, `filePath` n'est PAS un argument de lecture,
+    // c'est un chemin de SAUVEGARDE. Vérifié sur place à cette tête :
+    // `conversation-browser.ts:121` le documente « [summarize] Chemin pour
+    // sauvegarder » et le transmet à `roosyncSummarize` (:604) ; les deux sites
+    // d'écriture sont `generate-trace-summary.tool.ts:198-202`
+    // (`mkdir(dirname, {recursive:true})` puis `writeFile(absolutePath, …)`,
+    // chemin résolu depuis l'argument de l'appelant) et
+    // `get-conversation-synthesis.tool.ts:380` (`writeFile(filePath, …)`).
+    // Les deux SEULES autres occurrences de `filePath` dans des outils de
+    // lecture (`get-raw.tool.ts:98`, `list-conversations.tool.ts:430`) sont des
+    // VARIABLES LOCALES, jamais des propriétés d'arguments : aucun outil de la
+    // surface ne prend un `filePath` en entrée pour LIRE. Un flag GLOBAL est
+    // donc sûr ici et n'a pas besoin d'un map par outil.
+    'filePath',
 ]);
 
 /**

@@ -625,6 +625,57 @@ describe('#4149 F2 — transport HTTP du daemon RSM', () => {
         });
     });
 
+    // §3c — arbitrage du coordinateur (re-review du 30/10 17:51Z). Le corps de
+    // PR soutenait que `filePath` est un argument de LECTURE pour
+    // `conversation_browser` ; c'est faux, c'est un chemin de sauvegarde.
+    // Une entrée GLOBALE ferme donc les TROIS sites d'écriture d'un coup.
+    // -------------------------------------------------------------- *
+    describe('§3c — filePath est un chemin de SAUVEGARDE, pas de lecture', () => {
+        const savingCalls: Array<[string, Record<string, unknown>]> = [
+            // export-data.ts:651-652 / :719-723 — writeFile au chemin fourni.
+            ['export_data', { filePath: 'C:/tmp/export.json' }],
+            // task/export.ts:407-408 — saveXmlToFile / writeFile.
+            ['task_export', { taskId: 'task-1', filePath: 'C:/tmp/task.json' }],
+            // generate-trace-summary.tool.ts:198-202 (mkdir + writeFile) et
+            // get-conversation-synthesis.tool.ts:380 (writeFile).
+            [
+                'conversation_browser',
+                { action: 'summarize', taskId: 'task-1', filePath: 'C:/tmp/summary.md' },
+            ],
+        ];
+
+        for (const [tool, args] of savingCalls) {
+            it(`refuse ${tool}(filePath) sans identité et ne le dispatche pas`, async () => {
+                const res = await post(toolCall(tool, args), { as: null });
+                expect(res.status).toBe(403);
+                expect(res.json?.error).toBe('identity_required');
+                expect(dispatched).toHaveLength(0);
+            });
+        }
+
+        it('une identité trustée suffit pour ces trois écritures (le garde est la porte)', async () => {
+            for (const [tool, args] of savingCalls) {
+                const res = await post(toolCall(tool, args), {
+                    as: 'myia-web2:roo-extensions',
+                });
+                expect(res.status).toBe(200);
+            }
+            expect(dispatched.map((d) => d.name)).toEqual(savingCalls.map(([t]) => t));
+        });
+
+        it('conversation_browser(action=summarize) SANS filePath reste une lecture', async () => {
+            // Frontière du correctif : sans `filePath`, la synthèse est rendue
+            // DANS la réponse — aucune écriture. La lecture reste donc sans
+            // identité (le flag porte sur la PRÉSENCE du chemin).
+            const res = await post(
+                toolCall('conversation_browser', { action: 'summarize', taskId: 'task-1' }),
+                { as: null }
+            );
+            expect(res.status).toBe(200);
+            expect(dispatched).toHaveLength(1);
+        });
+    });
+
     describe('identité canonique — même destination quelle que soit la graphie', () => {
         it('une entrée LANE épingle la graphie ENREGISTRÉE, même assertée en minuscules', async () => {
             // Env de confiance : "myia-web3:CoursIA" (graphie enregistrée).
