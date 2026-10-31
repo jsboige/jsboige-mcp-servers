@@ -239,4 +239,43 @@ describe('#4149 F2 — complétude de la surface du gate HTTP', () => {
         };
         expect(classifyCall(noAction).readOnly).toBe(false);
     });
+
+    it('#4427 (dispatch 20261031a, item 5) — roosync_claudish_cascade : découpage par action, plus en écriture pure', () => {
+        // Relecture outil par outil promise par ms#1591 : les quatre actions de
+        // lecture ne font que lire (canon du magasin, `.env` du siège, et
+        // conteneur via `docker exec cat`/`inspect`/`logs` — NON mutants).
+        const mixed = CLASSIFIED_TOOLS.mixed;
+        expect(mixed.roosync_claudish_cascade).toEqual(
+            new Set(['collect', 'compare', 'status', 'list']),
+        );
+        // Sorti de l'écriture pure (le bloc ms#1591 était provisoire).
+        expect(CLASSIFIED_TOOLS.writeOnly.has('roosync_claudish_cascade')).toBe(false);
+        expect(CLASSIFIED_TOOLS.readOnly.has('roosync_claudish_cascade')).toBe(false);
+
+        const call = (args: Record<string, unknown>) => classifyCall({
+            jsonrpc: '2.0', id: 1, method: 'tools/call',
+            params: { name: 'roosync_claudish_cascade', arguments: args },
+        });
+
+        // Les quatre lectures passent sans identité.
+        for (const action of ['collect', 'compare', 'status', 'list']) {
+            expect(call({ action, env_path: 'C:/seat/.env', container: 'claudish' }).readOnly,
+                `claudish_cascade(${action}) doit rester une lecture`).toBe(true);
+        }
+        // publish écrit le canon, apply réécrit le `.env` — identité exigée.
+        expect(call({ action: 'publish', payload: { schemaVersion: 1 } }).readOnly).toBe(false);
+        expect(call({ action: 'apply', env_path: 'C:/seat/.env' }).readOnly).toBe(false);
+        // apply en dry_run n'écrit RIEN mais reste une écriture : la
+        // granularité du gate est l'ACTION, un geste de déploiement ne se
+        // laisse pas lire par défaut (commentaire du tableau).
+        expect(call({ action: 'apply', env_path: 'C:/seat/.env', dry_run: true }).readOnly).toBe(false);
+        // confirm : comportementalement une lecture, mais son nom appartient
+        // au vocabulaire d'actions mutantes (il écrit chez roosync_harmonization)
+        // — le garde de surface interdit un même nom en lecture et en mutation,
+        // il reste GATED (conservatisme de vocabulaire, cf. tableau).
+        expect(call({ action: 'confirm', container: 'claudish' }).readOnly).toBe(false);
+        // Action inconnue ou absente : default-deny.
+        expect(call({ action: 'recreate' }).readOnly).toBe(false);
+        expect(call({}).readOnly).toBe(false);
+    });
 });
