@@ -26,7 +26,7 @@
  * @module tools/roosync/claudish-cascade
  */
 
-import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { hostname } from 'os';
 import { join } from 'path';
 import { z } from 'zod';
@@ -51,6 +51,7 @@ import {
 } from '../../services/cascade-store.js';
 import { readCascadeContainer, type CascadeContainerReading } from '../../services/cascade-container.js';
 import { applyCascadeWrites } from '../../services/cascade-env-writer.js';
+import { writeSeatEnvAtomically } from '../../services/cascade-env-file.js';
 
 export const ClaudishCascadeArgsSchema = z.object({
     action: z.enum(['collect', 'publish', 'compare', 'apply', 'confirm', 'status', 'list']),
@@ -392,6 +393,7 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
                 coverage: plan.coverage,
                 would_write: plan.writes,
                 appended: outcome.appended,
+                duplicates: outcome.duplicates,
                 preserved: plan.preserved,
                 unchanged: plan.unchanged,
                 source_hash: plan.sourceHash,
@@ -406,15 +408,42 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
             const record = await store.backup(plan, seat, now);
             backupId = record.backupId;
         }
-        writeFileSync(seatEnv.path as string, outcome.text, 'utf8');
+        // Écriture ATOMIQUE + relecture comparée : `applied: true` n'est rendu
+        // qu'après que le disque a rendu le texte attendu. Un write direct
+        // interrompu laisserait un .env tronqué — le fichier que le conteneur
+        // relit au prochain recreate.
+        const fileWrite = writeSeatEnvAtomically(seatEnv.path as string, outcome.text);
+        if (!fileWrite.applied) {
+            return {
+                action: 'apply',
+                seat,
+                applied: false,
+                dry_run: false,
+                reason: fileWrite.error ?? 'relecture après écriture ≠ texte attendu',
+                reread_matches: false,
+                coverage: plan.coverage,
+                written: outcome.written,
+                appended: outcome.appended,
+                duplicates: outcome.duplicates,
+                preserved: plan.preserved,
+                unchanged: plan.unchanged,
+                backup_id: backupId,
+                source_hash: plan.sourceHash,
+                deployment: fileWrite.error !== null
+                    ? 'aucun — échec AVANT le remplacement, le .env d’origine est intact'
+                    : 'INDÉTERMINÉ — le fichier ne relit pas le texte attendu : RELIRE avant tout recreate',
+            };
+        }
         return {
             action: 'apply',
             seat,
             applied: true,
             dry_run: false,
+            reread_matches: true,
             coverage: plan.coverage,
             written: outcome.written,
             appended: outcome.appended,
+            duplicates: outcome.duplicates,
             preserved: plan.preserved,
             unchanged: plan.unchanged,
             backup_id: backupId,
