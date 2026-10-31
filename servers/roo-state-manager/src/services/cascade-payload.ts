@@ -749,7 +749,16 @@ export function validateCascadePayload(payload: unknown): CascadeValidationResul
             }
             const ex = exRaw as Record<string, unknown>;
             checkKeys(ex, ALLOWED_EXCEPTION_KEYS, `exceptions[${i}]`, errors);
-            if (!ex.machine) errors.push('exception sans machine');
+            // Machine d'exception : non-vide, RIEN DE PLUS — ni MACHINE_RE ni
+            // normalisation (contrat de casse, #4427 suite ms#1592). Une
+            // exception vise un SIÈGE, pas forcément une machine `myia-*` :
+            // son identifiant est opaque pour le canon, comparé et hashé TEL
+            // QU'ÉCRIT (cf. canonicalizeForHash — à la différence des machines
+            // de stepExclude, qui font l'aller-retour runtime et se
+            // normalisent).
+            if (typeof ex.machine !== 'string' || ex.machine.trim().length === 0) {
+                errors.push('exception sans machine');
+            }
             if (typeof ex.reason !== 'string' || ex.reason.trim().length === 0) {
                 errors.push(`exception ${String(ex.machine ?? '?')} : raison absente (une exception non documentée n'est pas harmonisable)`);
             }
@@ -858,7 +867,14 @@ function canonicalizeForHash(payload: CascadePayload): unknown {
                 const entry = obj(e);
                 return {
                     stepTarget: String(entry.stepTarget ?? ''),
-                    machines: arr(entry.machines).map(String).sort(),
+                    // Contrat de casse (#4427, suite ms#1592) : le chemin texte
+                    // (parseStepExcludeRaw) lowercasse les machines et les clés
+                    // B11 aussi ; le chemin payload valide MACHINE_RE /i SANS
+                    // normaliser. Sans lowercase ICI, une machine écrite dans
+                    // deux casses produit DEUX hashes pour un canon
+                    // sémantiquement identique — et chaque aller-retour
+                    // collect→publish (le texte lowercasse) dérive FANTÔME.
+                    machines: arr(entry.machines).map(m => String(m).toLowerCase()).sort(),
                 };
             })
             .sort((a, b) => a.stepTarget.localeCompare(b.stepTarget)),

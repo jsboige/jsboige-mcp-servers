@@ -454,4 +454,48 @@ describe('cascade payload #4427 — validateCascadePayload', () => {
         b.roles.SONNET.steps[0].ref = 'mistral@zai-glm-5-4';
         expect(computeCanonicalHash(a)).not.toBe(computeCanonicalHash(b));
     });
+
+    test('contrat de casse — deux casses d’une machine stepExclude : UN SEUL hash (2 casses = 2 hashes = dérive fantôme)', () => {
+        // Le chemin payload valide MACHINE_RE /i sans normaliser ; le chemin
+        // texte (parseStepExcludeRaw) lowercasse tout. Sans normalisation au
+        // niveau du hash, un canon publié à la main en casse mixte puis
+        // recollecté via l’env (lowercassé) rapporterait une dérive FANTÔME :
+        // mêmes machines, deux hashes.
+        const a = goldenPayload();
+        const b = goldenPayload();
+        a.stepExclude = [{ stepTarget: 'vllm-myia@swift-1.5-27b', machines: ['MyIA-PO-2027'] }];
+        b.stepExclude = [{ stepTarget: 'vllm-myia@swift-1.5-27b', machines: ['myia-po-2027'] }];
+        expect(computeCanonicalHash(a)).toBe(computeCanonicalHash(b));
+    });
+
+    test('contrat de casse — exceptions[].machine : non-vide SUFFIT (siège hors motif myia-* accepté)', () => {
+        // Une exception vise un SIÈGE opaque : ni MACHINE_RE ni normalisation.
+        // Un siège hors flotte myia (vibe, nanoclaw…) doit pouvoir être exempté
+        // sans que le canon le rejette.
+        const p = goldenPayload();
+        p.exceptions = [{ machine: 'vibe-seat-42', reason: 'siège hors flotte myia — pas de cascade' }];
+        expect(validateCascadePayload(p).ok).toBe(true);
+    });
+
+    test('contrat de casse — exceptions[].machine n’est PAS normalisée : deux casses = deux exceptions au hash', () => {
+        // Contre-pied délibéré du contrat stepExclude : l’exception ne fait
+        // PAS l’aller-retour runtime, son identifiant est opaque — le canon le
+        // compare tel qu’écrit. Normaliser ici fusionnerait en silence deux
+        // exceptions que l’opérateur a écrites distinctes.
+        const a = goldenPayload();
+        const b = goldenPayload();
+        a.exceptions = [{ machine: 'Myia-po-2028', reason: 'x' }];
+        b.exceptions = [{ machine: 'myia-po-2028', reason: 'x' }];
+        expect(computeCanonicalHash(a)).not.toBe(computeCanonicalHash(b));
+    });
+
+    test('exception avec machine NON textuelle ou blanche : rejet (« non-vide » est un contrat de chaîne)', () => {
+        const p = goldenPayload();
+        p.exceptions = [{ machine: 123, reason: 'x' }] as unknown as CascadePayload['exceptions'];
+        expect(validateCascadePayload(p).errors.some(e => e.includes('sans machine'))).toBe(true);
+
+        const q = goldenPayload();
+        q.exceptions = [{ machine: '   ', reason: 'x' }];
+        expect(validateCascadePayload(q).errors.some(e => e.includes('sans machine'))).toBe(true);
+    });
 });
