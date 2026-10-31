@@ -21,9 +21,17 @@ import { randomBytes } from 'crypto';
 export interface CascadeEnvFileWrite {
     /** `true` UNIQUEMENT si la relecture a rendu exactement le texte écrit. */
     applied: boolean;
+    /**
+     * `true` dès que le `rename` a réussi — la cible a été REMPLACÉE.
+     * #4427 (review ai-01, ms#1602) : avec la relecture dans le filet, un
+     * `error !== null` ne dit plus si l'original est intact (échec amont) ou si
+     * le nouveau texte est déjà sur disque (relecture seule en échec). C'est ce
+     * discriminant que l'appelant mappe sur la consigne de déploiement.
+     */
+    replaced: boolean;
     /** Ce que le disque a rendu après le rename (indéterminé si erreur amont). */
     reread: string | null;
-    /** Erreur d'écriture/renommage éventuelle (le fichier d'origine est intact). */
+    /** Erreur d'écriture/renommage/relecture. L'original n'est garanti intact que si `replaced` est `false`. */
     error: string | null;
 }
 
@@ -75,7 +83,7 @@ export function writeSeatEnvAtomically(envPath: string, text: string): CascadeEn
         } catch {
             /* la cible peut ne pas exister — on ne masque pas l'erreur amont */
         }
-        return { applied: false, reread, error: err instanceof Error ? err.message : String(err) };
+        return { applied: false, replaced: false, reread, error: err instanceof Error ? err.message : String(err) };
     }
     // #4427 (review ai-01, item 2a): la relecture est DANS le filet — une
     // relecture qui échoue (antivirus qui verrouille, fichier retiré entre le
@@ -87,7 +95,10 @@ export function writeSeatEnvAtomically(envPath: string, text: string): CascadeEn
     try {
         reread = readFileSync(envPath, 'utf8');
     } catch (err) {
-        return { applied: false, reread, error: err instanceof Error ? err.message : String(err) };
+        // Le remplacement A EU LIEU : le nouveau texte est probablement sur
+        // disque, c'est la RELECTURE seule qui échoue — d'où `replaced:true`,
+        // pour que l'appelant ne dise jamais « l'original est intact » ici.
+        return { applied: false, replaced: true, reread, error: err instanceof Error ? err.message : String(err) };
     }
-    return { applied: reread === text, reread, error: null };
+    return { applied: reread === text, replaced: true, reread, error: null };
 }
