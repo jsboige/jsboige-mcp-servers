@@ -14,7 +14,7 @@
  * @module services/cascade-env-file
  */
 
-import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'fs';
+import { chmodSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'fs';
 import { dirname, join } from 'path';
 import { randomBytes } from 'crypto';
 
@@ -38,8 +38,28 @@ export function writeSeatEnvAtomically(envPath: string, text: string): CascadeEn
     const dir = dirname(envPath);
     tempCounter += 1;
     const tmp = join(dir, `.claude-cascade-apply-${process.pid}-${tempCounter}-${randomBytes(4).toString('hex')}.tmp`);
+    // #4427 (review ai-01, item 2b): le rename REMPLACE le mode de la cible par
+    // celui du temporaire (créé `0o666 & ~umask`). Sur un siège Linux un `.env`
+    // en `0600` redeviendrait lisible par le groupe au premier apply ; on
+    // recopie donc le mode d'origine. Sous Windows, le mode n'est qu'un bit
+    // read-only — les ACL gouvernent réellement — et l'appel y est sans effet.
+    let originalMode: number | null = null;
+    try {
+        originalMode = statSync(envPath).mode & 0o777;
+    } catch {
+        /* pas de cible (première écriture du siège) : rien à préserver */
+    }
     try {
         writeFileSync(tmp, text, 'utf8');
+        if (originalMode !== null) {
+            try {
+                // chmod n'est PAS masqué par l'umask, contrairement au mode
+                // passé à create — c'est le seul moyen fiable de recopier.
+                chmodSync(tmp, originalMode);
+            } catch {
+                /* préserver le mode est un mieux, pas le contrat : le contenu primera */
+            }
+        }
         renameSync(tmp, envPath);
     } catch (err) {
         // Le temporaire ne doit jamais survivre à un échec — un voisin qui
@@ -57,6 +77,17 @@ export function writeSeatEnvAtomically(envPath: string, text: string): CascadeEn
         }
         return { applied: false, reread, error: err instanceof Error ? err.message : String(err) };
     }
-    const reread = readFileSync(envPath, 'utf8');
+    // #4427 (review ai-01, item 2a): la relecture est DANS le filet — une
+    // relecture qui échoue (antivirus qui verrouille, fichier retiré entre le
+    // rename et le read) doit rendre `applied:false`, jamais propager une
+    // exception hors du module. Le contrat d'en-tête l'exige : `applied` n'est
+    // vrai QUE si le disque a rendu le texte — un échec de relecture ne prouve
+    // rien et ne peut donc pas valoir succès.
+    let reread: string | null = null;
+    try {
+        reread = readFileSync(envPath, 'utf8');
+    } catch (err) {
+        return { applied: false, reread, error: err instanceof Error ? err.message : String(err) };
+    }
     return { applied: reread === text, reread, error: null };
 }
