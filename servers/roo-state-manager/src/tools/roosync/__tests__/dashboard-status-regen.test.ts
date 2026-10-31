@@ -24,6 +24,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, readFile, writeFile, readdir } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { parseDashboardMarkdown } from '../dashboard-markdown.js';
 
 const { mockDualWriteDashboardSync, mockReadDashboardFromPg, mockProbeHydration, mockListKeysFromPg, llm } = vi.hoisted(() => ({
     mockDualWriteDashboardSync: vi.fn().mockResolvedValue(undefined),
@@ -228,7 +229,15 @@ describe('roosync_dashboard — condensation status regen on-change (#4205)', ()
         expect(allArchived).toContain('FILLER-0');
         expect(allArchived).toContain('## Statut avant condensation (#3962)');
         expect(after).toContain('CONDENSATION-SUMMARY');
-        expect(after).toContain('## Résumé des messages archivés (test)');
+        // #4434 (review ms#1601) : le corps du résumé est un CONTENU de message —
+        // depuis l'échappement des titres de section, sa ligne « ## … » est
+        // préfixée dans le fichier sérialisé (« \#\# … ») pour ne pas ouvrir une
+        // fausse section. L'invariant « le résumé atterrit dans le live » vit sur
+        // le CONTENU re-parsé (le round-trip est épinglé par
+        // dashboard-section-heading-escape.test.ts), pas sur la forme sérialisée.
+        const reparsed = parseDashboardMarkdown(after, 'workspace-test-workspace');
+        const summaryMsg = reparsed.intercom.messages.find(m => m.content.includes('CONDENSATION-SUMMARY'));
+        expect(summaryMsg?.content).toContain('## Résumé des messages archivés (test)');
 
         // #4205 honnêteté (review ms#1439) : une passe skippée dit « Statut
         // conservé », jamais « Statut mis à jour » — notice ET frontmatter
