@@ -4826,10 +4826,16 @@ export function truncateToMaxSize(text: string, maxSizeBytes: number, label: str
   }
 
   // #2463: If even the last single line exceeds the cap (e.g. a single long line),
-  // hard-truncate it by character count (UTF-8 safe: worst case 4 bytes/char).
+  // hard-truncate it by character count (UTF-8 safe).
   if (!result) {
     const lastLine = lines[lines.length - 1] || '';
-    const maxChars = Math.floor(maxSizeBytes / 2); // safe for any UTF-8 (2 bytes min for supplementary)
+    // #4434 (volet 5 fixtures): a JS char (UTF-16 code unit) encodes to AT MOST
+    // 3 UTF-8 bytes (BMP planes; supplementary pairs are 2 units × 2 bytes → 2
+    // bytes per unit), so /3 is the tightest divisor that guarantees the byte
+    // cap for ANY string. The previous /2 violated it on 3-byte scripts —
+    // measured by the fixture suite: '字'×600 capped at 600 B returned 900 B,
+    // breaking #2598's hard-cap invariant exactly where it matters (fallback).
+    const maxChars = Math.floor(maxSizeBytes / 3);
     result = lastLine.length > maxChars
       ? lastLine.slice(-maxChars)
       : lastLine;
