@@ -13,7 +13,12 @@
  *   3. jumelle retirée par merge (#3782) → PAS ressuscitée : introuvable ;
  *   4. canonique retiré par merge → la famille entière reste morte ;
  *   5. deux jumelles → la plus récente (max des horodatages, pas l'ordre du
- *      tableau — skew d'horloge cross-machine) est servie.
+ *      tableau — skew d'horloge cross-machine) est servie ;
+ *   6. jumelle retirée mais RESSUSCITÉE par le trafic (messages plus récents
+ *      que retiredAt) → servie, marque périmée signalée (6e facette, web1
+ *      31/10 : marques des 26/09 et 19/10, trafic du jour) ;
+ *   7. deux jumelles retirées, une morte une ressuscitée → seule la
+ *      ressuscitée est servie (discriminateur par candidat).
  *
  * Harness : même passe-partout que dashboard-retirement.test.ts — store
  * temporaire par test, PG gates fermées, module store mocké à la frontière
@@ -214,6 +219,54 @@ describe('#4439 — read sert la jumelle DriveFS quand le canonique manque (mesu
     // le repli ne rouvre pas le fork.
     expect(result.success).toBe(false);
     expect(String(result.message)).toContain('introuvable');
+  });
+
+  it('jumelle retirée mais RESSUSCITÉE (messages plus récents que retiredAt) → servie, marque périmée signalée', async () => {
+    // 6e facette (mesure web1 31/10 21:1xZ) : les merges des 26/09 et 19/10
+    // ont marqué les jumelles, mais le trafic vivant les a RESSUSCITÉES —
+    // workspace-CoursIA (1) portait un message de 20:40Z le 31/10 sous une
+    // marque du 26/09. Refuser la jumelle rendait « introuvable » sur le
+    // seul exemplaire vivant du dashboard : exactement le mensonge que le
+    // repli devait fermer.
+    seedDashboard(FORK1_FILE, '2026-10-31T20:40:00.000Z', [
+      { id: 'f2', timestamp: '2026-10-31T20:40:00.000Z', content: 'trafic vivant APRÈS le merge — fork ressuscité' },
+    ]);
+    getRetirementSpy.mockImplementation(async (k: string) =>
+      k === 'workspace-claudish (1)' ? markOf('workspace-claudish (1)', 'workspace-claudish') : null);
+
+    const result = await readCanonical();
+
+    // La marque (31/10 09:00Z fixe dans markOf) décrit un état mort : la
+    // jumelle porte un message de 20:40Z. Servie — sous étiquette renforcée.
+    expect(result.success).toBe(true);
+    expect(result.resolved_from_fork).toBe('workspace-claudish (1)');
+    expect(String(result.message)).toContain('PÉRIMÉE');
+    expect(String(result.message)).toContain('2026-10-31T09:00:00.000Z');
+    expect(String(result.message)).toContain('fork ressuscité');
+    const data = result.data as { intercom?: { messages: Array<{ content: string }> } };
+    expect(data.intercom?.messages?.[0]?.content).toContain('fork ressuscité');
+    expect(fileExists(CANONICAL_FILE)).toBe(false);
+  });
+
+  it('deux jumelles retirées — une morte, une ressuscitée → seule la ressuscitée est servie', async () => {
+    seedDashboard(FORK1_FILE, '2026-10-29T23:51:26.000Z', [
+      { id: 'f1', timestamp: '2026-10-29T23:51:26.000Z', content: 'jumelle morte — rien après la marque' },
+    ]);
+    seedDashboard(FORK2_FILE, '2026-10-31T18:12:00.000Z', [
+      { id: 'g1', timestamp: '2026-10-31T18:12:00.000Z', content: 'jumelle ressuscitée après la marque' },
+    ]);
+    getRetirementSpy.mockImplementation(async (k: string) =>
+      k.startsWith('workspace-claudish (') ? markOf(k, 'workspace-claudish') : null);
+
+    const result = await readCanonical();
+
+    // Le discriminateur est PAR CANDIDAT : la marque ne tue que la jumelle
+    // qu'elle décrit encore. (1) morte → refusée ; (2) ressuscitée → servie.
+    expect(result.success).toBe(true);
+    expect(result.resolved_from_fork).toBe('workspace-claudish (2)');
+    expect(String(result.message)).toContain('PÉRIMÉE');
+    const data = result.data as { intercom?: { messages: Array<{ content: string }> } };
+    expect(data.intercom?.messages?.[0]?.content).toContain('ressuscitée');
   });
 
   it('canonique retiré par merge → la famille ENTIERE reste morte', async () => {
