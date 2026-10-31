@@ -7512,10 +7512,14 @@ async function handleAppend(
         skippedDiag.outcome = 'skipped-lock-held';
         condenseDiagnostics.push(skippedDiag);
       } else {
+        // #4131: the timer must also cover the catch below — hoisted above the try
+        // so the FAILURE diagnostic carries the real duration of the pass that
+        // threw, not a hardcoded 0 (the one path where the LLM's churn time is
+        // the signal the operator needs).
+        const tCondense = Date.now();
         try {
           const beforeCount = updatedDashboard.intercom.messages.length;
           const condenseDiag = newDiagnostic('post-append');
-          const tCondense = Date.now();
           finalDashboard = await condenseIntercom(key, updatedDashboard, effectiveKeep, condenseDiag);
           preemptiveCondenseMs = Date.now() - tCondense;
           condenseDiagnostics.push(condenseDiag);
@@ -7553,7 +7557,7 @@ async function handleAppend(
           });
           const failedDiag = newDiagnostic('post-append');
           failedDiag.outcome = 'llm-failed-injected';
-          failedDiag.elapsedMs = 0;
+          failedDiag.elapsedMs = Date.now() - tCondense; // #4131: real duration, was hardcoded 0
           condenseDiagnostics.push(failedDiag);
         } finally {
           // Release only if we still own it (releaseCondenseLock verifies pid+acquiredAt).

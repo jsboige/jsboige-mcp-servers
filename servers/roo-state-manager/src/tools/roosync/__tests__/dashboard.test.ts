@@ -855,6 +855,65 @@ describe('roosync_dashboard', () => {
       // #1792: With circuit breaker fallback, message reports success (not LLM failure)
       expect(condensedResult.message).toContain('auto-condensation');
     });
+
+    it('#4131: llm-failed-injected reports the REAL elapsed, not a hardcoded 0', async () => {
+      // The catch around post-append condensation hardcoded failedDiag.elapsedMs = 0 —
+      // on the one path where the duration matters most: the LLM already churned
+      // before the throw. This pins the wiring: a 25 ms LLM mock makes a truthful
+      // elapsed distinguishable from 0. The fault is armed by the LLM answer itself
+      // (condensation in flight) and stays armed: reads retry 3× with backoff
+      // (#3404), so a one-shot fault is swallowed by attempt 2 — the persistent
+      // fault exhausts the loop and the throw escapes into the outer catch.
+      //
+      // Lock isolation: the condense file-lock lives in getLockDir() = %TEMP%/roosync-locks,
+      // SHARED across this suite's tests. The faulted read breaks the lock's RELEASE too
+      // (releaseCondenseLock reads the lock file before unlinking, best-effort) — an
+      // un-isolated leftover would hold key 'global' for the lock TTL (~15 min) and
+      // silently skip condensation for every later test in this file. Isolating
+      // ROOSYNC_LOCK_DIR in the per-test tmpdir keeps the leftover local (same pattern
+      // as condense-file-lock.test.ts).
+      const setupLockDir = process.env.ROOSYNC_LOCK_DIR;
+      process.env.ROOSYNC_LOCK_DIR = path.join(tmpDir, 'locks');
+      await fsp.mkdir(process.env.ROOSYNC_LOCK_DIR, { recursive: true });
+      let readsFaulted = false;
+      mockGetChatClient.mockImplementation(() => ({
+        chat: { completions: { create: mockChatCreate } }
+      }));
+      mockChatCreate.mockImplementation(async () => {
+        readsFaulted = true;
+        await new Promise(r => setTimeout(r, 25));
+        return { choices: [{ message: { content: '## Summary\n\nArchived' } }] };
+      });
+      const readFileMock = vi.mocked(fsp.readFile);
+      readFileMock.mockImplementation((...args: unknown[]) => {
+        if (readsFaulted) {
+          return Promise.reject(Object.assign(new Error('EACCES: injected read fault (#4131 test)'), { code: 'EACCES' }));
+        }
+        return fsReal.readFile!(...args);
+      });
+
+      try {
+        // Unique bytes: lastCondenseHash is keyed by dashboard KEY ('global'), not by
+        // tmpdir — a filler identical to another test's would poison the #2464 hash-skip
+        // for every later test in this file (measured: the preemptive suite goes silent).
+        await roosyncDashboard({ action: 'write', type: 'global', content: '# Init #4131-elapsed' });
+        const filler = 'Y'.repeat(3000);
+        let failed: any = null;
+        for (let i = 0; i < 24 && !failed; i++) {
+          const result = await roosyncDashboard({ action: 'append', type: 'global', content: `${filler} #4131-el-${i}` });
+          failed = (result.condenseDiagnostic ?? []).find((d: any) => d.outcome === 'llm-failed-injected');
+        }
+
+        expect(failed).toBeDefined();
+        expect(failed.phase).toBe('post-append');
+        // 25 ms of LLM work precede the throw — a hardcoded 0 fails this assert.
+        expect(failed.elapsedMs).toBeGreaterThanOrEqual(20);
+      } finally {
+        readFileMock.mockImplementation((...args: unknown[]) => fsReal.readFile!(...args));
+        if (setupLockDir === undefined) delete process.env.ROOSYNC_LOCK_DIR;
+        else process.env.ROOSYNC_LOCK_DIR = setupLockDir;
+      }
+    });
   });
 
   describe('Preemptive condensation (#1497)', () => {
