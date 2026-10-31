@@ -8,6 +8,7 @@
 export type FailureMode =
 	| 'embedding_unreachable'    // POST embedding fail → service down or DNS
 	| 'embedding_timeout'        // embedding slow > timeout
+	| 'embedding_endpoint_not_found' // #4438 item 1: 404 on the embedder call — wrong path/model, NOT a Qdrant collection issue
 	| 'qdrant_unreachable'       // TCP RST / DNS fail / TLS fail
 	| 'qdrant_client_failure'    // #3344: transport failed BUT /healthz is UP → client/path-specific, not a Qdrant outage
 	| 'qdrant_proxy_drop'        // TLS OK + GET OK + POST search timeout (IIS/ARR pattern)
@@ -197,8 +198,20 @@ export async function classifySearchError(
 		};
 	}
 
-	// Collection not found (404)
+	// Collection not found (404) — #4438 dispatch item 1: the operation gate
+	// below is the fix. A 404 raised by the EMBEDDING call is an endpoint/model
+	// problem on the embedder (wrong base-URL path, unknown model); classifying
+	// it as a missing Qdrant collection sent the operator to
+	// `roosync_indexing(rebuild)` — the wrong cause, and an expensive remedy.
 	if (errorStatus === 404 || errorMsg.includes('Not found') || errorMsg.includes('Collection not found')) {
+		if (operation === 'embedding') {
+			return {
+				mode: 'embedding_endpoint_not_found',
+				originalError: errorMsg,
+				message: 'Embedding endpoint not found (404) — the embedder rejected the path or the model; the Qdrant index is NOT the cause',
+				hint: 'Check EMBEDDING_API_BASE_URL (OpenAI-compatible servers expect it to end with /v1) and the embedding model name. Do NOT run roosync_indexing(action: "rebuild").',
+			};
+		}
 		return {
 			mode: 'qdrant_collection_missing',
 			originalError: errorMsg,

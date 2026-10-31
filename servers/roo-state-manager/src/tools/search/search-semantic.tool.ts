@@ -63,7 +63,10 @@ function injectFallbackMeta(result: CallToolResult, reason: FallbackReason): Cal
 }
 
 export const INFRASTRUCTURE_ERROR_MODES = new Set([
-    'embedding_unreachable', 'embedding_timeout', 'qdrant_unreachable',
+    // #4438 item 1: an embedder 404 (wrong path/model) is an infrastructure
+    // failure of the embeddings stage — it must keep the degraded banner, not
+    // fall to `unknown` (which asserts NO known backend outage).
+    'embedding_unreachable', 'embedding_timeout', 'embedding_endpoint_not_found', 'qdrant_unreachable',
     'qdrant_client_failure', 'qdrant_proxy_drop', 'qdrant_backend_slow',
     'qdrant_collection_missing', 'auth_failed', 'resource_exhausted',
 ]);
