@@ -1953,11 +1953,25 @@ const FORK_TWIN_MAX_SCAN = 5;
  * #3782 — deux garde-marques : une jumelle source d'un merge est retirée
  * (ressusciter-la rouvrirait le fork refermé), et une clé canonique retirée
  * (merge A→B) ne se « rabat » JAMAIS sur sa famille — la retraite doit
- * rester la dernière parole.
+ * rester la dernière parole SUR L'ÉTAT QU'ELLE DÉCRIT.
+ *
+ * #4439 6e facette (mesure web1 31/10 21:1xZ) : une marque de retraite
+ * PÉRIMÉE ne veto pas la jumelle. Les merges des 26/09 et 19/10 avaient
+ * retiré `workspace-CoursIA (1)` et `workspace-claudish (1)`, mais le trafic
+ * vivant a RESSUSCITÉ les forks (messages du 31/10, le motif « le merge ne
+ * tient pas » des 5 récidives) : refuser la jumelle rendait « introuvable »
+ * sur le seul exemplaire vivant du dashboard — exactement le mensonge que
+ * ce repli devait fermer. Discriminateur : si la jumelle porte des messages
+ * PLUS RÉCENTS que `retiredAt`, la marque décrit un état mort et la jumelle
+ * est servie sous étiquette renforcée (`staleRetirement` = la date de la
+ * marque). Une jumelle morte (aucun message postérieur à la marque, ou date
+ * illisible) reste refusée — la garde #3782 d'origine garde son sens. Le
+ * canonique retiré (garde haute ci-dessous) reste hors de ce discriminateur :
+ * ressusciter une FAMILLE entière est une décision merge, pas une lecture.
  */
 async function resolveDashboardForkTwin(
   key: string
-): Promise<{ dashboard: Dashboard; forkKey: string } | null> {
+): Promise<{ dashboard: Dashboard; forkKey: string; staleRetirement?: string } | null> {
   // Canonique retiré : la famille entière est morte par décision, pas par accident.
   const canonicalRetirement = await getDashboardRetirement(key);
   if (canonicalRetirement) return null;
@@ -1972,10 +1986,9 @@ async function resolveDashboardForkTwin(
     .filter((name) => isGdriveConflictCopyFile(name) && canonicalKeyOfFork(name.replace(/\.md$/, '')) === key)
     .map((name) => name.replace(/\.md$/, ''))
     .slice(0, FORK_TWIN_MAX_SCAN);
-  let best: { dashboard: Dashboard; forkKey: string } | null = null;
+  let best: { dashboard: Dashboard; forkKey: string; staleRetirement?: string } | null = null;
   for (const forkKey of twinKeys) {
     const retirement = await getDashboardRetirement(forkKey);
-    if (retirement) continue;
     let candidate: Dashboard | null;
     try {
       candidate = await readDashboardFromGdrive(forkKey);
@@ -1983,8 +1996,18 @@ async function resolveDashboardForkTwin(
       continue; // ce candidat illisible ≠ échec du repli entier
     }
     if (!candidate) continue;
+    // #4439 6e facette : la marque ne veto que l'état qu'elle décrit. La
+    // lecture du candidat précède la décision — la fraîcheur se mesure sur le
+    // CONTENU (freshestTimestamp, max des messages, même instrument que le
+    // choix de jumelle — pas le mtime fichier, skew DriveFS).
+    if (retirement) {
+      const retiredAtMs = Date.parse(retirement.retiredAt);
+      const twinNewestMs = Date.parse(freshestTimestamp(candidate));
+      const markIsStale = !Number.isNaN(retiredAtMs) && !Number.isNaN(twinNewestMs) && twinNewestMs > retiredAtMs;
+      if (!markIsStale) continue; // jumelle morte (ou dates illisibles) : la retraite prime
+    }
     if (!best || freshestTimestamp(candidate) > freshestTimestamp(best.dashboard)) {
-      best = { dashboard: candidate, forkKey };
+      best = { dashboard: candidate, forkKey, staleRetirement: retirement?.retiredAt };
     }
   }
   return best;
@@ -6209,7 +6232,11 @@ export interface DashboardResult {
    * on web1 30-31/10). The value is the fork key actually read. Deliberately
    * absent (not empty) on canonical reads to keep the historical payload
    * shape. Read-only signal: write paths never resolve twins (#4439 scope —
-   * the merge decision belongs to the store owner).
+   * the merge decision belongs to the store owner). When the twin carries a
+   * #3782 retirement mark that its own content contradicts (messages newer
+   * than `retiredAt` — fork resurrected by live traffic, 6th facet, web1
+   * 31/10), `message` says so explicitly: the mark is STALE, the twin is the
+   * only live copy on this seat's file half.
    */
   resolved_from_fork?: string;
   /**
@@ -6867,11 +6894,13 @@ async function handleRead(
   // ci-dessous relit par readDashboardFile (canonique) et n'écrit donc jamais
   // le contenu de la jumelle sur une autre clé.
   let resolvedFromFork: string | null = null;
+  let staleRetirement: string | undefined;
   if (!dashboard) {
     const twin = await resolveDashboardForkTwin(key);
     if (twin) {
       dashboard = twin.dashboard;
       resolvedFromFork = twin.forkKey;
+      staleRetirement = twin.staleRetirement;
     }
   }
   if (!dashboard) {
@@ -7011,6 +7040,15 @@ async function handleRead(
       `Lu depuis la jumelle DriveFS '${resolvedFromFork}' — le fichier canonique est absent ` +
       `de la moitié fichier de ce siège (alias de montage ou fork réel, #4439). ` +
       `Le store PG fait référence : ne PAS merger depuis ce seul constat.`;
+    // #4439 6e facette : la jumelle porte une marque de retraite que son
+    // propre contenu dément (messages plus récents que retiredAt). Le fait
+    // doit être visible — l'opérateur tient ici la preuve que la famille
+    // « refermée » par merge vit de nouveau sur le fork.
+    if (staleRetirement) {
+      jsonResult.message +=
+        ` ATTENTION : marque de retraite #3782 PÉRIMÉE (posée ${staleRetirement}) — ` +
+        `cette jumelle reçoit du trafic PLUS RÉCENT que la marque (fork ressuscité, #4439).`;
+    }
   }
 
   // #1832: markdown format (default) — return human-readable markdown instead of JSON envelope
