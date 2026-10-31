@@ -26,6 +26,10 @@ const mockFsState = vi.hoisted(() => ({
     failRename: false,
     /** Non-null : la prochaine relecture du `.env` rend CE texte (un tiers a réécrit la cible). */
     rereadOverride: null as string | null,
+    /** true : la relecture du `.env` JETTE (verrou antivirus, fichier retiré entre rename et read). */
+    failReread: false,
+    /** Modes recopiés par chmodSync — l'instrument de l'item 2b (portable, y compris sous Windows). */
+    chmodCalls: [] as Array<{ path: string; mode: number }>,
 }));
 
 vi.mock('fs', async (importOriginal) => {
@@ -39,11 +43,18 @@ vi.mock('fs', async (importOriginal) => {
             return (actual.renameSync as (...a: unknown[]) => unknown)(...args);
         }) as typeof actual.renameSync,
         readFileSync: ((...args: unknown[]) => {
+            if (mockFsState.failReread && String(args[0]).endsWith('.env')) {
+                throw new Error('EBUSY: resource busy or locked');
+            }
             if (mockFsState.rereadOverride !== null && String(args[0]).endsWith('.env')) {
                 return mockFsState.rereadOverride;
             }
             return (actual.readFileSync as (...a: unknown[]) => unknown)(...args);
         }) as typeof actual.readFileSync,
+        chmodSync: ((...args: unknown[]) => {
+            mockFsState.chmodCalls.push({ path: String(args[0]), mode: Number(args[1]) });
+            return (actual.chmodSync as (...a: unknown[]) => unknown)(...args);
+        }) as typeof actual.chmodSync,
     };
 });
 
@@ -61,6 +72,8 @@ function tempResidue(dir: string): string[] {
 beforeEach(() => {
     mockFsState.failRename = false;
     mockFsState.rereadOverride = null;
+    mockFsState.failReread = false;
+    mockFsState.chmodCalls = [];
 });
 
 describe('writeSeatEnvAtomically — le .env ne passe jamais par un état tronqué', () => {
@@ -109,6 +122,56 @@ describe('writeSeatEnvAtomically — le .env ne passe jamais par un état tronqu
         expect(out.error).toBeNull();
         expect(out.reread).toBe('OLD=overwritten-by-someone-else\n');
         mockFsState.rereadOverride = null;
+        expect(tempResidue(dir)).toEqual([]);
+    });
+
+    test('relecture post-rename en ÉCHEC : applied:false + erreur, l’exception ne sort PAS du module (item 2a)', () => {
+        const { dir, envPath } = tempEnvDir();
+        // Verrou antivirus / fichier retiré entre le rename et le read : la
+        // relecture JETTE. Avant la correction, l'exception sortait du module
+        // et l'appelant n'obtenait ni verdict ni erreur — il ne pouvait pas
+        // distinguer « écriture non appliquée » d'un crash du pipeline.
+        mockFsState.failReread = true;
+
+        const out = writeSeatEnvAtomically(envPath, 'NEW=1\n');
+
+        expect(out.applied).toBe(false);
+        expect(out.reread).toBeNull();
+        expect(out.error).toContain('EBUSY');
+        // L'écriture a bien ATTERRI (le rename a précédé l'échec de relecture) :
+        // le verdict pessimiste ne doit pas être lu comme « rien n'a changé ».
+        mockFsState.failReread = false;
+        expect(fs.readFileSync(envPath, 'utf8')).toBe('NEW=1\n');
+        expect(tempResidue(dir)).toEqual([]);
+    });
+
+    test('le MODE de la cible est recopié sur le remplaçant — le rename ne dégrade pas les permissions (item 2b)', () => {
+        const { dir, envPath } = tempEnvDir();
+        // Un .env de siège est souvent en 0600 (il porte des clés) : le
+        // temporaire, lui, naît en 0o666 & ~umask, et le rename REMPLACE le
+        // mode de la cible par le sien. Sans recopie, le premier apply
+        // élargirait les droits du fichier de secrets.
+        fs.chmodSync(envPath, 0o600);
+        mockFsState.chmodCalls = [];
+        // Sous Windows `chmod` ne pose qu'un bit read-only : le mode RELU rend
+        // `0o666`, jamais `0o600`. Ce que ce test verrouille n'est donc pas la
+        // constante POSIX mais la CONTRACTUALITÉ de la recopie — l'appel doit
+        // porter exactement le mode que la cible rapporte au moment du geste.
+        const targetMode = fs.statSync(envPath).mode & 0o777;
+        if (process.platform !== 'win32') {
+            expect(targetMode).toBe(0o600); // le siège de test a bien des modes
+        }
+
+        const out = writeSeatEnvAtomically(envPath, 'SECRET=abc\n');
+
+        expect(out.applied).toBe(true);
+        expect(mockFsState.chmodCalls.length).toBeGreaterThanOrEqual(1);
+        expect(mockFsState.chmodCalls[0].mode).toBe(targetMode);
+        expect(mockFsState.chmodCalls[0].path).toMatch(/\.tmp$/);
+        // Contrôle réel du disque, là où les modes existent.
+        if (process.platform !== 'win32') {
+            expect(fs.statSync(envPath).mode & 0o777).toBe(0o600);
+        }
         expect(tempResidue(dir)).toEqual([]);
     });
 });
