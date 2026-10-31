@@ -83,6 +83,7 @@ describe('writeSeatEnvAtomically — le .env ne passe jamais par un état tronqu
         const out = writeSeatEnvAtomically(envPath, text);
 
         expect(out.applied).toBe(true);
+        expect(out.replaced).toBe(true);
         expect(out.error).toBeNull();
         expect(out.reread).toBe(text);
         // Le disque porte bien le nouveau texte, et le répertoire du siège
@@ -101,6 +102,9 @@ describe('writeSeatEnvAtomically — le .env ne passe jamais par un état tronqu
         const out = writeSeatEnvAtomically(envPath, 'TRUNCATED=partial');
 
         expect(out.applied).toBe(false);
+        // Le remplacement n'a PAS eu lieu : c'est le seul cas où « original
+        // intact » est une promesse vraie (discriminant #4427 review ms#1602).
+        expect(out.replaced).toBe(false);
         expect(out.error).toContain('EPERM');
         // Le .env d'origine n'a pas bougé — c'est la garantie que le conteneur
         // ne relira jamais un fichier à moitié écrit.
@@ -119,6 +123,7 @@ describe('writeSeatEnvAtomically — le .env ne passe jamais par un état tronqu
         const out = writeSeatEnvAtomically(envPath, 'NEW=1\n');
 
         expect(out.applied).toBe(false);
+        expect(out.replaced).toBe(true);
         expect(out.error).toBeNull();
         expect(out.reread).toBe('OLD=overwritten-by-someone-else\n');
         mockFsState.rereadOverride = null;
@@ -136,6 +141,7 @@ describe('writeSeatEnvAtomically — le .env ne passe jamais par un état tronqu
         const out = writeSeatEnvAtomically(envPath, 'NEW=1\n');
 
         expect(out.applied).toBe(false);
+        expect(out.replaced).toBe(true); // le rename a précédé : « intact » serait un mensonge
         expect(out.reread).toBeNull();
         expect(out.error).toContain('EBUSY');
         // L'écriture a bien ATTERRI (le rename a précédé l'échec de relecture) :
