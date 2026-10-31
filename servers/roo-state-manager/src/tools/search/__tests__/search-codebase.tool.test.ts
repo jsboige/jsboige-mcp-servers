@@ -1608,7 +1608,14 @@ describe('search-codebase.tool', () => {
 
 				await handleCodebaseSearch({ query: 'one', workspace: '/ws/v2c-cache' });
 				await handleCodebaseSearch({ query: 'two', workspace: '/ws/v2c-cache' });
-				expect(mockQdrant.scroll).toHaveBeenCalledTimes(1);
+				// #2609 q3: variant selection now samples liveness (one payload-only scroll
+				// per candidate). The property under test is the COVERAGE cache, so count
+				// coverage scrolls only — they ask for ['filePath'], the probe for
+				// ['pathSegments','filePath'].
+				const coverageScrolls = mockQdrant.scroll.mock.calls.filter(
+					([, opts]: any[]) => !opts?.with_payload?.include?.includes('pathSegments')
+				).length;
+				expect(coverageScrolls).toBe(1);
 			});
 
 			// #4352: the count scrolls every point (12-14 s on 486k points, ai-01 25/10) and
@@ -1616,7 +1623,12 @@ describe('search-codebase.tool', () => {
 			test('a slow coverage count does not hold the search: pending now, from cache next time (#4352)', async () => {
 				process.env.CODEBASE_COVERAGE_WAIT_MS = '20';
 				let releaseScroll!: (v: any) => void;
-				mockQdrant.scroll.mockImplementationOnce(() => new Promise(r => { releaseScroll = r; }));
+				// #2609 q3: the variant liveness probe also scrolls. Resolve it instantly and
+				// hang the COVERAGE scroll specifically, which is what this test measures.
+				mockQdrant.scroll.mockImplementation((_coll: string, opts: any) =>
+					opts?.with_payload?.include?.includes('pathSegments')
+						? Promise.resolve({ points: [] })
+						: new Promise(r => { releaseScroll = r; }));
 				mockReaddirSync.mockImplementation(() => [
 					{ name: 'a.ts', isDirectory: () => false, isFile: () => true },
 					{ name: 'b.ts', isDirectory: () => false, isFile: () => true }
@@ -1634,13 +1646,20 @@ describe('search-codebase.tool', () => {
 				expect(second.coverage_pending).toBeUndefined();
 				expect(second.coverage.indexed_files).toBe(1);
 				expect(second.coverage.eligible_files).toBe(2);
-				expect(mockQdrant.scroll).toHaveBeenCalledTimes(1);
+				const coverageScrolls = mockQdrant.scroll.mock.calls.filter(
+					([, opts]: any[]) => !opts?.with_payload?.include?.includes('pathSegments')
+				).length;
+				expect(coverageScrolls).toBe(1);
 			});
 
 			test('concurrent searches on one collection share one coverage count (#4352)', async () => {
 				process.env.CODEBASE_COVERAGE_WAIT_MS = '20';
 				let releaseScroll!: (v: any) => void;
-				mockQdrant.scroll.mockImplementationOnce(() => new Promise(r => { releaseScroll = r; }));
+				// #2609 q3: hang the coverage scroll only; the liveness probe resolves at once.
+				mockQdrant.scroll.mockImplementation((_coll: string, opts: any) =>
+					opts?.with_payload?.include?.includes('pathSegments')
+						? Promise.resolve({ points: [] })
+						: new Promise(r => { releaseScroll = r; }));
 				mockReaddirSync.mockImplementation(() => [
 					{ name: 'a.ts', isDirectory: () => false, isFile: () => true }
 				]);
@@ -1651,7 +1670,10 @@ describe('search-codebase.tool', () => {
 				]);
 				expect(JSON.parse(a.content[0].text).coverage_pending).toBe(true);
 				expect(JSON.parse(b.content[0].text).coverage_pending).toBe(true);
-				expect(mockQdrant.scroll).toHaveBeenCalledTimes(1);
+				const coverageScrolls = mockQdrant.scroll.mock.calls.filter(
+					([, opts]: any[]) => !opts?.with_payload?.include?.includes('pathSegments')
+				).length;
+				expect(coverageScrolls).toBe(1);
 				releaseScroll({ points: [] });
 			});
 

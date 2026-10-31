@@ -334,6 +334,74 @@ export function estimateCollectionLiveness(
 	}
 }
 
+// ─── #2609 q3 (2026-10-31): liveness preference at HASH-VARIANT resolution ──────
+// #4352 taught the variant ladder to probe every spelling at once and serve the
+// LARGEST collection. Measured po-2023, 2026-10-31: that rule served the decaying
+// twin. Two collections exist for D:\Dev\roo-extensions — the canonical
+// d:\dev\roo-extensions (328 245 pts, 193/200 sampled paths alive = 0.965) and the
+// lower-drive/mixed-case d:\Dev\roo-extensions (571 554 pts, 180/200 = 0.900, and
+// it carries the decommissioned `zoo-code` tree). Points count is a proxy for
+// "live corpus" that inverts exactly when a stale collection accumulated junk: the
+// bigger one won every query, and the q3 golden — the `joinFromQdrant(` block of
+// search-semantic.tool.ts — never surfaced from it.
+//
+// The instrument that sees the difference already exists (#2609 grain 3,
+// estimateCollectionLiveness + the content-match preference below). This extends
+// the SAME rule to the variant ladder: among variants that exist, the liveliest
+// wins, points only break ties. Gated by CONTENT_MATCH_LIVENESS, so `=0` restores
+// the pure #4352 points ranking — one rollback for both paths.
+
+export interface VariantCandidate {
+	name: string;
+	points: number | null;
+}
+
+/** Caps the liveness probe: the served candidate plus its closest competitor. */
+const VARIANT_LIVENESS_PROBE_MAX = 2;
+/** Bounds the probe — a hung scroll must never hold a search (measured: pending scroll = 15 s timeout). */
+const VARIANT_LIVENESS_PROBE_TIMEOUT_MS = parseFloat(process.env.VARIANT_LIVENESS_PROBE_TIMEOUT_MS || '1500');
+
+export interface VariantSelection {
+	candidate: VariantCandidate;
+	/** what decided: 'liveness' when the preference ran, 'points' = legacy #4352 rule */
+	basis: 'points' | 'liveness';
+	/** true when liveness overrode the largest-by-points pick */
+	flipped: boolean;
+}
+
+/**
+ * Choose the collection to serve among the hash variants that exist.
+ *
+ * Liveness applies only when ≥2 candidates are decidable (same rule as the
+ * content-match preference): a single measured ratio is not a comparison. When it
+ * cannot decide — flag off, one measurable candidate, equal ratios — the legacy
+ * largest-by-points ranking stands untouched.
+ */
+export function selectVariantCollection(
+	candidates: VariantCandidate[],
+	liveness: Map<string, { ratio: number; checked: number } | null> | null | undefined
+): VariantSelection | null {
+	if (candidates.length === 0) return null;
+	const byPoints = candidates.reduce<VariantCandidate>(
+		(best, v) => ((v.points ?? -1) > (best.points ?? -1) ? v : best),
+		candidates[0]);
+	if (!liveness || candidates.length < 2) return { candidate: byPoints, basis: 'points', flipped: false };
+
+	const decidable = candidates.filter(c => liveness.get(c.name));
+	if (decidable.length < 2) return { candidate: byPoints, basis: 'points', flipped: false };
+
+	const byLiveness = decidable.reduce<VariantCandidate>((best, v) => {
+		const ratio = liveness.get(v.name)!.ratio;
+		const bestRatio = liveness.get(best.name)!.ratio;
+		if (ratio > bestRatio) return v;
+		// Equal ratios: the bigger corpus gives more headroom — keep #4352's rule.
+		if (ratio === bestRatio && (v.points ?? -1) > (best.points ?? -1)) return v;
+		return best;
+	}, decidable[0]);
+
+	return { candidate: byLiveness, basis: 'liveness', flipped: byLiveness.name !== byPoints.name };
+}
+
 /**
  * Find the ws-* collection whose indexed top-level directories best match the workspace's
  * actual directory structure. Content-based fallback when hash resolution fails.
@@ -1511,6 +1579,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// that exists let the spelling of the argument pick the corpus: D:/Dev/… landed
 		// on a frozen 328k-point copy instead of the live 486k-point one. Probe all
 		// variants at once and serve the largest; a tie keeps the earlier spelling.
+		// #2609 q3 (2026-10-31): "largest" is only a proxy for "live" — it inverts when a
+		// stale spelling kept accumulating junk (see selectVariantCollection). Liveness
+		// now decides among the variants that exist; points rank the rest.
 		const variantProbes = await Promise.allSettled(collectionVariants.map(async variant => {
 			const collectionInfo = await withTransportRetry(() => qdrant.getCollection(variant));
 			if (collectionInfo.status === undefined) return null;
@@ -1528,11 +1599,31 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		if (existingVariants.length === 0 && unreachableVariants.length > 0) {
 			throw (variantProbes.find(p => p.status === 'rejected' && isNetworkErrorLike(p.reason)) as PromiseRejectedResult).reason;
 		}
-		const largestVariant = existingVariants.reduce<{ name: string; points: number | null } | null>(
-			(best, v) => (best === null || (v.points ?? -1) > (best.points ?? -1) ? v : best), null);
-		if (largestVariant) {
-			collectionName = largestVariant.name;
-			hashMatchedPointsCount = largestVariant.points;
+		// #2609 q3: probe liveness of every existing variant so the liveness preference
+		// (selectVariantCollection) can override #4352's points ranking. Sampling is one
+		// payload-only scroll per variant, in parallel, and only when ≥2 variants exist —
+		// the common single-collection case pays nothing.
+		let variantLiveness: Map<string, { ratio: number; checked: number } | null> | null = null;
+		if (isContentMatchLivenessEnabled() && existingVariants.length >= 2) {
+			const probed = [...existingVariants]
+				.sort((a, b) => (b.points ?? -1) - (a.points ?? -1))
+				.slice(0, VARIANT_LIVENESS_PROBE_MAX);
+			const bounded = (p: Promise<{ dirs: Set<string>; paths: string[] } | null>) =>
+				Promise.race([
+					p,
+					new Promise<null>(r => setTimeout(() => r(null), VARIANT_LIVENESS_PROBE_TIMEOUT_MS)),
+				]).catch(() => null);
+			const sigs = await Promise.all(probed.map(v => bounded(getCollectionSignature(qdrant, v.name))));
+			variantLiveness = new Map();
+			probed.forEach((v, i) => {
+				const sig = sigs[i];
+				variantLiveness!.set(v.name, sig ? estimateCollectionLiveness(sig.paths, workspace) : null);
+			});
+		}
+		const variantSelection = selectVariantCollection(existingVariants, variantLiveness);
+		if (variantSelection) {
+			collectionName = variantSelection.candidate.name;
+			hashMatchedPointsCount = variantSelection.candidate.points;
 		}
 
 
@@ -2205,6 +2296,21 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			collection_resolved_by: collectionResolvedBy,
 			// #4352: several spellings of this workspace own a collection; the largest was served.
 			...(existingVariants.length > 1 ? { collection_variants: existingVariants } : {}),
+			// #2609 q3: WHICH rule picked among those variants, and the measured liveness
+			// that decided. A response that names its collection but not its selection rule
+			// leaves the caller unable to tell a served twin from a served canonical index.
+			...(variantSelection && existingVariants.length > 1 ? {
+				variant_selection: {
+					basis: variantSelection.basis,
+					served: variantSelection.candidate.name,
+					...(variantSelection.flipped ? { flipped_from_largest: true } : {}),
+					liveness: Object.fromEntries(
+						[...(variantLiveness ?? new Map())].map(([name, l]) => [
+							name,
+							l ? { ratio: Math.round(l.ratio * 1000) / 1000, checked: l.checked } : null,
+						])),
+				},
+			} : {}),
 			// #4352: spellings whose probe failed on the network — one of them may be larger.
 			...(unreachableVariants.length > 0 ? { collection_variants_unreachable: unreachableVariants } : {}),
 			...(contentMatchDetails ? { content_match: contentMatchDetails } : {}),
