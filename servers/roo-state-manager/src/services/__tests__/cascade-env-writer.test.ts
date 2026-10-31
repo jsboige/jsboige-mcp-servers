@@ -105,14 +105,27 @@ describe('applyCascadeWrites — cas limites', () => {
         expect(out.appended).toEqual([]);
     });
 
-    test('une seule écriture par clé : la seconde occurrence d’une clé dupliquée reste intacte', () => {
-        // Comportement explicite : le plan porte UNE valeur par clé, on n'écrit
-        // qu'une ligne. Le doublon est une anomalie du siège, pas à « réparer »
-        // en silence par l'instrument.
-        const text = 'CLAUDISH_FAILOVER_AUTO=0\nCLAUDISH_FAILOVER_AUTO=0\n';
+    test('clé DUPLIQUÉE : chaque occurrence est réécrite, et la duplication est rapportée avec ses lignes', () => {
+        // Politique #4427 suivi (dispatch 31/10) : ne réécrire que la première
+        // occurrence laissait survivre une copie PÉRIMÉE — le runtime lit
+        // souvent la DERNIÈRE ligne, donc l'ancienne valeur l'emportait et le
+        // rapport disait « applied ». On réécrit TOUTES les occurrences ; la
+        // duplication elle-même (une anomalie du siège) est rapportée avec ses
+        // numéros de ligne, pas corrigée en silence.
+        const text = 'A=1\nCLAUDISH_FAILOVER_AUTO=0\nB=2\nCLAUDISH_FAILOVER_AUTO=0\n';
         const out = applyCascadeWrites(text, [w('CLAUDISH_FAILOVER_AUTO', '1')]);
-        expect(out.text).toBe('CLAUDISH_FAILOVER_AUTO=1\nCLAUDISH_FAILOVER_AUTO=0\n');
+        expect(out.text).toBe('A=1\nCLAUDISH_FAILOVER_AUTO=1\nB=2\nCLAUDISH_FAILOVER_AUTO=1\n');
         expect(out.written).toEqual(['CLAUDISH_FAILOVER_AUTO']);
+        expect(out.appended).toEqual([]);
+        expect(out.duplicates).toEqual([{ key: 'CLAUDISH_FAILOVER_AUTO', lines: [2, 4] }]);
+    });
+
+    test('clé dupliquée mais NON visée : le texte est inchangé et rien n’est rapporté', () => {
+        const text = 'A=1\nA=2\n';
+        const out = applyCascadeWrites(text, [w('CLAUDISH_FAILOVER_AUTO', '1')]);
+        expect(out.text).toBe('A=1\nA=2\nCLAUDISH_FAILOVER_AUTO=1\n');
+        expect(out.duplicates).toEqual([]);
+        expect(out.appended).toEqual(['CLAUDISH_FAILOVER_AUTO']);
     });
 
     test('une ligne sans `=` ou un commentaire déguisé n’est jamais confondu avec une clé', () => {

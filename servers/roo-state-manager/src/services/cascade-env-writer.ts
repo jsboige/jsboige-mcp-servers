@@ -19,7 +19,7 @@ import type { CascadeWrite } from './cascade-sync.js';
 export interface CascadeEnvWriteOutcome {
     /** Le texte réécrit (identique à l'entrée si aucune écriture ne s'applique). */
     text: string;
-    /** Clés remplacées en place. */
+    /** Clés remplacées en place (une fois chacune, ordre de première occurrence). */
     written: string[];
     /** Clés absentes du fichier, ajoutées en fin de fichier. */
     appended: string[];
@@ -27,6 +27,13 @@ export interface CascadeEnvWriteOutcome {
     eol: '\n' | '\r\n';
     /** Nombre de lignes hors cascade laissées intactes. */
     preservedLines: number;
+    /**
+     * Clés présentes sur PLUSIEURS lignes du fichier d'origine : chaque
+     * occurrence est réécrite (aucune copie périmée ne survit), et la
+     * duplication est RAPPORTÉE avec ses numéros de ligne — elle appartient au
+     * siège, la réécrire ne la corrige pas.
+     */
+    duplicates: Array<{ key: string; lines: number[] }>;
 }
 
 /** Sépare un texte en lignes en CONSERVANT la fin de ligne d'origine. */
@@ -88,8 +95,13 @@ export function applyCascadeWrites(currentText: string, writes: CascadeWrite[]):
     for (const w of writes) byKey.set(w.key, w);
 
     const written: string[] = [];
+    const seen = new Set<string>();
+    /** 1-based, cumulé sur TOUTES les occurrences d'une clé dupliquée. */
+    const dupLines = new Map<string, number[]>();
     let preservedLines = 0;
+    let lineNo = 0;
     const nextLines = lines.map((line) => {
+        lineNo += 1;
         const parsed = keyOfLine(line);
         if (!parsed) {
             preservedLines += 1;
@@ -100,11 +112,22 @@ export function applyCascadeWrites(currentText: string, writes: CascadeWrite[]):
             preservedLines += 1;
             return line;
         }
-        byKey.delete(parsed.key);
-        written.push(parsed.key);
+        // Clé dupliquée : on réécrit CHAQUE occurrence — n'en réécrire qu'une
+        // laisserait survivre une copie périmée (le runtime lit souvent la
+        // DERNIÈRE), tout en rapportant la duplication, qui appartient au
+        // fichier du siège et ne se corrige pas en silence ici.
+        if (seen.has(parsed.key)) {
+            dupLines.get(parsed.key)!.push(lineNo);
+        } else {
+            seen.add(parsed.key);
+            written.push(parsed.key);
+            dupLines.set(parsed.key, [lineNo]);
+        }
         const currentValue = line.slice(parsed.eqIndex + 1);
         return `${parsed.exportPrefix}${parsed.key}=${quoteLike(currentValue, write.value)}`;
     });
+    // Les clés vues au moins une fois ne doivent PAS être re-appendues.
+    for (const k of seen) byKey.delete(k);
 
     const appended = [...byKey.keys()];
     if (appended.length > 0) {
@@ -126,5 +149,8 @@ export function applyCascadeWrites(currentText: string, writes: CascadeWrite[]):
     for (let i = 0; i < nextLines.length; i++) text += nextLines[i] + (eols[i] ?? '');
     if (currentText !== '' && !endedWithEol) text = text.replace(/\r\n$|\n$/, '');
 
-    return { text, written, appended, eol, preservedLines };
+    const duplicates = [...dupLines.entries()]
+        .filter(([, lines]) => lines.length > 1)
+        .map(([key, lines]) => ({ key, lines }));
+    return { text, written, appended, eol, preservedLines, duplicates };
 }
