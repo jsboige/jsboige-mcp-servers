@@ -186,8 +186,8 @@ ${rows}
 ---
 
 💡 **Actions :**
-- **Récupérer :** \`roosync_get_attachment\` avec \`uuid\` et \`targetPath\`
-- **Supprimer :** \`roosync_delete_attachment\` avec \`uuid\``;
+- **Récupérer :** \`roosync_attachments\` avec \`action: "get"\`, \`uuid\` et \`targetPath\`
+- **Supprimer :** \`roosync_attachments\` avec \`action: "delete"\` et \`uuid\``;
 
     return { content: [{ type: 'text', text }] };
   } catch (error) {

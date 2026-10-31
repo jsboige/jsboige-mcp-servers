@@ -10,10 +10,9 @@
 import { getMessageManager } from '../../services/MessageManager.js';
 import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
-import os from 'os';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { StateManagerError } from '../../types/errors.js';
-import { getLocalFullId } from '../../utils/message-helpers.js';
+import { getLocalFullId, getLocalMachineId } from '../../utils/message-helpers.js';
 
 // Logger instance for amend_message tool
 const logger: Logger = createLogger('AmendMessageTool');
@@ -33,20 +32,11 @@ interface AmendMessageArgs {
 }
 
 /**
- * Récupère l'ID de la machine locale depuis la variable d'environnement
- * ou depuis le hostname OS en fallback
- *
- * @returns ID de la machine locale (hostname normalisé)
+ * #4149 F2 : l'identité machine passe par le helper partagé (message-helpers),
+ * qui lit l'identité de la REQUÊTE courante (daemon HTTP) avant l'env/process.
+ * La copie locale était un point de fuite : sur un daemon HTTP, elle aurait
+ * estampillé l'amendement au nom du daemon et non du client.
  */
-function getLocalMachineId(): string {
-  // Priorité à la variable d'environnement (pour les tests)
-  if (process.env.ROOSYNC_MACHINE_ID) {
-    return process.env.ROOSYNC_MACHINE_ID;
-  }
-  
-  // Fallback vers le hostname OS
-  return os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '-');
-}
 
 /**
  * Modifie le contenu d'un message envoyé (avant lecture)

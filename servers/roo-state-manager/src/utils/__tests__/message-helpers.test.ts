@@ -458,11 +458,26 @@ describe('message-helpers', () => {
       expect(() => resolveCallerIdentity('myia-ai-01')).toThrow(StateManagerError);
     });
 
-    test('la comparaison du workspace est case-insensitive des DEUX côtés', () => {
+    test('la comparaison du workspace est case-insensitive des DEUX côtés — l\'orthographe ENREGISTRÉE est installée', () => {
+      // ms#1578 (défaut 3) : la confiance se décide sur les formes
+      // normalisées, mais l'identité RETOURNÉE est l'orthographe canonique
+      // du dépôt — pour une entrée lane, la graphie ENREGISTRÉE. Sinon deux
+      // graphies acceptées du même workspace fourquent la destination
+      // (clé de dashboard : buildDashboardKey préserve la casse).
       process.env[ENV] = 'myia-ai-01:hermes-agent';
-      expect(resolveCallerIdentity('MYIA-AI-01:HERMES-AGENT').fullId).toBe('MYIA-AI-01:HERMES-AGENT');
+      expect(resolveCallerIdentity('MYIA-AI-01:HERMES-AGENT').fullId).toBe('myia-ai-01:hermes-agent');
+      expect(resolveCallerIdentity('myia-ai-01:HERMES-AGENT').fullId).toBe('myia-ai-01:hermes-agent');
       process.env[ENV] = 'myia-ai-01:HERMES-AGENT';
-      expect(resolveCallerIdentity('myia-ai-01:hermes-agent').fullId).toBe('myia-ai-01:hermes-agent');
+      expect(resolveCallerIdentity('myia-ai-01:hermes-agent').fullId).toBe('myia-ai-01:HERMES-AGENT');
+    });
+
+    test('une entrée machine installe le basename de l\'assertion, casse préservée (pas de lowercase)', () => {
+      // Pas d\'entrée lane pour épingle la graphie : la destination du dépôt
+      // (buildDashboardKey) préservant la casse, l\'identité installée la
+      // préserve aussi — CoursIA asserté ne doit PAS devenir coursia.
+      process.env[ENV] = 'myia-po-2024';
+      expect(resolveCallerIdentity('myia-po-2024:CoursIA').workspaceId).toBe('CoursIA');
+      expect(resolveCallerIdentity('myia-po-2024:C:\\dev\\CoursIA').workspaceId).toBe('CoursIA');
     });
 
     test('la machine de l\'entrée de voie est canonique des deux côtés (#3292)', () => {

@@ -8,9 +8,17 @@
 import os from 'os';
 import path from 'path';
 import { StateManagerError } from '../types/errors.js';
+import { getCallerContext } from '../transport/caller-context.js';
 
 /**
  * Récupère l'ID de la machine locale depuis le hostname OS
+ *
+ * #4149 F2 (amendement 1 d'ai-01) : sur le transport HTTP (daemon), l'identité
+ * vient de la REQUÊTE (en-tête `x-roosync-as`), pas du process — la requête
+ * est prioritaire sur l'env et sur le hostname. Le point d'injection est ici,
+ * et non dans `resolveCallerIdentity` : une vingtaine de fichiers lisent ces
+ * deux helpers directement (dashboard, MessageManager, claims, health-view…),
+ * et tous doivent suivre l'identité du client.
  *
  * @returns ID de la machine locale (hostname normalisé)
  *
@@ -21,6 +29,12 @@ import { StateManagerError } from '../types/errors.js';
  * ```
  */
 export function getLocalMachineId(): string {
+  // #4149 F2 : identité de la requête courante (daemon HTTP) — prioritaire.
+  const caller = getCallerContext();
+  if (caller?.machineId) {
+    return caller.machineId.toLowerCase();
+  }
+
   // Priorité à la variable d'environnement (pour les tests)
   // Normalisation lowercase pour cohérence (évite doublons case-sensitive)
   if (process.env.ROOSYNC_MACHINE_ID) {
@@ -55,6 +69,15 @@ export function getLocalMachineId(): string {
  * ```
  */
 export function getLocalWorkspaceId(): string {
+  // 0. #4149 F2 : identité de la requête courante (daemon HTTP) — prioritaire.
+  //    Le workspace asserté par le client (`x-roosync-as: machine:workspace`)
+  //    prime sur l'env et sur le cwd : sur un daemon, le cwd est celui du
+  //    daemon, pas celui du client.
+  const caller = getCallerContext();
+  if (caller?.workspaceId) {
+    return caller.workspaceId;
+  }
+
   // 1. Override manuel via env var (pour tests ou cas spéciaux)
   if (process.env.ROOSYNC_WORKSPACE_ID) {
     return process.env.ROOSYNC_WORKSPACE_ID;
@@ -195,6 +218,15 @@ interface TrustedCallerEntry {
   machineId: string;
   /** Workspace basename lowercased (normalizeWorkspaceId) — undefined = whole machine. */
   workspaceId?: string;
+  /**
+   * Orthographe ENREGISTRÉE du workspace (basename, casse préservée) — la
+   * sémantique de destination du dépôt. `buildDashboardKey` replie sur un
+   * basename SANS lowercaser précisément parce que les clés existantes
+   * préservent la casse (CoursIA, Argumentum) : l'identité installée après
+   * la décision de confiance doit être cette orthographe-là, pas la graphie
+   * brute de l'appelant (revue ms#1578, défaut 3).
+   */
+  rawWorkspaceId?: string;
 }
 
 /**
@@ -224,6 +256,7 @@ function parseTrustedCallerIds(): TrustedCallerEntry[] {
       return {
         machineId: canonicalMachine,
         workspaceId: workspaceId === undefined ? undefined : normalizeWorkspaceId(workspaceId.trim()),
+        rawWorkspaceId: workspaceId === undefined ? undefined : canonicalWorkspaceLabel(workspaceId),
       };
     })
     .filter((entry): entry is TrustedCallerEntry => entry !== null);
@@ -321,10 +354,22 @@ export function resolveCallerIdentity(as?: string): {
   //   entry "machine:workspace" → ONLY that lane passes: the machine-only
   //                               assertion and every other workspace of the
   //                               same machine stay refused (19/10, option b).
+  // On garde l'entrée QUI a autorisé (pas juste un booléen) : l'orthographe
+  // canonique du workspace s'en déduit — une entrée lane épingle la graphie
+  // ENREGISTRÉE, une entrée machine garde le basename de l'assertion, casse
+  // préservée dans les deux cas (revue ms#1578, défaut 3).
+  let matched: TrustedCallerEntry | undefined;
   const allowed = trusted.some((entry) => {
     if (entry.machineId !== machine) return false;
-    if (entry.workspaceId === undefined) return true;
-    return assertedWorkspace !== undefined && entry.workspaceId === assertedWorkspace;
+    if (entry.workspaceId === undefined) {
+      matched = entry;
+      return true;
+    }
+    if (assertedWorkspace !== undefined && entry.workspaceId === assertedWorkspace) {
+      matched = entry;
+      return true;
+    }
+    return false;
   });
   if (!allowed) {
     const assertedLabel = assertedWorkspace ? `${machine}:${assertedWorkspace}` : machine;
@@ -339,10 +384,23 @@ export function resolveCallerIdentity(as?: string): {
       { rejectedParam: 'as', envVar: TRUSTED_CALLER_IDS_ENV, asserted: canonical }
     );
   }
+  // Orthographe canonique APRÈS la décision de confiance (ms#1578, défaut 3) :
+  // une entrée lane épingle l'orthographe ENREGISTRÉE dans
+  // ROOSYNC_TRUSTED_CALLER_IDS (opérateur = la source de vérité de la casse) ;
+  // une entrée machine installe le basename de l'assertion, casse préservée.
+  // Dans les deux cas le repli de chemin s'applique ("C:\dev\CoursIA" →
+  // "CoursIA") mais JAMAIS le lowercasing : la destination du dépôt
+  // (buildDashboardKey) préserve la casse, et l'ancien retour de la graphie
+  // brute laissait `coursia` asserté forker vers `workspace-coursia`.
+  const canonicalWorkspace = matched?.workspaceId !== undefined && matched?.rawWorkspaceId
+    ? matched.rawWorkspaceId
+    : parsed.workspaceId !== undefined
+      ? canonicalWorkspaceLabel(parsed.workspaceId)
+      : undefined;
   return {
-    machineId: parsed.machineId,
-    workspaceId: parsed.workspaceId,
-    fullId: parsed.workspaceId ? `${parsed.machineId}:${parsed.workspaceId}` : parsed.machineId,
+    machineId: machine,
+    workspaceId: canonicalWorkspace,
+    fullId: canonicalWorkspace ? `${machine}:${canonicalWorkspace}` : machine,
   };
 }
 
@@ -487,6 +545,25 @@ export function normalizeWorkspaceId(workspaceId: string): string {
   // Replace backslashes with forward slashes for cross-platform compatibility
   // (path.basename on Linux doesn't handle Windows backslashes)
   return path.basename(workspaceId.replace(/\\/g, '/')).toLowerCase();
+}
+
+/**
+ * Orthographe CANONIQUE d'un workspace pour IDENTITÉ, pas pour comparaison.
+ *
+ * Même repli de chemin que `normalizeWorkspaceId` (backslashes → basename) mais
+ * SANS lowercaser : la sémantique de destination du dépôt préserve la casse —
+ * `buildDashboardKey` (tools/roosync/dashboard.ts) écrit `workspace-CoursIA`,
+ * pas `workspace-coursia`, et les clés existantes en dépendent. L'identité
+ * installée après la décision de confiance (`resolveCallerIdentity`, puis le
+ * contexte ALS du transport HTTP) doit être cette orthographe-là, sinon une
+ * assertion en minuscules fourche l'état vers une clé fantôme (revue ms#1578,
+ * défaut 3 : `myia-web2:CoursIA` asserté `coursia` → `workspace-coursia`).
+ *
+ * @param workspaceId Identifiant brut (assertion ou entrée de confiance)
+ * @returns Basename, casse préservée
+ */
+export function canonicalWorkspaceLabel(workspaceId: string): string {
+  return path.basename(workspaceId.trim().replace(/\\/g, '/'));
 }
 
 /**

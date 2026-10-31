@@ -20,6 +20,7 @@ import { listRooSyncDashboardKeysFromPg, readDashboardFromPg } from '../../servi
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { getEmbeddingShadowingStatus, type EmbeddingShadowingStatus } from '../../services/embedding-endpoints.js';
 import * as os from 'os';
+import { getCallerContext } from '../../transport/caller-context.js';
 
 const logger = createLogger('HealthView');
 
@@ -142,7 +143,18 @@ function isKnownMachine(machineId: string): boolean {
   return machineId.toLowerCase().startsWith('myia-');
 }
 
+/**
+ * #4149 F2 : sur le transport HTTP (daemon), l'identité machine vient de la
+ * REQUÊTE courante (en-tête `x-roosync-as`). Le repli local reste celui de ce
+ * fichier (hostname simple) — le helper partagé message-helpers lit
+ * `ROOSYNC_MACHINE_ID` en priorité, ce qui changeait le comportement
+ * historique de cette vue.
+ */
 function getLocalMachineId(): string {
+  const caller = getCallerContext();
+  if (caller?.machineId) {
+    return caller.machineId.toLowerCase();
+  }
   return os.hostname().toLowerCase();
 }
 
