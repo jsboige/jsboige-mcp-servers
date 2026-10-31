@@ -1,8 +1,16 @@
 # Guide de migration — ConversationSkeleton → extraction unifiée (task extraction)
 
-**Statut :** J+0 livré (2026-09-29) — annotation + warn-once. **Retrait :** pas avant le
-**2026-10-28**, gardé par roo-extensions #1394 (recensement et migration des consommateurs
-`src/tools/`).
+**Statut :** J+0 livré (2026-09-29) — annotation + warn-once. **Retrait :** gardé par des
+prérequis **mesurés**, pas par une date. La borne calendaire du 2026-10-28 est **échue sans que sa
+garde soit satisfaite** (roo-extensions #1395, mesures du 2026-10-31) : le store PG unifié importe
+encore le type (`src/services/unified-store/backfill.ts`, `conversation-list-store.ts`) et 100 des
+182 fichiers `src` qui le référencent sont sous `src/tools`. Conditions de retrait, dans cet ordre :
+
+1. `grep -rn "ConversationSkeleton" src/services/unified-store` = 0 (découplage du store PG) ;
+2. `grep -rl "ConversationSkeleton" src/tools --include=*.ts` = 0 (migration downstream, #1394) ;
+3. alors seulement `grep -ro "ConversationSkeleton" src --include=*.ts` = 0.
+
+Aucun retrait fondé sur un calendrier : une date échue n'est pas une preuve de préservation.
 
 **Références :** roo-extensions #1360 / #1395 · architecture :
 `docs/architecture/unified-task-extraction-architecture.md` (repo roo-extensions, PR #3922) ·
