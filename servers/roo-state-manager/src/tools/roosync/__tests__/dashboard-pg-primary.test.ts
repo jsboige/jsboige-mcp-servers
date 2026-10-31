@@ -527,6 +527,11 @@ describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
     process.env.UNIFIED_STORE_DUAL_WRITE = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
     process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '0';
+    // Ce test ne mesure pas la borne : il exige que la moitié GDrive RÉUSSISSE.
+    // Les 150 ms du beforeEach mordaient sur un runner CI chargé (échec Node 22
+    // du 31/10, run 41204368209) : moitié expirée → miroir PG checked appelé une
+    // fois → faux rouge sur `not.toHaveBeenCalled()`. Défaut de production (30 s) ici.
+    process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS = '30000';
     // Dashboard préexistant : on veut le chemin INCRÉMENTAL (lecture + écriture
     // GDrive), pas le full-write du premier append.
     await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Init' });
@@ -541,6 +546,8 @@ describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
     expect(result.durationBreakdown?.writeBreakdown?.gdriveWriteMs).toBeGreaterThanOrEqual(0);
     // Pas de PG d'abord : aucune écriture PG sous verrou n'a couru.
     expect(result.durationBreakdown?.writeBreakdown?.pgPrimaryWriteMs).toBeUndefined();
+    // Une moitié GDrive expirée se nomme ici, avant de se lire comme un appel PG.
+    expect(result.writeVerification?.gdriveDegraded).toBeFalsy();
     expect(mockDualWriteSyncChecked).not.toHaveBeenCalled();
   });
 
