@@ -1944,6 +1944,12 @@ const FORK_TWIN_MAX_SCAN = 5;
  * clé dont la moitié fichier est possiblement un twin (le merge appartient
  * au propriétaire, arbitrage ai-01 comment #4439 : « nothing to merge »).
  *
+ * Résolution par NOM (le cadrage d'ai-01 : « per-mount DriveFS name
+ * resolution ») : UN readdir de la moitié fichier, puis lecture des SEULES
+ * jumelles qui existent. La garde #3205 (« ENOENT → exactement 1 appel de
+ * lecture », dashboard.test.ts) doit tenir : un dashboard réellement absent
+ * ne paie QUE son readdir — jamais un scan d'appels de lecture aveugle.
+ *
  * #3782 — deux garde-marques : une jumelle source d'un merge est retirée
  * (ressusciter-la rouvrirait le fork refermé), et une clé canonique retirée
  * (merge A→B) ne se « rabat » JAMAIS sur sa famille — la retraite doit
@@ -1955,9 +1961,19 @@ async function resolveDashboardForkTwin(
   // Canonique retiré : la famille entière est morte par décision, pas par accident.
   const canonicalRetirement = await getDashboardRetirement(key);
   if (canonicalRetirement) return null;
+  const dir = path.dirname(getDashboardPath(key));
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return null; // moitié fichier illisible : le repli n'a pas de matière
+  }
+  const twinKeys = names
+    .filter((name) => isGdriveConflictCopyFile(name) && canonicalKeyOfFork(name.replace(/\.md$/, '')) === key)
+    .map((name) => name.replace(/\.md$/, ''))
+    .slice(0, FORK_TWIN_MAX_SCAN);
   let best: { dashboard: Dashboard; forkKey: string } | null = null;
-  for (let n = 1; n <= FORK_TWIN_MAX_SCAN; n++) {
-    const forkKey = `${key} (${n})`;
+  for (const forkKey of twinKeys) {
     const retirement = await getDashboardRetirement(forkKey);
     if (retirement) continue;
     let candidate: Dashboard | null;
