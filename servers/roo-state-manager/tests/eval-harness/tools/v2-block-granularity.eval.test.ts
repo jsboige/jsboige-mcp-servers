@@ -29,6 +29,12 @@
  *     ai-01 2026-10-15 — index content is not a V2 render regression)
  *   - when every failing hit is stale and NO valid-anchor hit exists, the
  *     run records INCONCLUSIVE (stale-anchor) — never PASS
+ *   - when the known-answer region is beyond the indexed tail (or the file is
+ *     not indexed at all), the JOIN gate is unmeasurable on this index and the
+ *     run records INCONCLUSIVE (coverage gap) with its measured numbers —
+ *     measured po-2023 2026-10-31: index stopped at line 1343 of 1872, the
+ *     call sits at 1627 (index-coverage.ts). A covered index keeps the gate
+ *     hard: coverage never excuses a ranking failure.
  *   - expansion observability present
  *
  * Grading scope (ai-01 triage on #4105, 2026-10-07): the contract is graded
@@ -50,6 +56,7 @@ import { isAbsolute, join } from 'node:path';
 import { STORM_ACTIVE, STORM_GUARD_RESULT, runStormGuard } from '../storm-guard.js';
 import { assessIndexFreshness } from '../anchor-probe.js';
 import { resolveScenarioWorkspace } from '../resolve-workspace.js';
+import { probeKnownAnswerCoverage } from '../index-coverage.js';
 import type { CheckResult } from '../verdict.js';
 import { writeVerdictArtifact } from '../verdict-artifact.js';
 import { handleCodebaseSearch } from '../../../src/tools/search/search-codebase.tool.js';
@@ -299,6 +306,50 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 			&& !!joinHit.match_lines;
 		checks.push({ name: 'search-semantic JOIN block + navigable line handle', ok: joinBlockOk, observed: joinHit ? `${joinHit.file_path} ${joinHit.start_line}-${joinHit.end_line}` : 'ABSENT' });
 		console.log(`[golden] search-semantic JOIN block: ${joinHit ? `${joinHit.file_path} lines ${joinHit.start_line}-${joinHit.end_line} (matched ${joinHit.match_lines})` : 'ABSENT'}`);
+
+		// ---- index coverage of the known answer (Epic #2609 q3, 2026-10-31) ----
+		// The known answer is a region of the CURRENT file. When the index never
+		// reached that region, no ranking can return it and the gate above is red
+		// for an index-content reason — the same class as the stale-anchor lever
+		// of #4105, so it must record INCONCLUSIVE with its MEASURED numbers, never
+		// FAIL and never PASS. When coverage reaches the region, a red gate stays
+		// a FAIL: that is the scenario's own verdict (garde-fou 1 of the module).
+		const KNOWN_ANSWER_REL = 'mcps/internal/servers/roo-state-manager/src/tools/search/search-semantic.tool.ts';
+		let neededStart = 0;
+		try {
+			const answerLines = readFileSync(join(SCENARIO_3_WORKSPACE!, KNOWN_ANSWER_REL), 'utf8').split(/\r?\n/);
+			const idx = answerLines.findIndex(l => !/^\s*(?:\/\/|\/\*|\*)/.test(l) && /(?:await\s+)?(?:\w+\.)?joinFromQdrant\s*\(/.test(l));
+			neededStart = idx >= 0 ? idx + 1 : 0;
+		} catch {
+			neededStart = 0;
+		}
+		const coverage = await probeKnownAnswerCoverage({
+			workspace: SCENARIO_3_WORKSPACE as string,
+			relPath: KNOWN_ANSWER_REL,
+			neededStart,
+			neededEnd: neededStart,
+			collection: typeof parsed.collection === 'string' ? parsed.collection : null,
+		});
+		console.log(`[coverage] ${coverage.line} (collection=${typeof parsed.collection === 'string' ? parsed.collection : 'n/a'})`);
+		checks.push({
+			name: 'known answer reachable by the index (coverage, informational on the gate)',
+			ok: coverage.verdict === 'covered',
+			observed: `${coverage.verdict}: indexed through line ${coverage.maxIndexedEnd ?? 'n/a'} (${coverage.indexedChunks} chunks), answer at ${coverage.neededStart} of ${coverage.currentLines}`,
+		});
+		if (!joinBlockOk && coverage.verdict === 'gap') {
+			console.log(`[INCONCLUSIVE] ${coverage.line} — the known answer is outside the indexed tail: the JOIN gate is unmeasurable on this index, not a V2 render regression`);
+			writeVerdictArtifact({
+				tool: 'codebase_search',
+				scenario: 'scenario-3-block-granularity',
+				verdict: 'INCONCLUSIVE',
+				reason: `known answer outside the index's coverage: ${coverage.reason}`,
+				checks: checks,
+				latency_ms: latencyMs,
+				timestamp: new Date().toISOString(),
+			});
+			expect(coverage.verdict).toBe('gap');
+			return;
+		}
 		if (sourceClassHits[0]) {
 			const b = sourceClassHits[0];
 			console.log(`[recorded] top source-class hit: ${b.file_path} lines ${b.start_line}-${b.end_line} (matched ${b.match_lines}), snippet head: ${String(b.snippet).slice(0, 160)}`);
