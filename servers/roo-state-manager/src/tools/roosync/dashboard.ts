@@ -1915,6 +1915,82 @@ export async function readDashboardFile(key: string): Promise<Dashboard | null> 
 }
 
 /**
+ * #4439 — horodatage le plus récent d'un dashboard (max des messages, pas le
+ * dernier élément : skew d'horloge cross-machine, même règle que le curseur
+ * global #3226). Sert de clef de fraîcheur au choix de la jumelle.
+ */
+function freshestTimestamp(dashboard: Dashboard): string {
+  return dashboard.intercom.messages.reduce(
+    (max, m) => (m.timestamp > max ? m.timestamp : max),
+    dashboard.lastModified
+  );
+}
+
+/** #4439 — borné : DriveFS ne cascade qu'un marqueur en pratique, mais les
+ * collisions imbriquées (« (1) (1) », vues po-204 21/09) existent. */
+const FORK_TWIN_MAX_SCAN = 5;
+
+/**
+ * #4439 (5e récidive, mesure web1 30-31/10 : `workspace-claudish` /
+ * `workspace-CoursIA`) — quand la moitié fichier d'un montage ne connaît un
+ * dashboard QUE sous une copie de conflit DriveFS « key (N) », la lecture
+ * canonique rend « introuvable » alors que le trafic vivant atterrit sur la
+ * jumelle. Portage du pattern ms#1585 (registre lu comme union de ses copies
+ * DriveFS, #2570) au chemin de LECTURE des dashboards — avec la différence
+ * de sémantique qui s'impose : un dashboard n'est PAS add-only, deux jumelles
+ * peuvent DIVERGER (alias de montage vs vrai twin). On ne UNIONNE donc
+ * jamais : on sert la jumelle la plus récente, SOUS ÉTIQUETTE, et seulement
+ * à `read` — jamais aux chemins d'écriture, qui publieraient sinon sur une
+ * clé dont la moitié fichier est possiblement un twin (le merge appartient
+ * au propriétaire, arbitrage ai-01 comment #4439 : « nothing to merge »).
+ *
+ * Résolution par NOM (le cadrage d'ai-01 : « per-mount DriveFS name
+ * resolution ») : UN readdir de la moitié fichier, puis lecture des SEULES
+ * jumelles qui existent. La garde #3205 (« ENOENT → exactement 1 appel de
+ * lecture », dashboard.test.ts) doit tenir : un dashboard réellement absent
+ * ne paie QUE son readdir — jamais un scan d'appels de lecture aveugle.
+ *
+ * #3782 — deux garde-marques : une jumelle source d'un merge est retirée
+ * (ressusciter-la rouvrirait le fork refermé), et une clé canonique retirée
+ * (merge A→B) ne se « rabat » JAMAIS sur sa famille — la retraite doit
+ * rester la dernière parole.
+ */
+async function resolveDashboardForkTwin(
+  key: string
+): Promise<{ dashboard: Dashboard; forkKey: string } | null> {
+  // Canonique retiré : la famille entière est morte par décision, pas par accident.
+  const canonicalRetirement = await getDashboardRetirement(key);
+  if (canonicalRetirement) return null;
+  const dir = path.dirname(getDashboardPath(key));
+  let names: string[];
+  try {
+    names = await fs.readdir(dir);
+  } catch {
+    return null; // moitié fichier illisible : le repli n'a pas de matière
+  }
+  const twinKeys = names
+    .filter((name) => isGdriveConflictCopyFile(name) && canonicalKeyOfFork(name.replace(/\.md$/, '')) === key)
+    .map((name) => name.replace(/\.md$/, ''))
+    .slice(0, FORK_TWIN_MAX_SCAN);
+  let best: { dashboard: Dashboard; forkKey: string } | null = null;
+  for (const forkKey of twinKeys) {
+    const retirement = await getDashboardRetirement(forkKey);
+    if (retirement) continue;
+    let candidate: Dashboard | null;
+    try {
+      candidate = await readDashboardFromGdrive(forkKey);
+    } catch {
+      continue; // ce candidat illisible ≠ échec du repli entier
+    }
+    if (!candidate) continue;
+    if (!best || freshestTimestamp(candidate) > freshestTimestamp(best.dashboard)) {
+      best = { dashboard: candidate, forkKey };
+    }
+  }
+  return best;
+}
+
+/**
  * #3782 — suit la chaîne des marques de retraite (A→B, B→C) et rend la marque
  * DERNIÈRE résolue : `targetKey` est la cible finale, non une clé elle-même
  * retirée. Borné (5 sauts) + garde de cycle — une base marquée en boucle ne
@@ -6127,6 +6203,16 @@ export interface DashboardResult {
   condensed?: boolean;
   archivedCount?: number;
   /**
+   * #4439 (5e récidive des canoniques absents) — set when `read` was served
+   * from a DriveFS conflict-copy twin (`key (N)`) because the canonical file
+   * is absent from THIS seat's file half (per-mount name deviation measured
+   * on web1 30-31/10). The value is the fork key actually read. Deliberately
+   * absent (not empty) on canonical reads to keep the historical payload
+   * shape. Read-only signal: write paths never resolve twins (#4439 scope —
+   * the merge decision belongs to the store owner).
+   */
+  resolved_from_fork?: string;
+  /**
    * #2719 (ask CoursIA 25/09 20:10Z, dispatch ai-01 26/09) — true when a
    * condensation pass archived messages WITHOUT any LLM summary (truncation
    * fallback). `condensed: true` alone reads as success; this field exposes
@@ -6775,6 +6861,19 @@ async function handleRead(
   }
 
   let dashboard = await readDashboardFile(key);
+  // #4439 — la moitié fichier de ce montage peut ne connaître le dashboard que
+  // sous sa jumelle DriveFS « key (N) » : on sert alors la plus récente sous
+  // étiquette au lieu de mentir « introuvable ». Read SEULEMENT — l'auto-ACK
+  // ci-dessous relit par readDashboardFile (canonique) et n'écrit donc jamais
+  // le contenu de la jumelle sur une autre clé.
+  let resolvedFromFork: string | null = null;
+  if (!dashboard) {
+    const twin = await resolveDashboardForkTwin(key);
+    if (twin) {
+      dashboard = twin.dashboard;
+      resolvedFromFork = twin.forkKey;
+    }
+  }
   if (!dashboard) {
     if (!storeAccessible) {
       return {
@@ -6900,6 +6999,18 @@ async function handleRead(
   // #2306: Warn when reading only the status section — it may be stale
   if (readSection === 'status') {
     jsonResult.warning = 'Status section may be stale — use section: "all" or "intercom" for latest messages.';
+  }
+
+  // #4439 — la lecture a été servie depuis une jumelle : la moitié fichier de
+  // CE siège ne connaît pas le canonique. Jamais silencieux — l'opérateur doit
+  // savoir que sa vue fichier dévie (alias DriveFS ou twin réel) avant de
+  // décider d'un quelconque merge.
+  if (resolvedFromFork) {
+    jsonResult.resolved_from_fork = resolvedFromFork;
+    jsonResult.message =
+      `Lu depuis la jumelle DriveFS '${resolvedFromFork}' — le fichier canonique est absent ` +
+      `de la moitié fichier de ce siège (alias de montage ou fork réel, #4439). ` +
+      `Le store PG fait référence : ne PAS merger depuis ce seul constat.`;
   }
 
   // #1832: markdown format (default) — return human-readable markdown instead of JSON envelope
