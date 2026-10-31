@@ -443,6 +443,51 @@ describe('loadPgConversationSkeleton', () => {
     expect(skeleton!.metadata.title).toBe('first question');
   });
 
+  test('unfolds tool_calls back into the sequence as actions (ms#1396 round-trip)', async () => {
+    mockGetConversation.mockResolvedValue(convRow());
+    mockGetMessages.mockResolvedValue([
+      msg(0, { content: 'do it' }),
+      msg(1, {
+        content: 'doing it',
+        tool_calls: [
+          { type: 'tool', name: 'Read', parameters: { file_path: '/a' }, status: 'success', timestamp: '2026-09-05T12:15:01.000Z' },
+          { type: 'command', name: 'npm', parameters: { cmd: 'test' }, status: 'failure', timestamp: '2026-09-05T12:15:02.000Z' },
+          // Foreign junk in the column must never reach the sequence.
+          { type: 'tool', name: '' , parameters: {}, status: 'success', timestamp: '' },
+          { not: 'an action' },
+        ] as unknown as NonNullable<MessageRow['tool_calls']>,
+      }),
+    ]);
+
+    const skeleton = await loadPgConversationSkeleton('claude-d--dev-CoursIA--0f1e2d3c');
+
+    // Actions reappear right after the assistant message that issued them —
+    // the mirror of mapSequenceToMessageRows (dual-write.ts).
+    expect(skeleton!.sequence).toEqual([
+      { role: 'user', content: 'do it', timestamp: '2026-09-05T12:14:55.368Z', isTruncated: false },
+      { role: 'assistant', content: 'doing it', timestamp: '2026-09-05T12:14:55.368Z', isTruncated: false },
+      { type: 'tool', name: 'Read', parameters: { file_path: '/a' }, status: 'success', timestamp: '2026-09-05T12:15:01.000Z' },
+      { type: 'command', name: 'npm', parameters: { cmd: 'test' }, status: 'failure', timestamp: '2026-09-05T12:15:02.000Z' },
+    ]);
+    // The measured count replaces the write-time metadata count.
+    expect(skeleton!.metadata.actionCount).toBe(2);
+  });
+
+  test('pre-ms#1396 rows (tool_calls null) keep rendering messages-only', async () => {
+    mockGetConversation.mockResolvedValue(convRow({ metadata: { actionCount: 5 } }));
+    mockGetMessages.mockResolvedValue([msg(0), msg(1, { content: 'answer', tool_calls: null })]);
+
+    const skeleton = await loadPgConversationSkeleton('claude-d--dev-CoursIA--0f1e2d3c');
+
+    expect(skeleton!.sequence).toEqual([
+      { role: 'user', content: 'message 0', timestamp: '2026-09-05T12:14:55.368Z', isTruncated: false },
+      { role: 'assistant', content: 'answer', timestamp: '2026-09-05T12:14:55.368Z', isTruncated: false },
+    ]);
+    // The body holds no actions: the measured count (0) wins over the stored
+    // metadata count (5), which describes the local analysis at write time.
+    expect(skeleton!.metadata.actionCount).toBe(0);
+  });
+
   test('converts Date timestamps on the conversation row (node-pg TIMESTAMPTZ)', async () => {
     mockGetConversation.mockResolvedValue(
       convRow({

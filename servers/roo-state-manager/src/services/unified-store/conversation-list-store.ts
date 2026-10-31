@@ -34,7 +34,7 @@
  * it loads ONE conversation's body when no local source can.
  */
 
-import type { ConversationSkeleton, MessageSkeleton, SkeletonMetadata } from '../../types/conversation.js';
+import type { ActionMetadata, ConversationSkeleton, SkeletonMetadata } from '../../types/conversation.js';
 import type {
   IUnifiedStoreReader,
   ConversationListFilters,
@@ -269,6 +269,19 @@ function toIso(value: unknown): string | undefined {
 }
 
 /**
+ * `messages.tool_calls` is `unknown[] | null` at the type level. Entries the
+ * dual-write folded are full ActionMetadata objects; anything else a foreign
+ * writer may have put in the column is skipped rather than rendered.
+ */
+function isActionMetadata(value: unknown): value is ActionMetadata {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (v.type === 'tool' || v.type === 'command')
+    && typeof v.name === 'string' && v.name.length > 0
+    && (v.status === 'success' || v.status === 'failure' || v.status === 'in_progress');
+}
+
+/**
  * Load one conversation's body from the unified store, for `view` (#2191).
  *
  * `view` resolves a task from local files only, so a conversation listed by the
@@ -280,8 +293,11 @@ function toIso(value: unknown): string | undefined {
  * store holds no message rows for it (a header-only row adds nothing over the
  * skeleton-only degradation), or PG fails; the caller keeps its local path.
  *
- * Fidelity: `messages` stores user/assistant turns only. Tool/command actions
- * are not persisted, so the returned sequence carries no ActionMetadata.
+ * Fidelity: `messages` stores user/assistant turns, and since ms#1396 each
+ * action lives in the `tool_calls` of the row it follows. Those are unfolded
+ * back into the sequence here, so a PG-served body renders its actions the
+ * same way a local load does. Rows written before ms#1396 carry null
+ * tool_calls and keep rendering messages-only, unchanged.
  */
 export async function loadPgConversationSkeleton(taskId: string): Promise<ConversationSkeleton | null> {
   const reader = getConversationListPgReader();
@@ -301,10 +317,20 @@ export async function loadPgConversationSkeleton(taskId: string): Promise<Conver
       if (page.length < PG_VIEW_PAGE_SIZE) break;
     }
 
-    const sequence: MessageSkeleton[] = [];
+    const firstUserMessage = messages.find(m => m.role === 'user')?.content ?? null;
+
+    const sequence: ConversationSkeleton['sequence'] = [];
+    let actionsUnfolded = 0;
     for (const m of messages) {
       if (m.role !== 'user' && m.role !== 'assistant') continue;
       sequence.push({ role: m.role, content: m.content ?? '', timestamp: toIso(m.ts) ?? '', isTruncated: false });
+      // ms#1396 folds each action into the tool_calls of the row it follows —
+      // unfold them back after their message, mirroring mapSequenceToMessageRows.
+      for (const call of m.tool_calls ?? []) {
+        if (!isActionMetadata(call)) continue;
+        sequence.push(call);
+        actionsUnfolded++;
+      }
     }
     if (sequence.length === 0) return null;
 
@@ -313,9 +339,11 @@ export async function loadPgConversationSkeleton(taskId: string): Promise<Conver
       first_ts: toIso(row.first_ts) ?? null,
       last_ts: toIso(row.last_ts) ?? null,
       ingested_at: toIso(row.ingested_at),
-      first_user_message: sequence.find(item => item.role === 'user')?.content ?? null,
+      first_user_message: firstUserMessage,
     });
-    return { ...skeleton, sequence };
+    // The measured count of actions in THIS body replaces the write-time
+    // metadata count, which is 0 for every row written before ms#1396.
+    return { ...skeleton, sequence, metadata: { ...skeleton.metadata, actionCount: actionsUnfolded } };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     getLogger().warn('[conversation-pg] view read failed — keeping the local path', { taskId, error: message });
