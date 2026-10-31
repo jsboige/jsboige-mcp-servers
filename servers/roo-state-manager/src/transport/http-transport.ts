@@ -169,6 +169,24 @@ const READ_ONLY_ACTIONS: Record<string, ReadonlySet<string>> = {
     // seule la lecture (list/check) passe sans identité (revue ms#1578, défaut 1 —
     // l'outil était classé pure-read en bloc).
     roosync_claim: new Set(['list', 'check']),
+    // #4427 (dispatch 20261031a, item 5) : découpage lecture/écriture PROMIS
+    // par ms#1591 (« un découpage lecture/écriture se fera sur une relecture
+    // outil par outil, pas à la fusion »). Relecture faite : `collect`,
+    // `compare`, `status` et `list` ne font QUE lire — le canon du magasin, le
+    // `.env` du siège, et le conteneur via des commandes docker NON mutantes
+    // (`exec cat /proc/1/environ`, `inspect`, `logs --tail` —
+    // cascade-container.ts, sans shell, argv pur). `publish` (écrit le canon)
+    // et `apply` (réécrit le `.env` + backup) restent des écritures ; `apply`
+    // en dry_run n'écrit rien mais reste classé écriture : la granularité du
+    // gate est l'ACTION, et un geste qui engage un déploiement ne se laisse
+    // pas lire par défaut. `confirm` est comportementalement une lecture
+    // (relecture live du conteneur, verdict calculé) mais reste GATED : son
+    // nom appartient au vocabulaire d'actions mutantes (`confirm` écrit chez
+    // roosync_harmonization) et le garde de surface interdit un même nom en
+    // lecture et en mutation — le conservatisme de vocabulaire gagne ; ses
+    // appelants réels (vérification post-apply) portent l'identité. Action
+    // inconnue ou absente → écriture (default-deny ci-dessous).
+    roosync_claudish_cascade: new Set(['collect', 'compare', 'status', 'list']),
 };
 
 /**
@@ -193,12 +211,10 @@ const WRITE_ONLY_TOOLS = new Set([
     // Écrit des fichiers dans le store partagé via un script PowerShell
     // (`outputDir` surchargeable par l'appelant) — cf. READ_ONLY_TOOLS.
     'roosync_refresh_dashboard',
-    // Ajouté par ms#1591 (#4427 PR3) après l'ouverture de cette PR : `publish`
-    // écrit le canon, `apply` réécrit le `.env` d'un siège, et même les
-    // lectures lancent `docker` sur l'hôte du daemon. Classé en bloc en
-    // écriture (le plus strict) ; un découpage lecture/écriture se fera sur
-    // une relecture outil par outil, pas à la fusion.
-    'roosync_claudish_cascade',
+    // `roosync_claudish_cascade` n'est PLUS ici : le découpage promis par
+    // ms#1591 a été fait (dispatch 20261031a, item 5) — les cinq actions de
+    // lecture sont dans READ_ONLY_ACTIONS ci-dessus ; `publish`/`apply` et
+    // toute action inconnue restent des écritures par default-deny.
 ]);
 
 /**
