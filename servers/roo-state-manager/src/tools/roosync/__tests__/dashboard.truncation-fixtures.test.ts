@@ -12,10 +12,10 @@
  *      premières. Chemin MAJORITAIRE (condensation déterministe dominante
  *      dans les mesures ai-01).
  *   B. Fallback mono-ligne — la fenêtre garde les DERNIERS caractères et
- *      coupe en plein token (le « (658 » mesuré) ; le diviseur de sécurité
- *      UTF-8 doit garantir le plafond d'octets (défaut /2 trouvé PAR cette
- *      suite : '字'×600 sous cap 600 rendait 900 o — une unité UTF-16 code
- *      jusqu'à 3 octets, pas 2).
+ *      coupe en plein token (le « (658 » mesuré) ; la coupe doit être
+ *      EXACTE à l'octet et alignée sur les points de code (#4434 : le
+ *      diviseur /3, borne du pire cas, jetait deux tiers du budget en ASCII ;
+ *      avant lui /2, trouvé PAR cette suite, violait le plafond).
  *   C. Marqueur #2719 — strip ancré en début de ligne (la prose citant la
  *      sentinelle survit), au plus un marqueur par re-stamp, et le contrat
  *      de réservation du call-site (marker + statut tronqué ≤ plafond).
@@ -25,6 +25,9 @@
  *   M2 diviseur /3 → /2                                    → B2 rouge
  *   M3 strip startsWith → includes                         → C1 rouge
  *   M4 slice(-maxChars) → slice(0, maxChars)               → B1 rouge
+ *   M5 coupe exacte → retour au diviseur floor(cap/3)      → B1/B2 rouges
+ *   M6 paire de substitution non enjambée (1 unité)         → B5 rouge
+ *   M7 largeur 4 octets comptée 3                           → B4/B5 rouges
  *
  * Hors d'atteinte unitaire (documenté, non testé ici) : l'append des marqueurs
  * #1502/#3803 APRÈS condenseTextIfTooLarge (dashboard.ts ~L5753-5782, mesure
@@ -128,7 +131,12 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
       // Le résultat est un SUFFIXE exact — mutant M4 (slice(0, maxChars),
       // fenêtre de tête) rouge ici : il rendrait un préfixe.
       expect(line.endsWith(out)).toBe(true);
-      expect(out.length).toBeGreaterThan(0);
+      // ASCII en queue : la coupe exacte remplit le budget à l'octet près
+      // (le diviseur /3 n'en donnait que 100 — mutant M5 rouge ici). La queue
+      // contient un 'é' (2 octets) : c'est bien l'OCTET qui est saturé, pas le
+      // nombre d'unités UTF-16.
+      expect(bytes(out)).toBe(cap);
+      expect(out.length).toBeLessThan(cap);
       // Le contenu RÉCENT (la métrique de queue) survit…
       expect(out).toContain('78,6 % du non-caché (658');
       // …le marqueur de tête est hors fenêtre.
@@ -145,6 +153,9 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
       const out = truncateToMaxSize(line, cap, 'Status (fixture B1b)');
       expect(bytes(out)).toBeLessThanOrEqual(cap);
       expect(line.endsWith(out)).toBe(true);
+      // Que de l'ASCII : la fenêtre sature le budget à l'unité près.
+      expect(out.length).toBe(cap);
+      expect(bytes(out)).toBe(cap);
 
       // La coupure atterrit entre deux chiffres : nombre amputé, ni
       // séparateur ni début de token à la frontière.
@@ -154,29 +165,62 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
       expect(/[0-9]$/.test(line.charAt(windowStart - 1))).toBe(true);
     });
 
-    it('B2 — plafond DUR en pire cas UTF-8 : 3 octets par unité (le diviseur /2 le violait — défaut trouvé par cette suite)', () => {
+    it('B2 — plafond DUR en pire cas UTF-8 : 3 octets par unité, budget saturé (le diviseur /2 le violait)', () => {
       // '字' = 3 octets UTF-8 pour 1 unité JS. Avec maxChars = floor(cap/2)
       // le rendu faisait cap/2 × 3 = 1,5× cap en octets (mesure : cap 600
-      // → 900 o). Une unité UTF-16 code au plus 3 octets (BMP ; les paires
-      // supplémentaires font 2 unités × 2 octets = 2 o/unité) : /3 est le
-      // diviseur sûr LE PLUS SERRE. Mutant M2 (/3 → /2) rouge ici.
+      // → 900 o). Mutant M2 (/3 → /2) rouge ici ; mutant M5 (retour au /3)
+      // rouge aussi, parce que la fenêtre exacte doit ATTEINDRE le plafond.
       const line = '字'.repeat(600); // 600 unités, 1 800 o
       const cap = 600;
       const out = truncateToMaxSize(line, cap, 'Status (fixture B2)');
       expect(bytes(out)).toBeLessThanOrEqual(cap);
-      expect(out.length).toBeGreaterThan(0);
+      expect(out.length).toBe(200);
+      expect(bytes(out)).toBe(600);
     });
 
-    it('B3 — emoji 4 octets, fenêtre alignée sur les paires : emoji ENTIERS, ≤ cap', () => {
-      // cap 600 → fenêtre floor(600/3) = 200 unités = 100 paires exactement.
+    it('B3 — emoji 4 octets, fenêtre alignée sur les paires : emoji ENTIERS, budget saturé', () => {
+      // cap 600 → 150 emoji (600 o). Le diviseur /3 en donnait 100 (400 o).
       const line = '😀'.repeat(400); // 800 unités JS, 1 600 o
       const cap = 600;
       const out = truncateToMaxSize(line, cap, 'Status (fixture B3)');
       expect(bytes(out)).toBeLessThanOrEqual(cap);
+      expect(out).toBe('😀'.repeat(150));
       // Paires surrogates intactes : longueur paire et décomposition en
       // codepoints complets (aucun demi-surrogat isolé).
       expect(out.length % 2).toBe(0);
       expect(out).toBe('😀'.repeat(out.length / 2));
+    });
+
+    it('B4 — coupe EXACTE : la fenêtre est MAXIMALE (un point de code de plus la ferait déborder)', () => {
+      // Mélange 1/2/3/4 octets — 'a', 'é', '字', '😀' : 10 o par motif.
+      const line = 'aé字😀'.repeat(300); // 1 200 unités JS, 3 000 o
+      const cap = 1001; // ni multiple de 4, ni de 10
+      const out = truncateToMaxSize(line, cap, 'Status (fixture B4)');
+
+      expect(bytes(out)).toBeLessThanOrEqual(cap);
+      expect(line.endsWith(out)).toBe(true);
+      // Aucun demi-surrogat : le suffixe se recompose en points de code entiers.
+      expect(Array.from(out).join('')).toBe(out);
+      // MAXIMALITÉ : le point de code précédant la fenêtre ne rentre pas.
+      const start = line.length - out.length;
+      expect(start).toBeGreaterThan(0);
+      const before = Array.from(line.slice(0, start));
+      const nextWidth = bytes(before[before.length - 1]);
+      expect(bytes(out) + nextWidth).toBeGreaterThan(cap);
+    });
+
+    it('B5 — emoji 4 octets : plafond non multiple de 4, la fenêtre s’arrête au dernier emoji ENTIER', () => {
+      const line = '😀'.repeat(400); // 1 600 o
+      const cases: Array<[number, number]> = [[601, 150], [600, 150], [399, 99]];
+      for (const [cap, expected] of cases) {
+        const out = truncateToMaxSize(line, cap, `Status (fixture B5 cap=${cap})`);
+        // Un mutant qui compte 3 octets par unité (M7) déborderait ; un mutant
+        // qui n'enjambe pas la paire (M6) couperait un demi-surrogat.
+        expect(out).toBe('😀'.repeat(expected));
+        expect(bytes(out)).toBe(expected * 4);
+        expect(bytes(out)).toBeLessThanOrEqual(cap);
+        expect(out.length % 2).toBe(0);
+      }
     });
   });
 

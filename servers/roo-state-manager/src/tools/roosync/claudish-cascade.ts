@@ -429,8 +429,16 @@ export async function roosyncClaudishCascade(rawArgs: unknown): Promise<Record<s
                 unchanged: plan.unchanged,
                 backup_id: backupId,
                 source_hash: plan.sourceHash,
+                // #4427 (review ms#1602) : `error` recouvre deux phases que le
+                // service discriminate désormais. Avant le remplacement,
+                // l'original est intact — rien à relire. Après (relecture seule
+                // en échec), le NOUVEAU texte est probablement sur disque : le
+                // prochain recreate le chargerait — dire « original intact »
+                // ici serait le mensonge que ce wording existe pour éviter.
                 deployment: fileWrite.error !== null
-                    ? 'aucun — échec AVANT le remplacement, le .env d’origine est intact'
+                    ? fileWrite.replaced
+                        ? 'INDÉTERMINÉ — échec de RELECTURE APRÈS le remplacement : le nouveau texte est probablement sur disque, RELIRE avant tout recreate'
+                        : 'aucun — échec AVANT le remplacement, le .env d’origine est intact'
                     : 'INDÉTERMINÉ — le fichier ne relit pas le texte attendu : RELIRE avant tout recreate',
             };
         }

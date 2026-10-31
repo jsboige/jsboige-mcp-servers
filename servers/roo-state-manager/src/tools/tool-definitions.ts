@@ -184,18 +184,27 @@ export const roosyncSearchDefinition = {
 // ============================================================
 export const roosyncIndexingDefinition = {
     name: 'roosync_indexing',
-    description: "Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, repair_gaps, repair_workspace, cleanup, garbage_scan, cleanup_orphans, tool_usage_stats, save_snapshot, trend_report)",
+    description: "Manage semantic index, cache, and archiving (index, reset, rebuild, diagnose, archive, status, repair_gaps, repair_workspace, cleanup, garbage_scan, cleanup_orphans, tool_usage_stats, save_snapshot, trend_report, index_code_supplement)",
     inputSchema: {
         type: 'object',
         properties: {
-            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'repair_workspace', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, repair_workspace=backfill workspace_name on existing points, cleanup=old vectors, garbage_scan=junk detection, cleanup_orphans=purge, cleanup_failed=operator dead-letter by error class, tool_usage_stats=usage aggregation, save_snapshot=persist weekly stats to shared storage, trend_report=compare snapshots with ↑/↓ trend arrows (fleet=true: fleet-wide aggregate across machines)' },
+            action: { type: 'string', enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'repair_gaps', 'repair_workspace', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement'], description: 'index=Qdrant, reset=clear, rebuild=SQLite, diagnose=health, archive=GDrive, status=metrics, repair_gaps=fix, repair_workspace=backfill workspace_name on existing points, cleanup=old vectors, garbage_scan=junk detection, cleanup_orphans=purge, cleanup_failed=operator dead-letter by error class, tool_usage_stats=usage aggregation, save_snapshot=persist weekly stats to shared storage, trend_report=compare snapshots with ↑/↓ trend arrows (fleet=true: fleet-wide aggregate across machines), index_code_supplement=build the sup- collection for files Zoo never indexes — .ps1, .sh, .yml, .mjs/.cjs and hidden dirs (#4352 a3; dry_run defaults to TRUE here)' },
             task_id: { type: 'string', description: 'Required for action=index' },
             repair: { type: 'string', enum: ['headless'], description: "For action=index (#4352 g8): arm the one-shot headless-repair bypass for a task the g7 scan named (missing head pages, min(chunk_index)>1). A plain requeue is a NO-OP on a success task — shouldIndex skips it on TTL/unchanged-content — so the consumer arms repair:'headless' instead of resetting: the task keeps its success state, the skips are bypassed exactly once, and the marker is deleted on completion (success OR failure). Only for scan-named tasks; never a global force." },
             confirm: { type: 'boolean', description: 'Required for action=reset', default: false },
             force: { type: 'boolean', description: 'For action=reset. Wipe even a populated collection above the safety floor, or when the point count cannot be determined (transient Qdrant error). Default: false.', default: false },
             workspace_filter: { type: 'string', description: 'Workspace filter (for rebuild)' },
+            // #4352 (a3, 31/10): index_code_supplement shipped on the tool-module
+            // schema only (ms#1514) — the served definition is the wire contract, so
+            // the action, its four params and the inverted dry_run default live HERE
+            // or no conforming client can reach them (8th occurrence of the #1038/
+            // #3254 class; guard: tool-definitions.test.ts enum-equality).
+            workspace: { type: 'string', description: 'For index_code_supplement (#4352): workspace whose sup- collection is built. Resolved like codebase_search when omitted.' },
+            takeover: { type: 'boolean', description: 'For index_code_supplement (#4352). One writer per sup- collection is enforced in code by a sentinel record: set this ONLY to take ownership from another lane (the previous writer is recorded). Default: false.', default: false },
+            max_files: { type: 'number', description: 'For index_code_supplement (#4352): cap on files selected per run (0 = all). Default: 0.', default: 0 },
+            batch_size: { type: 'number', description: 'For index_code_supplement (#4352): chunks per embedding/upsert batch. Default: 32.', default: 32 },
             max_tasks: { type: 'number', description: '0 = all', default: 0 },
-            dry_run: { type: 'boolean', description: 'Simulation mode (rebuild, garbage_scan, cleanup_orphans, repair_workspace)', default: false },
+            dry_run: { type: 'boolean', description: 'Simulation mode (rebuild, garbage_scan, cleanup_orphans, repair_workspace). INVERTED default for index_code_supplement (#4352): omitting it means dry_run=TRUE — that action writes to Qdrant only when dry_run is explicitly false.', default: false },
             machine_id: { type: 'string', description: 'Machine filter (for archive)' },
             claude_code_sessions: { type: 'boolean', description: 'For action=archive. Archive Claude Code JSONL sessions to GDrive as cloud copies (#1747, RX46 24/09: sanctuary = access, not confinement). Sessions that grew since their last archive are re-archived. Never touches the source files.', default: false },
             max_sessions: { type: 'number', description: 'For action=archive with claude_code_sessions=true. Max sessions to process (0 = all).', default: 0 },

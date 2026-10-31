@@ -212,7 +212,7 @@ const WRITE_ONLY_TOOLS = new Set([
     // (`outputDir` surchargeable par l'appelant) — cf. READ_ONLY_TOOLS.
     'roosync_refresh_dashboard',
     // `roosync_claudish_cascade` n'est PLUS ici : le découpage promis par
-    // ms#1591 a été fait (dispatch 20261031a, item 5) — les cinq actions de
+    // ms#1591 a été fait (dispatch 20261031a, item 5) — les quatre actions de
     // lecture sont dans READ_ONLY_ACTIONS ci-dessus ; `publish`/`apply` et
     // toute action inconnue restent des écritures par default-deny.
 ]);

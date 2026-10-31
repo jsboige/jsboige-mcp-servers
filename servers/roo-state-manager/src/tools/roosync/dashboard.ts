@@ -4833,6 +4833,43 @@ function isRefSourced(refNum: string, lowerSourceBag: string): boolean {
  * during LLM outages.
  */
 /**
+ * #4434 — coupe EXACTE à l'octet, alignée sur les points de code.
+ *
+ * Rend le plus long SUFFIXE de `text` dont la longueur UTF-8 tient dans
+ * `maxBytes`, en reculant d'un POINT DE CODE à la fois : une paire de
+ * substitution est enjambée d'un bloc, donc aucun demi-surrogat isolé ne peut
+ * sortir d'ici.
+ *
+ * Ce que ça remplace : un diviseur de caractères (`floor(cap / 3)`), borne du
+ * PIRE cas (une unité UTF-16 code au plus 3 octets). Il garantissait le
+ * plafond, mais il jetait jusqu'à deux tiers du budget sur de l'ASCII et un
+ * tiers sur de l'emoji 4 octets : un statut capé à 15 Ko n'en rendait que
+ * ~5 Ko dès qu'il était en français ou en anglais.
+ */
+export function sliceSuffixToMaxBytes(text: string, maxBytes: number): string {
+  if (maxBytes <= 0) return '';
+  let used = 0;
+  let i = text.length;
+  while (i > 0) {
+    let start = i - 1;
+    const unit = text.charCodeAt(start);
+    // Un low surrogate n'est un point de code QUE collé à son high surrogate :
+    // on recule alors de deux unités d'un coup (sinon `codePointAt` rendrait un
+    // demi-caractère et la largeur calculée serait fausse).
+    if (unit >= 0xdc00 && unit <= 0xdfff && start > 0) {
+      const high = text.charCodeAt(start - 1);
+      if (high >= 0xd800 && high <= 0xdbff) start -= 1;
+    }
+    const cp = text.codePointAt(start) as number;
+    const width = cp <= 0x7f ? 1 : cp <= 0x7ff ? 2 : cp <= 0xffff ? 3 : 4;
+    if (used + width > maxBytes) break;
+    used += width;
+    i = start;
+  }
+  return text.slice(i);
+}
+
+/**
  * Deterministic (non-LLM) truncation: keeps the most recent lines that fit within maxSizeBytes.
  * Used when LLM condensation fails (#2463 — status should never exceed its cap, even in fallback).
  */
@@ -4850,19 +4887,14 @@ export function truncateToMaxSize(text: string, maxSizeBytes: number, label: str
   }
 
   // #2463: If even the last single line exceeds the cap (e.g. a single long line),
-  // hard-truncate it by character count (UTF-8 safe).
+  // hard-truncate it (UTF-8 safe).
   if (!result) {
     const lastLine = lines[lines.length - 1] || '';
-    // #4434 (volet 5 fixtures): a JS char (UTF-16 code unit) encodes to AT MOST
-    // 3 UTF-8 bytes (BMP planes; supplementary pairs are 2 units × 2 bytes → 2
-    // bytes per unit), so /3 is the tightest divisor that guarantees the byte
-    // cap for ANY string. The previous /2 violated it on 3-byte scripts —
-    // measured by the fixture suite: '字'×600 capped at 600 B returned 900 B,
-    // breaking #2598's hard-cap invariant exactly where it matters (fallback).
-    const maxChars = Math.floor(maxSizeBytes / 3);
-    result = lastLine.length > maxChars
-      ? lastLine.slice(-maxChars)
-      : lastLine;
+    // #4434: coupe EXACTE à l'octet (voir sliceSuffixToMaxBytes). Le diviseur
+    // /3 qui précédait était la borne du pire cas : juste, mais il laissait
+    // deux tiers du budget sur la table en ASCII. La garantie du plafond ne
+    // change pas — elle devient seulement serrée au lieu de prudente.
+    result = sliceSuffixToMaxBytes(lastLine, maxSizeBytes);
   }
 
   const truncated = result;
