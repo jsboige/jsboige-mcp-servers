@@ -24,7 +24,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as path from 'path';
 import * as os from 'os';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+// ms#1539 : mkdtemp est le patron obligatoire pour un répertoire temporaire
+// unique — pas de jeton fait main (le harness retirement copié l'utilise,
+// mais il est grandfatheré en baseline ; un NOUVEAU fichier doit être net).
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 
 const { pgReadSpy, getRetirementSpy } = vi.hoisted(() => ({
   pgReadSpy: vi.fn(),
@@ -72,8 +75,6 @@ const WATCHED_ENV = [
   'EMBEDDING_API_BASE_URL',
 ] as const;
 let savedEnv: Partial<Record<typeof WATCHED_ENV[number], string | undefined>> = {};
-
-let testSerial = 0;
 
 interface SeedMessage {
   id: string;
@@ -127,7 +128,7 @@ const readCanonical = () =>
   roosyncDashboard({ action: 'read', type: 'workspace', workspace: 'claudish' }) as Promise<Record<string, unknown>>;
 
 beforeEach(() => {
-  testDir = path.join(os.tmpdir(), `roosync-fork-twin-${Date.now()}-${process.pid}-${++testSerial}`);
+  testDir = mkdtempSync(path.join(os.tmpdir(), 'roosync-fork-twin-'));
   dashboardsDir = path.join(testDir, 'shared-state', 'dashboards');
   mkdirSync(path.join(testDir, 'shared-state'), { recursive: true });
 
