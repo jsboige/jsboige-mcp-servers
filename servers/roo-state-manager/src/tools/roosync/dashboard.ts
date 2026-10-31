@@ -4250,6 +4250,14 @@ RÈGLES :
         logger.warn(`Auto-condense ${label} attempt ${attempt}: LLM returned empty`, { elapsed: `${elapsed}ms` });
         continue;
       }
+      // #4434: a refusal or an error artifact is not a candidate, even under the cap.
+      const artifact = detectModelOutputArtifact(condensed);
+      if (artifact) {
+        logger.warn(`Auto-condense ${label} attempt ${attempt}: model output rejected (${artifact})`, {
+          elapsed: `${elapsed}ms`, contentLength: condensed.length
+        });
+        continue;
+      }
 
       const newSize = Buffer.byteLength(condensed, 'utf8');
       logger.info(`Auto-condensed ${label} (attempt ${attempt})`, {
@@ -4281,10 +4289,15 @@ RÈGLES :
   // respect the HARD cap (#2598): use it only if under cap, else keep it as the best
   // candidate for the deterministic backstop below.
   // #2998: cloudCondenseWithRetry retries on 429/5xx instead of a single attempt.
+  // #4434: the artifact check runs INSIDE the chain (same regime as the status leg's
+  // validator): a refusing model is a per-model failure and the next model is tried.
   const fbCloud = await cloudCondenseWithRetry(
     `Tu es un expert en synthèse. Condense le texte sous ${capKb} Ko en préservant TOUTE information critique (décisions, métriques chiffrées, dates, blocages). Fusionne les redondances, supprime le verbeux. Pas d'emojis, pas de prose. LAST-KNOWN-STATE WINS (#1502). N'extrapole rien qui ne soit pas dans le texte source.`,
     text,
-    { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs },
+    {
+      maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs,
+      validate: (content: string) => detectModelOutputArtifact(content),
+    },
   );
   if (fbCloud && 'content' in fbCloud) {
     const fbSize = Buffer.byteLength(fbCloud.content, 'utf8');
@@ -5453,7 +5466,47 @@ export function computeKeepCount(
  */
 export type StatusGuardVerdict =
   | { failed: false }
-  | { failed: true; reason: 'empty' | 'error-artifact' | 'too-short' };
+  | { failed: true; reason: ModelOutputArtifact | 'too-short' };
+
+/**
+ * #4434 — formes de sortie qui ne sont PAS le texte demandé, quelle que soit leur
+ * taille : vide, artefact d'erreur transporté en 200, ou réponse adressée au
+ * demandeur (refus / demande de clarification).
+ *
+ * Incident fondateur du refus (30/10 17:11Z, dashboard `global`) : le condenseur
+ * « trop gros » (condenseTextIfTooLarge) a reçu un statut coupé en milieu de mot,
+ * le fallback cloud a répondu « I cannot complete this request as specified. […]
+ * Would you like me to proceed on that basis…? » — 1,5 Ko, sous le plafond, donc
+ * accepté ET écrit comme statut. Le statut réel, non archivé, est perdu.
+ *
+ * Les deux règles ne lisent que la PREMIÈRE ligne non vide : un statut légitime qui
+ * CITE un refus (« le condenseur a écrit « I cannot… » »), ou qui restitue une
+ * question ouverte au user en cours de texte (forme mandatée par la flotte), ne
+ * déclenche pas. Testée sur tout le document, la question renvoyée rejetait 4/4
+ * statuts légitimes de cette forme (mesure po-2024, review ms#1589 30/10 20:16Z) ;
+ * la forme « contenu réel puis question renvoyée » n'est donc plus interceptée —
+ * elle est indiscernable d'un statut qui restitue une question.
+ */
+export type ModelOutputArtifact = 'empty' | 'error-artifact' | 'refusal';
+
+// Ouverture de refus, testée sur la première ligne non vide (marqueurs markdown ôtés).
+// (Pas de `\b` après « é » : hors mode unicode, « é » n'est pas un caractère de mot.)
+const REFUSAL_OPENING = /^(?:i(?:\s+(?:cannot|can['’]t|can\s+not|am\s+unable|am\s+sorry|won['’]t)|['’]m\s+(?:unable|sorry))\b|sorry\b|unfortunately,?\s+i\b|as\s+an\s+ai\b|je\s+ne\s+peux\s+pas\b|je\s+ne\s+suis\s+pas\s+en\s+mesure\b|(?:je\s+suis\s+)?d[ée]sol[ée]|malheureusement,?\s+je\b)/i;
+// Question renvoyée au demandeur, testée comme l'ouverture : première ligne seulement.
+const ASK_BACK_OPENING = /^(?:would\s+you\s+like\s+me\s+to|do\s+you\s+want\s+me\s+to|shall\s+i\b|should\s+i\s+proceed|voulez-vous\s+que\s+je|souhaitez-vous\s+que\s+je|dois-je\s+(?:continuer|proc[ée]der))/i;
+
+export function detectModelOutputArtifact(candidate: string | null | undefined): ModelOutputArtifact | null {
+  const trimmed = (candidate ?? '').trim();
+  if (!trimmed) return 'empty';
+  // #3962 suivi (dispatch c0355) : normalisation de casse + crochet optionnel —
+  // `[error:` minuscule et `Error:`/`error:` sans crochet passaient la porte.
+  // L'ancre reste le DÉBUT du texte : une erreur citée en milieu de statut
+  // légitime (liste à puces) ne doit pas déclencher (anti-faux-positifs).
+  if (/^\[?error:/i.test(trimmed)) return 'error-artifact';
+  const firstLine = trimmed.split('\n', 1)[0].replace(/^[#>*_\s]+/, '');
+  if (REFUSAL_OPENING.test(firstLine) || ASK_BACK_OPENING.test(firstLine)) return 'refusal';
+  return null;
+}
 
 /**
  * Rétention minimale du statut : le nouveau statut doit conserver au moins cette
@@ -5480,20 +5533,14 @@ export function isModelFailureStatus(
   previousStatus: string,
   minRetentionRatio: number = STATUS_MIN_RETENTION_RATIO,
 ): StatusGuardVerdict {
+  const artifact = detectModelOutputArtifact(candidate);
+  if (artifact) {
+    return { failed: true, reason: artifact };
+  }
   const trimmed = (candidate ?? '').trim();
-  if (!trimmed) {
-    return { failed: true, reason: 'empty' };
-  }
-  // #3962 suivi (dispatch c0355) : normalisation de casse + crochet optionnel —
-  // `[error:` minuscule et `Error:`/`error:` sans crochet passaient la porte.
-  // L'ancre reste le DÉBUT du texte : une erreur citée en milieu de statut
-  // légitime (liste à puces) ne doit pas déclencher (anti-faux-positifs).
-  if (/^\[?error:/i.test(trimmed)) {
-    return { failed: true, reason: 'error-artifact' };
-  }
   const prev = previousStatus.trim();
   // Première condensation (statut précédent vide ou trivial) : seul le garde
-  // empty/error-artifact s'applique — il n'y a rien à protéger par la longueur.
+  // d'artefact (empty/error-artifact/refusal) s'applique — rien à protéger par la longueur.
   if (prev.length >= 200 && trimmed.length < Math.floor(prev.length * minRetentionRatio)) {
     return { failed: true, reason: 'too-short' };
   }

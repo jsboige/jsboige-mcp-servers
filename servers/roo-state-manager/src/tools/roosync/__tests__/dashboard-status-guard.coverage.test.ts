@@ -33,6 +33,7 @@ import {
   roosyncDashboard,
   resetCondenseCircuitBreaker,
   isModelFailureStatus,
+  detectModelOutputArtifact,
   STATUS_MIN_RETENTION_RATIO,
 } from '../dashboard.js';
 
@@ -135,6 +136,98 @@ describe('isModelFailureStatus (#3962 — prédicat)', () => {
     const legit = '# Statut\n- incident constaté : error: timeout sur la jambe fallback (citation)\n- règle conservée.';
     const v = isModelFailureStatus(legit, 'x'.repeat(300));
     expect(v.failed).toBe(false);
+  });
+
+  // #4434 — incident 30/10 17:11Z (`global`) : le fallback cloud a répondu au demandeur.
+  const REFUSAL_30_10 = [
+    'I cannot complete this request as specified.',
+    '',
+    'The source text is a system status log written in French, and you\'ve asked me to condense it under 15 KB while preserving all critical information. However, there are two problems:',
+    '',
+    '1. **The text is already truncated.** It ends mid-sentence at "**É" in the "En cours" section.',
+    '',
+    'What I can do instead:',
+    '',
+    '- Produce a faithful condensation of exactly what is present.',
+    '',
+    'Would you like me to proceed on that basis — a faithful condensation of the truncated source, with the truncation flagged rather than filled in?',
+  ].join('\n');
+
+  it('11. refus réel du 30/10 → failed/refusal, même quand la rétention ne le prendrait pas', () => {
+    // Statut précédent court : la règle de longueur seule laisserait passer ce texte.
+    const v = isModelFailureStatus(REFUSAL_30_10, 'x'.repeat(600));
+    expect(v.failed).toBe(true);
+    if (v.failed) expect(v.reason).toBe('refusal');
+    // Première condensation : le refus reste intercepté sans statut précédent.
+    expect(isModelFailureStatus(REFUSAL_30_10, '').failed).toBe(true);
+  });
+
+  it('12. ouvertures de refus EN et FR, marqueurs markdown tolérés → refusal', () => {
+    for (const cand of [
+      "I can't condense this text without losing the dates.",
+      "**I'm unable to** produce a status from a truncated source.",
+      'Sorry, the source is incomplete.',
+      'Unfortunately, I need the full log to continue.',
+      'Je ne peux pas condenser ce texte sans extrapoler.',
+      '## Désolé, le texte source est tronqué.',
+      'Je ne suis pas en mesure de produire ce statut.',
+    ]) {
+      const v = isModelFailureStatus(cand, '');
+      expect(v.failed, cand).toBe(true);
+      if (v.failed) expect(v.reason, cand).toBe('refusal');
+    }
+  });
+
+  it('13. question renvoyée au demandeur en PREMIÈRE ligne, marqueurs markdown tolérés → refusal', () => {
+    for (const cand of [
+      'Voulez-vous que je poursuive sur cette base ?\n\n- point 1',
+      '> Souhaitez-vous que je fusionne les sections ?',
+      'Would you like me to condense the truncated text as is?',
+      '**Shall I** keep the superseded claims?',
+    ]) {
+      const v = isModelFailureStatus(cand, '');
+      expect(v.failed, cand).toBe(true);
+      if (v.failed) expect(v.reason, cand).toBe('refusal');
+    }
+  });
+
+  it('14. anti-faux-positifs : un statut légitime qui parle de refus ou CITE un refus en milieu de ligne passe', () => {
+    for (const legit of [
+      '# Statut\n- #4427 : four refusals — RESET length, DIRECTION overwrite (PR3a)\n- règle conservée.',
+      '# Statut\n- RX122 : Refusé pour main-admin (accès refusé), essai 2/2 consommé.',
+      '# Statut\n- 30/10 : le condenseur a écrit « I cannot complete this request » comme statut (#4434).',
+      '# Statut\n- incident : le modèle demandait « Would you like me to proceed? » — rejeté.',
+      'Statut — impossible de joindre PG depuis web2 (timeout 3/3).',
+    ]) {
+      const v = isModelFailureStatus(legit, 'x'.repeat(300));
+      expect(v.failed, legit).toBe(false);
+    }
+  });
+
+  it('15. anti-faux-positifs : un statut qui restitue une question ouverte en DÉBUT de ligne, après le titre, passe', () => {
+    // La forme que la flotte écrit (mesure po-2024 sur ms#1589 : 4/4 rejetés quand la
+    // question renvoyée était testée sur tout le document). Sans statut précédent, pour
+    // que seule la règle de refus soit exercée, pas la rétention.
+    for (const legit of [
+      "# Statut — flotte\n- Voulez-vous que je produise l'essai à blanc avant tout geste ?",
+      '# Statut\n- Should I proceed with the cleanup?',
+      '## Statut\n### Questions\n  Voulez-vous que je relance le hub ?',
+      '## Statut\n- 3 PR ouvertes\n\nSouhaitez-vous que je fusionne les deux registres ?',
+      '## Statut\n- point 1\nShall I keep the superseded claims?',
+    ]) {
+      expect(detectModelOutputArtifact(legit), legit).toBeNull();
+      expect(isModelFailureStatus(legit, '').failed, legit).toBe(false);
+    }
+  });
+});
+
+describe('detectModelOutputArtifact (#4434 — prédicat partagé par les deux mécanismes)', () => {
+  it('rend la raison pour chaque forme, null pour un texte légitime', () => {
+    expect(detectModelOutputArtifact('')).toBe('empty');
+    expect(detectModelOutputArtifact(null)).toBe('empty');
+    expect(detectModelOutputArtifact('[Error: bad gateway]')).toBe('error-artifact');
+    expect(detectModelOutputArtifact('I cannot complete this request as specified.')).toBe('refusal');
+    expect(detectModelOutputArtifact('## Statut\n- point 1\n- point 2')).toBeNull();
   });
 });
 
