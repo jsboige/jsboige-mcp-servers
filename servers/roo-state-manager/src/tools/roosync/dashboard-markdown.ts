@@ -175,7 +175,13 @@ export function parseDashboardMarkdown(content: string, key: string): Dashboard 
 
         // Content starts after optional blank line
         const msgContent = remaining.replace(/^\n/, '');
-        const unescapedContent = msgContent.trim().replace(/^\\#\\#\\# \[/gm, '### [');
+        // #4434 — l'échappement des titres de section est SYMÉTRIQUE de
+        // l'échappement de sérialisation (buildDashboardMarkdown + append incrémental) :
+        // `### [` protège le découpage en messages, `## ` protège le découpage en
+        // sections. Une moitié seule fait fuiter des backslashes dans le contenu relu.
+        const unescapedContent = msgContent.trim()
+          .replace(/^\\#\\#\\# \[/gm, '### [')
+          .replace(/^\\#\\# /gm, '## ');
 
         // Parse acknowledged_at from raw string
         let acknowledged_at: Record<string, string> | undefined;
