@@ -356,10 +356,18 @@ export interface VariantCandidate {
 	points: number | null;
 }
 
-/** Caps the liveness probe: the served candidate plus its closest competitor. */
-const VARIANT_LIVENESS_PROBE_MAX = 2;
-/** Bounds the probe — a hung scroll must never hold a search (measured: pending scroll = 15 s timeout). */
-const VARIANT_LIVENESS_PROBE_TIMEOUT_MS = parseFloat(process.env.VARIANT_LIVENESS_PROBE_TIMEOUT_MS || '1500');
+/**
+ * Bounds each probe — a hung scroll must never hold a search (measured: pending
+ * scroll = 15 s timeout). Invalid (NaN/≤0) values fall back to the default: a NaN
+ * delay makes setTimeout fire at ~0 ms, every probe reads null, and the preference
+ * falls back to points ranking WITHOUT A WORD — an env typo must never silently
+ * disarm the rule (review ms#1599, blocking hold 2).
+ */
+export function resolveVariantLivenessTimeout(raw: string | undefined): number {
+	const t = parseFloat(raw ?? '1500');
+	return Number.isFinite(t) && t > 0 ? t : 1500;
+}
+const VARIANT_LIVENESS_PROBE_TIMEOUT_MS = resolveVariantLivenessTimeout(process.env.VARIANT_LIVENESS_PROBE_TIMEOUT_MS);
 
 export interface VariantSelection {
 	candidate: VariantCandidate;
@@ -1599,23 +1607,31 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		if (existingVariants.length === 0 && unreachableVariants.length > 0) {
 			throw (variantProbes.find(p => p.status === 'rejected' && isNetworkErrorLike(p.reason)) as PromiseRejectedResult).reason;
 		}
-		// #2609 q3: probe liveness of every existing variant so the liveness preference
-		// (selectVariantCollection) can override #4352's points ranking. Sampling is one
-		// payload-only scroll per variant, in parallel, and only when ≥2 variants exist —
-		// the common single-collection case pays nothing.
+		// #2609 q3: probe liveness of EVERY existing variant so the liveness preference
+		// (selectVariantCollection) can override #4352's points ranking. Each probe is
+		// one payload-only 200-point scroll, all in parallel under the same timeout, and
+		// only when ≥2 variants exist — the common single-collection case pays nothing.
+		// Probing a subset chosen by points was reviewed out (ms#1599, blocking hold 1):
+		// with ≥3 variants the top-2 by points are exactly the two the pathology inflates,
+		// so the live canonical is never measured while the response claims
+		// basis:'liveness'. There are only a handful of spellings — probe them all.
 		let variantLiveness: Map<string, { ratio: number; checked: number } | null> | null = null;
 		if (isContentMatchLivenessEnabled() && existingVariants.length >= 2) {
-			const probed = [...existingVariants]
-				.sort((a, b) => (b.points ?? -1) - (a.points ?? -1))
-				.slice(0, VARIANT_LIVENESS_PROBE_MAX);
-			const bounded = (p: Promise<{ dirs: Set<string>; paths: string[] } | null>) =>
-				Promise.race([
-					p,
-					new Promise<null>(r => setTimeout(() => r(null), VARIANT_LIVENESS_PROBE_TIMEOUT_MS)),
-				]).catch(() => null);
-			const sigs = await Promise.all(probed.map(v => bounded(getCollectionSignature(qdrant, v.name))));
+			const bounded = (p: Promise<{ dirs: Set<string>; paths: string[] } | null>) => {
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const timeout = new Promise<null>(r => {
+					timer = setTimeout(() => r(null), VARIANT_LIVENESS_PROBE_TIMEOUT_MS);
+				});
+				// clearTimeout on BOTH exits: the losing setTimeout of a Promise.race
+				// otherwise stays pending for the full bound on every search (review ms#1599).
+				return Promise.race([p, timeout])
+					.then(
+						v => { clearTimeout(timer); return v; },
+						() => { clearTimeout(timer); return null; });
+			};
+			const sigs = await Promise.all(existingVariants.map(v => bounded(getCollectionSignature(qdrant, v.name))));
 			variantLiveness = new Map();
-			probed.forEach((v, i) => {
+			existingVariants.forEach((v, i) => {
 				const sig = sigs[i];
 				variantLiveness!.set(v.name, sig ? estimateCollectionLiveness(sig.paths, workspace) : null);
 			});
@@ -2303,6 +2319,9 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				variant_selection: {
 					basis: variantSelection.basis,
 					served: variantSelection.candidate.name,
+					// how many variants were actually measured for this decision — a
+					// `liveness` basis must never rest on a silently partial probe set.
+					probed_variants: variantLiveness ? variantLiveness.size : 0,
 					...(variantSelection.flipped ? { flipped_from_largest: true } : {}),
 					liveness: Object.fromEntries(
 						[...(variantLiveness ?? new Map())].map(([name, l]) => [

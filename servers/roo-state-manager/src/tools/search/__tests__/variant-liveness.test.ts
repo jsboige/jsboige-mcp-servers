@@ -15,6 +15,7 @@
 import { describe, it, expect } from 'vitest';
 import {
 	selectVariantCollection,
+	resolveVariantLivenessTimeout,
 	type VariantCandidate,
 } from '../search-codebase.tool.js';
 
@@ -81,5 +82,49 @@ describe('selectVariantCollection', () => {
 
 	it('returns null when no variant exists', () => {
 		expect(selectVariantCollection([], new Map())).toBeNull();
+	});
+
+	it('serves the small live canonical over TWO large decaying twins (the ≥3-variant case)', () => {
+		// Review ms#1599 blocking hold 1 (measured by executing the shipped code): with a
+		// top-2-by-points probe set, the two stale big twins are the only ones measured and
+		// the live canonical is never probed while the response claims basis:'liveness'.
+		// The probe now covers every existing variant — this pins the RULE on a complete map.
+		const stale1: VariantCandidate = { name: 'ws-stale1', points: 900000 };
+		const stale2: VariantCandidate = { name: 'ws-stale2', points: 800000 };
+		const canonical: VariantCandidate = { name: 'ws-canonical', points: 328245 };
+		const sel = selectVariantCollection(
+			[stale1, stale2, canonical],
+			new Map([
+				[stale1.name, { ratio: 0.4, checked: 200 }],
+				[stale2.name, { ratio: 0.45, checked: 200 }],
+				[canonical.name, { ratio: 0.965, checked: 200 }],
+			]));
+		expect(sel?.candidate.name).toBe(canonical.name);
+		expect(sel?.basis).toBe('liveness');
+		expect(sel?.flipped).toBe(true);
+	});
+});
+
+describe('resolveVariantLivenessTimeout', () => {
+	it('defaults to 1500 ms when the env var is unset', () => {
+		expect(resolveVariantLivenessTimeout(undefined)).toBe(1500);
+	});
+
+	it('falls back to 1500 ms on an invalid value — NaN would fire setTimeout at ~0 ms and silently disarm the rule', () => {
+		// Review ms#1599 blocking hold 2: parseFloat('abc') = NaN, setTimeout(fn, NaN)
+		// fires at ~0 ms, both probes read null, and the search falls back to points
+		// ranking without a word. An env typo must never disable the preference.
+		expect(resolveVariantLivenessTimeout('abc')).toBe(1500);
+		expect(resolveVariantLivenessTimeout('')).toBe(1500);
+	});
+
+	it('rejects zero and negative bounds — a 0 ms bound disarms as surely as NaN', () => {
+		expect(resolveVariantLivenessTimeout('0')).toBe(1500);
+		expect(resolveVariantLivenessTimeout('-5')).toBe(1500);
+	});
+
+	it('accepts a positive finite override', () => {
+		expect(resolveVariantLivenessTimeout('3000')).toBe(3000);
+		expect(resolveVariantLivenessTimeout('0.5')).toBe(0.5);
 	});
 });
