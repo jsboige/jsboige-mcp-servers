@@ -1305,7 +1305,7 @@ export function buildArchiveMessagesMarkdown(messages: IntercomMessage[]): strin
   return messages
     .map(
       (msg) =>
-        `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]\n\n${msg.content.replace(/^### \[/gm, '\\#\\#\\# [')}`
+        `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]\n\n${msg.content.replace(/^### \[/gm, '\\#\\#\\# [').replace(/^## /gm, '\\#\\# ')}`
     )
     .join('\n\n---\n\n');
 }
@@ -2479,8 +2479,14 @@ export function buildDashboardMarkdown(dashboard: Dashboard): string {
   const statusSection = dashboard.status.markdown || '*Aucun contenu.*';
 
   // FIX #1123: Escape "### [" at line start in content to prevent false message splits
+  // #4434: a message body starting a line with "## " opened a FAKE level-2 section —
+  // measured on `machine-myia-po-2023` (two "## Résumé des N messages archivés"
+  // sections in one file, each one an LLM summary body). Same treatment as "### [",
+  // mirrored by parseDashboardMarkdown's unescape (#4434) — the two halves ship together.
   const escapeContent = (text: string): string =>
-    text.replace(/^### \[/gm, '\\#\\#\\# [');
+    text
+      .replace(/^### \[/gm, '\\#\\#\\# [')
+      .replace(/^## /gm, '\\#\\# ');
   const intercomSection = dashboard.intercom.messages.length > 0
     ? dashboard.intercom.messages.map(msg => {
         // v3 (#1363): persist message id on a dedicated line below header
@@ -3134,8 +3140,13 @@ async function appendDashboardIncremental(
 
     const fmReplaced = existing.replace(/^---\n[\s\S]+?\n---/, newFm);
 
+    // #4434 — même règle que buildDashboardMarkdown : cette copie est le chemin
+    // d'écriture de production d'un append, une moitié seule laisserait fuiter
+    // une fausse section `## ` sur les seuls messages arrivés par append.
     const escapeContent = (text: string): string =>
-      text.replace(/^### \[/gm, '\\#\\#\\# [');
+      text
+        .replace(/^### \[/gm, '\\#\\#\\# [')
+        .replace(/^## /gm, '\\#\\# ');
 
     const newMessages = dashboard.intercom.messages.slice(-newMessageCount);
     const newBlock = newMessages.map(msg => {

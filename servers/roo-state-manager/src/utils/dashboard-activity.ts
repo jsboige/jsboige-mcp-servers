@@ -218,7 +218,7 @@ export function renderDashboardActivityMarkdown(dashboard: {
 		// render doit émettre le MÊME format, pas un corps brut. Une ligne
 		// « ### [ts] machine|ws » dans un corps produirait sinon une activité
 		// fantôme dans extractMachineActivity.
-		.map(m => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n${m.content.replace(/^### \[/gm, '\\#\\#\\# [')}`)
+		.map(m => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n${m.content.replace(/^### \[/gm, '\\#\\#\\# [').replace(/^## /gm, '\\#\\# ')}`)
 		.join('\n\n');
 	return `${dashboard.status.markdown}\n${messages}`;
 }
