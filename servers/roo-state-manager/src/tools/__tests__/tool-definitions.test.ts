@@ -10,6 +10,12 @@
 
 import { describe, it, expect } from 'vitest';
 import { DetailLevelStrategyFactory } from '../../services/reporting/DetailLevelStrategyFactory.js';
+// #4352 (a3, 31/10): the handler's OWN schema — the drift guard below compares it
+// to the SERVED definition, which is the only wire contract. The handler-side
+// self-check in roosync-indexing.tool.coverage.test.ts compares the handler schema
+// to a hardcoded list, so it stayed green while index_code_supplement was dead on
+// the wire for every conforming caller.
+import { roosyncIndexingTool } from '../indexing/roosync-indexing.tool.js';
 import {
     allToolDefinitions,
     conversationBrowserDefinition,
@@ -604,6 +610,40 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(props).toHaveProperty('repair');
             expect(props.repair?.type).toBe('string');
             expect(props.repair?.enum).toEqual(['headless']);
+        });
+
+        // 8th occurrence (ai-01 #4352 a3, 31/10): `index_code_supplement` was merged
+        // into the HANDLER by ms#1514 (switch case, runtime allowlist, tool-module
+        // schema) but never into the SERVED definition — registry.ts serves
+        // allToolDefinitions, so no conforming client could ever select the action:
+        // the sup- collection was unbuildable by design-shape, not by permission.
+        // This equality guard is the one the handler-side test cannot provide: it
+        // pins served ≡ handler, so the next action added on one side only fails CI
+        // instead of silently reaching nobody.
+        it('roosync_indexing action enum served ≡ handler (drift guard, #4352 a3)', () => {
+            const served = (roosyncIndexingDefinition.inputSchema.properties?.action as { enum?: string[] })?.enum ?? [];
+            const handler = (roosyncIndexingTool.inputSchema.properties?.action as { enum?: string[] })?.enum ?? [];
+            expect([...served].sort()).toEqual([...handler].sort());
+            expect(served).toContain('index_code_supplement');
+        });
+
+        it('roosync_indexing must expose the index_code_supplement params on the wire (#4352 a3)', () => {
+            const props = roosyncIndexingDefinition.inputSchema.properties as Record<string, { type?: string; default?: unknown }>;
+            expect(props).toHaveProperty('workspace');
+            expect(props.workspace?.type).toBe('string');
+            expect(props.takeover).toMatchObject({ type: 'boolean', default: false });
+            expect(props.max_files).toMatchObject({ type: 'number', default: 0 });
+            expect(props.batch_size).toMatchObject({ type: 'number', default: 32 });
+        });
+
+        // The inverted default is a behaviour, not a default value in the schema
+        // (dry_run:false stays the literal default so the other actions keep their
+        // meaning). A conforming caller can only learn it from the description —
+        // so the description is the contract and must keep saying it.
+        it('roosync_indexing dry_run description must state the inverted default for index_code_supplement', () => {
+            const props = roosyncIndexingDefinition.inputSchema.properties as Record<string, { description?: string }>;
+            expect(props.dry_run?.description).toMatch(/INVERTED default for index_code_supplement/i);
+            expect(props.dry_run?.description).toMatch(/dry_run=TRUE/);
         });
     });
 });
