@@ -71,6 +71,33 @@ describe('classifySearchError', () => {
 		expect(result.mode).toBe('qdrant_collection_missing');
 	});
 
+	// ── #4438 dispatch item 1: a 404 on the EMBEDDING call is not a Qdrant collection issue ──
+
+	it('classifies 404 + embedding op as embedding_endpoint_not_found, not qdrant_collection_missing', async () => {
+		const err = makeError('404 Not found: /v2/embeddings', { status: 404 });
+		const result = await classifySearchError(err, 'embedding');
+		expect(result.mode).toBe('embedding_endpoint_not_found');
+		expect(result.hint).toContain('EMBEDDING_API_BASE_URL');
+		// The expensive wrong remedy must not be SUGGESTED for an embedder 404
+		// (the hint may name it only to forbid it).
+		expect(result.hint).not.toContain('Run roosync_indexing');
+	});
+
+	it('classifies "Not found" message + embedding op (no status) the same way', async () => {
+		const err = makeError('Not found');
+		const result = await classifySearchError(err, 'embedding');
+		expect(result.mode).toBe('embedding_endpoint_not_found');
+	});
+
+	it('embedding_endpoint_not_found implicates the embeddings component (failureComponent)', () => {
+		expect(failureComponent('embedding_endpoint_not_found')).toBe('embeddings');
+	});
+
+	it('embedding_endpoint_not_found counts as an infrastructure error for the degraded banner', async () => {
+		const { INFRASTRUCTURE_ERROR_MODES } = await import('../search-semantic.tool.js');
+		expect(INFRASTRUCTURE_ERROR_MODES.has('embedding_endpoint_not_found')).toBe(true);
+	});
+
 	// ── Embedding-specific errors ──
 
 	it('classifies ECONNREFUSED + embedding op as embedding_unreachable', async () => {
