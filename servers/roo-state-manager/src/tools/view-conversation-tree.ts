@@ -213,8 +213,9 @@ async function renderFromUnifiedStore(
     const result = await handleViewConversationTreeExecutionAsync({ ...args, task_id: taskId }, conversationCache);
     const first = result.content?.[0];
     if (first && first.type === 'text') {
-        first.text = `ℹ️ Source: unified store (PG, machine ${stored.metadata.machineId ?? 'unknown'}) — no local files for this task here. ` +
-            `Messages only: tool/command actions are not stored.\n\n${first.text}`;
+        // Actions ARE stored (ms#1396) and the loader unfolds them into the
+        // sequence, so they render like a local load — no fidelity disclaimer.
+        first.text = `ℹ️ Source: unified store (PG, machine ${stored.metadata.machineId ?? 'unknown'}) — no local files for this task here.\n\n${first.text}`;
     }
     return result;
 }

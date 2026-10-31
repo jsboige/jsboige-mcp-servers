@@ -118,7 +118,9 @@ describe('#2191 — view falls back to the unified store', () => {
 
 		const text = textOf(result);
 		expect(text).toContain('Source: unified store (PG, machine myia-po-2025)');
-		expect(text).toContain('Messages only: tool/command actions are not stored.');
+		// Actions are stored (ms#1396) and the loader unfolds them — the banner
+		// carries provenance only, no fidelity disclaimer.
+		expect(text).not.toContain('not stored');
 		expect(text).toContain('answer stored in PG');
 		expect(cache.get('t-pg-only')?.sequence).toHaveLength(2);
 		expect(loadPgMock).toHaveBeenCalledTimes(1);
