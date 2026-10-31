@@ -462,6 +462,66 @@ describe('search-codebase.tool', () => {
 			]);
 		});
 
+		test('#2609: three spellings — the live canonical beats two bigger decaying twins (pins ms#1599 hold 1)', async () => {
+			// The reviewer's mutant H1 reintroduced a "top 2 by points" probe cap in the
+			// handler and 158/158 stayed green: the selector tests pin the pure function,
+			// nothing pinned the WIRING. With ≥3 variants the top-2 by points are exactly
+			// the two decaying twins the pathology inflates — the live canonical (smallest)
+			// is never measured while the response would claim basis:'liveness'.
+			delete process.env.CONTENT_MATCH_LIVENESS;
+			const canonical = getWorkspaceCollectionName('D:/Dev/roo-ext');   // exact spelling — the live corpus
+			const twinA = getWorkspaceCollectionName('d:/dev/roo-ext');       // all-lowercase spelling — decaying
+			const twinB = getWorkspaceCollectionName('d:\\Dev\\roo-ext');     // lowercase-drive spelling — decaying
+			const variants = getWorkspaceCollectionVariants('D:/Dev/roo-ext');
+			expect(variants).toEqual(expect.arrayContaining([canonical, twinA, twinB]));
+			expect(new Set([canonical, twinA, twinB]).size).toBe(3);
+
+			mockQdrant.getCollection.mockImplementation(async (name: string) => {
+				if (name === canonical) return { status: 'green', points_count: 328245 };
+				if (name === twinA) return { status: 'green', points_count: 900000 };
+				if (name === twinB) return { status: 'green', points_count: 800000 };
+				throw new Error('not found');
+			});
+			// Signature scrolls keyed by collection: the twins' samples index the
+			// decommissioned `zoo-code` tree (dead on disk), the canonical indexes live
+			// files. Any other scroll (coverage, …) sees an empty corpus.
+			mockQdrant.scroll.mockImplementation((coll: string) => {
+				const sample = (live: string[], dead: string[]) => ({
+					points: [...live, ...dead].map(filePath => ({ payload: { filePath } }))
+				});
+				if (coll === canonical) return Promise.resolve(sample(
+					['src/live-a.ts', 'src/live-b.ts', 'src/live-c.ts', 'src/live-d.ts', 'src/live-e.ts'], []));
+				if (coll === twinA) return Promise.resolve(sample(
+					['src/live-a.ts', 'src/live-b.ts'],
+					['zoo-code/src/dead-1.ts', 'zoo-code/src/dead-2.ts', 'zoo-code/src/dead-3.ts']));
+				if (coll === twinB) return Promise.resolve(sample(
+					['src/live-a.ts', 'src/live-b.ts'],
+					['zoo-code/src/dead-4.ts', 'zoo-code/src/dead-5.ts', 'zoo-code/src/dead-6.ts']));
+				return Promise.resolve({ points: [] });
+			});
+			// A path is dead iff it belongs to the decommissioned tree.
+			mockExistsSync.mockImplementation((p: unknown) => !String(p).includes('zoo-code'));
+			mockQdrant.query.mockResolvedValue({
+				points: [{ score: 0.7, payload: { filePath: 'src/foo.ts', codeChunk: 'export function foo() {}', startLine: 1, endLine: 5 } }]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'foo function', workspace: 'D:/Dev/roo-ext' });
+			const parsed = JSON.parse(result.content[0].text);
+			expect(parsed.status).toBe('success');
+			expect(parsed.collection).toBe(canonical);
+			expect(parsed.collection_resolved_by).toBe('hash');
+			expect(parsed.variant_selection).toMatchObject({
+				basis: 'liveness',
+				served: canonical,
+				probed_variants: 3,
+				flipped_from_largest: true,
+			});
+			// The liveness of EVERY variant is reported — a partial probe set must stay visible.
+			expect(Object.keys(parsed.variant_selection.liveness).sort()).toEqual([canonical, twinA, twinB].sort());
+			expect(parsed.variant_selection.liveness[canonical]).toEqual({ ratio: 1, checked: 5 });
+			expect(parsed.variant_selection.liveness[twinA]).toEqual({ ratio: 0.4, checked: 5 });
+		});
+
 		test('#4352: a network error on every variant surfaces as qdrant_unreachable', async () => {
 			vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('probe refused')));
 			try {
