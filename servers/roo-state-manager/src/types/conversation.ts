@@ -81,8 +81,12 @@ export interface SkeletonHeader {
  *
  * @deprecated Roo-specific conversation format — superseded by the unified
  * PG-backed task extraction (roo-extensions #1360 / #1395). Do not add new
- * consumers. Removal no earlier than 2026-10-28, gated on roo-extensions
- * #1394 (src/tools consumer migration). See docs/MIGRATION-UNIFIED-TASK-EXTRACTION.md.
+ * consumers. Removal is gated on MEASURED prerequisites, not a date
+ * (roo-extensions #1395, measured 2026-10-31 — the 2026-10-28 date expired with
+ * the gate unsatisfied): the unified PG store must stop importing this type
+ * (services/unified-store/backfill.ts, conversation-list-store.ts) AND
+ * src/tools must reach zero references (100 of 182 files today).
+ * See docs/MIGRATION-UNIFIED-TASK-EXTRACTION.md.
  */
 export interface ConversationSkeleton extends SkeletonHeader {
    sequence: (MessageSkeleton | ActionMetadata)[];
