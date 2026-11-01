@@ -28,12 +28,21 @@ import {
  * Détecteur pour les conversations Claude Code
  */
 export class ClaudeStorageDetector {
-    // P1 fix: streamed line-by-line (no full-load) — 500MB hard cap is a sanity guard
-    // against runaway files, not an OOM threshold. Previous 10MB limit silently
-    // dropped 15/147 sessions (CoursIA 103MB, large traces 24-26MB) at discovery.
-    private static readonly MAX_CONVERSATION_FILE_SIZE = 500 * 1024 * 1024;
     // Skeleton is metadata-only; cap line count to bound memory under truly huge files.
     private static readonly MAX_SKELETON_LINES = 20000;
+    // #4352 g9: the skeleton keeps the HEAD (createdAt, first user message, cwd) and
+    // the TAIL (lastActivity, current ai-title, recent content) of a session. Keeping
+    // only the first MAX_SKELETON_LINES entries froze lastActivity at entry 20 000: a
+    // live session stopped looking modified, so it was never re-queued for indexing
+    // (41 sessions on ai-01, 01/11).
+    private static readonly SKELETON_HEAD_ENTRIES = 50;
+    // #4352 g9: past this size, only the head entries and the last window of the file
+    // are streamed. This replaces the 500 MiB skip, which left a growing session frozen
+    // at the skeleton it had when it crossed the cap (ai-01 01/11: two live coordinator
+    // sessions, 625 MB and 1 064 MB, seen as 499.9 MB with a lastActivity of 24-25/10).
+    // The window also bounds what one refresh tick (every 2 min, per changed live
+    // session) reads. Env CLAUDE_SKELETON_TAIL_WINDOW_BYTES overrides the window size.
+    private static readonly DEFAULT_SKELETON_TAIL_WINDOW_BYTES = 32 * 1024 * 1024;
     // Nom du répertoire de stockage Claude Code
     private static readonly CLAUDE_PROJECTS_DIR = 'projects';
     private static readonly CLAUDE_CONFIG_DIR = '.claude';
@@ -245,20 +254,13 @@ export class ClaudeStorageDetector {
             // Parser tous les fichiers JSONL
             const allEntries: ClaudeJsonlEntry[] = [];
             let totalSize = 0;
-            const oversizedFiles: string[] = [];
 
             for (const file of jsonlFiles) {
                 const filePath = path.join(projectPath, file);
                 const fileStats = await fs.stat(filePath);
                 totalSize += fileStats.size;
 
-                if (fileStats.size > this.MAX_CONVERSATION_FILE_SIZE) {
-                    console.warn(`⚠️ [ClaudeStorageDetector] File exceeds ${this.MAX_CONVERSATION_FILE_SIZE / 1024 / 1024}MB sanity cap, skipping: ${file} (${(fileStats.size / 1024 / 1024).toFixed(1)}MB)`);
-                    oversizedFiles.push(`${file} (${(fileStats.size / 1024 / 1024).toFixed(1)}MB)`);
-                    continue;
-                }
-
-                const entries = await this.parseJsonlFile(filePath);
+                const entries = await this.parseJsonlFile(filePath, fileStats.size);
                 allEntries.push(...entries);
             }
 
@@ -285,7 +287,6 @@ export class ClaudeStorageDetector {
                     ...metadata,
                     workspace,
                     machineId: os.hostname(), // Ajouter l'identifiant de la machine
-                    ...(oversizedFiles.length > 0 ? { oversizedFiles } : {}),
                 },
             };
         } catch (error) {
@@ -295,40 +296,115 @@ export class ClaudeStorageDetector {
     }
 
     /**
-     * Parse un fichier JSONL complet en streaming (readline).
+     * Parse un fichier JSONL en streaming (readline).
      *
      * P1 fix: previously `fs.readFile` + `content.split('\n')` would crash on
      * 100MB+ traces (CoursIA 103MB, large roo-extensions sessions 24-26MB).
      * Pattern mirrored from ChunkExtractor.ts:471-488.
-     * Caps at MAX_SKELETON_LINES — skeleton is metadata, not full content.
+     *
+     * #4352 g9: keeps at most MAX_SKELETON_LINES entries — the first
+     * SKELETON_HEAD_ENTRIES and the LAST ones (ring buffer), so lastActivity is the
+     * session's real last entry. A file larger than the tail window is read as its
+     * head plus its last window only: the I/O stays bounded however large the session
+     * grows. Entries in between are omitted — the skeleton is metadata, not content.
      */
-    private static async parseJsonlFile(filePath: string): Promise<ClaudeJsonlEntry[]> {
-        const entries: ClaudeJsonlEntry[] = [];
-        let skippedEntries = 0;
-        let lineCount = 0;
-        let truncated = false;
+    private static async parseJsonlFile(filePath: string, fileSize: number): Promise<ClaudeJsonlEntry[]> {
+        const headCap = this.SKELETON_HEAD_ENTRIES;
+        const tailCap = this.MAX_SKELETON_LINES - headCap;
+        const head: ClaudeJsonlEntry[] = [];
+        const tail: ClaudeJsonlEntry[] = [];
+        let tailOldest = 0; // index of the oldest tail entry once the ring is full
+        let omitted = 0;
+        const keep = (entry: ClaudeJsonlEntry): boolean => {
+            if (head.length < headCap) {
+                head.push(entry);
+            } else if (tail.length < tailCap) {
+                tail.push(entry);
+            } else {
+                tail[tailOldest] = entry;
+                tailOldest = (tailOldest + 1) % tailCap;
+                omitted++;
+            }
+            return true;
+        };
 
-        const fileStream = createReadStream(filePath, { encoding: 'utf-8' });
+        const windowBytes = this.getTailWindowBytes();
+        const windowed = fileSize > windowBytes;
+        let skippedEntries = 0;
+        if (windowed) {
+            // The head pass covers [0, tailOffset). The tail pass starts one byte
+            // early and always drops its first line: that line is either the one cut
+            // by the offset, or empty when the offset fell right after a newline. So
+            // the tail pass begins at the first line starting at or after tailOffset,
+            // and no entry is read twice.
+            const tailOffset = fileSize - windowBytes;
+            const headPass = await this.streamJsonlEntries(filePath, 0, tailOffset - 1, false, (entry) => {
+                head.push(entry);
+                return head.length < headCap;
+            });
+            const tailPass = await this.streamJsonlEntries(filePath, tailOffset - 1, undefined, true, keep);
+            skippedEntries = headPass.skipped + tailPass.skipped;
+        } else {
+            skippedEntries = (await this.streamJsonlEntries(filePath, 0, undefined, false, keep)).skipped;
+        }
+
+        if (skippedEntries > 0) {
+            console.warn(`[ClaudeStorageDetector] ⚠️ ${skippedEntries} invalid JSONL lines skipped in ${path.basename(filePath)}`);
+        }
+        if (windowed || omitted > 0) {
+            const detail = windowed
+                ? `only the last ${(windowBytes / 1048576).toFixed(0)} MiB of ${(fileSize / 1048576).toFixed(0)} MiB read`
+                : `${omitted} in between omitted`;
+            console.warn(`[ClaudeStorageDetector] ⚠️ ${path.basename(filePath)}: skeleton keeps the first ${head.length} and the last ${tail.length} entries (${detail}; skeleton metadata only)`);
+        }
+
+        return [...head, ...tail.slice(tailOldest), ...tail.slice(0, tailOldest)];
+    }
+
+    /** #4352 g9: tail window size, env CLAUDE_SKELETON_TAIL_WINDOW_BYTES (positive integer) or the default. */
+    private static getTailWindowBytes(): number {
+        const raw = Number.parseInt(process.env.CLAUDE_SKELETON_TAIL_WINDOW_BYTES ?? '', 10);
+        return Number.isFinite(raw) && raw > 0 ? raw : this.DEFAULT_SKELETON_TAIL_WINDOW_BYTES;
+    }
+
+    /**
+     * #4352 g9: stream the valid entries of [start, end] (end inclusive, undefined =
+     * end of file) to `onEntry`, which returns false to stop early.
+     */
+    private static async streamJsonlEntries(
+        filePath: string,
+        start: number,
+        end: number | undefined,
+        dropFirstLine: boolean,
+        onEntry: (entry: ClaudeJsonlEntry) => boolean
+    ): Promise<{ skipped: number }> {
+        let skipped = 0;
+        let pendingInvalid = false;
+        let lineCount = 0;
+
+        const fileStream = createReadStream(filePath, { encoding: 'utf-8', start, ...(end !== undefined ? { end } : {}) });
         const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
         try {
             for await (const rawLine of rl) {
-                // stripBOM on the first line only (handles UTF-8 BOM at file start)
-                const line = lineCount === 0 ? stripBOM(rawLine) : rawLine;
                 lineCount++;
+                if (lineCount === 1 && dropFirstLine) continue;
+                if (pendingInvalid) {
+                    skipped++;
+                    pendingInvalid = false;
+                }
+                // stripBOM on the file's first line only (handles UTF-8 BOM at file start)
+                const line = lineCount === 1 && start === 0 ? stripBOM(rawLine) : rawLine;
 
                 const entry = await this.parseJsonlLine(line);
                 if (entry) {
-                    entries.push(entry);
+                    if (!onEntry(entry)) break;
                 } else if (line.trim()) {
-                    skippedEntries++;
-                }
-
-                if (entries.length >= this.MAX_SKELETON_LINES) {
-                    truncated = true;
-                    break;
+                    pendingInvalid = true;
                 }
             }
+            // A bounded pass may cut its last line: a parse failure there is the cut, not bad data.
+            if (pendingInvalid && end === undefined) skipped++;
         } catch (error) {
             console.error(`[ClaudeStorageDetector] Error streaming JSONL file ${filePath}:`, error);
         } finally {
@@ -336,14 +412,7 @@ export class ClaudeStorageDetector {
             fileStream.destroy();
         }
 
-        if (skippedEntries > 0) {
-            console.warn(`[ClaudeStorageDetector] ⚠️ ${skippedEntries} invalid JSONL lines skipped in ${path.basename(filePath)}`);
-        }
-        if (truncated) {
-            console.warn(`[ClaudeStorageDetector] ⚠️ Truncated at ${this.MAX_SKELETON_LINES} entries in ${path.basename(filePath)} (skeleton metadata only)`);
-        }
-
-        return entries;
+        return { skipped };
     }
 
     /**

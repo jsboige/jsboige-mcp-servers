@@ -80,6 +80,8 @@ import {
   isPermanentIndexingError,
   registerDeadLetter,
   shouldRequeueForRefresh,
+  findHeldChangesDue,
+  MAX_HELD_CHANGES_PER_TICK,
 } from '../../../src/services/background-services.js';
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
 import type { ConversationSkeleton, SkeletonHeader, SkeletonMetadata } from '../../../src/types/conversation.js';
@@ -1080,5 +1082,131 @@ describe('shouldRequeueForRefresh', () => {
       forceRescan: false,
     });
     expect(result).toBe(false);
+  });
+});
+
+// ===================================================================
+// #4352 g9 — minimum reindex interval: the refresh requeue waits for it, and
+// findHeldChangesDue() queues the held change once it has elapsed.
+// ===================================================================
+describe('#4352 g9 — held changes and the minimum reindex interval', () => {
+  const NOW = Date.UTC(2026, 10, 1, 12, 0, 0);
+  const MIN = 60 * 1000;
+  const iso = (ms: number) => new Date(ms).toISOString();
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('shouldRequeueForRefresh: a changed success task inside the interval is not queued', () => {
+    const result = shouldRequeueForRefresh({
+      taskId: 'live',
+      state: makeStateWithQueue(),
+      indexStatus: 'success',
+      lastIndexed: iso(NOW - 10 * MIN),
+      fileMtimeMs: NOW - MIN,
+      lastActivityMs: NOW - MIN,
+      forceRescan: false,
+      nowMs: NOW,
+    });
+    expect(result).toBe(false);
+  });
+
+  it('shouldRequeueForRefresh: a changed success task past the interval is queued', () => {
+    const result = shouldRequeueForRefresh({
+      taskId: 'live',
+      state: makeStateWithQueue(),
+      indexStatus: 'success',
+      lastIndexed: iso(NOW - 61 * MIN),
+      fileMtimeMs: NOW - MIN,
+      lastActivityMs: NOW - MIN,
+      forceRescan: false,
+      nowMs: NOW,
+    });
+    expect(result).toBe(true);
+  });
+
+  it('shouldRequeueForRefresh: the interval does not gate a never-indexed or retry task', () => {
+    const state = makeStateWithQueue();
+    expect(shouldRequeueForRefresh({
+      taskId: 'new', state, indexStatus: undefined, lastIndexed: undefined,
+      fileMtimeMs: NOW, lastActivityMs: NOW, forceRescan: false, nowMs: NOW,
+    })).toBe(true);
+    expect(shouldRequeueForRefresh({
+      taskId: 'retry', state, indexStatus: 'retry', lastIndexed: iso(NOW - MIN),
+      fileMtimeMs: NOW, lastActivityMs: NOW, forceRescan: false, nowMs: NOW,
+    })).toBe(true);
+  });
+
+  it('shouldRequeueForRefresh: kill-switch INDEX_REINDEX_CHANGED_AFTER_MS=0 restores the ungated requeue', () => {
+    vi.stubEnv('INDEX_REINDEX_CHANGED_AFTER_MS', '0');
+    const result = shouldRequeueForRefresh({
+      taskId: 'live',
+      state: makeStateWithQueue(),
+      indexStatus: 'success',
+      lastIndexed: iso(NOW - 10 * MIN),
+      fileMtimeMs: NOW - MIN,
+      lastActivityMs: NOW - MIN,
+      forceRescan: false,
+      nowMs: NOW,
+    });
+    expect(result).toBe(true);
+  });
+
+  function cacheEntry(lastActivityMs: number, indexingState: any, extra: any = {}): any {
+    return { taskId: 'x', metadata: { lastActivity: iso(lastActivityMs), indexingState, ...extra } };
+  }
+
+  function stateWith(entries: Record<string, any>, decide: (h: any) => boolean = () => true): any {
+    const state = makeStateWithQueue();
+    state.conversationCache = new Map(Object.entries(entries));
+    state.indexingDecisionService = { shouldIndex: (h: any) => ({ shouldIndex: decide(h) }) };
+    return state;
+  }
+
+  it('findHeldChangesDue: returns only success tasks changed after their index, with the interval elapsed', () => {
+    const state = stateWith({
+      due: cacheEntry(NOW - 5 * MIN, { indexStatus: 'success', lastIndexedAt: iso(NOW - 2 * 60 * MIN) }),
+      early: cacheEntry(NOW - MIN, { indexStatus: 'success', lastIndexedAt: iso(NOW - 10 * MIN) }),
+      unchanged: cacheEntry(NOW - 3 * 60 * MIN, { indexStatus: 'success', lastIndexedAt: iso(NOW - 2 * 60 * MIN) }),
+      failed: cacheEntry(NOW - MIN, { indexStatus: 'failed', lastIndexedAt: iso(NOW - 2 * 60 * MIN) }),
+      noIndexDate: cacheEntry(NOW - MIN, { indexStatus: 'success' }),
+      archive: cacheEntry(NOW - MIN, { indexStatus: 'success', lastIndexedAt: iso(NOW - 2 * 60 * MIN) }, { dataSource: 'archive' }),
+    });
+    expect(findHeldChangesDue(state, NOW)).toEqual(['due']);
+  });
+
+  it('findHeldChangesDue: skips what is already queued or dead-lettered, and what shouldIndex refuses', () => {
+    const changed = () => cacheEntry(NOW - MIN, { indexStatus: 'success', lastIndexedAt: iso(NOW - 2 * 60 * MIN) });
+    const state = stateWith(
+      { queued: changed(), dead: changed(), noise: changed(), ok: changed() },
+      (h: any) => h !== state.conversationCache.get('noise'),
+    );
+    state.qdrantIndexQueue.add('queued');
+    state.deadLetterQueue.add('dead');
+    expect(findHeldChangesDue(state, NOW)).toEqual(['ok']);
+  });
+
+  it('findHeldChangesDue: bounded per tick (the first tick after a deploy finds every held change)', () => {
+    const entries: Record<string, any> = {};
+    for (let i = 0; i < MAX_HELD_CHANGES_PER_TICK + 6; i++) {
+      entries[`t${i}`] = cacheEntry(NOW - MIN, { indexStatus: 'success', lastIndexedAt: iso(NOW - 3 * 60 * MIN) });
+    }
+    const state = stateWith(entries);
+    const first = findHeldChangesDue(state, NOW);
+    expect(first).toHaveLength(MAX_HELD_CHANGES_PER_TICK);
+    for (const id of first) state.qdrantIndexQueue.add(id);
+    const second = findHeldChangesDue(state, NOW);
+    expect(second).toHaveLength(MAX_HELD_CHANGES_PER_TICK);
+    expect(second.some((id) => first.includes(id))).toBe(false);
+  });
+
+  it('findHeldChangesDue: kill-switch, or no decision service, returns nothing', () => {
+    const entries = { due: cacheEntry(NOW - MIN, { indexStatus: 'success', lastIndexedAt: iso(NOW - 2 * 60 * MIN) }) };
+    const noService = stateWith(entries);
+    noService.indexingDecisionService = null;
+    expect(findHeldChangesDue(noService, NOW)).toEqual([]);
+    vi.stubEnv('INDEX_REINDEX_CHANGED_AFTER_MS', '0');
+    expect(findHeldChangesDue(stateWith(entries), NOW)).toEqual([]);
   });
 });
