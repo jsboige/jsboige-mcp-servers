@@ -535,6 +535,16 @@ class JupyterManager:
                         msg_type = msg["msg_type"]
                         content = msg["content"]
 
+                        # #4481 (C1): only this request's traffic counts. After a
+                        # restart while a request is in flight, the restarted
+                        # kernel publishes its own busy/idle cycle; the old code
+                        # ended the run on that first foreign `idle`, reported
+                        # `ok` with execution_count=0 and no output, and the
+                        # caller then overwrote good outputs already on disk.
+                        parent_id = (msg.get("parent_header") or {}).get("msg_id")
+                        if parent_id != msg_id:
+                            continue
+
                         self.logger.debug(f"Received message type: {msg_type}")
 
                         if msg_type == "stream":
@@ -1063,6 +1073,13 @@ class JupyterManager:
 
                         msg_type = msg["msg_type"]
                         content = msg["content"]
+
+                        # #4481 (C1): same correlation as execute_code -- the
+                        # streaming path shares the SUB socket and would end the
+                        # run on a foreign `idle` for the same reason.
+                        parent_id = (msg.get("parent_header") or {}).get("msg_id")
+                        if parent_id != msg_id:
+                            continue
 
                         if msg_type == "stream":
                             text = content.get("text", "")

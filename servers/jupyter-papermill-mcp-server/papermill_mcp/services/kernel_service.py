@@ -489,6 +489,13 @@ class KernelService:
                     "outputs": [],
                     "execution_time": 0.0,
                     "message": "Empty cell, nothing to execute",
+                    "persisted": {
+                        "written": False,
+                        "path": str(notebook_path),
+                        "execution_count": None,
+                        "outputs_written": 0,
+                        "reason": "empty cell: nothing executed, nothing persisted",
+                    },
                 }
                 return result
 
@@ -508,8 +515,12 @@ class KernelService:
             # disk stayed byte-identical (ec=None, outs=[]), so a caller that
             # trusted the response (or a pre-commit checking ec) discovered
             # after a whole session that nothing was ever written.
-            persisted = self._persist_cell_execution(
-                notebook_path, cell_index, cell.source, cell_result
+            persisted = await asyncio.to_thread(
+                self._persist_cell_execution,
+                notebook_path,
+                cell_index,
+                cell.source,
+                cell_result,
             )
 
             result = {
@@ -643,13 +654,23 @@ class KernelService:
                 )
                 return info
 
+            ec = cell_result.execution_count
+            if not isinstance(ec, int) or ec <= 0:
+                # #4481 (C1): no honest execution counter means this run cannot
+                # account for the cell -- a foreign `idle` after an in-flight
+                # restart, or a shell reply that never arrived. Writing here
+                # replaced the outputs already on disk with an empty list and
+                # still reported `written: true, reason: null`.
+                info["reason"] = (
+                    "no execution_count from the kernel "
+                    f"(got {ec!r}) -- outputs not persisted, "
+                    f"cell {cell_index} left exactly as it was on disk"
+                )
+                logger.warning(f"#4481 {info['reason']}")
+                return info
+
             cell.outputs = self._outputs_to_nbformat(cell_result.outputs)
-            cell.execution_count = (
-                cell_result.execution_count
-                if isinstance(cell_result.execution_count, int)
-                and cell_result.execution_count > 0
-                else None
-            )
+            cell.execution_count = ec
             info["execution_count"] = cell.execution_count
             info["outputs_written"] = len(cell.outputs)
 

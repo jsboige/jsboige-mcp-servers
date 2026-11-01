@@ -5,6 +5,7 @@ Defines all notebook-related MCP tools using FastMCP.
 """
 
 import asyncio
+import inspect
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -35,21 +36,38 @@ def get_notebook_service() -> NotebookService:
     return _notebook_service
 
 
-async def _bounded_file_op(coro, op_name: str, timeout: Optional[float] = None):
+async def _bounded_file_op(op, op_name: str, timeout: Optional[float] = None):
     """
     #4481: bound every notebook file operation with a transport-level timeout
     and an explicit error payload. Before this, a call stuck below the service
     layer never returned on its own -- the harness burned its whole 900 s MCP
     timeout per attempt with no server-side diagnosis.
+
+    ``op`` is a zero-argument callable (or a plain awaitable for other callers).
+    #4481 (W1): the work runs in a worker thread. Every notebook service method
+    is an ``async def`` whose body is purely synchronous, so ``wait_for`` around
+    the coroutine could never preempt it -- measured: a 1e-6 s budget still
+    returned a 400-cell notebook, i.e. the promise bounded nothing. Off the
+    event loop the caller gets an explicit ``status: "timeout"`` payload and the
+    server stays responsive. A timed-out thread cannot be killed: it finishes in
+    the background and its result is dropped.
     """
+    budget = timeout or 60.0
+
+    def _run():
+        result = op() if callable(op) else op
+        if inspect.isawaitable(result):
+            # No running loop in this worker thread: asyncio.run drives the
+            # service coroutine to completion there, off the event loop.
+            return asyncio.run(result)
+        return result
+
     try:
-        return await asyncio.wait_for(coro, timeout=timeout or 60.0)
+        return await asyncio.wait_for(asyncio.to_thread(_run), timeout=budget)
     except asyncio.TimeoutError:
-        logger.error(
-            f"{op_name} timed out after {timeout or 60.0}s (file operation)"
-        )
+        logger.error(f"{op_name} timed out after {budget}s (file operation)")
         return {
-            "error": f"{op_name} timed out after {timeout or 60.0}s",
+            "error": f"{op_name} timed out after {budget}s",
             "operation": op_name,
             "status": "timeout",
             "success": False,
@@ -125,7 +143,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             logger.info(f"Reading notebook: {path}")
             service = get_notebook_service()
             result = await _bounded_file_op(
-                service.read_notebook(path), "read_notebook"
+                lambda: service.read_notebook(path), "read_notebook"
             )
             logger.info(f"Successfully read notebook: {path}")
             return result
@@ -149,7 +167,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             logger.info(f"Writing notebook: {path}")
             service = get_notebook_service()
             result = await _bounded_file_op(
-                service.write_notebook(path, content), "write_notebook"
+                lambda: service.write_notebook(path, content), "write_notebook"
             )
             logger.info(f"Successfully wrote notebook: {path}")
             return result
@@ -173,7 +191,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             logger.info(f"Creating notebook: {path} with kernel: {kernel}")
             service = get_notebook_service()
             result = await _bounded_file_op(
-                service.create_notebook(path, kernel), "create_notebook"
+                lambda: service.create_notebook(path, kernel), "create_notebook"
             )
             logger.info(f"Successfully created notebook: {path}")
             return result
@@ -206,7 +224,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             logger.info(f"Adding {cell_type} cell to notebook: {path}")
             service = get_notebook_service()
             result = await _bounded_file_op(
-                service.add_cell(path, cell_type, source, metadata, index), "add_cell"
+                lambda: service.add_cell(path, cell_type, source, metadata, index), "add_cell"
             )
             logger.info(f"Successfully added cell to notebook: {path}")
             return result
@@ -235,7 +253,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             logger.info(f"Removing cell {index} from notebook: {path}")
             service = get_notebook_service()
             result = await _bounded_file_op(
-                service.remove_cell(path, index), "remove_cell"
+                lambda: service.remove_cell(path, index), "remove_cell"
             )
             logger.info(f"Successfully removed cell from notebook: {path}")
             return result
@@ -260,7 +278,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             logger.info(f"Updating cell {index} in notebook: {path}")
             service = get_notebook_service()
             result = await _bounded_file_op(
-                service.update_cell(path, index, source), "update_cell"
+                lambda: service.update_cell(path, index, source), "update_cell"
             )
             logger.info(f"Successfully updated cell in notebook: {path}")
             return result
@@ -319,7 +337,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             logger.info(f"Reading cells from notebook (mode={mode}): {path}")
             service = get_notebook_service()
             result = await _bounded_file_op(
-                service.read_cells(
+                lambda: service.read_cells(
                     path=path,
                     mode=mode,
                     index=index,
@@ -474,7 +492,7 @@ def register_notebook_tools(app: FastMCP) -> None:
             logger.info(f"Inspecting notebook (mode={mode}): {path}")
             service = get_notebook_service()
             result = await _bounded_file_op(
-                service.inspect_notebook(path, mode=mode), "inspect_notebook"
+                lambda: service.inspect_notebook(path, mode=mode), "inspect_notebook"
             )
             logger.info(f"Successfully inspected notebook: {path}")
             return result

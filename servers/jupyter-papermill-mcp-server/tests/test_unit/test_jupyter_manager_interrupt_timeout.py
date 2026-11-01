@@ -106,11 +106,14 @@ async def test_execute_code_normal_completion_marks_idle(manager_with_busy_kerne
     """Normal completion (no timeout) returns ok and kernel idle."""
     mgr, kernel_id, km_mock = manager_with_busy_kernel
 
-    # Make get_iopub_msg return an idle status quickly
+    # Make get_iopub_msg return an idle status quickly. #4481 (C1): the idle is
+    # only accepted for the request that caused it, so it carries the msg_id
+    # kc.execute() returned -- as a real kernel does.
     kc_mock = km_mock.client.return_value
     kc_mock.get_iopub_msg.side_effect = lambda timeout=1.0: {
         "msg_type": "status",
         "content": {"execution_state": "idle"},
+        "parent_header": {"msg_id": kc_mock.execute.return_value},
     }
 
     result = await mgr.execute_code(kernel_id, "print('hello')", timeout=5)

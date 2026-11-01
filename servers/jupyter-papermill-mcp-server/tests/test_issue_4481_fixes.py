@@ -81,7 +81,13 @@ class FakeClient:
         self._msgid += 1
         msg_id = f"msg-{self._msgid}"
         if self._iopub_runs:
-            self._iopub.extend(self._iopub_runs.pop(0))
+            for msg in self._iopub_runs.pop(0):
+                # A real kernel stamps every iopub message with the msg_id of
+                # the request that caused it; #4481 (C1) correlates on it.
+                parent = msg.setdefault("parent_header", {})
+                if parent.get("msg_id") is None:
+                    parent["msg_id"] = msg_id
+                self._iopub.append(msg)
         for template in self._replies_on_execute:
             reply = {
                 **template,
@@ -103,11 +109,16 @@ class FakeKernelManager:
         self._client = client
         self.start_kwargs = None
         self.connection_file = "fake-conn.json"
+        # #4481 (W3): each call here is a client a real kernel manager would
+        # create and never close -- the leak. Counting makes the assertion able
+        # to fail for the reason the test names.
+        self.client_calls = 0
 
     def start_kernel(self, **kw):
         self.start_kwargs = kw
 
     def client(self):
+        self.client_calls += 1
         return self._client
 
 
@@ -264,6 +275,43 @@ async def test_notebook_cell_persists_error_output_and_ec(service, notebook):
     assert cell["outputs"][0]["ename"] == "TypeError"
 
 
+async def test_false_ok_without_execution_count_keeps_persisted_outputs(
+    service, notebook
+):
+    """#4481 (C1): the destruction the review measured. A first run persists real
+    outputs; a later `ok` result carrying no honest counter (foreign idle, or a
+    shell reply that never came) must leave the file byte-identical."""
+    good = ExecutionResult(
+        status="ok",
+        execution_count=4,
+        outputs=[
+            ExecutionOutput(
+                output_type="stream", content={"name": "stdout", "text": "kept\n"}
+            )
+        ],
+        text_output="kept\n",
+    )
+    with patch.object(
+        service.jupyter_manager, "execute_code", new_callable=AsyncMock
+    ) as mock_exec:
+        mock_exec.return_value = good
+        first = await service.execute_notebook_cell(str(notebook), 0, "k1", timeout=5)
+
+    assert first["persisted"]["written"] is True
+    before = notebook.read_bytes()
+
+    fake_ok = ExecutionResult(status="ok", execution_count=0, outputs=[], text_output="")
+    with patch.object(
+        service.jupyter_manager, "execute_code", new_callable=AsyncMock
+    ) as mock_exec:
+        mock_exec.return_value = fake_ok
+        second = await service.execute_notebook_cell(str(notebook), 0, "k1", timeout=5)
+
+    assert second["persisted"]["written"] is False
+    assert "execution_count" in second["persisted"]["reason"]
+    assert notebook.read_bytes() == before, "persisted outputs must survive"
+
+
 async def test_notebook_cell_timeout_not_persisted(service, notebook):
     before = notebook.read_bytes()
     result = ExecutionResult(status="timeout", execution_count=0, outputs=[])
@@ -392,18 +440,52 @@ async def test_execute_code_drains_stale_iopub_from_previous_run():
     assert result.execution_count == 2
 
 
-async def test_execute_code_reuses_shared_client():
-    client = FakeClient([_iopub_run(ec=1), _iopub_run(ec=2)], [])
+async def test_execute_code_ignores_foreign_idle_after_restart():
+    """#4481 (C1): with a restart in flight, the restarted kernel publishes its
+    own busy/idle cycle. The old code ended the request on that foreign `idle`,
+    returned ok / ec=0 / no output, and the caller then wiped the outputs
+    already persisted on disk for the cell."""
+    foreign = [
+        {
+            "msg_type": "status",
+            "content": {"execution_state": "busy"},
+            "parent_header": {"msg_id": "restart-elsewhere"},
+        },
+        {
+            "msg_type": "status",
+            "content": {"execution_state": "idle"},
+            "parent_header": {"msg_id": "restart-elsewhere"},
+        },
+    ]
+    ours = _iopub_run(stream_text="REAL\n", ec=5)
+    client = FakeClient([foreign + ours], [])
     km = FakeKernelManager(client)
     mgr = make_manager({"k1": (km, client)})
+
+    result = await mgr.execute_code("k1", "print('REAL')", timeout=5)
+
+    assert result.status == "ok"
+    assert result.execution_count == 5, "a foreign idle must not zero the counter"
+    assert result.text_output == "REAL\n", "this request's own output must survive"
+
+
+async def test_execute_code_reuses_shared_client():
+    """#4481 (W3): count the clients the kernel manager hands out -- a mutant
+    that restores one fresh ``km.client()`` per execution must turn this red."""
+    client = FakeClient([_iopub_run(ec=1), _iopub_run(ec=2)], [])
+    km = FakeKernelManager(client)
+    # No client in the registry yet: the first execution builds it, the second
+    # must reuse it.
+    mgr = make_manager({"k1": (km, None)})
 
     await mgr.execute_code("k1", "1", timeout=5)
     await mgr.execute_code("k1", "2", timeout=5)
 
-    # Before the fix each execution called km.client() and leaked it;
-    # now the registry client is reused as-is.
     assert mgr._kernel_info["k1"].client is client
-    assert client.started_with is None  # adopted from registry, not rebuilt
+    assert km.client_calls == 1, (
+        f"one client per kernel expected, got {km.client_calls} -- "
+        "a per-execution client leaks the ZMQ context (#4481 D1)"
+    )
 
 
 async def test_stop_kernel_closes_shared_client():
@@ -430,13 +512,14 @@ async def test_execute_code_serializes_on_shared_client():
     class SlowIopubClient(FakeClient):
         def get_iopub_msg(self, timeout=None):
             inner_started["flag"] = True
-            deadline = time.monotonic() + 30
-            if not release["flag"] and time.monotonic() < deadline:
+            if not release["flag"]:
                 time.sleep(0.02)
                 raise Exception("Empty")  # emulate the poll loop's Empty
-            return _msg("status", {"execution_state": "idle"})
+            # Hand back the message execute() queued for THIS request: it is
+            # stamped with that msg_id, which is what #4481 (C1) correlates on.
+            return super().get_iopub_msg(timeout)
 
-    slow = SlowIopubClient([], [])
+    slow = SlowIopubClient([_iopub_run(ec=1), _iopub_run(ec=2)], [])
     mgr = make_manager({"k1": (FakeKernelManager(slow), slow)})
 
     t1 = asyncio.create_task(mgr.execute_code("k1", "slow()", timeout=30))
@@ -501,18 +584,37 @@ async def test_manage_kernel_start_passes_working_dir():
 
 
 async def test_bounded_file_op_times_out():
+    # A worker thread cannot be killed: it must finish on its own or the
+    # interpreter waits for it at exit. Short sleep, same proof (budget 0.1 s).
     async def stuck():
-        await asyncio.sleep(999)
+        await asyncio.sleep(1.0)
 
-    out = await _bounded_file_op(stuck(), "read_cells", timeout=0.1)
+    out = await _bounded_file_op(stuck, "read_cells", timeout=0.1)
     assert out["status"] == "timeout"
     assert "timed out" in out["error"]
     assert out["success"] is False
+
+
+async def test_bounded_file_op_bounds_a_synchronous_body():
+    """#4481 (W1): the notebook service bodies are synchronous, so a wait_for
+    around the coroutine bounded nothing (measured: a 1e-6 s budget still
+    returned a 400-cell notebook). The body now runs in a worker thread, which
+    is what makes this assertion able to fail."""
+    def slow_sync_read():
+        time.sleep(0.5)
+        return {"cells": 400}
+
+    started = time.monotonic()
+    out = await _bounded_file_op(slow_sync_read, "read_notebook", timeout=0.01)
+    elapsed = time.monotonic() - started
+
+    assert out["status"] == "timeout", "a synchronous body must still be bounded"
+    assert elapsed < 0.4, f"caller waited {elapsed:.2f}s -- the bound did not bite"
 
 
 async def test_bounded_file_op_passthrough():
     async def fine():
         return {"cells": 3}
 
-    out = await _bounded_file_op(fine(), "read_cells", timeout=5)
+    out = await _bounded_file_op(fine, "read_cells", timeout=5)
     assert out == {"cells": 3}
