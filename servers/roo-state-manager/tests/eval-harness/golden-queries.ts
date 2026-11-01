@@ -93,3 +93,52 @@ export const CROSS_CONVERSATION_QUERY: GoldenQuery = {
     exclude_tool_results: true,
   },
 };
+
+export interface CrossConversationGolden {
+  /** Verdict artifact id */
+  scenario: string;
+  query: GoldenQuery;
+}
+
+/** Same args as CROSS_CONVERSATION_QUERY: only the wording varies across the set. */
+function crossConversationWording(searchQuery: string, description: string): GoldenQuery {
+  return {
+    ...CROSS_CONVERSATION_QUERY,
+    description,
+    args: { ...CROSS_CONVERSATION_QUERY.args, search_query: searchQuery },
+  };
+}
+
+/**
+ * Golden scenario 4 as a SET of wordings (RX133, user 2026-11-01, option c).
+ *
+ * Ranking can be tuned to one wording; it cannot be tuned to four. Each entry is
+ * graded by the full rubric as its own scenario, and every entry must pass. The
+ * first entry is the historical query and keeps its scenario id, so the verdict
+ * history stays continuous. The wordings were fixed before their first live
+ * measurement, not chosen from it.
+ */
+export const CROSS_CONVERSATION_QUERIES: readonly CrossConversationGolden[] = [
+  { scenario: 'scenario-4-cross-conversation', query: CROSS_CONVERSATION_QUERY },
+  {
+    scenario: 'scenario-4-cross-conversation-epic-wording',
+    query: crossConversationWording(
+      'Les arbitrages encore ouverts cette semaine avec leur contexte',
+      'Cross-conversation synthesis: the Epic #2609 wording of scenario 4',
+    ),
+  },
+  {
+    scenario: 'scenario-4-cross-conversation-registry',
+    query: crossConversationWording(
+      'questions du registre en attente de réponse de l\'utilisateur',
+      'Cross-conversation synthesis: registry vocabulary (user question registry)',
+    ),
+  },
+  {
+    scenario: 'scenario-4-cross-conversation-english',
+    query: crossConversationWording(
+      'open user arbitrations still waiting for an answer',
+      'Cross-conversation synthesis: English wording',
+    ),
+  },
+];

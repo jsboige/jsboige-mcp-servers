@@ -12,6 +12,11 @@
  *   (b)      handle — drill_down on the best chunk of each top group
  *   (d)      metadata — relative_time and/or conversation_stats.last_activity
  *   (a)      >=2 human-authored decision passages across >=2 top-3 conversations
+ *            — a request is excluded by its form (the passage floor), never by
+ *            a substring (RX133, q4-rubric.ts)
+ *
+ * The scenario runs once per wording of CROSS_CONVERSATION_QUERIES (RX133):
+ * every wording must pass, so the ranking cannot be tuned to a single one.
  *
  * exclude_tool_results=true is the best measured lever for decision-content
  * queries (live 2026-10-05: 5/7 top slots were tool_interaction JSON fragments
@@ -24,7 +29,8 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { STORM_ACTIVE, STORM_GUARD_RESULT, runStormGuard } from '../storm-guard.js';
 import type { CheckResult } from '../verdict.js';
 import { writeVerdictArtifact } from '../verdict-artifact.js';
-import { CROSS_CONVERSATION_QUERY } from '../golden-queries.js';
+import { CROSS_CONVERSATION_QUERIES } from '../golden-queries.js';
+import { decisionPassagesInTop3 } from '../q4-rubric.js';
 import { handleRooSyncSearch } from '../../../src/tools/search/roosync-search.tool.js';
 import { handleDiagnoseSemanticIndex } from '../../../src/tools/indexing/diagnose-index.tool.js';
 import { handleSearchTasksSemanticFallback } from '../../../src/tools/search/search-fallback.tool.js';
@@ -34,18 +40,19 @@ import { classifyMachineOutput, isClassifiedInfrastructureError, INFRASTRUCTURE_
 // Fleet evergreen: "open arbitrations" is core coordination vocabulary, present
 // in every era of the corpus (verified 2026-10-05: 24 results / 7 unique tasks /
 // 4 machines / 7 distinct workspaces).
-const SCENARIO_4_ARGS = CROSS_CONVERSATION_QUERY.args;
 
 beforeAll(async () => {
   await runStormGuard();
 });
 
-describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis)', () => {
-  it('returns a synthesis scaffold spanning multiple conversations', async () => {
+describe.each(CROSS_CONVERSATION_QUERIES)('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis): $scenario', ({ scenario, query }) => {
+  const SCENARIO_4_ARGS = query.args;
+
+  it(`returns a synthesis scaffold spanning multiple conversations for "${String(query.args.search_query)}"`, async () => {
     if (STORM_ACTIVE) {
       writeVerdictArtifact({
         tool: 'roosync_search',
-        scenario: 'scenario-4-cross-conversation',
+        scenario,
         verdict: 'INCONCLUSIVE',
         reason: `storm guard active: ${STORM_GUARD_RESULT.reason}`,
         checks: [],
@@ -85,7 +92,7 @@ describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis
     if (result.isError && isClassifiedInfrastructureError(result)) {
       writeVerdictArtifact({
         tool: 'roosync_search',
-        scenario: 'scenario-4-cross-conversation',
+        scenario,
         verdict: 'INCONCLUSIVE',
         reason: 'classified infrastructure error',
         checks: [],
@@ -99,7 +106,7 @@ describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis
     if (result.isError) {
       writeVerdictArtifact({
         tool: 'roosync_search',
-        scenario: 'scenario-4-cross-conversation',
+        scenario,
         verdict: 'FAIL',
         reason: 'unclassified semantic error: functional failure',
         checks: checks,
@@ -114,7 +121,7 @@ describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis
       && !INFRASTRUCTURE_ERROR_MODES.has(parsed.semantic_error_mode)) {
       writeVerdictArtifact({
         tool: 'roosync_search',
-        scenario: 'scenario-4-cross-conversation',
+        scenario,
         verdict: 'FAIL',
         reason: `unclassified semantic error mode: ${parsed.semantic_error_mode}`,
         checks: checks,
@@ -128,7 +135,7 @@ describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis
     if (parsed.semantic_degraded === true || parsed.fallback_used === true) {
       writeVerdictArtifact({
         tool: 'roosync_search',
-        scenario: 'scenario-4-cross-conversation',
+        scenario,
         verdict: 'INCONCLUSIVE',
         reason: `semantic search degraded: ${parsed.semantic_error ?? parsed.fallback_reason ?? 'unknown'}`,
         checks: [],
@@ -183,16 +190,7 @@ describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis
     // A sub-sentence or machine-output fragment is not the answer even if its
     // handle and metadata are perfect; that is precisely the Epic baseline.
     const top3 = (parsed.results ?? []).slice(0, 3);
-    const humanPassages = top3.filter((r: any) => {
-      const c = r?.chunks?.[0];
-      return (c?.snippet?.length ?? 0) >= 100
-        && (c?.machine_output_kind ?? classifyMachineOutput(c?.chunk_type, c?.snippet ?? '')) === null
-        && c?.tool_continuation_status !== 'unknown'
-        && /arbitrage|décision|decision|en attente|pending|ouverte?/i.test(c?.snippet ?? '')
-        && !/redétaille|redetaille|détaille les arbitrages|detaille les arbitrages/i.test(c?.snippet ?? '');
-    });
-    const passageInTop3 = humanPassages.length >= 2
-      && new Set(humanPassages.map((r: any) => r.taskId)).size >= 2;
+    const { ok: passageInTop3 } = decisionPassagesInTop3(parsed.results);
     checks.push({
       name: 'rubric(a): >=2 human-authored decision passages across >=2 top-3 conversations',
       ok: passageInTop3,
@@ -208,7 +206,7 @@ describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis
     });
 
     // ---- console evidence for the verdict report ----
-    console.log('=== q4 cross-conversation live evidence ===');
+    console.log(`=== q4 cross-conversation live evidence: ${scenario} — "${String(SCENARIO_4_ARGS.search_query)}" ===`);
     console.log(`latency_ms=${latencyMs}, unique_tasks=${uniqueTasks}, workspaces=${workspaces.size}`);
     console.log(`machines_found=${JSON.stringify(parsed.cross_machine_analysis?.machines_found)}`);
     console.log(`context_expansion=${JSON.stringify(parsed.current_machine?.context_expansion ?? null)}`);
@@ -222,7 +220,7 @@ describe('roosync_search — Epic #2609 scenario 4 (cross-conversation synthesis
     const allPass = checks.every(c => c.ok);
     writeVerdictArtifact({
       tool: 'roosync_search',
-      scenario: 'scenario-4-cross-conversation',
+      scenario,
       verdict: allPass ? 'PASS' : 'FAIL',
       reason: allPass ? 'all gates measured and passed' : 'one or more gates failed',
       checks: checks,
