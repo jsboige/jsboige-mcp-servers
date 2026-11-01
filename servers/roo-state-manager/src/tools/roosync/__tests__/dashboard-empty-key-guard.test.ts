@@ -171,6 +171,34 @@ describe('createEmptyDashboard — refus de création à nom vide (#3537 §6.3)'
   });
 });
 
+describe('createEmptyDashboard — refus de création à clé non matérialisable en fichier (po-2023, 01/11)', () => {
+  it("jette sur la clé observée en flotte 'workspace-vllm\"}PMC_JSON_DOWN'", () => {
+    expect(() => createEmptyDashboard('workspace', 'workspace-vllm"}PMC_JSON_DOWN', author))
+      .toThrow(/non matérialisable/u);
+  });
+
+  it('jette sur chaque caractère interdit dans un nom de fichier Windows, et sur un contrôle', () => {
+    for (const c of ['<', '>', ':', '"', '/', '\\', '|', '?', '*', '\t', '\u0000']) {
+      expect(() => createEmptyDashboard('workspace', `workspace-a${c}b`, author), JSON.stringify(c))
+        .toThrow(/non matérialisable/u);
+    }
+    expect(() => createEmptyDashboard('machine', 'machine-po"2023', author)).toThrow(/non matérialisable/u);
+  });
+
+  it('laisse passer les clés réelles, accents et espaces compris', () => {
+    expect(() => createEmptyDashboard('workspace', 'workspace-LivresAgités', author)).not.toThrow();
+    expect(() => createEmptyDashboard('workspace', 'workspace-2025-Epita-Intelligence-Symbolique', author)).not.toThrow();
+    expect(() => createEmptyDashboard('workspace', 'workspace-100%_load', author)).not.toThrow();
+  });
+
+  it("append avec un workspace corrompu → rejette, aucun fichier, ZÉRO appel dual-write PG", async () => {
+    await expect(
+      roosyncDashboard({ action: 'append', type: 'workspace', workspace: 'vllm"}PMC_JSON_DOWN', content: 'message' })
+    ).rejects.toThrow(/non matérialisable/u);
+    expect(dualWriteSyncSpy).not.toHaveBeenCalled();
+  });
+});
+
 describe('seam append/write — le refus arrive avant TOUTE écriture', () => {
   it("append workspace:'' → rejette, aucun fichier, ZÉRO appel dual-write PG", async () => {
     await expect(

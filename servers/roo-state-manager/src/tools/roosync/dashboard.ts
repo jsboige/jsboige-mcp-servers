@@ -3477,6 +3477,9 @@ async function appendDashboardIncremental(
   return wv;
 }
 
+/** Caractères qu'un nom de fichier Windows ne peut pas porter (garde de création ci-dessous). */
+const UNMATERIALIZABLE_KEY_CHARS = /[<>:"/\\|?*\u0000-\u001f]/u;
+
 /**
  * Crée un dashboard vide avec les valeurs par défaut.
  *
@@ -3508,6 +3511,12 @@ async function appendDashboardIncremental(
  * §6.2 explicite), `.md`/`.bak`/`%3A` — ces formes restent lisibles à jamais
  * et ne sont JAMAIS rejetées à la dérivation.
  *
+ * Seconde borne (po-2023, 01/11) : refuser de CRÉER une clé qu'aucun fichier
+ * Windows ne peut porter (`<>:"/\|?*` ou caractère de contrôle). Un paramètre
+ * `workspace` corrompu (`vllm"}PMC_JSON_DOWN`) a créé une clé PG-only que ni
+ * `delete` ni `merge` ne savent atteindre depuis Windows (EINVAL à l'archive).
+ * Même portée création-seule : une clé existante reste lisible.
+ *
  * Ordre délibéré garde → WARN : une clé refusée ne jette AUCUN `[NEW-KEY]` —
  * l'erreur de refus est le signal plus fort ; le WARN ne parle que des clés
  * qui passent la garde.
@@ -3523,6 +3532,13 @@ export function createEmptyDashboard(
       `Refus de créer un dashboard ${type} à nom vide : clé dérivée '${key}' ` +
       `(machineId='${author.machineId}', workspace='${author.workspace}'). ` +
       `L'appelant a passé workspace/machineId vide — '??' ne remplace pas une chaîne vide (#3537 §6.3).`
+    );
+  }
+  if (UNMATERIALIZABLE_KEY_CHARS.test(key)) {
+    throw new Error(
+      `Refus de créer un dashboard ${type} à clé non matérialisable en fichier : '${key}' ` +
+      `contient un caractère interdit dans un nom de fichier Windows (<>:"/\\|?* ou contrôle). ` +
+      `Paramètre workspace/machineId corrompu par l'appelant ?`
     );
   }
   logger.warn(
