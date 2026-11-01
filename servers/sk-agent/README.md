@@ -527,8 +527,8 @@ Short guide for callers. Defaults are right most of the time: `call_agent` witho
 | Code edit or verify on this machine | `coder` | Carries `open_terminal` |
 | PR review | `review_pr` | Picks its tier-1/tier-2 agents itself (#1587) |
 | Structured French deliverable | `owui-analyst`, `owui-writer` | OWUI expert presets |
-| Multi-perspective deliberation | `run_conversation` + `deep_think` | 4-agent group chat |
-| Sourced research | `run_conversation` + `deep_search` | researcher → synthesizer → critic |
+| Multi-perspective deliberation | `run_conversation` + `deep-think` | 4-agent group chat |
+| Sourced research | `run_conversation` + `deep-search` | researcher → synthesizer → critic |
 | Cheap mechanical sub-tasks | via `swift-delegator` | Delegates to `frognano-4b` mini presets (#4107) |
 
 **stdio vs mcp-tools.** Every entry in `mcps` is spawned by sk-agent itself as a
