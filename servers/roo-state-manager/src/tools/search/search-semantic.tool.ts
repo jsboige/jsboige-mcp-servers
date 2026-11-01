@@ -247,6 +247,58 @@ function applyFragmentMalus(score: number, content: string): { score: number; ap
     return { score: score * quality.factor, applied: true, factor: quality.factor };
 }
 
+// ---- #2609 q4 — request-form de-rank -------------------------------------------------
+//
+// Measured live (2026-11-01, seat ai-01, golden scenario 4): the default page for
+// "arbitrage user question ouverte décision en attente" returned 7 groups of which
+// FIVE were bare user requests of 27-73 chars ("Détaille les arbitrages stp"), and
+// the three real decision passages sat at ranks 2, 9 and 10 of the deeper pool.
+//
+// Thinness alone cannot separate them: "Représente moi stp tous les arbitrages en
+// détail avec tes recommandations" is 12 words / 73 chars, so it clears BOTH bars of
+// the fragment ramp (10 words, 40 chars) and pays nothing — it outranks a 317-char
+// decision passage. The ramp's floor is also deliberately gentle (0.85 → 1.0, max
+// −15%), which by construction cannot reorder a 0.8914 ask against a 0.8303 answer.
+//
+// A request is not thin prose, it is a different KIND of evidence: it states no
+// result. So it gets its own binary de-rank, exactly like machine output (#4352),
+// and only below the Epic's passage floor — above 100 chars a chunk that mentions
+// an ask is a passage ABOUT an ask, not an ask (ruling out substring scoring, which
+// punished a 298-char analysis for quoting the request it analysed).
+const REQUEST_MALUS_FACTOR = 0.85;
+const REQUEST_MALUS_MAX_CHARS = 100;
+// Stems, not infinitives: "Tu peux me détailler" escaped a `\bdétaille\b` rule
+// and stayed in the top-3 of the live page (measured 2026-11-01). Only chunks
+// below the passage floor are ever tested, so a broad stem cannot tax a passage.
+const REQUEST_FORM = /\b(re-?détaill|re-?detaill|détaill|detaill|représente[- ]moi|represente[- ]moi|expliqu|montre[- ]moi|donne[- ]moi|peux[- ](tu|me|nous|vous)|pourrais[- ](tu|me|nous|vous)|fais[- ]moi|list|résum|resum|synthétis|synthetis|tell me|show me|summari[sz]|explain|give me)/i;
+const REQUEST_TRAILER = /(\b(stp|svp|s'?il te pla[iî]t|please)\b|\?\s*$)/i;
+// Outcome vocabulary only: a request that names the topic ("détaille les arbitrages")
+// must NOT escape by mentioning the word it asks about.
+const REQUEST_OWN_CONTENT = /\b(décidé|décision|decided|validé|approuvé|rejeté|refusé|on garde|on ne |donc |because |parce que|approved|rejected|\d{1,2}h\d{2}|cron )/i;
+
+export function isRequestMalusEnabled(): boolean {
+    return process.env.SEMANTIC_REQUEST_MALUS !== '0';
+}
+
+/**
+ * #2609 q4 — binary factor for a chunk that IS a bare request.
+ *
+ * Exported for tests and for the refill pre-pass so ranking, page composition and
+ * the ANN-depth decision read the same predicate (single-helper contract).
+ */
+export function requestFormFactor(content: string): { factor: number; applied: boolean } {
+    if (!isRequestMalusEnabled()) return { factor: 1, applied: false };
+    const text = content.trim();
+    // Above the passage floor a chunk is a passage, whatever it quotes.
+    if (text.length >= REQUEST_MALUS_MAX_CHARS) return { factor: 1, applied: false };
+    if (!REQUEST_FORM.test(text)) return { factor: 1, applied: false };
+    if (!REQUEST_TRAILER.test(text)) return { factor: 1, applied: false };
+    // A short chunk that carries its own outcome ("OK pour ton tri", "on garde 3h")
+    // is an arbitration, not a request.
+    if (REQUEST_OWN_CONTENT.test(text)) return { factor: 1, applied: false };
+    return { factor: REQUEST_MALUS_FACTOR, applied: true };
+}
+
 // #4352 (user 25/10, search tools mandate): tool output is indexed as ordinary
 // conversation text — Claude tool results as role=user `[tool_result] Result:`,
 // Roo ones as `[tool for '...'] Result:`, tool calls as chunk_type
@@ -1390,14 +1442,27 @@ export const searchTasksByContentTool = {
             // by DIVERSIFY_OVERFETCH so that grouping + per-task cap can surface >=3
             // unique_tasks even when one task dominates the Qdrant ranking.
             const effectiveMaxResults = max_results || 10;
-            const diversifyLimit = effectiveMaxResults * (exclude_tool_results ? 5 : DIVERSIFY_OVERFETCH);
+            // #2609 q4 — the decision-content over-fetch was calibrated against a window
+            // that LOSES ~82% of its candidates (measured live 2026-11-01: 40 fetched →
+            // 20 after the machine-output filter → 7 after the provenance filter), so a
+            // budget of 8 groups was under-filled at 7 and the passages behind rank 7
+            // were never seen. 12 restores a full page at the measured attrition.
+            // The window is bounded: widen, never let a large max_results turn the
+            // over-fetch into an unbounded ANN cost.
+            const diversifyLimit = Math.min(
+                effectiveMaxResults * (exclude_tool_results ? 12 : DIVERSIFY_OVERFETCH),
+                1200
+            );
             // #2609 review (MAJOR 2): the over-fetch factor is applied BEFORE the
             // machine-output filter, so a full ANN window can be exhausted by filtered
             // candidates while eligible prose sits further out. The repair is a BOUNDED
             // number of extra ANN windows (ANN_REFILL_MAX_ROUNDS): the collection holds
             // ~14M points, so a blind factor increase is a cost, not a recall fix. The
             // residual is measured (current_machine.recall_budget), not assumed.
-            const ANN_REFILL_MAX_ROUNDS = 1;
+            // #2609 q4: the wider decision-content window is the first lever; the refill
+            // stays as the fallback when even that window is consumed by the filters, so
+            // a decision query may spend up to three bounded rounds instead of one.
+            const ANN_REFILL_MAX_ROUNDS = exclude_tool_results ? 3 : 1;
             const ANN_MAX_OFFSET = 10000;
             // Payload whitelist shared by the first window and the refill windows, so both
             // read exactly the same fields.
@@ -1450,7 +1515,20 @@ export const searchTasksByContentTool = {
             for (let round = 0; round < ANN_REFILL_MAX_ROUNDS; round++) {
                 const surviving = countSurvivingCandidates(rawPointsAll);
                 const distinctTasks = new Set(surviving.map(p => String(p.payload?.task_id ?? 'unknown'))).size;
-                const budgetShort = distinctTasks < effectiveMaxResults;
+                // #2609 q4: depth is chosen by PASSAGE availability, not by task count
+                // alone. A page that can only be filled with bare requests is not
+                // saturated — on the live q4 corpus the decision passages sat at ranks
+                // 9-10 of a pool the task-count rule had already declared complete.
+                const distinctPassageTasks = new Set(
+                    surviving
+                        .filter(p => {
+                            const text = String(p.payload?.content || p.payload?.content_summary || '');
+                            return text.trim().length >= REQUEST_MALUS_MAX_CHARS && !requestFormFactor(text).applied;
+                        })
+                        .map(p => String(p.payload?.task_id ?? 'unknown'))
+                ).size;
+                const budgetShort = distinctTasks < effectiveMaxResults
+                    || (exclude_tool_results && isRequestMalusEnabled() && distinctPassageTasks < effectiveMaxResults);
                 const windowExhausted = candidatesFetched >= diversifyLimit;
                 const filterConsumed = surviving.length < candidatesFetched;
                 const refillOffset = effectiveOffset + candidatesFetched;
@@ -1482,6 +1560,7 @@ export const searchTasksByContentTool = {
             let fragmentMalusApplied = 0;
             let fragmentFactorMin = 1;
             let fragmentFactorSum = 0;
+            let requestMalusApplied = 0;
             const machineOutputByKind: Partial<Record<MachineOutputKind, number>> = {};
             let machineOutputApplied = 0;
             const results: RawSearchResult[] = rawPointsAll.map((result: any): RawSearchResult | null => {
@@ -1506,8 +1585,12 @@ export const searchTasksByContentTool = {
                     fragmentFactorMin = Math.min(fragmentFactorMin, malus.factor);
                     fragmentFactorSum += malus.factor;
                 }
+                // #2609 q4: request-form de-rank. A machine chunk is never a request,
+                // so the two classes cannot stack on the same defect.
+                const request = machineKind ? { factor: 1, applied: false } : requestFormFactor(fullContent);
+                if (request.applied) requestMalusApplied++;
                 // #4352: machine-output de-rank, same single-helper contract.
-                const machine = applyMachineOutputMalus(malus.score, result.payload?.chunk_type, fullContent);
+                const machine = applyMachineOutputMalus(malus.score * request.factor, result.payload?.chunk_type, fullContent);
                 if (exclude_tool_results && chunk_type !== 'tool_interaction' && machineKind) return null;
                 if (machine.kind) {
                     machineOutputApplied++;
@@ -1762,6 +1845,15 @@ export const searchTasksByContentTool = {
                                     } : {}),
                                 }),
                             enabled: process.env.SEMANTIC_FRAGMENT_MALUS !== '0',
+                        }
+                    } : {}),
+                    // #2609 q4: request-form de-rank observability, same quiet convention.
+                    ...(requestMalusApplied > 0 || !isRequestMalusEnabled() ? {
+                        request_malus: {
+                            applied: requestMalusApplied,
+                            factor: REQUEST_MALUS_FACTOR,
+                            max_chars: REQUEST_MALUS_MAX_CHARS,
+                            enabled: isRequestMalusEnabled(),
                         }
                     } : {}),
                     // #4352: machine-output de-rank observability, same quiet convention.
