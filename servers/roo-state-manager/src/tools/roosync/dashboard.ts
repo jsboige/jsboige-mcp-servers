@@ -7983,7 +7983,10 @@ async function handleAppend(
   // les logs locaux des hôtes appendants.
   const stallLockPhrase = condensationStalled === 'lock-held'
     ? (condensationStallLock
-        ? `verrou condense détenu depuis ${formatCondenseLockAge(condensationStallLock.ageMs)} par ${condensationStallLock.holder} (vol TTL à ${Math.round(CONDENSE_LOCK_TTL_MS / 1000)} s)`
+        // Both lock layers steal at TTL + clock-skew grace (tryAcquireCondenseLock,
+        // isCondenseLockStale): naming the bare TTL made a lock inside the grace
+        // read as "expired but never stolen" (po-2028, workspace-claudish 01/11).
+        ? `verrou condense détenu depuis ${formatCondenseLockAge(condensationStallLock.ageMs)} par ${condensationStallLock.holder} (vol au-delà de ${Math.round((CONDENSE_LOCK_TTL_MS + condenseLockClockSkewMs()) / 1000)} s = TTL ${Math.round(CONDENSE_LOCK_TTL_MS / 1000)} s + marge d'horloge ${Math.round(condenseLockClockSkewMs() / 1000)} s)`
         : 'verrou condense détenu par un autre process (âge du verrou indéterminable)')
     : 'contenu inchangé depuis la dernière passe (#2464)';
   const stallSuffix = condensationStalled && !condensed

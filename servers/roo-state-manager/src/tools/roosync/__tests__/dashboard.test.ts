@@ -2530,6 +2530,36 @@ describe('#3205 write-side — append lock cross-process', () => {
     expect(small.condensationStalled).toBeUndefined();
   });
 
+  it('stall message names the EFFECTIVE steal threshold (TTL + clock-skew grace), not the bare TTL (po-2028 01/11)', async () => {
+    // Measured case: a lock 1 005 641 ms old (16 min 46 s) was reported as
+    // "TTL 900 s" — read as expired-but-never-stolen. With the defaults
+    // (TTL 900 s + grace 120 s) it is inside the grace: held, not stolen.
+    const pad = 'x'.repeat(900);
+    const body = Array.from({ length: 60 }, (_, i) => {
+      const ts = new Date(Date.UTC(2026, 10, 1, 0, i, 0)).toISOString();
+      return `### [${ts}] other-machine|other-ws\n[msg: grace-${i}]\n\nmessage ${i} ${pad}`;
+    }).join('\n\n---\n\n');
+    const big = ['---', 'type: global', "lastModified: '2026-11-01T01:00:00.000Z'", 'totalMessages: 60', '---', '',
+      '## Status', '', '# Statut saturé', '', '## Intercom (60 messages)', '', body, ''].join('\n');
+    await fsp.mkdir(path.join(lockTmpDir, 'dashboards'), { recursive: true });
+    await fsp.writeFile(path.join(lockTmpDir, 'dashboards', 'global.md'), big, 'utf8');
+    const inGrace = {
+      machineId: 'myia-po-2027', workspace: 'claudish', pid: 41724,
+      acquiredAt: new Date(Date.now() - 1005641).toISOString()
+    };
+    await fsp.writeFile(getCondenseLockPath('global'), JSON.stringify(inGrace), 'utf8');
+
+    const result = await roosyncDashboard({ action: 'append', type: 'global', content: 'APPEND DANS LA MARGE' }) as any;
+
+    expect(result.condensationStalled).toBe('lock-held');
+    expect(result.condensationStallLockAgeMs).toBeGreaterThan(900000);
+    expect(String(result.message)).toMatch(/vol au-delà de 1020 s = TTL 900 s \+ marge d'horloge 120 s/);
+    expect(String(result.message)).not.toMatch(/vol TTL à 900 s/);
+    // Inside the grace the holder keeps its lock.
+    const raw = await fsp.readFile(getCondenseLockPath('global'), 'utf8');
+    expect(JSON.parse(raw).pid).toBe(41724);
+  });
+
   it('readCondenseLockHolderInfo — holder + âge depuis le fichier local ; null si absent/illisible (web2 05/10)', async () => {
     const KEY = 'stall-lock-age-unit';
     // Absent → null (le stall resterait visible, sans qualificatif d'âge).
