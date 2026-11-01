@@ -82,7 +82,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 	getUnifiedStoreReader: () => mockUnifiedStoreReader
 }));
 
-import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, passageQualityFactor } from '../search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, passageQualityFactor, requestFormFactor } from '../search-semantic.tool.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 import { splitChunkId } from '../../../services/task-indexer/ChunkExtractor.js';
 
@@ -1688,7 +1688,10 @@ describe('helper functions (indirect via handler)', () => {
 				mockEnsureCache,
 				defaultFallback
 			);
-			expect(mockQdrantClient.search.mock.calls[0][1].limit).toBe(20);
+			// #2609 q4: the decision-content over-fetch is 12× (was 5×) — measured
+			// attrition of the ANN window is ~82% once machine output and tool
+			// continuations are filtered, so 5× under-filled the requested page.
+			expect(mockQdrantClient.search.mock.calls[0][1].limit).toBe(48);
 		});
 
 		test('exclude_tool_results=true rejects tool output stored as message_exchange', async () => {
@@ -1789,8 +1792,8 @@ describe('helper functions (indirect via handler)', () => {
 				makeCache(), mockEnsureCache, defaultFallback
 			);
 			const args = mockQdrantClient.search.mock.calls[0][1];
-			expect(args.limit).toBe(500);
-			expect(args.params.hnsw_ef).toBe(500);
+			expect(args.limit).toBe(1200);
+			expect(args.params.hnsw_ef).toBe(1200);
 		});
 
 		// ============================================================
@@ -1902,13 +1905,17 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('a window exhausted by machine output is repaired by one bounded refill window', async () => {
 			const toolOutputSample = '[tool_result] Result: ' + JSON.stringify({ ok: true });
-			const machineOutput = Array.from({ length: 10 }, (_unused, i) => ({
+			// #2609 q4: the fixture must fill the CURRENT window (2 × 12 = 24), not the
+			// old 5× one — otherwise it no longer exercises an exhausted window at all.
+			const machineOutput = Array.from({ length: 24 }, (_unused, i) => ({
 				score: 0.9 - i * 0.001,
 				payload: { task_id: 'task-tool-' + i, chunk_type: 'message_exchange', content: toolOutputSample, host_os: 'h1' },
 			}));
 			const prose = [
-				{ score: 0.5, payload: { task_id: 'task-prose-a', chunk_type: 'message_exchange', content: 'The human decision about the coordination cadence stays available for the synthesis.', host_os: 'h1' } },
-				{ score: 0.49, payload: { task_id: 'task-prose-b', chunk_type: 'message_exchange', content: 'Another human decision about the coordination load is recorded in this passage.', host_os: 'h1' } },
+				// #2609 q4: real passages (>= the 100-char floor the depth rule measures),
+				// otherwise the fixture no longer represents what the rule counts.
+				{ score: 0.5, payload: { task_id: 'task-prose-a', chunk_type: 'message_exchange', content: 'The human decision about the coordination cadence stays available for the synthesis, with its rationale and the interval that was rejected.', host_os: 'h1' } },
+				{ score: 0.49, payload: { task_id: 'task-prose-b', chunk_type: 'message_exchange', content: 'Another human decision about the coordination load is recorded in this passage, including the alternatives that were weighed and dropped.', host_os: 'h1' } },
 			];
 			mockQdrantClient.search
 				.mockResolvedValueOnce(machineOutput)
@@ -1922,20 +1929,23 @@ describe('helper functions (indirect via handler)', () => {
 			// The first window was exhausted by filtered candidates: ONE bounded refill
 			// window pulled the eligible prose in.
 			expect(mockQdrantClient.search).toHaveBeenCalledTimes(2);
-			expect(mockQdrantClient.search.mock.calls[1][1].offset).toBe(10);
+			expect(mockQdrantClient.search.mock.calls[1][1].offset).toBe(24);
 			expect(parsed.results.map((r: any) => r.taskId).sort()).toEqual(['task-prose-a', 'task-prose-b']);
 			expect(parsed.current_machine.recall_budget.refill_windows).toBe(1);
 		});
 
 		test('the refill window is mandatory when the filter leaves the budget short', async () => {
 			const toolOutputSample = '[tool_result] Result: ' + JSON.stringify({ ok: true });
-			const machineOutput = Array.from({ length: 10 }, (_unused, i) => ({
+			// Same calibration as above: 24 fills the current 2 × 12 window.
+			const machineOutput = Array.from({ length: 24 }, (_unused, i) => ({
 				score: 0.9 - i * 0.001,
 				payload: { task_id: 'task-tool-' + i, chunk_type: 'message_exchange', content: toolOutputSample, host_os: 'h1' },
 			}));
 			const prose = [
-				{ score: 0.5, payload: { task_id: 'task-prose-a', chunk_type: 'message_exchange', content: 'The human decision about the coordination cadence stays available for the synthesis.', host_os: 'h1' } },
-				{ score: 0.49, payload: { task_id: 'task-prose-b', chunk_type: 'message_exchange', content: 'Another human decision about the coordination load is recorded in this passage.', host_os: 'h1' } },
+				// #2609 q4: real passages (>= the 100-char floor the depth rule measures),
+				// otherwise the fixture no longer represents what the rule counts.
+				{ score: 0.5, payload: { task_id: 'task-prose-a', chunk_type: 'message_exchange', content: 'The human decision about the coordination cadence stays available for the synthesis, with its rationale and the interval that was rejected.', host_os: 'h1' } },
+				{ score: 0.49, payload: { task_id: 'task-prose-b', chunk_type: 'message_exchange', content: 'Another human decision about the coordination load is recorded in this passage, including the alternatives that were weighed and dropped.', host_os: 'h1' } },
 			];
 			mockQdrantClient.search
 				.mockResolvedValueOnce(machineOutput)
@@ -1950,8 +1960,8 @@ describe('helper functions (indirect via handler)', () => {
 			// The measured residual is what makes the refill MANDATORY: 10 candidates
 			// fetched, all 10 consumed by the machine-output filter, 0 groups left, so
 			// the budget (2) can only be filled by one extra window.
-			expect(budget.candidates_fetched).toBe(12);
-			expect(budget.excluded_by_machine_output).toBe(10);
+			expect(budget.candidates_fetched).toBe(26);
+			expect(budget.excluded_by_machine_output).toBe(24);
 			expect(budget.refill_windows).toBe(1);
 			expect(budget.budget_filled).toBe(true);
 			expect(budget.returned_groups).toBe(2);
@@ -3242,5 +3252,90 @@ describe('#4352 machine-output de-rank', () => {
 		const parsed = JSON.parse(getTextContent(result));
 		expect(parsed.results).toHaveLength(1);
 		expect(parsed.results[0].best_score).toBeCloseTo(0.9 * 0.85, 8);
+	});
+});
+
+// ============================================================
+// #2609 q4 — request-form de-rank
+// ============================================================
+//
+// Measured live on the golden scenario 4 corpus (2026-11-01, seat ai-01):
+// of the 7 groups returned for "arbitrage user question ouverte décision en
+// attente", FIVE were bare user requests of 27-73 chars, and the 73-char one
+// ("Représente moi stp…") ranked FIRST at 0.8914 — above a 317-char decision
+// passage at 0.8303. Thinness cannot separate them: 12 words / 73 chars clears
+// both bars of the fragment ramp, so it paid nothing.
+describe('#2609 q4 — request-form de-rank', () => {
+	beforeEach(() => {
+		mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: [0.1] }] });
+		mockUnifiedStoreReader.isNull.mockReturnValue(true);
+		mockQdrantClient.scroll.mockReset();
+		delete process.env.SEMANTIC_REQUEST_MALUS;
+	});
+
+	// The five requests actually returned by the live golden query.
+	const LIVE_REQUESTS = [
+		'Représente moi stp tous les arbitrages en détail avec tes recommandations',
+		'> Arbitrages owner en attente \nDétaille stp',
+		'Tu peux me détailler un peu mieux les arbitrages?',
+		'REdétaille les arbitrages stp',
+		'Détaille les arbitrages stp',
+	];
+
+	test('the five requests measured live are de-ranked as requests', () => {
+		for (const text of LIVE_REQUESTS) {
+			const q = requestFormFactor(text);
+			expect(q, text).toEqual({ factor: 0.85, applied: true });
+		}
+	});
+
+	test('a passage ABOVE the floor that quotes a request is a passage, not a request', () => {
+		// The live 298-char chunk that the harness excluded for quoting
+		// "REdétaille les arbitrages stp". Form, not substring: above the floor a
+		// chunk that mentions an ask is a passage ABOUT an ask.
+		const quoted = 'Clear signal: with `exclude_tool_results`, structure improves (7 context groups, 4 machines) '
+			+ 'but top snippets are user **questions** ("REdétaille les arbitrages stp") while the actual decision '
+			+ 'passages sit in the `after_turn` context. The tool has a `role` filter too — let me test it.';
+		expect(quoted.length).toBeGreaterThanOrEqual(100);
+		expect(requestFormFactor(quoted)).toEqual({ factor: 1, applied: false });
+	});
+
+	test('a short chunk carrying its own outcome is an arbitration, not a request', () => {
+		// Naming the topic must not buy an escape, but stating the result must.
+		for (const text of ['OK pour ton tri — on garde la cadence 3h', 'Décision : validé, on garde 12h', 'approuvé, parce que la charge baisse']) {
+			expect(requestFormFactor(text), text).toEqual({ factor: 1, applied: false });
+		}
+	});
+
+	test('a short non-request passage is never taxed', () => {
+		for (const text of ['La cadence du coordinateur est fixée à 3h.', 'Le JOIN Postgres est dans search-semantic.', 'ajouté au registre.']) {
+			expect(requestFormFactor(text), text).toEqual({ factor: 1, applied: false });
+		}
+	});
+
+	test('rollback SEMANTIC_REQUEST_MALUS=0 disables the signal', () => {
+		process.env.SEMANTIC_REQUEST_MALUS = '0';
+		expect(requestFormFactor('Détaille les arbitrages stp')).toEqual({ factor: 1, applied: false });
+		delete process.env.SEMANTIC_REQUEST_MALUS;
+	});
+
+	test('a request no longer outranks a coherent passage through the handler', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.8914, payload: { task_id: 'task-ask', chunk_type: 'message_exchange', content: 'Représente moi stp tous les arbitrages en détail avec tes recommandations', host_os: 'h1' } },
+			{ score: 0.8303, payload: { task_id: 'task-passage', chunk_type: 'message_exchange', content: 'Carried forward: the user approved four arbitrages — OK pour ton tri, OK pour changer la règle. La cadence reste à 3h parce que la charge de coordination baisse.', host_os: 'h1' } },
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'arbitrage' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-passage', 'task-ask']);
+		expect(parsed.current_machine.request_malus).toMatchObject({ applied: 1, factor: 0.85, enabled: true });
+		// De-ranked, never hidden: the request is still reachable.
+		expect(parsed.results).toHaveLength(2);
 	});
 });
