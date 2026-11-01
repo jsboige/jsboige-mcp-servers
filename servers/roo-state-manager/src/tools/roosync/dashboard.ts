@@ -2014,6 +2014,47 @@ async function resolveDashboardForkTwin(
 }
 
 /**
+ * #4439 — 7e facette (mesure web1 01/11) : une clé retirée que le trafic a
+ * RESSUSCITÉE redevient listable. Même discriminateur que le repli de lecture
+ * (`resolveDashboardForkTwin`) : le CONTENU plus récent que `retiredAt` dément
+ * la marque, et `freshestTimestamp` (max des messages, pas le mtime fichier —
+ * skew DriveFS) est le seul instrument de fraîcheur commun aux deux chemins.
+ *
+ * Pourquoi `list` en a besoin : sur un siège dont la moitié fichier ne connaît
+ * la famille QUE sous « key (N) », une `list` muette sur les deux clés empêche
+ * de constater la famille — et pousse un agent à recréer un canonique vide
+ * (`createIfNotExists`) à côté du trafic vivant (dommage décrit par #4439).
+ *
+ * Lecture GDrive DIRECTE, à dessein : `readDashboardFile` rend null pour toute
+ * clé retirée (choke point #3782) — c'est exactement le veto mesuré ici. Le
+ * chemin d'ÉCRITURE reste inchangé : lister n'écrit jamais, et un fork ne doit
+ * pas devenir une cible d'écriture en apparaissant dans une liste.
+ *
+ * Fail-closed : `retiredAt` illisible ou absent ⇒ la marque tient (invisible).
+ */
+async function readResurrectedRetiredTwin(key: string): Promise<Dashboard | null> {
+  const retirement = await getDashboardRetirement(key);
+  const retiredAtMs = Date.parse(retirement?.retiredAt ?? '');
+  if (!retirement || Number.isNaN(retiredAtMs)) return null;
+  let candidate: Dashboard | null;
+  try {
+    candidate = await readDashboardFromGdrive(key);
+  } catch {
+    return null; // un candidat illisible n'est pas une résurrection prouvée
+  }
+  if (!candidate) return null;
+  const freshest = freshestTimestamp(candidate);
+  const freshestMs = Date.parse(freshest);
+  if (Number.isNaN(freshestMs) || freshestMs <= retiredAtMs) return null;
+  logger.warn('[retirement #3782] clé retirée RESSUSCITÉE — listée (#4439)', {
+    key,
+    retiredAt: retirement.retiredAt,
+    freshest,
+  });
+  return candidate;
+}
+
+/**
  * #3782 — suit la chaîne des marques de retraite (A→B, B→C) et rend la marque
  * DERNIÈRE résolue : `targetKey` est la cible finale, non une clé elle-même
  * retirée. Borné (5 sauts) + garde de cycle — une base marquée en boucle ne
@@ -8349,12 +8390,27 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
     // visibilité) — un opérateur qui lève la marque rend la clé listable à nouveau.
     const retiredKeys = await listRetiredDashboardKeys();
     const summaries: DashboardSummary[] = [];
+    // #4439 — 7e facette (mesure web1 01/11) : `list` et `read` doivent voir la
+    // MÊME chose. Une clé retirée dont le fichier porte du trafic postérieur à sa
+    // marque est ressuscitée ; la masquer rend la famille indécouvrable sur un
+    // siège dont la moitié fichier ne connaît que la jumelle (mesuré : ni le
+    // canonique ni la jumelle n'étaient listés, alors que `read` servait la
+    // jumelle) — et un agent qui en conclut « absent » fabrique ensuite un
+    // canonique VIDE via createIfNotExists, c'est-à-dire le dommage que #4439
+    // documente. Une jumelle morte reste invisible : la marque tient.
+    const resurrectedKeys = new Set<string>();
 
     for (const file of mdFiles) {
       const key = file.replace(/\.md$/, '');
-      if (retiredKeys.has(key)) continue;
       try {
-        const dashboard = await readDashboardFile(key);
+        let dashboard: Dashboard | null;
+        if (retiredKeys.has(key)) {
+          dashboard = await readResurrectedRetiredTwin(key);
+          if (!dashboard) continue;
+          resurrectedKeys.add(key);
+        } else {
+          dashboard = await readDashboardFile(key);
+        }
         if (dashboard) {
           const sizes = buildSizes(dashboard);
           summaries.push({
@@ -8383,7 +8439,10 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
     let forks: DashboardForkGroup[] = [];
     try {
       forks = detectDashboardForks(
-        mdFiles.map(f => f.replace(/\.md$/, '')).filter(k => !retiredKeys.has(k))
+        // #4439 7e facette — les ressuscitées comptent : c'est la famille que
+        // l'opérateur doit voir pour la réparer (son canonique reste ABSENT).
+        mdFiles.map(f => f.replace(/\.md$/, ''))
+          .filter(k => !retiredKeys.has(k) || resurrectedKeys.has(k))
       );
       for (const group of forks) {
         logger.warn('[DASHBOARD-FORK] clé(s) forkée(s) détectée(s) (#3482) — writers potentiellement divergents', {
