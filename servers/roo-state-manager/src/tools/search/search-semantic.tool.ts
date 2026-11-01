@@ -270,8 +270,20 @@ const REQUEST_MALUS_MAX_CHARS = 100;
 // Stems, not infinitives: "Tu peux me détailler" escaped a `\bdétaille\b` rule
 // and stayed in the top-3 of the live page (measured 2026-11-01). Only chunks
 // below the passage floor are ever tested, so a broad stem cannot tax a passage.
-const REQUEST_FORM = /\b(re-?détaill|re-?detaill|détaill|detaill|représente[- ]moi|represente[- ]moi|expliqu|montre[- ]moi|donne[- ]moi|peux[- ](tu|me|nous|vous)|pourrais[- ](tu|me|nous|vous)|fais[- ]moi|list|résum|resum|synthétis|synthetis|tell me|show me|summari[sz]|explain|give me)/i;
-const REQUEST_TRAILER = /(\b(stp|svp|s'?il te pla[iî]t|please)\b|\?\s*$)/i;
+// Stem borders (post-merge audit 01/11): `list(?:e|ez|ons)?\b` so "Listening"/"Listed"
+// stop colliding with the imperative, and `résum(?!é)` so the NOUN "résumé" ("Voici
+// le résumé stp" — a delivery, not an ask) is not taxed while "résume(r)" still is.
+// (No `\b` after é: in non-unicode JS regex é is not a word char, so `é\b` never
+// holds — the bare lookahead is what actually excludes the noun.)
+const REQUEST_FORM = /\b(re-?détaill|re-?detaill|détaill|detaill|représente[- ]moi|represente[- ]moi|expliqu|montre[- ]moi|donne[- ]moi|peux[- ](tu|me|nous|vous)|pourrais[- ](tu|me|nous|vous)|fais[- ]moi|list(?:e|ez|ons)?\b|résum(?!é)|resum(?!é)|synthétis|synthetis|tell me|show me|summari[sz]|explain|give me)/i;
+// Politeness counts only where a request puts it: at the END of the passage
+// (trailing slot, optional closing punctuation) or in the POST-STEM slot right
+// after the request verb ("détaille stp les arbitrages" — French habit, and the
+// live 73-char flagship request of 2026-11-01 carried it there). Anywhere-else
+// matching taxed statements that merely mention politeness ("…please wait",
+// audit 01/11) — but a strict end anchor would spare the flagship, so both slots.
+const REQUEST_POLITENESS = /\b(?:stp|svp|s'?il te pla[iî]t|please)\b/i;
+const REQUEST_TRAILER_END = /(?:\b(?:stp|svp|s'?il te pla[iî]t|please)\b[\s,.!;:…]*|\?+\s*)$/i;
 // Outcome vocabulary only: a request that names the topic ("détaille les arbitrages")
 // must NOT escape by mentioning the word it asks about.
 const REQUEST_OWN_CONTENT = /\b(décidé|décision|decided|validé|approuvé|rejeté|refusé|on garde|on ne |donc |because |parce que|approved|rejected|\d{1,2}h\d{2}|cron )/i;
@@ -291,8 +303,15 @@ export function requestFormFactor(content: string): { factor: number; applied: b
     const text = content.trim();
     // Above the passage floor a chunk is a passage, whatever it quotes.
     if (text.length >= REQUEST_MALUS_MAX_CHARS) return { factor: 1, applied: false };
-    if (!REQUEST_FORM.test(text)) return { factor: 1, applied: false };
-    if (!REQUEST_TRAILER.test(text)) return { factor: 1, applied: false };
+    const stem = REQUEST_FORM.exec(text);
+    if (!stem) return { factor: 1, applied: false };
+    // Trailing slot, or the post-stem slot within 6 chars of the request verb
+    // (French "détaille stp les arbitrages"): both mark a request; a politeness
+    // token quoted mid-sentence does not ("Explique pourquoi le résumé stp n'a
+    // pas marché" is a passage ABOUT politeness, audit 01/11).
+    const stemEnd = stem.index + stem[0].length;
+    const politenessAfterStem = REQUEST_POLITENESS.test(text.slice(stemEnd, stemEnd + 6));
+    if (!politenessAfterStem && !REQUEST_TRAILER_END.test(text)) return { factor: 1, applied: false };
     // A short chunk that carries its own outcome ("OK pour ton tri", "on garde 3h")
     // is an arbitration, not a request.
     if (REQUEST_OWN_CONTENT.test(text)) return { factor: 1, applied: false };
@@ -1442,6 +1461,10 @@ export const searchTasksByContentTool = {
             // by DIVERSIFY_OVERFETCH so that grouping + per-task cap can surface >=3
             // unique_tasks even when one task dominates the Qdrant ranking.
             const effectiveMaxResults = max_results || 10;
+            // Shared ANN budget ceiling: caps BOTH the window `limit` and the
+            // refill `hnsw_ef` — the audit (01/11) caught hnsw_ef growing to
+            // 2400/3600/4800 with the refill offset while `limit` stayed ≤ 1200.
+            const ANN_MAX_CANDIDATES = 1200;
             // #2609 q4 — the decision-content over-fetch was calibrated against a window
             // that LOSES ~82% of its candidates (measured live 2026-11-01: 40 fetched →
             // 20 after the machine-output filter → 7 after the provenance filter), so a
@@ -1451,7 +1474,7 @@ export const searchTasksByContentTool = {
             // over-fetch into an unbounded ANN cost.
             const diversifyLimit = Math.min(
                 effectiveMaxResults * (exclude_tool_results ? 12 : DIVERSIFY_OVERFETCH),
-                1200
+                ANN_MAX_CANDIDATES
             );
             // #2609 review (MAJOR 2): the over-fetch factor is applied BEFORE the
             // machine-output filter, so a full ANN window can be exhausted by filtered
@@ -1540,7 +1563,10 @@ export const searchTasksByContentTool = {
                     offset: refillOffset,
                     filter: filter,
                     params: {
-                        hnsw_ef: Math.max(128, diversifyLimit + refillOffset),
+                        // #2609 q4 audit: the ef grows with the offset for recall, but
+                        // never past the candidate budget — the growth past 1200 was a
+                        // latency-only cost with no measured recall gain.
+                        hnsw_ef: Math.min(Math.max(128, diversifyLimit + refillOffset), ANN_MAX_CANDIDATES),
                         exact: false,
                         quantization: { rescore: true }
                     },
