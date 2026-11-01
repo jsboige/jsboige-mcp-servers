@@ -6,12 +6,13 @@ using the JupyterManager for low-level kernel interactions.
 """
 
 import asyncio
+import hashlib
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Literal
 
-from ..core.jupyter_manager import JupyterManager, ExecutionResult
+from ..core.jupyter_manager import JupyterManager, ExecutionResult, ExecutionOutput
 from ..config import MCPConfig
 
 logger = logging.getLogger(__name__)
@@ -62,25 +63,33 @@ class KernelService:
             logger.error(f"Error listing kernels: {e}")
             raise
 
-    async def start_kernel(self, kernel_name: str = "python3") -> Dict[str, Any]:
+    async def start_kernel(
+        self, kernel_name: str = "python3", working_dir: Optional[str] = None
+    ) -> Dict[str, Any]:
         """
         Start a new kernel.
 
         Args:
             kernel_name: Name of the kernel to start
+            working_dir: Optional working directory for the kernel process
+                (#4481: previously accepted by manage_kernel then dropped --
+                the kernel inherited the server's cwd instead)
 
         Returns:
             Dictionary with kernel startup information
         """
         try:
-            logger.info(f"Starting kernel: {kernel_name}")
+            logger.info(f"Starting kernel: {kernel_name} (working_dir={working_dir})")
 
-            kernel_id = await self.jupyter_manager.start_kernel(kernel_name)
+            kernel_id = await self.jupyter_manager.start_kernel(
+                kernel_name, working_dir=working_dir
+            )
 
             result = {
                 "kernel_id": kernel_id,
                 "kernel_name": kernel_name,
                 "status": "started",
+                "working_dir": working_dir,
                 "success": True,
             }
 
@@ -492,6 +501,15 @@ class KernelService:
                 ),
             )
 
+            # #4481: persist execution_count + outputs into the .ipynb. Before
+            # this, the outputs lived ONLY in the JSON response -- the file on
+            # disk stayed byte-identical (ec=None, outs=[]), so a caller that
+            # trusted the response (or a pre-commit checking ec) discovered
+            # after a whole session that nothing was ever written.
+            persisted = self._persist_cell_execution(
+                notebook_path, cell_index, cell.source, cell_result
+            )
+
             result = {
                 "notebook_path": notebook_path,
                 "cell_index": cell_index,
@@ -504,6 +522,7 @@ class KernelService:
                 else None,
                 "execution_time": getattr(cell_result, "execution_time", None),
                 "success": cell_result.status == "ok",
+                "persisted": persisted,
             }
 
             logger.info(
@@ -516,6 +535,134 @@ class KernelService:
                 f"Error executing cell {cell_index} from notebook {notebook_path}: {e}"
             )
             raise
+
+    @staticmethod
+    def _outputs_to_nbformat(outputs: List[ExecutionOutput]) -> List[Dict[str, Any]]:
+        """Convert manager ExecutionOutput objects to nbformat outputs.
+
+        Returns NotebookNode objects (not plain dicts): nbformat's writer
+        accesses `output.output_type` by attribute, so plain dicts raise
+        AttributeError at write time.
+        """
+        converted: List[Dict[str, Any]] = []
+        for out in outputs:
+            if out.output_type == "stream":
+                converted.append(
+                    {
+                        "output_type": "stream",
+                        "name": out.content.get("name", "stdout"),
+                        "text": out.content.get("text", ""),
+                    }
+                )
+            elif out.output_type == "execute_result":
+                converted.append(
+                    {
+                        "output_type": "execute_result",
+                        "data": dict(out.content),
+                        "metadata": dict(out.metadata or {}),
+                        "execution_count": out.execution_count,
+                    }
+                )
+            elif out.output_type == "display_data":
+                converted.append(
+                    {
+                        "output_type": "display_data",
+                        "data": dict(out.content),
+                        "metadata": dict(out.metadata or {}),
+                    }
+                )
+            elif out.output_type == "error":
+                converted.append(
+                    {
+                        "output_type": "error",
+                        "ename": out.content.get("ename", "Error"),
+                        "evalue": out.content.get("evalue", ""),
+                        "traceback": list(out.content.get("traceback", [])),
+                    }
+                )
+        from nbformat import from_dict
+
+        return [from_dict(d) for d in converted]
+
+    def _persist_cell_execution(
+        self,
+        notebook_path: str,
+        cell_index: int,
+        expected_source: str,
+        cell_result: ExecutionResult,
+    ) -> Dict[str, Any]:
+        """
+        #4481: write the executed cell's execution_count and outputs back into
+        the .ipynb on disk. Ok AND error results are persisted (an error output
+        is a legitimate notebook state, and the kernel's execution_count is
+        honest thanks to the execute_reply read in JupyterManager). A timed-out
+        cell is NOT persisted: its outputs are partial and the kernel was
+        interrupted.
+
+        Never raises -- persistence is reported, not thrown.
+        """
+        from ..utils.file_utils import FileUtils
+
+        info: Dict[str, Any] = {
+            "written": False,
+            "path": str(notebook_path),
+            "execution_count": None,
+            "outputs_written": 0,
+            "reason": None,
+        }
+
+        if cell_result.status == "timeout":
+            info["reason"] = (
+                "status=timeout: partial outputs not persisted "
+                "(kernel was interrupted mid-run)"
+            )
+            return info
+
+        try:
+            # Fresh read: never clobber concurrent edits to other cells.
+            nb = FileUtils.read_notebook(notebook_path)
+            if cell_index < 0 or cell_index >= len(nb.cells):
+                info["reason"] = (
+                    f"cell {cell_index} out of range after re-read "
+                    f"({len(nb.cells)} cells) -- notebook changed during execution"
+                )
+                return info
+            cell = nb.cells[cell_index]
+            if cell.cell_type != "code":
+                info["reason"] = (
+                    f"cell {cell_index} is no longer a code cell -- "
+                    f"notebook changed during execution"
+                )
+                return info
+            if cell.source != expected_source:
+                info["reason"] = (
+                    "cell source changed on disk during execution -- "
+                    f"outputs not persisted for cell {cell_index}"
+                )
+                return info
+
+            cell.outputs = self._outputs_to_nbformat(cell_result.outputs)
+            cell.execution_count = (
+                cell_result.execution_count
+                if isinstance(cell_result.execution_count, int)
+                and cell_result.execution_count > 0
+                else None
+            )
+            info["execution_count"] = cell.execution_count
+            info["outputs_written"] = len(cell.outputs)
+
+            FileUtils.write_notebook(nb, notebook_path)
+            raw = Path(notebook_path).read_bytes()
+            info["written"] = True
+            info["sha256"] = hashlib.sha256(raw).hexdigest()
+            logger.info(
+                f"#4481 persisted cell {cell_index} of {notebook_path}: "
+                f"ec={cell.execution_count}, {len(cell.outputs)} output(s)"
+            )
+        except Exception as e:
+            info["reason"] = f"persistence failed: {e}"
+            logger.error(f"#4481 {info['reason']}")
+        return info
 
     async def get_kernel_status(self, kernel_id: str) -> Dict[str, Any]:
         """
@@ -627,8 +774,9 @@ class KernelService:
         if action == "start":
             if not kernel_name:
                 raise ValueError("kernel_name is required for start action")
-            # working_dir is not currently supported by start_kernel but could be added
-            return await self.start_kernel(kernel_name)
+            # #4481: working_dir is honored (it was accepted then silently
+            # dropped here, so kernels always inherited the server's cwd).
+            return await self.start_kernel(kernel_name, working_dir=working_dir)
 
         if not kernel_id:
             raise ValueError(f"kernel_id is required for {action} action")

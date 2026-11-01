@@ -4,6 +4,7 @@ MCP tools for notebook operations.
 Defines all notebook-related MCP tools using FastMCP.
 """
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -32,6 +33,27 @@ def get_notebook_service() -> NotebookService:
     if _notebook_service is None:
         raise RuntimeError("Notebook service not initialized")
     return _notebook_service
+
+
+async def _bounded_file_op(coro, op_name: str, timeout: Optional[float] = None):
+    """
+    #4481: bound every notebook file operation with a transport-level timeout
+    and an explicit error payload. Before this, a call stuck below the service
+    layer never returned on its own -- the harness burned its whole 900 s MCP
+    timeout per attempt with no server-side diagnosis.
+    """
+    try:
+        return await asyncio.wait_for(coro, timeout=timeout or 60.0)
+    except asyncio.TimeoutError:
+        logger.error(
+            f"{op_name} timed out after {timeout or 60.0}s (file operation)"
+        )
+        return {
+            "error": f"{op_name} timed out after {timeout or 60.0}s",
+            "operation": op_name,
+            "status": "timeout",
+            "success": False,
+        }
 
 
 # Input models for tools
@@ -102,7 +124,9 @@ def register_notebook_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Reading notebook: {path}")
             service = get_notebook_service()
-            result = await service.read_notebook(path)
+            result = await _bounded_file_op(
+                service.read_notebook(path), "read_notebook"
+            )
             logger.info(f"Successfully read notebook: {path}")
             return result
         except Exception as e:
@@ -124,7 +148,9 @@ def register_notebook_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Writing notebook: {path}")
             service = get_notebook_service()
-            result = await service.write_notebook(path, content)
+            result = await _bounded_file_op(
+                service.write_notebook(path, content), "write_notebook"
+            )
             logger.info(f"Successfully wrote notebook: {path}")
             return result
         except Exception as e:
@@ -146,7 +172,9 @@ def register_notebook_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Creating notebook: {path} with kernel: {kernel}")
             service = get_notebook_service()
-            result = await service.create_notebook(path, kernel)
+            result = await _bounded_file_op(
+                service.create_notebook(path, kernel), "create_notebook"
+            )
             logger.info(f"Successfully created notebook: {path}")
             return result
         except Exception as e:
@@ -177,7 +205,9 @@ def register_notebook_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Adding {cell_type} cell to notebook: {path}")
             service = get_notebook_service()
-            result = await service.add_cell(path, cell_type, source, metadata, index)
+            result = await _bounded_file_op(
+                service.add_cell(path, cell_type, source, metadata, index), "add_cell"
+            )
             logger.info(f"Successfully added cell to notebook: {path}")
             return result
         except Exception as e:
@@ -204,7 +234,9 @@ def register_notebook_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Removing cell {index} from notebook: {path}")
             service = get_notebook_service()
-            result = await service.remove_cell(path, index)
+            result = await _bounded_file_op(
+                service.remove_cell(path, index), "remove_cell"
+            )
             logger.info(f"Successfully removed cell from notebook: {path}")
             return result
         except Exception as e:
@@ -227,7 +259,9 @@ def register_notebook_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Updating cell {index} in notebook: {path}")
             service = get_notebook_service()
-            result = await service.update_cell(path, index, source)
+            result = await _bounded_file_op(
+                service.update_cell(path, index, source), "update_cell"
+            )
             logger.info(f"Successfully updated cell in notebook: {path}")
             return result
         except Exception as e:
@@ -284,14 +318,17 @@ def register_notebook_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Reading cells from notebook (mode={mode}): {path}")
             service = get_notebook_service()
-            result = await service.read_cells(
-                path=path,
-                mode=mode,
-                index=index,
-                start_index=start_index,
-                end_index=end_index,
-                include_preview=include_preview,
-                preview_length=preview_length,
+            result = await _bounded_file_op(
+                service.read_cells(
+                    path=path,
+                    mode=mode,
+                    index=index,
+                    start_index=start_index,
+                    end_index=end_index,
+                    include_preview=include_preview,
+                    preview_length=preview_length,
+                ),
+                "read_cells",
             )
             logger.info(f"Successfully read cells from notebook: {path}")
             return result
@@ -436,7 +473,9 @@ def register_notebook_tools(app: FastMCP) -> None:
         try:
             logger.info(f"Inspecting notebook (mode={mode}): {path}")
             service = get_notebook_service()
-            result = await service.inspect_notebook(path, mode=mode)
+            result = await _bounded_file_op(
+                service.inspect_notebook(path, mode=mode), "inspect_notebook"
+            )
             logger.info(f"Successfully inspected notebook: {path}")
             return result
         except Exception as e:

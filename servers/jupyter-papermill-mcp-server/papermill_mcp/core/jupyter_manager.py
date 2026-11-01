@@ -10,6 +10,7 @@ import logging
 import subprocess
 import sys
 import uuid
+from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -71,6 +72,12 @@ class KernelInfo:
     started_at: datetime
     last_activity: datetime
     status: str = "idle"  # idle, busy, starting, dead, unresponsive
+    # #4481: shared kernel client for this kernel. Every execute_code() used to
+    # build a fresh BlockingKernelClient (4 live ZMQ sockets + its own context)
+    # and never stop it -- one leaked context per execution, GC warnings in
+    # production logs, and an iopub SUB socket connected AFTER the execute was
+    # sent (outputs published in between are lost to the subscriber race).
+    client: Optional[Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -107,6 +114,11 @@ class JupyterManager:
         # Active kernels tracking
         self._active_kernels: Dict[str, KernelManager] = {}
         self._kernel_info: Dict[str, KernelInfo] = {}
+
+        # #4481: per-kernel execution lock. The kernel executes requests
+        # sequentially; the lock keeps callers from polling the SHARED client's
+        # ZMQ sockets concurrently (ZMQ sockets are not thread-safe).
+        self._kernel_locks: Dict[str, asyncio.Lock] = {}
 
         # Streaming executions: execution_id -> StreamExecution
         self._stream_executions: Dict[str, StreamExecution] = {}
@@ -215,12 +227,19 @@ class JupyterManager:
             self.logger.error(f"Failed to list active kernels: {e}")
             return []
 
-    async def start_kernel(self, kernel_name: str = "python3") -> str:
+    async def start_kernel(
+        self, kernel_name: str = "python3", working_dir: Optional[str] = None
+    ) -> str:
         """
         Start a new kernel instance.
 
         Args:
             kernel_name: Name of the kernel to start
+            working_dir: Optional working directory for the kernel process
+                (#4481: previously accepted by the tool layer then silently
+                dropped -- the kernel always inherited the server's cwd).
+                Validated up front so a typo fails fast instead of leaking a
+                half-started kernel.
 
         Returns:
             Unique kernel ID
@@ -230,13 +249,28 @@ class JupyterManager:
         """
         kernel_id = str(uuid.uuid4())
         km: Optional[KernelManager] = None
+        kc = None
 
         try:
+            if working_dir is not None:
+                # jupyter_client forwards Popen kwargs to the kernel process;
+                # Popen itself raises on a bad cwd, but validate here so the
+                # error names the offending path before any process spawns.
+                if not Path(working_dir).is_dir():
+                    raise ValueError(
+                        f"working_dir does not exist or is not a directory: {working_dir}"
+                    )
+
             # Create kernel manager
             km = KernelManager(kernel_name=kernel_name)
 
             # Start the kernel
-            await asyncio.get_event_loop().run_in_executor(None, km.start_kernel)
+            popen_kwargs: Dict[str, Any] = (
+                {"cwd": str(Path(working_dir))} if working_dir else {}
+            )
+            await asyncio.get_event_loop().run_in_executor(
+                None, lambda: km.start_kernel(**popen_kwargs)
+            )
 
             # Wait for kernel to be ready
             kc = km.client()
@@ -256,6 +290,11 @@ class JupyterManager:
             self._active_kernels[kernel_id] = km
             self._kernel_info[kernel_id] = kernel_info
 
+            # #4481: adopt the handshake client (its shell/iopub sockets are
+            # already connected by wait_for_ready) as the kernel's shared
+            # client instead of leaking it while execute_code builds new ones.
+            kernel_info.client = kc
+
             self.logger.info(f"Started kernel '{kernel_name}' with ID: {kernel_id}")
             return kernel_id
 
@@ -265,6 +304,13 @@ class JupyterManager:
             # slow-starting .NET kernels). The kernel is not registered yet, so
             # nothing would ever shut it down -- kill it boundedly or the process
             # leaks with no registry entry.
+            try:
+                # #4481: the handshake client may exist with live channels even
+                # when wait_for_ready failed -- close it or it leaks a context.
+                if km is not None and kc is not None:
+                    kc.stop_channels()
+            except Exception:
+                pass
             if km is not None:
                 # Tree-kill before the direct-child kill: a .NET kernelspec
                 # wrapper (dotnet.exe) has the real kernel as a grandchild.
@@ -316,9 +362,14 @@ class JupyterManager:
             # Shutdown the kernel
             await asyncio.get_event_loop().run_in_executor(None, km.shutdown_kernel)
 
+            # #4481: close the shared client's channels (and its zmq context)
+            # before dropping the registry entry.
+            self._stop_client(kernel_id)
+
             # Remove from tracking
             del self._active_kernels[kernel_id]
             del self._kernel_info[kernel_id]
+            self._kernel_locks.pop(kernel_id, None)
 
             self.logger.info(f"Stopped kernel {kernel_id}")
             return True
@@ -347,6 +398,10 @@ class JupyterManager:
 
             # Restart the kernel
             await asyncio.get_event_loop().run_in_executor(None, km.restart_kernel)
+
+            # #4481: the pre-restart client's sockets predate the respawned
+            # process -- drop it; the next execution builds a fresh one.
+            self._stop_client(kernel_id)
 
             # Update info
             kernel_info.last_activity = datetime.now()
@@ -431,175 +486,259 @@ class JupyterManager:
         status = "ok"
         cancelled = False
 
-        try:
-            # Update status
-            kernel_info.status = "busy"
-            kernel_info.last_activity = datetime.now()
+        # #4481: serialize executions on this kernel. The kernel itself runs
+        # requests one at a time, and the shared client's ZMQ sockets must not
+        # be polled from two tasks concurrently.
+        lock = self._kernel_locks.setdefault(kernel_id, asyncio.Lock())
 
-            # Get kernel client
-            kc = km.client()
-
-            # Execute code
-            msg_id = kc.execute(code)
-
-            # Collect outputs
-            outputs = []
-            text_output = ""
-            execution_count = 0
-            error_name = None
-            error_value = None
-            traceback = None
-            status = "ok"
-
-            # Process messages with timeout
-            timeout = timeout or 60.0
-            deadline = asyncio.get_event_loop().time() + timeout
-
-            while asyncio.get_event_loop().time() < deadline:
-                try:
-                    # Check for messages
-                    msg = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: kc.get_iopub_msg(timeout=1.0)
-                    )
-
-                    msg_type = msg["msg_type"]
-                    content = msg["content"]
-
-                    self.logger.debug(f"Received message type: {msg_type}")
-
-                    if msg_type == "stream":
-                        text = content.get("text", "")
-                        text_output += text
-                        outputs.append(
-                            ExecutionOutput(
-                                output_type="stream",
-                                content={
-                                    "name": content.get("name", "stdout"),
-                                    "text": text,
-                                },
-                            )
-                        )
-
-                    elif msg_type == "execute_result":
-                        execution_count = content.get("execution_count", 0)
-                        outputs.append(
-                            ExecutionOutput(
-                                output_type="execute_result",
-                                content=content.get("data", {}),
-                                metadata=content.get("metadata", {}),
-                                execution_count=execution_count,
-                            )
-                        )
-
-                    elif msg_type == "display_data":
-                        outputs.append(
-                            ExecutionOutput(
-                                output_type="display_data",
-                                content=content.get("data", {}),
-                                metadata=content.get("metadata", {}),
-                            )
-                        )
-
-                    elif msg_type == "error":
-                        status = "error"
-                        error_name = content.get("ename", "Error")
-                        error_value = content.get("evalue", "")
-                        traceback = content.get("traceback", [])
-                        text_output += f"{error_name}: {error_value}\n"
-                        if traceback:
-                            text_output += "\n".join(traceback)
-
-                        outputs.append(
-                            ExecutionOutput(
-                                output_type="error",
-                                content={
-                                    "ename": error_name,
-                                    "evalue": error_value,
-                                    "traceback": traceback,
-                                },
-                            )
-                        )
-
-                    elif msg_type == "status":
-                        execution_state = content.get("execution_state")
-                        if execution_state == "idle":
-                            # Execution completed
-                            break
-
-                except Exception:
-                    # Timeout on get_iopub_msg is expected
-                    continue
-
-            # Check if we timed out
-            if asyncio.get_event_loop().time() >= deadline:
-                status = "timeout"
-                self.logger.warning(f"Code execution timed out after {timeout}s")
-                # The bounded interrupt + status update now live in the finally
-                # block below (_finalize_execution), so they run on EVERY exit
-                # path -- including cancellation -- instead of only here (#3346).
-
-            return ExecutionResult(
-                status=status,
-                execution_count=execution_count,
-                outputs=outputs,
-                text_output=text_output,
-                error_name=error_name,
-                error_value=error_value,
-                traceback=traceback,
-            )
-
-        except asyncio.CancelledError:
-            # #3346: transport-level hard timeout or caller cancellation. CancelledError
-            # derives from BaseException, so it used to skip both the except below and
-            # the post-loop status update -- the kernel stayed 'busy' in the registry
-            # with a live OS process and nobody left to restart it (the zombie-kernel
-            # leak of the full-notebook path). Re-raise after the bounded cleanup in
-            # the finally block, which DOES run during cancellation unwinding.
-            cancelled = True
-            self.logger.error(
-                f"Execution on kernel {kernel_id} was cancelled mid-flight -- "
-                f"running bounded cleanup before the cancellation completes"
-            )
-            raise
-        except Exception as e:
-            error_msg = f"Code execution failed: {e}"
-            self.logger.error(error_msg)
-
-            return ExecutionResult(
-                status="error",
-                execution_count=0,
-                outputs=[],
-                text_output=str(e),
-                error_name="ExecutionError",
-                error_value=str(e),
-            )
-        finally:
-            # #3346: bounded finalization for every exit path (ok / error / timeout /
-            # cancellation). Time-boxed so it can never hang the return or the
-            # cancellation. Status transitions:
-            #   - normal/error exit, or timeout with a cooperative interrupt -> 'idle'
-            #   - timeout with a non-cooperative kernel, caller present -> 'unresponsive'
-            #     (#2718 semantics preserved: registered, re-queue refused, manual
-            #     restart recovers)
-            #   - cancellation with a non-cooperative kernel -> force-stopped and
-            #     deregistered (#3346: nobody is left to restart it)
+        async with lock:
             try:
-                cleanup_diag = await self._finalize_execution(
-                    kernel_id,
-                    kernel_info,
-                    timed_out=(status == "timeout"),
-                    cancelled=cancelled,
+                # Update status
+                kernel_info.status = "busy"
+                kernel_info.last_activity = datetime.now()
+
+                # #4481: shared, pre-connected client (see KernelInfo.client).
+                # The iopub subscription is live BEFORE the execute is sent, so
+                # early outputs can no longer be lost to the subscribe race.
+                kc = self._get_client(kernel_id, km)
+
+                # Discard shell replies left unread by earlier runs so the
+                # reply fetched below matches this execution's msg_id.
+                self._drain_shell(kc)
+
+                # Execute code
+                msg_id = kc.execute(code)
+
+                # Collect outputs
+                outputs = []
+                text_output = ""
+                execution_count = 0
+                error_name = None
+                error_value = None
+                traceback = None
+                status = "ok"
+
+                # Process messages with timeout
+                timeout = timeout or 60.0
+                deadline = asyncio.get_event_loop().time() + timeout
+
+                while asyncio.get_event_loop().time() < deadline:
+                    try:
+                        # Check for messages
+                        msg = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: kc.get_iopub_msg(timeout=1.0)
+                        )
+
+                        msg_type = msg["msg_type"]
+                        content = msg["content"]
+
+                        self.logger.debug(f"Received message type: {msg_type}")
+
+                        if msg_type == "stream":
+                            text = content.get("text", "")
+                            text_output += text
+                            outputs.append(
+                                ExecutionOutput(
+                                    output_type="stream",
+                                    content={
+                                        "name": content.get("name", "stdout"),
+                                        "text": text,
+                                    },
+                                )
+                            )
+
+                        elif msg_type == "execute_result":
+                            execution_count = content.get("execution_count", 0)
+                            outputs.append(
+                                ExecutionOutput(
+                                    output_type="execute_result",
+                                    content=content.get("data", {}),
+                                    metadata=content.get("metadata", {}),
+                                    execution_count=execution_count,
+                                )
+                            )
+
+                        elif msg_type == "display_data":
+                            outputs.append(
+                                ExecutionOutput(
+                                    output_type="display_data",
+                                    content=content.get("data", {}),
+                                    metadata=content.get("metadata", {}),
+                                )
+                            )
+
+                        elif msg_type == "error":
+                            status = "error"
+                            error_name = content.get("ename", "Error")
+                            error_value = content.get("evalue", "")
+                            traceback = content.get("traceback", [])
+                            text_output += f"{error_name}: {error_value}\n"
+                            if traceback:
+                                text_output += "\n".join(traceback)
+
+                            outputs.append(
+                                ExecutionOutput(
+                                    output_type="error",
+                                    content={
+                                        "ename": error_name,
+                                        "evalue": error_value,
+                                        "traceback": traceback,
+                                    },
+                                )
+                            )
+
+                        elif msg_type == "status":
+                            execution_state = content.get("execution_state")
+                            if execution_state == "idle":
+                                # Execution completed
+                                break
+
+                    except Exception:
+                        # Timeout on get_iopub_msg is expected
+                        continue
+
+                # Check if we timed out
+                if asyncio.get_event_loop().time() >= deadline:
+                    status = "timeout"
+                    self.logger.warning(f"Code execution timed out after {timeout}s")
+                    # The bounded interrupt + status update now live in the finally
+                    # block below (_finalize_execution), so they run on EVERY exit
+                    # path -- including cancellation -- instead of only here (#3346).
+
+                # #4481: read the execute_reply from the shell channel. The iopub
+                # 'error' message carries NO execution_count -- without this, an
+                # errored cell could not be persisted with an honest count (and
+                # the pre-commit ec checks of the CoursIA fleet would keep
+                # failing on cells that DID run). Bounded; a missing reply falls
+                # back to the iopub-derived count (ok cells only).
+                if status in ("ok", "error"):
+                    reply = await self._await_execute_reply(kc, msg_id)
+                    if reply is not None:
+                        reply_ec = (reply.get("content") or {}).get("execution_count")
+                        if isinstance(reply_ec, int):
+                            execution_count = reply_ec
+
+                return ExecutionResult(
+                    status=status,
+                    execution_count=execution_count,
+                    outputs=outputs,
+                    text_output=text_output,
+                    error_name=error_name,
+                    error_value=error_value,
+                    traceback=traceback,
                 )
-                if cleanup_diag:
-                    self.logger.warning(
-                        f"#3346 kernel {kernel_id} cleanup: {cleanup_diag}"
-                    )
-            except Exception as finalize_err:
-                # Finalization must never mask the original outcome.
+
+            except asyncio.CancelledError:
+                # #3346: transport-level hard timeout or caller cancellation. CancelledError
+                # derives from BaseException, so it used to skip both the except below and
+                # the post-loop status update -- the kernel stayed 'busy' in the registry
+                # with a live OS process and nobody left to restart it (the zombie-kernel
+                # leak of the full-notebook path). Re-raise after the bounded cleanup in
+                # the finally block, which DOES run during cancellation unwinding.
+                cancelled = True
                 self.logger.error(
-                    f"#3346 kernel {kernel_id} finalize failed: {finalize_err}"
+                    f"Execution on kernel {kernel_id} was cancelled mid-flight -- "
+                    f"running bounded cleanup before the cancellation completes"
                 )
-            kernel_info.last_activity = datetime.now()
+                raise
+            except Exception as e:
+                error_msg = f"Code execution failed: {e}"
+                self.logger.error(error_msg)
+
+                return ExecutionResult(
+                    status="error",
+                    execution_count=0,
+                    outputs=[],
+                    text_output=str(e),
+                    error_name="ExecutionError",
+                    error_value=str(e),
+                )
+            finally:
+                # #3346: bounded finalization for every exit path (ok / error / timeout /
+                # cancellation). Time-boxed so it can never hang the return or the
+                # cancellation. Status transitions:
+                #   - normal/error exit, or timeout with a cooperative interrupt -> 'idle'
+                #   - timeout with a non-cooperative kernel, caller present -> 'unresponsive'
+                #     (#2718 semantics preserved: registered, re-queue refused, manual
+                #     restart recovers)
+                #   - cancellation with a non-cooperative kernel -> force-stopped and
+                #     deregistered (#3346: nobody is left to restart it)
+                try:
+                    cleanup_diag = await self._finalize_execution(
+                        kernel_id,
+                        kernel_info,
+                        timed_out=(status == "timeout"),
+                        cancelled=cancelled,
+                    )
+                    if cleanup_diag:
+                        self.logger.warning(
+                            f"#3346 kernel {kernel_id} cleanup: {cleanup_diag}"
+                        )
+                except Exception as finalize_err:
+                    # Finalization must never mask the original outcome.
+                    self.logger.error(
+                        f"#3346 kernel {kernel_id} finalize failed: {finalize_err}"
+                    )
+                kernel_info.last_activity = datetime.now()
+
+    def _get_client(self, kernel_id: str, km: KernelManager) -> Any:
+        """
+        #4481: return the kernel's shared BlockingKernelClient, creating and
+        connecting it on first use. The iopub subscription is live before the
+        caller sends its execute request, closing the subscribe race that could
+        drop early outputs.
+        """
+        info = self._kernel_info.get(kernel_id)
+        if info is None:
+            raise RuntimeError(f"Kernel {kernel_id} not found")
+        if info.client is None:
+            kc = km.client()
+            # shell+iopub only: stdin is unanswered by this server (allow_stdin
+            # False), and the heartbeat thread is not consumed here.
+            kc.start_channels(shell=True, iopub=True, stdin=False, hb=False, control=False)
+            info.client = kc
+        return info.client
+
+    def _stop_client(self, kernel_id: str) -> None:
+        """#4481: close the shared client's channels and zmq context, bounded."""
+        info = self._kernel_info.get(kernel_id)
+        if info is None or info.client is None:
+            return
+        try:
+            info.client.stop_channels()
+        except Exception as e:
+            self.logger.warning(f"#4481 failed to stop client of kernel {kernel_id}: {e}")
+        info.client = None
+
+    @staticmethod
+    def _drain_shell(kc: Any) -> None:
+        """#4481: discard stale (never-read) shell replies, non-blocking."""
+        while True:
+            try:
+                kc.shell_channel.get_msg(timeout=0)
+            except Exception:
+                return
+
+    async def _await_execute_reply(
+        self, kc: Any, msg_id: str, budget: float = 5.0
+    ) -> Optional[Dict[str, Any]]:
+        """
+        #4481: fetch the execute_reply for msg_id from the shell channel,
+        bounded by `budget`. Replies for other msg_ids (stale leftovers) are
+        discarded. Returns None if the reply does not arrive in time.
+        """
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + budget
+        while loop.time() < deadline:
+            try:
+                msg = await loop.run_in_executor(
+                    None, lambda: kc.shell_channel.get_msg(timeout=1.0)
+                )
+            except Exception:
+                continue
+            if (msg.get("parent_header") or {}).get("msg_id") == msg_id:
+                return msg
+        return None
 
     async def _finalize_execution(
         self,
@@ -770,8 +909,10 @@ class JupyterManager:
                 )
 
         if stopped:
+            self._stop_client(kernel_id)
             self._active_kernels.pop(kernel_id, None)
             self._kernel_info.pop(kernel_id, None)
+            self._kernel_locks.pop(kernel_id, None)
             result = {
                 "phase": "cleanup",
                 "interrupt": "failed",
@@ -862,129 +1003,144 @@ class JupyterManager:
             stream_exec.completed_at = datetime.now()
             return
 
-        try:
-            kernel_info.status = "busy"
-            kernel_info.last_activity = datetime.now()
-
-            kc = km.client()
-            msg_id = kc.execute(code)
-
-            deadline = asyncio.get_event_loop().time() + timeout
-
-            while asyncio.get_event_loop().time() < deadline:
-                try:
-                    msg = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: kc.get_iopub_msg(timeout=1.0)
-                    )
-
-                    msg_type = msg["msg_type"]
-                    content = msg["content"]
-
-                    if msg_type == "stream":
-                        text = content.get("text", "")
-                        stream_exec.text_output += text
-                        stream_exec.outputs.append(
-                            ExecutionOutput(
-                                output_type="stream",
-                                content={
-                                    "name": content.get("name", "stdout"),
-                                    "text": text,
-                                },
-                            )
-                        )
-
-                    elif msg_type == "execute_result":
-                        stream_exec.execution_count = content.get("execution_count", 0)
-                        stream_exec.outputs.append(
-                            ExecutionOutput(
-                                output_type="execute_result",
-                                content=content.get("data", {}),
-                                metadata=content.get("metadata", {}),
-                                execution_count=stream_exec.execution_count,
-                            )
-                        )
-
-                    elif msg_type == "display_data":
-                        stream_exec.outputs.append(
-                            ExecutionOutput(
-                                output_type="display_data",
-                                content=content.get("data", {}),
-                                metadata=content.get("metadata", {}),
-                            )
-                        )
-
-                    elif msg_type == "error":
-                        stream_exec.status = "error"
-                        stream_exec.error_name = content.get("ename", "Error")
-                        stream_exec.error_value = content.get("evalue", "")
-                        traceback = content.get("traceback", [])
-                        stream_exec.text_output += f"{stream_exec.error_name}: {stream_exec.error_value}\n"
-                        if traceback:
-                            stream_exec.text_output += "\n".join(traceback)
-                        stream_exec.outputs.append(
-                            ExecutionOutput(
-                                output_type="error",
-                                content={
-                                    "ename": stream_exec.error_name,
-                                    "evalue": stream_exec.error_value,
-                                    "traceback": traceback,
-                                },
-                            )
-                        )
-
-                    elif msg_type == "status":
-                        execution_state = content.get("execution_state")
-                        if execution_state == "idle":
-                            if stream_exec.status == "running":
-                                stream_exec.status = "ok"
-                            break
-
-                except Exception:
-                    continue
-
-            if asyncio.get_event_loop().time() >= deadline:
-                stream_exec.status = "timeout"
-                # Interrupt the kernel to actually free it (same root cause as execute_code:
-                # without this the kernel stays busy and subsequent calls hang indefinitely).
-                #
-                # #2718: time-box the interrupt itself -- km.interrupt_kernel() can block
-                # indefinitely for non-cooperative code paths (e.g. .NET nuget restore).
-                # If the interrupt doesn't return in 5s, mark the kernel "unresponsive".
-                interrupt_succeeded = False
-                try:
-                    await asyncio.wait_for(
-                        self.interrupt_kernel(kernel_id),
-                        timeout=5.0,
-                    )
-                    interrupt_succeeded = True
-                except asyncio.TimeoutError:
-                    self.logger.error(
-                        f"Interrupt kernel {kernel_id} timed out (streaming) -- "
-                        f"kernel likely stuck in non-cooperative code path. "
-                        f"Marking as 'unresponsive'."
-                    )
-                except Exception as ie:
-                    self.logger.error(
-                        f"Failed to interrupt kernel {kernel_id} after streaming timeout: {ie}"
-                    )
-                # Stash for finally block (streaming can't easily thread status through)
-                stream_exec._interrupt_succeeded = interrupt_succeeded
-
-        except Exception as e:
+        # #4481: same shared client + per-kernel lock as execute_code (ZMQ
+        # sockets are not thread-safe). Non-blocking: a busy kernel refuses the
+        # stream immediately instead of queueing behind the other execution.
+        lock = self._kernel_locks.setdefault(kernel_id, asyncio.Lock())
+        if lock.locked():
             stream_exec.status = "error"
-            stream_exec.error_name = "ExecutionError"
-            stream_exec.error_value = str(e)
-        finally:
-            # If timeout occurred and interrupt failed/timed out, kernel is still busy:
-            # mark "unresponsive" to prevent next call from re-queueing on busy kernel.
-            if stream_exec.status == "timeout" and not getattr(
-                stream_exec, "_interrupt_succeeded", False
-            ):
-                kernel_info.status = "unresponsive"
-            else:
-                kernel_info.status = "idle"
-            kernel_info.last_activity = datetime.now()
+            stream_exec.error_value = (
+                f"Kernel {kernel_id} is busy with another execution; "
+                f"retry when it completes (poll stream_outputs)."
+            )
             stream_exec.completed_at = datetime.now()
+            return
+
+        async with lock:
+            try:
+                kernel_info.status = "busy"
+                kernel_info.last_activity = datetime.now()
+
+                kc = self._get_client(kernel_id, km)
+                self._drain_shell(kc)
+                msg_id = kc.execute(code)
+
+                deadline = asyncio.get_event_loop().time() + timeout
+
+                while asyncio.get_event_loop().time() < deadline:
+                    try:
+                        msg = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda: kc.get_iopub_msg(timeout=1.0)
+                        )
+
+                        msg_type = msg["msg_type"]
+                        content = msg["content"]
+
+                        if msg_type == "stream":
+                            text = content.get("text", "")
+                            stream_exec.text_output += text
+                            stream_exec.outputs.append(
+                                ExecutionOutput(
+                                    output_type="stream",
+                                    content={
+                                        "name": content.get("name", "stdout"),
+                                        "text": text,
+                                    },
+                                )
+                            )
+
+                        elif msg_type == "execute_result":
+                            stream_exec.execution_count = content.get("execution_count", 0)
+                            stream_exec.outputs.append(
+                                ExecutionOutput(
+                                    output_type="execute_result",
+                                    content=content.get("data", {}),
+                                    metadata=content.get("metadata", {}),
+                                    execution_count=stream_exec.execution_count,
+                                )
+                            )
+
+                        elif msg_type == "display_data":
+                            stream_exec.outputs.append(
+                                ExecutionOutput(
+                                    output_type="display_data",
+                                    content=content.get("data", {}),
+                                    metadata=content.get("metadata", {}),
+                                )
+                            )
+
+                        elif msg_type == "error":
+                            stream_exec.status = "error"
+                            stream_exec.error_name = content.get("ename", "Error")
+                            stream_exec.error_value = content.get("evalue", "")
+                            traceback = content.get("traceback", [])
+                            stream_exec.text_output += f"{stream_exec.error_name}: {stream_exec.error_value}\n"
+                            if traceback:
+                                stream_exec.text_output += "\n".join(traceback)
+                            stream_exec.outputs.append(
+                                ExecutionOutput(
+                                    output_type="error",
+                                    content={
+                                        "ename": stream_exec.error_name,
+                                        "evalue": stream_exec.error_value,
+                                        "traceback": traceback,
+                                    },
+                                )
+                            )
+
+                        elif msg_type == "status":
+                            execution_state = content.get("execution_state")
+                            if execution_state == "idle":
+                                if stream_exec.status == "running":
+                                    stream_exec.status = "ok"
+                                break
+
+                    except Exception:
+                        continue
+
+                if asyncio.get_event_loop().time() >= deadline:
+                    stream_exec.status = "timeout"
+                    # Interrupt the kernel to actually free it (same root cause as execute_code:
+                    # without this the kernel stays busy and subsequent calls hang indefinitely).
+                    #
+                    # #2718: time-box the interrupt itself -- km.interrupt_kernel() can block
+                    # indefinitely for non-cooperative code paths (e.g. .NET nuget restore).
+                    # If the interrupt doesn't return in 5s, mark the kernel "unresponsive".
+                    interrupt_succeeded = False
+                    try:
+                        await asyncio.wait_for(
+                            self.interrupt_kernel(kernel_id),
+                            timeout=5.0,
+                        )
+                        interrupt_succeeded = True
+                    except asyncio.TimeoutError:
+                        self.logger.error(
+                            f"Interrupt kernel {kernel_id} timed out (streaming) -- "
+                            f"kernel likely stuck in non-cooperative code path. "
+                            f"Marking as 'unresponsive'."
+                        )
+                    except Exception as ie:
+                        self.logger.error(
+                            f"Failed to interrupt kernel {kernel_id} after streaming timeout: {ie}"
+                        )
+                    # Stash for finally block (streaming can't easily thread status through)
+                    stream_exec._interrupt_succeeded = interrupt_succeeded
+
+            except Exception as e:
+                stream_exec.status = "error"
+                stream_exec.error_name = "ExecutionError"
+                stream_exec.error_value = str(e)
+            finally:
+                # If timeout occurred and interrupt failed/timed out, kernel is still busy:
+                # mark "unresponsive" to prevent next call from re-queueing on busy kernel.
+                if stream_exec.status == "timeout" and not getattr(
+                    stream_exec, "_interrupt_succeeded", False
+                ):
+                    kernel_info.status = "unresponsive"
+                else:
+                    kernel_info.status = "idle"
+                kernel_info.last_activity = datetime.now()
+                stream_exec.completed_at = datetime.now()
 
     def get_stream_output(self, execution_id: str) -> Optional[Dict[str, Any]]:
         """
