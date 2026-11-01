@@ -269,6 +269,38 @@ describe('EmbeddingValidator', () => {
       const short = 'TOKEN: abc';
       expect(redactSecrets(short)).toBe(short);
     });
+
+    // Measured 2026-11-01 (ai-01 DM msg-20261101T172049-o92o1d): the dashboard
+    // messageId `ai01-task-po2024-archive-sync-20261101` was published as
+    // `ai01-ta<redacted-sk>` — the `sk-` inside `task-` matched, and the recipient
+    // got a broken pointer. A word ending in "sk" is not a key prefix.
+    it('should not mask an identifier where sk- ends a word (task-, disk-, risk-)', () => {
+      for (const id of [
+        'ai01-task-po2024-archive-sync-20261101',
+        'wt/disk-usage-report-for-every-seat',
+        'the risk-assessment-of-the-cutover-plan',
+      ]) {
+        expect(redactSecrets(id)).toBe(id);
+      }
+    });
+
+    it('should still mask an sk- key after a separator, a digit or an underscore', () => {
+      const key = 'sk-proj-AAAA1111bbbb2222cccc3333dddd4444';
+      for (const text of [key, `"${key}"`, `(${key})`, `x-${key}`, `1${key}`, `_${key}`, `KEY=${key}`]) {
+        expect(redactSecrets(text)).not.toContain(key);
+      }
+    });
+  });
+
+  describe('maskSecretTextForPublication — dashboard and DM boundary', () => {
+    it('should publish a task- identifier intact and still mask a key beside it', async () => {
+      const { maskSecretTextForPublication } = await import('../../../utils/secret-redaction.js');
+      const out = maskSecretTextForPublication(
+        '[TASK] ai01-task-po2024-archive-sync-20261101 key sk-proj-AAAA1111bbbb2222cccc3333dddd4444',
+      );
+      expect(out).toContain('ai01-task-po2024-archive-sync-20261101');
+      expect(out).not.toContain('sk-proj-AAAA1111bbbb2222cccc3333dddd4444');
+    });
   });
 
   describe('sanitizePayload — secret scrubbing integration (#2783)', () => {

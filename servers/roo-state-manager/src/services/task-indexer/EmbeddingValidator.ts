@@ -62,7 +62,10 @@ export function validateVectorGlobal(vector: number[], expectedDim?: number): vo
  */
 export const SECRET_PATTERNS: Array<[RegExp, string]> = [
     // Tokens auto-préfixés : masqués où qu'ils apparaissent, même sans nom de variable.
-    [/sk-[A-Za-z0-9_-]{20,}/g, '<redacted-sk>'],            // OpenAI / Anthropic (incl. sk-proj-…)
+    // Not after a letter: `task-…`, `disk-…`, `risk-…` end a word, they are not a key
+    // prefix (measured 01/11: a messageId `ai01-task-…` published as `ai01-ta<redacted-sk>`).
+    // A digit, `_`, `-`, a quote or `=` before `sk-` still masks.
+    [/(?<![A-Za-z])sk-[A-Za-z0-9_-]{20,}/g, '<redacted-sk>'], // OpenAI / Anthropic (incl. sk-proj-…)
     [/gh[opsur]_[A-Za-z0-9]{36,}/g, '<redacted-gh>'],        // GitHub PAT / OAuth / server tokens
     [/xox[baprs]-[A-Za-z0-9-]{10,}/g, '<redacted-slack>'],   // Slack tokens
     [/Bearer\s+[A-Za-z0-9_\-.=]+/gi, 'Bearer <redacted>'],   // Authorization: Bearer …
