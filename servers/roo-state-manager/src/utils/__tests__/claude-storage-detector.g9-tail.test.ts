@@ -46,7 +46,7 @@ describe('ClaudeStorageDetector — #4352 g9 head + tail skeleton', () => {
     let projectDir: string;
 
     beforeEach(async () => {
-        tempDir = path.join(os.tmpdir(), `claude-g9-tail-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+        tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'claude-g9-tail-'));
         projectDir = path.join(tempDir, 'c--g9-project');
         await fs.mkdir(projectDir, { recursive: true });
         vi.spyOn(console, 'warn').mockImplementation(() => {});
