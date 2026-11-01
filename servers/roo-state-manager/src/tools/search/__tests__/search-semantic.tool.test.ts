@@ -1934,6 +1934,29 @@ describe('helper functions (indirect via handler)', () => {
 			expect(parsed.current_machine.recall_budget.refill_windows).toBe(1);
 		});
 
+		test('#2609 q4 audit — refill hnsw_ef stays capped at the ANN candidate budget', async () => {
+			// max_results 100 → the 12× window saturates the 1200 candidate budget.
+			// The first window comes back entirely machine output, so the refill
+			// fires at offset 1200: ef was 1200 + 1200 = 2400 (audit 01/11), a
+			// latency-only growth — it must never exceed the budget `limit` obeys.
+			const toolOutputSample = '[tool_result] Result: ' + JSON.stringify({ ok: true });
+			const machineOutput = Array.from({ length: 1200 }, (_unused, i) => ({
+				score: 0.9 - i * 0.0001,
+				payload: { task_id: 'task-tool-' + i, chunk_type: 'message_exchange', content: toolOutputSample, host_os: 'h1' },
+			}));
+			mockQdrantClient.search
+				.mockResolvedValueOnce(machineOutput)
+				.mockResolvedValueOnce([]);
+			await searchTasksByContentTool.handler(
+				{ search_query: 'décision', max_results: 100, exclude_tool_results: true },
+				makeCache(), mockEnsureCache, defaultFallback
+			);
+			const refillArgs = mockQdrantClient.search.mock.calls[1][1];
+			expect(refillArgs.offset).toBe(1200);
+			expect(refillArgs.limit).toBe(1200);
+			expect(refillArgs.params.hnsw_ef).toBe(1200);
+		});
+
 		test('the refill window is mandatory when the filter leaves the budget short', async () => {
 			const toolOutputSample = '[tool_result] Result: ' + JSON.stringify({ ok: true });
 			// Same calibration as above: 24 fills the current 2 × 12 window.
@@ -3286,6 +3309,48 @@ describe('#2609 q4 — request-form de-rank', () => {
 		for (const text of LIVE_REQUESTS) {
 			const q = requestFormFactor(text);
 			expect(q, text).toEqual({ factor: 0.85, applied: true });
+		}
+	});
+
+	test('post-merge audit 01/11 — politeness outside the request slots no longer taxes a statement', () => {
+		// The audit's wrongly-demoted cases, each attributed to its fix:
+		// - "Listening now, please wait": \blist collided with *Listening* (stem border);
+		// - "Listed below stp: 4 arbitrages": *Listed* is a statement, not the imperative (stem border);
+		// - "Voici le résumé stp": *résumé* is the noun — a delivery, not the verb (stem border);
+		// - "Explique pourquoi le résumé stp n'a pas marché": stem matches but the politeness
+		//   token is quoted mid-sentence — neither the trailing nor the post-stem slot.
+		for (const text of [
+			'Listening now, please wait',
+			'Listed below stp: 4 arbitrages',
+			'Listed below, please',
+			'Voici le résumé stp',
+			"Explique pourquoi le résumé stp n'a pas marché",
+		]) {
+			expect(requestFormFactor(text), text).toEqual({ factor: 1, applied: false });
+		}
+	});
+
+	test('post-merge audit 01/11 — the post-stem politeness slot still marks a request', () => {
+		// The trailing slot alone would wrongly spare the live flagship
+		// "Représente moi stp tous les arbitrages…" (stp sits right after the verb),
+		// so both slots must count. Same for the bare imperative right after the stem.
+		// (no own-content vocabulary in these two: "décisions" would trip the
+		// REQUEST_OWN_CONTENT escape and spare the chunk for the wrong reason)
+		for (const text of ['Résume stp les 4 arbitrages ouverts', 'Liste stp les arbitrages en attente']) {
+			expect(requestFormFactor(text), text).toEqual({ factor: 0.85, applied: true });
+		}
+	});
+
+	test('post-merge audit 01/11 — the own-content escape is reached, not shadowed (L298)', () => {
+		// Both fixtures pass the form gate AND a politeness slot (post-stem for the
+		// first, trailing for the second): the ONLY thing sparing them is
+		// REQUEST_OWN_CONTENT — deleting that line turns exactly this test red
+		// (the audit's point: the three older fixtures were spared by the form gate).
+		for (const text of [
+			'Détaille stp la décision: on garde 3h',
+			'La décision: on garde 3h — détaille stp',
+		]) {
+			expect(requestFormFactor(text), text).toEqual({ factor: 1, applied: false });
 		}
 	});
 
