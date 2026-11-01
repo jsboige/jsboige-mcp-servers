@@ -57,9 +57,12 @@ class FakeClient:
     template is substituted with the msg_id actually returned by execute().
     """
 
-    def __init__(self, iopub_msgs, replies, on_execute=None):
+    def __init__(self, iopub_runs, replies, on_execute=None, stale_iopub=None):
         self.shell_channel = FakeShellChannel(replies)
-        self._iopub = list(iopub_msgs)
+        # A real kernel publishes iopub messages only once the request is on
+        # the wire, so each execution consumes the next run's messages.
+        self._iopub = list(stale_iopub or [])
+        self._iopub_runs = [list(run) for run in iopub_runs]
         self._replies_on_execute = list(on_execute or [])
         self._msgid = 0
         self.stopped = False
@@ -77,6 +80,8 @@ class FakeClient:
     def execute(self, code):
         self._msgid += 1
         msg_id = f"msg-{self._msgid}"
+        if self._iopub_runs:
+            self._iopub.extend(self._iopub_runs.pop(0))
         for template in self._replies_on_execute:
             reply = {
                 **template,
@@ -322,7 +327,7 @@ async def test_notebook_cell_persistence_failure_reported_not_raised(service, no
 
 async def test_execute_code_takes_execution_count_from_reply():
     iopub = _iopub_run(error=("TypeError", "boom"))  # no execute_result in iopub
-    client = FakeClient(iopub, [], on_execute=[_reply("__current__", "error", 12)])
+    client = FakeClient([iopub], [], on_execute=[_reply("__current__", "error", 12)])
     mgr = make_manager({"k1": (FakeKernelManager(client), client)})
 
     result = await mgr.execute_code("k1", "raise TypeError('boom')", timeout=5)
@@ -334,7 +339,7 @@ async def test_execute_code_takes_execution_count_from_reply():
 
 async def test_execute_code_reply_missing_falls_back_to_iopub_count():
     iopub = _iopub_run(stream_text="hi\n", ec=4)
-    client = FakeClient(iopub, [])  # shell channel never yields the reply
+    client = FakeClient([iopub], [])  # shell channel never yields the reply
     mgr = make_manager({"k1": (FakeKernelManager(client), client)})
 
     result = await mgr.execute_code("k1", "42", timeout=5)
@@ -347,7 +352,7 @@ async def test_execute_code_discards_stale_shell_replies():
     stale = _reply("msg-OLD", "ok", 99)
     fresh = _reply("__current__", "ok", 5)
     iopub = _iopub_run(ec=5)
-    client = FakeClient(iopub, [], on_execute=[stale, fresh])
+    client = FakeClient([iopub], [], on_execute=[stale, fresh])
     mgr = make_manager({"k1": (FakeKernelManager(client), client)})
 
     result = await mgr.execute_code("k1", "5", timeout=5)
@@ -355,8 +360,40 @@ async def test_execute_code_discards_stale_shell_replies():
     assert result.execution_count == 5  # stale reply (other msg_id) discarded
 
 
+async def test_drains_are_bounded_when_the_client_never_raises():
+    """Regression guard: a client whose get_msg never raises must not spin.
+
+    A shared client lives across executions, so the stale-traffic drains run
+    on every call. An unbounded drain hung the whole manager on a client that
+    did not raise on an empty channel (caught by the #2718 interrupt tests).
+    """
+    kc = Mock()
+    kc.shell_channel.get_msg.return_value = {"msg_type": "execute_reply"}
+    kc.get_iopub_msg.return_value = {"msg_type": "status"}
+
+    JupyterManager._drain_shell(kc, max_msgs=10)
+    JupyterManager._drain_iopub(kc, max_msgs=10)
+
+    assert kc.shell_channel.get_msg.call_count == 10
+    assert kc.get_iopub_msg.call_count == 10
+
+
+async def test_execute_code_drains_stale_iopub_from_previous_run():
+    """A timed-out run leaves its messages in the shared SUB socket; the next
+    run must not report them as its own output."""
+    stale = _iopub_run(stream_text="OLD\n")
+    fresh = _iopub_run(stream_text="NEW\n", ec=2)
+    client = FakeClient([fresh], [], stale_iopub=stale)
+    mgr = make_manager({"k1": (FakeKernelManager(client), client)})
+
+    result = await mgr.execute_code("k1", "print('NEW')", timeout=5)
+
+    assert result.text_output == "NEW\n"
+    assert result.execution_count == 2
+
+
 async def test_execute_code_reuses_shared_client():
-    client = FakeClient(_iopub_run(ec=1), [])
+    client = FakeClient([_iopub_run(ec=1), _iopub_run(ec=2)], [])
     km = FakeKernelManager(client)
     mgr = make_manager({"k1": (km, client)})
 

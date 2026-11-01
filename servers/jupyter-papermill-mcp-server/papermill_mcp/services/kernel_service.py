@@ -81,9 +81,11 @@ class KernelService:
         try:
             logger.info(f"Starting kernel: {kernel_name} (working_dir={working_dir})")
 
-            kernel_id = await self.jupyter_manager.start_kernel(
-                kernel_name, working_dir=working_dir
-            )
+            # Only forward working_dir when one was asked for: the parameter is
+            # optional all the way down, and callers/tests that mirror the
+            # manager signature must keep working for a plain start.
+            extra = {"working_dir": working_dir} if working_dir is not None else {}
+            kernel_id = await self.jupyter_manager.start_kernel(kernel_name, **extra)
 
             result = {
                 "kernel_id": kernel_id,

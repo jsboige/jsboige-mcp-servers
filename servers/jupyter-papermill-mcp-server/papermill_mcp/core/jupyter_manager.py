@@ -502,8 +502,11 @@ class JupyterManager:
                 # early outputs can no longer be lost to the subscribe race.
                 kc = self._get_client(kernel_id, km)
 
-                # Discard shell replies left unread by earlier runs so the
-                # reply fetched below matches this execution's msg_id.
+                # Discard iopub messages and shell replies left unread by
+                # earlier runs (a timed-out run leaves both behind), so this
+                # execution only reports -- and only reads replies for -- its
+                # own traffic.
+                self._drain_iopub(kc)
                 self._drain_shell(kc)
 
                 # Execute code
@@ -711,12 +714,36 @@ class JupyterManager:
         info.client = None
 
     @staticmethod
-    def _drain_shell(kc: Any) -> None:
-        """#4481: discard stale (never-read) shell replies, non-blocking."""
-        while True:
+    def _drain_shell(kc: Any, max_msgs: int = 1000) -> None:
+        """#4481: discard stale (never-read) shell replies, non-blocking.
+
+        Bounded on purpose: a client whose get_msg() never raises on an empty
+        channel would spin forever here (a real BlockingKernelClient raises
+        Empty, but the manager must not depend on that to stay responsive).
+        """
+        for _ in range(max_msgs):
             try:
-                kc.shell_channel.get_msg(timeout=0)
+                msg = kc.shell_channel.get_msg(timeout=0)
             except Exception:
+                return
+            if not isinstance(msg, dict):
+                return
+
+    @staticmethod
+    def _drain_iopub(kc: Any, max_msgs: int = 1000) -> None:
+        """#4481: discard iopub messages left over by an earlier execution.
+
+        Only safe while holding the kernel's execution lock and BEFORE the
+        execute request is sent. Without it, a run that timed out or was
+        interrupted leaves its trailing messages in the shared client's SUB
+        socket, and the next run reads them as its own output.
+        """
+        for _ in range(max_msgs):
+            try:
+                msg = kc.get_iopub_msg(timeout=0)
+            except Exception:
+                return
+            if not isinstance(msg, dict):
                 return
 
     async def _await_execute_reply(
@@ -1022,6 +1049,7 @@ class JupyterManager:
                 kernel_info.last_activity = datetime.now()
 
                 kc = self._get_client(kernel_id, km)
+                self._drain_iopub(kc)
                 self._drain_shell(kc)
                 msg_id = kc.execute(code)
 
