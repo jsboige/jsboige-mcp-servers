@@ -513,6 +513,38 @@ Each preset states in its own `description` what the calling agent may hand over
 |----|-------|-------|-------------|
 | `swift-delegator` | swift-1.5-27b | sk_agent | Fleet medium (Swift-1.5-27B) that keeps the judgement and delegates short, tooled, verifiable sub-tasks to the mini presets through the self-inclusion plugin. A child failure is reported and finished by the medium — never a silent gap. |
 
+## Usage Guide — which agent for what (#4085 volet D)
+
+Short guide for callers. Defaults are right most of the time: `call_agent` without
+`agent` runs `analyst` (local, full tool belt). Deviate only when a row says so.
+
+| You need | Call | Why |
+| -------- | ---- | --- |
+| General analysis | `analyst` (default) | Local Swift-1.5-27B, searxng + playwright + markitdown |
+| Heavy analysis while local is down | `analyst-glm5` | Cloud twin, same tool belt |
+| Quick triage, cheap | `fast-responder`, `analyst-fast` | Hub flash models, minimal tools |
+| Images / screenshots | `vision-analyst` (vision default) or `vision-local` | Hub strips images (#794) — vision runs local |
+| Code edit or verify on this machine | `coder` | Carries `open_terminal` |
+| PR review | `review_pr` | Picks its tier-1/tier-2 agents itself (#1587) |
+| Structured French deliverable | `owui-analyst`, `owui-writer` | OWUI expert presets |
+| Multi-perspective deliberation | `run_conversation` + `deep_think` | 4-agent group chat |
+| Sourced research | `run_conversation` + `deep_search` | researcher → synthesizer → critic |
+| Cheap mechanical sub-tasks | via `swift-delegator` | Delegates to `frognano-4b` mini presets (#4107) |
+
+**stdio vs mcp-tools.** Every entry in `mcps` is spawned by sk-agent itself as a
+**local stdio subprocess** — plugin isolation is free (`venv-markitdown` runs mcp 2.x
+while the main venv stays on 1.x). Agents mount plugins **by name** in their `mcps`
+list; there is no per-call plugin choice — the agent's list decides what its turns can
+call. `list_tools` reports the mounted set per agent.
+
+**Known limits.**
+
+- **Vision is local-only** — the hub strips images (#794).
+- **Attachments accept office/media only** — `.py`/`.ps1` are refused; source code goes in the prompt (the mini presets enforce this).
+- **Thinking doubles latency** on Swift models — prefer the `-no-thinking` variants (`coder`, `fast`, `fast-local`) unless reasoning is needed.
+- **Timeouts and budgets** follow the timeout chain (#3797) and per-model budget overrides; the mini-tier budget floor is 4096 tokens (#4107).
+- **Usage telemetry** (`usage.jsonl`) records tool, duration, agent and model — never content (ms#1387, ms#1612).
+
 ## Changelog
 
 ### v2.4 (2026-10-11) — canonical swift-1.5-27b ids (#3411, fleet audit option A)
