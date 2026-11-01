@@ -2614,19 +2614,32 @@ mcp_server = FastMCP(**_mcp_kwargs)
 # ---------------------------------------------------------------------------
 # Usage telemetry
 # ---------------------------------------------------------------------------
-# One JSONL line per tool call -- tool name, outcome, duration, pid.  No prompt
-# or response content is written.  Purpose: answer "is sk-agent usage growing?"
-# with a counter instead of an impression.  Best-effort by design -- a
-# telemetry failure must never break an agent call.  Same record format and
-# env var as the prototype in jsboige/vllm (myia_vllm/mcp/sk_agent.py).
+# One JSONL line per tool call -- tool name, outcome, duration, pid, plus
+# agent/model when known.  No prompt or response content is written.  Purpose:
+# answer "is sk-agent usage growing?" with a counter instead of an impression.
+# Best-effort by design -- a telemetry failure must never break an agent call.
+# Same record format and env var as the prototype in jsboige/vllm
+# (myia_vllm/mcp/sk_agent.py).
 USAGE_LOG = Path(
     os.environ.get("SK_AGENT_USAGE_LOG")
     or Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "sk-agent" / "usage.jsonl"
 )
 
 
-def log_usage(tool: str, ok: bool, started: float, error: str = "") -> None:
-    """Append one usage record.  Swallows every error on purpose."""
+def log_usage(
+    tool: str,
+    ok: bool,
+    started: float,
+    error: str = "",
+    agent: str | None = None,
+    model: str | None = None,
+) -> None:
+    """Append one usage record.  Swallows every error on purpose.
+
+    ``agent`` / ``model`` are added only when known -- absent means
+    omitted, never ``null`` (issue #4085: adoption reporting needs the
+    per-agent and per-model split without growing a fixed schema).
+    """
     try:
         USAGE_LOG.parent.mkdir(parents=True, exist_ok=True)
         record = {
@@ -2638,6 +2651,10 @@ def log_usage(tool: str, ok: bool, started: float, error: str = "") -> None:
         }
         if error:
             record["error"] = error[:200]
+        if agent:
+            record["agent"] = agent
+        if model:
+            record["model"] = model
         with USAGE_LOG.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
@@ -2654,12 +2671,23 @@ def track_usage(fn):
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
         started = time.monotonic()
+        # The ``agent`` kwarg exists on agent-targeting tools (call_agent,
+        # review_pr) and is absent elsewhere -- kwargs.get keeps both cases.
+        agent = kwargs.get("agent")
         try:
             result = await fn(*args, **kwargs)
         except Exception as exc:
-            log_usage(fn.__name__, False, started, repr(exc))
+            log_usage(fn.__name__, False, started, repr(exc), agent=agent)
             raise
-        log_usage(fn.__name__, True, started)
+        # Tools return JSON strings; model_used rides on success payloads.
+        model = None
+        try:
+            payload = json.loads(result) if isinstance(result, str) else result
+            if isinstance(payload, dict):
+                model = payload.get("model_used")
+        except Exception:
+            model = None
+        log_usage(fn.__name__, True, started, agent=agent, model=model)
         return result
 
     return wrapper
