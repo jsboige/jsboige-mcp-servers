@@ -52,4 +52,7 @@ jobs:
         cd servers/jupyter-papermill-mcp-server
         # Explicit path: an accidental empty collection exits 5 (red), never green.
         # test_file_utils.py carries the atomic-write guard (0-byte notebook, 27/10).
-        python -m pytest tests/test_unit tests/test_file_utils.py
+        # test_issue_4481_fixes.py carries the D1/D2/C1 guards (#4481): without it
+        # here the freeze and the output-wiping regression were protected only
+        # locally -- it was collected by no CI selection before or after merge.
+        python -m pytest tests/test_unit tests/test_file_utils.py tests/test_issue_4481_fixes.py

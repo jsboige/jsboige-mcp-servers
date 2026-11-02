@@ -240,25 +240,31 @@ class TestThreadSafety:
         results = []
 
         def create_job(index):
-            with patch("builtins.open", create=True) as mock_open:
-                mock_open.return_value.__enter__.return_value.read.return_value = (
-                    sample_notebook_simple
-                )
-                result = manager.start_notebook_async(
-                    f"/mock/notebook{index}.ipynb", wait_seconds=0
-                )
-                results.append(result)
+            result = manager.start_notebook_async(
+                f"/mock/notebook{index}.ipynb", wait_seconds=0
+            )
+            results.append(result)
 
-        # Create multiple threads
-        threads = []
-        for i in range(5):
-            thread = threading.Thread(target=create_job, args=(i,))
-            threads.append(thread)
-            thread.start()
+        # #4481 (W2): patch once around the whole concurrent run. `patch` saves
+        # the previous value of a *process-wide* attribute on __enter__ and puts
+        # it back on __exit__; started and stopped from five threads at once, one
+        # thread's exit restores a value another thread's enter captured, and the
+        # last stop can leave a MagicMock in `builtins` for the rest of the
+        # session -- every later test that reads a file then gets a mock instead
+        # of a handle.
+        with patch("builtins.open", create=True) as mock_open:
+            mock_open.return_value.__enter__.return_value.read.return_value = (
+                sample_notebook_simple
+            )
+            threads = []
+            for i in range(5):
+                thread = threading.Thread(target=create_job, args=(i,))
+                threads.append(thread)
+                thread.start()
 
-        # Wait for all threads
-        for thread in threads:
-            thread.join()
+            # Wait for all threads
+            for thread in threads:
+                thread.join()
 
         # All should succeed (within concurrent limit)
         successful = [r for r in results if r["success"]]
