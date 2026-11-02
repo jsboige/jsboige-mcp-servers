@@ -154,7 +154,8 @@ describe('generateStatusUpdate — budget par section (#4434)', () => {
     it('bloc BUDGET PAR SECTION présent, avec total et une ligne par section (8/8)', async () => {
         const { system } = await captureStatusCall();
         expect(system).toContain('BUDGET PAR SECTION (#4434)');
-        expect(system).toContain('~1 300 mots');
+        expect(system).toContain('LIMITE STRICTE');
+        expect(system).toContain('~600 mots');
         for (const name of CANON) {
             // Chaque section canonique porte SA ligne de budget « - <nom> : ≤ N mots »
             const line = system.split('\n').find(l => l.trim().startsWith('-') && l.includes(name) && l.includes('mots'));

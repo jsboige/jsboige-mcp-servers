@@ -4242,16 +4242,17 @@ Format : "- **entité** : état (source: [date])"
 ### Patterns appris
 [Anti-patterns identifiés, conventions établies, leçons consolidées — mémoire durable du projet]
 
-BUDGET PAR SECTION (#4434) — la sortie entière doit tenir dans ~1 300 mots (~9 000 caractères) :
-- Résumé : ≤ 60 mots
-- État des systèmes : ≤ 220 mots (une ligne par entité, dernier état connu)
-- Décisions actées : ≤ 220 mots
-- Blocages structurels : ≤ 140 mots
-- Livrables récents : ≤ 180 mots (synthèse par thème)
-- En cours : ≤ 140 mots
-- Métriques de référence : ≤ 180 mots
-- Patterns appris : ≤ 180 mots
+BUDGET PAR SECTION (#4434) — LIMITE STRICTE : la sortie entière doit tenir dans ~600 mots (~4 200 caractères) :
+- Résumé : ≤ 40 mots
+- État des systèmes : ≤ 100 mots (une ligne par entité, dernier état connu)
+- Décisions actées : ≤ 90 mots
+- Blocages structurels : ≤ 60 mots
+- Livrables récents : ≤ 80 mots (synthèse par thème)
+- En cours : ≤ 60 mots
+- Métriques de référence : ≤ 85 mots
+- Patterns appris : ≤ 85 mots
 Règles du budget :
+- Avant d'écrire, ESTIME le total prévu ; s'il dépasse le budget, condense davantage AVANT de commencer — un dépassement en cours de rédaction ne se rattrape pas.
 - Les 8 sections apparaissent TOUJOURS, dans cet ordre, CHACUNE COMPLÈTE — jamais une section omise, jamais une section coupée en cours de rédaction.
 - Pour tenir un budget : condense DANS la section (fusionner les entrées, garder le dernier état, chasser le détail tactique) — jamais supprimer la section ni son titre.
 - En cas de tension : « Patterns appris » et « Métriques de référence » ne sont JAMAIS sacrifiées — rogne « Résumé » et « Livrables récents » d'abord.
