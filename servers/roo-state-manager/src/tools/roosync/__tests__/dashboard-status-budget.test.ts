@@ -187,10 +187,14 @@ describe('generateStatusUpdate — budget par section (#4434)', () => {
         // ne sort du statut que sur réfutation).
         expect(line!).toContain('PAS de plafond de mots');
         expect(line!).not.toMatch(/Blocages structurels\s*:\s*≤\s*\d+\s*mots/);
-        expect(line!).toContain('UNE LIGNE PAR BLOCAGE ACTIF');
-        expect(line!).toContain('date de vérification');
+        expect(line!).toContain('RECOPIE une ligne par blocage actif du statut précédent');
+        expect(line!).toContain('même sujet, même date de vérification');
         expect(line!).toMatch(/≤\s*25\s*mots par ligne/);
+        expect(line!).toContain('PEUT dépasser le budget sans limite');
+        // Jamais de disparition silencieuse : la ligne reste, marquée.
+        expect(line!).toContain('ne disparaît jamais silencieusement');
         expect(line!).toContain('REFUTE <date>');
+        expect(line!).toContain('RÉSOLU <date>');
         // La règle anti-rogne : les lignes de blocage ne se sacrifient jamais
         // au budget — c'est ce qui rend l'absence de plafond effective.
         expect(system).toContain('Les lignes de blocage ne se rognent JAMAIS pour tenir le budget');

@@ -4246,7 +4246,7 @@ BUDGET PAR SECTION (#4434) — LIMITE STRICTE : la sortie doit tenir dans ~600 m
 - Résumé : ≤ 40 mots
 - État des systèmes : ≤ 100 mots (une ligne par entité, dernier état connu)
 - Décisions actées : ≤ 90 mots
-- Blocages structurels : PAS de plafond de mots — UNE LIGNE PAR BLOCAGE ACTIF, avec sa date de vérification (format « … [vérifié JJ/MM HH:MMZ] »), ≤ 25 mots par ligne ; un blocage ne quitte le statut que réfuté, marqué « REFUTE <date> » avec la réfutation citée
+- Blocages structurels : PAS de plafond de mots — RECOPIE une ligne par blocage actif du statut précédent (même sujet, même date de vérification, format « … [vérifié JJ/MM HH:MMZ] »), détail condensé à ≤ 25 mots par ligne ; cette section PEUT dépasser le budget sans limite. Une ligne de blocage ne disparaît jamais silencieusement : elle ne sort que si un message la réfute ou la clôt, et dans ce cas elle RESTE, marquée « REFUTE <date> » (réfutation citée) ou « RÉSOLU <date> »
 - Livrables récents : ≤ 55 mots (synthèse par thème)
 - En cours : ≤ 60 mots
 - Métriques de référence : ≤ 85 mots
