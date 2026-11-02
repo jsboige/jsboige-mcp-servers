@@ -10,7 +10,8 @@ import {
     INDEX_VERSION_CURRENT,
     DEFAULT_REINDEX_TTL_HOURS,
     MAX_RETRY_ATTEMPTS,
-    RETRY_BACKOFF_BASE_MS
+    RETRY_BACKOFF_BASE_MS,
+    getReindexChangedAfterMs
 } from '../types/indexing.js';
 import { NoiseFilter } from './noise-filter.js';
 
@@ -131,6 +132,32 @@ export class IndexingDecisionService {
 
         // SKIP : Déjà indexé avec succès et dans le TTL
         if (indexingState.indexStatus === 'success') {
+            // #4352 g9: content written since the last success overrides the TTL. The
+            // TTL bounds the re-index of UNCHANGED content; checked first, it held
+            // changed sessions for up to 7 days (ai-01 01/11: 16 held, 10 of them
+            // written in the last 24 h). The minimum interval keeps a live session
+            // from being re-extracted on every refresh tick; 0 = legacy TTL-first order.
+            const changedAfterMs = getReindexChangedAfterMs();
+            if (changedAfterMs > 0 && indexingState.lastIndexedAt) {
+                const lastIndexed = new Date(indexingState.lastIndexedAt).getTime();
+                if (lastActivity > lastIndexed) {
+                    const sinceIndexed = now - lastIndexed;
+                    if (sinceIndexed >= changedAfterMs) {
+                        return {
+                            shouldIndex: true,
+                            reason: `Contenu modifié depuis la dernière indexation (${indexingState.lastIndexedAt}), réindexation requise — prime sur le TTL`,
+                            action: 'index'
+                        };
+                    }
+                    const minutesRemaining = Math.ceil((changedAfterMs - sinceIndexed) / (60 * 1000));
+                    return {
+                        shouldIndex: false,
+                        reason: `Contenu modifié, réindexation dans ${minutesRemaining}min (intervalle minimal)`,
+                        action: 'skip'
+                    };
+                }
+            }
+
             // Vérifier le TTL de réindexation
             if (indexingState.nextReindexAfter) {
                 const nextReindex = new Date(indexingState.nextReindexAfter).getTime();

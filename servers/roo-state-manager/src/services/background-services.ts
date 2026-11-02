@@ -14,7 +14,7 @@ import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics } from './task-indexer/VectorIndexer.js';
-import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass } from '../types/indexing.js';
+import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass, getReindexChangedAfterMs } from '../types/indexing.js';
 import { matchesPattern } from '../utils/matches-pattern.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 import { isLocallyIndexable } from './task-partition.js';
@@ -843,6 +843,11 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                 }
             } catch {
                 // Claude detection not critical
+            }
+
+            // #4352 g9: changes held back by the minimum reindex interval come due here.
+            for (const taskId of findHeldChangesDue(state)) {
+                state.qdrantIndexQueue.add(taskId);
             }
 
             // #2427 defect B: settle the tick's Claude dual-writes BEFORE persisting any
@@ -2159,6 +2164,7 @@ export function shouldRequeueForRefresh(args: {
     fileMtimeMs: number;
     lastActivityMs: number;
     forceRescan: boolean;
+    nowMs?: number;
 }): boolean {
     // Rule 1: dead-lettered tasks stay dead-lettered. Optional-chaining
     // guards against older state mocks that pre-date #2766 S2+.
@@ -2185,7 +2191,48 @@ export function shouldRequeueForRefresh(args: {
         return false;
     }
 
+    // #4352 g9: a changed success task still inside the minimum reindex interval
+    // is not queued now — shouldIndex() would only skip it. findHeldChangesDue()
+    // queues it on the first tick after the interval has elapsed.
+    if (contentChanged && args.indexStatus === 'success' && args.lastIndexed) {
+        const changedAfterMs = getReindexChangedAfterMs();
+        const sinceIndexed = (args.nowMs ?? Date.now()) - new Date(args.lastIndexed).getTime();
+        if (changedAfterMs > 0 && sinceIndexed < changedAfterMs) {
+            return false;
+        }
+    }
+
     return contentChanged;
+}
+
+/** #4352 g9: at most this many held changes are queued per refresh tick. */
+export const MAX_HELD_CHANGES_PER_TICK = 4;
+
+/**
+ * #4352 g9: success tasks whose content changed after their last indexing and
+ * whose minimum reindex interval has now elapsed. The refresh loops only revisit
+ * a file whose mtime moved past their cursor, so a session that stopped writing
+ * inside the interval would otherwise keep its last part out of the index until
+ * the next restart scan. Bounded per tick: the first tick after a deploy finds
+ * every change the TTL was holding.
+ */
+export function findHeldChangesDue(state: ServerState, nowMs: number = Date.now()): string[] {
+    const changedAfterMs = getReindexChangedAfterMs();
+    if (changedAfterMs <= 0 || !state.indexingDecisionService) return [];
+    const due: string[] = [];
+    for (const [taskId, header] of state.conversationCache) {
+        if (due.length >= MAX_HELD_CHANGES_PER_TICK) break;
+        const idx = header.metadata?.indexingState;
+        if (idx?.indexStatus !== 'success' || !idx.lastIndexedAt) continue;
+        const lastIndexed = new Date(idx.lastIndexedAt).getTime();
+        if (!(new Date(header.metadata.lastActivity).getTime() > lastIndexed)) continue;
+        if (nowMs - lastIndexed < changedAfterMs) continue;
+        if (state.qdrantIndexQueue.has(taskId) || state.deadLetterQueue?.has(taskId)) continue;
+        if (!isLocallyIndexable(header)) continue;
+        if (!state.indexingDecisionService.shouldIndex(header).shouldIndex) continue;
+        due.push(taskId);
+    }
+    return due;
 }
 
 /**

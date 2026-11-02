@@ -86,7 +86,7 @@ export const roosyncSearchTool: Tool = {
             action: {
                 type: 'string',
                 enum: ['semantic', 'text', 'diagnose'],
-                description: 'Action: semantic (Qdrant vector search), text (cache search), diagnose (index health)'
+                description: 'Action: semantic (Qdrant vector search over message content), text (cache search: titles and first instructions; message content only for tasks loaded in full, so 0 results is not absence), diagnose (index health)'
             },
             search_query: {
                 type: 'string',

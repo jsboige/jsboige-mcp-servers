@@ -60,6 +60,13 @@ export async function searchFallbackTool(
     // result AND counted, so "0 results" can never be mistaken for "0 failures".
     let unevaluableForErrors = 0;
 
+    // #4352 g10: text mode only sees what the cache holds. The cache keeps task
+    // headers (title, first instruction), not message content — content is there
+    // only for tasks loaded in full by this process. Both counts are reported so
+    // an empty result is never read as "absent from the conversations".
+    let tasksExamined = 0;
+    let contentSearchedTasks = 0;
+
     if (!query || query.trim().length === 0) {
       return {
         isError: true,
@@ -135,6 +142,7 @@ export async function searchFallbackTool(
         if (hasFailure !== has_errors) continue;
       }
 
+      tasksExamined++;
       const title = skeleton.metadata?.title?.toLowerCase() || '';
       const instruction = skeleton.truncatedInstruction?.toLowerCase() || '';
 
@@ -146,6 +154,7 @@ export async function searchFallbackTool(
           .join(' ')
           .toLowerCase();
       }
+      if (messageText.trim().length > 0) contentSearchedTasks++;
 
       // Score: full phrase match > individual token matches
       let score = 0;
@@ -229,6 +238,9 @@ export async function searchFallbackTool(
     if (unevaluableForErrors > 0) {
       warnings.push(`${unevaluableForErrors} task(s) could not be evaluated for has_errors (no action sequence loaded in cache) and are excluded from these results — this is not evidence that they carry no errors.`);
     }
+    if (contentSearchedTasks < tasksExamined) {
+      warnings.push(`Text mode searched message content for ${contentSearchedTasks} of ${tasksExamined} task(s); for the others it matched only the title and first instruction (the search cache holds no message content for them). 0 results is not evidence of absence — use action:"semantic" to search message content.`);
+    }
     if (max_results && offsetResults.length > max_results) {
       warnings.push(`Results capped from ${offsetResults.length} to ${max_results}.`);
     }
@@ -251,6 +263,10 @@ export async function searchFallbackTool(
             tokenCount: tokens.length,
             cacheSize: conversationCache.size,
             workspace: workspace || 'all',
+            // #4352 g10: what was actually searched.
+            searched_fields: ['title', 'truncatedInstruction', 'message content (tasks loaded in full only)'],
+            tasks_examined: tasksExamined,
+            content_searched_tasks: contentSearchedTasks,
             // #2920: explicit so a programmatic consumer never has to infer
             // whether its filters took effect.
             applied_filters: appliedFilters.length > 0 ? appliedFilters : undefined,

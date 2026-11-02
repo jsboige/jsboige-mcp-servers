@@ -92,6 +92,25 @@ export interface IndexingMetrics {
 
 export const INDEX_VERSION_CURRENT = "1.2"; // #2455: bump to trigger fleet-wide reindex for workspace_name propagation
 export const DEFAULT_REINDEX_TTL_HOURS = 168; // 7 jours
+
+/**
+ * #4352 g9: content written since the last successful indexing overrides the
+ * reindex TTL, at most once per this interval — a live session is written every
+ * few seconds, and without a floor it would be re-extracted on every 2-min
+ * refresh tick. Env INDEX_REINDEX_CHANGED_AFTER_MS overrides; 0 restores the
+ * legacy order, where changed content waited for the TTL (up to 7 days).
+ */
+export const DEFAULT_REINDEX_CHANGED_AFTER_MS = 60 * 60 * 1000;
+
+export function getReindexChangedAfterMs(): number {
+    const raw = process.env.INDEX_REINDEX_CHANGED_AFTER_MS;
+    if (raw !== undefined && raw.trim() !== '') {
+        const parsed = Number(raw);
+        if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+    }
+    return DEFAULT_REINDEX_CHANGED_AFTER_MS;
+}
+
 export const MAX_RETRY_ATTEMPTS = 3;
 export const RETRY_BACKOFF_BASE_MS = 60000; // 1 minute base
 
