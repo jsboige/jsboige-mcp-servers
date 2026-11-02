@@ -42,10 +42,12 @@
  * one backfill of that tree covers the fleet: the marker is fleet-wide.
  *
  * CONNECTION — the lookup uses its OWN short-lived client (3 s connect and
- * statement timeouts), not the shared reader pool: a marker lookup must not
- * instantiate — nor hold open — the seat's PG pool, and it must not be
- * able to keep the process alive. SSL comes from the connection string
- * (`sslmode=require`), exactly like the reader and the writer.
+ * statement timeouts by default), not the shared reader pool: a marker
+ * lookup must not instantiate — nor hold open — the seat's PG pool, and it
+ * must not be able to keep the process alive. SSL comes from the connection
+ * string (`sslmode=require`), exactly like the reader and the writer. A
+ * caller off the request path may pass a longer budget to
+ * `ensureBackfillMarkersFresh` (the send CLI does, see there).
  */
 
 import { createLogger } from '../../utils/logger.js';
@@ -75,8 +77,8 @@ export const DASHBOARD_BACKFILL_META_KEY = 'dashboard_backfill_complete_at';
 /** Default TTL of the marker lookup, in ms. */
 const DEFAULT_TTL_MS = 300_000;
 
-/** Connect / statement timeout of the marker lookup, in ms. */
-const LOOKUP_TIMEOUT_MS = 3_000;
+/** Default connect / statement timeout of the marker lookup, in ms. */
+export const BACKFILL_MARKER_LOOKUP_TIMEOUT_MS = 3_000;
 
 const META_KEYS: Record<BackfillScope, string> = {
   channel: CHANNEL_BACKFILL_META_KEY,
@@ -128,17 +130,22 @@ export function getBackfillMarkerState(scope: BackfillScope): BackfillMarkerStat
  *
  * @param force - re-read even if a refresh is already in flight (used by the
  *   backfill scripts' own verification path and by tests).
+ * @param timeoutMs - connect / statement budget of THIS lookup. A refresh
+ *   already in flight is joined with its own budget.
  */
-export async function refreshBackfillMarkers(force = false): Promise<void> {
+export async function refreshBackfillMarkers(
+  force = false,
+  timeoutMs = BACKFILL_MARKER_LOOKUP_TIMEOUT_MS
+): Promise<void> {
   if (inFlight && !force) return inFlight;
-  const run = doRefresh().finally(() => {
+  const run = doRefresh(timeoutMs).finally(() => {
     inFlight = null;
   });
   inFlight = run;
   return run;
 }
 
-async function doRefresh(): Promise<void> {
+async function doRefresh(timeoutMs: number): Promise<void> {
   const url = process.env.UNIFIED_STORE_PG_URL;
   if (!url) {
     // No store on this host: nothing to mark, the GDrive path is the only one.
@@ -149,7 +156,7 @@ async function doRefresh(): Promise<void> {
 
   let values: Map<string, string>;
   try {
-    values = await readMetaValues(url, Object.values(META_KEYS));
+    values = await readMetaValues(url, Object.values(META_KEYS), timeoutMs);
   } catch (error) {
     // Two causes, one safe answer: migrations/012 not applied on this store,
     // or PG unreachable. Both mean "no proof of completeness" → the GDrive
@@ -184,12 +191,16 @@ async function doRefresh(): Promise<void> {
  *
  * @returns the values found (a key with no row is simply absent from the map).
  */
-async function readMetaValues(url: string, keys: string[]): Promise<Map<string, string>> {
+async function readMetaValues(
+  url: string,
+  keys: string[],
+  timeoutMs: number
+): Promise<Map<string, string>> {
   const { default: pg } = await import('pg');
   const client = new pg.Client({
     connectionString: url,
-    connectionTimeoutMillis: LOOKUP_TIMEOUT_MS,
-    statement_timeout: LOOKUP_TIMEOUT_MS,
+    connectionTimeoutMillis: timeoutMs,
+    statement_timeout: timeoutMs,
   });
   const values = new Map<string, string>();
   try {
@@ -229,8 +240,17 @@ function setState(scope: BackfillScope, state: BackfillMarkerState, logAbsent = 
  * MCP startup, the CLI helpers) uses this to close the 'unknown' window — an
  * unresolved marker reads as "no proof of completeness", which on a
  * PG-primary seat would be one empty inbox.
+ *
+ * @param options.timeoutMs - connect / statement budget of the lookup when
+ *   one is needed (default 3 s, the request-path budget). A one-shot process
+ *   that sends nothing until it decides may wait longer: the send CLI passes
+ *   15 s, because a 3 s lookup that loses a PG busy burst sends the worker
+ *   report to G: (#4131 — measured on ai-01, 02/11 07:10:26Z: connect
+ *   timeout while ~20 RSM hosts restarting at once took 5-6 s per inbox read).
  */
-export async function ensureBackfillMarkersFresh(): Promise<void> {
+export async function ensureBackfillMarkersFresh(
+  options: { timeoutMs?: number } = {}
+): Promise<void> {
   const now = Date.now();
   const scopes: BackfillScope[] = ['channel', 'dashboard'];
   const fresh = scopes.every(
@@ -239,7 +259,7 @@ export async function ensureBackfillMarkersFresh(): Promise<void> {
       now - cache[scope].checkedAt <= backfillMarkerTtlMs()
   );
   if (fresh) return;
-  await refreshBackfillMarkers();
+  await refreshBackfillMarkers(false, options.timeoutMs ?? BACKFILL_MARKER_LOOKUP_TIMEOUT_MS);
 }
 
 /**

@@ -30,8 +30,8 @@ const STUBS: Record<string, string> = {
   `,
   'services/unified-store/pg-backfill-marker.js': `
     import { appendFileSync } from 'node:fs';
-    export async function ensureBackfillMarkersFresh() {
-      appendFileSync(process.env.SEND_CLI_TRACE, 'ensure-start\\n');
+    export async function ensureBackfillMarkersFresh(options) {
+      appendFileSync(process.env.SEND_CLI_TRACE, 'ensure-start timeoutMs=' + options?.timeoutMs + '\\n');
       if (process.env.SEND_CLI_STUB_MARKER_THROWS === '1') throw new Error('stub marker failure');
       await new Promise((resolve) => setTimeout(resolve, 30));
       globalThis.__markerResolved = true;
@@ -120,7 +120,16 @@ describe('send-roosync-message.mjs — marker resolved before the send (#4131)',
   test('the marker is resolved, and awaited, before sendMessage decides', () => {
     const run = runCli({ gdrive: false, live: true });
     expect(run.status, run.stderr).toBe(0);
-    expect(run.lines.slice(0, 3)).toEqual(['ensure-start', 'ensure-end', 'send resolved=true']);
+    expect(run.lines.slice(0, 3)).toEqual(['ensure-start timeoutMs=15000', 'ensure-end', 'send resolved=true']);
+  });
+
+  test('the lookup gets the writer-pool budget (15 s), not the 3 s request-path default', () => {
+    // ai-01 02/11 07:10:26Z: the default 3 s connect timed out during a PG busy
+    // burst and the worker report went to G:, while the writer pool (15 s)
+    // connected right after.
+    const run = runCli({ gdrive: false, live: true });
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.lines[0]).toBe('ensure-start timeoutMs=15000');
   });
 
   test('a marker resolution that throws never blocks the send: delivered on G:, exit 0', () => {
