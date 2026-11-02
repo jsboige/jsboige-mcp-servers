@@ -13,7 +13,7 @@ const {
     mockWriteFile,
     mockAccess,
     mockUtimes,
-    mockExec,
+    mockExecFile,
     mockCopyFile,
     mockUnlink,
 } = vi.hoisted(() => ({
@@ -21,7 +21,7 @@ const {
     mockWriteFile: vi.fn(),
     mockAccess: vi.fn(),
     mockUtimes: vi.fn(),
-    mockExec: vi.fn(),
+    mockExecFile: vi.fn(),
     // #3988: staged write (writeMcpSettingsAtomic) — copyFile stage + unlink cleanup
     mockCopyFile: vi.fn(),
     mockUnlink: vi.fn(),
@@ -36,8 +36,9 @@ vi.mock('fs/promises', () => ({
     unlink: mockUnlink,
 }));
 
+// #4149 (famille ms#1630) : la frontière est execFile (argv sans shell).
 vi.mock('child_process', () => ({
-    exec: mockExec,
+    execFile: mockExecFile,
 }));
 
 vi.mock('os', () => ({
@@ -313,7 +314,7 @@ describe('roosync_mcp_management', () => {
 
     describe('action=rebuild', () => {
         it('rebuilds MCP with cwd', async () => {
-            mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+            mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
                 cb(null, 'Build successful', '');
             });
             const result = await roosyncMcpManagement({
