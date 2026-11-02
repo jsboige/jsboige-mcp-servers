@@ -941,6 +941,97 @@ function condenseCBStateFile(): string {
   return path.join(os.tmpdir(), `rsm-condense-cb-${key}.json`);
 }
 
+/**
+ * #4434 — les fichiers du breaker sous vitest sont par-pid à dessein (des
+ * workers parallèles ne doivent pas partager un état), mais rien ne les
+ * supprimait : 1 441 restes dans `%TEMP%` sur ai-01 et **639 sur po-2028**
+ * (mesuré le 02/11). L'état ne vaut plus rien quand le worker est mort, donc
+ * celui qui écrit supprime ses propres fichiers, et un balayage prend le relais
+ * pour les workers tués avant leur hook de sortie.
+ *
+ * Le balayage ne reconnaît que l'infixe `-test-` : le fichier du breaker réel
+ * (`rsm-condense-cb-<sha12>.json`) n'est jamais candidat, quel que soit son âge.
+ */
+export const CONDENSE_CB_TEST_FILE_PREFIX = 'rsm-condense-cb-test-';
+/** Même seuil que `TMP_SWEEP_MIN_AGE_MS` (#4003) : un test vivant écrit ce fichier pour quelques ms. */
+export const CONDENSE_CB_TEST_SWEEP_MIN_AGE_MS = 15 * 60_000;
+const CONDENSE_CB_TEST_FILE_RE = /^rsm-condense-cb-test-(\d+)-[0-9a-f]+\.json(?:\.tmp-\d+)?$/;
+
+// Fichiers écrits par CE process, supprimés à sa sortie. Au niveau module (et
+// non par appel) pour qu'un seul hook couvre toutes les clés d'endpoint touchées.
+const condenseCBOwnTestFiles = new Set<string>();
+let condenseCBTestCleanupArmed = false;
+
+/** Supprime les fichiers de test écrits par ce process. Idempotent, best-effort. */
+function condenseCBCleanupOwnTestFiles(): string[] {
+  const removed: string[] = [];
+  for (const own of condenseCBOwnTestFiles) {
+    for (const candidate of [own, `${own}.tmp-${process.pid}`]) {
+      try {
+        fsSync.rmSync(candidate, { force: true });
+        removed.push(candidate);
+      } catch {
+        /* best-effort : un fichier déjà parti n'est pas une erreur */
+      }
+    }
+    condenseCBOwnTestFiles.delete(own);
+  }
+  return removed;
+}
+
+function trackCondenseCBTestFile(file: string): void {
+  if (!process.env.VITEST) return;
+  condenseCBOwnTestFiles.add(file);
+  if (condenseCBTestCleanupArmed) return;
+  condenseCBTestCleanupArmed = true;
+  // Une fois par process : retirer ce que les workers tués ont laissé, pour que
+  // la fuite diminue au run suivant au lieu de ne jamais se résorber.
+  sweepCondenseCbTestFiles();
+  process.once('exit', () => {
+    condenseCBCleanupOwnTestFiles();
+  });
+}
+
+/**
+ * Balayage des `rsm-condense-cb-test-<pid>-<key>.json` laissés par des workers
+ * vitest morts avant leur hook. Un fichier n'est retiré que si les DEUX
+ * conditions tiennent : plus vieux que `minAgeMs`, et le pid de son nom est
+ * mort sur cette machine. Best-effort : ne lève jamais.
+ */
+export function sweepCondenseCbTestFiles(opts?: { minAgeMs?: number; dir?: string }): {
+  swept: string[];
+  skipped: string[];
+} {
+  const minAge = opts?.minAgeMs ?? CONDENSE_CB_TEST_SWEEP_MIN_AGE_MS;
+  const dir = opts?.dir ?? os.tmpdir();
+  const swept: string[] = [];
+  const skipped: string[] = [];
+  let entries: string[];
+  try {
+    entries = fsSync.readdirSync(dir);
+  } catch {
+    return { swept, skipped };
+  }
+  const now = Date.now();
+  for (const name of entries) {
+    const match = CONDENSE_CB_TEST_FILE_RE.exec(name);
+    if (!match) continue;
+    const full = path.join(dir, name);
+    try {
+      const ageMs = now - fsSync.statSync(full).mtimeMs;
+      if (ageMs < minAge || isPidAlive(Number(match[1]))) {
+        skipped.push(name);
+        continue;
+      }
+      fsSync.rmSync(full, { force: true });
+      swept.push(name);
+    } catch {
+      skipped.push(name);
+    }
+  }
+  return { swept, skipped };
+}
+
 function condenseCBReadShared(): CondenseCircuitBreaker | null {
   try {
     const parsed = JSON.parse(fsSync.readFileSync(condenseCBStateFile(), 'utf8')) as Partial<CondenseCircuitBreaker>;
@@ -979,6 +1070,7 @@ let condenseCBWriteWarned = false;
 function condenseCBWriteShared(state: CondenseCircuitBreaker): void {
   try {
     const file = condenseCBStateFile();
+    trackCondenseCBTestFile(file);
     const tmp = `${file}.tmp-${process.pid}`;
     fsSync.writeFileSync(tmp, JSON.stringify(state), 'utf8');
     fsSync.renameSync(tmp, file);
@@ -1063,6 +1155,9 @@ export const __condenseBreakerHooks = {
   recordSuccess: condenseCBRecordSuccess,
   shouldBypass: condenseCBShouldBypass,
   stateFile: condenseCBStateFile,
+  // #4434 : même routine que le hook de sortie — la suite l'appelle pour prouver
+  // qu'aucun fichier ne survit, sans dépendre du timing de sortie du worker.
+  cleanupOwnFiles: condenseCBCleanupOwnTestFiles,
 };
 
 /** Reset circuit breaker state (for testing). */

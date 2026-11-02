@@ -380,7 +380,13 @@ class RooStateManagerServer {
         // them, DriveFS accumulation). Un-awaited and non-fatal: the sweep must
         // never gate the init path nor the first tool call.
         void import('./tools/roosync/dashboard.js')
-            .then(({ sweepOrphanDashboardTmpFiles }) => sweepOrphanDashboardTmpFiles())
+            .then(({ sweepOrphanDashboardTmpFiles, sweepCondenseCbTestFiles }) => {
+                // #4434: vitest workers write a per-pid condensation-breaker file and
+                // nothing removed it when the worker was killed (1 441 leftovers on
+                // ai-01, 639 on po-2028). Only the `-test-` names are candidates.
+                sweepCondenseCbTestFiles();
+                return sweepOrphanDashboardTmpFiles();
+            })
             .catch((e) => logger.warn('[TmpSweep #4003] sweep failed (non-fatal)', { error: e instanceof Error ? e.message : String(e) }));
     }
 
