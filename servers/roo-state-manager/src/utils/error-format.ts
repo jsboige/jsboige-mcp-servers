@@ -40,3 +40,39 @@ export function formatErrorForLog(error: unknown): {
 			: undefined,
 	};
 }
+
+/**
+ * Render a thrown value as a READABLE string for the journal (#4131).
+ *
+ * `String(error)` renders "[object Object]" for anything that is not an
+ * Error/string/number — measured in the RSM journal (2026-11-02,
+ * "sauvegarde PG impossible { "error": "[object Object]" }"): the cause
+ * became unreadable exactly when it was needed. Message + code + name
+ * first, then JSON.stringify as a last resort.
+ */
+export function describeError(error: unknown): string {
+	if (error instanceof Error) {
+		const parts: string[] = [error.message];
+		const code = (error as NodeJS.ErrnoException).code;
+		if (code) parts.push(`code=${code}`);
+		if (error.name && error.name !== 'Error') parts.push(`name=${error.name}`);
+		return parts.join(' ');
+	}
+	if (typeof error === 'string') return error;
+	if (error !== null && typeof error === 'object') {
+		const e = error as { message?: unknown; code?: unknown; name?: unknown };
+		if (e.message !== undefined || e.code !== undefined || e.name !== undefined) {
+			const parts: string[] = [];
+			if (typeof e.message === 'string') parts.push(e.message);
+			if (e.code !== undefined) parts.push(`code=${String(e.code)}`);
+			if (e.name !== undefined) parts.push(`name=${String(e.name)}`);
+			return parts.join(' ');
+		}
+		try {
+			return JSON.stringify(error) ?? String(error);
+		} catch {
+			return String(error);
+		}
+	}
+	return String(error);
+}

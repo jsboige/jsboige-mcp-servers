@@ -54,6 +54,13 @@ const mockStoreMeta = vi.hoisted(() => ({
   upsertStoreMetaValue: vi.fn(),
   storeMetaUrl: vi.fn(),
 }));
+
+// #4131 file d : capter les lignes de journal SANS dépendre de la mémoïsation
+// du lazy logger — chaque createLogger() pousse dans les mêmes tableaux.
+const mockLog = vi.hoisted(() => ({
+  warn: [] as unknown[][],
+  error: [] as unknown[][],
+}));
 vi.mock('../../unified-store/store-meta.js', () => ({
   MACHINE_REGISTRY_META_KEY: 'machine_registry',
   inventoryMetaKey: (id: string) => `inventory:${id.toLowerCase()}`,
@@ -64,7 +71,16 @@ vi.mock('../../unified-store/store-meta.js', () => ({
 }));
 
 vi.mock('../../../utils/logger.js', () => ({
-  createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
+  createLogger: () => ({
+    info: vi.fn(),
+    warn: vi.fn((...args: unknown[]) => {
+      mockLog.warn.push(args);
+    }),
+    error: vi.fn((...args: unknown[]) => {
+      mockLog.error.push(args);
+    }),
+    debug: vi.fn(),
+  }),
 }));
 
 import * as fsPromises from 'fs/promises';
@@ -78,6 +94,8 @@ function inventoryFor(machineId: string): { machineId: string; hostname: string 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockLog.warn.length = 0;
+  mockLog.error.length = 0;
   mockExecSync.mockReturnValue('7.4.6');
   mockStoreMeta.storeMetaUrl.mockReturnValue('postgresql://test');
   mockStoreMeta.readStoreMetaValue.mockResolvedValue(null);
@@ -294,5 +312,108 @@ describe('#4131 Phase D — saveToSharedState, end of dual-write (03/11)', () =>
 
   it('the kill-switch env name is the one documented for operators', () => {
     expect(INVENTORY_PG_PRIMARY_ENV).toBe('UNIFIED_STORE_INVENTORY_PG_PRIMARY');
+  });
+});
+
+// #4131 — garde d'identité au writer, RÈGLE ASYMÉTRIQUE (review ms#1628) :
+// le writer publie toujours la forme canonique, donc (a) une publication non
+// canonique est refusée — le vrai défaut d'un writer — mais (b) une ligne
+// existante non canonique est GUÉRIE par la publication canonique, avec un
+// WARN qui nomme les deux graphies. Un refus symétrique garderait la mauvaise
+// ligne pour toujours et figerait l'inventaire du siège (#3975).
+describe("#4131 — garde d'identité asymétrique au writer", () => {
+  it("publication NON canonique → refus : aucune écriture (ni PG ni miroir), sans même relire la ligne", async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(JSON.stringify(inventoryFor('myia-a')));
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('Myia-A'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).not.toHaveBeenCalled();
+    expect(fsPromises.writeFile).not.toHaveBeenCalled();
+    expect(mockStoreMeta.readStoreMetaValue).not.toHaveBeenCalled();
+    expect(String(mockLog.error[0])).toContain("'Myia-A'");
+  });
+
+  it("ligne non canonique + publication canonique → GUÉRISON : upsert ×1 et un WARN qui nomme les deux graphies", async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(JSON.stringify(inventoryFor('Myia-A')));
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledTimes(1);
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledWith(
+      'inventory:myia-a',
+      expect.stringContaining('"machineId": "myia-a"')
+    );
+    const warned = mockLog.warn.map((args) => String(args)).join('\n');
+    expect(warned).toContain("'Myia-A'");
+    expect(warned).toContain("'myia-a'");
+  });
+
+  it('même graphie canonique → publication normale, sans WARN', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(JSON.stringify(inventoryFor('myia-a')));
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledTimes(1);
+    expect(mockLog.warn).toHaveLength(0);
+  });
+
+  it('ligne absente → publication normale', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(null);
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledTimes(1);
+  });
+
+  it("relecture impossible → la garde ne bloque pas sur sa propre panne", async () => {
+    mockStoreMeta.readStoreMetaValue.mockRejectedValue(new Error('pg timeout'));
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledTimes(1);
+  });
+
+  it("deux sièges DIFFÉRENTS ne sont pas une collision", async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(JSON.stringify(inventoryFor('myia-b')));
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledTimes(1);
+    expect(mockLog.warn).toHaveLength(0);
+  });
+});
+
+// #4131 file d (ai-01) : `String(error)` rend "[object Object]" pour un rejet
+// non-Error — mesuré au journal RSM le 02/11 12:10:40Z. La cause doit rester
+// lisible au moment où elle sert.
+describe('#4131 — la cause d’un échec PG reste lisible au journal', () => {
+  it('rejet avec un objet non-Error → le journal contient son message et son code, pas "[object Object]"', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(null);
+    mockStoreMeta.upsertStoreMetaValue.mockRejectedValue({ message: 'timeout expired', code: 'XX000' });
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+
+    // JSON.stringify, jamais String() : les args sont [message, {…}] et
+    // String([msg, obj]) rend précisément le "[object Object]" qu'on chasse.
+    const errored = mockLog.error.map((args) => JSON.stringify(args)).join('\n');
+    expect(errored).toContain('timeout expired');
+    expect(errored).toContain('XX000');
+    expect(errored).not.toContain('[object Object]');
+    // PG en échec → le miroir GDrive reste la surface de secours
+    expect(fsPromises.writeFile).toHaveBeenCalledTimes(1);
   });
 });

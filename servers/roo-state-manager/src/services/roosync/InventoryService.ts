@@ -19,6 +19,7 @@ import {
   storeMetaUrl
 } from '../unified-store/store-meta.js';
 import { isPgFlagExplicitlyOff } from '../unified-store/pg-flags.js';
+import { describeError } from '../../utils/error-format.js';
 import { createLogger } from '../../utils/logger.js';
 
 /**
@@ -510,6 +511,50 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
   private async saveToSharedState(inventory: FullInventory): Promise<void> {
     const masked = maskSecretTextForPublication(JSON.stringify(inventory, null, 2));
 
+    // #4131 — garde d'identité, RÈGLE ASYMÉTRIQUE (review ms#1628, ai-01) : le
+    // writer publie toujours la forme canonique (minuscules, `getMachineInventory`
+    // normalise avant l'appel), donc une collision ne peut venir que (a) d'un
+    // writer qui ne normalise pas, ou (b) d'une ligne existante non canonique
+    // (ancien vintage). Refuser symétriquement les deux garderait la MAUVAISE
+    // ligne pour toujours et figerait l'inventaire du siège — l'inventaire figé
+    // est précisément ce qui a masqué la panne po-2025 (#3975). D'où :
+    //   (a) publication non canonique → REFUS (le vrai défaut d'un writer) ;
+    //   (b) ligne non canonique + publication canonique → on PUBLIE, la ligne
+    //       guérit, et un WARN nomme les deux graphies (traçabilité) ;
+    //   (c) relecture impossible → on publie : la garde ne bloque jamais sur sa
+    //       propre panne. La relecture n'est plus dans le chemin critique du
+    //       refus — elle ne sert qu'au WARN de (b).
+    if (inventory.machineId !== inventory.machineId.toLowerCase()) {
+      invLogger().error(
+        `[inventory] publication REFUSÉE : machineId non canonique '${inventory.machineId}' ` +
+        `(minuscules attendues) — aucune écriture, ni PG ni miroir (#4131)`
+      );
+      return;
+    }
+    if (storeMetaUrl()) {
+      try {
+        const existing = await readStoreMetaValue(inventoryMetaKey(inventory.machineId));
+        if (existing !== null) {
+          const published = (JSON.parse(existing) as Partial<FullInventory>)?.machineId;
+          if (
+            typeof published === 'string' &&
+            published !== inventory.machineId &&
+            published.toLowerCase() === inventory.machineId
+          ) {
+            invLogger().warn(
+              `[inventory] ligne non canonique GUÉRIE : ${inventoryMetaKey(inventory.machineId)} ` +
+              `portait '${published}', la publication '${inventory.machineId}' la remplace (#4131)`
+            );
+          }
+        }
+      } catch (error) {
+        invLogger().warn("[inventory] garde d'identité : relecture impossible, publication maintenue", {
+          machineId: inventory.machineId,
+          error: describeError(error)
+        });
+      }
+    }
+
     let pgSaved = false;
     if (storeMetaUrl()) {
       try {
@@ -517,9 +562,12 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
         pgSaved = true;
         invLogger().info(`[inventory] '${inventory.machineId}' sauvegardé dans PG (#4131)`);
       } catch (error) {
+        // #4131 (file d, ai-01) : `String(error)` rend "[object Object]" pour un
+        // rejet non-Error (mesuré au journal 02/11 12:10:40Z) — la cause doit
+        // rester lisible au moment où elle sert.
         invLogger().error('[inventory] sauvegarde PG impossible', {
           machineId: inventory.machineId,
-          error: String(error)
+          error: describeError(error)
         });
       }
     }
