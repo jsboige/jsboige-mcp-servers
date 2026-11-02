@@ -20,6 +20,12 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn().mockResolvedValue({ rows: [] }),
   end: vi.fn().mockResolvedValue(undefined),
   configs: [] as unknown[],
+  info: vi.fn(),
+  warn: vi.fn(),
+}));
+
+vi.mock('../../../utils/logger.js', () => ({
+  createLogger: () => ({ debug: vi.fn(), info: mocks.info, warn: mocks.warn, error: vi.fn() }),
 }));
 
 vi.mock('pg', () => ({
@@ -53,6 +59,8 @@ describe('backfill completeness marker (#4131)', () => {
     mocks.query.mockReset().mockResolvedValue({ rows: [] });
     mocks.end.mockReset().mockResolvedValue(undefined);
     mocks.configs.length = 0;
+    mocks.info.mockReset();
+    mocks.warn.mockReset();
     delete process.env.UNIFIED_STORE_PG_URL;
     delete process.env.UNIFIED_STORE_BACKFILL_MARKER_TTL_MS;
     resetBackfillMarkerCache();
@@ -208,17 +216,41 @@ describe('backfill completeness marker (#4131)', () => {
     });
 
     test('the kept state stays bounded: a failed refresh restarts the TTL, no query storm while PG is down', async () => {
-      process.env.UNIFIED_STORE_BACKFILL_MARKER_TTL_MS = '200';
-      await proveBothComplete();
-      // Let the proof go stale, so only the failed refresh can make it fresh.
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      mocks.query.mockReset().mockRejectedValue(new Error('Connection terminated unexpectedly'));
+      // Only Date is faked: the clock cannot cross the TTL behind the test's
+      // back on a loaded runner, while promises and setTimeout stay real.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(new Date('2026-11-01T16:43:00.000Z'));
+        process.env.UNIFIED_STORE_BACKFILL_MARKER_TTL_MS = '200';
+        await proveBothComplete();
+        // Let the proof go stale, so only the failed refresh can make it fresh.
+        vi.setSystemTime(Date.now() + 250);
+        mocks.query.mockReset().mockRejectedValue(new Error('Connection terminated unexpectedly'));
+        await refreshBackfillMarkers(true);
+        const afterFailure = mocks.query.mock.calls.length;
+        for (let i = 0; i < 10; i++) getBackfillMarkerState('channel');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(mocks.query.mock.calls.length).toBe(afterFailure);
+        expect(getBackfillMarkerState('channel')).toBe('complete');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('a failed lookup logs the failure, never "marker absent" — only a successful lookup does', async () => {
+      const markerAbsentLines = () =>
+        mocks.info.mock.calls.filter(([line]) => String(line).includes("marker in PG")).length;
+      process.env.UNIFIED_STORE_PG_URL = PG_URL;
+      mocks.query.mockRejectedValue(new Error('connect ECONNREFUSED'));
       await refreshBackfillMarkers(true);
-      const afterFailure = mocks.query.mock.calls.length;
-      for (let i = 0; i < 10; i++) getBackfillMarkerState('channel');
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      expect(mocks.query.mock.calls.length).toBe(afterFailure);
-      expect(getBackfillMarkerState('channel')).toBe('complete');
+      expect(getBackfillMarkerState('channel')).toBe('absent');
+      expect(mocks.warn).toHaveBeenCalledTimes(1);
+      expect(markerAbsentLines()).toBe(0);
+      // Control: the same scope after a SUCCESSFUL empty lookup does say it.
+      resetBackfillMarkerCache();
+      mocks.query.mockReset().mockResolvedValue({ rows: [] });
+      await refreshBackfillMarkers(true);
+      expect(markerAbsentLines()).toBe(2);
     });
 
     test('the channel PG-primary gate stays ON through a failed refresh', async () => {

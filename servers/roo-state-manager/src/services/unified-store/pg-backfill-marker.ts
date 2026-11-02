@@ -166,8 +166,9 @@ async function doRefresh(): Promise<void> {
     // that no longer holds the PG-only history (measured on ai-01, 01/11
     // 16:43-16:57Z: a G:-only send between PG-primary sends of the same
     // process). An unproven scope keeps the fail-safe answer.
+    // The warn above already says why: no "marker absent" line on this path.
     for (const scope of ['channel', 'dashboard'] as BackfillScope[]) {
-      setState(scope, cache[scope].state === 'complete' ? 'complete' : 'absent');
+      setState(scope, cache[scope].state === 'complete' ? 'complete' : 'absent', false);
     }
     return;
   }
@@ -209,10 +210,10 @@ async function readMetaValues(url: string, keys: string[]): Promise<Map<string, 
   return values;
 }
 
-function setState(scope: BackfillScope, state: BackfillMarkerState): void {
+function setState(scope: BackfillScope, state: BackfillMarkerState, logAbsent = true): void {
   const previous = cache[scope].state;
   cache[scope] = { state, checkedAt: Date.now() };
-  if (state === 'absent' && previous !== 'absent') {
+  if (logAbsent && state === 'absent' && previous !== 'absent') {
     logger.info(
       `[backfill-marker] no '${META_KEYS[scope]}' marker in PG — the default PG read stays OFF ` +
       'and GDrive keeps serving this surface (run the backfill script to import the history)'
@@ -251,7 +252,13 @@ export function setBackfillMarkerState(scope: BackfillScope, state: BackfillMark
   cache[scope] = { state, checkedAt: Date.now() };
 }
 
-/** Drop the cached states (test seam / config hot-reload). */
+/**
+ * Drop the cached states (test seam).
+ *
+ * The cache is not keyed by URL and `UNIFIED_STORE_PG_URL` is not reloadable
+ * today. Whatever makes it reloadable must call this, or a `'complete'`
+ * proven on the old store survives a failed lookup on the new one.
+ */
 export function resetBackfillMarkerCache(): void {
   cache.channel = { state: 'unknown', checkedAt: 0 };
   cache.dashboard = { state: 'unknown', checkedAt: 0 };
