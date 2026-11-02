@@ -18,7 +18,16 @@ import {
   upsertStoreMetaValue,
   storeMetaUrl
 } from '../unified-store/store-meta.js';
+import { isPgFlagExplicitlyOff } from '../unified-store/pg-flags.js';
 import { createLogger } from '../../utils/logger.js';
+
+/**
+ * #4131 Phase D (fin du double-écriture, 03/11) — kill-switch du miroir GDrive
+ * des inventaires. Non défini (défaut) : après une écriture PG réussie, le
+ * fichier `inventories/{machineId}.json` n'est plus écrit. `=0` (ou une autre
+ * graphie OFF de pg-flags) : le miroir est réécrit comme avant.
+ */
+export const INVENTORY_PG_PRIMARY_ENV = 'UNIFIED_STORE_INVENTORY_PG_PRIMARY';
 
 /**
  * Lazy logger — ce module est importé par des tests qui mockent `fs` avec un
@@ -486,9 +495,11 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
    * @param inventory - L'inventaire à sauvegarder
    *
    * #4131 Phase D : la ligne PG (`inventory:{machineId}`) est la surface ;
-   * le fichier GDrive devient un miroir meilleur-effort (échec toléré et
-   * journalisé, symétrique du miroir dashboards). Les DEUX en échec = une
-   * ligne d'erreur, jamais un silence.
+   * le fichier GDrive n'est écrit que si PG n'a PAS pris l'écriture (non
+   * configuré ou en échec) — fin du double-écriture du 03/11, nouveau défaut.
+   * Kill-switch `UNIFIED_STORE_INVENTORY_PG_PRIMARY=0` (lu à l'appel) : le
+   * miroir est réécrit après chaque succès PG. Les DEUX en échec = une ligne
+   * d'erreur, jamais un silence.
    */
   private async saveToSharedState(inventory: FullInventory): Promise<void> {
     const masked = maskSecretTextForPublication(JSON.stringify(inventory, null, 2));
@@ -505,6 +516,13 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
           error: String(error)
         });
       }
+    }
+
+    if (pgSaved && !isPgFlagExplicitlyOff(INVENTORY_PG_PRIMARY_ENV)) {
+      invLogger().info(
+        `[inventory] miroir GDrive non écrit : la ligne PG fait foi (${INVENTORY_PG_PRIMARY_ENV}=0 le rétablit)`
+      );
+      return;
     }
 
     let mirrorSaved = false;
