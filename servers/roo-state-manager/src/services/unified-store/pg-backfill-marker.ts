@@ -98,6 +98,9 @@ const cache: Record<BackfillScope, CacheEntry> = {
 /** In-flight refresh — one observer per condition, never a stampede. */
 let inFlight: Promise<void> | null = null;
 
+/** Budget of the in-flight refresh, in ms. */
+let inFlightTimeoutMs = 0;
+
 /** TTL of the marker lookup, in ms. */
 export function backfillMarkerTtlMs(): number {
   const raw = Number(process.env.UNIFIED_STORE_BACKFILL_MARKER_TTL_MS);
@@ -131,17 +134,21 @@ export function getBackfillMarkerState(scope: BackfillScope): BackfillMarkerStat
  * @param force - re-read even if a refresh is already in flight (used by the
  *   backfill scripts' own verification path and by tests).
  * @param timeoutMs - connect / statement budget of THIS lookup. A refresh
- *   already in flight is joined with its own budget.
+ *   already in flight is joined only when its budget is at least as large:
+ *   a caller asking for more starts its own lookup, since joining a shorter
+ *   one would hand it the very timeout it asked to avoid (ms#1625 review).
+ *   Overlapping lookups are safe: a failed one never downgrades a proof.
  */
 export async function refreshBackfillMarkers(
   force = false,
   timeoutMs = BACKFILL_MARKER_LOOKUP_TIMEOUT_MS
 ): Promise<void> {
-  if (inFlight && !force) return inFlight;
-  const run = doRefresh(timeoutMs).finally(() => {
-    inFlight = null;
+  if (inFlight && !force && timeoutMs <= inFlightTimeoutMs) return inFlight;
+  const run: Promise<void> = doRefresh(timeoutMs).finally(() => {
+    if (inFlight === run) inFlight = null;
   });
   inFlight = run;
+  inFlightTimeoutMs = timeoutMs;
   return run;
 }
 
@@ -283,4 +290,5 @@ export function resetBackfillMarkerCache(): void {
   cache.channel = { state: 'unknown', checkedAt: 0 };
   cache.dashboard = { state: 'unknown', checkedAt: 0 };
   inFlight = null;
+  inFlightTimeoutMs = 0;
 }

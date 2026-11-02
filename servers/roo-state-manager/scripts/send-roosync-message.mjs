@@ -162,10 +162,13 @@ const sharedStatePath = getSharedStatePath();
 // bounded lookup; a failure resolves to the G: path, never blocks the send).
 // The catch keeps that last promise local to this file: a worker report is
 // never lost to a marker lookup.
-// The budget is the writer pool's connect budget (15 s), not the 3 s of the
-// MCP request path: this one-shot process waits on nobody, and a 3 s lookup
-// lost to a PG busy burst sent the report to G: (ai-01, 02/11 07:10:26Z).
-const MARKER_LOOKUP_TIMEOUT_MS = 15_000;
+// The budget is the writer pool's connect budget (UNIFIED_STORE_CONNECT_TIMEOUT_MS,
+// 15 s by default, as in writer-factory), not the 3 s of the MCP request path:
+// this one-shot process waits on nobody, and a 3 s lookup lost to a PG busy
+// burst sent the report to G: (ai-01, 02/11 07:10:26Z).
+const configuredConnectMs = Number(process.env.UNIFIED_STORE_CONNECT_TIMEOUT_MS);
+const MARKER_LOOKUP_TIMEOUT_MS =
+  Number.isFinite(configuredConnectMs) && configuredConnectMs > 0 ? configuredConnectMs : 15_000;
 try {
   await ensureBackfillMarkersFresh({ timeoutMs: MARKER_LOOKUP_TIMEOUT_MS });
 } catch (err) {
