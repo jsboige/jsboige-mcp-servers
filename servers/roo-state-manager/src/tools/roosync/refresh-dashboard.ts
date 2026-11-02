@@ -4,18 +4,16 @@
  * Rafraîchit le dashboard MCP en exécutant le script generate-mcp-dashboard.ps1
  *
  * @module tools/roosync/refresh-dashboard
- * @version 1.0.0
+ * @version 1.1.0 (#4149 : argv sans shell — baseline/outputDir ne sont plus
+ *   interpolés dans une commande pwsh -c ; repli powershell.exe siège sans pwsh)
  */
 
 import { z } from 'zod';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { exec } from 'child_process';
-import { promisify } from 'util';
 import * as path from 'path';
 import * as fs from 'fs';
 import { fileURLToPath } from 'url';
-
-const execAsync = promisify(exec);
+import { PowerShellExecutor, type PowerShellExecutionResult } from '../../services/PowerShellExecutor.js';
 
 /**
  * Détecte la racine roo-extensions en remontant l'arborescence
@@ -101,21 +99,47 @@ export async function roosyncRefreshDashboard(args: RefreshDashboardArgs): Promi
     console.log('[REFRESH DASHBOARD] Baseline:', baseline);
     console.log('[REFRESH DASHBOARD] OutputDir:', outputDir);
 
-    // Construire la commande PowerShell avec chemin absolu
+    // Construire le chemin du script avec racine absolue
     const repoRoot = findRooExtensionsRoot();
     const scriptPath = path.join(repoRoot, 'scripts', 'roosync', 'generate-mcp-dashboard.ps1');
-    const command = `pwsh -NoProfile -ExecutionPolicy Bypass -c "& '${scriptPath}' -Baseline '${baseline}' -OutputDir '${outputDir}'"`;
 
     console.log('[REFRESH DASHBOARD] Repo root:', repoRoot);
-    console.log('[REFRESH DASHBOARD] Exécution de la commande:', command);
 
-    // Exécuter le script PowerShell depuis la racine du repo
-    const { stdout, stderr } = await execAsync(command, {
+    // #4149 — injection fermée : les valeurs passent en ARGV (spawn sans shell,
+    // -File + paramètres via PowerShellExecutor), jamais interpolées dans une
+    // chaîne de commande. Une apostrophe dans baseline/outputDir est un littéral,
+    // pas un séparateur — il n'existe plus de couche cmd/pwsh qui la parse.
+    const execOptions = {
       cwd: repoRoot,
-      encoding: 'utf8',
       timeout: 60_000,
-      env: { ...process.env, ROOSYNC_SHARED_PATH: sharedPath }
-    });
+      env: { ROOSYNC_SHARED_PATH: sharedPath }
+    };
+    const scriptArgs = ['-Baseline', baseline, '-OutputDir', outputDir];
+    const executor = new PowerShellExecutor({ roosyncBasePath: sharedPath });
+
+    let result: PowerShellExecutionResult;
+    try {
+      result = await executor.executeScript(scriptPath, scriptArgs, execOptions);
+    } catch (error) {
+      // Repli #2368 : pwsh est absent de certains sièges — spawn ENOENT seulement.
+      // («Script not found» est un rejet AVANT spawn et ne doit PAS retrigger.)
+      if (!/ENOENT|Failed to spawn/i.test((error as Error).message)) {
+        throw error;
+      }
+      console.warn('[REFRESH DASHBOARD] pwsh introuvable, repli powershell.exe (Windows PowerShell 5.1)');
+      const fallback = new PowerShellExecutor({ roosyncBasePath: sharedPath, powershellPath: 'powershell.exe' });
+      result = await fallback.executeScript(scriptPath, scriptArgs, execOptions);
+    }
+
+    if (!result.success) {
+      // exitCode non nul : le contrat stdout «Fichier:» ne peut pas être honoré.
+      throw new Error(
+        `generate-mcp-dashboard.ps1 a échoué (exit ${result.exitCode})` +
+        (result.stderr ? `: ${result.stderr.trim().slice(0, 300)}` : '')
+      );
+    }
+
+    const { stdout, stderr } = result;
 
     if (stderr && !stderr.includes('WARNING')) {
       console.warn('[REFRESH DASHBOARD] Stderr:', stderr);
