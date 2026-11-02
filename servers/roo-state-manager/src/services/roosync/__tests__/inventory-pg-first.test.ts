@@ -127,6 +127,59 @@ describe('#4131 Phase D — loadRemoteInventory, PG-first', () => {
     expect(readJSONFileWithoutBOM).not.toHaveBeenCalled();
   });
 
+  // #4131 : l'écrivain normalise la CLÉ, le contenu garde la casse native.
+  // Une comparaison à l'identique refuse une ligne que les lecteurs ms#1622
+  // servent. Les deux sens sont épinglés (contenu minuscule / demande mixte,
+  // puis l'inverse) : un mutant qui ne normalise qu'UN côté échoue sur l'un des deux.
+  it('PG row in native case, request in another case → served, not a typed error', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(
+      JSON.stringify(inventoryFor('remote-box'))
+    );
+    const svc = InventoryService.getInstance();
+
+    const inv = await (svc as any).loadRemoteInventory('Remote-Box');
+
+    expect(inv.machineId).toBe('remote-box');
+    expect(mockStoreMeta.readStoreMetaValue).toHaveBeenCalledWith('inventory:remote-box');
+    expect(readJSONFileWithoutBOM).not.toHaveBeenCalled();
+  });
+
+  it('file branch: content in native case, request in another case → served (#4131)', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(null);
+    vi.mocked(readJSONFileWithoutBOM).mockResolvedValue(inventoryFor('remote-box') as any);
+    const svc = InventoryService.getInstance();
+
+    const inv = await (svc as any).loadRemoteInventory('Remote-Box');
+
+    expect(inv.machineId).toBe('remote-box');
+    expect(readJSONFileWithoutBOM).toHaveBeenCalledTimes(1);
+  });
+
+  // Sens inverse : contenu en casse mixte, demande en minuscules. Sans ces deux
+  // cas, un mutant qui ne baisse que la DEMANDE passe toute la suite.
+  it('PG row in mixed case, request lowercase → served (reverse direction)', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(
+      JSON.stringify(inventoryFor('Remote-Box'))
+    );
+    const svc = InventoryService.getInstance();
+
+    const inv = await (svc as any).loadRemoteInventory('remote-box');
+
+    expect(inv.machineId).toBe('Remote-Box');
+    expect(readJSONFileWithoutBOM).not.toHaveBeenCalled();
+  });
+
+  it('file branch: content in mixed case, request lowercase → served (reverse direction)', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(null);
+    vi.mocked(readJSONFileWithoutBOM).mockResolvedValue(inventoryFor('Remote-Box') as any);
+    const svc = InventoryService.getInstance();
+
+    const inv = await (svc as any).loadRemoteInventory('remote-box');
+
+    expect(inv.machineId).toBe('Remote-Box');
+    expect(readJSONFileWithoutBOM).toHaveBeenCalledTimes(1);
+  });
+
   it('PG unreachable → file fallback, no crash', async () => {
     mockStoreMeta.readStoreMetaValue.mockRejectedValue(new Error('connection refused'));
     const svc = InventoryService.getInstance();

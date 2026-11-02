@@ -198,7 +198,11 @@ private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
             { machineId, rawPreview: String(raw).slice(0, 80) }
           );
         }
-        if (inventory.machineId !== machineId) {
+        // ms#1622 : l'écrivain normalise la CLÉ (`inventory:{id minuscule}`)
+        // mais laisse la casse NATIVE dans le contenu. Comparer à l'identique
+        // refuse donc une ligne que les lecteurs servent — même idiome que
+        // InventoryCollector/InventoryCollectorWrapper (#4131).
+        if (String(inventory.machineId).toLowerCase() !== String(machineId).toLowerCase()) {
           throw new InventoryCollectorError(
             `Incohérence dans l'inventaire (PG): machineId de la ligne (${inventory.machineId}) ` +
             `diffère du machineId demandé (${machineId})`,
@@ -237,7 +241,9 @@ private async loadRemoteInventory(machineId: string): Promise<FullInventory> {
     const inventory: FullInventory = await readJSONFileWithoutBOM<FullInventory>(inventoryPath);
 
     // Vérifier que l'inventaire chargé correspond bien au machineId demandé
-    if (inventory.machineId !== machineId) {
+    // (casse-insensible ici aussi : le nom de fichier est déjà normalisé par le
+    // système de fichiers, le contenu garde la casse native — #4131)
+    if (String(inventory.machineId).toLowerCase() !== String(machineId).toLowerCase()) {
       throw new InventoryCollectorError(
         `Incohérence dans l'inventaire: machineId du fichier (${inventory.machineId}) ` +
         `diffère du machineId demandé (${machineId})`,
