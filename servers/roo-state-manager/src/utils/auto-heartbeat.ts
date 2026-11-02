@@ -103,7 +103,10 @@ function claimFileName(machineId: string, now: number, bootId: number): string {
  * Returns true when this process should refresh. EEXIST = another process of
  * the host already took this boot's refresh for today. Any other error
  * (unwritable dir) fails OPEN — the pre-#4131 per-process refresh, never a
- * silent stop. The winner removes every older claim of the same id.
+ * silent stop. The winner removes the claims of its id from OTHER UTC days
+ * only: deleting a same-day claim of another boot bucket would let two
+ * processes of one boot split across a bucket edge delete each other's claim,
+ * and every process would win again — the herd this claim exists to stop.
  */
 export function claimHostDailyInventoryRefresh(
     dir: string,
@@ -117,10 +120,11 @@ export function claimHostDailyInventoryRefresh(
     } catch (error) {
         return (error as NodeJS.ErrnoException).code !== 'EEXIST';
     }
-    const sameId = new RegExp(`^rsm-inventory-refresh-${safeClaimId(machineId)}-\\d{8}-b-?\\d+\\.claim$`);
+    const today = name.slice(0, name.lastIndexOf('-b'));
+    const sameId = new RegExp(`^rsm-inventory-refresh-${safeClaimId(machineId)}-\\d{8}-b\\d+\\.claim$`);
     try {
         for (const entry of readdirSync(dir)) {
-            if (entry !== name && sameId.test(entry)) {
+            if (sameId.test(entry) && !entry.startsWith(`${today}-b`)) {
                 try { unlinkSync(join(dir, entry)); } catch { /* locked: harmless */ }
             }
         }

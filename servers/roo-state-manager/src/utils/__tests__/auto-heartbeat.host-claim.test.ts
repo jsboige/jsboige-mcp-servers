@@ -72,7 +72,19 @@ describe('claimHostDailyInventoryRefresh (#4131)', () => {
     it('a reboot the same day is claimable again: the boot state is what it publishes', () => {
         expect(claimHostDailyInventoryRefresh(dir, 'myia-ai-01', T0, BOOT)).toBe(true);
         expect(claimHostDailyInventoryRefresh(dir, 'myia-ai-01', T0 + 8 * 3600 * 1000, BOOT + 48)).toBe(true);
-        expect(readdirSync(dir)).toEqual([`rsm-inventory-refresh-myia-ai-01-20261102-b${BOOT + 48}.claim`]);
+        // same-day claims of other boots are kept: they are purged on the next UTC day
+        expect(readdirSync(dir).sort()).toEqual([
+            `rsm-inventory-refresh-myia-ai-01-20261102-b${BOOT}.claim`,
+            `rsm-inventory-refresh-myia-ai-01-20261102-b${BOOT + 48}.claim`,
+        ]);
+    });
+
+    it('one boot split across a bucket edge refreshes twice, never once per process', () => {
+        // a burst of 20 processes whose boot time straddles a 10-min edge
+        const winners = Array.from({ length: 20 }, (_, i) =>
+            claimHostDailyInventoryRefresh(dir, 'myia-ai-01', T0 + i * 100, BOOT + (i % 2)),
+        ).filter(Boolean).length;
+        expect(winners).toBe(2);
     });
 
     it('the next UTC day is claimable again and removes the previous claim', () => {
@@ -81,9 +93,9 @@ describe('claimHostDailyInventoryRefresh (#4131)', () => {
         expect(readdirSync(dir)).toEqual([`rsm-inventory-refresh-myia-ai-01-20261103-b${BOOT}.claim`]);
     });
 
-    it('the winner removes every older claim of its id (skipped days too), never another id', () => {
+    it('the winner removes every claim of its id from other days (skipped days too), never another id', () => {
         writeFileSync(join(dir, `rsm-inventory-refresh-myia-ai-01-20261029-b${BOOT}.claim`), '');
-        writeFileSync(join(dir, 'rsm-inventory-refresh-myia-ai-01-20261031-b-5.claim'), '');
+        writeFileSync(join(dir, `rsm-inventory-refresh-myia-ai-01-20261031-b${BOOT - 7}.claim`), '');
         writeFileSync(join(dir, `rsm-inventory-refresh-myia-ai-01-x-20261031-b${BOOT}.claim`), '');
         writeFileSync(join(dir, 'unrelated.txt'), '');
 
@@ -148,6 +160,9 @@ describe('autoHeartbeat schedules no inventory refresh under vitest (#4131)', ()
     });
 });
 
+// Lifting the vitest guard is contained because the unit pool is `forks` (one
+// process per file, `process.env` not shared) and every module this describe
+// reaches is mocked (os, lazy-roosync, InventoryService): no real I/O runs.
 describe('heartbeat → timer → claim wiring, outside the vitest guard (#4131)', () => {
     let dir: string;
     const saved: Record<string, string | undefined> = {};
@@ -201,6 +216,20 @@ describe('heartbeat → timer → claim wiring, outside the vitest guard (#4131)
         await vi.advanceTimersByTimeAsync(60 * 1000);
 
         expect(h.collect).toHaveBeenCalledTimes(1);
+        expect(readdirSync(dir)).toHaveLength(1);
+    });
+
+    it('the delay tops out just under 5 min, and its timer never holds a short process alive', async () => {
+        vi.mocked(Math.random).mockReturnValue(0.9999); // 120 000 + floor(0.9999 × 180 000) = 299 982 ms
+        const setTimeoutSpy = vi.spyOn(globalThis, 'setTimeout');
+        await startProcesses(1);
+
+        const timer = setTimeoutSpy.mock.results[0]?.value as NodeJS.Timeout;
+        expect(timer.hasRef()).toBe(false);
+
+        await vi.advanceTimersByTimeAsync(299_981);
+        expect(readdirSync(dir)).toEqual([]);
+        await vi.advanceTimersByTimeAsync(1);
         expect(readdirSync(dir)).toHaveLength(1);
     });
 
