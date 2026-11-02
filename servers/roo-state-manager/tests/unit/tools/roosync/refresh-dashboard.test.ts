@@ -3,6 +3,9 @@
  *
  * Covers: successful refresh, ROOSYNC_SHARED_PATH validation,
  * script execution, dashboard parsing, error handling
+ *
+ * #4149 : la frontière mockée est PowerShellExecutor.executeScript (spawn sans
+ * shell, argv -File) — plus aucune chaîne de commande interpolée.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -11,27 +14,30 @@ import {
 } from '../../../../src/tools/roosync/refresh-dashboard.js';
 
 const {
-    mockExec,
+    mockExecuteScript,
     mockReadFile,
 } = vi.hoisted(() => ({
-    mockExec: vi.fn(),
+    mockExecuteScript: vi.fn(),
     mockReadFile: vi.fn(),
 }));
 
-vi.mock('child_process', () => ({
-    exec: mockExec,
-}));
-
-vi.mock('util', () => ({
-    promisify: () => mockExec,
+vi.mock('../../../../src/services/PowerShellExecutor.js', () => ({
+    PowerShellExecutor: class {
+        executeScript = mockExecuteScript;
+    },
 }));
 
 vi.mock('fs/promises', () => ({
     readFile: mockReadFile,
 }));
 
-function mockExecSuccess(stdout: string) {
-    mockExec.mockResolvedValue({ stdout, stderr: '' });
+function mockScriptSuccess(stdout: string) {
+    mockExecuteScript.mockResolvedValue({ success: true, stdout, stderr: '', exitCode: 0, executionTime: 10 });
+}
+
+/** Args reçus par executeScript : [scriptPath, argv, options]. */
+function argvOfCall(i = 0): string[] {
+    return mockExecuteScript.mock.calls[i][1] as string[];
 }
 
 const DASHBOARD_MD = `# MCP Dashboard
@@ -50,7 +56,7 @@ describe('roosync_refresh_dashboard', () => {
     });
 
     it('refreshes dashboard successfully', async () => {
-        mockExecSuccess(`Some output\nFichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_12-00-00.md\nDone`);
+        mockScriptSuccess(`Some output\nFichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_12-00-00.md\nDone`);
         mockReadFile.mockResolvedValue(DASHBOARD_MD);
 
         const result = await roosyncRefreshDashboard({});
@@ -63,32 +69,33 @@ describe('roosync_refresh_dashboard', () => {
     });
 
     it('uses custom baseline', async () => {
-        mockExecSuccess(`Fichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_12-00-00.md`);
+        mockScriptSuccess(`Fichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_12-00-00.md`);
         mockReadFile.mockResolvedValue(DASHBOARD_MD);
 
         const result = await roosyncRefreshDashboard({ baseline: 'myia-po-2025' });
         expect(result.baseline).toBe('myia-po-2025');
-        const cmd = mockExec.mock.calls[0][0];
-        expect(cmd).toContain('myia-po-2025');
+        // #4149 : la valeur est un élément argv distinct, pas une sous-chaîne de commande
+        const argv = argvOfCall(0);
+        expect(argv[argv.indexOf('-Baseline') + 1]).toBe('myia-po-2025');
     });
 
     it('uses custom outputDir', async () => {
-        mockExecSuccess(`Fichier: /custom/dir/mcp-dashboard-2026-05-04_12-00-00.md`);
+        mockScriptSuccess(`Fichier: /custom/dir/mcp-dashboard-2026-05-04_12-00-00.md`);
         mockReadFile.mockResolvedValue(DASHBOARD_MD);
 
         const result = await roosyncRefreshDashboard({ outputDir: '/custom/dir' });
         expect(result.success).toBe(true);
-        const cmd = mockExec.mock.calls[0][0];
-        expect(cmd).toContain('/custom/dir');
+        const argv = argvOfCall(0);
+        expect(argv[argv.indexOf('-OutputDir') + 1]).toBe('/custom/dir');
     });
 
     it('uses default outputDir from ROOSYNC_SHARED_PATH', async () => {
-        mockExecSuccess(`Fichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_12-00-00.md`);
+        mockScriptSuccess(`Fichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_12-00-00.md`);
         mockReadFile.mockResolvedValue(DASHBOARD_MD);
 
         await roosyncRefreshDashboard({});
-        const cmd = mockExec.mock.calls[0][0];
-        expect(cmd).toContain('/tmp/shared/dashboards');
+        const argv = argvOfCall(0);
+        expect(argv[argv.indexOf('-OutputDir') + 1]).toBe('/tmp/shared/dashboards');
     });
 
     it('throws when ROOSYNC_SHARED_PATH missing', async () => {
@@ -98,19 +105,19 @@ describe('roosync_refresh_dashboard', () => {
     });
 
     it('throws when dashboard path not found in output', async () => {
-        mockExecSuccess('Script ran but no file path in output');
+        mockScriptSuccess('Script ran but no file path in output');
         await expect(roosyncRefreshDashboard({}))
             .rejects.toThrow('Impossible de déterminer le chemin');
     });
 
     it('throws when script execution fails', async () => {
-        mockExec.mockRejectedValue(new Error('Script crashed'));
+        mockExecuteScript.mockRejectedValue(new Error('Script crashed'));
         await expect(roosyncRefreshDashboard({}))
             .rejects.toThrow('Script crashed');
     });
 
     it('handles empty dashboard parsing gracefully', async () => {
-        mockExecSuccess(`Fichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_12-00-00.md`);
+        mockScriptSuccess(`Fichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_12-00-00.md`);
         mockReadFile.mockResolvedValue('# Empty dashboard\nNo tables');
 
         const result = await roosyncRefreshDashboard({});
@@ -120,7 +127,7 @@ describe('roosync_refresh_dashboard', () => {
     });
 
     it('extracts timestamp from filename', async () => {
-        mockExecSuccess(`Fichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_15-30-45.md`);
+        mockScriptSuccess(`Fichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_15-30-45.md`);
         mockReadFile.mockResolvedValue(DASHBOARD_MD);
 
         const result = await roosyncRefreshDashboard({});
@@ -128,7 +135,7 @@ describe('roosync_refresh_dashboard', () => {
     });
 
     it('handles dashboard read failure gracefully', async () => {
-        mockExecSuccess(`Fichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_12-00-00.md`);
+        mockScriptSuccess(`Fichier: /tmp/shared/dashboards/mcp-dashboard-2026-05-04_12-00-00.md`);
         mockReadFile.mockRejectedValue(new Error('File not found'));
 
         const result = await roosyncRefreshDashboard({});

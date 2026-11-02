@@ -1,23 +1,34 @@
 /**
  * Tests unitaires pour roosyncRefreshDashboard
  *
- * Couvre refresh-dashboard.ts (lignes 23-217) :
- * - roosyncRefreshDashboard : success, ROOSYNC_SHARED_PATH manquant,
- *   dashboard path introuvable, erreur exec, parsing dashboard
+ * #4149 : la frontière mockée est PowerShellExecutor.executeScript (spawn sans
+ * shell, argv -File) — les assertions portent sur le TABLEAU d'arguments, plus
+ * jamais sur une chaîne de commande interpolée.
  *
  * @module tools/roosync/__tests__/refresh-dashboard.test
- * @version 1.0.0 (#492)
+ * @version 2.0.0 (#4149 : argv sans shell + repli powershell.exe)
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import { join } from 'path';
 
 // ─────────────────── hoisted mocks (évite les problèmes de hoisting) ───────────────────
 
-const mockExec = vi.hoisted(() => vi.fn());
+const mockExecuteScript = vi.hoisted(() => vi.fn());
+const mockCtorConfigs = vi.hoisted(() => [] as Array<Record<string, unknown>>);
 const mockAccessSync = vi.hoisted(() => vi.fn());
 const mockReadFile = vi.hoisted(() => vi.fn());
 
-vi.mock('child_process', () => ({ exec: mockExec }));
+vi.mock('../../../services/PowerShellExecutor.js', () => ({
+  // #4149 : le SUT construit l'exécuteur (1er essai pwsh, repli powershell.exe) —
+  // les configs sont capturées pour distinguer les deux instances.
+  PowerShellExecutor: class MockPowerShellExecutor {
+    constructor(config?: Record<string, unknown>) {
+      mockCtorConfigs.push(config ?? {});
+    }
+    executeScript = mockExecuteScript;
+  }
+}));
 vi.mock('fs', () => ({
   accessSync: mockAccessSync,
   default: { accessSync: mockAccessSync }
@@ -33,18 +44,17 @@ import { roosyncRefreshDashboard } from '../refresh-dashboard.js';
 
 // ─────────────────── helpers ───────────────────
 
-function setupExecSuccess(stdout: string, stderr = '') {
-  mockExec.mockImplementation((_cmd: any, _opts: any, callback: any) => {
-    callback(null, { stdout, stderr });
-    return {} as any;
-  });
+function setupScriptSuccess(stdout: string, stderr = '', exitCode = 0) {
+  mockExecuteScript.mockResolvedValue({ success: exitCode === 0, stdout, stderr, exitCode, executionTime: 12 });
 }
 
-function setupExecFailure(errorMessage: string) {
-  mockExec.mockImplementation((_cmd: any, _opts: any, callback: any) => {
-    callback(new Error(errorMessage), { stdout: '', stderr: '' });
-    return {} as any;
-  });
+function setupScriptReject(message: string) {
+  mockExecuteScript.mockRejectedValue(new Error(message));
+}
+
+/** Args reçus par executeScript au i-ème appel : [scriptPath, argv, options]. */
+function argvOfCall(i = 0): string[] {
+  return mockExecuteScript.mock.calls[i][1] as string[];
 }
 
 // ─────────────────── tests ───────────────────
@@ -54,6 +64,7 @@ describe('roosyncRefreshDashboard', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCtorConfigs.length = 0;
     process.env.ROOSYNC_SHARED_PATH = '/mock/shared/path';
     // findRooExtensionsRoot: accessSync réussit dès la première tentative
     mockAccessSync.mockReturnValue(undefined);
@@ -71,7 +82,7 @@ describe('roosyncRefreshDashboard', () => {
 
   test('retourne success=true avec un dashboard généré', async () => {
     const dashboardPath = '/mock/shared/path/dashboards/mcp-dashboard-2026-02-22_11-00-00.md';
-    setupExecSuccess(`Fichier: ${dashboardPath}\nDone.`);
+    setupScriptSuccess(`Fichier: ${dashboardPath}\nDone.`);
 
     const markdownContent = `# Dashboard
 
@@ -97,32 +108,35 @@ Some other content
     expect(result.metrics.machinesWithoutInventory).toBe(1);
   });
 
-  test('utilise la baseline et outputDir passés en paramètre', async () => {
+  test('utilise la baseline et outputDir passés en paramètre — en ARGV, un élément par valeur', async () => {
     const dashboardPath = '/custom/out/mcp-dashboard-2026-02-22_11-00-00.md';
-    setupExecSuccess(`Fichier: ${dashboardPath}`);
+    setupScriptSuccess(`Fichier: ${dashboardPath}`);
     mockReadFile.mockResolvedValue('');
 
     await roosyncRefreshDashboard({ baseline: 'myia-po-2025', outputDir: '/custom/out' });
 
-    const execCall = mockExec.mock.calls[0][0] as string;
-    expect(execCall).toContain('myia-po-2025');
-    expect(execCall).toContain('/custom/out');
+    const argv = argvOfCall(0);
+    // Forme argv plate : la valeur est un élément distinct, jamais concaténée
+    expect(argv).toEqual(['-Baseline', 'myia-po-2025', '-OutputDir', '/custom/out']);
+    // Le script est visé en chemin absolu via -File (posé par PowerShellExecutor,
+    // ici mocké : le SUT lui passe le chemin détecté)
+    const scriptPath = mockExecuteScript.mock.calls[0][0] as string;
+    expect(scriptPath).toContain(join('scripts', 'roosync', 'generate-mcp-dashboard.ps1'));
   });
 
   test('utilise outputDir par défaut basé sur ROOSYNC_SHARED_PATH', async () => {
     const dashboardPath = '/mock/shared/path/dashboards/mcp-dashboard-2026-02-22_11-00-00.md';
-    setupExecSuccess(`Fichier: ${dashboardPath}`);
+    setupScriptSuccess(`Fichier: ${dashboardPath}`);
     mockReadFile.mockResolvedValue('');
 
     await roosyncRefreshDashboard({});
 
-    const execCall = mockExec.mock.calls[0][0] as string;
-    expect(execCall).toContain('/mock/shared/path/dashboards');
+    expect(argvOfCall(0)).toEqual(['-Baseline', 'myia-ai-01', '-OutputDir', '/mock/shared/path/dashboards']);
   });
 
   test('timestamp utilise toISOString si pas de match de pattern dans le chemin', async () => {
     const dashboardPath = '/mock/shared/path/dashboards/custom-name.md';
-    setupExecSuccess(`Fichier: ${dashboardPath}`);
+    setupScriptSuccess(`Fichier: ${dashboardPath}`);
     mockReadFile.mockResolvedValue('');
 
     const result = await roosyncRefreshDashboard({});
@@ -130,13 +144,75 @@ Some other content
     expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
-  test('gère stderr non-fatal contenant WARNING', async () => {
+  test('gère stderr non-fatal contenant WARNING (exit 0)', async () => {
     const dashboardPath = '/mock/shared/path/dashboards/mcp-dashboard-2026-02-22_11-00-00.md';
-    setupExecSuccess(`Fichier: ${dashboardPath}`, 'WARNING: some PowerShell warning');
+    setupScriptSuccess(`Fichier: ${dashboardPath}`, 'WARNING: some PowerShell warning');
     mockReadFile.mockResolvedValue('');
 
     const result = await roosyncRefreshDashboard({});
     expect(result.success).toBe(true);
+  });
+
+  // ── #4149 : injection fermée — l'apostrophe est un littéral ──
+
+  test("#4149 : une apostrophe dans baseline reste UN seul élément argv littéral", async () => {
+    const payload = "x'; $env:PWNED_4149='oui'; '";
+    const dashboardPath = '/mock/shared/path/dashboards/mcp-dashboard.md';
+    setupScriptSuccess(`Fichier: ${dashboardPath}`);
+    mockReadFile.mockResolvedValue('');
+
+    await roosyncRefreshDashboard({ baseline: payload });
+
+    const argv = argvOfCall(0);
+    expect(argv).toEqual(['-Baseline', payload, '-OutputDir', '/mock/shared/path/dashboards']);
+    // L'argv ne peut pas se scinder : exactement 4 éléments, aucun échappement.
+    expect(argv.filter((a) => a.includes('Baseline'))).toHaveLength(1);
+  });
+
+  test("#4149 : une apostrophe dans outputDir reste UN seul élément argv littéral", async () => {
+    const payload = "d'out'; Remove-Item -Recurse C:\\; '";
+    const dashboardPath = '/mock/shared/path/dashboards/mcp-dashboard.md';
+    setupScriptSuccess(`Fichier: ${dashboardPath}`);
+    mockReadFile.mockResolvedValue('');
+
+    await roosyncRefreshDashboard({ outputDir: payload });
+
+    expect(argvOfCall(0)).toEqual(['-Baseline', 'myia-ai-01', '-OutputDir', payload]);
+  });
+
+  test("#4149 : le repli powershell.exe ne se déclenche QUE sur ENOENT de spawn", async () => {
+    const dashboardPath = '/mock/shared/path/dashboards/mcp-dashboard.md';
+    // 1er essai (pwsh) : ENOENT ; repli (powershell.exe) : succès
+    mockExecuteScript
+      .mockRejectedValueOnce(new Error('PowerShell execution failed: spawn pwsh.exe ENOENT'))
+      .mockResolvedValueOnce({ success: true, stdout: `Fichier: ${dashboardPath}`, stderr: '', exitCode: 0, executionTime: 20 });
+    mockReadFile.mockResolvedValue('');
+
+    const result = await roosyncRefreshDashboard({});
+
+    expect(result.success).toBe(true);
+    expect(mockCtorConfigs).toHaveLength(2);
+    // Le repli porte explicitement powershell.exe (#2368)
+    expect(mockCtorConfigs[1]).toMatchObject({ powershellPath: 'powershell.exe' });
+    // Même argv rejoué à l'identique
+    expect(argvOfCall(1)).toEqual(['-Baseline', 'myia-ai-01', '-OutputDir', '/mock/shared/path/dashboards']);
+  });
+
+  test("#4149 : «Script not found» n'est PAS un ENOENT de spawn — pas de repli, échec direct", async () => {
+    mockExecuteScript.mockRejectedValue(new Error('Script not found: C:\\x\\generate-mcp-dashboard.ps1'));
+    mockReadFile.mockResolvedValue('');
+
+    await expect(roosyncRefreshDashboard({})).rejects.toThrow('Erreur lors du rafraîchissement du dashboard');
+    expect(mockCtorConfigs).toHaveLength(1); // aucun repli
+  });
+
+  test("#4149 : pwsh ET powershell.exe absents — l'échec du repli remonte enveloppé", async () => {
+    mockExecuteScript
+      .mockRejectedValueOnce(new Error('PowerShell execution failed: spawn pwsh.exe ENOENT'))
+      .mockRejectedValueOnce(new Error('PowerShell execution failed: spawn powershell.exe ENOENT'));
+
+    await expect(roosyncRefreshDashboard({})).rejects.toThrow('Erreur lors du rafraîchissement du dashboard');
+    expect(mockCtorConfigs).toHaveLength(2);
   });
 
   // ── erreurs ──
@@ -148,15 +224,22 @@ Some other content
       .rejects.toThrow('ROOSYNC_SHARED_PATH non configuré');
   });
 
-  test('lève une erreur si exec échoue', async () => {
-    setupExecFailure('pwsh not found');
+  test('lève une erreur si le script échoue (exit non nul)', async () => {
+    mockExecuteScript.mockResolvedValue({ success: false, stdout: '', stderr: 'boom', exitCode: 1, executionTime: 5 });
+
+    await expect(roosyncRefreshDashboard({}))
+      .rejects.toThrow('generate-mcp-dashboard.ps1 a échoué (exit 1)');
+  });
+
+  test('lève une erreur si executeScript rejette hors ENOENT', async () => {
+    setupScriptReject('PowerShell execution failed: EACCES permission denied');
 
     await expect(roosyncRefreshDashboard({}))
       .rejects.toThrow('Erreur lors du rafraîchissement du dashboard');
   });
 
   test('lève une erreur si le chemin dashboard introuvable dans stdout', async () => {
-    setupExecSuccess('Script done. No path returned.');
+    setupScriptSuccess('Script done. No path returned.');
 
     await expect(roosyncRefreshDashboard({}))
       .rejects.toThrow('Impossible de déterminer le chemin du dashboard');
@@ -166,7 +249,7 @@ Some other content
 
   test('parseDashboardMachines : retourne [] si readFile échoue', async () => {
     const dashboardPath = '/mock/shared/path/dashboards/mcp-dashboard-2026-02-22_11-00-00.md';
-    setupExecSuccess(`Fichier: ${dashboardPath}`);
+    setupScriptSuccess(`Fichier: ${dashboardPath}`);
     mockReadFile.mockRejectedValue(new Error('ENOENT'));
 
     const result = await roosyncRefreshDashboard({});
@@ -177,7 +260,7 @@ Some other content
 
   test('parseDashboardMachines : parse correctement plusieurs lignes', async () => {
     const dashboardPath = '/mock/shared/path/dashboards/mcp-dashboard-2026-02-22_11-00-00.md';
-    setupExecSuccess(`Fichier: ${dashboardPath}`);
+    setupScriptSuccess(`Fichier: ${dashboardPath}`);
 
     const content = `# MCP Dashboard
 
@@ -201,7 +284,7 @@ Some other content
 
   test('parseDashboardMachines : arrête au premier non-pipe après le tableau', async () => {
     const dashboardPath = '/mock/shared/path/dashboards/mcp-dashboard-2026-02-22_11-00-00.md';
-    setupExecSuccess(`Fichier: ${dashboardPath}`);
+    setupScriptSuccess(`Fichier: ${dashboardPath}`);
 
     const content = `| Machine | Status | Diffs |
 |---|---|---|

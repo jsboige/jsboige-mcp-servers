@@ -3,39 +3,38 @@
  *
  * Couvre les paramètres de l'outil :
  * - baseline: Machine à utiliser comme baseline (défaut: myia-ai-01)
- * - outputDir: Répertoire de sortie pour le dashboard (défaut: $ROOSYNC_SHARED_PATH/dashboards)
+ * - outputDir: Répertoire de sortie (défaut: $ROOSYNC_SHARED_PATH/dashboards)
  *
  * Framework: Vitest
  * Type: Intégration (DashboardService réel, opérations filesystem réelles)
  *
  * @module roosync/refresh-dashboard.integration.test
- * @version 1.2.0 (#2639 11e réactivation : le shell est mocké à la frontière)
+ * @version 1.3.0 (#4149 : la frontière mockée est PowerShellExecutor.executeScript —
+ *   spawn sans shell, argv -File — plus aucune chaîne de commande interpolée)
  */
 /*
- * #2639 (2026-10-05) — POURQUOI LE SHELL EST MOCKÉ ICI.
+ * #2639 (2026-10-05) puis #4149 (2026-11-02) — POURQUOI LA FRONTIÈRE EST MOCKÉE ICI.
  *
- * L'exclusion CI de ce fichier portait « platform-dependent : shell dur vers pwsh ».
- * Mesuré faux : `pwsh` S'EXÉCUTE (aucune erreur de shell, Windows comme runner
- * ubuntu). Ce qui manque est le **script du dépôt parent**
+ * L'exclusion CI historique portait « platform-dependent : shell dur vers pwsh ».
+ * Mesuré faux : ce qui manque est le **script du dépôt parent**
  * (`scripts/roosync/generate-mcp-dashboard.ps1`) — `findRooExtensionsRoot()`
  * (refresh-dashboard.ts l.23-46) remonte l'arbre à la recherche d'un `CLAUDE.md` ;
- * dans un checkout **submodule autonome** (la CI) il n'en trouve aucun, retombe sur
- * `process.cwd()` (= servers/roo-state-manager) et vise donc un script inexistant.
- * Rouge d'abord mesuré : 13/13 `Command failed: pwsh … roo-state-manager\scripts\
- * roosync\generate-mcp-dashboard.ps1`. C'est une dépendance **PARENT_REPO**, pas
- * une dépendance de plateforme.
+ * dans un checkout **submodule autonome** (la CI) il n'en trouve aucun et vise
+ * un script inexistant. C'est une dépendance **PARENT_REPO**, pas de plateforme.
  *
- * Le mock remplace le SEUL point de contact avec l'extérieur (l.114-119) et
- * reproduit le **contrat du script**, pas son implémentation :
+ * Le mock remplace le SEUL point de contact avec l'extérieur — depuis #4149 :
+ * `PowerShellExecutor.executeScript` — et reproduit le **contrat du script**,
+ * pas son implémentation :
  *   - `New-Item -Force` de l'outputDir        (generate-mcp-dashboard.ps1 l.35-39)
  *   - écriture de `mcp-dashboard.md`          (l.31, l.317)
- *   - stdout portant `Fichier: <chemin>`      (lu par refresh-dashboard.ts l.127)
+ *   - stdout portant `Fichier: <chemin>`      (lu par refresh-dashboard.ts)
  *
- * Frontière de fidélité, assumée : le générateur PowerShell lui-même n'est plus
- * exercé ici. Il appartient au dépôt **parent**, qui porte son propre harnais.
- * Ce que ce fichier couvre, et couvre mieux qu'avant : construction de la commande
- * (script visé, `-Baseline`, `-OutputDir`), lecture de `Fichier:` sur stdout,
- * parsing du tableau markdown, métriques exactes, chemin d'erreur.
+ * Frontière de fidélité, assumée : le générateur PowerShell lui-même n'est pas
+ * exercé ici (il appartient au dépôt parent), ni le spawn réel (couvert par
+ * refresh-dashboard.injection.test.ts). Ce que ce fichier couvre : construction
+ * de l'argv (script visé, `-Baseline`, `-OutputDir` en éléments distincts),
+ * lecture de `Fichier:` sur stdout, parsing du tableau markdown, métriques
+ * exactes, chemins d'erreur, repli powershell.exe.
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -43,15 +42,15 @@ import { existsSync, rmSync, mkdirSync } from 'fs';
 import { join } from 'path';
 
 /**
- * État partagé avec le mock (hoisté : les fabriques `vi.mock` s'exécutent avant
+ * État partagé avec le mock (hoisted : les fabriques `vi.mock` s'exécutent avant
  * les `import`, une simple `const` du corps serait en TDZ).
  */
 const shell = vi.hoisted(() => ({
-  /** Commandes reçues par `exec`, une par appel — le contrat de construction s'y lit. */
-  commands: [] as string[],
-  /** Force le prochain appel à échouer (couvre le chemin `throw` de l'outil). */
+  /** Appels reçus par `executeScript` : { scriptPath, argv, options } — le contrat de construction s'y lit. */
+  calls: [] as Array<{ scriptPath: string; argv: string[]; options: Record<string, unknown> }>,
+  /** Force le prochain appel à rejeter (couvre le chemin `throw` de l'outil). */
   failNext: false,
-  /** Réussit mais sans marqueur `Fichier:` sur stdout (couverture l.127-134). */
+  /** Réussit mais sans marqueur `Fichier:` sur stdout (couverture extraction chemin). */
   noMarker: false,
   /** Tableau markdown minimal respectant le format lu par parseDashboardMachines. */
   fixture: [
@@ -66,49 +65,42 @@ const shell = vi.hoisted(() => ({
   ].join('\n')
 }));
 
-vi.mock('child_process', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('child_process')>();
-  const { mkdirSync: mk, writeFileSync: wf } = await import('fs');
-  const { join: j } = await import('path');
-
-  const exec = (
-    command: string,
-    _options: unknown,
-    callback: (error: Error | null, result?: { stdout: string; stderr: string }) => void
-  ) => {
-    shell.commands.push(command);
-
-    if (shell.failNext) {
-      shell.failNext = false;
-      callback(new Error('Command failed: pwsh (fixture #2639 — échec forcé)'));
-      return {} as never;
+vi.mock('../../../services/PowerShellExecutor.js', () => ({
+  PowerShellExecutor: class MockPowerShellExecutor {
+    constructor(_config?: Record<string, unknown>) {
+      /* #4149 : config non observée ici — le repli powershell.exe est couvert
+         en unitaire (refresh-dashboard.test.ts) où les configs sont capturées. */
     }
+    executeScript = vi.fn(
+      async (scriptPath: string, argv: string[], options: Record<string, unknown>) => {
+        shell.calls.push({ scriptPath, argv: [...argv], options });
 
-    if (shell.noMarker) {
-      shell.noMarker = false;
-      callback(null, { stdout: 'Dashboard généré avec succès\n', stderr: '' });
-      return {} as never;
-    }
+        if (shell.failNext) {
+          shell.failNext = false;
+          throw new Error('PowerShell execution failed: Command failed (fixture #4149 — échec forcé)');
+        }
 
-    const outputDir = /-OutputDir '([^']+)'/.exec(command)?.[1];
-    if (!outputDir) {
-      callback(new Error(`-OutputDir introuvable dans la commande : ${command}`));
-      return {} as never;
-    }
+        if (shell.noMarker) {
+          shell.noMarker = false;
+          return { success: true, stdout: 'Dashboard généré avec succès\n', stderr: '', exitCode: 0, executionTime: 10 };
+        }
 
-    try {
-      mk(outputDir, { recursive: true });
-      const dashboardPath = j(outputDir, 'mcp-dashboard.md');
-      wf(dashboardPath, shell.fixture, 'utf8');
-      callback(null, { stdout: `Dashboard généré avec succès\nFichier: ${dashboardPath}\n`, stderr: '' });
-    } catch (error) {
-      callback(error as Error);
-    }
-    return {} as never;
-  };
+        const i = argv.indexOf('-OutputDir');
+        const outputDir = i !== -1 ? argv[i + 1] : undefined;
+        if (!outputDir) {
+          throw new Error(`-OutputDir introuvable dans l'argv : ${argv.join(' ')}`);
+        }
 
-  return { ...actual, exec };
-});
+        // fs réel (non mocké dans ce fichier) — import dynamique ESM, pas require
+        const { mkdirSync: mk, writeFileSync: wf } = await import('fs');
+        mk(outputDir, { recursive: true });
+        const dashboardPath = join(outputDir, 'mcp-dashboard.md');
+        wf(dashboardPath, shell.fixture, 'utf8');
+        return { success: true, stdout: `Dashboard généré avec succès\nFichier: ${dashboardPath}\n`, stderr: '', exitCode: 0, executionTime: 10 };
+      }
+    );
+  }
+}));
 
 // Mock getLocalMachineId pour contrôler l'identifiant dans les tests
 vi.mock('../../../utils/message-helpers.js', async () => {
@@ -142,8 +134,8 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
     // Reset singleton so it gets recreated with the test path
     RooSyncService.resetInstance();
 
-    // Reset de l'observation du shell entre les tests
-    shell.commands.length = 0;
+    // Reset de l'observation de la frontière entre les tests
+    shell.calls.length = 0;
     shell.failNext = false;
 
     // Setup : créer répertoire temporaire pour tests isolés
@@ -212,18 +204,23 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
       }
     });
 
-    test('should build the PowerShell command against the detected repo root (#2639)', async () => {
+    test('should build the argv against the detected repo root (#4149)', async () => {
       await roosyncRefreshDashboard({ baseline: 'myia-po-2025' });
 
-      // Un appel shell par refresh, pas deux (anti double-exécution)
-      expect(shell.commands).toHaveLength(1);
-      const command = shell.commands[0];
+      // Un appel executeScript par refresh, pas deux (anti double-exécution)
+      expect(shell.calls).toHaveLength(1);
+      const { scriptPath, argv } = shell.calls[0];
 
-      // Script visé : celui du repo root détecté (refresh-dashboard.ts l.106-107).
+      // Script visé : celui du repo root détecté (refresh-dashboard.ts).
       // Construit avec `path.join` => séparateur de la plateforme.
-      expect(command).toContain(join('scripts', 'roosync', 'generate-mcp-dashboard.ps1'));
-      expect(command).toContain('-Baseline \'myia-po-2025\'');
-      expect(command).toContain('pwsh -NoProfile -ExecutionPolicy Bypass');
+      expect(scriptPath).toContain(join('scripts', 'roosync', 'generate-mcp-dashboard.ps1'));
+
+      // #4149 : forme ARGV — la baseline est un élément distinct, SANS quotes.
+      const i = argv.indexOf('-Baseline');
+      expect(i).toBeGreaterThanOrEqual(0);
+      expect(argv[i + 1]).toBe('myia-po-2025');
+      // Aucune couche de shell : la valeur ne porte ni quote ni échappement
+      expect(argv[i + 1]).not.toContain("'");
     });
   });
 
@@ -236,12 +233,13 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
       const result = await roosyncRefreshDashboard({});
 
       expect(result.success).toBe(true);
-      // Le défaut écrit sous $ROOSYNC_SHARED_PATH/dashboards (refresh-dashboard.ts l.98)
+      // Le défaut écrit sous $ROOSYNC_SHARED_PATH/dashboards (refresh-dashboard.ts)
       expect(result.dashboardPath).toContain(join(testSharedStatePath, 'dashboards'));
-      // Défaut construit par interpolation `${sharedPath}/dashboards` (l.98) =>
+      // Défaut construit par interpolation `${sharedPath}/dashboards` =>
       // séparateur `/`, quelle que soit la plateforme — assertion volontairement
       // littérale, c'est la forme réellement envoyée au script.
-      expect(shell.commands[0]).toContain(`-OutputDir '${testSharedStatePath}/dashboards'`);
+      const { argv } = shell.calls[0];
+      expect(argv[argv.indexOf('-OutputDir') + 1]).toBe(`${testSharedStatePath}/dashboards`);
     });
 
     test('should accept custom outputDir', async () => {
@@ -256,7 +254,8 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
       // Le répertoire est créé par le script (generate-mcp-dashboard.ps1 l.36-39) — ici
       // reproduit par la bordure mockée, qui reçoit bien le chemin demandé.
       expect(existsSync(customOutputDir)).toBe(true);
-      expect(shell.commands[0]).toContain(`-OutputDir '${customOutputDir}'`);
+      const { argv } = shell.calls[0];
+      expect(argv[argv.indexOf('-OutputDir') + 1]).toBe(customOutputDir);
     });
 
     test('should create outputDir if it does not exist', async () => {
@@ -273,6 +272,25 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
       // Répertoire créé par la bordure (contrat du script : New-Item -Force, l.36-39)
       expect(existsSync(nonExistentDir)).toBe(true);
       expect(result.dashboardPath).toContain(nonExistentDir);
+    });
+  });
+
+  // ============================================================
+  // #4149 : injection — l'apostrophe traverse la frontière comme littéral
+  // ============================================================
+
+  describe('injection boundary (#4149)', () => {
+    test("une apostrophe dans baseline atteint le script comme valeur brute, non exécutée", async () => {
+      const payload = "x'; $env:PWNED_4149='oui'; '";
+      const result = await roosyncRefreshDashboard({ baseline: payload });
+
+      expect(result.success).toBe(true);
+      const { argv } = shell.calls[0];
+      const i = argv.indexOf('-Baseline');
+      // La payload est UN élément argv, byte-identique — pas de séparation possible
+      expect(argv[i + 1]).toBe(payload);
+      // L'argv reste plat : 4 éléments exactement, aucune scission
+      expect(argv).toHaveLength(4);
     });
   });
 
@@ -300,21 +318,20 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
     test('should return valid result object', async () => {
       const result = await roosyncRefreshDashboard({});
 
-      // Contrat RefreshDashboardResultSchema (refresh-dashboard.ts l.63-78)
+      // Contrat RefreshDashboardResultSchema (refresh-dashboard.ts)
       expect(result.success).toBe(true);
       expect(result.dashboardPath).toMatch(/mcp-dashboard\.md$/);
-      // Nom de fichier fixe (#799) => le fallback ISO est TOUJOURS pris (l.135-136)
+      // Nom de fichier fixe (#799) => le fallback ISO est TOUJOURS pris
       expect(result.timestamp).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
       expect(result.baseline).toBe('myia-ai-01');
       expect(Array.isArray(result.machines)).toBe(true);
       // #2639 : la fixture étant connue, les métriques sont assertées EXACTES
-      // (avant : `expect.any(Number)` — la formule l.142-146 n'était pas couverte)
       expect(result.metrics).toEqual({
         totalMachines: 3,
         machinesWithInventory: 2,
         machinesWithoutInventory: 1
       });
-      // Cohérence métriques/parse (l.142-146) : totalMachines = machines.length
+      // Cohérence métriques/parse : totalMachines = machines.length
       expect(result.metrics.totalMachines).toBe(result.machines.length);
     });
 
@@ -351,7 +368,7 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
 
       const result = await roosyncRefreshDashboard({});
 
-      // L'outil ne retourne jamais success:false — il throw (l.159-162).
+      // L'outil ne retourne jamais success:false — il throw.
       // Retour effectif = succès complet du contrat.
       expect(result.success).toBe(true);
       expect(result.dashboardPath).toMatch(/mcp-dashboard\.md$/);
@@ -363,15 +380,15 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
       });
 
       // baseline inconnue: le script s'exécute quand même et l'outil
-      // retourne le contrat complet avec la baseline demandée (l.92, l.155)
+      // retourne le contrat complet avec la baseline demandée
       expect(result.success).toBe(true);
       expect(result.baseline).toBe('non-existent-machine');
       expect(result.dashboardPath).toMatch(/mcp-dashboard\.md$/);
     });
 
-    test('should throw a wrapped error when the generator fails (#2639)', async () => {
-      // Chemin d'erreur jamais couvert avant #2639 : l'outil emballe l'échec du
-      // shell dans `Erreur lors du rafraîchissement du dashboard` (l.159-162).
+    test('should throw a wrapped error when the generator fails (#4149)', async () => {
+      // Chemin d'erreur : l'outil emballe l'échec du script dans
+      // `Erreur lors du rafraîchissement du dashboard`.
       shell.failNext = true;
 
       await expect(roosyncRefreshDashboard({})).rejects.toThrow(
@@ -380,7 +397,7 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
     });
 
     test('should throw when stdout carries no dashboard path (#2639)', async () => {
-      // Le contrat stdout est `Fichier: <chemin>` (l.127-134) : sans lui, l'outil
+      // Le contrat stdout est `Fichier: <chemin>` : sans lui, l'outil
       // refuse de deviner plutôt que de rendre un chemin vide.
       shell.noMarker = true;
 
@@ -409,8 +426,8 @@ describe('roosync_refresh_dashboard (integration)', { testTimeout: 30000 }, () =
       expect(result2.baseline).toBe('myia-po-2024');
       // Fichier fixe (#799): les deux refresh écrivent le même chemin
       expect(result2.dashboardPath).toBe(result1.dashboardPath);
-      // Un appel shell par refresh, deux au total
-      expect(shell.commands).toHaveLength(2);
+      // Un appel executeScript par refresh, deux au total
+      expect(shell.calls).toHaveLength(2);
     });
 
     test('should persist dashboard state across operations', async () => {
