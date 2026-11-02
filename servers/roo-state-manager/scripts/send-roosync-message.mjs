@@ -27,6 +27,16 @@
  * is the source of truth and must never be blocked by PG (Phase A). The log
  * line names the mode so a missing dual-write is visible in the worker log.
  *
+ * #4131 — the default PG-primary gate is opened by the backfill marker, and a
+ * fresh process starts with that marker UNRESOLVED ('unknown' ⇒ gate closed).
+ * Without resolving it first, every CLI send took the G: path, so the worker
+ * reports of every seat kept the G: `messages/` tree written past the end of
+ * dual-write (measured on ai-01, 02/11 04:59:52Z, tags without
+ * `no-pg-dual-write`, i.e. this path and not the raw fallback). The send now
+ * awaits the marker first, exactly like the CLI readers
+ * (roosync-channel-read.ts readCliInboxFromPg). The mode printed is MEASURED:
+ * `pg-primary` when no G: inbox file was written for the message.
+ *
  * Usage (from servers/roo-state-manager/, after npm run build):
  *   node scripts/send-roosync-message.mjs \
  *     --from myia-po-2024 --to myia-ai-01 \
@@ -39,7 +49,7 @@
  */
 
 import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
 
@@ -135,16 +145,28 @@ const [
   { getMessageManager },
   { dualWriteRooSyncMessageToStore },
   { getUnifiedStoreWriter },
+  { ensureBackfillMarkersFresh },
 ] = await Promise.all([
   import(buildUrl('utils/shared-state-path.js')),
   import(buildUrl('services/MessageManager.js')),
   import(buildUrl('services/unified-store/roosync-channel-dual-write.js')),
   import(buildUrl('services/unified-store/writer-factory.js')),
+  import(buildUrl('services/unified-store/pg-backfill-marker.js')),
 ]);
 
 // getMessageManager() reads process.env.ROOSYNC_SHARED_PATH directly; this
 // also seeds it from the .env fallback when the var is not exported (#1628).
-getSharedStatePath();
+const sharedStatePath = getSharedStatePath();
+
+// #4131 — resolve the marker BEFORE the send decides PG-primary vs G: (one
+// bounded lookup; a failure resolves to the G: path, never blocks the send).
+// The catch keeps that last promise local to this file: a worker report is
+// never lost to a marker lookup.
+try {
+  await ensureBackfillMarkersFresh();
+} catch (err) {
+  console.warn(`[send-roosync-message] marker resolution failed, sending on the G: path: ${err?.message ?? err}`);
+}
 
 const messageManager = getMessageManager();
 const message = await messageManager.sendMessage(
@@ -170,4 +192,6 @@ if (liveMode) {
   );
 }
 
-console.log(`SENT ${message.id} (${liveMode ? 'gdrive+pg' : 'gdrive-only'})`);
+const onGdrive = existsSync(path.join(sharedStatePath, 'messages', 'inbox', `${message.id}.json`));
+const mode = !onGdrive ? 'pg-primary' : liveMode ? 'gdrive+pg' : 'gdrive-only';
+console.log(`SENT ${message.id} (${mode})`);
