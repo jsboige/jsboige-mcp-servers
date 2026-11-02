@@ -19,7 +19,11 @@ import { createLogger, Logger } from '../utils/logger.js';
 import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
 import { getSharedStatePath, ensureStoreSubdir } from '../utils/shared-state-path.js';
 import type { BootResilienceInfo } from '../types/inventory.js';
-import { inventoryMetaKey, readStoreMetaValue, storeMetaUrl } from './unified-store/store-meta.js';
+import { inventoryMetaKey, readStoreMetaValue, storeMetaUrl, upsertStoreMetaValue } from './unified-store/store-meta.js';
+import { isPgFlagExplicitlyOff } from './unified-store/pg-flags.js';
+import { INVENTORY_PG_PRIMARY_ENV } from './roosync/InventoryService.js';
+import { maskSecretTextForPublication } from '../utils/secret-redaction.js';
+import { describeError } from '../utils/error-format.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -733,10 +737,40 @@ export class InventoryCollector {
   }
 
   /**
-   * Sauvegarde l'inventaire dans .shared-state/inventories/
+   * Sauvegarde l'inventaire — ligne PG d'abord, fichier horodaté en repli.
    * @param inventory - Inventaire à sauvegarder
+   *
+   * #4131 (file d, ai-01) : ce writer écrivait `inventories/{id}-{ts}.json`
+   * sans aucune porte PG — après le 03/11, tout siège local sans ligne PG ni
+   * fichier (collecte fraîche, `:291-310`) serait reparti sur G:. Même gating
+   * que `InventoryService.saveToSharedState` : la ligne PG (contenu masqué)
+   * est la surface ; le fichier horodaté n'est plus écrit qu'en repli — PG en
+   * échec ou non configuré — ou kill-switch `UNIFIED_STORE_INVENTORY_PG_PRIMARY=0`.
+   * Même règle (a) qu'InventoryService : une publication non canonique
+   * (majuscules) n'écrit NULLE part — la clé est normalisée en minuscules et
+   * l'écrasement silencieux est le défaut que la garde ferme.
    */
   private async saveToSharedState(inventory: MachineInventory): Promise<void> {
+    if (inventory.machineId !== inventory.machineId.toLowerCase()) {
+      this.logger.error(
+        `[inventory] publication REFUSÉE : machineId non canonique '${inventory.machineId}' ` +
+        `(minuscules attendues) — aucune écriture, ni PG ni fichier (#4131)`
+      );
+      return;
+    }
+    if (storeMetaUrl()) {
+      try {
+        const masked = maskSecretTextForPublication(JSON.stringify(inventory, null, 2));
+        await upsertStoreMetaValue(inventoryMetaKey(inventory.machineId), masked);
+        if (!isPgFlagExplicitlyOff(INVENTORY_PG_PRIMARY_ENV)) {
+          this.logger.info(`💾 Inventaire sauvegardé dans PG: ${inventoryMetaKey(inventory.machineId)} (#4131)`);
+          return;
+        }
+      } catch (error) {
+        // Non-bloquant : repli fichier horodaté, la cause reste lisible.
+        this.logger.warn(`⚠️ Sauvegarde PG impossible — repli fichier horodaté`, { error: describeError(error) });
+      }
+    }
     try {
       // Construire le chemin .shared-state/inventories/
       const sharedStatePath = getSharedStatePath();
@@ -756,7 +790,7 @@ export class InventoryCollector {
 
     } catch (error) {
       // Non-bloquant : on log mais on ne throw pas
-      this.logger.warn(`⚠️ Impossible de sauvegarder dans .shared-state`, { error });
+      this.logger.warn(`⚠️ Impossible de sauvegarder dans .shared-state`, { error: describeError(error) });
     }
   }
 
