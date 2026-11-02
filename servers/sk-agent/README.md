@@ -525,7 +525,7 @@ Short guide for callers. Defaults are right most of the time: `call_agent` witho
 | Quick triage, cheap | `fast-responder`, `analyst-fast` | Hub flash models, minimal tools |
 | Images / screenshots | `vision-analyst` (vision default) or `vision-local` | Hub strips images (#794) — vision runs local |
 | Code edit or verify on this machine | `coder` | Carries `open_terminal` |
-| PR review | `review_pr` | Picks its tier-1/tier-2 agents itself (#1587) |
+| PR review | `review_pr` | Picks its review tier itself — three tiers (#1587) |
 | Structured French deliverable | `owui-analyst`, `owui-writer` | OWUI expert presets |
 | Multi-perspective deliberation | `run_conversation` + `deep-think` | 4-agent group chat |
 | Sourced research | `run_conversation` + `deep-search` | researcher → synthesizer → critic |
@@ -533,9 +533,12 @@ Short guide for callers. Defaults are right most of the time: `call_agent` witho
 
 **stdio vs mcp-tools.** Every entry in `mcps` is spawned by sk-agent itself as a
 **local stdio subprocess** — plugin isolation is free (`venv-markitdown` runs mcp 2.x
-while the main venv stays on 1.x). Agents mount plugins **by name** in their `mcps`
-list; there is no per-call plugin choice — the agent's list decides what its turns can
-call. `list_tools` reports the mounted set per agent.
+while the main venv stays on 1.x). An agent's `mcps` list is the **default** set for its
+turns: a single call can narrow or swap it with `mcp_overrides` (`{"add": …}`,
+`{"remove": …}`, `{"replace": …}`) or `agent_spec.mcps`, and can never widen beyond the
+agent's capabilities. `list_agents` reports each agent's configured `mcps`;
+`list_tools` shows the tools loaded in the **first initialised kernel** — useful for
+debugging plugin wiring, not for a per-agent inventory.
 
 **Known limits.**
 
