@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { randomBytes } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -761,9 +761,11 @@ export async function withEBUSYRetry<T>(
 }
 
 async function runNpmBuild(mcpPath: string): Promise<string> {
+    // #4149 (famille ms#1630) : argv sans shell — Windows : npm est npm.cmd.
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
     return withEBUSYRetry(
         () => new Promise<string>((resolve, reject) => {
-            exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout) => {
+            execFile(npm, ['run', 'build'], { cwd: mcpPath, windowsHide: true }, (error, stdout) => {
                 if (error) {
                     reject(error);
                 } else {
@@ -782,15 +784,23 @@ async function runNpmBuild(mcpPath: string): Promise<string> {
 }
 
 async function touchFile(filePath: string): Promise<void> {
-    const command = `(Get-Item -LiteralPath "${filePath}").LastWriteTime = Get-Date`;
+    // #4149 (famille ms#1630), jumeau de rebuild-and-restart.ts : le chemin ne
+    // s'interpole plus dans un script pwsh — il passe par une variable
+    // d'environnement qu'aucun shell ne ré-analyse, le script est une constante.
+    const script = '(Get-Item -LiteralPath $env:RSM_TOUCH_PATH).LastWriteTime = Get-Date';
     return new Promise((resolve, reject) => {
-        exec(`powershell.exe -Command "${command}"`, { windowsHide: true }, (error) => {
-            if (error) {
-                reject(new HeartbeatServiceError(`Touch échoué pour ${filePath}: ${error.message}`, 'TOUCH_FAILED'));
-            } else {
-                resolve();
+        execFile(
+            'powershell.exe',
+            ['-NoProfile', '-NonInteractive', '-Command', script],
+            { windowsHide: true, env: { ...process.env, RSM_TOUCH_PATH: filePath } },
+            (error) => {
+                if (error) {
+                    reject(new HeartbeatServiceError(`Touch échoué pour ${filePath}: ${error.message}`, 'TOUCH_FAILED'));
+                } else {
+                    resolve();
+                }
             }
-        });
+        );
     });
 }
 

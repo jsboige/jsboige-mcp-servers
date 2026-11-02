@@ -18,7 +18,7 @@ import { describe, test, expect, beforeEach, vi, afterEach } from 'vitest';
 import { roosyncMcpManagement, type McpManagementArgs } from '../mcp-management.js';
 import { HeartbeatServiceError } from '../../../services/roosync/HeartbeatService.js';
 import * as fs from 'fs/promises';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 
 // Mock des modules
 vi.mock('fs/promises');
@@ -407,18 +407,17 @@ describe('roosyncMcpManagement', () => {
 
             vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
 
-            // Mock successful build and touch (handle both exec signatures)
-            vi.mocked(exec).mockImplementation(((cmd: string, optionsOrCallback: any, maybeCallback?: any) => {
-                // Determine if second arg is callback or options
+            // Mock successful build and touch (argv dispatch — #4149, execFile sans shell)
+            vi.mocked(execFile).mockImplementation(((file: string, args: string[], optionsOrCallback: any, maybeCallback?: any) => {
+                // Determine if third arg is callback or options
                 const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
 
                 if (callback) {
                     setImmediate(() => {
-                        if (cmd.includes('npm run build')) {
+                        if (String(file).includes('npm')) {
                             callback(null, 'Build successful', '');
-                        } else if (cmd.includes('powershell')) {
-                            callback(null, '', '');
                         } else {
+                            // powershell touch
                             callback(null, '', '');
                         }
                     });
@@ -450,14 +449,15 @@ describe('roosyncMcpManagement', () => {
 
             vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
 
-            vi.mocked(exec).mockImplementation(((cmd: string, optionsOrCallback: any, maybeCallback?: any) => {
+            vi.mocked(execFile).mockImplementation(((file: string, args: string[], optionsOrCallback: any, maybeCallback?: any) => {
                 const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
 
                 if (callback) {
                     setImmediate(() => {
-                        if (cmd.includes('npm run build')) {
+                        if (String(file).includes('npm')) {
                             callback(null, 'Build successful', '');
-                        } else if (cmd.includes('powershell')) {
+                        } else {
+                            // powershell touch
                             callback(null, '', '');
                         }
                     });
@@ -504,12 +504,12 @@ describe('roosyncMcpManagement', () => {
 
             vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
 
-            vi.mocked(exec).mockImplementation(((cmd: string, optionsOrCallback: any, maybeCallback?: any) => {
+            vi.mocked(execFile).mockImplementation(((file: string, args: string[], optionsOrCallback: any, maybeCallback?: any) => {
                 const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
 
                 if (callback) {
                     setImmediate(() => {
-                        if (cmd.includes('npm run build')) {
+                        if (String(file).includes('npm')) {
                             callback(new Error('Build failed'), '', 'Build error');
                         }
                     });
@@ -548,7 +548,7 @@ describe('roosyncMcpManagement', () => {
             });
 
             // le build ne doit JAMAIS être lancé hors racine de package
-            expect(exec).not.toHaveBeenCalled();
+            expect(execFile).not.toHaveBeenCalled();
 
             // clearAllMocks ne reset pas les implementations — rendre access
             // permissive pour les tests suivants
@@ -569,7 +569,7 @@ describe('roosyncMcpManagement', () => {
             vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
             vi.mocked(fs.access).mockResolvedValue(undefined);
 
-            vi.mocked(exec).mockImplementation(((cmd: string, optionsOrCallback: any, maybeCallback?: any) => {
+            vi.mocked(execFile).mockImplementation(((file: string, args: string[], optionsOrCallback: any, maybeCallback?: any) => {
                 const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
                 if (callback) {
                     setImmediate(() => callback(null, 'Build successful', ''));
@@ -584,6 +584,47 @@ describe('roosyncMcpManagement', () => {
 
             expect(result.success).toBe(true);
             expect(result.details?.mcpPath).toBe('/srv/mcp');
+        });
+
+        // #4149 (famille ms#1630), jumeau de rebuild-and-restart.ts : le touch
+        // ne compile plus de script interpolé — le chemin passe par
+        // RSM_TOUCH_PATH, jamais par le texte de la commande.
+        test('touch passes the path via env var, never interpolated (#4149)', async () => {
+            const hostilePath = 'C:\\tmp\\x").LastWriteTime=Get-Date; calc.exe #\\build\\index.js';
+            const mockSettings = {
+                mcpServers: {
+                    'test-mcp': {
+                        command: 'node',
+                        cwd: '/path/to/mcp',
+                        watchPaths: [hostilePath]
+                    }
+                }
+            };
+
+            vi.mocked(fs.readFile).mockResolvedValue(JSON.stringify(mockSettings));
+            vi.mocked(fs.access).mockResolvedValue(undefined);
+
+            vi.mocked(execFile).mockImplementation(((file: string, args: string[], optionsOrCallback: any, maybeCallback?: any) => {
+                const callback = typeof optionsOrCallback === 'function' ? optionsOrCallback : maybeCallback;
+                if (callback) {
+                    setImmediate(() => callback(null, '', ''));
+                }
+                return {} as any;
+            }) as any);
+
+            const result = await roosyncMcpManagement({
+                action: 'rebuild',
+                mcp_name: 'test-mcp'
+            });
+
+            expect(result.success).toBe(true);
+            const touchCalls = vi.mocked(execFile).mock.calls.filter(c => String(c[0]).includes('powershell'));
+            expect(touchCalls.length).toBe(1);
+            const [file, args, opts] = touchCalls[0] as unknown as [string, string[], { env: Record<string, string> }];
+            expect(args.join(' ')).not.toContain(hostilePath);
+            expect(args.join(' ')).not.toContain('calc.exe');
+            expect(opts.env.RSM_TOUCH_PATH).toBe(hostilePath);
+            expect(args).toContain('(Get-Item -LiteralPath $env:RSM_TOUCH_PATH).LastWriteTime = Get-Date');
         });
     });
 

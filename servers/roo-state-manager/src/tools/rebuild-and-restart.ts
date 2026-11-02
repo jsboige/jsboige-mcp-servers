@@ -1,5 +1,5 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { exec, ExecOptions } from 'child_process';
+import { execFile, ExecFileOptions } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { fileURLToPath } from 'url';
@@ -15,15 +15,17 @@ const BUILD_TIMEOUT_MS = 120_000; // 120s for npm build
 const TOUCH_TIMEOUT_MS = 15_000;  // 15s for PowerShell touch
 
 /**
- * Execute a command with timeout protection.
+ * Execute a program with timeout protection, WITHOUT a shell (#4149, famille
+ * ms#1630): the command line is an argv array, so every interpolated value is
+ * a literal argument — no quote in a path can close it and start a new one.
  * Kills the child process if timeout expires, preventing zombie processes.
  */
-function execWithTimeout(command: string, options: ExecOptions): Promise<string> {
+function execFileWithTimeout(file: string, args: string[], options: ExecFileOptions): Promise<string> {
     return new Promise((resolve, reject) => {
-        const child = exec(command, options, (error, stdout, stderr) => {
+        const child = execFile(file, args, options, (error, stdout, stderr) => {
             if (error) {
                 const msg = (error as any).killed
-                    ? `Command timed out after ${options.timeout}ms: ${command}`
+                    ? `Command timed out after ${options.timeout}ms: ${file} ${args.join(' ')}`
                     : error.message;
                 return reject(new GenericError(msg, GenericErrorCode.FILE_SYSTEM_ERROR));
             }
@@ -41,15 +43,24 @@ async function runNpmBuild(mcpPath: string): Promise<string> {
     // #2307 (Phase 4, item EBUSY) : retry borné partagé avec roosync_mcp_management
     // rebuild — l'hôte MCP vivant tient sqlite3.node chargé sous Windows, le
     // remplacement du binaire natif peut échouer en EBUSY de façon transitoire.
+    // Windows : `npm` est npm.cmd — sans shell, spawn('npm') rend ENOENT.
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
     return withEBUSYRetry(() =>
-        execWithTimeout('npm run build', { cwd: mcpPath, windowsHide: true, timeout: BUILD_TIMEOUT_MS })
+        execFileWithTimeout(npm, ['run', 'build'], { cwd: mcpPath, windowsHide: true, timeout: BUILD_TIMEOUT_MS })
     );
 }
 
 async function touchFile(filePath: string): Promise<string> {
-    const command = `(Get-Item -LiteralPath "${filePath}").LastWriteTime = Get-Date`;
-    return execWithTimeout(`powershell.exe -Command "${command}"`, { windowsHide: true, timeout: TOUCH_TIMEOUT_MS })
-        .then(() => `Touched: ${filePath}`);
+    // #4149 (famille ms#1630) : l'ancienne forme interpolait filePath dans un
+    // script pwsh -Command — un `"` dans le chemin séparait l'argument. Le
+    // chemin passe maintenant par une variable d'environnement, qu'aucun shell
+    // ne ré-analyse : le script est une constante, la donnée reste une donnée.
+    const script = '(Get-Item -LiteralPath $env:RSM_TOUCH_PATH).LastWriteTime = Get-Date';
+    return execFileWithTimeout(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', script],
+        { windowsHide: true, timeout: TOUCH_TIMEOUT_MS, env: { ...process.env, RSM_TOUCH_PATH: filePath } }
+    ).then(() => `Touched: ${filePath}`);
 }
 
 export const rebuildAndRestart = {

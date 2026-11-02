@@ -1,12 +1,13 @@
 /**
  * Tests pour rebuild-and-restart.ts
  * Issue #492 - Couverture des outils top-level
+ * #4149 (famille ms#1630) : la frontière mockée est execFile (argv sans shell).
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 
-const { mockExec } = vi.hoisted(() => ({
-	mockExec: vi.fn()
+const { mockExecFile } = vi.hoisted(() => ({
+	mockExecFile: vi.fn()
 }));
 
 const { mockReadFile } = vi.hoisted(() => ({
@@ -18,10 +19,10 @@ const { mockAccess } = vi.hoisted(() => ({
 }));
 
 vi.mock('child_process', () => ({
-	exec: (...args: any[]) => {
-		// Handle both exec(cmd, opts, cb) and exec(cmd, cb) signatures
-		const cb = typeof args[1] === 'function' ? args[1] : args[2];
-		return mockExec(args[0], typeof args[1] === 'function' ? {} : args[1], cb);
+	execFile: (...args: any[]) => {
+		// Handle both execFile(file, args, opts, cb) and execFile(file, args, cb) signatures
+		const cb = typeof args[2] === 'function' ? args[2] : args[3];
+		return mockExecFile(args[0], args[1], typeof args[2] === 'function' ? {} : args[2], cb);
 	}
 }));
 
@@ -43,6 +44,11 @@ vi.mock('../../types/errors.js', () => ({
 		INVALID_ARGUMENT: 'INVALID_ARGUMENT'
 	}
 }));
+
+/** The build program name depends on the platform (npm.cmd on win32, no shell). */
+function isNpmBuildCall(call: any[]): boolean {
+	return String(call[0]).includes('npm') && Array.isArray(call[1]) && call[1][0] === 'run' && call[1][1] === 'build';
+}
 
 describe('rebuild-and-restart', () => {
 	const origAppdata = process.env.APPDATA;
@@ -112,8 +118,7 @@ describe('rebuild-and-restart', () => {
 			}
 		}));
 
-		// Mock exec for npm build (success)
-		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+		mockExecFile.mockImplementation((file: string, args: string[], opts: any, cb: Function) => {
 			cb(null, 'Build output', '');
 		});
 
@@ -134,7 +139,7 @@ describe('rebuild-and-restart', () => {
 			}
 		}));
 
-		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+		mockExecFile.mockImplementation((file: string, args: string[], opts: any, cb: Function) => {
 			cb(null, 'output', '');
 		});
 
@@ -156,7 +161,7 @@ describe('rebuild-and-restart', () => {
 			}
 		}));
 
-		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+		mockExecFile.mockImplementation((file: string, args: string[], opts: any, cb: Function) => {
 			cb(new Error('Compilation error'), '', 'Error details');
 		});
 
@@ -177,7 +182,7 @@ describe('rebuild-and-restart', () => {
 			}
 		}));
 
-		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+		mockExecFile.mockImplementation((file: string, args: string[], opts: any, cb: Function) => {
 			cb(null, 'Build OK', '');
 		});
 
@@ -198,7 +203,7 @@ describe('rebuild-and-restart', () => {
 			}
 		}));
 
-		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+		mockExecFile.mockImplementation((file: string, args: string[], opts: any, cb: Function) => {
 			cb(null, 'Build OK', '');
 		});
 
@@ -221,7 +226,7 @@ describe('rebuild-and-restart', () => {
 
 		mockAccess.mockRejectedValue(new Error('ENOENT'));
 
-		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+		mockExecFile.mockImplementation((file: string, args: string[], opts: any, cb: Function) => {
 			cb(null, 'Build OK', '');
 		});
 
@@ -229,7 +234,7 @@ describe('rebuild-and-restart', () => {
 		const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
 
 		expect(result.content[0].text).toContain('package.json');
-		expect(mockExec).not.toHaveBeenCalledWith(expect.stringContaining('npm run build'), expect.anything(), expect.anything());
+		expect(mockExecFile).not.toHaveBeenCalled();
 	});
 
 	test('handles settings file read error', async () => {
@@ -260,8 +265,8 @@ describe('rebuild-and-restart', () => {
 
 		vi.useFakeTimers();
 		let call = 0;
-		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
-			if (cmd.includes('npm run build')) {
+		mockExecFile.mockImplementation((file: string, args: string[], opts: any, cb: Function) => {
+			if (isNpmBuildCall([file, args])) {
 				call++;
 				if (call === 1) {
 					const err: Error & { code?: string } = new Error(
@@ -284,7 +289,7 @@ describe('rebuild-and-restart', () => {
 		const result = await pending;
 
 		expect(result.content[0].text).toContain('successful');
-		const npmBuildCalls = mockExec.mock.calls.filter(c => String(c[0]).includes('npm run build')).length;
+		const npmBuildCalls = mockExecFile.mock.calls.filter(isNpmBuildCall).length;
 		expect(npmBuildCalls).toBe(2);
 		vi.useRealTimers();
 	});
@@ -300,7 +305,7 @@ describe('rebuild-and-restart', () => {
 			}
 		}));
 
-		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+		mockExecFile.mockImplementation((file: string, args: string[], opts: any, cb: Function) => {
 			cb(new Error('TS2304: Cannot find name'), '', 'Error details');
 		});
 
@@ -308,7 +313,7 @@ describe('rebuild-and-restart', () => {
 		const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
 
 		expect(result.content[0].text).toContain('Error');
-		const npmBuildCalls = mockExec.mock.calls.filter(c => String(c[0]).includes('npm run build')).length;
+		const npmBuildCalls = mockExecFile.mock.calls.filter(isNpmBuildCall).length;
 		expect(npmBuildCalls).toBe(1);
 	});
 
@@ -322,7 +327,7 @@ describe('rebuild-and-restart', () => {
 			}
 		}));
 
-		mockExec.mockImplementation((cmd: string, opts: any, cb: Function) => {
+		mockExecFile.mockImplementation((file: string, args: string[], opts: any, cb: Function) => {
 			cb(null, 'output', '');
 		});
 
@@ -330,7 +335,45 @@ describe('rebuild-and-restart', () => {
 		const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
 
 		expect(result.content[0].text).toContain('WARNING');
-		const touchCalls = mockExec.mock.calls.filter(c => String(c[0]).includes('powershell.exe')).length;
+		const touchCalls = mockExecFile.mock.calls.filter(c => String(c[0]).includes('powershell.exe')).length;
 		expect(touchCalls).toBe(1);
+	});
+
+	// ============================================================
+	// #4149 (famille ms#1630) — le touch ne construit plus une chaîne
+	// pwsh interpolée : le chemin passe par une variable d'environnement,
+	// le script est une constante. Témoin d'injection : un chemin portant
+	// `"` et `$()` n'apparaît NULLE PART dans le texte de la commande.
+	// ============================================================
+	test('touch passes the path via env var, never interpolated (#4149)', async () => {
+		const hostilePath = 'C:\\tmp\\x").LastWriteTime=Get-Date; calc.exe #\\build\\index.js';
+		mockReadFile.mockResolvedValue(JSON.stringify({
+			mcpServers: {
+				'test-mcp': {
+					command: 'node',
+					cwd: '/path/to/mcp',
+					watchPaths: [hostilePath]
+				}
+			}
+		}));
+
+		mockExecFile.mockImplementation((file: string, args: string[], opts: any, cb: Function) => {
+			cb(null, '', '');
+		});
+
+		const { rebuildAndRestart } = await import('../rebuild-and-restart.js');
+		const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
+
+		expect(result.content[0].text).toContain('successful');
+		const touchCalls = mockExecFile.mock.calls.filter(c => String(c[0]).includes('powershell.exe'));
+		expect(touchCalls.length).toBe(1);
+		const [file, args, opts] = touchCalls[0];
+		// Le script est une constante : le chemin n'y figure pas.
+		expect(args.join(' ')).not.toContain(hostilePath);
+		expect(args.join(' ')).not.toContain('calc.exe');
+		// La donnée voyage par l'environnement — valeur intacte, littérale.
+		expect(opts.env.RSM_TOUCH_PATH).toBe(hostilePath);
+		// Le script reste celui attendu, quel que soit le chemin.
+		expect(args).toContain('(Get-Item -LiteralPath $env:RSM_TOUCH_PATH).LastWriteTime = Get-Date');
 	});
 });

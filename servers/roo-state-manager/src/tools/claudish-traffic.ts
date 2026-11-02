@@ -42,7 +42,7 @@
  *     histogram is request-based, never response-based.
  */
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { sanitizeInt } from '../utils/int-validator.js';
 
 // #3391: docker logs maxBuffer. Node default is 1 MB; the hub emits 5-6k
@@ -403,10 +403,14 @@ const TAIL_PROBE_LINES = 5;
 
 // ── Docker exec ────────────────────────────────────────────────────────────
 
-function execDockerLogs(command: string): Promise<{ stdout: string; stderr: string; errMsg: string | null }> {
+// #4149 (famille ms#1630) : la ligne de commande est un argv, pas une chaîne
+// shell — les valeurs validées (since, container, docker_context) restent des
+// littéraux même si un jour un métacaractère passe la regex de garde.
+function execDockerLogs(args: string[]): Promise<{ stdout: string; stderr: string; errMsg: string | null }> {
     return new Promise(resolve => {
-        exec(
-            command,
+        execFile(
+            'docker',
+            args,
             { maxBuffer: DOCKER_LOGS_MAX_BUFFER, windowsHide: true, timeout: DOCKER_EXEC_TIMEOUT_MS, encoding: 'utf8' },
             (error, stdout, stderr) => {
                 resolve({ stdout: stdout ?? '', stderr: stderr ?? '', errMsg: error ? error.message || String(error) : null });
@@ -426,8 +430,8 @@ function classifyDockerFailure(errMsg: string, stderr: string): string {
 
 // Invariant 8. Names come from docker itself, but they are re-validated by NAME_RE
 // before any of them can reach a command string — same guard as user input.
-async function discoverClaudishContainers(contextArg: string): Promise<string[]> {
-    const { stdout } = await execDockerLogs(`docker ${contextArg}ps --format "{{.Names}}"`);
+async function discoverClaudishContainers(contextArgs: string[]): Promise<string[]> {
+    const { stdout } = await execDockerLogs([...contextArgs, 'ps', '--format', '{{.Names}}']);
     return stdout
         .split('\n')
         .map(l => l.trim())
@@ -482,15 +486,15 @@ export const claudishTraffic = {
             // Values below 500 cannot fit the metadata header — rejected (#4002,
             // documented in the schema; the old silent clamp-up is gone).
             const maxOutputLength = maxLenCheck.value;
-            const contextArg = args.docker_context ? `--context ${args.docker_context} ` : '';
-            const logsCommand = (name: string) => `docker ${contextArg}logs --timestamps --since ${since} ${name}`;
+            const contextArgs = args.docker_context ? ['--context', args.docker_context] : [];
+            const logsCommand = (name: string) => [...contextArgs, 'logs', '--timestamps', '--since', since, name];
             // Rotation probe: `--tail` is the ONLY mode that reads the CURRENT json-file
             // segment once docker has rotated (measured on claudish-sidecar, ai-01,
             // 2026-09-06). N is small on purpose — we need one timestamp, not a corpus.
-            const tailProbeCommand = (name: string) => `docker ${contextArg}logs --timestamps --tail ${TAIL_PROBE_LINES} ${name}`;
-            let command = logsCommand(container);
+            const tailProbeCommand = (name: string) => [...contextArgs, 'logs', '--timestamps', '--tail', String(TAIL_PROBE_LINES), name];
+            let cmdArgs = logsCommand(container);
 
-            let collected = await execDockerLogs(command);
+            let collected = await execDockerLogs(cmdArgs);
             let containerNote: string | undefined;
 
             if (collected.errMsg && collected.stdout.trim() === '') {
@@ -498,7 +502,7 @@ export const claudishTraffic = {
                 const detail = (collected.stderr || collected.errMsg).split('\n').filter(l => l.trim()).slice(0, 3).join('\n');
                 let candidatesHint = '';
                 if (kind === 'CONTAINER_NOT_FOUND') {
-                    const candidates = await discoverClaudishContainers(contextArg);
+                    const candidates = await discoverClaudishContainers(contextArgs);
                     const others = candidates.filter(c => c !== container);
                     // Auto-substitute ONLY the unpinned default, ONLY when discovery is
                     // unambiguous. An explicitly-passed name is never silently replaced —
@@ -508,7 +512,7 @@ export const claudishTraffic = {
                         if (!retry.errMsg || retry.stdout.trim() !== '') {
                             containerNote = `ℹ container '${container}' not found — auto-selected '${others[0]}' (docker ps discovery; pass container= to pin).`;
                             container = others[0];
-                            command = logsCommand(container);
+                            cmdArgs = logsCommand(container);
                             collected = retry;
                         }
                     }
@@ -520,7 +524,7 @@ export const claudishTraffic = {
                     return {
                         content: [{
                             type: 'text' as const,
-                            text: `claudish_traffic: collection FAILED (${kind}) — zero-request states are distinguished from this:\nCommand: ${command}\n${detail}${candidatesHint}\nNote: ${kind === 'DOCKER_CLI_MISSING' ? 'docker CLI not available here — use docker_context to target the hub remotely (experimental).' : 'This is an infrastructure failure, NOT a silent-but-nominal sidecar.'}`,
+                            text: `claudish_traffic: collection FAILED (${kind}) — zero-request states are distinguished from this:\nCommand: docker ${cmdArgs.join(' ')}\n${detail}${candidatesHint}\nNote: ${kind === 'DOCKER_CLI_MISSING' ? 'docker CLI not available here — use docker_context to target the hub remotely (experimental).' : 'This is an infrastructure failure, NOT a silent-but-nominal sidecar.'}`,
                         }],
                     };
                 }
@@ -552,7 +556,7 @@ export const claudishTraffic = {
                     since,
                     container,
                     machineFilter: args.machine,
-                    command,
+                    command: `docker ${cmdArgs.join(' ')}`,
                     maxOutputLength,
                     now: Date.now(),
                     collectionWarning,

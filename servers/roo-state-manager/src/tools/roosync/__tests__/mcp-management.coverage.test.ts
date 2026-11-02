@@ -56,7 +56,8 @@ vi.mock('fs/promises', () => ({
 }));
 
 vi.mock('child_process', () => ({
-  exec: mockExec,
+  // #4149 (famille ms#1630) : la frontière est execFile (argv sans shell).
+  execFile: mockExec,
 }));
 
 vi.mock('os', () => ({
@@ -103,7 +104,7 @@ beforeEach(async () => {
   mockWriteFile.mockResolvedValue(undefined);
   mockAccess.mockResolvedValue(undefined);
   mockUtimes.mockResolvedValue(undefined);
-  mockExec.mockImplementation((_cmd: string, _opts: unknown, cb: (e: unknown, o: string, e2: string) => void) =>
+  mockExec.mockImplementation((_file: string, _args: string[], _opts: unknown, cb: (e: unknown, o: string, e2: string) => void) =>
     cb(null, 'build ok', ''),
   );
   // Reset module-level `lastReadTimestamp` (the isolation problem that forced
@@ -223,7 +224,7 @@ describe('runNpmBuild — EBUSY retry logic', () => {
   test('EBUSY on first attempt then success → retried once and built', async () => {
     vi.useFakeTimers();
     let call = 0;
-    mockExec.mockImplementation((_c: string, _o: unknown, cb: (e: unknown, o: string, e2: string) => void) => {
+    mockExec.mockImplementation((_file: string, _args: string[], _o: unknown, cb: (e: unknown, o: string, e2: string) => void) => {
       call++;
       if (call === 1) {
         const err: Error & { code?: string } = new Error('EBUSY: resource busy');
@@ -242,16 +243,16 @@ describe('runNpmBuild — EBUSY retry logic', () => {
     expect(result.success).toBe(true);
     expect(result.action).toBe('rebuild');
     // runNpmBuild retried once (EBUSY → backoff → success). Count ONLY the
-    // `npm run build` exec calls — handleRebuildAction also calls touchFile
-    // (powershell.exe) which shares mockExec, so total exec calls = 3 here.
-    const npmBuildCalls = mockExec.mock.calls.filter(c => String(c[0]).includes('npm run build')).length;
+    // `npm run build` execFile calls — handleRebuildAction also calls touchFile
+    // (powershell.exe) which shares mockExec, so total execFile calls = 3 here.
+    const npmBuildCalls = mockExec.mock.calls.filter(c => String(c[0]).includes('npm')).length;
     expect(npmBuildCalls).toBe(2);
     vi.useRealTimers();
   });
 
   test('non-EBUSY build error → BUILD_FAILED immediately (no retry)', async () => {
     let call = 0;
-    mockExec.mockImplementation((_c: string, _o: unknown, cb: (e: unknown, o: string, e2: string) => void) => {
+    mockExec.mockImplementation((_file: string, _args: string[], _o: unknown, cb: (e: unknown, o: string, e2: string) => void) => {
       call++;
       cb(new Error('TS2304: Cannot find name'), '', '');
     });

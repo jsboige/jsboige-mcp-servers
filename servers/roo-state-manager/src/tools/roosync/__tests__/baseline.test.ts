@@ -56,6 +56,27 @@ vi.mock('child_process', () => ({
       return '';
     }
     return '';
+  }),
+  // #4149 (famille ms#1630) : les appels git de baseline.ts passent par
+  // execFileSync (argv sans shell) — le dispatch lit le tableau d'arguments.
+  execFileSync: vi.fn((file: string, args: string[]) => {
+    if (file !== 'git') return '';
+    if (args[0] === 'rev-parse' && args[1] === '--verify') {
+      // Tag existe pas par défaut
+      throw new Error('Tag not found');
+    }
+    if (args[0] === 'tag' && args[1] === '-l') {
+      return 'baseline-v1.0.0\nbaseline-v1.1.0\n';
+    }
+    if (args[0] === 'show') {
+      return JSON.stringify({
+        machineId: 'test-machine',
+        version: '1.0.0',
+        lastUpdated: '2026-01-01T00:00:00.000Z',
+        config: { roo: {}, hardware: {}, software: {}, system: {} }
+      });
+    }
+    return '';
   })
 }));
 
@@ -490,16 +511,18 @@ describe('roosync_baseline', () => {
     test('git tag listing + per-tag reads carry cwd = workspace root', async () => {
       const result = await roosync_baseline({ action: 'list_versions' });
 
-      const { execSync } = await import('child_process');
+      const { execFileSync } = await import('child_process');
       const expectedCwd = process.env.WORKSPACE_PATH || process.cwd();
 
       // tag listing + date read both carry cwd (message read is symmetric)
-      expect(execSync).toHaveBeenCalledWith(
-        'git tag -l "baseline-v*"',
+      expect(execFileSync).toHaveBeenCalledWith(
+        'git',
+        ['tag', '-l', 'baseline-v*'],
         expect.objectContaining({ cwd: expectedCwd })
       );
-      expect(execSync).toHaveBeenCalledWith(
-        expect.stringContaining('git log -1 --format=%ai'),
+      expect(execFileSync).toHaveBeenCalledWith(
+        'git',
+        expect.arrayContaining(['log', '-1', '--format=%ai']),
         expect.objectContaining({ cwd: expectedCwd })
       );
 
@@ -519,17 +542,19 @@ describe('roosync_baseline', () => {
       });
 
       expect(result.success).toBe(true);
-      const { execSync } = await import('child_process');
+      const { execFileSync } = await import('child_process');
       const expectedCwd = process.env.WORKSPACE_PATH || process.cwd();
 
       // tag -a creation carries cwd (lands in parent repo, where list_versions reads)
-      expect(execSync).toHaveBeenCalledWith(
-        'git tag -a baseline-v2.0.0 -m "Test version"',
+      expect(execFileSync).toHaveBeenCalledWith(
+        'git',
+        ['tag', '-a', 'baseline-v2.0.0', '-m', 'Test version'],
         expect.objectContaining({ cwd: expectedCwd })
       );
       // push --tags carries cwd (pushes from parent repo remote)
-      expect(execSync).toHaveBeenCalledWith(
-        'git push --tags',
+      expect(execFileSync).toHaveBeenCalledWith(
+        'git',
+        ['push', '--tags'],
         expect.objectContaining({ cwd: expectedCwd })
       );
     });
@@ -773,19 +798,19 @@ describe('roosync_baseline', () => {
   describe('edge cases and error handling', () => {
     test('should handle tag already exists error', async () => {
       // Importer le module pour accéder au mock
-      const { execSync } = await import('child_process');
+      const { execFileSync } = await import('child_process');
 
       // Sauvegarder et remplacer temporairement le mock
-      const originalImplementation = vi.mocked(execSync).mockImplementation;
-      vi.mocked(execSync).mockImplementation((cmd: string) => {
-        if (cmd.includes('git rev-parse --verify refs/tags/baseline-v1.0.0')) {
+      const originalImplementation = vi.mocked(execFileSync).mockImplementation;
+      vi.mocked(execFileSync).mockImplementation((file: string, args: string[]) => {
+        if (file === 'git' && args[0] === 'rev-parse' && args.includes('refs/tags/baseline-v1.0.0')) {
           return 'existing-tag-commit'; // Tag existe
         }
-        if (cmd.includes('git tag -l')) {
+        if (file === 'git' && args[0] === 'tag' && args[1] === '-l') {
           return 'baseline-v1.0.0\n';
         }
         // Utiliser le comportement par défaut pour les autres commandes
-        if (cmd.includes('git rev-parse --verify refs/tags/')) {
+        if (file === 'git' && args[0] === 'rev-parse' && args[1] === '--verify') {
           throw new Error('Tag not found');
         }
         return '';
@@ -798,18 +823,18 @@ describe('roosync_baseline', () => {
 
     test('should handle git tag creation failure', async () => {
       // Importer le module pour accéder au mock
-      const { execSync } = await import('child_process');
+      const { execFileSync } = await import('child_process');
 
       // Sauvegarder et remplacer temporairement le mock
-      const originalImplementation = vi.mocked(execSync).mockImplementation;
-      vi.mocked(execSync).mockImplementation((cmd: string) => {
-        if (cmd.includes('git tag -a')) {
+      const originalImplementation = vi.mocked(execFileSync).mockImplementation;
+      vi.mocked(execFileSync).mockImplementation((file: string, args: string[]) => {
+        if (file === 'git' && args[0] === 'tag' && args[1] === '-a') {
           throw new Error('Git tag creation failed');
         }
-        if (cmd.includes('git rev-parse --verify refs/tags/')) {
+        if (file === 'git' && args[0] === 'rev-parse' && args[1] === '--verify') {
           throw new Error('Tag not found');
         }
-        if (cmd.includes('git tag -l')) {
+        if (file === 'git' && args[0] === 'tag' && args[1] === '-l') {
           return 'baseline-v1.0.0\n';
         }
         // Utiliser le comportement par défaut pour les autres commandes
@@ -1812,9 +1837,9 @@ First release
   // ============================================================
   describe('action: list_versions (#2963 missing-data-as-zero)', () => {
     test('git succeeds with 0 tags → success: true, totalVersions: 0, measured: true', async () => {
-      const { execSync } = await import('child_process');
-      vi.mocked(execSync).mockImplementationOnce((cmd: string) => {
-        if (cmd.includes('git tag -l')) return ''; // git OK, 0 matching tags
+      const { execFileSync } = await import('child_process');
+      vi.mocked(execFileSync).mockImplementationOnce((file: string, args: string[]) => {
+        if (file === 'git' && args[0] === 'tag' && args[1] === '-l') return ''; // git OK, 0 matching tags
         throw new Error('unexpected call');
       });
 
@@ -1829,8 +1854,8 @@ First release
     test('git fails (no repo / bad cwd) → success: false with measurementError, NOT success: true + 0', async () => {
       // The previous bug: a git failure was caught and rendered as success: true
       // with versions: [] — indistinguishable from a real "0 versions" measurement.
-      const { execSync } = await import('child_process');
-      vi.mocked(execSync).mockImplementationOnce(() => {
+      const { execFileSync } = await import('child_process');
+      vi.mocked(execFileSync).mockImplementationOnce(() => {
         throw new Error('fatal: not a git repository');
       });
 
