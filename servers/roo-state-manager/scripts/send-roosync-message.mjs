@@ -166,6 +166,9 @@ const sharedStatePath = getSharedStatePath();
 // 15 s by default, as in writer-factory), not the 3 s of the MCP request path:
 // this one-shot process waits on nobody, and a 3 s lookup lost to a PG busy
 // burst sent the report to G: (ai-01, 02/11 07:10:26Z).
+// One budget for both bounds, on purpose: the lookup is one connect plus one
+// indexed read (2-4 ms measured), and it is the connect a burst slows. A seat
+// that shortens its pool connect to fail fast gets a lookup that fails as fast.
 const configuredConnectMs = Number(process.env.UNIFIED_STORE_CONNECT_TIMEOUT_MS);
 const MARKER_LOOKUP_TIMEOUT_MS =
   Number.isFinite(configuredConnectMs) && configuredConnectMs > 0 ? configuredConnectMs : 15_000;

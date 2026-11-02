@@ -145,7 +145,10 @@ export async function refreshBackfillMarkers(
 ): Promise<void> {
   if (inFlight && !force && timeoutMs <= inFlightTimeoutMs) return inFlight;
   const run: Promise<void> = doRefresh(timeoutMs).finally(() => {
-    if (inFlight === run) inFlight = null;
+    if (inFlight === run) {
+      inFlight = null;
+      inFlightTimeoutMs = 0;
+    }
   });
   inFlight = run;
   inFlightTimeoutMs = timeoutMs;
