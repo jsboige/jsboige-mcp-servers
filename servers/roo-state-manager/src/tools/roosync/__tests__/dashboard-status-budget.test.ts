@@ -12,16 +12,24 @@
  *
  * Ces tests épinglent la consigne de production ELLE-MÊME, capturée via le
  * harnais de dashboard-status-regen.test.ts (mock OpenAI, prompt réel de
- * generateStatusUpdate). Chaque assertion échoue sur le code d'avant #4434
- * (bloc budget absent, consigne « un peu plus volumineux » présente) : la
- * discrimination contre le défaut réel est par construction — pas besoin de
- * mutant synthétique pour le prouver, l'ancien main EST le mutant.
+ * generateStatusUpdate). Sauf le test « plafond NON relevé » (épingle de
+ * NON-RÉGRESSION : elle passe aussi sur le code d'avant #4434, elle existe
+ * pour qu'aucune révision du budget ne relève jamais max_tokens en passant),
+ * chaque assertion échoue sur le code d'avant #4434 (bloc budget absent,
+ * consigne « un peu plus volumineux » présente) : la discrimination contre le
+ * défaut réel est par construction — pas besoin de mutant synthétique pour le
+ * prouver, l'ancien main EST le mutant.
  *
  * Critères du dispatch : budget respecté (block + totaux + 8 lignes),
  * ordre des sections (canevas === budget === canonique), aucune section
  * perdue (mandat 8-sections-toujours-complètes), queue protégée
  * (« Patterns appris » jamais sacrifiée), plafond NON relevé
  * (max_tokens reste CONDENSE_LLM_MAX_TOKENS = 7200).
+ * Review ms#1633 (ai-01, 02/11) : « Blocages structurels » n'a PAS de plafond
+ * de mots — une ligne par blocage actif, date de vérification conservée
+ * (~25 mots/ligne, sortie sur réfutation seule, règle #4082) ; l'enveloppe
+ * ~600 mots EXCLUT les lignes de blocage ; compensation sur « Livrables
+ * récents » (80→55) et « Patterns appris » (85→55).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -151,17 +159,42 @@ describe('generateStatusUpdate — budget par section (#4434)', () => {
         delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
     });
 
-    it('bloc BUDGET PAR SECTION présent, avec total et une ligne par section (8/8)', async () => {
+    it('bloc BUDGET PAR SECTION présent, total HORS lignes de blocage, plafond de mots sur 7/8 sections', async () => {
         const { system } = await captureStatusCall();
         expect(system).toContain('BUDGET PAR SECTION (#4434)');
         expect(system).toContain('LIMITE STRICTE');
+        // L'enveloppe globale EXCLUT les lignes de blocage : sinon un statut
+        // portant ~20 blocages dater forcerait de nouveau l'abandon de blocages
+        // non réfutés (review ms#1633).
         expect(system).toContain('~600 mots');
-        for (const name of CANON) {
+        expect(system).toContain('HORS lignes de blocage');
+        // 7 sections sur 8 portent un plafond de mots ; « Blocages structurels »
+        // est l'exception volontaire (règle par-ligne, test dédié ci-dessous).
+        for (const name of CANON.filter(n => n !== 'Blocages structurels')) {
             // Chaque section canonique porte SA ligne de budget « - <nom> : ≤ N mots »
             const line = system.split('\n').find(l => l.trim().startsWith('-') && l.includes(name) && l.includes('mots'));
             expect(line, `ligne de budget pour « ${name} »`).toBeTruthy();
             expect(line!).toMatch(/≤\s*\d+\s*mots/);
         }
+    });
+
+    it('blocages structurels : PAS de plafond de mots — une ligne par blocage actif, date conservée (review ms#1633)', async () => {
+        const { system } = await captureStatusCall();
+        const line = system.split('\n').find(l => l.trim().startsWith('-') && l.includes('Blocages structurels'));
+        expect(line, 'ligne budget « Blocages structurels »').toBeTruthy();
+        // Un plafond de mots sur cette section force l'abandon de blocages non
+        // réfutés — exactement ce que la règle #4082 interdit (un blocage daté
+        // ne sort du statut que sur réfutation).
+        expect(line!).toContain('PAS de plafond de mots');
+        expect(line!).not.toMatch(/Blocages structurels\s*:\s*≤\s*\d+\s*mots/);
+        expect(line!).toContain('UNE LIGNE PAR BLOCAGE ACTIF');
+        expect(line!).toContain('date de vérification');
+        expect(line!).toMatch(/≤\s*25\s*mots par ligne/);
+        expect(line!).toContain('REFUTE <date>');
+        // La règle anti-rogne : les lignes de blocage ne se sacrifient jamais
+        // au budget — c'est ce qui rend l'absence de plafond effective.
+        expect(system).toContain('Les lignes de blocage ne se rognent JAMAIS pour tenir le budget');
+        expect(system).toContain('garde SA ligne et sa date');
     });
 
     it('budget dans le MÊME ordre canonique que le canevas STRUCTURE (jamais deux ordres contradictoires)', async () => {
@@ -216,6 +249,9 @@ describe('generateStatusUpdate — budget par section (#4434)', () => {
         // Le levier retenu est le budget dans le prompt, PAS le plafond : un
         // max_tokens plus haut allongerait le pire cas au-delà de la passerelle
         // ~600 s (dashboard.ts, commentaire CONDENSE_LLM_MAX_TOKENS).
+        // Épingle de NON-RÉGRESSION : passe aussi sur l'ancien main — elle
+        // existe pour qu'aucune révision du budget ne relève le plafond en
+        // passant (note review ms#1633).
         expect(params.max_tokens).toBe(7200);
         expect(params.temperature).toBe(0.3);
     });

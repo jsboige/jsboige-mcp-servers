@@ -4242,19 +4242,20 @@ Format : "- **entité** : état (source: [date])"
 ### Patterns appris
 [Anti-patterns identifiés, conventions établies, leçons consolidées — mémoire durable du projet]
 
-BUDGET PAR SECTION (#4434) — LIMITE STRICTE : la sortie entière doit tenir dans ~600 mots (~4 200 caractères) :
+BUDGET PAR SECTION (#4434) — LIMITE STRICTE : la sortie doit tenir dans ~600 mots (~4 200 caractères) HORS lignes de blocage :
 - Résumé : ≤ 40 mots
 - État des systèmes : ≤ 100 mots (une ligne par entité, dernier état connu)
 - Décisions actées : ≤ 90 mots
-- Blocages structurels : ≤ 60 mots
-- Livrables récents : ≤ 80 mots (synthèse par thème)
+- Blocages structurels : PAS de plafond de mots — UNE LIGNE PAR BLOCAGE ACTIF, avec sa date de vérification (format « … [vérifié JJ/MM HH:MMZ] »), ≤ 25 mots par ligne ; un blocage ne quitte le statut que réfuté, marqué « REFUTE <date> » avec la réfutation citée
+- Livrables récents : ≤ 55 mots (synthèse par thème)
 - En cours : ≤ 60 mots
 - Métriques de référence : ≤ 85 mots
-- Patterns appris : ≤ 85 mots
+- Patterns appris : ≤ 55 mots
 Règles du budget :
 - Avant d'écrire, ESTIME le total prévu ; s'il dépasse le budget, condense davantage AVANT de commencer — un dépassement en cours de rédaction ne se rattrape pas.
 - Les 8 sections apparaissent TOUJOURS, dans cet ordre, CHACUNE COMPLÈTE — jamais une section omise, jamais une section coupée en cours de rédaction.
 - Pour tenir un budget : condense DANS la section (fusionner les entrées, garder le dernier état, chasser le détail tactique) — jamais supprimer la section ni son titre.
+- Les lignes de blocage ne se rognent JAMAIS pour tenir le budget : chaque blocage actif garde SA ligne et sa date — compense en condensant les autres sections.
 - En cas de tension : « Patterns appris » et « Métriques de référence » ne sont JAMAIS sacrifiées — rogne « Résumé » et « Livrables récents » d'abord.
 
 INTERDIT :
