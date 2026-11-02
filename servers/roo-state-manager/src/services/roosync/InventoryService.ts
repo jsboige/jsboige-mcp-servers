@@ -510,6 +510,44 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
   private async saveToSharedState(inventory: FullInventory): Promise<void> {
     const masked = maskSecretTextForPublication(JSON.stringify(inventory, null, 2));
 
+    // #4131 — garde d'identité (réserve ms#1621, ouverte après ms#1627) : la clé
+    // est normalisée en minuscules (`inventoryMetaKey`), donc deux graphies d'un
+    // même siège tombent sur la MÊME ligne et la seconde écrase la première sans
+    // laisser de trace. On refuse la publication quand le contenu déjà publié
+    // porte une AUTRE graphie du même identifiant : la ligne existante reste
+    // intacte et le journal nomme les deux formes. Ligne absente, contenu
+    // illisible ou relecture impossible → on publie : la garde ne bloque jamais
+    // sur sa propre panne, et son silence est journalisé.
+    let previousSpelling: string | null = null;
+    if (storeMetaUrl()) {
+      try {
+        const existing = await readStoreMetaValue(inventoryMetaKey(inventory.machineId));
+        if (existing !== null) {
+          const published = (JSON.parse(existing) as Partial<FullInventory>)?.machineId;
+          if (
+            typeof published === 'string' &&
+            published !== inventory.machineId &&
+            published.toLowerCase() === String(inventory.machineId).toLowerCase()
+          ) {
+            previousSpelling = published;
+          }
+        }
+      } catch (error) {
+        invLogger().warn("[inventory] garde d'identité : relecture impossible, publication maintenue", {
+          machineId: inventory.machineId,
+          error: String(error)
+        });
+      }
+    }
+    if (previousSpelling !== null) {
+      invLogger().error(
+        `[inventory] collision d'identité REFUSÉE : la ligne ${inventoryMetaKey(inventory.machineId)} ` +
+        `porte '${previousSpelling}', la publication demande '${inventory.machineId}' — ` +
+        'aucune écriture, ni PG ni miroir (même siège, deux graphies) (#4131)'
+      );
+      return;
+    }
+
     let pgSaved = false;
     if (storeMetaUrl()) {
       try {

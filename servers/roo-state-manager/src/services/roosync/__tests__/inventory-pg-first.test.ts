@@ -296,3 +296,63 @@ describe('#4131 Phase D — saveToSharedState, end of dual-write (03/11)', () =>
     expect(INVENTORY_PG_PRIMARY_ENV).toBe('UNIFIED_STORE_INVENTORY_PG_PRIMARY');
   });
 });
+
+// #4131 — garde d'identité au writer (réserve ms#1621, restée ouverte après
+// ms#1627). La clé est normalisée en minuscules : deux graphies d'un même siège
+// tombent sur la même ligne, et l'écrasement serait SILENCIEUX. Le premier test
+// est le test-du-test : sans la garde, l'upsert part et l'assertion tombe.
+describe("#4131 — garde d'identité au writer : deux graphies d'un même siège", () => {
+  it("collision de graphie → aucune écriture (ni PG ni miroir), la ligne existante reste intacte", async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(JSON.stringify(inventoryFor('myia-a')));
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('Myia-A'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).not.toHaveBeenCalled();
+    expect(fsPromises.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('même graphie → publication normale', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(JSON.stringify(inventoryFor('Myia-A')));
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('Myia-A'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledWith(
+      'inventory:myia-a',
+      expect.stringContaining('"machineId": "Myia-A"')
+    );
+  });
+
+  it('ligne absente → publication normale', async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(null);
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('Myia-A'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledTimes(1);
+  });
+
+  it("relecture impossible → la garde ne bloque pas sur sa propre panne", async () => {
+    mockStoreMeta.readStoreMetaValue.mockRejectedValue(new Error('pg timeout'));
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('Myia-A'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledTimes(1);
+  });
+
+  it("deux sièges DIFFÉRENTS ne sont pas une collision", async () => {
+    mockStoreMeta.readStoreMetaValue.mockResolvedValue(JSON.stringify(inventoryFor('myia-b')));
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledTimes(1);
+  });
+});
