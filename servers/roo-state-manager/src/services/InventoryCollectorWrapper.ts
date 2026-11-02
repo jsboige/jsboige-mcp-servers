@@ -17,6 +17,7 @@ import { getSharedStatePath } from '../utils/shared-state-path.js';
 import { createLogger } from '../utils/logger.js';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '../types/errors.js';
 import { InventoryService } from './roosync/InventoryService.js';
+import { inventoryMetaKey, readStoreMetaValue, storeMetaUrl } from './unified-store/store-meta.js';
 
 const logger = createLogger('InventoryCollectorWrapper');
 
@@ -131,6 +132,27 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
    * CORRECTION SDDD : Charge l'inventaire depuis le shared state pour les machines distantes
    */
   private async loadFromSharedState(machineId: string): Promise<BaselineMachineInventory | null> {
+      // #4131 Phase D : la ligne PG `inventory:{machineId}` d'abord — depuis la
+      // fin du double-écriture, le fichier GDrive n'est plus réécrit après un
+      // succès PG et vieillit. Ligne absente ou PG injoignable → fichier, comme
+      // avant ; ligne présente mais illisible → null, jamais le fichier périmé.
+      if (storeMetaUrl()) {
+        try {
+          const row = await readStoreMetaValue(inventoryMetaKey(machineId));
+          if (row !== null) {
+            try {
+              logger.info(`📂 Inventaire ${machineId} servi depuis PG (#4131)`);
+              return this.convertRawToBaselineFormat(JSON.parse(row));
+            } catch (parseError) {
+              logger.error(`Ligne PG inventory:${machineId} illisible — pas de repli fichier`, parseError);
+              return null;
+            }
+          }
+        } catch (pgError) {
+          logger.warn(`Lecture PG inventory:${machineId} impossible — repli fichier GDrive`, { error: String(pgError) });
+        }
+      }
+
       try {
         // CORRECTION SDDD : Utiliser la variable d'environnement ROOSYNC_SHARED_PATH via helper centralisé
         const baseSharedPath = getSharedStatePath();
