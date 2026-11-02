@@ -7,8 +7,10 @@
  *          PG row absent  → the G: file serves (contract migration-012);
  *          PG row held by ANOTHER machineId → typed error, never a silent
  *          fallback to a stale file.
- *   write: PG upsert first, G: file a tolerated mirror; a PG failure does
- *          not lose the publish (mirror still written).
+ *   write: PG upsert first; after a PG success the G: file is no longer
+ *          written (end of dual-write, 03/11) unless the kill-switch
+ *          UNIFIED_STORE_INVENTORY_PG_PRIMARY=0 is set; a PG failure or no
+ *          PG at all does not lose the publish (mirror written).
  *
  * Same hoisted-mock harness as InventoryService.coverage.test.ts.
  */
@@ -67,7 +69,7 @@ vi.mock('../../../utils/logger.js', () => ({
 
 import * as fsPromises from 'fs/promises';
 import { readJSONFileWithoutBOM } from '../../../utils/encoding-helpers.js';
-import { InventoryService } from '../InventoryService.js';
+import { InventoryService, INVENTORY_PG_PRIMARY_ENV } from '../InventoryService.js';
 import { InventoryCollectorError } from '../../../types/errors.js';
 
 function inventoryFor(machineId: string): { machineId: string; hostname: string } {
@@ -159,8 +161,15 @@ describe('#4131 Phase D — review ms#1563 (Hermes 🟡) : ligne PG corrompue et
   });
 });
 
-describe('#4131 Phase D — saveToSharedState, PG-first with tolerated mirror', () => {
-  it('upserts PG with the masked JSON, then writes the file mirror', async () => {
+describe('#4131 Phase D — saveToSharedState, end of dual-write (03/11)', () => {
+  const savedFlag = process.env[INVENTORY_PG_PRIMARY_ENV];
+  afterEach(() => {
+    if (savedFlag === undefined) delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    else process.env[INVENTORY_PG_PRIMARY_ENV] = savedFlag;
+  });
+
+  it('default: PG upsert succeeds → the G: mirror is NOT written', async () => {
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
     const svc = InventoryService.getInstance();
 
     await (svc as any).saveToSharedState(inventoryFor('myia-a'));
@@ -169,15 +178,68 @@ describe('#4131 Phase D — saveToSharedState, PG-first with tolerated mirror', 
       'inventory:myia-a',
       expect.stringContaining('"machineId": "myia-a"')
     );
+    expect(fsPromises.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('flag explicitly ON (=1) behaves as the default: no mirror after a PG success', async () => {
+    process.env[INVENTORY_PG_PRIMARY_ENV] = '1';
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+
+    expect(fsPromises.writeFile).not.toHaveBeenCalled();
+  });
+
+  it.each(['0', 'false', 'off', ' OFF '])(
+    'kill-switch %j → the mirror is written again after the PG success, with the SAME masked text',
+    async (value) => {
+      process.env[INVENTORY_PG_PRIMARY_ENV] = value;
+      const svc = InventoryService.getInstance();
+
+      await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+
+      expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledTimes(1);
+      expect(fsPromises.writeFile).toHaveBeenCalledTimes(1);
+      const [filePath, written] = vi.mocked(fsPromises.writeFile).mock.calls[0];
+      expect(String(filePath)).toMatch(/inventories[\\/]myia-a\.json$/);
+      expect(written).toBe(mockStoreMeta.upsertStoreMetaValue.mock.calls[0][1]);
+    }
+  );
+
+  it('the kill-switch is read at CALL time, not at module load', async () => {
+    const svc = InventoryService.getInstance();
+
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+    expect(fsPromises.writeFile).not.toHaveBeenCalled();
+
+    process.env[INVENTORY_PG_PRIMARY_ENV] = '0';
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
     expect(fsPromises.writeFile).toHaveBeenCalledTimes(1);
   });
 
-  it('PG save fails → mirror still written, no throw', async () => {
+  it('PG save fails → mirror still written (only surface left), no throw', async () => {
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
     mockStoreMeta.upsertStoreMetaValue.mockRejectedValue(new Error('pg down'));
     const svc = InventoryService.getInstance();
 
     await (svc as any).saveToSharedState(inventoryFor('myia-a'));
 
     expect(fsPromises.writeFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('PG not configured (no store-meta URL) → mirror written, PG never touched', async () => {
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    mockStoreMeta.storeMetaUrl.mockReturnValue(null);
+    const svc = InventoryService.getInstance();
+
+    await (svc as any).saveToSharedState(inventoryFor('myia-a'));
+
+    expect(mockStoreMeta.upsertStoreMetaValue).not.toHaveBeenCalled();
+    expect(fsPromises.writeFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('the kill-switch env name is the one documented for operators', () => {
+    expect(INVENTORY_PG_PRIMARY_ENV).toBe('UNIFIED_STORE_INVENTORY_PG_PRIMARY');
   });
 });

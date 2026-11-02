@@ -19,6 +19,7 @@ import { createLogger, Logger } from '../utils/logger.js';
 import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
 import { getSharedStatePath, ensureStoreSubdir } from '../utils/shared-state-path.js';
 import type { BootResilienceInfo } from '../types/inventory.js';
+import { inventoryMetaKey, readStoreMetaValue, storeMetaUrl } from './unified-store/store-meta.js';
 
 const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
@@ -494,10 +495,25 @@ export class InventoryCollector {
    * @returns Inventaire ou null si non trouvé
    */
   private async loadFromSharedState(machineId: string): Promise<MachineInventory | null> {
+    // #4131 Phase D : la ligne PG `inventory:{machineId}` d'abord — depuis la
+    // fin du double-écriture, le fichier GDrive n'est plus réécrit après un
+    // succès PG et vieillit. Ligne absente ou PG injoignable → fichier, comme
+    // avant ; ligne présente mais illisible → null, jamais le fichier périmé.
+    if (storeMetaUrl()) {
+      try {
+        const row = await readStoreMetaValue(inventoryMetaKey(machineId));
+        if (row !== null) {
+          return this.parseInventoryContent(row, machineId, `PG inventory:${machineId}`);
+        }
+      } catch (error) {
+        this.logger.warn(`⚠️ Lecture PG inventory:${machineId} impossible — repli fichier GDrive`, { error });
+      }
+    }
+
     try {
       const sharedStatePath = getSharedStatePath();
       const inventoriesDir = join(sharedStatePath, 'inventories');
-      
+
       // CORRECTION Bug #322 : Logger le chemin pour debug
       this.logger.debug(`📂 sharedStatePath: ${sharedStatePath}`);
       this.logger.debug(`📂 inventoriesDir: ${inventoriesDir}`);
@@ -560,11 +576,26 @@ export class InventoryCollector {
    * @returns Inventaire ou null en cas d'erreur
    */
   private async loadInventoryFile(filepath: string, machineId: string): Promise<MachineInventory | null> {
+    let content: string;
     try {
       this.logger.info(`📂 Chargement depuis: ${filepath}`);
+      content = await fs.readFile(filepath, 'utf-8');
+    } catch (error) {
+      this.logger.error(`❌ Erreur lecture fichier inventaire: ${filepath}`, error);
+      return null;
+    }
+    return this.parseInventoryContent(content, machineId, filepath);
+  }
 
-      let content = await fs.readFile(filepath, 'utf-8');
-
+  /**
+   * Interprète le texte d'un inventaire (fichier GDrive ou ligne PG #4131)
+   * @param content - JSON de l'inventaire
+   * @param machineId - Identifiant de la machine (pour le cache)
+   * @param source - Origine du texte, pour le journal
+   * @returns Inventaire ou null si le texte est illisible
+   */
+  private parseInventoryContent(content: string, machineId: string, source: string): MachineInventory | null {
+    try {
       // Strip BOM UTF-8 si présent
       if (content.charCodeAt(0) === 0xFEFF) {
         content = content.slice(1);
@@ -687,7 +718,7 @@ export class InventoryCollector {
 
       return inventory;
     } catch (error) {
-      this.logger.error(`❌ Erreur lecture fichier inventaire: ${filepath}`, error);
+      this.logger.error(`❌ Erreur lecture inventaire: ${source}`, error);
       return null;
     }
   }

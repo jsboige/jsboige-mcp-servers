@@ -40,7 +40,9 @@ export function initAutoHeartbeat(): void {
 
 /**
  * #3975: Daily-gated local inventory refresh (fire-and-forget, never blocks
- * the tool call). Keeps .shared-state/inventories/{machineId}.json fresh so
+ * the tool call). Keeps the shared inventory fresh — the PG row
+ * `inventory:{machineId}` (#4131; the .shared-state/inventories/{machineId}.json
+ * mirror only when PG is unavailable or UNIFIED_STORE_INVENTORY_PG_PRIMARY=0) — so
  * cross-machine reads (audit tick, compare_config boot-resilience) see the
  * current boot resilience state — the po-2025 outage stayed invisible because
  * the fleet inventory was 8 days stale.
