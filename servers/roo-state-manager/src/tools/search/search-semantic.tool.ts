@@ -1002,6 +1002,164 @@ export function applyDiversifyCap(groups: GroupedTask[], cap: number): {
     return { truncated_groups, chunks_capped };
 }
 
+// ============================================================
+// #2609 q4 — passage-slot reservation (composition lever).
+//
+// Decision: ai-01 GO 2026-11-02 (dispatch ai01-queue-20261102c), on the
+// measurements of po-2023 c.671/673/674: the two q4 FAILs are a COMPOSITION
+// problem, not a corpus problem — under an identical freshness filter the
+// same corpus PASSES (registre) or misses by exactly one rank (english,
+// passages at ranks 1 and 4 of the page). Short condensation artifacts
+// (`_cond-…`) and mode-prompt chunks outscore the human decision passages
+// and occupy the head of the page. The lever chosen is reservation, not a
+// harsher global malus: hardening the malus moves EVERY query's ranking,
+// reservation only composes the page.
+//
+// What is reserved: page slots — the first PASSAGE_SLOT_WINDOW groups of
+// the final page must contain at least PASSAGE_SLOT_MIN groups whose
+// representative chunk (chunks[0], the one consumers render) is a passage
+// BY FORM: >= PASSAGE_SLOT_FLOOR_CHARS chars of human-authored prose
+// (not machine output, provenance not 'unknown'). A chunk is excluded by
+// its form, never by a substring (RX133, q4-rubric.ts) — the engine must
+// not re-import the rubric's vocabulary, which is why the floor and the
+// machine-output classifier are the ONLY inputs. `_cond-…` artifacts stay
+// indexed and keep competing: being short, they simply cannot OCCUPY a
+// reserved slot — they fall to the tail, which still shows them.
+//
+// What is NOT changed: no score is rewritten, no group is added or
+// dropped, chunk order inside a group is untouched, and both the window
+// and the tail remain score-ordered. Outside the window the page is
+// exactly the legacy ranking. Groups arrive score-sorted from
+// groupResultsByTask/PG enrichment; if the window already holds
+// >= PASSAGE_SLOT_MIN passages the pass is a no-op — the common query,
+// and every currently-passing scenario, sees zero difference.
+//
+// Rollback / A-B: SEMANTIC_PASSAGE_SLOTS=0 restores the legacy page
+// composition entirely (same convention as SEMANTIC_FRAGMENT_MALUS,
+// SEMANTIC_REQUEST_MALUS, SEMANTIC_MACHINE_OUTPUT_MALUS).
+// ============================================================
+
+/** #2609 q4: a chunk shorter than this is a fragment, whatever it says (aligned with the rubric's passage floor and REQUEST_MALUS_MAX_CHARS). */
+export const PASSAGE_SLOT_FLOOR_CHARS = 100;
+/** #2609 q4: the head of the page where the reservation applies (the synthesis window consumers read first). */
+export const PASSAGE_SLOT_WINDOW = 3;
+/**
+ * #2609 q4: how many of the window slots are reserved for passage groups.
+ * Set to the full window (2026-11-02, measured live): a 2-of-3 reservation
+ * left the english wording at 1/2 qualifying — the second reserved slot went
+ * to a form-passing but non-decision chunk (158c of status prose) while a
+ * qualifying passage sat at rank 5; 3-of-3 promotes it and the wording
+ * passes. When the pool runs short the reservation degrades gracefully
+ * (partial promotion) rather than fabricating.
+ */
+export const PASSAGE_SLOT_MIN = 3;
+
+/** #2609 q4: rollback / A-B flag — read at call time so tests can toggle it post-import. */
+export function isPassageSlotsEnabled(): boolean {
+    return process.env.SEMANTIC_PASSAGE_SLOTS !== '0';
+}
+
+/**
+ * #2609 q4: a group's representative chunk is a passage BY FORM — long
+ * enough, human-authored, certified provenance. Deliberately weaker than
+ * the eval rubric (no decision vocabulary): the engine reserves slots for
+ * passages in general, the harness decides whether the passages answer the
+ * question. Grading with the engine's own topic classifier would be the
+ * fox guarding the henhouse (same reason q4-rubric.ts re-declares its rule
+ * instead of importing one).
+ */
+export function isPassageGroup(group: GroupedTask): boolean {
+    const chunk = group?.chunks?.[0];
+    const text = chunk?.snippet ?? '';
+    return text.length >= PASSAGE_SLOT_FLOOR_CHARS
+        && (chunk?.machine_output_kind ?? classifyMachineOutput(chunk?.chunk_type, text)) === null
+        && chunk?.tool_continuation_status !== 'unknown';
+}
+
+/**
+ * #2609 q4: compose the final page so the first PASSAGE_SLOT_WINDOW groups
+ * contain >= PASSAGE_SLOT_MIN passage groups. Candidates come first from
+ * the page itself below the window, then from `pool` — the groups the
+ * max_results cut dropped (the measured registre case: 0/8 qualifying
+ * groups in the page, the passages buried UNDER the cut). The caller is
+ * responsible for the pool's validity (diversify cap already applied,
+ * Postgres join semantics preserved) and for re-truncating the page to
+ * max_results afterwards.
+ *
+ * Mutates `groups` in place (same contract as dedupGroupedChunksByContent /
+ * applyDiversifyCap). With no promotions this is a no-op: order, membership
+ * and count are exactly the legacy page — lever off and already-composed
+ * pages are byte-identical to before.
+ *
+ * The reservation demotes the LOWEST-scored non-passage groups of the
+ * window and promotes the HIGHEST-scored passage groups (page ranks below
+ * the window first, then pool, each in score order), then sorts the window
+ * and the tail by best_score separately, so both sides of the window
+ * boundary stay score-ordered under the one key every group carries.
+ * Invariants (window W, min M, passages-in-window P):
+ *   - P >= M                → no-op (already composed — the common query).
+ *   - candidates short of M-P → partial promotion; a page the corpus
+ *                              cannot compose stays as close as the pool
+ *                              allows (never fabricates, never drops).
+ *   - non-passages in window >= W - P >= M - P = need → demotion never
+ *                              starves (algebra, not hope).
+ */
+export function composePassageSlots(groups: GroupedTask[], window: number = PASSAGE_SLOT_WINDOW, min: number = PASSAGE_SLOT_MIN, pool: GroupedTask[] = []): {
+    enabled: boolean;
+    groups_promoted: number;
+    groups_promoted_from_pool: number;
+    groups_demoted: number;
+} {
+    if (!isPassageSlotsEnabled()) {
+        return { enabled: false, groups_promoted: 0, groups_promoted_from_pool: 0, groups_demoted: 0 };
+    }
+    // A page no longer than the window with no pool either has nothing to
+    // promote from — small drill-down pages are left alone. With a pool,
+    // even a short page gets its window composed (the PG join may have
+    // shrunk a synthesis page below the cut).
+    if (groups.length <= window && pool.length === 0) {
+        return { enabled: true, groups_promoted: 0, groups_promoted_from_pool: 0, groups_demoted: 0 };
+    }
+
+    const top = groups.slice(0, window);
+    const rest = groups.slice(window);
+    const passagesInTop = top.filter(isPassageGroup).length;
+    const need = min - passagesInTop;
+    if (need <= 0) {
+        return { enabled: true, groups_promoted: 0, groups_promoted_from_pool: 0, groups_demoted: 0 };
+    }
+
+    // groups and pool arrive score-ordered; filter preserves that order.
+    // Page candidates outrank pool candidates: they already survived every
+    // page-level filter and re-ordering.
+    const fromPage = rest.filter(isPassageGroup);
+    const fromPool = pool.filter(g => isPassageGroup(g) && !groups.includes(g));
+    const candidates = [...fromPage, ...fromPool].slice(0, need);
+    if (candidates.length === 0) {
+        return { enabled: true, groups_promoted: 0, groups_promoted_from_pool: 0, groups_demoted: 0 };
+    }
+
+    const demotable = top.filter(g => !isPassageGroup(g));
+    const demoted = demotable.slice(demotable.length - candidates.length);
+    const demotedSet = new Set(demoted);
+    const candidateSet = new Set(candidates);
+    const keptTop = top.filter(g => !demotedSet.has(g));
+    const keptRest = rest.filter(g => !candidateSet.has(g));
+
+    const byScoreDesc = (a: GroupedTask, b: GroupedTask) => b.best_score - a.best_score;
+    const composedWindow = [...keptTop, ...candidates].sort(byScoreDesc);
+    const tail = [...demoted, ...keptRest].sort(byScoreDesc);
+
+    groups.length = 0;
+    groups.push(...composedWindow, ...tail);
+    return {
+        enabled: true,
+        groups_promoted: candidates.length,
+        groups_promoted_from_pool: candidates.filter(c => fromPool.includes(c)).length,
+        groups_demoted: demoted.length,
+    };
+}
+
 // #2609 V3 (rubric (c) — surrounding context): excerpt budget per neighbor turn.
 const CONTEXT_EXPANSION_EXCERPT_CHARS = 320;
 
@@ -1715,6 +1873,15 @@ export const searchTasksByContentTool = {
             // dropped from over-represented tasks) becomes measurable. Quiet for the
             // common non-truncating query (reported only when > 0).
             const diversifyStats = applyDiversifyCap(groupedResults, DIVERSIFY_MAX_CHUNKS_PER_TASK);
+            // #2609 q4: keep the groups the cut below is about to drop — the
+            // passage-slot reservation promotes from them (the measured
+            // registre case buries its passages UNDER the page cut). Captured
+            // only when the lever is on so the disabled arm is byte-identical
+            // to legacy, and BEFORE the slice so the pool is the full ranked
+            // tail, diversify cap already applied.
+            const passageSlotPool: GroupedTask[] | undefined = isPassageSlotsEnabled() && groupedResults.length > effectiveMaxResults
+                ? groupedResults.slice(effectiveMaxResults)
+                : undefined;
             if (groupedResults.length > effectiveMaxResults) {
                 groupedResults = groupedResults.slice(0, effectiveMaxResults);
             }
@@ -1725,6 +1892,10 @@ export const searchTasksByContentTool = {
             //   (b) Enrich results with conversation metadata from Postgres
             //   (c) Preserve ANN ranking (sorted by Qdrant score)
             const unifiedStoreReader = getUnifiedStoreReader();
+            // #2609 q4: when the join acts as an inner-join filter, the promotion
+            // pool must respect it — promoting a task Postgres filtered out would
+            // undo the enrichment semantics (#2426). Null = join never gated.
+            let pgJoinTaskIds: Set<string> | null = null;
             if (!unifiedStoreReader.isNull()) {
                 try {
                     const qdrantHits = groupedResults.map(g => ({
@@ -1750,6 +1921,7 @@ export const searchTasksByContentTool = {
                     // Postgres has no rows loses no correctness.
                     if (pgHits.length > 0) {
                         const pgTaskIds = new Set(pgHits.map(h => h.task_id));
+                        pgJoinTaskIds = pgTaskIds;
                         // Filter groupedResults to only those confirmed by Postgres,
                         // re-ordered by ANN score (pgHits is already sorted by score DESC)
                         const pgScoreMap = new Map(pgHits.map(h => [h.task_id, h.score]));
@@ -1777,6 +1949,42 @@ export const searchTasksByContentTool = {
             // duplicate_count reflects exactly what is shown. See
             // dedupGroupedChunksByContent for rationale and flags.
             const dedupStats = dedupGroupedChunksByContent(groupedResults);
+
+            // #2609 q4 (composition lever, GO ai-01 2026-11-02): reserve the head
+            // of the page for passage groups. Runs after EVERY group-removing
+            // stage (machine-output filter, per-task cap, PG enrichment join,
+            // cross-task dedup) so the reservation composes the page that is
+            // actually returned, and BEFORE context expansion so the neighbor
+            // turns attach around the final representatives. Candidates come
+            // from the page below the window, then from the pool captured
+            // above the cut — filtered to the Postgres join's semantics when
+            // the join gated. Rollback: SEMANTIC_PASSAGE_SLOTS=0.
+            const passageSlotStats = composePassageSlots(
+                groupedResults,
+                PASSAGE_SLOT_WINDOW,
+                PASSAGE_SLOT_MIN,
+                passageSlotPool?.filter(g => pgJoinTaskIds === null || pgJoinTaskIds.has(g.taskId)) ?? []
+            );
+            if (passageSlotStats.groups_promoted > 0) {
+                // A promoted group never went through the stats/dedup stages
+                // (they ran on the pre-composition page): complete its
+                // enrichment, re-check the WHOLE composed page for cross-task
+                // duplicates (fleet MEMORY.md echoes are byte-identical across
+                // seats — a promoted echo must not double-show a passage the
+                // window already carries), and re-truncate to max_results so
+                // the demoted tail gives way to the promotions, not to nothing.
+                for (const group of groupedResults) {
+                    if (!group.conversation_stats && conversationCache.has(group.taskId)) {
+                        group.conversation_stats = buildConversationStats(conversationCache.get(group.taskId)!);
+                    }
+                }
+                const secondDedupPass = dedupGroupedChunksByContent(groupedResults);
+                dedupStats.duplicates_removed += secondDedupPass.duplicates_removed;
+                dedupStats.groups_pruned += secondDedupPass.groups_pruned;
+                if (groupedResults.length > effectiveMaxResults) {
+                    groupedResults = groupedResults.slice(0, effectiveMaxResults);
+                }
+            }
 
             // #2609 V3 (rubric (c) — surrounding context): expand the turns adjacent
             // to each retained task's best chunk. Runs after every filter/prune stage
@@ -1915,6 +2123,21 @@ export const searchTasksByContentTool = {
                         context_expansion: {
                             attached_groups: contextAttached,
                             enabled: process.env.SEARCH_CONTEXT_EXPANSION !== '0',
+                        }
+                    } : {}),
+                    // #2609 q4: passage-slot reservation observability. Emitted only
+                    // when the lever actually composed the page OR is explicitly
+                    // disabled (rollback visibility) — quiet for the common
+                    // already-composed query, same convention as the levers above.
+                    ...(passageSlotStats.groups_promoted > 0 || !passageSlotStats.enabled ? {
+                        passage_slots: {
+                            enabled: passageSlotStats.enabled,
+                            window: PASSAGE_SLOT_WINDOW,
+                            min_passage_groups: PASSAGE_SLOT_MIN,
+                            floor_chars: PASSAGE_SLOT_FLOOR_CHARS,
+                            groups_promoted: passageSlotStats.groups_promoted,
+                            groups_promoted_from_pool: passageSlotStats.groups_promoted_from_pool,
+                            groups_demoted: passageSlotStats.groups_demoted,
                         }
                     } : {})
                 },

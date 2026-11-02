@@ -82,7 +82,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 	getUnifiedStoreReader: () => mockUnifiedStoreReader
 }));
 
-import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, passageQualityFactor, requestFormFactor } from '../search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, passageQualityFactor, requestFormFactor, composePassageSlots, PASSAGE_SLOT_FLOOR_CHARS } from '../search-semantic.tool.js';
 import type { ConversationSkeleton } from '../../../types/conversation.js';
 import { splitChunkId } from '../../../services/task-indexer/ChunkExtractor.js';
 
@@ -1259,6 +1259,180 @@ describe('helper functions (indirect via handler)', () => {
 			expect(stats.chunks_capped).toBe(5);    // (4−2) + (5−2)
 			expect(groups[0].chunks).toHaveLength(2);
 			expect(groups[1].chunks).toHaveLength(2);
+		});
+	});
+
+	// ============================================================
+	// #2609 q4 — passage-slot reservation (composition lever, GO ai-01
+	// 2026-11-02). The head of the page must contain >=2 groups whose
+	// representative chunk is a passage BY FORM (>=100 chars, human-authored,
+	// certified provenance), when the ranked pool has any to offer. Reorder
+	// only: no score rewrite, no group added or dropped.
+	// ============================================================
+	describe('#2609 q4 passage-slot reservation', () => {
+		const PASSAGE = 'Décision arbitrage encore ouverte cette semaine, contexte complet de la lane et du registre des questions.';
+		const SHORT = '_cond-20261101 artifact';
+		const mkPSChunk = (snippet: string, score: number, over: Partial<{ chunk_type: string; machine_output_kind: string | null; tool_continuation_status: string }> = {}) => ({
+			score, relevance: 'good', snippet,
+			chunk_type: (over.chunk_type ?? 'message_exchange') as any,
+			role: 'user' as const, relative_time: 'now', message_position: undefined,
+			tool_name: undefined, has_error: undefined,
+			...(over.machine_output_kind !== undefined ? { machine_output_kind: over.machine_output_kind } : {}),
+			...(over.tool_continuation_status !== undefined ? { tool_continuation_status: over.tool_continuation_status } : {}),
+		});
+		const mkPSGroup = (taskId: string, snippet: string, score: number, over: Parameters<typeof mkPSChunk>[2] = {}) => ({
+			taskId, task_title: taskId, workspace: undefined, host_os: 'h1',
+			best_score: score, relevance: 'good', source: undefined, model: undefined,
+			chunks: [mkPSChunk(snippet, score, over)],
+		} as any);
+
+		afterEach(() => { delete process.env.SEMANTIC_PASSAGE_SLOTS; });
+
+		test('SEMANTIC_PASSAGE_SLOTS=0 → disabled: order untouched, enabled:false (rollback restores legacy composition)', () => {
+			process.env.SEMANTIC_PASSAGE_SLOTS = '0';
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('p1', PASSAGE, 0.75), mkPSGroup('p2', PASSAGE, 0.70),
+			];
+			const stats = composePassageSlots(groups);
+			expect(stats.enabled).toBe(false);
+			expect(stats.groups_promoted).toBe(0);
+			expect(groups.map(g => g.taskId)).toEqual(['f1', 'f2', 'f3', 'p1', 'p2']);
+		});
+
+		test('window fully composed (3 passages) → no-op (common already-composed query sees zero difference)', () => {
+			const groups = [
+				mkPSGroup('p1', PASSAGE, 0.90), mkPSGroup('p2', PASSAGE, 0.85), mkPSGroup('p3', PASSAGE, 0.80),
+				mkPSGroup('f1', SHORT, 0.75), mkPSGroup('f2', SHORT, 0.70),
+			];
+			const stats = composePassageSlots(groups);
+			expect(stats.groups_promoted).toBe(0);
+			expect(groups.map(g => g.taskId)).toEqual(['p1', 'p2', 'p3', 'f1', 'f2']);
+		});
+
+		test('window 2-of-3 composed → promotes the third (the measured english fix: a form-passing non-decision chunk must not hold a reserved slot)', () => {
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('p1', PASSAGE, 0.85), mkPSGroup('p2', PASSAGE, 0.80),
+				mkPSGroup('p3', PASSAGE, 0.75), mkPSGroup('f2', SHORT, 0.70),
+			];
+			const stats = composePassageSlots(groups);
+			expect(stats.groups_promoted).toBe(1);
+			expect(stats.groups_demoted).toBe(1);
+			expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['p1', 'p2', 'p3']);
+			expect(groups.slice(3).map(g => g.taskId)).toEqual(['f1', 'f2']);
+		});
+
+		test('the measured failure shape: fragment head, passages below → 2 promoted, 2 lowest frags demoted, both sides score-ordered', () => {
+			// c.673 live shape: _cond- fragments occupy ranks 1-3, the decision
+			// passages sit at ranks 4-5 of the same page.
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('p1', PASSAGE, 0.75), mkPSGroup('p2', PASSAGE, 0.70), mkPSGroup('f4', SHORT, 0.65),
+			];
+			const stats = composePassageSlots(groups);
+			expect(stats.groups_promoted).toBe(2);
+			expect(stats.groups_demoted).toBe(2);
+			// Window: the best fragment stays, the two passages join it, score-ordered.
+			expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['f1', 'p1', 'p2']);
+			// Tail: the demoted fragments keep competing, score-ordered above f4.
+			expect(groups.slice(3).map(g => g.taskId)).toEqual(['f2', 'f3', 'f4']);
+			// Membership and count unchanged — reorder only.
+			expect(groups).toHaveLength(6);
+			expect(new Set(groups.map(g => g.taskId))).toEqual(new Set(['f1', 'f2', 'f3', 'p1', 'p2', 'f4']));
+		});
+
+		test('pool short of the reservation → partial promotion, never fabricates and never drops', () => {
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('p1', PASSAGE, 0.75), mkPSGroup('f4', SHORT, 0.70),
+			];
+			const stats = composePassageSlots(groups);
+			expect(stats.groups_promoted).toBe(1);
+			expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['f1', 'f2', 'p1']);
+			expect(groups.slice(3).map(g => g.taskId)).toEqual(['f3', 'f4']);
+			expect(groups).toHaveLength(5);
+		});
+
+		test('page no longer than the window → no-op (drill-down pages are not synthesis scaffolds)', () => {
+			const groups = [mkPSGroup('f1', SHORT, 0.9), mkPSGroup('f2', SHORT, 0.8), mkPSGroup('f3', SHORT, 0.7)];
+			const stats = composePassageSlots(groups);
+			expect(stats.groups_promoted).toBe(0);
+			expect(groups.map(g => g.taskId)).toEqual(['f1', 'f2', 'f3']);
+		});
+
+		test('a machine-output representative is not a passage — reservation skips it (form rule, RX133)', () => {
+			// 100+ chars of JSON tool output at rank 4 must NOT be promotable.
+			const longToolJson = JSON.stringify({ status: 'ok', data: Array.from({ length: 12 }, (_, i) => ({ row: i, value: 'x'.repeat(9) })) });
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('t1', longToolJson, 0.75, { machine_output_kind: 'json' }),
+			];
+			const stats = composePassageSlots(groups);
+			expect(stats.groups_promoted).toBe(0); // nothing eligible below the window
+			expect(groups.map(g => g.taskId)).toEqual(['f1', 'f2', 'f3', 't1']);
+		});
+
+		test('unverified provenance (tool_continuation_status=unknown) is not a certified passage', () => {
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('u1', PASSAGE, 0.75, { tool_continuation_status: 'unknown' }),
+			];
+			const stats = composePassageSlots(groups);
+			expect(stats.groups_promoted).toBe(0);
+			expect(groups.map(g => g.taskId)).toEqual(['f1', 'f2', 'f3', 'u1']);
+		});
+
+		test('floor is form, not substring: a <100c chunk quoting decision vocabulary stays a fragment', () => {
+			// RX133 mirrored: floor-minus-one chars of on-topic prose must not take a reserved slot.
+			const justUnder = 'Décision arbitrage en attente: '.padEnd(PASSAGE_SLOT_FLOOR_CHARS - 1, 'x');
+			expect(justUnder.length).toBe(PASSAGE_SLOT_FLOOR_CHARS - 1);
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('s1', justUnder, 0.75),
+			];
+			const stats = composePassageSlots(groups);
+			expect(stats.groups_promoted).toBe(0);
+		});
+
+		test('pool promotion (the measured registre shape): 0/8 passages in the page, passages under the cut → pulled up from the pool', () => {
+			// c.671 live shape: the whole 8-group page carries no qualifying
+			// chunks[0]; the passages sit BELOW the max_results cut.
+			const groups = Array.from({ length: 8 }, (_, i) => mkPSGroup(`f${i + 1}`, SHORT, 0.90 - i * 0.02));
+			const pool = [mkPSGroup('p1', PASSAGE, 0.60), mkPSGroup('p2', PASSAGE, 0.55)];
+			const stats = composePassageSlots(groups, 3, 2, pool);
+			expect(stats.groups_promoted).toBe(2);
+			expect(stats.groups_promoted_from_pool).toBe(2);
+			expect(stats.groups_demoted).toBe(2);
+			// Window: best frag + the two pool passages, score-ordered.
+			expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['f1', 'p1', 'p2']);
+			// Tail keeps every demoted frag, score-ordered (the caller re-truncates).
+			expect(groups.slice(3).map(g => g.taskId)).toEqual(['f2', 'f3', 'f4', 'f5', 'f6', 'f7', 'f8']);
+			expect(groups).toHaveLength(10);
+		});
+
+		test('page candidates outrank pool candidates: the in-page passage fills the first of two slots, the pool the second', () => {
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('pPage', PASSAGE, 0.75), mkPSGroup('f4', SHORT, 0.70),
+			];
+			const pool = [mkPSGroup('pPool', PASSAGE, 0.68)];
+			const stats = composePassageSlots(groups, 3, 2, pool);
+			expect(stats.groups_promoted).toBe(2);
+			expect(stats.groups_promoted_from_pool).toBe(1);
+			expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['f1', 'pPage', 'pPool']);
+			expect(groups.slice(3).map(g => g.taskId)).toEqual(['f2', 'f3', 'f4']);
+		});
+
+		test('pool already present in the page is never double-promoted', () => {
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('p1', PASSAGE, 0.75),
+			];
+			const pool = [groups[3]]; // same reference — a mis-wired pool must not clone it into the window
+			const stats = composePassageSlots(groups, 3, 2, pool);
+			expect(stats.groups_promoted).toBe(1);
+			expect(groups).toHaveLength(4);
+			expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['f1', 'f2', 'p1']);
 		});
 	});
 
