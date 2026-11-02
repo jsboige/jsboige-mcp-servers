@@ -32,6 +32,7 @@ const STUBS: Record<string, string> = {
     import { appendFileSync } from 'node:fs';
     export async function ensureBackfillMarkersFresh() {
       appendFileSync(process.env.SEND_CLI_TRACE, 'ensure-start\\n');
+      if (process.env.SEND_CLI_STUB_MARKER_THROWS === '1') throw new Error('stub marker failure');
       await new Promise((resolve) => setTimeout(resolve, 30));
       globalThis.__markerResolved = true;
       appendFileSync(process.env.SEND_CLI_TRACE, 'ensure-end\\n');
@@ -74,7 +75,7 @@ let root: string;
 let trace: string;
 let shared: string;
 
-function runCli(stub: { gdrive: boolean; live: boolean }) {
+function runCli(stub: { gdrive: boolean; live: boolean; markerThrows?: boolean }) {
   // A scrubbed env: nothing inherited can reach a real store.
   const env: NodeJS.ProcessEnv = {
     PATH: process.env.PATH,
@@ -83,6 +84,7 @@ function runCli(stub: { gdrive: boolean; live: boolean }) {
     SEND_CLI_TRACE: trace,
     SEND_CLI_STUB_GDRIVE: stub.gdrive ? '1' : '0',
     SEND_CLI_STUB_LIVE: stub.live ? '1' : '0',
+    SEND_CLI_STUB_MARKER_THROWS: stub.markerThrows ? '1' : '0',
   };
   const result = spawnSync(
     process.execPath,
@@ -119,6 +121,14 @@ describe('send-roosync-message.mjs — marker resolved before the send (#4131)',
     const run = runCli({ gdrive: false, live: true });
     expect(run.status, run.stderr).toBe(0);
     expect(run.lines.slice(0, 3)).toEqual(['ensure-start', 'ensure-end', 'send resolved=true']);
+  });
+
+  test('a marker resolution that throws never blocks the send: delivered on G:, exit 0', () => {
+    const run = runCli({ gdrive: true, live: true, markerThrows: true });
+    expect(run.status, run.stderr).toBe(0);
+    expect(run.lines).toContain('send resolved=false');
+    expect(run.stdout).toContain('SENT msg-stub-1 (gdrive+pg)');
+    expect(run.stderr).toContain('marker resolution failed');
   });
 
   test('a send that wrote no G: inbox file prints pg-primary', () => {

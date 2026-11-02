@@ -160,7 +160,13 @@ const sharedStatePath = getSharedStatePath();
 
 // #4131 — resolve the marker BEFORE the send decides PG-primary vs G: (one
 // bounded lookup; a failure resolves to the G: path, never blocks the send).
-await ensureBackfillMarkersFresh();
+// The catch keeps that last promise local to this file: a worker report is
+// never lost to a marker lookup.
+try {
+  await ensureBackfillMarkersFresh();
+} catch (err) {
+  console.warn(`[send-roosync-message] marker resolution failed, sending on the G: path: ${err?.message ?? err}`);
+}
 
 const messageManager = getMessageManager();
 const message = await messageManager.sendMessage(
