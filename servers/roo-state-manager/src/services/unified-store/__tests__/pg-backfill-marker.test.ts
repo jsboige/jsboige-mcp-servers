@@ -6,7 +6,9 @@
  *      short-lived client that is always closed;
  *   2. a marker present ⇒ 'complete', absent ⇒ 'absent';
  *   3. every failure (table missing, PG unreachable) ⇒ 'absent' — the
- *      fail-safe direction (GDrive keeps serving);
+ *      fail-safe direction (GDrive keeps serving) — UNLESS the scope was
+ *      already proven complete: a failed refresh keeps 'complete', only a
+ *      successful lookup without the marker closes it;
  *   4. the lookup is BOUNDED: one query per TTL, never one per call;
  *   5. no PG URL on the host ⇒ 'absent', no query at all.
  */
@@ -18,6 +20,12 @@ const mocks = vi.hoisted(() => ({
   query: vi.fn().mockResolvedValue({ rows: [] }),
   end: vi.fn().mockResolvedValue(undefined),
   configs: [] as unknown[],
+  info: vi.fn(),
+  warn: vi.fn(),
+}));
+
+vi.mock('../../../utils/logger.js', () => ({
+  createLogger: () => ({ debug: vi.fn(), info: mocks.info, warn: mocks.warn, error: vi.fn() }),
 }));
 
 vi.mock('pg', () => ({
@@ -51,6 +59,8 @@ describe('backfill completeness marker (#4131)', () => {
     mocks.query.mockReset().mockResolvedValue({ rows: [] });
     mocks.end.mockReset().mockResolvedValue(undefined);
     mocks.configs.length = 0;
+    mocks.info.mockReset();
+    mocks.warn.mockReset();
     delete process.env.UNIFIED_STORE_PG_URL;
     delete process.env.UNIFIED_STORE_BACKFILL_MARKER_TTL_MS;
     resetBackfillMarkerCache();
@@ -151,6 +161,110 @@ describe('backfill completeness marker (#4131)', () => {
     expect(backfillMarkerTtlMs()).toBe(1000);
     process.env.UNIFIED_STORE_BACKFILL_MARKER_TTL_MS = 'not-a-number';
     expect(backfillMarkerTtlMs()).toBe(300_000);
+  });
+
+  describe('a failed refresh never downgrades a proven complete (#4131, ai-01 01/11 16:43-16:57Z)', () => {
+    async function proveBothComplete(): Promise<void> {
+      process.env.UNIFIED_STORE_PG_URL = PG_URL;
+      mocks.query.mockResolvedValue({
+        rows: [
+          { key: CHANNEL_BACKFILL_META_KEY, value: '2026-10-27T18:00:00.000Z' },
+          { key: DASHBOARD_BACKFILL_META_KEY, value: '2026-10-27T18:05:00.000Z' },
+        ],
+      });
+      await refreshBackfillMarkers(true);
+      expect(getBackfillMarkerState('channel')).toBe('complete');
+      expect(getBackfillMarkerState('dashboard')).toBe('complete');
+    }
+
+    test('a failing query after a proof keeps both scopes complete', async () => {
+      await proveBothComplete();
+      mocks.query.mockReset().mockRejectedValue(new Error('Connection terminated unexpectedly'));
+      await refreshBackfillMarkers(true);
+      expect(getBackfillMarkerState('channel')).toBe('complete');
+      expect(getBackfillMarkerState('dashboard')).toBe('complete');
+      expect(mocks.end).toHaveBeenCalled();
+    });
+
+    test('a failing CONNECT after a proof keeps the scope complete', async () => {
+      await proveBothComplete();
+      mocks.connect.mockReset().mockRejectedValue(new Error('connect ETIMEDOUT'));
+      await refreshBackfillMarkers(true);
+      expect(getBackfillMarkerState('channel')).toBe('complete');
+    });
+
+    test('only the proven scope is kept — an absent one stays absent', async () => {
+      process.env.UNIFIED_STORE_PG_URL = PG_URL;
+      mocks.query.mockResolvedValue({
+        rows: [{ key: CHANNEL_BACKFILL_META_KEY, value: '2026-10-27T18:00:00.000Z' }],
+      });
+      await refreshBackfillMarkers(true);
+      mocks.query.mockReset().mockRejectedValue(new Error('Connection terminated unexpectedly'));
+      await refreshBackfillMarkers(true);
+      expect(getBackfillMarkerState('channel')).toBe('complete');
+      expect(getBackfillMarkerState('dashboard')).toBe('absent');
+    });
+
+    test('a SUCCESSFUL lookup that no longer finds the marker still closes the scope', async () => {
+      await proveBothComplete();
+      mocks.query.mockReset().mockRejectedValue(new Error('Connection terminated unexpectedly'));
+      await refreshBackfillMarkers(true);
+      mocks.query.mockReset().mockResolvedValue({ rows: [] });
+      await refreshBackfillMarkers(true);
+      expect(getBackfillMarkerState('channel')).toBe('absent');
+      expect(getBackfillMarkerState('dashboard')).toBe('absent');
+    });
+
+    test('the kept state stays bounded: a failed refresh restarts the TTL, no query storm while PG is down', async () => {
+      // Only Date is faked: the clock cannot cross the TTL behind the test's
+      // back on a loaded runner, while promises and setTimeout stay real.
+      vi.useFakeTimers({ toFake: ['Date'] });
+      try {
+        vi.setSystemTime(new Date('2026-11-01T16:43:00.000Z'));
+        process.env.UNIFIED_STORE_BACKFILL_MARKER_TTL_MS = '200';
+        await proveBothComplete();
+        // Let the proof go stale, so only the failed refresh can make it fresh.
+        vi.setSystemTime(Date.now() + 250);
+        mocks.query.mockReset().mockRejectedValue(new Error('Connection terminated unexpectedly'));
+        await refreshBackfillMarkers(true);
+        const afterFailure = mocks.query.mock.calls.length;
+        for (let i = 0; i < 10; i++) getBackfillMarkerState('channel');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(mocks.query.mock.calls.length).toBe(afterFailure);
+        expect(getBackfillMarkerState('channel')).toBe('complete');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test('a failed lookup logs the failure, never "marker absent" — only a successful lookup does', async () => {
+      const markerAbsentLines = () =>
+        mocks.info.mock.calls.filter(([line]) => String(line).includes("marker in PG")).length;
+      process.env.UNIFIED_STORE_PG_URL = PG_URL;
+      mocks.query.mockRejectedValue(new Error('connect ECONNREFUSED'));
+      await refreshBackfillMarkers(true);
+      expect(getBackfillMarkerState('channel')).toBe('absent');
+      expect(mocks.warn).toHaveBeenCalledTimes(1);
+      expect(markerAbsentLines()).toBe(0);
+      // Control: the same scope after a SUCCESSFUL empty lookup does say it.
+      resetBackfillMarkerCache();
+      mocks.query.mockReset().mockResolvedValue({ rows: [] });
+      await refreshBackfillMarkers(true);
+      expect(markerAbsentLines()).toBe(2);
+    });
+
+    test('the channel PG-primary gate stays ON through a failed refresh', async () => {
+      const { isChannelPgPrimaryEnabled, isDashboardPgPrimaryEnabled } = await import('../pg-read-gates.js');
+      delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
+      delete process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY;
+      delete process.env.UNIFIED_STORE_DUAL_WRITE;
+      await proveBothComplete();
+      expect(isChannelPgPrimaryEnabled()).toBe(true);
+      mocks.query.mockReset().mockRejectedValue(new Error('Connection terminated unexpectedly'));
+      await refreshBackfillMarkers(true);
+      expect(isChannelPgPrimaryEnabled()).toBe(true);
+      expect(isDashboardPgPrimaryEnabled()).toBe(true);
+    });
   });
 
   test('the forced state (test seam) is returned as-is', () => {

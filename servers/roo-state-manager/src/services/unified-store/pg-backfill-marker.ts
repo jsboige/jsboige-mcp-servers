@@ -30,10 +30,12 @@
  * (one observer per condition), and a stale value is served until the
  * refresh lands — bounded staleness, never a per-call query.
  *
- * FAIL-SAFE — every failure (PG unreachable, table missing because
- * migrations/012 was never applied, marker absent) resolves to `'absent'`,
- * i.e. the GDrive path. The marker can only ever OPEN the PG surface, never
- * close it by accident.
+ * FAIL-SAFE — a scope never proven complete resolves every failure (PG
+ * unreachable, table missing because migrations/012 was never applied,
+ * marker absent) to `'absent'`, i.e. the GDrive path. A scope already proven
+ * complete keeps `'complete'` when a refresh FAILS: an unreachable PG says
+ * nothing about the data it holds. Only a successful lookup that no longer
+ * finds the marker closes it (#4131 — see doRefresh).
  *
  * SCOPE — the GDrive tree is SHARED (`.shared-state/messages`; `inbox/` has
  * no recipient index, which is why the historical sweep was fleet-wide), so
@@ -59,7 +61,8 @@ export type BackfillScope = 'channel' | 'dashboard';
  * - `'unknown'` — never looked up (or the lookup is in flight): the default
  *   read stays on GDrive.
  * - `'complete'`— the marker is in PG: the store is complete.
- * - `'absent'`  — no marker (or the lookup failed): GDrive stays.
+ * - `'absent'`  — no marker (or the lookup failed before any proof): GDrive
+ *   stays.
  */
 export type BackfillMarkerState = 'unknown' | 'complete' | 'absent';
 
@@ -153,12 +156,20 @@ async function doRefresh(): Promise<void> {
     // path. The message names the likely cause without printing anything
     // from the connection string.
     logger.warn(
-      '[backfill-marker] marker lookup failed — PG reads stay on GDrive ' +
-      '(migrations/012 not applied on this store, or PG unreachable)',
+      '[backfill-marker] marker lookup failed — a scope already proven complete keeps PG, ' +
+      'an unproven one stays on GDrive (migrations/012 not applied on this store, or PG unreachable)',
       { error: String(error) }
     );
-    setState('channel', 'absent');
-    setState('dashboard', 'absent');
+    // #4131 — a failed lookup proves nothing about the DATA. Downgrading a
+    // proven 'complete' here closed the PG-primary gates for a whole TTL on
+    // every PG blip: sends landed on G: only and reads fell back to a G: tree
+    // that no longer holds the PG-only history (measured on ai-01, 01/11
+    // 16:43-16:57Z: a G:-only send between PG-primary sends of the same
+    // process). An unproven scope keeps the fail-safe answer.
+    // The warn above already says why: no "marker absent" line on this path.
+    for (const scope of ['channel', 'dashboard'] as BackfillScope[]) {
+      setState(scope, cache[scope].state === 'complete' ? 'complete' : 'absent', false);
+    }
     return;
   }
 
@@ -199,10 +210,10 @@ async function readMetaValues(url: string, keys: string[]): Promise<Map<string, 
   return values;
 }
 
-function setState(scope: BackfillScope, state: BackfillMarkerState): void {
+function setState(scope: BackfillScope, state: BackfillMarkerState, logAbsent = true): void {
   const previous = cache[scope].state;
   cache[scope] = { state, checkedAt: Date.now() };
-  if (state === 'absent' && previous !== 'absent') {
+  if (logAbsent && state === 'absent' && previous !== 'absent') {
     logger.info(
       `[backfill-marker] no '${META_KEYS[scope]}' marker in PG — the default PG read stays OFF ` +
       'and GDrive keeps serving this surface (run the backfill script to import the history)'
@@ -241,7 +252,13 @@ export function setBackfillMarkerState(scope: BackfillScope, state: BackfillMark
   cache[scope] = { state, checkedAt: Date.now() };
 }
 
-/** Drop the cached states (test seam / config hot-reload). */
+/**
+ * Drop the cached states (test seam).
+ *
+ * The cache is not keyed by URL and `UNIFIED_STORE_PG_URL` is not reloadable
+ * today. Whatever makes it reloadable must call this, or a `'complete'`
+ * proven on the old store survives a failed lookup on the new one.
+ */
 export function resetBackfillMarkerCache(): void {
   cache.channel = { state: 'unknown', checkedAt: 0 };
   cache.dashboard = { state: 'unknown', checkedAt: 0 };
