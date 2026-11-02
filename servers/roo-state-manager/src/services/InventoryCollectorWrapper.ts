@@ -141,8 +141,16 @@ export class InventoryCollectorWrapper implements IInventoryCollector {
           const row = await readStoreMetaValue(inventoryMetaKey(machineId));
           if (row !== null) {
             try {
+              const rawInventory = JSON.parse(row);
+              // #4131 (review ms#1621, Hermes 🟠) : même garde que loadRemoteInventory —
+              // une ligne dont le contenu nomme une autre machine n'est pas servie
+              // sous le nom demandé. Insensible à la casse, comme la clé.
+              if (String(rawInventory?.machineId).toLowerCase() !== machineId.toLowerCase()) {
+                logger.error(`Ligne PG inventory:${machineId} incohérente : machineId du contenu (${rawInventory?.machineId}) — pas de repli fichier`);
+                return null;
+              }
               logger.info(`📂 Inventaire ${machineId} servi depuis PG (#4131)`);
-              return this.convertRawToBaselineFormat(JSON.parse(row));
+              return this.convertRawToBaselineFormat(rawInventory);
             } catch (parseError) {
               logger.error(`Ligne PG inventory:${machineId} illisible — pas de repli fichier`, parseError);
               return null;

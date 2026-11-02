@@ -503,7 +503,7 @@ export class InventoryCollector {
       try {
         const row = await readStoreMetaValue(inventoryMetaKey(machineId));
         if (row !== null) {
-          return this.parseInventoryContent(row, machineId, `PG inventory:${machineId}`);
+          return this.parseInventoryContent(row, machineId, `PG inventory:${machineId}`, true);
         }
       } catch (error) {
         this.logger.warn(`⚠️ Lecture PG inventory:${machineId} impossible — repli fichier GDrive`, { error });
@@ -592,9 +592,10 @@ export class InventoryCollector {
    * @param content - JSON de l'inventaire
    * @param machineId - Identifiant de la machine (pour le cache)
    * @param source - Origine du texte, pour le journal
+   * @param checkIdentity - Refuser un contenu dont le machineId n'est pas celui demandé
    * @returns Inventaire ou null si le texte est illisible
    */
-  private parseInventoryContent(content: string, machineId: string, source: string): MachineInventory | null {
+  private parseInventoryContent(content: string, machineId: string, source: string, checkIdentity = false): MachineInventory | null {
     try {
       // Strip BOM UTF-8 si présent
       if (content.charCodeAt(0) === 0xFEFF) {
@@ -707,7 +708,15 @@ export class InventoryCollector {
         this.logger.error(`❌ Format d'inventaire non reconnu`);
         return null;
       }
-      
+
+      // #4131 (review ms#1621, Hermes 🟠) : même garde que loadRemoteInventory —
+      // une ligne dont le contenu nomme une autre machine n'est pas servie (ni
+      // cachée) sous le nom demandé. Insensible à la casse, comme la clé.
+      if (checkIdentity && String(inventory.machineId).toLowerCase() !== machineId.toLowerCase()) {
+        this.logger.error(`❌ Incohérence ${source} : machineId du contenu (${inventory.machineId}) ≠ demandé (${machineId})`);
+        return null;
+      }
+
       this.logger.info(`✅ Inventaire chargé pour ${inventory.machineId}`);
 
       // Mettre à jour le cache

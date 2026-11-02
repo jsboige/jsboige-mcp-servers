@@ -12,6 +12,7 @@
  *   PG row absent      → the G: file serves, as before;
  *   PG unreachable     → the G: file serves, as before;
  *   PG row unreadable  → null, never the stale file;
+ *   PG row of another machine → null, never served under the requested name;
  *   PG not configured  → PG never touched, the G: file serves.
  */
 
@@ -157,6 +158,27 @@ describe.each(readers)('#4131 Phase D — $name.loadFromSharedState reads PG fir
     expect(h.readFile).not.toHaveBeenCalled();
   });
 
+  it('PG row whose content names another machine → null, never served under the requested name, no file fallback', async () => {
+    // Review ms#1621 (Hermes 🟠): same guard as InventoryService.loadRemoteInventory.
+    h.readStoreMetaValue.mockResolvedValue(fullInventoryText(PG_TS, 'po-2026'));
+
+    const inv = await load(MACHINE);
+
+    expect(h.readStoreMetaValue).toHaveBeenCalledWith(`inventory:${MACHINE}`);
+    expect(inv).toBeNull();
+    expect(h.readFile).not.toHaveBeenCalled();
+  });
+
+  it('the identity check is case-insensitive like the key (mixed-case request, lower-case content)', async () => {
+    h.readStoreMetaValue.mockResolvedValue(fullInventoryText(PG_TS));
+
+    const inv = await load('Remote-Box');
+
+    expect(inv).not.toBeNull();
+    expect(inv.machineId).toBe(MACHINE);
+    expect(inv.timestamp).toBe(PG_TS);
+  });
+
   it('PG not configured → PG never touched, the G: file serves', async () => {
     h.storeMetaUrl.mockReturnValue(null);
 
@@ -179,6 +201,16 @@ describe('#4131 Phase D — the PG-first read reaches the public entry points', 
     expect(second).toBe(first);
     expect(h.readStoreMetaValue).toHaveBeenCalledTimes(1);
     expect(h.readFile).not.toHaveBeenCalled();
+  });
+
+  it('InventoryCollector.collectInventory(remote) does not cache a row that names another machine', async () => {
+    h.readStoreMetaValue.mockResolvedValue(fullInventoryText(PG_TS, 'po-2026'));
+    const collector = new InventoryCollector();
+
+    await collector.collectInventory(MACHINE);
+    await collector.collectInventory(MACHINE);
+
+    expect(h.readStoreMetaValue).toHaveBeenCalledTimes(2);
   });
 
   it('InventoryCollectorWrapper.collectInventory returns the PG row before any local collection', async () => {
