@@ -10,7 +10,9 @@
  *      already proven complete: a failed refresh keeps 'complete', only a
  *      successful lookup without the marker closes it;
  *   4. the lookup is BOUNDED: one query per TTL, never one per call;
- *   5. no PG URL on the host ⇒ 'absent', no query at all.
+ *   5. no PG URL on the host ⇒ 'absent', no query at all;
+ *   6. the lookup budget is 3 s by default, and a caller off the request
+ *      path (the send CLI) can widen it.
  */
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
@@ -42,9 +44,11 @@ vi.mock('pg', () => ({
 }));
 
 import {
+  BACKFILL_MARKER_LOOKUP_TIMEOUT_MS,
   CHANNEL_BACKFILL_META_KEY,
   DASHBOARD_BACKFILL_META_KEY,
   backfillMarkerTtlMs,
+  ensureBackfillMarkersFresh,
   getBackfillMarkerState,
   refreshBackfillMarkers,
   resetBackfillMarkerCache,
@@ -264,6 +268,83 @@ describe('backfill completeness marker (#4131)', () => {
       await refreshBackfillMarkers(true);
       expect(isChannelPgPrimaryEnabled()).toBe(true);
       expect(isDashboardPgPrimaryEnabled()).toBe(true);
+    });
+  });
+
+  describe('lookup budget (#4131, ai-01 02/11 07:10:26Z)', () => {
+    const budgetOf = (index: number) => {
+      const config = mocks.configs[index] as { connectionTimeoutMillis?: number; statement_timeout?: number };
+      return [config?.connectionTimeoutMillis, config?.statement_timeout];
+    };
+
+    test('the default lookup keeps the 3 s request-path budget, on connect AND statement', async () => {
+      process.env.UNIFIED_STORE_PG_URL = PG_URL;
+      expect(BACKFILL_MARKER_LOOKUP_TIMEOUT_MS).toBe(3_000);
+      await refreshBackfillMarkers(true);
+      expect(budgetOf(0)).toEqual([3_000, 3_000]);
+      resetBackfillMarkerCache();
+      await ensureBackfillMarkersFresh();
+      expect(budgetOf(1)).toEqual([3_000, 3_000]);
+    });
+
+    test('ensureBackfillMarkersFresh passes a caller budget to the lookup client', async () => {
+      process.env.UNIFIED_STORE_PG_URL = PG_URL;
+      mocks.query.mockResolvedValue({
+        rows: [{ key: CHANNEL_BACKFILL_META_KEY, value: '2026-10-27T18:00:00.000Z' }],
+      });
+      await ensureBackfillMarkersFresh({ timeoutMs: 15_000 });
+      expect(mocks.configs).toHaveLength(1);
+      expect(budgetOf(0)).toEqual([15_000, 15_000]);
+      expect(getBackfillMarkerState('channel')).toBe('complete');
+    });
+
+    // ms#1625 review: a gate consulted before the CLI's await starts a 3 s
+    // refresh; joining it would hand the CLI the very miss it widened against.
+    test('a larger caller budget does not join a shorter lookup in flight', async () => {
+      process.env.UNIFIED_STORE_PG_URL = PG_URL;
+      let releaseShort: () => void = () => {};
+      let releaseLong: () => void = () => {};
+      mocks.connect
+        .mockImplementationOnce(() => new Promise<void>((resolve) => { releaseShort = resolve; }))
+        .mockImplementationOnce(() => new Promise<void>((resolve) => { releaseLong = resolve; }));
+      mocks.query.mockResolvedValue({
+        rows: [{ key: CHANNEL_BACKFILL_META_KEY, value: '2026-10-27T18:00:00.000Z' }],
+      });
+      const short = refreshBackfillMarkers();
+      await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledTimes(1));
+      const long = ensureBackfillMarkersFresh({ timeoutMs: 15_000 });
+      await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledTimes(2));
+      expect(budgetOf(0)).toEqual([3_000, 3_000]);
+      expect(budgetOf(1)).toEqual([15_000, 15_000]);
+      // The short lookup ending first must not unregister the long one: a
+      // third caller with the same budget still joins it.
+      releaseShort();
+      await short;
+      const joined = refreshBackfillMarkers(false, 15_000);
+      releaseLong();
+      await Promise.all([long, joined]);
+      expect(mocks.configs).toHaveLength(2);
+      expect(getBackfillMarkerState('channel')).toBe('complete');
+    });
+
+    test('an equal budget joins the lookup in flight (one observer per condition)', async () => {
+      process.env.UNIFIED_STORE_PG_URL = PG_URL;
+      let releaseShort: () => void = () => {};
+      mocks.connect.mockImplementationOnce(() => new Promise<void>((resolve) => { releaseShort = resolve; }));
+      const short = refreshBackfillMarkers();
+      await vi.waitFor(() => expect(mocks.connect).toHaveBeenCalledTimes(1));
+      const joined = ensureBackfillMarkersFresh();
+      releaseShort();
+      await Promise.all([short, joined]);
+      expect(mocks.configs).toHaveLength(1);
+    });
+
+    test('a fresh cache issues no lookup, whatever the budget', async () => {
+      process.env.UNIFIED_STORE_PG_URL = PG_URL;
+      await refreshBackfillMarkers(true);
+      await ensureBackfillMarkersFresh({ timeoutMs: 15_000 });
+      expect(mocks.configs).toHaveLength(1);
+      expect(budgetOf(0)).toEqual([3_000, 3_000]);
     });
   });
 

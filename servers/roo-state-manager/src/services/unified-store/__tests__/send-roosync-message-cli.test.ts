@@ -30,8 +30,8 @@ const STUBS: Record<string, string> = {
   `,
   'services/unified-store/pg-backfill-marker.js': `
     import { appendFileSync } from 'node:fs';
-    export async function ensureBackfillMarkersFresh() {
-      appendFileSync(process.env.SEND_CLI_TRACE, 'ensure-start\\n');
+    export async function ensureBackfillMarkersFresh(options) {
+      appendFileSync(process.env.SEND_CLI_TRACE, 'ensure-start timeoutMs=' + options?.timeoutMs + '\\n');
       if (process.env.SEND_CLI_STUB_MARKER_THROWS === '1') throw new Error('stub marker failure');
       await new Promise((resolve) => setTimeout(resolve, 30));
       globalThis.__markerResolved = true;
@@ -75,9 +75,13 @@ let root: string;
 let trace: string;
 let shared: string;
 
-function runCli(stub: { gdrive: boolean; live: boolean; markerThrows?: boolean }) {
+function runCli(
+  stub: { gdrive: boolean; live: boolean; markerThrows?: boolean },
+  extraEnv: NodeJS.ProcessEnv = {}
+) {
   // A scrubbed env: nothing inherited can reach a real store.
   const env: NodeJS.ProcessEnv = {
+    ...extraEnv,
     PATH: process.env.PATH,
     SystemRoot: process.env.SystemRoot,
     ROOSYNC_SHARED_PATH: shared,
@@ -120,7 +124,20 @@ describe('send-roosync-message.mjs — marker resolved before the send (#4131)',
   test('the marker is resolved, and awaited, before sendMessage decides', () => {
     const run = runCli({ gdrive: false, live: true });
     expect(run.status, run.stderr).toBe(0);
-    expect(run.lines.slice(0, 3)).toEqual(['ensure-start', 'ensure-end', 'send resolved=true']);
+    expect(run.lines.slice(0, 3)).toEqual(['ensure-start timeoutMs=15000', 'ensure-end', 'send resolved=true']);
+  });
+
+  test('the lookup budget follows the writer pool when the seat configures it', () => {
+    // ai-01 02/11 07:10:26Z: the default 3 s connect timed out during a PG busy
+    // burst and the worker report went to G:, while the writer pool connected
+    // right after. A seat that widens the pool widens the lookup with it; a
+    // value that is not a positive number keeps the 15 s default.
+    const widened = runCli({ gdrive: false, live: true }, { UNIFIED_STORE_CONNECT_TIMEOUT_MS: '60000' });
+    expect(widened.status, widened.stderr).toBe(0);
+    expect(widened.lines[0]).toBe('ensure-start timeoutMs=60000');
+    rmSync(trace, { force: true });
+    const invalid = runCli({ gdrive: false, live: true }, { UNIFIED_STORE_CONNECT_TIMEOUT_MS: 'abc' });
+    expect(invalid.lines[0]).toBe('ensure-start timeoutMs=15000');
   });
 
   test('a marker resolution that throws never blocks the send: delivered on G:, exit 0', () => {
