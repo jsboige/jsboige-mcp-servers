@@ -4192,7 +4192,7 @@ CONTEXTE : Le dashboard contient un STATUT et des MESSAGES INTERCOM, qui jouent 
 
 Les messages les plus anciens vont être archivés. Ta mission : faire ÉVOLUER le statut en HÉRITANT de l'ancien et en y intégrant ce qui a valeur durable dans les messages [SERA ARCHIVÉ]. Tu ne réécris PAS depuis zéro.
 
-La taille du statut est gérée ailleurs — préfère un statut un peu plus volumineux à la perte d'informations historiques importantes. Le fine détail des cycles reste dans les messages (eux-mêmes condensés en cascade).
+La taille du statut est bornée par le BUDGET PAR SECTION ci-dessous : condense À L'INTÉRIEUR d'une section plutôt que de la couper — une section complète et dense vaut mieux qu'une section tronquée. Le fine détail des cycles reste dans les messages (eux-mêmes condensés en cascade).
 
 RÈGLE ABSOLUE — LAST-KNOWN-STATE WINS (#1502) :
 Pour CHAQUE sujet (machine, service, tâche), SEUL le dernier état connu doit apparaître.
@@ -4241,6 +4241,20 @@ Format : "- **entité** : état (source: [date])"
 
 ### Patterns appris
 [Anti-patterns identifiés, conventions établies, leçons consolidées — mémoire durable du projet]
+
+BUDGET PAR SECTION (#4434) — la sortie entière doit tenir dans ~1 300 mots (~9 000 caractères) :
+- Résumé : ≤ 60 mots
+- État des systèmes : ≤ 220 mots (une ligne par entité, dernier état connu)
+- Décisions actées : ≤ 220 mots
+- Blocages structurels : ≤ 140 mots
+- Livrables récents : ≤ 180 mots (synthèse par thème)
+- En cours : ≤ 140 mots
+- Métriques de référence : ≤ 180 mots
+- Patterns appris : ≤ 180 mots
+Règles du budget :
+- Les 8 sections apparaissent TOUJOURS, dans cet ordre, CHACUNE COMPLÈTE — jamais une section omise, jamais une section coupée en cours de rédaction.
+- Pour tenir un budget : condense DANS la section (fusionner les entrées, garder le dernier état, chasser le détail tactique) — jamais supprimer la section ni son titre.
+- En cas de tension : « Patterns appris » et « Métriques de référence » ne sont JAMAIS sacrifiées — rogne « Résumé » et « Livrables récents » d'abord.
 
 INTERDIT :
 - Réécrire le statut comme si l'ancien n'existait pas (HÉRITER ET ENRICHIR)
