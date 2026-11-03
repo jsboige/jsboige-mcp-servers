@@ -1457,6 +1457,25 @@ class TestDelegatingPreset:
             "the child fails"
         )
 
+    def test_delegated_review_rule_is_documented(self):
+        # vllm#205 measure (po-2025, 03/11): a review delegated to a same-tier
+        # or weaker reviewer fabricated 7 findings out of 10 lines, while a
+        # one-tier-above reviewer GIVEN THE SOURCE hit 14/14 exact — the lever
+        # is the reviewer's capacity plus its access to the source, not tool
+        # grants. The rule belongs in the orchestrator's and the reviewer's
+        # prompts, where the delegation is decided.
+        delegator_prompt = _preset_by_id(DELEGATING_PRESET_ID).system_prompt
+        assert "at least one tier ABOVE the producer" in delegator_prompt, (
+            "the delegator must pick reviewers one tier above the producer"
+        )
+        assert "SOURCE material" in delegator_prompt, (
+            "the delegator must pass the source, not only the productions"
+        )
+        critic_prompt = _preset_by_id("critic").system_prompt
+        assert "require the SOURCE material" in critic_prompt, (
+            "the reviewer preset must demand the source and verify against it"
+        )
+
     def test_delegating_preset_names_the_child_presets(self):
         description = _preset_by_id(DELEGATING_PRESET_ID).description
         for preset_id in MINI_PRESETS:
