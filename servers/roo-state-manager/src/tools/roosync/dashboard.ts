@@ -5137,14 +5137,74 @@ export function sliceSuffixToMaxBytes(text: string, maxBytes: number): string {
 }
 
 /**
+ * #4434: locate the blockers section of a dashboard status.
+ *
+ * Returns the inclusive index of its heading and the exclusive end index (the
+ * next heading of any level, or EOF) — so the whole block travels together.
+ * `null` when the status has no such heading, in which case callers keep their
+ * historical behaviour untouched.
+ */
+function findBlocagesSection(lines: string[]): { start: number; end: number } | null {
+  const start = lines.findIndex((line) => /^#{1,6}\s*(?:Blocages|Blockers)\b/i.test(line));
+  if (start === -1) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (/^#{1,6}\s/.test(lines[i])) {
+      end = i;
+      break;
+    }
+  }
+  return { start, end };
+}
+
+/**
  * Deterministic (non-LLM) truncation: keeps the most recent lines that fit within maxSizeBytes.
  * Used when LLM condensation fails (#2463 — status should never exceed its cap, even in fallback).
+ *
+ * #4434: the tail-only rule decapitates the head, and the head is exactly where
+ * the « Blocages structurels » section lives — the block whose loss costs a
+ * reader the most (it is what the readers act on). When such a section exists
+ * and fits on its own, it is kept whole together with the document's lead
+ * heading, and the remaining budget goes to the tail (recency contract kept).
+ * No such heading, or a block that alone exceeds the cap (a truncated blockers
+ * list would read as complete): historical tail-only path, unchanged.
  */
 export function truncateToMaxSize(text: string, maxSizeBytes: number, label: string): string {
   const sizeBytes = Buffer.byteLength(text, 'utf8');
   if (sizeBytes <= maxSizeBytes) return text;
 
   const lines = text.split('\n');
+
+  const blocages = findBlocagesSection(lines);
+  if (blocages) {
+    const lead = blocages.start > 0 && /^#{1,6}\s/.test(lines[0]) ? [lines[0]] : [];
+    const block = lines.slice(blocages.start, blocages.end);
+    const kept = lead.concat(block).join('\n');
+    const keptBytes = Buffer.byteLength(kept, 'utf8');
+    if (keptBytes <= maxSizeBytes) {
+      let usedBytes = keptBytes;
+      const tail: string[] = [];
+      for (let i = lines.length - 1; i >= blocages.end; i--) {
+        // Separator counted with the line: the cap is a byte cap, not a sum
+        // of line lengths.
+        const cost = Buffer.byteLength('\n' + lines[i], 'utf8');
+        if (usedBytes + cost > maxSizeBytes) break;
+        usedBytes += cost;
+        tail.unshift(lines[i]);
+      }
+      const preserved = tail.length ? `${kept}\n${tail.join('\n')}` : kept;
+      logger.info(`Deterministic truncation preserved the blockers section for ${label}`, {
+        originalBytes: sizeBytes,
+        truncatedBytes: Buffer.byteLength(preserved, 'utf8'),
+        limitBytes: maxSizeBytes,
+        blockerLines: block.length,
+        tailLines: tail.length,
+        linesRemoved: lines.length - preserved.split('\n').length,
+      });
+      return preserved;
+    }
+  }
+
   // Keep lines from the end (most recent) until we fit
   let result = '';
   for (let i = lines.length - 1; i >= 0; i--) {
