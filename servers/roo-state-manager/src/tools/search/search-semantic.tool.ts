@@ -362,7 +362,12 @@ const ENV_DETAILS_MARKER = /<environment_details>|# VSCode Visible Files|# VSCod
 // unclassified. Named residual: prose that happens to start a line with the
 // two complete tags still matches — quoting a whole envelope line is
 // indistinguishable from an envelope, same trade as the slug pair above.
-const MODE_PROMPT_MARKER = /<slug>[^<]{0,60}<\/slug>[\s\S]{0,4}<name>|(?:\\r?\\n|\r?\n)[\t ]*<name>[^<]{0,60}<\/name>[\s\S]{0,80}<model>[^<]{0,60}<\/model>/;
+// Index 0 is the same shape without a preceding break (review 095228a5,
+// ai-01 03/11): a content whose FIRST characters are the envelope has no break
+// to anchor on, and fell back to prose. `^` closes it — a false negative on a
+// real mode block costs more than the residual it re-admits, since that
+// residual is the whole-envelope-line quote already named just above.
+const MODE_PROMPT_MARKER = /<slug>[^<]{0,60}<\/slug>[\s\S]{0,4}<name>|(?:^|\\r?\\n|\r?\n)[\t ]*<name>[^<]{0,60}<\/name>[\s\S]{0,80}<model>[^<]{0,60}<\/model>/;
 // Density thresholds per 100 chars of the first 2000, measured on the live
 // pools: prose stays far below either of them.
 const JSON_ESCAPED_QUOTES_PER_100 = 1;
