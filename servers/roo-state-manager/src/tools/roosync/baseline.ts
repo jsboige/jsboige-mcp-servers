@@ -17,7 +17,7 @@ import { BaselineService } from '../../services/BaselineService.js';
 import { ConfigService } from '../../services/ConfigService.js';
 import { InventoryCollector } from '../../services/InventoryCollector.js';
 import { DiffDetector } from '../../services/DiffDetector.js';
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 
 /** Timeout for git operations in baseline management */
 const GIT_TIMEOUT_MS = 60_000;
@@ -449,7 +449,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   // Vérifier si le tag existe déjà
   let tagExists = false;
   try {
-    execSync(`git rev-parse --verify refs/tags/${tagName}`, { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_QUICK_TIMEOUT_MS });
+    execFileSync('git', ['rev-parse', '--verify', `refs/tags/${tagName}`], { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_QUICK_TIMEOUT_MS });
     tagExists = true;
   } catch (error) {
     // Le tag n'existe pas, c'est normal
@@ -475,7 +475,10 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   // list_versions reads it (#2962 read/write coherence). Without cwd the tag was
   // created in the submodule, diverging from the read path fixed above.
   try {
-    execSync(`git tag -a ${tagName} -m "${tagMessage}"`, { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_TIMEOUT_MS });
+    // #4149 (famille ms#1630) : tagName/tagMessage sont interpolés dans une
+    // chaîne shell par la forme historique — un `"` dans le message séparait
+    // l'argument. argv sans shell : les valeurs sont des littéraux.
+    execFileSync('git', ['tag', '-a', tagName, '-m', tagMessage], { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_TIMEOUT_MS });
     getLogger().info('✅ Git tag created successfully', { tagName });
   } catch (error) {
     throw new RooSyncServiceError(
@@ -489,7 +492,7 @@ async function handleVersionAction(args: BaselineArgs, timestamp: string): Promi
   let tagPushed = false;
   if (args.pushTags !== false) {
     try {
-      execSync('git push --tags', { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_TIMEOUT_MS });
+      execFileSync('git', ['push', '--tags'], { stdio: 'pipe', cwd: WORKSPACE_ROOT, timeout: GIT_TIMEOUT_MS });
       tagPushed = true;
       getLogger().info('✅ Git tag pushed successfully');
     } catch (error) {
@@ -769,7 +772,7 @@ async function handleListVersionsAction(args: BaselineArgs, timestamp: string): 
 
   let allTags: string;
   try {
-    allTags = execSync('git tag -l "baseline-v*"', {
+    allTags = execFileSync('git', ['tag', '-l', 'baseline-v*'], {
       encoding: 'utf8',
       cwd: WORKSPACE_ROOT,
       timeout: GIT_QUICK_TIMEOUT_MS,
@@ -818,14 +821,14 @@ async function handleListVersionsAction(args: BaselineArgs, timestamp: string): 
     let date = '';
     let message = '';
     try {
-      date = execSync(`git log -1 --format=%ai ${tag}`, {
+      date = execFileSync('git', ['log', '-1', '--format=%ai', tag], {
         encoding: 'utf8',
         cwd: WORKSPACE_ROOT,
         timeout: GIT_QUICK_TIMEOUT_MS,
       }).trim();
     } catch { /* skip */ }
     try {
-      message = execSync(`git log -1 --format=%s ${tag}`, {
+      message = execFileSync('git', ['log', '-1', '--format=%s', tag], {
         encoding: 'utf8',
         cwd: WORKSPACE_ROOT,
         timeout: GIT_QUICK_TIMEOUT_MS,

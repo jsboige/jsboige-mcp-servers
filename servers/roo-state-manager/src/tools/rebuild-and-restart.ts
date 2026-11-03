@@ -1,5 +1,5 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { exec, ExecOptions } from 'child_process';
+import { exec, execFile, ExecFileOptions, ExecOptions } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { fileURLToPath } from 'url';
@@ -15,8 +15,10 @@ const BUILD_TIMEOUT_MS = 120_000; // 120s for npm build
 const TOUCH_TIMEOUT_MS = 15_000;  // 15s for PowerShell touch
 
 /**
- * Execute a command with timeout protection.
- * Kills the child process if timeout expires, preventing zombie processes.
+ * Execute a shell command with timeout protection. For CONSTANT command lines
+ * only (#4149 review): `mcpPath` travels as `cwd`, never through the command
+ * string, so nothing user-controlled reaches the shell. Kills the child
+ * process if timeout expires, preventing zombie processes.
  */
 function execWithTimeout(command: string, options: ExecOptions): Promise<string> {
     return new Promise((resolve, reject) => {
@@ -37,19 +39,57 @@ function execWithTimeout(command: string, options: ExecOptions): Promise<string>
     });
 }
 
+/**
+ * Execute a program with timeout protection, WITHOUT a shell (#4149, famille
+ * ms#1630): the command line is an argv array, so every interpolated value is
+ * a literal argument — no quote in a path can close it and start a new one.
+ * Kills the child process if timeout expires, preventing zombie processes.
+ */
+function execFileWithTimeout(file: string, args: string[], options: ExecFileOptions): Promise<string> {
+    return new Promise((resolve, reject) => {
+        const child = execFile(file, args, options, (error, stdout, stderr) => {
+            if (error) {
+                const msg = (error as any).killed
+                    ? `Command timed out after ${options.timeout}ms: ${file} ${args.join(' ')}`
+                    : error.message;
+                return reject(new GenericError(msg, GenericErrorCode.FILE_SYSTEM_ERROR));
+            }
+            resolve(stdout?.toString() ?? '');
+        });
+
+        // Safety net: ensure child is killed if process exits prematurely
+        const cleanup = () => { try { child.kill(); } catch {} };
+        process.on('exit', cleanup);
+        child.on('exit', () => { process.removeListener('exit', cleanup); });
+    });
+}
+
 async function runNpmBuild(mcpPath: string): Promise<string> {
     // #2307 (Phase 4, item EBUSY) : retry borné partagé avec roosync_mcp_management
     // rebuild — l'hôte MCP vivant tient sqlite3.node chargé sous Windows, le
     // remplacement du binaire natif peut échouer en EBUSY de façon transitoire.
+    // CVE-2024-27980 (mesuré ai-01 v24.14.1 / web2 v24.19.0) : Node refuse de
+    // spawner un .cmd/.bat sans shell — execFile('npm.cmd', …) lève spawn
+    // EINVAL, `npm` nu rend ENOENT sur win32. La ligne est une CONSTANTE et
+    // mcpPath ne voyage que par cwd : pas un site #4149, on garde la forme de
+    // main (exec). L'invariant est épinglé par test : jamais de .cmd/.bat via
+    // execFile sans shell.
     return withEBUSYRetry(() =>
         execWithTimeout('npm run build', { cwd: mcpPath, windowsHide: true, timeout: BUILD_TIMEOUT_MS })
     );
 }
 
 async function touchFile(filePath: string): Promise<string> {
-    const command = `(Get-Item -LiteralPath "${filePath}").LastWriteTime = Get-Date`;
-    return execWithTimeout(`powershell.exe -Command "${command}"`, { windowsHide: true, timeout: TOUCH_TIMEOUT_MS })
-        .then(() => `Touched: ${filePath}`);
+    // #4149 (famille ms#1630) : l'ancienne forme interpolait filePath dans un
+    // script pwsh -Command — un `"` dans le chemin séparait l'argument. Le
+    // chemin passe maintenant par une variable d'environnement, qu'aucun shell
+    // ne ré-analyse : le script est une constante, la donnée reste une donnée.
+    const script = '(Get-Item -LiteralPath $env:RSM_TOUCH_PATH).LastWriteTime = Get-Date';
+    return execFileWithTimeout(
+        'powershell.exe',
+        ['-NoProfile', '-NonInteractive', '-Command', script],
+        { windowsHide: true, timeout: TOUCH_TIMEOUT_MS, env: { ...process.env, RSM_TOUCH_PATH: filePath } }
+    ).then(() => `Touched: ${filePath}`);
 }
 
 export const rebuildAndRestart = {

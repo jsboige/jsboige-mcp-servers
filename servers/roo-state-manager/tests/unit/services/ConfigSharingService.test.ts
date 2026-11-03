@@ -47,8 +47,11 @@ vi.mock('fs', () => ({
   },
 }));
 
+// #4149 (famille ms#1630) : la génération .roomodes passe par execFileSync
+// (argv sans shell) — execSync reste pour les autres consommateurs.
 vi.mock('child_process', () => ({
   execSync: vi.fn(() => ''),
+  execFileSync: vi.fn(() => ''),
 }));
 
 vi.mock('crypto', () => ({

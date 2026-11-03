@@ -32,6 +32,7 @@ const {
   mockAccess,
   mockUtimes,
   mockExec,
+  mockExecCmd,
   mockCopyFile,
   mockUnlink,
 } = vi.hoisted(() => ({
@@ -40,6 +41,9 @@ const {
   mockAccess: vi.fn(),
   mockUtimes: vi.fn(),
   mockExec: vi.fn(),
+  // review ms#1634 : le build voyage par exec (chaîne CONSTANTE), le touch
+  // reste execFile argv — deux fronts distincts, deux mocks distincts.
+  mockExecCmd: vi.fn(),
   // #3988: writeMcpSettingsAtomic stage (copyFile) puis cleanup (unlink) —
   // implementations posées à la factory : clearAllMocks ne les retire pas.
   mockCopyFile: vi.fn().mockResolvedValue(undefined),
@@ -56,7 +60,10 @@ vi.mock('fs/promises', () => ({
 }));
 
 vi.mock('child_process', () => ({
-  exec: mockExec,
+  // #4149 (famille ms#1630) : le touch est execFile (argv sans shell) ; le
+  // build reste exec (CVE-2024-27980 : pas de .cmd sans shell).
+  execFile: mockExec,
+  exec: mockExecCmd,
 }));
 
 vi.mock('os', () => ({
@@ -103,9 +110,13 @@ beforeEach(async () => {
   mockWriteFile.mockResolvedValue(undefined);
   mockAccess.mockResolvedValue(undefined);
   mockUtimes.mockResolvedValue(undefined);
-  mockExec.mockImplementation((_cmd: string, _opts: unknown, cb: (e: unknown, o: string, e2: string) => void) =>
+  mockExec.mockImplementation((_file: string, _args: string[], _opts: unknown, cb: (e: unknown, o: string, e2: string) => void) =>
     cb(null, 'build ok', ''),
   );
+  mockExecCmd.mockImplementation((_cmd: string, optsOrCb: unknown, maybeCb?: (e: unknown, o: string, e2: string) => void) => {
+    const cb = (typeof optsOrCb === 'function' ? optsOrCb : maybeCb) as ((e: unknown, o: string, e2: string) => void) | undefined;
+    cb?.(null, 'build ok', '');
+  });
   // Reset module-level `lastReadTimestamp` (the isolation problem that forced
   // the existing suite to skip WRITE_NOT_AUTHORIZED tests).
   vi.resetModules();
@@ -223,8 +234,10 @@ describe('runNpmBuild — EBUSY retry logic', () => {
   test('EBUSY on first attempt then success → retried once and built', async () => {
     vi.useFakeTimers();
     let call = 0;
-    mockExec.mockImplementation((_c: string, _o: unknown, cb: (e: unknown, o: string, e2: string) => void) => {
+    mockExecCmd.mockImplementation((_cmd: string, optsOrCb: unknown, maybeCb?: (e: unknown, o: string, e2: string) => void) => {
+      const cb = (typeof optsOrCb === 'function' ? optsOrCb : maybeCb) as ((e: unknown, o: string, e2: string) => void) | undefined;
       call++;
+      if (!cb) return;
       if (call === 1) {
         const err: Error & { code?: string } = new Error('EBUSY: resource busy');
         err.code = 'EBUSY';
@@ -241,19 +254,20 @@ describe('runNpmBuild — EBUSY retry logic', () => {
 
     expect(result.success).toBe(true);
     expect(result.action).toBe('rebuild');
-    // runNpmBuild retried once (EBUSY → backoff → success). Count ONLY the
-    // `npm run build` exec calls — handleRebuildAction also calls touchFile
-    // (powershell.exe) which shares mockExec, so total exec calls = 3 here.
-    const npmBuildCalls = mockExec.mock.calls.filter(c => String(c[0]).includes('npm run build')).length;
+    // runNpmBuild retried once (EBUSY → backoff → success) — le build voyage
+    // par exec (mockExecCmd) ; le touch (powershell.exe) reste sur execFile
+    // (mockExec) et n'apparaît donc plus dans ce compteur.
+    const npmBuildCalls = mockExecCmd.mock.calls.filter(c => String(c[0]).includes('npm')).length;
     expect(npmBuildCalls).toBe(2);
     vi.useRealTimers();
   });
 
   test('non-EBUSY build error → BUILD_FAILED immediately (no retry)', async () => {
     let call = 0;
-    mockExec.mockImplementation((_c: string, _o: unknown, cb: (e: unknown, o: string, e2: string) => void) => {
+    mockExecCmd.mockImplementation((_cmd: string, optsOrCb: unknown, maybeCb?: (e: unknown, o: string, e2: string) => void) => {
+      const cb = (typeof optsOrCb === 'function' ? optsOrCb : maybeCb) as ((e: unknown, o: string, e2: string) => void) | undefined;
       call++;
-      cb(new Error('TS2304: Cannot find name'), '', '');
+      cb?.(new Error('TS2304: Cannot find name'), '', '');
     });
 
     await expect(roosyncMcpManagement({ action: 'rebuild', mcp_name: 'test-server' })).rejects.toMatchObject({

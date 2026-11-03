@@ -18,8 +18,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // The handler under test imports 'child_process'; mock it BEFORE importing the module.
+// #4149 (famille ms#1630) : la frontière est execFile (argv sans shell).
 vi.mock('child_process', () => ({
-    exec: vi.fn(),
+    execFile: vi.fn(),
 }));
 
 import {
@@ -30,7 +31,7 @@ import {
     boundOutput,
     validateClaudishArgs,
 } from '../claudish-traffic.js';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 
 // ── Fixtures (producer format, docker --timestamps prefix) ─────────────────
 
@@ -372,11 +373,11 @@ describe('validateClaudishArgs', () => {
 
 describe('claudishTraffic.handler', () => {
     beforeEach(() => {
-        vi.mocked(exec).mockReset();
+        vi.mocked(execFile).mockReset();
     });
 
     it('classifies docker daemon down as an infrastructure failure (≠ nominal silence)', async () => {
-        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+        vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _opts: any, cb: any) => {
             cb(new Error('command failed'), '', 'Error response from daemon: Cannot connect to the Docker daemon');
             return {} as any;
         }) as any);
@@ -387,7 +388,7 @@ describe('claudishTraffic.handler', () => {
     });
 
     it('renders the incident GAP report from docker logs stdout', async () => {
-        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+        vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _opts: any, cb: any) => {
             cb(null, INCIDENT_LINES.join('\n'), '');
             return {} as any;
         }) as any);
@@ -401,14 +402,14 @@ describe('claudishTraffic.handler', () => {
         const res = await claudishTraffic.handler({ bucket_minutes: 30, container: 'x; rm -rf /' });
         const text = (res.content as any)[0].text as string;
         expect(text).toContain('Invalid');
-        expect(exec).not.toHaveBeenCalled();
+        expect(execFile).not.toHaveBeenCalled();
     });
 
     it('renders the LOCAL collection line for empty docker_context (#1169)', async () => {
         // Causal end-to-end: before #1169 this returned "Invalid 'docker_context'"
         // (empty string failed NAME_RE); after, "" selects the local default
         // context — the rendered Collection line carries no --context flag.
-        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+        vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _opts: any, cb: any) => {
             cb(null, INCIDENT_LINES.join('\n'), '');
             return {} as any;
         }) as any);
@@ -422,7 +423,7 @@ describe('claudishTraffic.handler', () => {
         // 60s timeout / 128MB maxBuffer kill exec AFTER stdout was emitted — the corpus
         // tail is missing and a GAP verdict on it is unreliable. Before the fix, this
         // rendered as a complete report (the incident failure mode, inverted).
-        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+        vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _opts: any, cb: any) => {
             cb(new Error('maxBuffer length exceeded'), INCIDENT_LINES.join('\n'), '');
             return {} as any;
         }) as any);
@@ -439,11 +440,11 @@ describe('claudishTraffic.handler', () => {
         expect(text).toContain('bucket_minutes must be an integer');
         // #4005 item 1 — the refusal must be flagged isError, or the LLM client reads it as a success
         expect((res as any).isError).toBe(true);
-        expect(exec).not.toHaveBeenCalled();
+        expect(execFile).not.toHaveBeenCalled();
     });
 
     it('never throws — unexpected exec crash is returned as text', async () => {
-        vi.mocked(exec).mockImplementation((() => {
+        vi.mocked(execFile).mockImplementation((() => {
             throw new Error('boom');
         }) as any);
         const res = await claudishTraffic.handler({ bucket_minutes: 30 });
@@ -454,10 +455,10 @@ describe('claudishTraffic.handler', () => {
     // ── Container-name fallback (invariant 8, ai-01 05/09) ────────────────────
 
     it('auto-selects the single discovered claudish* container when the default is absent', async () => {
-        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
-            if (_cmd.includes(' ps ')) {
+        vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _opts: any, cb: any) => {
+            if (_args.includes('ps')) {
                 cb(null, 'claudish-sidecar\n', '');
-            } else if (_cmd.endsWith('claudish-proxy')) {
+            } else if (_args[_args.length - 1] === 'claudish-proxy') {
                 cb(new Error('exit 1'), '', 'Error response from daemon: No such container: claudish-proxy');
             } else {
                 cb(null, INCIDENT_LINES.join('\n'), '');
@@ -472,8 +473,8 @@ describe('claudishTraffic.handler', () => {
     });
 
     it('never silently substitutes an explicitly-passed container — suggests instead', async () => {
-        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
-            if (_cmd.includes(' ps ')) {
+        vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _opts: any, cb: any) => {
+            if (_args.includes('ps')) {
                 cb(null, 'claudish-sidecar\n', '');
             } else {
                 cb(new Error('exit 1'), '', 'Error response from daemon: No such container: claudish-proxy');
@@ -485,12 +486,12 @@ describe('claudishTraffic.handler', () => {
         expect(text).toContain('CONTAINER_NOT_FOUND');
         expect(text).toContain('Available claudish container(s) here: claudish-sidecar');
         expect(text).not.toContain('auto-selected');
-        expect(exec).toHaveBeenCalledTimes(2);
+        expect(execFile).toHaveBeenCalledTimes(2);
     });
 
     it('lists candidates without substituting when discovery is ambiguous', async () => {
-        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
-            if (_cmd.includes(' ps ')) {
+        vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _opts: any, cb: any) => {
+            if (_args.includes('ps')) {
                 cb(null, 'claudish-sidecar\nclaudish-relay\n', '');
             } else {
                 cb(new Error('exit 1'), '', 'Error: No such container: claudish-proxy');
@@ -502,12 +503,12 @@ describe('claudishTraffic.handler', () => {
         expect(text).toContain('CONTAINER_NOT_FOUND');
         expect(text).toContain('claudish-sidecar, claudish-relay');
         expect(text).not.toContain('auto-selected');
-        expect(exec).toHaveBeenCalledTimes(2);
+        expect(execFile).toHaveBeenCalledTimes(2);
     });
 
     it('keeps the plain failure when container discovery itself fails', async () => {
-        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
-            if (_cmd.includes(' ps ')) {
+        vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _opts: any, cb: any) => {
+            if (_args.includes('ps')) {
                 cb(new Error('exit 1'), '', 'Error response from daemon: Cannot connect to the Docker daemon');
             } else {
                 cb(new Error('exit 1'), '', 'Error: No such container: claudish-proxy');
@@ -606,31 +607,31 @@ describe('renderTrafficReport -- rotated corpus (docker --since sert le fichier 
 
 describe('claudishTraffic.handler -- sonde de rotation', () => {
     beforeEach(() => {
-        vi.mocked(exec).mockReset();
+        vi.mocked(execFile).mockReset();
     });
 
     it('ne sonde PAS quand la queue du corpus est fraiche (aucun exec superflu)', async () => {
         const fresh = new Date(Date.now() - 30_000).toISOString().replace('Z', '000000Z');
-        vi.mocked(exec).mockImplementation(((_cmd: string, _opts: any, cb: any) => {
+        vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _opts: any, cb: any) => {
             cb(null, REQ(fresh, 'glm-5.2', 'ComposedHandler', 'myia-ai-01', UA_CLI), '');
             return {} as any;
         }) as any);
         await claudishTraffic.handler({ bucket_minutes: 30, container: 'claudish-sidecar' });
-        expect(vi.mocked(exec)).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(execFile)).toHaveBeenCalledTimes(1);
     });
 
     it('sonde en --tail quand le corpus ne couvre pas le present, et le declare', async () => {
         const fresh = new Date(Date.now() - 40_000).toISOString().replace('Z', '000000Z');
-        vi.mocked(exec).mockImplementation(((cmd: string, _opts: any, cb: any) => {
+        vi.mocked(execFile).mockImplementation(((file: string, args: string[], _opts: any, cb: any) => {
             // `--since` sert le fichier TOURNE (vieux), `--tail` le fichier COURANT.
-            if (cmd.includes('--tail')) cb(null, RESP(fresh), '');
+            if (args.includes('--tail')) cb(null, RESP(fresh), '');
             else cb(null, RESP('2026-09-05T21:45:05.000000000Z'), '');
             return {} as any;
         }) as any);
         const res = await claudishTraffic.handler({ bucket_minutes: 30, container: 'claudish-sidecar' });
         const text = (res.content as any)[0].text as string;
-        expect(vi.mocked(exec)).toHaveBeenCalledTimes(2);
-        expect(vi.mocked(exec).mock.calls[1][0]).toContain('--tail');
+        expect(vi.mocked(execFile)).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(execFile).mock.calls[1][1]).toContain('--tail');
         expect(text).toContain('ROTATED CORPUS');
         expect(text).toContain('UNKNOWN: no verdict possible');
         expect(text).not.toContain('NOMINAL');
