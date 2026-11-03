@@ -50,6 +50,7 @@ import faulthandler
 import functools
 import json
 import logging
+import math
 import mimetypes
 import os
 import re
@@ -58,6 +59,7 @@ import subprocess
 import sys
 import time
 import uuid
+from collections import deque
 from contextlib import AsyncExitStack
 from datetime import datetime, timezone
 from pathlib import Path
@@ -116,6 +118,7 @@ from sk_agent_config import (
     AgentConfig,
     ModelConfig,
     McpConfig,
+    RateLimitConfig,
     load_config,
     CONFIG_PATH,
     SK_AGENT_DEPTH,
@@ -1308,6 +1311,83 @@ class SKAgentManager:
 
             return _FallbackSummariser()
 
+    def _rate_gate(self, agent_cfg: AgentConfig | None) -> dict[str, Any] | None:
+        """Admission control per agent ``rate_limit`` (#1748).
+
+        Returns a refusal dict when the agent's sliding window is exhausted,
+        else ``None`` (and the call has consumed one slot). Counted at
+        admission: a refused call consumes nothing; an admitted call consumes
+        a slot whether the downstream invocation succeeds or fails — a failed
+        oracle call has already spent the budget the limit guards.
+
+        Counter scope (measured, see the #1748 PR): the window lives in this
+        server process's memory (``_rate_counters``, lazily created). stdio
+        transport = one process per MCP client session; streamable-http =
+        one process shared by every HTTP session it serves. Not persisted, not
+        shared across machines — a server restart resets the window.
+        """
+        if agent_cfg is None:
+            return None
+        # Kill-switch (house rule, #1748 review item 3): SK_AGENT_RATE_LIMIT=0
+        # disables every declared bound without touching the config — the
+        # declared default is ON, the switch is the operator's way out when a
+        # bound misfires in production.
+        if os.environ.get("SK_AGENT_RATE_LIMIT", "").strip() == "0":
+            return None
+        # Typed-field check: only a parsed RateLimitConfig bounds the agent.
+        # Tolerates any non-conforming agent object (v1 configs, test
+        # doubles whose auto-created attributes are not None) — an
+        # unparseable bound must not gate, and must not crash either.
+        rl = getattr(agent_cfg, "rate_limit", None)
+        if not isinstance(rl, RateLimitConfig):
+            return None
+        now = time.monotonic()
+        # Lazy init: tests build SKAgentManager via __new__, bypassing
+        # __init__ — setdefault keeps the gate functional either way.
+        counters: dict[str, deque] = self.__dict__.setdefault("_rate_counters", {})
+        window: deque = counters.setdefault(agent_cfg.id, deque())
+        horizon = now - rl.window_s
+        while window and window[0] <= horizon:
+            window.popleft()
+        if len(window) >= rl.max_calls:
+            retry_after_s = math.ceil(max(0.0, window[0] + rl.window_s - now))
+            return {
+                "error": (
+                    f"rate limit exceeded for agent '{agent_cfg.id}': "
+                    f"max {rl.max_calls} call(s) per {rl.window_s}s window"
+                ),
+                "rate_limited": True,
+                "agent": agent_cfg.id,
+                "limit": {"max_calls": rl.max_calls, "window_s": rl.window_s},
+                "retry_after_s": retry_after_s,
+            }
+        window.append(now)
+        return None
+
+    def _config_error_gate(self, agent_cfg: AgentConfig | None) -> dict[str, Any] | None:
+        """Refuse an agent whose config entry was rejected at parse (#1748 review item 2).
+
+        ``_parse_config`` isolates a malformed agent instead of failing the
+        whole load, so the entry exists but must never be invoked. Returning
+        an explicit error naming the field is what keeps the blast radius at
+        "this agent" — silently skipping it would answer with another agent.
+        """
+        if agent_cfg is None:
+            return None
+        # Typed check for the same reason as the rate field: an untyped
+        # attribute on a test double must not be read as a config error.
+        err = getattr(agent_cfg, "config_error", None)
+        if not isinstance(err, str) or not err:
+            return None
+        return {
+            "error": (
+                f"agent '{agent_cfg.id}' is not callable: its configuration "
+                f"entry was rejected ({err})"
+            ),
+            "config_error": True,
+            "agent": agent_cfg.id,
+        }
+
     async def _resolve_agent(
         self,
         agent_id: str | None = None,
@@ -1575,6 +1655,17 @@ class SKAgentManager:
             nonlocal options, spec_effective, spec_model_used
             options = options or {}
 
+            # An explicitly requested agent whose entry was rejected is refused
+            # BEFORE resolution (#1748 review item 2): _get_or_create_agent
+            # returns None for it, and resolution would then fall through to
+            # the default agent — the caller would get another agent's answer
+            # under the id it asked for.
+            if agent_id:
+                requested_cfg = self.config.get_agent(agent_id)
+                requested_gate = self._config_error_gate(requested_cfg)
+                if requested_gate is not None:
+                    return requested_gate
+
             # Normalize attachment to list for multi-image support
             attachments_list: list[str] | None = None
             if attachment:
@@ -1721,6 +1812,21 @@ class SKAgentManager:
 
             # Determine if we need a temporary agent (model_override or mcp_overrides)
             agent_cfg = next((a for a in self.config.agents if a.id == resolved_id), None)
+
+            # Rejected config entry (#1748 review item 2): refuse THIS agent by
+            # name — covers the agent_spec path whose base preset was rejected.
+            config_gate = self._config_error_gate(agent_cfg)
+            if config_gate is not None:
+                return config_gate
+
+            # Per-agent rate limit (#1748): explicit refusal before any model
+            # invocation. Keyed on the resolved base agent — an agent_spec
+            # extending a bounded preset inherits its limit, and neither
+            # model_override nor mcp_overrides bypass it.
+            gate = self._rate_gate(agent_cfg)
+            if gate is not None:
+                return gate
+
             needs_temp_agent = (not spec_active) and (
                 bool(model_override) or bool(mcp_overrides)
             )

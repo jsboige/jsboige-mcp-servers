@@ -272,6 +272,28 @@ class ExecutionProfile(_StrictModel):
     )
 
 
+class RateLimitSpec(_StrictModel):
+    """Admission bound for one agent (#1748).
+
+    Declared as a schema model so ``AgentPreset`` (``extra="forbid"``)
+    accepts the field ``sync_from_template`` stamps on the oracle agents:
+    without this, every config load on every seat would log a ``Config
+    validation`` warning about the server's own field. Ranges mirror
+    ``sk_agent_config.RateLimitConfig.from_dict`` — a bound of zero or less
+    is meaningless, not "unlimited" (absent means unlimited) — and
+    ``strict=True`` keeps this layer from being *looser* than the parser,
+    which rejects ``"5"`` and ``true`` (a schema that accepted them would
+    advertise a bound the loader then refuses).
+    """
+
+    max_calls: int = Field(
+        ge=1, strict=True, description="Admitted calls per window."
+    )
+    window_s: int = Field(
+        ge=1, strict=True, description="Sliding window length, seconds."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Spec models
 # ---------------------------------------------------------------------------
@@ -504,6 +526,13 @@ class AgentPreset(_StrictModel):
     )
     execution: ExecutionProfile = Field(default_factory=ExecutionProfile)
     parameters: dict[str, Any] = Field(default_factory=dict)
+    rate_limit: RateLimitSpec | None = Field(
+        default=None,
+        description=(
+            "Optional admission bound (#1748): max_calls per window_s. "
+            "Absent = unlimited (exact legacy behaviour)."
+        ),
+    )
 
     @field_validator("parameters")
     @classmethod
@@ -1173,6 +1202,7 @@ __all__ = [
     "RISK_CLASS_REQUIRED_CAPABILITIES",
     "CapabilityProfile",
     "ExecutionProfile",
+    "RateLimitSpec",
     "ModelSpec",
     "ToolSpec",
     "AgentPreset",

@@ -480,6 +480,40 @@ class SamplingConfig:
 
 
 @dataclass
+class RateLimitConfig:
+    """Per-agent admission limit (#1748): max_calls per sliding window_s.
+
+    Absent from an agent entry = unlimited (exact legacy behaviour). Invalid
+    values are refused at config load rather than silently ignored — a
+    dead rate limit is worse than none because the caller believes the
+    agent is bounded when it is not.
+    """
+
+    max_calls: int = 1
+    window_s: int = 3600
+
+    @classmethod
+    def from_dict(cls, data) -> RateLimitConfig | None:
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"rate_limit must be an object {{max_calls, window_s}}, "
+                f"got {type(data).__name__}"
+            )
+        for name in ("max_calls", "window_s"):
+            value = data.get(name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(
+                    f"rate_limit.{name} must be an integer >= 1, got {value!r}"
+                )
+        return cls(max_calls=data["max_calls"], window_s=data["window_s"])
+
+    def to_dict(self) -> dict:
+        return {"max_calls": self.max_calls, "window_s": self.window_s}
+
+
+@dataclass
 class AgentConfig:
     """An agent: model + system prompt + MCP subset + memory + parameters."""
 
@@ -492,6 +526,12 @@ class AgentConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     parameters: dict[str, Any] = field(default_factory=dict)
     condensation: dict[str, Any] = field(default_factory=dict)
+    rate_limit: RateLimitConfig | None = None  # see #1748
+    # Set when this entry was REJECTED at parse time (#1748 review item 2):
+    # the agent stays in the list so its id still resolves, and call_agent
+    # refuses it by name instead of failing the whole config load. Never
+    # serialized — a rejected entry is not a valid entry.
+    config_error: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> AgentConfig:
@@ -505,6 +545,7 @@ class AgentConfig:
             memory=MemoryConfig.from_dict(data.get("memory")),
             parameters=data.get("parameters", {}),
             condensation=dict(data.get("condensation") or {}),
+            rate_limit=RateLimitConfig.from_dict(data.get("rate_limit")),
         )
 
     def to_dict(self) -> dict:
@@ -521,6 +562,8 @@ class AgentConfig:
             d["capabilities"] = list(self.capabilities)
         if self.condensation:
             d["condensation"] = dict(self.condensation)
+        if self.rate_limit is not None:
+            d["rate_limit"] = self.rate_limit.to_dict()
         return d
 
 
@@ -1054,10 +1097,21 @@ def load_config(path: str | None = None) -> SKAgentConfig:
 
 
 def _parse_config(raw: dict) -> SKAgentConfig:
-    """Parse a validated v2 config dict into SKAgentConfig."""
+    """Parse a validated v2 config dict into SKAgentConfig.
+
+    A malformed agent entry is isolated, not fatal (#1748 review item 2):
+    ``AgentConfig.from_dict`` raises on a meaningless ``rate_limit``, and
+    letting that propagate out of ``load_config`` takes down every agent on
+    the seat over one typo. The rejected entry stays in the list carrying
+    ``config_error`` so ``call_agent`` can name it explicitly, while the
+    other agents keep working.
+    """
     models = [ModelConfig.from_dict(m) for m in raw.get("models", [])]
     mcps = [McpConfig.from_dict(m) for m in raw.get("mcps", [])]
-    agents = [AgentConfig.from_dict(a) for a in raw.get("agents", [])]
+    agents = [
+        _parse_agent_at(index, entry)
+        for index, entry in enumerate(raw.get("agents", []))
+    ]
     conversations = [
         ConversationConfig.from_dict(c) for c in raw.get("conversations", [])
     ]
@@ -1076,6 +1130,28 @@ def _parse_config(raw: dict) -> SKAgentConfig:
         qdrant=QdrantConfig.from_dict(raw.get("qdrant")),
         sampling=SamplingConfig.from_dict(raw.get("sampling")),
     )
+
+
+def _parse_agent_at(index: int, entry: Any) -> AgentConfig:
+    """Parse one agent entry; a rejected entry becomes an inert placeholder.
+
+    The placeholder keeps the id (when it has one) so resolution still finds
+    it and ``call_agent`` can refuse THAT agent by name — the alternative,
+    dropping it, would make the caller's explicit ``agent`` parameter fall
+    through to the default agent and silently answer with a different agent.
+    """
+    try:
+        return AgentConfig.from_dict(entry)
+    except ValueError as exc:
+        agent_id = entry.get("id") if isinstance(entry, dict) else None
+        log.error(
+            "agents[%d] '%s' rejected: %s — this agent will refuse calls; "
+            "the other agents stay callable",
+            index,
+            agent_id,
+            exc,
+        )
+        return AgentConfig(id=agent_id or "", config_error=str(exc))
 
 
 def save_config(config: SKAgentConfig, path: str | None = None) -> None:
