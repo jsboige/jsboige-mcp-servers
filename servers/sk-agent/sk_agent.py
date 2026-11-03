@@ -48,12 +48,14 @@ import asyncio
 import base64
 import faulthandler
 import functools
+import html
 import json
 import logging
 import math
 import mimetypes
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -378,6 +380,25 @@ _IMAGE_EXTENSIONS = {
 }
 _VIDEO_EXTENSIONS = {".mp4", ".avi", ".mov", ".mkv", ".webm", ".flv", ".wmv"}
 _DOCUMENT_EXTENSIONS = {".pdf", ".ppt", ".pptx", ".doc", ".docx", ".xls", ".xlsx"}
+# Text source channel (vllm#205 gesture b): local text files whose content is
+# injected verbatim into the prompt — a corpus channel for callers who would
+# otherwise re-type kilobytes of log/code inline. Not a media attachment.
+_TEXT_SOURCE_EXTENSIONS = {
+    ".txt", ".log", ".md", ".csv", ".tsv", ".json", ".jsonl",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".xml", ".sql",
+    ".py", ".ps1", ".sh", ".bash", ".bat", ".cmd",
+    ".js", ".ts", ".mjs", ".cjs", ".c", ".h", ".cpp", ".hpp", ".cs",
+    ".go", ".rs", ".java", ".rb", ".php", ".html", ".css",
+}
+# Default injection cap: 100K chars ≈ 25K tokens — the mini tier this channel
+# primarily serves cannot absorb more, and a caller with a bigger model raises
+# the cap per call via options.source_max_chars (hard ceiling below).
+_SOURCE_FILE_DEFAULT_MAX_CHARS = 100_000
+_SOURCE_FILE_ABSOLUTE_MAX_CHARS = 2_000_000
+# A UTF-8 character is at most 4 bytes: this is the byte envelope of the
+# largest admissible cap, checked with getsize() BEFORE any read so a
+# multi-GB log is never pulled into RAM.
+_SOURCE_FILE_READ_CEILING_BYTES = _SOURCE_FILE_ABSOLUTE_MAX_CHARS * 4
 
 
 def file_uri_to_path(uri: str) -> str:
@@ -467,6 +488,94 @@ def validate_attachment(path: str) -> tuple[bool, str]:
     return True, ""
 
 
+def prepare_source_file(
+    source_file: str, max_chars: int | None = None
+) -> tuple[str, dict[str, Any]]:
+    """Read a local text file and wrap it as prompt-injectable source material.
+
+    Text channel for large corpora (vllm#205 gesture b): the caller passes a
+    file path instead of re-typing kilobytes of log/code into the prompt. The
+    content is injected VERBATIM between explicit ``<source_file>`` delimiters
+    so the agent can quote from it — it is data to read, never instructions to
+    follow. The delimiters carry a per-call nonce, so a corpus that quotes the
+    closing tag cannot end the block early.
+
+    Returns ``(prompt_block, echo)`` where ``prompt_block`` starts with a blank
+    line and is meant to be appended to the prompt, and ``echo`` describes what
+    was injected (path, char count, truncated flag) for the tool response.
+
+    Raises ValueError on: a transport other than stdio, a missing file, an
+    unsupported extension, the agent configuration file, a file above the read
+    ceiling, or an invalid cap.
+    """
+    # Gate 1 — transport. streamable-http is reachable by any holder of the
+    # shared Bearer (OpenWebUI users, bots) and grants them no filesystem
+    # access to this host; source_file must not become a host-filesystem read
+    # primitive there. On stdio the caller already has the same user's
+    # filesystem, so the channel gives no privilege it did not already have.
+    if _transport_mode != "stdio":
+        raise ValueError(
+            f"source_file is only available over the stdio transport "
+            f"(current: {_transport_mode}). Pass the text inline instead."
+        )
+
+    path = Path(source_file)
+    if not path.is_file():
+        raise ValueError(f"Source file not found: {source_file}")
+
+    # Gate 2 — the agent configuration file holds the per-model API keys.
+    # Refused even on stdio: a prompt-injected agent could otherwise push them
+    # into a cloud-hosted model. resolve() on both sides so a relative path or
+    # a symlink aimed at it is caught too.
+    try:
+        resolved = path.resolve()
+        config_resolved = Path(CONFIG_PATH).resolve()
+    except OSError:
+        resolved, config_resolved = None, None
+    if resolved is not None and resolved == config_resolved:
+        raise ValueError(
+            "Refusing to read the sk-agent configuration file: it holds the "
+            "per-model API keys."
+        )
+
+    ext = path.suffix.lower()
+    if ext not in _TEXT_SOURCE_EXTENSIONS:
+        supported = ", ".join(sorted(_TEXT_SOURCE_EXTENSIONS))
+        raise ValueError(
+            f"Unsupported source file extension '{ext}'. "
+            f"Text channel supports: {supported}"
+        )
+    cap = _SOURCE_FILE_DEFAULT_MAX_CHARS if max_chars is None else max_chars
+
+    # Gate 3 — size BEFORE reading. Reading first and truncating after would
+    # pull a multi-GB log into RAM; the ceiling is the byte envelope of the
+    # largest admissible cap.
+    size_bytes = path.stat().st_size
+    if size_bytes > _SOURCE_FILE_READ_CEILING_BYTES:
+        raise ValueError(
+            f"Source file is {size_bytes} bytes, above the "
+            f"{_SOURCE_FILE_READ_CEILING_BYTES}-byte read ceiling. Pre-trim "
+            f"the file or raise source_max_chars."
+        )
+
+    # newline="" keeps CRLF/LF exactly as they sit in the file — a corpus
+    # quoted from this block must diff byte-identical against grep oracles.
+    with open(path, "r", encoding="utf-8-sig", errors="replace", newline="") as fh:
+        content = fh.read()
+    total_chars = len(content)
+    truncated = total_chars > cap
+    if truncated:
+        content = content[:cap] + f"\n… [truncated — first {cap} of {total_chars} chars]"
+    nonce = secrets.token_hex(4)
+    block = (
+        f'\n\n<source_file id="{nonce}" path="{html.escape(source_file)}" '
+        f'chars="{total_chars}" truncated="{str(truncated).lower()}">\n'
+        f'{content}\n</source_file id="{nonce}">'
+    )
+    echo = {"path": str(path), "chars": total_chars, "truncated": truncated}
+    return block, echo
+
+
 # ---------------------------------------------------------------------------
 # Image/Media Processing Helpers
 # ---------------------------------------------------------------------------
@@ -548,7 +657,8 @@ def build_call_agent_description(config: SKAgentConfig) -> str:
             "  prompt: The question or instruction",
             "  agent: Agent ID (default: auto-select based on attachment type)",
             "  attachment: File path or URL (image, video, PDF, PPTX, DOCX, XLSX)",
-            "  options: JSON string with type-specific params: region ({\"x\":0,\"y\":0,\"width\":100,\"height\":100}), mode (auto/visual/text/hybrid), max_pages, page_range, num_frames",
+            "  source_file: Local text file (log, md, py, ps1, json, ...) injected verbatim into the prompt between <source_file> delimiters — the large-corpus channel. STDIO TRANSPORT ONLY (refused over streamable-http: a remote caller has no host filesystem access); the agent configuration file and files above the size ceiling are refused; cap via options {\"source_max_chars\": N} (default 100000, ceiling 2000000), response echoes {path, chars, truncated}",
+            "  options: JSON string with type-specific params: region ({\"x\":0,\"y\":0,\"width\":100,\"height\":100}), mode (auto/visual/text/hybrid), max_pages, page_range, num_frames, source_max_chars",
             "  conversation_id: Continue previous conversation",
             "  include_steps: Show intermediate tool/reasoning steps",
             "  model_override: Model ID to use instead of agent default (must be enabled)",
@@ -2895,6 +3005,7 @@ async def call_agent(
     system_prompt: str = "",
     mcp_overrides: str = "",
     agent_spec: str = "",
+    source_file: str = "",
 ) -> str:
     """Send a prompt to an AI agent.
 
@@ -2906,7 +3017,17 @@ async def call_agent(
         agent: Agent ID (default: auto-select based on attachment type).
         attachment: File path, URL, or JSON array of paths (image, video, PDF, PPTX, DOCX, XLSX).
                    For multiple images: '["path1.png", "path2.png"]'
-        options: JSON string with type-specific params (region, mode, max_pages, page_range, num_frames).
+        source_file: Local text file (log, md, py, ps1, json, ...) whose content is
+                   injected VERBATIM into the prompt between <source_file> delimiters —
+                   the large-corpus channel (vllm#205): pass the file instead of
+                   re-typing kilobytes inline. STDIO TRANSPORT ONLY: refused over
+                   streamable-http, where the caller is remote and has no host
+                   filesystem. The agent configuration file (per-model api_key) and
+                   files above the size ceiling are refused. Default cap 100K chars;
+                   raise per call via options {"source_max_chars": N} (ceiling 2M).
+                   The response echoes {path, chars, truncated}.
+        options: JSON string with type-specific params (region, mode, max_pages, page_range, num_frames,
+                 source_max_chars for the source_file channel).
         conversation_id: Continue previous conversation.
         include_steps: Show intermediate tool/reasoning steps.
         timeout: Max seconds to wait for response (default 120, 0 = no limit).
@@ -2956,6 +3077,38 @@ async def call_agent(
         except json.JSONDecodeError:
             return json.dumps({"error": "Invalid options JSON"}, ensure_ascii=False)
 
+    # Text source channel (vllm#205 gesture b): pop the cap override before
+    # opts reaches the manager — it is a wrapper-level concern, not a
+    # type-specific media param. Reject bools explicitly: JSON `true` coerces
+    # to 1 in isinstance(x, int) and would silently cap at one char.
+    source_cap: int | None = None
+    if "source_max_chars" in opts:
+        raw_cap = opts.pop("source_max_chars")
+        if isinstance(raw_cap, bool) or not isinstance(raw_cap, int) or raw_cap < 1:
+            return json.dumps(
+                {"error": "Invalid source_max_chars: must be an integer >= 1"},
+                ensure_ascii=False,
+            )
+        if raw_cap > _SOURCE_FILE_ABSOLUTE_MAX_CHARS:
+            return json.dumps(
+                {
+                    "error": (
+                        f"source_max_chars exceeds the server ceiling of "
+                        f"{_SOURCE_FILE_ABSOLUTE_MAX_CHARS}"
+                    )
+                },
+                ensure_ascii=False,
+            )
+        source_cap = raw_cap
+
+    source_echo = None
+    if source_file:
+        try:
+            block, source_echo = prepare_source_file(source_file, source_cap)
+        except ValueError as exc:
+            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+        prompt = prompt + block
+
     # Parse mcp_overrides
     parsed_mcp_overrides = None
     if mcp_overrides:
@@ -2993,6 +3146,8 @@ async def call_agent(
         mcp_overrides=parsed_mcp_overrides,
         agent_spec=parsed_agent_spec,
     )
+    if source_echo is not None and isinstance(result, dict):
+        result.setdefault("source_file", source_echo)
     return json.dumps(result, ensure_ascii=False)
 
 
