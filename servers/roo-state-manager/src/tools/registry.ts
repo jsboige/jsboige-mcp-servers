@@ -23,6 +23,7 @@ import { getToolTimeoutMs } from '../config/tool-timeouts.js';
 import { formatErrorForLog } from '../utils/error-format.js';
 import { getServerCapabilities, type Capability } from '../utils/server-capabilities.js';
 import { resolveFullConversationSkeleton, hydrateTier3SkeletonFromCache } from '../utils/server-helpers.js';
+import { ensureBackfillMarkersFresh } from '../services/unified-store/pg-backfill-marker.js';
 
 // 511396f0: Lazy-loaded heavy modules — these pull deep ESM dependency chains
 // (roo-storage-detector → glob, cache-manager, skeleton-*; background-services → task-indexer, etc.)
@@ -153,6 +154,23 @@ export function registerCallToolHandler(
                     }],
                     isError: true,
                 };
+            }
+        }
+
+        // #4131 Phase D — a cold host (one-shot `claude -p`, fresh MCP spawn)
+        // can receive its first write before initializeBackfillMarkers()
+        // resolves: the PRIMARY gates then read the marker as 'unknown' and the
+        // write lands on the G: files instead of PG (measured on ai-01, 03/11
+        // 04:35:18Z and 05:28:34Z — two sends from hosts started that second).
+        // Reads already await the marker (roosync-channel-read.ts) and so does
+        // the send CLI (#1624); this closes the tool path. Warm host: a
+        // synchronous check. Cold host: one lookup bounded at 3 s, joined with
+        // the startup one. A failure leaves the gates on their cached answer.
+        if (requiredCaps?.includes('sharedPath')) {
+            try {
+                await ensureBackfillMarkersFresh();
+            } catch (error) {
+                registryLogger.warn('[backfill-marker] pre-dispatch refresh failed — gates keep their cached answer', formatErrorForLog(error));
             }
         }
 
