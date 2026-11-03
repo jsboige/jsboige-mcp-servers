@@ -353,7 +353,16 @@ const ENV_DETAILS_MARKER = /<environment_details>|# VSCode Visible Files|# VSCod
 // The gap allows 0-4 chars, not `\s*`: a serialized copy separates `</slug>`
 // from `<name>` with a LITERAL backslash-n (2 chars, not whitespace), and that
 // shape is a real mode block measured in the 0.9 % exposure.
-const MODE_PROMPT_MARKER = /<slug>[^<]{0,60}<\/slug>[\s\S]{0,4}<name>|<name>[^<]{0,60}<\/name>[\s\S]{0,80}<model>[^<]{0,60}<\/model>/;
+// The name+model alternative carries the same trap (merge 786c84d6, ai-01
+// 03/11): unanchored, it matched prose citing both tags in one sentence —
+// « Le prompt declare <name>Code Simple</name> et <model>glm-4.7</model> ».
+// Its anchor is the line break before `<name>`: in every measured envelope
+// `<name>` starts a line, raw (`\n`) in live text or literal (`\n`, `\r\n`)
+// inside a serialized copy. Mid-sentence prose has no break there and stays
+// unclassified. Named residual: prose that happens to start a line with the
+// two complete tags still matches — quoting a whole envelope line is
+// indistinguishable from an envelope, same trade as the slug pair above.
+const MODE_PROMPT_MARKER = /<slug>[^<]{0,60}<\/slug>[\s\S]{0,4}<name>|(?:\\r?\\n|\r?\n)[\t ]*<name>[^<]{0,60}<\/name>[\s\S]{0,80}<model>[^<]{0,60}<\/model>/;
 // Density thresholds per 100 chars of the first 2000, measured on the live
 // pools: prose stays far below either of them.
 const JSON_ESCAPED_QUOTES_PER_100 = 1;

@@ -3381,6 +3381,16 @@ describe('#4352 machine-output de-rank', () => {
 		expect(classifyMachineOutput('message_exchange', 'On a decide de renommer le mode <slug>debug-complex</slug> en debug-deep, voir #3766.')).toBeNull();
 	});
 
+	// Follow-up (merge 786c84d6, ai-01 03/11): the SAME prose trap on the other
+	// alternative — a sentence quoting BOTH tags in-line matched the unanchored
+	// name+model pair. The anchor: in every measured envelope `<name>` starts a
+	// line (raw break, or literal \n / \r\n in a serialized copy), so prose that
+	// cites the tags mid-sentence has no break before `<name>` and stays prose.
+	test('#2609 decision prose quoting both name and model tags stays prose', () => {
+		expect(classifyMachineOutput('message_exchange', 'Le prompt declare <name>Code Simple</name> et <model>glm-4.7</model> : a garder tel quel.')).toBeNull();
+		expect(classifyMachineOutput('message_exchange', 'On garde le couple <name>Code Simple</name> avec <model>glm-4.7</model>, inchangé pour cette lane.')).toBeNull();
+	});
+
 	test('#2609 rejects the broad predicates: escaped instructions and padded listings stay prose', () => {
 		// 1.5 escaped newlines per 100 chars — the measured shape that the
 		// rejected predicate dropped along with a real decision passage.
