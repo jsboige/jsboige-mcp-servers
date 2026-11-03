@@ -4192,7 +4192,7 @@ CONTEXTE : Le dashboard contient un STATUT et des MESSAGES INTERCOM, qui jouent 
 
 Les messages les plus anciens vont être archivés. Ta mission : faire ÉVOLUER le statut en HÉRITANT de l'ancien et en y intégrant ce qui a valeur durable dans les messages [SERA ARCHIVÉ]. Tu ne réécris PAS depuis zéro.
 
-La taille du statut est gérée ailleurs — préfère un statut un peu plus volumineux à la perte d'informations historiques importantes. Le fine détail des cycles reste dans les messages (eux-mêmes condensés en cascade).
+La taille du statut est bornée par le BUDGET PAR SECTION ci-dessous : condense À L'INTÉRIEUR d'une section plutôt que de la couper — une section complète et dense vaut mieux qu'une section tronquée. Le fine détail des cycles reste dans les messages (eux-mêmes condensés en cascade).
 
 RÈGLE ABSOLUE — LAST-KNOWN-STATE WINS (#1502) :
 Pour CHAQUE sujet (machine, service, tâche), SEUL le dernier état connu doit apparaître.
@@ -4241,6 +4241,22 @@ Format : "- **entité** : état (source: [date])"
 
 ### Patterns appris
 [Anti-patterns identifiés, conventions établies, leçons consolidées — mémoire durable du projet]
+
+BUDGET PAR SECTION (#4434) — LIMITE STRICTE : la sortie doit tenir dans ~600 mots (~4 200 caractères) HORS lignes de blocage :
+- Résumé : ≤ 40 mots
+- État des systèmes : ≤ 100 mots (une ligne par entité, dernier état connu)
+- Décisions actées : ≤ 90 mots
+- Blocages structurels : PAS de plafond de mots — RECOPIE une ligne par blocage actif du statut précédent (même sujet, même date de vérification, format « … [vérifié JJ/MM HH:MMZ] »), détail condensé à ≤ 25 mots par ligne ; cette section PEUT dépasser le budget sans limite. Une ligne de blocage ne disparaît jamais silencieusement : elle ne sort que si un message la réfute ou la clôt, et dans ce cas elle RESTE, marquée « REFUTE <date> » (réfutation citée) ou « RÉSOLU <date> »
+- Livrables récents : ≤ 55 mots (synthèse par thème)
+- En cours : ≤ 60 mots
+- Métriques de référence : ≤ 85 mots
+- Patterns appris : ≤ 55 mots
+Règles du budget :
+- Avant d'écrire, ESTIME le total prévu ; s'il dépasse le budget, condense davantage AVANT de commencer — un dépassement en cours de rédaction ne se rattrape pas.
+- Les 8 sections apparaissent TOUJOURS, dans cet ordre, CHACUNE COMPLÈTE — jamais une section omise, jamais une section coupée en cours de rédaction.
+- Pour tenir un budget : condense DANS la section (fusionner les entrées, garder le dernier état, chasser le détail tactique) — jamais supprimer la section ni son titre.
+- Les lignes de blocage ne se rognent JAMAIS pour tenir le budget : chaque blocage actif garde SA ligne et sa date — compense en condensant les autres sections.
+- En cas de tension : « Patterns appris » et « Métriques de référence » ne sont JAMAIS sacrifiées — rogne « Résumé » et « Livrables récents » d'abord.
 
 INTERDIT :
 - Réécrire le statut comme si l'ancien n'existait pas (HÉRITER ET ENRICHIR)
