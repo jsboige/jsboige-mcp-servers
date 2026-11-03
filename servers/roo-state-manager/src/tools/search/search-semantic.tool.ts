@@ -329,18 +329,36 @@ export function requestFormFactor(content: string): { factor: number; applied: b
 // Rollback / A-B: SEMANTIC_MACHINE_OUTPUT_MALUS=0.
 const MACHINE_OUTPUT_MALUS_FACTOR = 0.85;
 const TOOL_RESULT_MARKER = /^\s*\[(?:tool_result|[a-z_]+(?: for [^\]]{0,200})?)\] Result:/;
-const ENV_DETAILS_MARKER = /<environment_details>|# VSCode Visible Files|# VSCode Open Tabs/;
+const ENV_DETAILS_MARKER = /<environment_details>|# VSCode Visible Files|# VSCode Open Tabs|# Current Workspace Directory/;
+// #2609 (measured 2026-11-03) — Roo mode prompts are indexed as ordinary
+// `message_exchange` text, so they compete with human passages: on the registry
+// wording of scenario 4, four of the top-8 groups were prompt blocks (a mode XML
+// header + workspace listing, a padded session listing, two escaped
+// custom-instruction fragments) and the classifier returned null for them.
+// Detected by ENVELOPE only, never by vocabulary (RX133). Exposure measured on
+// the population that can steal a passage slot (>=100 chars, currently
+// unclassified, n=1500): this marker matched 0.9 % and every match was a real
+// mode block. Two broader candidates were measured and REJECTED —
+// escaped-newline density reached 7.5 % and dropped a genuine decision passage
+// ("Le « ~28 Go/j » qui a fondé la priorité"), column padding reached 5.3 % and
+// matched code and log blobs. The fragments that carry neither envelope stay
+// unclassified on purpose: a residual named here beats a broad rule that
+// silently eats passages.
+const MODE_PROMPT_MARKER = /<slug>[\s\S]{0,80}<\/slug>|<name>[^<]{0,60}<\/name>[\s\S]{0,80}<model>[^<]{0,60}<\/model>/;
 // Density thresholds per 100 chars of the first 2000, measured on the live
 // pools: prose stays far below either of them.
 const JSON_ESCAPED_QUOTES_PER_100 = 1;
 const JSON_KEYS_PER_100 = 1.5;
 
-export type MachineOutputKind = 'tool_call' | 'tool_result' | 'env_details' | 'json_escaped' | 'json';
+export type MachineOutputKind = 'tool_call' | 'tool_result' | 'env_details' | 'mode_prompt' | 'json_escaped' | 'json';
 
 export function classifyMachineOutput(chunkType: unknown, content: string): MachineOutputKind | null {
     if (chunkType === 'tool_interaction') return 'tool_call';
     if (TOOL_RESULT_MARKER.test(content)) return 'tool_result';
     if (ENV_DETAILS_MARKER.test(content)) return 'env_details';
+    // Before the JSON-density rules: a serialized mode block carries escaped
+    // quotes too, and `mode_prompt` is the more specific of the two.
+    if (MODE_PROMPT_MARKER.test(content)) return 'mode_prompt';
     const head = content.slice(0, 2000);
     const per100 = (n: number) => n / Math.max(1, head.length / 100);
     if (per100((head.match(/\\"/g) || []).length) >= JSON_ESCAPED_QUOTES_PER_100) return 'json_escaped';
