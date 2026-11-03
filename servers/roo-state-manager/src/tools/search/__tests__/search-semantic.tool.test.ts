@@ -3348,12 +3348,96 @@ describe('#4352 machine-output de-rank', () => {
 		expect(classifyMachineOutput('message_exchange', 'Le champ "workspace": il manque sur un tiers des points, d\'où le filtre aveugle sur ces conversations anciennes.')).toBeNull();
 	});
 
+	// ---------------------------------------------------------------
+	// #2609 (measured 2026-11-03): mode prompts are indexed as ordinary
+	// message_exchange text and competed with human passages.
+	// ---------------------------------------------------------------
+	const MODE_BLOCK = 'Current Mode\n<slug>code-simple</slug>\n<name>💻 Code Simple</name>\n<model>glm-4.7</model>\n<tool_format>native</tool_format>';
+	// The exact residual the broad predicates were rejected for: escaped
+	// custom-instruction text with no mode envelope does NOT classify.
+	const ESCAPED_INSTRUCTIONS = '...PERSISTANCE DES DÉCISIONS:\\n   - Documente les décisions prises dans un format standardisé\\n   - Format: [DÉCISION] Description: Justification [/DÉCISION]\\n   - Réfère-toi à ces décisions avant de poser de nouvelles questions';
+
+	test('a mode prompt envelope classifies as mode_prompt, its environment listing stays env_details', () => {
+		expect(classifyMachineOutput('message_exchange', MODE_BLOCK)).toBe('mode_prompt');
+		// Serialized copy (json-escaped too): the more specific kind wins.
+		expect(classifyMachineOutput('message_exchange', ' "snippet": " Current Mode\\n<slug>code</slug>\\n<name>💻 Code</name>\\n<model>glm-4.7</model>')).toBe('mode_prompt');
+		// The workspace listing is an environment block, not a prompt envelope:
+		// env_details already owns it and keeps precedence.
+		expect(classifyMachineOutput('message_exchange', '/slug>\n<name>❓ Ask</name>\n<model>glm-4.7</model>\n# Current Workspace Directory (g:/x) Files\n.env\ndocker-compose.yml')).toBe('env_details');
+		expect(classifyMachineOutput('message_exchange', 'Contexte.\n# Current Workspace Directory (g:/x) Files\n.env')).toBe('env_details');
+	});
+
+	test('a tool result that quotes a mode prompt stays a tool result', () => {
+		expect(classifyMachineOutput('message_exchange', '[tool_result] Result: ' + MODE_BLOCK)).toBe('tool_result');
+	});
+
+	// Review f6ab8548 (myia-ai-01, 03/11): decision prose that QUOTES a complete
+	// slug pair must stay prose — under exclude_tool_results a match here is a
+	// pure removal, and it also costs passage-slot eligibility, two paths the
+	// malus rollback does not cover. Both sentences are the coordinator's
+	// measured examples: red on the head that matched them.
+	test('#2609 decision prose quoting a complete slug pair stays prose', () => {
+		expect(classifyMachineOutput('message_exchange', 'Le champ <slug>code-simple</slug> du fichier .roomodes ne doit pas etre modifie : c est la source.')).toBeNull();
+		expect(classifyMachineOutput('message_exchange', 'On a decide de renommer le mode <slug>debug-complex</slug> en debug-deep, voir #3766.')).toBeNull();
+	});
+
+	test('#2609 rejects the broad predicates: escaped instructions and padded listings stay prose', () => {
+		// 1.5 escaped newlines per 100 chars — the measured shape that the
+		// rejected predicate dropped along with a real decision passage.
+		expect(classifyMachineOutput('message_exchange', ESCAPED_INSTRUCTIONS)).toBeNull();
+		// Column-padded code blob (the other rejected candidate): it is NOT a
+		// mode prompt — the JSON density rule already owns it.
+		expect(classifyMachineOutput('message_exchange', 'return { 235 | "name": self.name, 236 | "logic_type": self.logic_type, 237 | "description": value }')).not.toBe('mode_prompt');
+		// The padded session listing (measured shape) stays the documented
+		// residual: no envelope, so it remains unclassified on purpose.
+		expect(classifyMachineOutput('message_exchange', 'code-simple          019d4094   14 REGLE ABSOLUE: JAMAIS demander a l\'utilisateur, JAMAIS poser de\n                question, JAMAIS demander confirmation')).toBeNull();
+		// Prose that merely NAMES a mode or a tag is still prose.
+		expect(classifyMachineOutput('message_exchange', 'Le mode code-simple a été choisi pour cette tâche, avec <name> et <model> mentionnés en clair dans la décision.')).toBeNull();
+		expect(classifyMachineOutput('message_exchange', PROSE)).toBeNull();
+	});
+
+	test('a mode prompt is de-ranked and reported under its own kind', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.84, payload: { task_id: 'task-mode', chunk_type: 'message_exchange', role: 'system', content: MODE_BLOCK, host_os: 'h1' } },
+			{ score: 0.78, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', role: 'assistant', content: PROSE, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'décision de cycle' },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results[0].taskId).toBe('task-prose');
+		expect(parsed.results[1].best_score).toBeCloseTo(0.84 * 0.85, 8);
+		expect(parsed.current_machine.machine_output_malus.by_kind).toEqual({ mode_prompt: 1 });
+	});
+
+	test('a mode prompt leaves the page under exclude_tool_results', async () => {
+		mockQdrantClient.search.mockResolvedValue([
+			{ score: 0.9, payload: { task_id: 'task-mode', chunk_type: 'message_exchange', content: MODE_BLOCK + ' padding to stay above the passage floor of one hundred characters.' }, host_os: 'h1' },
+			{ score: 0.8, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', content: PROSE, host_os: 'h1' } }
+		]);
+
+		const result = await searchTasksByContentTool.handler(
+			{ search_query: 'décision de cycle', exclude_tool_results: true },
+			makeCache(),
+			mockEnsureCache,
+			defaultFallback
+		);
+
+		const parsed = JSON.parse(getTextContent(result));
+		expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-prose']);
+		expect(parsed.current_machine.recall_budget.excluded_by_machine_output).toBe(1);
+	});
+
 	test('tool result de-ranked below the prose passage that explains it', async () => {
 		mockQdrantClient.search.mockResolvedValue([
 			{ score: 0.82, payload: { task_id: 'task-tool', chunk_type: 'message_exchange', role: 'user', content: CLAUDE_TOOL_RESULT, host_os: 'h1' } },
 			{ score: 0.78, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', role: 'assistant', content: PROSE, host_os: 'h1' } }
 		]);
-
 		const result = await searchTasksByContentTool.handler(
 			{ search_query: 'disque D sous cinq pour cent' },
 			makeCache(),
