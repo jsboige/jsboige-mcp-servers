@@ -38,14 +38,15 @@ Agents are the central abstraction. Each agent has:
 
 ### Core Tools
 
-#### `call_agent(prompt, agent?, attachment?, options?, conversation_id?, include_steps?, model_override?, system_prompt?, mcp_overrides?, agent_spec?)`
+#### `call_agent(prompt, agent?, attachment?, options?, conversation_id?, include_steps?, model_override?, system_prompt?, mcp_overrides?, agent_spec?, source_file?)`
 
 Unified agent invocation. Routes to the right agent based on content type.
 
 - `prompt`: Question or instruction
 - `agent`: Agent ID (default: auto-select based on attachment)
 - `attachment`: File path or URL (image, video, PDF, PPTX, DOCX, XLSX)
-- `options`: JSON string with type-specific params (`region`, `mode`, `max_pages`, `page_range`, `num_frames`)
+- `source_file`: Local **text** file (`.log`, `.md`, `.py`, `.ps1`, `.json`, …) whose content is injected **verbatim** into the prompt between `<source_file>` delimiters — the large-corpus channel (vllm#205): pass the file instead of re-typing kilobytes inline. Local files only, no URL. Default cap 100K chars (~25K tokens — sized for the mini tier), raised per call via `options.source_max_chars` (hard ceiling 2M chars). The response echoes `{path, chars, truncated}`; a truncated block carries an in-prompt marker so the agent knows it saw a prefix.
+- `options`: JSON string with type-specific params (`region`, `mode`, `max_pages`, `page_range`, `num_frames`, `source_max_chars`)
 - `conversation_id`: Continue previous conversation
 - `include_steps`: Show intermediate tool/reasoning steps
 - `agent_spec`: JSON string composing an agent à la carte (#3407) — model + prompt + capabilities + tools + execution, optionally specializing a preset via `extends`. Precedence per dimension: call-level override > spec > preset > server default. Only server-configured models/MCPs may be referenced; anything else is refused, as are vision-requirement violations and attempts to widen tool-enabling parameters (`github_tools`). The response carries `effective_config` (no secrets).
@@ -498,7 +499,7 @@ Purged (dead): `omnicoder-9b` + `owui-omnicoder-9b` (GPU 2 freed 30/04), `owui-g
 
 ### Mini tier presets (4) — delegate the mechanical work
 
-Each preset states in its own `description` what the calling agent may hand over, and that **source code goes in the prompt** (sk-agent attachments accept office/media only — `.py`/`.ps1` are refused). All four run `frognano-4b` (no-thinking) and carry the economy rule (#63).
+Each preset states in its own `description` what the calling agent may hand over, and that **source code goes in the prompt** (sk-agent *attachments* accept office/media only — `.py`/`.ps1` are refused; hand code over as a `source_file`, which injects the content verbatim, instead). All four run `frognano-4b` (no-thinking) and carry the economy rule (#63).
 
 | ID | Tools | What to delegate | Budget floor |
 |----|-------|------------------|--------------|
@@ -543,7 +544,7 @@ debugging plugin wiring, not for a per-agent inventory.
 **Known limits.**
 
 - **Vision is local-only** — the hub strips images (#794).
-- **Attachments accept office/media only** — `.py`/`.ps1` are refused; source code goes in the prompt (the mini presets enforce this).
+- **Attachments accept office/media only** — `.py`/`.ps1` are refused as attachments; text corpora go through the `source_file` channel (verbatim prompt injection, capped) or inline in the prompt (the mini presets enforce this).
 - **Thinking doubles latency** on Swift models — prefer the `-no-thinking` variants (`coder`, `fast`, `fast-local`) unless reasoning is needed.
 - **Timeouts and budgets** follow the timeout chain (#3797) and per-model budget overrides; the mini-tier budget floor is 4096 tokens (#4107).
 - **Usage telemetry** (`usage.jsonl`) records tool, duration, agent and model — never content (ms#1387, ms#1612).
