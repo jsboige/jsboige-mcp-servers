@@ -3,10 +3,14 @@ import { rebuildAndRestart } from '../../../src/tools/rebuild-and-restart.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-// #4149 (famille ms#1630) : la frontière est execFile (argv sans shell).
+// #4149 (famille ms#1630) : le touch est execFile argv sans shell ; le build
+// reste exec sur une chaîne CONSTANTE (CVE-2024-27980 : Node refuse de spawner
+// un .cmd/.bat sans shell — execFile('npm.cmd', …) lève spawn EINVAL).
 vi.mock('child_process', () => {
+    const mockExec = vi.fn();
     const mockExecFile = vi.fn();
     return {
+        exec: mockExec,
         execFile: mockExecFile,
     };
 });
@@ -33,6 +37,7 @@ vi.mock('path', async () => {
 const TOUCH_SCRIPT = '(Get-Item -LiteralPath $env:RSM_TOUCH_PATH).LastWriteTime = Get-Date';
 
 describe('rebuild_and_restart_mcp Tool', () => {
+    let mockExec: any;
     let mockExecFile: any;
     let mockReadFile: any;
     let mockAccess: any;
@@ -44,6 +49,7 @@ describe('rebuild_and_restart_mcp Tool', () => {
         const fsPromises = await vi.importMock('fs/promises');
         const pathModule = await vi.importMock('path');
 
+        mockExec = childProcess.exec;
         mockExecFile = childProcess.execFile;
         mockReadFile = fsPromises.readFile;
         mockAccess = fsPromises.access;
@@ -54,6 +60,14 @@ describe('rebuild_and_restart_mcp Tool', () => {
         // #4006: rebuild exige un package.json au chemin résolu — présent par
         // défaut pour garder la sémantique des tests legacy.
         mockAccess.mockResolvedValue(undefined);
+
+        // Défauts : build via exec (chaîne constante), touch via execFile argv.
+        mockExec.mockImplementation((_cmd: string, _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
+            cb(null, 'Build output', '');
+        });
+        mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
+            cb(null, 'Touched', '');
+        });
 
         // Mock par défaut pour readFile
         mockReadFile.mockResolvedValue(JSON.stringify({
@@ -79,34 +93,17 @@ describe('rebuild_and_restart_mcp Tool', () => {
     });
 
     it('should rebuild and restart MCP with watchPaths', async () => {
-        // Dispatch argv : npm build et touch powershell, sans shell intermédiaire.
-        mockExecFile.mockImplementation((file: string, args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
-            const a = args ?? [];
-            if (String(file).includes('npm') && a[0] === 'run' && a[1] === 'build') {
-                cb(null, 'Build output', '');
-            } else if (file === 'powershell.exe') {
-                cb(null, 'Touched', '');
-            }
-        });
-
         const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
 
         expect(result.content[0].text).toContain('Build for "test-mcp" successful');
         expect(result.content[0].text).toContain('targeted restart via watchPaths');
-        expect(mockExecFile).toHaveBeenCalledWith(expect.stringContaining('npm'), ['run', 'build'], expect.objectContaining({ cwd: '/path/to/test-mcp', windowsHide: true, timeout: 120_000 }), expect.any(Function));
+        // Le build voyage par exec — ligne CONSTANTE, mcpPath passe par cwd
+        // uniquement (CVE-2024-27980 : pas de .cmd spawne sans shell).
+        expect(mockExec).toHaveBeenCalledWith('npm run build', expect.objectContaining({ cwd: '/path/to/test-mcp', windowsHide: true, timeout: 120_000 }), expect.any(Function));
         expect(mockExecFile).toHaveBeenCalledWith('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', TOUCH_SCRIPT], expect.objectContaining({ windowsHide: true, timeout: 15_000 }), expect.any(Function));
     });
 
     it('should fallback to global restart when watchPaths is missing', async () => {
-        mockExecFile.mockImplementation((file: string, args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
-            const a = args ?? [];
-            if (String(file).includes('npm') && a[0] === 'run' && a[1] === 'build') {
-                cb(null, 'Build output', '');
-            } else if (file === 'powershell.exe') {
-                cb(null, 'Touched', '');
-            }
-        });
-
         const result = await rebuildAndRestart.handler({ mcp_name: 'mcp-without-watchpaths' });
 
         expect(result.content[0].text).toContain('global restart as fallback');
@@ -114,19 +111,10 @@ describe('rebuild_and_restart_mcp Tool', () => {
     });
 
     it('should handle MCP with options.cwd', async () => {
-        mockExecFile.mockImplementation((file: string, args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
-            const a = args ?? [];
-            if (String(file).includes('npm') && a[0] === 'run' && a[1] === 'build') {
-                cb(null, 'Build output', '');
-            } else if (file === 'powershell.exe') {
-                cb(null, 'Touched', '');
-            }
-        });
-
         const result = await rebuildAndRestart.handler({ mcp_name: 'mcp-with-options-cwd' });
 
         expect(result.content[0].text).toContain('Build for "mcp-with-options-cwd" successful');
-        expect(mockExecFile).toHaveBeenCalledWith(expect.stringContaining('npm'), ['run', 'build'], expect.objectContaining({ cwd: '/path/to/mcp-with-options-cwd', windowsHide: true, timeout: 120_000 }), expect.any(Function));
+        expect(mockExec).toHaveBeenCalledWith('npm run build', expect.objectContaining({ cwd: '/path/to/mcp-with-options-cwd', windowsHide: true, timeout: 120_000 }), expect.any(Function));
     });
 
     it('should throw error when MCP not found', async () => {
@@ -137,11 +125,8 @@ describe('rebuild_and_restart_mcp Tool', () => {
     });
 
     it('should handle build failure', async () => {
-        mockExecFile.mockImplementation((file: string, args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
-            const a = args ?? [];
-            if (String(file).includes('npm') && a[0] === 'run' && a[1] === 'build') {
-                cb(new Error('Build failed'), '', '');
-            }
+        mockExec.mockImplementation((_cmd: string, _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
+            cb(new Error('Build failed'), '', '');
         });
 
         const result = await rebuildAndRestart.handler({ mcp_name: 'test-mcp' });
@@ -151,11 +136,8 @@ describe('rebuild_and_restart_mcp Tool', () => {
     });
 
     it('should handle touch file failure', async () => {
-        mockExecFile.mockImplementation((file: string, args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
-            const a = args ?? [];
-            if (String(file).includes('npm') && a[0] === 'run' && a[1] === 'build') {
-                cb(null, 'Build output', '');
-            } else if (file === 'powershell.exe') {
+        mockExecFile.mockImplementation((file: string, _args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
+            if (file === 'powershell.exe') {
                 cb(new Error('Touch failed'), '', '');
             }
         });

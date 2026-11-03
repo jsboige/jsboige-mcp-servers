@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import { join, dirname, basename } from 'path';
 import { existsSync, mkdirSync } from 'fs';
 import { createHash } from 'crypto';
-import { execSync } from 'child_process';
+import { execFileSync, execSync } from 'child_process';
 import { homedir } from 'os';
 import { ensureStoreSubdir } from '../utils/shared-state-path.js';
 import { ConfigNormalizationService } from './ConfigNormalizationService.js';
@@ -1105,10 +1105,15 @@ export class ConfigSharingService implements IConfigSharingService {
       if (options.generateModes !== false && !options.dryRun) {
         const generateModesPath = join(inventory.paths.rooExtensions, 'roo-config', 'scripts', 'generate-modes.js');
         if (existsSync(generateModesPath)) {
-          const command = `node "${generateModesPath}" --profile "${profile.name}" --deploy`;
-          this.logger.info(`Génération .roomodes: ${command}`);
+          // #4149 (famille ms#1630) : profile.name vient du fichier profils
+          // GDrive — un `"` dans le nom séparait l'argument dans la forme
+          // interpolée. argv sans shell : la valeur devient un littéral.
+          // process.execPath spawne node.exe directement : pas un .cmd, donc
+          // pas de spawn EINVAL (CVE-2024-27980).
+          const argv = [generateModesPath, '--profile', profile.name, '--deploy'];
+          this.logger.info(`Génération .roomodes: ${process.execPath} ${argv.join(' ')}`);
           try {
-            const output = execSync(command, {
+            const output = execFileSync(process.execPath, argv, {
               encoding: 'utf-8',
               cwd: inventory.paths.rooExtensions,
               timeout: 30000

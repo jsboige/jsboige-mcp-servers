@@ -8,7 +8,7 @@
  */
 
 import { z } from 'zod';
-import { execFile } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { randomBytes } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -761,11 +761,15 @@ export async function withEBUSYRetry<T>(
 }
 
 async function runNpmBuild(mcpPath: string): Promise<string> {
-    // #4149 (famille ms#1630) : argv sans shell — Windows : npm est npm.cmd.
-    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    // CVE-2024-27980 (mesuré ai-01 v24.14.1 / web2 v24.19.0) : depuis le fix,
+    // Node refuse de spawner un .cmd/.bat sans shell — execFile('npm.cmd', …)
+    // lève spawn EINVAL et `npm` nu rend ENOENT sur win32. La ligne de commande
+    // est une CONSTANTE et mcpPath ne voyage que par cwd : pas un site #4149,
+    // on garde la forme de main (exec). L'invariant est épinglé par test :
+    // jamais de .cmd/.bat via execFile sans shell.
     return withEBUSYRetry(
         () => new Promise<string>((resolve, reject) => {
-            execFile(npm, ['run', 'build'], { cwd: mcpPath, windowsHide: true }, (error, stdout) => {
+            exec('npm run build', { cwd: mcpPath, windowsHide: true }, (error, stdout) => {
                 if (error) {
                     reject(error);
                 } else {

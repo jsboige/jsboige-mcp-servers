@@ -13,6 +13,7 @@ const {
     mockWriteFile,
     mockAccess,
     mockUtimes,
+    mockExec,
     mockExecFile,
     mockCopyFile,
     mockUnlink,
@@ -21,6 +22,7 @@ const {
     mockWriteFile: vi.fn(),
     mockAccess: vi.fn(),
     mockUtimes: vi.fn(),
+    mockExec: vi.fn(),
     mockExecFile: vi.fn(),
     // #3988: staged write (writeMcpSettingsAtomic) — copyFile stage + unlink cleanup
     mockCopyFile: vi.fn(),
@@ -36,8 +38,10 @@ vi.mock('fs/promises', () => ({
     unlink: mockUnlink,
 }));
 
-// #4149 (famille ms#1630) : la frontière est execFile (argv sans shell).
+// #4149 (famille ms#1630) : le touch est execFile argv sans shell ; le build
+// reste exec sur une chaîne CONSTANTE (CVE-2024-27980 : pas de .cmd sans shell).
 vi.mock('child_process', () => ({
+    exec: mockExec,
     execFile: mockExecFile,
 }));
 
@@ -314,8 +318,12 @@ describe('roosync_mcp_management', () => {
 
     describe('action=rebuild', () => {
         it('rebuilds MCP with cwd', async () => {
-            mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
+            // Build via exec (chaîne constante), touch via execFile argv.
+            mockExec.mockImplementation((_cmd: string, _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
                 cb(null, 'Build successful', '');
+            });
+            mockExecFile.mockImplementation((_file: string, _args: string[], _opts: unknown, cb: (e: Error | null, o: string, e2: string) => void) => {
+                cb(null, 'Touched', '');
             });
             const result = await roosyncMcpManagement({
                 action: 'rebuild', mcp_name: 'test-server',
