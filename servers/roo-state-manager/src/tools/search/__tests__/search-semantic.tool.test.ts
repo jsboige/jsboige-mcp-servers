@@ -3371,6 +3371,16 @@ describe('#4352 machine-output de-rank', () => {
 		expect(classifyMachineOutput('message_exchange', '[tool_result] Result: ' + MODE_BLOCK)).toBe('tool_result');
 	});
 
+	// Review f6ab8548 (myia-ai-01, 03/11): decision prose that QUOTES a complete
+	// slug pair must stay prose — under exclude_tool_results a match here is a
+	// pure removal, and it also costs passage-slot eligibility, two paths the
+	// malus rollback does not cover. Both sentences are the coordinator's
+	// measured examples: red on the head that matched them.
+	test('#2609 decision prose quoting a complete slug pair stays prose', () => {
+		expect(classifyMachineOutput('message_exchange', 'Le champ <slug>code-simple</slug> du fichier .roomodes ne doit pas etre modifie : c est la source.')).toBeNull();
+		expect(classifyMachineOutput('message_exchange', 'On a decide de renommer le mode <slug>debug-complex</slug> en debug-deep, voir #3766.')).toBeNull();
+	});
+
 	test('#2609 rejects the broad predicates: escaped instructions and padded listings stay prose', () => {
 		// 1.5 escaped newlines per 100 chars — the measured shape that the
 		// rejected predicate dropped along with a real decision passage.

@@ -344,7 +344,16 @@ const ENV_DETAILS_MARKER = /<environment_details>|# VSCode Visible Files|# VSCod
 // matched code and log blobs. The fragments that carry neither envelope stay
 // unclassified on purpose: a residual named here beats a broad rule that
 // silently eats passages.
-const MODE_PROMPT_MARKER = /<slug>[\s\S]{0,80}<\/slug>|<name>[^<]{0,60}<\/name>[\s\S]{0,80}<model>[^<]{0,60}<\/model>/;
+// The slug alternative requires the `<name>` that follows in the observed
+// envelope (review f6ab8548, ai-01 03/11): on its own, `/<slug>…<\/slug>/`
+// matched decision prose quoting a complete pair — « Le champ
+// <slug>code-simple</slug> du fichier .roomodes ne doit pas être modifié » —
+// and a match here is a pure removal under `exclude_tool_results` plus a lost
+// passage slot, two paths `SEMANTIC_MACHINE_OUTPUT_MALUS=0` does not cover.
+// The gap allows 0-4 chars, not `\s*`: a serialized copy separates `</slug>`
+// from `<name>` with a LITERAL backslash-n (2 chars, not whitespace), and that
+// shape is a real mode block measured in the 0.9 % exposure.
+const MODE_PROMPT_MARKER = /<slug>[^<]{0,60}<\/slug>[\s\S]{0,4}<name>|<name>[^<]{0,60}<\/name>[\s\S]{0,80}<model>[^<]{0,60}<\/model>/;
 // Density thresholds per 100 chars of the first 2000, measured on the live
 // pools: prose stays far below either of them.
 const JSON_ESCAPED_QUOTES_PER_100 = 1;
