@@ -51,6 +51,32 @@ ORACLE_MODELS = ["claude-sonnet", "claude-opus"]
 # Oracle agents (local-only)
 ORACLE_AGENT_IDS = ["oracle-sonnet", "oracle-opus"]
 
+# #1748: oracles are the costly SOTA escape hatches — bounded by default at
+# 5 calls / 3600 s unless the local entry declares an explicit rate_limit.
+ORACLE_RATE_LIMIT_DEFAULT = {"max_calls": 5, "window_s": 3600}
+
+
+def apply_oracle_rate_defaults(config: dict) -> int:
+    """Stamp the default rate_limit on oracle agents that lack one (#1748).
+
+    Runs over the FINAL config (template + preserved-local + additions) so
+    an oracle arriving via ``preserve_local_agents`` or via
+    ``add_oracle_additions`` is bounded either way. An explicit
+    ``rate_limit`` already on the entry is left untouched — the default
+    never overrides a deliberate operator bound. Returns the number of
+    stamped agents (report only).
+    """
+    stamped = 0
+    for agent in config.get("agents", []):
+        if (
+            isinstance(agent, dict)
+            and agent.get("id") in ORACLE_AGENT_IDS
+            and not agent.get("rate_limit")
+        ):
+            agent["rate_limit"] = dict(ORACLE_RATE_LIMIT_DEFAULT)
+            stamped += 1
+    return stamped
+
 
 def load_json(path: Path) -> dict:
     if not path.exists():
@@ -403,6 +429,16 @@ def main():
     # Optionally add local-only additions
     if args.local_additions:
         new_config = add_oracle_additions(new_config, local)
+
+    # #1748: bound the oracles by default, whichever path carried them into
+    # the final config (preserve-local or local-additions).
+    stamped_rate_limits = apply_oracle_rate_defaults(new_config)
+    if stamped_rate_limits:
+        print(
+            f"Oracle rate_limit default applied to {stamped_rate_limits} "
+            "agent(s): " + str(ORACLE_RATE_LIMIT_DEFAULT),
+            file=sys.stderr,
+        )
 
     # MCP install-path cure (#4085): runs over the FINAL config (template +
     # preserved-local + additions) so seats synced before the fix heal too.

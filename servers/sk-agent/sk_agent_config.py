@@ -480,6 +480,40 @@ class SamplingConfig:
 
 
 @dataclass
+class RateLimitConfig:
+    """Per-agent admission limit (#1748): max_calls per sliding window_s.
+
+    Absent from an agent entry = unlimited (exact legacy behaviour). Invalid
+    values are refused at config load rather than silently ignored — a
+    dead rate limit is worse than none because the caller believes the
+    agent is bounded when it is not.
+    """
+
+    max_calls: int = 1
+    window_s: int = 3600
+
+    @classmethod
+    def from_dict(cls, data) -> RateLimitConfig | None:
+        if data is None:
+            return None
+        if not isinstance(data, dict):
+            raise ValueError(
+                f"rate_limit must be an object {{max_calls, window_s}}, "
+                f"got {type(data).__name__}"
+            )
+        for name in ("max_calls", "window_s"):
+            value = data.get(name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(
+                    f"rate_limit.{name} must be an integer >= 1, got {value!r}"
+                )
+        return cls(max_calls=data["max_calls"], window_s=data["window_s"])
+
+    def to_dict(self) -> dict:
+        return {"max_calls": self.max_calls, "window_s": self.window_s}
+
+
+@dataclass
 class AgentConfig:
     """An agent: model + system prompt + MCP subset + memory + parameters."""
 
@@ -492,6 +526,7 @@ class AgentConfig:
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     parameters: dict[str, Any] = field(default_factory=dict)
     condensation: dict[str, Any] = field(default_factory=dict)
+    rate_limit: RateLimitConfig | None = None  # see #1748
 
     @classmethod
     def from_dict(cls, data: dict) -> AgentConfig:
@@ -505,6 +540,7 @@ class AgentConfig:
             memory=MemoryConfig.from_dict(data.get("memory")),
             parameters=data.get("parameters", {}),
             condensation=dict(data.get("condensation") or {}),
+            rate_limit=RateLimitConfig.from_dict(data.get("rate_limit")),
         )
 
     def to_dict(self) -> dict:
@@ -521,6 +557,8 @@ class AgentConfig:
             d["capabilities"] = list(self.capabilities)
         if self.condensation:
             d["condensation"] = dict(self.condensation)
+        if self.rate_limit is not None:
+            d["rate_limit"] = self.rate_limit.to_dict()
         return d
 
 
