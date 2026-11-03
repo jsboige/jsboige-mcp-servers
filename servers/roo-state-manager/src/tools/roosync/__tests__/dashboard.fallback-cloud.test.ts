@@ -27,7 +27,13 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtemp, rm, readdir, readFile } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, resetCondenseCircuitBreaker, isRetryableFallbackError } from '../dashboard.js';
+import {
+  roosyncDashboard,
+  resetCondenseCircuitBreaker,
+  isRetryableFallbackError,
+  validateSummaryCompleteness,
+  isBudgetTruncatedFinish,
+} from '../dashboard.js';
 
 // #3011 second tour: import the REAL SDK timeout class so the bite-test constructs the
 // exact error the fallback path throws on a hung endpoint. The global test setup
@@ -58,6 +64,16 @@ vi.mock('@/services/openai', () => ({
 }));
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-fallback-cloud-');
+
+// A cloud answer in the summary prompt's imposed format: the summary leg's chain
+// guard (validateSummaryCompleteness) rejects a content missing any of the three
+// sections. The same mock answers both legs; the status guard only checks retention.
+function cloudSummary(label: string): string {
+  return `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none`;
+}
+// The summary leg's user prompt, as built by generateLLMSummary.
+const isSummaryRequest = (req: any): boolean =>
+  JSON.stringify(req?.messages ?? []).includes('messages retirés du dashboard à synthétiser');
 
 // NOTE on the suite option below: it must be `timeout`, NOT `testTimeout` —
 // vitest 3 suite options silently ignore an unknown `testTimeout` key, so the
@@ -139,7 +155,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
       chat: { completions: { create: mockFallbackCreate } },
     });
     mockFallbackCreate.mockResolvedValue({
-      choices: [{ message: { content: '## Cloud summary\n\nArchived traffic salvaged by z.ai.' } }],
+      choices: [{ message: { content: cloudSummary('Archived traffic salvaged by z.ai.') } }],
     });
 
     const condensedResult = await fillUntilCondensed();
@@ -292,7 +308,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     mockFallbackCreate
       .mockRejectedValueOnce(error429)
       .mockResolvedValue({
-        choices: [{ message: { content: '## Cloud summary (after retry)\n\nSalvaged by z.ai on 2nd attempt.' } }],
+        choices: [{ message: { content: cloudSummary('Salvaged by z.ai on 2nd attempt.') } }],
       });
 
     const condensedResult = await fillUntilCondensed();
@@ -537,7 +553,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
       chat: { completions: { create: mockFallbackCreate } },
     });
     mockFallbackCreate.mockResolvedValue({
-      choices: [{ message: { content: '## Cloud summary\n\nSalvaged while the primary breaker was open.' } }],
+      choices: [{ message: { content: cloudSummary('Salvaged while the primary breaker was open.') } }],
     });
 
     const condensedResult = await fillUntilCondensed();
@@ -562,7 +578,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     });
     mockFallbackCreate.mockImplementation(async (req: any) => req.model === 'glm-4.7'
       ? { choices: [{ message: { content: '' }, finish_reason: 'length' }] }
-      : { choices: [{ message: { content: '## Sonnet summary\n\nSalvaged by the second tier.' } }] });
+      : { choices: [{ message: { content: cloudSummary('Salvaged by the second tier.') } }] });
 
     const condensedResult = await fillUntilCondensed();
 
@@ -744,7 +760,8 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
       chat: { completions: { create: mockFallbackCreate } },
     });
     const shortStatus = `## Statut cloud trop court\n\n${'c'.repeat(60)}`; // ~84 chars < 200 floor
-    const validStatus = `## Statut\n\n${'v'.repeat(600)}`; // 600 chars ≥ 200 floor
+    // ≥ 200-char floor; it also answers the summary leg, hence the imposed sections.
+    const validStatus = `## Statut\n\n${cloudSummary('v')}\n${'v'.repeat(600)}`;
     mockFallbackCreate.mockImplementation(async (req: any) => req.model === 'deepseek-v4-flash'
       ? { choices: [{ message: { content: shortStatus } }] }
       : { choices: [{ message: { content: validStatus } }] });
@@ -784,9 +801,12 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     mockGetFallbackClient.mockReturnValue({
       chat: { completions: { create: mockFallbackCreate } },
     });
-    // Both models answer 200 with content far under the 20% retention floor.
+    // Both models answer the status leg with content far under the 20% retention floor,
+    // and the summary leg with a summary in the imposed format.
     mockFallbackCreate.mockImplementation(async (req: any) => ({
-      choices: [{ message: { content: `## Court (${req.model})\n\n${'c'.repeat(40)}` } }],
+      choices: [{ message: { content: isSummaryRequest(req)
+        ? cloudSummary(`summary by ${req.model}`)
+        : `## Court (${req.model})\n\n${'c'.repeat(40)}` } }],
     }));
 
     const filler = 'X'.repeat(3000);
@@ -811,10 +831,116 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     // Per-model guard errors: both chain models tried and named, 'too-short' reason kept.
     expect(unfolded).toContain('deepseek-v4-flash: guard-rejected (too-short) | claude-sonnet-5-5: guard-rejected (too-short)');
     // Per-leg outcomes (ms#1501): the status leg died in the chain while the summary leg
-    // — which carries no validator — was salvaged by the FIRST model, unchanged.
+    // — whose own guard accepts a complete summary — was salvaged by the FIRST model.
     expect(unfolded).toContain('statusOutcome: error');
     expect(unfolded).toContain('summaryOutcome: ok-with-fallback');
     expect(unfolded).toContain('summaryFallbackModel: deepseek-v4-flash');
+  });
+
+  // Incident ai-01, 03/11 18:44:25Z: deepseek-v4-flash answered the summary leg in 2.5 s
+  // with 715 chars — one of the three imposed sections, stopping mid-word ("- Limite").
+  // The chain accepted it (non-empty) and it became the only trace of 9 archived
+  // messages. The guard must hand such a summary to the next model.
+  async function condenseOnce(): Promise<any> {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+    const filler = 'X'.repeat(3000);
+    let condensedResult: any = null;
+    for (let i = 0; i < 20; i++) {
+      const result = await roosyncDashboard({ action: 'append', type: 'global', content: `${filler} message-${i}` });
+      if ((result as any).condensed && !condensedResult) condensedResult = result;
+    }
+    expect(condensedResult).not.toBeNull();
+    return condensedResult;
+  }
+
+  it('(s) a summary cut inside its first section → the next model writes the summary', { timeout: 60000 }, async () => {
+    mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM timeout'));
+    mockFallbackModelId.mockImplementation(() => 'deepseek-v4-flash,claude-sonnet-5-5');
+    mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+    const cutSummary = '## Résumé des 9 messages archivés\n\n### Thèmes principaux\n- Dérive consommation : plan validé 03/11.\n- Limite';
+    mockFallbackCreate.mockImplementation(async (req: any) => {
+      if (!isSummaryRequest(req)) return { choices: [{ message: { content: '## Statut\n\nnominal' }, finish_reason: 'stop' }] };
+      return req.model === 'deepseek-v4-flash'
+        ? { choices: [{ message: { content: cutSummary }, finish_reason: 'stop' }] }
+        : { choices: [{ message: { content: cloudSummary('rescued by the second model') }, finish_reason: 'stop' }] };
+    });
+
+    const condensedResult = await condenseOnce();
+
+    const cloudPasses = condensedResult.condenseDiagnostic!.filter((d: any) => d.outcome === 'fallback-cloud');
+    expect(cloudPasses.length).toBeGreaterThanOrEqual(1);
+    // Bite-test: with `validate` removed from summaryFallbackOpts, deepseek's cut summary
+    // is accepted and this reads 'deepseek-v4-flash'.
+    expect(cloudPasses[0].llm.summary.finalOutcome).toBe('ok-with-fallback');
+    expect(cloudPasses[0].llm.summary.fallbackModel).toBe('claude-sonnet-5-5');
+    // The status leg is unaffected: its first model's answer stands.
+    expect(cloudPasses[0].llm.status.fallbackModel).toBe('deepseek-v4-flash');
+  });
+
+  it('(t) a completion stopped on its output budget (finish_reason=length) → the next model', { timeout: 60000 }, async () => {
+    mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM timeout'));
+    mockFallbackModelId.mockImplementation(() => 'deepseek-v4-flash,claude-sonnet-5-5');
+    mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+    // Both legs: the first model's text LOOKS complete but the provider says it was cut.
+    mockFallbackCreate.mockImplementation(async (req: any) => req.model === 'deepseek-v4-flash'
+      ? { choices: [{ message: { content: cloudSummary('cut by the budget') }, finish_reason: 'length' }] }
+      : { choices: [{ message: { content: cloudSummary('complete') }, finish_reason: 'stop' }] });
+
+    const condensedResult = await condenseOnce();
+
+    const cloudPasses = condensedResult.condenseDiagnostic!.filter((d: any) => d.outcome === 'fallback-cloud');
+    expect(cloudPasses.length).toBeGreaterThanOrEqual(1);
+    // Bite-test: without the finish_reason check both legs read 'deepseek-v4-flash'.
+    expect(cloudPasses[0].llm.summary.fallbackModel).toBe('claude-sonnet-5-5');
+    expect(cloudPasses[0].llm.status.fallbackModel).toBe('claude-sonnet-5-5');
+  });
+
+  it('(u) every model returns an incomplete summary → truncation names the missing sections per model', { timeout: 60000 }, async () => {
+    mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM timeout'));
+    mockFallbackModelId.mockImplementation(() => 'deepseek-v4-flash,claude-sonnet-5-5');
+    mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+    mockFallbackCreate.mockImplementation(async (req: any) => ({
+      choices: [{ message: { content: isSummaryRequest(req)
+        ? '## Résumé\n\n### Thèmes principaux\n- coupé'
+        : '## Statut\n\nnominal' }, finish_reason: 'stop' }],
+    }));
+
+    const condensedResult = await condenseOnce();
+
+    const truncatedPasses = condensedResult.condenseDiagnostic!.filter((d: any) => d.outcome === 'fallback-truncated');
+    expect(truncatedPasses.length).toBeGreaterThanOrEqual(1);
+    const archiveFiles = await readdir(path.join(tmpDir, 'dashboards', 'archive'));
+    const fallbackArchives = archiveFiles.filter(f => f.endsWith('-fallback.md'));
+    expect(fallbackArchives.length).toBeGreaterThanOrEqual(1);
+    const archiveContent = await readFile(path.join(tmpDir, 'dashboards', 'archive', fallbackArchives[0]), 'utf8');
+    const unfolded = archiveContent.replace(/\n\s+/g, ' ');
+    expect(unfolded).toContain('deepseek-v4-flash: guard-rejected (incomplete-summary (missing: actions et resultats, decisions et metriques))');
+    expect(unfolded).toContain('claude-sonnet-5-5: guard-rejected (incomplete-summary (missing: actions et resultats, decisions et metriques))');
+  });
+});
+
+describe('summary completeness and budget-truncation predicates', () => {
+  it('accepts the three imposed sections, whatever the case and accents', () => {
+    expect(validateSummaryCompleteness(cloudSummary('x'))).toBeNull();
+    expect(validateSummaryCompleteness('### THEMES PRINCIPAUX\n### Actions et resultats\n### décisions et MÉTRIQUES')).toBeNull();
+  });
+
+  it('names every missing section', () => {
+    expect(validateSummaryCompleteness('## Résumé des 9 messages archivés\n\n### Thèmes principaux\n- Limite'))
+      .toBe('incomplete-summary (missing: actions et resultats, decisions et metriques)');
+    expect(validateSummaryCompleteness('free text'))
+      .toBe('incomplete-summary (missing: themes principaux, actions et resultats, decisions et metriques)');
+  });
+
+  it('reads both wire formats of a budget stop, and nothing else', () => {
+    expect(isBudgetTruncatedFinish('length')).toBe(true);
+    expect(isBudgetTruncatedFinish('max_tokens')).toBe(true);
+    for (const reason of ['stop', 'end_turn', 'stop_sequence', 'tool_calls', '', null, undefined]) {
+      expect(isBudgetTruncatedFinish(reason as any)).toBe(false);
+    }
   });
 });
 
