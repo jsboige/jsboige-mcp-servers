@@ -61,17 +61,19 @@ def apply_oracle_rate_defaults(config: dict) -> int:
 
     Runs over the FINAL config (template + preserved-local + additions) so
     an oracle arriving via ``preserve_local_agents`` or via
-    ``add_oracle_additions`` is bounded either way. An explicit
-    ``rate_limit`` already on the entry is left untouched — the default
-    never overrides a deliberate operator bound. Returns the number of
-    stamped agents (report only).
+    ``add_oracle_additions`` is bounded either way. An entry that already
+    carries the key is left untouched — the default never overrides a
+    deliberate operator bound, and an explicit ``"rate_limit": null`` means
+    "unlimited" (``RateLimitConfig.from_dict`` parses null as no bound), so
+    it must not be read as "missing". Returns the number of stamped agents
+    (report only).
     """
     stamped = 0
     for agent in config.get("agents", []):
         if (
             isinstance(agent, dict)
             and agent.get("id") in ORACLE_AGENT_IDS
-            and not agent.get("rate_limit")
+            and "rate_limit" not in agent
         ):
             agent["rate_limit"] = dict(ORACLE_RATE_LIMIT_DEFAULT)
             stamped += 1

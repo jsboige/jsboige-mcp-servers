@@ -1328,6 +1328,12 @@ class SKAgentManager:
         """
         if agent_cfg is None:
             return None
+        # Kill-switch (house rule, #1748 review item 3): SK_AGENT_RATE_LIMIT=0
+        # disables every declared bound without touching the config — the
+        # declared default is ON, the switch is the operator's way out when a
+        # bound misfires in production.
+        if os.environ.get("SK_AGENT_RATE_LIMIT", "").strip() == "0":
+            return None
         # Typed-field check: only a parsed RateLimitConfig bounds the agent.
         # Tolerates any non-conforming agent object (v1 configs, test
         # doubles whose auto-created attributes are not None) — an
@@ -1357,6 +1363,30 @@ class SKAgentManager:
             }
         window.append(now)
         return None
+
+    def _config_error_gate(self, agent_cfg: AgentConfig | None) -> dict[str, Any] | None:
+        """Refuse an agent whose config entry was rejected at parse (#1748 review item 2).
+
+        ``_parse_config`` isolates a malformed agent instead of failing the
+        whole load, so the entry exists but must never be invoked. Returning
+        an explicit error naming the field is what keeps the blast radius at
+        "this agent" — silently skipping it would answer with another agent.
+        """
+        if agent_cfg is None:
+            return None
+        # Typed check for the same reason as the rate field: an untyped
+        # attribute on a test double must not be read as a config error.
+        err = getattr(agent_cfg, "config_error", None)
+        if not isinstance(err, str) or not err:
+            return None
+        return {
+            "error": (
+                f"agent '{agent_cfg.id}' is not callable: its configuration "
+                f"entry was rejected ({err})"
+            ),
+            "config_error": True,
+            "agent": agent_cfg.id,
+        }
 
     async def _resolve_agent(
         self,
@@ -1625,6 +1655,17 @@ class SKAgentManager:
             nonlocal options, spec_effective, spec_model_used
             options = options or {}
 
+            # An explicitly requested agent whose entry was rejected is refused
+            # BEFORE resolution (#1748 review item 2): _get_or_create_agent
+            # returns None for it, and resolution would then fall through to
+            # the default agent — the caller would get another agent's answer
+            # under the id it asked for.
+            if agent_id:
+                requested_cfg = self.config.get_agent(agent_id)
+                requested_gate = self._config_error_gate(requested_cfg)
+                if requested_gate is not None:
+                    return requested_gate
+
             # Normalize attachment to list for multi-image support
             attachments_list: list[str] | None = None
             if attachment:
@@ -1771,6 +1812,12 @@ class SKAgentManager:
 
             # Determine if we need a temporary agent (model_override or mcp_overrides)
             agent_cfg = next((a for a in self.config.agents if a.id == resolved_id), None)
+
+            # Rejected config entry (#1748 review item 2): refuse THIS agent by
+            # name — covers the agent_spec path whose base preset was rejected.
+            config_gate = self._config_error_gate(agent_cfg)
+            if config_gate is not None:
+                return config_gate
 
             # Per-agent rate limit (#1748): explicit refusal before any model
             # invocation. Keyed on the resolved base agent — an agent_spec

@@ -33,7 +33,14 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import sk_agent
 from sk_agent import SKAgentManager
-from sk_agent_config import AgentConfig, ModelConfig, RateLimitConfig, SKAgentConfig
+from sk_agent_config import (
+    AgentConfig,
+    ModelConfig,
+    RateLimitConfig,
+    SKAgentConfig,
+    _parse_config,
+    validate_config,
+)
 from sync_from_template import (
     ORACLE_AGENT_IDS,
     ORACLE_RATE_LIMIT_DEFAULT,
@@ -41,8 +48,10 @@ from sync_from_template import (
 )
 
 
-def _gated_agent(agent_id: str = "a-gated", max_calls: int = 3, window_s: int = 100):
-    return AgentConfig(
+_UNSET = object()
+
+
+def _gated_agent(agent_id: str = "a-gated", max_calls: int = 3, window_s: int = 100):    return AgentConfig(
         id=agent_id,
         model="m-x",
         rate_limit=RateLimitConfig(max_calls=max_calls, window_s=window_s),
@@ -312,6 +321,17 @@ class TestSyncOracleDefaults:
         assert ORACLE_RATE_LIMIT_DEFAULT == {"max_calls": 5, "window_s": 3600}
         assert set(ORACLE_AGENT_IDS) == {"oracle-sonnet", "oracle-opus"}
 
+    def test_explicit_null_is_a_declared_choice_not_a_missing_bound(self):
+        """Review follow-up: ``null`` parses as "unlimited"
+        (``RateLimitConfig.from_dict``), so it is a declaration, not an
+        absence — stamping it would turn an operator's explicit "no bound"
+        into 5/3600."""
+        cfg = self._config_with_agents(
+            {"id": "oracle-sonnet", "model": "m", "rate_limit": None}
+        )
+        assert apply_oracle_rate_defaults(cfg) == 0
+        assert cfg["agents"][0]["rate_limit"] is None
+
 
 # ---------------------------------------------------------------------------
 # (f) Test-of-the-test — the enforcement tests above assert THE gate
@@ -347,3 +367,170 @@ class TestMutantDiscriminance:
         # The real parser refuses where the mutant swallows:
         with pytest.raises(ValueError):
             RateLimitConfig.from_dict({"max_calls": 0, "window_s": 60})
+
+
+# ---------------------------------------------------------------------------
+# (g) Review item 1 — the schema declares the field the server stamps
+# ---------------------------------------------------------------------------
+
+
+def _schema_payload(rate_limit: object = _UNSET) -> dict:
+    agent: dict = {"id": "oracle-sonnet", "model": "m-x"}
+    if rate_limit is not _UNSET:
+        agent["rate_limit"] = rate_limit
+    return {
+        "config_version": 2,
+        "models": [
+            {
+                "id": "m-x",
+                "enabled": True,
+                "base_url": "http://localhost/v1",
+                "api_key": "test-key",
+                "model_id": "m",
+            }
+        ],
+        "agents": [agent],
+    }
+
+
+class TestSchemaKnowsTheField:
+    """``AgentPreset`` is ``extra="forbid"``: a field the server itself
+    stamps must be declared there, or every seat logs a ``Config
+    validation`` warning about the server's own field on every load
+    (review item 1)."""
+
+    def test_validate_config_accepts_a_preset_with_rate_limit(self):
+        errors = validate_config(
+            _schema_payload({"max_calls": 5, "window_s": 3600})
+        )
+        assert errors == []
+
+    def test_legacy_preset_without_the_field_still_validates(self):
+        assert validate_config(_schema_payload()) == []
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"max_calls": 0, "window_s": 3600},
+            {"max_calls": 5, "window_s": 0},
+            {"max_calls": "5", "window_s": 3600},
+        ],
+    )
+    def test_schema_refuses_a_dead_bound(self, bad):
+        # The schema must not be looser than the parser: a bound the schema
+        # accepts but the parser rejects is a warning-free crash.
+        errors = validate_config(_schema_payload(bad))
+        assert any("rate_limit" in e for e in errors), errors
+
+
+# ---------------------------------------------------------------------------
+# (h) Review item 2 — blast radius: one bad preset, one refused agent
+# ---------------------------------------------------------------------------
+
+
+def _two_agent_raw() -> dict:
+    return {
+        "config_version": 2,
+        "models": [
+            {
+                "id": "m-x",
+                "enabled": True,
+                "base_url": "http://localhost/v1",
+                "api_key": "test-key",
+                "model_id": "m",
+            }
+        ],
+        "agents": [
+            {"id": "broken", "model": "m-x", "rate_limit": "5/3600"},
+            {
+                "id": "ok-agent",
+                "model": "m-x",
+                "rate_limit": {"max_calls": 2, "window_s": 3600},
+            },
+        ],
+    }
+
+
+class TestBlastRadius:
+    def test_parse_isolates_the_malformed_agent(self):
+        cfg = _parse_config(_two_agent_raw())
+        assert [a.id for a in cfg.agents] == ["broken", "ok-agent"]
+        broken = next(a for a in cfg.agents if a.id == "broken")
+        assert isinstance(broken.config_error, str)
+        assert "rate_limit" in broken.config_error
+        assert next(a for a in cfg.agents if a.id == "ok-agent").config_error is None
+
+    def test_rejected_entry_is_not_serialized_as_valid(self):
+        broken = next(
+            a for a in _parse_config(_two_agent_raw()).agents if a.id == "broken"
+        )
+        assert "config_error" not in broken.to_dict()
+
+    def _manager(self):
+        manager = SKAgentManager.__new__(SKAgentManager)
+        manager.config = _parse_config(_two_agent_raw())
+        manager._threads = {}
+        manager._thread_counter = 0
+        manager._execution_settings = None
+        manager._resolve_agent = AsyncMock(
+            side_effect=lambda **kw: (kw.get("agent_id"), object())
+        )
+        manager._handle_text = AsyncMock(
+            return_value={
+                "response": "ok",
+                "conversation_id": "c1",
+                "agent_used": "ok-agent",
+                "model_used": "m-x",
+            }
+        )
+        return manager
+
+    def test_call_agent_refuses_only_the_broken_agent(self):
+        manager = self._manager()
+
+        refused = asyncio.run(manager.call_agent(prompt="hi", agent_id="broken"))
+        assert refused["config_error"] is True
+        assert refused["agent"] == "broken"
+        assert "rate_limit" in refused["error"]
+        assert manager._handle_text.call_count == 0
+
+        ok = asyncio.run(manager.call_agent(prompt="hi", agent_id="ok-agent"))
+        assert ok.get("response") == "ok"
+        assert manager._handle_text.call_count == 1
+
+    def test_non_isolating_parse_would_take_the_seat_down(self):
+        """Mutant witness: without the per-agent isolation, this same payload
+        raises out of the parse layer — every agent lost over one typo."""
+        with pytest.raises(ValueError):
+            [AgentConfig.from_dict(a) for a in _two_agent_raw()["agents"]]
+
+
+# ---------------------------------------------------------------------------
+# (i) Review item 3 — kill-switch SK_AGENT_RATE_LIMIT=0
+# ---------------------------------------------------------------------------
+
+
+class TestKillSwitch:
+    def test_zero_disables_every_bound(self, monkeypatch):
+        monkeypatch.setenv("SK_AGENT_RATE_LIMIT", "0")
+        agent = _gated_agent(max_calls=1, window_s=3600)
+        manager = _gate_manager(agent)
+        for _ in range(5):
+            assert manager._rate_gate(agent) is None
+
+    def test_absent_keeps_the_bound(self, monkeypatch):
+        monkeypatch.delenv("SK_AGENT_RATE_LIMIT", raising=False)
+        agent = _gated_agent(max_calls=1, window_s=3600)
+        manager = _gate_manager(agent)
+        assert manager._rate_gate(agent) is None
+        assert manager._rate_gate(agent) is not None
+
+    def test_non_zero_value_does_not_disable(self, monkeypatch):
+        """Discriminance: a truthiness check on the env var would treat "1"
+        as "enabled" and "false" as "disabled". The contract is exactly
+        ``=0``, the house convention."""
+        monkeypatch.setenv("SK_AGENT_RATE_LIMIT", "1")
+        agent = _gated_agent(max_calls=1, window_s=3600)
+        manager = _gate_manager(agent)
+        assert manager._rate_gate(agent) is None
+        assert manager._rate_gate(agent) is not None
