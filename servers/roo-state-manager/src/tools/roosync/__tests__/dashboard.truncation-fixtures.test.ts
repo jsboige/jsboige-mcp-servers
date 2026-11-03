@@ -19,6 +19,12 @@
  *   C. Marqueur #2719 — strip ancré en début de ligne (la prose citant la
  *      sentinelle survit), au plus un marqueur par re-stamp, et le contrat
  *      de réservation du call-site (marker + statut tronqué ≤ plafond).
+ *   D. Section « Blocages structurels » — le plancher garde ce bloc ENTIER
+ *      (avec le titre du document) au lieu de le décapiter en premier, puis
+ *      dépense le budget restant sur la queue. Pas de section ⇒ chemin
+ *      historique inchangé, octet pour octet ; bloc seul au-dessus du
+ *      plafond ⇒ repli sur la queue (une liste tronquée se lirait comme
+ *      complète).
  *
  * Témoins de mutation (exécutés au cycle, consignés dans la PR) :
  *   M1 inversion du sens de la boucle (tête↔queue)        → A1 rouge
@@ -28,6 +34,10 @@
  *   M5 coupe exacte → retour au diviseur floor(cap/3)      → B1/B2 rouges
  *   M6 paire de substitution non enjambée (1 unité)         → B5 rouge
  *   M7 largeur 4 octets comptée 3                           → B4/B5 rouges
+ *   M8 protection de la section désactivée (→ null)          → D1/D4/D5 rouges
+ *   M9 fin de section = heading seul (bloc sans corps)       → D1/D3/D4/D5 rouges
+ *   M10 séparateur non compté ('\n' + ligne → ligne)         → D5 rouge (> plafond)
+ *   M11 garde de taille du bloc retirée                      → D3 rouge (> plafond)
  *
  * Hors d'atteinte unitaire (documenté, non testé ici) : l'append des marqueurs
  * #1502/#3803 APRÈS condenseTextIfTooLarge (dashboard.ts ~L5753-5782, mesure
@@ -280,6 +290,134 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
       expect(bytes(whole)).toBeLessThanOrEqual(MAX);
       // Et le marqueur n'a pas été décapité : il est en tête, entière ligne.
       expect(whole.split('\n')[0]).toBe(marker);
+    });
+  });
+
+  describe('D — la section « Blocages structurels » survit au plancher (#4434)', () => {
+    // 6 sections de ~800 o ≈ 5,7 Ko pour un cap de 2,2 Ko : le budget est
+    // TENDU — lead + bloc blocages (~920 o) passent, et il ne reste de quoi
+    // payer qu'une section de queue. C'est ce qui rend la priorité du bloc
+    // observable : un plancher qui ne le réserve pas le perd au profit de la
+    // queue, même quand le bloc, lui, tenait.
+    const CAP_D = 2200;
+    const withBlockers = [
+      '## [workspace] — État au 2026-11-03T08:10Z',
+      section('Résumé', 8),
+      section('État des systèmes', 8),
+      section('Blocages structurels', 8),
+      '---',
+      section('S5', 8),
+      section('S6', 8),
+      section('S7', 8),
+    ].join('\n');
+
+    it('D1 — la section blocages survit ENTIÈRE avec le titre du document, la queue aussi, la tête intermédiaire est sacrifiée', () => {
+      expect(bytes(withBlockers)).toBeGreaterThan(CAP_D); // bien le chemin de troncation
+      const blockerLines = section('Blocages structurels', 8).split('\n');
+      expect(blockerLines.length).toBeGreaterThan(1);
+
+      const out = truncateToMaxSize(withBlockers, CAP_D, 'Status (fixture D1)');
+      expect(bytes(out)).toBeLessThanOrEqual(CAP_D);
+
+      // Le titre du document (lead heading) est conservé…
+      expect(out.split('\n')[0]).toBe('## [workspace] — État au 2026-11-03T08:10Z');
+      // …la section blocages est conservée ligne à ligne, heading compris…
+      for (const line of blockerLines) expect(out).toContain(line);
+      // …et le contrat de récence tient : la dernière ligne d'origine survit.
+      expect(out).toContain('## S7');
+      expect(out.endsWith(withBlockers.slice(withBlockers.lastIndexOf('\n') + 1))).toBe(true);
+      // Le prix : la tête intermédiaire est bien sacrifiée (pas de passe-droit).
+      expect(out).not.toContain('## Résumé');
+      expect(out).not.toContain('## État des systèmes');
+    });
+
+    it('D2 — sans section blocages, le comportement historique est intact : suffixe contigu du texte', () => {
+      const noBlockers = [
+        section('Résumé', 8),
+        section('S2', 8),
+        section('S3', 8),
+        section('S4', 8),
+        section('S5', 8),
+      ].join('\n');
+      expect(bytes(noBlockers)).toBeGreaterThan(CAP_D);
+
+      const out = truncateToMaxSize(noBlockers, CAP_D, 'Status (fixture D2)');
+      expect(bytes(out)).toBeLessThanOrEqual(CAP_D);
+      // Suffixe exact : la règle « queue seule » n'a pas bougé d'un octet.
+      expect(noBlockers.endsWith(out)).toBe(true);
+      expect(out).not.toContain('## Résumé');
+    });
+
+    it('D3 — bloc seul au-dessus du plafond : repli sur la queue, jamais une liste tronquée qui se lit comme complète', () => {
+      const huge = [
+        '## Blocages structurels',
+        ...Array.from({ length: 40 }, (_, i) => `blocage ${i} : ${'y'.repeat(200)} [vérifié 03/11].`),
+      ].join('\n');
+      const status = `## S1\n${huge}`;
+      const cap = 500;
+      expect(bytes(huge)).toBeGreaterThan(cap); // le bloc NE tient pas seul
+
+      const out = truncateToMaxSize(status, cap, 'Status (fixture D3)');
+      expect(bytes(out)).toBeLessThanOrEqual(cap);
+      expect(status.endsWith(out)).toBe(true); // chemin historique
+      // Le heading du bloc est en TÊTE de bloc : absent de la fenêtre de queue.
+      expect(out).not.toContain('## Blocages structurels');
+    });
+
+    it('D4 — blocages accentués et emoji : conservés octet pour octet, aucune paire de substitution cassée', () => {
+      const block = [
+        '## Blocages structurels',
+        'blocage é : « déjà vérifié » — 字 😀 [vérifié 03/11 05:40Z].',
+        'blocage à : données 100 % — fin de ligne.',
+      ].join('\n');
+      const fixture = [
+        '## [workspace] — État',
+        section('Résumé', 8),
+        block,
+        section('S9', 8),
+      ].join('\n');
+      const cap = 700;
+      expect(bytes(fixture)).toBeGreaterThan(cap);
+
+      const out = truncateToMaxSize(fixture, cap, 'Status (fixture D4)');
+      expect(bytes(out)).toBeLessThanOrEqual(cap);
+      for (const line of block.split('\n')) expect(out).toContain(line);
+      // Le plafond est un plafond d'OCTETS : la coupe ne laisse pas de
+      // demi-surrogat (contraste avec une coupe par unités UTF-16).
+      expect(Array.from(out).join('')).toBe(out);
+    });
+
+    it('D5 — comptabilité exacte : chaque séparateur compte, la fenêtre remplit le budget sans le franchir', () => {
+      // Budget construit à l'octet près à partir du fixture : le lead + le bloc
+      // blocages, plus les 3 DERNIÈRES lignes. Le candidat suivant est `---`
+      // (3 o) et la fenêtre garde 3 lignes : un séparateur non compté laisse
+      // 3 o de sous-compte, donc `---` entre et le plafond est franchi de 4 o.
+      const lead = '## [workspace] — État';
+      const block = section('Blocages structurels', 3);
+      const tail = [
+        `queue 1 : ${'q'.repeat(120)}`,
+        `queue 2 : ${'q'.repeat(120)}`,
+        `queue 3 : ${'q'.repeat(120)}`,
+      ];
+      const fixture = [lead, section('Résumé', 2), block, '## S5', '---', ...tail].join('\n');
+      const lines = fixture.split('\n');
+      const start = lines.indexOf('## Blocages structurels');
+      const end = lines.findIndex((l, i) => i > start && /^#{1,6}\s/.test(l));
+      expect(start).toBeGreaterThan(0);
+      expect(end).toBeGreaterThan(start);
+      expect(lines[end]).toBe('## S5');
+      expect(lines.slice(-3)).toEqual(tail); // la fenêtre attendue
+
+      const leadBlock = [lines[0], ...lines.slice(start, end)].join('\n');
+      const cap = bytes(leadBlock) + tail.reduce((n, l) => n + 1 + bytes(l), 0);
+      expect(bytes(fixture)).toBeGreaterThan(cap);
+
+      const out = truncateToMaxSize(fixture, cap, 'Status (fixture D5)');
+      // Exactement le budget : ni gaspillé, ni franchi.
+      expect(bytes(out)).toBe(cap);
+      expect(out.endsWith(tail[tail.length - 1])).toBe(true);
+      // La ligne `---` (premier candidat de queue) ne rentre pas.
+      expect(out.split('\n')).not.toContain('---');
     });
   });
 });
