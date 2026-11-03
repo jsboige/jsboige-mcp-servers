@@ -25,6 +25,15 @@
  *      historique inchangé, octet pour octet ; bloc seul au-dessus du
  *      plafond ⇒ repli sur la queue (une liste tronquée se lirait comme
  *      complète).
+ *   E. Review ms#1637 (3 réserves ai-01) — (a) récence : le chemin bloc
+ *      réserve la DERNIÈRE ligne avant la queue (le chemin historique ne
+ *      la perd jamais — hard-cut en dernier recours — le chemin bloc ne le
+ *      doit pas non plus) ; (b) marqueur d'omission : l'auto-condense rend
+ *      un document qui DIT combien de lignes sont tombées, marqueur budgété
+ *      comme #2719 (marqueur + corps ≤ plafond, invariant dur) ; (c) contrat
+ *      de libellé : seuls « Blocages » / « Blockers » ouvrent le droit au
+ *      bloc — tout autre libellé, même porteur du même contenu, est du
+ *      contenu ordinaire (chemin historique).
  *
  * Témoins de mutation (exécutés au cycle, consignés dans la PR) :
  *   M1 inversion du sens de la boucle (tête↔queue)        → A1 rouge
@@ -38,6 +47,9 @@
  *   M9 fin de section = heading seul (bloc sans corps)       → D1/D3/D4/D5 rouges
  *   M10 séparateur non compté ('\n' + ligne → ligne)         → D5 rouge (> plafond)
  *   M11 garde de taille du bloc retirée                      → D3 rouge (> plafond)
+ *   M12 plancher de récence retiré (garde + seed → état mergé) → E1a rouge
+ *   M13 marqueur non budgété (append à budget plein)          → E2 rouge (> plafond)
+ *   M14 libellé élargi à tout heading                         → E3 rouge (mesuré : 10 rouges — D1-D5, E1a/E1b ; la priorité de bloc change partout)
  *
  * Hors d'atteinte unitaire (documenté, non testé ici) : l'append des marqueurs
  * #1502/#3803 APRÈS condenseTextIfTooLarge (dashboard.ts ~L5753-5782, mesure
@@ -50,6 +62,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   truncateToMaxSize,
+  truncateWithOmissionMarker,
   buildStatusFallbackMarker,
   stripStatusFallbackMarker,
 } from '../dashboard.js';
@@ -418,6 +431,125 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
       expect(out.endsWith(tail[tail.length - 1])).toBe(true);
       // La ligne `---` (premier candidat de queue) ne rentre pas.
       expect(out.split('\n')).not.toContain('---');
+    });
+  });
+
+  describe('E — récence, marqueur d\'omission, contrat de libellé (review ms#1637)', () => {
+    it('E1a — bande meurtrière : le solde ne paie même pas la dernière ligne ⇒ repli historique, elle survit, le bloc paie', () => {
+      // Revue ms#1637 réserve (a) : la boucle de queue démarrait à la DERNIÈRE
+      // ligne et s'arrêtait net sur la première qui ne rentre pas — quand le
+      // solde est plus petit que cette ligne, tail restait vide et la dernière
+      // ligne mourait, contrairement au contrat de récence du chemin
+      // historique (qui la hard-cute plutôt que de la perdre).
+      const lead = '## [workspace] — État';
+      const block = section('Blocages structurels', 3);
+      const tail = [
+        `queue 1 : ${'q'.repeat(150)}`,
+        `queue 2 : ${'q'.repeat(150)}`,
+        `DERNIÈRE : sentinelle de récence ${'z'.repeat(60)}`,
+      ];
+      const fixture = [lead, section('Résumé', 2), block, '## S5', ...tail].join('\n');
+      const lines = fixture.split('\n');
+      const start = lines.indexOf('## Blocages structurels');
+      const end = lines.findIndex((l, i) => i > start && /^#{1,6}\s/.test(l));
+      const leadBlockBytes = bytes([lines[0], ...lines.slice(start, end)].join('\n'));
+      const lastCost = 1 + bytes(lines[lines.length - 1]);
+      // La bande meurtrière exacte : lead+bloc passent SEULS, mais pas avec la
+      // dernière ligne en plus.
+      const cap = leadBlockBytes + Math.max(1, lastCost - 2);
+      expect(leadBlockBytes).toBeLessThanOrEqual(cap);
+      expect(leadBlockBytes + lastCost).toBeGreaterThan(cap);
+
+      const out = truncateToMaxSize(fixture, cap, 'Status (fixture E1a)');
+      expect(bytes(out)).toBeLessThanOrEqual(cap);
+      // Contrat de récence : la dernière ligne survit…
+      expect(out.endsWith(lines[lines.length - 1])).toBe(true);
+      // …et c'est le BLOC qui paie : chemin historique (suffixe contigu).
+      expect(fixture.endsWith(out)).toBe(true);
+      expect(out).not.toContain('## Blocages structurels');
+    });
+
+    it('E1b — frontière inclusive : lead+bloc+dernière ligne exactement = budget ⇒ les trois tenus, l\'avant-dernière seule sacrifiée', () => {
+      // Épingle d'exactitude (pas un témoin de mutation — l'état mergé rend
+      // la même sortie à CE budget) : la garde est ≤, le seed paie la dernière
+      // ligne en premier, et le plafond est atteint sans être franchi.
+      const lead = '## [workspace] — État';
+      const block = section('Blocages structurels', 3);
+      const tail = [
+        `queue 1 : ${'q'.repeat(150)}`,
+        `DERNIÈRE : sentinelle de récence ${'z'.repeat(60)}`,
+      ];
+      const fixture = [lead, section('Résumé', 2), block, '## S5', ...tail].join('\n');
+      const lines = fixture.split('\n');
+      const start = lines.indexOf('## Blocages structurels');
+      const end = lines.findIndex((l, i) => i > start && /^#{1,6}\s/.test(l));
+      const leadBlock = [lines[0], ...lines.slice(start, end)].join('\n');
+      const last = lines[lines.length - 1];
+      const prev = lines[lines.length - 2];
+      const cap = bytes(leadBlock) + 1 + bytes(last);
+      expect(bytes(leadBlock) + (1 + bytes(last)) + (1 + bytes(prev))).toBeGreaterThan(cap);
+
+      const out = truncateToMaxSize(fixture, cap, 'Status (fixture E1b)');
+      expect(bytes(out)).toBe(cap); // atteint sans être franchi
+      expect(out).toContain('## Blocages structurels'); // bloc tenu
+      expect(out.endsWith(last)).toBe(true); // dernière tenue (réservée d'abord)
+      expect(out.split('\n')).not.toContain(prev); // l'avant-dernière paie
+    });
+
+    it('E2 — le marqueur d\'omission annonce le VRAI compte de lignes tombées, et son budget est compté dans le plafond', () => {
+      // Revue ms#1637 réserve (b) : la sortie du plancher ressemblait à un
+      // document complet. Le marqueur est budgété comme #2719 — ses octets
+      // sont réservés AVANT la troncature, marqueur + corps ≤ plafond.
+      const fixture = [
+        '## [workspace] — État',
+        section('Résumé', 8),
+        section('Blocages structurels', 4),
+        section('S4', 8),
+      ].join('\n');
+      const cap = 1200;
+      expect(bytes(fixture)).toBeGreaterThan(cap);
+
+      const out = truncateWithOmissionMarker(fixture, cap, 'Status (fixture E2)');
+      expect(bytes(out)).toBeLessThanOrEqual(cap); // invariant dur, marqueur compris
+      const outLines = out.split('\n');
+      const m = /^… (\d+) lignes omises$/.exec(outLines[0]);
+      expect(m, 'la première ligne doit être le marqueur d\'omission').not.toBeNull();
+      const removed = Number(m![1]);
+      expect(removed).toBeGreaterThan(0);
+      // Le compte est VRAI : lignes d'origine − lignes rendues (hors marqueur).
+      expect(fixture.split('\n').length - (outLines.length - 1)).toBe(removed);
+      // Budgété, pas plaqué : le corps tient sous le plafond RÉDUIT du marqueur.
+      expect(bytes(outLines.slice(1).join('\n'))).toBeLessThanOrEqual(cap - bytes(`${outLines[0]}\n`));
+
+      // Texte qui tient : aucun marqueur, sortie inchangée.
+      const small = '## tient\nligne unique';
+      expect(truncateWithOmissionMarker(small, 4096, 'Status (fixture E2bis)')).toBe(small);
+    });
+
+    it('E3 — contrat de libellé : « Verrous » (même rôle, autre libellé) = contenu ordinaire, chemin historique', () => {
+      // Revue ms#1637 réserve (c) : seuls « Blocages » / « Blockers » ouvrent
+      // le droit au bloc. Élargir le libellé est une décision produit, pas
+      // une optimisation — ce test rend toute élargissement silencieuse rouge.
+      const otherLabel = [
+        '## Verrous ouverts',
+        'verrou X [vérifié 03/11 22:53Z].',
+        'verrou Y [vérifié 03/11 23:10Z].',
+      ].join('\n');
+      const fixture = [
+        '## [workspace] — État',
+        section('Résumé', 8),
+        otherLabel,
+        section('S4', 8),
+      ].join('\n');
+      const cap = 700;
+      expect(bytes(fixture)).toBeGreaterThan(cap);
+
+      const out = truncateToMaxSize(fixture, cap, 'Status (fixture E3)');
+      expect(bytes(out)).toBeLessThanOrEqual(cap);
+      // Pas de passe-droit de libellé : suffixe contigu historique, le heading
+      // « Verrous » meurt avec la tête comme n'importe quelle section.
+      expect(fixture.endsWith(out)).toBe(true);
+      expect(out).not.toContain('## Verrous ouverts');
     });
   });
 });
