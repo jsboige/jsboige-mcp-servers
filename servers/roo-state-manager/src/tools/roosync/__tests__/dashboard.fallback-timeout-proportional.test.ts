@@ -58,7 +58,7 @@ vi.mock('openai', async (importOriginal) => {
               throw new real.APIConnectionTimeoutError({ message: 'Request timed out.' });
             }
             return {
-              choices: [{ message: { content: '## Cloud summary\n\nBorne-proportional salvage.' } }],
+              choices: [{ message: { content: '## Cloud summary\n\n### Thèmes principaux\n- Borne-proportional salvage.\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none' } }],
             };
           },
         },
