@@ -4463,7 +4463,9 @@ export async function condenseTextIfTooLarge(
     openai = getChatOpenAIClient();
   } catch {
     logger.warn(`Cannot auto-condense ${label}: no LLM client — applying deterministic truncation`);
-    return truncateToMaxSize(text, maxSizeBytes, label);
+    // #4434 review (b): through the omission-marker wrapper — the floor alone
+    // would return a document that reads as complete.
+    return truncateWithOmissionMarker(text, maxSizeBytes, label);
   }
   const modelId = getLLMModelId();
   const capKb = Math.round(maxSizeBytes / 1024);
@@ -4588,10 +4590,12 @@ RÈGLES :
 
   // LLM never converged under the cap (down, empty, or still oversized) → deterministic
   // backstop on the smallest candidate so ${label} NEVER exceeds its cap (the #2598 bug).
+  // #4434 review (b): omission-marker wrapper — the floor's output must say
+  // what was dropped instead of reading as a complete document.
   logger.warn(`Auto-condense ${label}: LLM did not converge under ${capKb}KB, applying deterministic truncation`, {
     bestKB: `${(bestSize / 1024).toFixed(1)}KB`
   });
-  return truncateToMaxSize(bestCandidate, maxSizeBytes, label);
+  return truncateWithOmissionMarker(bestCandidate, maxSizeBytes, label);
 }
 
 /**
@@ -5143,6 +5147,13 @@ export function sliceSuffixToMaxBytes(text: string, maxBytes: number): string {
  * next heading of any level, or EOF) — so the whole block travels together.
  * `null` when the status has no such heading, in which case callers keep their
  * historical behaviour untouched.
+ *
+ * Label contract (#4434 review (c)): deliberately narrow — only « Blocages »
+ * and « Blockers » (case-insensitive, word-bounded) are preserved. A section
+ * carrying the same kind of content under a different label (« Verrous »,
+ * « Issues ouvertes »…) is ORDINARY content for the floor: widening the label
+ * set is a product decision (which sections deserve head-priority), not a
+ * drive-by. Differently labelled ⇒ `null` ⇒ historical path, byte for byte.
  */
 function findBlocagesSection(lines: string[]): { start: number; end: number } | null {
   const start = lines.findIndex((line) => /^#{1,6}\s*(?:Blocages|Blockers)\b/i.test(line));
@@ -5166,6 +5177,11 @@ function findBlocagesSection(lines: string[]): { start: number; end: number } | 
  * reader the most (it is what the readers act on). When such a section exists
  * and fits on its own, it is kept whole together with the document's lead
  * heading, and the remaining budget goes to the tail (recency contract kept).
+ * Recency floor (#4434 review (a)): the historical path below NEVER drops the
+ * last line — it hard-cuts it at byte level when it must — so the block path
+ * owes the same contract. The last line is reserved FIRST; when even it cannot
+ * be paid alongside the block, the block is what gets sacrificed (fall to the
+ * historical path) rather than the last line.
  * No such heading, or a block that alone exceeds the cap (a truncated blockers
  * list would read as complete): historical tail-only path, unchanged.
  */
@@ -5181,10 +5197,22 @@ export function truncateToMaxSize(text: string, maxSizeBytes: number, label: str
     const block = lines.slice(blocages.start, blocages.end);
     const kept = lead.concat(block).join('\n');
     const keptBytes = Buffer.byteLength(kept, 'utf8');
-    if (keptBytes <= maxSizeBytes) {
-      let usedBytes = keptBytes;
+    // #4434 review (a) — recency floor. The tail loop starts at the LAST line
+    // and breaks on the first line that does not fit: when the remaining
+    // budget cannot pay even that line, `tail` stays empty and the last line
+    // dies — a contract the historical path below never breaks (it hard-cuts
+    // the last line rather than dropping it). Reserve the last line FIRST;
+    // when it cannot be paid alongside the block, the guard below fails and
+    // the historical path takes over, so the recency contract survives even
+    // where the block does not. When the block runs to EOF it already ends
+    // with the last line (lastCost = 0, guard degenerates to the size check).
+    const lastIdx = lines.length - 1;
+    const lastCost = lastIdx >= blocages.end ? Buffer.byteLength('\n' + lines[lastIdx], 'utf8') : 0;
+    if (keptBytes + lastCost <= maxSizeBytes) {
+      let usedBytes = keptBytes + lastCost;
       const tail: string[] = [];
-      for (let i = lines.length - 1; i >= blocages.end; i--) {
+      if (lastCost > 0) tail.unshift(lines[lastIdx]);
+      for (let i = lastIdx - 1; i >= blocages.end; i--) {
         // Separator counted with the line: the cap is a byte cap, not a sum
         // of line lengths.
         const cost = Buffer.byteLength('\n' + lines[i], 'utf8');
@@ -5233,6 +5261,40 @@ export function truncateToMaxSize(text: string, maxSizeBytes: number, label: str
   });
 
   return truncated;
+}
+
+/**
+ * #4434 review (b): the deterministic floor returns a document that LOOKS
+ * complete — nothing in it says lines were dropped, and a reader cannot tell
+ * a truncated status from a whole one. Wrap the floor with an omission marker
+ * budgeted exactly like the #2719 status marker (see the `markerBytes`
+ * reservation at its call site): the marker's own bytes are reserved from the
+ * cap, the floor runs on the reduced budget, the marker is prepended — so
+ * marker + truncated body ≤ cap stays a hard invariant.
+ *
+ * The omitted-line count depends on the budget, and the budget depends on the
+ * marker's byte length, which depends on the count: the loop re-runs the floor
+ * until the count stabilizes (a wider count only shrinks the floor budget by
+ * its own digit growth, so it converges in a couple of passes). No lines
+ * dropped (e.g. a single oversized line, hard-cut in place) ⇒ no marker: the
+ * output is then literally true.
+ */
+export function truncateWithOmissionMarker(text: string, maxSizeBytes: number, label: string): string {
+  if (Buffer.byteLength(text, 'utf8') <= maxSizeBytes) return text;
+  const originalLines = text.split('\n').length;
+  let removed = 0;
+  let truncated = text;
+  for (let pass = 0; pass < 4; pass++) {
+    const marker = `… ${removed} lignes omises`;
+    const markerBytes = Buffer.byteLength(`${marker}\n`, 'utf8');
+    const next = truncateToMaxSize(text, Math.max(0, maxSizeBytes - markerBytes), label);
+    const nextRemoved = originalLines - next.split('\n').length;
+    truncated = next;
+    if (nextRemoved === removed) break;
+    removed = nextRemoved;
+  }
+  if (removed === 0) return truncated;
+  return `… ${removed} lignes omises\n${truncated}`;
 }
 
 /**

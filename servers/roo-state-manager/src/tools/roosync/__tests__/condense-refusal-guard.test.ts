@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { condenseTextIfTooLarge, truncateToMaxSize } from '../dashboard.js';
+import { condenseTextIfTooLarge, truncateWithOmissionMarker } from '../dashboard.js';
 
 const mockPrimaryCreate = vi.fn();
 const mockGetPrimaryClient = vi.fn();
@@ -54,7 +54,7 @@ describe('condenseTextIfTooLarge — refusal is never a candidate (#4434)', () =
     mockPrimaryCreate.mockResolvedValue(reply(REFUSAL));
     const out = await condenseTextIfTooLarge(oversizedText, CAP, 'Status');
     expect(out).not.toContain('I cannot complete');
-    expect(out).toBe(truncateToMaxSize(oversizedText, CAP, 'Status'));
+    expect(out).toBe(truncateWithOmissionMarker(oversizedText, CAP, 'Status'));
     expect(bytes(out)).toBeLessThanOrEqual(CAP);
     expect(mockPrimaryCreate).toHaveBeenCalledTimes(2); // the refusal moved it to attempt 2
   });
@@ -85,7 +85,7 @@ describe('condenseTextIfTooLarge — refusal is never a candidate (#4434)', () =
     mockFallbackCreate.mockResolvedValue(reply(REFUSAL));
     const out = await condenseTextIfTooLarge(oversizedText, CAP, 'Status');
     expect(out).not.toContain('Would you like me to');
-    expect(out).toBe(truncateToMaxSize(oversizedText, CAP, 'Status'));
+    expect(out).toBe(truncateWithOmissionMarker(oversizedText, CAP, 'Status'));
   });
 
   it('control: a legitimate under-cap condensation from the primary is returned unchanged', async () => {
