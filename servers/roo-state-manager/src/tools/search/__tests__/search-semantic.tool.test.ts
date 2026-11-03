@@ -3391,6 +3391,16 @@ describe('#4352 machine-output de-rank', () => {
 		expect(classifyMachineOutput('message_exchange', 'On garde le couple <name>Code Simple</name> avec <model>glm-4.7</model>, inchangé pour cette lane.')).toBeNull();
 	});
 
+	// Next grain (review on 095228a5, ai-01 03/11): the line-break anchor has an
+	// index-0 blind spot — a content whose FIRST characters are the envelope has
+	// no break before `<name>`, so it fell back to prose. `^` closes it, at no
+	// cost: such a text quotes a whole envelope line, the residual already named
+	// above (indistinguishable from an envelope).
+	test('#2609 an envelope that starts at index 0 is still a mode prompt', () => {
+		expect(classifyMachineOutput('message_exchange', '<name>💻 Code Simple</name>\n<model>glm-4.7</model>')).toBe('mode_prompt');
+		expect(classifyMachineOutput('message_exchange', '<name>Code Simple</name><model>glm-4.7</model>')).toBe('mode_prompt');
+	});
+
 	test('#2609 rejects the broad predicates: escaped instructions and padded listings stay prose', () => {
 		// 1.5 escaped newlines per 100 chars — the measured shape that the
 		// rejected predicate dropped along with a real decision passage.
