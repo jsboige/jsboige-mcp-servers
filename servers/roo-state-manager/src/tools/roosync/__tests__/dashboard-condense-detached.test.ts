@@ -45,6 +45,50 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   ...mocks,
 }));
 
+// #4527 review (ai-01, 04/11) — point d'injection du test de verrou : chaque
+// écriture de dashboard se termine par une copie in-place (staging → copyFile).
+// Le test tient OUVERTE celle de la relecture-fusion détachée : c'est la fenêtre
+// où un append concurrent pouvait s'intercaler puis être écrasé. `gateAtCall`
+// désigne ce numéro d'appel — les DEUX chemins d'écriture comptent (l'append
+// incrémental de l'appelant, puis la fusion détachée), donc la copie #1 est
+// l'append, la #2 la passe détachée. `copyAfterGateEntered` dit si un autre
+// writer a franchi SON écriture pendant que celle-ci est tenue. Désactivé par
+// défaut : les autres tests de ce fichier ne voient qu'un passe-plat.
+const fsGate = vi.hoisted(() => ({
+  enabled: false,
+  gateAtCall: 0,
+  copyCalls: 0,
+  copyAfterGateEntered: false,
+  onGatedCopy: null as null | (() => void),
+  onCopyAfterGate: null as null | (() => void),
+  gatedCopyBarrier: null as null | Promise<void>,
+  releaseGated: null as null | (() => void),
+}));
+
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  return {
+    ...actual,
+    copyFile: async (
+      src: Parameters<typeof actual.copyFile>[0],
+      dest: Parameters<typeof actual.copyFile>[1]
+    ) => {
+      if (fsGate.enabled) {
+        fsGate.copyCalls += 1;
+        if (fsGate.copyCalls === fsGate.gateAtCall) {
+          const barrier = fsGate.gatedCopyBarrier;
+          fsGate.onGatedCopy?.();
+          if (barrier) await barrier;
+        } else if (fsGate.copyCalls > fsGate.gateAtCall) {
+          fsGate.copyAfterGateEntered = true;
+          fsGate.onCopyAfterGate?.();
+        }
+      }
+      return actual.copyFile(src, dest);
+    },
+  };
+});
+
 // Le faux client LLM est PILOTÉ par le test : `llmGate` permet de tenir la
 // passe en vol (preuve que l'append n'attend pas), `llmMode` choisit succès ou
 // échec de la passe.
@@ -97,6 +141,14 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     releaseLlmGate = null;
     llmMode = 'ok';
     llmCalls = 0;
+    fsGate.enabled = false;
+    fsGate.gateAtCall = 0;
+    fsGate.copyCalls = 0;
+    fsGate.copyAfterGateEntered = false;
+    fsGate.onGatedCopy = null;
+    fsGate.onCopyAfterGate = null;
+    fsGate.gatedCopyBarrier = null;
+    fsGate.releaseGated = null;
     // Le disjoncteur est de l'état MODULE : un test d'échec le laisserait ouvert
     // pour les suivants (passe primaire sautée → 0 appel LLM au lieu de 2).
     resetCondenseCircuitBreaker();
@@ -123,6 +175,14 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
       llmMode = 'ok';
       releaseLlmGate();
       releaseLlmGate = null;
+    }
+    // Même contrat pour le gate fs : un test qui expire en le tenant laisserait
+    // le verrou de clé armé pour le suivant (la clé est la même d'un test à
+    // l'autre) — la cascade transforme un rouge en deux.
+    if (fsGate.releaseGated) {
+      fsGate.enabled = false;
+      fsGate.releaseGated();
+      fsGate.releaseGated = null;
     }
     await rm(tmpDir, { recursive: true, force: true });
     delete process.env.ROOSYNC_SHARED_PATH;
@@ -287,6 +347,11 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     });
     expect(second.condensationDeferred).toBeUndefined();
     expect(second.condensationStalled).toBe('lock-held');
+    // #4527 review — un lock-held causé par NOTRE passe détachée est un état
+    // nominal, pas un stall étranger : la réponse le qualifie (télémétrie, sans
+    // épingler d'âge ni de durée).
+    expect(second.condensationStallLockOwnPass).toBe(true);
+    expect(second.message).toContain('passe détachée de CE process');
 
     llmMode = 'ok';
     releaseLlmGate?.();
@@ -295,6 +360,67 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
 
     // Deux appels LLM = UNE passe (statut + résumé en parallèle), pas deux.
     expect(llmCalls).toBe(2);
+  });
+
+  it('l\'écriture détachée ré-entre dans le verrou de clé : un append concurrent ne peut pas être écrasé', async () => {
+    const { key, status } = await populateBelowThreshold();
+    const tokenB = 'APPEND-CONCURRENT-4527';
+
+    let enteredGatedCopy!: () => void;
+    const gatedCopyEntered = new Promise<void>(resolve => { enteredGatedCopy = resolve; });
+    let enteredCopyAfterGate!: () => void;
+    const copyAfterGateEntered = new Promise<void>(resolve => { enteredCopyAfterGate = resolve; });
+    let releaseGatedCopy!: () => void;
+    const gatedCopyBarrier = new Promise<void>(resolve => { releaseGatedCopy = resolve; });
+
+    // Copie #1 = l'écriture incrémentale de l'append A (celle qui rend la main à
+    // l'appelant) ; copie #2 = l'écriture FUSIONNÉE de la passe détachée, celle
+    // qu'on tient ouverte pour ouvrir la fenêtre de course.
+    fsGate.enabled = true;
+    fsGate.gateAtCall = 2;
+    fsGate.copyCalls = 0;
+    fsGate.copyAfterGateEntered = false;
+    fsGate.onGatedCopy = enteredGatedCopy;
+    fsGate.onCopyAfterGate = enteredCopyAfterGate;
+    fsGate.gatedCopyBarrier = gatedCopyBarrier;
+    fsGate.releaseGated = releaseGatedCopy;
+
+    // A franchit le seuil : sa passe détachée part, et va jusqu'à l'écriture
+    // finale (relecture-fusion faite, copyFile en vol).
+    const a = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: crossingContent(status, 'A-VERROU-4527'),
+      tags: ['INFO'],
+    });
+    expect(a.condensationDeferred).toBe(true);
+    await gatedCopyEntered;
+
+    // B arrive pendant cette écriture. Sous le verrou de clé il doit ATTENDRE —
+    // sans lui, il franchit sa propre copyFile sur une vue antérieure à la fusion
+    // et son message est ensuite écrasé (la course reproduite par Hermes).
+    const bPromise = roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: `B ${tokenB} ${'w'.repeat(800)}`,
+      tags: ['INFO'],
+    });
+    // Témoin négatif : sous le verrou, B n'entre JAMAIS dans son écriture ; sans
+    // le verrou il y entre en quelques millisecondes. La course est bornée des
+    // deux côtés (signal positif vs délai), pas par un sleep nu.
+    const outcome = await Promise.race([
+      copyAfterGateEntered.then(() => 'entered' as const),
+      new Promise<'not-entered'>(resolve => setTimeout(() => resolve('not-entered'), 300)),
+    ]);
+    expect(outcome).toBe('not-entered');
+
+    releaseGatedCopy();
+    fsGate.releaseGated = null;
+    const b = await bPromise;
+    await awaitDetachedCondense(key);
+
+    expect(b.success).toBe(true);
+    expect(await messageSurvivesAnywhere(tokenB)).toBe(true);
   });
 
   it('signale le remplissage avant le seuil de condensation (avis 85 %)', async () => {

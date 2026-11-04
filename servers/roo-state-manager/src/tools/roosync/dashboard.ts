@@ -1898,7 +1898,36 @@ function startDetachedCondense(
       });
       if (newlyArchived > 0) {
         lastCondenseHash.set(key, payloadHash);
-        await applyCondensedWithMerge(key, snapshot, condensedDashboard);
+        // #4527 review (ai-01, 04/11) — la relecture-fusion ET l'écriture finale
+        // d'applyCondensedWithMerge doivent se trouver sous le MÊME verrou de clé
+        // que le dispatcher `append` (case 'append'). Détachée, la passe écrivait
+        // hors de ce verrou : un append de la même clé pouvait atterrir entre la
+        // relecture de la fusion et son écriture, puis être écrasé (reproduit par
+        // Hermes). Le verrou est tenu SEULEMENT autour de l'écriture — la passe LLM
+        // ci-dessus reste dehors : elle dure des minutes et rien ne doit s'y
+        // sérialiser.
+        const condenseWv = await withKeyLock(key, () =>
+          applyCondensedWithMerge(key, snapshot, condensedDashboard)
+        );
+        // #3774 critère 3 — cette écriture n'a plus d'appelant pour porter son
+        // verdict (le chemin synchrone l'accumule dans writeVerify). Sans ce
+        // journal, un fork DriveFS ou une moitié GDrive dégradée apparus pendant
+        // la passe détachée restaient invisibles.
+        if (condenseWv?.forkSuspected) {
+          logger.warn('[FORK SUSPECTÉ #3482] écriture de condensation détachée déviée — relire le canonique avant tout retry', {
+            key,
+            forkDetail: condenseWv.forkDetail,
+            forkPath: condenseWv.forkPath,
+            diag,
+          });
+        }
+        if (condenseWv?.gdriveDegraded) {
+          logger.warn('[GDRIVE DÉGRADÉ #4131] condensation détachée : le store PG a porté l\'écriture', {
+            key,
+            error: condenseWv.gdriveDegraded,
+            diag,
+          });
+        }
       }
     } catch (err) {
       diag.outcome = 'llm-failed-injected';
@@ -6719,6 +6748,13 @@ export interface DashboardResult {
   /** Stall diagnostics — age in ms of the condense lock at stall time (PG clock when the PG layer holds it, else holder.acquiredAt). */
   condensationStallLockAgeMs?: number;
   /**
+   * #4527 review (ai-01, 04/11) — qualifie `condensationStalled='lock-held'` :
+   * true quand le verrou est tenu par la passe détachée de CE process (état
+   * nominal — la condensation progresse, son issue va au journal), absent quand
+   * il l'est par un détenteur étranger (vrai stall).
+   */
+  condensationStallLockOwnPass?: true;
+  /**
    * ms#1339 — présent quand l'auteur a été résolu depuis le process hôte
    * (`author` absent), ex. `process-default: myia-ai-01|roo-extensions`. Un
    * append passerelle sans `author` était attribué en silence à la lane hôte
@@ -8033,6 +8069,11 @@ async function handleAppend(
   let condensationDeferred = false;
   // Stall diagnostics (web2 05/10) — filled only on the lock-held path.
   let condensationStallLock: { holder: string; ageMs: number } | null = null;
+  // #4527 review (ai-01, 04/11) — un `lock-held` n'a pas le même sens selon qui
+  // tient le verrou : la passe détachée de CE process est un état nominal (la
+  // condensation progresse, son issue va au journal), un détenteur étranger est
+  // un vrai stall. Discriminant in-process, sans parser l'identité du holder.
+  let condensationStallOwnPass = false;
 
   const tWrite = Date.now();
   const writeStages: WriteStageTimings = {};
@@ -8143,6 +8184,7 @@ async function handleAppend(
         // healthy concurrent condense, near-TTL = steal horizon. Best-effort:
         // null keeps the stall visible, just without the qualifier.
         condensationStallLock = await readCondenseLockHolderInfo(key);
+        condensationStallOwnPass = detachedCondenseInFlight.has(key);
         const skippedDiag = newDiagnostic('post-append');
         skippedDiag.outcome = 'skipped-lock-held';
         condenseDiagnostics.push(skippedDiag);
@@ -8423,7 +8465,9 @@ async function handleAppend(
   // workspace-CoursIA (332 %, appends succès verts) n'était visible que dans
   // les logs locaux des hôtes appendants.
   const stallLockPhrase = condensationStalled === 'lock-held'
-    ? (condensationStallLock
+    ? (condensationStallOwnPass
+        ? 'verrou condense tenu par la passe détachée de CE process (condensation en vol — son issue va au journal et au lastCondensedAt de la prochaine lecture, #4527)'
+        : condensationStallLock
         // Both lock layers steal at TTL + clock-skew grace (tryAcquireCondenseLock,
         // isCondenseLockStale): naming the bare TTL made a lock inside the grace
         // read as "expired but never stolen" (po-2028, workspace-claudish 01/11).
@@ -8469,6 +8513,12 @@ async function handleAppend(
       condensationStalled === 'lock-held' && !condensed && condensationStallLock
         ? Math.round(condensationStallLock.ageMs)
         : undefined,
+    // #4527 review (ai-01, 04/11) — qualifie le `lock-held` : notre propre passe
+    // détachée (nominal) vs un détenteur étranger (vrai stall).
+    condensationStallLockOwnPass:
+      condensationStalled === 'lock-held' && !condensed && condensationStallOwnPass
+        ? true
+        : undefined,
     crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
     condenseDiagnostic: condenseDiagnostics.length > 0 ? condenseDiagnostics : undefined,
     splitCount: newMessages.length,
@@ -8478,11 +8528,17 @@ async function handleAppend(
     // seul) est visible dans la réponse : un succès silencieux apprendrait à
     // l'appelant à l'ignorer. storeMissing (B2) n'a pas forcément dégradé
     // l'écriture (le montage peut revenir entre-temps) : warning d'entrée.
-    warning: guardAWarning
-      ?? (fillWarnCrossed
+    // #4527 review (ai-01, 04/11) — les avis se CONCATÈNENT : un `??` en chaîne
+    // masquait B2 #4131 dès que l'avis de remplissage sortait, et l'appelant
+    // perdait un signal indépendant. Chaque avis est autonome, aucun ne remplace
+    // l'autre.
+    warning: [
+      guardAWarning,
+      fillWarnCrossed
         ? `[WARN #4527] dashboard à ${Math.round((estimatedSize / MAX_DASHBOARD_SIZE_BYTES) * 100)} % du plafond (${Math.round(estimatedSize / 1024)} Ko) — au-dessus du seuil d'avis ${Math.round(fillWarnThreshold / 1024)} Ko, sous le seuil de condensation ${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)} Ko.`
-        : undefined)
-      ?? (storeMissing ? "[B2 #4131] store G: absent à l'entrée — écriture tentée en mode PG-seul" : undefined),
+        : undefined,
+      storeMissing ? "[B2 #4131] store G: absent à l'entrée — écriture tentée en mode PG-seul" : undefined,
+    ].filter((w): w is string => typeof w === 'string' && w.length > 0).join(' ') || undefined,
     // #4286 — le miroir différé est un état, pas une panne : l'appelant doit
     // savoir que le fichier suit derrière (il ne peut pas en déduire l'inverse
     // d'un simple succès).
