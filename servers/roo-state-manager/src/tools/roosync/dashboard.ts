@@ -5349,6 +5349,57 @@ function findBlocagesSection(lines: string[]): { start: number; end: number } | 
 }
 
 /**
+ * #4434 (04/11) — blockers share. « Kept whole » is bounded. On the 4 archived
+ * roo-extensions statuses measured (02-04/11) the blockers section is the
+ * largest one, 26-44 % of the status (8.4 KB, 46 lines, 39 % on the 21.7 KB
+ * input of 04/11), with 0-1 of its lines marked REFUTE/RÉSOLU: the generator
+ * copies every line forward, and a section the floor keeps whole makes the
+ * others pay. When the floor runs, blocker lines leave first, but only while
+ * the document is over the cap AND the section is over this share of the cap;
+ * below the share the other sections pay as before.
+ * `CONDENSE_BLOCKERS_MAX_SHARE_PCT=0` restores « Blocages kept whole »
+ * (rollback lever, not a cruising mode). Read per call, like
+ * DASHBOARD_FILL_WARN_PCT.
+ */
+function blockersMaxShare(): number | null {
+  const raw = process.env.CONDENSE_BLOCKERS_MAX_SHARE_PCT;
+  if (raw !== undefined && raw.trim() !== '' && Number(raw) === 0) return null;
+  const pct = Number(raw);
+  return Number.isFinite(pct) && pct > 0 ? Math.min(90, Math.max(10, pct)) / 100 : 0.4;
+}
+
+/**
+ * Drop order of a blocker line, lowest first: a line marked REFUTE/RÉSOLU in
+ * capitals, plural included (#4082: refuted lines are declassed; « NON
+ * RÉSOLU » / « PAS RÉSOLU » say the opposite and are not), then an undated
+ * line (#4082: not reliable; a stamp outside day 1-31 / month 1-12 counts as
+ * undated), then dated lines by their `[vérifié JJ/MM HH:MMZ]` stamp, oldest
+ * first (the time is optional). The stamp has no year: a month later than the
+ * current one is read as last year's.
+ *
+ * No marker line replaces the dropped blockers: the next generation pass would
+ * copy it forward, and it would enter the very ratchet this share breaks. The
+ * floor's « … N lignes omises » head marker and the pass archive (full status
+ * from before condensation) carry the omission.
+ */
+export function blockerDropRank(line: string, now: Date = new Date()): number {
+  // The negator (NON / PAS) is a whole word, followed by any run of blanks
+  // and dashes (NBSP, tab, `-`, `–`, `—` included) before the marker.
+  if (/(?:^|[^A-Za-zÀ-ÿ])(?<!(?:^|[^A-Za-zÀ-ÿ])(?:[Nn][Oo][Nn]|[Pp][Aa][Ss])[\s\-\u2010-\u2015]+)(?:REFUT[EÉ]E?S?|R[EÉ]SOLUE?S?)(?![A-Za-zÀ-ÿ])/.test(line)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  const m = /\[v[ée]rifi[ée]e?\s+(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2})Z?)?/i.exec(line);
+  if (!m) return Number.MIN_SAFE_INTEGER;
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  if (day < 1 || day > 31 || month < 1 || month > 12) return Number.MIN_SAFE_INTEGER;
+  const hh = m[3] !== undefined ? Number(m[3]) : 0;
+  const mm = m[4] !== undefined ? Number(m[4]) : 0;
+  const yearOffset = month > now.getUTCMonth() + 1 ? -1 : 0;
+  return (((yearOffset * 13 + month) * 32 + day) * 24 + hh) * 60 + mm;
+}
+
+/**
  * #4434 (04/11) — section-aware floor: trim INSIDE sections, never drop one whole.
  *
  * Measured on ai-01 on 04/11: 7/7 status passes ended on the deterministic floor.
@@ -5359,9 +5410,11 @@ function findBlocagesSection(lines: string[]): { start: number; end: number } | 
  * makes the loss permanent: the floor first threw away the long-term memory the
  * status exists to carry.
  *
- * This path never drops a heading line. It keeps the « Blocages » section whole
- * (same label contract as findBlocagesSection), and it keeps the document's last
- * line (the recency contract of the paths below). The bytes come out of the
+ * This path never drops a heading line. The « Blocages » section (same label
+ * contract as findBlocagesSection) loses lines first, and only down to its
+ * share (see blockersMaxShare above); below the share it is not a candidate.
+ * The document's last non-blank line is always kept (the recency contract of
+ * the paths below). The bytes come out of the
  * section that is currently largest, one body line at a time, topmost line
  * first, so a bloated section pays before a short one. On a tie the later
  * section pays, which protects the head.
@@ -5379,7 +5432,44 @@ export function truncateBySections(text: string, maxSizeBytes: number, label: st
   if (headingIdx.length < 2) return null;
 
   const blocages = findBlocagesSection(lines);
-  const lastIdx = lines.length - 1;
+  // The recency contract protects the last line that carries text: with a
+  // trailing newline the array ends on '' and the real last line would
+  // otherwise become a candidate.
+  let lastIdx = lines.length - 1;
+  while (lastIdx > 0 && lines[lastIdx].trim() === '') lastIdx--;
+  const keep = new Array<boolean>(lines.length).fill(true);
+  let size = Buffer.byteLength(text, 'utf8');
+
+  // Blockers share: drop blocker lines in blockerDropRank order while the
+  // document is over the cap and the section body is over its share — never
+  // more than the cap needs. Equal ranks go topmost first; the document's last
+  // non-blank line is never a candidate.
+  let blockersTrimmed = 0;
+  const share = blockersMaxShare();
+  if (blocages && share !== null) {
+    const shareBytes = Math.floor(maxSizeBytes * share);
+    const body: number[] = [];
+    let blockBytes = 0;
+    for (let i = blocages.start + 1; i < Math.min(blocages.end, lastIdx); i++) {
+      blockBytes += Buffer.byteLength(lines[i], 'utf8') + 1;
+      if (lines[i].trim() !== '') body.push(i);
+    }
+    if (blockBytes > shareBytes) {
+      const now = new Date();
+      // -Infinity - -Infinity is NaN, which is falsy: the index decides.
+      const order = body
+        .map((i) => ({ i, rank: blockerDropRank(lines[i], now) }))
+        .sort((a, b) => (a.rank - b.rank) || (a.i - b.i));
+      for (const { i } of order) {
+        if (blockBytes <= shareBytes || size <= maxSizeBytes) break;
+        const cost = Buffer.byteLength(lines[i], 'utf8') + 1;
+        keep[i] = false;
+        blockBytes -= cost;
+        size -= cost;
+        blockersTrimmed++;
+      }
+    }
+  }
   // Removable ranges [next, to): the body lines of every section except
   // « Blocages », plus any preamble before the first heading. The last line of
   // the document is never removable.
@@ -5399,8 +5489,6 @@ export function truncateBySections(text: string, maxSizeBytes: number, label: st
 
   // Dropping one line removes the line and one separator, because at least the
   // two headings always remain: size accounting stays exact at the byte.
-  const keep = new Array<boolean>(lines.length).fill(true);
-  let size = Buffer.byteLength(text, 'utf8');
   while (size > maxSizeBytes) {
     let pick = -1;
     for (let s = 0; s < segments.length; s++) {
@@ -5422,7 +5510,8 @@ export function truncateBySections(text: string, maxSizeBytes: number, label: st
     truncatedBytes: Buffer.byteLength(out, 'utf8'),
     limitBytes: maxSizeBytes,
     sections: headingIdx.length,
-    blockersKeptWhole: blocages !== null,
+    blockersSectionPresent: blocages !== null,
+    blockersTrimmed,
     linesRemoved: lines.length - out.split('\n').length,
   });
   return out;
