@@ -235,6 +235,18 @@ describe('logger', () => {
 			expect(output).toContain('key'); // the field names survive
 		});
 
+		test('a function as metadata, or a Proxy that refuses its keys, never makes the logger throw', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			expect(() => logger.error('Failed', undefined, (() => 1) as any)).not.toThrow();
+			expect(consoleSpy.error.mock.calls[0][0]).toContain('function value');
+			const hostile = new Proxy({}, {
+				ownKeys() { throw new Error('no-keys'); },
+				get() { throw new Error('no-get'); },
+			});
+			expect(() => logger.error('Failed', undefined, hostile as any)).not.toThrow();
+			expect(consoleSpy.error.mock.calls[1][0]).toContain('metadataNotSerializable');
+		});
+
 		test('a BigInt in the context is written, not thrown', () => {
 			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
 			expect(() => logger.error('Failed', { count: BigInt(42) })).not.toThrow();

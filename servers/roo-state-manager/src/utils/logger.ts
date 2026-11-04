@@ -198,7 +198,7 @@ export class Logger {
                     errorStack: error.stack
                 };
             } else if (isPlainObject(error)) {
-                // 19 call sites (4 files) pass their context as the 2nd argument
+                // Call sites pass their context as the 2nd argument
                 // (`logger.error(msg, { key, detail })`); `String()` turned it
                 // into "[object Object]" and every [DASHBOARD-FORK] alert lost
                 // its key and detail. A plain object IS context: its fields are
@@ -237,14 +237,20 @@ export class Logger {
         // Format metadata with indentation for better readability
         let metadataStr = '';
         if (metadata) {
-            let formattedMetadata: string;
+            let formattedMetadata: string | undefined;
             try {
                 formattedMetadata = JSON.stringify(metadata, metadataReplacer, 2);
             } catch (serializeError) {
                 // The logger is called from catch blocks: a cyclic context must
                 // never turn it into a thrower that replaces the original error.
                 const reason = serializeError instanceof Error ? serializeError.message : String(serializeError);
-                formattedMetadata = JSON.stringify({ metadataNotSerializable: reason, keys: Object.keys(metadata) }, null, 2);
+                let keys: string[] = [];
+                try { keys = Object.keys(metadata); } catch { /* exotic object (Proxy): no keys */ }
+                formattedMetadata = JSON.stringify({ metadataNotSerializable: reason, keys }, null, 2);
+            }
+            // JSON.stringify returns undefined, without throwing, for a function or a symbol.
+            if (formattedMetadata === undefined) {
+                formattedMetadata = JSON.stringify({ metadataNotSerializable: `${typeof metadata} value` }, null, 2);
             }
             metadataStr = '\n' + formattedMetadata.split('\n').map(line => `  ${line}`).join('\n');
         }
