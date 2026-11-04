@@ -74,15 +74,23 @@
  *   M19 séparateur non compté dans le coût d'une ligne       → A1/A5/D5 rouges
  *   M20 jambe cloud visant le plafond au lieu de 75 %        → condense-size-target (cloud) rouge
  *   Part des blocages (04/11, exécutés, fichier restauré par cp + sha256) :
- *   M21 part désactivée (share → null)                       → F1/F2/F4/F5/F6/F7 rouges
- *   M22 rang ignoré (ordre du document seul)                 → F1/F2/F5/F6 rouges
+ *   M21 part désactivée (share → null)                       → F1/F1b/F2/F4/F5/F6/F7/F8/F9 rouges
+ *   M22 rang ignoré (ordre du document seul)                 → F1/F1b/F2/F5/F6/F8/F9 rouges
  *   M23 année glissante retirée                              → F3 rouge
  *   M24 REFUTE/RÉSOLU non déclassés                          → F2/F3 rouges
  *   M25 levier =0 ignoré                                     → D3/E1a/E1b/F4 rouges
- *   M26 dernière ligne du document candidate                 → F6 rouge
+ *   M26 dernière ligne du document candidate                 → F6/F9 rouges
  *   M27 non daté rangé comme le plus récent                  → F2/F3 rouges
  *   M28 égalité : la plus basse sort                         → F2 rouge
- *   M29 part comptée sur le texte entier au lieu du plafond  → F1/F2/F4/F5/F7 rouges
+ *   M29 part comptée sur le texte entier au lieu du plafond  → F1b/F2/F4 rouges
+ *   Suites de la review (04/11) :
+ *   M30 rogne jusqu'à la part même sous le plafond (S1)      → F1/F2/F5/F8 rouges
+ *   M31 « NON/PAS RÉSOLU » déclassé (S2)                     → F3 rouge
+ *   M32 pluriels non déclassés                               → F3 rouge
+ *   M33 tampon hors calendrier lu comme une date             → F3 rouge
+ *   M34 dernière ligne = dernier élément même vide           → F9 rouge
+ *   M35 levier : seule la graphie `0` coupe                  → F4 rouge
+ *   M36 valeur vide lue comme zéro                           → F4 rouge
  *
  * Hors d'atteinte unitaire (documenté, non testé ici) : l'append des marqueurs
  * #1502/#3803 APRÈS condenseTextIfTooLarge (dashboard.ts ~L5753-5782, mesure
@@ -438,6 +446,11 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
       expect(bytes(withBlockers)).toBeGreaterThan(CAP_D); // bien le chemin de troncation
       const blockerLines = section('Blocages structurels', 6).split('\n');
       expect(blockerLines.length).toBeGreaterThan(1);
+      // Marge vis-à-vis de la part par défaut (F) : corps 816 o sous floor(0,4 × 2 200) = 880 o,
+      // 64 o de marge. « Entière » ici tient À CAUSE de cette marge : si la part par défaut
+      // descend, ce test doit rougir sur cette ligne, pas plus bas.
+      const blockerBody = blockerLines.slice(1).reduce((a, l) => a + bytes(l) + 1, 0);
+      expect(Math.floor(CAP_D * 0.4) - blockerBody).toBe(64);
 
       const out = truncateToMaxSize(withBlockers, CAP_D, 'Status (fixture D1)');
       expect(bytes(out)).toBeLessThanOrEqual(CAP_D);
@@ -671,10 +684,12 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
   });
 
   describe('F — part des blocages : au-delà de 40 % du plafond, les moins récemment vérifiés sortent (#4434, 04/11)', () => {
-    // Mesuré sur 24 statuts archivés (31/10-04/11) : la section blocages
-    // croissait à chaque passe jusqu'à 91 % du statut (14,5 Ko sur 15,9 Ko),
-    // avec 0-1 ligne marquée REFUTE/RÉSOLU — des lignes entrent, aucune ne
-    // sort, et « gardée entière » faisait payer les sept autres sections.
+    // Mesuré sur les 4 statuts archivés de roo-extensions (02-04/11) : la
+    // section blocages est la plus grosse, 26-44 % du statut (8,4 Ko, 46 lignes,
+    // 39 % sur l'entrée de 21,7 Ko du 04/11), avec 0-1 ligne marquée
+    // REFUTE/RÉSOLU — le générateur recopie chaque ligne, et « gardée entière »
+    // faisait payer les autres sections. Les fixtures poussent la forme
+    // au-delà de la mesure (F1 : > 80 %) pour exercer la part sans ambiguïté.
     const LINE = 120;
     /** Ligne de blocage de 120 o exactement, tampon en fin de ligne comme en production. */
     const blocker = (id: string, stamp: string) => {
@@ -698,8 +713,8 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
     const CAP_F = 8 * 1024;
     const SHARE_F = Math.floor(CAP_F * 0.4);
     const others = [['Résumé', 2], ['État des systèmes', 3], ['Décisions actées', 3], ['Livrables récents', 2], ['Patterns appris', 2]] as const;
-    /** Forme mesurée : la section blocages porte l'essentiel du statut. */
-    const measured = (n: number) => [
+    /** Forme poussée au-delà de la mesure (26-44 %) : la section blocages porte l'essentiel du statut. */
+    const heavy = (n: number) => [
       '## [workspace-roo-extensions] — État au 2026-11-04T08:17Z',
       section('Résumé', 2),
       section('État des systèmes', 3),
@@ -710,17 +725,31 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
       section('Patterns appris', 2),
     ].join('\n');
 
-    it('F1 — forme mesurée (blocages > 80 % du statut) : la part est tenue au plus juste, les autres sections sortent INTACTES', () => {
-      const fx = measured(70);
+    /** Même forme, autres sections épaissies à `k` lignes : elles pèsent plus que 60 % du plafond, la part devient la borne. */
+    const crowded = (n: number, k: number) => [
+      '## [workspace-roo-extensions] — État au 2026-11-04T08:17Z',
+      section('Résumé', k),
+      section('État des systèmes', k),
+      section('Décisions actées', k),
+      '## Blocages structurels',
+      ...Array.from({ length: n }, (_, i) => blocker(`B${i}`, stampAt(i))),
+      section('Livrables récents', k),
+      section('Patterns appris', k),
+    ].join('\n');
+    const headingsOf = (s: string) => s.split('\n').filter(l => /^#{1,6}\s/.test(l));
+
+    it('F1 — forme extrême (blocages > 80 % du statut) : les blocages paient SEULS et au plus juste du plafond, les autres sections sortent INTACTES', () => {
+      const fx = heavy(70);
       expect(bytes(fx)).toBeGreaterThan(CAP_F);
       const before = blockersBody(fx);
       expect(bodyBytes(before) / bytes(fx)).toBeGreaterThan(0.8);
 
       const out = truncateToMaxSize(fx, CAP_F, 'Status (fixture F1)');
       expect(bytes(out)).toBeLessThanOrEqual(CAP_F);
+      expect(bytes(out) + LINE + 1).toBeGreaterThan(CAP_F); // une ligne de plus déborderait : rien de trop n'est sorti
       const kept = blockersBody(out);
-      expect(bodyBytes(kept)).toBeLessThanOrEqual(SHARE_F);
-      expect(bodyBytes(kept) + LINE + 1).toBeGreaterThan(SHARE_F); // une ligne de plus déborderait
+      // Le plafond n'exigeait pas de descendre à la part : la section reste au-dessus.
+      expect(bodyBytes(kept)).toBeGreaterThan(SHARE_F);
       // Les plus récemment vérifiées restent — ici en tête : préfixe exact, ordre gardé.
       expect(kept).toEqual(before.slice(0, kept.length));
       // Les autres sections, que « Blocages entiers » faisait payer, sont intactes.
@@ -728,6 +757,22 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
         for (const line of section(t, n).split('\n')) expect(out).toContain(line);
       }
       expect(out.split('\n')[0]).toBe('## [workspace-roo-extensions] — État au 2026-11-04T08:17Z');
+    });
+
+    it('F1b — part contraignante : les blocages s\'arrêtent à leur part, au plus juste, et les autres sections paient le reste, titres gardés', () => {
+      const fx = crowded(50, 12);
+      const before = blockersBody(fx);
+      const othersBytes = bytes(fx) - bodyBytes(before);
+      expect(othersBytes).toBeGreaterThan(CAP_F - SHARE_F); // sans la part, les blocages paieraient plus
+
+      const out = truncateToMaxSize(fx, CAP_F, 'Status (fixture F1b)');
+      expect(bytes(out)).toBeLessThanOrEqual(CAP_F);
+      const kept = blockersBody(out);
+      expect(bodyBytes(kept)).toBeLessThanOrEqual(SHARE_F);
+      expect(bodyBytes(kept) + LINE + 1).toBeGreaterThan(SHARE_F); // une ligne de plus déborderait la part
+      expect(kept).toEqual(before.slice(0, kept.length));
+      expect(headingsOf(out)).toEqual(headingsOf(fx));
+      expect(bytes(fx) - bodyBytes(before) - (bytes(out) - bodyBytes(kept))).toBeGreaterThan(0); // les autres ont payé
     });
 
     it('F2 — ordre de sortie : REFUTE/RÉSOLU, puis non daté, puis la vérification la plus ancienne ; à égalité, la plus haute', () => {
@@ -741,9 +786,10 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
         blocker('résolu', 'RÉSOLU [vérifié 04/11 10:00Z]'),
       ];
       const fx = ['## [workspace] — État', '## Résumé', 'résumé court', '## Blocages structurels', ...ls, '## Fin', 'fin'].join('\n');
-      // Part = floor(0,4 × 7 × 121) = 338 o : 2 lignes (242 o) tiennent, 3 (363 o) non ⇒ 5 sortent.
-      const cap = 7 * (LINE + 1);
-      expect(bytes(fx)).toBeGreaterThan(cap);
+      // Plafond choisi pour exiger 5 sorties exactement (4 ne suffisent pas d'un octet) ;
+      // la part (40 % du plafond) reste sous les 2 lignes gardées : elle n'est pas la borne ici.
+      const cap = bytes(fx) - 4 * (LINE + 1) - 1;
+      expect(Math.floor(cap * 0.4)).toBeLessThan(2 * (LINE + 1));
 
       const out = truncateToMaxSize(fx, cap, 'Status (fixture F2)');
       expect(bytes(out)).toBeLessThanOrEqual(cap);
@@ -765,32 +811,58 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
       expect(blockerDropRank('x RÉSOLU [vérifié 04/11 09:00Z]', nov)).toBe(Number.NEGATIVE_INFINITY);
       expect(blockerDropRank('x non résolu [vérifié 04/11 09:00Z]', nov)).toBeGreaterThan(Number.MIN_SAFE_INTEGER);
       expect(blockerDropRank('x REFUTED_BY [vérifié 04/11 09:00Z]', nov)).toBeGreaterThan(Number.MIN_SAFE_INTEGER);
+      // « NON / PAS RÉSOLU » disent le contraire : jamais déclassés, quelle que soit la casse du négateur.
+      for (const neg of ['NON RÉSOLU', 'PAS RÉSOLU', 'NON-RÉSOLU', 'Non RÉSOLU', 'non RÉSOLU', 'pas RESOLUE']) {
+        expect(blockerDropRank(`x ${neg} [vérifié 04/11 09:00Z]`, nov)).toBeGreaterThan(Number.MIN_SAFE_INTEGER);
+      }
+      // Pluriels et féminins : déclassés.
+      for (const mark of ['RÉSOLUS', 'RESOLUES', 'REFUTÉES', 'REFUTES', 'REFUTÉ']) {
+        expect(blockerDropRank(`x ${mark} [vérifié 04/11 09:00Z]`, nov)).toBe(Number.NEGATIVE_INFINITY);
+      }
+      // Tampon hors calendrier (jour 1-31, mois 1-12) : non daté, pas un mois inventé.
+      expect(blockerDropRank('x [vérifié 99/10 10:00Z]', nov)).toBe(Number.MIN_SAFE_INTEGER);
+      expect(blockerDropRank('x [vérifié 01/13 10:00Z]', nov)).toBe(Number.MIN_SAFE_INTEGER);
+      expect(blockerDropRank('x [vérifié 00/11 10:00Z]', nov)).toBe(Number.MIN_SAFE_INTEGER);
     });
 
     it('F4 — levier : `=0` garde les blocages ENTIERS (les autres paient), valeur invalide = 40 %, `25` = 25 %', () => {
-      // 60 lignes (7,3 Ko) : entières, elles tiennent encore avec les titres et la dernière ligne.
-      const fx = measured(60);
+      // 50 lignes (6 Ko) : entières, elles tiennent encore avec les titres et la dernière ligne.
+      // Autres sections épaissies : la part est la borne à 40 % comme à 25 %.
+      const fx = crowded(50, 12);
       expect(bytes(fx)).toBeGreaterThan(CAP_F);
       const before = blockersBody(fx);
+      expect(bytes(fx) - bodyBytes(before)).toBeGreaterThan(CAP_F - Math.floor(CAP_F * 0.25));
+      const atShare = (got: number, pct: number) => {
+        const shareB = Math.floor(CAP_F * pct);
+        expect(got).toBeLessThanOrEqual(shareB);
+        expect(got + LINE + 1).toBeGreaterThan(shareB);
+      };
 
       vi.stubEnv('CONDENSE_BLOCKERS_MAX_SHARE_PCT', '0');
       const whole = truncateToMaxSize(fx, CAP_F, 'Status (fixture F4 =0)');
       expect(bytes(whole)).toBeLessThanOrEqual(CAP_F);
       expect(blockersBody(whole)).toEqual(before);
-      const othersLines = others.flatMap(([t, n]) => section(t, n).split('\n').slice(1));
+      const othersLines = others.flatMap(([t]) => section(t, 12).split('\n').slice(1));
       expect(othersLines.filter(l => !whole.includes(l)).length).toBeGreaterThan(0);
+      // Toute graphie numérique de zéro coupe la part, comme `0`.
+      for (const zero of ['00', '0.0', ' 0 ']) {
+        vi.stubEnv('CONDENSE_BLOCKERS_MAX_SHARE_PCT', zero);
+        expect(blockersBody(truncateToMaxSize(fx, CAP_F, `Status (fixture F4 ${zero})`))).toEqual(before);
+      }
+      // Vide = non réglé = 40 %, pas « coupé ».
+      vi.stubEnv('CONDENSE_BLOCKERS_MAX_SHARE_PCT', '  ');
+      atShare(bodyBytes(blockersBody(truncateToMaxSize(fx, CAP_F, 'Status (fixture F4 vide)'))), 0.4);
 
       vi.stubEnv('CONDENSE_BLOCKERS_MAX_SHARE_PCT', 'abc');
-      expect(bodyBytes(blockersBody(truncateToMaxSize(fx, CAP_F, 'Status (fixture F4 abc)')))).toBeLessThanOrEqual(SHARE_F);
+      atShare(bodyBytes(blockersBody(truncateToMaxSize(fx, CAP_F, 'Status (fixture F4 abc)'))), 0.4);
 
       vi.stubEnv('CONDENSE_BLOCKERS_MAX_SHARE_PCT', '25');
-      const quarter = bodyBytes(blockersBody(truncateToMaxSize(fx, CAP_F, 'Status (fixture F4 25)')));
-      expect(quarter).toBeLessThanOrEqual(Math.floor(CAP_F * 0.25));
-      expect(quarter + LINE + 1).toBeGreaterThan(Math.floor(CAP_F * 0.25));
+      atShare(bodyBytes(blockersBody(truncateToMaxSize(fx, CAP_F, 'Status (fixture F4 25)'))), 0.25);
     });
 
-    it('F5 — le cliquet est rompu : 5 passes où le générateur ajoute 40 blocages frais, la part tient, les anciens sortent', () => {
-      let status = measured(70);
+    it('F5 — le cliquet est rompu : 5 passes où le générateur ajoute 40 blocages frais, la section ne grossit plus, les anciens sortent', () => {
+      let status = heavy(70);
+      const lengths: number[] = [];
       for (let p = 1; p <= 5; p++) {
         const fresh = Array.from({ length: 40 }, (_, i) =>
           blocker(`P${p}-${i}`, `[vérifié 0${4 + p}/11 ${String(23 - Math.floor(i / 2)).padStart(2, '0')}:${i % 2 ? '10' : '40'}Z]`));
@@ -801,15 +873,18 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
         const out = truncateToMaxSize(status, CAP_F, `Status (fixture F5 passe ${p})`);
         expect(bytes(out)).toBeLessThanOrEqual(CAP_F);
         const kept = blockersBody(out);
-        expect(bodyBytes(kept)).toBeLessThanOrEqual(SHARE_F);
-        // Les 40 fraîches (4,8 Ko) dépassent seules la part : rien d'une passe précédente ne survit.
-        expect(kept.length).toBeGreaterThan(0);
-        expect(kept.every(l => l.startsWith(`- **P${p}-`))).toBe(true);
+        // Les 40 fraîches sont les plus récentes : toutes gardées.
+        for (const l of fresh) expect(kept).toContain(l);
+        // Dès la passe 2, rien d'antérieur à la passe précédente ne survit : les anciens sortent.
+        if (p >= 2) expect(kept.every(l => l.startsWith(`- **P${p}-`) || l.startsWith(`- **P${p - 1}-`))).toBe(true);
+        lengths.push(kept.length);
         for (const [t, n] of others) {
           for (const line of section(t, n).split('\n')) expect(out).toContain(line);
         }
         status = out;
       }
+      // Régime établi : la section ne grossit plus d'une passe à l'autre.
+      expect(new Set(lengths.slice(1)).size).toBe(1);
     });
 
     it('F6 — blocages en DERNIÈRE section : la dernière ligne du document survit, même la plus ancienne', () => {
@@ -824,14 +899,45 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
     });
 
     it('F7 — le marqueur d\'omission compte aussi les blocages sortis : compte vrai, plafond tenu', () => {
-      const fx = measured(70);
+      const fx = heavy(70);
       const out = truncateWithOmissionMarker(fx, CAP_F, 'Status (fixture F7)');
       expect(bytes(out)).toBeLessThanOrEqual(CAP_F);
       const outLines = out.split('\n');
       const m = /^… (\d+) lignes omises$/.exec(outLines[0]);
       expect(m).not.toBeNull();
       expect(fx.split('\n').length - (outLines.length - 1)).toBe(Number(m![1]));
-      expect(Number(m![1])).toBe(70 - 27); // 27 lignes de 121 o = 3 267 o ≤ part
+      // Au plus juste : toutes les lignes omises sont des blocages, les autres sections sont intactes.
+      expect(blockersBody(out).length).toBe(70 - Number(m![1]));
+      for (const [t, n] of others) {
+        for (const line of section(t, n).split('\n')) expect(out).toContain(line);
+      }
+    });
+
+    it('F8 — au plus juste : 1 octet au-dessus du plafond, seule la vérification la plus ancienne sort, la section reste AU-DESSUS de sa part', () => {
+      const fx = heavy(70);
+      const before = blockersBody(fx);
+      const cap = bytes(fx) - 1;
+      expect(bodyBytes(before)).toBeGreaterThan(Math.floor(cap * 0.4)); // la part est bien dépassée
+
+      const out = truncateToMaxSize(fx, cap, 'Status (fixture F8)');
+      expect(bytes(out)).toBeLessThanOrEqual(cap);
+      const kept = blockersBody(out);
+      // B69 porte le tampon le plus ancien : elle seule sort, le reste à l'identique.
+      expect(kept).toEqual(before.slice(0, 69));
+      expect(bodyBytes(kept)).toBeGreaterThan(Math.floor(cap * 0.4)); // jamais plus que le plafond ne l'exige
+      expect(bytes(fx) - bytes(out)).toBe(LINE + 1);
+    });
+
+    it('F9 — retour à la ligne final : la dernière ligne PORTEUSE de texte reste protégée, même la plus ancienne', () => {
+      const ls = Array.from({ length: 10 }, (_, i) => blocker(`L${i}`, stampAt(i))); // L9 = la plus ancienne
+      const fx = ['## [workspace] — État', section('Résumé', 2), '## Blocages structurels', ...ls].join('\n') + '\n';
+      const cap = bytes(fx) - 2 * (LINE + 1);
+
+      const out = truncateToMaxSize(fx, cap, 'Status (fixture F9)');
+      expect(bytes(out)).toBeLessThanOrEqual(cap);
+      expect(out).toContain(ls[9]);
+      expect(out).not.toContain(ls[8]); // les deux plus anciennes candidates sont sorties
+      expect(out).not.toContain(ls[7]);
     });
   });
 });

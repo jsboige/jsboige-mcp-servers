@@ -5349,27 +5349,31 @@ function findBlocagesSection(lines: string[]): { start: number; end: number } | 
 }
 
 /**
- * #4434 (04/11) — blockers share. « Kept whole » is bounded. Over 24 archived
- * roo-extensions statuses (31/10-04/11), the blockers section grew at every
- * pass until it filled 91 % of the status (14.5 KB of 15.9 KB), with 0-1 of
- * its lines ever marked REFUTE/RÉSOLU: lines enter, none leave, and a section
- * the floor keeps whole then crowds out the seven others. When the floor runs,
- * the section body is capped at this share of the cap.
+ * #4434 (04/11) — blockers share. « Kept whole » is bounded. On the 4 archived
+ * roo-extensions statuses measured (02-04/11) the blockers section is the
+ * largest one, 26-44 % of the status (8.4 KB, 46 lines, 39 % on the 21.7 KB
+ * input of 04/11), with 0-1 of its lines marked REFUTE/RÉSOLU: the generator
+ * copies every line forward, and a section the floor keeps whole makes the
+ * others pay. When the floor runs, blocker lines leave first, but only while
+ * the document is over the cap AND the section is over this share of the cap;
+ * below the share the other sections pay as before.
  * `CONDENSE_BLOCKERS_MAX_SHARE_PCT=0` restores « Blocages kept whole »
  * (rollback lever, not a cruising mode). Read per call, like
  * DASHBOARD_FILL_WARN_PCT.
  */
 function blockersMaxShare(): number | null {
   const raw = process.env.CONDENSE_BLOCKERS_MAX_SHARE_PCT;
-  if (raw !== undefined && raw.trim() === '0') return null;
+  if (raw !== undefined && raw.trim() !== '' && Number(raw) === 0) return null;
   const pct = Number(raw);
   return Number.isFinite(pct) && pct > 0 ? Math.min(90, Math.max(10, pct)) / 100 : 0.4;
 }
 
 /**
- * Drop order of a blocker line, lowest first: a line marked REFUTE/RÉSOLU
- * (#4082: refuted lines are declassed), then an undated line (#4082: not
- * reliable), then dated lines by their `[vérifié JJ/MM HH:MMZ]` stamp, oldest
+ * Drop order of a blocker line, lowest first: a line marked REFUTE/RÉSOLU in
+ * capitals, plural included (#4082: refuted lines are declassed; « NON
+ * RÉSOLU » / « PAS RÉSOLU » say the opposite and are not), then an undated
+ * line (#4082: not reliable; a stamp outside day 1-31 / month 1-12 counts as
+ * undated), then dated lines by their `[vérifié JJ/MM HH:MMZ]` stamp, oldest
  * first (the time is optional). The stamp has no year: a month later than the
  * current one is read as last year's.
  *
@@ -5379,13 +5383,14 @@ function blockersMaxShare(): number | null {
  * from before condensation) carry the omission.
  */
 export function blockerDropRank(line: string, now: Date = new Date()): number {
-  if (/(?:^|[^A-Za-zÀ-ÿ])(?:REFUT[EÉ]E?|R[EÉ]SOLUE?)(?![A-Za-zÀ-ÿ])/.test(line)) {
+  if (/(?:^|[^A-Za-zÀ-ÿ])(?<!(?:[Nn][Oo][Nn]|[Pp][Aa][Ss])[\s-])(?:REFUT[EÉ]E?S?|R[EÉ]SOLUE?S?)(?![A-Za-zÀ-ÿ])/.test(line)) {
     return Number.NEGATIVE_INFINITY;
   }
   const m = /\[v[ée]rifi[ée]e?\s+(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2})Z?)?/i.exec(line);
   if (!m) return Number.MIN_SAFE_INTEGER;
   const day = Number(m[1]);
   const month = Number(m[2]);
+  if (day < 1 || day > 31 || month < 1 || month > 12) return Number.MIN_SAFE_INTEGER;
   const hh = m[3] !== undefined ? Number(m[3]) : 0;
   const mm = m[4] !== undefined ? Number(m[4]) : 0;
   const yearOffset = month > now.getUTCMonth() + 1 ? -1 : 0;
@@ -5403,10 +5408,11 @@ export function blockerDropRank(line: string, now: Date = new Date()): number {
  * makes the loss permanent: the floor first threw away the long-term memory the
  * status exists to carry.
  *
- * This path never drops a heading line. It keeps the « Blocages » section whole
- * up to its share (see blockersMaxShare below; same label contract as
- * findBlocagesSection), and it keeps the document's last
- * line (the recency contract of the paths below). The bytes come out of the
+ * This path never drops a heading line. The « Blocages » section (same label
+ * contract as findBlocagesSection) loses lines first, and only down to its
+ * share (see blockersMaxShare above); below the share it is not a candidate.
+ * The document's last non-blank line is always kept (the recency contract of
+ * the paths below). The bytes come out of the
  * section that is currently largest, one body line at a time, topmost line
  * first, so a bloated section pays before a short one. On a tie the later
  * section pays, which protects the head.
@@ -5424,13 +5430,18 @@ export function truncateBySections(text: string, maxSizeBytes: number, label: st
   if (headingIdx.length < 2) return null;
 
   const blocages = findBlocagesSection(lines);
-  const lastIdx = lines.length - 1;
+  // The recency contract protects the last line that carries text: with a
+  // trailing newline the array ends on '' and the real last line would
+  // otherwise become a candidate.
+  let lastIdx = lines.length - 1;
+  while (lastIdx > 0 && lines[lastIdx].trim() === '') lastIdx--;
   const keep = new Array<boolean>(lines.length).fill(true);
   let size = Buffer.byteLength(text, 'utf8');
 
-  // Blockers share: drop blocker lines in blockerDropRank order until the
-  // section body fits in its share. Equal ranks go topmost first; the
-  // document's last line is never a candidate.
+  // Blockers share: drop blocker lines in blockerDropRank order while the
+  // document is over the cap and the section body is over its share — never
+  // more than the cap needs. Equal ranks go topmost first; the document's last
+  // non-blank line is never a candidate.
   let blockersTrimmed = 0;
   const share = blockersMaxShare();
   if (blocages && share !== null) {
@@ -5448,7 +5459,7 @@ export function truncateBySections(text: string, maxSizeBytes: number, label: st
         .map((i) => ({ i, rank: blockerDropRank(lines[i], now) }))
         .sort((a, b) => (a.rank - b.rank) || (a.i - b.i));
       for (const { i } of order) {
-        if (blockBytes <= shareBytes) break;
+        if (blockBytes <= shareBytes || size <= maxSizeBytes) break;
         const cost = Buffer.byteLength(lines[i], 'utf8') + 1;
         keep[i] = false;
         blockBytes -= cost;
