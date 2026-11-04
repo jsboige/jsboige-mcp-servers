@@ -161,6 +161,8 @@ describe('#3962 piste 3 renforcée — machine-counted per-key census of fallbac
     let tmpDir: string;
 
     beforeEach(async () => {
+      // #4527 - suite sur la SEMANTIQUE de la passe : chemin synchrone conserve.
+      process.env.CONDENSE_DETACHED = '0';
       tmpDir = await mkdtemp(testTmpBase);
       process.env.ROOSYNC_SHARED_PATH = tmpDir;
       await mkdir(path.join(tmpDir, 'dashboards', 'archive'), { recursive: true });

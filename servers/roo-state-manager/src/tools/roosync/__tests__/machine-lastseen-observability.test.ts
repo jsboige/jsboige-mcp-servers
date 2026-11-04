@@ -85,6 +85,8 @@ describe('#3695 — machineLastSeen observability', () => {
     let archiveDir: string;
 
     beforeEach(() => {
+      // #4527 - suite sur la SEMANTIQUE de la passe : chemin synchrone conserve.
+      process.env.CONDENSE_DETACHED = '0';
       // #4344 residual: the STALE verdict cache is process-global; these
       // fixtures (2026-09-xx) conclude stale, which would skip the next test's
       // walk. Reset per test.
