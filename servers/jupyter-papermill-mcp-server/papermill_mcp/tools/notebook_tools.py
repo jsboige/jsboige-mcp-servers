@@ -57,9 +57,19 @@ async def _bounded_file_op(op, op_name: str, timeout: Optional[float] = None):
     def _run():
         result = op() if callable(op) else op
         if inspect.isawaitable(result):
-            # No running loop in this worker thread: asyncio.run drives the
-            # service coroutine to completion there, off the event loop.
-            return asyncio.run(result)
+            # A loop owned by this worker thread drives the service coroutine,
+            # off the event loop. Not asyncio.run: under nest_asyncio (main.py)
+            # it becomes get_event_loop().run_until_complete(), and once
+            # papermill's execute has switched the global policy to
+            # WindowsSelectorEventLoopPolicy (papermill/clientwrap.py, win32), a
+            # class nest_asyncio never patched, get_event_loop() raises "There
+            # is no current event loop in thread 'asyncio_0'" here -- for every
+            # file op until the server restarts.
+            loop = asyncio.new_event_loop()
+            try:
+                return loop.run_until_complete(result)
+            finally:
+                loop.close()
         return result
 
     try:

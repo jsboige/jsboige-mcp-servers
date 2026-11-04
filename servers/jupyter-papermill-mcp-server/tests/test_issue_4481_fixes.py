@@ -618,3 +618,40 @@ async def test_bounded_file_op_passthrough():
 
     out = await _bounded_file_op(fine, "read_cells", timeout=5)
     assert out == {"cells": 3}
+
+
+async def test_bounded_file_op_survives_an_unpatched_policy_under_nest_asyncio(
+    monkeypatch,
+):
+    """#4481 (W1 regression): after one execute_notebook, every file op answered
+    "There is no current event loop in thread 'asyncio_0'" (po-2024, po-2023).
+
+    Two production facts combine. main.py applies nest_asyncio, whose asyncio.run
+    is get_event_loop().run_until_complete(); and papermill's execute sets
+    WindowsSelectorEventLoopPolicy (clientwrap.py), a policy class nest_asyncio
+    never patched, whose get_event_loop() raises in a non-main thread. Both are
+    reproduced here without either dependency, so this runs on any platform:
+    the async service body must still complete in the worker thread.
+    """
+
+    def nest_asyncio_run(main, *, debug=False):
+        # nest_asyncio 1.6.0 _patch_asyncio().run, reduced to its loop lookup
+        return asyncio.get_event_loop().run_until_complete(main)
+
+    class UnpatchedPolicy(asyncio.DefaultEventLoopPolicy):
+        # stands for WindowsSelectorEventLoopPolicy: the stdlib lookup, which
+        # raises in a thread that never set a loop
+        get_event_loop = asyncio.events.BaseDefaultEventLoopPolicy.get_event_loop
+
+    async def service_body():
+        return {"cells": 3}
+
+    monkeypatch.setattr(asyncio, "run", nest_asyncio_run)
+    previous = asyncio.get_event_loop_policy()
+    asyncio.set_event_loop_policy(UnpatchedPolicy())
+    try:
+        out = await _bounded_file_op(service_body, "read_cells", timeout=5)
+    finally:
+        asyncio.set_event_loop_policy(previous)
+
+    assert out == {"cells": 3}
