@@ -27,6 +27,19 @@ const { mockIsAvailable, mockExtractSettings, mockExistsSync, mockReadFile, mock
 	mockReaddir: vi.fn().mockResolvedValue([])
 }));
 
+// #4523 — la ligne PG du registre, côté loadRegistryMachines. Défaut SANS PG :
+// les tests existants (miroir G: seul) restent sur leur comportement d'origine.
+const { mockStoreMetaUrl, mockReadStoreMetaValue } = vi.hoisted(() => ({
+	mockStoreMetaUrl: vi.fn().mockReturnValue(null),
+	mockReadStoreMetaValue: vi.fn().mockResolvedValue(null)
+}));
+
+vi.mock('../../../services/unified-store/store-meta.js', () => ({
+	MACHINE_REGISTRY_META_KEY: 'machine_registry',
+	storeMetaUrl: (...args: any[]) => mockStoreMetaUrl(...args),
+	readStoreMetaValue: (...args: any[]) => mockReadStoreMetaValue(...args)
+}));
+
 vi.mock('../../../services/RooSyncService.js', () => ({
 	getRooSyncService: vi.fn(() => ({
 		getConfig: mockGetConfig,
@@ -998,7 +1011,9 @@ describe('compare-config', () => {
 				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
 				expect(rosterDiff).toBeDefined();
 				expect(rosterDiff!.severity).toBe('INFO');
-				expect(rosterDiff!.description).toContain('registre');
+				// #4523 : lu sans PG, le registre-fichier se nomme désormais « miroir G: » —
+				// le sens du test (le registre bat le dashboard périmé) est inchangé.
+				expect(rosterDiff!.description).toContain('miroir G:');
 				expect(result.differences.filter(d => d.severity === 'CRITICAL' && d.path === 'env.ROO_FLEET_ROSTER')).toHaveLength(0);
 			} finally {
 				restoreFs();
@@ -1054,6 +1069,115 @@ describe('compare-config', () => {
 			expect(rosterDiff!.action).toContain('NE PAS retirer myia-po-2027');
 			expect(rosterDiff!.action).not.toContain('Aligner sur le roster canonique');
 			expect(rosterDiff!.action).not.toContain('Ajouter');
+		});
+
+		// ============================================================
+		// #4523 — la référence du roster est la ligne PG, pas le miroir G:
+		// ============================================================
+		const FLEET_8 = [...FLEET_7, 'myia-web2'].sort();
+
+		function mockPgRegistry(machines: string[]) {
+			mockStoreMetaUrl.mockReturnValue('postgresql://test:5432/roosync');
+			mockReadStoreMetaValue.mockResolvedValue(JSON.stringify({
+				lastUpdated: '2026-11-04T00:40:00.000Z',
+				machines: Object.fromEntries(machines.map(m => [m, { machineId: m, status: 'online' }]))
+			}));
+		}
+
+		beforeEach(() => {
+			mockStoreMetaUrl.mockReturnValue(null);
+			mockReadStoreMetaValue.mockReset();
+			mockReadStoreMetaValue.mockResolvedValue(null);
+		});
+
+		test('#4523 PG row (8) wins over a stale G: mirror (5), roster 8 → NO size-drift diff', async () => {
+			// C'est le cas web2 du 04/11 : le miroir G: gelé listait 5 machines,
+			// la ligne PG en liste 8 — l'ancien code prescrivait un re-roster flotte.
+			mockGetConfig.mockReturnValue({ machineId: 'myia-web2', sharedPath: '/shared', fleetRoster: FLEET_8 });
+			mockDashboard6();
+			mockPgRegistry(FLEET_8);
+			mockRegistry(FLEET_5_MISSING_2024); // le miroir G: périmé (5 machines)
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-web2', targetMachine: 'myia-ai-01', hostId: 'myia-web2', differences: []
+			});
+			try {
+				const result = await roosyncCompareConfig({ target: 'myia-ai-01' });
+				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+				expect(rosterDiff).toBeDefined();
+				expect(rosterDiff!.severity).toBe('INFO');
+				expect(rosterDiff!.description).toContain('registre PG');
+				expect(result.differences.filter(d => d.path === 'env.ROO_FLEET_ROSTER' && d.severity === 'CRITICAL')).toHaveLength(0);
+			} finally {
+				restoreFs();
+			}
+		});
+
+		test('#4523 PG row ABSENT → G: fallback is the legitimate surface, prescriptions unchanged', async () => {
+			// Ligne absente = contrat migration-012 (la DONNÉE décide) : le miroir
+			// reste la référence et le diff garde sa prescription — pas de dégradation.
+			mockGetConfig.mockReturnValue({ machineId: 'myia-ai-01', sharedPath: '/shared', fleetRoster: FLEET_6 });
+			mockDashboard6();
+			mockStoreMetaUrl.mockReturnValue('postgresql://test:5432/roosync');
+			mockReadStoreMetaValue.mockResolvedValue(null); // ligne absente, PAS un échec
+			mockRegistry(FLEET_7);
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-ai-01', targetMachine: 'myia-po-2023', hostId: 'myia-ai-01', differences: []
+			});
+			try {
+				const result = await roosyncCompareConfig({ target: 'myia-po-2023' });
+				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+				expect(rosterDiff!.severity).toBe('CRITICAL');
+				expect(rosterDiff!.action).toContain('Ajouter myia-po-2027');
+			} finally {
+				restoreFs();
+			}
+		});
+
+		test('#4523 PG read THROWS → mirror reference names itself and carries NO fleet prescription', async () => {
+			// Lecture PG en échec = mesure dégradée : le mismatch est rapporté mais
+			// jamais prescriptif — pas de re-roster flotte ni de rebuild depuis un miroir.
+			mockGetConfig.mockReturnValue({ machineId: 'myia-web2', sharedPath: '/shared', fleetRoster: FLEET_8 });
+			mockDashboard6();
+			mockStoreMetaUrl.mockReturnValue('postgresql://test:5432/roosync');
+			mockReadStoreMetaValue.mockRejectedValue(new Error('connect ECONNREFUSED'));
+			mockRegistry(FLEET_5_MISSING_2024); // miroir périmé : 5 machines
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-web2', targetMachine: 'myia-ai-01', hostId: 'myia-web2', differences: []
+			});
+			try {
+				const result = await roosyncCompareConfig({ target: 'myia-ai-01' });
+				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+				expect(rosterDiff!.severity).toBe('CRITICAL'); // le mismatch mesuré reste dit
+				expect(rosterDiff!.description).toContain('miroir G:');
+				expect(rosterDiff!.action).toContain('À vérifier');
+				expect(rosterDiff!.action).toContain('lecture PG en échec');
+				expect(rosterDiff!.action).not.toContain('Ajouter');
+				expect(rosterDiff!.action).not.toContain('rebuild');
+			} finally {
+				restoreFs();
+			}
+		});
+
+		test('#4523 negative witness: without the PG read, the first case turns red (mirror 5 vs roster 8 → CRITICAL drift)', async () => {
+			// Rejeu du témoin négatif demandé par l'issue : si la lecture PG est
+			// retirée (storeMetaUrl → null, seul le miroir G: parle), la même
+			// configuration que le 1er test DOIT produire le faux drift —
+			// c'est le bug #4523 rendu visible, et la preuve que le test 1
+			// est rouge quand on revert la lecture PG.
+			mockGetConfig.mockReturnValue({ machineId: 'myia-web2', sharedPath: '/shared', fleetRoster: FLEET_8 });
+			mockDashboard6();
+			mockRegistry(FLEET_5_MISSING_2024);
+			mockCompareRealConfigurations.mockResolvedValue({
+				sourceMachine: 'myia-web2', targetMachine: 'myia-ai-01', hostId: 'myia-web2', differences: []
+			});
+			try {
+				const result = await roosyncCompareConfig({ target: 'myia-ai-01' });
+				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
+				expect(rosterDiff!.severity).toBe('CRITICAL');
+				expect(rosterDiff!.description).toContain('Mismatch taille');
+			} finally {
+				restoreFs();
+			}
 		});
 	});
 
