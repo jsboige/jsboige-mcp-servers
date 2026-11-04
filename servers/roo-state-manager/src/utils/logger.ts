@@ -98,6 +98,13 @@ const LOG_LEVELS: Record<LogLevel, number> = {
     ERROR: 3
 };
 
+/** A `{...}` literal or an `Object.create(null)` bag — not an Error, array, Date or class instance. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    if (value === null || typeof value !== 'object') return false;
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+}
+
 export class Logger {
     private logDir: string;
     private filePrefix: string;
@@ -163,7 +170,8 @@ export class Logger {
     }
 
     /**
-     * Log an ERROR message
+     * Log an ERROR message. The 2nd argument may be an Error, any other value
+     * (stringified), or a plain context object (its fields are logged).
      */
     public error(message: string, error?: Error | unknown, metadata?: Record<string, any>): void {
         let enhancedMetadata = metadata || {};
@@ -175,6 +183,16 @@ export class Logger {
                     errorName: error.name,
                     errorMessage: error.message,
                     errorStack: error.stack
+                };
+            } else if (isPlainObject(error)) {
+                // 20 call sites pass their context as the 2nd argument
+                // (`logger.error(msg, { key, detail })`); `String()` turned it
+                // into "[object Object]" and every [DASHBOARD-FORK] alert lost
+                // its key and detail. A plain object IS context: its fields are
+                // kept, and explicit metadata wins on a name collision.
+                enhancedMetadata = {
+                    ...error,
+                    ...enhancedMetadata
                 };
             } else {
                 enhancedMetadata = {
