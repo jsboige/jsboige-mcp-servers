@@ -180,6 +180,86 @@ describe('logger', () => {
 			logger.error('Failed', new Error('test'), { context: 'unit-test' });
 			expect(consoleSpy.error).toHaveBeenCalled();
 		});
+
+		// [DASHBOARD-FORK] alerts were logged as `"error": "[object Object]"`:
+		// 20 call sites pass their context as the 2nd argument.
+		test('keeps the fields of a plain context object passed as the 2nd argument', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			logger.error('[DASHBOARD-FORK] write diverted', { key: 'workspace-CoursIA-2', detail: 'absent from PG' });
+			const output = consoleSpy.error.mock.calls[0][0];
+			expect(output).toContain('workspace-CoursIA-2');
+			expect(output).toContain('absent from PG');
+			expect(output).not.toContain('[object Object]');
+		});
+
+		test('a null-prototype bag is context too', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			const bag = Object.assign(Object.create(null), { key: 'k-null-proto' });
+			logger.error('Failed', bag);
+			expect(consoleSpy.error.mock.calls[0][0]).toContain('k-null-proto');
+		});
+
+		test('explicit metadata wins over a context field of the same name', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			logger.error('Failed', { key: 'from-context', only: 'ctx-only' }, { key: 'from-metadata' });
+			const output = consoleSpy.error.mock.calls[0][0];
+			expect(output).toContain('from-metadata');
+			expect(output).not.toContain('from-context');
+			expect(output).toContain('ctx-only');
+		});
+
+		test('non-plain values keep the stringified form', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			logger.error('Failed', ['a', 'b']);
+			logger.error('Failed', 'string error');
+			expect(consoleSpy.error.mock.calls[0][0]).toContain('a,b');
+			expect(consoleSpy.error.mock.calls[1][0]).toContain('string error');
+		});
+
+		test('an Error still logs its name, message and stack', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			logger.error('Failed', new TypeError('boom-msg'));
+			const output = consoleSpy.error.mock.calls[0][0];
+			expect(output).toContain('TypeError');
+			expect(output).toContain('boom-msg');
+			expect(output).toContain('errorStack');
+		});
+
+		test('a cyclic context never makes the logger throw (it runs inside catch blocks)', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			const ctx: Record<string, unknown> = { key: 'k-cycle' };
+			ctx.self = ctx;
+			expect(() => logger.error('Failed', ctx)).not.toThrow();
+			const output = consoleSpy.error.mock.calls[0][0];
+			expect(output).toContain('metadataNotSerializable');
+			expect(output).toContain('key'); // the field names survive
+		});
+
+		test('a function as metadata, or a Proxy that refuses its keys, never makes the logger throw', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			expect(() => logger.error('Failed', undefined, (() => 1) as any)).not.toThrow();
+			expect(consoleSpy.error.mock.calls[0][0]).toContain('function value');
+			const hostile = new Proxy({}, {
+				ownKeys() { throw new Error('no-keys'); },
+				get() { throw new Error('no-get'); },
+			});
+			expect(() => logger.error('Failed', undefined, hostile as any)).not.toThrow();
+			expect(consoleSpy.error.mock.calls[1][0]).toContain('metadataNotSerializable');
+		});
+
+		test('a BigInt in the context is written, not thrown', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			expect(() => logger.error('Failed', { count: BigInt(42) })).not.toThrow();
+			expect(consoleSpy.error.mock.calls[0][0]).toContain('"42"');
+		});
+
+		test('an Error nested in the context keeps its message instead of `{}`', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			logger.error('Failed', { key: 'k-nested', error: new Error('nested-boom') });
+			const output = consoleSpy.error.mock.calls[0][0];
+			expect(output).toContain('nested-boom');
+			expect(output).toContain('k-nested');
+		});
 	});
 
 	// ============================================================

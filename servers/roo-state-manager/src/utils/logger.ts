@@ -98,6 +98,26 @@ const LOG_LEVELS: Record<LogLevel, number> = {
     ERROR: 3
 };
 
+/** A `{...}` literal or an `Object.create(null)` bag — not an Error, array, Date or class instance. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+    if (value === null || typeof value !== 'object') return false;
+    const proto = Object.getPrototypeOf(value);
+    return proto === Object.prototype || proto === null;
+}
+
+/**
+ * JSON replacer for log metadata: an Error nested in the context (`{ error }`)
+ * keeps its name/message/stack instead of serializing to `{}`, and a BigInt is
+ * written as a string instead of throwing.
+ */
+function metadataReplacer(_key: string, value: unknown): unknown {
+    if (value instanceof Error) {
+        return { name: value.name, message: value.message, stack: value.stack };
+    }
+    if (typeof value === 'bigint') return value.toString();
+    return value;
+}
+
 export class Logger {
     private logDir: string;
     private filePrefix: string;
@@ -163,7 +183,8 @@ export class Logger {
     }
 
     /**
-     * Log an ERROR message
+     * Log an ERROR message. The 2nd argument may be an Error, any other value
+     * (stringified), or a plain context object (its fields are logged).
      */
     public error(message: string, error?: Error | unknown, metadata?: Record<string, any>): void {
         let enhancedMetadata = metadata || {};
@@ -175,6 +196,16 @@ export class Logger {
                     errorName: error.name,
                     errorMessage: error.message,
                     errorStack: error.stack
+                };
+            } else if (isPlainObject(error)) {
+                // Call sites pass their context as the 2nd argument
+                // (`logger.error(msg, { key, detail })`); `String()` turned it
+                // into "[object Object]" and every [DASHBOARD-FORK] alert lost
+                // its key and detail. A plain object IS context: its fields are
+                // kept, and explicit metadata wins on a name collision.
+                enhancedMetadata = {
+                    ...error,
+                    ...enhancedMetadata
                 };
             } else {
                 enhancedMetadata = {
@@ -206,7 +237,21 @@ export class Logger {
         // Format metadata with indentation for better readability
         let metadataStr = '';
         if (metadata) {
-            const formattedMetadata = JSON.stringify(metadata, null, 2);
+            let formattedMetadata: string | undefined;
+            try {
+                formattedMetadata = JSON.stringify(metadata, metadataReplacer, 2);
+            } catch (serializeError) {
+                // The logger is called from catch blocks: a cyclic context must
+                // never turn it into a thrower that replaces the original error.
+                const reason = serializeError instanceof Error ? serializeError.message : String(serializeError);
+                let keys: string[] = [];
+                try { keys = Object.keys(metadata); } catch { /* exotic object (Proxy): no keys */ }
+                formattedMetadata = JSON.stringify({ metadataNotSerializable: reason, keys }, null, 2);
+            }
+            // JSON.stringify returns undefined, without throwing, for a function or a symbol.
+            if (formattedMetadata === undefined) {
+                formattedMetadata = JSON.stringify({ metadataNotSerializable: `${typeof metadata} value` }, null, 2);
+            }
             metadataStr = '\n' + formattedMetadata.split('\n').map(line => `  ${line}`).join('\n');
         }
 

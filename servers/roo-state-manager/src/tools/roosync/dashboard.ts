@@ -8110,6 +8110,24 @@ async function handleAppend(
   // mentions/cross-posts). Auto-generated ids are unique per call and can
   // never trip this guard — only opted-in deterministic ids are affected.
   if (pendingCustomId || schemaCustomId) {
+    const dedupedResult = (message: string, warning?: string) => ({
+      success: true,
+      action: 'append' as const,
+      key,
+      type: args.type!,
+      request: requestEcho,
+      deduplicated: true,
+      messageCount: dashboard.intercom.messages.length,
+      sizes: buildSizes(dashboard),
+      warning,
+      durationBreakdown: {
+        totalMs: Date.now() - appendStart,
+        preemptiveCondenseMs: 0,
+        reactiveCondenseMs: 0,
+        writeMs: 0
+      },
+      message
+    });
     const existing = dashboard.intercom.messages.find(m => m.id === messageIdValue);
     if (existing) {
       const contentMismatch = (existing.content || '') !== (args.content || '');
@@ -8119,26 +8137,36 @@ async function handleAppend(
         existingTimestamp: existing.timestamp,
         contentMismatch
       });
-      return {
-        success: true,
-        action: 'append',
-        key,
-        type: args.type!,
-        request: requestEcho,
-        deduplicated: true,
-        messageCount: dashboard.intercom.messages.length,
-        sizes: buildSizes(dashboard),
-        warning: contentMismatch
+      return dedupedResult(
+        `Message dédupliqué — id '${messageIdValue}' déjà présent (ajouté ${existing.timestamp}) : append ignoré (#3276 idempotence)`,
+        contentMismatch
           ? `messageId '${messageIdValue}' existait déjà avec un CONTENU DIFFÉRENT — entrée existante (${existing.timestamp}) conservée, append ignoré`
-          : undefined,
-        durationBreakdown: {
-          totalMs: Date.now() - appendStart,
-          preemptiveCondenseMs: 0,
-          reactiveCondenseMs: 0,
-          writeMs: 0
-        },
-        message: `Message dédupliqué — id '${messageIdValue}' déjà présent (ajouté ${existing.timestamp}) : append ignoré (#3276 idempotence)`
-      };
+          : undefined
+      );
+    }
+    // #3782 tombstone — an id that a condensation already ARCHIVED is not new
+    // either. Without this check the re-post landed in the GDrive file while
+    // the PG row stayed archived (the journal upsert never clears archived_at):
+    // fleet reads (PG-primary) never saw it, the file did, and every re-post
+    // raised a [DASHBOARD-FORK] alert (stall-detector daily note, whose own
+    // contract is « an append whose messageId already exists is skipped
+    // server-side »). null = no PG half, failure or timeout: unknown, so the
+    // append goes on as before. Rollback: DASHBOARD_APPEND_ARCHIVED_DEDUPE=0.
+    if (process.env.DASHBOARD_APPEND_ARCHIVED_DEDUPE?.trim() !== '0') {
+      // One-id lookup (unique index), never the whole archived history:
+      // minute-bucketed callers (vibe-feeder, watchdogs) grow that history
+      // without bound, and a slow full read would hit the 3 s timeout and
+      // fail open into the very fork this check closes.
+      const archivedIds = await fetchArchivedDashboardMessageIds(key, messageIdValue);
+      if (archivedIds?.has(messageIdValue)) {
+        logger.info('Append deduplicated — explicit messageId already archived by a condensation (#3276/#3782)', {
+          key,
+          messageId: messageIdValue
+        });
+        return dedupedResult(
+          `Message dédupliqué — id '${messageIdValue}' déjà archivé par une condensation : append ignoré (#3276 idempotence, tombe #3782)`
+        );
+      }
     }
   }
 

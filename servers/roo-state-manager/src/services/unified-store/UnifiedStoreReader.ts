@@ -201,8 +201,11 @@ export interface IUnifiedStoreReader {
    * #3782 (résurrection CoursIA 26/09) — message_ids ARCHIVED on a key
    * (archived_at IS NOT NULL). Decision input for the merge tombstones, same
    * ungated contract as the retirement reads; null = no PG story (fail-open).
+   * With `messageId`, the read is restricted to that one id (0 or 1 row, served
+   * by the unique (dashboard_key, message_id) index) — the append dedupe asks
+   * about one id and must not pull the whole archived history of the key.
    */
-  getArchivedRooSyncDashboardMessageIds(key: string): Promise<string[] | null>;
+  getArchivedRooSyncDashboardMessageIds(key: string, messageId?: string): Promise<string[] | null>;
 
   // ─── RooSync attachment reads (#3151 §7.5.2) ─────────────────────
 
@@ -263,7 +266,7 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   async getRooSyncDashboardRetirement(_key: string): Promise<DashboardRetirementMark | null> { return null; }
   async listRetiredRooSyncDashboardKeys(): Promise<string[]> { return []; }
   async listRooSyncDashboardKeys(): Promise<string[]> { return []; }
-  async getArchivedRooSyncDashboardMessageIds(_key: string): Promise<string[] | null> { return null; }
+  async getArchivedRooSyncDashboardMessageIds(_key: string, _messageId?: string): Promise<string[] | null> { return null; }
   async getRooSyncAttachmentById(_id: string): Promise<(RooSyncAttachmentMetadataRow & { payload: Buffer }) | null> { return null; }
   async listRooSyncAttachmentMetadata(_uuids: string[]): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
   async scanRooSyncAttachments(_messageId?: string): Promise<RooSyncAttachmentMetadataRow[]> { return []; }

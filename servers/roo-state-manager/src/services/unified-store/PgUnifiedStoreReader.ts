@@ -290,15 +290,22 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
 
   // ─── RooSync dashboard retirements (#3782) ───────────────────────
 
-  async getArchivedRooSyncDashboardMessageIds(key: string): Promise<string[] | null> {
+  async getArchivedRooSyncDashboardMessageIds(key: string, messageId?: string): Promise<string[] | null> {
     if (!this.pool) await this.init();
     if (!this.pool) throw new Error('Pool not initialized');
 
-    const result = await this.pool.query(
-      `SELECT message_id FROM roosync_dashboard_messages
-       WHERE dashboard_key = $1 AND archived_at IS NOT NULL AND message_id IS NOT NULL`,
-      [key],
-    );
+    const result = messageId === undefined
+      ? await this.pool.query(
+        `SELECT message_id FROM roosync_dashboard_messages
+         WHERE dashboard_key = $1 AND archived_at IS NOT NULL AND message_id IS NOT NULL`,
+        [key],
+      )
+      : await this.pool.query(
+        `SELECT message_id FROM roosync_dashboard_messages
+         WHERE dashboard_key = $1 AND message_id = $2 AND archived_at IS NOT NULL
+         LIMIT 1`,
+        [key, messageId],
+      );
     return result.rows.map(r => r.message_id as string);
   }
 
