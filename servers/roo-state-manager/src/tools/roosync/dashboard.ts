@@ -1867,11 +1867,35 @@ const fillWarnLatched = new Set<string>();
 const detachedCondenseInFlight = new Map<string, Promise<void>>();
 
 /**
+ * #4536 (#4527 follow-up) — issue de la dernière passe de condensation
+ * DÉTACHÉE terminée pour une clé. L'append qui a lancé la passe a répondu
+ * avant sa fin (`condensationDeferred`) : sans ce registre, le verdict
+ * (ok / fork suspecté / GDrive dégradé / erreur) n'était visible que du
+ * journal de l'hôte — la prochaine lecture/append de la clé ne pouvait pas
+ * le rendre.
+ */
+export interface DetachedCondenseOutcome {
+  /** Quand la passe a terminé (ISO) — distingue une trace fraîche d'une périmée. */
+  finishedAt: string;
+  outcome: 'ok' | 'fork-suspected' | 'gdrive-degraded' | 'error';
+  /** Diagnostic complet de la passe (outcome LLM, stats par jambe, durée, archivés). */
+  diag: CondenseAttemptInfo;
+  /** Message de l'erreur (uniquement `outcome: 'error'`). */
+  error?: string;
+}
+const detachedCondenseOutcomes = new Map<string, DetachedCondenseOutcome>();
+
+/**
  * Attend la passe détachée en cours pour `key` (tests, diagnostics). Résout
  * immédiatement quand aucune passe n'est en vol.
  */
 export function awaitDetachedCondense(key: string): Promise<void> {
   return detachedCondenseInFlight.get(key) ?? Promise.resolve();
+}
+
+/** Réinitialise le registre des issues détachées (isolation entre tests). */
+export function resetDetachedCondenseOutcomes(): void {
+  detachedCondenseOutcomes.clear();
 }
 
 function startDetachedCondense(
@@ -1884,6 +1908,7 @@ function startDetachedCondense(
   const startedAt = Date.now();
   const diag = newDiagnostic('post-append');
   const run = (async () => {
+    let condenseWv: WriteVerifyResult | undefined;
     try {
       const beforeCount = snapshot.intercom.messages.length;
       const condensedDashboard = await condenseIntercom(key, snapshot, keepCount, diag);
@@ -1906,7 +1931,7 @@ function startDetachedCondense(
         // Hermes). Le verrou est tenu SEULEMENT autour de l'écriture — la passe LLM
         // ci-dessus reste dehors : elle dure des minutes et rien ne doit s'y
         // sérialiser.
-        const condenseWv = await withKeyLock(key, () =>
+        condenseWv = await withKeyLock(key, () =>
           applyCondensedWithMerge(key, snapshot, condensedDashboard)
         );
         // #3774 critère 3 — cette écriture n'a plus d'appelant pour porter son
@@ -1929,13 +1954,33 @@ function startDetachedCondense(
           });
         }
       }
+      // #4536 — verdict retenu par clé : l'append qui a lancé cette passe a déjà
+      // répondu, la prochaine lecture/append de la clé rend l'issue ici.
+      detachedCondenseOutcomes.set(key, {
+        finishedAt: new Date().toISOString(),
+        outcome: condenseWv?.forkSuspected
+          ? 'fork-suspected'
+          : condenseWv?.gdriveDegraded
+            ? 'gdrive-degraded'
+            : 'ok',
+        diag,
+      });
     } catch (err) {
       diag.outcome = 'llm-failed-injected';
       diag.elapsedMs = Date.now() - startedAt;
+      detachedCondenseOutcomes.set(key, {
+        finishedAt: new Date().toISOString(),
+        outcome: 'error',
+        error: err instanceof Error ? err.message : String(err),
+        diag,
+      });
+      // #4536 — le diag COMPLET voyage dans le warn : {key, elapsedMs, error}
+      // seul ne disait rien de la cause (jambe en échec, tentatives, repli).
       logger.warn('Detached condensation failed — message and previous status intact (#4527)', {
         key,
         elapsedMs: diag.elapsedMs,
         error: err instanceof Error ? err.message : String(err),
+        diag,
       });
     } finally {
       try {
@@ -7002,6 +7047,16 @@ export interface DashboardResult {
    */
   condensationStallLockOwnPass?: true;
   /**
+   * #4536 (#4527 follow-up) — issue de la dernière passe de condensation
+   * DÉTACHÉE terminée pour cette clé dans CE process (ok / fork-suspected /
+   * gdrive-degraded / error), avec son diagnostic complet. L'append qui a
+   * lancé la passe a répondu avant sa fin (`condensationDeferred`) : c'est à
+   * la prochaine lecture/append que son verdict remonte. Absent tant qu'aucune
+   * passe détachée n'a terminé ; la voie synchrone (`CONDENSE_DETACHED=0`)
+   * rapporte déjà via `condenseDiagnostic` et ne remplit pas ce champ.
+   */
+  condensationLastOutcome?: DetachedCondenseOutcome;
+  /**
    * ms#1339 — présent quand l'auteur a été résolu depuis le process hôte
    * (`author` absent), ex. `process-default: myia-ai-01|roo-extensions`. Un
    * append passerelle sans `author` était attribué en silence à la lane hôte
@@ -7762,6 +7817,13 @@ async function handleRead(
   // #2306: Warn when reading only the status section — it may be stale
   if (readSection === 'status') {
     jsonResult.warning = 'Status section may be stale — use section: "all" or "intercom" for latest messages.';
+  }
+
+  // #4536 — l'issue de la dernière passe détachée de CE process pour cette clé :
+  // l'append qui l'a lancée a répondu avant sa fin, c'est ici qu'elle remonte.
+  const lastDetachedOutcome = detachedCondenseOutcomes.get(key);
+  if (lastDetachedOutcome) {
+    jsonResult.condensationLastOutcome = lastDetachedOutcome;
   }
 
   // #4439 — la lecture a été servie depuis une jumelle : la moitié fichier de
@@ -8794,6 +8856,10 @@ async function handleAppend(
       condensationStalled === 'lock-held' && !condensed && condensationStallOwnPass
         ? true
         : undefined,
+    // #4536 — verdict de la dernière passe détachée TERMINÉE pour cette clé
+    // (celle que CET append a lancée répondra condensationDeferred et son
+    // verdict paraîtra à la prochaine lecture/append).
+    condensationLastOutcome: detachedCondenseOutcomes.get(key),
     crossPost: crossPostResults.length > 0 ? crossPostResults : undefined,
     condenseDiagnostic: condenseDiagnostics.length > 0 ? condenseDiagnostics : undefined,
     splitCount: newMessages.length,
