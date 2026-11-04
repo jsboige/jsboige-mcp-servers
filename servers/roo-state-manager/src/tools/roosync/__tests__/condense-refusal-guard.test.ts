@@ -47,6 +47,7 @@ beforeEach(() => {
   mockFallbackModelId.mockImplementation(() => 'glm-5.3-flash');
   delete process.env.OPENAI_BASE_URL;
   delete process.env.FALLBACK_API_FORMAT; // a seat's .env must not flip the dialect
+  delete process.env.CONDENSE_STATUS_CLOUD_FIRST; // #4434: a seat's rollback must not change the path
 });
 
 describe('condenseTextIfTooLarge — refusal is never a candidate (#4434)', () => {
