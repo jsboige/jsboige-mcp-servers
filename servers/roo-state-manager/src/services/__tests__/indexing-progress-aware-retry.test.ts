@@ -123,21 +123,42 @@ describe('#4531 — progress-aware retry budget', () => {
     expect(skeleton.metadata.indexingState!.indexStatus).toBe('failed');
   });
 
-  it('case 4b: alternating 0-write and progress attempts terminate on the zero-writes', () => {
+  it('case 4b: interleaved 0-write blips never park a progressing task in a dead state', () => {
     const skeleton = createSkeleton(0);
 
-    // progress, zero, progress, zero, ... — only the zero-writes may count, and
-    // a progressing attempt revives a failed task. Termination comes from the
-    // zero-writes piling up: progress is finite (a task has finitely many
-    // sub-chunks), so the sequence always reaches the ceiling.
+    // The production shape (web2, 4e13fb8f): progress, blip, progress, blip, …
+    // Termination no longer comes from the counter — a progress attempt is free
+    // and a resurrection restarts it — it comes from the REMAINDER: each progress
+    // attempt writes NEW deduplicated points out of a finite set, so the task
+    // runs out of missing vectors after finitely many free passes. What must
+    // never happen is the state after the blips: parked at the ceiling, skipped
+    // on every pass, waiting for a human.
     for (let pass = 0; pass < 8; pass++) {
       const written = pass % 2 === 0 ? 1200 : 0;
       service.markIndexingFailure(skeleton, partialAttemptError(written).message, false, written);
     }
 
     const state = skeleton.metadata.indexingState!;
+    expect(state.indexStatus).not.toBe('failed');
+    expect(state.indexRetryCount).toBeLessThan(MAX_RETRY_ATTEMPTS);
+  });
+
+  it('case 4e: a task that stops writing is still dead-lettered after a resurrection', () => {
+    // The counter is not infinite: restarting it on resurrection must not turn a
+    // task that cannot progress into an eternal retry.
+    const skeleton = createSkeleton(MAX_RETRY_ATTEMPTS);
+    skeleton.metadata.indexingState!.indexStatus = 'failed';
+
+    service.markIndexingFailure(skeleton, partialAttemptError(1089).message, false, 1089);
+    expect(skeleton.metadata.indexingState!.indexRetryCount).toBe(0);
+
+    for (let pass = 0; pass < MAX_RETRY_ATTEMPTS; pass++) {
+      service.markIndexingFailure(skeleton, partialAttemptError(0).message, false, 0);
+    }
+
+    const state = skeleton.metadata.indexingState!;
     expect(state.indexStatus).toBe('failed');
-    expect(state.indexRetryCount).toBeGreaterThanOrEqual(MAX_RETRY_ATTEMPTS);
+    expect(state.indexRetryCount).toBe(MAX_RETRY_ATTEMPTS);
   });
 
   it('case 4c: a repair attempt that writes points revives a failed task instead of re-failing it', () => {
@@ -150,7 +171,33 @@ describe('#4531 — progress-aware retry budget', () => {
 
     const state = skeleton.metadata.indexingState!;
     expect(state.indexStatus).toBe('retry');
-    expect(state.indexRetryCount).toBe(MAX_RETRY_ATTEMPTS);
+    // ms#1648 review (ai-01): the label flip alone was not a revival. Keeping the
+    // count at the ceiling left the `retry` gate (`>= MAX_RETRY_ATTEMPTS`)
+    // skipping the task on every pass — the manual repair #4531 removes was
+    // still owed. The budget restarts once progress is proven.
+    expect(state.indexRetryCount).toBe(0);
+  });
+
+  it('case 4d: the revived task is actually re-admitted by shouldIndex once the backoff expires', () => {
+    // The assertion that closes the issue's own criterion ("reaches `indexed`
+    // with no manual repair"): the scheduler has to pick the task up again.
+    const skeleton = createSkeleton(MAX_RETRY_ATTEMPTS);
+    skeleton.metadata.indexingState!.indexStatus = 'failed';
+
+    service.markIndexingFailure(skeleton, partialAttemptError(1089).message, false, 1089);
+
+    // Backoff is a separate rule and stays untouched: the revived task waits its
+    // turn like any other retry, it is not fast-tracked.
+    expect(service.shouldIndex(skeleton).shouldIndex).toBe(false);
+
+    // Past the backoff window the task must be admitted, not skipped for a
+    // budget it already proved it can spend.
+    skeleton.metadata.indexingState!.lastIndexAttempt = new Date(
+      Date.now() - 60 * 60 * 1000
+    ).toISOString();
+    const decision = service.shouldIndex(skeleton);
+    expect(decision.shouldIndex).toBe(true);
+    expect(decision.reason).not.toContain('Maximum de tentatives atteint');
   });
 
   it('case 5: a permanent error is never made free by progress', () => {

@@ -258,7 +258,10 @@ export class IndexingDecisionService {
      * @param progressWritten #4531 — new deduplicated points this attempt wrote
      *   (the `written` detail of an `Embedding incomplete` error). When > 0 the
      *   attempt moved the task forward, so it does not consume the retry budget:
-     *   status stays 'retry' at the current count. An attempt that wrote nothing
+     *   status stays 'retry' at the current count — or restarts from 0 when the
+     *   task had already reached the ceiling, so a revived task is actually
+     *   re-admitted by `shouldIndex` instead of being skipped forever. An
+     *   attempt that wrote nothing
      *   keeps counting, so a task that cannot progress still reaches 'failed' —
      *   and since a free attempt adds at least one point out of a finite set,
      *   progress-aware retries terminate. INDEX_PROGRESS_AWARE_RETRY=0 restores
@@ -291,21 +294,34 @@ export class IndexingDecisionService {
             isProgressAwareRetryEnabled();
 
         if (wroteNewPoints) {
-            // #4531 — progress, not failure: keep the count, requeue with the
-            // normal backoff. The points stay on disk (the attempt kept them),
-            // and the pre-flight dedup makes the next pass embed only the rest.
+            // #4531 — progress, not failure: requeue with the normal backoff.
+            // The points stay on disk (the attempt kept them), and the pre-flight
+            // dedup makes the next pass embed only the rest.
+            //
+            // ms#1648 review (ai-01): a task that reached the ceiling carries
+            // `indexRetryCount = MAX_RETRY_ATTEMPTS`, and the `retry` gate below
+            // skips on `>=` — so keeping the count there turned the revival into
+            // a label flip the scheduler never picked up again (the very manual
+            // repair #4531 exists to remove). At the ceiling the budget restarts:
+            // once an attempt has proved it can move the task, the count starts
+            // from zero. Below the ceiling the count is kept, so a task that
+            // alternates progress and zero-write attempts still terminates.
+            const atCeiling = currentRetryCount >= MAX_RETRY_ATTEMPTS;
+            const nextRetryCount = atCeiling ? 0 : currentRetryCount;
             skeleton.metadata.indexingState = {
                 ...skeleton.metadata.indexingState,
                 indexStatus: 'retry',
                 indexError: error,
                 lastIndexAttempt: now,
-                indexRetryCount: currentRetryCount,
+                indexRetryCount: nextRetryCount,
                 lastAttemptWritten: progressWritten,
                 repair: undefined
             };
             console.log(
                 `[INDEXING][#4531] ${skeleton.taskId}: ${progressWritten} new point(s) written — ` +
-                `retry ${currentRetryCount + 1}/${MAX_RETRY_ATTEMPTS} not consumed`
+                (atCeiling
+                    ? `retry budget restarted (0/${MAX_RETRY_ATTEMPTS}) after resurrection`
+                    : `retry budget untouched (${nextRetryCount}/${MAX_RETRY_ATTEMPTS})`)
             );
         } else if (isPermanent || currentRetryCount >= MAX_RETRY_ATTEMPTS - 1) {
             // Échec permanent
