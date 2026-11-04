@@ -52,6 +52,8 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
   let tmpDir: string;
 
   beforeEach(async () => {
+    // #4527 - suite sur la SEMANTIQUE de la passe : chemin synchrone conserve.
+    process.env.CONDENSE_DETACHED = '0';
     tmpDir = await mkdtemp(testTmpBase);
     process.env.ROOSYNC_SHARED_PATH = tmpDir;
     process.env.ROOSYNC_MACHINE_ID = 'test-machine';

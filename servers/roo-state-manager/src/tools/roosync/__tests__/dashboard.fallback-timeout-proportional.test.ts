@@ -85,6 +85,8 @@ const testTmpBase = path.join(os.tmpdir(), 'dashboard-fallback-proportional-');
 
 describe('#2719 borne — computeFallbackAttemptTimeoutMs (unit)', () => {
   beforeEach(() => {
+    // #4527 - suite sur la SEMANTIQUE de la passe : chemin synchrone conserve.
+    process.env.CONDENSE_DETACHED = '0';
     delete process.env.FALLBACK_TIMEOUT_MS;
     delete process.env.FALLBACK_TIMEOUT_MIN_MS;
     delete process.env.FALLBACK_TIMEOUT_MS_PER_KB;

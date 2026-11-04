@@ -169,6 +169,26 @@ const KEEP_INTERCOM_BUDGET_BYTES = 16 * 1024;      // 16 KB target for retained 
 // the working set smaller and shifts the latency into more predictable slots.
 const PREEMPTIVE_CONDENSE_THRESHOLD_BYTES = Math.floor(MAX_DASHBOARD_SIZE_BYTES * 0.92); // ~46 KB
 
+// #4527 (volet secondaire) — signal AVANT la passe de 92 %. Le dashboard
+// workspace d'ai-01 était monté à 77,8 % sans qu'aucune ligne ne le dise :
+// l'opérateur n'apprenait la saturation qu'au moment où une condensation
+// échouait. Seuil configurable, exprimé en % de MAX_DASHBOARD_SIZE_BYTES ;
+// borné sous 92 % pour que le franchissement ne double pas le déclencheur de
+// condensation (un avis qui arrive en même temps que la passe n'informe plus).
+// Lu par appel (et non au chargement du module) : les suites de test posent
+// l'environnement après l'import, comme pour DASHBOARD_CONDENSE_STATUS_MODE.
+function condenseFillWarnBytes(): number {
+  const raw = Number(process.env.DASHBOARD_FILL_WARN_PCT);
+  const pct = Number.isFinite(raw) && raw > 0 ? Math.min(91, Math.max(50, raw)) : 85;
+  return Math.floor(MAX_DASHBOARD_SIZE_BYTES * (pct / 100));
+}
+
+// #4527 — l'appelant n'attend plus la passe. `CONDENSE_DETACHED=0` restaure le
+// chemin synchrone historique (levier de rollback, pas un mode de croisière).
+function isDetachedCondenseEnabled(): boolean {
+  return (process.env.CONDENSE_DETACHED ?? '1') !== '0';
+}
+
 // #1589: Per-message size cap. Messages larger than this are split into multiple
 // parts at append time, so each part is subject to the CONDENSE_KEEP slice policy
 // independently. Prevents the pathological case where 3 "recent" 15KB dispatches
@@ -1825,6 +1845,85 @@ export async function releaseCondenseLock(key: string, holder: CondenseLockInfo)
   } catch {
     // Lock already gone or unreadable — nothing to release.
   }
+}
+
+// === #4527 — condensation DÉTACHÉE de la réponse d'append ===
+//
+// Le message est déjà persisté (WRITE-FIRST) avant toute condensation ; la
+// passe ne produit rien dont l'appelant ait besoin pour continuer. La garder
+// synchrone faisait payer à chaque appender le timeout primaire complet (90 s
+// mesurés sur ai-01 le 03/11, KV 90,1 %) pour un résultat qui n'intéresse que
+// la condensation SUIVANTE.
+//
+// Le verrou est acquis par l'appelant AVANT le détachement, puis relâché par la
+// passe elle-même : deux franchissements pendant une passe en vol ne peuvent
+// donc pas lancer deux passes (le second voit `lock-held`, #2818/#3782).
+//
+// Sortie de l'hôte en cours de passe : le message et le statut restent tels
+// quels (aucune écriture n'a eu lieu), le verrou expire par son TTL, et le
+// prochain appender au-dessus du seuil refait une passe. Rien à drainer ici —
+// c'est le choix de conception retenu dans #4527, pas un oubli.
+const fillWarnLatched = new Set<string>();
+const detachedCondenseInFlight = new Map<string, Promise<void>>();
+
+/**
+ * Attend la passe détachée en cours pour `key` (tests, diagnostics). Résout
+ * immédiatement quand aucune passe n'est en vol.
+ */
+export function awaitDetachedCondense(key: string): Promise<void> {
+  return detachedCondenseInFlight.get(key) ?? Promise.resolve();
+}
+
+function startDetachedCondense(
+  key: string,
+  snapshot: Dashboard,
+  keepCount: number,
+  payloadHash: string,
+  lockHolder: CondenseLockInfo
+): void {
+  const startedAt = Date.now();
+  const diag = newDiagnostic('post-append');
+  const run = (async () => {
+    try {
+      const beforeCount = snapshot.intercom.messages.length;
+      const condensedDashboard = await condenseIntercom(key, snapshot, keepCount, diag);
+      const newlyArchived = beforeCount - condensedDashboard.intercom.messages.length;
+      diag.elapsedMs = Date.now() - startedAt;
+      diag.archivedMessageCount = Math.max(0, newlyArchived);
+      logger.info('Detached condensation finished (#4527)', {
+        key,
+        outcome: diag.outcome,
+        elapsedMs: diag.elapsedMs,
+        archived: diag.archivedMessageCount,
+      });
+      if (newlyArchived > 0) {
+        lastCondenseHash.set(key, payloadHash);
+        await applyCondensedWithMerge(key, snapshot, condensedDashboard);
+      }
+    } catch (err) {
+      diag.outcome = 'llm-failed-injected';
+      diag.elapsedMs = Date.now() - startedAt;
+      logger.warn('Detached condensation failed — message and previous status intact (#4527)', {
+        key,
+        elapsedMs: diag.elapsedMs,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    } finally {
+      try {
+        // Release only if we still own it (pid+acquiredAt), same as the sync path.
+        await releaseCondenseLock(key, lockHolder);
+      } catch (releaseErr) {
+        logger.debug('Detached condensation lock release failed (TTL will recover)', {
+          key,
+          error: releaseErr instanceof Error ? releaseErr.message : String(releaseErr),
+        });
+      }
+    }
+  })();
+  detachedCondenseInFlight.set(key, run);
+  void run.finally(() => {
+    if (detachedCondenseInFlight.get(key) === run) detachedCondenseInFlight.delete(key);
+  }).catch(() => { /* run ne rejette pas — ce catch garde le finally silencieux */ });
 }
 
 // === Cross-process append file-lock (#3205 write-side) ===
@@ -6601,6 +6700,16 @@ export interface DashboardResult {
    */
   condensationStalled?: 'lock-held' | 'unchanged-hash';
   /**
+   * #4527 — la condensation requise a été lancée APRÈS la réponse (passe
+   * détachée, verrou condense déjà acquis par cet append). Le message est
+   * persisté ; `sizes`/`messageCount` décrivent l'état post-append AVANT la
+   * passe. Son issue (archivage, fallback cloud, échec) n'est pas dans cette
+   * réponse : elle va au journal de l'hôte et au `lastCondensedAt` de la
+   * prochaine lecture. Délibérément absent sur le chemin synchrone
+   * (`CONDENSE_DETACHED=0`) pour ne pas changer la forme du payload historique.
+   */
+  condensationDeferred?: true;
+  /**
    * Stall diagnostics (web2 05/10, incident stall 04/10) — identity of the
    * current condense-lock holder when condensationStalled='lock-held'
    * (`machine:workspace#pid`). Absent when the stall is 'unchanged-hash',
@@ -7920,6 +8029,8 @@ async function handleAppend(
   let finalDashboard = updatedDashboard;
   // #3782 — why a REQUIRED condensation didn't run (surface, not just logs).
   let condensationStalled: 'lock-held' | 'unchanged-hash' | undefined;
+  // #4527 — la passe a été lancée APRÈS la réponse (chemin détaché).
+  let condensationDeferred = false;
   // Stall diagnostics (web2 05/10) — filled only on the lock-held path.
   let condensationStallLock: { holder: string; ageMs: number } | null = null;
 
@@ -7953,6 +8064,28 @@ async function handleAppend(
   const effectiveKeep = computeKeepCount(updatedDashboard.intercom.messages);
   const needsCondense = estimatedSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES
     && updatedDashboard.intercom.messages.length > effectiveKeep;
+
+  // #4527 (volet secondaire) — avis de remplissage AVANT la passe de 92 %.
+  // Sur TRANSITION seulement : un append par-dessus le seuil ne re-signale pas à
+  // chaque message (le bruit ferait ignorer le signal) ; une condensation qui
+  // fait redescendre la taille ré-arme le latch.
+  const fillWarnThreshold = condenseFillWarnBytes();
+  let fillWarnCrossed = false;
+  if (estimatedSize >= fillWarnThreshold) {
+    if (!fillWarnLatched.has(key)) {
+      fillWarnLatched.add(key);
+      fillWarnCrossed = true;
+      logger.warn('[WARN #4527] dashboard above fill warning level', {
+        key,
+        estimatedSize: `${Math.round(estimatedSize / 1024)}KB`,
+        fillPct: `${Math.round((estimatedSize / MAX_DASHBOARD_SIZE_BYTES) * 100)}%`,
+        warnThresholdPct: `${Math.round((fillWarnThreshold / MAX_DASHBOARD_SIZE_BYTES) * 100)}%`,
+        condenseThresholdPct: `${Math.round((PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / MAX_DASHBOARD_SIZE_BYTES) * 100)}%`,
+      });
+    }
+  } else {
+    fillWarnLatched.delete(key);
+  }
 
   if (needsCondense) {
     // #2464: Hash-based skip — if the messages to condense + current status haven't
@@ -8013,7 +8146,14 @@ async function handleAppend(
         const skippedDiag = newDiagnostic('post-append');
         skippedDiag.outcome = 'skipped-lock-held';
         condenseDiagnostics.push(skippedDiag);
+      } else if (isDetachedCondenseEnabled()) {
+        // #4527 (levier 1) — la passe part détachée : l'appelant a sa réponse dès
+        // que le message est persisté (il l'est déjà, on est après WRITE-FIRST).
+        // Le verrou est tenu par la passe et relâché dans son `finally`.
+        condensationDeferred = true;
+        startDetachedCondense(key, updatedDashboard, effectiveKeep, payloadHash, lockHolder);
       } else {
+        // #4527 — chemin synchrone historique, conservé sous CONDENSE_DETACHED=0.
         // #4131: the timer must also cover the catch below — hoisted above the try
         // so the FAILURE diagnostic carries the real duration of the pass that
         // threw, not a hardcoded 0 (the one path where the LLM's churn time is
@@ -8316,6 +8456,11 @@ async function handleAppend(
     archivedCount: reportedArchivedCount,
     summaryFailed: summaryFailed || undefined,
     condensationStalled: condensationStalled && !condensed ? condensationStalled : undefined,
+    // #4527 — la condensation requise a été LANCÉE APRÈS cette réponse : le
+    // message est persisté, `sizes`/`messageCount` décrivent l'état post-append
+    // (pré-passe). Le résultat de la passe va au journal et au `lastCondensedAt`
+    // de la prochaine lecture.
+    condensationDeferred: condensationDeferred || undefined,
     condensationStallLockHolder:
       condensationStalled === 'lock-held' && !condensed && condensationStallLock
         ? condensationStallLock.holder
@@ -8334,6 +8479,9 @@ async function handleAppend(
     // l'appelant à l'ignorer. storeMissing (B2) n'a pas forcément dégradé
     // l'écriture (le montage peut revenir entre-temps) : warning d'entrée.
     warning: guardAWarning
+      ?? (fillWarnCrossed
+        ? `[WARN #4527] dashboard à ${Math.round((estimatedSize / MAX_DASHBOARD_SIZE_BYTES) * 100)} % du plafond (${Math.round(estimatedSize / 1024)} Ko) — au-dessus du seuil d'avis ${Math.round(fillWarnThreshold / 1024)} Ko, sous le seuil de condensation ${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)} Ko.`
+        : undefined)
       ?? (storeMissing ? "[B2 #4131] store G: absent à l'entrée — écriture tentée en mode PG-seul" : undefined),
     // #4286 — le miroir différé est un état, pas une panne : l'appelant doit
     // savoir que le fichier suit derrière (il ne peut pas en déduire l'inverse
@@ -8346,7 +8494,7 @@ async function handleAppend(
       writeMs,
       ...(Object.keys(writeStages).length > 0 ? { writeBreakdown: writeStages } : {})
     },
-    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${diagSuffix}${cloudSuffix}${stallSuffix}${crossPostSuffix}${writeVerify.gdriveDegraded ? ` — ⚠️ [GDRIVE DÉGRADÉ #4131] la moitié fichier a échoué (${writeVerify.gdriveDegraded}) ; le message est publié sur le miroir PG SEUL. Les sièges READ_PG=1 le lisent déjà ; le fichier suivra à la relecture/réparation.` : ''}${writeVerify.forkSuspected ? ` — 🚨 [FORK SUSPECTÉ #3482] ${writeVerify.forkDetail ?? ''}${writeVerify.forkPath ? ` (${writeVerify.forkPath})` : ''}. L'écriture a peut-être dévié vers un fork DriveFS : RELIRE le canonique avant tout retry — re-poster seulement si le message y est absent (intercom-protocol §append expiré).` : ''}`
+    message: `Message ajouté au dashboard '${key}'${splitSuffix}${condensed ? ` (auto-condensation: ${reportedArchivedCount} messages archivés, taille réduite)` : ''}${condensationDeferred ? ' — condensation différée (#4527): le message est persisté, la passe tourne détachée (son issue va au journal et au lastCondensedAt de la prochaine lecture)' : ''}${diagSuffix}${cloudSuffix}${stallSuffix}${crossPostSuffix}${writeVerify.gdriveDegraded ? ` — ⚠️ [GDRIVE DÉGRADÉ #4131] la moitié fichier a échoué (${writeVerify.gdriveDegraded}) ; le message est publié sur le miroir PG SEUL. Les sièges READ_PG=1 le lisent déjà ; le fichier suivra à la relecture/réparation.` : ''}${writeVerify.forkSuspected ? ` — 🚨 [FORK SUSPECTÉ #3482] ${writeVerify.forkDetail ?? ''}${writeVerify.forkPath ? ` (${writeVerify.forkPath})` : ''}. L'écriture a peut-être dévié vers un fork DriveFS : RELIRE le canonique avant tout retry — re-poster seulement si le message y est absent (intercom-protocol §append expiré).` : ''}`
   };
 }
 
