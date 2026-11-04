@@ -3943,7 +3943,9 @@ function isMentioned(mentions: ParsedMention[], localMachineId: string, localWor
  * to preserve the Dashboard return type consumed by legacy paths).
  *
  * Outcomes:
- *   - `condensed`         : LLM succeeded (primary), archive written, status updated
+ *   - `condensed`         : LLM succeeded (primary; since #4434 the status leg is
+ *                           answered by the cloud tier on the cloud-first route),
+ *                           archive written, status updated
  *   - `fallback-cloud`    : #2719 primary (local vLLM) failed but the cloud fallback
  *                           (z.ai glm-4.7-flash) salvaged the condensation — the
  *                           dashboard still got an LLM summary, just not from the
@@ -4349,6 +4351,16 @@ FORMAT :
 export function statusCloudFirstEnabled(): boolean {
   const raw = process.env.CONDENSE_STATUS_CLOUD_FIRST;
   return !(raw !== undefined && raw.trim() !== '' && Number(raw) === 0);
+}
+
+/**
+ * #4434: the outcome label shown in notices and in the append suffix. A status
+ * the cloud answered on the cloud-first route keeps `finalOutcome:
+ * 'ok-with-fallback'` in the stats, but it is a route, not a rescue: printing
+ * "ok-with-fallback (0 attempts)" would read as "the primary failed".
+ */
+export function legOutcomeLabel(st: LLMCallStats): string {
+  return st.cloudFirst === true && st.finalOutcome === 'ok-with-fallback' ? 'ok-cloud-first' : st.finalOutcome;
 }
 
 /**
@@ -5932,6 +5944,9 @@ async function executeTruncationFallback(
     ...(failedCalls?.statusCall ? { statusOutcome: failedCalls.statusCall.stats.finalOutcome } : {}),
     ...(failedCalls?.summaryCall ? { summaryOutcome: failedCalls.summaryCall.stats.finalOutcome } : {}),
     ...(failedCalls?.statusCall?.stats.fallbackModel ? { statusFallbackModel: failedCalls.statusCall.stats.fallbackModel } : {}),
+    // #4434: same key as the success path — without it, a cloud-first status next to a
+    // dead summary reads here as "the primary failed and the cloud rescued the status".
+    ...(failedCalls?.statusCall?.stats.cloudFirst === true ? { statusCloudFirst: true } : {}),
     ...(failedCalls?.summaryCall?.stats.fallbackModel ? { summaryFallbackModel: failedCalls.summaryCall.stats.fallbackModel } : {}),
     hostTruncationCount: truncCounter.count, // #3962 piste 3: Nth truncation of this key on this host
   });
@@ -6065,7 +6080,7 @@ ${archiveMessages}
       const st = c.stats;
       if (st.finalOutcome === 'ok') return `${label}: ok.\n`;
       const why = st.lastError ? ` — ${st.lastError}` : '';
-      return `${label}: ${st.finalOutcome} (${st.attempts} attempt${st.attempts === 1 ? '' : 's'}, ${Math.round(st.elapsedMs / 1000)}s)${why}\n`;
+      return `${label}: ${legOutcomeLabel(st)} (${st.attempts} attempt${st.attempts === 1 ? '' : 's'}, ${Math.round(st.elapsedMs / 1000)}s)${why}\n`;
     };
     errorDetail = fmtFail('Status', failedCalls.statusCall) + fmtFail('Summary', failedCalls.summaryCall);
   }
@@ -8668,8 +8683,8 @@ async function handleAppend(
     const summary = first.llm?.summary;
     const status = first.llm?.status;
     const llmBits: string[] = [];
-    if (summary) llmBits.push(`summary=${summary.finalOutcome}×${summary.attempts}`);
-    if (status) llmBits.push(`status=${status.finalOutcome}×${status.attempts}`);
+    if (summary) llmBits.push(`summary=${legOutcomeLabel(summary)}×${summary.attempts}`);
+    if (status) llmBits.push(`status=${legOutcomeLabel(status)}×${status.attempts}`);
     // Explicit underlying cause — HTTP status / timeout+endpoint — not just the label.
     const why = summary?.lastError || status?.lastError || '';
     const dedupNote = failedDiags.some(d => d.outcome === 'llm-failed-dedup')

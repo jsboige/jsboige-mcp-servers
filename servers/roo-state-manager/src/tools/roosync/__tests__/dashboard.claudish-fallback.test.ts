@@ -99,6 +99,7 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
     delete process.env.EMBEDDING_API_BASE_URL;
     delete process.env.CONDENSE_CLOUD_RESERVE_MS;
     delete process.env.CONDENSE_PASS_DEADLINE_MS;
+    delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
     delete process.env.FALLBACK_API_FORMAT;
     delete process.env.FALLBACK_TIMEOUT_MIN_MS;
     delete process.env.FALLBACK_TIMEOUT_MS_PER_KB;
@@ -118,6 +119,7 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
     delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
     delete process.env.CONDENSE_CLOUD_RESERVE_MS;
     delete process.env.CONDENSE_PASS_DEADLINE_MS;
+    delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
     delete process.env.FALLBACK_API_FORMAT;
     await rm(tmpDir, { recursive: true, force: true });
     delete process.env.ROOSYNC_SHARED_PATH;
@@ -222,6 +224,9 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
   });
 
   it('(c4) three rescued passes open the breaker; the fourth skips the primary', async () => {
+    // #4434: pins the primary-first chain this test describes (the status leg is
+    // cloud-first by default; under the default it would be routed, not rescued).
+    process.env.CONDENSE_STATUS_CLOUD_FIRST = '0';
     process.env.FALLBACK_API_FORMAT = 'anthropic';
     primaryUnauthorized();
     mockGetFallbackClient.mockReturnValue({

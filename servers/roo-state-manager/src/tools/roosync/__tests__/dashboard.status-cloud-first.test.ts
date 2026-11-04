@@ -18,6 +18,10 @@
  *       (2 seeded failures are cleared, the breaker stays closed).
  *   (g) breaker: cloud-first-failed status + primary summary is not a primary failure.
  *   (h) breaker: a summary the cloud had to rescue still counts as a primary failure.
+ *   (i) truncation: cloud-first status + summary dead on both tiers → the `-fallback`
+ *       archive says `statusCloudFirst: true`, and the notice and append suffix name
+ *       the route (`ok-cloud-first`), never `ok-with-fallback`.
+ *   (j) `legOutcomeLabel` relabels only a cloud-first ok; a real rescue keeps its name.
  *
  * @module tools/roosync/__tests__/dashboard.status-cloud-first
  */
@@ -31,6 +35,7 @@ import {
   roosyncDashboard,
   resetCondenseCircuitBreaker,
   statusCloudFirstEnabled,
+  legOutcomeLabel,
   __condenseBreakerHooks,
 } from '../dashboard.js';
 
@@ -269,5 +274,41 @@ describe('#4434 status leg cloud-first', { timeout: 30000 }, () => {
     expect(summaryCalls(mockFallbackCreate).length).toBeGreaterThanOrEqual(1);
     expect((result.condenseDiagnostic as any[]).some(d => d.outcome === 'fallback-cloud')).toBe(true);
     expect(__condenseBreakerHooks.shouldBypass()).toBe(true);
+  });
+
+  it('(i) truncation: a cloud-first status next to a dead summary is named as a route, not a rescue', async () => {
+    // Primary client cannot init (beforeEach default). The cloud answers the status and
+    // returns empty content for the summary (non-retryable): the summary dies on both tiers.
+    mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+    mockFallbackCreate.mockImplementation(async (req: any) => ({
+      choices: [{ message: { content: isSummaryRequest(req) ? '' : statusAnswer(`cloud ${req.model}`) }, finish_reason: 'stop' }],
+    }));
+
+    const result = await fillUntilCondensed();
+
+    expect(statusCalls(mockFallbackCreate).length).toBeGreaterThanOrEqual(1);
+    expect((result.condenseDiagnostic as any[]).some(d => d.outcome === 'fallback-truncated')).toBe(true);
+
+    const archives = await readArchives('fallback');
+    expect(archives.length).toBeGreaterThanOrEqual(1);
+    expect(archives[0]).toContain('statusCloudFirst: true');
+    expect(archives[0]).toContain('statusOutcome: ok-with-fallback');
+
+    const md = await readFile(path.join(tmpDir, 'dashboards', 'global.md'), 'utf8');
+    expect(md).toContain('Status: ok-cloud-first (0 attempts');
+    expect(md).not.toContain('Status: ok-with-fallback');
+    expect(result.message).toContain('status=ok-cloud-first×0');
+    expect(result.message).not.toContain('status=ok-with-fallback');
+
+    // The summary failed on the primary: the breaker counts it.
+    expect(readBreaker()?.consecutiveFailures ?? 0).toBeGreaterThanOrEqual(1);
+  });
+
+  it('(j) legOutcomeLabel: only a cloud-first ok is relabelled; a real rescue keeps its name', () => {
+    const base = { attempts: 0, elapsedMs: 0, nullCount: 0, errorCount: 0, timeoutCount: 0 };
+    expect(legOutcomeLabel({ ...base, finalOutcome: 'ok-with-fallback', cloudFirst: true } as any)).toBe('ok-cloud-first');
+    expect(legOutcomeLabel({ ...base, finalOutcome: 'ok-with-fallback' } as any)).toBe('ok-with-fallback');
+    expect(legOutcomeLabel({ ...base, finalOutcome: 'cloud-first-failed', cloudFirst: true } as any)).toBe('cloud-first-failed');
+    expect(legOutcomeLabel({ ...base, finalOutcome: 'timeout' } as any)).toBe('timeout');
   });
 });

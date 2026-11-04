@@ -157,6 +157,9 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
   });
 
   it('(t2) primary down → cloud salvages → notice says "via fallback cloud", summaryFailed absent', async () => {
+    // #4434: pins the primary-first chain this test describes (the status leg is
+    // cloud-first by default; under the default it would be routed, not rescued).
+    process.env.CONDENSE_STATUS_CLOUD_FIRST = '0';
     mockGetPrimaryClient.mockReturnValue({
       chat: { completions: { create: mockPrimaryCreate } },
     });

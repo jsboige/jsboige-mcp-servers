@@ -79,6 +79,7 @@ describe('#3962 — leg budget independence + truncation counter', { timeout: 12
     delete process.env.FALLBACK_API_FORMAT;
     delete process.env.CONDENSE_CLOUD_RESERVE_MS;
     delete process.env.CONDENSE_PASS_DEADLINE_MS;
+    delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
     resetTruncationAlertLimiterForTest();
     resetCondenseCircuitBreaker();
     resetFallbackTruncationCountersForTest();
@@ -88,6 +89,7 @@ describe('#3962 — leg budget independence + truncation counter', { timeout: 12
     delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
     delete process.env.CONDENSE_CLOUD_RESERVE_MS;
     delete process.env.CONDENSE_PASS_DEADLINE_MS;
+    delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
     await rm(tmpDir, { recursive: true, force: true });
     delete process.env.ROOSYNC_SHARED_PATH;
     delete process.env.ROOSYNC_MACHINE_ID;
@@ -136,6 +138,9 @@ describe('#3962 — leg budget independence + truncation counter', { timeout: 12
   });
 
   it('(t2) cascade repro — a primary hang longer than its clamped slice must not starve the cloud leg', async () => {
+    // #4434: pins the primary-first chain this test describes (the status leg is
+    // cloud-first by default; under the default it would be routed, not rescued).
+    process.env.CONDENSE_STATUS_CLOUD_FIRST = '0';
     // Budget: 50s pass deadline, 35s cloud reserve → the primary's slice is ~15s.
     // The mock engine "hangs" 45s (the #3962 ~86s engine cut, scaled down): with
     // the fix the SDK per-request timeout (clamped to ~15s) cuts first and the
@@ -305,6 +310,9 @@ describe('#3962 — leg budget independence + truncation counter', { timeout: 12
   });
 
   it('(t4) mixed pass — truncation archive carries per-leg outcomes (status rescued, summary dead)', async () => {
+    // #4434: pins the primary-first chain this test describes (the status leg is
+    // cloud-first by default; under the default it would be routed, not rescued).
+    process.env.CONDENSE_STATUS_CLOUD_FIRST = '0';
     // #3962 follow-up (ms#1498 parity): the primary dies on both legs (502), the
     // cloud tier salvages ONLY the status leg. The pass still truncates (the
     // summary is mandatory), and the fallback archive must name each leg's
