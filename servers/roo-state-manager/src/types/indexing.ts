@@ -53,6 +53,12 @@ export interface IndexingState {
     indexVersion?: string;         // Version d'index pour migrations
     nextReindexAfter?: string;     // ISO datetime pour TTL/rafraîchissement
     indexRetryCount?: number;      // Compteur de tentatives pour backoff
+    /**
+     * #4531 — new deduplicated points the last attempt wrote (0 when it wrote
+     * nothing). Carried on the state so `indexing(status)` can tell "failing"
+     * from "progressing", and so a free (progress-aware) retry leaves a trace.
+     */
+    lastAttemptWritten?: number;
     lastIndexAttempt?: string;     // ISO datetime de dernière tentative (réussie ou non)
     /**
      * #4352 g6b — ISO datetime of the reset that cleared this state.
@@ -113,6 +119,19 @@ export function getReindexChangedAfterMs(): number {
 
 export const MAX_RETRY_ATTEMPTS = 3;
 export const RETRY_BACKOFF_BASE_MS = 60000; // 1 minute base
+
+/**
+ * #4531 — an attempt that wrote new points moved the task forward, so charging
+ * it the same retry as one that wrote nothing is what marked a 28k-sub-chunk
+ * session `failed` after ~3 partial passes over a flaky link (web2, 04/11).
+ * Default ON; INDEX_PROGRESS_AWARE_RETRY=0 restores the old arithmetic, where
+ * every attempt consumes the budget.
+ */
+export function isProgressAwareRetryEnabled(): boolean {
+    const raw = process.env.INDEX_PROGRESS_AWARE_RETRY;
+    if (raw === undefined || raw.trim() === '') return true;
+    return raw.trim() !== '0';
+}
 
 /**
  * #2766 S2+ P1 follow-up — single-source-of-truth for "this task is stuck in

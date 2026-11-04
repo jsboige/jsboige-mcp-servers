@@ -1202,7 +1202,10 @@ export async function handleRooSyncIndexing(
             // but indexStatus never flipped to 'failed'). Both kinds belong in the
             // operator-visible failure list. Use the shared `isStuckRetry` helper so
             // the MAX_RETRY_ATTEMPTS threshold has a single source of truth.
-            const failedTasks: Array<{ task_id: string; error: string; error_class: string; retry_count: number; last_attempt: string | undefined }> = [];
+            // #4531: `last_attempt_written` separates "failing" from "progressing" —
+            // a row carrying points on its last attempt is moving even while it
+            // still errors. It is the same number the free-retry rule spends.
+            const failedTasks: Array<{ task_id: string; error: string; error_class: string; retry_count: number; last_attempt: string | undefined; last_attempt_written: number }> = [];
             // #4440: rows whose stored class contradicted their message (a
             // stale class from an earlier attempt). Counted so the repair is
             // visible to the operator instead of silently applied.
@@ -1237,6 +1240,7 @@ export async function handleRooSyncIndexing(
                         error_class: errorClass,
                         retry_count: idx?.indexRetryCount ?? 0,
                         last_attempt: idx?.lastIndexAttempt,
+                        last_attempt_written: idx?.lastAttemptWritten ?? 0,
                     });
                 }
             }
@@ -1814,6 +1818,10 @@ export async function handleRooSyncIndexing(
                     error_class: string;
                     error: string;
                     retry_count: number;
+                    // #4531: > 0 = the last attempt wrote points, so resetting
+                    // this task is a repair of something that moves, not a retry
+                    // of something stuck.
+                    last_attempt_written: number;
                     is_permanent: boolean;
                 }> = [];
                 for (const [taskId, skeleton] of conversationCache) {
@@ -1844,6 +1852,9 @@ export async function handleRooSyncIndexing(
                         error_class: errorClass,
                         error: errorMessage,
                         retry_count: idx?.indexRetryCount ?? 0,
+                        // #4531: > 0 means the last attempt wrote points — the
+                        // task is progressing, not stalled.
+                        last_attempt_written: idx?.lastAttemptWritten ?? 0,
                         is_permanent: isPermanent,
                     });
                 }

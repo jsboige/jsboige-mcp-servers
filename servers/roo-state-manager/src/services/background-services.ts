@@ -2060,7 +2060,20 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
                 // indexingState so the status tool can group failures by root cause.
                 // markIndexingFailure() only takes (error, isPermanent); we manually
                 // attach errorClass AFTER so the existing failure path stays intact.
-                state.indexingDecisionService.markIndexingFailure(skeleton, error.message, isPermanentError);
+                // #4531: an attempt that wrote new points has progressed — pass the
+                // count so the retry budget is not charged. Only `written` counts
+                // (the `Embedding incomplete` detail, measured after the dedup):
+                // 0 or absent keeps today's arithmetic, and the 4th argument is
+                // omitted in that case so the call shape stays unchanged.
+                const writtenThisAttempt =
+                    typeof error?.details?.written === 'number' ? error.details.written : 0;
+                if (writtenThisAttempt > 0) {
+                    state.indexingDecisionService.markIndexingFailure(
+                        skeleton, error.message, isPermanentError, writtenThisAttempt
+                    );
+                } else {
+                    state.indexingDecisionService.markIndexingFailure(skeleton, error.message, isPermanentError);
+                }
                 if (skeleton.metadata?.indexingState) {
                     skeleton.metadata.indexingState.errorClass = classification.errorClass;
                 }

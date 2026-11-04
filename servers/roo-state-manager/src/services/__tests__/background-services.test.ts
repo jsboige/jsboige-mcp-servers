@@ -1125,6 +1125,77 @@ describe('background-services', () => {
         false // temporary error
       );
     });
+
+    // #4531 wiring: the service-level tests prove the arithmetic, this proves the
+    // caller actually hands the written count over. Drop the 4th argument in
+    // background-services.ts and only this test goes red.
+    it('#4531: passes the written-point count of a partial attempt to markIndexingFailure', async () => {
+      const state = createMockState();
+      const skeleton = createMockSkeleton('task-001');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'retry' as const, indexRetryCount: 2 },
+      };
+      state.conversationCache.set('task-001', skeleton);
+
+      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
+        shouldIndex: true,
+        reason: 'new task',
+        action: 'index',
+        requiresSave: false,
+      });
+
+      const partial = Object.assign(
+        new Error(
+          'Embedding incomplete for task task-001: 588/2167 sub-chunks without a vector ' +
+          '(1089 points written, kept for the retry)'
+        ),
+        { code: 'NETWORK_ERROR', details: { taskId: 'task-001', missingVectors: 588, written: 1089, transport: true } }
+      );
+      TaskIndexerSpies.indexTask.mockRejectedValue(partial);
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      await indexTaskInQdrant('task-001', state);
+
+      expect(state.indexingDecisionService.markIndexingFailure).toHaveBeenCalledWith(
+        skeleton,
+        expect.stringContaining('Embedding incomplete'),
+        false,
+        1089
+      );
+    });
+
+    it('#4531: a 0-write attempt keeps the 3-argument call shape', async () => {
+      const state = createMockState();
+      const skeleton = createMockSkeleton('task-001');
+      state.conversationCache.set('task-001', skeleton);
+
+      (state.indexingDecisionService.shouldIndex as any).mockReturnValue({
+        shouldIndex: true,
+        reason: 'new task',
+        action: 'index',
+        requiresSave: false,
+      });
+
+      const empty = Object.assign(
+        new Error('Embedding incomplete for task task-001: 2167/2167 sub-chunks without a vector (0 points written, kept for the retry)'),
+        { code: 'NETWORK_ERROR', details: { taskId: 'task-001', missingVectors: 2167, written: 0 } }
+      );
+      TaskIndexerSpies.indexTask.mockRejectedValue(empty);
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      await indexTaskInQdrant('task-001', state);
+
+      expect(state.indexingDecisionService.markIndexingFailure).toHaveBeenCalledWith(
+        skeleton,
+        expect.stringContaining('Embedding incomplete'),
+        false
+      );
+    });
   });
 
   // === classifyIndexingError ===
