@@ -52,6 +52,10 @@ const primaryUnauthorized = (): void => {
 };
 
 const THINKING = 'SCRATCHPAD-should-never-reach-the-dashboard';
+// A cloud answer in the summary prompt's imposed format (validateSummaryCompleteness
+// rejects a summary missing a section); the same mock also answers the status leg.
+const formatted = (label: string): string =>
+  `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none`;
 const anthropicAnswer = (text: string) => ({
   id: 'msg_test',
   type: 'message',
@@ -170,7 +174,7 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
       chat: { completions: { create: mockFallbackCreate } },
       post: mockFallbackPost,
     });
-    mockFallbackPost.mockResolvedValue(anthropicAnswer('Résumé claudish de secours — synthèse complète des messages archivés.'));
+    mockFallbackPost.mockResolvedValue(anthropicAnswer(formatted('Résumé claudish de secours — synthèse complète des messages archivés.')));
 
     await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Init' });
     const outcomes = await driveOneCondensation();
@@ -204,7 +208,7 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
       chat: { completions: { create: mockFallbackCreate } },
       post: mockFallbackPost,
     });
-    mockFallbackCreate.mockResolvedValue({ choices: [{ message: { content: 'Résumé OpenAI de secours — synthèse des messages archivés.' } }] });
+    mockFallbackCreate.mockResolvedValue({ choices: [{ message: { content: formatted('Résumé OpenAI de secours — synthèse des messages archivés.') } }] });
 
     await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Init' });
     const outcomes = await driveOneCondensation();
@@ -222,7 +226,7 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
       chat: { completions: { create: mockFallbackCreate } },
       post: mockFallbackPost,
     });
-    mockFallbackPost.mockResolvedValue(anthropicAnswer('Résumé claudish de secours — synthèse complète des messages archivés.'));
+    mockFallbackPost.mockResolvedValue(anthropicAnswer(formatted('Résumé claudish de secours — synthèse complète des messages archivés.')));
 
     await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Init' });
     for (let pass = 1; pass <= 3; pass++) {
@@ -235,5 +239,29 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
     expect(fourth).toContain('fallback-cloud');
     // Breaker OPEN: the fourth pass went to the cloud tier without touching the primary.
     expect(mockPrimaryCreate.mock.calls.length).toBe(primaryCallsAfterThree);
+  });
+
+  it('(c5) Anthropic route: stop_reason "max_tokens" hands the leg to the next model', async () => {
+    process.env.FALLBACK_API_FORMAT = 'anthropic';
+    fallbackModelId = 'claude-sonnet-5-5,claude-haiku-5-5';
+    primaryUnauthorized();
+    mockGetFallbackClient.mockReturnValue({
+      chat: { completions: { create: mockFallbackCreate } },
+      post: mockFallbackPost,
+    });
+    mockFallbackPost.mockImplementation(async (_route: string, options: any) => options.body.model === 'claude-sonnet-5-5'
+      ? { ...anthropicAnswer(formatted('CUT-BY-BUDGET')), stop_reason: 'max_tokens' }
+      : anthropicAnswer(formatted('Résumé haiku complet.')));
+
+    await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Init' });
+    const outcomes = await driveOneCondensation();
+
+    expect(outcomes).toContain('fallback-cloud');
+    const models = mockFallbackPost.mock.calls.map(([, options]) => options.body.model);
+    expect(models.indexOf('claude-sonnet-5-5')).toBeGreaterThanOrEqual(0);
+    expect(models.indexOf('claude-sonnet-5-5')).toBeLessThan(models.indexOf('claude-haiku-5-5'));
+    const md = await readFile(path.join(tmpDir, 'dashboards', 'workspace-test-workspace.md'), 'utf8');
+    expect(md).toContain('Résumé haiku complet.');
+    expect(md).not.toContain('CUT-BY-BUDGET');
   });
 });

@@ -592,6 +592,35 @@ export function fallbackApiFormat(): 'openai' | 'anthropic' {
 /** The part of an Anthropic Messages response the condensation reads. */
 interface AnthropicMessageResponse {
   content?: Array<{ type?: string; text?: string }>;
+  stop_reason?: string | null;
+}
+
+/**
+ * A completion the provider stopped because the output budget ran out: OpenAI-compat
+ * `finish_reason: "length"`, Anthropic `stop_reason: "max_tokens"`. Its text is cut,
+ * whatever its size, so the chain must not accept it as a summary or a status.
+ */
+export function isBudgetTruncatedFinish(reason: string | null | undefined): boolean {
+  return reason === 'length' || reason === 'max_tokens';
+}
+
+/**
+ * The three section headings the intercom-summary prompt imposes (FORMAT block of
+ * generateLLMSummary), compared case- and accent-insensitively.
+ */
+const SUMMARY_REQUIRED_SECTIONS = ['themes principaux', 'actions et resultats', 'decisions et metriques'];
+
+/**
+ * Cloud-chain guard for the summary leg: names the imposed sections a summary lacks, or
+ * returns null when all three are present. Measured on ai-01, 03/11 18:44:25Z: the cloud
+ * model returned a 715-char summary of 9 messages in 2.5 s, which stopped mid-word inside
+ * its first section. The chain accepted it because it was not empty, and it became the
+ * only trace of the 9 archived messages on the global dashboard.
+ */
+export function validateSummaryCompleteness(content: string): string | null {
+  const normalized = content.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const missing = SUMMARY_REQUIRED_SECTIONS.filter(section => !normalized.includes(section));
+  return missing.length === 0 ? null : `incomplete-summary (missing: ${missing.join(', ')})`;
 }
 
 /**
@@ -638,6 +667,7 @@ async function cloudCondenseOnce(
   const fbStart = Date.now();
   try {
     let content: string | null | undefined;
+    let finishReason: string | null | undefined;
     if (fallbackApiFormat() === 'anthropic') {
       // #3962 piste 4 (user 22/10: the fleet's rescue is claudish under its Sonnet
       // role, which has its own failover cascade): Anthropic /v1/messages route. The
@@ -662,6 +692,7 @@ async function cloudCondenseOnce(
         timeout: attemptTimeoutMs,
       });
       content = extractAnthropicText(message);
+      finishReason = message?.stop_reason;
     } else {
       // gpt-5 / o-series reasoning models reject `max_tokens` (require
       // `max_completion_tokens`) and any `temperature` != 1. Classic OpenAI-compat /
@@ -701,8 +732,18 @@ async function cloudCondenseOnce(
         { timeout: attemptTimeoutMs },
       );
       content = response.choices[0]?.message?.content;
+      finishReason = response.choices[0]?.finish_reason;
     }
     const elapsedMs = Date.now() - fbStart;
+    if (content && isBudgetTruncatedFinish(finishReason)) {
+      // A cut completion is never a summary or a status: hand it to the next model of
+      // the chain. Non-retryable, same regime as empty-content: the same model with the
+      // same budget would stop at the same place.
+      logger.warn('#2719 cloud fallback stopped on its output budget — moving to the next model', {
+        fbModel, finishReason, contentLength: content.length, elapsed: `${elapsedMs}ms`,
+      });
+      return { ok: false, retryable: false, error: `truncated (finish_reason=${finishReason}, ${content.length} chars)`, elapsedMs, model: fbModel };
+    }
     if (!content) {
       logger.warn('#2719 cloud fallback returned empty content', { fbModel, elapsed: `${elapsedMs}ms` });
       // #2719 discriminant fix (2026-09-19, po-2024 spec from the po-2027 datapoint):
@@ -718,6 +759,7 @@ async function cloudCondenseOnce(
       fbModel,
       elapsed: `${elapsedMs}ms`,
       sizeKB: `${(Buffer.byteLength(content, 'utf8') / 1024).toFixed(1)}KB`,
+      finishReason: finishReason ?? 'unreported',
     });
     return { ok: true, content, elapsedMs, model: fbModel };
   } catch (error: unknown) {
@@ -4023,11 +4065,21 @@ FORMAT :
   const callStart = Date.now();
   const stats: LLMCallStats = emptyLLMStats('null');
 
+  // The summary leg's cloud chain checks the imposed format, as the status leg checks
+  // retention (#3962 grain h): a summary missing a section is a per-model failure, so the
+  // next model is tried instead of a cut summary becoming the archive's only trace.
+  const summaryFallbackOpts = {
+    maxTokens: CONDENSE_LLM_MAX_TOKENS,
+    temperature: 0.3,
+    passDeadlineMs: opts?.passDeadlineMs,
+    validate: validateSummaryCompleteness,
+  };
+
   // #2719 (22/09): the primary's circuit breaker is OPEN — skip the primary, but the
   // cloud tier is an independent provider: try it before resigning to truncation.
   if (opts?.skipPrimary) {
     stats.finalOutcome = 'circuit-open';
-    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, summaryFallbackOpts, stats, callStart);
     return fb ?? circuitOpenFailure(stats, callStart);
   }
 
@@ -4044,7 +4096,7 @@ FORMAT :
     stats.finalOutcome = 'client-init-failed';
     stats.lastError = truncateError(errStr);
     stats.elapsedMs = Date.now() - callStart;
-    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+    const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, summaryFallbackOpts, stats, callStart);
     return fb ?? { content: null, stats };
   }
   const modelId = getLLMModelId();
@@ -4062,7 +4114,7 @@ FORMAT :
       logger.warn('Primary summary attempt refused — pass deadline reached the cloud reserve (#3962)', {
         attempt, remainingMs: opts?.passDeadlineMs !== undefined ? opts.passDeadlineMs - Date.now() : undefined,
       });
-      const fbBudget = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+      const fbBudget = await tryCloudCondenseFallback(systemPrompt, userPrompt, summaryFallbackOpts, stats, callStart);
       return fbBudget ?? { content: null, stats };
     }
     stats.attempts = attempt;
@@ -4103,7 +4155,7 @@ FORMAT :
         stats.elapsedMs = Date.now() - callStart;
         stats.lastError = `LLM returned null content ${stats.nullCount}× (finish_reason likely "length" — thinking consumed max_tokens=${CONDENSE_LLM_MAX_TOKENS})`;
         // #2719: primary exhausted with null content (likely thinking-loop) → cloud fallback
-        const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+        const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, summaryFallbackOpts, stats, callStart);
         if (fbNull) return fbNull;
         return { content: null, stats };
       }
@@ -4145,7 +4197,7 @@ FORMAT :
       stats.elapsedMs = Date.now() - callStart;
       stats.lastError = describeLLMError(error, { isTimeout, timeoutMs: attemptTimeoutMs, elapsedMs: stats.elapsedMs, model: modelId });
       // #2719: primary endpoint failed (down/timeout) → cloud fallback before giving up
-      const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, { maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs: opts?.passDeadlineMs }, stats, callStart);
+      const fbErr = await tryCloudCondenseFallback(systemPrompt, userPrompt, summaryFallbackOpts, stats, callStart);
       if (fbErr) return fbErr;
       return { content: null, stats };
     }

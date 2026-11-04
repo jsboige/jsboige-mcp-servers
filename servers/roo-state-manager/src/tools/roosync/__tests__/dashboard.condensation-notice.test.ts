@@ -160,7 +160,7 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
       chat: { completions: { create: mockFallbackCreate } },
     });
     mockFallbackCreate.mockResolvedValue({
-      choices: [{ message: { content: '## Cloud summary\n\nSalvaged by z.ai.' } }],
+      choices: [{ message: { content: '## Cloud summary\n\n### Thèmes principaux\n- Salvaged by z.ai.\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none' } }],
     });
 
     const result = await fillUntilCondensed();
