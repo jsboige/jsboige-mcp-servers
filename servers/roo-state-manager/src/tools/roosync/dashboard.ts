@@ -5349,6 +5349,86 @@ function findBlocagesSection(lines: string[]): { start: number; end: number } | 
 }
 
 /**
+ * #4434 (04/11) — section-aware floor: trim INSIDE sections, never drop one whole.
+ *
+ * Measured on ai-01 on 04/11: 7/7 status passes ended on the deterministic floor.
+ * The cloud fallback returned 18.8 KB against the 15 KB cap. The block path then
+ * kept the lead heading, the « Blocages » section and the tail, so everything in
+ * between vanished whole: Résumé, État des systèmes, Décisions actées
+ * (`… 24 lignes omises`). The next pass inherits that amputated status, which
+ * makes the loss permanent: the floor first threw away the long-term memory the
+ * status exists to carry.
+ *
+ * This path never drops a heading line. It keeps the « Blocages » section whole
+ * (same label contract as findBlocagesSection), and it keeps the document's last
+ * line (the recency contract of the paths below). The bytes come out of the
+ * section that is currently largest, one body line at a time, topmost line
+ * first, so a bloated section pays before a short one. On a tie the later
+ * section pays, which protects the head.
+ *
+ * Returns null, and the caller falls back to the block/historical paths, in two
+ * cases: the text is not sectioned (fewer than 2 headings), or the protected
+ * skeleton (headings + blockers + last line) does not fit on its own.
+ */
+export function truncateBySections(text: string, maxSizeBytes: number, label: string): string | null {
+  const lines = text.split('\n');
+  const headingIdx: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/^#{1,6}\s/.test(lines[i])) headingIdx.push(i);
+  }
+  if (headingIdx.length < 2) return null;
+
+  const blocages = findBlocagesSection(lines);
+  const lastIdx = lines.length - 1;
+  // Removable ranges [next, to): the body lines of every section except
+  // « Blocages », plus any preamble before the first heading. The last line of
+  // the document is never removable.
+  const segments: Array<{ next: number; to: number; bytes: number }> = [];
+  const pushSegment = (from: number, to: number) => {
+    const end = Math.min(to, lastIdx);
+    let segBytes = 0;
+    for (let i = from; i < end; i++) segBytes += Buffer.byteLength(lines[i], 'utf8') + 1;
+    if (end > from) segments.push({ next: from, to: end, bytes: segBytes });
+  };
+  if (headingIdx[0] > 0) pushSegment(0, headingIdx[0]);
+  for (let k = 0; k < headingIdx.length; k++) {
+    if (blocages && headingIdx[k] === blocages.start) continue;
+    const to = k + 1 < headingIdx.length ? headingIdx[k + 1] : lines.length;
+    pushSegment(headingIdx[k] + 1, to);
+  }
+
+  // Dropping one line removes the line and one separator, because at least the
+  // two headings always remain: size accounting stays exact at the byte.
+  const keep = new Array<boolean>(lines.length).fill(true);
+  let size = Buffer.byteLength(text, 'utf8');
+  while (size > maxSizeBytes) {
+    let pick = -1;
+    for (let s = 0; s < segments.length; s++) {
+      if (segments[s].next >= segments[s].to) continue;
+      if (pick === -1 || segments[s].bytes >= segments[pick].bytes) pick = s;
+    }
+    if (pick === -1) return null; // the protected skeleton alone is over the cap
+    const seg = segments[pick];
+    const cost = Buffer.byteLength(lines[seg.next], 'utf8') + 1;
+    keep[seg.next] = false;
+    seg.next++;
+    seg.bytes -= cost;
+    size -= cost;
+  }
+
+  const out = lines.filter((_, i) => keep[i]).join('\n');
+  logger.info(`Section-aware truncation kept every section heading for ${label}`, {
+    originalBytes: Buffer.byteLength(text, 'utf8'),
+    truncatedBytes: Buffer.byteLength(out, 'utf8'),
+    limitBytes: maxSizeBytes,
+    sections: headingIdx.length,
+    blockersKeptWhole: blocages !== null,
+    linesRemoved: lines.length - out.split('\n').length,
+  });
+  return out;
+}
+
+/**
  * Deterministic (non-LLM) truncation: keeps the most recent lines that fit within maxSizeBytes.
  * Used when LLM condensation fails (#2463 — status should never exceed its cap, even in fallback).
  *
@@ -5364,10 +5444,18 @@ function findBlocagesSection(lines: string[]): { start: number; end: number } | 
  * historical path) rather than the last line.
  * No such heading, or a block that alone exceeds the cap (a truncated blockers
  * list would read as complete): historical tail-only path, unchanged.
+ *
+ * #4434 (04/11): a sectioned text (2+ headings) goes through truncateBySections
+ * first, which trims inside sections instead of dropping the ones between the
+ * lead and the blockers. The block and tail paths below now serve only
+ * unsectioned text, and a skeleton that does not fit on its own.
  */
 export function truncateToMaxSize(text: string, maxSizeBytes: number, label: string): string {
   const sizeBytes = Buffer.byteLength(text, 'utf8');
   if (sizeBytes <= maxSizeBytes) return text;
+
+  const bySections = truncateBySections(text, maxSizeBytes, label);
+  if (bySections !== null) return bySections;
 
   const lines = text.split('\n');
 
