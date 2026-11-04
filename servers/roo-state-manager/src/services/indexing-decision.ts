@@ -11,7 +11,8 @@ import {
     DEFAULT_REINDEX_TTL_HOURS,
     MAX_RETRY_ATTEMPTS,
     RETRY_BACKOFF_BASE_MS,
-    getReindexChangedAfterMs
+    getReindexChangedAfterMs,
+    isProgressAwareRetryEnabled
 } from '../types/indexing.js';
 import { NoiseFilter } from './noise-filter.js';
 
@@ -236,6 +237,9 @@ export class IndexingDecisionService {
             // Nettoyer les champs d'erreur/retry
             indexError: undefined,
             indexRetryCount: undefined,
+            // #4531: the progress trace belongs to a failed attempt — clear it
+            // with the rest of the retry state.
+            lastAttemptWritten: undefined,
             // #4352 g8: the headless-repair marker is one-shot — consumed by
             // this very completion. Leaving it in place (the spread above would)
             // would re-bypass the skips on every later drain.
@@ -250,8 +254,22 @@ export class IndexingDecisionService {
 
     /**
      * Met à jour l'état d'indexation après un échec
+     *
+     * @param progressWritten #4531 — new deduplicated points this attempt wrote
+     *   (the `written` detail of an `Embedding incomplete` error). When > 0 the
+     *   attempt moved the task forward, so it does not consume the retry budget:
+     *   status stays 'retry' at the current count. An attempt that wrote nothing
+     *   keeps counting, so a task that cannot progress still reaches 'failed' —
+     *   and since a free attempt adds at least one point out of a finite set,
+     *   progress-aware retries terminate. INDEX_PROGRESS_AWARE_RETRY=0 restores
+     *   the old arithmetic.
      */
-    public markIndexingFailure(skeleton: SkeletonHeader, error: string, isPermanent: boolean = false): void {
+    public markIndexingFailure(
+        skeleton: SkeletonHeader,
+        error: string,
+        isPermanent: boolean = false,
+        progressWritten?: number
+    ): void {
         if (!skeleton.metadata) return;
         const now = new Date().toISOString();
 
@@ -260,8 +278,36 @@ export class IndexingDecisionService {
         }
 
         const currentRetryCount = skeleton.metadata.indexingState.indexRetryCount || 0;
+        // #4531: no stickiness. A task already 'failed' is revived when an
+        // attempt writes points — that is exactly the repair path (#4352 g8: one
+        // shot, which used to come back 'failed' because the attempt was charged
+        // like a zero-write one). Termination does not depend on stickiness: only
+        // zero-write attempts increment, so a task that stops progressing reaches
+        // the ceiling after MAX attempts, and a task has finitely many sub-chunks.
+        const wroteNewPoints =
+            !isPermanent &&
+            typeof progressWritten === 'number' &&
+            progressWritten > 0 &&
+            isProgressAwareRetryEnabled();
 
-        if (isPermanent || currentRetryCount >= MAX_RETRY_ATTEMPTS - 1) {
+        if (wroteNewPoints) {
+            // #4531 — progress, not failure: keep the count, requeue with the
+            // normal backoff. The points stay on disk (the attempt kept them),
+            // and the pre-flight dedup makes the next pass embed only the rest.
+            skeleton.metadata.indexingState = {
+                ...skeleton.metadata.indexingState,
+                indexStatus: 'retry',
+                indexError: error,
+                lastIndexAttempt: now,
+                indexRetryCount: currentRetryCount,
+                lastAttemptWritten: progressWritten,
+                repair: undefined
+            };
+            console.log(
+                `[INDEXING][#4531] ${skeleton.taskId}: ${progressWritten} new point(s) written — ` +
+                `retry ${currentRetryCount + 1}/${MAX_RETRY_ATTEMPTS} not consumed`
+            );
+        } else if (isPermanent || currentRetryCount >= MAX_RETRY_ATTEMPTS - 1) {
             // Échec permanent
             skeleton.metadata.indexingState = {
                 ...skeleton.metadata.indexingState,
@@ -269,6 +315,7 @@ export class IndexingDecisionService {
                 indexError: error,
                 lastIndexAttempt: now,
                 indexRetryCount: currentRetryCount + 1,
+                lastAttemptWritten: 0,
                 // #4352 g8: one-shot marker — an attempted repair is spent even
                 // when it fails (a second drain goes through the normal rules).
                 repair: undefined
@@ -281,6 +328,7 @@ export class IndexingDecisionService {
                 indexError: error,
                 lastIndexAttempt: now,
                 indexRetryCount: currentRetryCount + 1,
+                lastAttemptWritten: 0,
                 repair: undefined
             };
         }
