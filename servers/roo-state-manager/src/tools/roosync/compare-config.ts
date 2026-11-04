@@ -31,6 +31,11 @@ import { promises as fsPromises } from 'fs';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { readMachineRegistryFile } from '../../utils/machine-registry-file.js';
+import {
+  MACHINE_REGISTRY_META_KEY,
+  readStoreMetaValue,
+  storeMetaUrl,
+} from '../../services/unified-store/store-meta.js';
 
 /**
  * #3044 — VibeSync: surface source/target values for each diff so the caller
@@ -1922,13 +1927,56 @@ async function withRosterCheck(
 }
 
 /**
- * Machines du registre partagé `.machine-registry.json`, triées — `null` si absent ou illisible.
- * Le registre est écrit par chaque machine à son enregistrement ; c'est la référence vivante.
- * Clés en minuscules, comme le roster (parseFleetRoster) et BaselineManager pour ce même fichier.
+ * Machines du registre de référence, triées — `null` si aucune source lisible.
+ * #4523 : la surface vivante est la ligne PG (`roosync_store_meta`, clé
+ * `machine_registry`) depuis #4131 Phase D — exactement comme
+ * `BaselineManager.loadMachineRegistry()`. Le fichier G: n'est plus qu'un
+ * miroir : ni frais (lastUpdated mesuré 30/10 vs PG 04/11), ni identique
+ * d'un siège à l'autre (jumeaux DriveFS divergents), et gelé pour de bon
+ * après la fin du double-write (05/11 18:00Z). Lire le miroir comme référence
+ * prescrivait un re-roster flotte + rebuild complet pour rien.
+ *
+ * `source` dit d'où vient la référence : 'pg' (fraîche par construction) ou
+ * 'mirror' (repli). Le repli a deux visages, comme dans BaselineManager :
+ * ligne PG ABSENTE (`pgFailed: false`) → le miroir est la surface légitime du
+ * contrat migration-012 (la DONNÉE décide), prescriptions inchangées ;
+ * lecture PG en ÉCHEC (`pgFailed: true`) → mesure dégradée, l'appelant ne
+ * prescrit plus rien de flotte (#4523).
+ * Clés en minuscules, comme le roster (parseFleetRoster) et BaselineManager.
  * Il n'oublie aucune machine (ajout seul) : une machine retirée de la flotte y reste.
  */
-async function loadRegistryMachines(sharedPath: string | undefined): Promise<{ machines: string[]; updated?: string } | null> {
+async function loadRegistryMachines(sharedPath: string | undefined): Promise<{ machines: string[]; updated?: string; source: 'pg' | 'mirror'; pgFailed: boolean } | null> {
+  // 1. Ligne PG d'abord — même lecture que BaselineManager.loadMachineRegistry()
+  if (storeMetaUrl()) {
+    try {
+      const raw = await readStoreMetaValue(MACHINE_REGISTRY_META_KEY);
+      if (raw !== null) {
+        const registryData = JSON.parse(raw);
+        const machines = [
+          ...new Set(Object.keys(registryData.machines || {}).map(k => k.toLowerCase()))
+        ].sort();
+        if (machines.length > 0) {
+          return { machines, updated: registryData.lastUpdated, source: 'pg', pgFailed: false };
+        }
+      }
+    } catch {
+      // Lecture PG en échec → repli miroir ci-dessous, pgFailed le dira.
+      if (sharedPath) {
+        const mirror = await readRegistryMirror(sharedPath);
+        if (mirror) return { ...mirror, pgFailed: true };
+      }
+      return null;
+    }
+  }
+
+  // 2. Repli légitime (ligne absente ou PG non configuré) : le miroir G:.
   if (!sharedPath) return null;
+  const mirror = await readRegistryMirror(sharedPath);
+  return mirror ? { ...mirror, pgFailed: false } : null;
+}
+
+/** Lecture du miroir G:, union des copies DriveFS (sans le verdict de source). */
+async function readRegistryMirror(sharedPath: string): Promise<{ machines: string[]; updated?: string; source: 'mirror' } | null> {
   try {
     // #2570 (récidive) : le registre est forké par DriveFS (`.machine-registry
     // (N).json`) et le nom canonique peut être ABSENT — la lecture se fait
@@ -1938,7 +1986,9 @@ async function loadRegistryMachines(sharedPath: string | undefined): Promise<{ m
     const machines = [
       ...new Set(Object.keys(registryRead.data?.machines || {}).map(k => k.toLowerCase()))
     ].sort();
-    return machines.length > 0 ? { machines, updated: registryRead.data?.lastUpdated } : null;
+    return machines.length > 0
+      ? { machines, updated: registryRead.data?.lastUpdated, source: 'mirror' as const }
+      : null;
   } catch {
     return null;
   }
@@ -1980,13 +2030,14 @@ async function checkRosterConsistency(
 
   const localRoster: string[] | null = config?.fleetRoster ?? null;
 
-  // Référence flotte : registre vivant d'abord, dashboard (instantané) en repli
+  // Référence flotte : registre vivant d'abord (PG, puis miroir en repli),
+  // dashboard (instantané) en dernier recours.
   let dashboardMachines: string[] = [];
   let refLabel: string;
   const registry = await loadRegistryMachines(config?.sharedPath);
   if (registry) {
     dashboardMachines = registry.machines;
-    refLabel = `registre${registry.updated ? ` (maj ${registry.updated})` : ''}`;
+    refLabel = `${registry.source === 'pg' ? 'registre PG' : 'miroir G:'}${registry.updated ? ` (maj ${registry.updated})` : ''}`;
   } else {
     try {
       const dashboard = await service.loadDashboard();
@@ -2004,6 +2055,14 @@ async function checkRosterConsistency(
 
   const dashSet = new Set(dashboardMachines);
 
+  // #4523 : référence lue sur le miroir G: après un ÉCHEC de lecture PG = mesure
+  // DÉGRADÉE. Le miroir est ni frais ni homogène entre sièges : aucune
+  // prescription flotte (re-roster + rebuild, ou définition du roster depuis la
+  // référence) ne part d'un miroir — à vérifier, la ligne PG tranche au
+  // prochain passage. (Ligne PG ABSENTE ≠ échec : le miroir est alors la
+  // surface légitime du contrat migration-012, prescriptions inchangées.)
+  const degradedReference = registry?.source === 'mirror' && registry?.pgFailed === true;
+
   if (!localRoster) {
     // Roster unset → partitioning DISABLED (cette machine indexe tout l'espace)
     diffs.push({
@@ -2011,7 +2070,9 @@ async function checkRosterConsistency(
       severity: 'WARNING',
       path: 'env.ROO_FLEET_ROSTER',
       description: `ROO_FLEET_ROSTER non défini — partitioning DÉSACTIVÉ. Cette machine indexe la totalité du task-space (pas de shard filtering), tandis que le ${refLabel} liste ${dashboardMachines.length} machines (${dashboardMachines.join(', ')}). Contributeur de redondance d'indexation silencieuse (#2570).`,
-      action: `Définir ROO_FLEET_ROSTER="${dashboardMachines.join(',')}" dans ~/.claude.json mcpServers.roo-state-manager.env, puis restart MCP + roosync_indexing(rebuild)`
+      action: degradedReference
+        ? `À vérifier : référence lue sur le miroir G: (lecture PG en échec) — ne PAS définir ROO_FLEET_ROSTER depuis ce miroir. Relancer roosync_compare_config quand la ligne PG répond (#4523).`
+        : `Définir ROO_FLEET_ROSTER="${dashboardMachines.join(',')}" dans ~/.claude.json mcpServers.roo-state-manager.env, puis restart MCP + roosync_indexing(rebuild)`
     });
     return diffs;
   }
@@ -2022,6 +2083,9 @@ async function checkRosterConsistency(
   // Jamais de retrait prescrit sur la foi de la seule référence : une machine absente
   // de la référence peut être la référence périmée, pas la machine (#2570, 16/09).
   const rosterAction = (missingFromRoster: string[], extraInRoster: string[]): string => {
+    if (degradedReference) {
+      return `À vérifier : référence lue sur le miroir G: (lecture PG en échec, maj ${registry?.updated ?? 'inconnue'}) — ne PAS re-roster la flotte ni relancer d'indexation sur cette foi : le miroir n'est ni frais ni homogène entre sièges. Relancer roosync_compare_config quand la ligne PG répond (#4523).`;
+    }
     const parts: string[] = [];
     if (missingFromRoster.length) {
       parts.push(`Ajouter ${missingFromRoster.join(', ')} au ROO_FLEET_ROSTER de TOUTES les machines simultanément, puis restart MCP + roosync_indexing(rebuild) sur chacune (migration task-partition.ts) — après avoir confirmé que la machine est toujours en service (le registre n'oublie aucune machine)`);
