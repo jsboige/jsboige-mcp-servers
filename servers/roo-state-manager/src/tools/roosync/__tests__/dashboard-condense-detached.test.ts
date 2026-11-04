@@ -14,6 +14,10 @@
  *   4. deux franchissements ne lancent pas deux passes en parallèle.
  * Plus le volet secondaire : l'avis de remplissage (85 %) arrive AVANT le 92 %.
  *
+ * #4536 (follow-up) — l'échec détaché laisse une trace : le warn porte le diag
+ * COMPLET, et l'issue de la dernière passe (ok / error) est retenue par clé et
+ * rendue à la lecture/append suivants (`condensationLastOutcome`).
+ *
  * NB config : `mockReset: true` (vitest.config.ts) wipe les implémentations
  * posées dans `vi.hoisted` — chaque comportement est ré-armé dans le beforeEach
  * (pattern #2639 lot 2), pas seulement déclaré.
@@ -38,12 +42,28 @@ const mocks = vi.hoisted(() => ({
   releaseDashboardSharedLock: vi.fn(),
   readDashboardSharedLock: vi.fn(),
   fetchArchivedDashboardMessageIds: vi.fn(),
+  getDashboardPgReader: vi.fn(),
 }));
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   // Gate OFF + PG null : la passe ancre son delta sur le fichier local.
   ...mocks,
 }));
+
+// #4536 — capture du WARN de l'échec détaché : le diag complet doit voyager
+// dans le log, pas seulement {key, elapsedMs, error}. `vi.hoisted` car
+// `createLogger()` tourne à l'éval de dashboard.ts, avant le corps de ce
+// module — un `const` nu serait en TDZ.
+const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
+vi.mock('../../../utils/logger.js', () => ({
+  createLogger: vi.fn(() => ({ info: vi.fn(), warn, error: vi.fn(), debug: vi.fn() })),
+}));
+
+// #4536 — injection d'échec ARCHIVE : `writeFile` vers dashboards/archive/
+// rejette à la demande. Les échecs LLM sont absorbés en interne par la passe
+// (truncation fallback) ; c'est l'erreur d'écriture d'archive qui fait
+// sortir `condenseIntercom` par le throw et atteint le catch détaché.
+const fsFail = vi.hoisted(() => ({ archiveWriteFails: false }));
 
 // #4527 review (ai-01, 04/11) — point d'injection du test de verrou : chaque
 // écriture de dashboard se termine par une copie in-place (staging → copyFile).
@@ -86,6 +106,16 @@ vi.mock('fs/promises', async (importOriginal) => {
       }
       return actual.copyFile(src, dest);
     },
+    writeFile: async (
+      file: Parameters<typeof actual.writeFile>[0],
+      data: Parameters<typeof actual.writeFile>[1],
+      options?: Parameters<typeof actual.writeFile>[2]
+    ) => {
+      if (fsFail.archiveWriteFails && String(file).replace(/\\/g, '/').includes('/archive/')) {
+        throw new Error('injected archive write failure (#4536)');
+      }
+      return actual.writeFile(file, data, options);
+    },
   };
 });
 
@@ -117,7 +147,7 @@ vi.mock('@/services/openai', () => ({
   getFallbackLLMModelId: () => 'test-fallback-model',
 }));
 
-import { roosyncDashboard, awaitDetachedCondense, resetCondenseCircuitBreaker } from '../dashboard.js';
+import { roosyncDashboard, awaitDetachedCondense, resetCondenseCircuitBreaker, resetDetachedCondenseOutcomes } from '../dashboard.js';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-condense-detached-');
 const PREEMPTIVE_THRESHOLD = Math.floor(50 * 1024 * 0.92); // ~46 KB, cf. dashboard.ts
@@ -141,6 +171,11 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     releaseLlmGate = null;
     llmMode = 'ok';
     llmCalls = 0;
+    fsFail.archiveWriteFails = false;
+    warn.mockClear();
+    // #4536 — le registre des issues détachées est un état de module : sans
+    // reset, un test lirait le verdict de la passe du test précédent.
+    resetDetachedCondenseOutcomes();
     fsGate.enabled = false;
     fsGate.gateAtCall = 0;
     fsGate.copyCalls = 0;
@@ -165,6 +200,7 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     mocks.releaseDashboardSharedLock.mockResolvedValue(undefined);
     mocks.readDashboardSharedLock.mockResolvedValue(null);
     mocks.fetchArchivedDashboardMessageIds.mockResolvedValue(null);
+    mocks.getDashboardPgReader.mockReturnValue(null);
   });
 
   afterEach(async () => {
@@ -450,5 +486,102 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     expect(result.warning).toContain('seuil d\'avis');
     expect(result.condensed).toBe(false);
     expect(result.condensationDeferred).toBeUndefined();
+  });
+
+  it('rend l\'issue de la passe ok à la lecture ET à l\'append suivants (#4536)', async () => {
+    const { key, status } = await populateBelowThreshold();
+
+    const a = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: crossingContent(status, 'SUCCES-ISSUE-4536'),
+      tags: ['INFO'],
+    });
+    expect(a.condensationDeferred).toBe(true);
+    // Au départ de la passe : son issue n'existe pas encore — rien de retenu.
+    expect(a.condensationLastOutcome).toBeUndefined();
+
+    await awaitDetachedCondense(key);
+
+    const read = await roosyncDashboard({ action: 'read', type: 'workspace', section: 'status' });
+    expect(read.condensationLastOutcome).toMatchObject({
+      outcome: 'ok',
+      diag: {
+        phase: 'post-append',
+        outcome: 'condensed',
+      },
+    });
+    expect(read.condensationLastOutcome!.diag.archivedMessageCount).toBeGreaterThan(0);
+    expect(read.condensationLastOutcome!.diag.llm).toBeDefined();
+    expect(Number.isNaN(Date.parse(read.condensationLastOutcome!.finishedAt))).toBe(false);
+
+    // Même verdict depuis l'append suivant de la même clé.
+    const b = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: 'petit message après la passe',
+      tags: ['INFO'],
+    });
+    expect(b.condensationLastOutcome).toMatchObject({ outcome: 'ok' });
+  });
+
+  it('journalise le diag COMPLET au warn d\'échec — le mutant « diag retiré du log » rougit (#4536)', async () => {
+    const { key, status } = await populateBelowThreshold();
+    const token = 'ECHEC-DIAG-4536';
+    // Les échecs LLM sont absorbés (truncation fallback) : c'est l'écriture
+    // d'archive qui fait sortir condenseIntercom par le throw et atteint le
+    // catch détaché.
+    fsFail.archiveWriteFails = true;
+
+    const result = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: crossingContent(status, token),
+      tags: ['INFO'],
+    });
+    expect(result.condensationDeferred).toBe(true);
+    await awaitDetachedCondense(key);
+
+    const failWarn = warn.mock.calls.find(([m]) => String(m).includes('Detached condensation failed'));
+    expect(failWarn).toBeDefined();
+    const meta = failWarn![1] as Record<string, unknown>;
+    expect(meta.key).toBe(key);
+    expect(meta.error).toBe('injected archive write failure (#4536)');
+    // Le diag complet voyage dans le warn : sans ce champ, l'échec ne disait
+    // rien de sa cause (jambe LLM, tentatives, durée de la passe).
+    expect(meta.diag).toMatchObject({
+      phase: 'post-append',
+      outcome: 'llm-failed-injected',
+    });
+    expect(typeof (meta.diag as Record<string, unknown>).elapsedMs).toBe('number');
+    expect((meta.diag as Record<string, unknown>).llm).toBeDefined();
+    expect(typeof meta.elapsedMs).toBe('number');
+
+    // Aucune perte : le message et le statut précédent survivent à l'échec.
+    expect(await messageSurvivesAnywhere(token)).toBe(true);
+    expect(await readStatusSection(key)).toContain(status);
+  });
+
+  it('rend l\'issue error à la lecture suivante quand la passe détachée échoue (#4536)', async () => {
+    const { key, status } = await populateBelowThreshold();
+    fsFail.archiveWriteFails = true;
+
+    await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: crossingContent(status, 'ECHEC-ISSUE-4536'),
+      tags: ['INFO'],
+    });
+    await awaitDetachedCondense(key);
+
+    const read = await roosyncDashboard({ action: 'read', type: 'workspace', section: 'status' });
+    expect(read.condensationLastOutcome).toMatchObject({
+      outcome: 'error',
+      error: 'injected archive write failure (#4536)',
+      diag: {
+        phase: 'post-append',
+        outcome: 'llm-failed-injected',
+      },
+    });
   });
 });

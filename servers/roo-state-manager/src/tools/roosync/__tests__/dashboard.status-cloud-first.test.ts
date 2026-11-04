@@ -22,6 +22,8 @@
  *       archive says `statusCloudFirst: true`, and the notice and append suffix name
  *       the route (`ok-cloud-first`), never `ok-with-fallback`.
  *   (j) `legOutcomeLabel` relabels only a cloud-first ok; a real rescue keeps its name.
+ *   (k) #4536: (a) replayed on the DETACHED default (no CONDENSE_DETACHED pin) —
+ *       the pass telemetry surfaces on the next read via condensationLastOutcome.
  *
  * @module tools/roosync/__tests__/dashboard.status-cloud-first
  */
@@ -36,6 +38,7 @@ import {
   resetCondenseCircuitBreaker,
   statusCloudFirstEnabled,
   legOutcomeLabel,
+  awaitDetachedCondense,
   __condenseBreakerHooks,
 } from '../dashboard.js';
 
@@ -310,5 +313,42 @@ describe('#4434 status leg cloud-first', { timeout: 30000 }, () => {
     expect(legOutcomeLabel({ ...base, finalOutcome: 'ok-with-fallback' } as any)).toBe('ok-with-fallback');
     expect(legOutcomeLabel({ ...base, finalOutcome: 'cloud-first-failed', cloudFirst: true } as any)).toBe('cloud-first-failed');
     expect(legOutcomeLabel({ ...base, finalOutcome: 'timeout' } as any)).toBe('timeout');
+  });
+
+  it('(k) #4536 replay of (a) on the DETACHED default (CONDENSE_DETACHED unset): the telemetry surfaces on the next read', async () => {
+    // #4536 — la voie de production (détachée) doit garder sa garde de
+    // télémétrie : le reste de ce fichier épinglant CONDENSE_DETACHED=0,
+    // (a) est rejoué ici SANS épingle, et la télémétrie lue via le registre
+    // des issues détachées (condensationLastOutcome) au lieu de
+    // condenseDiagnostic (vide sur la voie détachée).
+    delete process.env.CONDENSE_DETACHED;
+    primaryAnswersBothLegs();
+    cloudAnswersBothLegs();
+
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Init' });
+    const filler = 'X'.repeat(3000);
+    let deferredKey: string | null = null;
+    for (let i = 0; i < 20; i++) {
+      const result = await roosyncDashboard({ action: 'append', type: 'global', content: `${filler} message-${i}` });
+      if ((result as any).condensationDeferred && !deferredKey) deferredKey = result.key;
+    }
+    expect(deferredKey).not.toBeNull();
+    await awaitDetachedCondense(deferredKey!);
+
+    // (a) toujours vrai sur la voie détachée : statut au cloud, résumé au primaire.
+    expect(statusCalls(mockPrimaryCreate)).toHaveLength(0);
+    expect(summaryCalls(mockPrimaryCreate).length).toBeGreaterThanOrEqual(1);
+    expect(statusCalls(mockFallbackCreate).length).toBeGreaterThanOrEqual(1);
+
+    // La télémétrie #4434 survit au détachement : elle remonte à la lecture
+    // suivante via le verdict retenu, diagnostic complet compris.
+    const read = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+    const last = (read as any).condensationLastOutcome;
+    expect(last).toBeDefined();
+    expect(last.outcome).toBe('ok');
+    expect(last.diag.outcome).toBe('condensed');
+    expect(last.diag.llm?.status?.cloudFirst).toBe(true);
+    expect(last.diag.llm?.status?.finalOutcome).toBe('ok-with-fallback');
+    expect(last.diag.llm?.summary?.finalOutcome).toBe('ok');
   });
 });
