@@ -5383,7 +5383,9 @@ function blockersMaxShare(): number | null {
  * from before condensation) carry the omission.
  */
 export function blockerDropRank(line: string, now: Date = new Date()): number {
-  if (/(?:^|[^A-Za-zÀ-ÿ])(?<!(?:[Nn][Oo][Nn]|[Pp][Aa][Ss])[\s-])(?:REFUT[EÉ]E?S?|R[EÉ]SOLUE?S?)(?![A-Za-zÀ-ÿ])/.test(line)) {
+  // The negator (NON / PAS) is a whole word, followed by any run of blanks
+  // and dashes (NBSP, tab, `-`, `–`, `—` included) before the marker.
+  if (/(?:^|[^A-Za-zÀ-ÿ])(?<!(?:^|[^A-Za-zÀ-ÿ])(?:[Nn][Oo][Nn]|[Pp][Aa][Ss])[\s\-\u2010-\u2015]+)(?:REFUT[EÉ]E?S?|R[EÉ]SOLUE?S?)(?![A-Za-zÀ-ÿ])/.test(line)) {
     return Number.NEGATIVE_INFINITY;
   }
   const m = /\[v[ée]rifi[ée]e?\s+(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2})Z?)?/i.exec(line);

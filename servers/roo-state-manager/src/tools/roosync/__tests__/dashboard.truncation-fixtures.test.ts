@@ -38,10 +38,10 @@
  *      de libellé : seuls « Blocages » / « Blockers » ouvrent le droit au
  *      bloc — tout autre libellé, même porteur du même contenu, est du
  *      contenu ordinaire (chemin historique).
- *   F. Part des blocages (#4434, 04/11). Sur 24 statuts archivés, la section
- *      blocages grossissait à chaque passe jusqu'à 91 % du statut, 0-1 ligne
- *      jamais marquée REFUTE/RÉSOLU : gardée entière, elle faisait payer les
- *      sept autres. Quand le plancher tourne, son corps est plafonné à 40 % du
+ *   F. Part des blocages (#4434, 04/11). Sur les 4 statuts archivés mesurés
+ *      (02-04/11), la section blocages est la plus grosse, 26-44 % du statut,
+ *      0-1 ligne marquée REFUTE/RÉSOLU : gardée entière, elle faisait payer
+ *      les autres. Quand le plancher tourne, son corps est plafonné à 40 % du
  *      plafond ; sortent d'abord les lignes REFUTE/RÉSOLU, puis les non datées,
  *      puis la vérification la plus ancienne (à égalité, la plus haute). Levier
  *      `CONDENSE_BLOCKERS_MAX_SHARE_PCT=0` = « Blocages entiers » (D3/E1a/E1b
@@ -91,6 +91,10 @@
  *   M34 dernière ligne = dernier élément même vide           → F9 rouge
  *   M35 levier : seule la graphie `0` coupe                  → F4 rouge
  *   M36 valeur vide lue comme zéro                           → F4 rouge
+ *   Re-review (04/11) :
+ *   M37 un seul séparateur après le négateur                 → F3 rouge
+ *   M38 tirets Unicode (– —) absents des séparateurs         → F3 rouge
+ *   M39 négateur sans frontière de mot à gauche              → F3 rouge
  *
  * Hors d'atteinte unitaire (documenté, non testé ici) : l'append des marqueurs
  * #1502/#3803 APRÈS condenseTextIfTooLarge (dashboard.ts ~L5753-5782, mesure
@@ -814,6 +818,14 @@ describe('#4434 volet 5 — fixtures troncation déterministe', () => {
       // « NON / PAS RÉSOLU » disent le contraire : jamais déclassés, quelle que soit la casse du négateur.
       for (const neg of ['NON RÉSOLU', 'PAS RÉSOLU', 'NON-RÉSOLU', 'Non RÉSOLU', 'non RÉSOLU', 'pas RESOLUE']) {
         expect(blockerDropRank(`x ${neg} [vérifié 04/11 09:00Z]`, nov)).toBeGreaterThan(Number.MIN_SAFE_INTEGER);
+      }
+      // Séparateurs réels (review 04/11) : plusieurs blancs, tabulation, espace insécable, tirets – et —.
+      for (const neg of ['NON  RÉSOLU', 'PAS\tRÉSOLU', 'NON\u00a0RÉSOLU', 'NON—RÉSOLU', 'NON – RÉSOLU', 'PAS - REFUTE']) {
+        expect(blockerDropRank(`x ${neg} [vérifié 04/11 09:00Z]`, nov)).toBeGreaterThan(Number.MIN_SAFE_INTEGER);
+      }
+      // Le négateur est un mot entier : « COMPAS » / « ANON » ne nient rien.
+      for (const mark of ['COMPAS RÉSOLU', 'ANON RÉSOLU', 'NONCE REFUTE']) {
+        expect(blockerDropRank(`x ${mark} [vérifié 04/11 09:00Z]`, nov)).toBe(Number.NEGATIVE_INFINITY);
       }
       // Pluriels et féminins : déclassés.
       for (const mark of ['RÉSOLUS', 'RESOLUES', 'REFUTÉES', 'REFUTES', 'REFUTÉ']) {
