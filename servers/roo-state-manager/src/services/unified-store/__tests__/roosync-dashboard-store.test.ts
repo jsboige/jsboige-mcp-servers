@@ -623,7 +623,14 @@ describe('fetchArchivedDashboardMessageIds (#3782 merge tombstones)', () => {
     const result = await fetchArchivedDashboardMessageIds('workspace-coursia-fork');
     expect(result).toBeInstanceOf(Set);
     expect([...result!]).toEqual(['ic-a', 'ic-b', 'ic-c']);
-    expect(mockGetArchivedIds).toHaveBeenCalledWith('workspace-coursia-fork');
+    expect(mockGetArchivedIds).toHaveBeenCalledWith('workspace-coursia-fork', undefined); // merge path: whole archived history
+  }));
+
+  test('gate on, un seul id demandé → transmis au reader (dédup de l\'append, pas l\'histoire entière)', withDualWriteGate(async () => {
+    mockGetArchivedIds.mockResolvedValueOnce(['stall-x']);
+    const result = await fetchArchivedDashboardMessageIds('workspace-roo-extensions', 'stall-x');
+    expect([...result!]).toEqual(['stall-x']);
+    expect(mockGetArchivedIds).toHaveBeenCalledWith('workspace-roo-extensions', 'stall-x');
   }));
 
   test('gate on, reader sans histoire → [] puis Set vide → union inchangée', withDualWriteGate(async () => {
@@ -689,5 +696,18 @@ describe('PgUnifiedStoreReader.getArchivedRooSyncDashboardMessageIds SQL shape',
     mockQuery.mockResolvedValueOnce({ rows: [] });
     const result = await reader.getArchivedRooSyncDashboardMessageIds('global');
     expect(result).toEqual([]);
+  });
+
+  test('avec un messageId → requête ciblée sur cet id (index unique), LIMIT 1, deux paramètres', async () => {
+    mockQuery.mockClear();
+    mockQuery.mockResolvedValueOnce({ rows: [{ message_id: 'stall-x' }] });
+    const result = await reader.getArchivedRooSyncDashboardMessageIds('workspace-roo-extensions', 'stall-x');
+    expect(result).toEqual(['stall-x']);
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('archived_at IS NOT NULL'));
+    expect(call).toBeDefined();
+    const sql = String(call![0]);
+    expect(sql).toContain('message_id = $2');
+    expect(sql).toContain('LIMIT 1');
+    expect(call![1]).toEqual(['workspace-roo-extensions', 'stall-x']);
   });
 });

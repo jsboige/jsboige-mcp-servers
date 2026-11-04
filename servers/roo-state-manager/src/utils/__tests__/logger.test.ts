@@ -224,6 +224,30 @@ describe('logger', () => {
 			expect(output).toContain('boom-msg');
 			expect(output).toContain('errorStack');
 		});
+
+		test('a cyclic context never makes the logger throw (it runs inside catch blocks)', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			const ctx: Record<string, unknown> = { key: 'k-cycle' };
+			ctx.self = ctx;
+			expect(() => logger.error('Failed', ctx)).not.toThrow();
+			const output = consoleSpy.error.mock.calls[0][0];
+			expect(output).toContain('metadataNotSerializable');
+			expect(output).toContain('key'); // the field names survive
+		});
+
+		test('a BigInt in the context is written, not thrown', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			expect(() => logger.error('Failed', { count: BigInt(42) })).not.toThrow();
+			expect(consoleSpy.error.mock.calls[0][0]).toContain('"42"');
+		});
+
+		test('an Error nested in the context keeps its message instead of `{}`', () => {
+			const logger = new Logger({ minLevel: 'ERROR' as LogLevel, logDir: makeLogDir() });
+			logger.error('Failed', { key: 'k-nested', error: new Error('nested-boom') });
+			const output = consoleSpy.error.mock.calls[0][0];
+			expect(output).toContain('nested-boom');
+			expect(output).toContain('k-nested');
+		});
 	});
 
 	// ============================================================

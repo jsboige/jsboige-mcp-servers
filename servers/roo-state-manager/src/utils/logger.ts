@@ -105,6 +105,19 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
     return proto === Object.prototype || proto === null;
 }
 
+/**
+ * JSON replacer for log metadata: an Error nested in the context (`{ error }`)
+ * keeps its name/message/stack instead of serializing to `{}`, and a BigInt is
+ * written as a string instead of throwing.
+ */
+function metadataReplacer(_key: string, value: unknown): unknown {
+    if (value instanceof Error) {
+        return { name: value.name, message: value.message, stack: value.stack };
+    }
+    if (typeof value === 'bigint') return value.toString();
+    return value;
+}
+
 export class Logger {
     private logDir: string;
     private filePrefix: string;
@@ -185,7 +198,7 @@ export class Logger {
                     errorStack: error.stack
                 };
             } else if (isPlainObject(error)) {
-                // 20 call sites pass their context as the 2nd argument
+                // 19 call sites (4 files) pass their context as the 2nd argument
                 // (`logger.error(msg, { key, detail })`); `String()` turned it
                 // into "[object Object]" and every [DASHBOARD-FORK] alert lost
                 // its key and detail. A plain object IS context: its fields are
@@ -224,7 +237,15 @@ export class Logger {
         // Format metadata with indentation for better readability
         let metadataStr = '';
         if (metadata) {
-            const formattedMetadata = JSON.stringify(metadata, null, 2);
+            let formattedMetadata: string;
+            try {
+                formattedMetadata = JSON.stringify(metadata, metadataReplacer, 2);
+            } catch (serializeError) {
+                // The logger is called from catch blocks: a cyclic context must
+                // never turn it into a thrower that replaces the original error.
+                const reason = serializeError instanceof Error ? serializeError.message : String(serializeError);
+                formattedMetadata = JSON.stringify({ metadataNotSerializable: reason, keys: Object.keys(metadata) }, null, 2);
+            }
             metadataStr = '\n' + formattedMetadata.split('\n').map(line => `  ${line}`).join('\n');
         }
 

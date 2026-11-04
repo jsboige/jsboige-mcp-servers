@@ -8064,7 +8064,11 @@ async function handleAppend(
     // server-side »). null = no PG half, failure or timeout: unknown, so the
     // append goes on as before. Rollback: DASHBOARD_APPEND_ARCHIVED_DEDUPE=0.
     if (process.env.DASHBOARD_APPEND_ARCHIVED_DEDUPE?.trim() !== '0') {
-      const archivedIds = await fetchArchivedDashboardMessageIds(key);
+      // One-id lookup (unique index), never the whole archived history:
+      // minute-bucketed callers (vibe-feeder, watchdogs) grow that history
+      // without bound, and a slow full read would hit the 3 s timeout and
+      // fail open into the very fork this check closes.
+      const archivedIds = await fetchArchivedDashboardMessageIds(key, messageIdValue);
       if (archivedIds?.has(messageIdValue)) {
         logger.info('Append deduplicated — explicit messageId already archived by a condensation (#3276/#3782)', {
           key,

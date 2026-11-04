@@ -71,7 +71,8 @@ describe('append dedupe on an archived explicit messageId (#3276/#3782)', () => 
     expect(r.success).toBe(true);
     expect(r.deduplicated).toBe(true);
     expect(r.message).toContain('archivé par une condensation');
-    expect(fetchArchived).toHaveBeenCalledWith('global');
+    // One-id lookup on the store key: never the whole archived history.
+    expect(fetchArchived).toHaveBeenCalledWith('global', ARCHIVED_ID);
     expect(await intercomIds()).toEqual(before);
   });
 

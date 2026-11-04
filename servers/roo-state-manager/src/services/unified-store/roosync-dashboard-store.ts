@@ -371,7 +371,7 @@ export function resetArchivedIdsReaderForTests(): void {
   dedicatedArchivedIdsReader = null;
 }
 
-export async function fetchArchivedDashboardMessageIds(key: string): Promise<Set<string> | null> {
+export async function fetchArchivedDashboardMessageIds(key: string, messageId?: string): Promise<Set<string> | null> {
   const pgUrl = process.env.UNIFIED_STORE_PG_URL;
   if (!pgUrl) {
     return null;
@@ -385,7 +385,7 @@ export async function fetchArchivedDashboardMessageIds(key: string): Promise<Set
   });
   try {
     const result = await Promise.race([
-      reader.getArchivedRooSyncDashboardMessageIds(key),
+      reader.getArchivedRooSyncDashboardMessageIds(key, messageId),
       timeout,
     ]);
     if (result === null && timedOut) {
