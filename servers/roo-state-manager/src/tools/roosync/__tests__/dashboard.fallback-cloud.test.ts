@@ -105,6 +105,9 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     // suite's OpenAI-compat leg onto the anthropic branch (mirror of
     // dashboard.claudish-fallback.test.ts beforeEach).
     delete process.env.FALLBACK_API_FORMAT;
+    // #4434: the status leg routes cloud-first by default; a lever leaked from a
+    // seat's .env would flip it back to primary-first under the whole suite.
+    delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
     // Default: primary unavailable, no fallback configured (inert).
     mockGetPrimaryClient.mockImplementation(() => { throw new Error('No chat API key configured'); });
     mockPrimaryCreate.mockReset();
@@ -121,6 +124,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
     delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
+    delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
   });
 
   /**
@@ -265,6 +269,9 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
   });
 
   it('(c) primary ok → outcome `condensed` (fallback NOT flagged, #2719 criterion #6c)', async () => {
+    // Primary-first chain, under the #4434 lever: by default the status leg would
+    // go to the cloud first (covered by the #4434 block below).
+    process.env.CONDENSE_STATUS_CLOUD_FIRST = '0';
     // Primary succeeds — the cloud client is configured but must NOT be used.
     mockGetPrimaryClient.mockReturnValue({
       chat: { completions: { create: mockPrimaryCreate } },
@@ -834,9 +841,13 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     expect(unfolded).toContain('deepseek-v4-flash: guard-rejected (too-short) | claude-sonnet-5-5: guard-rejected (too-short)');
     // Per-leg outcomes (ms#1501): the status leg died in the chain while the summary leg
     // — whose own guard accepts a complete summary — was salvaged by the FIRST model.
-    expect(unfolded).toContain('statusOutcome: error');
+    // #4434: the status leg went to the cloud first, so its death is `cloud-first-failed`.
+    expect(unfolded).toContain('statusOutcome: cloud-first-failed');
     expect(unfolded).toContain('summaryOutcome: ok-with-fallback');
     expect(unfolded).toContain('summaryFallbackModel: deepseek-v4-flash');
+    // #4434: the primary was only ever asked for the summary.
+    expect(mockPrimaryCreate.mock.calls.length).toBeGreaterThanOrEqual(1);
+    expect(mockPrimaryCreate.mock.calls.every((c: any[]) => isSummaryRequest(c[0]))).toBe(true);
   });
 
   // Incident ai-01, 03/11 18:44:25Z: deepseek-v4-flash answered the summary leg in 2.5 s

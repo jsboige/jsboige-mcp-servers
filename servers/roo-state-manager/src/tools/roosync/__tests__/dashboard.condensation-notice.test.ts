@@ -69,6 +69,8 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
     delete process.env.EMBEDDING_API_BASE_URL;
     // #3962 hermeticity: seat .env carries FALLBACK_API_FORMAT since the 23/10 fleet gesture
     delete process.env.FALLBACK_API_FORMAT;
+    // #4434: a leaked lever would flip the status leg back to primary-first.
+    delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
     mockGetPrimaryClient.mockImplementation(() => { throw new Error('No chat API key configured'); });
     mockPrimaryCreate.mockReset();
     mockGetFallbackClient.mockImplementation(() => null);
@@ -83,6 +85,7 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
     delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
+    delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
   });
 
   async function fillUntilCondensed(): Promise<any> {
@@ -204,6 +207,9 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
     // ("synthèse de dashboards de coordination") fails — the cloud fallback
     // answers the status. This is the divergent-legs shape the #1233 review
     // pointed at: outcome = fallback-cloud while the summary is a primary success.
+    // #4434: the status leg reaches the primary only under the lever — by default it
+    // goes to the cloud first, which is a route, not a rescue (fallback-cloud test file).
+    process.env.CONDENSE_STATUS_CLOUD_FIRST = '0';
     mockGetPrimaryClient.mockReturnValue({
       chat: { completions: { create: mockPrimaryCreate } },
     });

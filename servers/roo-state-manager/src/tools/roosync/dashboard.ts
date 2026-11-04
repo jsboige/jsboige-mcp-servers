@@ -4001,8 +4001,13 @@ export interface LLMCallStats {
   /** Final outcome. `guard-rejected` (#3962) : le garde « jamais pire que l'entrée » a rejeté
    * un statut-artefact d'échec transporté en 200 (vide / `[Error:` / trop court).
    * `skipped-on-change` (#4205) : l'appel n'a PAS eu lieu — les messages archivés ne
-   * portaient aucun signal d'état, le statut précédent est conservé tel quel. */
-  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback' | 'guard-rejected' | 'skipped-on-change' | 'budget-exhausted';
+   * portaient aucun signal d'état, le statut précédent est conservé tel quel.
+   * `cloud-first-failed` (#4434) : jambe statut envoyée au cloud d'abord, le cloud n'a rien
+   * rendu ; le primaire n'a pas été appelé. */
+  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback' | 'guard-rejected' | 'skipped-on-change' | 'budget-exhausted' | 'cloud-first-failed';
+  /** #4434: the status leg went to the cloud tier FIRST and never called the primary.
+   * The breaker tracks the primary: such a leg neither fails nor vouches for it. */
+  cloudFirst?: boolean;
   // #2719: Cloud fallback fields
   /** Whether the cloud fallback (z.ai / OpenAI) was used for this call. */
   fallbackUsed?: boolean;
@@ -4337,6 +4342,16 @@ FORMAT :
 }
 
 /**
+ * #4434: whether the status leg goes to the cloud tier before the primary.
+ * Default on. `CONDENSE_STATUS_CLOUD_FIRST=0` (any numeric spelling of zero)
+ * restores primary-first. Read per call, like CONDENSE_BLOCKERS_MAX_SHARE_PCT.
+ */
+export function statusCloudFirstEnabled(): boolean {
+  const raw = process.env.CONDENSE_STATUS_CLOUD_FIRST;
+  return !(raw !== undefined && raw.trim() !== '' && Number(raw) === 0);
+}
+
+/**
  * Génère une mise à jour du statut dashboard à partir de la version précédente
  * et des messages condensés (#858 Phase 2)
  *
@@ -4503,6 +4518,32 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
     stats.finalOutcome = 'circuit-open';
     const fb = await tryCloudCondenseFallback(systemPrompt, userPrompt, cloudFallbackOpts, stats, callStart);
     return fb ?? circuitOpenFailure(stats, callStart);
+  }
+
+  // #4434 (04/11): the status leg goes to the cloud tier FIRST when one is configured.
+  // Measured on ai-01, 02-04/11: 52 primary status calls, 0 succeeded (38 timed out
+  // at the ~90 s slice the pass deadline leaves it). A 4-6 K-token status cannot
+  // decode inside that slice, so each attempt paid 90 s and held a vLLM slot the hub
+  // sessions need, and then the cloud carried the pass anyway. The summary leg keeps
+  // the primary (10 of 38 succeeded there). With no cloud tier configured, the primary
+  // is tried as before. Lever: CONDENSE_STATUS_CLOUD_FIRST=0.
+  if (statusCloudFirstEnabled()) {
+    const first = await tryCloudCondenseFallback(systemPrompt, userPrompt, cloudFallbackOpts, stats, callStart);
+    if (first) {
+      first.stats.cloudFirst = true;
+      return first;
+    }
+    if (stats.fallbackAttempted) {
+      // The cloud tier exists and did not deliver. The primary is not tried: on this
+      // leg it has not succeeded once in the measured window, and the pass budget the
+      // cloud just spent is gone. The floor takes the pass, as it did before.
+      stats.cloudFirst = true;
+      stats.finalOutcome = 'cloud-first-failed';
+      stats.elapsedMs = Date.now() - callStart;
+      stats.lastError = `cloud-first status leg failed; primary not tried (#4434): ${stats.fallbackError ?? 'no detail'}`;
+      return { content: null, stats };
+    }
+    // No cloud tier on this seat: fall through to the primary.
   }
 
   let openai: OpenAI;
@@ -6497,6 +6538,10 @@ async function condenseIntercom(
     summaryOutcome: summaryCall.stats.finalOutcome
   });
 
+  // #4434: a cloud-first status leg never called the primary. On such a pass the
+  // breaker is judged on the summary leg alone.
+  const statusExercisedPrimary = statusCall.stats.cloudFirst !== true;
+
   // Both LLM calls are MANDATORY — if either fails, use truncation fallback
   if (!llmSummary || !newStatus) {
     logger.warn('LLM call failed, using truncation fallback (#1792)', {
@@ -6508,7 +6553,10 @@ async function condenseIntercom(
       statusOutcome: statusCall.stats.finalOutcome
     });
     // The breaker tracks the primary: a pass that never called it records nothing.
-    if (!primaryCircuitOpen) condenseCBRecordFailure();
+    if (!primaryCircuitOpen) {
+      if (!llmSummary || statusExercisedPrimary || summaryCall.stats.fallbackUsed === true) condenseCBRecordFailure();
+      else condenseCBRecordSuccess();
+    }
     return executeTruncationFallback(
       key, dashboard, toArchive, toKeep, diagnostic, condensationStart,
       { statusCall, summaryCall }
@@ -6535,7 +6583,10 @@ async function condenseIntercom(
     // frontmatter lisent finalOutcome/lastError).
     statusCall.stats.finalOutcome = 'guard-rejected';
     statusCall.stats.lastError = `status ${statusGuard.reason} (new ${newStatus!.length} chars vs previous ${previousStatus.length})`;
-    if (!primaryCircuitOpen) condenseCBRecordFailure();
+    if (!primaryCircuitOpen) {
+      if (statusExercisedPrimary || summaryCall.stats.fallbackUsed === true) condenseCBRecordFailure();
+      else condenseCBRecordSuccess();
+    }
     return executeTruncationFallback(
       key, dashboard, toArchive, toKeep, diagnostic, condensationStart,
       { statusCall, summaryCall }
@@ -6549,7 +6600,7 @@ async function condenseIntercom(
   // it and every append kept paying the primary's full slice before the rescue.
   // Three rescued passes now open the breaker and the next ones go straight to
   // the cloud tier on the whole pass budget.
-  const primaryRescued = statusCall.stats.fallbackUsed === true || summaryCall.stats.fallbackUsed === true;
+  const primaryRescued = (statusExercisedPrimary && statusCall.stats.fallbackUsed === true) || summaryCall.stats.fallbackUsed === true;
   if (!primaryCircuitOpen) {
     if (primaryRescued) condenseCBRecordFailure();
     else condenseCBRecordSuccess();
@@ -6670,6 +6721,7 @@ async function condenseIntercom(
     statusOutcome: statusCall.stats.finalOutcome,
     summaryOutcome: summaryCall.stats.finalOutcome,
     ...(statusCall.stats.fallbackModel ? { statusFallbackModel: statusCall.stats.fallbackModel } : {}),
+    ...(statusCall.stats.cloudFirst === true ? { statusCloudFirst: true } : {}),
     ...(summaryCall.stats.fallbackModel ? { summaryFallbackModel: summaryCall.stats.fallbackModel } : {})
   });
 
@@ -6763,7 +6815,7 @@ ${archiveMessages}
   // « Statut conservé », pas « Statut mis à jour ».
   const statusClause = !statusDecision.regenerate
     ? `Statut conservé (skip #4205, ${statusDecision.reason})`
-    : `Statut mis à jour${statusViaCloud ? ' via fallback cloud' : ''} (${(statusSizeBytes / 1024).toFixed(1)}KB)`;
+    : `Statut mis à jour${statusViaCloud ? (statusCall.stats.cloudFirst === true ? ' via cloud (cloud-first #4434)' : ' via fallback cloud') : ''} (${(statusSizeBytes / 1024).toFixed(1)}KB)`;
   const totalElapsed = Date.now() - condensationStart;
   const condenseNotice: IntercomMessage = {
     id: generateMessageId('system', 'system'),
@@ -6782,7 +6834,10 @@ ${archiveMessages}
     // #2719: distinguish a condensation salvaged by the cloud fallback (primary
     // vLLM down, z.ai glm-4.7-flash succeeded) from a clean primary success, so
     // operators can see "cloud saved it" without drilling into llm.stats.fallbackUsed.
-    const usedFallback = statusCall.stats.fallbackUsed === true
+    // #4434: a cloud-first status leg is the route, not a rescue. Counting it would
+    // label every pass `fallback-cloud` and make the append result claim "primary LLM
+    // down" while the primary served the summary.
+    const usedFallback = (statusCall.stats.fallbackUsed === true && statusCall.stats.cloudFirst !== true)
       || summaryCall.stats.fallbackUsed === true;
     diagnostic.outcome = usedFallback ? 'fallback-cloud' : 'condensed';
     diagnostic.elapsedMs = totalElapsed;
