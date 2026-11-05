@@ -9551,6 +9551,27 @@ function mergeGuardRefusal(
 }
 
 /**
+ * #4439 — nom d'artefact dérivé d'une clé. La clé est une ENTRÉE arbitraire :
+ * celle née d'une erreur de parse JSON peut porter `"` (mesuré 05/11 sur
+ * `workspace:"vllm"}PMC_JSON_DOWN`). `mergeGuardRefusal` refuse `\\ / :` et
+ * `..` parce que ce sont des CHEMINS, pas parce qu'ils sont illicites dans un
+ * NOM — donc `<>"|?*` et les contrôles passent la garde, puis rendent le
+ * renommage d'archive impossible (EINVAL sous Windows) : la source ne peut
+ * alors JAMAIS être retirée, et `merge` perd son rôle d'outil de réparation.
+ *
+ * La clé reste BRUTE en PG (c'est son identité, et `list` doit la rendre telle
+ * quelle) : seul l'artefact disque est assaini. Les espaces et points FINAUX
+ * sont neutralisés aussi — Windows les retire silencieusement, le nom relu ne
+ * serait plus celui écrit.
+ */
+function sanitizeKeyForFileName(sourceKey: string): string {
+  const sanitized = sourceKey
+    .replace(/[<>:"|?*\u0000-\u001f\u007f]/g, '_')
+    .replace(/[. ]+$/, trailing => '_'.repeat(trailing.length));
+  return sanitized.length > 0 ? sanitized : '_';
+}
+
+/**
  * #3537 §6.2 — Fusion d'une clé fork/parasite dans la clé cible.
  *
  * Pourquoi cette action existe : un dashboard vit dans DEUX artefacts co-égaux
@@ -10003,7 +10024,7 @@ async function handleMerge(
     const archiveDir = getArchiveDir();
     ensureStoreSubdir(getSharedStatePath(), 'dashboards', 'archive');
     const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    archiveFile = `${sourceKey}-pre-merge-${now}.md`;
+    archiveFile = `${sanitizeKeyForFileName(sourceKey)}-pre-merge-${now}.md`;
     const archivePath = path.join(archiveDir, archiveFile);
 
     const sourceHasContent =
