@@ -2445,6 +2445,20 @@ interface ErrorPattern {
 }
 
 const ERROR_PATTERNS: readonly ErrorPattern[] = [
+    // Store-layer failure of the indexing chain — deliberately FIRST (#4352).
+    //
+    // `VectorIndexer` words it as « circuit breaker active or repeated upsert
+    // errors (N points already written) ». The trailing count makes this message
+    // collide with the bare status codes below: for N = 401 the boundary-aware
+    // match on '401' succeeds, and the task would be classified `auth_failed` —
+    // PERMANENT, hence dead-lettered and never re-armed, for a failure that is
+    // transient and that po-2027 measured recurring on three lanes on 05/11.
+    // A textual pattern evaluated before the numeric ones closes that trap
+    // without touching the message the indexer writes.
+    {
+        errorClass: 'qdrant_upsert_failed',
+        patterns: ['circuit breaker active', 'repeated upsert errors'],
+    },
     // Permanent — task cannot be indexed no matter how many retries (operator action required).
     {
         errorClass: 'claude_session_not_found',
@@ -2493,7 +2507,12 @@ const ERROR_PATTERNS: readonly ErrorPattern[] = [
     },
     {
         errorClass: 'connection_reset',
-        patterns: ['econnreset', 'connection reset'],
+        // 'connection error' is the wording the embedding HTTP layer actually
+        // produces (`Connection error.`, 3 723 of them in one ai-01 session on
+        // 25/10) — it matched neither 'connection reset' nor 'econnreset', so
+        // those failures were counted as `unknown` and po-2027 had to spot them
+        // by hand on 05/11 (#4352).
+        patterns: ['econnreset', 'connection reset', 'connection error'],
     },
     {
         errorClass: 'dns_failure',
