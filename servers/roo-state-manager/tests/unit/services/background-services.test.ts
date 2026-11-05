@@ -86,6 +86,7 @@ import {
   findFailedRearmDue,
   rearmFailedTasks,
   isRearmableFailureClass,
+  claudeSessionPresentLocally,
   MAX_FAILED_REARM_PER_TICK,
 } from '../../../src/services/background-services.js';
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
@@ -1263,18 +1264,31 @@ describe('#4352 — automatic re-arm of failed tasks', () => {
     }
   });
 
-  it('findFailedRearmDue: only failed tasks of a re-armable class whose last attempt is older than the cooldown', () => {
+  it('findFailedRearmDue: only failed tasks of a re-armable class whose last attempt is older than the cooldown (a live retry is left alone)', () => {
     const state = stateWith({
       due: failedEntry(NOW - 25 * HOUR, 'embedding_timeout'),
       csnf: failedEntry(NOW - 25 * HOUR, 'claude_session_not_found'),
       noDate: failedEntry(undefined, 'unknown'),
       recent: failedEntry(NOW - 23 * HOUR, 'embedding_timeout'),
       auth: failedEntry(NOW - 25 * HOUR, 'auth_failed', '401 Unauthorized'),
-      retry: { taskId: 'x', metadata: { indexingState: { indexStatus: 'retry', lastIndexAttempt: iso(NOW - 25 * HOUR) } } },
+      liveRetry: { taskId: 'x', metadata: { indexingState: { indexStatus: 'retry', indexError: 'boom', lastIndexAttempt: iso(NOW - 5 * 60 * 1000) } } },
       success: { taskId: 'x', metadata: { indexingState: { indexStatus: 'success', lastIndexAttempt: iso(NOW - 25 * HOUR) } } },
       archive: failedEntry(NOW - 25 * HOUR, 'unknown', 'boom', { dataSource: 'archive' }),
     });
     expect(findFailedRearmDue(state, NOW)).toEqual(['due', 'csnf', 'noDate']);
+  });
+
+  it('findFailedRearmDue: a retry older than the cooldown is stuck (nothing else picks it up) and is re-armed; a permanent retry is not', () => {
+    const retry = (lastAttemptMs: number, indexError: string, errorClass?: string): any => ({
+      taskId: 'x',
+      metadata: { indexingState: { indexStatus: 'retry', indexError, ...(errorClass ? { errorClass } : {}), lastIndexAttempt: iso(lastAttemptMs) } },
+    });
+    const state = stateWith({
+      stuck: retry(NOW - 25 * HOUR, 'Indexing timeout after 180000ms without progress', 'embedding_timeout'),
+      live: retry(NOW - 10 * 60 * 1000, 'Indexing timeout after 180000ms without progress', 'embedding_timeout'),
+      permanent: retry(NOW - 25 * HOUR, '401 Unauthorized', 'auth_failed'),
+    });
+    expect(findFailedRearmDue(state, NOW)).toEqual(['stuck']);
   });
 
   it('findFailedRearmDue: the stored class is reconciled with the message (an embedding timeout stored as permanent is re-armed)', () => {
@@ -1338,5 +1352,68 @@ describe('#4352 — automatic re-arm of failed tasks', () => {
     expect(await rearmFailedTasks(state, NOW)).toEqual([]);
     expect(state.failedRearmRequestedAt?.has('a') ?? false).toBe(false);
     expect(await rearmFailedTasks(state, NOW)).toEqual(['a']);
+  });
+
+  it('rearmFailedTasks: a « session not found » task is re-armed only when its session file is on disk here', async () => {
+    mockFs.appendFile.mockResolvedValue(undefined);
+    const probe = vi.fn(async (taskId: string) => taskId === 'claude-p--present');
+    const state = stateWith({
+      'claude-p--present': failedEntry(NOW - 25 * HOUR, 'claude_session_not_found'),
+      'claude-p--gone': failedEntry(NOW - 25 * HOUR, 'claude_session_not_found'),
+      transient: failedEntry(NOW - 25 * HOUR, 'embedding_timeout'),
+    });
+    expect(await rearmFailedTasks(state, NOW, probe)).toEqual(['claude-p--present', 'transient']);
+    // Only the csnf candidates are probed.
+    expect(probe.mock.calls.map((c) => c[0])).toEqual(['claude-p--present', 'claude-p--gone']);
+    const [, body] = mockFs.appendFile.mock.calls[0];
+    expect(String(body).trim().split('\n').map((l) => JSON.parse(l).taskId)).toEqual(['claude-p--present', 'transient']);
+    // The absent one stays failed, and is not probed again before the cooldown.
+    expect(state.conversationCache.get('claude-p--gone').metadata.indexingState.indexStatus).toBe('failed');
+    expect(state.failedRearmRequestedAt.get('claude-p--gone')).toBe(NOW);
+    expect(await rearmFailedTasks(state, NOW + HOUR, probe)).toEqual([]);
+    expect(probe).toHaveBeenCalledTimes(2);
+  });
+
+  it('rearmFailedTasks: when every candidate is an absent session, nothing is written', async () => {
+    const state = stateWith({ 'claude-p--gone': failedEntry(NOW - 25 * HOUR, 'claude_session_not_found') });
+    expect(await rearmFailedTasks(state, NOW, async () => false)).toEqual([]);
+    expect(mockFs.appendFile).not.toHaveBeenCalled();
+    expect(state.failedRearmRequestedAt.get('claude-p--gone')).toBe(NOW);
+  });
+
+  describe('claudeSessionPresentLocally', () => {
+    const projectPath = path.join('/home', '.claude', 'projects', 'd--roo-extensions');
+    let detectorSpy: any;
+
+    beforeEach(async () => {
+      const { ClaudeStorageDetector } = await import('../../../src/utils/claude-storage-detector.js');
+      detectorSpy = vi.spyOn(ClaudeStorageDetector, 'detectStorageLocations').mockResolvedValue([{ projectPath } as any]);
+    });
+
+    afterEach(() => {
+      detectorSpy.mockRestore();
+      mockFs.access.mockReset();
+    });
+
+    it('per-session id: true only when {uuid}.jsonl is in the matching project directory', async () => {
+      mockFs.access.mockResolvedValue(undefined);
+      expect(await claudeSessionPresentLocally('claude-d--roo-extensions--1234-abcd')).toBe(true);
+      expect(mockFs.access).toHaveBeenCalledWith(path.join(projectPath, '1234-abcd.jsonl'));
+      mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      expect(await claudeSessionPresentLocally('claude-d--roo-extensions--1234-abcd')).toBe(false);
+    });
+
+    it('a session of another project directory is not found here, whatever the file name', async () => {
+      mockFs.access.mockResolvedValue(undefined);
+      expect(await claudeSessionPresentLocally('claude-d--claudish--1234-abcd')).toBe(false);
+      expect(mockFs.access).not.toHaveBeenCalled();
+    });
+
+    it('legacy per-project id, non-Claude id, and a failing detector', async () => {
+      expect(await claudeSessionPresentLocally('claude-d--roo-extensions')).toBe(true);
+      expect(await claudeSessionPresentLocally('0b7c-roo-task')).toBe(false);
+      detectorSpy.mockRejectedValue(new Error('no home'));
+      expect(await claudeSessionPresentLocally('claude-d--roo-extensions--1234-abcd')).toBe(false);
+    });
   });
 });
