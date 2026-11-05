@@ -98,9 +98,12 @@ try {
   usageError(`lecture de --file impossible : ${err instanceof Error ? err.message : String(err)}`);
 }
 
+// Get-MachineInventory.ps1 writes with `Set-Content -Encoding UTF8`, which on
+// Windows PowerShell 5.1 emits a BOM, and JSON.parse rejects a leading U+FEFF.
+// Strip it here rather than requiring every producer to get it right.
 let inventory;
 try {
-  inventory = JSON.parse(raw);
+  inventory = JSON.parse(raw.replace(/^﻿/, ''));
 } catch (err) {
   usageError(`JSON invalide dans ${filePath} : ${err instanceof Error ? err.message : String(err)}`);
 }
