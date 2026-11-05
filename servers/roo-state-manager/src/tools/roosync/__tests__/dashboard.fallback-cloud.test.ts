@@ -800,7 +800,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     expect(models.indexOf('deepseek-v4-flash')).toBeLessThan(models.indexOf('claude-sonnet-5-5'));
   });
 
-  it('(r) #3962 every model guard-rejected → truncation names each model, summary leg untouched', { timeout: 60000 }, async () => {
+  it('(r) #3962 every model guard-rejected → the kept-status archive names each model, summary kept', { timeout: 60000 }, async () => {
     await roosyncDashboard({ action: 'write', type: 'global', content: `# Statut\n\n${'S'.repeat(1000)}` });
     mockGetPrimaryClient.mockReturnValue({
       chat: { completions: { create: mockPrimaryCreate } },
@@ -828,16 +828,23 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     }
     expect(condensedResult).not.toBeNull();
 
-    const truncatedPasses = condensedResult.condenseDiagnostic!.filter((d: any) => d.outcome === 'fallback-truncated');
-    expect(truncatedPasses.length).toBeGreaterThanOrEqual(1);
+    // #4434 follow-up (05/11): a dead status leg next to a good summary no longer
+    // truncates — the previous status is kept and the summary goes through.
+    const diags = condensedResult.condenseDiagnostic as any[];
+    expect(diags.some(d => d.outcome === 'fallback-truncated')).toBe(false);
+    expect(diags.some(d => d.statusKept === true)).toBe(true);
 
     const archiveFiles = await readdir(path.join(tmpDir, 'dashboards', 'archive'));
-    const fallbackArchives = archiveFiles.filter(f => f.endsWith('-fallback.md'));
-    expect(fallbackArchives.length).toBeGreaterThanOrEqual(1);
-    const archiveContent = await readFile(path.join(tmpDir, 'dashboards', 'archive', fallbackArchives[0]), 'utf8');
+    expect(archiveFiles.filter(f => f.endsWith('-fallback.md'))).toHaveLength(0);
+    const llmArchives = archiveFiles.filter(f => !f.endsWith('-fallback.md'));
+    expect(llmArchives.length).toBeGreaterThanOrEqual(1);
+    const archiveContent = await readFile(path.join(tmpDir, 'dashboards', 'archive', llmArchives[0]), 'utf8');
     // yaml.dump folds long scalars across lines — compare the unfolded text (mirror of (l)).
     const unfolded = archiveContent.replace(/\n\s+/g, ' ');
-    // Per-model guard errors: both chain models tried and named, 'too-short' reason kept.
+    expect(unfolded).toContain('statusUpdated: false');
+    // Per-model guard errors survive on the kept-status archive: both chain models
+    // tried and named, 'too-short' reason kept.
+    expect(unfolded).toContain('statusFallbackError:');
     expect(unfolded).toContain('deepseek-v4-flash: guard-rejected (too-short) | claude-sonnet-5-5: guard-rejected (too-short)');
     // Per-leg outcomes (ms#1501): the status leg died in the chain while the summary leg
     // — whose own guard accepts a complete summary — was salvaged by the FIRST model.

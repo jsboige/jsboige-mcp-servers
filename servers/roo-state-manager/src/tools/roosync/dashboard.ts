@@ -1920,6 +1920,7 @@ function startDetachedCondense(
         outcome: diag.outcome,
         elapsedMs: diag.elapsedMs,
         archived: diag.archivedMessageCount,
+        ...(diag.statusKept ? { statusKept: true } : {}),
       });
       if (newlyArchived > 0) {
         lastCondenseHash.set(key, payloadHash);
@@ -4014,6 +4015,8 @@ export interface CondenseAttemptInfo {
   outcome: 'condensed' | 'no-op' | 'llm-failed-dedup' | 'llm-failed-injected' | 'fallback-truncated' | 'fallback-cloud' | 'skipped-lock-held';
   elapsedMs: number;
   archivedMessageCount: number;
+  /** #4434: the status leg died, the previous status was kept and the summary used. */
+  statusKept?: true;
   llm?: {
     summary?: LLMCallStats;
     status?: LLMCallStats;
@@ -6602,6 +6605,33 @@ async function condenseIntercom(
   // breaker is judged on the summary leg alone.
   const statusExercisedPrimary = statusCall.stats.cloudFirst !== true;
 
+  // #4434 follow-up (incident ai-01 05/11 01:16Z, workspace-CoursIA): when only the
+  // STATUS leg died (every tier timed out) while the summary came back, the
+  // truncation floor threw the good summary away — the archived messages lost
+  // their digest and the fleet [ERROR] announced a content hole the pass had in
+  // fact avoided. Keep the previous status verbatim instead (the #4205 skip
+  // semantics) and let the summary through. The breaker records exactly what the
+  // truncation branch would have recorded for the same pass. Scope: a DEAD status
+  // leg only — a status the #3962 guard rejects keeps its floor and banner.
+  // Kill-switch: CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL=0 restores the floor.
+  let statusKeptOnLegFailure = false;
+  if (!newStatus && !!llmSummary
+      && previousStatus.trim().length > 0
+      && process.env.CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL !== '0') {
+    logger.warn('Status leg failed — previous status kept, LLM summary kept (no content hole) (#4434)', {
+      key,
+      messageCount: toArchive.length,
+      statusOutcome: statusCall.stats.finalOutcome,
+      summaryOutcome: summaryCall.stats.finalOutcome,
+    });
+    if (!primaryCircuitOpen) {
+      if (statusExercisedPrimary || summaryCall.stats.fallbackUsed === true) condenseCBRecordFailure();
+      else condenseCBRecordSuccess();
+    }
+    newStatus = previousStatus;
+    statusKeptOnLegFailure = true;
+  }
+
   // Both LLM calls are MANDATORY — if either fails, use truncation fallback
   if (!llmSummary || !newStatus) {
     logger.warn('LLM call failed, using truncation fallback (#1792)', {
@@ -6629,8 +6659,9 @@ async function condenseIntercom(
   // de doctrine). Vide après trim, préfixe `[Error:`, ou rétrécissement sous le seuil
   // de rétention mesuré → échec DU MODÈLE → executeTruncationFallback, qui garde
   // l'ancien statut (tronqué au plafond + marqueur de repli).
+  // A status already kept verbatim above is the previous status, not a model output.
   const statusGuard = isModelFailureStatus(newStatus, previousStatus);
-  if (statusGuard.failed) {
+  if (!statusKeptOnLegFailure && statusGuard.failed) {
     logger.warn('Status guard tripped — model returned a failure artifact as status (#3962)', {
       key,
       reason: statusGuard.reason,
@@ -6661,7 +6692,8 @@ async function condenseIntercom(
   // Three rescued passes now open the breaker and the next ones go straight to
   // the cloud tier on the whole pass budget.
   const primaryRescued = (statusExercisedPrimary && statusCall.stats.fallbackUsed === true) || summaryCall.stats.fallbackUsed === true;
-  if (!primaryCircuitOpen) {
+  // A kept-status pass was already recorded above (once per pass).
+  if (!primaryCircuitOpen && !statusKeptOnLegFailure) {
     if (primaryRescued) condenseCBRecordFailure();
     else condenseCBRecordSuccess();
   }
@@ -6742,7 +6774,8 @@ async function condenseIntercom(
 
   // #4205 honesty (review ms#1439) : un skip conserve previousStatus tel quel —
   // le frontmatter de l'archive ne doit pas prétendre le contraire.
-  const statusUpdated = statusDecision.regenerate;
+  // #4434: a status kept after its leg failed is not an update either.
+  const statusUpdated = statusDecision.regenerate && !statusKeptOnLegFailure;
 
   // #3962 piste 3 renforcée: stamp the durable per-key census (archive listing,
   // cross-host) on every REGENERATED status — the LLM hand-typed a wrong count
@@ -6782,6 +6815,9 @@ async function condenseIntercom(
     summaryOutcome: summaryCall.stats.finalOutcome,
     ...(statusCall.stats.fallbackModel ? { statusFallbackModel: statusCall.stats.fallbackModel } : {}),
     ...(statusCall.stats.cloudFirst === true ? { statusCloudFirst: true } : {}),
+    // #4434: a kept status still says why its leg died (per-model errors), as the
+    // truncation archive's fallbackError did before this pass stopped truncating.
+    ...(statusKeptOnLegFailure && statusCall.stats.fallbackError ? { statusFallbackError: truncateError(statusCall.stats.fallbackError) } : {}),
     ...(summaryCall.stats.fallbackModel ? { summaryFallbackModel: summaryCall.stats.fallbackModel } : {})
   });
 
@@ -6837,7 +6873,7 @@ ${archiveMessages}
   const summarySizeBytes = Buffer.byteLength(llmSummary ?? '', 'utf8');
   // #4205 honesty (review ms#1439) : sur une passe skippée le statut n'est PAS
   // régénéré — le log et la notice ne doivent pas revendiquer une mise à jour.
-  if (statusDecision.regenerate) {
+  if (statusDecision.regenerate && !statusKeptOnLegFailure) {
     logger.info('Status updated from archived messages', {
       previousLength: previousStatus.length,
       newLength: newStatus!.length,
@@ -6846,7 +6882,7 @@ ${archiveMessages}
     });
   } else {
     logger.info('Status kept verbatim (skip #4205)', {
-      reason: statusDecision.reason,
+      reason: statusKeptOnLegFailure ? 'status-leg-failed (#4434)' : statusDecision.reason,
       statusSizeKB: `${(statusSizeBytes / 1024).toFixed(1)}KB`,
       summarySizeKB: `${(summarySizeBytes / 1024).toFixed(1)}KB`
     });
@@ -6875,7 +6911,9 @@ ${archiveMessages}
   // « Statut conservé », pas « Statut mis à jour ».
   const statusClause = !statusDecision.regenerate
     ? `Statut conservé (skip #4205, ${statusDecision.reason})`
-    : `Statut mis à jour${statusViaCloud ? (statusCall.stats.cloudFirst === true ? ' via cloud (cloud-first #4434)' : ' via fallback cloud') : ''} (${(statusSizeBytes / 1024).toFixed(1)}KB)`;
+    : statusKeptOnLegFailure
+      ? `Statut conservé (jambe statut en échec : ${statusCall.stats.finalOutcome} — résumé gardé, #4434)`
+      : `Statut mis à jour${statusViaCloud ? (statusCall.stats.cloudFirst === true ? ' via cloud (cloud-first #4434)' : ' via fallback cloud') : ''} (${(statusSizeBytes / 1024).toFixed(1)}KB)`;
   const totalElapsed = Date.now() - condensationStart;
   const condenseNotice: IntercomMessage = {
     id: generateMessageId('system', 'system'),
@@ -6900,6 +6938,7 @@ ${archiveMessages}
     const usedFallback = (statusCall.stats.fallbackUsed === true && statusCall.stats.cloudFirst !== true)
       || summaryCall.stats.fallbackUsed === true;
     diagnostic.outcome = usedFallback ? 'fallback-cloud' : 'condensed';
+    if (statusKeptOnLegFailure) diagnostic.statusKept = true;
     diagnostic.elapsedMs = totalElapsed;
     diagnostic.archivedMessageCount = toArchive.length;
   }
