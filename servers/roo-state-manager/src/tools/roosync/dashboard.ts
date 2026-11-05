@@ -10212,6 +10212,28 @@ async function handleMerge(
 async function handleDelete(key: string, args: DashboardArgs, requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
   const filePath = getDashboardPath(key);
 
+  // #4553 (a) — `messageId` is an APPEND parameter (idempotence key #3276) that
+  // the schema exposes globally because the tool advertises one flat argument
+  // object. Nothing in this handler ever read it: a caller asking to remove ONE
+  // message got the whole dashboard destroyed, with no error to warn them the
+  // parameter had been ignored. Refuse the gesture instead of interpreting it —
+  // a silent scope widening on a destructive action is the defect (#4553).
+  if (args.messageId !== undefined) {
+    logger.warn('Delete refused: messageId is not a delete parameter', { key, messageId: args.messageId });
+    return {
+      success: false,
+      action: 'delete',
+      key,
+      type: args.type ?? '',
+      request: requestEcho,
+      message:
+        `⛔ REFUSÉ: l'action 'delete' ne retire pas un message — elle détruit le dashboard ENTIER. ` +
+        `Le paramètre messageId ('${args.messageId}') est refusé plutôt qu'ignoré (#4553). ` +
+        `Aucun geste n'a été effectué : le dashboard est intact. ` +
+        `Pour retirer le dashboard entier en connaissance de cause, relancer 'delete' SANS messageId.`
+    };
+  }
+
   // Safety check: read the dashboard to verify it's not recently active (#1128).
   // #3782 — lecture GDrive DIRECTE (pas readDashboardFile) : le delete est un
   // geste opérateur explicite qui doit continuer de voir le fichier réel —
@@ -10253,8 +10275,59 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
       }
     }
   } catch (readError) {
-    // If we can't read the dashboard, still allow deletion (file may be corrupted)
-    logger.warn('Could not read dashboard before delete, proceeding', { key, error: String(readError) });
+    // #4553 (c) — l'ancienne branche disait « the file may be corrupted » et
+    // laissait passer la suppression. Elle désarmait donc la protection #1128
+    // ET l'archive pré-suppression sur exactement le fichier où elles comptent
+    // le plus : celui que le parse ne rend pas (les 44 Ko de NUL du 03/11).
+    // Un dashboard illisible n'est pas supprimable SANS archive — mais il reste
+    // supprimable : on sauve les OCTETS BRUTS avant de détruire. La lecture de
+    // sauvetage ne parse pas et ne retente pas, elle cherche une seule chose :
+    // la copie. Si elle échoue aussi (DriveFS muet, borne dépassée), on refuse.
+    logger.warn('Dashboard illisible avant delete — sauvegarde brute de la copie', { key, error: String(readError) });
+    let salvaged: string | null = null;
+    let salvageError: unknown = null;
+    try {
+      salvaged = await fs.readFile(filePath, {
+        encoding: 'utf8',
+        signal: AbortSignal.timeout(gdriveWriteTimeoutMs())
+      });
+    } catch (err) {
+      salvageError = err;
+      // Le fichier a disparu entre les deux lectures : il n'y a plus rien à
+      // détruire, ni à archiver. Même verdict que l'unlink plus bas.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return {
+          success: false,
+          action: 'delete',
+          key,
+          type: args.type ?? '',
+          request: requestEcho,
+          message: `Dashboard '${key}' introuvable`
+        };
+      }
+    }
+    if (salvaged === null) {
+      logger.error('Suppression refusée : dashboard illisible et non archivable', salvageError, { key });
+      return {
+        success: false,
+        action: 'delete',
+        key,
+        type: args.type ?? '',
+        request: requestEcho,
+        message:
+          `⛔ REFUSÉ: Dashboard '${key}' est illisible (${readError instanceof Error ? readError.message : String(readError)}) ` +
+          `et sa copie de sécurité n'a pas pu être écrite (${salvageError instanceof Error ? salvageError.message : String(salvageError)}). ` +
+          `Aucune suppression sans archive (#4553) : réparer ou déplacer le fichier manuellement, puis relancer. Le dashboard est intact.`
+      };
+    }
+    const archiveDir = getArchiveDir();
+    ensureStoreSubdir(getSharedStatePath(), 'dashboards', 'archive');
+    const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+    const archivePath = path.join(archiveDir, `${key}-pre-delete-unreadable-${now}.md`);
+    // Même raison qu'au #3584 ci-dessus : la copie ne traverse pas
+    // writeDashboardFile, donc le masquage se fait ici.
+    await fs.writeFile(archivePath, maskSecretText(salvaged), 'utf8');
+    logger.warn('Dashboard illisible archivé brut avant suppression', { key, archivePath, bytes: salvaged.length });
   }
 
   try {
