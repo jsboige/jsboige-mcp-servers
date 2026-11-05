@@ -73,9 +73,9 @@ export interface ServerState {
     deadLetterQueue: Set<string>;
     deadLetterDetails: Map<string, DeadLetterEntry>;
     /**
-     * #4352: when this process last asked the indexing leader to re-arm a failed
-     * task (epoch ms). Bounds the automatic re-arm to one request per task per
-     * cooldown even when the leader is another process. Created on first use.
+     * #4352: when the indexing leader last re-armed a failed task, or set aside a
+     * « session not found » task whose file is absent (epoch ms). Bounds the
+     * automatic re-arm to one request per task per cooldown. Created on first use.
      */
     failedRearmRequestedAt?: Map<string, number>;
 }

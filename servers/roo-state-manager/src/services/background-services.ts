@@ -850,9 +850,6 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                 state.qdrantIndexQueue.add(taskId);
             }
 
-            // #4352: failed tasks of a re-armable class get one more chance per cooldown.
-            await rearmFailedTasks(state);
-
             // #2427 defect B: settle the tick's Claude dual-writes BEFORE persisting any
             // cursor. The Claude cursor advances ONLY if every write succeeded; a single
             // failure freezes it so the failed session(s) re-scan (and retry the write)
@@ -1765,6 +1762,12 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             `cache_size=${m.embeddings_cache_size}`
         );
 
+        // #4352: stuck failed/retry tasks are re-armed with idle capacity only. The
+        // request written here is consumed just below, in this same tick.
+        if (isIdleForRearm(state)) {
+            await rearmFailedTasks(state);
+        }
+
         // #4352 g3: consume index requests persisted by FOLLOWERS. This must run
         // BEFORE the empty-queue early return: a pending request IS the work, and
         // on an all-idle fleet no process would ever reach the leader election
@@ -2267,8 +2270,24 @@ export function findHeldChangesDue(state: ServerState, nowMs: number = Date.now(
     return due;
 }
 
-/** #4352: at most this many failed tasks are re-armed per refresh tick. */
+/** #4352: at most this many failed tasks are re-armed per idle indexing tick. */
 export const MAX_FAILED_REARM_PER_TICK = 4;
+
+/**
+ * #4352: the re-arm only uses idle capacity. It runs in the indexing leader,
+ * whose cache holds the freshest failure state, and only while that leader's
+ * queue is empty and the breaker is closed, so fresh sessions never wait behind
+ * re-armed ones. The leader drains 5 tasks per 5-min tick, sequentially, at the
+ * embedding pacer's rate. The first version re-armed 4 tasks per 2-min Worker A
+ * tick (up to 120/h): on a seat with 472 failures (po-2025, 05/11), hundreds of
+ * old sessions would have queued ahead of fresh work.
+ */
+export function isIdleForRearm(
+    state: ServerState,
+    breakerBlocking: () => boolean = isCircuitBreakerBlocking
+): boolean {
+    return state.isIndexLeader && state.isQdrantIndexingEnabled && state.qdrantIndexQueue.size === 0 && !breakerBlocking();
+}
 
 /**
  * #4352: a failed task may be re-armed unless its class is permanent.
@@ -2320,12 +2339,10 @@ export async function claudeSessionPresentLocally(taskId: string): Promise<boole
  * `retry` task of an inactive session while the process runs: the refresh scan
  * only revisits files with a fresh mtime. The backoff of a live retry is
  * minutes, so a `retry` older than the cooldown is stuck.
- * The caller hands the tasks to the indexing leader as ordinary index requests,
- * which reset the state exactly as cleanup_failed does by hand. The per-process
- * memory covers a leader that is not this process, whose reset this cache would
- * not see: at most one request per task per cooldown from this process. The
- * queue check only sees this process's queue; the consumer de-duplicates the
- * rest. Bounded per tick.
+ * The caller (the indexing leader, when idle: `isIdleForRearm`) hands the tasks
+ * to its own request consumer as ordinary index requests, which reset the state
+ * exactly as cleanup_failed does by hand. The per-process memory bounds it to
+ * one request per task per cooldown, absent sessions included. Bounded per tick.
  */
 export function findFailedRearmDue(state: ServerState, nowMs: number = Date.now()): string[] {
     const cooldownMs = getFailedRearmCooldownMs();
