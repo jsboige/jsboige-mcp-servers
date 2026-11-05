@@ -495,7 +495,7 @@ Purged (dead): `omnicoder-9b` + `owui-omnicoder-9b` (GPU 2 freed 30/04), `owui-g
 |----|-------|------|
 | `owui-analyst` | owui-expert-analyste | Structured French analysis |
 | `owui-writer` | owui-redacteur-technique | Technical documentation |
-| `owui-vision` | owui-vision-expert | Vision analysis |
+| `owui-vision` | owui-qwen3.6-35b | Vision analysis |
 
 ### Mini tier presets (4) — delegate the mechanical work
 
