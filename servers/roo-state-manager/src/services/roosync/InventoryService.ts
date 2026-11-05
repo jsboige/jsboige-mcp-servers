@@ -31,6 +31,19 @@ import { createLogger } from '../../utils/logger.js';
 export const INVENTORY_PG_PRIMARY_ENV = 'UNIFIED_STORE_INVENTORY_PG_PRIMARY';
 
 /**
+ * #4131 grain G-INV — verdict d'une publication d'inventaire, consommé par le
+ * CLI `scripts/rsm-inventory-save.mjs` : la tâche planifiée d'inventaire doit
+ * savoir si PG a pris l'écriture (le journal seul ne se parse pas).
+ * `refused` ne peut venir que d'un appel DIRECT à saveToSharedState avec une
+ * casse non canonique — publishExternalInventory normalise avant.
+ */
+export interface InventorySaveOutcome {
+  pgSaved: boolean;
+  mirrorSaved: boolean;
+  refused?: 'machineId-non-canonical';
+}
+
+/**
  * Lazy logger — ce module est importé par des tests qui mockent `fs` avec un
  * double partiel, et `createLogger` touche le système de fichiers dans son
  * constructeur (même raison que conversation-list-store.ts). Les lignes
@@ -498,6 +511,23 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
   }
 
   /**
+   * #4131 grain G-INV — publie un inventaire PRODUIT À L'EXTÉRIEUR du service
+   * (Get-MachineInventory.ps1 via le CLI scripts/rsm-inventory-save.mjs) : la
+   * donnée du fichier fait foi, la collecte n'est PAS relancée. Même chemin
+   * que la collecte interne — PG d'abord (clé inventory:{machineId}), miroir
+   * GDrive seulement si PG n'a pas pris l'écriture (#4131 Phase D, 03/11).
+   *
+   * La clé est normalisée en minuscules AVANT la garde d'identité : un fichier
+   * produit avec une casse mixte publie la forme canonique, il n'est pas
+   * refusé (la règle asymétrique ms#1628 vise les writers du service, pas ses
+   * éditeurs externes).
+   */
+  public async publishExternalInventory(raw: FullInventory): Promise<InventorySaveOutcome> {
+    const inventory: FullInventory = { ...raw, machineId: String(raw.machineId).toLowerCase() };
+    return await this.saveToSharedState(inventory);
+  }
+
+  /**
    * CORRECTION #322: Sauvegarde l'inventaire dans le shared state pour permettre à compare_config de fonctionner
    * @param inventory - L'inventaire à sauvegarder
    *
@@ -508,7 +538,7 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
    * miroir est réécrit après chaque succès PG. Les DEUX en échec = une ligne
    * d'erreur, jamais un silence.
    */
-  private async saveToSharedState(inventory: FullInventory): Promise<void> {
+  private async saveToSharedState(inventory: FullInventory): Promise<InventorySaveOutcome> {
     const masked = maskSecretTextForPublication(JSON.stringify(inventory, null, 2));
 
     // #4131 — garde d'identité, RÈGLE ASYMÉTRIQUE (review ms#1628, ai-01) : le
@@ -529,7 +559,7 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
         `[inventory] publication REFUSÉE : machineId non canonique '${inventory.machineId}' ` +
         `(minuscules attendues) — aucune écriture, ni PG ni miroir (#4131)`
       );
-      return;
+      return { pgSaved: false, mirrorSaved: false, refused: 'machineId-non-canonical' };
     }
     if (storeMetaUrl()) {
       try {
@@ -576,7 +606,7 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
       invLogger().info(
         `[inventory] miroir GDrive non écrit : la ligne PG fait foi (${INVENTORY_PG_PRIMARY_ENV}=0 le rétablit)`
       );
-      return;
+      return { pgSaved: true, mirrorSaved: false };
     }
 
     let mirrorSaved = false;
@@ -612,5 +642,6 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
         `[inventory] AUCUNE sauvegarde réussie pour '${inventory.machineId}' (PG et GDrive en échec)`
       );
     }
+    return { pgSaved, mirrorSaved };
   }
 }
