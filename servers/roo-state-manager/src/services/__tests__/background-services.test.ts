@@ -100,7 +100,7 @@ import {
   indexTaskInQdrant,
   loadFullSkeleton,
 } from '../background-services.js';
-import { classifyIndexingError } from '../background-services.js';
+import { classifyIndexingError, isRearmableFailureClass } from '../background-services.js';
 import { getUnifiedStoreWriter } from '../unified-store/writer-factory.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import type { ConversationSkeleton } from '../../types/conversation.js';
@@ -1231,6 +1231,9 @@ describe('background-services', () => {
         // classification. Operators see 'unknown' and can add a pattern if it spikes.
         { message: 'timeout', expectedClass: 'unknown' },
         { message: 'ECONNRESET', expectedClass: 'connection_reset' },
+        // #4352 — the wording the embedding HTTP layer really produces; it used
+        // to match nothing and be counted as `unknown` (po-2027, 05/11).
+        { message: 'Connection error.', expectedClass: 'connection_reset' },
         { message: 'ENOTFOUND', expectedClass: 'dns_failure' },
       ];
 
@@ -1239,6 +1242,29 @@ describe('background-services', () => {
         expect(result.isPermanent).toBe(false);
         expect(result.errorClass).toBe(expectedClass);
       }
+    });
+
+    it('#4352 — names the Qdrant store stage instead of leaving it unknown', () => {
+      // Verbatim from VectorIndexer (`Indexation failed for task … - circuit
+      // breaker active or repeated upsert errors (N points already written)`).
+      const message =
+        'Indexation failed for task claude-proj--abc - circuit breaker active or repeated upsert errors (706 points already written)';
+      expect(classifyIndexingError(new Error(message))).toEqual({
+        isPermanent: false,
+        errorClass: 'qdrant_upsert_failed',
+      });
+    });
+
+    it('#4352 — a written-point count of 401 cannot turn a store failure permanent', () => {
+      // The trailing count collides with the boundary-aware '401' → auth_failed
+      // (PERMANENT, dead-lettered, never re-armed). The store pattern is
+      // evaluated first, so the count no longer decides the class.
+      const message =
+        'Indexation failed for task claude-proj--abc - circuit breaker active or repeated upsert errors (401 points already written)';
+      const result = classifyIndexingError(new Error(message));
+      expect(result.errorClass).toBe('qdrant_upsert_failed');
+      expect(result.isPermanent).toBe(false);
+      expect(isRearmableFailureClass(result.errorClass)).toBe(true);
     });
 
     it('should return false + unknown for unknown errors', () => {

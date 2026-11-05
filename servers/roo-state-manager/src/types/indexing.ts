@@ -16,8 +16,8 @@ export type IndexStatus = 'success' | 'retry' | 'failed' | 'skip';
  *   `permission_denied` / `invalid_format` / `corrupted_data` /
  *   `quota_exceeded` / `auth_failed` → permanent (dead-letter, no retry)
  * - `network_timeout` / `service_503` / `rate_limit` / `connection_reset` /
- *   `dns_failure` / `embedding_timeout` / `unknown` → transient (retry
- *   with backoff, NEVER rotate key)
+ *   `dns_failure` / `embedding_timeout` / `qdrant_upsert_failed` / `unknown`
+ *   → transient (retry with backoff, NEVER rotate key)
  *
  * Adding a new class = extend this union + classifyIndexingError() map +
  * tests. The status tool groups failed tasks by this field.
@@ -37,6 +37,7 @@ export type IndexingErrorClass =
     | 'connection_reset'
     | 'dns_failure'
     | 'embedding_timeout'
+    | 'qdrant_upsert_failed'
     | 'unknown';
 
 export interface IndexingState {
