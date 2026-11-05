@@ -62,6 +62,32 @@ import { MessagesArgsSchema } from '../roosync/messages.js';
 // #3985 drift-guard: idem pour roosync_storage_management (maintenanceAction handler-orphelin)
 import { StorageManagementArgsSchema } from '../roosync/storage-management.js';
 import { conversationBrowserTool } from '../conversation/conversation-browser.js';
+// #4352 (ms#1660 review): enum↔union parity — the served error_class enum must
+// track the IndexingErrorClass union; type-only import, no runtime edge.
+import type { IndexingErrorClass } from '../../types/indexing.js';
+
+// #4352 — exhaustive runtime mirror of the IndexingErrorClass union. Record
+// forces every union member to appear as a key (a missing member = compile
+// error here), so the parity test below compares the served enum against a
+// list that cannot silently go stale in either direction.
+const UNION_MEMBERS: Record<IndexingErrorClass, true> = {
+    claude_session_not_found: true,
+    file_not_found: true,
+    access_denied: true,
+    permission_denied: true,
+    invalid_format: true,
+    corrupted_data: true,
+    quota_exceeded: true,
+    auth_failed: true,
+    network_timeout: true,
+    service_503: true,
+    rate_limit: true,
+    connection_reset: true,
+    dns_failure: true,
+    embedding_timeout: true,
+    qdrant_upsert_failed: true,
+    unknown: true
+};
 
 const EXPECTED_TOOL_COUNT = 18; // #3391: claudish_traffic (15 → 16) ; #3545: roosync_harmonization (16 → 17) ; #4427: roosync_claudish_cascade (17 → 18)
 
@@ -625,6 +651,23 @@ describe('tool-definitions.ts — Schema Validation', () => {
             const handler = (roosyncIndexingTool.inputSchema.properties?.action as { enum?: string[] })?.enum ?? [];
             expect([...served].sort()).toEqual([...handler].sort());
             expect(served).toContain('index_code_supplement');
+        });
+
+        // 9th occurrence of the class (ai-01 COMMENT on ms#1660, 05/11):
+        // `qdrant_upsert_failed` shipped in the IndexingErrorClass union and in
+        // the handler's error_class type, but never in the SERVED enum — so
+        // cleanup_failed could not filter the new class (family #1038/#3254).
+        // The guard pins served enum ≡ union: UNION_MEMBERS fails to COMPILE if
+        // a union member goes unlisted, and the equality below goes red if the
+        // served enum drifts from that mirror in either direction.
+        it('roosync_indexing error_class enum served ≡ IndexingErrorClass union (drift guard, #4352)', () => {
+            const served = (roosyncIndexingDefinition.inputSchema.properties?.error_class as { enum?: string[] })?.enum ?? [];
+            expect(served[0]).toBe('all');
+            const servedClasses = served.filter(v => v !== 'all');
+            const unionValues = Object.keys(UNION_MEMBERS) as IndexingErrorClass[];
+            expect([...servedClasses].sort()).toEqual([...unionValues].sort());
+            expect(servedClasses).toContain('qdrant_upsert_failed');
+            expect(servedClasses).toHaveLength(16);
         });
 
         it('roosync_indexing must expose the index_code_supplement params on the wire (#4352 a3)', () => {

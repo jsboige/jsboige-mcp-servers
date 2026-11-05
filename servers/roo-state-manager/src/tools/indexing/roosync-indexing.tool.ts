@@ -574,7 +574,7 @@ export interface RooSyncIndexingArgs {
     /**
      * #2766 S2+ P1 follow-up — `cleanup_failed` action: filter by error class.
      * Use 'all' to clean every perm-failed + stuck-retry task; otherwise narrow
-     * to one of the 15 IndexingErrorClass values (e.g. 'claude_session_not_found'
+     * to one of the 16 IndexingErrorClass values (e.g. 'claude_session_not_found'
      * for the typical orphaned-JSONL case). Resetting `auth_failed` without
      * fixing the underlying key rotates the task back into the queue only to
      * re-fail — see the doc comment on the case below.
