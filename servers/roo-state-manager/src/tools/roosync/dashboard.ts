@@ -75,7 +75,7 @@ import {
   readDashboardSharedLock,
   isDashboardPgPrimary,
 } from '../../services/unified-store/roosync-dashboard-store.js';
-import { isPgFlagOn } from '../../services/unified-store/pg-flags.js';
+import { isPgFlagOn, pgFlagState } from '../../services/unified-store/pg-flags.js';
 import { isDashboardReadPgEnabled } from '../../services/unified-store/pg-read-gates.js';
 // #3782: journal-level retirement mark (mark, never DELETE — gel des purges)
 import type { DashboardRetirementMark } from '../../services/unified-store/types.js';
@@ -430,6 +430,38 @@ function isDashboardFileMirrorDeferrable(): boolean {
     isPgFlagOn('UNIFIED_STORE_DUAL_WRITE') && !!process.env.UNIFIED_STORE_PG_URL;
   if (!pgCanCarryWrite) return false;
   return isDashboardViewPgDerived();
+}
+
+/**
+ * #4131 G-DASH (spec c.6665408973 §4, échéance 07/11 12:00Z) — le miroir
+ * fichier écrit à CHAQUE append cesse d'être le défaut : G: devient un export
+ * périodique, produit par la réparation PG→fichier de la réconciliation
+ * (#3230, `roosync-dashboard-reconcile.ts`). Modèle : l'inventaire de
+ * `UNIFIED_STORE_INVENTORY_PG_PRIMARY` (#4131 Phase D, 03/11).
+ *
+ *   - unset (défaut)      → pas d'écriture G: à l'append
+ *   - `0` / `off` / `false` / `no` / `n` / `disable(d)` → miroir réécrit
+ *     (kill-switch : l'ancien comportement revient sans redéploiement)
+ *   - `1` / `true`        → miroir réécrit (opt-in explicite)
+ *
+ * Le modèle inventaire n'honore QUE le kill-switch OFF ; ici les deux états
+ * explicites rétablissent le miroir : un opérateur qui écrit `=1` demande le
+ * miroir, l'ignorer serait le piège inverse.
+ *
+ * Lu à l'appel (aucun restart d'hôte MCP), et JAMAIS seul : le saut du miroir
+ * reste conditionné à `isDashboardFileMirrorDeferrable()` (PG porte une
+ * écriture vérifiée ET aucun lecteur ne dépend du fichier). Sur un siège sans
+ * store, le fichier est la seule surface — il continue d'être écrit.
+ *
+ * Mesure du déclencheur (ai-01, 05/11, §3 de la spec) : 135 fichiers écrits
+ * sur G: en 24 h par les deux écrivains légitimes, dont ce miroir par append ;
+ * il fabrique encore des copies de conflit DriveFS (`workspace-vllm (1).md`).
+ */
+export const DASHBOARD_APPEND_MIRROR_ENV = 'UNIFIED_STORE_DASHBOARD_APPEND_MIRROR';
+
+/** True quand le miroir fichier doit encore être écrit à chaque append. */
+export function isDashboardAppendMirrorEnabled(): boolean {
+  return pgFlagState(DASHBOARD_APPEND_MIRROR_ENV) !== 'default';
 }
 const appendLockRetryMs = (): number => Number(process.env.APPEND_LOCK_RETRY_MS) || 150;
 
@@ -2534,6 +2566,14 @@ export interface WriteVerifyResult {
    * fichier suit (et #3230 le répare depuis la vue PG s'il n'a jamais suivi).
    */
   gdriveDeferred?: true;
+  /**
+   * #4131 G-DASH — le miroir fichier n'a PAS été écrit à cet append : G: est
+   * désormais un export périodique (réparation PG→fichier de la réconciliation,
+   * #3230), et PG a pris l'écriture autoritaire de façon vérifiée. État
+   * NOMINAL, pas une dégradation — l'inverse de `gdriveDegraded`. Le
+   * kill-switch `UNIFIED_STORE_DASHBOARD_APPEND_MIRROR` rétablit l'écriture.
+   */
+  gdriveSkipped?: true;
 }
 
 /**
@@ -3366,7 +3406,12 @@ async function appendDashboardIncremental(
   if (stages) stages.lockWaitMs = Date.now() - lockT0;
   // #4286 §2 — décidé UNE fois, avant toute écriture : la moitié fichier
   // n'entre sur le chemin critique que si un lecteur en dépend.
-  const deferFileMirror = isDashboardFileMirrorDeferrable();
+  const fileMirrorDeferrable = isDashboardFileMirrorDeferrable();
+  // #4131 G-DASH — le miroir par append est OFF par défaut. L'ancien mode
+  // (écriture en arrière-plan) reste atteignable par le kill-switch ; il ne
+  // peut être choisi que là où le miroir était déjà différé, jamais ailleurs.
+  const appendMirrorEnabled = isDashboardAppendMirrorEnabled();
+  const deferFileMirror = fileMirrorDeferrable && appendMirrorEnabled;
   // #4131 G-B lot 2 — PG-PREMIER SOUS VERROU append : le verrou existe pour
   // sérialiser la course read→write last-writer-wins ; la surface primaire
   // doit donc être sérialisée comme l'était le fichier (le journal PG est
@@ -3399,7 +3444,7 @@ async function appendDashboardIncremental(
   // la moitié GDrive coûte 15,7-24,3 s de lecture + 30,0 s d'écriture (borne
   // mordue) là où l'écriture PG coûte 15-1342 ms. Échec PG → aucun report, le
   // chemin GDrive-first complet ci-dessous reste le filet.
-  if (deferFileMirror && !pgPrimaryOk) {
+  if (fileMirrorDeferrable && !pgPrimaryOk) {
     const pgT0 = Date.now();
     const pgOutcome = await dualWriteDashboardSyncChecked(dashboard);
     if (stages) stages.pgPrimaryWriteMs = Date.now() - pgT0;
@@ -3410,6 +3455,22 @@ async function appendDashboardIncremental(
         reason: pgOutcome.reason
       });
     }
+  }
+
+  // #4131 G-DASH — G: n'est plus un miroir d'append : c'est un EXPORT
+  // périodique, réécrit par la réparation PG→fichier de la réconciliation
+  // (#3230). On ne saute la moitié fichier que si PG a RÉELLEMENT pris
+  // l'écriture : la garde `fileMirrorDeferrable` exige déjà DUAL_WRITE + URL
+  // de store + une vue PG-dérivée, et `pgPrimaryOk` atteste l'écriture
+  // autoritaire de CET append. Si PG n'a pas pris (store en échec, siège sans
+  // store), le fichier redevient la surface et il est écrit comme avant —
+  // jamais de message perdu au nom d'un défaut.
+  const skipFileMirror = fileMirrorDeferrable && !appendMirrorEnabled && pgPrimaryOk;
+  if (skipFileMirror) {
+    logger.info('[GDRIVE-EXPORT #4131] miroir fichier non écrit à cet append — G: est un export périodique, réparé depuis PG (#3230)', {
+      key,
+      restoreWith: `${DASHBOARD_APPEND_MIRROR_ENV}=0`
+    });
   }
 
   // #4286 — la moitié fichier devient une VALEUR : son corps est inchangé, seul
@@ -3684,7 +3745,26 @@ async function appendDashboardIncremental(
   // ce recul, un DriveFS qui rampe coûte 45-60 s à chaque append (mesure §1).
   let outcome: FileHalfOutcome = { wv: { forkSuspected: false } };
   let fileMirrorDeferred = false;
-  if (deferFileMirror && pgPrimaryOk) {
+  let fileMirrorSkipped = false;
+  if (skipFileMirror) {
+    // #4131 G-DASH — aucune moitié fichier à protéger : le verrou append est
+    // rendu tout de suite. Il n'existe plus de fenêtre read→rename G: sur ce
+    // chemin ; la sérialisation des deux surfaces est déjà faite (PG écrit et
+    // vérifié sous ce verrou).
+    fileMirrorSkipped = true;
+    if (lockOwned) {
+      try {
+        await releaseAppendLock(key, holder);
+      } catch (err) {
+        // Le message est publié sur PG : un verrou qui ne se rend pas est un
+        // incident de coordination, pas un échec d'écriture.
+        logger.warn('[GDRIVE-EXPORT #4131] relâchement du verrou append impossible après un append sans miroir', {
+          key,
+          error: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+  } else if (deferFileMirror && pgPrimaryOk) {
     fileMirrorDeferred = true;
     const mirrorT0 = Date.now();
     void runFileHalf()
@@ -3743,6 +3823,11 @@ async function appendDashboardIncremental(
   const gdriveFailure = outcome.gdriveFailure;
   if (fileMirrorDeferred) {
     wv = { ...wv, gdriveDeferred: true };
+  } else if (fileMirrorSkipped) {
+    // #4131 G-DASH — état NOMINAL du nouveau défaut, pas une panne : le
+    // fichier suivra au prochain tick d'export. L'appelant le voit pour ne pas
+    // conclure « fichier à jour » d'un succès.
+    wv = { ...wv, gdriveSkipped: true };
   }
 
   if (pgPrimaryOk) {
@@ -8946,7 +9031,7 @@ async function handleAppend(
     // #4286 — le miroir différé est un état, pas une panne : l'appelant doit
     // savoir que le fichier suit derrière (il ne peut pas en déduire l'inverse
     // d'un simple succès).
-    writeVerification: (writeVerify.forkSuspected || writeVerify.gdriveDegraded || writeVerify.gdriveDeferred) ? writeVerify : undefined,
+    writeVerification: (writeVerify.forkSuspected || writeVerify.gdriveDegraded || writeVerify.gdriveDeferred || writeVerify.gdriveSkipped) ? writeVerify : undefined,
     durationBreakdown: {
       totalMs,
       preemptiveCondenseMs,

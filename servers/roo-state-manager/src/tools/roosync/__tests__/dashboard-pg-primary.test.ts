@@ -161,6 +161,7 @@ describe('PG-premier, GDrive miroir borné (#4131 G-B lot 2)', () => {
     delete process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY;
     delete process.env.UNIFIED_STORE_DUAL_WRITE;
     delete process.env.UNIFIED_STORE_PG_URL;
+    delete process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR;
     setBackfillMarkerState('dashboard', 'absent');
   });
 
@@ -466,12 +467,16 @@ describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
     delete process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY;
     delete process.env.UNIFIED_STORE_DUAL_WRITE;
     delete process.env.UNIFIED_STORE_PG_URL;
+    delete process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR;
   });
 
   it('report effectif : l\'append rend la main pendant que l\'écriture fichier pend, le miroir atterrit ensuite', async () => {
     process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
     process.env.UNIFIED_STORE_DUAL_WRITE = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    // #4131 G-DASH — le miroir par append est OFF par défaut ; ce test épingle
+    // le chemin DIFFÉRÉ (#4286), désormais atteint par le kill-switch.
+    process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR = '1';
     setPgView(pgView());
 
     // Une porte que le test ouvre lui-même : la COPIE staging→store reste
@@ -568,6 +573,82 @@ describe('PG d\'abord, miroir fichier hors du chemin critique (#4286)', () => {
   });
 
   /**
+   * #4131 G-DASH (spec c.6665408973 §4, échéance 07/11 12:00Z) — le DÉFAUT a
+   * changé : G: n'est plus un miroir d'append mais un EXPORT périodique
+   * (réparation PG→fichier de la réconciliation, #3230). Ce test épingle le
+   * défaut lui-même : aucune moitié fichier, PG porte et vérifie, et
+   * l'appelant voit `gdriveSkipped` (succès, mais pas « fichier à jour »).
+   */
+  it('défaut #4131 G-DASH : aucun miroir fichier à l\'append, PG porte seul, gdriveSkipped', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    setPgView(pgView());
+
+    const result = await roosyncDashboard({ action: 'append', type: 'workspace', content: 'append sans miroir fichier' });
+
+    expect(result.success).toBe(true);
+    expect(result.writeVerification?.gdriveSkipped).toBe(true);
+    expect(result.writeVerification?.gdriveDeferred).toBeFalsy();
+    expect(result.writeVerification?.gdriveDegraded).toBeFalsy();
+
+    // La moitié fichier n'a pas couru DU TOUT : aucune étape mesurée, aucune
+    // écriture vers G:, et le verrou append est rendu sans tâche de fond.
+    expect(result.durationBreakdown?.writeBreakdown?.gdriveReadMs).toBeUndefined();
+    expect(result.durationBreakdown?.writeBreakdown?.gdriveWriteMs).toBeUndefined();
+    expect(mockWriteFile.mock.calls.map(c => String(c[0])).filter(p => p.includes('dashboards'))).toEqual([]);
+    expect(mockCopyFile.mock.calls.map(c => String(c[1])).filter(p => p.includes('dashboards'))).toEqual([]);
+    expect(existsSync(path.join(tmpDir, 'dashboards', `${result.key}.md`))).toBe(false);
+    expect(existsSync(getAppendLockPath(result.key))).toBe(false);
+    // PG a porté l'écriture autoritaire une seule fois.
+    expect(mockDualWriteSyncChecked).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * Le kill-switch documenté (`=0`, modèle `UNIFIED_STORE_INVENTORY_PG_PRIMARY`)
+   * rétablit l'écriture — et rétablit l'ANCIEN chemin (différé #4286), pas un
+   * troisième comportement.
+   */
+  it('kill-switch UNIFIED_STORE_DASHBOARD_APPEND_MIRROR=0 : le miroir par append revient', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR = '0';
+    setPgView(pgView());
+
+    const result = await roosyncDashboard({ action: 'append', type: 'workspace', content: 'append sous kill-switch miroir' });
+
+    expect(result.success).toBe(true);
+    expect(result.writeVerification?.gdriveSkipped).toBeFalsy();
+    expect(result.writeVerification?.gdriveDeferred).toBe(true);
+
+    const filePath = path.join(tmpDir, 'dashboards', `${result.key}.md`);
+    await vi.waitFor(async () => {
+      const content = await readFile(filePath, 'utf8').catch(() => '');
+      expect(content).toContain('append sous kill-switch miroir');
+    }, { timeout: 3000, interval: 25 });
+    await waitForDetachedMirror(result.key);
+  });
+
+  /**
+   * Garde du défaut : « off par défaut » ne doit JAMAIS devenir « le fichier
+   * disparaît sur un siège qui n'a pas de store ». Sans DUAL_WRITE ni URL PG,
+   * le fichier est la seule surface — il reste écrit, comme avant.
+   */
+  it('défaut G-DASH sans PG : le saut n\'est pas inconditionnel, le fichier reste écrit', async () => {
+    const result = await roosyncDashboard({ action: 'append', type: 'workspace', content: 'append siège sans store' });
+
+    expect(result.success).toBe(true);
+    expect(result.writeVerification?.gdriveSkipped).toBeFalsy();
+    // Premier append sur un fichier absent : c'est le full-write qui court
+    // (pas l'incrément), donc l'étape mesurée est `fallbackFullWriteMs`.
+    expect(result.durationBreakdown?.writeBreakdown?.fallbackFullWriteMs).toBeGreaterThanOrEqual(0);
+
+    const content = await readFile(path.join(tmpDir, 'dashboards', `${result.key}.md`), 'utf8');
+    expect(content).toContain('append siège sans store');
+  });
+
+  /**
    * Copie locale EN RETARD : elle porte `file-only-1` mais PAS `seed-1`, que
    * la vue PG détient — la forme du lag qu'un miroir différé peut créer.
    */
@@ -637,6 +718,8 @@ message présent seulement sur le fichier
     mockIsDashboardPgPrimary.mockReturnValue(true);
     process.env.UNIFIED_STORE_DUAL_WRITE = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    // #4131 G-DASH — chemin DIFFÉRÉ (#4286) : opt-in par le kill-switch.
+    process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR = '1';
     // #4131: la porte de LECTURE se ferme par le kill-switch '0' — son
     // ABSENCE ne la ferme plus (le défaut suit la présence d'une URL PG, donc
     // ce siège serait PG-lecteur et la garde #3230 ne serait plus inerte).
@@ -690,6 +773,9 @@ message présent seulement sur le fichier
     process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
     process.env.UNIFIED_STORE_DUAL_WRITE = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    // #4131 G-DASH — la réparation #3230 court DANS le miroir détaché, donc
+    // dans le chemin différé : opt-in par le kill-switch.
+    process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR = '1';
 
     const filePath = await writeLaggingDashFile();
     setPgView(pgViewWithSeed());
@@ -733,6 +819,8 @@ message présent seulement sur le fichier
     process.env.UNIFIED_STORE_DASHBOARD_READ_PG = '1';
     process.env.UNIFIED_STORE_DUAL_WRITE = '1';
     process.env.UNIFIED_STORE_PG_URL = 'postgresql://test';
+    // #4131 G-DASH — ce test épingle le `.catch` du miroir DÉTACHÉ : opt-in.
+    process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR = '1';
     setPgView(pgView());
 
     // 1er appel PG (le « PG d'abord ») réussit ; les suivants (le repli interne
