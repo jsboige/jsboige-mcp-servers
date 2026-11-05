@@ -1112,3 +1112,66 @@ describe('action merge — garde canonique post-union (#4439 Attendé 2)', () =>
     }
   });
 });
+
+describe('action merge — clé source portant un caractère de nom illicite (#4439)', () => {
+  it("assainit le nom d'archive pré-merge : la source PG-only est retirée au lieu d'échouer en EINVAL", async () => {
+    // Cas réel mesuré le 05/11 (ai-01, c.6665485237) : `workspace:"vllm"}PMC_JSON_DOWN`
+    // est une clé née d'une erreur de parse JSON. Elle n'a AUCUN fichier (PG-only),
+    // et l'archive pré-merge portait le `"` — `fs.rename`/`open` rendait EINVAL,
+    // donc `merge` ne pouvait jamais retirer la clé : le seul outil de réparation
+    // des clés fork était aveugle à la population même qui l'exige.
+    const BAD_KEY = 'machine-myia-po-2025"}DUP';
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-05T17:02:00.000Z', [M.m2]);
+    const pgOnlySource = {
+      type: 'machine' as const,
+      key: BAD_KEY,
+      lastModified: '2026-09-08T12:48:00.000Z',
+      lastModifiedBy: { machineId: 'pg', workspace: 'pg' },
+      status: { markdown: '*Statut PG de la clé malformée.*' },
+      intercom: {
+        messages: [{
+          id: 'q1', timestamp: '2026-09-08T12:48:00.000Z',
+          author: { machineId: 'pg', workspace: 'pg' },
+          content: 'q1 — PG seul (clé malformée)'
+        }],
+        totalMessages: 1
+      }
+    };
+    pgReadSpy.mockImplementation(async (k: string) => (k === BAD_KEY ? pgOnlySource : null));
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: BAD_KEY
+    }) as any;
+
+    // Le merge aboutit : le contenu de la source est dans la cible…
+    expect(result.success).toBe(true);
+    expect(fileText('machine-myia-po-2025.md')).toContain('q1 — PG seul (clé malformée)');
+    // …et la source est RETIRÉE (marque #3782) — c'est ce que l'EINVAL empêchait.
+    expect(retireCheckedSpy).toHaveBeenCalledWith(BAD_KEY, 'machine-myia-po-2025', expect.any(String));
+
+    // L'archive existe, et son NOM ne porte aucun caractère illicite : le `"`
+    // de la clé est remplacé, la clé elle-même reste brute côté journal.
+    const archiveDir = path.join(dashboardsDir, 'archive');
+    const archives = readdirSync(archiveDir).filter(f => f.includes('-pre-merge-'));
+    expect(archives.length).toBe(1);
+    expect(archives[0]).not.toMatch(/[<>:"|?*]/);
+    expect(archives[0].startsWith('machine-myia-po-2025_}DUP-pre-merge-')).toBe(true);
+    expect(readFileSync(path.join(archiveDir, archives[0]), 'utf8')).toContain('q1 — PG seul (clé malformée)');
+  });
+
+  it("laisse INTACT un nom de clé légal (parenthèses, espaces internes) — pas de régression sur les forks ` (N)`", async () => {
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z', [M.m3]);
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    expect(result.success).toBe(true);
+    const archiveDir = path.join(dashboardsDir, 'archive');
+    const archives = readdirSync(archiveDir).filter(f => f.includes('-pre-merge-'));
+    expect(archives.length).toBe(1);
+    expect(archives[0].startsWith('machine-myia-po-2025 (1)-pre-merge-')).toBe(true);
+  });
+});
