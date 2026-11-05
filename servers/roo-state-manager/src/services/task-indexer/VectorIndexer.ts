@@ -1180,7 +1180,12 @@ export interface IndexTaskStats {
     missingVectors: number;
 }
 
-function emptyStats(): IndexTaskStats {
+/**
+ * Zeroed counters for one attempt. Exported so the caller that OWNS the stats
+ * object (the inactivity watchdog in background-services) can seed it before it
+ * hands the reference to indexTask — #4531 follow-up 1.
+ */
+export function emptyStats(): IndexTaskStats {
     return {
         chunksExtracted: 0,
         subChunksBuilt: 0,
@@ -1500,6 +1505,12 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                     );
                 }
                 indexedPoints.push(...pointsToIndex);
+                // #4531 follow-up 1: keep the LIVE counter current, not only the
+                // end-of-run snapshot below. An abort (inactivity watchdog) ends the
+                // run between two windows, and a counter written once at the end
+                // reports 0 for an attempt that did write points — which is exactly
+                // the budget the fix must not charge.
+                stats.pointsIndexed = indexedPoints.length;
                 options?.onProgress?.(); // #4352 g5: one more acknowledged window
             }
         }

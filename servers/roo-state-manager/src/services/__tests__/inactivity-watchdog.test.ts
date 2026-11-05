@@ -11,7 +11,10 @@
  *   4. INDEX_TASK_INACTIVITY_MS=0 (kill-switch) restores the legacy wall clock,
  *      including its no-abort behaviour;
  *   5. a fence fails its OWN task but never debits the seat-wide breaker
- *      (review ms#1548 B2 — three fences used to OPEN it and defer every task).
+ *      (review ms#1548 B2 — three fences used to OPEN it and defer every task);
+ *   6. the timeout error carries `details.written`, the points THIS attempt
+ *      wrote, so a pass that progressed does not burn its retry budget (#4531
+ *      follow-up 1 — the same contract as the `Embedding incomplete` throw).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as os from 'os';
@@ -89,6 +92,40 @@ describe('runIndexingWithInactivityWatchdog (#4352 g5)', () => {
         // give the loser time to hit its next checkpoint and settle
         await sleep(300);
         expect(orphanOutcome).toBe('fenced');
+    });
+
+    it('the timeout error carries details.written — a pass that wrote points is not charged to the retry budget (#4531 f1)', async () => {
+        process.env.INDEX_TASK_INACTIVITY_MS = '80';
+        const err: any = await runIndexingWithInactivityWatchdog('task-written', async ({ stats }) => {
+            // two acknowledged windows that DID write points, then the hang: this
+            // is the shape the budget must survive. The counters are read off the
+            // object the watchdog handed us, so a mutant that builds its
+            // `details.written` from a fresh emptyStats() reports 0 here.
+            stats.pointsIndexed = 1;
+            await sleep(20);
+            stats.pointsIndexed = 42;
+            await sleep(3000); // never acknowledges again
+            return 0;
+        }).then(() => null, (e: unknown) => e);
+
+        expect(err).not.toBeNull();
+        // The number (not undefined) is what the caller's catch reads — see
+        // `typeof error?.details?.written === 'number'` in indexTaskInQdrant.
+        expect(typeof err.details?.written).toBe('number');
+        expect(err.details.written).toBe(42);
+        expect(err.message).toMatch(/42 point\(s\) written and kept/);
+    });
+
+    it('details.written is 0 (not absent) when the attempt wrote nothing — the budget is still charged for it', async () => {
+        process.env.INDEX_TASK_INACTIVITY_MS = '80';
+        const err: any = await runIndexingWithInactivityWatchdog('task-nothing-written', async () => {
+            await sleep(3000);
+            return 0;
+        }).then(() => null, (e: unknown) => e);
+
+        expect(err).not.toBeNull();
+        expect(err.details?.written).toBe(0);
+        expect(err.message).toMatch(/0 point\(s\) written and kept/);
     });
 
     it('throwIfIndexingAborted: always throws a MARKED GenericError (watchdogAbort), keeping the classifiable wording', async () => {
