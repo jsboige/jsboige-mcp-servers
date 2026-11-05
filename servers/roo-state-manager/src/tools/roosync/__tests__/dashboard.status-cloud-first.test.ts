@@ -13,7 +13,10 @@
  *       `abc`, `true` keep it on.
  *   (c) `CONDENSE_STATUS_CLOUD_FIRST=0` restores primary-first.
  *   (d) no cloud tier on the seat → the status leg falls through to the primary.
- *   (e) the cloud tier fails → `cloud-first-failed`, the primary is NOT tried, floor.
+ *   (e) the cloud tier fails → `cloud-first-failed`, the primary is NOT tried; the
+ *       previous status is kept verbatim and the summary is kept (05/11 follow-up:
+ *       a dead status leg no longer throws a good summary away), `statusUpdated: false`.
+ *   (e2) `CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL=0` restores the floor for (e).
  *   (f) breaker: cloud-first status + primary summary vouches for the primary
  *       (2 seeded failures are cleared, the breaker stays closed).
  *   (g) breaker: cloud-first-failed status + primary summary is not a primary failure.
@@ -226,19 +229,82 @@ describe('#4434 status leg cloud-first', { timeout: 30000 }, () => {
     expect(archives[0]).not.toContain('statusCloudFirst');
   });
 
-  it('(e) the cloud tier fails the status → cloud-first-failed, primary not tried, floor', async () => {
+  it('(e) the cloud tier fails the status → cloud-first-failed, primary not tried, previous status kept, summary kept', async () => {
     primaryAnswersBothLegs();
     cloudRejectsTheStatus();
+    const initialStatus = `# Statut\n\n${'S'.repeat(1000)}`;
 
-    const result = await fillUntilCondensed(`# Statut\n\n${'S'.repeat(1000)}`);
+    const result = await fillUntilCondensed(initialStatus);
 
     expect(statusCalls(mockPrimaryCreate)).toHaveLength(0);
     expect(summaryCalls(mockPrimaryCreate).length).toBeGreaterThanOrEqual(1);
-    expect((result.condenseDiagnostic as any[]).some(d => d.outcome === 'fallback-truncated')).toBe(true);
-    const archives = await readArchives('fallback');
+    const diags = result.condenseDiagnostic as any[];
+    expect(diags.some(d => d.outcome === 'fallback-truncated')).toBe(false);
+    expect(diags.some(d => d.outcome === 'condensed' && d.statusKept === true)).toBe(true);
+
+    expect(await readArchives('fallback')).toHaveLength(0);
+    const archives = await readArchives('llm');
     expect(archives.length).toBeGreaterThanOrEqual(1);
+    expect(archives[0]).toContain('llmGenerated: true');
+    expect(archives[0]).toContain('statusUpdated: false');
     expect(archives[0]).toContain('statusOutcome: cloud-first-failed');
     expect(archives[0]).toContain('summaryOutcome: ok');
+    // The leg's own error names the route and embeds the cloud chain's error
+    // (single-model chain: historical shape, no model prefix).
+    expect(archives[0]).toContain('statusLegError:');
+    expect(archives[0]).toContain('primary not tried (#4434): guard-rejected (too-short)');
+
+    const md = await readFile(path.join(tmpDir, 'dashboards', 'global.md'), 'utf8');
+    expect(md).toContain('S'.repeat(1000));
+    expect(md).toContain('Statut conservé (jambe statut en échec : cloud-first-failed');
+    expect(md).toContain('CONDENSATION-SUMMARY');
+    expect(md).toContain('résumé LLM généré (');
+    expect(md).not.toContain('FALLBACK TRUNCATION');
+  });
+
+  it('(e3) seat without a cloud tier: a dead primary status leg keeps the summary and still says why', { timeout: 60000 }, async () => {
+    // mockGetFallbackClient stays null (beforeEach): no cloud tier, the status leg
+    // falls through to the primary, which fails the status and serves the summary.
+    mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+    mockPrimaryCreate.mockImplementation(async (req: any) => {
+      if (isSummaryRequest(req)) {
+        return { choices: [{ message: { content: summaryAnswer('primary') }, finish_reason: 'stop' }] };
+      }
+      throw new Error('vLLM status leg down');
+    });
+
+    const result = await fillUntilCondensed(`# Statut\n\n${'S'.repeat(1000)}`);
+
+    expect(statusCalls(mockPrimaryCreate).length).toBeGreaterThanOrEqual(1);
+    expect((result.condenseDiagnostic as any[]).some(d => d.statusKept === true)).toBe(true);
+    expect(await readArchives('fallback')).toHaveLength(0);
+    const archives = await readArchives('llm');
+    expect(archives.length).toBeGreaterThanOrEqual(1);
+    expect(archives[0]).toContain('statusUpdated: false');
+    expect(archives[0]).not.toContain('statusCloudFirst');
+    // No cloud attempt → no fallbackError; the leg's own error is the cause.
+    expect(archives[0]).toContain('statusLegError:');
+    expect(archives[0]).toContain('vLLM status leg down');
+  });
+
+  it.each(['0', ' 0.0 '])('(e2) kill-switch CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL=%j → the dead status leg floors the pass', async (off) => {
+    process.env.CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL = off;
+    try {
+      primaryAnswersBothLegs();
+      cloudRejectsTheStatus();
+
+      const result = await fillUntilCondensed(`# Statut\n\n${'S'.repeat(1000)}`);
+
+      const diags = result.condenseDiagnostic as any[];
+      expect(diags.some(d => d.outcome === 'fallback-truncated')).toBe(true);
+      expect(diags.some(d => d.statusKept === true)).toBe(false);
+      const archives = await readArchives('fallback');
+      expect(archives.length).toBeGreaterThanOrEqual(1);
+      expect(archives[0]).toContain('statusOutcome: cloud-first-failed');
+      expect(archives[0]).toContain('summaryOutcome: ok');
+    } finally {
+      delete process.env.CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL;
+    }
   });
 
   it('(f) breaker: cloud-first status + primary summary clears two seeded failures', async () => {
