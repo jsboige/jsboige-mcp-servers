@@ -108,6 +108,8 @@ const mockFs = fs as unknown as {
   access: ReturnType<typeof vi.fn>;
   mkdir: ReturnType<typeof vi.fn>;
   appendFile: ReturnType<typeof vi.fn>;
+  rename: ReturnType<typeof vi.fn>;
+  unlink: ReturnType<typeof vi.fn>;
 };
 
 const mockDetector = RooStorageDetector as unknown as {
