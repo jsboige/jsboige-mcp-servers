@@ -213,6 +213,54 @@ describe('indexTask — the reported counters describe the run (#4352 crit.4)', 
 		expect(stats.pointsIndexed).toBe(0);
 	});
 
+	test('the counter is LIVE at each acknowledged window, not written once at the end (#4531 f1)', async () => {
+		vi.resetModules();
+		const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+		resetCircuitBreakerForTest();
+		// 260 sub-chunks > the 256-sub-chunk upsert window ⇒ two windows, so the run
+		// emits at least two `onProgress` acknowledgements. This is the shape the
+		// inactivity watchdog relies on: it reads `stats` from a DIFFERENT context,
+		// after an abort between two windows. A counter assigned once at the end of
+		// the run reads 0 there — and `details.written: 0` charges the retry budget
+		// of a pass that did write points, the exact asymmetry #4531 removed.
+		mockExtractTask.mockResolvedValue(
+			Array.from({ length: 260 }, (_, i) => ({
+				chunk_id: `t1-live-${i}`,
+				content: `chunk number ${i} — unique content so nothing dedups`,
+				indexed: true,
+				task_id: 't1',
+				sequence_order: i,
+				chunk_type: 'message_exchange',
+				role: 'user',
+				total_chunks: 260,
+				chunk_index: i + 1,
+			})),
+		);
+
+		const stats = freshStats();
+		const snapshots: number[] = [];
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		let points: any[];
+		try {
+			points = await indexTask('t1', '/p', 'roo', undefined, {
+				stats,
+				onProgress: () => { snapshots.push(stats.pointsIndexed); },
+			});
+		} finally {
+			logSpy.mockRestore(); warnSpy.mockRestore();
+		}
+
+		expect(points!.length).toBe(260);
+		expect(snapshots.length).toBeGreaterThanOrEqual(2);
+		// nothing is written before the first window's upsert…
+		expect(snapshots[0]).toBe(0);
+		// …but by the last acknowledgement before the end of the run, the counter
+		// must already reflect what was written (red on an end-only assignment).
+		expect(snapshots[snapshots.length - 1]).toBeGreaterThan(0);
+		expect(stats.pointsIndexed).toBe(260);
+	});
+
 	test('a reused stats object is reset per attempt — no stale counters', async () => {
 		vi.resetModules();
 		const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');

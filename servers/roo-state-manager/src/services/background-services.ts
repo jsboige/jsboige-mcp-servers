@@ -13,7 +13,7 @@ import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
-import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics } from './task-indexer/VectorIndexer.js';
+import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics, emptyStats, type IndexTaskStats } from './task-indexer/VectorIndexer.js';
 import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass, getReindexChangedAfterMs } from '../types/indexing.js';
 import { matchesPattern } from '../utils/matches-pattern.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
@@ -1890,21 +1890,33 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
  * competing with the retry; the windows already written are kept and the
  * pre-flight dedup makes the next attempt resume after them (a4/a6).
  *
+ * The timeout error carries `details.written` — the points this attempt actually
+ * wrote — so the caller can spare the retry budget of a pass that progressed
+ * (#4531 follow-up 1: the progress-aware rule must not depend on which throw
+ * ended the attempt).
+ *
  * Kill-switch: `INDEX_TASK_INACTIVITY_MS=0` restores the legacy wall-clock race
  * (which does not abort its loser — exactly the old behaviour, including its
  * known defect).
  */
 export async function runIndexingWithInactivityWatchdog<T>(
     taskId: string,
-    start: (options: { signal: AbortSignal; onProgress: () => void }) => Promise<T>,
+    start: (options: { signal: AbortSignal; onProgress: () => void; stats: IndexTaskStats }) => Promise<T>,
 ): Promise<T> {
+    // #4531 follow-up 1: the watchdog owns the stats object it hands to the run,
+    // so what the attempt actually wrote survives the abort. Without it the
+    // timeout error carries no `written`, the caller's catch reads 0, and a pass
+    // that wrote points is charged to the retry budget like a pass that wrote
+    // nothing — the exact asymmetry #4531 removed for the `Embedding incomplete`
+    // path, left open on the watchdog path.
+    const stats = emptyStats();
     const inactivityMs = Number.parseInt(process.env.INDEX_TASK_INACTIVITY_MS ?? '180000', 10);
     if (!Number.isFinite(inactivityMs) || inactivityMs <= 0) {
         // Kill-switch: legacy wall-clock race, unchanged (no abort — the orphan
         // keeps running; that defect is the reason g5 exists).
         const taskTimeoutMs = parseInt(process.env.INDEX_TASK_TIMEOUT_MS || '300', 10) * 1000;
         const controller = new AbortController();
-        const run = start({ signal: controller.signal, onProgress: () => {} });
+        const run = start({ signal: controller.signal, onProgress: () => {}, stats });
         run.catch(() => {});
         await Promise.race([
             run,
@@ -1921,7 +1933,7 @@ export async function runIndexingWithInactivityWatchdog<T>(
     const onProgress = () => { deadline = Date.now() + inactivityMs; };
     let watchdog: ReturnType<typeof setInterval> | undefined;
     try {
-        const run = start({ signal: controller.signal, onProgress });
+        const run = start({ signal: controller.signal, onProgress, stats });
         // After the watchdog fires, the aborted run is EXPECTED to reject at its
         // next checkpoint; handle that late rejection here so it does not surface
         // as an unhandled error on a promise the race already abandoned.
@@ -1931,9 +1943,15 @@ export async function runIndexingWithInactivityWatchdog<T>(
             new Promise<never>((_, reject) => {
                 watchdog = setInterval(() => {
                     if (Date.now() >= deadline) {
-                        const err = new Error(
-                            `Indexing timeout for ${taskId} — no batch acknowledged for ${inactivityMs}ms ` +
-                            `(inactivity watchdog #4352 g5; windows already written are kept, the retry resumes after them)`
+                        const err = Object.assign(
+                            new Error(
+                                `Indexing timeout for ${taskId} — no batch acknowledged for ${inactivityMs}ms ` +
+                                `(inactivity watchdog #4352 g5; ${stats.pointsIndexed} point(s) written and kept, the retry resumes after them)`
+                            ),
+                            // #4531 follow-up 1: same `details.written` contract as the
+                            // `Embedding incomplete` throw — the caller's catch uses it
+                            // to spare the retry budget of an attempt that progressed.
+                            { details: { written: stats.pointsIndexed } }
                         );
                         controller.abort(err);
                         reject(err);
