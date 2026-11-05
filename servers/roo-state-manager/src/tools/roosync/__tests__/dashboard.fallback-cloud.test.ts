@@ -844,7 +844,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     expect(unfolded).toContain('statusUpdated: false');
     // Per-model guard errors survive on the kept-status archive: both chain models
     // tried and named, 'too-short' reason kept.
-    expect(unfolded).toContain('statusFallbackError:');
+    expect(unfolded).toContain('statusLegError:');
     expect(unfolded).toContain('deepseek-v4-flash: guard-rejected (too-short) | claude-sonnet-5-5: guard-rejected (too-short)');
     // Per-leg outcomes (ms#1501): the status leg died in the chain while the summary leg
     // — whose own guard accepts a complete summary — was salvaged by the FIRST model.

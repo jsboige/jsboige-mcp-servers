@@ -6613,16 +6613,29 @@ async function condenseIntercom(
   // semantics) and let the summary through. The breaker records exactly what the
   // truncation branch would have recorded for the same pass. Scope: a DEAD status
   // leg only — a status the #3962 guard rejects keeps its floor and banner.
-  // Kill-switch: CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL=0 restores the floor.
+  // Kill-switch: CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL=0 (any numeric spelling of
+  // zero, as CONDENSE_STATUS_CLOUD_FIRST) restores the floor.
+  const keepSummaryRaw = process.env.CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL;
+  const keepSummaryOnStatusFail = !(keepSummaryRaw !== undefined && keepSummaryRaw.trim() !== '' && Number(keepSummaryRaw) === 0);
+  // Why the status leg died — never an opaque outcome label alone: the leg's own
+  // last error, plus the cloud chain's per-model errors when they are not already
+  // in it (cloud-first-failed embeds them; primary-then-cloud does not; a seat
+  // without a cloud tier stamps no fallbackError at all).
+  const statusLastError = statusCall.stats.lastError;
+  const statusCloudError = statusCall.stats.fallbackError;
+  const statusLegError = statusLastError && statusCloudError && !statusLastError.includes(statusCloudError)
+    ? `${statusLastError}; cloud: ${statusCloudError}`
+    : (statusLastError ?? statusCloudError ?? 'no detail captured');
   let statusKeptOnLegFailure = false;
   if (!newStatus && !!llmSummary
       && previousStatus.trim().length > 0
-      && process.env.CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL !== '0') {
+      && keepSummaryOnStatusFail) {
     logger.warn('Status leg failed — previous status kept, LLM summary kept (no content hole) (#4434)', {
       key,
       messageCount: toArchive.length,
       statusOutcome: statusCall.stats.finalOutcome,
       summaryOutcome: summaryCall.stats.finalOutcome,
+      statusLegError: truncateError(statusLegError),
     });
     if (!primaryCircuitOpen) {
       if (statusExercisedPrimary || summaryCall.stats.fallbackUsed === true) condenseCBRecordFailure();
@@ -6815,9 +6828,9 @@ async function condenseIntercom(
     summaryOutcome: summaryCall.stats.finalOutcome,
     ...(statusCall.stats.fallbackModel ? { statusFallbackModel: statusCall.stats.fallbackModel } : {}),
     ...(statusCall.stats.cloudFirst === true ? { statusCloudFirst: true } : {}),
-    // #4434: a kept status still says why its leg died (per-model errors), as the
-    // truncation archive's fallbackError did before this pass stopped truncating.
-    ...(statusKeptOnLegFailure && statusCall.stats.fallbackError ? { statusFallbackError: truncateError(statusCall.stats.fallbackError) } : {}),
+    // #4434: a kept status still says why its leg died, as the truncation archive's
+    // fallbackError did before this pass stopped truncating.
+    ...(statusKeptOnLegFailure ? { statusLegError: truncateError(statusLegError) } : {}),
     ...(summaryCall.stats.fallbackModel ? { summaryFallbackModel: summaryCall.stats.fallbackModel } : {})
   });
 

@@ -249,9 +249,10 @@ describe('#4434 status leg cloud-first', { timeout: 30000 }, () => {
     expect(archives[0]).toContain('statusUpdated: false');
     expect(archives[0]).toContain('statusOutcome: cloud-first-failed');
     expect(archives[0]).toContain('summaryOutcome: ok');
-    expect(archives[0]).toContain('statusFallbackError:');
-    // Single-model chain: historical error shape, no model prefix.
-    expect(archives[0]).toContain('statusFallbackError: guard-rejected (too-short)');
+    // The leg's own error names the route and embeds the cloud chain's error
+    // (single-model chain: historical shape, no model prefix).
+    expect(archives[0]).toContain('statusLegError:');
+    expect(archives[0]).toContain('primary not tried (#4434): guard-rejected (too-short)');
 
     const md = await readFile(path.join(tmpDir, 'dashboards', 'global.md'), 'utf8');
     expect(md).toContain('S'.repeat(1000));
@@ -261,8 +262,33 @@ describe('#4434 status leg cloud-first', { timeout: 30000 }, () => {
     expect(md).not.toContain('FALLBACK TRUNCATION');
   });
 
-  it('(e2) kill-switch CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL=0 → the dead status leg floors the pass', async () => {
-    process.env.CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL = '0';
+  it('(e3) seat without a cloud tier: a dead primary status leg keeps the summary and still says why', { timeout: 60000 }, async () => {
+    // mockGetFallbackClient stays null (beforeEach): no cloud tier, the status leg
+    // falls through to the primary, which fails the status and serves the summary.
+    mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+    mockPrimaryCreate.mockImplementation(async (req: any) => {
+      if (isSummaryRequest(req)) {
+        return { choices: [{ message: { content: summaryAnswer('primary') }, finish_reason: 'stop' }] };
+      }
+      throw new Error('vLLM status leg down');
+    });
+
+    const result = await fillUntilCondensed(`# Statut\n\n${'S'.repeat(1000)}`);
+
+    expect(statusCalls(mockPrimaryCreate).length).toBeGreaterThanOrEqual(1);
+    expect((result.condenseDiagnostic as any[]).some(d => d.statusKept === true)).toBe(true);
+    expect(await readArchives('fallback')).toHaveLength(0);
+    const archives = await readArchives('llm');
+    expect(archives.length).toBeGreaterThanOrEqual(1);
+    expect(archives[0]).toContain('statusUpdated: false');
+    expect(archives[0]).not.toContain('statusCloudFirst');
+    // No cloud attempt → no fallbackError; the leg's own error is the cause.
+    expect(archives[0]).toContain('statusLegError:');
+    expect(archives[0]).toContain('vLLM status leg down');
+  });
+
+  it.each(['0', ' 0.0 '])('(e2) kill-switch CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL=%j → the dead status leg floors the pass', async (off) => {
+    process.env.CONDENSE_KEEP_SUMMARY_ON_STATUS_FAIL = off;
     try {
       primaryAnswersBothLegs();
       cloudRejectsTheStatus();
