@@ -27,7 +27,7 @@ const { loadPgMock, peekMock, rooDetectMock, claudeDetectMock, claudeAnalyzeMock
 }));
 
 vi.mock('../../services/unified-store/conversation-list-store.js', () => ({
-	loadPgConversationSkeleton: loadPgMock,
+	loadPgConversationBody: loadPgMock,
 }));
 
 vi.mock('../../services/skeleton-cache.service.js', () => ({

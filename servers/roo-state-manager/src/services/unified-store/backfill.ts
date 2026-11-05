@@ -22,7 +22,7 @@
  * so the iteration/counting logic can be unit-tested WITHOUT a DB or even the env gate.
  */
 
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from './types.js';
 import type { DualWriteResult } from './dual-write.js';
 
 /**
@@ -33,7 +33,7 @@ import type { DualWriteResult } from './dual-write.js';
  */
 export type BackfillWriteFn = (
   taskId: string,
-  skeleton: ConversationSkeleton,
+  skeleton: StoredConversation,
 ) => Promise<void | DualWriteResult>;
 
 export interface BackfillOptions {
@@ -66,7 +66,7 @@ export interface BackfillResult {
  *          for rows actually persisted).
  */
 export async function runBackfill(
-  skeletons: ConversationSkeleton[],
+  skeletons: StoredConversation[],
   writeFn: BackfillWriteFn,
   options: BackfillOptions = {},
 ): Promise<BackfillResult> {

@@ -82,10 +82,10 @@ export interface SkeletonHeader {
  * @deprecated Roo-specific conversation format — superseded by the unified
  * PG-backed task extraction (roo-extensions #1360 / #1395). Do not add new
  * consumers. Removal is gated on MEASURED prerequisites, not a date
- * (roo-extensions #1395, measured 2026-10-31 — the 2026-10-28 date expired with
- * the gate unsatisfied): the unified PG store must stop importing this type
- * (services/unified-store/backfill.ts, conversation-list-store.ts) AND
- * src/tools must reach zero references (100 of 182 files today).
+ * (roo-extensions #1395): the unified PG store is decoupled since 2026-11-05
+ * (P2 — it declares its own `StoredConversation` exchange type in
+ * services/unified-store/types.ts); src/tools must reach zero references
+ * (100 of 182 files, measured 2026-10-31).
  * See docs/MIGRATION-UNIFIED-TASK-EXTRACTION.md.
  */
 export interface ConversationSkeleton extends SkeletonHeader {

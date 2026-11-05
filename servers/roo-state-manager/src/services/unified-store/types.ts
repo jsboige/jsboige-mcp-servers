@@ -11,6 +11,8 @@
  * -> rows; the reader maps rows -> in-memory.
  */
 
+import type { ActionMetadata, MessageSkeleton, SkeletonMetadata } from '../../types/conversation.js';
+
 /** Origin harness for a conversation. */
 export type Harness = 'roo' | 'zoo' | 'claude';
 
@@ -289,4 +291,29 @@ export interface UnifiedStoreSearchHit {
   conversation: ConversationRow;
   /** Optional: matched messages if the filter targets messages. */
   matched_messages?: MessageRow[];
+}
+
+/**
+ * The unified store's own exchange shape for a conversation body — what
+ * backfill iterates, what dual-write maps to rows, what the PG tiers hand
+ * back to list/view (#1395 P2, roo-extensions).
+ *
+ * Structurally identical to the deprecated skeleton pivot it replaces here
+ * (src/types/conversation.ts, migration guide
+ * docs/MIGRATION-UNIFIED-TASK-EXTRACTION.md), so every existing caller
+ * (background workers, build-skeleton-cache, the list/view tools) keeps
+ * compiling unchanged — the store now OWNS its contract instead of importing
+ * the legacy type. `UnifiedTask` cannot serve this role: it does not model
+ * `sequence` (src/types/unified-task.ts, unifiedTaskToSkeletonHeader JSDoc).
+ * Never delete this mirror's fields without checking assignability at the
+ * store boundaries.
+ */
+export interface StoredConversation {
+  taskId: string;
+  parentTaskId?: string;
+  metadata: SkeletonMetadata;
+  childTaskInstructionPrefixes?: string[];
+  isCompleted?: boolean;
+  truncatedInstruction?: string;
+  sequence: (MessageSkeleton | ActionMetadata)[];
 }

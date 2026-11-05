@@ -12,7 +12,7 @@
  *   - loadPgConversationTier: dedup against the tiers already loaded, the
  *     `truncated` flag when the cap is reached, and graceful degradation
  *     (a throwing reader yields status 'failed', never an exception)
- *   - loadPgConversationSkeleton (#2191, the `view` body load): same gate, the
+ *   - loadPgConversationBody (#2191, the `view` body load): same gate, the
  *     cold-pool init, paging, user/assistant mapping, and null on every
  *     degraded path so `view` keeps its historical answer
  *   - the SQL SHAPE of PgUnifiedStoreReader.listConversations, asserted against
@@ -72,7 +72,7 @@ import {
   resolveLabel,
   mapRowToSkeleton,
   loadPgConversationTier,
-  loadPgConversationSkeleton,
+  loadPgConversationBody,
   PG_DATA_SOURCE,
   DEFAULT_PG_LIST_LIMIT,
   PG_VIEW_PAGE_SIZE,
@@ -365,7 +365,7 @@ describe('loadPgConversationTier', () => {
   });
 });
 
-// ─── loadPgConversationSkeleton (#2191 view body load) ──────────────
+// ─── loadPgConversationBody (#2191 view body load) ──────────────
 
 function convRow(overrides: Partial<ConversationRow> = {}): ConversationRow {
   return {
@@ -396,18 +396,18 @@ function msg(seq: number, overrides: Partial<MessageRow> = {}): MessageRow {
   };
 }
 
-describe('loadPgConversationSkeleton', () => {
+describe('loadPgConversationBody', () => {
   test('returns null without touching the reader when the gate is off', async () => {
     // #4131: "gate off" is now the explicit kill-switch, not the absence of
     // the flag (the absence means "follow the default", i.e. ON with a URL).
     process.env.UNIFIED_STORE_CONVERSATION_READ_PG = '0';
-    expect(await loadPgConversationSkeleton('any')).toBeNull();
+    expect(await loadPgConversationBody('any')).toBeNull();
     expect(mockInit).not.toHaveBeenCalled();
     expect(mockGetConversation).not.toHaveBeenCalled();
   });
 
   test('initialises the pool before reading (#2816: no self-init on a cold pool)', async () => {
-    await loadPgConversationSkeleton('any');
+    await loadPgConversationBody('any');
     expect(mockInit).toHaveBeenCalledTimes(1);
     expect(mockInit.mock.invocationCallOrder[0]).toBeLessThan(
       mockGetConversation.mock.invocationCallOrder[0],
@@ -415,7 +415,7 @@ describe('loadPgConversationSkeleton', () => {
   });
 
   test('returns null when the store has no row for the task', async () => {
-    expect(await loadPgConversationSkeleton('absent')).toBeNull();
+    expect(await loadPgConversationBody('absent')).toBeNull();
     expect(mockGetMessages).not.toHaveBeenCalled();
   });
 
@@ -428,7 +428,7 @@ describe('loadPgConversationSkeleton', () => {
       msg(3, { role: 'user', content: 'second question' }),
     ]);
 
-    const skeleton = await loadPgConversationSkeleton('claude-d--dev-CoursIA--0f1e2d3c');
+    const skeleton = await loadPgConversationBody('claude-d--dev-CoursIA--0f1e2d3c');
 
     expect(skeleton).not.toBeNull();
     expect(skeleton!.taskId).toBe('claude-d--dev-CoursIA--0f1e2d3c');
@@ -459,7 +459,7 @@ describe('loadPgConversationSkeleton', () => {
       }),
     ]);
 
-    const skeleton = await loadPgConversationSkeleton('claude-d--dev-CoursIA--0f1e2d3c');
+    const skeleton = await loadPgConversationBody('claude-d--dev-CoursIA--0f1e2d3c');
 
     // Actions reappear right after the assistant message that issued them —
     // the mirror of mapSequenceToMessageRows (dual-write.ts).
@@ -477,7 +477,7 @@ describe('loadPgConversationSkeleton', () => {
     mockGetConversation.mockResolvedValue(convRow({ metadata: { actionCount: 5 } }));
     mockGetMessages.mockResolvedValue([msg(0), msg(1, { content: 'answer', tool_calls: null })]);
 
-    const skeleton = await loadPgConversationSkeleton('claude-d--dev-CoursIA--0f1e2d3c');
+    const skeleton = await loadPgConversationBody('claude-d--dev-CoursIA--0f1e2d3c');
 
     expect(skeleton!.sequence).toEqual([
       { role: 'user', content: 'message 0', timestamp: '2026-09-05T12:14:55.368Z', isTruncated: false },
@@ -497,7 +497,7 @@ describe('loadPgConversationSkeleton', () => {
     );
     mockGetMessages.mockResolvedValue([msg(0)]);
 
-    const skeleton = await loadPgConversationSkeleton('t');
+    const skeleton = await loadPgConversationBody('t');
 
     expect(skeleton!.metadata.createdAt).toBe('2026-09-05T12:14:55.368Z');
     expect(skeleton!.metadata.lastActivity).toBe('2026-09-06T03:37:15.817Z');
@@ -508,7 +508,7 @@ describe('loadPgConversationSkeleton', () => {
     const full = Array.from({ length: PG_VIEW_PAGE_SIZE }, (_, i) => msg(i));
     mockGetMessages.mockResolvedValueOnce(full).mockResolvedValueOnce([msg(PG_VIEW_PAGE_SIZE)]);
 
-    const skeleton = await loadPgConversationSkeleton('t');
+    const skeleton = await loadPgConversationBody('t');
 
     expect(mockGetMessages).toHaveBeenNthCalledWith(1, 't', { limit: PG_VIEW_PAGE_SIZE, offset: 0 });
     expect(mockGetMessages).toHaveBeenNthCalledWith(2, 't', {
@@ -521,13 +521,13 @@ describe('loadPgConversationSkeleton', () => {
 
   test('returns null for a header-only row (no message rows: nothing to show)', async () => {
     mockGetConversation.mockResolvedValue(convRow({ msg_count: 42 }));
-    expect(await loadPgConversationSkeleton('orphan')).toBeNull();
+    expect(await loadPgConversationBody('orphan')).toBeNull();
   });
 
   test('degrades to null with a warn when the store throws — never an exception', async () => {
     mockGetConversation.mockResolvedValue(convRow());
     mockGetMessages.mockRejectedValue(new Error('connection refused'));
-    expect(await loadPgConversationSkeleton('t')).toBeNull();
+    expect(await loadPgConversationBody('t')).toBeNull();
     expect(mockLoggerWarn).toHaveBeenCalled();
   });
 });

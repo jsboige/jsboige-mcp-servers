@@ -3,7 +3,7 @@
  *
  * Unlike view-conversation-tree-unified-store.test.ts, which mocks the PG
  * LOADER, this file mocks only the READER FACTORY and lets the REAL
- * `loadPgConversationSkeleton` run — gate resolution, row paging, mapping,
+ * `loadPgConversationBody` run — gate resolution, row paging, mapping,
  * tool_calls unfolding — feeding the REAL renderer through `view`'s unified
  * store fallback.
  *

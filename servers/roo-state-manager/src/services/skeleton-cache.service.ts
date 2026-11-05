@@ -1034,11 +1034,11 @@ export class SkeletonCacheService {
         // demandé au store PG (siège backfillé, même gate que le tier LIST lue
         // à l'appel) ; l'archive G: n'est lue que pour une conversation que PG
         // ne sert pas (antérieure au backfill, ou siège sans PG). Sur un siège
-        // sans URL PG, loadPgConversationSkeleton rend null avant toute requête
+        // sans URL PG, loadPgConversationBody rend null avant toute requête
         // et le chemin G: ci-dessous est inchangé, byte pour byte.
         try {
-            const { loadPgConversationSkeleton } = await import('./unified-store/conversation-list-store.js');
-            const pgSkeleton = await loadPgConversationSkeleton(taskId);
+            const { loadPgConversationBody } = await import('./unified-store/conversation-list-store.js');
+            const pgSkeleton = await loadPgConversationBody(taskId);
             if (pgSkeleton && pgSkeleton.sequence.length > 0) {
                 entry.sequence = pgSkeleton.sequence;
                 entry.metadata.hydrated = true;

@@ -71,14 +71,14 @@ vi.mock('../task-archiver/index.js', () => ({
 
 // #4151 S2 — hydrateTier3Entry demande le corps au store PG AVANT l'archive
 // G:. Import dynamique intercepté par vi.mock ; défaut null = siège sans PG
-// (loadPgConversationSkeleton rend null avant toute requête réelle), le
+// (loadPgConversationBody rend null avant toute requête réelle), le
 // chemin G: reste alors l'unique source, byte pour byte.
-const { mockLoadPgConversationSkeleton } = vi.hoisted(() => ({
-	mockLoadPgConversationSkeleton: vi.fn((): Promise<null> => Promise.resolve(null)),
+const { mockLoadPgConversationBody } = vi.hoisted(() => ({
+	mockLoadPgConversationBody: vi.fn((): Promise<null> => Promise.resolve(null)),
 }));
 
 vi.mock('../unified-store/conversation-list-store.js', () => ({
-	loadPgConversationSkeleton: mockLoadPgConversationSkeleton,
+	loadPgConversationBody: mockLoadPgConversationBody,
 }));
 
 import { SkeletonCacheService } from '../skeleton-cache.service.js';
@@ -920,7 +920,7 @@ describe('SkeletonCacheService', () => {
 			const service = SkeletonCacheService.getInstance();
 			await service.getCache();
 
-			mockLoadPgConversationSkeleton.mockResolvedValueOnce({
+			mockLoadPgConversationBody.mockResolvedValueOnce({
 				taskId: 't-pg',
 				metadata: { messageCount: 7 },
 				sequence: [{ role: 'user', content: 'pg-body', timestamp: '2026-10-01T00:00:00Z', isTruncated: false }],
@@ -947,7 +947,7 @@ describe('SkeletonCacheService', () => {
 			const service = SkeletonCacheService.getInstance();
 			await service.getCache();
 
-			mockLoadPgConversationSkeleton.mockResolvedValueOnce(null);
+			mockLoadPgConversationBody.mockResolvedValueOnce(null);
 			expect(await service.ensureConversationHydrated('t-gd')).toBe(true);
 			const cache = await service.getCache();
 			expect(cache.get('t-gd')!.sequence[0]).toMatchObject({ role: 'user', content: 'needle-in-archive' });
@@ -961,7 +961,7 @@ describe('SkeletonCacheService', () => {
 			const service = SkeletonCacheService.getInstance();
 			await service.getCache();
 
-			mockLoadPgConversationSkeleton.mockRejectedValueOnce(new Error('pool exhausted'));
+			mockLoadPgConversationBody.mockRejectedValueOnce(new Error('pool exhausted'));
 			expect(await service.ensureConversationHydrated('t-err')).toBe(true);
 			const cache = await service.getCache();
 			expect(cache.get('t-err')!.sequence[0]).toMatchObject({ role: 'user', content: 'gdrive-body' });
