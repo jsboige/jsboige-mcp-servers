@@ -72,6 +72,12 @@ export interface ServerState {
     // groups dead-letter entries by errorClass for triage.
     deadLetterQueue: Set<string>;
     deadLetterDetails: Map<string, DeadLetterEntry>;
+    /**
+     * #4352: when this process last asked the indexing leader to re-arm a failed
+     * task (epoch ms). Bounds the automatic re-arm to one request per task per
+     * cooldown even when the leader is another process. Created on first use.
+     */
+    failedRearmRequestedAt?: Map<string, number>;
 }
 
 export interface DeadLetterEntry {

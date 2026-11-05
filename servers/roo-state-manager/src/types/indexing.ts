@@ -121,6 +121,26 @@ export const MAX_RETRY_ATTEMPTS = 3;
 export const RETRY_BACKOFF_BASE_MS = 60000; // 1 minute base
 
 /**
+ * #4352 — a task marked `failed` after MAX_RETRY_ATTEMPTS zero-write attempts
+ * stayed failed until an operator ran cleanup_failed, whatever the cause. An
+ * embedding outage (02/11) therefore dead-lettered whole lane sessions for good:
+ * 166 failed on ai-01 on 05/11, 103 on po-2027, 11 on web2, all re-armed by hand.
+ * A failed task whose failure class is transient is now re-armed once per this
+ * cooldown. Env INDEX_FAILED_REARM_HOURS overrides; 0 restores the legacy
+ * behaviour (failed until an operator acts).
+ */
+export const DEFAULT_FAILED_REARM_HOURS = 24;
+
+export function getFailedRearmCooldownMs(): number {
+    const raw = process.env.INDEX_FAILED_REARM_HOURS;
+    if (raw !== undefined && raw.trim() !== '') {
+        const parsed = Number(raw);
+        if (Number.isFinite(parsed) && parsed >= 0) return parsed * 60 * 60 * 1000;
+    }
+    return DEFAULT_FAILED_REARM_HOURS * 60 * 60 * 1000;
+}
+
+/**
  * #4531 — an attempt that wrote new points moved the task forward, so charging
  * it the same retry as one that wrote nothing is what marked a 28k-sub-chunk
  * session `failed` after ~3 partial passes over a flaky link (web2, 04/11).

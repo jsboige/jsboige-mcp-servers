@@ -14,7 +14,7 @@ import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics, emptyStats, type IndexTaskStats } from './task-indexer/VectorIndexer.js';
-import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass, getReindexChangedAfterMs } from '../types/indexing.js';
+import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass, getReindexChangedAfterMs, getFailedRearmCooldownMs } from '../types/indexing.js';
 import { matchesPattern } from '../utils/matches-pattern.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 import { isLocallyIndexable } from './task-partition.js';
@@ -849,6 +849,9 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
             for (const taskId of findHeldChangesDue(state)) {
                 state.qdrantIndexQueue.add(taskId);
             }
+
+            // #4352: failed tasks of a re-armable class get one more chance per cooldown.
+            await rearmFailedTasks(state);
 
             // #2427 defect B: settle the tick's Claude dual-writes BEFORE persisting any
             // cursor. The Claude cursor advances ONLY if every write succeeded; a single
@@ -2260,6 +2263,128 @@ export function findHeldChangesDue(state: ServerState, nowMs: number = Date.now(
         if (!isLocallyIndexable(header)) continue;
         if (!state.indexingDecisionService.shouldIndex(header).shouldIndex) continue;
         due.push(taskId);
+    }
+    return due;
+}
+
+/** #4352: at most this many failed tasks are re-armed per refresh tick. */
+export const MAX_FAILED_REARM_PER_TICK = 4;
+
+/**
+ * #4352: a failed task may be re-armed unless its class is permanent.
+ * `claude_session_not_found` is the exception, because before #4352 any
+ * indexing error of a Claude session surfaced as « session not found »: on
+ * ai-01 on 05/11, the files of all 72 tasks in that class were on disk. Such a
+ * task is re-armed only when its session file is on disk here
+ * (`claudeSessionPresentLocally`): on a seat that does not hold the session,
+ * the class is genuine and retrying cannot succeed.
+ */
+export function isRearmableFailureClass(errorClass: IndexingErrorClass): boolean {
+    return !PERMANENT_ERROR_CLASSES.has(errorClass) || errorClass === 'claude_session_not_found';
+}
+
+/**
+ * #4352: is the Claude session behind `taskId` on disk on this machine? Same
+ * resolution as the Claude branch of `TaskIndexer.indexTask`: `claude-{dir}` is a
+ * project directory, `claude-{dir}--{uuid}` is `{uuid}.jsonl` inside it. A
+ * detector failure answers « absent », so the re-arm stays conservative.
+ */
+export async function claudeSessionPresentLocally(taskId: string): Promise<boolean> {
+    if (!taskId.startsWith('claude-')) return false;
+    try {
+        const { ClaudeStorageDetector } = await import('../utils/claude-storage-detector.js');
+        const locations = await ClaudeStorageDetector.detectStorageLocations();
+        const suffix = taskId.slice('claude-'.length);
+        for (const loc of locations) {
+            const basename = path.basename(loc.projectPath);
+            if (basename === suffix) return true;
+            if (!suffix.startsWith(basename + '--')) continue;
+            const sessionFile = path.join(loc.projectPath, suffix.slice(basename.length + 2) + '.jsonl');
+            try {
+                await fs.access(sessionFile);
+                return true;
+            } catch {
+                // not in this location
+            }
+        }
+    } catch {
+        // detector unavailable: treat as absent
+    }
+    return false;
+}
+
+/**
+ * #4352: tasks left `failed` or `retry` whose failure class is re-armable, last
+ * attempted longer ago than the cooldown, and not considered by this process
+ * within the cooldown. `retry` is included because nothing else picks up a
+ * `retry` task of an inactive session while the process runs: the refresh scan
+ * only revisits files with a fresh mtime. The backoff of a live retry is
+ * minutes, so a `retry` older than the cooldown is stuck.
+ * The caller hands the tasks to the indexing leader as ordinary index requests,
+ * which reset the state exactly as cleanup_failed does by hand. The per-process
+ * memory covers a leader that is not this process, whose reset this cache would
+ * not see: at most one request per task per cooldown from this process. The
+ * queue check only sees this process's queue; the consumer de-duplicates the
+ * rest. Bounded per tick.
+ */
+export function findFailedRearmDue(state: ServerState, nowMs: number = Date.now()): string[] {
+    const cooldownMs = getFailedRearmCooldownMs();
+    if (cooldownMs <= 0) return [];
+    const requested = state.failedRearmRequestedAt;
+    const due: string[] = [];
+    for (const [taskId, header] of state.conversationCache) {
+        if (due.length >= MAX_FAILED_REARM_PER_TICK) break;
+        const idx = header.metadata?.indexingState;
+        if (idx?.indexStatus !== 'failed' && idx?.indexStatus !== 'retry') continue;
+        const errorClass = reconcileErrorClass(idx.indexError || 'unknown error', idx.errorClass).errorClass;
+        if (!isRearmableFailureClass(errorClass)) continue;
+        const lastAttempt = idx.lastIndexAttempt ? new Date(idx.lastIndexAttempt).getTime() : NaN;
+        if (Number.isFinite(lastAttempt) && nowMs - lastAttempt < cooldownMs) continue;
+        const requestedAt = requested?.get(taskId);
+        if (requestedAt !== undefined && nowMs - requestedAt < cooldownMs) continue;
+        if (state.qdrantIndexQueue.has(taskId)) continue;
+        if (!isLocallyIndexable(header)) continue;
+        due.push(taskId);
+    }
+    return due;
+}
+
+/**
+ * #4352: hand the due tasks to the indexing leader. A `claude_session_not_found`
+ * candidate whose session file is absent here is set aside instead. Both are
+ * remembered only once the request is written, so a failed write is retried on
+ * the next tick, and a missing session is not probed again before the cooldown.
+ */
+export async function rearmFailedTasks(
+    state: ServerState,
+    nowMs: number = Date.now(),
+    sessionPresent: (taskId: string) => Promise<boolean> = claudeSessionPresentLocally
+): Promise<string[]> {
+    const candidates = findFailedRearmDue(state, nowMs);
+    if (candidates.length === 0) return [];
+    const due: string[] = [];
+    const absent: string[] = [];
+    for (const taskId of candidates) {
+        const idx = state.conversationCache.get(taskId)?.metadata?.indexingState;
+        const errorClass = reconcileErrorClass(idx?.indexError || 'unknown error', idx?.errorClass).errorClass;
+        if (errorClass === 'claude_session_not_found' && !(await sessionPresent(taskId))) absent.push(taskId);
+        else due.push(taskId);
+    }
+    if (due.length > 0) {
+        try {
+            await requestQueuedIndexBatch(due, state.machineId);
+        } catch (error: any) {
+            console.warn(`⚠️ [#4352 rearm] Unable to request ${due.length} re-arm(s): ${error?.message ?? error}`);
+            return [];
+        }
+    }
+    if (!state.failedRearmRequestedAt) state.failedRearmRequestedAt = new Map();
+    for (const taskId of [...due, ...absent]) state.failedRearmRequestedAt.set(taskId, nowMs);
+    if (absent.length > 0) {
+        console.log(`[#4352 rearm] ${absent.length} « session not found » task(s) left failed: no session file on this machine (${absent.join(', ')})`);
+    }
+    if (due.length > 0) {
+        console.log(`🔁 [#4352 rearm] ${due.length} stuck task(s) re-armed (re-armable class, cooldown elapsed): ${due.join(', ')}`);
     }
     return due;
 }
