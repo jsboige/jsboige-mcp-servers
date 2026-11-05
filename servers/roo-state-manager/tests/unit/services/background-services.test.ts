@@ -28,6 +28,8 @@ vi.mock('fs', async () => {
       access: vi.fn(),
       mkdir: vi.fn(),
       appendFile: vi.fn(),
+      rename: vi.fn(),
+      unlink: vi.fn(),
     },
   };
 });
@@ -87,6 +89,8 @@ import {
   rearmFailedTasks,
   isRearmableFailureClass,
   claudeSessionPresentLocally,
+  isIdleForRearm,
+  startQdrantIndexingBackgroundProcess,
   MAX_FAILED_REARM_PER_TICK,
 } from '../../../src/services/background-services.js';
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
@@ -104,6 +108,8 @@ const mockFs = fs as unknown as {
   access: ReturnType<typeof vi.fn>;
   mkdir: ReturnType<typeof vi.fn>;
   appendFile: ReturnType<typeof vi.fn>;
+  rename: ReturnType<typeof vi.fn>;
+  unlink: ReturnType<typeof vi.fn>;
 };
 
 const mockDetector = RooStorageDetector as unknown as {
@@ -1379,6 +1385,98 @@ describe('#4352 — automatic re-arm of failed tasks', () => {
     expect(await rearmFailedTasks(state, NOW, async () => false)).toEqual([]);
     expect(mockFs.appendFile).not.toHaveBeenCalled();
     expect(state.failedRearmRequestedAt.get('claude-p--gone')).toBe(NOW);
+  });
+
+  it('isIdleForRearm: only the indexing leader, enabled, with an empty queue and a closed breaker', () => {
+    const idle = () => {
+      const st = stateWith({});
+      st.isIndexLeader = true;
+      return st;
+    };
+    expect(isIdleForRearm(idle(), () => false)).toBe(true);
+    const notLeader = idle();
+    notLeader.isIndexLeader = false;
+    expect(isIdleForRearm(notLeader, () => false)).toBe(false);
+    const disabled = idle();
+    disabled.isQdrantIndexingEnabled = false;
+    expect(isIdleForRearm(disabled, () => false)).toBe(false);
+    const busy = idle();
+    busy.qdrantIndexQueue.add('fresh-session');
+    expect(isIdleForRearm(busy, () => false)).toBe(false);
+    expect(isIdleForRearm(idle(), () => true)).toBe(false);
+  });
+
+  describe('indexing tick wiring', () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      // No pending request file: the tick stops after the re-arm step.
+      mockFs.access.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+      mockFs.appendFile.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+      mockFs.access.mockReset();
+      mockFs.readFile.mockReset();
+      mockFs.writeFile.mockReset();
+      mockFs.rename.mockReset();
+      mockFs.unlink.mockReset();
+    });
+
+    async function runOneTick(state: any): Promise<void> {
+      startQdrantIndexingBackgroundProcess(state);
+      await vi.advanceTimersByTimeAsync(5 * 60 * 1000);
+      clearInterval(state.qdrantIndexInterval);
+      state.qdrantIndexInterval = null;
+    }
+
+    it('an idle indexing leader re-arms a due failed task on its tick', async () => {
+      const state = stateWith({ stuck: failedEntry(NOW - 25 * HOUR, 'embedding_timeout') });
+      state.isIndexLeader = true;
+      await runOneTick(state);
+      expect(mockFs.appendFile).toHaveBeenCalledTimes(1);
+      const [, body] = mockFs.appendFile.mock.calls[0];
+      expect(JSON.parse(String(body).trim()).taskId).toBe('stuck');
+    });
+
+    it('a process that is not the indexing leader does not re-arm', async () => {
+      const state = stateWith({ stuck: failedEntry(NOW - 25 * HOUR, 'embedding_timeout') });
+      state.isIndexLeader = false;
+      await runOneTick(state);
+      expect(mockFs.appendFile).not.toHaveBeenCalled();
+    });
+
+    it('an idle leader whose lock is now held by another process steps down instead of re-arming', async () => {
+      const state = stateWith({ stuck: failedEntry(NOW - 25 * HOUR, 'embedding_timeout') });
+      state.isIndexLeader = true;
+      mockFs.writeFile.mockRejectedValueOnce(Object.assign(new Error('EEXIST'), { code: 'EEXIST' }));
+      mockFs.readFile.mockResolvedValueOnce(JSON.stringify({ pid: process.pid + 1, timestamp: NOW }));
+      await runOneTick(state);
+      expect(mockFs.appendFile).not.toHaveBeenCalled();
+      expect(state.isIndexLeader).toBe(false);
+    });
+
+    it('the request it writes is consumed in the same tick: the task is reset, then drained', async () => {
+      vi.stubEnv('ROO_INDEXING_ON_METERED', 'true');
+      const state = stateWith({ stuck: failedEntry(NOW - 25 * HOUR, 'embedding_timeout') });
+      state.isIndexLeader = true;
+      const shouldIndex = vi.fn().mockReturnValue({ shouldIndex: false, requiresSave: false, reason: 'test stop' });
+      state.indexingDecisionService = { shouldIndex };
+      // The request file, as the tick sees it: what the re-arm appends, read back once by the consumer.
+      let requestFile = '';
+      mockFs.appendFile.mockImplementation(async (_p: string, body: string) => { requestFile += body; });
+      mockFs.access.mockResolvedValue(undefined);
+      mockFs.rename.mockResolvedValue(undefined);
+      mockFs.readFile.mockImplementation(async () => { const body = requestFile; requestFile = ''; return body; });
+      mockFs.unlink.mockResolvedValue(undefined);
+      await runOneTick(state);
+      // The consumer awaits a dynamic import, which fake timers do not flush: wait for the drain.
+      await vi.waitFor(() => expect(shouldIndex).toHaveBeenCalledTimes(1));
+      expect(mockFs.rename).toHaveBeenCalledTimes(1);
+      expect(state.conversationCache.get('stuck').metadata.indexingState.indexStatus).toBeUndefined();
+      expect(state.qdrantIndexQueue.size).toBe(0);
+    });
   });
 
   describe('claudeSessionPresentLocally', () => {
