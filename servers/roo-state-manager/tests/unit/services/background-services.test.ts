@@ -28,6 +28,8 @@ vi.mock('fs', async () => {
       access: vi.fn(),
       mkdir: vi.fn(),
       appendFile: vi.fn(),
+      rename: vi.fn(),
+      unlink: vi.fn(),
     },
   };
 });
@@ -1414,6 +1416,10 @@ describe('#4352 — automatic re-arm of failed tasks', () => {
     afterEach(() => {
       vi.useRealTimers();
       mockFs.access.mockReset();
+      mockFs.readFile.mockReset();
+      mockFs.writeFile.mockReset();
+      mockFs.rename.mockReset();
+      mockFs.unlink.mockReset();
     });
 
     async function runOneTick(state: any): Promise<void> {
@@ -1437,6 +1443,37 @@ describe('#4352 — automatic re-arm of failed tasks', () => {
       state.isIndexLeader = false;
       await runOneTick(state);
       expect(mockFs.appendFile).not.toHaveBeenCalled();
+    });
+
+    it('an idle leader whose lock is now held by another process steps down instead of re-arming', async () => {
+      const state = stateWith({ stuck: failedEntry(NOW - 25 * HOUR, 'embedding_timeout') });
+      state.isIndexLeader = true;
+      mockFs.writeFile.mockRejectedValueOnce(Object.assign(new Error('EEXIST'), { code: 'EEXIST' }));
+      mockFs.readFile.mockResolvedValueOnce(JSON.stringify({ pid: process.pid + 1, timestamp: NOW }));
+      await runOneTick(state);
+      expect(mockFs.appendFile).not.toHaveBeenCalled();
+      expect(state.isIndexLeader).toBe(false);
+    });
+
+    it('the request it writes is consumed in the same tick: the task is reset, then drained', async () => {
+      vi.stubEnv('ROO_INDEXING_ON_METERED', 'true');
+      const state = stateWith({ stuck: failedEntry(NOW - 25 * HOUR, 'embedding_timeout') });
+      state.isIndexLeader = true;
+      const shouldIndex = vi.fn().mockReturnValue({ shouldIndex: false, requiresSave: false, reason: 'test stop' });
+      state.indexingDecisionService = { shouldIndex };
+      // The request file, as the tick sees it: what the re-arm appends, read back once by the consumer.
+      let requestFile = '';
+      mockFs.appendFile.mockImplementation(async (_p: string, body: string) => { requestFile += body; });
+      mockFs.access.mockResolvedValue(undefined);
+      mockFs.rename.mockResolvedValue(undefined);
+      mockFs.readFile.mockImplementation(async () => { const body = requestFile; requestFile = ''; return body; });
+      mockFs.unlink.mockResolvedValue(undefined);
+      await runOneTick(state);
+      // The consumer awaits a dynamic import, which fake timers do not flush: wait for the drain.
+      await vi.waitFor(() => expect(shouldIndex).toHaveBeenCalledTimes(1));
+      expect(mockFs.rename).toHaveBeenCalledTimes(1);
+      expect(state.conversationCache.get('stuck').metadata.indexingState.indexStatus).toBeUndefined();
+      expect(state.qdrantIndexQueue.size).toBe(0);
     });
   });
 

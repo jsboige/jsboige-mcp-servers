@@ -1763,9 +1763,17 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
         );
 
         // #4352: stuck failed/retry tasks are re-armed with idle capacity only. The
-        // request written here is consumed just below, in this same tick.
+        // request written here is consumed just below, in this same tick. An idle
+        // leader never reaches the lock renewal further down (it returns on the empty
+        // queue), so its belief is checked here first: a stolen lock means stepping
+        // down instead of feeding its own local queue.
         if (isIdleForRearm(state)) {
-            await rearmFailedTasks(state);
+            if (await tryAcquireLeaderLock(state.machineId)) {
+                await rearmFailedTasks(state);
+            } else {
+                state.isIndexLeader = false;
+                console.warn(`⚠️ [Leader-Election] PID ${process.pid} lost leadership while idle (lock held by another process). Stepping down.`);
+            }
         }
 
         // #4352 g3: consume index requests persisted by FOLLOWERS. This must run
