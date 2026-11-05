@@ -14,7 +14,7 @@ import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
 import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics, emptyStats, type IndexTaskStats } from './task-indexer/VectorIndexer.js';
-import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass, getReindexChangedAfterMs } from '../types/indexing.js';
+import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass, getReindexChangedAfterMs, getFailedRearmCooldownMs } from '../types/indexing.js';
 import { matchesPattern } from '../utils/matches-pattern.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
 import { isLocallyIndexable } from './task-partition.js';
@@ -849,6 +849,9 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
             for (const taskId of findHeldChangesDue(state)) {
                 state.qdrantIndexQueue.add(taskId);
             }
+
+            // #4352: failed tasks of a re-armable class get one more chance per cooldown.
+            await rearmFailedTasks(state);
 
             // #2427 defect B: settle the tick's Claude dual-writes BEFORE persisting any
             // cursor. The Claude cursor advances ONLY if every write succeeded; a single
@@ -2261,6 +2264,71 @@ export function findHeldChangesDue(state: ServerState, nowMs: number = Date.now(
         if (!state.indexingDecisionService.shouldIndex(header).shouldIndex) continue;
         due.push(taskId);
     }
+    return due;
+}
+
+/** #4352: at most this many failed tasks are re-armed per refresh tick. */
+export const MAX_FAILED_REARM_PER_TICK = 4;
+
+/**
+ * #4352: a failed task may be re-armed unless its class is permanent.
+ * `claude_session_not_found` is the exception, because before #4352 any
+ * indexing error of a Claude session surfaced as « session not found »: on
+ * ai-01 on 05/11, the files of all 72 tasks in that class were on disk. Re-arming
+ * a task that is really gone costs one failed location probe per cooldown.
+ */
+export function isRearmableFailureClass(errorClass: IndexingErrorClass): boolean {
+    return !PERMANENT_ERROR_CLASSES.has(errorClass) || errorClass === 'claude_session_not_found';
+}
+
+/**
+ * #4352: failed tasks whose failure class is re-armable, last attempted longer
+ * ago than the cooldown, and not re-armed by this process within the cooldown.
+ * The caller hands them to the indexing leader as ordinary index requests, which
+ * reset the state exactly as cleanup_failed does by hand. A task that fails again
+ * is `failed` with a fresh lastIndexAttempt, so it waits a full cooldown: at most
+ * one re-arm per task per cooldown. The per-process memory covers a leader that
+ * is not this process, whose reset this cache would not see. Bounded per tick.
+ */
+export function findFailedRearmDue(state: ServerState, nowMs: number = Date.now()): string[] {
+    const cooldownMs = getFailedRearmCooldownMs();
+    if (cooldownMs <= 0) return [];
+    const requested = state.failedRearmRequestedAt;
+    const due: string[] = [];
+    for (const [taskId, header] of state.conversationCache) {
+        if (due.length >= MAX_FAILED_REARM_PER_TICK) break;
+        const idx = header.metadata?.indexingState;
+        if (idx?.indexStatus !== 'failed') continue;
+        const errorClass = reconcileErrorClass(idx.indexError || 'unknown error', idx.errorClass).errorClass;
+        if (!isRearmableFailureClass(errorClass)) continue;
+        const lastAttempt = idx.lastIndexAttempt ? new Date(idx.lastIndexAttempt).getTime() : NaN;
+        if (Number.isFinite(lastAttempt) && nowMs - lastAttempt < cooldownMs) continue;
+        const requestedAt = requested?.get(taskId);
+        if (requestedAt !== undefined && nowMs - requestedAt < cooldownMs) continue;
+        if (state.qdrantIndexQueue.has(taskId)) continue;
+        if (!isLocallyIndexable(header)) continue;
+        due.push(taskId);
+    }
+    return due;
+}
+
+/**
+ * #4352: hand the due failed tasks to the indexing leader, and remember the
+ * hand-off only once the request is written, so a failed write is retried on
+ * the next tick.
+ */
+export async function rearmFailedTasks(state: ServerState, nowMs: number = Date.now()): Promise<string[]> {
+    const due = findFailedRearmDue(state, nowMs);
+    if (due.length === 0) return [];
+    try {
+        await requestQueuedIndexBatch(due, state.machineId);
+    } catch (error: any) {
+        console.warn(`⚠️ [#4352 rearm] Unable to request ${due.length} re-arm(s): ${error?.message ?? error}`);
+        return [];
+    }
+    if (!state.failedRearmRequestedAt) state.failedRearmRequestedAt = new Map();
+    for (const taskId of due) state.failedRearmRequestedAt.set(taskId, nowMs);
+    console.log(`🔁 [#4352 rearm] ${due.length} failed task(s) re-armed (re-armable class, cooldown elapsed): ${due.join(', ')}`);
     return due;
 }
 

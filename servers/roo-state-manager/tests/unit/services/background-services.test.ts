@@ -27,6 +27,7 @@ vi.mock('fs', async () => {
       stat: vi.fn(),
       access: vi.fn(),
       mkdir: vi.fn(),
+      appendFile: vi.fn(),
     },
   };
 });
@@ -82,6 +83,10 @@ import {
   shouldRequeueForRefresh,
   findHeldChangesDue,
   MAX_HELD_CHANGES_PER_TICK,
+  findFailedRearmDue,
+  rearmFailedTasks,
+  isRearmableFailureClass,
+  MAX_FAILED_REARM_PER_TICK,
 } from '../../../src/services/background-services.js';
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
 import type { ConversationSkeleton, SkeletonHeader, SkeletonMetadata } from '../../../src/types/conversation.js';
@@ -97,6 +102,7 @@ const mockFs = fs as unknown as {
   stat: ReturnType<typeof vi.fn>;
   access: ReturnType<typeof vi.fn>;
   mkdir: ReturnType<typeof vi.fn>;
+  appendFile: ReturnType<typeof vi.fn>;
 };
 
 const mockDetector = RooStorageDetector as unknown as {
@@ -1208,5 +1214,129 @@ describe('#4352 g9 — held changes and the minimum reindex interval', () => {
     expect(findHeldChangesDue(noService, NOW)).toEqual([]);
     vi.stubEnv('INDEX_REINDEX_CHANGED_AFTER_MS', '0');
     expect(findHeldChangesDue(stateWith(entries), NOW)).toEqual([]);
+  });
+});
+
+// ===================================================================
+// #4352 — automatic re-arm of failed tasks whose failure class is transient.
+// Before it, `failed` was terminal until an operator ran cleanup_failed: the
+// 31/10-02/11 embedding outage left 166 sessions failed on ai-01 for good.
+// ===================================================================
+describe('#4352 — automatic re-arm of failed tasks', () => {
+  const NOW = Date.UTC(2026, 10, 5, 12, 0, 0);
+  const HOUR = 60 * 60 * 1000;
+  const iso = (ms: number) => new Date(ms).toISOString();
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    mockFs.appendFile.mockReset();
+  });
+
+  function failedEntry(lastAttemptMs: number | undefined, errorClass: string | undefined, indexError = 'boom', extra: any = {}): any {
+    return {
+      taskId: 'x',
+      metadata: {
+        lastActivity: iso(NOW - 48 * HOUR),
+        indexingState: {
+          indexStatus: 'failed',
+          indexError,
+          ...(errorClass !== undefined ? { errorClass } : {}),
+          ...(lastAttemptMs !== undefined ? { lastIndexAttempt: iso(lastAttemptMs) } : {}),
+        },
+        ...extra,
+      },
+    };
+  }
+
+  function stateWith(entries: Record<string, any>): any {
+    const state = makeStateWithQueue();
+    state.conversationCache = new Map(Object.entries(entries));
+    return state;
+  }
+
+  it('isRearmableFailureClass: transient classes and the csnf mislabel are re-armable, other permanent classes are not', () => {
+    for (const c of ['embedding_timeout', 'network_timeout', 'service_503', 'rate_limit', 'connection_reset', 'dns_failure', 'unknown', 'claude_session_not_found'] as const) {
+      expect(isRearmableFailureClass(c)).toBe(true);
+    }
+    for (const c of ['file_not_found', 'access_denied', 'permission_denied', 'invalid_format', 'corrupted_data', 'quota_exceeded', 'auth_failed'] as const) {
+      expect(isRearmableFailureClass(c)).toBe(false);
+    }
+  });
+
+  it('findFailedRearmDue: only failed tasks of a re-armable class whose last attempt is older than the cooldown', () => {
+    const state = stateWith({
+      due: failedEntry(NOW - 25 * HOUR, 'embedding_timeout'),
+      csnf: failedEntry(NOW - 25 * HOUR, 'claude_session_not_found'),
+      noDate: failedEntry(undefined, 'unknown'),
+      recent: failedEntry(NOW - 23 * HOUR, 'embedding_timeout'),
+      auth: failedEntry(NOW - 25 * HOUR, 'auth_failed', '401 Unauthorized'),
+      retry: { taskId: 'x', metadata: { indexingState: { indexStatus: 'retry', lastIndexAttempt: iso(NOW - 25 * HOUR) } } },
+      success: { taskId: 'x', metadata: { indexingState: { indexStatus: 'success', lastIndexAttempt: iso(NOW - 25 * HOUR) } } },
+      archive: failedEntry(NOW - 25 * HOUR, 'unknown', 'boom', { dataSource: 'archive' }),
+    });
+    expect(findFailedRearmDue(state, NOW)).toEqual(['due', 'csnf', 'noDate']);
+  });
+
+  it('findFailedRearmDue: the stored class is reconciled with the message (an embedding timeout stored as permanent is re-armed)', () => {
+    const state = stateWith({
+      mislabelled: failedEntry(NOW - 25 * HOUR, 'auth_failed', 'Indexing timeout after 180000ms without progress'),
+      genuine: failedEntry(NOW - 25 * HOUR, 'auth_failed', '401 Unauthorized'),
+    });
+    expect(findFailedRearmDue(state, NOW)).toEqual(['mislabelled']);
+  });
+
+  it('findFailedRearmDue: skips a task already queued, or re-armed by this process within the cooldown', () => {
+    const state = stateWith({
+      queued: failedEntry(NOW - 25 * HOUR, 'unknown'),
+      requested: failedEntry(NOW - 25 * HOUR, 'unknown'),
+      requestedLongAgo: failedEntry(NOW - 50 * HOUR, 'unknown'),
+      ok: failedEntry(NOW - 25 * HOUR, 'unknown'),
+    });
+    state.qdrantIndexQueue.add('queued');
+    state.failedRearmRequestedAt = new Map([
+      ['requested', NOW - 2 * HOUR],
+      ['requestedLongAgo', NOW - 25 * HOUR],
+    ]);
+    expect(findFailedRearmDue(state, NOW)).toEqual(['requestedLongAgo', 'ok']);
+  });
+
+  it('findFailedRearmDue: bounded per tick', () => {
+    const entries: Record<string, any> = {};
+    for (let i = 0; i < MAX_FAILED_REARM_PER_TICK + 3; i++) entries[`t${i}`] = failedEntry(NOW - 25 * HOUR, 'unknown');
+    expect(findFailedRearmDue(stateWith(entries), NOW)).toHaveLength(MAX_FAILED_REARM_PER_TICK);
+  });
+
+  it('findFailedRearmDue: INDEX_FAILED_REARM_HOURS overrides the cooldown, and 0 restores the legacy terminal failed', () => {
+    const entries = { t: failedEntry(NOW - 3 * HOUR, 'unknown') };
+    expect(findFailedRearmDue(stateWith(entries), NOW)).toEqual([]);
+    vi.stubEnv('INDEX_FAILED_REARM_HOURS', '2');
+    expect(findFailedRearmDue(stateWith(entries), NOW)).toEqual(['t']);
+    vi.stubEnv('INDEX_FAILED_REARM_HOURS', '0');
+    expect(findFailedRearmDue(stateWith({ t: failedEntry(NOW - 100 * HOUR, 'unknown') }), NOW)).toEqual([]);
+  });
+
+  it('rearmFailedTasks: hands the due tasks to the leader request file and remembers them, so the next tick skips them', async () => {
+    mockFs.appendFile.mockResolvedValue(undefined);
+    const state = stateWith({
+      a: failedEntry(NOW - 25 * HOUR, 'embedding_timeout'),
+      b: failedEntry(NOW - 25 * HOUR, 'unknown'),
+    });
+    expect(await rearmFailedTasks(state, NOW)).toEqual(['a', 'b']);
+    expect(mockFs.appendFile).toHaveBeenCalledTimes(1);
+    const [, body] = mockFs.appendFile.mock.calls[0];
+    const lines = String(body).trim().split('\n').map((l) => JSON.parse(l));
+    expect(lines.map((l) => l.taskId)).toEqual(['a', 'b']);
+    expect(lines.every((l) => l.repair === undefined)).toBe(true);
+    expect(state.failedRearmRequestedAt.get('a')).toBe(NOW);
+    expect(await rearmFailedTasks(state, NOW + HOUR)).toEqual([]);
+    expect(mockFs.appendFile).toHaveBeenCalledTimes(1);
+  });
+
+  it('rearmFailedTasks: a failed request write is not remembered, so the next tick retries it', async () => {
+    mockFs.appendFile.mockRejectedValueOnce(new Error('EACCES')).mockResolvedValue(undefined);
+    const state = stateWith({ a: failedEntry(NOW - 25 * HOUR, 'unknown') });
+    expect(await rearmFailedTasks(state, NOW)).toEqual([]);
+    expect(state.failedRearmRequestedAt?.has('a') ?? false).toBe(false);
+    expect(await rearmFailedTasks(state, NOW)).toEqual(['a']);
   });
 });
