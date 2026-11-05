@@ -7131,6 +7131,17 @@ export interface DashboardResult {
    */
   writeVerification?: WriteVerifyResult;
   /**
+   * #4439 Attendé 2 — merge-only : garde de relecture canonique. Présent
+   * UNIQUEMENT quand la garde a ÉCHOUÉ après l'écriture de l'union (canonique
+   * absent des deux vues, ou messages de l'union invisibles à la relecture —
+   * tombstones refetchés #4527 déjà appliqués). `reason`: 'canonical-absent' |
+   * 'union-incomplete' ; `missingIds` : les ids non visibles (pour
+   * 'canonical-absent', l'union entière). Absent = canonique relu, existant et
+   * porteur de l'union — c'est cette relecture, pas la réponse de l'appel,
+   * qui fait foi (5e récidive de la famille fork, web1 30/10).
+   */
+  canonicalGuard?: { ok: false; reason: 'canonical-absent' | 'union-incomplete'; missingIds: string[] };
+  /**
    * Wall-clock breakdown of the append call (#1589). Populated on every
    * `append` result so operators can attribute latency to condensation phases
    * vs disk write vs other work without tailing MCP logs. Times are in ms.
@@ -9783,6 +9794,83 @@ async function handleMerge(
         `⛔ MAIS la moitié PG n'a PAS persisté l'union (${pgOutcome.reason}${pgOutcome.detail ? ` : ${pgOutcome.detail}` : ''}) — ` +
         `SUPPRESSION DE LA SOURCE DIFFÉRÉE : son journal PG reste la seule trace des messages non encore dans la cible. ` +
         `Source INTACTE. Réessayer le merge une fois PG revenu (l'union est idempotente).`
+    };
+  }
+
+  // --- #4439 Attendé 2 — garde de relecture canonique post-union --------------
+  // 5e récidive de la famille fork (claudish/CoursIA/vllm, mesuré web1 30/10) :
+  // le merge rendait « success » sans que RIEN ne relise le canonique. Les
+  // gardes existantes vérifient chacune une MOITIÉ du monde :
+  // verifyDashboardWriteLanded cherche l'id d'atterrissage au chemin demandé
+  // (un SEUL id, et un writer qui réécrit un dashboard existant y retrouve ses
+  // messages par construction — verdict nominal vacant, cf. #3774),
+  // verifyWriteVisibleInStore relit le STORE PG. Aucune ne prouve « le
+  // canonique existe ET porte l'union ». La réparation ne tenait pas parce que
+  // sa preuve était la RÉPONSE de l'appel merge, jamais la relecture (Attendé
+  // 3 du corps : exiger la relecture canonique). Ici on relit les DEUX vues du
+  // canonique APRÈS l'écriture : échec loud si aucune vue n'existe, ou si un
+  // message de l'union n'est visible dans AUCUNE vue — sauf fraîchement
+  // archivé par une condensation détachée concurrente (#4527 : tombstones
+  // REFÉTCHÉS à l'instant de la garde, jamais réutilisés du filtre d'union
+  // ci-dessus, qui date d'avant l'écriture).
+  const [guardPgSettled, guardFileSettled] = await Promise.allSettled([
+    readDashboardFromPg(key),
+    readDashboardFromGdrive(key)
+  ]);
+  const canonicalPgView = guardPgSettled.status === 'fulfilled' ? guardPgSettled.value : null;
+  const canonicalFileView = guardFileSettled.status === 'fulfilled' ? guardFileSettled.value : null;
+  const unionIds = mergedMessages.map(m => m.id).filter(id => id !== undefined && id !== '');
+  if (!canonicalPgView && !canonicalFileView) {
+    logger.error(
+      `[MERGE] #4439 garde canonique — le canonique '${key}' est ABSENT (ou illisible) des DEUX vues à la relecture post-union : le merge n'a PAS tenu`,
+      { sourceKey, targetKey: key, unionMessages: mergedMessages.length }
+    );
+    return {
+      ...base,
+      success: false,
+      messageCount: mergedMessages.length,
+      canonicalGuard: { ok: false, reason: 'canonical-absent', missingIds: unionIds },
+      message:
+        `⛔ Merge de '${sourceKey}' vers '${key}' : l'union a été écrite mais le canonique est ` +
+        `ABSENT (ou illisible) des deux vues (PG et fichier) à la relecture — le remède n'a pas tenu ` +
+        `(#4439, 5e récidive de la famille fork). Source INTACTE : réessayer le merge (l'union est ` +
+        `idempotente) après relire du canonique ; siège probablement wedgé DriveFS (redémarrer DriveFS/VS Code).`
+    };
+  }
+  const visibleIds = new Set<string>();
+  for (const v of [canonicalPgView, canonicalFileView]) {
+    if (v) for (const m of v.intercom.messages) if (m.id) visibleIds.add(m.id);
+  }
+  let missingFromCanonical = unionIds.filter(id => !visibleIds.has(id));
+  if (missingFromCanonical.length > 0) {
+    // Course #4527 : une condensation DÉTACHÉE a pu archiver des messages de
+    // l'union entre l'écriture et cette relecture — un message fraîchement
+    // tombstoné est condensé, pas perdu. Refetch : les tombstones du filtre
+    // d'union datent d'avant l'écriture, ils ne peuvent pas témoigner.
+    let freshlyArchived: Set<string> | null = null;
+    try {
+      freshlyArchived = await fetchArchivedDashboardMessageIds(key);
+    } catch {
+      freshlyArchived = null; // indisponible : la garde ne pardonne rien
+    }
+    if (freshlyArchived) {
+      missingFromCanonical = missingFromCanonical.filter(id => !freshlyArchived!.has(id));
+    }
+  }
+  if (missingFromCanonical.length > 0) {
+    logger.error(
+      `[MERGE] #4439 garde canonique — ${missingFromCanonical.length} message(s) de l'union INVISIBLES dans le canonique '${key}' à la relecture post-union`,
+      { sourceKey, targetKey: key, missing: missingFromCanonical.slice(0, 10), unionMessages: mergedMessages.length }
+    );
+    return {
+      ...base,
+      success: false,
+      messageCount: mergedMessages.length,
+      canonicalGuard: { ok: false, reason: 'union-incomplete', missingIds: missingFromCanonical },
+      message:
+        `⛔ Merge de '${sourceKey}' vers '${key}' : le canonique existe mais ${missingFromCanonical.length} ` +
+        `message(s) de l'union en sont ABSENTS à la relecture (${missingFromCanonical.slice(0, 5).join(', ')}) — ` +
+        `l'union ne tient pas (#4439). Source INTACTE : réessayer le merge (idempotent) après relire du canonique.`
     };
   }
 

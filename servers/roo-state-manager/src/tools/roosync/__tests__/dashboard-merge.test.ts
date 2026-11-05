@@ -75,6 +75,16 @@ vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (imp
   };
 });
 
+// #4439 — namespace 'fs/promises' rendu spaiable (pass-through pur : toutes
+// les fonctions restent les vraies). Un namespace ESM nu jette « not
+// configurable » au spyOn (cf. cascade-env-file.test.ts) ; le passthrough
+// permet aux tests de garde canonique d'injecter une déviation copyFile
+// DriveFS le temps d'un test (pattern dashboard-pg-primary.test.ts).
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return { ...actual };
+});
+
 // #858 / #864: client LLM (condensation) inert — aucune condensation attendue.
 vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => { throw new Error('No chat API key configured'); },
@@ -955,5 +965,150 @@ describe('action merge — critère de statut rapporté par paire (suivi #1219)'
     expect(result.success).toBe(true);
     expect(String(result.message)).toContain('RENAME — cible créée depuis la source');
     expect(String(result.message)).toContain('aucune concurrence — vue unique');
+  });
+});
+
+// #4439 Attendé 2 (5e récidive de la famille fork, mesuré web1 30/10) — la
+// preuve d'un merge réparateur est la RELECTURE du canonique, pas la réponse
+// de l'appel. Aucune garde existante ne relisait le canonique comme un TOUT :
+// verifyDashboardWriteLanded cherche un seul id d'atterrissage (verdict nominal
+// vacant pour un writer qui réécrit un dashboard existant, cf. #3774),
+// verifyWriteVisibleInStore relit le store PG. Ces tests injectent la déviation
+// DriveFS mesurée AU NIVEAU DU copyFile : la moitié fichier de
+// writeDashboardFile est writeFile(staging) + copyFile(staging → canonique)
+// (#3782 copy-in-place) — un copyFile DriveFS peut matérialiser l'écriture en
+// copie de conflit ` (N)` et laisser le canonique absent, ou « réussir » en
+// conservant l'ancien contenu. La vue PG reste mockée (pgReadSpy → null :
+// porte fermée), donc la garde ne témoigne que par le fichier — exactement le
+// siège web1 du constat.
+describe('action merge — garde canonique post-union (#4439 Attendé 2)', () => {
+  /** Spy copyFile : détourne l'écriture du canonique vers un fork ` (9)` (canonique jamais créé). */
+  async function spyCopyFileDeviatedToFork(canonicalName: string): Promise<ReturnType<typeof vi.spyOn>> {
+    const { copyFile: realCopyFile } = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+    const fsMocked = await import('fs/promises');
+    return vi.spyOn(fsMocked, 'copyFile').mockImplementation(((src: unknown, dest: unknown) => {
+      const destStr = String(dest);
+      if (path.basename(destStr) === canonicalName) {
+        // DriveFS matérialise l'écriture en copie de conflit : le canonique
+        // n'est jamais créé, le contenu atterrit sur le sibling.
+        return realCopyFile(src as string, path.join(path.dirname(destStr), canonicalName.replace(/\.md$/, ' (9).md')));
+      }
+      return realCopyFile(src as string, destStr);
+    }) as typeof realCopyFile);
+  }
+
+  /** Spy copyFile : l'écriture « réussit » mais le canonique garde son ANCIEN contenu (conflit résolu côté Drive par la version cloud périmée). */
+  async function spyCopyFileKeepsStale(canonicalName: string, staleBody: string): Promise<ReturnType<typeof vi.spyOn>> {
+    const { copyFile: realCopyFile, writeFile: realWriteFile } = await vi.importActual<typeof import('fs/promises')>('fs/promises');
+    const fsMocked = await import('fs/promises');
+    return vi.spyOn(fsMocked, 'copyFile').mockImplementation(((src: unknown, dest: unknown) => {
+      const destStr = String(dest);
+      if (path.basename(destStr) === canonicalName) {
+        return realWriteFile(destStr, staleBody, 'utf8');
+      }
+      return realCopyFile(src as string, destStr);
+    }) as typeof realCopyFile);
+  }
+
+  it('canonique ABSENT des deux vues après une écriture déviée → ÉCHEC, source INTACTE, aucun retrait', async () => {
+    // Fork seul (canonique absent avant le merge — cas RENAME pur du 30/10).
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z', [M.m3]);
+    const spy = await spyCopyFileDeviatedToFork('machine-myia-po-2025.md');
+
+    try {
+      const result = await roosyncDashboard({
+        action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+        sourceKey: 'machine-myia-po-2025 (1)'
+      }) as any;
+
+      expect(result.success).toBe(false);
+      expect(String(result.message)).toContain('ABSENT');
+      expect(String(result.message)).toContain('#4439');
+      expect(result.canonicalGuard?.ok).toBe(false);
+      expect(result.canonicalGuard?.reason).toBe('canonical-absent');
+      expect(result.canonicalGuard?.missingIds).toEqual(['m3']);
+      // La déviation est réelle : le contenu a atterri sur le sibling, le
+      // canonique n'existe pas.
+      expect(fileExists('machine-myia-po-2025.md')).toBe(false);
+      expect(fileExists('machine-myia-po-2025 (9).md')).toBe(true);
+      // Source INTACTE : ni retrait fichier, ni marque #3782, ni delete PG.
+      expect(fileExists('machine-myia-po-2025 (1).md')).toBe(true);
+      expect(retireCheckedSpy).not.toHaveBeenCalled();
+      expect(pgDeleteCheckedSpy).not.toHaveBeenCalled();
+      expect(dualWriteDeleteSpy).not.toHaveBeenCalled();
+      // L'union a bien été ÉCRITE (le write est passé) : c'est la relecture
+      // qui échoue, pas l'écriture — le rapport le distingue.
+      expect(dualWriteSyncSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('canonique présent mais SANS les messages de l’union → ÉCHEC (le remède n’a pas tenu)', async () => {
+    // Cible vivante + fork divergent : union = m1 + m2 + m3.
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-05T17:02:00.000Z', [M.m1old, M.m2]);
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z', [M.m1new, M.m3]);
+    const staleBody = fileText('machine-myia-po-2025.md');
+    const spy = await spyCopyFileKeepsStale('machine-myia-po-2025.md', staleBody);
+
+    try {
+      const result = await roosyncDashboard({
+        action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+        sourceKey: 'machine-myia-po-2025 (1)'
+      }) as any;
+
+      expect(result.success).toBe(false);
+      expect(result.canonicalGuard?.ok).toBe(false);
+      expect(result.canonicalGuard?.reason).toBe('union-incomplete');
+      // Le canonique relu porte m1+m2 (stale) ; seul m3 (fork seul) manque.
+      expect(result.canonicalGuard?.missingIds).toEqual(['m3']);
+      expect(String(result.message)).toContain('m3');
+      // Source INTACTE : aucune marque, aucun delete.
+      expect(fileExists('machine-myia-po-2025 (1).md')).toBe(true);
+      expect(retireCheckedSpy).not.toHaveBeenCalled();
+      expect(pgDeleteCheckedSpy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('condensation détachée entre écriture et relecture : un message de l’union fraîchement ARCHIVÉ est pardonné (#4527)', async () => {
+    // Même canonique périmé que ci-dessus, MAIS entre l'écriture et la garde
+    // une condensation détachée archive m3 : le refetch de tombstones à
+    // l'instant de la garde le témoigne — condensé, pas perdu → garde VERTE,
+    // le merge termine (source retirée).
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-05T17:02:00.000Z', [M.m1old, M.m2]);
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-08T12:48:00.000Z', [M.m1new, M.m3]);
+    const staleBody = fileText('machine-myia-po-2025.md');
+    const spy = await spyCopyFileKeepsStale('machine-myia-po-2025.md', staleBody);
+    // 1er fetch = filtre d'union (avant écriture : rien d'archivé) ;
+    // 2e fetch = garde post-écriture : m3 vient d'être condensé.
+    let tombstoneCalls = 0;
+    archivedIdsSpy.mockImplementation(async () => {
+      tombstoneCalls++;
+      return tombstoneCalls <= 1 ? new Set<string>() : new Set(['m3']);
+    });
+
+    try {
+      const result = await roosyncDashboard({
+        action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+        sourceKey: 'machine-myia-po-2025 (1)'
+      }) as any;
+
+      expect(result.success).toBe(true);
+      expect(result.canonicalGuard).toBeUndefined();
+      // La garde a bien refetché (2 appels : filtre d'union + garde).
+      expect(tombstoneCalls).toBe(2);
+      // La garde VERTE ne court-circuite PAS le fail-closed #3774 : avec le
+      // canonique périmé injecté, le scan d'id de verifyDashboardWriteLanded
+      // trouve m3 dans la SOURCE (forkSuspected sans forkPath) et la
+      // suppression de la source reste ABANDONNÉE — la garde pardonne le
+      // message condensé, elle ne neutralise pas la garde anti-déviation.
+      expect(String(result.message)).toContain('SUPPRESSION DE LA SOURCE ABANDONNÉE');
+      expect(fileExists('machine-myia-po-2025 (1).md')).toBe(true);
+      expect(retireCheckedSpy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
