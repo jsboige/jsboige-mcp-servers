@@ -1994,10 +1994,18 @@ async function readRegistryMirror(sharedPath: string): Promise<{ machines: strin
   }
 }
 
+/** #4352 : ce que vaut un écart de roster depuis ms#1503 — dit tel quel dans chaque diff. */
+export const ROSTER_NO_INDEXING_EFFECT =
+  "Sans effet sur l'indexation depuis ms#1503 (#4352) : le partitionnement par hash n'est plus appliqué, chaque siège indexe ses propres fichiers — aucun bucket ne bouge. Le roster ne sert plus qu'à élargir la garde des destinataires de mention (#4206).";
+
 /**
  * Check la cohérence du ROO_FLEET_ROSTER local contre les machines connues de la flotte (#2570).
  *
- * Le roster (env var) drive le hash-based task-space partitioning (task-partition.ts).
+ * Le roster (env var) pilotait le hash-based task-space partitioning (task-partition.ts).
+ * Depuis ms#1503 (#4352, 25/10) l'indexeur ne l'applique plus (`isLocallyIndexable()`) :
+ * un écart de roster n'a AUCUN effet sur l'indexation ni sur le recall. Le check reste un
+ * signal d'audit (INFO), sans prescription de rebuild — l'ancien texte « décale ~TOUS les
+ * buckets → recall dégradé » en CRITICAL lançait la flotte sur une panne qui n'existe plus.
  * Il n'a aucune source-of-truth dans le repo ni dans les inventory snapshots GDrive,
  * donc le drift entre machines passe silencieusement (certaines 5-machine, d'autres unset).
  *
@@ -2064,15 +2072,15 @@ async function checkRosterConsistency(
   const degradedReference = registry?.source === 'mirror' && registry?.pgFailed === true;
 
   if (!localRoster) {
-    // Roster unset → partitioning DISABLED (cette machine indexe tout l'espace)
+    // Roster unset — sans effet sur l'indexation depuis #4352 (signal d'audit seulement)
     diffs.push({
       category: 'environment',
-      severity: 'WARNING',
+      severity: 'INFO',
       path: 'env.ROO_FLEET_ROSTER',
-      description: `ROO_FLEET_ROSTER non défini — partitioning DÉSACTIVÉ. Cette machine indexe la totalité du task-space (pas de shard filtering), tandis que le ${refLabel} liste ${dashboardMachines.length} machines (${dashboardMachines.join(', ')}). Contributeur de redondance d'indexation silencieuse (#2570).`,
+      description: `ROO_FLEET_ROSTER non défini ; le ${refLabel} liste ${dashboardMachines.length} machines (${dashboardMachines.join(', ')}). ${ROSTER_NO_INDEXING_EFFECT}`,
       action: degradedReference
         ? `À vérifier : référence lue sur le miroir G: (lecture PG en échec) — ne PAS définir ROO_FLEET_ROSTER depuis ce miroir. Relancer roosync_compare_config quand la ligne PG répond (#4523).`
-        : `Définir ROO_FLEET_ROSTER="${dashboardMachines.join(',')}" dans ~/.claude.json mcpServers.roo-state-manager.env, puis restart MCP + roosync_indexing(rebuild)`
+        : `Aucune action d'indexation. Facultatif : définir ROO_FLEET_ROSTER="${dashboardMachines.join(',')}" dans ~/.claude.json mcpServers.roo-state-manager.env (garde des mentions #4206) — aucun rebuild`
     });
     return diffs;
   }
@@ -2088,7 +2096,7 @@ async function checkRosterConsistency(
     }
     const parts: string[] = [];
     if (missingFromRoster.length) {
-      parts.push(`Ajouter ${missingFromRoster.join(', ')} au ROO_FLEET_ROSTER de TOUTES les machines simultanément, puis restart MCP + roosync_indexing(rebuild) sur chacune (migration task-partition.ts) — après avoir confirmé que la machine est toujours en service (le registre n'oublie aucune machine)`);
+      parts.push(`Ajouter ${missingFromRoster.join(', ')} au ROO_FLEET_ROSTER si la machine est toujours en service (garde des mentions #4206 ; le registre n'oublie aucune machine) — aucun rebuild ni migration : le roster ne pilote plus l'indexation (#4352)`);
     }
     if (extraInRoster.length) {
       parts.push(`NE PAS retirer ${extraInRoster.join(', ')} sur la seule foi du ${refLabel} : confirmer d'abord que la machine a quitté la flotte (ou qu'elle manque seulement à la référence)`);
@@ -2096,7 +2104,7 @@ async function checkRosterConsistency(
     return parts.join(' — ');
   };
 
-  // Mismatch de taille (5 vs 6 décale ~tous les buckets — hash % size)
+  // Mismatch de taille — sans effet sur l'indexation depuis #4352 (le hash % size n'est plus appliqué)
   if (rosterSorted.length !== dashboardMachines.length) {
     const missingFromRoster = dashboardMachines.filter(m => !rosterSet.has(m));
     const extraInRoster = rosterSorted.filter(m => !dashSet.has(m));
@@ -2105,9 +2113,9 @@ async function checkRosterConsistency(
     if (extraInRoster.length) detail.push(`absentes de la référence: ${extraInRoster.join(', ')}`);
     diffs.push({
       category: 'environment',
-      severity: 'CRITICAL',
+      severity: 'INFO',
       path: 'env.ROO_FLEET_ROSTER',
-      description: `Mismatch taille ROO_FLEET_ROSTER — partition drift. ${detail.join(' | ')}. Un écart de taille (hash % roster.length) décale ~TOUS les buckets, pas seulement le shard de la machine manquante → recall/precision dégradés silencieusement (#2570).`,
+      description: `Mismatch taille ROO_FLEET_ROSTER. ${detail.join(' | ')}. ${ROSTER_NO_INDEXING_EFFECT} Le registre ne liste que les sièges qui y ont écrit : une machine hors service peut y manquer.`,
       action: rosterAction(missingFromRoster, extraInRoster)
     });
     return diffs;
@@ -2120,9 +2128,9 @@ async function checkRosterConsistency(
     const extraInRoster = rosterSorted.filter(m => !dashSet.has(m));
     diffs.push({
       category: 'environment',
-      severity: 'CRITICAL',
+      severity: 'INFO',
       path: 'env.ROO_FLEET_ROSTER',
-      description: `Mismatch contenu ROO_FLEET_ROSTER (même taille, membres différents). roster=${rosterSorted.join(', ')} vs ${refLabel}=${dashboardMachines.join(', ')}. Manquantes du roster: ${missingFromRoster.join(',') || 'none'}. Absentes de la référence: ${extraInRoster.join(',') || 'none'}. → partition drift (#2570).`,
+      description: `Mismatch contenu ROO_FLEET_ROSTER (même taille, membres différents). roster=${rosterSorted.join(', ')} vs ${refLabel}=${dashboardMachines.join(', ')}. Manquantes du roster: ${missingFromRoster.join(',') || 'none'}. Absentes de la référence: ${extraInRoster.join(',') || 'none'}. ${ROSTER_NO_INDEXING_EFFECT}`,
       action: rosterAction(missingFromRoster, extraInRoster)
     });
     return diffs;
@@ -2133,7 +2141,7 @@ async function checkRosterConsistency(
     category: 'environment',
     severity: 'INFO',
     path: 'env.ROO_FLEET_ROSTER',
-    description: `ROO_FLEET_ROSTER consistant avec le ${refLabel} (${rosterSorted.length} machines: ${rosterSorted.join(', ')}). Partitioning sain.`
+    description: `ROO_FLEET_ROSTER consistant avec le ${refLabel} (${rosterSorted.length} machines: ${rosterSorted.join(', ')}).`
   });
 
   return diffs;

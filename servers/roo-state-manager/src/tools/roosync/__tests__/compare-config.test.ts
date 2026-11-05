@@ -5,7 +5,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 // Fix #636 timeout: Use static import instead of dynamic imports
-import { CompareConfigArgsSchema, CompareConfigResultSchema, roosyncCompareConfig, compareModelProfiles } from '../compare-config.js';
+import { CompareConfigArgsSchema, CompareConfigResultSchema, roosyncCompareConfig, compareModelProfiles, ROSTER_NO_INDEXING_EFFECT } from '../compare-config.js';
 
 // Mock dependencies
 const { mockGetConfig, mockCompareRealConfigurations, mockLoadDashboard, mockGetInventory } = vi.hoisted(() => ({
@@ -904,7 +904,7 @@ describe('compare-config', () => {
 			mockLoadDashboard.mockResolvedValue({ machines });
 		}
 
-		test('WARNING when ROO_FLEET_ROSTER unset (partitioning disabled)', async () => {
+		test('INFO when ROO_FLEET_ROSTER unset — no indexing effect since #4352, no rebuild prescribed', async () => {
 			mockGetConfig.mockReturnValue({ machineId: 'myia-po-2024', sharedPath: '/shared', fleetRoster: null });
 			mockDashboard6();
 			mockCompareRealConfigurations.mockResolvedValue({
@@ -915,11 +915,13 @@ describe('compare-config', () => {
 
 			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
 			expect(rosterDiff).toBeDefined();
-			expect(rosterDiff!.severity).toBe('WARNING');
-			expect(rosterDiff!.description).toContain('partitioning DÉSACTIVÉ');
+			expect(rosterDiff!.severity).toBe('INFO');
+			expect(rosterDiff!.description).toContain('non défini');
+			expect(rosterDiff!.description).toContain(ROSTER_NO_INDEXING_EFFECT);
+			expect(rosterDiff!.action).not.toContain('roosync_indexing(rebuild)');
 		});
 
-		test('CRITICAL when roster size mismatches dashboard (5 vs 6 → partition drift)', async () => {
+		test('INFO when roster size mismatches dashboard (5 vs 6) — said to have no indexing effect, no rebuild', async () => {
 			mockGetConfig.mockReturnValue({ machineId: 'myia-po-2026', sharedPath: '/shared', fleetRoster: FLEET_5_MISSING_2024 });
 			mockDashboard6();
 			mockCompareRealConfigurations.mockResolvedValue({
@@ -930,12 +932,16 @@ describe('compare-config', () => {
 
 			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
 			expect(rosterDiff).toBeDefined();
-			expect(rosterDiff!.severity).toBe('CRITICAL');
+			expect(rosterDiff!.severity).toBe('INFO');
 			expect(rosterDiff!.description).toContain('Mismatch taille');
 			expect(rosterDiff!.description).toContain('myia-po-2024');
+			// #4352 : l'écart est dit sans effet sur l'indexation, plus de « recall dégradé »
+			expect(rosterDiff!.description).toContain(ROSTER_NO_INDEXING_EFFECT);
+			expect(rosterDiff!.description).not.toContain('recall');
+			expect(rosterDiff!.action ?? '').not.toContain('roosync_indexing(rebuild)');
 		});
 
-		test('CRITICAL when roster content differs from dashboard (same size, different members)', async () => {
+		test('INFO when roster content differs from dashboard (same size, different members)', async () => {
 			// Same size 6 but one member swapped
 			const swapped = [...FLEET_6];
 			swapped[swapped.indexOf('myia-po-2024')] = 'myia-phantom';
@@ -949,8 +955,9 @@ describe('compare-config', () => {
 
 			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
 			expect(rosterDiff).toBeDefined();
-			expect(rosterDiff!.severity).toBe('CRITICAL');
+			expect(rosterDiff!.severity).toBe('INFO');
 			expect(rosterDiff!.description).toContain('Mismatch contenu');
+			expect(rosterDiff!.description).toContain(ROSTER_NO_INDEXING_EFFECT);
 		});
 
 		test('INFO when roster consistent with dashboard (6/6 canonical)', async () => {
@@ -1014,7 +1021,9 @@ describe('compare-config', () => {
 				// #4523 : lu sans PG, le registre-fichier se nomme désormais « miroir G: » —
 				// le sens du test (le registre bat le dashboard périmé) est inchangé.
 				expect(rosterDiff!.description).toContain('miroir G:');
-				expect(result.differences.filter(d => d.severity === 'CRITICAL' && d.path === 'env.ROO_FLEET_ROSTER')).toHaveLength(0);
+				// every roster diff is INFO since #4352: the verdict lives in the text
+				expect(rosterDiff!.description).toContain('consistant');
+				expect(rosterDiff!.description).not.toContain('Mismatch');
 			} finally {
 				restoreFs();
 			}
@@ -1036,7 +1045,7 @@ describe('compare-config', () => {
 			}
 		});
 
-		test('roster missing a registry member → CRITICAL, the action ADDS it', async () => {
+		test('roster missing a registry member → INFO, the action ADDS it without any rebuild', async () => {
 			mockGetConfig.mockReturnValue({ machineId: 'myia-ai-01', sharedPath: '/shared', fleetRoster: FLEET_6 });
 			mockDashboard6();
 			mockRegistry(FLEET_7);
@@ -1046,9 +1055,11 @@ describe('compare-config', () => {
 			try {
 				const result = await roosyncCompareConfig({ target: 'myia-po-2023' });
 				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
-				expect(rosterDiff!.severity).toBe('CRITICAL');
+				expect(rosterDiff!.severity).toBe('INFO');
 				expect(rosterDiff!.description).toContain('manquantes du roster: myia-po-2027');
 				expect(rosterDiff!.action).toContain('Ajouter myia-po-2027');
+				expect(rosterDiff!.action).not.toContain('roosync_indexing(rebuild)');
+				expect(rosterDiff!.action).not.toContain('TOUTES les machines');
 				expect(rosterDiff!.action).not.toContain('NE PAS retirer');
 			} finally {
 				restoreFs();
@@ -1065,7 +1076,7 @@ describe('compare-config', () => {
 			const result = await roosyncCompareConfig({ target: 'myia-po-2023' });
 
 			const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
-			expect(rosterDiff!.severity).toBe('CRITICAL');
+			expect(rosterDiff!.severity).toBe('INFO');
 			expect(rosterDiff!.action).toContain('NE PAS retirer myia-po-2027');
 			expect(rosterDiff!.action).not.toContain('Aligner sur le roster canonique');
 			expect(rosterDiff!.action).not.toContain('Ajouter');
@@ -1106,7 +1117,9 @@ describe('compare-config', () => {
 				expect(rosterDiff).toBeDefined();
 				expect(rosterDiff!.severity).toBe('INFO');
 				expect(rosterDiff!.description).toContain('registre PG');
-				expect(result.differences.filter(d => d.path === 'env.ROO_FLEET_ROSTER' && d.severity === 'CRITICAL')).toHaveLength(0);
+				// every roster diff is INFO since #4352: the verdict lives in the text
+				expect(rosterDiff!.description).toContain('consistant');
+				expect(rosterDiff!.description).not.toContain('Mismatch');
 			} finally {
 				restoreFs();
 			}
@@ -1126,7 +1139,7 @@ describe('compare-config', () => {
 			try {
 				const result = await roosyncCompareConfig({ target: 'myia-po-2023' });
 				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
-				expect(rosterDiff!.severity).toBe('CRITICAL');
+				expect(rosterDiff!.severity).toBe('INFO');
 				expect(rosterDiff!.action).toContain('Ajouter myia-po-2027');
 			} finally {
 				restoreFs();
@@ -1147,7 +1160,7 @@ describe('compare-config', () => {
 			try {
 				const result = await roosyncCompareConfig({ target: 'myia-ai-01' });
 				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
-				expect(rosterDiff!.severity).toBe('CRITICAL'); // le mismatch mesuré reste dit
+				expect(rosterDiff!.severity).toBe('INFO'); // le mismatch mesuré reste dit
 				expect(rosterDiff!.description).toContain('miroir G:');
 				expect(rosterDiff!.action).toContain('À vérifier');
 				expect(rosterDiff!.action).toContain('lecture PG en échec');
@@ -1158,7 +1171,7 @@ describe('compare-config', () => {
 			}
 		});
 
-		test('#4523 negative witness: without the PG read, the first case turns red (mirror 5 vs roster 8 → CRITICAL drift)', async () => {
+		test('#4523 negative witness: without the PG read, the first case turns red (mirror 5 vs roster 8 → size drift reported)', async () => {
 			// Rejeu du témoin négatif demandé par l'issue : si la lecture PG est
 			// retirée (storeMetaUrl → null, seul le miroir G: parle), la même
 			// configuration que le 1er test DOIT produire le faux drift —
@@ -1173,7 +1186,7 @@ describe('compare-config', () => {
 			try {
 				const result = await roosyncCompareConfig({ target: 'myia-ai-01' });
 				const rosterDiff = result.differences.find(d => d.path === 'env.ROO_FLEET_ROSTER');
-				expect(rosterDiff!.severity).toBe('CRITICAL');
+				expect(rosterDiff!.severity).toBe('INFO');
 				expect(rosterDiff!.description).toContain('Mismatch taille');
 			} finally {
 				restoreFs();

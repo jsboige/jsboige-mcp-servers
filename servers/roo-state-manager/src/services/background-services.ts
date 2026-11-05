@@ -1231,12 +1231,10 @@ async function initializeQdrantIndexingService(state: ServerState): Promise<void
         } else {
             console.log(`🔄 [Leader-Election] PID ${process.pid} is follower — will attempt takeover if leader goes stale`);
         }
-        // #2352: Log task-space partition status
-        if (state.fleetRoster && state.fleetRoster.length > 0) {
-            console.log(`🎯 [Partition] Task-space partition enabled: ${state.fleetRoster.length} machines, this=${state.machineId}, shard=~${Math.round(100 / state.fleetRoster.length)}% of tasks`);
-        } else {
-            console.log(`🎯 [Partition] Task-space partition disabled (no ROO_FLEET_ROSTER) — all machines index all tasks`);
-        }
+        // #4352: the hash partition no longer gates indexing (isLocallyIndexable) — say so,
+        // instead of announcing a shard that the indexer does not apply.
+        const rosterSize = state.fleetRoster?.length ?? 0;
+        console.log(`🎯 [Partition] Task-space partition retired (#4352): this machine indexes its own sessions; ROO_FLEET_ROSTER ${rosterSize > 0 ? `= ${rosterSize} machines (mention guard only)` : 'unset'}`);
         startQdrantIndexingBackgroundProcess(state);
 
         console.log('✅ Service d\'indexation Qdrant initialisé (indexation en arrière-plan activée)');
