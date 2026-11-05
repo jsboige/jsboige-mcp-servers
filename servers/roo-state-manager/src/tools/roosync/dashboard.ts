@@ -38,6 +38,7 @@ import * as fsSync from 'fs';
 import * as path from 'path';
 import { createHash } from 'crypto';
 import * as os from 'os';
+import { spawnSync } from 'child_process';
 import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir, isSharedPathAccessible } from '../../utils/shared-state-path.js';
 import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER } from '../../utils/secret-redaction.js';
@@ -1075,20 +1076,42 @@ export function sweepCondenseCbTestFiles(opts?: { minAgeMs?: number; dir?: strin
     return { swept, skipped };
   }
   const now = Date.now();
+  // #4554 — même découpe qu'au sweep des staging : on décide d'abord sur l'âge,
+  // puis on lit l'identité des PID survivants en un seul lot.
+  const owners: { name: string; full: string; pid: number; mtimeMs: number }[] = [];
   for (const name of entries) {
     const match = CONDENSE_CB_TEST_FILE_RE.exec(name);
     if (!match) continue;
     const full = path.join(dir, name);
     try {
-      const ageMs = now - fsSync.statSync(full).mtimeMs;
-      if (ageMs < minAge || isPidAlive(Number(match[1]))) {
+      const mtimeMs = fsSync.statSync(full).mtimeMs;
+      if (now - mtimeMs < minAge) {
         skipped.push(name);
         continue;
       }
-      fsSync.rmSync(full, { force: true });
-      swept.push(name);
+      if (!isPidAlive(Number(match[1]))) {
+        fsSync.rmSync(full, { force: true });
+        swept.push(name);
+        continue;
+      }
+      owners.push({ name, full, pid: Number(match[1]), mtimeMs });
     } catch {
       skipped.push(name);
+    }
+  }
+  if (owners.length > 0) {
+    const starts = __pidIdentityHooks.processStartTimesMs(owners.map((o) => o.pid));
+    for (const o of owners) {
+      if (!isPidRecycled(o.pid, o.mtimeMs, starts)) {
+        skipped.push(o.name);
+        continue;
+      }
+      try {
+        fsSync.rmSync(o.full, { force: true });
+        swept.push(o.name);
+      } catch {
+        skipped.push(o.name);
+      }
     }
   }
   return { swept, skipped };
@@ -1523,6 +1546,108 @@ function isPidAlive(pid: number): boolean {
 }
 
 /**
+ * #4554 — marge entre l'heure de démarrage d'un process et le mtime du fichier
+ * qu'il écrit. Un écrivain démarre TOUJOURS avant d'écrire ; la tolérance
+ * couvre la granularité de mtime (2 s sur certains systèmes de fichiers) et le
+ * décalage d'horloge. Le sens de l'erreur est choisi : dans le doute on GARDE
+ * (skip), jamais on ne supprime le staging d'un écrivain vivant.
+ */
+export const PID_IDENTITY_TOLERANCE_MS = 5_000;
+
+/**
+ * #4554 — heures de démarrage des process demandés, en epoch ms, quand la
+ * plateforme sait les rendre. `process.kill(pid, 0)` ne dit que « un process
+ * porte ce PID » : un PID recyclé par un programme sans rapport (précédent
+ * mesuré flotte : un verrou PG porté par `msedge.exe`, 03/11) est déclaré
+ * vivant, et le sweep saute indéfiniment un orphelin.
+ *
+ * Best-effort et sans exception : un PID absent de la map = pas de signal
+ * d'identité pour lui, et les appelants retombent sur la vivacité legacy.
+ * Windows : une seule requête CIM pour tout le lot (pas un spawn par fichier).
+ * Linux : `/proc/<pid>/stat` + `btime` de `/proc/stat`, sans spawn.
+ */
+function processStartTimesMs(pids: number[]): Map<number, number> {
+  const out = new Map<number, number>();
+  const wanted = [...new Set(pids)].filter((p) => Number.isInteger(p) && p > 0);
+  if (wanted.length === 0) return out;
+
+  if (process.platform === 'linux') {
+    let btimeSec: number | undefined;
+    try {
+      const m = fsSync.readFileSync('/proc/stat', 'utf8').match(/^btime\s+(\d+)/m);
+      if (m) btimeSec = Number(m[1]);
+    } catch {
+      return out; // /proc indisponible (conteneur exotique) — pas de signal
+    }
+    if (btimeSec === undefined || !Number.isFinite(btimeSec)) return out;
+    for (const pid of wanted) {
+      try {
+        const raw = fsSync.readFileSync(`/proc/${pid}/stat`, 'utf8');
+        // Le champ 2 (comm) peut contenir espaces et parenthèses : les champs
+        // suivants se lisent après le DERNIER ')'. rest[0] = champ 3 (state),
+        // starttime = champ 22 ⇒ rest[19]. USER_HZ = 100 sur Linux.
+        const rest = raw.slice(raw.lastIndexOf(')') + 2).split(' ');
+        const ticks = Number(rest[19]);
+        if (Number.isFinite(ticks)) out.set(pid, btimeSec * 1000 + (ticks * 1000) / 100);
+      } catch {
+        // process disparu entre les deux lectures — pas d'entrée
+      }
+    }
+    return out;
+  }
+
+  if (process.platform === 'win32') {
+    // Lot borné : garde la ligne de commande loin de sa limite.
+    const CHUNK = 40;
+    for (let i = 0; i < wanted.length; i += CHUNK) {
+      const chunk = wanted.slice(i, i + CHUNK);
+      const filter = chunk.map((p) => `ProcessId=${p}`).join(' or ');
+      try {
+        const res = spawnSync(
+          'powershell.exe',
+          [
+            '-NoProfile',
+            '-NonInteractive',
+            '-Command',
+            `Get-CimInstance Win32_Process -Filter "${filter}" | ForEach-Object { "$($_.ProcessId) $(([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds())" }`,
+          ],
+          { encoding: 'utf8', timeout: 15_000, windowsHide: true }
+        );
+        for (const line of (res.stdout ?? '').split(/\r?\n/)) {
+          const m = line.trim().match(/^(\d+)\s+(-?\d+)$/);
+          if (!m) continue;
+          const ms = Number(m[2]);
+          if (Number.isFinite(ms)) out.set(Number(m[1]), ms);
+        }
+      } catch {
+        // PowerShell absent/refusé — pas de signal pour ce lot
+      }
+    }
+    return out;
+  }
+
+  return out; // autres plateformes : vivacité legacy, aucun changement
+}
+
+/**
+ * #4554 — un process dont le démarrage est POSTÉRIEUR au mtime du fichier qu'il
+ * est censé avoir écrit ne l'a pas écrit : son PID a été recyclé. Sans signal
+ * d'identité (map sans entrée), on ne conclut pas.
+ */
+function isPidRecycled(pid: number, fileMtimeMs: number, starts: Map<number, number>): boolean {
+  const started = starts.get(pid);
+  if (started === undefined) return false;
+  return started > fileMtimeMs + PID_IDENTITY_TOLERANCE_MS;
+}
+
+/**
+ * #4554 — point d'injection des tests : remplacer la lecture d'identité par une
+ * map déterministe (un vrai PID recyclé ne se fabrique pas à la demande).
+ * Restaurer `__pidIdentityHooks.processStartTimesMs` après le test.
+ */
+export const __pidIdentityHooks = { processStartTimesMs };
+
+/**
  * #4003 — sweep des staging `*.md.<pid>[.<seq>].tmp` orphelins de dashboards/ (legacy) et du répertoire de staging hors-arbre.
  *
  * Les chemins d'écriture (#3782, complétés #4286) staged chaque write dans
@@ -1559,6 +1684,9 @@ export async function sweepOrphanDashboardTmpFiles(
     } catch {
       continue; // store absent/illisible — rien à sweeper ici
     }
+    // #4554 — deux passes : l'identité des PID se lit en UN lot par répertoire
+    // (un spawn PowerShell par fichier coûterait plus que le sweep entier).
+    const owners: { entry: string; full: string; pid: number; mtimeMs: number }[] = [];
     for (const entry of entries) {
       // #4286 — deux formes reconnues, le PID reste le groupe 1 : le staging
       // per-appel `.<pid>.<seq>.tmp` ET l'ancien `.<pid>.tmp` (les fichiers déjà
@@ -1570,14 +1698,33 @@ export async function sweepOrphanDashboardTmpFiles(
       const full = path.join(dir, entry);
       try {
         const st = await fs.stat(full);
-        if (now - st.mtimeMs < minAge || pid === process.pid || isPidAlive(pid)) {
+        if (now - st.mtimeMs < minAge || pid === process.pid) {
           skipped.push(entry);
           continue;
         }
-        await fs.unlink(full);
-        swept.push(entry);
+        if (!isPidAlive(pid)) {
+          await fs.unlink(full);
+          swept.push(entry);
+          continue;
+        }
+        // Vivant au sens du PID — reste à savoir si c'est l'ÉCRIVAIN (#4554).
+        owners.push({ entry, full, pid, mtimeMs: st.mtimeMs });
       } catch {
         skipped.push(entry);
+      }
+    }
+    if (owners.length === 0) continue;
+    const starts = __pidIdentityHooks.processStartTimesMs(owners.map((o) => o.pid));
+    for (const o of owners) {
+      if (!isPidRecycled(o.pid, o.mtimeMs, starts)) {
+        skipped.push(o.entry);
+        continue;
+      }
+      try {
+        await fs.unlink(o.full);
+        swept.push(o.entry);
+      } catch {
+        skipped.push(o.entry);
       }
     }
   }
