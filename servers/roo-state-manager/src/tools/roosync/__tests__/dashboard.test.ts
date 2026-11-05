@@ -613,6 +613,61 @@ describe('roosync_dashboard', () => {
     expect(result.message).toContain('introuvable');
   });
 
+  // === Test 23b (#4553 a): messageId est REFUSÉ, jamais ignoré ===
+  // Le schéma expose `messageId` (paramètre d'append) à toutes les actions ;
+  // `handleDelete` ne le lisait pas : un appelant qui croyait retirer UN
+  // message détruisait le dashboard entier, sans erreur. Le refus est la
+  // garantie testable : rien n'est détruit, et le motif du refus est nommé.
+  it('delete refuses messageId instead of silently deleting the whole dashboard (#4553)', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Test' });
+    await roosyncDashboard({ action: 'append', type: 'global', content: 'message a retirer' });
+
+    const result = await roosyncDashboard({ action: 'delete', type: 'global', messageId: 'msg-a-retirer' } as never);
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('REFUS');
+    expect(result.message).toContain('messageId');
+
+    // Le geste n'a rien détruit : dashboard ET message sont intacts.
+    const dashboardPath = path.join(tmpDir, 'dashboards', 'global.md');
+    const onDisk = await fsp.readFile(dashboardPath, 'utf8');
+    expect(onDisk).toContain('message a retirer');
+  });
+
+  // === Test 23c (#4553 c): un dashboard ILLISIBLE est archivé avant destruction ===
+  // Le parse jette (frontmatter absent) — c'est la classe du fichier de NUL du
+  // 03/11. L'ancienne branche catch laissait passer la suppression SANS copie,
+  // désarmant la protection #1128 et la sécurité d'archive sur le seul cas où
+  // elles comptent. La copie se fait maintenant sur les octets bruts.
+  it('delete archives an unreadable dashboard before removing it (#4553)', async () => {
+    await roosyncDashboard({ action: 'write', type: 'global', content: '# Test' });
+    const dashboardPath = path.join(tmpDir, 'dashboards', 'global.md');
+    const garbage = 'pas de frontmatter, donc parseDashboardMarkdown jette';
+    await fsp.writeFile(dashboardPath, garbage, 'utf8');
+
+    const result = await roosyncDashboard({ action: 'delete', type: 'global' });
+
+    expect(result.success).toBe(true);
+    const archiveDir = path.join(tmpDir, 'dashboards', 'archive');
+    const archived = (await fsp.readdir(archiveDir)).filter(f => f.startsWith('global-pre-delete-unreadable-'));
+    expect(archived).toHaveLength(1);
+    expect(await fsp.readFile(path.join(archiveDir, archived[0]), 'utf8')).toBe(garbage);
+    await expect(fsp.access(dashboardPath)).rejects.toThrow(); // bien supprimé
+  });
+
+  // === Test 23d (#4553 c): ni lisible ni archivable ⇒ REFUS, le dashboard reste ===
+  it('delete refuses when neither the dashboard nor its safety copy can be read (#4553)', async () => {
+    const dashboardPath = path.join(tmpDir, 'dashboards', 'global.md');
+    await fsp.mkdir(path.join(tmpDir, 'dashboards'), { recursive: true });
+    await fsp.mkdir(dashboardPath); // readFile ⇒ EISDIR, sur les deux lectures
+
+    const result = await roosyncDashboard({ action: 'delete', type: 'global' });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('Aucune suppression sans archive');
+    await expect(fsp.access(dashboardPath)).resolves.toBeUndefined(); // intact
+  });
+
   // === Test 24: read_archive sans archiveFile liste les archives ===
   // Archive created via auto-condensation (triggered by append crossing the
   // size threshold) instead of the removed manual `condense` action.
