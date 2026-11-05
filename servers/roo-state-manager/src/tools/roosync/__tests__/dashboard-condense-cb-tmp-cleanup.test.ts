@@ -15,7 +15,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { sweepCondenseCbTestFiles, __condenseBreakerHooks } from '../dashboard.js';
+import { spawn } from 'node:child_process';
+import { sweepCondenseCbTestFiles, __condenseBreakerHooks, __pidIdentityHooks } from '../dashboard.js';
 
 /** `process.kill(999999, 0)` lève sur Windows comme sur POSIX : pid mort par construction. */
 const DEAD_PID = 999999;
@@ -50,17 +51,28 @@ describe('sweepCondenseCbTestFiles (#4434)', () => {
     const staleAlive = writeFile(`rsm-condense-cb-test-${process.pid}-dddddddddddd.json`, STALE_MS);
     const realBreaker = writeFile('rsm-condense-cb-eeeeeeeeeeee.json', STALE_MS);
 
-    const { swept } = sweepCondenseCbTestFiles({ minAgeMs: 15 * 60_000, dir });
+    // #4554 — l'identité entre dans la décision. Ce test antidate ses fichiers
+    // (utimes 45 min) alors que le process vit depuis quelques secondes : sans
+    // injection, ce PID serait « recyclé » et son fichier balayé. On déclare
+    // donc le démarrage d'un vrai écrivain (bien avant ses fichiers).
+    const identity = __pidIdentityHooks.processStartTimesMs;
+    __pidIdentityHooks.processStartTimesMs = (pids: number[]) =>
+      new Map(pids.map((p) => [p, Date.now() - 2 * 60 * 60_000]));
+    try {
+      const { swept } = sweepCondenseCbTestFiles({ minAgeMs: 15 * 60_000, dir });
 
-    expect(swept.sort()).toEqual([path.basename(staleDead), path.basename(staleDeadTmp)].sort());
-    expect(fs.existsSync(staleDead)).toBe(false);
-    expect(fs.existsSync(staleDeadTmp)).toBe(false);
-    // Trop récent : un test peut être en train d'écrire ce fichier.
-    expect(fs.existsSync(freshDead)).toBe(true);
-    // Pid vivant : son worker n'a pas fini.
-    expect(fs.existsSync(staleAlive)).toBe(true);
-    // Le disjoncteur réel n'est jamais touché, quel que soit son âge.
-    expect(fs.existsSync(realBreaker)).toBe(true);
+      expect(swept.sort()).toEqual([path.basename(staleDead), path.basename(staleDeadTmp)].sort());
+      expect(fs.existsSync(staleDead)).toBe(false);
+      expect(fs.existsSync(staleDeadTmp)).toBe(false);
+      // Trop récent : un test peut être en train d'écrire ce fichier.
+      expect(fs.existsSync(freshDead)).toBe(true);
+      // Pid vivant : son worker n'a pas fini.
+      expect(fs.existsSync(staleAlive)).toBe(true);
+      // Le disjoncteur réel n'est jamais touché, quel que soit son âge.
+      expect(fs.existsSync(realBreaker)).toBe(true);
+    } finally {
+      __pidIdentityHooks.processStartTimesMs = identity;
+    }
   });
 
   it('ne lève pas quand le répertoire est illisible', () => {
@@ -88,5 +100,65 @@ describe('sweepCondenseCbTestFiles (#4434)', () => {
       else process.env.CONDENSE_CB_STATE_FILE = saved;
       __condenseBreakerHooks.cleanupOwnFiles();
     }
+  });
+});
+
+/**
+ * #4554 — le sweep condensation-cb ne doit pas confondre « un process porte ce
+ * PID » avec « le worker vit encore ». Identité injectée : un enfant vivant
+ * dont l'heure de démarrage est POSTÉRIEURE au fichier est un PID recyclé.
+ */
+describe('sweepCondenseCbTestFiles #4554 — PID recyclé', () => {
+  const realStartTimes = __pidIdentityHooks.processStartTimesMs;
+  let child: { pid: number; kill: () => void } | undefined;
+
+  function liveChildPid(): Promise<{ pid: number; kill: () => void }> {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+      proc.on('error', reject);
+      proc.on('spawn', () => resolve({ pid: proc.pid!, kill: () => proc.kill() }));
+    });
+  }
+
+  beforeEach(async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-cb-4554-'));
+    child = await liveChildPid();
+  });
+
+  afterEach(() => {
+    __pidIdentityHooks.processStartTimesMs = realStartTimes;
+    child?.kill();
+    child = undefined;
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('supprime le fichier d\'un PID vivant mais recyclé, garde celui d\'un vrai worker', () => {
+    // Deux PID vivants distincts : l'enfant (recyclage simulé) et ce process-ci
+    // (écrivain légitime — son kernel a démarré bien avant ses fichiers).
+    const recycled = writeFile(`rsm-condense-cb-test-${child!.pid}-aaaabbbbcccc.json`, STALE_MS);
+    const genuine = writeFile(`rsm-condense-cb-test-${process.pid}-dddddddddddd.json`, STALE_MS);
+
+    const now = Date.now();
+    __pidIdentityHooks.processStartTimesMs = (pids: number[]) =>
+      new Map(pids.map((p) => [p, p === child!.pid ? now : now - 2 * 60 * 60_000]));
+
+    const { swept, skipped } = sweepCondenseCbTestFiles({ minAgeMs: 15 * 60_000, dir });
+
+    expect(swept).toEqual([path.basename(recycled)]);
+    expect(skipped).toEqual([path.basename(genuine)]);
+    expect(fs.existsSync(recycled)).toBe(false);
+    expect(fs.existsSync(genuine)).toBe(true);
+  });
+
+  it('garde le fichier quand le PID vivant a démarré AVANT le fichier (vrai écrivain)', () => {
+    const genuine = writeFile(`rsm-condense-cb-test-${child!.pid}-eeeeeeeeeeee.json`, STALE_MS);
+    __pidIdentityHooks.processStartTimesMs = (pids: number[]) =>
+      new Map(pids.map((p) => [p, Date.now() - 2 * 60 * 60_000]));
+
+    const { swept, skipped } = sweepCondenseCbTestFiles({ minAgeMs: 15 * 60_000, dir });
+
+    expect(swept).toEqual([]);
+    expect(skipped).toEqual([path.basename(genuine)]);
+    expect(fs.existsSync(genuine)).toBe(true);
   });
 });

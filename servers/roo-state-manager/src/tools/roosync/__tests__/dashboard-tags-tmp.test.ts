@@ -26,7 +26,7 @@ vi.mock('../heartbeat-activity.js', () => ({
   recordSchedulerRunAsync: vi.fn(),
 }));
 
-import { roosyncDashboard, sweepOrphanDashboardTmpFiles } from '../dashboard.js';
+import { roosyncDashboard, sweepOrphanDashboardTmpFiles, __pidIdentityHooks } from '../dashboard.js';
 import { parseDashboardMarkdown } from '../dashboard-markdown.js';
 import { normalizeDashboardTags, normalizeDashboardTag } from '../dashboard-schemas.js';
 import { recordSchedulerRunAsync } from '../heartbeat-activity.js';
@@ -378,5 +378,113 @@ describe('dashboard #4003 — scheduler-cycle detection is exact-match (#1442)',
     });
     await flushAsync();
     expect(recordSchedulerRunAsync).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * #4554 — `isPidAlive` ne distinguait pas un PID recyclé : un staging dont le
+ * PID appartient désormais à un programme sans rapport était déclaré « porté »
+ * à chaque passe, donc jamais balayé. Un vrai recyclage ne se fabrique pas à la
+ * demande dans un test : l'identité est donc injectée par `__pidIdentityHooks`,
+ * et un test séparé vérifie que l'instrument RÉEL rend bien une heure de
+ * démarrage sur la plateforme courante.
+ */
+describe('dashboard #4554 — PID recyclé n\'est pas un écrivain vivant', () => {
+  let tmpDir: string;
+  const realStartTimes = __pidIdentityHooks.processStartTimesMs;
+  let liveChild: { pid: number; kill: () => void } | undefined;
+
+  function liveChildPid(): Promise<{ pid: number; kill: () => void }> {
+    return new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { stdio: 'ignore' });
+      child.on('error', reject);
+      child.on('spawn', () => resolve({ pid: child.pid!, kill: () => child.kill() }));
+    });
+  }
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(testTmpBase);
+    process.env.ROOSYNC_SHARED_PATH = tmpDir;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
+    process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    process.env.ROOSYNC_DASHBOARD_STAGING_DIR = path.join(tmpDir, 'staging');
+    liveChild = await liveChildPid();
+  });
+
+  afterEach(async () => {
+    __pidIdentityHooks.processStartTimesMs = realStartTimes;
+    liveChild?.kill();
+    liveChild = undefined;
+    await rm(tmpDir, { recursive: true, force: true });
+    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.ROOSYNC_MACHINE_ID;
+    delete process.env.ROOSYNC_WORKSPACE_ID;
+    delete process.env.ROOSYNC_DASHBOARD_STAGING_DIR;
+  });
+
+  it('sweeps the staging of a LIVE pid whose process started AFTER the file (recycled)', async () => {
+    const dashDir = path.join(tmpDir, 'dashboards');
+    await mkdir(dashDir, { recursive: true });
+    const pid = liveChild!.pid;
+    const old = new Date(Date.now() - 20 * 60_000);
+    const recycled = `workspace-r.md.${pid}.1.tmp`;
+    await writeFile(path.join(dashDir, recycled), 'orphan of a dead writer');
+    await utimes(path.join(dashDir, recycled), old, old);
+
+    // L'identité dit : ce PID a démarré MAINTENANT ⇒ il n'a pas écrit ce fichier.
+    __pidIdentityHooks.processStartTimesMs = (pids: number[]) =>
+      new Map(pids.map((p) => [p, Date.now()]));
+
+    const result = await sweepOrphanDashboardTmpFiles();
+
+    expect(result.swept).toEqual([recycled]);
+    expect(await readdir(dashDir)).not.toContain(recycled);
+  });
+
+  it('keeps the staging of a LIVE pid that started BEFORE the file (genuine writer)', async () => {
+    const dashDir = path.join(tmpDir, 'dashboards');
+    await mkdir(dashDir, { recursive: true });
+    const pid = liveChild!.pid;
+    const old = new Date(Date.now() - 20 * 60_000);
+    const genuine = `workspace-s.md.${pid}.2.tmp`;
+    await writeFile(path.join(dashDir, genuine), 'held by a live writer');
+    await utimes(path.join(dashDir, genuine), old, old);
+
+    __pidIdentityHooks.processStartTimesMs = (pids: number[]) =>
+      new Map(pids.map((p) => [p, Date.now() - 60 * 60_000]));
+
+    const result = await sweepOrphanDashboardTmpFiles();
+
+    expect(result.swept).toEqual([]);
+    expect(result.skipped).toContain(genuine);
+    expect(await readdir(dashDir)).toContain(genuine);
+  });
+
+  it('with no identity signal, legacy liveness wins (live pid is never swept)', async () => {
+    const dashDir = path.join(tmpDir, 'dashboards');
+    await mkdir(dashDir, { recursive: true });
+    const pid = liveChild!.pid;
+    const old = new Date(Date.now() - 20 * 60_000);
+    const noSignal = `workspace-t.md.${pid}.3.tmp`;
+    await writeFile(path.join(dashDir, noSignal), 'unknown identity');
+    await utimes(path.join(dashDir, noSignal), old, old);
+
+    __pidIdentityHooks.processStartTimesMs = () => new Map();
+
+    const result = await sweepOrphanDashboardTmpFiles();
+
+    expect(result.swept).toEqual([]);
+    expect(await readdir(dashDir)).toContain(noSignal);
+  });
+
+  it('the REAL identity instrument returns a start time for a live pid on this platform', async () => {
+    const pid = liveChild!.pid;
+    const starts = await Promise.resolve(realStartTimes([pid]));
+    // linux (/proc) et win32 (CIM) savent répondre ; ailleurs pas de signal.
+    if (process.platform === 'linux' || process.platform === 'win32') {
+      const started = starts.get(pid);
+      expect(started, 'start time read for a live child').toBeTypeOf('number');
+      expect(Math.abs(Date.now() - started!)).toBeLessThan(5 * 60_000);
+    }
   });
 });
