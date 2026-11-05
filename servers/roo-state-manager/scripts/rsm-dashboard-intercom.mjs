@@ -21,6 +21,13 @@
  *                                      (replaces the GDrive mtime fallback
  *                                      poll — one grouped query)
  *
+ * Modifier: `--recent-keys <hours>` rides on `--workspace` and adds a
+ * `recentKeys` block (dashboards that received a live message in the window).
+ * #4131 G-DASH: the statusline's "N dash" cell used to walk `*.md` mtimes;
+ * once the per-append file mirror is off those mtimes say "an export touched
+ * it", not "it was active". Same process, same connection — the statusline
+ * cannot pay a second node+PG spawn per render.
+ *
  * Contract with the listener (fail-open): stdout is a single JSON document;
  * PG unreachable → stderr line `PG-UNREACHABLE: …` + exit 1, and the caller
  * keeps the file path. Exit codes: 0 ok · 1 PG unreachable · 2 usage.
@@ -42,6 +49,7 @@ import {
   SQL_INTERCOM_SINCE,
   SQL_DISCOVER_WORKSPACES,
   SQL_MAX_CREATED,
+  SQL_RECENT_KEYS,
   rowToListenerMessage,
   parseIntercomArgs,
 } from './lib/dashboard-journal.mjs';
@@ -74,7 +82,7 @@ function loadEnv(file) {
 
 function usageError(msg) {
   console.error(`ERREUR: ${msg}`);
-  console.error('Usage: node scripts/rsm-dashboard-intercom.mjs --workspace <ws> [--since <iso>] | --discover | --max-created <ws,ws…>');
+  console.error('Usage: node scripts/rsm-dashboard-intercom.mjs --workspace <ws> [--since <iso>] [--recent-keys <hours>] | --discover | --max-created <ws,ws…>');
   process.exit(2);
 }
 
@@ -82,6 +90,9 @@ const HELP_TEXT = `Usage: node scripts/rsm-dashboard-intercom.mjs [options]
 
   --workspace <ws> [--since <iso>]  Intercom messages of workspace-<ws> newer
                                     than the ISO cursor (omit = all live).
+  --recent-keys <hours>             With --workspace: adds \`recentKeys\`, the
+                                    dashboards that saw a live message in the
+                                    last <hours> hours (#4131 G-DASH).
   --discover                        Workspace names known to PG (site 2).
   --max-created <ws,ws,…>           Latest live message per key (site 3 poll).
 
@@ -122,7 +133,26 @@ try {
     const key = `workspace-${parsed.workspace}`;
     const res = await client.query(SQL_INTERCOM_SINCE, [key, parsed.since ?? new Date(0).toISOString()]);
     const messages = res.rows.map(rowToListenerMessage);
-    process.stdout.write(`${JSON.stringify({ mode: 'messages', workspace: parsed.workspace, count: messages.length, messages })}\n`);
+    const payload = { mode: 'messages', workspace: parsed.workspace, count: messages.length, messages };
+    if (parsed.recentHours !== undefined) {
+      // #4131 G-DASH — optional activity block, same connection. Failure of
+      // THIS query must not cost the messages: it is a display extra, so a
+      // bad `recentKeys` is worse than no `recentKeys`.
+      try {
+        const recent = await client.query(SQL_RECENT_KEYS, [parsed.recentHours]);
+        payload.recentKeys = {
+          hours: parsed.recentHours,
+          count: recent.rows.length,
+          keys: recent.rows.map((r) => ({
+            key: String(r.dashboard_key),
+            lastCreatedAt: r.max_created instanceof Date ? r.max_created.toISOString() : String(r.max_created),
+          })),
+        };
+      } catch (recentErr) {
+        payload.recentKeysError = recentErr instanceof Error ? recentErr.message : String(recentErr);
+      }
+    }
+    process.stdout.write(`${JSON.stringify(payload)}\n`);
   } else if (parsed.mode === 'discover') {
     const res = await client.query(SQL_DISCOVER_WORKSPACES);
     const workspaces = res.rows.map((r) => String(r.dashboard_key).replace(/^workspace-/, ''));

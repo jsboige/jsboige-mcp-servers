@@ -17,6 +17,7 @@ import {
   SQL_INTERCOM_SINCE,
   SQL_DISCOVER_WORKSPACES,
   SQL_MAX_CREATED,
+  SQL_RECENT_KEYS,
   rowToListenerMessage,
   validateEscalationContent,
   buildListenerEscalationMessage,
@@ -155,6 +156,34 @@ describe('G-C read-surface grammar (parseIntercomArgs)', () => {
   });
 });
 
+describe('#4131 G-DASH activity modifier (--recent-keys)', () => {
+  it('rides on --workspace and is absent by default (callers keep their exact shape)', () => {
+    // Absent by default: the pre-existing equality assertions above stay true.
+    expect(parseIntercomArgs(['--workspace', 'ws'])).not.toHaveProperty('recentHours');
+    expect(parseIntercomArgs(['--workspace', 'ws', '--recent-keys', '24'])).toEqual({
+      mode: 'messages',
+      workspace: 'ws',
+      since: null,
+      recentHours: 24,
+    });
+    expect(parseIntercomArgs(['--workspace', 'ws', '--since', '2026-10-13T00:00:00.000Z', '--recent-keys', '1']))
+      .toEqual({ mode: 'messages', workspace: 'ws', since: '2026-10-13T00:00:00.000Z', recentHours: 1 });
+  });
+
+  it('is a modifier, not a fourth mode: it refuses to ride on the other modes', () => {
+    expect(parseIntercomArgs(['--discover', '--recent-keys', '24']).error).toContain('accompagne --workspace');
+    expect(parseIntercomArgs(['--max-created', 'a', '--recent-keys', '24']).error).toContain('accompagne --workspace');
+    expect(parseIntercomArgs(['--recent-keys', '24']).error).toContain('un mode');
+  });
+
+  it('refuses a missing, non-integer or out-of-range window', () => {
+    expect(parseIntercomArgs(['--workspace', 'ws', '--recent-keys']).error).toContain('exige un nombre');
+    expect(parseIntercomArgs(['--workspace', 'ws', '--recent-keys', 'x']).error).toContain('entier');
+    expect(parseIntercomArgs(['--workspace', 'ws', '--recent-keys', '0']).error).toContain('entier');
+    expect(parseIntercomArgs(['--workspace', 'ws', '--recent-keys', '8761']).error).toContain('entier');
+  });
+});
+
 describe('G-C SQL parity with the reader (drift-guard)', () => {
   it('intercom query filters archived rows and orders like getRooSyncDashboard', () => {
     expect(SQL_INTERCOM_SINCE).toContain('archived_at IS NULL');
@@ -164,6 +193,13 @@ describe('G-C SQL parity with the reader (drift-guard)', () => {
     expect(SQL_DISCOVER_WORKSPACES).toContain("LIKE 'workspace-%'");
     expect(SQL_MAX_CREATED).toContain('GROUP BY dashboard_key');
     expect(SQL_MAX_CREATED).toContain('archived_at IS NULL');
+  });
+  it('#4131 G-DASH activity query: live rows only, grouped per dashboard, windowed', () => {
+    expect(SQL_RECENT_KEYS).toContain('archived_at IS NULL');
+    expect(SQL_RECENT_KEYS).toContain('GROUP BY dashboard_key');
+    expect(SQL_RECENT_KEYS).toContain("interval '1 hour'");
+    // The window is a bound parameter, never interpolated client-side.
+    expect(SQL_RECENT_KEYS).toContain('$1::int');
   });
 });
 
