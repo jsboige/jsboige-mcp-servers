@@ -2546,6 +2546,25 @@ const ERROR_PATTERNS: readonly ErrorPattern[] = [
         errorClass: 'embedding_timeout',
         patterns: ['indexing timeout', 'embedding timeout', 'timeout waiting', 'task timeout'],
     },
+    // #4352 résidu — « Embedding incomplete for task X: N/M sub-chunks without a
+    // vector (W points written, kept for the retry) » (VectorIndexer.ts:1529).
+    // The attempt wrote what it got, the pre-flight dedup re-embeds only the
+    // missing sub-chunks: TRANSIENT by construction (the throw is NETWORK_ERROR).
+    // 15 such rows stayed `unknown` in the dead-letter po-2023 measured on 05/11.
+    //
+    // Deliberately LAST — the OPPOSITE placement of `qdrant_upsert_failed` above.
+    // When the message carries « — last embedding error: <cause> », the cause is
+    // the actionable word: `502 <!DOCTYPE html` is a service_503, `Connection
+    // error.` a connection_reset (both measured on ai-01 27/10, pinned by
+    // « does not read a status code inside a quoted task id »). Evaluating this
+    // stage pattern first would swallow those two transport classes and move the
+    // failures the operator can act on into a bucket that says only « chunks
+    // missing ». Falling through to here means no transport cause was stated at
+    // all — which is exactly the residual these 15 rows were.
+    {
+        errorClass: 'embedding_incomplete',
+        patterns: ['embedding incomplete'],
+    },
 ] as const;
 
 /**
