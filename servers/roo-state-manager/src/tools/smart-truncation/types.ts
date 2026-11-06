@@ -3,8 +3,6 @@
  * @fileoverview Définitions TypeScript pour l'algorithme de troncature avec gradient
  */
 
-import { ConversationSkeleton } from '../../types/conversation.js';
-
 /**
  * Configuration pour l'algorithme de troncature intelligente
  */

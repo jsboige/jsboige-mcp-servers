@@ -1,9 +1,9 @@
 import { describe, test, expect } from 'vitest';
 import { SmartTruncationEngine } from '../engine.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 describe('SmartTruncation Coverage Tests', () => {
-    const createMockTask = (taskId: string, messageCount: number = 3): ConversationSkeleton => ({
+    const createMockTask = (taskId: string, messageCount: number = 3): StoredConversation => ({
         taskId,
         parentTaskId: undefined,
         metadata: {
@@ -148,7 +148,7 @@ describe('SmartTruncation Coverage Tests', () => {
     });
 
     test('should handle tasks with mixed content types', () => {
-        const createComplexTask = (taskId: string): ConversationSkeleton => ({
+        const createComplexTask = (taskId: string): StoredConversation => ({
             taskId,
             parentTaskId: undefined,
             metadata: {
@@ -234,7 +234,7 @@ describe('SmartTruncation Coverage Tests', () => {
             maxTruncationRate: 0.7
         });
 
-        const taskWithNoMessages: ConversationSkeleton = {
+        const taskWithNoMessages: StoredConversation = {
             taskId: 'empty-messages',
             parentTaskId: undefined,
             metadata: {

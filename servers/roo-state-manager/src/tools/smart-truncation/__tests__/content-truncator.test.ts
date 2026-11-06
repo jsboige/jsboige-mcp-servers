@@ -5,7 +5,8 @@ import {
     ElementTruncationPlan,
     SmartTruncationConfig
 } from '../types.js';
-import { ConversationSkeleton, MessageSkeleton, ActionMetadata } from '../../../types/conversation.js';
+import { MessageSkeleton, ActionMetadata } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Type guard helper
 const isMessage = (item: MessageSkeleton | ActionMetadata): item is MessageSkeleton => {
@@ -17,7 +18,7 @@ const isAction = (item: MessageSkeleton | ActionMetadata): item is ActionMetadat
 };
 
 describe('ContentTruncator', () => {
-    const createMockTask = (taskId: string, messages: string[]): ConversationSkeleton => ({
+    const createMockTask = (taskId: string, messages: string[]): StoredConversation => ({
         taskId,
         parentTaskId: undefined,
         metadata: {
@@ -409,7 +410,7 @@ describe('ContentTruncator', () => {
 
     describe('Action Truncation', () => {
         test('should handle action truncation for large parameters', () => {
-            const tasks: ConversationSkeleton[] = [{
+            const tasks: StoredConversation[] = [{
                 taskId: 'task1',
                 parentTaskId: undefined,
                 metadata: {
@@ -506,7 +507,7 @@ describe('ContentTruncator', () => {
 // ─────────────────────────────────────────────────────────────
 
 describe('SmartOutputFormatter', () => {
-    const createMockTask = (taskId: string): ConversationSkeleton => ({
+    const createMockTask = (taskId: string): StoredConversation => ({
         taskId,
         parentTaskId: undefined,
         metadata: {
@@ -584,7 +585,7 @@ describe('SmartOutputFormatter', () => {
 // ─────────────────────────────────────────────────────────────
 
 describe('ContentTruncator - summary truncation', () => {
-    const createTask = (content: string): ConversationSkeleton => ({
+    const createTask = (content: string): StoredConversation => ({
         taskId: 'task-summary',
         parentTaskId: undefined,
         metadata: {
