@@ -9,6 +9,9 @@
  *     writeFile never called) — the measure of 08/11 18:00Z;
  *   - a mixed-case producer publishes the CANONICAL row (normalization
  *     before the identity guard), it is not refused;
+ *   - edge whitespace is TRIMMED with the case fold (NanoClaw review of
+ *     ms#1662): a padded machineId publishes the canonical row instead of
+ *     failing both PG key and mirror filename;
  *   - PG down / unconfigured ⇒ the GDrive mirror is the fallback surface,
  *     and the outcome says so (the CLI exits on this verdict, not on logs);
  *   - the kill-switch still restores the mirror after a PG success;
@@ -136,6 +139,21 @@ describe('#4131 grain G-INV — publishExternalInventory', () => {
     );
     expect(fsPromises.writeFile).not.toHaveBeenCalled();
     expect(outcome.pgSaved).toBe(true);
+  });
+
+  it('machineId avec blancs en bordure → trimité avant publication (réserve NanoClaw, pas de faux « double échec »)', async () => {
+    delete process.env[INVENTORY_PG_PRIMARY_ENV];
+    const svc = InventoryService.getInstance();
+
+    const outcome = await svc.publishExternalInventory(inventoryFor('  Myia-A \n') as any);
+
+    // la clé ET le corps publiés portent la forme canonique trimitée
+    expect(mockStoreMeta.upsertStoreMetaValue).toHaveBeenCalledWith(
+      'inventory:myia-a',
+      expect.stringContaining('"machineId": "myia-a"')
+    );
+    expect(fsPromises.writeFile).not.toHaveBeenCalled();
+    expect(outcome).toEqual({ pgSaved: true, mirrorSaved: false });
   });
 
   it('PG en échec → miroir GDrive écrit, verdict mirrorSaved (le CLI exit 0 sur ce verdict)', async () => {
