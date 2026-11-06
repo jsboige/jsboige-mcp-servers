@@ -93,6 +93,8 @@ import {
   mapRowsToDashboard,
   fetchArchivedDashboardMessageIds,
   isDashboardPgPrimary,
+  listRetiredDashboardKeys,
+  isValidDashboardKeyShape,
 } from './roosync-dashboard-store.js';
 import type { Dashboard, IntercomMessage } from '../../tools/roosync/dashboard-schemas.js';
 import type { IUnifiedStoreWriter, RooSyncLockAcquireStatus } from './UnifiedStoreWriter.js';
@@ -235,14 +237,28 @@ export interface DashboardReconcileResult {
   mirrorIdlessHeldKeys: number;
   /** Files AHEAD of PG — file-only content, owned by the insert pass, never rewritten. */
   mirrorAheadKeys: string[];
+  /**
+   * #4131 G-DASH (suite ms#1664) — PG-only keys MATERIALIZED to G: this pass:
+   * keys born after the cutover whose file never existed (the repair above
+   * only rewrites files that exist). Same arming and shared write budget as
+   * the repair.
+   */
+  mirrorMaterialized: number;
+  /** Materializations that threw (counted, never thrown). */
+  mirrorMaterializeFailed: number;
+  /** PG-only keys skipped because the shared per-pass write budget was spent. */
+  mirrorMaterializeDeferred: number;
   durationMs: number;
 }
 
 export interface DashboardReconcileOptions {
   /** `{sharedStatePath}/dashboards` — the dir holding global/machine-/workspace-*.md. */
   dashboardsDir: string;
-  /** Reader seam for tests. Default getUnifiedStoreReader(). */
-  reader?: Pick<IUnifiedStoreReader, 'getRooSyncDashboard'>;
+  /**
+   * Reader seam for tests. Default getUnifiedStoreReader(). The key listing
+   * joined with #4131 G-DASH materialization (PG-only keys → new G: exports).
+   */
+  reader?: Pick<IUnifiedStoreReader, 'getRooSyncDashboard' | 'listRooSyncDashboardKeys'>;
   /**
    * Writer seam for tests. Default getUnifiedStoreWriter(). The lock methods
    * are optional on the seam: a fake without them is treated as
@@ -568,6 +584,9 @@ export async function reconcileDashboardsFromGDrive(
     mirrorRepairFailed: 0,
     mirrorIdlessHeldKeys: 0,
     mirrorAheadKeys: [],
+    mirrorMaterialized: 0,
+    mirrorMaterializeFailed: 0,
+    mirrorMaterializeDeferred: 0,
     durationMs: 0,
   };
 
@@ -966,6 +985,66 @@ export async function reconcileDashboardsFromGDrive(
     }
   }
 
+  // ─── Materialization pass (PG → file for keys with NO file, #4131 G-DASH
+  // suite de ms#1664) ───────────────────────────────────────────────────────
+  // The repair above only rewrites files that EXIST: a key born after the
+  // cutover (mirror off per append — the file was never created) has nothing
+  // to compare and would NEVER get a G: export. Same arming as the repair
+  // (PG-primary seat + fleet lock + writer, all in `mirrorArmed`), and the
+  // SAME write budget: materializing IS a mirror write, it competes with the
+  // repairs for the per-pass cap.
+  if (mirrorArmed) {
+    let pgKeys: string[] | null = null;
+    try {
+      pgKeys = (await reader.listRooSyncDashboardKeys()).filter(isValidDashboardKeyShape);
+    } catch (error) {
+      // Unreachable list → pass skipped with the reason in the operator list:
+      // no export is better than a blind one.
+      result.failures.push(`pg-key-list: materialization skipped — ${String(error)}`);
+      pgKeys = null;
+    }
+    if (pgKeys !== null) {
+      let retired: Set<string> | null;
+      try {
+        retired = await listRetiredDashboardKeys();
+      } catch {
+        // Retirement is a VISIBILITY mark: unreadable locally → write nothing
+        // rather than exhume a merged-away key as a raw file.
+        retired = null;
+      }
+      if (retired !== null) {
+        // Fork-derived keys count as present: `keyed` includes conflict
+        // copies, so a canonical key that only exists as forks on disk IS
+        // materialized (its forks stay the merge remedy's domain, but the
+        // canonical export itself is this pass's job).
+        const fileKeys = new Set(keyed.map((f) => f.replace(/\.md$/, '')));
+        for (const key of pgKeys) {
+          if (fileKeys.has(key)) continue;
+          if (retired.has(key)) continue;
+          if (
+            result.mirrorRepaired + result.mirrorRepairFailed +
+            result.mirrorMaterialized + result.mirrorMaterializeFailed >=
+            mirrorRepairMaxPerPass()
+          ) {
+            result.mirrorMaterializeDeferred++;
+            continue;
+          }
+          try {
+            const existing = await reader.getRooSyncDashboard(key);
+            // Listed but unreadable journal → nothing to export yet; the next
+            // pass retries (same tolerance as the repair's read).
+            if (!existing) continue;
+            await options.writeMirror!(key, mapRowsToDashboard(existing.dashboard, existing.messages));
+            result.mirrorMaterialized++;
+          } catch (error) {
+            result.mirrorMaterializeFailed++;
+            result.failures.push(`${key}: mirror materialize failed — ${String(error)}`);
+          }
+        }
+      }
+    }
+  }
+
   result.durationMs = Date.now() - startedAt;
 
   // #4131 demande 2 — report the mirror's health, not just when it was healed.
@@ -983,6 +1062,17 @@ export async function reconcileDashboardsFromGDrive(
       `[dashboard-reconcile] Mirror repaired from PG on ${result.mirrorRepaired}/${result.mirrorChecked} key(s) ` +
         `(${result.mirrorRepairDeferred} deferred by the per-pass budget, ${result.mirrorRepairFailed} failed, ` +
         `${result.mirrorIdlessHeldKeys} held for id-less file-only messages)`
+    );
+  }
+  if (
+    result.mirrorMaterialized > 0 ||
+    result.mirrorMaterializeDeferred > 0 ||
+    result.mirrorMaterializeFailed > 0
+  ) {
+    logger.info(
+      `[dashboard-reconcile] Materialized ${result.mirrorMaterialized} PG-only key(s) to G: ` +
+        `(${result.mirrorMaterializeDeferred} deferred by the shared write budget, ` +
+        `${result.mirrorMaterializeFailed} failed)`
     );
   }
   if (result.mirrorAheadKeys.length > 0) {
