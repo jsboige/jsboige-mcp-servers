@@ -217,10 +217,15 @@ describe('Issue #564 - MCP Tools Audit', () => {
 
     beforeAll(async () => {
       // Trouver tous les fichiers de tests
-      const testFiles = await glob('**/*.test.ts', {
+      // #2307 : ce fichier d'audit lui-même est EXCLU du corpus — son
+      // inventaire ALL_MCP_TOOLS cite les 49 noms d'outils, donc le compter
+      // rend la couverture trivialement 100 % et l'assertion de la Phase 2
+      // vaine (toujours vraie). Mesuré 06/11 : 47/49 = 95,9 % hors fichier
+      // d'audit (sans : debug_analyze_task_parsing, roosync_publish_config).
+      const testFiles = (await glob('**/*.test.ts', {
         cwd: TOOLS_TEST_DIR,
         absolute: false
-      });
+      })).filter(f => f !== 'mcp-tools-audit.test.ts');
 
       toolsWithTests = new Set();
 
@@ -249,9 +254,10 @@ describe('Issue #564 - MCP Tools Audit', () => {
       toolsWithoutTests = ALL_MCP_TOOLS.filter(t => !toolsWithTests.has(t));
     });
 
-    it.skip('should report test coverage statistics', () => {
-      // SKIPPED: Issue #564 - Work in progress
-      // Test coverage is being built up incrementally
+    it('should report test coverage statistics', () => {
+      // #2307 : réactivé — couverture mesurée 47/49 = 95,9 % (06/11, corpus
+      // hors fichier d'audit, voir beforeAll). Le seuil 70 % tient avec
+      // marge ; la preuve et la méthode de mesure vivent dans la PR.
       const coverage = (toolsWithTests.size / ALL_MCP_TOOLS.length) * 100;
 
       console.log(`\n📊 Test Coverage Report:`);
