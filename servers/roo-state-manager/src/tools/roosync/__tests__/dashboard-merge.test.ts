@@ -1175,3 +1175,104 @@ describe('action merge — clé source portant un caractère de nom illicite (#4
     expect(archives[0].startsWith('machine-myia-po-2025 (1)-pre-merge-')).toBe(true);
   });
 });
+
+describe('action merge — collision de noms d’archive pré-merge (#4439, suite ms#1666)', () => {
+  const ARCHIVE_NAME = /^machine-myia-po-2025_a-pre-merge-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-([0-9a-f]{12})\.md$/;
+
+  it('deux clés hostiles qui s’assainissent vers le MÊME nom → DEUX archives distinctes (suffixe sha256 de la clé brute)', async () => {
+    // `a"b` et `a*b` s’assainissent toutes deux vers `a_b` (ms#1666) : sans
+    // suffixe, le second merge ÉCRASE l’archive du premier sans erreur
+    // (fs.rename/fs.writeFile), et la preuve de préservation du premier
+    // merge disparaît. Le hash porte la clé BRUTE : deux clés distinctes ne
+    // peuvent pas produire le même suffixe, même seconde et même nom assaini.
+    const KEY_QUOTE = 'machine-myia-po-2025"a';
+    const KEY_STAR = 'machine-myia-po-2025*a';
+    const pgView = (key: string, id: string, content: string) => ({
+      type: 'machine' as const,
+      key,
+      lastModified: '2026-09-08T12:48:00.000Z',
+      lastModifiedBy: { machineId: 'pg', workspace: 'pg' },
+      status: { markdown: `*Statut PG de ${content}.*` },
+      intercom: {
+        messages: [{
+          id, timestamp: '2026-09-08T12:48:00.000Z',
+          author: { machineId: 'pg', workspace: 'pg' },
+          content
+        }],
+        totalMessages: 1
+      }
+    });
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-05T17:02:00.000Z', [M.m2]);
+    pgReadSpy.mockImplementation(async (k: string) =>
+      k === KEY_QUOTE ? pgView(KEY_QUOTE, 'q-quote', 'q-quote — clé au guillemet')
+      : k === KEY_STAR ? pgView(KEY_STAR, 'q-star', 'q-star — clé à l’astérisque')
+      : null);
+
+    const first = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025', sourceKey: KEY_QUOTE
+    }) as any;
+    const second = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025', sourceKey: KEY_STAR
+    }) as any;
+    expect(first.success).toBe(true);
+    expect(second.success).toBe(true);
+
+    const archiveDir = path.join(dashboardsDir, 'archive');
+    const archives = readdirSync(archiveDir).filter(f => f.includes('-pre-merge-')).sort();
+    // Les DEUX archives existent — l’écrasement silencieux est le défaut visé.
+    expect(archives.length).toBe(2);
+    // Chaque nom porte le format complet : préfixe assaini commun, suffixe hash 12 hex.
+    const hashes = archives.map(f => {
+      const m = f.match(ARCHIVE_NAME);
+      expect(m).not.toBeNull();
+      return m![1];
+    });
+    // Les suffixes — donc les noms complets — sont DISTINCTS : c’est le hash de
+    // la clé brute qui discriminate, pas la seconde (les deux merges ci-dessus
+    // peuvent tomber dans la même seconde comme dans deux secondes voisines).
+    expect(hashes[0]).not.toBe(hashes[1]);
+    // Chaque archive conserve SON contenu : la preuve de préservation des deux merges.
+    expect(readFileSync(path.join(archiveDir, archives[0]), 'utf8')).toContain('clé au guillemet');
+    expect(readFileSync(path.join(archiveDir, archives[1]), 'utf8')).toContain('clé à l’astérisque');
+  });
+
+  it('frontmatter d’archive : sourceKey échappé — une clé au retour ligne ne peut pas injecter de lignes YAML', async () => {
+    // La garde ne refuse que `\/:`, `..` : un contrôle (retour ligne) passe.
+    // Interpolé brut, il découperait la valeur en lignes arbitraires du
+    // frontmatter (falsification des métadonnées d’archive). JSON.stringify
+    // rend un scalaire double-quoté, round-trip identique sous yaml.load.
+    const KEY_LF = 'machine-myia-po-2025_x\nEVIL_FRONTMATTER_LINE';
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-05T17:02:00.000Z', [M.m2]);
+    pgReadSpy.mockImplementation(async (k: string) => (k === KEY_LF ? {
+      type: 'machine' as const,
+      key: KEY_LF,
+      lastModified: '2026-09-08T12:48:00.000Z',
+      lastModifiedBy: { machineId: 'pg', workspace: 'pg' },
+      status: { markdown: '*Statut PG de la clé au retour ligne.*' },
+      intercom: {
+        messages: [{
+          id: 'q-lf', timestamp: '2026-09-08T12:48:00.000Z',
+          author: { machineId: 'pg', workspace: 'pg' },
+          content: 'q-lf — PG seul (clé au retour ligne)'
+        }],
+        totalMessages: 1
+      }
+    } : null));
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025', sourceKey: KEY_LF
+    }) as any;
+    expect(result.success).toBe(true);
+
+    const archiveDir = path.join(dashboardsDir, 'archive');
+    const archives = readdirSync(archiveDir).filter(f => f.includes('-pre-merge-'));
+    expect(archives.length).toBe(1);
+    const archText = readFileSync(path.join(archiveDir, archives[0]), 'utf8');
+    // Forme échappée, UNE ligne : `sourceKey: "…_x\nEVIL_FRONTMATTER_LINE"` avec
+    // backslash-n littéral (pas de saut de ligne réel dans le fichier).
+    expect(archText).toContain('sourceKey: "machine-myia-po-2025_x\\nEVIL_FRONTMATTER_LINE"');
+    // L’ancienne interpolation brute aurait posé `EVIL_FRONTMATTER_LINE` comme
+    // ligne PROPRE du frontmatter — jamais sous forme échappée.
+    expect(archText).not.toMatch(/^EVIL_FRONTMATTER_LINE$/m);
+  });
+});

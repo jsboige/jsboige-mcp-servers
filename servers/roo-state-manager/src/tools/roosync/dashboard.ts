@@ -10171,7 +10171,14 @@ async function handleMerge(
     const archiveDir = getArchiveDir();
     ensureStoreSubdir(getSharedStatePath(), 'dashboards', 'archive');
     const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    archiveFile = `${sanitizeKeyForFileName(sourceKey)}-pre-merge-${now}.md`;
+    // #4439 — le couple (nom assaini, seconde) ne distingue NI deux clés qui
+    // s'assainissent vers le même nom (`a"b` / `a*b` → `a_b`), NI deux archives
+    // posées dans la même seconde : `fs.rename` comme `fs.writeFile` écrasent
+    // alors l'archive précédente SANS erreur — la preuve de préservation du
+    // premier merge disparaît. Suffixe court sha256(clé BRUTE) : la forme
+    // assainie ne porte pas l'identité, elle vient précisément d'en perdre.
+    const keyHash = createHash('sha256').update(sourceKey, 'utf8').digest('hex').slice(0, 12);
+    archiveFile = `${sanitizeKeyForFileName(sourceKey)}-pre-merge-${now}-${keyHash}.md`;
     const archivePath = path.join(archiveDir, archiveFile);
 
     const sourceHasContent =
@@ -10207,9 +10214,13 @@ async function handleMerge(
       // vide par construction.
       if (sourceHasContent) {
         // #3584 (rétention) — sérialisation de la vue PG hors writeDashboardFile : masquer.
+        // #4439 — `sourceKey` échappé (JSON.stringify = scalaire double-quoté,
+        // round-trip identique sous yaml.load de read_archive) : la garde ne
+        // refuse que `\/:`, `..` — une clé porteuse d'un contrôle (retour
+        // ligne…) s'interpolerait en LIGNES arbitraires du frontmatter.
         await fs.writeFile(
           archivePath,
-          maskSecretText(`---\ntype: ${source.type}\nlastModified: ${source.lastModified}\nsourceKey: ${sourceKey}\nmergedInto: ${key}\n---\n\n## Status\n\n${source.status.markdown || '*Aucun contenu.*'}\n\n## Intercom (${source.intercom.messages.length} messages)\n\n${source.intercom.messages
+          maskSecretText(`---\ntype: ${source.type}\nlastModified: ${source.lastModified}\nsourceKey: ${JSON.stringify(sourceKey)}\nmergedInto: ${key}\n---\n\n## Status\n\n${source.status.markdown || '*Aucun contenu.*'}\n\n## Intercom (${source.intercom.messages.length} messages)\n\n${source.intercom.messages
             .map(m => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n[msg: ${m.id}]\n\n${m.content}`)
             .join('\n\n---\n\n')}\n`),
           'utf8'
