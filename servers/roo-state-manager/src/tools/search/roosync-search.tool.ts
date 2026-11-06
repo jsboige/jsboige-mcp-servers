@@ -40,8 +40,8 @@ export interface RooSyncSearchArgs {
     /** Filtre par workspace */
     workspace?: string;
 
-    /** #604: Filtre par source (roo ou claude-code) */
-    source?: 'roo' | 'claude-code';
+    /** #604: Filtre par source (roo, claude-code ou zoo-code — #2191) */
+    source?: 'roo' | 'claude-code' | 'zoo-code';
 
     // #636: Advanced search filters
     /** Filter by chunk type */
@@ -110,8 +110,8 @@ export const roosyncSearchTool: Tool = {
             },
             source: {
                 type: 'string',
-                enum: ['roo', 'claude-code'],
-                description: 'Filter by source (Roo or Claude Code)'
+                enum: ['roo', 'claude-code', 'zoo-code'],
+                description: 'Filter by source (Roo, Claude Code or Zoo Code — #2191)'
             },
             chunk_type: {
                 type: 'string',

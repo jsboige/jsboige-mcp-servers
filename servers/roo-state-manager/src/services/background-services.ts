@@ -1979,6 +1979,28 @@ export async function runIndexingWithInactivityWatchdog<T>(
 }
 
 /**
+ * #2191 — source d'indexation dérivée des métadonnées du squelette.
+ *
+ * `metadata.source` porte l'attribution posée par la découverte
+ * (`detectSourceFromPath` : 'roo' | 'claude-code' | 'zoo-code',
+ * roo-storage-detector) ; `metadata.dataSource` ne porte QUE le marqueur
+ * `'claude'` des sessions Claude Code (ailleurs : un chemin de tâche, ou un
+ * marqueur d'archive). L'ancienne dérivation ne lisait que `dataSource` : toute
+ * tâche Zoo partait en `'roo'`, et le point Qdrant héritait de la mauvaise
+ * source — `VectorIndexer` écrit `payload.source = source` (le paramètre
+ * écrase la source du chunk), donc `roosync_search` ne pouvait plus la filtrer
+ * correctement. L'attribution du store unifié, elle, était déjà correcte :
+ * `dualWriteConversationToStore` lit `skeleton.metadata.source` directement.
+ */
+export function deriveIndexSource(
+    metadata?: Partial<Pick<NonNullable<ConversationSkeleton['metadata']>, 'source' | 'dataSource'>>
+): 'roo' | 'claude-code' | 'zoo-code' {
+    if (metadata?.source === 'zoo-code') return 'zoo-code';
+    if (metadata?.source === 'claude-code' || metadata?.dataSource === 'claude') return 'claude-code';
+    return 'roo';
+}
+
+/**
  * Indexe une tâche spécifique dans Qdrant
  */
 export async function indexTaskInQdrant(taskId: string, state: ServerState): Promise<void> {
@@ -2026,8 +2048,10 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
 
         console.log(`[INDEX] Task ${taskId}: ${decision.reason}`);
 
-        // #604: Determine source from skeleton metadata
-        const source: 'roo' | 'claude-code' = skeleton.metadata?.dataSource === 'claude' ? 'claude-code' : 'roo';
+        // #604/#2191: source depuis les métadonnées du squelette — `metadata.source`
+        // d'abord (attribution de la découverte, y compris 'zoo-code'), marqueur
+        // `dataSource === 'claude'` en repli.
+        const source = deriveIndexSource(skeleton.metadata);
 
         // #1985 → #4352: Claude Code sessions are indexed unless the machine opts out
         // (ROO_INDEX_CLAUDE_SESSIONS=false). Manual roosync_indexing(action: "index") is
