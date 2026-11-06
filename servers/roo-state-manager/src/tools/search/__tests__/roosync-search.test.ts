@@ -34,7 +34,7 @@ vi.mock('../search-fallback.tool.js', () => ({
 }));
 
 import { handleRooSyncSearch, RooSyncSearchArgs } from '../roosync-search.tool.js';
-import type { ConversationSkeleton } from '../../../types/index.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Helpers
 function getTextContent(result: any, index = 0): string {
@@ -43,7 +43,7 @@ function getTextContent(result: any, index = 0): string {
 }
 
 describe('roosync_search', () => {
-	let mockCache: Map<string, ConversationSkeleton>;
+	let mockCache: Map<string, StoredConversation>;
 	let mockEnsureCache: (args?: { workspace?: string }) => Promise<boolean>;
 	let mockDiagnoseHandler: () => Promise<any>;
 

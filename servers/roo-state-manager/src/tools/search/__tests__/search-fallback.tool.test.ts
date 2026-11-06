@@ -14,14 +14,14 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { searchFallbackTool, handleSearchTasksSemanticFallback } from '../search-fallback.tool.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ---- helpers ----
 
 function makeSkeleton(
 	taskId: string,
-	overrides: Partial<ConversationSkeleton> = {}
-): ConversationSkeleton {
+	overrides: Partial<StoredConversation> = {}
+): StoredConversation {
 	return {
 		taskId,
 		metadata: {
@@ -36,10 +36,10 @@ function makeSkeleton(
 		},
 		sequence: [],
 		...overrides,
-	} as ConversationSkeleton;
+	} as StoredConversation;
 }
 
-function makeCache(...skeletons: ConversationSkeleton[]): Map<string, ConversationSkeleton> {
+function makeCache(...skeletons: StoredConversation[]): Map<string, StoredConversation> {
 	return new Map(skeletons.map(s => [s.taskId, s]));
 }
 

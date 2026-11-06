@@ -1,5 +1,5 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 // Type pour les arguments de recherche
 export interface SearchFallbackArgs {
@@ -41,7 +41,7 @@ function parseBound(value: string | undefined): number | undefined {
  */
 export async function searchFallbackTool(
   args: SearchFallbackArgs,
-  conversationCache: Map<string, ConversationSkeleton>
+  conversationCache: Map<string, StoredConversation>
 ): Promise<CallToolResult> {
   try {
     const { query, workspace, source, max_results, filters_requested } = args;
