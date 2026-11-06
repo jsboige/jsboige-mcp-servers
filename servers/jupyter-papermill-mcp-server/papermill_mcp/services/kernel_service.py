@@ -674,6 +674,17 @@ class KernelService:
             info["execution_count"] = cell.execution_count
             info["outputs_written"] = len(cell.outputs)
 
+            # This rewrite is NOT a Papermill pass: a metadata.papermill /
+            # metadata.execution left by an earlier Papermill run would keep
+            # dating the outputs just written to that old run (STALE_BLOCK,
+            # CoursIA #11155). Strip them via the shared organ before the
+            # write (#12722) -- the locations are reported so the caller can
+            # see the notebook was cleaned, not silently altered.
+            from ..utils.papermill_meta import strip_stale_papermill_metadata
+
+            info["stale_papermill_metadata_stripped"] = self._stale_papermill_locations(nb)
+            strip_stale_papermill_metadata(nb)
+
             FileUtils.write_notebook(nb, notebook_path)
             raw = Path(notebook_path).read_bytes()
             info["written"] = True
@@ -686,6 +697,23 @@ class KernelService:
             info["reason"] = f"persistence failed: {e}"
             logger.error(f"#4481 {info['reason']}")
         return info
+
+    @staticmethod
+    def _stale_papermill_locations(nb) -> List[str]:
+        """Locations the stale-metadata strip is about to remove, for the
+        persisted report (same key set as the vendored organ: top-level and
+        per-cell ``papermill`` / ``execution`` wrappers)."""
+        locations: List[str] = []
+        metadata = nb.get("metadata") or {}
+        for key in ("papermill", "execution"):
+            if key in metadata:
+                locations.append(f"metadata.{key}")
+        for i, cell in enumerate(nb.get("cells", []) or []):
+            cell_meta = cell.get("metadata") or {}
+            for key in ("papermill", "execution"):
+                if key in cell_meta:
+                    locations.append(f"cells[{i}].metadata.{key}")
+        return locations
 
     async def get_kernel_status(self, kernel_id: str) -> Dict[str, Any]:
         """
