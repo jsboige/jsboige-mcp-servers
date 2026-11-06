@@ -85,6 +85,7 @@ const UNION_MEMBERS: Record<IndexingErrorClass, true> = {
     connection_reset: true,
     dns_failure: true,
     embedding_timeout: true,
+    embedding_incomplete: true,
     qdrant_upsert_failed: true,
     unknown: true
 };
@@ -667,7 +668,8 @@ describe('tool-definitions.ts — Schema Validation', () => {
             const unionValues = Object.keys(UNION_MEMBERS) as IndexingErrorClass[];
             expect([...servedClasses].sort()).toEqual([...unionValues].sort());
             expect(servedClasses).toContain('qdrant_upsert_failed');
-            expect(servedClasses).toHaveLength(16);
+            expect(servedClasses).toContain('embedding_incomplete');
+            expect(servedClasses).toHaveLength(17);
         });
 
         it('roosync_indexing must expose the index_code_supplement params on the wire (#4352 a3)', () => {

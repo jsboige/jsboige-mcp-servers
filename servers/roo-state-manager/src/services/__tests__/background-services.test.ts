@@ -1267,6 +1267,33 @@ describe('background-services', () => {
       expect(isRearmableFailureClass(result.errorClass)).toBe(true);
     });
 
+    it('#4352 résidu — a partial-embedding row WITHOUT a transport cause is named, not unknown', () => {
+      // Verbatim from VectorIndexer.ts:1529 — 15 such rows stayed `unknown` in
+      // the ai-01 dead-letter measured by po-2023 on 05/11. The attempt wrote
+      // what it could (`kept for the retry`); the pre-flight dedup makes the
+      // next attempt embed only the missing sub-chunks — transient by design.
+      const message =
+        'Embedding incomplete for task abc123: 15/142 sub-chunks without a vector (127 points written, kept for the retry)';
+      const result = classifyIndexingError(new Error(message));
+      expect(result.errorClass).toBe('embedding_incomplete');
+      expect(result.isPermanent).toBe(false);
+      expect(isRearmableFailureClass(result.errorClass)).toBe(true);
+    });
+
+    it('#4352 résidu — the stated transport cause still WINS over the stage wording', () => {
+      // The stage pattern sits LAST on purpose. A message that names its cause
+      // must keep the actionable class: `Connection error.` → connection_reset,
+      // never the generic « incomplete ». Both wordings are measured on ai-01
+      // 27/10; inverting this is what a "more specific" placement would break.
+      const withSuffix = classifyIndexingError(
+        new Error(
+          'Embedding incomplete for task abc123: 15/142 sub-chunks without a vector (127 points written, kept for the retry) — last embedding error: Connection error.'
+        )
+      );
+      expect(withSuffix.errorClass).toBe('connection_reset');
+      expect(withSuffix.isPermanent).toBe(false);
+    });
+
     it('should return false + unknown for unknown errors', () => {
       expect(classifyIndexingError(new Error('unknown error'))).toEqual({ isPermanent: false, errorClass: 'unknown' });
       expect(classifyIndexingError(new Error(''))).toEqual({ isPermanent: false, errorClass: 'unknown' });
