@@ -249,9 +249,9 @@ describe('Issue #564 - MCP Tools Audit', () => {
       toolsWithoutTests = ALL_MCP_TOOLS.filter(t => !toolsWithTests.has(t));
     });
 
-    it.skip('should report test coverage statistics', () => {
-      // SKIPPED: Issue #564 - Work in progress
-      // Test coverage is being built up incrementally
+    it('should report test coverage statistics', () => {
+      // #2307: re-enabled — coverage is now 49/49 (100%), so the 70% floor below
+      // is enforced in CI again. (Was `it.skip` for #564 while coverage was built up.)
       const coverage = (toolsWithTests.size / ALL_MCP_TOOLS.length) * 100;
 
       console.log(`\n📊 Test Coverage Report:`);
