@@ -517,13 +517,17 @@ private async collectMcpServers(): Promise<McpServerInfo[]> {
    * que la collecte interne — PG d'abord (clé inventory:{machineId}), miroir
    * GDrive seulement si PG n'a pas pris l'écriture (#4131 Phase D, 03/11).
    *
-   * La clé est normalisée en minuscules AVANT la garde d'identité : un fichier
-   * produit avec une casse mixte publie la forme canonique, il n'est pas
-   * refusé (la règle asymétrique ms#1628 vise les writers du service, pas ses
-   * éditeurs externes).
+   * La clé est normalisée (trim + minuscules) AVANT la garde d'identité : un
+   * fichier produit avec une casse mixte ou des blancs en bordure publie la
+   * forme canonique, il n'est pas refusé (la règle asymétrique ms#1628 vise
+   * les writers du service, pas ses éditeurs externes). Le trim n'est pas
+   * cosmétique : un blanc en bordure passe la garde « minuscules » puis fait
+   * échouer la clé PG ET le nom de fichier miroir (Windows refuse les espaces
+   * finales), rendant « les deux en échec » pour une faute de frappe (réserve
+   * NanoClaw, review ms#1662).
    */
   public async publishExternalInventory(raw: FullInventory): Promise<InventorySaveOutcome> {
-    const inventory: FullInventory = { ...raw, machineId: String(raw.machineId).toLowerCase() };
+    const inventory: FullInventory = { ...raw, machineId: String(raw.machineId).trim().toLowerCase() };
     return await this.saveToSharedState(inventory);
   }
 
