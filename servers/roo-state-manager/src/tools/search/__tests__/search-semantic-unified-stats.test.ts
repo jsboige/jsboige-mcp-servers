@@ -13,7 +13,7 @@
  */
 
 import { describe, test, expect } from 'vitest';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { buildConversationStats } from '../search-semantic.tool.js';
 
 // ─── Path A (legacy, congelé verbatim de search-semantic.tool.ts pré-#1394) ──
@@ -24,7 +24,7 @@ interface ConversationStatsA {
     last_activity: string | undefined;
 }
 
-function legacyConversationStats(cached: ConversationSkeleton): ConversationStatsA {
+function legacyConversationStats(cached: StoredConversation): ConversationStatsA {
     return {
         total_messages: cached.metadata?.messageCount || 0,
         workspace: cached.metadata?.workspace,
@@ -44,7 +44,7 @@ function makeSkeleton(overrides: {
     workspace?: string;
     lastActivity?: string;
     createdAt?: string;
-}): ConversationSkeleton {
+}): StoredConversation {
     return {
         taskId: overrides.taskId,
         metadata: {
@@ -57,10 +57,10 @@ function makeSkeleton(overrides: {
             source: 'roo',
         },
         sequence: [],
-    } as ConversationSkeleton;
+    } as StoredConversation;
 }
 
-const CORPUS: ConversationSkeleton[] = [
+const CORPUS: StoredConversation[] = [
     // Cas nominal : tout rempli, lastActivity > createdAt.
     makeSkeleton({ taskId: 'full', messageCount: 12, workspace: 'd:/dev/CoursIA' }),
     // messageCount 0 → total_messages 0 par `|| 0` des deux côtés.

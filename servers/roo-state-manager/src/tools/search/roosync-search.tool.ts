@@ -11,7 +11,7 @@
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 // Import des handlers existants
 import { searchTasksByContentTool, SearchTasksByContentArgs, extractSemanticErrorMode, INFRASTRUCTURE_ERROR_MODES } from './search-semantic.tool.js';
@@ -166,9 +166,9 @@ export const roosyncSearchTool: Tool = {
  */
 export async function handleRooSyncSearch(
     args: RooSyncSearchArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     ensureCacheFreshCallback: (args?: { workspace?: string }) => Promise<boolean>,
-    fallbackHandler: (args: any, cache: Map<string, ConversationSkeleton>) => Promise<CallToolResult>,
+    fallbackHandler: (args: any, cache: Map<string, StoredConversation>) => Promise<CallToolResult>,
     diagnoseHandler?: () => Promise<CallToolResult>
 ): Promise<CallToolResult> {
     // Validation de l'action

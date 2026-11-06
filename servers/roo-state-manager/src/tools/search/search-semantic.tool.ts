@@ -4,7 +4,6 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
 import { toUnifiedTask } from '../../types/unified-task.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { getEmbeddingQueryClient, getEmbeddingModel } from '../../services/openai.js';
@@ -14,7 +13,7 @@ import { resetEmbeddingCircuitBreaker as resetWriteCircuitBreaker } from '../../
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
 import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
 import { getUnifiedStoreReader } from '../../services/unified-store/reader-factory.js';
-import type { UnifiedStoreSearchFilters } from '../../services/unified-store/types.js';
+import type { StoredConversation, UnifiedStoreSearchFilters } from '../../services/unified-store/types.js';
 
 // #1232: Circuit breaker for embedding API failures
 // When the embedding API returns 502/503, skip semantic search and go directly to text fallback
@@ -102,7 +101,7 @@ const SEMANTIC_RETRY_BACKOFF_MS = parseInt(process.env.SEMANTIC_RETRY_BACKOFF_MS
  * createdAt` — assertée par le test A/B
  * `search/__tests__/search-semantic-unified-stats.test.ts`.
  */
-export function buildConversationStats(cached: ConversationSkeleton): {
+export function buildConversationStats(cached: StoredConversation): {
     total_messages: number;
     workspace: string | undefined;
     last_activity: string | undefined;
@@ -1359,9 +1358,9 @@ export const searchTasksByContentTool = {
      */
     handler: async (
         args: SearchTasksByContentArgs,
-        conversationCache: Map<string, ConversationSkeleton>,
+        conversationCache: Map<string, StoredConversation>,
         ensureCacheFreshCallback: (args?: { workspace?: string }) => Promise<boolean>,
-        fallbackHandler: (args: any, cache: Map<string, ConversationSkeleton>) => Promise<CallToolResult>,
+        fallbackHandler: (args: any, cache: Map<string, StoredConversation>) => Promise<CallToolResult>,
         diagnoseHandler?: () => Promise<CallToolResult>
     ): Promise<CallToolResult> => {
         const { conversation_id, search_query, max_results, offset, diagnose_index = false, workspace, source,

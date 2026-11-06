@@ -7,7 +7,7 @@
 
 import { describe, test, expect, beforeEach } from 'vitest';
 import { searchFallbackTool, handleSearchTasksSemanticFallback, SearchFallbackArgs } from '../search-fallback.tool.js';
-import type { ConversationSkeleton } from '../../../types/index.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Helpers
 function parseResult(result: any): any {
@@ -15,7 +15,7 @@ function parseResult(result: any): any {
 	return text ? JSON.parse(text) : {};
 }
 
-function createSkeleton(overrides: Partial<ConversationSkeleton> & { taskId: string }): ConversationSkeleton {
+function createSkeleton(overrides: Partial<StoredConversation> & { taskId: string }): StoredConversation {
 	return {
 		taskId: overrides.taskId,
 		parentTaskId: overrides.parentTaskId,
@@ -33,11 +33,11 @@ function createSkeleton(overrides: Partial<ConversationSkeleton> & { taskId: str
 			...(overrides.metadata ?? {})
 		},
 		sequence: overrides.sequence ?? []
-	} as ConversationSkeleton;
+	} as StoredConversation;
 }
 
 describe('search-fallback (text search)', () => {
-	let cache: Map<string, ConversationSkeleton>;
+	let cache: Map<string, StoredConversation>;
 
 	beforeEach(() => {
 		cache = new Map();
@@ -366,7 +366,7 @@ describe('search-fallback (text search)', () => {
 
 			test('full phrase match scores higher than individual token matches', async () => {
 				// Use a fresh cache to avoid interference from shared fixtures
-				const freshCache = new Map<string, ConversationSkeleton>();
+				const freshCache = new Map<string, StoredConversation>();
 				freshCache.set('task-exact', createSkeleton({
 					taskId: 'task-exact',
 					truncatedInstruction: 'Fix heartbeat hostname issue in production',

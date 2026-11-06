@@ -83,7 +83,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 }));
 
 import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, passageQualityFactor, requestFormFactor, composePassageSlots, PASSAGE_SLOT_FLOOR_CHARS } from '../search-semantic.tool.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { splitChunkId } from '../../../services/task-indexer/ChunkExtractor.js';
 
 // ─────────────────── helpers ───────────────────
@@ -92,7 +92,7 @@ function getTextContent(result: any): string {
 	return result.content?.[0]?.text || '';
 }
 
-function makeCache(): Map<string, ConversationSkeleton> {
+function makeCache(): Map<string, StoredConversation> {
 	return new Map();
 }
 
