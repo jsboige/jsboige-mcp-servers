@@ -1,5 +1,5 @@
 /**
- * Fire-and-forget dual-write of a FULL ConversationSkeleton to the unified Postgres store.
+ * Fire-and-forget dual-write of a FULL conversation body (StoredConversation) to the unified Postgres store.
  *
  * @module services/unified-store/dual-write
  * @issue #692 — the original wiring lived in SkeletonCacheService.addOrUpdate(), which
@@ -12,7 +12,7 @@
  * UNIFIED_STORE_PG_URL is unset), getUnifiedStoreWriter() returns a NullUnifiedStoreWriter
  * whose upsertConversationOnly() is a no-op → zero overhead when the flag is off.
  *
- * ⚠️ MUST only be called with a COMPLETE ConversationSkeleton (built by analyzeConversation
+ * ⚠️ MUST only be called with a COMPLETE conversation body (built by analyzeConversation
  * / archiveToSkeleton / parsed from a skeleton file with a non-empty `sequence`).
  * Header-only partials produced by `toHeader()` drop the sequence and must NOT be passed —
  * they would persist an incomplete row. Call sites that cache a `toHeader()` must dual-write
@@ -26,8 +26,8 @@
  * that await it read `result.ok`.
  */
 
-import type { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
-import type { ConversationRow, Harness, MessageRow } from './types.js';
+import type { MessageSkeleton } from '../../types/conversation.js';
+import type { ConversationRow, Harness, MessageRow, StoredConversation } from './types.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 
 /**
@@ -38,7 +38,7 @@ import { getUnifiedStoreWriter } from './writer-factory.js';
  * not need to import ActionMetadata and tolerates additive fields on either side.
  */
 function isMessageSkeleton(
-  item: ConversationSkeleton['sequence'][number]
+  item: StoredConversation['sequence'][number]
 ): item is MessageSkeleton {
   return typeof (item as MessageSkeleton).role === 'string';
 }
@@ -60,7 +60,7 @@ function isMessageSkeleton(
  */
 function mapSequenceToMessageRows(
   taskId: string,
-  sequence: ConversationSkeleton['sequence']
+  sequence: StoredConversation['sequence']
 ): MessageRow[] {
   const rows: MessageRow[] = [];
   let seq = 0;
@@ -93,13 +93,13 @@ export interface DualWriteResult {
 }
 
 /**
- * Map a ConversationSkeleton to a ConversationRow and upsert it into the unified store.
+ * Map a conversation body (StoredConversation) to a ConversationRow and upsert it into the unified store.
  * Fire-and-forget at call sites (never rejects, env-gated to a no-op when the flag is off);
  * callers that await it read the DualWriteResult (#2427 defect B).
  */
 export async function dualWriteConversationToStore(
   taskId: string,
-  skeleton: ConversationSkeleton
+  skeleton: StoredConversation
 ): Promise<DualWriteResult> {
   try {
     const writer = getUnifiedStoreWriter();

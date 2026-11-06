@@ -30,17 +30,17 @@
  * displayed label. `resolveLabel` coalesces title -> metadata.title -> first
  * user message, measured at 99.9% labelled (1113/1114) on po-2025.
  *
- * `loadPgConversationSkeleton` is the `view` counterpart (#2191): same gate,
+ * `loadPgConversationBody` is the `view` counterpart (#2191): same gate,
  * it loads ONE conversation's body when no local source can.
  */
 
-import type { ActionMetadata, ConversationSkeleton, SkeletonMetadata } from '../../types/conversation.js';
+import type { ActionMetadata, SkeletonMetadata } from '../../types/conversation.js';
 import type {
   IUnifiedStoreReader,
   ConversationListFilters,
   ConversationListRow,
 } from './UnifiedStoreReader.js';
-import type { MessageRow } from './types.js';
+import type { MessageRow, StoredConversation } from './types.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { isPgFlagOn } from './pg-flags.js';
 import { createLogger } from '../../utils/logger.js';
@@ -163,7 +163,7 @@ function notEpochJunk<T>(value: T | null | undefined): T | undefined {
  * stored metadata carries no real value, and no per-role message counts are
  * fabricated for a conversation whose messages were never read.
  */
-export function mapRowToSkeleton(row: ConversationListRow): ConversationSkeleton {
+export function mapRowToSkeleton(row: ConversationListRow): StoredConversation {
   const meta = row.metadata ?? {};
   // #4151 risque 2 — epoch-junk timestamps never feed lastActivity/createdAt:
   // the coalescing skips them exactly like an absent value.
@@ -207,7 +207,7 @@ export interface PgConversationTierResult {
   /** True when the row cap was reached — results may omit older conversations. */
   truncated: boolean;
   /** Skeletons contributed, i.e. rows whose taskId no earlier tier had produced. */
-  skeletons: ConversationSkeleton[];
+  skeletons: StoredConversation[];
   /** #4151 risque 2 — rows whose first_ts/last_ts was epoch-junk (masked at read, data intact). */
   epoch1970_filtered: number;
   /** Present only when status === 'failed'. */
@@ -238,7 +238,7 @@ export async function loadPgConversationTier(
   const limit = filters.limit ?? DEFAULT_PG_LIST_LIMIT;
   try {
     const rows = await reader.listConversations({ ...filters, limit });
-    const skeletons: ConversationSkeleton[] = [];
+    const skeletons: StoredConversation[] = [];
     let epoch1970Filtered = 0;
     for (const row of rows) {
       if (isEpochJunkTimestamp(row.first_ts) || isEpochJunkTimestamp(row.last_ts)) epoch1970Filtered++;
@@ -299,7 +299,7 @@ function isActionMetadata(value: unknown): value is ActionMetadata {
  * same way a local load does. Rows written before ms#1396 carry null
  * tool_calls and keep rendering messages-only, unchanged.
  */
-export async function loadPgConversationSkeleton(taskId: string): Promise<ConversationSkeleton | null> {
+export async function loadPgConversationBody(taskId: string): Promise<StoredConversation | null> {
   const reader = getConversationListPgReader();
   if (!reader) return null;
 
@@ -319,7 +319,7 @@ export async function loadPgConversationSkeleton(taskId: string): Promise<Conver
 
     const firstUserMessage = messages.find(m => m.role === 'user')?.content ?? null;
 
-    const sequence: ConversationSkeleton['sequence'] = [];
+    const sequence: StoredConversation['sequence'] = [];
     let actionsUnfolded = 0;
     for (const m of messages) {
       if (m.role !== 'user' && m.role !== 'assistant') continue;

@@ -17,9 +17,9 @@ import {
   getUnifiedStoreWriter,
   resetWriterInstance,
 } from '../index.js';
-import type { ConversationSkeleton } from '../../../../types/conversation.js';
+import type { StoredConversation } from '../types.js';
 
-function makeSkeleton(id: string | undefined): ConversationSkeleton {
+function makeSkeleton(id: string | undefined): StoredConversation {
   return {
     taskId: id,
     metadata: {
@@ -33,7 +33,7 @@ function makeSkeleton(id: string | undefined): ConversationSkeleton {
       machineId: 'myia-po-2023',
     },
     sequence: [],
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
 describe('runBackfill (#2581 volet 1)', () => {
@@ -83,7 +83,7 @@ describe('runBackfill (#2581 volet 1)', () => {
   test('skips skeletons missing taskId (does not call writeFn)', async () => {
     const skeletons = [
       makeSkeleton('t1'),
-      { ...makeSkeleton('t2'), taskId: undefined } as ConversationSkeleton,
+      { ...makeSkeleton('t2'), taskId: undefined } as StoredConversation,
       makeSkeleton('t3'),
     ];
     const writeFn = vi.fn().mockResolvedValue(undefined);

@@ -17,7 +17,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { dualWriteConversationToStore } from '../dual-write.js';
 import { resetWriterInstance } from '../writer-factory.js';
 import { NullUnifiedStoreWriter } from '../UnifiedStoreWriter.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../types.js';
 
 // #2656: vi.unstubAllEnvs() restores process.env to its ORIGINAL (OS-inherited)
 // state, not a clean slate. On machines where UNIFIED_STORE_DUAL_WRITE=1 is set
@@ -44,7 +44,7 @@ type SkelOverrides = {
   messageCount?: number;
 };
 
-function makeSkeleton(overrides: SkelOverrides = {}): ConversationSkeleton {
+function makeSkeleton(overrides: SkelOverrides = {}): StoredConversation {
   const metadata = {
     lastActivity: overrides.lastActivity ?? '2026-01-02T00:00:00.000Z',
     createdAt: overrides.createdAt ?? '2026-01-01T00:00:00.000Z',
@@ -56,7 +56,7 @@ function makeSkeleton(overrides: SkelOverrides = {}): ConversationSkeleton {
     workspace: overrides.workspace,
     parentTaskId: overrides.parentTaskId,
     title: overrides.title,
-  } as ConversationSkeleton['metadata'];
+  } as StoredConversation['metadata'];
 
   return {
     taskId: 'task-stub',
@@ -64,10 +64,10 @@ function makeSkeleton(overrides: SkelOverrides = {}): ConversationSkeleton {
     messageCount: overrides.messageCount ?? 0,
     sequence: [],
     metadata,
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
-function makeMinimalSkeleton(): ConversationSkeleton {
+function makeMinimalSkeleton(): StoredConversation {
   // Simulates "no metadata" by making metadata undefined — tests must pass
   // the null-coalescing chain (`skeleton.metadata?.source ?? 'roo'` etc).
   return {
@@ -76,7 +76,7 @@ function makeMinimalSkeleton(): ConversationSkeleton {
     messageCount: 0,
     sequence: [],
     metadata: undefined,
-  } as unknown as ConversationSkeleton;
+  } as unknown as StoredConversation;
 }
 
 describe('dual-write — env-gate off (Null writer, silent no-op)', () => {
@@ -311,7 +311,7 @@ describe('dual-write — row field mapping', () => {
       messageCount: 0,
       sequence: [],
       metadata: baseMeta,
-    } as ConversationSkeleton;
+    } as StoredConversation;
     await dualWriteConversationToStore('arg-id', skel);
     const row = spy.mock.calls[0][0];
     expect(row.task_id).toBe('arg-id');
@@ -338,7 +338,7 @@ describe('dual-write — row field mapping', () => {
       messageCount: 0,
       sequence: [],
       metadata: baseMeta,
-    } as ConversationSkeleton;
+    } as StoredConversation;
     await dualWriteConversationToStore('task-1', skel);
     const row = spy.mock.calls[0][0];
     expect(row.parent_task_id).toBe('parent-from-top');
@@ -356,7 +356,7 @@ describe('dual-write — row field mapping', () => {
       messageCount: 0,
       sequence: [],
       metadata: baseMeta,
-    } as ConversationSkeleton;
+    } as StoredConversation;
     await dualWriteConversationToStore('task-1', skel);
     const row = spy.mock.calls[0][0];
     expect(row.parent_task_id).toBe('parent-from-meta');
@@ -370,7 +370,7 @@ describe('dual-write — row field mapping', () => {
       messageCount: 0,
       sequence: [],
       metadata: baseMeta,
-    } as ConversationSkeleton;
+    } as StoredConversation;
     await dualWriteConversationToStore('task-1', skel);
     const row = spy.mock.calls[0][0];
     expect(row.parent_task_id).toBeNull();
@@ -497,7 +497,7 @@ describe('dual-write — #2957 défaut 1 message-write', () => {
 
   // Skeleton with a mixed sequence: user msg, tool action, assistant msg, command action.
   // Expected message rows = the 2 MessageSkeleton entries (actions filtered out).
-  function makeSkeletonWithSequence(taskId: string): ConversationSkeleton {
+  function makeSkeletonWithSequence(taskId: string): StoredConversation {
     return {
       taskId,
       parentTaskId: null,
@@ -517,7 +517,7 @@ describe('dual-write — #2957 défaut 1 message-write', () => {
         source: 'roo',
         machineId: 'myia-po-2026',
       },
-    } as unknown as ConversationSkeleton;
+    } as unknown as StoredConversation;
   }
 
   test('calls upsertMessages with mapped message rows (actions folded into the preceding row, #2191)', async () => {
@@ -561,7 +561,7 @@ describe('dual-write — #2957 défaut 1 message-write', () => {
       { type: 'tool', name: 'Bash', parameters: { command: 'ls' }, status: 'success', timestamp: '2026-08-09T10:00:00.000Z' },
       { type: 'tool', name: 'Grep', parameters: { pattern: 'x' }, status: 'success', timestamp: '2026-08-09T10:00:00.000Z' },
       { role: 'user', content: '[tool_result] Result: ok', timestamp: '2026-08-09T10:00:01.000Z', isTruncated: false },
-    ] as ConversationSkeleton['sequence'];
+    ] as StoredConversation['sequence'];
     await dualWriteConversationToStore('task-multi', skeleton);
     const rows = msgSpy.mock.calls[0][0];
     expect(rows).toHaveLength(2);
@@ -574,7 +574,7 @@ describe('dual-write — #2957 défaut 1 message-write', () => {
     skeleton.sequence = [
       { type: 'tool', name: 'Orphan', parameters: {}, status: 'success', timestamp: '2026-08-09T09:59:59.000Z' },
       { role: 'user', content: 'hi', timestamp: '2026-08-09T10:00:00.000Z', isTruncated: false },
-    ] as ConversationSkeleton['sequence'];
+    ] as StoredConversation['sequence'];
     await dualWriteConversationToStore('task-lead', skeleton);
     const rows = msgSpy.mock.calls[0][0];
     expect(rows).toHaveLength(1);
@@ -600,7 +600,7 @@ describe('dual-write — #2957 défaut 1 message-write', () => {
   test('single-point guard: missing sequence (undefined) → upsertMessages NOT called', async () => {
     // Header-only toHeader() partials drop the sequence entirely. The nullish
     // fallback (`skeleton.sequence ?? []`) must absorb this without throwing.
-    const headerOnly = { taskId: 'task-hdr', metadata: { source: 'roo' } } as unknown as ConversationSkeleton;
+    const headerOnly = { taskId: 'task-hdr', metadata: { source: 'roo' } } as unknown as StoredConversation;
     await expect(dualWriteConversationToStore('task-hdr', headerOnly)).resolves.toEqual({ ok: true });
     expect(msgSpy).not.toHaveBeenCalled();
   });

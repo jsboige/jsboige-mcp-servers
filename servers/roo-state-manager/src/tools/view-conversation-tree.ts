@@ -11,7 +11,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
-import { loadPgConversationSkeleton } from '../services/unified-store/conversation-list-store.js';
+import { loadPgConversationBody } from '../services/unified-store/conversation-list-store.js';
 import { sanitizeInt } from '../utils/int-validator.js';
 
 /**
@@ -206,7 +206,7 @@ async function renderFromUnifiedStore(
     args: ViewConversationTreeArgs,
     conversationCache: Map<string, ConversationSkeleton>
 ): Promise<CallToolResult | null> {
-    const stored = await loadPgConversationSkeleton(taskId);
+    const stored = await loadPgConversationBody(taskId);
     if (!stored) return null;
     conversationCache.set(taskId, stored);
     console.log(`[view] Task '${taskId}' served from the unified store (${stored.sequence.length} messages)`);
