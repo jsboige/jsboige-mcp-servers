@@ -2,7 +2,8 @@
 """Run benchmark #1748-H: execute tasks against all models and generate report.
 
 Calls models directly via OpenAI-compatible API (no MCP dependency).
-Reads model config from sk_agent_config.json.
+Reads model config from sk_agent_config.json (the committed template when no
+live config is installed), and benchmarks every model it marks enabled.
 """
 
 import json
@@ -12,24 +13,32 @@ import os
 import httpx
 from pathlib import Path
 
-# Load config
+# Load config. sk_agent_config.json is seat-specific and not in git, so CI and
+# fresh clones only ship the template; reading whichever is present keeps this
+# module importable — and its model list testable — everywhere.
 CONFIG_PATH = Path(__file__).parent / "sk_agent_config.json"
-with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+TEMPLATE_CONFIG_PATH = Path(__file__).parent / "sk_agent_config.template.json"
+ACTIVE_CONFIG_PATH = CONFIG_PATH if CONFIG_PATH.exists() else TEMPLATE_CONFIG_PATH
+with open(ACTIVE_CONFIG_PATH, "r", encoding="utf-8") as f:
     config = json.load(f)
 
 # Import tasks from benchmark_models
 sys.path.insert(0, str(Path(__file__).parent))
 from benchmark_models import TASKS, generate_benchmark_report
 
-# Models to benchmark (enabled, non-Anthropic, non-OWUI-disabled)
-BENCHMARK_MODEL_IDS = [
-    "glm-5.3",
-    "glm-5",
-    "glm-5.3-not",
-    "glm-5-not",
-    "glm-4.7-flash",
-    "qwen3.6-35b-a3b",
-]
+
+def derive_benchmark_model_ids(cfg: dict) -> list[str]:
+    """Model ids to benchmark: every model marked enabled in the loaded config.
+
+    Derived from the config (#1748 H(i)), never a hardcoded list — a literal one
+    goes stale silently: it kept benchmarking `glm-5`, `glm-5-not` and
+    `glm-4.7-flash` after they had left the config, and never benchmarked the
+    variants that replaced them.
+    """
+    return [m["id"] for m in cfg.get("models", []) if m.get("enabled", False)]
+
+
+BENCHMARK_MODEL_IDS = derive_benchmark_model_ids(config)
 
 
 def get_model_config(model_id: str) -> dict | None:
@@ -172,7 +181,8 @@ def main():
     total = len(BENCHMARK_MODEL_IDS) * len(TASKS)
     done = 0
 
-    print(f"# Benchmark #1748-H — {len(BENCHMARK_MODEL_IDS)} models × {len(TASKS)} tasks = {total} runs\n")
+    print(f"# Benchmark #1748-H — {len(BENCHMARK_MODEL_IDS)} models × {len(TASKS)} tasks = {total} runs")
+    print(f"# config: {ACTIVE_CONFIG_PATH.name}\n")
 
     for model_id in BENCHMARK_MODEL_IDS:
         model_cfg = get_model_config(model_id)
