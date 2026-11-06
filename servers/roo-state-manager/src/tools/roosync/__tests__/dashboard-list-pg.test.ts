@@ -223,11 +223,55 @@ describe('classifyMirrorDivergence (#4187, pur)', () => {
   it('horodatage PG illisible → fail-open, pas de faux positif', () => {
     expect(classifyMirrorDivergence('pas-un-iso', Date.now()).diverged).toBe(false);
   });
+
+  it('miroir coupé (4e param) : écart > seuil dans les DEUX sens → pas divergent, état mirror-off nommé', () => {
+    // file-newer : l'export a écrit le fichier après le dernier append PG.
+    const pgOld = new Date(Date.now() - 40 * 60 * 1000).toISOString();
+    const v1 = classifyMirrorDivergence(pgOld, Date.now(), MIRROR_DIVERGENCE_THRESHOLD_MS, true);
+    expect(v1.diverged).toBe(false);
+    expect(v1.expected).toBe('mirror-off');
+    expect(v1.direction).toBe('file-newer');
+    expect(v1.gapMs).toBeGreaterThan(MIRROR_DIVERGENCE_THRESHOLD_MS);
+    // pg-newer : un append n'a pas encore été exporté vers le fichier.
+    const pgNew = new Date(Date.now() + 40 * 60 * 1000).toISOString();
+    const v2 = classifyMirrorDivergence(pgNew, Date.now(), MIRROR_DIVERGENCE_THRESHOLD_MS, true);
+    expect(v2.diverged).toBe(false);
+    expect(v2.expected).toBe('mirror-off');
+    expect(v2.direction).toBe('pg-newer');
+  });
+
+  it('miroir coupé : sous le seuil ou une seule surface → inchangé, pas d\'état parasite', () => {
+    const pg = new Date(Date.now() - 60 * 1000).toISOString();
+    const v = classifyMirrorDivergence(pg, Date.now(), MIRROR_DIVERGENCE_THRESHOLD_MS, true);
+    expect(v.diverged).toBe(false);
+    expect(v.expected).toBeUndefined();
+    expect(
+      classifyMirrorDivergence(undefined, Date.now(), MIRROR_DIVERGENCE_THRESHOLD_MS, true).expected
+    ).toBeUndefined();
+  });
+
+  it('4e paramètre default = false : la signature à 3 arguments garde la sémantique #4187', () => {
+    const pg = new Date(Date.now() - 40 * 60 * 1000).toISOString();
+    const v = classifyMirrorDivergence(pg, Date.now());
+    expect(v.diverged).toBe(true);
+    expect(v.expected).toBeUndefined();
+  });
 });
 
 // ─── #4187 : garde mirrorDiverged dans la branche PG de handleList ─────────
 
 describe('roosync_dashboard list — garde mirrorDiverged (#4187)', () => {
+  beforeEach(() => {
+    // #4187 surveille un DUAL-WRITE : ses tests l'exercent miroir ON. Depuis
+    // ms#1664 le défaut est « miroir coupé » (kill-switch absent) et l'état
+    // mirror-off suspend l'instrument — sans cette ligne, ces tests ne
+    // garderaient plus rien.
+    process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR = '1';
+  });
+  afterEach(() => {
+    delete process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR;
+  });
+
   it('fichier GDrive plus frais que le miroir PG : entrée flaggée + divergence nommée dans le message', async () => {
     listKeysSpy.mockResolvedValue(['workspace-claudish']);
     // Miroir PG figé il y a 30 min (rows périmées — la fenêtre #4187)…
@@ -287,5 +331,66 @@ describe('roosync_dashboard list — garde mirrorDiverged (#4187)', () => {
     const entry = r.dashboards.find((d: any) => d.key === 'workspace-pg-only');
     expect(entry.mirrorDiverged).toBeUndefined();
     expect(r.message).not.toContain('mirrorDiverged');
+  });
+});
+
+// ─── #4131 G-DASH suite : miroir coupé → #4187 suspendu, silence lisible ────
+
+describe('roosync_dashboard list — miroir coupé : #4187 suspendu avec état nommé (#4131 G-DASH)', () => {
+  beforeEach(() => {
+    // Défaut post-ms#1664 : kill-switch ABSENT = miroir coupé. Explicitement
+    // retiré pour que le défaut soit bien ce que ces tests mesurent.
+    delete process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR;
+  });
+  afterEach(() => {
+    delete process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR;
+  });
+
+  it('pg-newer massif (append jamais exporté) : PAS de flag, écart compté comme ATTENDU dans le message', async () => {
+    listKeysSpy.mockResolvedValue(['workspace-cutover']);
+    // PG vivant (append à l'instant), fichier figé il y a 30 min (cutover).
+    pgReadSpy.mockResolvedValue(pgDashboard('workspace-cutover', new Date().toISOString()));
+    seedGdriveFile('workspace-cutover.md', 'workspace', new Date().toISOString());
+    const back = new Date(Date.now() - 30 * 60 * 1000);
+    utimesSync(path.join(dashboardsDir, 'workspace-cutover.md'), back, back);
+
+    const r = (await roosyncDashboard({ action: 'list' })) as any;
+    expect(r.success).toBe(true);
+    const entry = r.dashboards.find((d: any) => d.key === 'workspace-cutover');
+    expect(entry.mirrorDiverged).toBeUndefined();
+    expect(r.message).not.toContain('mirrorDiverged (#4187)');
+    // Le silence est lisible : l'état « miroir coupé » est nommé, l'instrument
+    // n'est pas mort en silence (exigence symétrique à la sonde #4340).
+    expect(r.message).toContain('écart d\'export ATTENDU');
+    expect(r.message).toContain('#4187 suspendu');
+    expect(r.message).toContain('1 clé(s)');
+  });
+
+  it('file-newer (export écrit APRÈS le dernier append) : suspendu AUSSI — un export périodique en produirait en série', async () => {
+    listKeysSpy.mockResolvedValue(['machine-quiet']);
+    // Dashboard calme : dernier append il y a 40 min, export écrit à l'instant.
+    const pgOld = new Date(Date.now() - 40 * 60 * 1000).toISOString();
+    pgReadSpy.mockResolvedValue(pgDashboard('machine-quiet', pgOld));
+    seedGdriveFile('machine-quiet.md', 'machine', pgOld); // mtime = maintenant
+
+    const r = (await roosyncDashboard({ action: 'list' })) as any;
+    expect(r.success).toBe(true);
+    const entry = r.dashboards.find((d: any) => d.key === 'machine-quiet');
+    expect(entry.mirrorDiverged).toBeUndefined();
+    expect(r.message).not.toContain('mirrorDiverged (#4187)');
+    expect(r.message).toContain('ATTENDU');
+  });
+
+  it('kill-switch posé (miroir réactivé) : l\'alarme #4187 REPREND — l\'état ne masque pas l\'autre', async () => {
+    process.env.UNIFIED_STORE_DASHBOARD_APPEND_MIRROR = '1';
+    listKeysSpy.mockResolvedValue(['workspace-on']);
+    const pgOld = new Date(Date.now() - 30 * 60 * 1000).toISOString();
+    pgReadSpy.mockResolvedValue(pgDashboard('workspace-on', pgOld));
+    seedGdriveFile('workspace-on.md', 'workspace', pgOld); // mtime = maintenant → file-newer
+
+    const r = (await roosyncDashboard({ action: 'list' })) as any;
+    const entry = r.dashboards.find((d: any) => d.key === 'workspace-on');
+    expect(entry.mirrorDiverged).toBe(true);
+    expect(r.message).toContain('mirrorDiverged (#4187)');
   });
 });

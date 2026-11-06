@@ -46,6 +46,22 @@ export const SQL_MAX_CREATED = `
    GROUP BY dashboard_key
 `;
 
+/** #4131 G-DASH — activity count for the statusline: dashboards that received
+ *  at least one live message in the last `$1` hours, with their latest stamp.
+ *
+ *  Replaces the `*.md` mtime walk the statusline used for its "N dash" cell.
+ *  Once the per-append file mirror is off, the files are periodic exports: an
+ *  mtime no longer says "this dashboard was active", only "an export tick
+ *  touched it". The journal is the surface that still carries activity. */
+export const SQL_RECENT_KEYS = `
+  SELECT dashboard_key, MAX(created_at) AS max_created
+    FROM roosync_dashboard_messages
+   WHERE archived_at IS NULL
+     AND created_at > now() - ($1::int * interval '1 hour')
+   GROUP BY dashboard_key
+   ORDER BY max_created DESC
+`;
+
 // ── Row → listener shape (site 1 mapping) ──────────────────────────────────
 
 /**
@@ -315,18 +331,24 @@ function flagValue(argv, name) {
  *   --discover                                     → workspace key list
  *   --max-created <ws,ws,…>                        → poll trigger map
  *
+ * `--recent-keys <hours>` is a MODIFIER of `--workspace` (not a mode): it
+ * adds a `recentKeys` block to the same response — the dashboards that saw a
+ * live message in that window. One process, one connection, one round-trip:
+ * the statusline replaced its `*.md` mtime walk with it (#4131 G-DASH) and
+ * cannot afford a second node+PG spawn per render.
+ *
  * Unknown flags are refused — the read surface carries no `--type` and no
  * write path, by construction (fail-closed on typos instead of silently
  * ignoring them).
  *
- * @returns {{mode, workspace?, since?, keys?} | {error: string}}
+ * @returns {{mode, workspace?, since?, recentHours?, keys?} | {error: string}}
  */
 export function parseIntercomArgs(argv) {
   if (!Array.isArray(argv)) return { error: 'argv requis' };
-  const known = new Set(['--workspace', '--since', '--discover', '--max-created', '--help', '-h']);
+  const known = new Set(['--workspace', '--since', '--discover', '--max-created', '--recent-keys', '--help', '-h']);
   for (let i = 0; i < argv.length; i++) {
     if (argv[i].startsWith('--') && !known.has(argv[i])) {
-      return { error: `option inconnue « ${argv[i]} » (surface lecture seule : --workspace/--since/--discover/--max-created)` };
+      return { error: `option inconnue « ${argv[i]} » (surface lecture seule : --workspace/--since/--discover/--max-created/--recent-keys)` };
     }
   }
   const help = argv.includes('--help') || argv.includes('-h');
@@ -334,10 +356,18 @@ export function parseIntercomArgs(argv) {
   const maxCreated = flagValue(argv, '--max-created');
   const workspace = flagValue(argv, '--workspace');
   const since = flagValue(argv, '--since');
+  const recentFlag = argv.includes('--recent-keys');
+  const recentRaw = flagValue(argv, '--recent-keys');
   if (help) return { mode: 'help' };
   const modes = [discover, maxCreated !== undefined, workspace !== undefined].filter(Boolean).length;
   if (modes !== 1) {
     return { error: 'exactement un mode requis : --workspace <ws> | --discover | --max-created <ws,ws…>' };
+  }
+  if (recentFlag && (discover || maxCreated !== undefined)) {
+    return { error: '--recent-keys accompagne --workspace <ws>, pas --discover ni --max-created' };
+  }
+  if (recentFlag && recentRaw === undefined) {
+    return { error: '--recent-keys exige un nombre d\'heures' };
   }
   if (discover) return { mode: 'discover' };
   if (maxCreated !== undefined) {
@@ -349,5 +379,19 @@ export function parseIntercomArgs(argv) {
   if (since !== undefined && !ISO_RE.test(since)) {
     return { error: `--since attend un ISO-8601 (yyyy-MM-ddTHH:mm:ss[.fff]Z), reçu « ${since} »` };
   }
-  return { mode: 'messages', workspace: workspace.trim(), since: since ?? null };
+  let recentHours;
+  if (recentFlag) {
+    const hours = Number(recentRaw);
+    if (!Number.isInteger(hours) || hours < 1 || hours > 8760) {
+      return { error: `--recent-keys attend un entier d'heures (1-8760), reçu « ${recentRaw} »` };
+    }
+    recentHours = hours;
+  }
+  return {
+    mode: 'messages',
+    workspace: workspace.trim(),
+    since: since ?? null,
+    // Absent par défaut : l'égalité exacte des appelants existants ne bouge pas.
+    ...(recentHours !== undefined ? { recentHours } : {}),
+  };
 }
