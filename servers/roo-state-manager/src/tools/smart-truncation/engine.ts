@@ -3,7 +3,7 @@
  * @fileoverview Implémentation de l'algorithme de troncature intelligente pour view_conversation_tree
  */
 
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import {
     SmartTruncationConfig,
     SmartTruncationResult,
@@ -77,7 +77,7 @@ class SizeCalculator {
     /**
      * Calcule la taille exacte d'une tâche
      */
-    static calculateTaskSize(skeleton: ConversationSkeleton): number {
+    static calculateTaskSize(skeleton: StoredConversation): number {
         let totalSize = 0;
         
         // En-tête de tâche (titre, métadonnées)
@@ -127,7 +127,7 @@ class BudgetAllocator {
      * Répartit le budget de troncature entre les tâches selon le gradient
      */
     static allocateTruncationBudget(
-        tasks: ConversationSkeleton[],
+        tasks: StoredConversation[],
         totalExcess: number,
         config: SmartTruncationConfig
     ): TaskTruncationPlan[] {
@@ -223,7 +223,7 @@ export class SmartTruncationEngine {
     /**
      * Applique l'algorithme de troncature intelligente
      */
-    public apply(tasks: ConversationSkeleton[]): SmartTruncationResult {
+    public apply(tasks: StoredConversation[]): SmartTruncationResult {
         const diagnostics: string[] = [];
         
         try {
@@ -282,7 +282,7 @@ export class SmartTruncationEngine {
     /**
      * Planifie la troncature des éléments d'une tâche
      */
-    private planElementTruncation(task: ConversationSkeleton, truncationBudget: number, maxElementRate: number = 0.7): ElementTruncationPlan[] {
+    private planElementTruncation(task: StoredConversation, truncationBudget: number, maxElementRate: number = 0.7): ElementTruncationPlan[] {
         const plans: ElementTruncationPlan[] = [];
         let remainingBudget = truncationBudget;
 
@@ -333,7 +333,7 @@ export class SmartTruncationEngine {
     /**
      * Crée un résultat de fallback en cas d'erreur
      */
-    private createFallbackResult(tasks: ConversationSkeleton[], diagnostics: string[]): SmartTruncationResult {
+    private createFallbackResult(tasks: StoredConversation[], diagnostics: string[]): SmartTruncationResult {
         const totalSize = tasks.reduce((sum, task) => sum + SizeCalculator.calculateTaskSize(task), 0);
         
         const taskPlans: TaskTruncationPlan[] = tasks.map((task, index) => ({

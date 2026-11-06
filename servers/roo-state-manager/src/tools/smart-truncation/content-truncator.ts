@@ -3,7 +3,7 @@
  * @fileoverview Applique les plans de troncature aux éléments de conversation
  */
 
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { TaskTruncationPlan, ElementTruncationPlan } from './types.js';
 
 /**
@@ -121,9 +121,9 @@ export class ContentTruncator {
      * Applique les plans de troncature aux tâches
      */
     static applyTruncationPlans(
-        tasks: ConversationSkeleton[],
+        tasks: StoredConversation[],
         taskPlans: TaskTruncationPlan[]
-    ): ConversationSkeleton[] {
+    ): StoredConversation[] {
         const planMap = new Map(taskPlans.map(plan => [plan.taskId, plan]));
         
         return tasks.map(task => {
@@ -140,9 +140,9 @@ export class ContentTruncator {
      * Applique la troncature à une tâche spécifique
      */
     private static applyTaskTruncation(
-        task: ConversationSkeleton, 
+        task: StoredConversation, 
         plan: TaskTruncationPlan
-    ): ConversationSkeleton {
+    ): StoredConversation {
         const elementPlanMap = new Map(plan.elementPlans.map(ep => [ep.sequenceIndex, ep]));
         
         const truncatedSequence = (task.sequence ?? []).map((item, index) => {
@@ -280,7 +280,7 @@ export class SmartOutputFormatter {
      * Formate la sortie avec les informations de troncature
      */
     static formatTruncatedOutput(
-        tasks: ConversationSkeleton[],
+        tasks: StoredConversation[],
         taskPlans: TaskTruncationPlan[],
         originalViewMode: string,
         originalDetailLevel: string

@@ -4,7 +4,7 @@ import {
     SmartTruncationConfig,
     SmartTruncationResult 
 } from '../types.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 describe('SmartTruncation Engine', () => {
     const mockConfig: Partial<SmartTruncationConfig> = {
@@ -20,7 +20,7 @@ describe('SmartTruncation Engine', () => {
         }
     };
 
-    const createMockTask = (taskId: string, messageCount: number = 3): ConversationSkeleton => ({
+    const createMockTask = (taskId: string, messageCount: number = 3): StoredConversation => ({
         taskId,
         parentTaskId: undefined,
         metadata: {
