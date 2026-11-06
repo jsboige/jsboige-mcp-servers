@@ -9205,6 +9205,18 @@ export interface MirrorDivergence {
   diverged: boolean;
   direction?: 'file-newer' | 'pg-newer';
   gapMs?: number;
+  /**
+   * #4131 G-DASH : « miroir coupé volontairement ». Quand l'écriture fichier
+   * par append est désactivée (kill-switch absent, défaut post-cutover), le
+   * fichier devient un artefact AVAL de PG (export périodique de la
+   * réconciliation) : un écart dans UN sens comme dans l'autre est le lag
+   * attendu de l'export — append pas encore exporté (pg-newer) ou export
+   * écrit après le dernier append (file-newer). #4187 surveille un dual-write
+   * dont les deux moitiés écrivent indépendamment ; sa prémisse est fausse
+   * miroir coupé, l'écart n'est PAS une divergence, mais l'état reste nommé
+   * (pas un silence indistinguable d'un instrument mort).
+   */
+  expected?: 'mirror-off';
 }
 
 /**
@@ -9215,7 +9227,8 @@ export interface MirrorDivergence {
 export function classifyMirrorDivergence(
   pgLastModifiedIso: string | undefined,
   fileMtimeMs: number | undefined,
-  thresholdMs: number = MIRROR_DIVERGENCE_THRESHOLD_MS
+  thresholdMs: number = MIRROR_DIVERGENCE_THRESHOLD_MS,
+  mirrorOff = false
 ): MirrorDivergence {
   if (!pgLastModifiedIso || fileMtimeMs === undefined) {
     return { diverged: false };
@@ -9224,9 +9237,13 @@ export function classifyMirrorDivergence(
   if (Number.isNaN(pgMs)) return { diverged: false };
   const gapMs = fileMtimeMs - pgMs;
   if (Math.abs(gapMs) <= thresholdMs) return { diverged: false };
+  const direction = gapMs > 0 ? 'file-newer' : 'pg-newer';
+  if (mirrorOff) {
+    return { diverged: false, direction, gapMs: Math.abs(gapMs), expected: 'mirror-off' };
+  }
   return {
     diverged: true,
-    direction: gapMs > 0 ? 'file-newer' : 'pg-newer',
+    direction,
     gapMs: Math.abs(gapMs),
   };
 }
@@ -9262,8 +9279,13 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
   let pgRepliNote = '';
   if (pgListKeys !== null) {
     const retiredKeys = await listRetiredDashboardKeys();
+    // #4131 G-DASH (suite ms#1664) — miroir fichier coupé : la fraîcheur
+    // fichier ne peut plus être comparée à PG comme un dual-write (le fichier
+    // est un artefact d'export aval) ; classifyMirrorDivergence porte l'état.
+    const mirrorOff = !isDashboardAppendMirrorEnabled();
     const summaries: DashboardSummary[] = [];
     let liveKeys = 0;
+    let expectedLagKeys = 0;
     for (const key of pgListKeys) {
       if (retiredKeys.has(key)) continue;
       liveKeys++;
@@ -9281,7 +9303,13 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
             // clé PG-sans-fichier : légitime (dashboard né dégradé, G-B) —
             // une seule surface, pas une divergence.
           }
-          const div = classifyMirrorDivergence(dashboard.lastModified, fileMtimeMs);
+          const div = classifyMirrorDivergence(
+            dashboard.lastModified,
+            fileMtimeMs,
+            MIRROR_DIVERGENCE_THRESHOLD_MS,
+            mirrorOff
+          );
+          if (div.expected === 'mirror-off') expectedLagKeys++;
           summaries.push({
             key: dashboard.key,
             type: dashboard.type,
@@ -9356,6 +9384,13 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
       const divergedNote = divergedEntries.length > 0
         ? ` — ⚠️ ${divergedEntries.length} entrée(s) mirrorDiverged (#4187): ${divergedEntries.map(s => s.key).join(', ')} — fichier GDrive et miroir PG divergent, compteurs de ces clés suspects (relier par read avant d'agir)`
         : '';
+      // #4131 G-DASH — le silence doit être lisible : quand #4187 est suspendu
+      // par l'état « miroir coupé », les écarts comptés sont nommés, sinon la
+      // disparition de l'alarme post-cutover est indistinguable d'un
+      // instrument mort (même exigence que la sonde deny-fallback #4340).
+      const expectedLagNote = expectedLagKeys > 0
+        ? ` — ℹ️ ${expectedLagKeys} clé(s) en écart d'export ATTENDU (miroir fichier coupé, ${DASHBOARD_APPEND_MIRROR_ENV} non défini — contrôle #4187 suspendu)`
+        : '';
 
       return {
         success: true,
@@ -9365,7 +9400,7 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
         request: requestEcho,
         dashboards: summaries,
         ...(forks.length > 0 ? { forks } : {}),
-        message: `${summaries.length} dashboard(s) trouvé(s) [source: PG]${cleanupNote}${forkNote}${divergedNote}`
+        message: `${summaries.length} dashboard(s) trouvé(s) [source: PG]${cleanupNote}${forkNote}${divergedNote}${expectedLagNote}`
       };
     }
 
