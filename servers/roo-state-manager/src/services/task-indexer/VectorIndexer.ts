@@ -1245,7 +1245,7 @@ export function throwIfIndexingAborted(options: IndexTaskProgressOptions | undef
     );
 }
 
-export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' = 'roo', metadata?: { workspace?: string; title?: string }, options?: IndexTaskProgressOptions): Promise<PointStruct[]> {
+export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' | 'zoo-code' = 'roo', metadata?: { workspace?: string; title?: string }, options?: IndexTaskProgressOptions): Promise<PointStruct[]> {
     console.log(`Starting granular indexing for task: ${taskId} (source: ${source})`);
 
     // #4352 g5 follow-up (ai-01 queue 20261028f): hoisted OUT of the try so the

@@ -5,8 +5,8 @@ import { ConversationSkeleton } from '../../types/conversation.js';
 export interface SearchFallbackArgs {
   query: string;
   workspace?: string;
-  /** #604: Filter by conversation source (roo tasks or claude-code sessions) */
-  source?: 'roo' | 'claude-code';
+  /** #604: Filter by conversation source (roo tasks, claude-code sessions, zoo-code tasks — #2191) */
+  source?: 'roo' | 'claude-code' | 'zoo-code';
   /** #2548: Max results to return (prevents unbounded dumps) */
   max_results?: number;
   /** #936: Pagination cursor — skip the first N ranked results before capping */

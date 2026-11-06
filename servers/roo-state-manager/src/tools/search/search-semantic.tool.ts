@@ -484,7 +484,7 @@ export interface SearchTasksByContentArgs {
     offset?: number;
     diagnose_index?: boolean;
     workspace?: string;
-    source?: 'roo' | 'claude-code';
+    source?: 'roo' | 'claude-code' | 'zoo-code';
     // #636: Advanced filters
     chunk_type?: 'message_exchange' | 'tool_interaction';
     role?: 'user' | 'assistant';
@@ -1346,8 +1346,8 @@ export const searchTasksByContentTool = {
                 },
                 source: {
                     type: 'string',
-                    enum: ['roo', 'claude-code'],
-                    description: 'Filtre les résultats par source (tâches Roo ou sessions Claude Code).'
+                    enum: ['roo', 'claude-code', 'zoo-code'],
+                    description: 'Filtre les résultats par source (tâches Roo, sessions Claude Code ou Zoo Code — #2191).'
                 },
             },
             required: ['search_query'],
