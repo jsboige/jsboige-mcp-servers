@@ -3129,14 +3129,26 @@ function redactForPublication(key: string, dashboard: Dashboard): Dashboard {
  * Intercom). Extrait de writeDashboardFile pour #3782 garde (a) : le
  * write-back d'hydratation produit des fichiers byte-identiques via UN seul
  * sérialiseur — deux constructeurs dériveraient.
+ *
+ * #4131 G-MES — `exportStamp` (repairDashboardMirrorFromPg uniquement) ajoute
+ * la clé `mirrorExportAt` au frontmatter : sans elle, une écriture d'export
+ * PG→fichier est indiscernable d'un écrivain résiduel depuis le système de
+ * fichiers (les ticks du daemon sont par hôte : 90 s après son démarrage puis
+ * toutes les 6 h, jamais prévisibles de l'extérieur). L'instrument Phase D
+ * `measure-gdrive-write-freeze.ps1` reconnaît l'écriture d'export à ce
+ * marqueur ≈ mtime. Absent (défaut) : rendu byte-identique à avant.
  */
-export function buildDashboardMarkdown(dashboard: Dashboard): string {
+export function buildDashboardMarkdown(
+  dashboard: Dashboard,
+  exportStamp?: { mirrorExportAt: string }
+): string {
   const frontmatter: DashboardFrontmatter = {
     type: dashboard.type,
     lastModified: dashboard.lastModified,
     lastModifiedBy: dashboard.lastModifiedBy,
     totalMessages: dashboard.intercom.totalMessages,
-    lastCondensedAt: dashboard.intercom.lastCondensedAt
+    lastCondensedAt: dashboard.intercom.lastCondensedAt,
+    ...(exportStamp ? { mirrorExportAt: exportStamp.mirrorExportAt } : {})
   };
 
   const yamlFrontmatter = yaml.dump(frontmatter);
@@ -3198,7 +3210,9 @@ async function runGdriveFullWriteHalf(
   filePath: string,
   tmpPath: string,
   writeTimeoutMs: number,
-  landedIds?: readonly string[]
+  landedIds?: readonly string[],
+  // #4131 G-MES — tampon d'export PG→fichier (cf. buildDashboardMarkdown).
+  exportStamp?: { mirrorExportAt: string }
 ): Promise<WriteVerifyResult> {
   const writeStartedAtMs = Date.now();
   // #4131 lot 1 — la préparation du répertoire appartient à la moitié GDrive :
@@ -3212,7 +3226,7 @@ async function runGdriveFullWriteHalf(
   // try/finally ; l'unlink reste best-effort (son échec ne doit ni masquer
   // celui de la copie ni faire échouer l'écriture).
   try {
-    await fs.writeFile(tmpPath, buildDashboardMarkdown(dashboard), {
+    await fs.writeFile(tmpPath, buildDashboardMarkdown(dashboard, exportStamp), {
       encoding: 'utf8',
       signal: AbortSignal.timeout(writeTimeoutMs)
     });
@@ -3262,8 +3276,18 @@ export async function repairDashboardMirrorFromPg(
     pid: process.pid,
     acquiredAt: new Date().toISOString()
   };
+  // #4131 G-MES — tampon d'export : la seule signature fichier qui distingue
+  // CETTE écriture (PG→fichier, tick du daemon de reconcile) de tout écrivain
+  // résiduel. Les ticks sont par hôte (90 s après démarrage puis 6 h) : sans
+  // marqueur, l'instrument Phase D ne peut pas les reconnaître et la famille
+  // `dashboards` ne peut jamais passer MET. Le stamp EST l'heure de l'export,
+  // pas celle de la vue (lastModified reste celle de PG).
+  const mirrorExportAt = new Date().toISOString();
   await withAppendLock(key, holder, async () => {
-    const wv = await writeDashboardFile(key, dashboard, undefined, { pgPrimaryPreWritten: true });
+    const wv = await writeDashboardFile(key, dashboard, undefined, {
+      pgPrimaryPreWritten: true,
+      mirrorExportAt
+    });
     // `writeDashboardFile` does not throw when the GDrive half degrades (by
     // design: PG is primary and the caller's write stands). Here the file IS the
     // deliverable, so a degraded half is a failed repair — reporting it as
@@ -3287,7 +3311,7 @@ async function writeDashboardFile(
   // idempotent, mais surtout : si PG flanche entre les deux, le fallback
   // GDrive-first de CETTE fonction throwrait « aucune surface » alors que le
   // message est déjà publié côté PG — le throw serait mensonger).
-  internal?: { pgPrimaryPreWritten?: boolean }
+  internal?: { pgPrimaryPreWritten?: boolean; mirrorExportAt?: string }
 ): Promise<WriteVerifyResult> {
   // #3584 — masquer AVANT toute persistance : ce choke point alimente à la fois le
   // fichier partagé et le miroir PostgreSQL (`dualWriteDashboardSync` ci-dessous), et
@@ -3327,7 +3351,20 @@ async function writeDashboardFile(
   let wv: WriteVerifyResult = { forkSuspected: false };
 
   const gdriveHalf = (): Promise<WriteVerifyResult> =>
-    runGdriveFullWriteHalf(key, dashboard, filePath, tmpPath, writeTimeoutMs, landedIds);
+    runGdriveFullWriteHalf(
+      key,
+      dashboard,
+      filePath,
+      tmpPath,
+      writeTimeoutMs,
+      landedIds,
+      // #4131 G-MES — la clé n'existe que pour le chemin d'export
+      // (repairDashboardMirrorFromPg) : les autres appelants ne la passent
+      // pas et rendent byte-identique à avant.
+      internal?.mirrorExportAt !== undefined
+        ? { mirrorExportAt: internal.mirrorExportAt }
+        : undefined
+    );
 
   // #4131 G-B lot 2 — PG-PREMIER : quand la porte write-primary est armée
   // (`UNIFIED_STORE_DASHBOARD_PG_PRIMARY=1`), le store PG est la surface

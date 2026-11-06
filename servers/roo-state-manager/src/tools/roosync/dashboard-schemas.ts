@@ -176,6 +176,15 @@ export interface DashboardFrontmatter {
   lastModifiedBy: Author;
   totalMessages?: number;
   lastCondensedAt?: string;
+  /**
+   * #4131 G-MES — tampon d'export PG→fichier (repairDashboardMirrorFromPg
+   * uniquement). Absent de toute autre écriture : c'est le marqueur qui rend
+   * une écriture d'export RECONNAISSABLE depuis le système de fichiers, pour
+   * que l'instrument Phase D (`measure-gdrive-write-freeze.ps1`) ne la compte
+   * pas comme écrivain résiduel. Jamais persisté côté PG (clé de rendu only :
+   * le Dashboard lui-même ne la porte pas).
+   */
+  mirrorExportAt?: string;
 }
 
 // === Dashboard Args Schema (unified for all actions) ===

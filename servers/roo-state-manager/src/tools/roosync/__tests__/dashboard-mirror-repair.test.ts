@@ -69,7 +69,7 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   readDashboardFromPgUngated: mockReadDashboardFromPgUngated,
 }));
 
-import { repairDashboardMirrorFromPg } from '../dashboard.js';
+import { repairDashboardMirrorFromPg, buildDashboardMarkdown } from '../dashboard.js';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-mirror-repair-');
 
@@ -166,5 +166,37 @@ describe('repairDashboardMirrorFromPg (#4131 review minor 1)', () => {
     expect(landed).toContain('pg-existing-1');
     expect(mockDualWriteSyncChecked).not.toHaveBeenCalled();
     expect(mockDualWriteSync).not.toHaveBeenCalled();
+  });
+
+  it('#4131 G-MES : le fichier exporté porte mirrorExportAt (le marqueur Phase D), pas les autres écritures', async () => {
+    const before = new Date().toISOString();
+    await repairDashboardMirrorFromPg('workspace-a', pgDashboard('workspace-a'));
+    const after = new Date().toISOString();
+
+    const landed = await readFile(path.join(tmpDir, 'dashboards', 'workspace-a.md'), 'utf8');
+    // Le marqueur vit dans le frontmatter, en tête de fichier — c'est lui que
+    // measure-gdrive-write-freeze.ps1 lit pour ne pas compter l'export comme
+    // écrivain résiduel. Sans lui (mutant : stamp retiré de
+    // repairDashboardMirrorFromPg), l'instrument ne peut PLUS distinguer
+    // l'export d'un écrivain résiduel : ce test est ce qui rend le mutant rouge.
+    const fm = landed.match(/^---\n([\s\S]+?)\n---/);
+    expect(fm).not.toBeNull();
+    const stamp = fm![1].match(/^mirrorExportAt:\s*'?([^'\s]+)'?/m);
+    expect(stamp).not.toBeNull();
+    // Comparaison en epoch : toBeGreaterThanOrEqual ne compare pas les chaînes.
+    const stampMs = Date.parse(stamp![1]);
+    expect(Number.isFinite(stampMs)).toBe(true);
+    expect(stampMs).toBeGreaterThanOrEqual(Date.parse(before));
+    expect(stampMs).toBeLessThanOrEqual(Date.parse(after));
+    // Le stamp est l'heure de l'EXPORT, pas celle de la vue PG : la vue
+    // lastModified de pgDashboard() est posée avant `before` et n'y suffit pas
+    // (elle daterait de la lecture, pas de l'écriture).
+
+    // L'autre direction : un rendu SANS tampon (toute écriture non-export —
+    // append, write, condensation) ne porte PAS la clé. Un mutant qui
+    // stamperrait tout rendrait le marqueur inutilisable par l'instrument
+    // (plus aucun moyen de distinguer l'export).
+    const plain = buildDashboardMarkdown(pgDashboard('workspace-a'));
+    expect(plain).not.toContain('mirrorExportAt');
   });
 });
