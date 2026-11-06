@@ -9719,6 +9719,21 @@ function sanitizeKeyForFileName(sourceKey: string): string {
 }
 
 /**
+ * #4553 suite (review ms#1666) — nom de l'archive brute pré-suppression d'un
+ * dashboard illisible. La clé est une ENTRÉE arbitraire du store partagé
+ * (mesuré #4439 : `workspace:"vllm"}PMC_JSON_DOWN`) : l'artefact disque dérivé
+ * passe par sanitizeKeyForFileName, exactement comme le nom d'archive
+ * pre-merge (:buildDashboardKey normalise les arguments, mais le store GDrive
+ * est lu-écrit par des sièges hétérogènes — un nom à `:` y devient un flux
+ * NTFS alternatif invisible, un `"` un EINVAL, et la copie de sécurité
+ * « réussie » n'existe alors pour personne). Helper pur extrait pour être
+ * gardé au niveau exact de sa défense : le choix du nom.
+ */
+export function preDeleteUnreadableArchiveName(key: string, now: string): string {
+  return `${sanitizeKeyForFileName(key)}-pre-delete-unreadable-${now}.md`;
+}
+
+/**
  * #3537 §6.2 — Fusion d'une clé fork/parasite dans la clé cible.
  *
  * Pourquoi cette action existe : un dashboard vit dans DEUX artefacts co-égaux
@@ -10502,7 +10517,7 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
     const archiveDir = getArchiveDir();
     ensureStoreSubdir(getSharedStatePath(), 'dashboards', 'archive');
     const now = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const archivePath = path.join(archiveDir, `${key}-pre-delete-unreadable-${now}.md`);
+    const archivePath = path.join(archiveDir, preDeleteUnreadableArchiveName(key, now));
     // Même raison qu'au #3584 ci-dessus : la copie ne traverse pas
     // writeDashboardFile, donc le masquage se fait ici.
     await fs.writeFile(archivePath, maskSecretText(salvaged), 'utf8');

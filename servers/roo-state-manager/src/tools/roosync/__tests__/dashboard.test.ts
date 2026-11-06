@@ -9,7 +9,7 @@ import { mkdtemp, rm } from 'fs/promises';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { roosyncDashboard, MentionSchema, detectStatusContradictions, reconcileStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock, getAppendLockPath, getCondenseLockPath, readCondenseLockHolderInfo } from '../dashboard.js';
+import { roosyncDashboard, MentionSchema, detectStatusContradictions, reconcileStatusContradictions, resetCondenseCircuitBreaker, computeKeepCount, acquireAppendLock, releaseAppendLock, getAppendLockPath, getCondenseLockPath, readCondenseLockHolderInfo, preDeleteUnreadableArchiveName } from '../dashboard.js';
 import { resolveMentionTarget } from '@/utils/dashboard-helpers';
 import { resetChatOpenAIClient } from '@/services/openai';
 
@@ -666,6 +666,42 @@ describe('roosync_dashboard', () => {
     expect(result.success).toBe(false);
     expect(result.message).toContain('Aucune suppression sans archive');
     await expect(fsp.access(dashboardPath)).resolves.toBeUndefined(); // intact
+  });
+
+  // === Test 23e (#4553 suite, review ms#1666): le nom d'archive pre-delete
+  // passe par sanitizeKeyForFileName ===
+  // La clé est une ENTRÉE arbitraire du store partagé (mesuré #4439 :
+  // `workspace:"vllm"}PMC_JSON_DOWN`). buildDashboardKey normalise les
+  // arguments d'API, mais le store GDrive est lu-écrit par des sièges
+  // hétérogènes : un nom d'artefact à `:` devient un flux NTFS alternatif
+  // invisible, un `"` un EINVAL — la copie de sécurité « réussie » n'existe
+  // alors pour personne. La défense est le CHOIX DU NOM, gardée au niveau
+  // exact où elle vit (helper pur — un témoin FS end-to-end ne peut pas
+  // produire ces clés via l'API publique, elles y sont normalisées).
+  it('pre-delete unreadable archive name is built from the SANITIZED key (#4553/ms#1666 review)', () => {
+    // Clé mesurée #4439 : chaque caractère hostile devient `_` (`}` est
+    // licite sur Windows et passe).
+    expect(preDeleteUnreadableArchiveName('workspace:"vllm"}PMC_JSON_DOWN', '2026-11-06T00-00-00'))
+      .toBe('workspace__vllm_}PMC_JSON_DOWN-pre-delete-unreadable-2026-11-06T00-00-00.md');
+    // Points/espaces finaux de la clé : neutralisés (Windows les retire
+    // silencieusement — le nom relu ne serait plus celui écrit).
+    expect(preDeleteUnreadableArchiveName('machine-x. ', '2026-11-06T00-00-00'))
+      .toBe('machine-x__-pre-delete-unreadable-2026-11-06T00-00-00.md');
+    // Clé bénigne : inchangée (le smoke end-to-end 23c couvre 'global').
+    expect(preDeleteUnreadableArchiveName('global', 'T0'))
+      .toBe('global-pre-delete-unreadable-T0.md');
+  });
+
+  // === Test 23f (#4553 suite): le contrat de refus messageId est annoncé dans
+  // la description de l'outil ===
+  // Le refus runtime (23b) ne protège que l'appelant qui l'a déjà déclenché ;
+  // la description est le contrat que l'AGENT lit avant d'appeler. Sans elle,
+  // un appelant continue de croire qu'un delete par message existe.
+  it('tool description announces that delete refuses messageId (no message-scoped delete)', async () => {
+    const { dashboardToolMetadata } = await import('../dashboard-schemas.js');
+    const d = dashboardToolMetadata.description;
+    expect(d).toContain('delete destroys the whole dashboard');
+    expect(d).toContain('refuses a passed messageId');
   });
 
   // === Test 24: read_archive sans archiveFile liste les archives ===
