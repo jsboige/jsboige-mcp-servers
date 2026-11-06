@@ -1633,10 +1633,18 @@ function processStartTimesMs(pids: number[]): Map<number, number> {
  * #4554 — un process dont le démarrage est POSTÉRIEUR au mtime du fichier qu'il
  * est censé avoir écrit ne l'a pas écrit : son PID a été recyclé. Sans signal
  * d'identité (map sans entrée), on ne conclut pas.
+ *
+ * W2 (review ms#1665) : une heure de démarrage « dans le futur » n'est pas un
+ * fait mais un instrument cassé — `/proc` lu avec un `USER_HZ` erroné, ou une
+ * dérive d'horloge, pousse le calcul APRÈS `Date.now()`. Conclure « recyclé »
+ * sur ce signal déplacerait l'erreur vers DELETE, c'est-à-dire la suppression
+ * du staging d'un écrivain vivant. Un signal impossible vaut « pas de
+ * signal » : on garde le fichier.
  */
 function isPidRecycled(pid: number, fileMtimeMs: number, starts: Map<number, number>): boolean {
   const started = starts.get(pid);
   if (started === undefined) return false;
+  if (started > Date.now() + PID_IDENTITY_TOLERANCE_MS) return false; // W2 : instrument cassé, pas un fait
   return started > fileMtimeMs + PID_IDENTITY_TOLERANCE_MS;
 }
 
@@ -1666,6 +1674,15 @@ export const __pidIdentityHooks = { processStartTimesMs };
  * Best-effort : jamais d'exception, les échecs individuels sont comptés
  * `skipped`. Appelé une fois au démarrage du serveur (index.ts), testable
  * directement (opts.minAgeMs).
+ *
+ * W1 (review ms#1665) — l'identité PID (#4554) ne s'applique QUE au répertoire
+ * de staging hors-arbre, machine-local : c'est le seul lieu où la table des
+ * process de CET hôte décrit l'écrivain. `dashboards/` vit sur le store G:
+ * partagé flotte — le PID du nom de fichier a été attribué par la machine qui
+ * a écrit, pas par celle qui sweep ; y lire NOTRE table produirait un verdict
+ * « recyclé » à propos d'un process qui n'a jamais pu écrire ce fichier. Sur
+ * le store partagé, la sémantique reviewée d'avant #4554 tient : porte d'âge +
+ * PID mort, jamais d'identité.
  */
 export async function sweepOrphanDashboardTmpFiles(
   opts?: { minAgeMs?: number }
@@ -1675,7 +1692,9 @@ export async function sweepOrphanDashboardTmpFiles(
   const skipped: string[] = [];
   // Le store (staging déjà sur disque d'avant le fix racine-Drive) ET le
   // répertoire de staging hors-arbre : mêmes règles âge + PID mort dans
-  // les deux lieux.
+  // les deux lieux ; l'identité (#4554) ne complète la décision que dans
+  // le staging, où l'écrivain est local (W1).
+  const stagingDir = path.resolve(getDashboardStagingDir());
   const now = Date.now();
   for (const dir of [getDashboardsDir(), getDashboardStagingDir()]) {
     let entries: string[];
@@ -1714,6 +1733,13 @@ export async function sweepOrphanDashboardTmpFiles(
       }
     }
     if (owners.length === 0) continue;
+    // W1 : hors du staging local (ie sur le store G: partagé), la table des
+    // process locale ne décrit pas l'écrivain — pas de verdict d'identité, le
+    // fichier vivant-au-PID est gardé, exactement comme avant #4554.
+    if (path.resolve(dir) !== stagingDir) {
+      for (const o of owners) skipped.push(o.entry);
+      continue;
+    }
     const starts = __pidIdentityHooks.processStartTimesMs(owners.map((o) => o.pid));
     for (const o of owners) {
       if (!isPidRecycled(o.pid, o.mtimeMs, starts)) {

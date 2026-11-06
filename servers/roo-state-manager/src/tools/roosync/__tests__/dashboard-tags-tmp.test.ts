@@ -423,13 +423,13 @@ describe('dashboard #4554 — PID recyclé n\'est pas un écrivain vivant', () =
   });
 
   it('sweeps the staging of a LIVE pid whose process started AFTER the file (recycled)', async () => {
-    const dashDir = path.join(tmpDir, 'dashboards');
-    await mkdir(dashDir, { recursive: true });
+    const staging = path.join(tmpDir, 'staging');
+    await mkdir(staging, { recursive: true });
     const pid = liveChild!.pid;
     const old = new Date(Date.now() - 20 * 60_000);
     const recycled = `workspace-r.md.${pid}.1.tmp`;
-    await writeFile(path.join(dashDir, recycled), 'orphan of a dead writer');
-    await utimes(path.join(dashDir, recycled), old, old);
+    await writeFile(path.join(staging, recycled), 'orphan of a dead writer');
+    await utimes(path.join(staging, recycled), old, old);
 
     // L'identité dit : ce PID a démarré MAINTENANT ⇒ il n'a pas écrit ce fichier.
     __pidIdentityHooks.processStartTimesMs = (pids: number[]) =>
@@ -438,17 +438,17 @@ describe('dashboard #4554 — PID recyclé n\'est pas un écrivain vivant', () =
     const result = await sweepOrphanDashboardTmpFiles();
 
     expect(result.swept).toEqual([recycled]);
-    expect(await readdir(dashDir)).not.toContain(recycled);
+    expect(await readdir(staging)).not.toContain(recycled);
   });
 
   it('keeps the staging of a LIVE pid that started BEFORE the file (genuine writer)', async () => {
-    const dashDir = path.join(tmpDir, 'dashboards');
-    await mkdir(dashDir, { recursive: true });
+    const staging = path.join(tmpDir, 'staging');
+    await mkdir(staging, { recursive: true });
     const pid = liveChild!.pid;
     const old = new Date(Date.now() - 20 * 60_000);
     const genuine = `workspace-s.md.${pid}.2.tmp`;
-    await writeFile(path.join(dashDir, genuine), 'held by a live writer');
-    await utimes(path.join(dashDir, genuine), old, old);
+    await writeFile(path.join(staging, genuine), 'held by a live writer');
+    await utimes(path.join(staging, genuine), old, old);
 
     __pidIdentityHooks.processStartTimesMs = (pids: number[]) =>
       new Map(pids.map((p) => [p, Date.now() - 60 * 60_000]));
@@ -457,24 +457,69 @@ describe('dashboard #4554 — PID recyclé n\'est pas un écrivain vivant', () =
 
     expect(result.swept).toEqual([]);
     expect(result.skipped).toContain(genuine);
-    expect(await readdir(dashDir)).toContain(genuine);
+    expect(await readdir(staging)).toContain(genuine);
   });
 
-  it('with no identity signal, legacy liveness wins (live pid is never swept)', async () => {
+  it('W1 — on the SHARED dashboards dir, identity never applies: a recycled-looking pid is kept', async () => {
     const dashDir = path.join(tmpDir, 'dashboards');
     await mkdir(dashDir, { recursive: true });
     const pid = liveChild!.pid;
     const old = new Date(Date.now() - 20 * 60_000);
+    const foreign = `workspace-u.md.${pid}.4.tmp`;
+    await writeFile(path.join(dashDir, foreign), 'staging written by another machine');
+    await utimes(path.join(dashDir, foreign), old, old);
+
+    // Même signature « recyclé » (démarrage APRÈS le fichier) : dashboards/
+    // vit sur le store partagé, et le PID du nom a été attribué par la
+    // machine qui a écrit — la table des process LOCALE n'en dit rien.
+    // Jamais de verdict d'identité ici : la sémantique d'avant #4554 tient.
+    __pidIdentityHooks.processStartTimesMs = (pids: number[]) =>
+      new Map(pids.map((p) => [p, Date.now()]));
+
+    const result = await sweepOrphanDashboardTmpFiles();
+
+    expect(result.swept).toEqual([]);
+    expect(result.skipped).toContain(foreign);
+    expect(await readdir(dashDir)).toContain(foreign);
+  });
+
+  it('W2 — a start time in the FUTURE is a broken instrument (wrong USER_HZ), never a recycled verdict', async () => {
+    const staging = path.join(tmpDir, 'staging');
+    await mkdir(staging, { recursive: true });
+    const pid = liveChild!.pid;
+    const old = new Date(Date.now() - 20 * 60_000);
+    const future = `workspace-v.md.${pid}.5.tmp`;
+    await writeFile(path.join(staging, future), 'mtime in the past, instrument says future');
+    await utimes(path.join(staging, future), old, old);
+
+    // USER_HZ erroné : l'heure calculée atterrit APRÈS Date.now() — un fait
+    // impossible. Conclure « recyclé » déplacerait l'erreur vers DELETE ; la
+    // seule conclusion sûre est « pas de signal » : on garde le fichier.
+    __pidIdentityHooks.processStartTimesMs = (pids: number[]) =>
+      new Map(pids.map((p) => [p, Date.now() + 60 * 60_000]));
+
+    const result = await sweepOrphanDashboardTmpFiles();
+
+    expect(result.swept).toEqual([]);
+    expect(result.skipped).toContain(future);
+    expect(await readdir(staging)).toContain(future);
+  });
+
+  it('with no identity signal, legacy liveness wins (live pid is never swept)', async () => {
+    const staging = path.join(tmpDir, 'staging');
+    await mkdir(staging, { recursive: true });
+    const pid = liveChild!.pid;
+    const old = new Date(Date.now() - 20 * 60_000);
     const noSignal = `workspace-t.md.${pid}.3.tmp`;
-    await writeFile(path.join(dashDir, noSignal), 'unknown identity');
-    await utimes(path.join(dashDir, noSignal), old, old);
+    await writeFile(path.join(staging, noSignal), 'unknown identity');
+    await utimes(path.join(staging, noSignal), old, old);
 
     __pidIdentityHooks.processStartTimesMs = () => new Map();
 
     const result = await sweepOrphanDashboardTmpFiles();
 
     expect(result.swept).toEqual([]);
-    expect(await readdir(dashDir)).toContain(noSignal);
+    expect(await readdir(staging)).toContain(noSignal);
   });
 
   it('the REAL identity instrument returns a start time for a live pid on this platform', async () => {
