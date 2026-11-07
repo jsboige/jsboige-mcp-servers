@@ -388,4 +388,14 @@ describe('Worker A leader-election — N-process budget (#3661 acceptance)', () 
     const onDisk = JSON.parse(await fs.readFile(lockPath, 'utf-8'));
     expect(onDisk.pid).toBe(second.pid);
   }, 60_000);
+
+  // NOTE #4352 W1: no parallel-steal N-process test lives here on purpose.
+  // The read-back arbitrates only when the rival's overwrite lands between our
+  // write and our re-read (sub-millisecond window); two contenders spawned
+  // apart by a few ms would each read their own pid back and both return true
+  // — a test asserting "exactly one leader" would be flaky by construction.
+  // The mechanism is pinned deterministically by the mocked-fs suite
+  // (leader-election.test.ts, W1 describe), and the structural bound on any
+  // residual overlap is the renewal tick: a stale "leader" that was overwritten
+  // reads a foreign live pid at its next tryAcquire and demotes.
 });

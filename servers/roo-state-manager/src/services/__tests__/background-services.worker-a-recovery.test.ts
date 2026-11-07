@@ -101,10 +101,17 @@ function wireWorkerALockFs(): void {
     // are plain writes and must succeed, exactly like the real algorithm.
     mockFs.writeFile.mockImplementation(async (p: any, data: any, opts?: any) => {
         const s = String(p);
-        if (s.includes('worker-a-leader') && workerALockMode === 'contested' && opts && (opts as any).flag === 'wx') {
-            const err: any = new Error('EEXIST simulated');
-            err.code = 'EEXIST';
-            throw err;
+        if (s.includes('worker-a-leader')) {
+            if (workerALockMode === 'contested' && opts && (opts as any).flag === 'wx') {
+                const err: any = new Error('EEXIST simulated');
+                err.code = 'EEXIST';
+                throw err;
+            }
+            // #4352 W1: the real filesystem reflects every write into the next
+            // read — the steal's read-back must observe our own overwrite (a
+            // mock that kept serving the pre-steal holder would demote every
+            // legitimate stealer to follower).
+            workerALockContent = JSON.parse(String(data));
         }
         return undefined;
     });

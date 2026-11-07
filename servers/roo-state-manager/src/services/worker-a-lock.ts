@@ -27,6 +27,7 @@ import * as path from 'node:path';
 // #4352: shared PID liveness probe (its own module — node builtins only, this
 // file's dependency constraint is preserved: pid-liveness imports nothing).
 import { isProcessAlive } from './pid-liveness.js';
+import { markWorkerALockAttempted } from './lock-participation.js';
 
 /**
  * Stale threshold, SHORTER (10 min) than #2352's 15 min because the Worker A
@@ -55,6 +56,32 @@ export interface WorkerALockOptions {
 }
 
 /**
+ * #4352 W1: read a lock back after an overwrite, to arbitrate a steal race.
+ * The plain-write steal path has no atomic primitive (the wx create is the only
+ * one), so the read-back answers "did a rival's overwrite land between our
+ * write and this re-read?" — the race window the steal itself opens. When it
+ * detects the rival, THIS process demotes to follower instead of believing a
+ * leadership its write no longer backs. Residual window: a rival writing AFTER
+ * our re-read is undetectable here; the renewal tick bounds that overlap (a
+ * stale "leader" reads a foreign live pid at its next tryAcquire and steps
+ * down). Null on any read failure: the caller treats an unreadable file as its
+ * own win (fail-open toward leadership after a successful write, the pre-W1
+ * behavior when nothing races us).
+ */
+async function readLockForAtomicity(lockPath: string): Promise<{ pid: number } | null> {
+    try {
+        const content = await fs.readFile(lockPath, 'utf-8');
+        const parsed = JSON.parse(content);
+        if (typeof parsed?.pid === 'number') {
+            return parsed;
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+/**
  * Try to acquire or renew the Worker A leader lock.
  *
  * Fail-closed: an unexpected error (permissions, disk full, unreadable state)
@@ -65,6 +92,10 @@ export async function tryAcquireWorkerALeaderLock(
     machineId: string,
     options: WorkerALockOptions = {}
 ): Promise<boolean> {
+    // #4352 W2: participation flag — the shutdown release only runs in processes
+    // that actually entered this election (saves the dynamic-import budget of
+    // processes that never tried to lead).
+    markWorkerALockAttempted();
     const lockPath = options.lockPath ?? (await getWorkerALockPath(machineId));
     const lockData = { pid: process.pid, timestamp: Date.now() };
 
@@ -96,14 +127,30 @@ export async function tryAcquireWorkerALeaderLock(
                 // 24-28 min leaderless per leader death on 07/11). Liveness is
                 // an accelerator only; the stale-threshold steal below remains
                 // the net for recycled PIDs ("alive" never proves identity).
+                // #4352 W1 (ms#1683 review): the steal is NOT atomic — two
+                // contenders can both see a dead holder and both overwrite
+                // (plain writeFile). Re-read after the write: whoever's pid the
+                // file actually carries wins, the loser demotes to follower.
                 await fs.writeFile(lockPath, JSON.stringify(lockData));
-                console.log(`🔑 [WorkerA-Lead] Stolen lock from DEAD PID ${existing.pid} (age ${Math.round(age / 1000)}s, before stale threshold). PID ${process.pid} is now leader.`);
-                return true;
+                const stolen = await readLockForAtomicity(lockPath);
+                if (stolen === null || stolen.pid === process.pid) {
+                    console.log(`🔑 [WorkerA-Lead] Stolen lock from DEAD PID ${existing.pid} (age ${Math.round(age / 1000)}s, before stale threshold). PID ${process.pid} is now leader.`);
+                    return true;
+                }
+                console.log(`🔑 [WorkerA-Lead] Lost an atomic steal race for DEAD PID ${existing.pid} — ${stolen.pid} wrote last. Staying follower.`);
+                return false;
             }
             if (age > WORKER_A_LOCK_STALE_MS) {
                 await fs.writeFile(lockPath, JSON.stringify(lockData));
-                console.log(`🔑 [WorkerA-Lead] Stolen stale lock (previous PID ${existing.pid}, age ${Math.round(age / 1000)}s). PID ${process.pid} is now leader.`);
-                return true;
+                // W1: same read-back for the stale-threshold steal (same race,
+                // same remedy — only the trigger differs).
+                const stolen = await readLockForAtomicity(lockPath);
+                if (stolen === null || stolen.pid === process.pid) {
+                    console.log(`🔑 [WorkerA-Lead] Stolen stale lock (previous PID ${existing.pid}, age ${Math.round(age / 1000)}s). PID ${process.pid} is now leader.`);
+                    return true;
+                }
+                console.log(`🔑 [WorkerA-Lead] Lost an atomic steal race for stale lock (previous PID ${existing.pid}) — ${stolen.pid} wrote last. Staying follower.`);
+                return false;
             }
 
             return false;
