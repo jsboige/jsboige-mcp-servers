@@ -1007,6 +1007,25 @@ export async function reconcileDashboardsFromGDrive(
       // budget; PG holding nothing readable leaves the file INTACT — never an
       // overwrite with empty. Without the mirror (file is the truth on this
       // seat), the legacy fail-closed error stands.
+      // Review ms#1682 — retry once before declaring the file corrupt: a
+      // HEALTHY file whose single read failed (transient DriveFS miss) can be
+      // ahead of PG, and rebuilding it from PG would silently drop that ahead
+      // content. If the second read parses, the failure was transient: leave
+      // the file alone — not in corruptFileKeys, skipped this pass, processed
+      // normally by the next reconcile pass.
+      try {
+        const retryContent = await readFile(
+          join(options.dashboardsDir, file),
+          'utf-8'
+        );
+        parseDashboardMarkdown(retryContent, key);
+        logger.warn(
+          `[dashboard-reconcile] Transient read failure on ${file}, recovered on retry — left for the next pass`
+        );
+        continue;
+      } catch {
+        // Two consecutive failures: genuinely unreadable, corrupt-file path.
+      }
       corruptFileKeys.add(key);
       if (mirrorArmed) {
         if (

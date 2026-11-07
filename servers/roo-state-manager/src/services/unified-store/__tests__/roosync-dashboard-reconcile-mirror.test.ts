@@ -25,11 +25,32 @@ import { reconcileDashboardsFromGDrive } from '../roosync-dashboard-reconcile.js
 import type { RooSyncDashboardRow, RooSyncDashboardMessageRow } from '../types.js';
 import type { Dashboard } from '../../../tools/roosync/dashboard-schemas.js';
 
-const { retiredKeysSpy } = vi.hoisted(() => ({ retiredKeysSpy: vi.fn() }));
+const { retiredKeysSpy, transientReadPaths } = vi.hoisted(() => ({
+  retiredKeysSpy: vi.fn(),
+  // Paths whose NEXT readFile must throw once (review ms#1682: transient
+  // DriveFS miss). Pass-through for everything else, so the real-fs harness
+  // of the rest of this file is unchanged.
+  transientReadPaths: [] as string[],
+}));
 
 vi.mock('../roosync-dashboard-store.js', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, listRetiredDashboardKeys: retiredKeysSpy };
+});
+
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  return {
+    ...actual,
+    readFile: async (path: unknown, ...rest: unknown[]) => {
+      const idx = transientReadPaths.indexOf(String(path));
+      if (idx >= 0) {
+        transientReadPaths.splice(idx, 1);
+        throw Object.assign(new Error(`EBUSY: transient read (test) on ${String(path)}`), { code: 'EBUSY' });
+      }
+      return (actual.readFile as unknown as (p: unknown, ...r: unknown[]) => Promise<unknown>)(path, ...rest);
+    },
+  };
 });
 
 /** A dashboard file whose intercom holds exactly `ids`, at `stamp` seconds. */
@@ -726,6 +747,7 @@ describe('dashboard reconcile — unreadable files rebuilt from PG (#4131 G-DASH
     pgRows = new Map();
     writeMirrorCalls = [];
     pgKeysList = [];
+    transientReadPaths.length = 0;
     retiredKeysSpy.mockReset().mockResolvedValue(new Set<string>());
   });
 
@@ -768,6 +790,44 @@ describe('dashboard reconcile — unreadable files rebuilt from PG (#4131 G-DASH
     expect(writeMirrorCalls).toHaveLength(1);
     expect(writeMirrorCalls[0].key).toBe('machine-web1');
     expect(writeMirrorCalls[0].ids).toEqual(['m1', 'm2']);
+  });
+
+  test('transient read failure, recovered on retry — NO rebuild (review ms#1682)', async () => {
+    // A HEALTHY file whose first read throws (DriveFS transient miss) can be
+    // AHEAD of PG; rebuilding it from PG would silently drop that content.
+    // The retry parses ⇒ not corrupt: file untouched, no writeMirror, the
+    // next reconcile pass processes it normally.
+    write('workspace-a.md', fixture('workspace-a', ['a1', 'a2']));
+    // PG journal exists (would-be rebuild source) — the test fails loudly if
+    // the retry-once guard is missing: the rebuild would fire and drop a1/a2.
+    pgRows.set('workspace-a', [{ id: 'm1', createdAt: '2026-11-05T10:00:00Z' }]);
+    pgKeysList = ['workspace-a'];
+    transientReadPaths.push(join(dir, 'workspace-a.md'));
+
+    const result = await run();
+
+    expect(result.mirrorRebuiltFromCorrupt).toBe(0);
+    expect(result.mirrorRepairFailed).toBe(0);
+    expect(result.errors).toBe(0);
+    expect(result.mirrorMaterialized).toBe(0);
+    expect(writeMirrorCalls).toHaveLength(0); // ahead-of-PG content preserved
+    expect(readFileSync(join(dir, 'workspace-a.md'), 'utf8')).toContain('[msg: a1]');
+  });
+
+  test('PERSISTENT read failure (retry also throws) still takes the rebuild path', async () => {
+    // Pins that retry-once does not weaken the corrupt-file handling: two
+    // consecutive failures = genuinely unreadable ⇒ rebuild from PG.
+    write('workspace-a.md', fixture('workspace-a', ['a1']));
+    pgRows.set('workspace-a', [{ id: 'm1', createdAt: '2026-11-05T10:00:00Z' }]);
+    pgKeysList = ['workspace-a'];
+    transientReadPaths.push(join(dir, 'workspace-a.md'), join(dir, 'workspace-a.md'));
+
+    const result = await run();
+
+    expect(result.mirrorRebuiltFromCorrupt).toBe(1);
+    expect(result.errors).toBe(0);
+    expect(writeMirrorCalls).toHaveLength(1);
+    expect(writeMirrorCalls[0].ids).toEqual(['m1']);
   });
 
   test('rebuilds a corrupt-frontmatter file the same way (unreadable ≠ only-empty)', async () => {
