@@ -25,11 +25,32 @@ import { reconcileDashboardsFromGDrive } from '../roosync-dashboard-reconcile.js
 import type { RooSyncDashboardRow, RooSyncDashboardMessageRow } from '../types.js';
 import type { Dashboard } from '../../../tools/roosync/dashboard-schemas.js';
 
-const { retiredKeysSpy } = vi.hoisted(() => ({ retiredKeysSpy: vi.fn() }));
+const { retiredKeysSpy, transientReadPaths } = vi.hoisted(() => ({
+  retiredKeysSpy: vi.fn(),
+  // Paths whose NEXT readFile must throw once (review ms#1682: transient
+  // DriveFS miss). Pass-through for everything else, so the real-fs harness
+  // of the rest of this file is unchanged.
+  transientReadPaths: [] as string[],
+}));
 
 vi.mock('../roosync-dashboard-store.js', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, listRetiredDashboardKeys: retiredKeysSpy };
+});
+
+vi.mock('fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs/promises')>();
+  return {
+    ...actual,
+    readFile: async (path: unknown, ...rest: unknown[]) => {
+      const idx = transientReadPaths.indexOf(String(path));
+      if (idx >= 0) {
+        transientReadPaths.splice(idx, 1);
+        throw Object.assign(new Error(`EBUSY: transient read (test) on ${String(path)}`), { code: 'EBUSY' });
+      }
+      return (actual.readFile as unknown as (p: unknown, ...r: unknown[]) => Promise<unknown>)(path, ...rest);
+    },
+  };
 });
 
 /** A dashboard file whose intercom holds exactly `ids`, at `stamp` seconds. */
@@ -627,5 +648,242 @@ describe('dashboard reconcile — materialization of PG-only keys (#4131 G-DASH,
     expect(writeMirrorCalls[0].key).toBe('workspace-a');
     // The fork file itself is untouched by THIS pass.
     expect(readFileSync(join(dir, 'workspace-a (2).md'), 'utf8')).toContain('status body');
+  });
+});
+
+describe('dashboard reconcile — unreadable files rebuilt from PG (#4131 G-DASH, corrupt-file blind spot)', () => {
+  // Measured 06/11: `machine-myia-web1.md` sat at 0 bytes while its 8 live
+  // siblings held 10-44 KB. Neither pass could heal it — the repair pass
+  // counted an error and continued, and the materialization pass excluded the
+  // key BY NAME from the directory listing — so the corrupt file permanently
+  // blocked its own export. These tests pin the criterion: an existing but
+  // unreadable file is treated as ABSENT (rebuilt from a readable journal,
+  // left intact otherwise, never overwritten with empty), and it no longer
+  // blocks its key's materialization. Same harness duplication rule as the
+  // sibling describes above.
+  let dir: string;
+  let saved: Record<string, string | undefined>;
+  let pgRows: Map<string, { id: string; createdAt: string }[]>;
+  let writeMirrorCalls: { key: string; ids: string[] }[];
+  let pgKeysList: string[];
+
+  const rowOf = (key: string, count: number): RooSyncDashboardRow => ({
+    key,
+    type: 'machine',
+    machine_id: key.replace(/^machine-/, ''),
+    workspace: null,
+    content: 'status body',
+    status_json: {
+      lastModified: '2026-11-06T08:34:00Z',
+      lastModifiedBy: { machineId: 'web1', workspace: 'w1' },
+      totalMessages: count,
+    },
+  });
+
+  const readerDouble = {
+    async getRooSyncDashboard(key: string) {
+      const rows = pgRows.get(key);
+      if (!rows) return null;
+      return {
+        dashboard: rowOf(key, rows.length),
+        messages: rows.map(
+          (r) =>
+            ({
+              dashboard_key: key,
+              message_id: r.id,
+              author_machine: 'web1',
+              author_workspace: 'w1',
+              content: `pg content ${r.id}`,
+              created_at: r.createdAt,
+              tags: [],
+              team_stage: null,
+              reply_to: null,
+              acknowledged_at: null,
+              archived_at: null,
+            }) as RooSyncDashboardMessageRow
+        ),
+      };
+    },
+    async listRooSyncDashboardKeys() {
+      return [...pgKeysList];
+    },
+  };
+
+  const writerDouble = {
+    async syncRooSyncDashboard() {
+      /* inserts are not what these tests measure */
+    },
+    async archiveRooSyncDashboardMessages() {
+      return 0;
+    },
+    async tryAcquireRooSyncDashboardLock() {
+      return 'unavailable' as const;
+    },
+    async releaseRooSyncDashboardLock() {
+      /* no-op */
+    },
+  };
+
+  const writeMirror = async (key: string, dashboard: Dashboard) => {
+    writeMirrorCalls.push({ key, ids: dashboard.intercom.messages.map((m) => m.id) });
+  };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'dash-corrupt-'));
+    saved = {
+      dual: process.env.UNIFIED_STORE_DUAL_WRITE,
+      url: process.env.UNIFIED_STORE_PG_URL,
+      primary: process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY,
+      archive: process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE,
+      repair: process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR,
+      max: process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR_MAX,
+    };
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://test/test';
+    process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY = '1';
+    process.env.ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE = '0';
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR;
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR_MAX;
+    pgRows = new Map();
+    writeMirrorCalls = [];
+    pgKeysList = [];
+    transientReadPaths.length = 0;
+    retiredKeysSpy.mockReset().mockResolvedValue(new Set<string>());
+  });
+
+  afterEach(() => {
+    const restore = (k: string, v: string | undefined) => {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    };
+    restore('UNIFIED_STORE_DUAL_WRITE', saved.dual);
+    restore('UNIFIED_STORE_PG_URL', saved.url);
+    restore('UNIFIED_STORE_DASHBOARD_PG_PRIMARY', saved.primary);
+    restore('ROOSYNC_DASHBOARD_RECONCILE_ARCHIVE', saved.archive);
+    restore('ROOSYNC_DASHBOARD_MIRROR_REPAIR', saved.repair);
+    restore('ROOSYNC_DASHBOARD_MIRROR_REPAIR_MAX', saved.max);
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  const write = (name: string, content: string) => writeFileSync(join(dir, name), content, 'utf8');
+  const run = () =>
+    reconcileDashboardsFromGDrive({ dashboardsDir: dir, writer: writerDouble, reader: readerDouble, writeMirror });
+
+  test('rebuilds a 0-byte file from a readable PG journal — repair, not error', async () => {
+    // The measured shape: machine-myia-web1.md at 0 bytes with its journal
+    // alive in PG. Must come back as a mirrorRebuiltFromCorrupt write carrying
+    // the whole PG view — and NOT be re-written by the materialization pass
+    // (the key stays "present" once rebuilt).
+    write('machine-web1.md', '');
+    pgRows.set('machine-web1', [
+      { id: 'm1', createdAt: '2026-11-05T10:00:00Z' },
+      { id: 'm2', createdAt: '2026-11-06T08:34:00Z' },
+    ]);
+    pgKeysList = ['machine-web1'];
+
+    const result = await run();
+
+    expect(result.mirrorRebuiltFromCorrupt).toBe(1);
+    expect(result.mirrorRepaired).toBe(0);
+    expect(result.errors).toBe(0);
+    expect(result.mirrorMaterialized).toBe(0); // no double write
+    expect(writeMirrorCalls).toHaveLength(1);
+    expect(writeMirrorCalls[0].key).toBe('machine-web1');
+    expect(writeMirrorCalls[0].ids).toEqual(['m1', 'm2']);
+  });
+
+  test('transient read failure, recovered on retry — NO rebuild (review ms#1682)', async () => {
+    // A HEALTHY file whose first read throws (DriveFS transient miss) can be
+    // AHEAD of PG; rebuilding it from PG would silently drop that content.
+    // The retry parses ⇒ not corrupt: file untouched, no writeMirror, the
+    // next reconcile pass processes it normally.
+    write('workspace-a.md', fixture('workspace-a', ['a1', 'a2']));
+    // PG journal exists (would-be rebuild source) — the test fails loudly if
+    // the retry-once guard is missing: the rebuild would fire and drop a1/a2.
+    pgRows.set('workspace-a', [{ id: 'm1', createdAt: '2026-11-05T10:00:00Z' }]);
+    pgKeysList = ['workspace-a'];
+    transientReadPaths.push(join(dir, 'workspace-a.md'));
+
+    const result = await run();
+
+    expect(result.mirrorRebuiltFromCorrupt).toBe(0);
+    expect(result.mirrorRepairFailed).toBe(0);
+    expect(result.errors).toBe(0);
+    expect(result.mirrorMaterialized).toBe(0);
+    expect(writeMirrorCalls).toHaveLength(0); // ahead-of-PG content preserved
+    expect(readFileSync(join(dir, 'workspace-a.md'), 'utf8')).toContain('[msg: a1]');
+  });
+
+  test('PERSISTENT read failure (retry also throws) still takes the rebuild path', async () => {
+    // Pins that retry-once does not weaken the corrupt-file handling: two
+    // consecutive failures = genuinely unreadable ⇒ rebuild from PG.
+    write('workspace-a.md', fixture('workspace-a', ['a1']));
+    pgRows.set('workspace-a', [{ id: 'm1', createdAt: '2026-11-05T10:00:00Z' }]);
+    pgKeysList = ['workspace-a'];
+    transientReadPaths.push(join(dir, 'workspace-a.md'), join(dir, 'workspace-a.md'));
+
+    const result = await run();
+
+    expect(result.mirrorRebuiltFromCorrupt).toBe(1);
+    expect(result.errors).toBe(0);
+    expect(writeMirrorCalls).toHaveLength(1);
+    expect(writeMirrorCalls[0].ids).toEqual(['m1']);
+  });
+
+  test('rebuilds a corrupt-frontmatter file the same way (unreadable ≠ only-empty)', async () => {
+    write('machine-web1.md', 'no frontmatter, no sections — truncated mid-write');
+    pgRows.set('machine-web1', [{ id: 'm1', createdAt: '2026-11-05T10:00:00Z' }]);
+    pgKeysList = ['machine-web1'];
+
+    const result = await run();
+
+    expect(result.mirrorRebuiltFromCorrupt).toBe(1);
+    expect(result.errors).toBe(0);
+    expect(writeMirrorCalls).toHaveLength(1);
+    expect(writeMirrorCalls[0].ids).toEqual(['m1']);
+  });
+
+  test('no readable PG journal ⇒ mirrorRepairFailed, file INTACT — never an overwrite with empty', async () => {
+    write('machine-web1.md', '');
+    // pgRows has NO entry → the reader returns null. Key still listed so the
+    // materialization pass also sees it (and skips on `!existing` too).
+    pgKeysList = ['machine-web1'];
+
+    const result = await run();
+
+    expect(result.mirrorRebuiltFromCorrupt).toBe(0);
+    expect(result.mirrorRepairFailed).toBe(1);
+    expect(result.mirrorMaterialized).toBe(0);
+    expect(result.mirrorMaterializeFailed).toBe(0);
+    expect(result.errors).toBe(0);
+    expect(writeMirrorCalls).toHaveLength(0);
+    // The 0-byte file must still be 0 bytes — no ghost write.
+    expect(readFileSync(join(dir, 'machine-web1.md'), 'utf8')).toBe('');
+  });
+
+  test('a corrupt key deferred by the write budget stays MATERIALIZABLE', async () => {
+    // Pins the fileKeys exclusion: before, the key's NAME in the directory
+    // listing excluded it from materialization forever. Two corrupt files with
+    // MAX=1: one consumes the budget (rebuilt), the other defers — order of
+    // the readdir does not matter, the counts 1/1 hold either way. The
+    // DEFERRED key then reaching the materialization budget check (and being
+    // deferred there too, not silently skipped) is what proves its own
+    // corrupt file no longer excludes it.
+    process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR_MAX = '1';
+    write('machine-web1.md', '');
+    write('machine-web2.md', '');
+    pgRows.set('machine-web1', [{ id: 'm1', createdAt: '2026-11-05T10:00:00Z' }]);
+    pgRows.set('machine-web2', [{ id: 'm2', createdAt: '2026-11-05T10:00:00Z' }]);
+    pgKeysList = ['machine-web1', 'machine-web2'];
+
+    const result = await run();
+
+    expect(result.mirrorRebuiltFromCorrupt).toBe(1);
+    expect(result.mirrorRepairDeferred).toBe(1);
+    expect(result.mirrorMaterializeDeferred).toBe(1);
+    expect(result.mirrorMaterialized).toBe(0);
+    expect(result.mirrorMaterializeFailed).toBe(0);
+    expect(result.errors).toBe(0);
+    expect(writeMirrorCalls).toHaveLength(1);
   });
 });
