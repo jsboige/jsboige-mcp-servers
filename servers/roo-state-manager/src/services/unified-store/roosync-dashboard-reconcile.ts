@@ -235,6 +235,13 @@ export interface DashboardReconcileResult {
    * them (#4131 review).
    */
   mirrorIdlessHeldKeys: number;
+  /**
+   * #4131 G-DASH — unreadable files (0 bytes, corrupt frontmatter) REBUILT
+   * from PG. Distinct from `mirrorRepaired` on purpose: a rebuild means the
+   * file half was CORRUPT, and a corrupt half that keeps coming back is a
+   * writer bug to surface, not one more lag repair.
+   */
+  mirrorRebuiltFromCorrupt: number;
   /** Files AHEAD of PG — file-only content, owned by the insert pass, never rewritten. */
   mirrorAheadKeys: string[];
   /**
@@ -583,6 +590,7 @@ export async function reconcileDashboardsFromGDrive(
     mirrorRepairDeferred: 0,
     mirrorRepairFailed: 0,
     mirrorIdlessHeldKeys: 0,
+    mirrorRebuiltFromCorrupt: 0,
     mirrorAheadKeys: [],
     mirrorMaterialized: 0,
     mirrorMaterializeFailed: 0,
@@ -737,6 +745,13 @@ export async function reconcileDashboardsFromGDrive(
     }
   }
 
+  // #4131 G-DASH — keys whose file exists but did NOT parse this pass (0
+  // bytes, corrupt frontmatter). The materialization pass below must treat
+  // them as fileless: an unreadable file is dead weight on disk, not a live
+  // export, and by blocking its key's name it used to block its own repair
+  // forever (measured: `machine-myia-web1.md`, 0 bytes, 06/11).
+  const corruptFileKeys = new Set<string>();
+
   for (const file of keyed) {
     const key = file.replace(/\.md$/, '');
     try {
@@ -802,7 +817,10 @@ export async function reconcileDashboardsFromGDrive(
               `[dashboard-reconcile] Mirror repair held for ${file}: ${idlessInFile} id-less ` +
                 `message(s) exist only in the file — rewriting from PG would erase them`
             );
-          } else if (result.mirrorRepaired + result.mirrorRepairFailed >= mirrorRepairMaxPerPass()) {
+          } else if (
+            result.mirrorRepaired + result.mirrorRepairFailed +
+            result.mirrorRebuiltFromCorrupt >= mirrorRepairMaxPerPass()
+          ) {
             result.mirrorRepairDeferred++;
           } else {
             try {
@@ -979,9 +997,63 @@ export async function reconcileDashboardsFromGDrive(
         }
       }
     } catch (error) {
-      // Corrupt frontmatter, transient DriveFS miss — the next pass retries.
-      result.errors++;
-      result.failures.push(`${file}: ${String(error)}`);
+      // #4131 G-DASH — an existing-but-unreadable file (0 bytes, corrupt
+      // frontmatter, transient DriveFS miss on the read) used to be a
+      // permanent blind spot: this pass only counted an error, and the
+      // materialization pass below excludes keys BY NAME (`fileKeys` is built
+      // from the directory listing alone), so the corrupt file blocked its own
+      // export forever. Treated as ABSENT now: with the mirror armed, PG
+      // holding a readable journal rebuilds the file under the shared write
+      // budget; PG holding nothing readable leaves the file INTACT — never an
+      // overwrite with empty. Without the mirror (file is the truth on this
+      // seat), the legacy fail-closed error stands.
+      corruptFileKeys.add(key);
+      if (mirrorArmed) {
+        if (
+          result.mirrorRepaired + result.mirrorRepairFailed +
+          result.mirrorRebuiltFromCorrupt >= mirrorRepairMaxPerPass()
+        ) {
+          result.mirrorRepairDeferred++;
+          result.failures.push(
+            `${file}: unreadable, rebuild deferred by the write budget — ${String(error)}`
+          );
+        } else {
+          try {
+            const existing = await reader.getRooSyncDashboard(key);
+            if (!existing) {
+              // No readable journal to rebuild from: an empty PG half must not
+              // produce an empty file half. The 0-byte file stays as-is.
+              result.mirrorRepairFailed++;
+              result.failures.push(
+                `${file}: unreadable with no PG journal to rebuild from — ${String(error)}`
+              );
+            } else {
+              await options.writeMirror!(
+                key,
+                mapRowsToDashboard(existing.dashboard, existing.messages)
+              );
+              result.mirrorRebuiltFromCorrupt++;
+              // The file half is valid again: the materialization pass must
+              // see this key as present, not re-write it (double write, one
+              // budget slot wasted).
+              corruptFileKeys.delete(key);
+              logger.info(
+                `[dashboard-reconcile] Rebuilt unreadable ${file} from PG ` +
+                  `(${existing.messages.length} message(s))`
+              );
+            }
+          } catch (rebuildError) {
+            result.mirrorRepairFailed++;
+            result.failures.push(
+              `${file}: unreadable, rebuild from PG failed — ${String(rebuildError)} ` +
+                `(original parse error: ${String(error)})`
+            );
+          }
+        }
+      } else {
+        result.errors++;
+        result.failures.push(`${file}: ${String(error)}`);
+      }
     }
   }
 
@@ -1019,10 +1091,15 @@ export async function reconcileDashboardsFromGDrive(
         // canonical export itself is this pass's job).
         const fileKeys = new Set(keyed.map((f) => f.replace(/\.md$/, '')));
         for (const key of pgKeys) {
-          if (fileKeys.has(key)) continue;
+          // #4131 G-DASH — a key whose file exists but did not parse is NOT a
+          // present export (`corruptFileKeys`, filled by the file pass; keys
+          // rebuilt above left it, their file is valid again). Excluding by
+          // name alone is what made a 0-byte file block its own repair.
+          if (fileKeys.has(key) && !corruptFileKeys.has(key)) continue;
           if (retired.has(key)) continue;
           if (
             result.mirrorRepaired + result.mirrorRepairFailed +
+            result.mirrorRebuiltFromCorrupt +
             result.mirrorMaterialized + result.mirrorMaterializeFailed >=
             mirrorRepairMaxPerPass()
           ) {
@@ -1056,11 +1133,13 @@ export async function reconcileDashboardsFromGDrive(
     result.mirrorRepaired > 0 ||
     result.mirrorRepairFailed > 0 ||
     result.mirrorRepairDeferred > 0 ||
+    result.mirrorRebuiltFromCorrupt > 0 ||
     result.mirrorIdlessHeldKeys > 0
   ) {
     logger.info(
       `[dashboard-reconcile] Mirror repaired from PG on ${result.mirrorRepaired}/${result.mirrorChecked} key(s) ` +
         `(${result.mirrorRepairDeferred} deferred by the per-pass budget, ${result.mirrorRepairFailed} failed, ` +
+        `${result.mirrorRebuiltFromCorrupt} rebuilt from unreadable files, ` +
         `${result.mirrorIdlessHeldKeys} held for id-less file-only messages)`
     );
   }
