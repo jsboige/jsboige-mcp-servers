@@ -37,3 +37,12 @@ services:
     extra_hosts:
       - host.docker.internal:host-gateway
     restart: unless-stopped
+    # Fleet bounds (roo-extensions Maintenance#303, user mandate 07/11): an
+    # unbounded container can take the whole WSL VM it shares with qdrant and
+    # postgres. Measured 07/11 18:00Z on ai-01: ~157 MiB, 50 PIDs; 2g leaves room
+    # for document conversion (install_libreoffice). Limits live HERE, not in
+    # `docker update`, which is lost at the next recreate. OWUI's
+    # docker-compose-myia.yaml manages the same container: keep both in step.
+    mem_limit: 2g
+    memswap_limit: 2g
+    pids_limit: 1024
