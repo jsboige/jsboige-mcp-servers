@@ -11,8 +11,10 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { getLeaderLockPath, isClaudeSessionIndexingEnabled, readLeaderLockInfo, tryAcquireLeaderLock as productionTryAcquireLeaderLock } from '../background-services.js';
+import { getLeaderLockPath, isClaudeSessionIndexingEnabled, readLeaderLockInfo, tryAcquireLeaderLock as productionTryAcquireLeaderLock, releaseLeaderLockIfOurs as productionReleaseLeaderLockIfOurs } from '../background-services.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
+// #4352: the liveness probe is production code — tests must not reimplement it.
+import { isProcessAlive } from '../pid-liveness.js';
 
 // Mock fs
 vi.mock('fs', async () => {
@@ -23,6 +25,7 @@ vi.mock('fs', async () => {
       ...actual.promises,
       writeFile: vi.fn(),
       readFile: vi.fn(),
+      unlink: vi.fn(),
     },
   };
 });
@@ -38,8 +41,17 @@ vi.mock('../../utils/roo-storage-detector.js', () => ({
 }));
 
 // Import after mocks
-const { writeFile, readFile } = vi.mocked(fs);
+const { writeFile, readFile, unlink } = vi.mocked(fs);
 const LOCK_PATH = `${MOCK_STORAGE_PATH}/tasks/.skeletons/.indexer-leader.lock`;
+
+// #4352: a provably-dead PID, found with the production liveness primitive
+// (high, sparsely-populated range — on Windows PIDs are multiples of 4).
+function findDeadPid(): number {
+  for (let candidate = 400000; candidate < 1000000; candidate += 4) {
+    if (!isProcessAlive(candidate)) return candidate;
+  }
+  throw new Error('no provably-dead PID found in the scan range');
+}
 
 // We test the lock logic by re-implementing the same algorithm in tests.
 // This validates the contract without coupling to internal function exports.
@@ -327,5 +339,55 @@ describe('Claude-session indexing policy — #4352', () => {
       const renewed = JSON.parse((writeFile as any).mock.calls[1][1]);
       expect(renewed.claudeIndexing).toBe(false);
     });
+  });
+});
+
+// --- #4352: dead-PID steal + release-on-shutdown, against the PRODUCTION
+// functions (not the mirror above — a copy stays green when the production
+// election is weakened, which is the failure mode these tests exist to catch).
+// The liveness probe itself is NOT mocked: process.kill is real, so the pids
+// seeded below must be provably dead or provably alive on the host. ---
+describe('tryAcquireLeaderLock / releaseLeaderLockIfOurs — #4352 dead-PID steal + release (production code)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('steals a FRESH lock whose holder PID is DEAD (no stale wait)', async () => {
+    const deadPid = findDeadPid();
+    (writeFile as any)
+      .mockRejectedValueOnce(Object.assign(new Error('exists'), { code: 'EEXIST' }))
+      .mockResolvedValueOnce(undefined); // the steal overwrite
+    (readFile as any).mockResolvedValueOnce(JSON.stringify({ pid: deadPid, timestamp: Date.now() }));
+    expect(await productionTryAcquireLeaderLock('myia-ai-01')).toBe(true);
+    const stolen = JSON.parse((writeFile as any).mock.calls[1][1]);
+    expect(stolen.pid).toBe(process.pid);
+  });
+
+  it('does NOT steal a fresh lock whose holder is ALIVE — the stale threshold stays the net', async () => {
+    // process.ppid is the vitest worker running this very test: alive by construction.
+    (writeFile as any).mockRejectedValueOnce(Object.assign(new Error('exists'), { code: 'EEXIST' }));
+    (readFile as any).mockResolvedValueOnce(JSON.stringify({ pid: process.ppid, timestamp: Date.now() }));
+    expect(await productionTryAcquireLeaderLock('myia-ai-01')).toBe(false);
+    // Only the failed wx attempt — no steal write happened.
+    expect((writeFile as any).mock.calls).toHaveLength(1);
+  });
+
+  it('releaseLeaderLockIfOurs unlinks OUR lock', async () => {
+    (readFile as any).mockResolvedValueOnce(JSON.stringify({ pid: process.pid, timestamp: Date.now() }));
+    expect(await productionReleaseLeaderLockIfOurs('myia-ai-01')).toBe(true);
+    expect(unlink).toHaveBeenCalledTimes(1);
+    expect(unlink).toHaveBeenCalledWith(await getLeaderLockPath('myia-ai-01'));
+  });
+
+  it('releaseLeaderLockIfOurs never unlinks a lock held by ANOTHER process', async () => {
+    (readFile as any).mockResolvedValueOnce(JSON.stringify({ pid: process.ppid, timestamp: Date.now() }));
+    expect(await productionReleaseLeaderLockIfOurs('myia-ai-01')).toBe(false);
+    expect(unlink).not.toHaveBeenCalled();
+  });
+
+  it('releaseLeaderLockIfOurs is a no-op on an unreadable/absent lock', async () => {
+    (readFile as any).mockRejectedValueOnce(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    expect(await productionReleaseLeaderLockIfOurs('myia-ai-01')).toBe(false);
+    expect(unlink).not.toHaveBeenCalled();
   });
 });

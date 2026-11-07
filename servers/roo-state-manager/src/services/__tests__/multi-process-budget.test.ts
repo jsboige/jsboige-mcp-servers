@@ -37,8 +37,11 @@ import {
   getWorkerALockPath,
   tryAcquireWorkerALeaderLock,
   ensureWorkerALeadershipForTick,
+  releaseWorkerALockIfOurs,
   WORKER_A_LOCK_STALE_MS,
 } from '../worker-a-lock.js';
+// #4352: the probe itself is production code — tests must not reimplement it.
+import { isProcessAlive } from '../pid-liveness.js';
 
 const N_PROCESSES = 8; // Spec requirement: N ≥ 8
 const CONTENDER_SCRIPT = path.join(
@@ -58,6 +61,27 @@ async function backdateLock(lockPath: string, ageMs: number): Promise<void> {
   await fs.utimes(lockPath, when, when);
 }
 
+// #4352: a foreign holder must be PROVABLY alive — `process.pid + 1` is dead on
+// most hosts, and a fresh lock held by a dead PID is now stolen immediately,
+// which would flip these follower expectations into leader outcomes at the
+// whim of the host's PID table.
+function spawnLiveForeignPid(): { pid: number; stop: () => void } {
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { stdio: 'ignore' });
+  return {
+    pid: child.pid!,
+    stop: () => { try { child.kill(); } catch { /* already gone */ } },
+  };
+}
+
+// #4352: a provably-dead PID, found with the production liveness primitive
+// (high, sparsely-populated range — on Windows PIDs are multiples of 4).
+function findDeadPid(): number {
+  for (let candidate = 400000; candidate < 1000000; candidate += 4) {
+    if (!isProcessAlive(candidate)) return candidate;
+  }
+  throw new Error('no provably-dead PID found in the scan range');
+}
+
 interface ChildResult {
   pid: number;
   isWorkerALeader: boolean;
@@ -65,9 +89,9 @@ interface ChildResult {
 }
 
 /** Spawn one real Node process that runs the production lock primitive. */
-function spawnLockContender(lockPath: string, machineId: string): Promise<ChildResult> {
+function spawnLockContender(lockPath: string, machineId: string, holdMs = 0): Promise<ChildResult> {
   return new Promise<ChildResult>((resolve, reject) => {
-    const child = spawn(process.execPath, [CONTENDER_SCRIPT, lockPath, machineId], {
+    const child = spawn(process.execPath, [CONTENDER_SCRIPT, lockPath, machineId, String(holdMs)], {
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -144,8 +168,13 @@ describe('tryAcquireWorkerALeaderLock — production primitive', () => {
   });
 
   it('second process with fresh lock from a different PID is rejected', async () => {
-    await seedLock(lockPath, process.pid + 1);
-    expect(await tryAcquireWorkerALeaderLock('test-machine', { lockPath })).toBe(false);
+    const foreign = spawnLiveForeignPid();
+    try {
+      await seedLock(lockPath, foreign.pid);
+      expect(await tryAcquireWorkerALeaderLock('test-machine', { lockPath })).toBe(false);
+    } finally {
+      foreign.stop();
+    }
   });
 
   it('same PID renews the lock (consecutive ticks of the leader)', async () => {
@@ -156,9 +185,25 @@ describe('tryAcquireWorkerALeaderLock — production primitive', () => {
     expect(timestamp).toBeGreaterThan(Date.now() - 30_000);
   });
 
-  it('stale lock (>10 min) is stolen by the next acquirer', async () => {
-    await seedLock(lockPath, process.pid + 1, WORKER_A_LOCK_STALE_MS + 60_000);
+  it('stale lock (>10 min) is stolen by the next acquirer even though the holder is ALIVE', async () => {
+    // #4352: with a live holder this is the ONLY way left to reach the
+    // stale-threshold branch — a dead holder is stolen before it. The net must
+    // survive for recycled PIDs ("alive" never proves identity).
+    const foreign = spawnLiveForeignPid();
+    try {
+      await seedLock(lockPath, foreign.pid, WORKER_A_LOCK_STALE_MS + 60_000);
+      expect(await tryAcquireWorkerALeaderLock('test-machine', { lockPath })).toBe(true);
+    } finally {
+      foreign.stop();
+    }
+  });
+
+  it('#4352 a fresh lock held by a DEAD PID is stolen immediately (no stale wait)', async () => {
+    await seedLock(lockPath, findDeadPid()); // fresh timestamp — only liveness can justify the steal
     expect(await tryAcquireWorkerALeaderLock('test-machine', { lockPath })).toBe(true);
+    // The stolen lock now carries the thief's pid — the next reader sees US.
+    const stolen = JSON.parse(await fs.readFile(lockPath, 'utf-8'));
+    expect(stolen.pid).toBe(process.pid);
   });
 
   it('a freshly-created EMPTY lock does not mint a second leader', async () => {
@@ -182,6 +227,27 @@ describe('tryAcquireWorkerALeaderLock — production primitive', () => {
     await fs.mkdir(dirAsLock);
     expect(await tryAcquireWorkerALeaderLock('test-machine', { lockPath: dirAsLock })).toBe(false);
   });
+
+  it('#4352 releaseWorkerALockIfOurs deletes the lock we hold', async () => {
+    expect(await tryAcquireWorkerALeaderLock('test-machine', { lockPath })).toBe(true);
+    expect(await releaseWorkerALockIfOurs('test-machine', { lockPath })).toBe(true);
+    await expect(fs.readFile(lockPath, 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('#4352 releaseWorkerALockIfOurs keeps a lock held by ANOTHER process', async () => {
+    const foreign = spawnLiveForeignPid();
+    try {
+      await seedLock(lockPath, foreign.pid);
+      expect(await releaseWorkerALockIfOurs('test-machine', { lockPath })).toBe(false);
+      expect(JSON.parse(await fs.readFile(lockPath, 'utf-8')).pid).toBe(foreign.pid);
+    } finally {
+      foreign.stop();
+    }
+  });
+
+  it('#4352 releaseWorkerALockIfOurs is a no-op when no lock exists', async () => {
+    expect(await releaseWorkerALockIfOurs('test-machine', { lockPath })).toBe(false);
+  });
 });
 
 describe('ensureWorkerALeadershipForTick — renewal / step-down (regression)', () => {
@@ -199,9 +265,14 @@ describe('ensureWorkerALeadershipForTick — renewal / step-down (regression)', 
 
   it('a follower stays a follower while another PID holds a live lock, and does no work', async () => {
     const state = { machineId: 'test-machine', isWorkerALeader: false };
-    await seedLock(lockPath, process.pid + 1);
-    expect(await ensureWorkerALeadershipForTick(state, { lockPath })).toBe('follower');
-    expect(state.isWorkerALeader).toBe(false);
+    const foreign = spawnLiveForeignPid();
+    try {
+      await seedLock(lockPath, foreign.pid);
+      expect(await ensureWorkerALeadershipForTick(state, { lockPath })).toBe('follower');
+      expect(state.isWorkerALeader).toBe(false);
+    } finally {
+      foreign.stop();
+    }
   });
 
   it('an unowned machine is taken over by a follower on its next tick', async () => {
@@ -225,20 +296,30 @@ describe('ensureWorkerALeadershipForTick — renewal / step-down (regression)', 
 
   it('a leader whose lock was stolen steps down, then re-elects', async () => {
     const state = { machineId: 'test-machine', isWorkerALeader: true };
-    await seedLock(lockPath, process.pid + 1); // another process now owns the lock
-    expect(await ensureWorkerALeadershipForTick(state, { lockPath })).toBe('stepped-down');
-    expect(state.isWorkerALeader).toBe(false);
-    // Step-down must NOT clear the interval: the next tick re-runs the election.
-    expect(await ensureWorkerALeadershipForTick(state, { lockPath })).toBe('follower');
+    const foreign = spawnLiveForeignPid(); // another LIVE process now owns the lock
+    try {
+      await seedLock(lockPath, foreign.pid);
+      expect(await ensureWorkerALeadershipForTick(state, { lockPath })).toBe('stepped-down');
+      expect(state.isWorkerALeader).toBe(false);
+      // Step-down must NOT clear the interval: the next tick re-runs the election.
+      expect(await ensureWorkerALeadershipForTick(state, { lockPath })).toBe('follower');
+    } finally {
+      foreign.stop();
+    }
   });
 
   it('an OLD stale lock is taken over by a starter (the boot-only failure mode)', async () => {
     const state = { machineId: 'test-machine', isWorkerALeader: false };
-    // What a leader that only acquired at boot leaves behind after 10 min without
-    // renewing: a lock any later starter can steal, yielding a second stack.
-    await seedLock(lockPath, process.pid + 1, WORKER_A_LOCK_STALE_MS + 60_000);
-    expect(await ensureWorkerALeadershipForTick(state, { lockPath })).toBe('became-leader');
-    expect(state.isWorkerALeader).toBe(true);
+    const foreign = spawnLiveForeignPid();
+    try {
+      // What a leader that only acquired at boot leaves behind after 10 min without
+      // renewing: a lock any later starter can steal, yielding a second stack.
+      await seedLock(lockPath, foreign.pid, WORKER_A_LOCK_STALE_MS + 60_000);
+      expect(await ensureWorkerALeadershipForTick(state, { lockPath })).toBe('became-leader');
+      expect(state.isWorkerALeader).toBe(true);
+    } finally {
+      foreign.stop();
+    }
   });
 });
 
@@ -265,10 +346,13 @@ describe('Worker A leader-election — N-process budget (#3661 acceptance)', () 
 
   it(`N=${N_PROCESSES} concurrent processes: exactly 1 leader, N-1 followers`, async () => {
     // Spawn N contenders in parallel — they all hit the lock at roughly the same time.
-    // The OS-level writeFile with flag:'wx' is the serialization point.
+    // The OS-level writeFile with flag:'wx' is the serialization point. #4352: the
+    // winner HOLDS the lock (holdMs) — a real holder is a long-lived MCP process;
+    // without the hold, the winner exits before the others probe and each would
+    // steal from a dead pid, minting N leaders out of the contention model.
     const promises: Promise<ChildResult>[] = [];
     for (let i = 0; i < N_PROCESSES; i++) {
-      promises.push(spawnLockContender(lockPath, 'test-machine'));
+      promises.push(spawnLockContender(lockPath, 'test-machine', 3000));
     }
 
     const results = await Promise.all(promises);
@@ -285,5 +369,23 @@ describe('Worker A leader-election — N-process budget (#3661 acceptance)', () 
     // that does not match the on-disk owner would let two stacks run.
     const onDisk = JSON.parse(await fs.readFile(lockPath, 'utf-8'));
     expect(onDisk.pid).toBe(leaders[0].pid);
+  }, 60_000);
+
+  it('#4352 a contender takes over immediately from an EXITED holder (no stale wait)', async () => {
+    // The contender harness runs the production primitive then exits. The first
+    // contender wins the lock and DIES holding it — the lock it leaves behind is
+    // fresh (age ~0) but its holder is gone. Before #4352 the next contender
+    // stayed follower for the whole 10-min stale window (ai-01 measured 24-28
+    // min leaderless per leader death on 07/11); now the takeover is immediate.
+    const first = await spawnLockContender(lockPath, 'test-machine');
+    expect(first.isWorkerALeader).toBe(true);
+
+    const second = await spawnLockContender(lockPath, 'test-machine');
+    expect(second.isWorkerALeader).toBe(true);
+    expect(second.pid).not.toBe(first.pid);
+
+    // And the lock on disk names the new leader, not the dead one.
+    const onDisk = JSON.parse(await fs.readFile(lockPath, 'utf-8'));
+    expect(onDisk.pid).toBe(second.pid);
   }, 60_000);
 });

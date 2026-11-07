@@ -1451,11 +1451,14 @@ describe('#4352 — automatic re-arm of failed tasks', () => {
       expect(mockFs.appendFile).not.toHaveBeenCalled();
     });
 
-    it('an idle leader whose lock is now held by another process steps down instead of re-arming', async () => {
+    it('an idle leader whose lock is now held by another LIVE process steps down instead of re-arming', async () => {
       const state = stateWith({ stuck: failedEntry(NOW - 25 * HOUR, 'embedding_timeout') });
       state.isIndexLeader = true;
       mockFs.writeFile.mockRejectedValueOnce(Object.assign(new Error('EEXIST'), { code: 'EEXIST' }));
-      mockFs.readFile.mockResolvedValueOnce(JSON.stringify({ pid: process.pid + 1, timestamp: NOW }));
+      // #4352: the holder must be provably ALIVE (ppid = the vitest worker) —
+      // a fresh lock held by a dead pid is stolen immediately now, which would
+      // keep us leader and break the step-down this test pins.
+      mockFs.readFile.mockResolvedValueOnce(JSON.stringify({ pid: process.ppid, timestamp: NOW }));
       await runOneTick(state);
       expect(mockFs.appendFile).not.toHaveBeenCalled();
       expect(state.isIndexLeader).toBe(false);

@@ -301,6 +301,8 @@ class RooStateManagerServer {
         if (!this.stateManager) {
             const { StateManager } = await getStateManager();
             this.stateManager = new StateManager();
+            // #4352: capture for gracefulShutdown's lock release (see release site).
+            _shutdownMachineId = this.stateManager.getState().machineId;
         }
 
         // #883: Log workspace detection
@@ -982,6 +984,11 @@ process.on('unhandledRejection', (reason, promise) => {
 const SHUTDOWN_TIMEOUT_MS = parseInt(process.env.SHUTDOWN_TIMEOUT_MS || '10000', 10);
 let isShuttingDown = false;
 let serverInstance: RooStateManagerServer | null = null;
+// #4352: machineId the process ran under, captured at StateManager construction
+// so gracefulShutdown can release OUR leader locks without reaching into the
+// (private) stateManager. Null until construction — a shutdown before that
+// holds no locks.
+let _shutdownMachineId: string | null = null;
 
 async function gracefulShutdown(signal: string): Promise<void> {
     if (isShuttingDown) {
@@ -1002,6 +1009,26 @@ async function gracefulShutdown(signal: string): Promise<void> {
             logger.info('Stopping MCP server...');
             await serverInstance.stop();
             logger.info('MCP server stopped');
+        }
+
+        // #4352: release OUR leader locks (Qdrant indexer + Worker A) so the
+        // next starter does not wait out a stale window after a clean stop —
+        // stdin-close under a vanishing MCP client is the common Windows path.
+        // Both releases are no-ops unless the lock carries this process's pid
+        // and never throw; a failure costs at most one stale window. Dynamic
+        // import per #1140 (background-services pulls Qdrant/embeddings; on the
+        // normal path it is already loaded and the import resolves instantly).
+        if (_shutdownMachineId) {
+            try {
+                const [{ releaseLeaderLockIfOurs }, { releaseWorkerALockIfOurs }] = await Promise.all([
+                    import('./services/background-services.js'),
+                    import('./services/worker-a-lock.js'),
+                ]);
+                await releaseLeaderLockIfOurs(_shutdownMachineId);
+                await releaseWorkerALockIfOurs(_shutdownMachineId);
+            } catch (error) {
+                logger.warn('[shutdown] leader-lock release skipped:', { error });
+            }
         }
 
         // #3151: hold the door for in-flight PG mirror writes. Before this,
