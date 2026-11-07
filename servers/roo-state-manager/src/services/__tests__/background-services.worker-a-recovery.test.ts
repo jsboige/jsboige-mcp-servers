@@ -19,7 +19,8 @@
  * The Worker A lock algorithm itself is NOT mocked: the real election runs
  * against the mocked fs, so the steal exercised here is the production path.
  */
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
+import { spawn } from 'child_process';
 
 // --- fs: path-aware mock. The Worker A lock (roosync-worker-a-leader-*) is
 // controlled per test through `workerALockMode` / `workerALockContent`; every
@@ -161,6 +162,14 @@ function makeSkeleton(taskId: string): ConversationSkeleton {
 
 let logs: string[];
 
+// #4352: the foreign holder must be PROVABLY alive — the previously-hardcoded
+// 451444/777777 pids are dead on most hosts, and a fresh lock held by a dead
+// PID is now stolen immediately, which would turn these "boot as follower"
+// scenarios into leader boots at the whim of the host's PID table.
+const liveForeign = spawn(process.execPath, ['-e', 'setInterval(() => {}, 60000)'], { stdio: 'ignore' });
+const liveForeignPid = liveForeign.pid!;
+afterAll(() => { try { liveForeign.kill(); } catch { /* already gone */ } });
+
 beforeEach(() => {
     vi.useFakeTimers();
     logs = [];
@@ -177,7 +186,7 @@ beforeEach(() => {
     mockFs.stat.mockResolvedValue({ mtime: new Date('2026-03-01T00:00:00Z') } as any);
     wireWorkerALockFs();
     workerALockMode = 'contested';
-    workerALockContent = { pid: 451444, timestamp: Date.now() }; // a live-looking other-pid lock
+    workerALockContent = { pid: liveForeignPid, timestamp: Date.now() }; // a provably-live foreign pid (a dead pid's fresh lock is stolen since #4352)
     delete process.env.ROO_INDEX_FORCE;
 });
 
@@ -219,7 +228,7 @@ describe('#2427 — Worker A mid-run leadership recovery', () => {
         expect(state.skeletonRefreshInterval).not.toBeNull();
 
         // The boot leader dies; its lock goes stale. A task was modified since.
-        workerALockContent = { pid: 451444, timestamp: Date.now() - STALE_MS };
+        workerALockContent = { pid: liveForeignPid, timestamp: Date.now() - STALE_MS };
         mockFs.readdir.mockResolvedValue([dirent('task-R1')] as any);
 
         await vi.advanceTimersByTimeAsync(SKELETON_REFRESH_INTERVAL_MS);
@@ -233,7 +242,7 @@ describe('#2427 — Worker A mid-run leadership recovery', () => {
         // Boot as follower, then the boot leader dies → steal on the next tick.
         const state = makeState();
         await boot(state);
-        workerALockContent = { pid: 451444, timestamp: Date.now() - STALE_MS };
+        workerALockContent = { pid: liveForeignPid, timestamp: Date.now() - STALE_MS };
         await vi.advanceTimersByTimeAsync(SKELETON_REFRESH_INTERVAL_MS);
         expect(state.isWorkerALeader).toBe(true);
 
@@ -244,11 +253,11 @@ describe('#2427 — Worker A mid-run leadership recovery', () => {
 
         // Step down (another live pid renewed over us), then become leader again:
         // the once-per-process guard must not re-pay the startup stack.
-        workerALockContent = { pid: 777777, timestamp: Date.now() };
+        workerALockContent = { pid: liveForeignPid, timestamp: Date.now() };
         await vi.advanceTimersByTimeAsync(SKELETON_REFRESH_INTERVAL_MS);
         expect(state.isWorkerALeader).toBe(false);
 
-        workerALockContent = { pid: 777777, timestamp: Date.now() - STALE_MS };
+        workerALockContent = { pid: liveForeignPid, timestamp: Date.now() - STALE_MS };
         await vi.advanceTimersByTimeAsync(SKELETON_REFRESH_INTERVAL_MS);
         expect(state.isWorkerALeader).toBe(true);
         expect(workerBInitCount()).toBe(1); // still exactly once
@@ -263,11 +272,11 @@ describe('#2427 — Worker A mid-run leadership recovery', () => {
         expect(state.qdrantIndexInterval).not.toBeNull();
 
         workerALockMode = 'contested';
-        workerALockContent = { pid: 777777, timestamp: Date.now() };
+        workerALockContent = { pid: liveForeignPid, timestamp: Date.now() };
         await vi.advanceTimersByTimeAsync(SKELETON_REFRESH_INTERVAL_MS); // renew fails → stepped down
         expect(state.isWorkerALeader).toBe(false);
 
-        workerALockContent = { pid: 777777, timestamp: Date.now() - STALE_MS };
+        workerALockContent = { pid: liveForeignPid, timestamp: Date.now() - STALE_MS };
         await vi.advanceTimersByTimeAsync(SKELETON_REFRESH_INTERVAL_MS); // steal → leader again
         expect(state.isWorkerALeader).toBe(true);
         expect(workerBInitCount()).toBe(1); // guard holds

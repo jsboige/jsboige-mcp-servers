@@ -24,6 +24,8 @@ import { isMeteredConnection } from './metered-connection.js';
 // N-process acceptance test can spawn contenders that run the PRODUCTION
 // primitive instead of a copy of it.
 import { tryAcquireWorkerALeaderLock, ensureWorkerALeadershipForTick } from './worker-a-lock.js';
+// #4352: PID liveness probe shared by both leader elections (node builtins only).
+import { isProcessAlive } from './pid-liveness.js';
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
@@ -1709,6 +1711,19 @@ export async function tryAcquireLeaderLock(machineId: string): Promise<boolean> 
                 return true;
             }
 
+            // #4352: a DEAD holder is stolen immediately, without waiting out the
+            // staleness window. Measured on ai-01 07/11: two leaders died within
+            // 25 min (PID 33052 at the 13:10:54Z hot-swap, PID 8772 ~13:30Z) and
+            // the machine stayed leaderless 24-28 min per death while the lock
+            // pointed at a dead PID the whole time. Liveness only ACCELERATES the
+            // steal — the stale-threshold net below stays for recycled PIDs
+            // (isProcessAlive doc reserve: "alive" never proves identity).
+            if (!isProcessAlive(existing.pid)) {
+                await fs.writeFile(lockPath, JSON.stringify(lockData));
+                console.log(`🔑 [Leader-Election] Stolen lock from DEAD PID ${existing.pid} (age ${Math.round((Date.now() - existing.timestamp) / 1000)}s, before stale threshold). PID ${process.pid} is now leader.`);
+                return true;
+            }
+
             // Check staleness
             const age = Date.now() - existing.timestamp;
             if (age > LEADER_LOCK_STALE_MS) {
@@ -1725,6 +1740,33 @@ export async function tryAcquireLeaderLock(machineId: string): Promise<boolean> 
             await fs.writeFile(lockPath, JSON.stringify(lockData));
             return true;
         }
+    }
+}
+
+/**
+ * #4352: release the leader lock on clean shutdown (SIGTERM/SIGINT/SIGHUP/
+ * stdin-close), but ONLY if it still carries OUR pid — a lock held by another
+ * process (we lost the election, or someone stole our expired lock) must
+ * survive us. Never throws: a failed release costs at most one stale window,
+ * which the steal paths above already cover. Wired from gracefulShutdown in
+ * index.ts; exported for the tests to check the lock THIS code touches.
+ */
+export async function releaseLeaderLockIfOurs(
+    machineId: string,
+    options: { lockPath?: string } = {}
+): Promise<boolean> {
+    try {
+        const lockPath = options.lockPath ?? (await getLeaderLockPath(machineId));
+        const content = await fs.readFile(lockPath, 'utf-8');
+        const existing = JSON.parse(content);
+        if (existing.pid !== process.pid) {
+            return false;
+        }
+        await fs.unlink(lockPath);
+        console.log(`🔓 [Leader-Election] Lock released on clean shutdown (PID ${process.pid}).`);
+        return true;
+    } catch {
+        return false;
     }
 }
 

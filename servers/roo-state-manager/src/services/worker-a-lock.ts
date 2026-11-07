@@ -24,6 +24,9 @@
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
+// #4352: shared PID liveness probe (its own module — node builtins only, this
+// file's dependency constraint is preserved: pid-liveness imports nothing).
+import { isProcessAlive } from './pid-liveness.js';
 
 /**
  * Stale threshold, SHORTER (10 min) than #2352's 15 min because the Worker A
@@ -87,6 +90,16 @@ export async function tryAcquireWorkerALeaderLock(
             }
 
             const age = Date.now() - existing.timestamp;
+            if (!isProcessAlive(existing.pid)) {
+                // #4352: a DEAD holder is stolen immediately, before the stale
+                // threshold — same fix as tryAcquireLeaderLock (ai-01 measured
+                // 24-28 min leaderless per leader death on 07/11). Liveness is
+                // an accelerator only; the stale-threshold steal below remains
+                // the net for recycled PIDs ("alive" never proves identity).
+                await fs.writeFile(lockPath, JSON.stringify(lockData));
+                console.log(`🔑 [WorkerA-Lead] Stolen lock from DEAD PID ${existing.pid} (age ${Math.round(age / 1000)}s, before stale threshold). PID ${process.pid} is now leader.`);
+                return true;
+            }
             if (age > WORKER_A_LOCK_STALE_MS) {
                 await fs.writeFile(lockPath, JSON.stringify(lockData));
                 console.log(`🔑 [WorkerA-Lead] Stolen stale lock (previous PID ${existing.pid}, age ${Math.round(age / 1000)}s). PID ${process.pid} is now leader.`);
@@ -118,6 +131,31 @@ export async function tryAcquireWorkerALeaderLock(
             }
             return false;
         }
+    }
+}
+
+/**
+ * #4352: release the Worker A lock on clean shutdown, ONLY if it carries OUR
+ * pid — a lock won by another process must survive us. Never throws: a failed
+ * release costs at most one stale window, which the steal path above already
+ * covers. Wired from gracefulShutdown in index.ts; exported for the tests.
+ */
+export async function releaseWorkerALockIfOurs(
+    machineId: string,
+    options: WorkerALockOptions = {}
+): Promise<boolean> {
+    try {
+        const lockPath = options.lockPath ?? (await getWorkerALockPath(machineId));
+        const content = await fs.readFile(lockPath, 'utf-8');
+        const existing = JSON.parse(content);
+        if (existing.pid !== process.pid) {
+            return false;
+        }
+        await fs.unlink(lockPath);
+        console.log(`🔓 [WorkerA-Lead] Lock released on clean shutdown (PID ${process.pid}).`);
+        return true;
+    } catch {
+        return false;
     }
 }
 
