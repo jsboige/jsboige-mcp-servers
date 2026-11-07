@@ -357,10 +357,48 @@ describe('tryAcquireLeaderLock / releaseLeaderLockIfOurs — #4352 dead-PID stea
     (writeFile as any)
       .mockRejectedValueOnce(Object.assign(new Error('exists'), { code: 'EEXIST' }))
       .mockResolvedValueOnce(undefined); // the steal overwrite
-    (readFile as any).mockResolvedValueOnce(JSON.stringify({ pid: deadPid, timestamp: Date.now() }));
+    (readFile as any)
+      .mockResolvedValueOnce(JSON.stringify({ pid: deadPid, timestamp: Date.now() }))
+      // #4352 W1: the steal is arbitrated by a READ-BACK — the same pid we wrote.
+      .mockResolvedValueOnce(JSON.stringify({ pid: process.pid, timestamp: Date.now() }));
     expect(await productionTryAcquireLeaderLock('myia-ai-01')).toBe(true);
     const stolen = JSON.parse((writeFile as any).mock.calls[1][1]);
     expect(stolen.pid).toBe(process.pid);
+  });
+
+  it('#4352 W1 a steal race is arbitrated by the read-back: ANOTHER pid wrote last → follower', async () => {
+    // Two contenders both saw the dead holder and both overwrote; the read-back
+    // shows the OTHER pid landed last → we must NOT claim leadership.
+    const deadPid = findDeadPid();
+    (writeFile as any)
+      .mockRejectedValueOnce(Object.assign(new Error('exists'), { code: 'EEXIST' }))
+      .mockResolvedValueOnce(undefined); // our steal overwrite (lost the race)
+    (readFile as any)
+      .mockResolvedValueOnce(JSON.stringify({ pid: deadPid, timestamp: Date.now() }))
+      .mockResolvedValueOnce(JSON.stringify({ pid: process.ppid, timestamp: Date.now() }));
+    expect(await productionTryAcquireLeaderLock('myia-ai-01')).toBe(false);
+  });
+
+  it('#4352 W1 the stale-threshold steal is arbitrated by the read-back too', async () => {
+    const staleMs = 15 * 60 * 1000 + 1000;
+    (writeFile as any)
+      .mockRejectedValueOnce(Object.assign(new Error('exists'), { code: 'EEXIST' }))
+      .mockResolvedValueOnce(undefined);
+    (readFile as any)
+      .mockResolvedValueOnce(JSON.stringify({ pid: process.ppid, timestamp: Date.now() - staleMs }))
+      .mockResolvedValueOnce(JSON.stringify({ pid: process.ppid, timestamp: Date.now() }));
+    expect(await productionTryAcquireLeaderLock('myia-ai-01')).toBe(false);
+  });
+
+  it('#4352 W1 an unreadable read-back after our own write still yields leadership (fail-open)', async () => {
+    const deadPid = findDeadPid();
+    (writeFile as any)
+      .mockRejectedValueOnce(Object.assign(new Error('exists'), { code: 'EEXIST' }))
+      .mockResolvedValueOnce(undefined);
+    (readFile as any)
+      .mockResolvedValueOnce(JSON.stringify({ pid: deadPid, timestamp: Date.now() }))
+      .mockRejectedValueOnce(Object.assign(new Error('gone'), { code: 'ENOENT' }));
+    expect(await productionTryAcquireLeaderLock('myia-ai-01')).toBe(true);
   });
 
   it('does NOT steal a fresh lock whose holder is ALIVE — the stale threshold stays the net', async () => {

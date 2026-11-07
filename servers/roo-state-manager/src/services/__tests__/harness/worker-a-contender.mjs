@@ -48,31 +48,42 @@ if (!lockPath) {
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sourcePath = path.join(here, '..', '..', 'worker-a-lock.ts');
 const transformedPath = path.join(os.tmpdir(), `rsm-3661-contender-${process.pid}.mjs`);
-// #4352: worker-a-lock now imports the shared liveness probe. The contender is
-// written to a temp dir, so the relative './pid-liveness.js' specifier would
-// resolve against THAT directory and fail. Transform the probe source too (same
-// production-source rule as the lock itself) and rewrite the specifier to its
-// absolute file URL.
-const probeSourcePath = path.join(here, '..', '..', 'pid-liveness.ts');
-const probeTransformedPath = path.join(os.tmpdir(), `rsm-4352-pid-liveness-${process.pid}.mjs`);
+// #4352: worker-a-lock now imports shared satellites (pid-liveness, then W1
+// added lock-participation). The contender is written to a temp dir, so the
+// relative './x.js' specifiers would resolve against THAT directory and fail.
+// Transform EACH satellite source (same production-source rule as the lock
+// itself) and rewrite every specifier to its absolute file URL.
+const SATELLITES = [
+    { src: 'pid-liveness.ts', tmp: `rsm-4352-pid-liveness-${process.pid}.mjs` },
+    { src: 'lock-participation.ts', tmp: `rsm-4352-lock-participation-${process.pid}.mjs` },
+];
 
 try {
-    const { code: probeCode } = transformSync(readFileSync(probeSourcePath, 'utf-8'), {
-        loader: 'ts',
-        format: 'esm',
-        target: 'node20',
-    });
-    writeFileSync(probeTransformedPath, probeCode, 'utf-8');
+    const rewrittenSpecifiers = new Map();
+    for (const { src, tmp } of SATELLITES) {
+        const satellitePath = path.join(os.tmpdir(), tmp);
+        const { code: satCode } = transformSync(readFileSync(path.join(here, '..', '..', src), 'utf-8'), {
+            loader: 'ts',
+            format: 'esm',
+            target: 'node20',
+        });
+        writeFileSync(satellitePath, satCode, 'utf-8');
+        rewrittenSpecifiers.set(`./${src.replace(/\.ts$/, '.js')}`, pathToFileURL(satellitePath).href);
+    }
 
     const { code } = transformSync(readFileSync(sourcePath, 'utf-8'), {
         loader: 'ts',
         format: 'esm',
         target: 'node20',
     });
-    const rewritten = code.replaceAll(
-        /(['"])\.\/pid-liveness\.js\1/g,
-        `'${pathToFileURL(probeTransformedPath).href}'`
-    );
+    let rewritten = code;
+    for (const [specifier, href] of rewrittenSpecifiers) {
+        // Plain string replace (split/join) — a regex would need every dot of
+        // the specifier escaped and `.{mod}.js` would silently over-match.
+        rewritten = rewritten
+            .split(`'${specifier}'`).join(`'${href}'`)
+            .split(`"${specifier}"`).join(`"${href}"`);
+    }
     writeFileSync(transformedPath, rewritten, 'utf-8');
     const { tryAcquireWorkerALeaderLock } = await import(pathToFileURL(transformedPath).href);
     const isWorkerALeader = await tryAcquireWorkerALeaderLock(machineId, { lockPath });
@@ -86,7 +97,8 @@ try {
 } catch (error) {
     report({ isWorkerALeader: false, error: String(error?.message ?? error) });
 } finally {
-    for (const p of [transformedPath, probeTransformedPath]) {
+    const temps = [transformedPath, ...SATELLITES.map(({ tmp }) => path.join(os.tmpdir(), tmp))];
+    for (const p of temps) {
         try {
             rmSync(p, { force: true });
         } catch {

@@ -35,6 +35,11 @@ import { createRequire } from 'module';
 import { captureHostEnvKeys, applyEnvFileForNonHostKeys } from './services/host-env-snapshot.js';
 import { recordEmbeddingFileConfig } from './services/embedding-endpoints.js';
 import { isPgFlagOn } from './services/unified-store/pg-flags.js';
+// #4352 W2: static import of the participation flags ONLY (dependency-free
+// module). background-services / worker-a-lock stay dynamically imported —
+// the point of the gate is to NOT load them in processes that never entered
+// an election.
+import { wasAnyLockAttempted } from './services/lock-participation.js';
 
 // Obtenir le répertoire du fichier actuel
 const __filename = fileURLToPath(import.meta.url);
@@ -1018,7 +1023,12 @@ async function gracefulShutdown(signal: string): Promise<void> {
         // and never throw; a failure costs at most one stale window. Dynamic
         // import per #1140 (background-services pulls Qdrant/embeddings; on the
         // normal path it is already loaded and the import resolves instantly).
-        if (_shutdownMachineId) {
+        // #4352 W2 (ms#1683 review): SKIP the imports entirely in processes
+        // that never entered an election (wasAnyLockAttempted) — previously
+        // they ran in EVERY process and consumed #3151's shutdown drain budget
+        // for nothing. A process that did participate already has the modules
+        // in memory, so its import resolves from the ESM cache at ~no cost.
+        if (_shutdownMachineId && wasAnyLockAttempted()) {
             try {
                 const [{ releaseLeaderLockIfOurs }, { releaseWorkerALockIfOurs }] = await Promise.all([
                     import('./services/background-services.js'),
