@@ -37,14 +37,14 @@ vi.mock('../../../utils/task-instruction-index.js', () => ({
 }));
 
 import { handleGetTaskTree } from '../get-tree.tool.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ─────────────────── helpers ───────────────────
 
 function makeConversation(
   taskId: string,
-  overrides: Partial<ConversationSkeleton> & { parentTaskId?: string; parentId?: string } = {}
-): ConversationSkeleton {
+  overrides: Partial<StoredConversation> & { parentTaskId?: string; parentId?: string } = {}
+): StoredConversation {
   return {
     taskId,
     metadata: {
@@ -60,10 +60,10 @@ function makeConversation(
     },
     messages: [],
     ...overrides,
-  } as unknown as ConversationSkeleton;
+  } as unknown as StoredConversation;
 }
 
-function makeCache(...skeletons: ConversationSkeleton[]): Map<string, ConversationSkeleton> {
+function makeCache(...skeletons: StoredConversation[]): Map<string, StoredConversation> {
   return new Map(skeletons.map(s => [s.taskId, s]));
 }
 
@@ -215,7 +215,7 @@ describe('handleGetTaskTree — coverage des branches', () => {
     test('un enfant avec taskId undefined est pruné sans casser la construction', async () => {
       const parentTask = makeConversation('parent-host');
       // child fantôme : parentTaskId déclaré mais taskId absent
-      const ghost = { parentTaskId: 'parent-host' } as unknown as ConversationSkeleton;
+      const ghost = { parentTaskId: 'parent-host' } as unknown as StoredConversation;
       ghost.taskId = undefined as unknown as string;
       const cache = makeCache(parentTask, ghost);
 

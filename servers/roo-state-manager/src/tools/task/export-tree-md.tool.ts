@@ -5,7 +5,7 @@
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 
@@ -28,7 +28,7 @@ export interface ExportTaskTreeMarkdownArgs {
  * Interface pour passer le cache de conversations
  */
 interface ConversationCacheProvider {
-    conversationCache: Map<string, ConversationSkeleton>;
+    conversationCache: Map<string, StoredConversation>;
 }
 
 /**
@@ -90,7 +90,7 @@ export async function handleExportTaskTreeMarkdown(
     args: ExportTaskTreeMarkdownArgs,
     handleGetTaskTree: (args: any) => Promise<CallToolResult>,
     ensureSkeletonCacheIsFresh: () => Promise<void>,
-    conversationCache?: Map<string, ConversationSkeleton>
+    conversationCache?: Map<string, StoredConversation>
 ): Promise<CallToolResult> {
     try {
         const {

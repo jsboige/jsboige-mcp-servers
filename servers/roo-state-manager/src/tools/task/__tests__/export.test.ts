@@ -16,7 +16,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { handleTaskExport, TaskExportArgs } from '../export.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 /** Helper to extract text from CallToolResult content */
@@ -62,7 +62,7 @@ vi.mock('../get-tree.tool.js', () => ({
 }));
 
 describe('task_export - CONS-9', () => {
-    let mockCache: Map<string, ConversationSkeleton>;
+    let mockCache: Map<string, StoredConversation>;
     let mockEnsureCache: () => Promise<void>;
 
     beforeEach(() => {

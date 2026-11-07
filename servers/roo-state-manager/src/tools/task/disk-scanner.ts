@@ -10,7 +10,8 @@ import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import * as path from 'path';
 import os from 'os';
-import { ConversationSkeleton, SkeletonHeader } from '../../types/conversation.js';
+import { SkeletonHeader } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { detectSourceFromPath } from '../../utils/extension-paths.js';
 
@@ -37,7 +38,7 @@ async function readTaskMetadata(taskPath: string): Promise<Record<string, any>> 
 async function quickAnalyze(
     taskId: string,
     taskPath: string
-): Promise<ConversationSkeleton> {
+): Promise<StoredConversation> {
     // Read task_metadata.json for workspace, totalSize, accurate counts
     const taskMeta = await readTaskMetadata(taskPath);
 
@@ -98,7 +99,7 @@ async function quickAnalyze(
 // Falls back to TTL-based invalidation as safety net.
 const DISK_SCAN_CACHE_TTL = 300_000; // 5 minutes (was 30s, #834 perf fix)
 let lastScanTime = 0;
-let lastScanResults: ConversationSkeleton[] | null = null;
+let lastScanResults: StoredConversation[] | null = null;
 let lastTasksDirMtime = 0; // mtime of the tasks/ directory at last scan
 
 /**
@@ -121,7 +122,7 @@ export function invalidateDiskScanCache(): void {
 export async function scanDiskForNewTasks(
     existingCache: Map<string, SkeletonHeader>,
     workspace?: string
-): Promise<ConversationSkeleton[]> {
+): Promise<StoredConversation[]> {
     const now = Date.now();
 
     // If we have cached scan results and TTL hasn't expired,
@@ -172,7 +173,7 @@ export async function scanDiskForNewTasks(
         // Parallelize quickAnalyze for uncached tasks (perf: #673)
         // existsSync replaced with async fs.access to avoid blocking the Node event loop
         const uncachedIds = taskDirs.filter(id => !existingCache.has(id));
-        const analyzeTask = async (taskId: string): Promise<ConversationSkeleton | null> => {
+        const analyzeTask = async (taskId: string): Promise<StoredConversation | null> => {
             const taskPath = path.join(tasksDir, taskId);
             const uiPath = path.join(taskPath, 'ui_messages.json');
             try {
@@ -193,7 +194,7 @@ export async function scanDiskForNewTasks(
         };
 
         const results = await Promise.all(uncachedIds.map(analyzeTask));
-        const newTasks = results.filter((s): s is ConversationSkeleton => s !== null);
+        const newTasks = results.filter((s): s is StoredConversation => s !== null);
 
         // Update cache
         lastScanTime = now;

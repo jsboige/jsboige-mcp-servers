@@ -4,7 +4,7 @@
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
 import { scanDiskForNewTasks } from './disk-scanner.js';
 
@@ -28,10 +28,10 @@ interface CurrentTaskResult {
  * Trouve la tâche la plus récente dans le cache, optionnellement filtrée par workspace
  */
 async function findMostRecentTask(
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     workspace?: string,
     forceRescan: boolean = true
-): Promise<ConversationSkeleton | undefined> {
+): Promise<StoredConversation | undefined> {
     // ÉTAPE 1: Scanner le disque pour nouvelles conversations
     if (forceRescan) {
         try {
@@ -109,7 +109,7 @@ export const getCurrentTaskTool = {
      */
     handler: async (
         args: { workspace?: string; force_refresh?: boolean },
-        conversationCache: Map<string, ConversationSkeleton>,
+        conversationCache: Map<string, StoredConversation>,
         contextWorkspace?: string,
         ensureSkeletonCacheIsFresh?: () => Promise<void>
     ): Promise<CallToolResult> => {

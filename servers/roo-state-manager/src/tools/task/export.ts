@@ -9,7 +9,7 @@
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { handleExportTaskTreeMarkdown, ExportTaskTreeMarkdownArgs } from './export-tree-md.tool.js';
 import { handleDebugTaskParsing, DebugTaskParsingArgs } from './debug-parsing.tool.js';
 import { handleGetTaskTree } from './get-tree.tool.js';
@@ -157,7 +157,7 @@ function validateArgs(args: TaskExportArgs): void {
  */
 export async function handleTaskExport(
     args: TaskExportArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     ensureSkeletonCacheIsFresh: () => Promise<void>
 ): Promise<CallToolResult> {
     try {

@@ -5,7 +5,7 @@
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import {
     formatTaskTreeAscii,
     generateTreeHeader,
@@ -86,7 +86,7 @@ export const getTaskTreeTool = {
  */
 export async function handleGetTaskTree(
     args: GetTaskTreeArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     ensureSkeletonCacheIsFresh: () => Promise<void>
 ): Promise<CallToolResult> {
     const {
