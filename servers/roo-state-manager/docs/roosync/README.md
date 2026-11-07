@@ -134,7 +134,7 @@ npm test
 - reply_message : 9/9 tests ✅
 
 ### Tests E2E
-Voir : [`roo-config/reports/roosync-messaging-e2e-test-report-20251016.md`](../../../../../roo-config/reports/roosync-messaging-e2e-test-report-20251016.md)
+Voir : `roo-config/reports/roosync-messaging-e2e-test-report-20251016.md`
 
 **Scénario testé** : Workflow bidirectionnel complet (8 étapes)
 **Résultat** : 100% succès ✅

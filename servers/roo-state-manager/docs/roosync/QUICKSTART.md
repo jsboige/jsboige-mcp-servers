@@ -117,4 +117,4 @@ Changez-le avec : `ROOSYNC_SHARED_PATH`
 
 ---
 
-**Documentation complète :** [GUIDE-TECHNIQUE-v2.3.md](GUIDE-TECHNIQUE-v2.3.md)
+**Documentation complète :** [GUIDE-TECHNIQUE-v2.3.md](../../../../../docs/roosync/GUIDE-TECHNIQUE-v2.3.md) (dépôt parent roo-extensions)

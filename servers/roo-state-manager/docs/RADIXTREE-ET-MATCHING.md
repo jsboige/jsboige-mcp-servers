@@ -48,7 +48,7 @@ Cette architecture permet de retrouver les relations hiérarchiques entre tâche
 
 ### **Modules Algorithmiques Clés**
 
-#### 1. **[`TaskInstructionIndex`](src/utils/task-instruction-index.ts)**
+#### 1. **[`TaskInstructionIndex`](../src/utils/task-instruction-index.ts)**
 - **Rôle :** Gestionnaire principal index RadixTree
 - **Implémentation :** Utilisation bibliothèque `exact-trie` optimisée
 - **Fonctionnalités :**
@@ -373,7 +373,7 @@ npm test -- matching-scoring.test.ts
 ```
 
 #### **Tests de Régression Critique**
-- **Fichier :** [`tests/unit/regression-hierarchy-extraction.test.ts`](tests/unit/regression-hierarchy-extraction.test.ts)
+- **Fichier :** [`tests/unit/regression-hierarchy-extraction.test.ts`](../tests/unit/regression-hierarchy-extraction.test.ts)
 - **Couverture :** Bug historique + Fix validation + Performance
 - **Résultat :** ✅ 4 tests passés, régression éliminée
 
@@ -404,8 +404,8 @@ node scripts/validate-real-world-matching.mjs
 
 ### **Documentation Technique**
 - Documents dans [`debug/`](debug/) - Historique résolutions algorithmes
-- [`src/utils/task-instruction-index.ts`](src/utils/task-instruction-index.ts) - Implémentation technique
-- [`src/utils/sub-instruction-extractor.ts`](src/utils/sub-instruction-extractor.ts) - Extraction post-correction
+- [`src/utils/task-instruction-index.ts`](../src/utils/task-instruction-index.ts) - Implémentation technique
+- [`src/utils/sub-instruction-extractor.ts`](../src/utils/sub-instruction-extractor.ts) - Extraction post-correction
 
 ## 🚀 Prochaines Étapes
 

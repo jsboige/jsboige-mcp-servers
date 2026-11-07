@@ -10,9 +10,9 @@ La **Phase 2c** a été **techniquement réussie** avec la création d'une infra
 ### ✅ SUCCÈS TECHNIQUES
 
 1. **Scripts d'analyse créés et fonctionnels** :
-   - [`analyze-parentid-stats.mjs`](../scripts/analyze-parentid-stats.mjs) - Analyse complète des hiérarchies
-   - [`generate-skeleton-cache.mjs`](../scripts/generate-skeleton-cache.mjs) - Génération automatique du cache
-   - [`run-phase2c-analysis.ps1`](../scripts/run-phase2c-analysis.ps1) - Script PowerShell documenté
+   - `analyze-parentid-stats.mjs` - Analyse complète des hiérarchies
+   - `generate-skeleton-cache.mjs` - Génération automatique du cache
+   - `run-phase2c-analysis.ps1` - Script PowerShell documenté
 
 2. **Système d'analyse opérationnel** :
    - Détection automatique des patterns utilisateur ("j'aimerais", "peux-tu", etc.)
@@ -121,9 +121,9 @@ Si taux < 70% sur données réelles :
 ## 📚 ARTEFACTS PHASE 2C
 
 - **Rapport détaillé :** [`RAPPORT-STATS-PARENTID-PHASE2C.md`](./RAPPORT-STATS-PARENTID-PHASE2C.md)
-- **Script principal :** [`analyze-parentid-stats.mjs`](../scripts/analyze-parentid-stats.mjs)  
-- **Script cache :** [`generate-skeleton-cache.mjs`](../scripts/generate-skeleton-cache.mjs)
-- **Script PowerShell :** [`run-phase2c-analysis.ps1`](../scripts/run-phase2c-analysis.ps1)
+- **Script principal :** `analyze-parentid-stats.mjs`  
+- **Script cache :** `generate-skeleton-cache.mjs`
+- **Script PowerShell :** `run-phase2c-analysis.ps1`
 
 **Phase 2c Infrastructure : ✅ VALIDÉE**  
 **Phase 2c Métriques Production : 🔄 EN ATTENTE**

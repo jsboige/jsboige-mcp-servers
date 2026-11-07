@@ -797,13 +797,13 @@ Suivre le plan détaillé dans `MIGRATION-PLAN-TESTS.md` :
 - [`NOUVEAU-LAYOUT-TESTS.md`](./NOUVEAU-LAYOUT-TESTS.md) - Design et justification de la structure cible
 - [`MIGRATION-PLAN-TESTS.md`](./MIGRATION-PLAN-TESTS.md) - Plan de migration détaillé en 11 étapes
 - [`TEST-SUITE-COMPLETE-RESULTS.md`](./TEST-SUITE-COMPLETE-RESULTS.md) - Résultats de validation des tests
-- [`RAPPORT-AVANCEMENT-REORGANISATION.md`](./RAPPORT-AVANCEMENT-REORGANISATION.md) - État d'avancement
+- [`RAPPORT-AVANCEMENT-REORGANISATION.md`](../reports/RAPPORT-AVANCEMENT-REORGANISATION.md) - État d'avancement
 
 ### Scripts Utiles
 
-- [`scripts/audit-tests.ps1`](./scripts/audit-tests.ps1) - Audit automatisé de l'arborescence
-- [`scripts/migrate-tests.ps1`](./scripts/migrate-tests.ps1) - Migration automatisée
-- [`scripts/run-tests.ps1`](./scripts/run-tests.ps1) - Exécution des tests
+- `scripts/audit-tests.ps1` - Audit automatisé de l'arborescence
+- `scripts/migrate-tests.ps1` - Migration automatisée
+- `scripts/run-tests.ps1` - Exécution des tests
 
 ### Standards Externes
 

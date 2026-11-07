@@ -730,9 +730,9 @@ console.log('Inventaire target:', JSON.stringify(invTarget, null, 2));
 
 | Document | Description | Lien |
 |----------|-------------|------|
-| Design Détection Réelle | Architecture complète (1900 lignes) | [`roosync-real-diff-detection-design.md`](../../../../docs/architecture/roosync-real-diff-detection-design.md) |
-| Plan Tests E2E | 8 scénarios tests (561 lignes) | [`roosync-e2e-test-plan.md`](../../../../docs/testing/roosync-e2e-test-plan.md) |
-| Synthèse Évolution v2.0 | Bilan complet projet (986 lignes) | [`roosync-v2-evolution-synthesis-20251015.md`](../../../../docs/orchestration/roosync-v2-evolution-synthesis-20251015.md) |
+| Design Détection Réelle | Architecture complète (1900 lignes) | `roosync-real-diff-detection-design.md` |
+| Plan Tests E2E | 8 scénarios tests (561 lignes) | `roosync-e2e-test-plan.md` |
+| Synthèse Évolution v2.0 | Bilan complet projet (986 lignes) | `roosync-v2-evolution-synthesis-20251015.md` |
 
 ### Code Source
 

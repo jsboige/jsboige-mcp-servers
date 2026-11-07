@@ -422,8 +422,8 @@ npm run test:coverage
 
 ## Voir aussi
 
-- [TESTS-ORGANIZATION.md](../TESTS-ORGANIZATION.md) - Documentation complète
-- [NOUVEAU-LAYOUT-TESTS.md](../NOUVEAU-LAYOUT-TESTS.md) - Justification du design
+- [TESTS-ORGANIZATION.md](TESTS-ORGANIZATION.md) - Documentation complète
+- [NOUVEAU-LAYOUT-TESTS.md](NOUVEAU-LAYOUT-TESTS.md) - Justification du design
 "@ | Out-File -FilePath "tests/README.md" -Encoding UTF8
 ```
 
