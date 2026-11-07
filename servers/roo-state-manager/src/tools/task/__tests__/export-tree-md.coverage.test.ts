@@ -19,7 +19,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Mock fs (même pattern que export-tree-md.test.ts)
 vi.mock('fs', () => {

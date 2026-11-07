@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { getCurrentTaskTool } from '../get-current-task.tool.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Mock disk-scanner
 vi.mock('../disk-scanner.js', () => ({
@@ -22,7 +22,7 @@ vi.spyOn(console, 'log').mockImplementation(() => {});
 vi.spyOn(console, 'error').mockImplementation(() => {});
 
 describe('get-current-task.tool', () => {
-  let conversationCache: Map<string, ConversationSkeleton>;
+  let conversationCache: Map<string, StoredConversation>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -40,7 +40,7 @@ describe('get-current-task.tool', () => {
         totalSize: 1024,
         workspace: '/workspace/test'
       }
-    } as ConversationSkeleton);
+    } as StoredConversation);
 
     conversationCache.set('task-2', {
       taskId: 'task-2',
@@ -55,7 +55,7 @@ describe('get-current-task.tool', () => {
         title: 'Test Task',
         mode: 'code-simple'
       }
-    } as ConversationSkeleton);
+    } as StoredConversation);
 
     conversationCache.set('task-3', {
       taskId: 'task-3',
@@ -68,7 +68,7 @@ describe('get-current-task.tool', () => {
         totalSize: 512,
         workspace: '/workspace/other'
       }
-    } as ConversationSkeleton);
+    } as StoredConversation);
   });
 
   describe('definition', () => {
@@ -155,7 +155,7 @@ describe('get-current-task.tool', () => {
     });
 
     it('should throw error when no tasks found in workspace', async () => {
-      const emptyCache = new Map<string, ConversationSkeleton>();
+      const emptyCache = new Map<string, StoredConversation>();
 
       await expect(
         getCurrentTaskTool.handler({ workspace: '/empty/workspace' }, emptyCache, undefined, undefined)
@@ -198,7 +198,7 @@ describe('get-current-task.tool', () => {
       const { scanDiskForNewTasks } = await import('../disk-scanner.js');
       const mockScan = vi.mocked(scanDiskForNewTasks);
 
-      const newTask: ConversationSkeleton = {
+      const newTask: StoredConversation = {
         taskId: 'new-task-from-disk',
         metadata: {
           createdAt: '2024-01-04T10:00:00Z',
@@ -208,7 +208,7 @@ describe('get-current-task.tool', () => {
           totalSize: 1500,
           workspace: '/workspace/test'
         }
-      } as ConversationSkeleton;
+      } as StoredConversation;
 
       mockScan.mockResolvedValue([newTask]);
 
@@ -242,7 +242,7 @@ describe('get-current-task.tool', () => {
 
   describe('handler - edge cases', () => {
     it('should handle cache with only invalid tasks', async () => {
-      const invalidCache = new Map<string, ConversationSkeleton>();
+      const invalidCache = new Map<string, StoredConversation>();
       invalidCache.set('invalid', {
         taskId: 'invalid',
         metadata: {} as any, // Missing lastActivity
@@ -255,7 +255,7 @@ describe('get-current-task.tool', () => {
     });
 
     it('should handle tasks without optional fields', async () => {
-      const minimalCache = new Map<string, ConversationSkeleton>();
+      const minimalCache = new Map<string, StoredConversation>();
       minimalCache.set('minimal', {
         taskId: 'minimal',
         metadata: {
@@ -266,7 +266,7 @@ describe('get-current-task.tool', () => {
           totalSize: 100,
           workspace: '/workspace/minimal'
         }
-      } as ConversationSkeleton);
+      } as StoredConversation);
 
       const result = await getCurrentTaskTool.handler(
         { workspace: '/workspace/minimal' },

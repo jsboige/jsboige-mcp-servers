@@ -38,14 +38,14 @@ vi.mock('../../../utils/task-instruction-index.js', () => ({
 }));
 
 import { handleGetTaskTree, getTaskTreeTool } from '../get-tree.tool.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ─────────────────── helpers ───────────────────
 
 function makeConversation(
   taskId: string,
-  overrides: Partial<ConversationSkeleton> & { parentTaskId?: string } = {}
-): ConversationSkeleton {
+  overrides: Partial<StoredConversation> & { parentTaskId?: string } = {}
+): StoredConversation {
   return {
     taskId,
     metadata: {
@@ -61,10 +61,10 @@ function makeConversation(
     },
     messages: [],
     ...overrides,
-  } as unknown as ConversationSkeleton;
+  } as unknown as StoredConversation;
 }
 
-function makeCache(...skeletons: ConversationSkeleton[]): Map<string, ConversationSkeleton> {
+function makeCache(...skeletons: StoredConversation[]): Map<string, StoredConversation> {
   return new Map(skeletons.map(s => [s.taskId, s]));
 }
 

@@ -54,7 +54,7 @@ vi.mock('fs', () => ({
 
 describe('disk-scanner', () => {
     let scanDiskForNewTasks: typeof import('../disk-scanner.js').scanDiskForNewTasks;
-    let mockCache: Map<string, import('../../../types/conversation.js').ConversationSkeleton>;
+    let mockCache: Map<string, import('../../../services/unified-store/types.js').StoredConversation>;
 
     beforeEach(async () => {
         vi.clearAllMocks();

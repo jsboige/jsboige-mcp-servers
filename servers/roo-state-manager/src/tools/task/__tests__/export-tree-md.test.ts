@@ -14,7 +14,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Mock fs
 vi.mock('fs', () => {
@@ -50,7 +50,7 @@ function getTextContent(result: CallToolResult, index: number = 0): string {
 describe('export-tree-md.tool', () => {
     let mockHandleGetTaskTree: ReturnType<typeof vi.fn>;
     let mockEnsureSkeletonCacheIsFresh: ReturnType<typeof vi.fn>;
-    let mockConversationCache: Map<string, ConversationSkeleton>;
+    let mockConversationCache: Map<string, StoredConversation>;
 
     const sampleTreeOutput = `# Task Tree
 ├── [✅] Task 1 - Do something
@@ -318,7 +318,7 @@ describe('export-tree-md.tool', () => {
         });
 
         test('should handle relative path when conversation not in cache', async () => {
-            const emptyCache = new Map<string, ConversationSkeleton>();
+            const emptyCache = new Map<string, StoredConversation>();
 
             const args: ExportTaskTreeMarkdownArgs = {
                 conversation_id: 'conv-123',

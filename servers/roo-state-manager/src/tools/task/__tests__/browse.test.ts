@@ -16,7 +16,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { handleTaskBrowse, TaskBrowseArgs } from '../browse.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 /** Helper to extract text from CallToolResult content */
@@ -50,7 +50,7 @@ vi.mock('../get-current-task.tool.js', () => ({
 }));
 
 describe('task_browse - CONS-9', () => {
-    let mockCache: Map<string, ConversationSkeleton>;
+    let mockCache: Map<string, StoredConversation>;
     let mockEnsureCache: () => Promise<void>;
 
     beforeEach(() => {

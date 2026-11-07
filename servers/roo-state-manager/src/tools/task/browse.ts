@@ -9,7 +9,7 @@
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { handleGetTaskTree, GetTaskTreeArgs } from './get-tree.tool.js';
 import { getCurrentTaskTool } from './get-current-task.tool.js';
 
@@ -146,7 +146,7 @@ function validateArgs(args: TaskBrowseArgs): void {
  */
 export async function handleTaskBrowse(
     args: TaskBrowseArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     ensureSkeletonCacheIsFresh: () => Promise<void>,
     contextWorkspace?: string
 ): Promise<CallToolResult> {
