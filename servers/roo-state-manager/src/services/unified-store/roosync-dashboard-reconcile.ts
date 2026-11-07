@@ -1014,10 +1014,19 @@ export async function reconcileDashboardsFromGDrive(
       // the file alone — not in corruptFileKeys, skipped this pass, processed
       // normally by the next reconcile pass.
       try {
-        const retryContent = await readFile(
+        let retryContent = await readFile(
           join(options.dashboardsDir, file),
           'utf-8'
         );
+        // Same normalization as the main read path (CRLF→LF + BOM strip,
+        // l.759-760): a healthy CRLF/BOM file recovered on retry must not
+        // fail the raw parse and be misclassified as corrupt (#4131
+        // follow-up — that misclassification would rebuild it from PG and
+        // silently drop its ahead-of-PG content).
+        retryContent = retryContent.replace(/\r\n/g, '\n');
+        if (retryContent.charCodeAt(0) === 0xfeff) {
+          retryContent = retryContent.slice(1);
+        }
         parseDashboardMarkdown(retryContent, key);
         logger.warn(
           `[dashboard-reconcile] Transient read failure on ${file}, recovered on retry — left for the next pass`

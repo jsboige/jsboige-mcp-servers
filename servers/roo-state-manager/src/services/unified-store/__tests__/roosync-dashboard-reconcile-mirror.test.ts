@@ -814,6 +814,32 @@ describe('dashboard reconcile — unreadable files rebuilt from PG (#4131 G-DASH
     expect(readFileSync(join(dir, 'workspace-a.md'), 'utf8')).toContain('[msg: a1]');
   });
 
+  test('healthy CRLF+BOM file, transient read — NOT corrupt (retry normalizes like the main path)', async () => {
+    // Follow-up ms#1682 review (ai-01 queue 07b item 2): the retry used to
+    // parse the RAW content, while the main path normalizes CRLF→LF and
+    // strips the BOM before parsing. A healthy file written with CRLF + BOM,
+    // recovered on retry, would fail the raw parse → misclassified corrupt →
+    // rebuilt from PG, silently dropping its ahead-of-PG content.
+    write(
+      'workspace-a.md',
+      '﻿' + fixture('workspace-a', ['a1', 'a2']).replace(/\n/g, '\r\n')
+    );
+    // PG journal exists (would-be rebuild source) — fails loudly if the
+    // normalization is missing: the rebuild would fire and drop a1/a2.
+    pgRows.set('workspace-a', [{ id: 'm1', createdAt: '2026-11-05T10:00:00Z' }]);
+    pgKeysList = ['workspace-a'];
+    transientReadPaths.push(join(dir, 'workspace-a.md'));
+
+    const result = await run();
+
+    expect(result.mirrorRebuiltFromCorrupt).toBe(0);
+    expect(result.mirrorRepairFailed).toBe(0);
+    expect(result.errors).toBe(0);
+    expect(result.mirrorMaterialized).toBe(0);
+    expect(writeMirrorCalls).toHaveLength(0); // ahead-of-PG content preserved
+    expect(readFileSync(join(dir, 'workspace-a.md'), 'utf8')).toContain('[msg: a1]');
+  });
+
   test('PERSISTENT read failure (retry also throws) still takes the rebuild path', async () => {
     // Pins that retry-once does not weaken the corrupt-file handling: two
     // consecutive failures = genuinely unreadable ⇒ rebuild from PG.
