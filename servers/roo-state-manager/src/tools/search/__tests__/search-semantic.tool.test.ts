@@ -82,7 +82,7 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 	getUnifiedStoreReader: () => mockUnifiedStoreReader
 }));
 
-import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, passageQualityFactor, requestFormFactor, composePassageSlots, PASSAGE_SLOT_FLOOR_CHARS } from '../search-semantic.tool.js';
+import { searchTasksByContentTool, SearchTasksByContentArgs, _resetEmbeddingCircuitBreaker, dedupGroupedChunksByContent, applyDiversifyCap, classifyMachineOutput, passageQualityFactor, requestFormFactor, composePassageSlots, isPassageGroup, PASSAGE_SLOT_FLOOR_CHARS } from '../search-semantic.tool.js';
 import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { splitChunkId } from '../../../services/task-indexer/ChunkExtractor.js';
 
@@ -1433,6 +1433,98 @@ describe('helper functions (indirect via handler)', () => {
 			expect(stats.groups_promoted).toBe(1);
 			expect(groups).toHaveLength(4);
 			expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['f1', 'f2', 'p1']);
+		});
+
+		// ---- (B) adjacent-turn promotion (2026-11-08) -------------------
+		// The measured registre shape has passages NOWHERE in page or pool: the
+		// substantive turn sits at message_index +/-1 of a sub-floor
+		// representative, so it is never a chunk candidate. The pre-pass stashes
+		// that turn keyed by its group; here the stash is the contract.
+
+		test('an adjacent stash makes a sub-floor group slot-eligible and it fills a reserved slot like a passage', () => {
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('f4', SHORT, 0.75), mkPSGroup('p1', PASSAGE, 0.60),
+			];
+			const adjacent = new Map<any, any>([[groups[3], mkPSChunk(PASSAGE, 0.75)]]);
+			const stats = composePassageSlots(groups, 3, 3, [], adjacent);
+			expect(stats.groups_promoted).toBe(2);
+			expect(stats.groups_promoted_adjacent).toBe(1); // f4 promoted BY THE STASH, not by its own chunk
+			expect(stats.groups_promoted_from_pool).toBe(0);
+			expect(stats.groups_demoted).toBe(2);
+			// Window: best frag + the stashed frag + the real passage, score-ordered.
+			expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['f1', 'f4', 'p1']);
+			expect(groups.slice(3).map(g => g.taskId)).toEqual(['f2', 'f3']);
+			// Reorder only: same groups, same count.
+			expect(groups).toHaveLength(5);
+			expect(new Set(groups.map(g => g.taskId))).toEqual(new Set(['f1', 'f2', 'f3', 'f4', 'p1']));
+		});
+
+		test('negative control: without the stash the very same page promotes one slot fewer', () => {
+			// Same inputs as above, no adjacent map: only the real passage is
+			// eligible, so the reservation is composed one slot short. This is what
+			// makes the adjacent test above evidence and not tautology.
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('f4', SHORT, 0.75), mkPSGroup('p1', PASSAGE, 0.60),
+			];
+			const stats = composePassageSlots(groups, 3, 3);
+			expect(stats.groups_promoted).toBe(1);
+			expect(stats.groups_promoted_adjacent).toBe(0);
+			expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['f1', 'f2', 'p1']);
+		});
+
+		test('a stashed group already in the window counts as a reserved slot (no promotion, no demotion of it)', () => {
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('p1', PASSAGE, 0.85), mkPSGroup('f2', SHORT, 0.80),
+				mkPSGroup('p2', PASSAGE, 0.70),
+			];
+			const adjacent = new Map<any, any>([[groups[0], mkPSChunk(PASSAGE, 0.90)]]);
+			const stats = composePassageSlots(groups, 3, 3, [], adjacent);
+			// 2 of 3 slots composed (f1 by stash, p1 by chunk) → one more needed.
+			expect(stats.groups_promoted).toBe(1);
+			expect(stats.groups_promoted_adjacent).toBe(0);
+			expect(stats.groups_demoted).toBe(1);
+			expect(groups.slice(0, 3).map(g => g.taskId)).toEqual(['f1', 'p1', 'p2']);
+		});
+
+		test('demotion immunity: a window full of stashed groups is already composed, nothing moves', () => {
+			// Starvation shape with the stash covering the whole window: the lever
+			// must return a no-op instead of demoting groups that now qualify.
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('f4', SHORT, 0.75),
+			];
+			const adjacent = new Map<any, any>([
+				[groups[0], mkPSChunk(PASSAGE, 0.90)],
+				[groups[1], mkPSChunk(PASSAGE, 0.85)],
+				[groups[2], mkPSChunk(PASSAGE, 0.80)],
+			]);
+			const stats = composePassageSlots(groups, 3, 3, [], adjacent);
+			expect(stats.groups_promoted).toBe(0);
+			expect(stats.groups_demoted).toBe(0);
+			expect(groups.map(g => g.taskId)).toEqual(['f1', 'f2', 'f3', 'f4']);
+		});
+
+		test('kill-switch: SEMANTIC_PASSAGE_SLOTS=0 ignores the stash entirely (rollback is complete)', () => {
+			process.env.SEMANTIC_PASSAGE_SLOTS = '0';
+			const groups = [
+				mkPSGroup('f1', SHORT, 0.90), mkPSGroup('f2', SHORT, 0.85), mkPSGroup('f3', SHORT, 0.80),
+				mkPSGroup('f4', SHORT, 0.75), mkPSGroup('p1', PASSAGE, 0.60),
+			];
+			const adjacent = new Map<any, any>([[groups[3], mkPSChunk(PASSAGE, 0.75)]]);
+			const stats = composePassageSlots(groups, 3, 3, [], adjacent);
+			expect(stats.enabled).toBe(false);
+			expect(stats.groups_promoted).toBe(0);
+			expect(groups.map(g => g.taskId)).toEqual(['f1', 'f2', 'f3', 'f4', 'p1']);
+		});
+
+		test('isPassageGroup is form-only: floor, machine output and provenance, in that order', () => {
+			const longToolJson = JSON.stringify({ status: 'ok', data: Array.from({ length: 12 }, (_, i) => ({ row: i, value: 'x'.repeat(9) })) });
+			expect(isPassageGroup(mkPSGroup('ok', PASSAGE, 0.9))).toBe(true);
+			expect(isPassageGroup(mkPSGroup('short', SHORT, 0.9))).toBe(false);
+			expect(isPassageGroup(mkPSGroup('machine', longToolJson, 0.9, { machine_output_kind: 'json' }))).toBe(false);
+			expect(isPassageGroup(mkPSGroup('unverified', PASSAGE, 0.9, { tool_continuation_status: 'unknown' }))).toBe(false);
 		});
 	});
 
