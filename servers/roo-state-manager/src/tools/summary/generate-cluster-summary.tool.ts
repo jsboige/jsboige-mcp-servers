@@ -9,7 +9,8 @@ import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
 import { TraceSummaryService } from '../../services/TraceSummaryService.js';
 import { ExportConfigManager } from '../../services/ExportConfigManager.js';
-import { ConversationSkeleton, ClusterSummaryOptions } from '../../types/conversation.js';
+import { ClusterSummaryOptions } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 /**
  * Arguments du tool generate_cluster_summary
@@ -165,8 +166,8 @@ export const generateClusterSummaryTool: Tool = {
  */
 export async function handleGenerateClusterSummary(
     args: GenerateClusterSummaryArgs,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>,
-    findChildTasks?: (rootTaskId: string) => Promise<ConversationSkeleton[]>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>,
+    findChildTasks?: (rootTaskId: string) => Promise<StoredConversation[]>
 ): Promise<string> {
     try {
         // Valider les arguments
@@ -191,7 +192,7 @@ export async function handleGenerateClusterSummary(
         }
 
         // Récupérer les tâches enfantes
-        let childTasks: ConversationSkeleton[] = [];
+        let childTasks: StoredConversation[] = [];
         
         if (args.childTaskIds && args.childTaskIds.length > 0) {
             // Utiliser les IDs fournis explicitement
@@ -296,4 +297,4 @@ export async function handleGenerateClusterSummary(
  * Helper pour trouver automatiquement les tâches enfantes d'une tâche racine
  * Cette fonction sera fournie par le serveur principal qui a accès à toutes les tâches
  */
-export type FindChildTasksFunction = (rootTaskId: string) => Promise<ConversationSkeleton[]>;
+export type FindChildTasksFunction = (rootTaskId: string) => Promise<StoredConversation[]>;

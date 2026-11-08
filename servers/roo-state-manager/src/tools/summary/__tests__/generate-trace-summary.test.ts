@@ -63,11 +63,11 @@ vi.mock('fs/promises', () => ({
 }));
 
 import { handleGenerateTraceSummary, generateTraceSummaryTool } from '../generate-trace-summary.tool.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ─────────────────── helpers ───────────────────
 
-function makeConversation(overrides: Partial<ConversationSkeleton> = {}): ConversationSkeleton {
+function makeConversation(overrides: Partial<StoredConversation> = {}): StoredConversation {
   return {
     taskId: 'task-001',
     metadata: {
@@ -77,7 +77,7 @@ function makeConversation(overrides: Partial<ConversationSkeleton> = {}): Conver
     },
     messages: [],
     ...overrides,
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
 function makeSuccessResult(content = '# Summary content') {

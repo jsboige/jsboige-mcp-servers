@@ -43,11 +43,11 @@ vi.mock('../../../services/ExportConfigManager.js', () => ({
 }));
 
 import { handleGenerateClusterSummary, generateClusterSummaryTool } from '../generate-cluster-summary.tool.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ─────────────────── helpers ───────────────────
 
-function makeConversation(taskId: string): ConversationSkeleton {
+function makeConversation(taskId: string): StoredConversation {
   return {
     taskId,
     metadata: {
@@ -56,7 +56,7 @@ function makeConversation(taskId: string): ConversationSkeleton {
       timestamp: '2026-01-01T00:00:00.000Z',
     },
     messages: [],
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
 function makeClusterResult(content = '# Cluster Summary') {

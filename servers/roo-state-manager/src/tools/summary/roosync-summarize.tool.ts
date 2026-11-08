@@ -14,7 +14,7 @@
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 // Import des handlers existants
 import {
@@ -258,7 +258,7 @@ function extractClaudeProjectName(taskId: string): string {
 export function createConversationGetter(
     source: 'roo' | 'claude',
     options?: { maxContentLength?: number }
-): (taskId: string) => Promise<ConversationSkeleton | null> {
+): (taskId: string) => Promise<StoredConversation | null> {
     // #2191 — mémo request-scoped : cette closure est créée PAR REQUÊTE par
     // handleRooSyncSummarize ; NarrativeContextBuilderService re-fetch le même
     // id 6+ fois par synthèse (mesure c.576 : detect×6 + analyze×6 = re-parse
@@ -267,7 +267,7 @@ export function createConversationGetter(
     // inchangée (une nouvelle requête = nouvelle closure = nouveau parse).
     // Les null (id absent) sont mémoïsés aussi : re-fetcher un miss ne fait que
     // rejouer le scan qui vient d'échouer.
-    const requestCache = new Map<string, ConversationSkeleton | null>();
+    const requestCache = new Map<string, StoredConversation | null>();
     return async (taskId: string) => {
         if (source === 'claude') {
             if (requestCache.has(taskId)) {
@@ -305,7 +305,7 @@ export function createConversationGetter(
  */
 function createChildTasksFinder(
     source: 'roo' | 'claude'
-): (rootTaskId: string) => Promise<ConversationSkeleton[]> {
+): (rootTaskId: string) => Promise<StoredConversation[]> {
     return async (rootTaskId: string) => {
         if (source === 'claude') {
             // #2191 follow-up — la découverte d'enfants pour un root Claude n'est
@@ -332,8 +332,8 @@ function createChildTasksFinder(
  */
 export async function handleRooSyncSummarize(
     args: RooSyncSummarizeArgs,
-    getConversationSkeleton?: (taskId: string) => Promise<ConversationSkeleton | null>,
-    findChildTasks?: (rootTaskId: string) => Promise<ConversationSkeleton[]>
+    getConversationSkeleton?: (taskId: string) => Promise<StoredConversation | null>,
+    findChildTasks?: (rootTaskId: string) => Promise<StoredConversation[]>
 ): Promise<string> {
     try {
         // Validation des arguments communs
@@ -375,8 +375,8 @@ export async function handleRooSyncSummarize(
         const source = args.source || 'roo';
 
         // Créer les getters appropriés selon la source
-        let actualGetConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>;
-        let actualFindChildTasks: ((rootTaskId: string) => Promise<ConversationSkeleton[]>) | undefined;
+        let actualGetConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>;
+        let actualFindChildTasks: ((rootTaskId: string) => Promise<StoredConversation[]>) | undefined;
 
         if (source === 'claude') {
             // Pour Claude, créer un getter spécial avec contenu adapté au type d'opération
@@ -439,7 +439,7 @@ export async function handleRooSyncSummarize(
  */
 async function dispatchTraceHandler(
     args: RooSyncSummarizeArgs,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>
 ): Promise<string> {
     // Convertir les args unifiés vers les args spécifiques trace
     const traceArgs: Partial<GenerateTraceSummaryArgs> = {
@@ -475,8 +475,8 @@ async function dispatchTraceHandler(
  */
 async function dispatchClusterHandler(
     args: RooSyncSummarizeArgs,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>,
-    findChildTasks?: (rootTaskId: string) => Promise<ConversationSkeleton[]>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>,
+    findChildTasks?: (rootTaskId: string) => Promise<StoredConversation[]>
 ): Promise<string> {
     // Convertir les args unifiés vers les args spécifiques cluster
     const clusterArgs: Partial<GenerateClusterSummaryArgs> = {
@@ -521,7 +521,7 @@ async function dispatchClusterHandler(
  */
 async function dispatchSynthesisHandler(
     args: RooSyncSummarizeArgs,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>
 ): Promise<string> {
     // Convertir les args unifiés vers les args spécifiques synthesis
     const synthesisArgs: Partial<GetConversationSynthesisArgs> = {
