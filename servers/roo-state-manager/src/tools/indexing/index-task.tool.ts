@@ -4,7 +4,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
@@ -40,7 +40,7 @@ export const indexTaskSemanticTool = {
      */
     handler: async (
         args: IndexTaskSemanticArgs,
-        conversationCache: Map<string, ConversationSkeleton>,
+        conversationCache: Map<string, StoredConversation>,
         ensureCacheFreshCallback: () => Promise<boolean>
     ): Promise<CallToolResult> => {
         try {

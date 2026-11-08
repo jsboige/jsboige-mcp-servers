@@ -11,7 +11,8 @@
  * @version 1.0.0
  */
 
-import { ConversationSkeleton, SkeletonHeader, MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
+import { SkeletonHeader, MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { matchesPattern } from '../../utils/matches-pattern.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -103,7 +104,7 @@ function isErrorContent(content: string): boolean {
 /**
  * Detect death spirals: same error message repeated N+ times consecutively
  */
-function detectDeathSpiral(skeleton: ConversationSkeleton): { detected: boolean; error?: string; count: number } {
+function detectDeathSpiral(skeleton: StoredConversation): { detected: boolean; error?: string; count: number } {
     const sequence = skeleton.sequence || [];
     let lastError = '';
     let consecutiveCount = 0;
@@ -152,7 +153,7 @@ function detectDeathSpiral(skeleton: ConversationSkeleton): { detected: boolean;
 /**
  * Compute assistant/error ratios from skeleton sequence
  */
-function computeRatios(skeleton: ConversationSkeleton): {
+function computeRatios(skeleton: StoredConversation): {
     assistantCount: number;
     errorCount: number;
     totalMessages: number;
@@ -210,7 +211,7 @@ function getDuplicateKey(skeleton: SkeletonHeader): string {
  * Operates on the in-memory cache — no disk reads needed for skeletons already loaded.
  */
 export async function scanForGarbage(
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     args: GarbageScanArgs
 ): Promise<GarbageScanResult> {
     const category = args.category || 'all';
@@ -353,7 +354,7 @@ export async function scanForGarbage(
  * NEVER touches raw JSONL files.
  */
 export async function cleanupGarbage(
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     candidates: GarbageCandidate[],
     args: GarbageScanArgs
 ): Promise<GarbageCleanupResult> {

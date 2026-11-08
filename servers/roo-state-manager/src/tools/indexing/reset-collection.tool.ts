@@ -4,7 +4,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { TaskIndexer } from '../../services/task-indexer.js';
 import { noteIndexEnqueue, IndexEnqueueNotable } from '../../services/background-services.js';
 
@@ -43,8 +43,8 @@ export const resetQdrantCollectionTool = {
      */
     handler: async (
         args: ResetQdrantCollectionArgs,
-        conversationCache: Map<string, ConversationSkeleton>,
-        saveSkeletonCallback: (skeleton: ConversationSkeleton) => Promise<void>,
+        conversationCache: Map<string, StoredConversation>,
+        saveSkeletonCallback: (skeleton: StoredConversation) => Promise<void>,
         qdrantIndexQueue: Set<string>,
         setQdrantIndexingEnabled: (enabled: boolean) => void,
         // #4352 W4 (review ms#1690 W2): host state (or the registry's
