@@ -54,15 +54,15 @@ vi.mock('fs', async () => {
 
 import { listConversationsTool } from '../list-conversations.tool.js';
 import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { archiveToSkeleton, archiveToStub } from '../../../services/archive-skeleton-builder.js';
 
 // ─────────────────── helpers ───────────────────
 
 function makeConversation(
   taskId: string,
-  overrides: Partial<ConversationSkeleton> = {}
-): ConversationSkeleton {
+  overrides: Partial<StoredConversation> = {}
+): StoredConversation {
   return {
     taskId,
     metadata: {
@@ -77,16 +77,16 @@ function makeConversation(
     },
     messages: [],
     ...overrides,
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
-function makeCache(...skeletons: ConversationSkeleton[]): Map<string, ConversationSkeleton> {
+function makeCache(...skeletons: StoredConversation[]): Map<string, StoredConversation> {
   return new Map(skeletons.map(s => [s.taskId, s]));
 }
 
 // ─────────────────── setup ───────────────────
 
-let emptyCache: Map<string, ConversationSkeleton>;
+let emptyCache: Map<string, StoredConversation>;
 let storageSpy: ReturnType<typeof vi.spyOn>;
 
 beforeEach(() => {
@@ -591,7 +591,7 @@ describe('listConversationsTool.handler', () => {
 
     test('integrates newly discovered tasks into results', async () => {
       const cache = makeCache(makeConversation('existing-task'));
-      const newTask: ConversationSkeleton = {
+      const newTask: StoredConversation = {
         taskId: 'new-disk-task',
         metadata: {
           workspace: '/workspace/default',
@@ -604,7 +604,7 @@ describe('listConversationsTool.handler', () => {
           totalSize: 512,
         },
         messages: [],
-      } as ConversationSkeleton;
+      } as StoredConversation;
 
       mockScanDiskForNewTasks.mockResolvedValue([newTask]);
 
@@ -629,7 +629,7 @@ describe('listConversationsTool.handler', () => {
 
     test('new task is added to the cache map (side effect)', async () => {
       const cache = makeCache(makeConversation('existing-task'));
-      const newTask: ConversationSkeleton = {
+      const newTask: StoredConversation = {
         taskId: 'side-effect-task',
         metadata: {
           workspace: '/workspace/default',
@@ -642,7 +642,7 @@ describe('listConversationsTool.handler', () => {
           totalSize: 256,
         },
         messages: [],
-      } as ConversationSkeleton;
+      } as StoredConversation;
 
       mockScanDiskForNewTasks.mockResolvedValue([newTask]);
 

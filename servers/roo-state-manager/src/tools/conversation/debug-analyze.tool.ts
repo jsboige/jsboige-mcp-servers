@@ -3,7 +3,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 
 /**
@@ -27,7 +27,7 @@ export const debugAnalyzeTool = {
      */
     handler: async (
         args: { taskId: string },
-        conversationCache: Map<string, ConversationSkeleton>
+        conversationCache: Map<string, StoredConversation>
     ): Promise<CallToolResult> => {
         const { taskId } = args;
         const skeleton = conversationCache.get(taskId);

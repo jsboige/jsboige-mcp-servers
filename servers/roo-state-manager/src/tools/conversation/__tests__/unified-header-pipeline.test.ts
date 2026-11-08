@@ -13,7 +13,7 @@
  */
 
 import { describe, test, expect } from 'vitest';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 import {
     applyUnifiedHeaderFiltersAndSort,
     UnifiedHeaderFilterArgs,
@@ -31,7 +31,7 @@ function makeSkeleton(overrides: {
     messageCount: number;
     totalSize: number;
     parentTaskId?: string;
-}): ConversationSkeleton {
+}): StoredConversation {
     return {
         taskId: overrides.taskId,
         parentTaskId: overrides.parentTaskId,
@@ -46,12 +46,12 @@ function makeSkeleton(overrides: {
             source: 'roo',
         },
         sequence: [],
-    } as ConversationSkeleton;
+    } as StoredConversation;
 }
 
 /** Corpus couvrant : basename workspace variants, machines distinctes, dates
  *  étalées, ex æquo messageCount (stabilité du tri), tailles variées. */
-const CORPUS: ConversationSkeleton[] = [
+const CORPUS: StoredConversation[] = [
     makeSkeleton({
         taskId: 'roo-a',
         workspace: 'd:/dev/CoursIA',
@@ -98,9 +98,9 @@ const CORPUS: ConversationSkeleton[] = [
 // ─── Path A : implémentation legacy (pré-#1394), verbatim ─────────────────────
 
 function legacyFilterAndSort(
-    skeletons: ConversationSkeleton[],
+    skeletons: StoredConversation[],
     args: UnifiedHeaderFilterArgs,
-): { skeletons: ConversationSkeleton[]; workspaceFilteredCount: number } {
+): { skeletons: StoredConversation[]; workspaceFilteredCount: number } {
     let all = [...skeletons];
     const workspaceMatchStrategy = args.workspacePathMatch || 'normalized';
 

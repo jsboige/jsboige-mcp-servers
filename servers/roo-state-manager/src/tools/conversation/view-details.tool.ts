@@ -5,7 +5,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { toUnifiedTask } from '../../types/unified-task.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 import { ContentTruncator } from '../smart-truncation/content-truncator.js';
@@ -110,7 +110,7 @@ export const viewTaskDetailsTool = {
      */
     handler: async (
         args: { task_id: string, action_index?: number, truncate?: number, max_output_length?: number },
-        conversationCache: Map<string, ConversationSkeleton>
+        conversationCache: Map<string, StoredConversation>
     ): Promise<CallToolResult> => {
         try {
             const { task_id, action_index, truncate = 0, max_output_length = 100000 } = args;

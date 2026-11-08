@@ -3,7 +3,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { SkeletonCacheService } from '../../services/skeleton-cache.service.js';
 import {
     getConversationListPgReader,
@@ -25,7 +25,7 @@ import os from 'os';
 
 /**
  * Node enrichi pour construire l'arbre hiérarchique
- * Défini explicitement sans étendre ConversationSkeleton pour éviter d'inclure la propriété sequence
+ * Défini explicitement sans étendre StoredConversation pour éviter d'inclure la propriété sequence
  */
 interface SkeletonNode {
     taskId: string;
@@ -383,7 +383,7 @@ interface SynthesisInfo {
  * @param skeleton The conversation skeleton to check
  * @returns SynthesisInfo with availability status and summary if available
  */
-async function detectSynthesis(skeleton: ConversationSkeleton): Promise<SynthesisInfo> {
+async function detectSynthesis(skeleton: StoredConversation): Promise<SynthesisInfo> {
     try {
         const synthesis = skeleton.metadata?.synthesis;
         if (!synthesis || synthesis.status !== 'completed') {
@@ -550,7 +550,7 @@ export const listConversationsTool = {
             // #3255 — opt into the bounded Tier-3 wait (pre-#3255 behavior)
             waitForArchives?: boolean
         },
-        conversationCache: Map<string, ConversationSkeleton>
+        conversationCache: Map<string, StoredConversation>
     ): Promise<CallToolResult> => {
         // Profiling removed (#832) — was emitting ~1131 lines of timing noise during tests
 
@@ -558,7 +558,7 @@ export const listConversationsTool = {
         const includeRoo = source === 'roo' || source === 'all';
         const includeClaude = source === 'claude' || source === 'all';
 
-        let allSkeletons: ConversationSkeleton[] = [];
+        let allSkeletons: StoredConversation[] = [];
 
         // Tier 3 cold-start (Hybride): set when archives were requested but the cache
         // wasn't ready within budget; surfaced as a `notice` field in the response.
@@ -602,7 +602,7 @@ export const listConversationsTool = {
             // Claude sessions can be 2GB+ across 200+ JSONL files — scan must not block foreground tools
             try {
                 const claudePromise = scanClaudeSessions(args.workspace, workspaceMatchStrategy);
-                const claudeTimeout = new Promise<ConversationSkeleton[]>((_, reject) =>
+                const claudeTimeout = new Promise<StoredConversation[]>((_, reject) =>
                     setTimeout(() => reject(new Error('Claude session scan timeout (5s)')), 5000)
                 );
                 const claudeSkeletons = await Promise.race([claudePromise, claudeTimeout]);
@@ -679,7 +679,7 @@ export const listConversationsTool = {
                     // awaitFreshnessWithBudget réussi (cache frais OU semé depuis
                     // le snapshot local pendant que le scan GDrive rattrape).
                     const scsCache = scsInstance.getCacheImmediate();
-                    const archiveSkeletons: ConversationSkeleton[] = [];
+                    const archiveSkeletons: StoredConversation[] = [];
 
                     for (const [taskId, skeleton] of scsCache.entries()) {
                         const dataSource = (skeleton as any).metadata?.dataSource;
@@ -856,7 +856,7 @@ export const listConversationsTool = {
         if (args.pendingSubtaskOnly === true) {
             const beforeCount = allSkeletons.length;
             
-            const pendingTasks: ConversationSkeleton[] = [];
+            const pendingTasks: StoredConversation[] = [];
             for (const skeleton of allSkeletons) {
                 try {
                     const hasPending = await hasPendingSubtask(skeleton.taskId);
@@ -875,7 +875,7 @@ export const listConversationsTool = {
         // #1244 Couche 2.4 — On passe le skeleton entier pour permettre la recherche
         // memoire sur les Tier 2/3 (sequence deja chargee) sans I/O disque inutile.
         if (args.contentPattern && args.contentPattern.trim().length > 0) {
-            const matchingTasks: ConversationSkeleton[] = [];
+            const matchingTasks: StoredConversation[] = [];
             for (const skeleton of allSkeletons) {
                 try {
                     const match = await matchesContentPattern(skeleton, args.contentPattern);
@@ -1376,7 +1376,7 @@ function excerptAround(haystack: string, needleLower: string, field: string, bud
     return { field, snippet: prefix + haystack.slice(start, end) + suffix };
 }
 
-async function matchesContentPattern(skeleton: ConversationSkeleton, pattern: string): Promise<ContentMatch | null> {
+async function matchesContentPattern(skeleton: StoredConversation, pattern: string): Promise<ContentMatch | null> {
     const normalizedPattern = pattern.toLowerCase().trim();
     if (normalizedPattern.length === 0) return { field: 'none', snippet: '' };
 
@@ -1912,7 +1912,7 @@ async function extractClaudeJsonlMetadata(filePath: string, fileSize: number): P
 // par client actif chaque minute sur les machines à nombreux hôtes MCP.
 const CLAUDE_SCAN_CACHE_TTL = 5 * 60_000; // 5 minutes
 let lastClaudeScanTime = 0;
-let lastClaudeScanResults: ConversationSkeleton[] | null = null;
+let lastClaudeScanResults: StoredConversation[] | null = null;
 
 // --- #3721 ghost eviction cooldown ---
 // evictGoneLocalTasks does a few readdirs (cheap, but not free on 7k+ task dirs).
@@ -1930,7 +1930,7 @@ let lastGhostEvictionAt = 0;
  * index is otherwise only rewritten when Worker A sees updates — a ghost never
  * updates, so it would persist in the index indefinitely).
  */
-function evictGoneLocalTasksInBackground(conversationCache: Map<string, ConversationSkeleton>): void {
+function evictGoneLocalTasksInBackground(conversationCache: Map<string, StoredConversation>): void {
     try {
         const now = Date.now();
         if (now - lastGhostEvictionAt < GHOST_EVICTION_COOLDOWN_MS) return;
@@ -1972,7 +1972,7 @@ function evictGoneLocalTasksInBackground(conversationCache: Map<string, Conversa
 async function scanClaudeSessions(
     workspaceFilter?: string,
     workspaceMatchStrategy: 'exact' | 'normalized' | 'substring' = 'normalized'
-): Promise<ConversationSkeleton[]> {
+): Promise<StoredConversation[]> {
     const now = Date.now();
 
     // Return cached results if TTL hasn't expired
@@ -1987,7 +1987,7 @@ async function scanClaudeSessions(
     }
 
     const locations = await ClaudeStorageDetector.detectStorageLocations();
-    const skeletons: ConversationSkeleton[] = [];
+    const skeletons: StoredConversation[] = [];
     const seenProjects = new Set<string>();
 
     for (const location of locations) {
@@ -2044,7 +2044,7 @@ async function scanClaudeSessions(
                     const userCount = sessionMeta.sampledUserCount ?? jsonlMeta.userCount;
                     const assistantCount = sessionMeta.sampledAssistantCount ?? jsonlMeta.assistantCount;
 
-                    const skeleton: ConversationSkeleton = {
+                    const skeleton: StoredConversation = {
                         taskId,
                         sequence: [], // Content loaded on-demand via view action
                         metadata: {
@@ -2065,7 +2065,7 @@ async function scanClaudeSessions(
                         _claudeLastMessageRole: mergedLastRole,
                         _claudeUserCount: userCount,
                         _claudeAssistantCount: assistantCount,
-                    } as ConversationSkeleton & {
+                    } as StoredConversation & {
                         _claudeFirstUserMessage?: string;
                         _claudeLastUserMessage?: string;
                         _claudeLastMessage?: string;

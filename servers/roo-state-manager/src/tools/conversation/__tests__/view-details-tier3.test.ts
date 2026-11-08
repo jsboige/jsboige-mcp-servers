@@ -45,7 +45,7 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 }));
 
 import { viewTaskDetailsTool } from '../view-details.tool.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 const tier3Stub = (taskId: string) => ({
 	taskId,
@@ -98,7 +98,7 @@ describe('#3661 — view_task_details d\'une archive Tier 3', () => {
 	test('archive hors conversationCache → hydrate, publie le corps dans le cache et le rend', async () => {
 		peekMock.mockReturnValueOnce(tier3Stub('t-web1')).mockReturnValueOnce(tier3Body('t-web1'));
 		hydrateMock.mockResolvedValue(true);
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		const result = await viewTaskDetailsTool.handler({ task_id: 't-web1' }, cache);
 
@@ -112,7 +112,7 @@ describe('#3661 — view_task_details d\'une archive Tier 3', () => {
 
 	test('re-view après éviction LRU (stub déshydraté dans conversationCache) → ré-hydrate et rend le corps', async () => {
 		const evicted = tier3Stub('t-web1');
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 		cache.set('t-web1', evicted);
 		peekMock.mockReturnValueOnce(evicted).mockReturnValueOnce(tier3Body('t-web1'));
 		hydrateMock.mockResolvedValue(true);
@@ -126,7 +126,7 @@ describe('#3661 — view_task_details d\'une archive Tier 3', () => {
 	test('hydratation échouée → « Aucune tâche trouvée », jamais une archive vide rendue', async () => {
 		peekMock.mockReturnValue(tier3Stub('t-web1'));
 		hydrateMock.mockResolvedValue(false);
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		const result = await viewTaskDetailsTool.handler({ task_id: 't-web1' }, cache);
 
@@ -144,7 +144,7 @@ describe('#3661 — view_task_details d\'une archive Tier 3', () => {
 		detectMock.mockResolvedValue([tmpRoot]);
 
 		const evicted = tier3Stub('t-web1');
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 		cache.set('t-web1', evicted);
 		peekMock.mockReturnValue(evicted);
 
@@ -157,7 +157,7 @@ describe('#3661 — view_task_details d\'une archive Tier 3', () => {
 
 	test('id inconnu du SkeletonCacheService (peek undefined) → « Aucune tâche », hydratation jamais tentée', async () => {
 		peekMock.mockReturnValue(undefined);
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		const result = await viewTaskDetailsTool.handler({ task_id: 't-unknown' }, cache);
 

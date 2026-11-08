@@ -16,7 +16,7 @@
 
 import { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { handleTaskBrowse, TaskBrowseArgs } from '../task/browse.js';
 import { viewConversationTree } from '../view-conversation-tree.js';
 import { handleRooSyncSummarize, RooSyncSummarizeArgs } from '../summary/roosync-summarize.tool.js';
@@ -343,7 +343,7 @@ async function handleSynthesisAction(
     taskId: string,
     outputFormat: 'json' | 'markdown',
     filePath?: string,
-    getConversationSkeleton?: (id: string) => Promise<ConversationSkeleton | null>
+    getConversationSkeleton?: (id: string) => Promise<StoredConversation | null>
 ): Promise<CallToolResult> {
     if (!getConversationSkeleton) {
         return {
@@ -410,11 +410,11 @@ const CONVERSATION_BROWSER_ARCHIVE_TIMEOUT_MS = parseInt(
  */
 export async function handleConversationBrowser(
     wireArgs: ConversationBrowserWireArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     ensureSkeletonCacheIsFresh: () => Promise<void>,
     contextWorkspace?: string,
-    getConversationSkeleton?: (id: string) => Promise<ConversationSkeleton | null>,
-    findChildTasks?: (rootId: string) => Promise<ConversationSkeleton[]>,
+    getConversationSkeleton?: (id: string) => Promise<StoredConversation | null>,
+    findChildTasks?: (rootId: string) => Promise<StoredConversation[]>,
     serverState?: ServerState
 ): Promise<CallToolResult> {
     // #1262 — Hard timeout (default 30s, env-overridable).
@@ -485,11 +485,11 @@ export async function handleConversationBrowser(
  */
 async function handleConversationBrowserCore(
     args: ConversationBrowserArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     ensureSkeletonCacheIsFresh: () => Promise<void>,
     contextWorkspace?: string,
-    getConversationSkeleton?: (id: string) => Promise<ConversationSkeleton | null>,
-    findChildTasks?: (rootId: string) => Promise<ConversationSkeleton[]>,
+    getConversationSkeleton?: (id: string) => Promise<StoredConversation | null>,
+    findChildTasks?: (rootId: string) => Promise<StoredConversation[]>,
     serverState?: ServerState
 ): Promise<CallToolResult> {
     try {

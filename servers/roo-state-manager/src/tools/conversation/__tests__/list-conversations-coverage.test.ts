@@ -48,14 +48,14 @@ vi.mock('fs', async () => {
 
 import { listConversationsTool } from '../list-conversations.tool.js';
 import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ─────────────────── helper ───────────────────
 
 function makeSkeleton(
   taskId: string,
   lastActivity = '2026-01-15T12:00:00.000Z'
-): ConversationSkeleton {
+): StoredConversation {
   return {
     taskId,
     metadata: {
@@ -69,7 +69,7 @@ function makeSkeleton(
       totalSize: 512,
     },
     messages: [],
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
 // ─────────────────── setup ───────────────────
@@ -92,7 +92,7 @@ describe('source: claude', () => {
    */
   test('source=claude retourne liste vide si ClaudeStorageDetector.detectStorageLocations retourne []', async () => {
     mockDetectClaudeLocations.mockResolvedValue([]);
-    const emptyCache: Map<string, ConversationSkeleton> = new Map();
+    const emptyCache: Map<string, StoredConversation> = new Map();
 
     const result = await listConversationsTool.handler({ source: 'claude' }, emptyCache);
 
@@ -109,7 +109,7 @@ describe('source: claude', () => {
 
   test('source=all inclut les tâches Roo du cache et tente le scan Claude', async () => {
     mockDetectClaudeLocations.mockResolvedValue([]);
-    const cache: Map<string, ConversationSkeleton> = new Map([
+    const cache: Map<string, StoredConversation> = new Map([
       ['roo-task-1', makeSkeleton('roo-task-1')],
     ]);
 

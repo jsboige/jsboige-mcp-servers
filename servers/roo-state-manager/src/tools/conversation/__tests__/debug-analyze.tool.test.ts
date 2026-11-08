@@ -7,7 +7,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { debugAnalyzeTool } from '../debug-analyze.tool.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { GenericError } from '../../../types/errors.js';
 
 describe('debugAnalyzeTool', () => {
@@ -43,7 +43,7 @@ describe('debugAnalyzeTool', () => {
 	// ============================================================
 
 	describe('handler', () => {
-		function createMockSkeleton(taskId: string, overrides?: Partial<ConversationSkeleton>): ConversationSkeleton {
+		function createMockSkeleton(taskId: string, overrides?: Partial<StoredConversation>): StoredConversation {
 			return {
 				taskId,
 				parentTaskId: null,
@@ -61,11 +61,11 @@ describe('debugAnalyzeTool', () => {
 				},
 				messages: [],
 				...overrides
-			} as ConversationSkeleton;
+			} as StoredConversation;
 		}
 
 		test('returns skeleton for existing task', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const skeleton = createMockSkeleton('task-123');
 			cache.set('task-123', skeleton);
 
@@ -80,7 +80,7 @@ describe('debugAnalyzeTool', () => {
 		});
 
 		test('returns pretty-printed JSON', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('task-1', createMockSkeleton('task-1'));
 
 			const result = await debugAnalyzeTool.handler({ taskId: 'task-1' }, cache);
@@ -92,7 +92,7 @@ describe('debugAnalyzeTool', () => {
 		});
 
 		test('throws GenericError for missing task', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 
 			await expect(
 				debugAnalyzeTool.handler({ taskId: 'nonexistent' }, cache)
@@ -100,7 +100,7 @@ describe('debugAnalyzeTool', () => {
 		});
 
 		test('error message includes task ID', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 
 			try {
 				await debugAnalyzeTool.handler({ taskId: 'missing-task-xyz' }, cache);
@@ -111,7 +111,7 @@ describe('debugAnalyzeTool', () => {
 		});
 
 		test('returns full skeleton data including messages', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const skeleton = createMockSkeleton('task-2', {
 				messages: [
 					{ role: 'user', content: 'Hello' } as any,
@@ -128,7 +128,7 @@ describe('debugAnalyzeTool', () => {
 		});
 
 		test('works with empty cache', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 
 			await expect(
 				debugAnalyzeTool.handler({ taskId: 'any-id' }, cache)
@@ -136,7 +136,7 @@ describe('debugAnalyzeTool', () => {
 		});
 
 		test('returns correct skeleton among multiple', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('task-a', createMockSkeleton('task-a'));
 			cache.set('task-b', createMockSkeleton('task-b'));
 			cache.set('task-c', createMockSkeleton('task-c'));

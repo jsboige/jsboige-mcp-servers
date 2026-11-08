@@ -13,7 +13,7 @@
  */
 
 import { describe, test, expect, vi } from 'vitest';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { viewTaskDetailsTool } from '../view-details.tool.js';
 
 vi.mock('../../../utils/claude-storage-detector.js', () => ({
@@ -24,7 +24,7 @@ vi.mock('../../../utils/claude-storage-detector.js', () => ({
 
 // ─── Path A (legacy, congelé verbatim de view-details.tool.ts pré-#1394) ─────
 
-function renderLegacyHeader(skeleton: ConversationSkeleton): string {
+function renderLegacyHeader(skeleton: StoredConversation): string {
     let output = `🔍 Détails techniques complets - Tâche: ${skeleton.metadata.title || skeleton.taskId}\n`;
     output += `═══════════════════════════════════════════════════════════════════════════════════════════════════════\n`;
     output += `ID: ${skeleton.taskId}\n`;
@@ -44,7 +44,7 @@ function makeSkeleton(overrides: {
     lastActivity: string;
     createdAt?: string;
     source?: 'roo' | 'claude-code' | 'zoo-code';
-}): ConversationSkeleton {
+}): StoredConversation {
     return {
         taskId: overrides.taskId,
         metadata: {
@@ -57,12 +57,12 @@ function makeSkeleton(overrides: {
             source: overrides.source ?? 'roo',
         },
         sequence: [],
-    } as ConversationSkeleton;
+    } as StoredConversation;
 }
 
 /** Corpus : sans titre (repli taskId), compte nul, source zoo, activité vide,
  *  dates distinctes (createdAt ≠ lastActivity — piège la confusion des champs). */
-const CORPUS: ConversationSkeleton[] = [
+const CORPUS: StoredConversation[] = [
     makeSkeleton({
         taskId: 'roo-titled',
         title: 'Migration UnifiedTask',
@@ -109,7 +109,7 @@ describe('view_task_details — en-tête A/B legacy vs UnifiedTask (#1394)', () 
     test.each(CORPUS.map(s => [s.taskId, s] as const))(
         'en-tête identique pour %s',
         async (_taskId, skeleton) => {
-            const cache = new Map<string, ConversationSkeleton>();
+            const cache = new Map<string, StoredConversation>();
             cache.set(skeleton.taskId, skeleton);
 
             const result = await viewTaskDetailsTool.handler({ task_id: skeleton.taskId }, cache);
@@ -128,7 +128,7 @@ describe('view_task_details — en-tête A/B legacy vs UnifiedTask (#1394)', () 
 
     test('la sortie sans actions garde le pied de rapport inchangé', async () => {
         const skeleton = CORPUS[1];
-        const cache = new Map<string, ConversationSkeleton>();
+        const cache = new Map<string, StoredConversation>();
         cache.set(skeleton.taskId, skeleton);
 
         const result = await viewTaskDetailsTool.handler({ task_id: skeleton.taskId }, cache);
