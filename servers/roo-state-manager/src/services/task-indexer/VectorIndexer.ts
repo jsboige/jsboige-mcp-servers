@@ -22,7 +22,7 @@ const COLLECTION_NAME = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semanti
  * through the default logger: it writes the roosync-YYYYMMDD.log file AND
  * echoes to stderr, so both channels carry the line.
  */
-function loopLog(line: string): void {
+export function loopLog(line: string): void {
     getDefaultLogger().info(line);
 }
 
