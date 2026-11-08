@@ -20,7 +20,7 @@ import { createHash } from 'crypto';
 // failures from the pre-#886 era) and the cleanup_failed action. Imports stay
 // narrow to avoid pulling the entire background-services module into the tool
 // layer (registry.ts owns that wiring).
-import { classifyIndexingError, reconcileErrorClass, readLeaderLockInfo, readIndexerQueueStatus } from '../../services/background-services.js';
+import { classifyIndexingError, reconcileErrorClass, readLeaderLockInfo, readIndexerQueueStatus, noteIndexEnqueue } from '../../services/background-services.js';
 import { isStuckRetry } from '../../types/indexing.js';
 import { sanitizeInt } from '../../utils/int-validator.js';
 
@@ -827,6 +827,10 @@ export interface IndexingState {
     // the reads below degrade to "unknown" rather than lying.
     machineId?: string;
     isIndexLeader?: boolean;
+    // #4352 W4: optional marker stamped by noteIndexEnqueue before every
+    // enqueue (leader-published queue observability). Optional for the same
+    // reason as the fields above — hand-built IndexingState may omit it.
+    qdrantIndexOldestEnqueuedAt?: number | null;
 }
 
 export async function handleRooSyncIndexing(
@@ -942,6 +946,9 @@ export async function handleRooSyncIndexing(
                     // true codé en dur).
                     deadLetterRemoved = indexingState.deadLetterQueue?.delete(args.task_id) ?? false;
                     indexingState.deadLetterDetails?.delete(args.task_id);
+                    // #4352 W4 (review ms#1690 W2): operator-triggered enqueues
+                    // stamp the oldest-enqueued marker too.
+                    noteIndexEnqueue(indexingState);
                     qdrantIndexQueue.add(args.task_id);
                     // Réactiver le service s'il était désactivé — clamp à l'env,
                     // même garde que reset-collection (#985 review finding 2).
@@ -1000,7 +1007,8 @@ export async function handleRooSyncIndexing(
                 conversationCache,
                 saveSkeletonCallback,
                 qdrantIndexQueue,
-                setQdrantIndexingEnabled
+                setQdrantIndexingEnabled,
+                indexingState // #4352 W4: lets the reindex enqueues stamp the marker
             );
         }
 

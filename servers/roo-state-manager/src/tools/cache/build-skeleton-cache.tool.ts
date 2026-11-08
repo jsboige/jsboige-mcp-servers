@@ -11,7 +11,7 @@ import { ConversationSkeleton, SkeletonHeader } from '../../types/conversation.j
 import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import { ServerState } from '../../services/state-manager.service.js';
-import { saveSkeletonIndex, toHeader } from '../../services/background-services.js';
+import { saveSkeletonIndex, toHeader, noteIndexEnqueue } from '../../services/background-services.js';
 import { dualWriteConversationToStore } from '../../services/unified-store/dual-write.js';
 
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
@@ -201,6 +201,9 @@ export async function handleBuildSkeletonCache(
         // Helper d'enqueue Qdrant — honore reindex meme si Qdrant indexing n'est pas force globalement
         const enqueueForReindex = (taskId: string) => {
             if (state && (state.isQdrantIndexingEnabled || reindex)) {
+                // #4352 W4 (review ms#1690 W2): operator-triggered enqueues
+                // stamp the oldest-enqueued marker too.
+                noteIndexEnqueue(state);
                 state.qdrantIndexQueue.add(taskId);
             }
         };

@@ -428,6 +428,13 @@ export function registerCallToolHandler(
                         // DELIVERS it. roosync-indexing.wiring.test.ts guards this literal.
                         machineId: state.machineId,
                         isIndexLeader: state.isIndexLeader,
+                        // #4352 W4: the oldest-enqueued marker must WRITE
+                        // THROUGH to the host state — this literal copies
+                        // scalars by value, so a plain field would strand the
+                        // stamp on a discarded copy (the #3279 trap, read/write
+                        // variant). Accessors alias the field instead.
+                        get qdrantIndexOldestEnqueuedAt() { return state.qdrantIndexOldestEnqueuedAt; },
+                        set qdrantIndexOldestEnqueuedAt(value: number | null | undefined) { state.qdrantIndexOldestEnqueuedAt = value; },
                     }
                 );
                 break;
@@ -470,7 +477,8 @@ export function registerCallToolHandler(
                     cache,
                     saveSkeletonToDisk,
                     state.qdrantIndexQueue,
-                    (enabled: boolean) => { state.isQdrantIndexingEnabled = enabled; }
+                    (enabled: boolean) => { state.isQdrantIndexingEnabled = enabled; },
+                    state // #4352 W4: stamps the oldest-enqueued marker on reindex enqueues
                 );
                 break;
             }

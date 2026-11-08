@@ -225,7 +225,8 @@ describe('roosyncIndexingTool', () => {
 			cache,
 			saveSkeleton,
 			indexQueue,
-			setEnabled
+			setEnabled,
+			undefined // #4352 W4: optional state forwarded for the enqueue marker
 		);
 		expect(result).toBe(expected);
 	});

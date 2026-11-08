@@ -93,6 +93,11 @@ vi.mock("../../../services/unified-store/dual-write.js", () => ({
 vi.mock("../../../services/background-services.js", () => ({
 	saveSkeletonIndex: (...args: any[]) => mockSaveSkeletonIndex(...args),
 	toHeader: (s: any) => ({ taskId: s.taskId }),
+	// #4352 W4: no-op stub — this file's concern is the reindex enqueue gate,
+	// not the oldest-enqueued marker (pinned against the real module by
+	// indexer-queue-status.test.ts). A full-module mock must know every
+	// export the tool imports, or the import silently becomes undefined.
+	noteIndexEnqueue: () => {},
 }));
 vi.mock("../../../utils/hierarchy-reconstruction-engine.js", () => ({
 	HierarchyReconstructionEngine: vi.fn().mockImplementation(() => ({

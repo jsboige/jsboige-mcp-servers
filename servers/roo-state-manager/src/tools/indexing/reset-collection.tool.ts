@@ -6,6 +6,7 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ConversationSkeleton } from '../../types/conversation.js';
 import { TaskIndexer } from '../../services/task-indexer.js';
+import { noteIndexEnqueue, IndexEnqueueNotable } from '../../services/background-services.js';
 
 export interface ResetQdrantCollectionArgs {
     confirm?: boolean;
@@ -45,7 +46,12 @@ export const resetQdrantCollectionTool = {
         conversationCache: Map<string, ConversationSkeleton>,
         saveSkeletonCallback: (skeleton: ConversationSkeleton) => Promise<void>,
         qdrantIndexQueue: Set<string>,
-        setQdrantIndexingEnabled: (enabled: boolean) => void
+        setQdrantIndexingEnabled: (enabled: boolean) => void,
+        // #4352 W4 (review ms#1690 W2): host state (or the registry's
+        // write-through literal) so reindex enqueues stamp the oldest-enqueued
+        // marker. Optional — callers and tests without it degrade to
+        // oldestEnqueuedAt=null (honest "unknown"), the pre-W4 behavior.
+        state?: IndexEnqueueNotable
     ): Promise<CallToolResult> => {
         try {
             // Confirmation obligatoire avant opération destructive
@@ -99,6 +105,9 @@ export const resetQdrantCollectionTool = {
                     skeletonsReset++;
                 }
                 // Ajouter à la queue pour réindexation
+                // #4352 W4 (review ms#1690 W2): stamp the oldest-enqueued
+                // marker when the queue crosses empty→non-empty.
+                if (state) { noteIndexEnqueue(state); }
                 qdrantIndexQueue.add(taskId);
             }
             

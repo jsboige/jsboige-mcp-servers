@@ -1487,12 +1487,20 @@ export async function getIndexerQueueStatusPath(machineId: string): Promise<stri
     return path.join(os.tmpdir(), `roosync-indexer-status-${safeId}.json`);
 }
 
+/** Minimal state slice noteIndexEnqueue touches. ServerState satisfies it, and
+ *  so do the narrower tool-level state interfaces (roosync-indexing's
+ *  IndexingState) once they carry the optional marker field. */
+export interface IndexEnqueueNotable {
+    qdrantIndexQueue: Set<string>;
+    qdrantIndexOldestEnqueuedAt?: number | null;
+}
+
 /** #4352 W4: call before EVERY qdrantIndexQueue.add — stamps the oldest-enqueued
  *  marker when the queue was empty (a marker already set is kept: on a partial
  *  drain the true oldest surviving item is OLDER than the marker, so the marker
  *  stays conservative — never claims younger than reality).
  *  Exported so the tests pin the production marker semantics, not a copy. */
-export function noteIndexEnqueue(state: ServerState): void {
+export function noteIndexEnqueue(state: IndexEnqueueNotable): void {
     if (state.qdrantIndexQueue.size === 0) {
         state.qdrantIndexOldestEnqueuedAt = Date.now();
     }
@@ -1966,6 +1974,16 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             }
         }
 
+        // #4352 W4 (review ms#1690 W1): heartbeat publication — EVERY leader
+        // tick, placed BEFORE all early returns below (empty queue, breaker
+        // open, metered link). A live but idle leader keeps refreshing
+        // updatedAt, so a follower's `stale=true` means the leader is gone,
+        // not quiet. Followers never publish — only the leader's queue
+        // drains, only its numbers are meaningful.
+        if (state.isIndexLeader) {
+            await writeIndexerQueueStatus(state);
+        }
+
         if (!state.isQdrantIndexingEnabled || state.qdrantIndexQueue.size === 0) {
             return;
         }
@@ -1989,12 +2007,6 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
                 return;
             }
         }
-        // #4352 W4: heartbeat publication — the leader refreshes its queue
-        // status file every tick EVEN when the drain below is skipped (breaker
-        // open, metered link, empty queue): a follower reading a fresh
-        // updatedAt knows the leader lives and its queue is intentionally held.
-        await writeIndexerQueueStatus(state);
-
         // #2165: Global back-off. If the Qdrant circuit breaker is OPEN, every
         // indexTask() call would extract chunks and (before this fix) compute
         // embeddings only to have the upsert rejected — hammering the embedding
