@@ -28,11 +28,11 @@ import {
   handleExportProjectXml,
   exportProjectXmlTool,
 } from '../export-project-xml.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ─────────────────── helpers ───────────────────
 
-function makeConversation(taskId: string, overrides: Partial<ConversationSkeleton> = {}): ConversationSkeleton {
+function makeConversation(taskId: string, overrides: Partial<StoredConversation> = {}): StoredConversation {
   return {
     taskId,
     metadata: {
@@ -47,10 +47,10 @@ function makeConversation(taskId: string, overrides: Partial<ConversationSkeleto
     },
     messages: [],
     ...overrides,
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
-function makeCache(...skeletons: ConversationSkeleton[]): Map<string, ConversationSkeleton> {
+function makeCache(...skeletons: StoredConversation[]): Map<string, StoredConversation> {
   return new Map(skeletons.map(s => [s.taskId, s]));
 }
 
@@ -313,7 +313,7 @@ describe('handleExportConversationXml', () => {
       const root = makeConversation('root-task');
       const cache = makeCache(root, child);
 
-      mockXmlExporterService.generateConversationXml.mockImplementation((root: ConversationSkeleton, children: ConversationSkeleton[]) => `<conversation>${[root, ...children].map(t => t.taskId).join(',')}</conversation>`);
+      mockXmlExporterService.generateConversationXml.mockImplementation((root: StoredConversation, children: StoredConversation[]) => `<conversation>${[root, ...children].map(t => t.taskId).join(',')}</conversation>`);
 
       await handleExportConversationXml(
         { conversationId: 'root-task' },
@@ -322,8 +322,8 @@ describe('handleExportConversationXml', () => {
         mockEnsureFresh
       );
 
-      const rootTask = mockXmlExporterService.generateConversationXml.mock.calls[0][0] as ConversationSkeleton;
-      const children = mockXmlExporterService.generateConversationXml.mock.calls[0][1] as ConversationSkeleton[];
+      const rootTask = mockXmlExporterService.generateConversationXml.mock.calls[0][0] as StoredConversation;
+      const children = mockXmlExporterService.generateConversationXml.mock.calls[0][1] as StoredConversation[];
       expect(rootTask.taskId).toBe('root-task');
       expect(children.some(t => t.taskId === 'child-task')).toBe(true);
     });
@@ -334,7 +334,7 @@ describe('handleExportConversationXml', () => {
       const root = makeConversation('root-task');
       const cache = makeCache(root, level1, level2);
 
-      mockXmlExporterService.generateConversationXml.mockImplementation((root: ConversationSkeleton, children: ConversationSkeleton[]) => `<conversation>${[root, ...children].map(t => t.taskId).join(',')}</conversation>`);
+      mockXmlExporterService.generateConversationXml.mockImplementation((root: StoredConversation, children: StoredConversation[]) => `<conversation>${[root, ...children].map(t => t.taskId).join(',')}</conversation>`);
 
       await handleExportConversationXml(
         { conversationId: 'root-task', maxDepth: 2 },
@@ -343,7 +343,7 @@ describe('handleExportConversationXml', () => {
         mockEnsureFresh
       );
 
-      const children = mockXmlExporterService.generateConversationXml.mock.calls[0][1] as ConversationSkeleton[];
+      const children = mockXmlExporterService.generateConversationXml.mock.calls[0][1] as StoredConversation[];
       // Avec maxDepth=2: root (depth=0) et level1 (depth=1) sont inclus, level2 (depth=2) est exclu
       // car collectTasks vérifie currentDepth >= maxDepth avant d'inclure
       expect(children.some(t => t.taskId === 'level1')).toBe(true);
@@ -437,7 +437,7 @@ describe('handleExportProjectXml', () => {
         mockEnsureFresh
       );
 
-      const tasksArg = mockXmlExporterService.generateProjectXml.mock.calls[0][0] as ConversationSkeleton[];
+      const tasksArg = mockXmlExporterService.generateProjectXml.mock.calls[0][0] as StoredConversation[];
       expect(tasksArg.some(t => t.taskId === 'task-001')).toBe(true);
       expect(tasksArg.some(t => t.taskId === 'task-002')).toBe(false);
     });
@@ -458,7 +458,7 @@ describe('handleExportProjectXml', () => {
         mockEnsureFresh
       );
 
-      const tasksArg = mockXmlExporterService.generateProjectXml.mock.calls[0][0] as ConversationSkeleton[];
+      const tasksArg = mockXmlExporterService.generateProjectXml.mock.calls[0][0] as StoredConversation[];
       expect(tasksArg.some(t => t.taskId === 'old-task')).toBe(false);
       expect(tasksArg.some(t => t.taskId === 'new-task')).toBe(true);
     });

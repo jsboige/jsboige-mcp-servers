@@ -4,7 +4,7 @@
 
 import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { XmlExporterService } from '../../services/XmlExporterService.js';
 
 /**
@@ -56,7 +56,7 @@ export const exportTasksXmlTool: Tool = {
  */
 export async function handleExportTasksXml(
     args: ExportTasksXmlArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     xmlExporterService: XmlExporterService,
     ensureSkeletonCacheIsFresh: () => Promise<void>
 ): Promise<CallToolResult> {

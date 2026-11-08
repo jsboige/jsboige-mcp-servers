@@ -3,7 +3,7 @@
  */
 
 import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { XmlExporterService } from '../../services/XmlExporterService.js';
 import { normalizePath } from '../../utils/path-normalizer.js';
 
@@ -62,7 +62,7 @@ export const exportProjectXmlTool: Tool = {
  */
 export async function handleExportProjectXml(
     args: ExportProjectXmlArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     xmlExporterService: XmlExporterService,
     ensureSkeletonCacheIsFresh: (options?: { workspace?: string }) => Promise<void>
 ): Promise<CallToolResult> {

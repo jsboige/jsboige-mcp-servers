@@ -127,9 +127,9 @@ export function registerCallToolHandler(
 ): void {
     server.setRequestHandler(CallToolRequestSchema, async (request): Promise<CallToolResult> => {
         const { name, arguments: args } = request.params;
-        // Temporary cast: cache holds SkeletonHeader but many callees still expect ConversationSkeleton.
+        // Temporary cast: cache holds SkeletonHeader but many callees still expect StoredConversation.
         // Safe because those callees only read header fields. Will be fixed in follow-up refactor.
-        const cache = state.conversationCache as any as Map<string, import('../types/conversation.js').ConversationSkeleton>;
+        const cache = state.conversationCache as any as Map<string, import('../services/unified-store/types.js').StoredConversation>;
 
         const toolCallStart = Date.now();
         let result: CallToolResult;

@@ -18,11 +18,12 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { handleExportData, ExportDataArgs } from '../export-data.js';
-import { ConversationSkeleton, SkeletonHeader } from '../../../types/conversation.js';
+import { SkeletonHeader } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Mock XmlExporterService — capture les arguments reçus
 const mockXmlExporterService = {
-    generateTaskXml: vi.fn((_skeleton: ConversationSkeleton, opts: { includeContent?: boolean } = {}) => {
+    generateTaskXml: vi.fn((_skeleton: StoredConversation, opts: { includeContent?: boolean } = {}) => {
         // Implémentation de test qui matérialise la séquence comme le ferait
         // un export réel (c'est exactement ce que XmlExporterService fait).
         const skel = _skeleton as any;
@@ -137,7 +138,7 @@ describe('export_data registry wiring — #3007 regression', () => {
 
         // Étape 2 : Le callback correctement câblé charge le skeleton complet
         // depuis le disque — comme `conversation_browser` le fait déjà (registry.ts:218-273).
-        const fullSkeleton: ConversationSkeleton = {
+        const fullSkeleton: StoredConversation = {
             ...headerOnly,
             sequence: [
                 { role: 'user', content: 'Hello world, this is a long message that should be included if includeContent=true', timestamp: '2026-07-29T10:00:00Z', isTruncated: false },
@@ -197,7 +198,7 @@ describe('export_data registry wiring — #3007 regression', () => {
         };
         mockCache.set('task-3007', headerOnly);
 
-        const fullSkeleton: ConversationSkeleton = {
+        const fullSkeleton: StoredConversation = {
             ...headerOnly,
             sequence: [
                 { role: 'user', content: 'A'.repeat(150), timestamp: '2026-07-29T10:00:00Z', isTruncated: false }

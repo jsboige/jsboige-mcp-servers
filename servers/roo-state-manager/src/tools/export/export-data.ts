@@ -18,7 +18,7 @@
 
 import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { XmlExporterService } from '../../services/XmlExporterService.js';
 import { TraceSummaryService, SummaryOptions } from '../../services/TraceSummaryService.js';
 import { ExportConfigManager } from '../../services/ExportConfigManager.js';
@@ -369,10 +369,10 @@ function validateRequiredParams(args: ExportDataArgs): void {
  */
 async function handleTaskXml(
     args: ExportDataArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     xmlExporterService: XmlExporterService,
     ensureSkeletonCacheIsFresh: () => Promise<void>,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>
 ): Promise<CallToolResult> {
     const { taskId, filePath, includeContent = false, prettyPrint = true } = args;
 
@@ -422,7 +422,7 @@ async function handleTaskXml(
  */
 async function handleConversationXml(
     args: ExportDataArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     xmlExporterService: XmlExporterService,
     ensureSkeletonCacheIsFresh: () => Promise<void>
 ): Promise<CallToolResult> {
@@ -441,7 +441,7 @@ async function handleConversationXml(
     }
 
     // Collecter toutes les tâches de la conversation
-    const collectTasks = (taskId: string, currentDepth = 0): ConversationSkeleton[] => {
+    const collectTasks = (taskId: string, currentDepth = 0): StoredConversation[] => {
         if (maxDepth && currentDepth >= maxDepth) return [];
 
         const task = conversationCache.get(taskId);
@@ -480,7 +480,7 @@ async function handleConversationXml(
  */
 async function handleProjectXml(
     args: ExportDataArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     xmlExporterService: XmlExporterService,
     ensureSkeletonCacheIsFresh: (options?: { workspace?: string }) => Promise<void>
 ): Promise<CallToolResult> {
@@ -570,7 +570,7 @@ async function handleProjectXml(
  *   corps chargé à la demande.
  */
 function assertExportableSequence(
-    conversation: ConversationSkeleton,
+    conversation: StoredConversation,
     taskId: string,
     format: 'json' | 'csv'
 ): void {
@@ -602,7 +602,7 @@ function assertExportableSequence(
  */
 async function handleConversationJson(
     args: ExportDataArgs,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>
 ): Promise<CallToolResult> {
     const { taskId, filePath, jsonVariant = 'light', truncationChars = 0, startIndex, endIndex } = args;
 
@@ -668,7 +668,7 @@ async function handleConversationJson(
  */
 async function handleConversationCsv(
     args: ExportDataArgs,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>
 ): Promise<CallToolResult> {
     const { taskId, filePath, csvVariant = 'conversations', truncationChars = 0, startIndex, endIndex } = args;
 
@@ -740,7 +740,7 @@ async function handleConversationCsv(
  */
 async function handleConversationMarkdown(
     args: ExportDataArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     ensureSkeletonCacheIsFresh: () => Promise<void>
 ): Promise<CallToolResult> {
     const exportArgs: ExportTaskTreeMarkdownArgs = {
@@ -782,10 +782,10 @@ async function handleTaskDebug(args: ExportDataArgs): Promise<CallToolResult> {
  */
 export async function handleExportData(
     args: ExportDataArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     xmlExporterService: XmlExporterService,
     ensureSkeletonCacheIsFresh: (options?: { workspace?: string }) => Promise<void>,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>
 ): Promise<CallToolResult> {
     try {
         // Valider les arguments
