@@ -1980,8 +1980,22 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
         // updatedAt, so a follower's `stale=true` means the leader is gone,
         // not quiet. Followers never publish — only the leader's queue
         // drains, only its numbers are meaningful.
+        //
+        // #4352 W4 follow-up (queue 20261108b, grain 1): VERIFY before
+        // publishing. The lock renewal sits AFTER the early return below, so
+        // on the indexing-disabled path (and empty-queue + breaker-open) an
+        // ex-leader whose lock was stolen kept publishing forever — and a
+        // real leader in another same-machine host (same machineId, same
+        // tmpdir → same status file) alternated pid/queueSize with it.
+        // Renew-or-demote first: the renew is the same call the idle re-arm
+        // path already makes every tick.
         if (state.isIndexLeader) {
-            await writeIndexerQueueStatus(state);
+            if (await tryAcquireLeaderLock(state.machineId)) {
+                await writeIndexerQueueStatus(state);
+            } else {
+                state.isIndexLeader = false;
+                console.warn(`⚠️ [Leader-Election] PID ${process.pid} lost leadership before status publication (lock held elsewhere). Stepping down.`);
+            }
         }
 
         if (!state.isQdrantIndexingEnabled || state.qdrantIndexQueue.size === 0) {
