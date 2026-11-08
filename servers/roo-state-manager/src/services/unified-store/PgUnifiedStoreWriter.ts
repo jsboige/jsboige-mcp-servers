@@ -28,6 +28,8 @@ import type {
   RooSyncMessageUpdate,
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
+  HarmonizationCampaignRow,
+  HarmonizationConfirmationRow,
 } from './types.js';
 import type { IUnifiedStoreWriter, RooSyncLockAcquireStatus, UnifiedStoreWriterConfig, UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 
@@ -203,6 +205,88 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
          SET value = EXCLUDED.value, updated_at = now()`,
       [key, value]
     );
+  }
+
+  // ─── RooSync harmonization campaigns (#3544, migrations/013) ────
+
+  async syncHarmonizationCampaign(
+    row: HarmonizationCampaignRow,
+    opts?: { backfill?: boolean }
+  ): Promise<UnifiedStoreWriteOutcome> {
+    return this.withRetryResult('syncHarmonizationCampaign', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+
+      const backfill = opts?.backfill === true;
+      await this.pool.query(
+        `INSERT INTO harmonization_campaigns
+           (campaign_id, target_file, canon_version, canon_hash, canon_mode,
+            status, rev, created_by, created_at, updated_at, closed_at,
+            close_reason, fleet, exceptions, payload)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), $10, $11,
+                 $12::jsonb, $13::jsonb, $14::jsonb)
+         ${backfill
+           ? 'ON CONFLICT (campaign_id) DO NOTHING'
+           : `ON CONFLICT (campaign_id) DO UPDATE SET
+             target_file   = EXCLUDED.target_file,
+             canon_version = EXCLUDED.canon_version,
+             canon_hash    = EXCLUDED.canon_hash,
+             canon_mode    = EXCLUDED.canon_mode,
+             status        = EXCLUDED.status,
+             rev           = EXCLUDED.rev,
+             created_by    = EXCLUDED.created_by,
+             closed_at     = EXCLUDED.closed_at,
+             close_reason  = EXCLUDED.close_reason,
+             fleet         = EXCLUDED.fleet,
+             exceptions    = EXCLUDED.exceptions,
+             payload       = EXCLUDED.payload,
+             updated_at    = now()`}`,
+        [
+          row.campaign_id,
+          row.target_file,
+          row.canon_version,
+          row.canon_hash,
+          row.canon_mode,
+          row.status,
+          row.rev,
+          row.created_by,
+          row.created_at,
+          row.closed_at,
+          row.close_reason,
+          JSON.stringify(row.fleet ?? []),
+          JSON.stringify(row.exceptions ?? {}),
+          JSON.stringify(row.payload ?? {}),
+        ]
+      );
+    });
+  }
+
+  async appendHarmonizationConfirmation(
+    row: HarmonizationConfirmationRow
+  ): Promise<UnifiedStoreWriteOutcome> {
+    return this.withRetryResult('appendHarmonizationConfirmation', async () => {
+      if (!this.pool) await this.init();
+      if (!this.pool) throw new Error('Pool not initialized');
+      // Idempotent on (campaign_id, event_id): a backfill replay of the same
+      // journal files must insert nothing the second time.
+      await this.pool.query(
+        `INSERT INTO harmonization_confirmations
+           (campaign_id, machine_id, workspace, confirmed_at, canon_hash,
+            observed_hash, source, event_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+         ON CONFLICT (campaign_id, event_id) DO NOTHING`,
+        [
+          row.campaign_id,
+          row.machine_id,
+          row.workspace,
+          row.confirmed_at,
+          row.canon_hash,
+          row.observed_hash,
+          row.source,
+          row.event_id,
+        ]
+      );
+    });
   }
 
   // ─── Upsert Operations ────────────────────────────────────────

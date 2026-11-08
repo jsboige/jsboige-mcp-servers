@@ -55,9 +55,17 @@
  *    single-writer distribué.
  *  - Aucun daemon/cron : `remind` est appelé par le coordinateur sur sa cadence.
  *
- * Persistance : fichier JSON par campagne sous {shared}/harmonization/campaigns/,
- * write atomique (tmp+rename) avec relecture. Fail closed : racine shared
- * absente => erreur, pas de mode dégradé.
+ * Persistance (#3544) : PostgreSQL est l'AUTORITÉ, GDrive en est le miroir de
+ * repli. Chaque campagne vit en `harmonization_campaigns` (JSONB `payload`
+ * portant l'enregistrement complet) et chaque confirmation en
+ * `harmonization_confirmations` (idempotente sur (campaign_id, event_id)) ;
+ * le fichier JSON par campagne sous {shared}/harmonization/campaigns/ est
+ * écrit APRÈS, en miroir, et reste ce qui fait fonctionner un siège sans canal
+ * PG. Une écriture fichier atomique (tmp+rename) avec relecture. Les lectures
+ * consultent PG d'abord et retombent sur le fichier à la moindre absence — une
+ * campagne absente en PG n'est JAMAIS annoncée « pas de campagne » (le
+ * sous-affichage que #3544 ferme). Fail closed : racine shared absente =>
+ * erreur, pas de mode dégradé.
  */
 
 import { promises as fs } from 'fs';
@@ -77,6 +85,14 @@ import {
   findLatestClaudeSettingsSnapshot,
 } from './ClaudeSettingsService.js';
 import { ensureStoreSubdir } from '../utils/shared-state-path.js';
+import {
+  readCampaignFromPg,
+  listCampaignsFromPg,
+  readConfirmationsFromPg,
+  writeCampaignToPg,
+  writeConfirmationToPg,
+  isHarmonizationPgPrimary,
+} from './unified-store/roosync-harmonization-store.js';
 
 const logger: Logger = createLogger('HarmonizationCampaign');
 
@@ -415,6 +431,13 @@ export class HarmonizationCampaignService {
 
   private async load(id: string): Promise<HarmonizationCampaignRecord> {
     const path = this.campaignPath(id);
+    // #3544 — PG is the AUTHORITY, the file is the fallback mirror. Read PG
+    // first so a seat that cannot see the GDrive tree (five of six on 07/11,
+    // mount divergence) reads the same campaign as a seat that can. A PG miss
+    // falls through to the file, and only then to CAMPAIGN_NOT_FOUND: an
+    // un-imported store must never be reported as "no campaign".
+    const fromPg = await readCampaignFromPg(id);
+    if (fromPg) return fromPg;
     if (!existsSync(path)) {
       throw new HarmonizationCampaignError(
         `Campagne introuvable: ${id} (${path}). Fail closed — vérifier ROOSYNC_SHARED_PATH.`,
@@ -456,6 +479,19 @@ export class HarmonizationCampaignService {
     } finally {
       await handle.close();
     }
+    // #3544 — the authority copy, written AFTER the file so that the
+    // exclusivity guard above (O_EXCL = canon immuable) still decides whether
+    // the campaign may exist at all. A PG failure is REPORTED, never fatal:
+    // the campaign lives in the GDrive mirror, which is the documented
+    // fallback, and the backfill replays it.
+    const outcome = await writeCampaignToPg(record);
+    if (!outcome.ok && isHarmonizationPgPrimary()) {
+      logger.warn(
+        `[harmonization-pg] campagne ${record.id} non persistée en PG (${outcome.reason}) — ` +
+        'le miroir G: seul la porte ; le backfill la rejouera',
+        { detail: 'detail' in outcome ? outcome.detail : undefined }
+      );
+    }
   }
 
   /**
@@ -473,15 +509,7 @@ export class HarmonizationCampaignService {
   private async save(record: HarmonizationCampaignRecord, expectedRev: number): Promise<void> {
     const path = this.campaignPath(record.id);
     this.ensureCampaignStoreDir();
-    let currentRev = 0;
-    if (existsSync(path)) {
-      try {
-        const cur = JSON.parse(await fs.readFile(path, 'utf-8')) as { rev?: number };
-        currentRev = typeof cur.rev === 'number' ? cur.rev : 0;
-      } catch {
-        currentRev = -1;
-      }
-    }
+    const currentRev = await this.currentRev(record.id, path);
     if (currentRev !== expectedRev) {
       throw new HarmonizationCampaignError(
         `Mutation coordinateur concurrente sur ${record.id} (rev attendu ${expectedRev}, relu ${currentRev}) — recharger et rejouer.`,
@@ -490,17 +518,59 @@ export class HarmonizationCampaignService {
       );
     }
     const next = { ...record, rev: expectedRev + 1 };
+    // #3544 — authority first. `readCampaignFromPg` above resolved the `rev`
+    // from PG when it is primary, so the CAS compares against what the fleet
+    // reads; the file below is the mirror.
+    const pgPrimary = isHarmonizationPgPrimary();
+    const outcome = await writeCampaignToPg(next);
+    if (!outcome.ok && pgPrimary) {
+      logger.warn(
+        `[harmonization-pg] mutation ${record.id} non persistée en PG (${outcome.reason}) — ` +
+        'le miroir G: la porte ; le backfill la rejouera (rev PG non avancé)',
+        { detail: 'detail' in outcome ? outcome.detail : undefined }
+      );
+    }
     const payload = stableJson(next);
     const tmp = `${path}.tmp-${process.pid}-${this.now().getTime()}-${this.eventIdGen().slice(0, 6)}`;
     await fs.writeFile(tmp, payload, 'utf-8');
     await fs.rename(tmp, path);
     const reread = JSON.parse(await fs.readFile(path, 'utf-8')) as { rev?: number };
-    if (reread.rev !== expectedRev + 1) {
+    if (reread.rev !== expectedRev + 1 && !pgPrimary) {
       throw new HarmonizationCampaignError(
         `Mutation coordinateur concurrente détectée sur ${record.id} (relecture ≠ écrit) — recharger et rejouer.`,
         'CONCURRENT_WRITE',
         { id: record.id }
       );
+    }
+    if (reread.rev !== expectedRev + 1 && pgPrimary) {
+      // The mirror lost the race while PG holds the mutation: keep the
+      // authoritative result, say so. Failing here would report a mutation
+      // that the fleet already reads as failed, and the caller's retry would
+      // meet a rev it no longer recognises.
+      logger.warn(
+        `[harmonization-pg] miroir G: de ${record.id} en retard (relu rev ${reread.rev}, ` +
+        `écrit ${expectedRev + 1}) — PG fait foi, le backfill réalignera le fichier`
+      );
+    }
+  }
+
+  /**
+   * Current `rev` of a campaign, read from the AUTHORITY (#3544).
+   *
+   * PG first when it is the store; the file second, so a seat without a PG
+   * channel keeps the historical check-then-write behaviour unchanged. The
+   * historical sentinels are preserved: `0` when no record exists yet, `-1`
+   * when the file is unreadable (which fails every CAS, as before).
+   */
+  private async currentRev(id: string, path: string): Promise<number> {
+    const fromPg = await readCampaignFromPg(id);
+    if (fromPg) return fromPg.rev;
+    if (!existsSync(path)) return 0;
+    try {
+      const cur = JSON.parse(await fs.readFile(path, 'utf-8')) as { rev?: number };
+      return typeof cur.rev === 'number' ? cur.rev : 0;
+    } catch {
+      return -1;
     }
   }
 
@@ -760,24 +830,58 @@ export class HarmonizationCampaignService {
     } finally {
       await handle.close();
     }
+    // #3544 — a CONFIRMATION is what the fleet must be able to read, so it is
+    // written to PG after the file (same eventId both sides). Failures stay
+    // local: a seat's failed attempt is not fleet knowledge. The outcome is
+    // reported, never thrown — the confirmation did happen, and losing it to a
+    // PG hiccup would turn a real live re-read into a false negative.
+    if (obs.kind === 'confirm') {
+      const outcome = await writeConfirmationToPg(id, { ...obs, eventId });
+      if (!outcome.ok && isHarmonizationPgPrimary()) {
+        logger.warn(
+          `[harmonization-pg] confirmation ${id}/${obs.machine}/${eventId} non persistée en PG ` +
+          `(${outcome.reason}) — seul le journal local la porte ; le backfill la rejouera`,
+          { detail: 'detail' in outcome ? outcome.detail : undefined }
+        );
+      }
+    }
   }
 
   private async loadObservations(id: string, machine: string): Promise<CampaignObservation[]> {
-    const dir = this.machineEventsDir(id, machine);
-    if (!existsSync(dir)) return [];
     const out: CampaignObservation[] = [];
+    const seen = new Set<string>();
+    // #3544 — confirmations are the union of PG and the file journal. PG holds
+    // what every seat confirmed (including seats whose GDrive tree this host
+    // cannot see); the file holds failures too (they never leave the seat) and
+    // the confirmations of a seat without a PG channel. Dedupe by eventId, the
+    // witness identity both sides share.
+    const fromPg = await readConfirmationsFromPg(id, machine);
+    if (fromPg) {
+      for (const c of fromPg) {
+        out.push(c);
+        seen.add(c.eventId);
+      }
+    }
+    const dir = this.machineEventsDir(id, machine);
+    if (!existsSync(dir)) return this.sortObservations(out);
     try {
       const entries = await fs.readdir(dir);
       for (const e of entries) {
         if (!e.endsWith('.json')) continue;
         try {
-          out.push(JSON.parse(await fs.readFile(join(dir, e), 'utf-8')) as CampaignObservation);
+          const obs = JSON.parse(await fs.readFile(join(dir, e), 'utf-8')) as CampaignObservation;
+          if (obs.eventId && seen.has(obs.eventId)) continue;
+          out.push(obs);
         } catch { /* événement illisible — immutable : ignoré, ne bloque pas */ }
       }
     } catch {
-      return [];
+      return this.sortObservations(out);
     }
-    return out.sort(
+    return this.sortObservations(out);
+  }
+
+  private sortObservations(events: CampaignObservation[]): CampaignObservation[] {
+    return events.sort(
       (a, b) => a.at.localeCompare(b.at) || a.eventId.localeCompare(b.eventId)
     );
   }
@@ -897,6 +1001,10 @@ export class HarmonizationCampaignService {
   }
 
   async listCampaigns(includeClosed = false): Promise<HarmonizationCampaignRecord[]> {
+    // #3544 — PG first. `null` means "gate off or PG failed", never "no
+    // campaign": only then does the GDrive directory decide.
+    const fromPg = await listCampaignsFromPg(includeClosed);
+    if (fromPg) return fromPg.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     if (!existsSync(this.campaignsDir)) return [];
     const entries = await fs.readdir(this.campaignsDir);
     const records: HarmonizationCampaignRecord[] = [];

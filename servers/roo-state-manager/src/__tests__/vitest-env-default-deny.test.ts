@@ -63,6 +63,10 @@ describe('#4131 (A) — default-deny : le `.env` du siège n\'atteint plus un fi
     expect(gates.isChannelReadPgEnabled()).toBe(false);
     // Revue ms#1558, point 2 : les deux gates qui manquaient au trip.
     expect(gates.isChannelPgPrimaryEnabled()).toBe(false);
+    // #3544 — la surface harmonisation, même contrat : un siège qui porte le
+    // drapeau l'armerait dans les tests sans ces pins.
+    expect(gates.isHarmonizationReadPgEnabled()).toBe(false);
+    expect(gates.isHarmonizationPgPrimaryEnabled()).toBe(false);
     // Un siège qui porte DUAL_WRITE=0 armerait le kill-switch dans les tests :
     // la clé épinglée est la chaîne vide, donc « explicitly off » doit rester faux.
     expect(gates.isDualWriteExplicitlyOff()).toBe(false);

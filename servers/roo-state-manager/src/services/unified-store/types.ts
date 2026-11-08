@@ -244,6 +244,67 @@ export interface RooSyncDashboardMessageRow {
 }
 
 /**
+ * A row of `harmonization_campaigns` (migrations/013, #3544).
+ *
+ * The queryable columns duplicate the cheap filters (status, target, canon
+ * identity) so `list` and the coordinator's drift sweep do not have to parse
+ * JSONB; `payload` carries the FULL `HarmonizationCampaignRecord` exactly as
+ * the organ wrote it. Reading the payload back is what keeps PG and the GDrive
+ * mirror interchangeable — the record's bookkeeping (dispatches, reminders)
+ * grows without a schema bump.
+ *
+ * Write authority: the `roosync_harmonization` organ only (ai-01 decision of
+ * 07/11 — PG is the authority, G: the fallback mirror).
+ */
+export interface HarmonizationCampaignRow {
+  campaign_id: string;
+  target_file: string;
+  canon_version: string;
+  canon_hash: string;
+  canon_mode: string;
+  status: 'active' | 'closed';
+  /** Optimistic concurrency token mirrored from the record (CAS single-writer). */
+  rev: number;
+  created_by: string;
+  /** ISO 8601. */
+  created_at: string;
+  /** Set by Postgres on write; ISO 8601 on read. */
+  updated_at?: string;
+  closed_at: string | null;
+  close_reason: string | null;
+  /** Entries 'machine' or 'machine:workspace'. */
+  fleet: string[];
+  /** machineId => exempted key paths for that machine. */
+  exceptions: Record<string, string[]>;
+  /** The full campaign record (HarmonizationCampaignRecord). */
+  payload: Record<string, unknown>;
+}
+
+/**
+ * A row of `harmonization_confirmations` (migrations/013, #3544) — the
+ * append-only journal of confirmations, one row per LIVE re-read.
+ *
+ * A confirmation is never derived from a claimed hash: only the organ's
+ * `confirm` action writes here, after re-reading the seat's own settings
+ * file. `event_id` is the organ's immutable event id, unique per campaign so
+ * a backfill replay is a no-op.
+ */
+export interface HarmonizationConfirmationRow {
+  /** BIGSERIAL — set by Postgres on insert, present on read. */
+  id?: number;
+  campaign_id: string;
+  machine_id: string;
+  workspace: string | null;
+  /** ISO 8601. */
+  confirmed_at: string;
+  canon_hash: string;
+  observed_hash: string;
+  /** Provenance — 'live-read' is the only source the organ writes. */
+  source: 'live-read';
+  event_id: string;
+}
+
+/**
  * A row of `roosync_dashboard_retirements` (migrations/008, #3782).
  *
  * A mark, never a DELETE: after a merge the source key keeps its

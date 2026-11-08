@@ -118,3 +118,27 @@ export function isDashboardReadPgEnabled(): boolean {
 export function isDashboardPgPrimaryEnabled(): boolean {
   return resolvePrimaryGate('UNIFIED_STORE_DASHBOARD_PG_PRIMARY', 'dashboard');
 }
+
+/**
+ * The harmonization read gate (#3544) —
+ * `UNIFIED_STORE_HARMONIZATION_READ_PG` / `..._PG_PRIMARY`.
+ *
+ * Same contract as the two surfaces above, and for the same measured reason:
+ * the campaign store was invisible to five seats out of six on 07/11 because
+ * of a GDrive mount divergence, and a "8/8 confirmed" proof nobody else can
+ * read is not a proof. PG becomes the surface only once the campaign backfill
+ * wrote its completeness marker — an un-imported store must present as "not
+ * found" so the caller falls back to the file, never as "no campaign".
+ */
+export function isHarmonizationReadPgEnabled(): boolean {
+  return resolveReadGate(
+    'UNIFIED_STORE_HARMONIZATION_READ_PG',
+    'UNIFIED_STORE_HARMONIZATION_PG_PRIMARY',
+    'harmonization'
+  );
+}
+
+/** The harmonization write-primary gate (`UNIFIED_STORE_HARMONIZATION_PG_PRIMARY`). */
+export function isHarmonizationPgPrimaryEnabled(): boolean {
+  return resolvePrimaryGate('UNIFIED_STORE_HARMONIZATION_PG_PRIMARY', 'harmonization');
+}

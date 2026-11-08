@@ -13,6 +13,7 @@ import {
   decideMarkerWrite,
   evaluateChannelScope,
   evaluateDashboardScope,
+  evaluateHarmonizationScope,
   isForeignMessageFileName,
 } from '../backfill-scope.js';
 
@@ -158,6 +159,45 @@ describe('decideMarkerWrite (#4131, ms#1540 RE2 — the marker gate)', () => {
         liveMode: true,
         errors: 0,
         scope: evaluateDashboardScope({ keyFilter: 'workspace-' }),
+      }).write,
+    ).toBe(false);
+  });
+});
+
+describe('evaluateHarmonizationScope (#3544)', () => {
+  test('the default run (no option) is FULL scope', () => {
+    expect(evaluateHarmonizationScope().fullScope).toBe(true);
+    expect(evaluateHarmonizationScope({}).reasons).toEqual([]);
+  });
+
+  test('a --limit smoke run is a SUBSET (it would leave confirmations behind)', () => {
+    const verdict = evaluateHarmonizationScope({ limit: 1 });
+    expect(verdict.fullScope).toBe(false);
+    expect(verdict.reasons.join(' ')).toContain('--limit 1');
+  });
+
+  test('a single-campaign run is a SUBSET', () => {
+    const verdict = evaluateHarmonizationScope({ campaignFilter: 'hc-claude-settings-2026.10.25-1' });
+    expect(verdict.fullScope).toBe(false);
+    expect(verdict.reasons.join(' ')).toContain('--campaign');
+  });
+
+  test('the verdict feeds the same marker gate as the other two surfaces', () => {
+    expect(
+      decideMarkerWrite({ liveMode: true, errors: 0, scope: evaluateHarmonizationScope() }).write,
+    ).toBe(true);
+    expect(
+      decideMarkerWrite({
+        liveMode: true,
+        errors: 0,
+        scope: evaluateHarmonizationScope({ limit: 2 }),
+      }).write,
+    ).toBe(false);
+    expect(
+      decideMarkerWrite({
+        liveMode: false,
+        errors: 0,
+        scope: evaluateHarmonizationScope(),
       }).write,
     ).toBe(false);
   });
