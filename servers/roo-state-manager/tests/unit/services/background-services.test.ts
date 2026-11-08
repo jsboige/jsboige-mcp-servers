@@ -1464,8 +1464,7 @@ describe('#4352 — automatic re-arm of failed tasks', () => {
       expect(state.isIndexLeader).toBe(false);
     });
 
-    it('the request it writes is consumed in the same tick: the task is reset, then drained', async () => {
-      vi.stubEnv('ROO_INDEXING_ON_METERED', 'true');
+    it('the request it writes is consumed in the same tick: the task is reset, then drained', async () => {      vi.stubEnv('ROO_INDEXING_ON_METERED', 'true');
       const state = stateWith({ stuck: failedEntry(NOW - 25 * HOUR, 'embedding_timeout') });
       state.isIndexLeader = true;
       const shouldIndex = vi.fn().mockReturnValue({ shouldIndex: false, requiresSave: false, reason: 'test stop' });
@@ -1480,9 +1479,34 @@ describe('#4352 — automatic re-arm of failed tasks', () => {
       await runOneTick(state);
       // The consumer awaits a dynamic import, which fake timers do not flush: wait for the drain.
       await vi.waitFor(() => expect(shouldIndex).toHaveBeenCalledTimes(1));
-      expect(mockFs.rename).toHaveBeenCalledTimes(1);
+      // #4352 W4: the indexer-status publisher also renames (tmp+rename) on the
+      // same mocked fs — pin the REQUEST file's consume, not any rename.
+      const requestRenames = mockFs.rename.mock.calls.filter(([, to]: unknown[]) =>
+        String(to).includes('roosync-index-requests'));
+      expect(requestRenames).toHaveLength(1);
       expect(state.conversationCache.get('stuck').metadata.indexingState.indexStatus).toBeUndefined();
       expect(state.qdrantIndexQueue.size).toBe(0);
+    });
+
+    // #4352 W4 (review ms#1690 W1): the heartbeat publication must run BEFORE
+    // the empty-queue early return — a live but IDLE leader keeps refreshing
+    // the status file, or every follower reports stale=true within 3× the
+    // interval on a healthy machine (false-alarm generator).
+    it('an idle leader still publishes its queue status; a follower never publishes', async () => {
+      const statusWrites = () =>
+        mockFs.writeFile.mock.calls.filter(([p]: unknown[]) =>
+          String(p).includes('roosync-indexer-status'));
+
+      const leader = stateWith({});
+      leader.isIndexLeader = true;
+      await runOneTick(leader);
+      expect(statusWrites().length).toBeGreaterThanOrEqual(1);
+
+      mockFs.writeFile.mockClear();
+      const follower = stateWith({});
+      follower.isIndexLeader = false;
+      await runOneTick(follower);
+      expect(statusWrites()).toHaveLength(0);
     });
   });
 

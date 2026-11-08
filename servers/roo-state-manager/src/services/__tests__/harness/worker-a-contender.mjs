@@ -56,6 +56,9 @@ const transformedPath = path.join(os.tmpdir(), `rsm-3661-contender-${process.pid
 const SATELLITES = [
     { src: 'pid-liveness.ts', tmp: `rsm-4352-pid-liveness-${process.pid}.mjs` },
     { src: 'lock-participation.ts', tmp: `rsm-4352-lock-participation-${process.pid}.mjs` },
+    // #4352 W3: readLockForAtomicity extracted to its own module (shared with
+    // background-services.ts) — worker-a-lock.ts imports it, so it transforms too.
+    { src: 'lock-atomicity.ts', tmp: `rsm-4352-lock-atomicity-${process.pid}.mjs` },
 ];
 
 try {

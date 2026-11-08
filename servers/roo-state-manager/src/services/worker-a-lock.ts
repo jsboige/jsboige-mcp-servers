@@ -28,6 +28,10 @@ import * as path from 'node:path';
 // file's dependency constraint is preserved: pid-liveness imports nothing).
 import { isProcessAlive } from './pid-liveness.js';
 import { markWorkerALockAttempted } from './lock-participation.js';
+// #4352 W3: shared read-back helper (was a local copy duplicated with
+// background-services.ts). It is a SATELLITE of worker-a-contender.mjs —
+// any new import here must be added to that harness's SATELLITES list.
+import { readLockForAtomicity } from './lock-atomicity.js';
 
 /**
  * Stale threshold, SHORTER (10 min) than #2352's 15 min because the Worker A
@@ -53,32 +57,6 @@ export interface WorkerALockOptions {
      * any RSM process actually running on the developer's machine.
      */
     lockPath?: string;
-}
-
-/**
- * #4352 W1: read a lock back after an overwrite, to arbitrate a steal race.
- * The plain-write steal path has no atomic primitive (the wx create is the only
- * one), so the read-back answers "did a rival's overwrite land between our
- * write and this re-read?" — the race window the steal itself opens. When it
- * detects the rival, THIS process demotes to follower instead of believing a
- * leadership its write no longer backs. Residual window: a rival writing AFTER
- * our re-read is undetectable here; the renewal tick bounds that overlap (a
- * stale "leader" reads a foreign live pid at its next tryAcquire and steps
- * down). Null on any read failure: the caller treats an unreadable file as its
- * own win (fail-open toward leadership after a successful write, the pre-W1
- * behavior when nothing races us).
- */
-async function readLockForAtomicity(lockPath: string): Promise<{ pid: number } | null> {
-    try {
-        const content = await fs.readFile(lockPath, 'utf-8');
-        const parsed = JSON.parse(content);
-        if (typeof parsed?.pid === 'number') {
-            return parsed;
-        }
-        return null;
-    } catch {
-        return null;
-    }
 }
 
 /**
