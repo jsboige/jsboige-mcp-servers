@@ -346,4 +346,17 @@ describe('WRITE — the organ mirrors to PG, the CAS follows the authority', () 
     // a failed write is a failed mutation.
     await expect(service.dispatch(record.id)).rejects.toMatchObject({ code: 'EPERM' });
   });
+
+  test('MIRROR — PG primary but the PG write FAILED: the mirror throw must reject (mutation in no store)', async () => {
+    store.isHarmonizationPgPrimary.mockReturnValue(true);
+    const service = makeService();
+    const record = await createMatchingCampaign(service);
+    // `writeCampaignToPg` never throws — it returns { ok:false }. Combined
+    // with a G: mirror throw, warn-and-return would report success for a
+    // mutation held by NEITHER store (review ms#1693).
+    store.writeCampaignToPg.mockResolvedValue({ ok: false, reason: 'exhausted' });
+    mirror.fails = true;
+
+    await expect(service.dispatch(record.id)).rejects.toMatchObject({ code: 'EPERM' });
+  });
 });
