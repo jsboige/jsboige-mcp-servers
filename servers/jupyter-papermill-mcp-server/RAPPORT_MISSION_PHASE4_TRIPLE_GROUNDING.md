@@ -163,7 +163,7 @@ Net: +1529 lignes
 ### 2.1. Documents Consultés
 
 #### Phase 4 Spécifiques
-1. **[`SPECIFICATIONS_API_CONSOLIDEE.md`](SPECIFICATIONS_API_CONSOLIDEE.md)** - Spécifications format retour
+1. **[`SPECIFICATIONS_API_CONSOLIDEE.md`](docs/consolidation/specifications/SPECIFICATIONS_API_CONSOLIDEE.md)** - Spécifications format retour
 2. **[`papermill_mcp/services/notebook_service.py`](papermill_mcp/services/notebook_service.py)** - ExecutionManager + ExecutionJob
 3. **[`papermill_mcp/tools/execution_tools.py`](papermill_mcp/tools/execution_tools.py)** - Outils async existants
 4. **[`tests/`](tests/)** - Tests Phases 1A, 1B, 2, 3 (patterns de référence)

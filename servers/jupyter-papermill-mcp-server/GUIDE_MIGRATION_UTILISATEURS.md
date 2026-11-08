@@ -852,7 +852,7 @@ auto_migrate.apply_fixes(dry_run=True)
 - [README.md](README.md) - Guide utilisateur principal
 - [RAPPORT_FINAL_CONSOLIDATION_MCP_JUPYTER.md](RAPPORT_FINAL_CONSOLIDATION_MCP_JUPYTER.md) - Rapport final complet
 - [CHANGELOG_CONSOLIDATION_PHASE*.md](.) - Détails par phase
-- [SPECIFICATIONS_API_CONSOLIDEE.md](SPECIFICATIONS_API_CONSOLIDEE.md) - Spécifications API
+- [SPECIFICATIONS_API_CONSOLIDEE.md](docs/consolidation/specifications/SPECIFICATIONS_API_CONSOLIDEE.md) - Spécifications API
 
 ### Tests et Exemples
 

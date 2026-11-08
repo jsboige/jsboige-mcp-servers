@@ -153,12 +153,15 @@ Les 18 wrappers deprecated peuvent être :
 
 ### Checkpoints Phases
 
-- [`CHECKPOINT_SDDD_PHASE1A.md`](CHECKPOINT_SDDD_PHASE1A.md) - Phase 1A (read_cells)
-- [`CHECKPOINT_SDDD_PHASE1B.md`](CHECKPOINT_SDDD_PHASE1B.md) - Phase 1B (inspect_notebook)
-- [`CHECKPOINT_SDDD_PHASE2.md`](CHECKPOINT_SDDD_PHASE2.md) - Phase 2 (execute_on_kernel)
-- [`CHECKPOINT_SDDD_PHASE3_FINAL.md`](CHECKPOINT_SDDD_PHASE3_FINAL.md) - Phase 3 (execute_notebook)
+- `CHECKPOINT_SDDD_PHASE1A.md` - Phase 1A (read_cells)
+- `CHECKPOINT_SDDD_PHASE1B.md` - Phase 1B (inspect_notebook)
+- `CHECKPOINT_SDDD_PHASE2.md` - Phase 2 (execute_on_kernel)
+- `CHECKPOINT_SDDD_PHASE3_FINAL.md` - Phase 3 (execute_notebook)
 - [`CHECKPOINT_SDDD_PHASE4.md`](CHECKPOINT_SDDD_PHASE4.md) - Phase 4 (manage_async_job)
 - [`CHECKPOINT_SDDD_PHASE5_FINAL.md`](CHECKPOINT_SDDD_PHASE5_FINAL.md) - Phase 5 (manage_kernel)
+
+> Les checkpoints 1A, 1B, 2 et 3 n'ont jamais été versionnés dans ce dépôt (absents
+> de l'historique git) : ils restent cités pour mémoire, sans lien.
 
 ---
 
