@@ -6,8 +6,16 @@
  * Classes:
  *  - alive       : target resolves from the source file
  *  - dead        : target does not resolve (candidate for repoint/removal)
- *  - code_ref    : `file.ext:NNN` line references — drift with code, treated
- *                  as a separate class (lot 3), never counted as dead
+ *  - code_ref    : `file.ext:NNN` line references the instrument does NOT
+ *                  control — frozen-tree sources, refs climbing out of the
+ *                  root, or shapes it cannot parse. Never counted as dead.
+ *  - code_ref_in_range (lot 3): the cited file exists AND every cited line
+ *                  exists. "In range" means exactly that — it does NOT mean
+ *                  the line still shows what the doc claims; a ref drifts
+ *                  freely inside the file without leaving the range
+ *                  (c.6721181082). Repairs re-point to a symbol, not a line.
+ *  - code_ref_dead : FILE_MISSING | LINE_OUT_OF_RANGE | RANGE_INVALID —
+ *                  candidates for the repair lot, never a gate flag.
  *  - cross_repo  : href climbs out of the repository root (submodule pointing
  *                  at the parent checkout) — unverifiable in the standalone
  *                  repo, reported separately, never counted as dead
@@ -76,6 +84,27 @@ function stripCode(text) {
   return withoutFences.replace(/`[^`\n]*`/g, '');
 }
 
+/**
+ * Lot 3 — control the `path:line[-line]` shape instead of only counting it.
+ * `in_range` says the file exists and the cited lines exist, nothing more:
+ * a ref drifts freely inside the file without ever leaving the range, so a
+ * later repair must re-point to a symbol, never to a bare line (c.6721181082).
+ */
+function checkCodeRef(fromDir, href) {
+  const m = href.match(/^(.+?):(\d+)(?:-(\d+))?$/);
+  if (!m) return { cls: 'code_ref', reason: 'unparsed' };
+  const abs = resolve(fromDir, m[1]);
+  if (relative(ROOT, abs).startsWith('..')) return { cls: 'code_ref', reason: 'cross_root' };
+  if (!existsSync(normalize(abs))) return { cls: 'code_ref_dead', reason: 'FILE_MISSING' };
+  if (!statSync(normalize(abs)).isFile()) return { cls: 'code_ref', reason: 'not_a_file' };
+  const lineCount = readFileSync(abs, 'utf8').replace(/\n$/, '').split('\n').length;
+  const start = Number(m[2]);
+  const end = m[3] === undefined ? start : Number(m[3]);
+  if (start > lineCount) return { cls: 'code_ref_dead', reason: 'LINE_OUT_OF_RANGE' };
+  if (end < start || end > lineCount) return { cls: 'code_ref_dead', reason: 'RANGE_INVALID' };
+  return { cls: 'code_ref_in_range' };
+}
+
 const links = [];
 for (const file of walk(ROOT)) {
   const rel = repoRel(file);
@@ -86,7 +115,14 @@ for (const file of walk(ROOT)) {
     const href = m[2].trim();
     if (EXTERNAL_RE.test(href)) continue;
     if (CODE_REF_RE.test(href)) {
-      links.push({ file: rel, href, cls: 'code_ref', frozen });
+      // Frozen first (c.6719230995 §3): a point-in-time report cites the
+      // lines of its era — freezing is correct, not a bypass. Never controlled.
+      if (frozen) {
+        links.push({ file: rel, href, cls: 'code_ref', frozen });
+        continue;
+      }
+      const verdict = checkCodeRef(dirname(file), href);
+      links.push({ file: rel, href, cls: verdict.cls, reason: verdict.reason, frozen });
       continue;
     }
     const target = href.split('#')[0];
@@ -107,32 +143,33 @@ for (const file of walk(ROOT)) {
 const count = (cls, frozen) => links.filter((l) => l.cls === cls && l.frozen === frozen).length;
 const deadActive = links.filter((l) => l.cls === 'dead' && !l.frozen);
 const deadFrozen = links.filter((l) => l.cls === 'dead' && l.frozen);
+const codeRefDead = links.filter((l) => l.cls === 'code_ref_dead');
+const totals = {
+  alive: count('alive', false) + count('alive', true),
+  dead_active: deadActive.length,
+  dead_frozen: deadFrozen.length,
+  code_ref: links.filter((l) => l.cls === 'code_ref').length,
+  code_ref_in_range: links.filter((l) => l.cls === 'code_ref_in_range').length,
+  code_ref_dead: codeRefDead.length,
+  cross_repo: links.filter((l) => l.cls === 'cross_repo').length,
+};
 
 if (asJson) {
   console.log(JSON.stringify({
     root: repoRel(ROOT),
-    totals: {
-      alive: count('alive', false) + count('alive', true),
-      dead_active: deadActive.length,
-      dead_frozen: deadFrozen.length,
-      code_ref: links.filter((l) => l.cls === 'code_ref').length,
-      cross_repo: links.filter((l) => l.cls === 'cross_repo').length,
-    },
+    totals,
     links,
   }, null, 2));
 } else {
-  const totals = {
-    alive: count('alive', false) + count('alive', true),
-    dead_active: deadActive.length,
-    dead_frozen: deadFrozen.length,
-    code_ref: links.filter((l) => l.cls === 'code_ref').length,
-    cross_repo: links.filter((l) => l.cls === 'cross_repo').length,
-  };
-  console.log(`doc links — alive=${totals.alive} dead_active=${totals.dead_active} dead_frozen=${totals.dead_frozen} code_ref=${totals.code_ref} cross_repo=${totals.cross_repo}`);
+  console.log(`doc links — alive=${totals.alive} dead_active=${totals.dead_active} dead_frozen=${totals.dead_frozen} code_ref=${totals.code_ref} (uncontrolled) code_ref_in_range=${totals.code_ref_in_range} code_ref_dead=${totals.code_ref_dead} cross_repo=${totals.cross_repo}`);
   console.log(`(frozen trees ${includeFrozen ? 'included' : 'excluded from dead count'}; cross-repo and code refs never counted dead)`);
   if (deadActive.length) {
     console.log('\nactive dead links:');
     for (const l of deadActive) console.log(`  ${l.file} :: ${l.href}`);
+  }
+  if (codeRefDead.length) {
+    console.log('\ncode refs dead (repair-lot candidates, not a gate):');
+    for (const l of codeRefDead) console.log(`  ${l.file} :: ${l.href} [${l.reason}]`);
   }
 }
 
