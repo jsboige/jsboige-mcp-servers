@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { handleStorageInfo } from '../storage/storage-info.js';
 import { handleMaintenance } from '../maintenance/maintenance.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { ServerState } from '../../services/state-manager.service.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 
@@ -83,7 +83,7 @@ export type StorageManagementResult = z.infer<typeof StorageManagementResultSche
  */
 export async function roosyncStorageManagement(
     args: StorageManagementArgs,
-    conversationCache?: Map<string, ConversationSkeleton>,
+    conversationCache?: Map<string, StoredConversation>,
     state?: ServerState
 ): Promise<StorageManagementResult> {
     try {
@@ -158,7 +158,7 @@ async function handleStorageAction(
  */
 async function handleMaintenanceAction(
     args: StorageManagementArgs,
-    conversationCache: Map<string, ConversationSkeleton> | undefined,
+    conversationCache: Map<string, StoredConversation> | undefined,
     state: ServerState | undefined,
     timestamp: string
 ): Promise<StorageManagementResult> {

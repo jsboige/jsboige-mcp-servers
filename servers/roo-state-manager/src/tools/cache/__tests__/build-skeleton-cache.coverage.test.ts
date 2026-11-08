@@ -17,7 +17,7 @@
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { handleBuildSkeletonCache } from "../build-skeleton-cache.tool.js";
-import type { ConversationSkeleton } from "../../../types/conversation.js";
+import type { StoredConversation } from "../../../types/conversation.js";
 
 // ---- hoisted mocks ----
 const {

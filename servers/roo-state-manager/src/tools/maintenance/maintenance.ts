@@ -13,7 +13,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { ServerState } from '../../services/state-manager.service.js';
 import { handleBuildSkeletonCache } from '../cache/build-skeleton-cache.tool.js';
 import { diagnoseConversationBomTool } from '../repair/diagnose-conversation-bom.tool.js';
@@ -107,7 +107,7 @@ export const maintenanceToolDefinition = {
  */
 export async function handleMaintenance(
     args: MaintenanceArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     state?: ServerState
 ): Promise<CallToolResult> {
     const { action } = args;

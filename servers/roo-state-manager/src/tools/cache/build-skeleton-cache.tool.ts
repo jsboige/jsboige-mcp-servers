@@ -7,7 +7,8 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { Tool } from '../../types/tool-definitions.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
-import { ConversationSkeleton, SkeletonHeader } from '../../types/conversation.js';
+import { SkeletonHeader } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { promises as fs, existsSync } from 'fs';
 import path from 'path';
 import { ServerState } from '../../services/state-manager.service.js';
@@ -42,7 +43,7 @@ interface BuildSkeletonCacheArgs {
 async function saveSkeletonWithRetry(
     taskId: string,
     skeletonPath: string,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     maxRetries: number = 3
 ): Promise<{ success: boolean; attempts: number; error?: string }> {
     const skeleton = conversationCache.get(taskId);
@@ -101,7 +102,7 @@ async function saveSkeletonWithRetry(
  * loadSkeletonsFromDisk() sees a non-empty index even when the build times out partway.
  */
 async function persistSkeletonIndex(
-    conversationCache: Map<string, ConversationSkeleton>
+    conversationCache: Map<string, StoredConversation>
 ): Promise<void> {
     try {
         const headerMap = new Map<string, SkeletonHeader>();
@@ -188,7 +189,7 @@ export const buildSkeletonCacheDefinition = {
  */
 export async function handleBuildSkeletonCache(
     args: BuildSkeletonCacheArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     state?: ServerState // Optionnel pour rétrocompatibilité, mais recommandé pour l'indexation
 ): Promise<CallToolResult> {
         conversationCache.clear();
@@ -291,7 +292,7 @@ export async function handleBuildSkeletonCache(
         }
 
         // 🚀 PROCESSUS DESCENDANT - PHASE 1: Construire tous les squelettes ET alimenter l'index RadixTree
-        const skeletonsWithPrefixes: Array<{ skeleton: ConversationSkeleton; prefixes: string[] }> = [];
+        const skeletonsWithPrefixes: Array<{ skeleton: StoredConversation; prefixes: string[] }> = [];
 
         for (const storageDir of locations) {
             // storageDir is the base storage path, we need to add 'tasks' to get to the tasks directory
@@ -406,7 +407,7 @@ export async function handleBuildSkeletonCache(
                                         if (skeletonContent.charCodeAt(0) === 0xFEFF) {
                                             skeletonContent = skeletonContent.slice(1);
                                         }
-                                        const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
+                                        const skeleton: StoredConversation = JSON.parse(skeletonContent);
                                         if (skeleton && skeleton.taskId) {
                                             conversationCache.set(skeleton.taskId, skeleton);
                                             // #692: dual-write the full skeleton to the unified Postgres store (fire-and-forget, env-gated)
@@ -726,7 +727,7 @@ export async function handleBuildSkeletonCache(
             let phase25Count = 0;
 
             // Créer un map taskId -> skeleton pour accès rapide
-            const taskIdToSkeleton = new Map<string, ConversationSkeleton>();
+            const taskIdToSkeleton = new Map<string, StoredConversation>();
             enhancedSkeletons.forEach(sk => taskIdToSkeleton.set(sk.taskId, sk));
 
             // Pour chaque skeleton, vérifier s'il a des instructions new_task
