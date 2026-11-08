@@ -49,6 +49,19 @@ export interface ServerState {
     // successful indexTaskInQdrant. Optional so older test-state mocks work.
     qdrantIndexOldestEnqueuedAt?: number | null;
     qdrantIndexLastIndexedAt?: number | null;
+    /**
+     * #4352 (amend1 grain 2, 08/11): a batch pass is currently running in the
+     * Worker B tick. `setInterval` does not await the async tick callback, so
+     * without this flag a pass longer than the tick interval let the next tick
+     * fire mid-pass — the in-flight task had been popped from the queue, the
+     * idle re-arm re-queued it, and a second concurrent pass started on the
+     * same task (measured on ai-01 08/11: pass starts 18:16-18:51Z all on
+     * ticks while lastIndexedAt stayed frozen at 18:12:52Z). Optional so
+     * older test-state mocks work; `qdrantIndexPassStartedAt` feeds the
+     * "tick skipped" measurement line (epoch ms, null when no pass runs).
+     */
+    qdrantIndexPassInFlight?: boolean;
+    qdrantIndexPassStartedAt?: number | null;
     qdrantIndexInterval: NodeJS.Timeout | null;
     isQdrantIndexingEnabled: boolean;
     // #2352: Leader-election — only one MCP instance indexes at a time

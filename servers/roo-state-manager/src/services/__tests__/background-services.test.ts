@@ -106,6 +106,8 @@ import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import type { ConversationSkeleton } from '../../types/conversation.js';
 import type { ServerState } from '../state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../../config/server-config.js';
+// #4352 amend1: the loop lines go through the file logger — spy its singleton.
+import { getDefaultLogger } from '../../utils/logger.js';
 // TaskIndexer is mocked above, no need to import the actual class
 import { TaskIndexer } from '../task-indexer.js';
 
@@ -791,7 +793,10 @@ describe('background-services', () => {
     // #4352 g6 (feu vert ai-01 29/10): one pass-done line per cycle that
     // actually processed tasks, so a long pass is readable as (tasks, duration)
     // against the pacer bound instead of inferred from log silence.
-    it('should log "pass done: N task(s) in Xms" after processing a batch', async () => {
+    // #4352 amend1 (08/11): the line now goes through the FILE logger (loopLog)
+    // — console.log → stderr is not journaled by a Claude-session host, so the
+    // line was unreadable on the leader (0 occurrence measured 08/11).
+    it('should log "pass done: N task(s) in Xms" through the file logger after processing a batch', async () => {
       const state = createMockState();
       state.isQdrantIndexingEnabled = true;
       state.qdrantIndexQueue.add('task-001');
@@ -816,22 +821,103 @@ describe('background-services', () => {
       mockFs.mkdir.mockResolvedValue(undefined);
       mockFs.writeFile.mockResolvedValue(undefined);
 
-      const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      // Capture in a local sink: mockRestore() clears the spy's call history,
+      // so lines are collected as they arrive (same pattern as the
+      // VectorIndexer loop-line test, ms#1698).
+      const lines: string[] = [];
+      const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((l: string) => {
+        lines.push(String(l));
+      });
 
       startQdrantIndexingBackgroundProcess(state);
 
       vi.advanceTimersByTime(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
       await vi.runOnlyPendingTimersAsync();
 
-      // The task really went through the batch loop before asserting the line.
+      // The task really went through the batch loop before asserting the lines.
       expect(mockIndexTask.mock.calls.some(call => call[0] === 'task-001')).toBe(true);
-      const passDoneLogs = logSpy.mock.calls
-        .map(call => String(call[0] ?? ''))
-        .filter(s => s.includes('pass done:'));
-      expect(passDoneLogs.length).toBeGreaterThanOrEqual(1);
-      expect(passDoneLogs[0]).toMatch(/pass done: 1 task\(s\) in \d+ms/);
+      const loopLines = lines.filter(s => s.includes('[#4352-loop]'));
+      // #4352 amend1 grain 1: ONE outcome line per task (success or error class)…
+      expect(loopLines.some(s => /task task-001: indexed in \d+ms/.test(s))).toBe(true);
+      // …and the pass-done line — both on the file-logger channel now.
+      expect(loopLines.filter(s => s.includes('pass done:')).length).toBeGreaterThanOrEqual(1);
+      expect(loopLines.find(s => s.includes('pass done:'))).toMatch(/pass done: 1 task\(s\) in \d+ms/);
 
-      logSpy.mockRestore();
+      infoSpy.mockRestore();
+    });
+
+    // #4352 amend1 grain 2 (ai-01 queue 20261108d): setInterval does NOT await
+    // the async tick — a pass longer than the tick interval used to let the
+    // next tick fire mid-pass (idle re-arm re-queued the in-flight task,
+    // measured on ai-01 08/11: pass starts on ticks 18:16-18:51Z while
+    // lastIndexedAt stayed frozen). The in-flight guard must make the second
+    // tick a no-op for the pipeline.
+    it('never re-enters: a second tick while a pass is still running skips (in-flight guard)', async () => {
+      const state = createMockState();
+      state.isQdrantIndexingEnabled = true;
+      state.qdrantIndexQueue.add('task-long');
+
+      const skeleton = createMockSkeleton('task-long');
+      skeleton.metadata = {
+        ...skeleton.metadata,
+        indexingState: { indexStatus: 'pending' as const },
+      };
+      state.conversationCache.set('task-long', skeleton);
+
+      state.indexingDecisionService.shouldIndex.mockReturnValue({
+        shouldIndex: true,
+        reason: 'test',
+        action: 'index',
+        requiresSave: false,
+      });
+
+      // A pass that hangs until released — longer than the tick interval. The
+      // inactivity watchdog must NOT fire first: it reads its deadline at call
+      // time (INDEX_TASK_INACTIVITY_MS), so push it past 2 tick intervals.
+      // MAX_BACKGROUND_INTERVAL = 5 min → ticks at 5 and 10 min; watchdog at
+      // 5 + 10 = 15 min. The hanging mock never acks, by design.
+      const previousInactivity = process.env.INDEX_TASK_INACTIVITY_MS;
+      process.env.INDEX_TASK_INACTIVITY_MS = '600000';
+      let release!: () => void;
+      const gate = new Promise<void>(resolve => { release = resolve; });
+      TaskIndexerSpies.indexTask.mockImplementation(() => gate);
+      mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
+      mockFs.mkdir.mockResolvedValue(undefined);
+      mockFs.writeFile.mockResolvedValue(undefined);
+
+      const lines: string[] = [];
+      const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((l: string) => {
+        lines.push(String(l));
+      });
+
+      try {
+        startQdrantIndexingBackgroundProcess(state);
+
+        // Tick 1 (t=5 min): the pass starts and hangs.
+        await vi.advanceTimersByTimeAsync(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
+        expect(TaskIndexerSpies.indexTask).toHaveBeenCalledTimes(1);
+        expect(state.qdrantIndexPassInFlight).toBe(true);
+        expect(state.qdrantIndexQueue.has('task-long')).toBe(false); // popped, in flight
+
+        // Tick 2 (t=10 min): fires mid-pass — the guard must skip it. Before
+        // the fix, the idle re-arm re-queued the task and a SECOND concurrent
+        // pass started on the same task.
+        await vi.advanceTimersByTimeAsync(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
+        expect(TaskIndexerSpies.indexTask).toHaveBeenCalledTimes(1);
+        expect(lines.some(s => s.includes('tick skipped: previous pass still in flight'))).toBe(true);
+
+        // Pass completes → flag cleared → tick 3 (t=15 min) is free again, but
+        // the queue is empty: no new pass, no new call.
+        release();
+        await vi.advanceTimersByTimeAsync(ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
+        expect(TaskIndexerSpies.indexTask).toHaveBeenCalledTimes(1);
+        expect(state.qdrantIndexPassInFlight).toBe(false);
+        expect(state.qdrantIndexPassStartedAt).toBeNull();
+      } finally {
+        if (previousInactivity === undefined) delete process.env.INDEX_TASK_INACTIVITY_MS;
+        else process.env.INDEX_TASK_INACTIVITY_MS = previousInactivity;
+        infoSpy.mockRestore();
+      }
     });
   });
 

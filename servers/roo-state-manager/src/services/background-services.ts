@@ -13,7 +13,7 @@ import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
 import { TaskIndexer, getHostIdentifier } from './task-indexer.js';
-import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics, emptyStats, type IndexTaskStats } from './task-indexer/VectorIndexer.js';
+import { getCircuitBreakerState, isCircuitBreakerBlocking, getEmbeddingMetrics, emptyStats, loopLog, type IndexTaskStats } from './task-indexer/VectorIndexer.js';
 import { REBUILD_BACKOFF_MIN_MS_DEFAULT, REBUILD_BACKOFF_MAX_MS_DEFAULT, IndexingErrorClass, getReindexChangedAfterMs, getFailedRearmCooldownMs } from '../types/indexing.js';
 import { matchesPattern } from '../utils/matches-pattern.js';
 import { SkeletonCacheService } from './skeleton-cache.service.js';
@@ -1942,6 +1942,29 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             `cache_size=${m.embeddings_cache_size}`
         );
 
+        // #4352 (amend1 grain 2, 08/11): re-entrancy guard. `setInterval` does NOT
+        // await this async callback — a pass longer than the tick interval let the
+        // NEXT tick fire mid-pass. The in-flight task had already been popped from
+        // the queue, so `isIdleForRearm` below saw an empty queue and re-armed the
+        // very task being indexed (measured on ai-01 08/11: pass starts at
+        // 18:16-18:51Z all on ticks while lastIndexedAt stayed frozen at 18:12:52Z;
+        // d5be00ef piled up concurrent passes, none of which completed). While a
+        // pass is in flight: keep publishing the leader heartbeat (W4 — a live
+        // leader on a long pass must not look stale to followers) but skip the
+        // idle re-arm AND a second batch — one pass owns the pipeline.
+        if (state.qdrantIndexPassInFlight) {
+            if (state.isIndexLeader) {
+                if (await tryAcquireLeaderLock(state.machineId)) {
+                    await writeIndexerQueueStatus(state);
+                } else {
+                    state.isIndexLeader = false;
+                    console.warn(`⚠️ [Leader-Election] PID ${process.pid} lost leadership while a pass is in flight (lock held elsewhere). Stepping down.`);
+                }
+            }
+            loopLog(`⏱️ [#4352-loop] tick skipped: previous pass still in flight (${Date.now() - (state.qdrantIndexPassStartedAt ?? 0)}ms)`);
+            return;
+        }
+
         // #4352: stuck failed/retry tasks are re-armed with idle capacity only. The
         // request written here is consumed just below, in this same tick. An idle
         // leader never reaches the lock renewal further down (it returns on the empty
@@ -2056,32 +2079,51 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
         // pass duration explicit per tick turns g6 from guesswork into a
         // subtraction: pass_ms vs (ops × 6s) at EMBEDDING_OPS_PER_MINUTE=10.
         const passStartedAt = Date.now();
-        for (const taskId of taskIds) {
-            // #2766 S2+ Dead-letter guard: skip tasks that are already in the
-            // dead-letter. Belt-and-braces against the refresh worker briefly
-            // re-adding a perm-failed task between cycles (mitigated by the
-            // refresh worker fix, but this keeps the active queue fast-draining
-            // even during the fix rollout window).
-            // Optional-chaining guards against older state mocks that pre-date
-            // #2766 S2+ (the field is always present on a live ServerState).
-            if (state.deadLetterQueue?.has(taskId)) {
+        // #4352 (amend1 grain 2, 08/11): mark the pass in flight for the whole
+        // batch — see the re-entrancy guard at the top of the tick. try/finally:
+        // an exception in the drain loop must not leave the flag stuck at true
+        // (that would freeze the worker forever).
+        state.qdrantIndexPassInFlight = true;
+        state.qdrantIndexPassStartedAt = passStartedAt;
+        try {
+            for (const taskId of taskIds) {
+                // #2766 S2+ Dead-letter guard: skip tasks that are already in the
+                // dead-letter. Belt-and-braces against the refresh worker briefly
+                // re-adding a perm-failed task between cycles (mitigated by the
+                // refresh worker fix, but this keeps the active queue fast-draining
+                // even during the fix rollout window).
+                // Optional-chaining guards against older state mocks that pre-date
+                // #2766 S2+ (the field is always present on a live ServerState).
+                if (state.deadLetterQueue?.has(taskId)) {
+                    state.qdrantIndexQueue.delete(taskId);
+                    continue;
+                }
                 state.qdrantIndexQueue.delete(taskId);
-                continue;
-            }
-            state.qdrantIndexQueue.delete(taskId);
-            await indexTaskInQdrant(taskId, state);
-            // #4352 W4: published observability — the leader's status file says
-            // when it last completed an index task (a follower has no drain of
-            // its own, so only the leader's number is meaningful).
-            state.qdrantIndexLastIndexedAt = Date.now();
+                const taskStartedAt = Date.now();
+                const outcome = await indexTaskInQdrant(taskId, state);
+                // #4352 (amend1 grain 1, 08/11): ONE measurement line per task,
+                // through the file logger — success OR failure class. A pass that
+                // never completes was invisible per task ("pass done" is
+                // completion-gated): d5be00ef sat queued since 18:11:42Z with no
+                // line at all. These lines land in roosync-YYYYMMDD.log whatever
+                // the host process does with stderr.
+                loopLog(`⏱️ [#4352-loop] task ${taskId}: ${outcome.outcome}${outcome.errorClass ? ` [${outcome.errorClass}]` : ''} in ${Date.now() - taskStartedAt}ms`);
+                // #4352 W4: published observability — the leader's status file says
+                // when it last completed an index task (a follower has no drain of
+                // its own, so only the leader's number is meaningful).
+                state.qdrantIndexLastIndexedAt = Date.now();
 
-            // #2165: If a task tripped the breaker, stop the rest of this batch
-            // immediately — the remaining tasks would all hit the open breaker
-            // and (re-)extract chunks for nothing. They stay queued for next cycle.
-            if (isCircuitBreakerBlocking()) {
-                console.warn(`🚫 [Qdrant-Worker] Circuit breaker opened mid-batch — aborting remaining ${taskIds.length - taskIds.indexOf(taskId) - 1} task(s) this cycle.`);
-                break;
+                // #2165: If a task tripped the breaker, stop the rest of this batch
+                // immediately — the remaining tasks would all hit the open breaker
+                // and (re-)extract chunks for nothing. They stay queued for next cycle.
+                if (isCircuitBreakerBlocking()) {
+                    console.warn(`🚫 [Qdrant-Worker] Circuit breaker opened mid-batch — aborting remaining ${taskIds.length - taskIds.indexOf(taskId) - 1} task(s) this cycle.`);
+                    break;
+                }
             }
+        } finally {
+            state.qdrantIndexPassInFlight = false;
+            state.qdrantIndexPassStartedAt = null;
         }
         // #4352 W4: the queue fully drained — the oldest-enqueued marker loses
         // its meaning until the next enqueue re-stamps it.
@@ -2089,7 +2131,10 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             state.qdrantIndexOldestEnqueuedAt = null;
         }
         if (taskIds.length > 0) {
-            console.log(`⏱️ [Qdrant-Worker] pass done: ${taskIds.length} task(s) in ${Date.now() - passStartedAt}ms`);
+            // #4352 (amend1 grain 1, 08/11): through the file logger, like every
+            // [#4352-loop] line — console.log goes to stderr, which the leader's
+            // Claude-session host does not journal (0 occurrence measured 08/11).
+            loopLog(`⏱️ [#4352-loop] pass done: ${taskIds.length} task(s) in ${Date.now() - passStartedAt}ms`);
         }
         // #4352 W4: end-of-tick publication (covers the drain just performed).
         // The heartbeat publication right after the leadership check covers the
@@ -2220,12 +2265,31 @@ export function deriveIndexSource(
 /**
  * Indexe une tâche spécifique dans Qdrant
  */
-export async function indexTaskInQdrant(taskId: string, state: ServerState): Promise<void> {
+/**
+ * #4352 (amend1 grain 1, 08/11): how one indexTaskInQdrant attempt ended. The
+ * Worker B drain loop logs ONE `[#4352-loop] task ...` line per task through
+ * the file logger — success or failure class — so a pass that never completes
+ * is visible per task, not only at "pass done" (d5be00ef sat queued for hours
+ * with no line at all because every line was completion-gated).
+ */
+export interface IndexTaskOutcome {
+    outcome:
+        | 'indexed'            // success — points written
+        | 'retry_fail'         // transient failure, retry budget charged
+        | 'permanent_fail'     // dead-letter
+        | 'deferred_breaker'   // transient infra — re-queued, budget untouched
+        | 'skipped'            // shouldIndex=false / machine opt-out
+        | 'missing_skeleton'   // not in cache
+        | 'missing_on_disk';   // in cache but file gone
+    errorClass?: string;       // set on retry_fail/permanent_fail
+}
+
+export async function indexTaskInQdrant(taskId: string, state: ServerState): Promise<IndexTaskOutcome> {
     try {
         const skeleton = state.conversationCache.get(taskId);
         if (!skeleton) {
             console.warn(`[WARN] Skeleton for task ${taskId} not found in cache. Skipping indexing.`);
-            return;
+            return { outcome: 'missing_skeleton' };
         }
 
         const decision = state.indexingDecisionService.shouldIndex(skeleton);
@@ -2247,7 +2311,7 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             if (skeleton.metadata?.indexingState?.indexStatus === 'failed') {
                 registerDeadLetter(state, taskId, skeleton, /*reason*/ decision.reason);
             }
-            return;
+            return { outcome: 'skipped' };
         }
 
         // Rebuild backoff — when a task is reindexed because of an index-version
@@ -2275,7 +2339,7 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
         // unaffected. Why the default flipped: isClaudeSessionIndexingEnabled().
         if (source === 'claude-code' && !isClaudeSessionIndexingEnabled()) {
             console.log(`[SKIP] Task ${taskId}: Claude Code session — background indexing disabled on this machine (ROO_INDEX_CLAUDE_SESSIONS=false).`);
-            return;
+            return { outcome: 'skipped' };
         }
 
         const taskIndexer = new TaskIndexer();
@@ -2308,9 +2372,12 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             console.warn(`[ARCHIVE] Non-blocking archive failed for ${taskId}:`, archiveError);
         }
 
+        return { outcome: 'indexed' };
+
     } catch (error: any) {
         if (error.message && error.message.includes('not found in any storage location')) {
             console.warn(`[WARN] Task ${taskId} is in cache but not on disk. Skipping indexing.`);
+            return { outcome: 'missing_on_disk' };
         } else if (error?.code === GenericErrorCode.CIRCUIT_BREAKER_OPEN) {
             // #2165: The circuit breaker was OPEN (or Qdrant was unreachable during
             // pre-flight dedup) — indexTask() bailed out BEFORE computing any
@@ -2323,10 +2390,14 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             noteIndexEnqueue(state);
             state.qdrantIndexQueue.add(taskId);
             console.warn(`[DEFERRED] Task ${taskId}: ${error.message} — re-queued, retry counter untouched.`);
+            return { outcome: 'deferred_breaker' };
         } else {
+            // #4352 (amend1 grain 1): classify BEFORE the skeleton check — the
+            // outcome return below needs the class even when the cache entry
+            // vanished mid-attempt (classification depends only on the error).
+            const classification = classifyIndexingError(error);
             const skeleton = state.conversationCache.get(taskId);
             if (skeleton) {
-                const classification = classifyIndexingError(error);
                 const isPermanentError = classification.isPermanent;
                 // #2766 S2+: Also surface the granular error class on the skeleton's
                 // indexingState so the status tool can group failures by root cause.
@@ -2366,6 +2437,7 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             }
 
             console.error(`[ERROR] Failed to index task ${taskId} in Qdrant:`, error);
+            return { outcome: classification.isPermanent ? 'permanent_fail' : 'retry_fail', errorClass: classification.errorClass };
         }
     }
 }
