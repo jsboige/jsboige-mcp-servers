@@ -20,7 +20,7 @@ import { createHash } from 'crypto';
 // failures from the pre-#886 era) and the cleanup_failed action. Imports stay
 // narrow to avoid pulling the entire background-services module into the tool
 // layer (registry.ts owns that wiring).
-import { classifyIndexingError, reconcileErrorClass, readLeaderLockInfo } from '../../services/background-services.js';
+import { classifyIndexingError, reconcileErrorClass, readLeaderLockInfo, readIndexerQueueStatus } from '../../services/background-services.js';
 import { isStuckRetry } from '../../types/indexing.js';
 import { sanitizeInt } from '../../utils/int-validator.js';
 
@@ -1353,6 +1353,8 @@ export async function handleRooSyncIndexing(
             const leaderMachineId = state.machineId;
             const isLeader = state.isIndexLeader === true;
             const leaderInfo = leaderMachineId ? await readLeaderLockInfo(leaderMachineId) : null;
+            // #4352 W4: the leader's PUBLISHED queue state — the one that drains.
+            const leaderQueue = leaderMachineId ? await readIndexerQueueStatus(leaderMachineId) : null;
             if (leaderMachineId && !isLeader) {
                 const holder = leaderInfo ? `PID ${leaderInfo.leaderPid}` : 'un autre process';
                 const ageClause = leaderInfo ? ` (âge du verrou ${Math.round(leaderInfo.lockAgeMs / 1000)}s)` : ' (verrou illisible/absent)';
@@ -1384,6 +1386,13 @@ export async function handleRooSyncIndexing(
                     pid: process.pid,
                     queue_size: state.qdrantIndexQueue.size,
                     queue_size_scope: 'this-process',
+                    // #4352 W4: the leader publishes queue_size / oldest_enqueued_at /
+                    // last_indexed_at to a machine-local status file every tick —
+                    // readable from ANY process on the machine, so a follower's
+                    // status answers "is this machine's queue moving?". null =
+                    // no status file (leader on an older build, or none since boot);
+                    // stale=true = updatedAt older than 3× the publish interval.
+                    leader_queue: leaderQueue,
                     // #4352 g3 — the queue CONTENT makes queued re-indexing
                     // observable: an operator watching action=index (queued=true)
                     // sees the task_id sit in this list, then leave it. Bounded

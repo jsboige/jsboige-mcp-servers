@@ -753,6 +753,7 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                     });
                                     // #4352: a task found by this LOCAL scan is indexed here — no fleet hash gate.
                                     if (shouldRequeue) {
+                                        noteIndexEnqueue(state);
                                         state.qdrantIndexQueue.add(entry.name);
                                     }
                                     if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -835,6 +836,7 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
                                         });
                                         // #4352: a session found by this LOCAL scan is indexed here — no fleet hash gate.
                                         if (shouldRequeue) {
+                                            noteIndexEnqueue(state);
                                             state.qdrantIndexQueue.add(taskId);
                                         }
                                         if (existingSkeleton) { updatedCount++; } else { newCount++; }
@@ -854,6 +856,7 @@ export function startSkeletonRefreshWorker(state: ServerState): void {
 
             // #4352 g9: changes held back by the minimum reindex interval come due here.
             for (const taskId of findHeldChangesDue(state)) {
+                noteIndexEnqueue(state);
                 state.qdrantIndexQueue.add(taskId);
             }
 
@@ -1308,6 +1311,7 @@ async function scanForOutdatedQdrantIndex(state: ServerState): Promise<void> {
                 skipCount++;
                 continue; // Will be picked up by periodic refresh worker
             }
+            noteIndexEnqueue(state);
             state.qdrantIndexQueue.add(taskId);
             if (decision.action === 'retry') {
                 retryCount++;
@@ -1469,6 +1473,107 @@ export async function getLeaderLockPath(machineId: string): Promise<string> {
 }
 
 /**
+ * #4352 W4 (file ai-01 2026-11-08a, item 2) — machine-local file where the
+ * indexing LEADER publishes its queue state, so any follower's `status` can
+ * answer "is this machine's queue moving?" (a follower's own queue_size is 0
+ * by design — the g3 request file is what carries its work to the leader).
+ *
+ * Same keying and same reasons as the leader lock: os.tmpdir() is machine-local
+ * and never GDrive-synced. Written via tmp+rename so a concurrent reader never
+ * observes a truncated JSON. Read by readIndexerQueueStatus (never throws).
+ */
+export async function getIndexerQueueStatusPath(machineId: string): Promise<string> {
+    const safeId = (machineId || 'local').replace(/[^a-z0-9-]/gi, '-').toLowerCase();
+    return path.join(os.tmpdir(), `roosync-indexer-status-${safeId}.json`);
+}
+
+/** #4352 W4: call before EVERY qdrantIndexQueue.add — stamps the oldest-enqueued
+ *  marker when the queue was empty (a marker already set is kept: on a partial
+ *  drain the true oldest surviving item is OLDER than the marker, so the marker
+ *  stays conservative — never claims younger than reality).
+ *  Exported so the tests pin the production marker semantics, not a copy. */
+export function noteIndexEnqueue(state: ServerState): void {
+    if (state.qdrantIndexQueue.size === 0) {
+        state.qdrantIndexOldestEnqueuedAt = Date.now();
+    }
+}
+
+/** #4352 W4: best-effort publication of the leader's queue state. Never
+ *  throws — observability must not be able to kill the indexing tick.
+ *  Exported so the tests check the file this code writes, not a copy. */
+export async function writeIndexerQueueStatus(state: ServerState): Promise<void> {
+    try {
+        const statusPath = await getIndexerQueueStatusPath(state.machineId);
+        const payload = {
+            machineId: state.machineId,
+            pid: process.pid,
+            queueSize: state.qdrantIndexQueue.size,
+            oldestEnqueuedAt: state.qdrantIndexOldestEnqueuedAt ?? null,
+            lastIndexedAt: state.qdrantIndexLastIndexedAt ?? null,
+            updatedAt: Date.now(),
+            intervalMs: ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL,
+        };
+        const tmpPath = `${statusPath}.tmp-${process.pid}`;
+        await fs.writeFile(tmpPath, JSON.stringify(payload), 'utf-8');
+        await fs.rename(tmpPath, statusPath);
+    } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.warn(`⚠️ [Indexer-Status] failed to publish queue status: ${message}`);
+    }
+}
+
+export interface IndexerQueueStatus {
+    machineId: unknown;
+    pid: number;
+    queueSize: number;
+    oldestEnqueuedAt: number | null;
+    lastIndexedAt: number | null;
+    updatedAt: number;
+    intervalMs: number;
+    /** Reader-computed freshness: age of updatedAt vs 3× the publish interval. */
+    ageMs: number;
+    stale: boolean;
+}
+
+/**
+ * #4352 W4: read the leader's published queue status for this machine.
+ * Returns null when the file is absent (leader on an older build, or no
+ * leader ever ran since boot), unreadable, or corrupt — never throws.
+ * `stale` = updatedAt older than 3× the leader's interval (leader died
+ * without releasing: its lock will be stolen within LEADER_LOCK_STALE_MS).
+ */
+export async function readIndexerQueueStatus(machineId: string): Promise<IndexerQueueStatus | null> {
+    try {
+        const statusPath = await getIndexerQueueStatusPath(machineId);
+        const content = await fs.readFile(statusPath, 'utf-8');
+        const data = JSON.parse(content);
+        if (
+            typeof data.pid !== 'number' ||
+            typeof data.queueSize !== 'number' ||
+            typeof data.updatedAt !== 'number' ||
+            typeof data.intervalMs !== 'number'
+        ) {
+            return null;
+        }
+        const intervalMs = data.intervalMs > 0 ? data.intervalMs : 60_000;
+        const ageMs = Date.now() - data.updatedAt;
+        return {
+            machineId: data.machineId,
+            pid: data.pid,
+            queueSize: data.queueSize,
+            oldestEnqueuedAt: typeof data.oldestEnqueuedAt === 'number' ? data.oldestEnqueuedAt : null,
+            lastIndexedAt: typeof data.lastIndexedAt === 'number' ? data.lastIndexedAt : null,
+            updatedAt: data.updatedAt,
+            intervalMs,
+            ageMs,
+            stale: ageMs > 3 * intervalMs,
+        };
+    } catch {
+        return null;
+    }
+}
+
+/**
  * #4352 g3 — cross-process queueing of "index this task" requests.
  *
  * `qdrantIndexQueue` and `deadLetterQueue` are IN-MEMORY Sets, per process, and
@@ -1621,6 +1726,7 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
                 new IndexingDecisionService().armHeadlessRepair(skeleton);
                 consumedRepairs++;
             }
+            noteIndexEnqueue(state);
             state.qdrantIndexQueue.add(taskId);
             if (!consumed.includes(taskId)) consumed.push(taskId);
         }
@@ -1883,6 +1989,11 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
                 return;
             }
         }
+        // #4352 W4: heartbeat publication — the leader refreshes its queue
+        // status file every tick EVEN when the drain below is skipped (breaker
+        // open, metered link, empty queue): a follower reading a fresh
+        // updatedAt knows the leader lives and its queue is intentionally held.
+        await writeIndexerQueueStatus(state);
 
         // #2165: Global back-off. If the Qdrant circuit breaker is OPEN, every
         // indexTask() call would extract chunks and (before this fix) compute
@@ -1933,6 +2044,10 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
             }
             state.qdrantIndexQueue.delete(taskId);
             await indexTaskInQdrant(taskId, state);
+            // #4352 W4: published observability — the leader's status file says
+            // when it last completed an index task (a follower has no drain of
+            // its own, so only the leader's number is meaningful).
+            state.qdrantIndexLastIndexedAt = Date.now();
 
             // #2165: If a task tripped the breaker, stop the rest of this batch
             // immediately — the remaining tasks would all hit the open breaker
@@ -1942,9 +2057,19 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
                 break;
             }
         }
+        // #4352 W4: the queue fully drained — the oldest-enqueued marker loses
+        // its meaning until the next enqueue re-stamps it.
+        if (state.qdrantIndexQueue.size === 0) {
+            state.qdrantIndexOldestEnqueuedAt = null;
+        }
         if (taskIds.length > 0) {
             console.log(`⏱️ [Qdrant-Worker] pass done: ${taskIds.length} task(s) in ${Date.now() - passStartedAt}ms`);
         }
+        // #4352 W4: end-of-tick publication (covers the drain just performed).
+        // The heartbeat publication right after the leadership check covers the
+        // early-return paths (breaker open, metered link) — between the two,
+        // every tick of a live leader refreshes the file.
+        await writeIndexerQueueStatus(state);
     }, ANTI_LEAK_CONFIG.MAX_BACKGROUND_INTERVAL);
 
     console.log('🔄 Service d\'indexation Qdrant en arrière-plan démarré');
@@ -2169,6 +2294,7 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             // Qdrant being slow, even though the task content is perfectly fine.
             // Just re-queue it for the next cycle (which itself back-offs while the
             // breaker is open) — no skeleton write, no retry-counter mutation.
+            noteIndexEnqueue(state);
             state.qdrantIndexQueue.add(taskId);
             console.warn(`[DEFERRED] Task ${taskId}: ${error.message} — re-queued, retry counter untouched.`);
         } else {

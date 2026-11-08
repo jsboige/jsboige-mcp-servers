@@ -1480,7 +1480,11 @@ describe('#4352 — automatic re-arm of failed tasks', () => {
       await runOneTick(state);
       // The consumer awaits a dynamic import, which fake timers do not flush: wait for the drain.
       await vi.waitFor(() => expect(shouldIndex).toHaveBeenCalledTimes(1));
-      expect(mockFs.rename).toHaveBeenCalledTimes(1);
+      // #4352 W4: the indexer-status publisher also renames (tmp+rename) on the
+      // same mocked fs — pin the REQUEST file's consume, not any rename.
+      const requestRenames = mockFs.rename.mock.calls.filter(([, to]: unknown[]) =>
+        String(to).includes('roosync-index-requests'));
+      expect(requestRenames).toHaveLength(1);
       expect(state.conversationCache.get('stuck').metadata.indexingState.indexStatus).toBeUndefined();
       expect(state.qdrantIndexQueue.size).toBe(0);
     });

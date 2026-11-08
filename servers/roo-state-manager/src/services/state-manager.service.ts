@@ -41,6 +41,14 @@ export interface ServerState {
     lastClaudeRefreshAt?: number;
     // Worker B: Qdrant indexation (driven by skeleton state)
     qdrantIndexQueue: Set<string>;
+    // #4352 W4: leader-published queue observability. Only the leader's queue
+    // drains, so only the leader's numbers are meaningful — it publishes them
+    // to a machine-local status file (see getIndexerQueueStatusPath).
+    // oldestEnqueuedAt resets when the queue EMPTIES (conservative on partial
+    // drains: never younger than reality); lastIndexedAt bumps after each
+    // successful indexTaskInQdrant. Optional so older test-state mocks work.
+    qdrantIndexOldestEnqueuedAt?: number | null;
+    qdrantIndexLastIndexedAt?: number | null;
     qdrantIndexInterval: NodeJS.Timeout | null;
     isQdrantIndexingEnabled: boolean;
     // #2352: Leader-election — only one MCP instance indexes at a time
