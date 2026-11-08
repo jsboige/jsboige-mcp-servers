@@ -35,7 +35,7 @@ vi.mock('../../summary/get-conversation-synthesis.tool.js', () => ({
 }));
 
 import { handleConversationBrowser, ConversationBrowserArgs } from '../conversation-browser.js';
-import type { ConversationSkeleton } from '../../../types/index.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Helpers
 function getTextContent(result: any, index = 0): string {
@@ -44,10 +44,10 @@ function getTextContent(result: any, index = 0): string {
 }
 
 describe('conversation_browser', () => {
-	let mockCache: Map<string, ConversationSkeleton>;
+	let mockCache: Map<string, StoredConversation>;
 	let mockEnsureCache: () => Promise<void>;
-	let mockGetSkeleton: (id: string) => Promise<ConversationSkeleton | null>;
-	let mockFindChildren: (rootId: string) => Promise<ConversationSkeleton[]>;
+	let mockGetSkeleton: (id: string) => Promise<StoredConversation | null>;
+	let mockFindChildren: (rootId: string) => Promise<StoredConversation[]>;
 
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -769,7 +769,7 @@ describe('conversation_browser', () => {
 	describe('regression #567 section 1: new tasks visibility', () => {
 		test('list discovers new tasks on disk not in cache', async () => {
 			// Setup: Add one task to cache, expect disk scan to find more
-			const cachedTask: ConversationSkeleton = {
+			const cachedTask: StoredConversation = {
 				taskId: 'cached-task-1',
 				metadata: {
 					title: 'Cached Task',
@@ -818,7 +818,7 @@ describe('conversation_browser', () => {
 	describe('regression #567 section 2: sorting and filtering', () => {
 		beforeEach(() => {
 			// Setup multiple tasks with different dates
-			const task1: ConversationSkeleton = {
+			const task1: StoredConversation = {
 				taskId: 'task-old',
 				metadata: {
 					title: 'Old Task',
@@ -830,7 +830,7 @@ describe('conversation_browser', () => {
 					workspace: 'd:\\roo-extensions'
 				}
 			};
-			const task2: ConversationSkeleton = {
+			const task2: StoredConversation = {
 				taskId: 'task-new',
 				metadata: {
 					title: 'New Task',
@@ -842,7 +842,7 @@ describe('conversation_browser', () => {
 					workspace: 'd:\\roo-extensions'
 				}
 			};
-			const task3: ConversationSkeleton = {
+			const task3: StoredConversation = {
 				taskId: 'task-middle',
 				metadata: {
 					title: 'Middle Task',
@@ -931,7 +931,7 @@ describe('conversation_browser', () => {
 
 		test('list filters by workspace when specified', async () => {
 			// Add a task with different workspace
-			const otherTask: ConversationSkeleton = {
+			const otherTask: StoredConversation = {
 				taskId: 'task-other-workspace',
 				metadata: {
 					title: 'Other Workspace Task',
@@ -967,7 +967,7 @@ describe('conversation_browser', () => {
 		test('concurrent list calls do not corrupt cache', async () => {
 			// Setup tasks
 			for (let i = 0; i < 10; i++) {
-				const task: ConversationSkeleton = {
+				const task: StoredConversation = {
 					taskId: `concurrent-task-${i}`,
 					metadata: {
 						title: `Concurrent Task ${i}`,
@@ -1003,7 +1003,7 @@ describe('conversation_browser', () => {
 
 		test('cache remains consistent after multiple operations', async () => {
 			// Initial setup
-			const task: ConversationSkeleton = {
+			const task: StoredConversation = {
 				taskId: 'consistency-task',
 				metadata: {
 					title: 'Consistency Task',

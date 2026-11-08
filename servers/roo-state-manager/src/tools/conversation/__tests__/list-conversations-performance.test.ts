@@ -58,14 +58,14 @@ vi.mock('../../../utils/claude-storage-detector.js', () => ({
 }));
 
 import { listConversationsTool } from '../list-conversations.tool.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ─────────────────── helpers ───────────────────
 
 function makeConversation(
   taskId: string,
-  overrides: Partial<ConversationSkeleton> = {}
-): ConversationSkeleton {
+  overrides: Partial<StoredConversation> = {}
+): StoredConversation {
   return {
     taskId,
     metadata: {
@@ -80,10 +80,10 @@ function makeConversation(
     },
     messages: [],
     ...overrides,
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
-function makeCache(...skeletons: ConversationSkeleton[]): Map<string, ConversationSkeleton> {
+function makeCache(...skeletons: StoredConversation[]): Map<string, StoredConversation> {
   return new Map(skeletons.map(s => [s.taskId, s]));
 }
 
@@ -265,7 +265,7 @@ describe('list_conversations performance & caching', () => {
 
     test('handler completes in reasonable time with large cache (1000 tasks)', async () => {
       // Build a cache with 1000 tasks to test iteration performance
-      const tasks: ConversationSkeleton[] = [];
+      const tasks: StoredConversation[] = [];
       for (let i = 0; i < 1000; i++) {
         tasks.push(makeConversation(`task-${i}`, {
           metadata: {

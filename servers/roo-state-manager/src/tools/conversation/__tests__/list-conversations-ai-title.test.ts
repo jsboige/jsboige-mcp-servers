@@ -47,7 +47,7 @@ vi.mock('../../../utils/claude-storage-detector.js', () => ({
 
 import { listConversationsTool } from '../list-conversations.tool.js';
 import { RooStorageDetector } from '../../../utils/roo-storage-detector.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ─────────────────── fixture builders ───────────────────
 
@@ -85,7 +85,7 @@ function buildLargeSessionLines(): string[] {
 
 // ─────────────────── helpers ───────────────────
 
-function makeCacheSkeleton(taskId: string, title: string, claudeFirst?: string): ConversationSkeleton {
+function makeCacheSkeleton(taskId: string, title: string, claudeFirst?: string): StoredConversation {
   const s: any = {
     taskId,
     sequence: [],
@@ -102,10 +102,10 @@ function makeCacheSkeleton(taskId: string, title: string, claudeFirst?: string):
   if (claudeFirst !== undefined) {
     s._claudeFirstUserMessage = claudeFirst;
   }
-  return s as ConversationSkeleton;
+  return s as StoredConversation;
 }
 
-async function listAll(cache: Map<string, ConversationSkeleton>): Promise<Map<string, any>> {
+async function listAll(cache: Map<string, StoredConversation>): Promise<Map<string, any>> {
   const result = await listConversationsTool.handler({ source: 'all' } as any, cache);
   const text = (result.content[0] as any).text;
   const response = JSON.parse(text);

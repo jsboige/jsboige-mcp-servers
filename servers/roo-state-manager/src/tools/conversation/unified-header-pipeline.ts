@@ -5,7 +5,7 @@
  * Rôle : le premier consommateur PRODUCTION du schéma unifié (#1391). Les
  * filtres de niveau header (workspace, fenêtre temporelle, machineId) et le
  * tri passent par la projection UnifiedTask de chaque squelette ; le résultat
- * restitue les objets ConversationSkeleton d'origine (l'étape suivante du
+ * restitue les objets StoredConversation d'origine (l'étape suivante du
  * pipeline — extraction sequence, pendingSubtask, contentPattern — reste
  * dépendante du squelette pendant la transition).
  *
@@ -15,7 +15,7 @@
  * « 0 régression fonctionnelle (tests comparison) »).
  */
 
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { toUnifiedTask, UnifiedTask } from '../../types/unified-task.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
 import { matchesWorkspace } from '../../utils/workspace-match.js';
@@ -38,7 +38,7 @@ export interface UnifiedHeaderFilterArgs {
 
 export interface UnifiedHeaderPipelineResult {
     /** Squelettes d'origine, filtrés puis triés (ordre stable identique au pipeline legacy). */
-    skeletons: ConversationSkeleton[];
+    skeletons: StoredConversation[];
     /** Nombre de squelettes écartés par le filtre workspace (télémétrie du tool). */
     workspaceFilteredCount: number;
     /** Projections UnifiedTask des squelettes retenus, dans le même ordre. */
@@ -46,7 +46,7 @@ export interface UnifiedHeaderPipelineResult {
 }
 
 export function applyUnifiedHeaderFiltersAndSort(
-    skeletons: ConversationSkeleton[],
+    skeletons: StoredConversation[],
     args: UnifiedHeaderFilterArgs,
 ): UnifiedHeaderPipelineResult {
     let pairs = skeletons.map(skeleton => ({ skeleton, task: toUnifiedTask(skeleton) }));

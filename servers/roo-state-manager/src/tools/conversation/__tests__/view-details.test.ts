@@ -5,13 +5,13 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { viewTaskDetailsTool } from '../view-details.tool.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Mock console.error
 vi.spyOn(console, 'error').mockImplementation(() => {});
 
 describe('view-details.tool', () => {
-  let conversationCache: Map<string, ConversationSkeleton>;
+  let conversationCache: Map<string, StoredConversation>;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -59,7 +59,7 @@ describe('view-details.tool', () => {
           error: 'Permission denied'
         }
       ]
-    } as unknown as ConversationSkeleton);
+    } as unknown as StoredConversation);
 
     // Task with no actions
     conversationCache.set('task-no-actions', {
@@ -75,7 +75,7 @@ describe('view-details.tool', () => {
         { role: 'user', content: 'Question' },
         { role: 'assistant', content: 'Answer' }
       ]
-    } as unknown as ConversationSkeleton);
+    } as unknown as StoredConversation);
   });
 
   describe('definition', () => {
@@ -209,7 +209,7 @@ describe('view-details.tool', () => {
           parameters: {},
           result: longContent
         }]
-      } as unknown as ConversationSkeleton);
+      } as unknown as StoredConversation);
 
       const result = await viewTaskDetailsTool.handler(
         { task_id: 'task-long', truncate: 5 },
@@ -238,7 +238,7 @@ describe('view-details.tool', () => {
           parameters: {},
           result: longContent
         }]
-      } as unknown as ConversationSkeleton);
+      } as unknown as StoredConversation);
 
       const result = await viewTaskDetailsTool.handler(
         { task_id: 'task-notrunc', truncate: 0 },
@@ -303,7 +303,7 @@ describe('view-details.tool', () => {
           totalSize: 100
         },
         sequence: []
-      } as unknown as ConversationSkeleton);
+      } as unknown as StoredConversation);
 
       const result = await viewTaskDetailsTool.handler(
         { task_id: 'task-no-title' },
