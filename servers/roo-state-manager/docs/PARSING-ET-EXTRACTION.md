@@ -56,7 +56,7 @@ Le système de parsing et d'extraction du `roo-state-manager` est responsable de
 - **Extraction :** Application des 6 patterns newTask
 - **Enrichissement :** Ajout métadonnées et contexte
 
-#### 3. **[`SubInstructionExtractor`](src/utils/sub-instruction-extractor.ts)** *(Nouveau - Post Correction)*
+#### 3. **[`SubInstructionExtractor`](../src/utils/sub-instruction-extractor.ts)** *(Nouveau - Post Correction)*
 - **Rôle :** Extraction intelligente sous-instructions depuis texte parent
 - **Méthodes :** Patterns regex avancés et validation contextuelle
 - **Performance :** Remplace l'ancienne logique défaillante 192 caractères
@@ -210,7 +210,7 @@ private enrichSkeleton(skeleton: TaskSkeleton, message: UIMessage): TaskSkeleton
 #### **Octobre 2025 - Correction Critique**
 - **Référence :** [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md)
 - **Bug majeur :** Système extraction 192 caractères défaillant
-- **Solution :** Réécriture complète avec [`SubInstructionExtractor`](src/utils/sub-instruction-extractor.ts)
+- **Solution :** Réécriture complète avec [`SubInstructionExtractor`](../src/utils/sub-instruction-extractor.ts)
 - **Résultat :** Restauration capacités extraction + performance
 
 ## 🔧 Configuration et Validation
@@ -262,9 +262,9 @@ export const VALIDATION_THRESHOLDS = {
 ### **Suite de Tests Parsing**
 
 #### **Tests Unitaires par Pattern**
-- **Pattern 1 XML :** [`test-pattern-1-xml.test.ts`](tests/unit/)
-- **Pattern 5 Production :** [`production-format-extraction.test.ts`](tests/unit/) ❌ Jest KO
-- **Multi-pattern :** [`test-multi-pattern-extraction.test.ts`](tests/unit/)
+- **Pattern 1 XML :** [`test-pattern-1-xml.test.ts`](../tests/unit/)
+- **Pattern 5 Production :** [`production-format-extraction.test.ts`](../tests/unit/) ❌ Jest KO
+- **Multi-pattern :** [`test-multi-pattern-extraction.test.ts`](../tests/unit/)
 
 #### **Tests d'Intégration**
 - **Méga-conversations :** Validation sur 9381 messages
@@ -288,8 +288,8 @@ node scripts/benchmark-parsing-performance.mjs
 ### **Bug Extraction 192 Caractères** *(Critique)*
 - **Nature :** Troncature arbitraire au lieu d'extraction intelligente
 - **Impact :** Perte 100% capacités identification sous-instructions
-- **Localisation :** [`hierarchy-reconstruction-engine.ts:175-189`](src/utils/hierarchy-reconstruction-engine.ts)
-- **Solution :** Remplacement par [`SubInstructionExtractor`](src/utils/sub-instruction-extractor.ts)
+- **Localisation :** [`hierarchy-reconstruction-engine.ts:175-189`](../src/utils/hierarchy-reconstruction-engine.ts)
+- **Solution :** Remplacement par [`SubInstructionExtractor`](../src/utils/sub-instruction-extractor.ts)
 
 ### **Messages UI Corrompus**
 - **Symptôme :** JSON malformé, structures incohérentes
@@ -314,7 +314,7 @@ node scripts/benchmark-parsing-performance.mjs
 - [`parsing/ARBRE_TACHES_VALIDATION_FINALE_6308_MESSAGES.md`](parsing/ARBRE_TACHES_VALIDATION_FINALE_6308_MESSAGES.md) - Tests volumétrie réelle
 
 ### **Archives Évolutions**
-- [`archives/2025-09/`](archives/2025-09/) - Parsing XML avancé et validation massive
+- `archives/2025-09/` - Parsing XML avancé et validation massive
 - [`archives/2025-10/`](archives/2025-10/) - Corrections post-régression et SDDD
 
 ### **Tests et Validation**

@@ -59,7 +59,7 @@ L'infrastructure de tests et validation du `roo-state-manager` constitue un syst
 
 #### 3. **Tests de Régression** ✅ **Critiques et Fonctionnels**
 - **Statut :** Opérationnels avec détection bug majeur
-- **Fichier principal :** [`tests/unit/regression-hierarchy-extraction.test.ts`](tests/unit/regression-hierarchy-extraction.test.ts)
+- **Fichier principal :** [`tests/unit/regression-hierarchy-extraction.test.ts`](../tests/unit/regression-hierarchy-extraction.test.ts)
 - **Validation :** Bug historique + Nouveau système + Extraction regex
 
 ## 📊 Suite de Tests - Détail par Catégorie
@@ -332,7 +332,7 @@ export const VALIDATION_TARGETS = {
 - **Problèmes :** Pas de tests unitaires systématiques
 
 #### **Septembre 2025 - Validation Massive**
-- **Références :** [`2025-09-28-01-DOC-TECH-validation-tests-unitaires-reconstruction.md`](archives/2025-09/)
+- **Références :** `2025-09-28-01-DOC-TECH-validation-tests-unitaires-reconstruction.md`
 - **Tests :** Suite complète tests unitaires hiérarchiques
 - **Évolution :** Tests sur méga-conversations 9381 messages
 
@@ -401,11 +401,11 @@ export const VALIDATION_TARGETS = {
 
 ### **Tests Techniques Détaillés**
 - Documents dans [`tests/`](tests/) - Suites de tests et organisation
-- [`tests/fixtures/controlled-hierarchy/`](tests/fixtures/controlled-hierarchy/) - Données test structurées
+- [`tests/fixtures/controlled-hierarchy/`](../tests/fixtures/controlled-hierarchy/) - Données test structurées
 
 ### **Scripts et Outils**
-- [`scripts/direct-diagnosis.mjs`](scripts/direct-diagnosis.mjs) - Diagnostic système complet
-- [`scripts/test-radixtree-matching.mjs`](scripts/test-radixtree-matching.mjs) - Tests algorithmes spécialisés
+- `scripts/direct-diagnosis.mjs` - Diagnostic système complet
+- `scripts/test-radixtree-matching.mjs` - Tests algorithmes spécialisés
 
 ## 🚀 Prochaines Étapes
 

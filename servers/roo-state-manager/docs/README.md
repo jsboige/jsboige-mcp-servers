@@ -169,9 +169,9 @@ docs/
 
 | Script | Usage | Description |
 |--------|-------|-------------|
-| [`../scripts/docs-status-report.ps1`](../scripts/docs-status-report.ps1) | `.\docs-status-report.ps1 -Detailed` | Rapport statut documentation |
-| [`../scripts/add-new-doc.ps1`](../scripts/add-new-doc.ps1) | `.\add-new-doc.ps1 -Type "RAPPORT" -Title "mission-xyz"` | Création nouveau document |
-| [`../scripts/validate-docs-reorganization.ps1`](../scripts/validate-docs-reorganization.ps1) | `.\validate-docs-reorganization.ps1 -Fix` | Validation réorganisation |
+| `../scripts/docs-status-report.ps1` | `.\docs-status-report.ps1 -Detailed` | Rapport statut documentation |
+| `../scripts/add-new-doc.ps1` | `.\add-new-doc.ps1 -Type "RAPPORT" -Title "mission-xyz"` | Création nouveau document |
+| `../scripts/validate-docs-reorganization.ps1` | `.\validate-docs-reorganization.ps1 -Fix` | Validation réorganisation |
 
 ---
 
@@ -193,9 +193,9 @@ docs/
 
 ## 🚀 PROCHAINES ÉTAPES
 
-1. **📝 Nouveaux documents** → Utiliser [`add-new-doc.ps1`](../scripts/add-new-doc.ps1)
-2. **📊 Suivi régulier** → Exécuter [`docs-status-report.ps1`](../scripts/docs-status-report.ps1)
-3. **✅ Validation** → Contrôler avec [`validate-docs-reorganization.ps1`](../scripts/validate-docs-reorganization.ps1)
+1. **📝 Nouveaux documents** → Utiliser `add-new-doc.ps1`
+2. **📊 Suivi régulier** → Exécuter `docs-status-report.ps1`
+3. **✅ Validation** → Contrôler avec `validate-docs-reorganization.ps1`
 4. **🔄 Maintenance thématique** → Mettre à jour synthèses lors d'évolutions majeures
 
 ---

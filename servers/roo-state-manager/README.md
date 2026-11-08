@@ -47,10 +47,10 @@ Le Roo State Manager intègre maintenant l'architecture SDDD (Semantic-Driven De
 Une documentation technique complète est maintenant disponible dans [`docs/`](./docs/) :
 
 - **[📋 Guide Principal](./docs/README.md)** - Index complet de la documentation SDDD
-- **[🎯 Document de Référence](./docs/SDDD_Master_Document.md)** - Vue d'ensemble consolidée de l'architecture
-- **[🏗️ Architecture](./docs/architecture/)** - Principes et spécifications techniques
-- **[👥 Utilisation](./docs/usage/)** - Guides d'utilisation et déploiement
-- **[🔧 Maintenance](./docs/maintenance/)** - Maintenance et résolution de problèmes
+- **🎯 Document de Référence** - Vue d'ensemble consolidée de l'architecture
+- **🏗️ Architecture** - Principes et spécifications techniques
+- **👥 Utilisation** - Guides d'utilisation et déploiement
+- **[🔧 Maintenance](./docs/BUGS-ET-RESOLUTIONS.md)** - Maintenance et résolution de problèmes
 - **[📊 Rapports](./docs/reports/)** - Rapports exécutifs et validation
 
 ### 🚀 Nouvelles Capacités SDDD
@@ -67,7 +67,7 @@ Une documentation technique complète est maintenant disponible dans [`docs/`](.
 Voir [`examples/`](./examples/) pour les scripts de démonstration :
 - **[demo-sddd-complete.js](./examples/demo-sddd-complete.js)** - Démonstration complète des fonctionnalités
 - **[performance-benchmark.js](./examples/performance-benchmark.js)** - Benchmarks de performance
-- **[Rapport de validation](./examples/validation/SDDD-Checkpoint1-Validation-Report.md)** - Validation technique complète
+- **Rapport de validation** - Validation technique complète
 
 ## 🧠 Système de Synthèse de Conversations
 
@@ -75,7 +75,7 @@ Voir [`examples/`](./examples/) pour les scripts de démonstration :
 
 Le Roo State Manager intègre un système avancé de synthèse automatique de conversations utilisant l'IA pour analyser et résumer intelligemment les traces d'interactions Roo.
 
-**Documentation technique complète :** [`docs/architecture/conversation-synthesis/`](./docs/architecture/conversation-synthesis/)
+**Documentation technique complète :** `docs/architecture/conversation-synthesis/`
 
 **API disponible :** `get_conversation_synthesis` - Synthèse LLM réelle avec OpenAI structured outputs
 
@@ -673,7 +673,7 @@ Le roo-state-manager inclut des outils spécialisés pour la gestion du serveur 
 ### Gestion MCP
 
 #### `manage_mcp_settings`
-Gère le fichier [`mcp_settings.json`](../../../../../config/mcp_settings.json) en lecture et écriture sécurisée.
+Gère le fichier `mcp_settings.json` en lecture et écriture sécurisée.
 
 **Actions disponibles :**
 - **`read`** : Lit la configuration actuelle
@@ -703,7 +703,7 @@ Rebuild un MCP spécifique et déclenche un redémarrage ciblé ou global.
 - **Global** : Touche le fichier de settings global (fallback)
 
 **Paramètres :**
-- `mcp_name` (string) : Nom du MCP à rebuilder (selon [`mcp_settings.json`](../../../../../config/mcp_settings.json))
+- `mcp_name` (string) : Nom du MCP à rebuilder (selon `mcp_settings.json`)
 
 **Exemple d'utilisation :**
 ```json
@@ -1408,8 +1408,8 @@ RooSync v2.1 implémente une architecture **baseline-driven** avec workflow obli
 | **Tests réussis** | 28/30 (93%) | >90% | ✅ |
 
 **Documentation complète v2.1 (~12000 lignes) :**
-- Architecture : [`roosync-v2-baseline-driven-architecture-design-20251020.md`](../../../../../roo-config/reports/roosync-v2-baseline-driven-architecture-design-20251020.md) (2100 lignes)
-- Synthèse : [`roosync-v2-baseline-driven-synthesis-20251020.md`](../../../../../roo-config/reports/roosync-v2-baseline-driven-synthesis-20251020.md) (1200 lignes)
+- Architecture : `roosync-v2-baseline-driven-architecture-design-20251020.md` (2100 lignes)
+- Synthèse : `roosync-v2-baseline-driven-synthesis-20251020.md` (1200 lignes)
 - Guides : [`docs/roosync-v2-1-*.md`](../../../../../docs/) (déploiement, développeur, utilisateur)
 
 ### 🛠️ Outils MCP RooSync v2.1 (12 outils)
@@ -1591,12 +1591,12 @@ cd tests/e2e
 ### Documentation Complète
 
 Pour plus de détails, consultez :
-- **[Plan d'intégration E2E](../../../../../docs/integration/12-plan-integration-e2e.md)** - Architecture et stratégie
-- **[Résultats tests E2E](../../../../../docs/integration/13-resultats-tests-e2e.md)** - Métriques et validation
-- **[Guide utilisation outils](../../../../../docs/integration/14-guide-utilisation-outils-roosync.md)** - Documentation 8 outils MCP
-- [Architecture d'intégration](../../../../../docs/integration/03-architecture-integration-roosync.md)
-- [Points d'intégration](../../../../../docs/integration/02-points-integration-roosync.md)
-- [CHANGELOG RooSync](../../../../../RooSync/CHANGELOG.md)
+- **Plan d'intégration E2E** - Architecture et stratégie
+- **Résultats tests E2E** - Métriques et validation
+- **Guide utilisation outils** - Documentation 8 outils MCP
+- Architecture d'intégration
+- Points d'intégration
+- CHANGELOG RooSync
 
 ## 📊 Métriques & Performance
 
@@ -1635,7 +1635,7 @@ Le roo-state-manager est maintenant un système de classe production avec des m�
 | **Cache inventaire** | 1h TTL | Configurable | ✅ |
 
 **Documentation complète v2.1** :
-- Architecture : [`roosync-v2-baseline-driven-architecture-design-20251020.md`](../../../../../roo-config/reports/roosync-v2-baseline-driven-architecture-design-20251020.md)
+- Architecture : `roosync-v2-baseline-driven-architecture-design-20251020.md`
 - Guides : [`docs/roosync-v2-1-*.md`](../../../../../docs/)
 
 ---

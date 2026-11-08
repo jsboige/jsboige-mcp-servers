@@ -42,7 +42,7 @@ src/
 ```
 
 ### Documentation
-- [`VITEST_MIGRATION_REPORT.md`](../VITEST_MIGRATION_REPORT.md) - Rapport de migration Jest → Vitest
+- [`VITEST_MIGRATION_REPORT.md`](../docs/reports/VITEST_MIGRATION_REPORT.md) - Rapport de migration Jest → Vitest
 - [`vitest.config.ts`](../vitest.config.ts) - Configuration Vitest
 
 ---
@@ -310,8 +310,8 @@ Dans le répertoire racine du serveur :
 ### Guides
 
 - [Installation et Configuration](../README.md)
-- [Guide de Développement](../CONTRIBUTING.md) (à créer)
-- [Architecture détaillée](../ARCHITECTURE.md) (à créer)
+- Guide de Développement (à créer)
+- Architecture détaillée (à créer)
 
 ---
 

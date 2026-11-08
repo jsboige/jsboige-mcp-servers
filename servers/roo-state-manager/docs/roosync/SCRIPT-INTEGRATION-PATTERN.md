@@ -159,7 +159,7 @@ Les scripts PowerShell DOIVENT :
 
 | Script | Outil MCP | Status | Notes |
 |--------|-----------|--------|-------|
-| [`Get-MachineInventory.ps1`](../../../../scripts/inventory/Get-MachineInventory.ps1) | `roosync_init` | 🔄 En cours | Collecte inventaire complet |
+| `Get-MachineInventory.ps1` | `roosync_init` | 🔄 En cours | Collecte inventaire complet |
 | `validate-mcp-config.ps1` | `roosync_compare_config` | 🔜 Prévu | Validation configuration |
 | `sync-config-differences.ps1` | `roosync_list_diffs` | 🔜 Prévu | Détection différences |
 | `apply-config-decision.ps1` | `roosync_apply_decision` | 🔜 Prévu | Application décision |
@@ -255,9 +255,7 @@ const __dirname = dirname(__filename);
 
 ## Références
 
-- [Documentation roosync_init](./roosync-init.md)
-- [Script Get-MachineInventory.ps1](../../../../scripts/inventory/Get-MachineInventory.ps1)
-- [Architecture RooSync v2](./architecture.md)
+- Script Get-MachineInventory.ps1
 
 ---
 

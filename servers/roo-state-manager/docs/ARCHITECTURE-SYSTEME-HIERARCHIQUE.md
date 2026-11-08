@@ -46,14 +46,14 @@ Le système de reconstruction hiérarchique de `roo-state-manager` est une archi
 
 ### **Modules Clés**
 
-#### 1. **[`HierarchyReconstructionEngine`](src/utils/hierarchy-reconstruction-engine.ts)**
+#### 1. **[`HierarchyReconstructionEngine`](../src/utils/hierarchy-reconstruction-engine.ts)**
 - **Rôle :** Orchestrateur principal de la reconstruction
 - **Responsabilités :**
   - Gestion des squelettes de tâches
   - Coordination entre extraction et indexation
   - Validation des relations parent-enfant
 
-#### 2. **[`SubInstructionExtractor`](src/utils/sub-instruction-extractor.ts)**
+#### 2. **[`SubInstructionExtractor`](../src/utils/sub-instruction-extractor.ts)**
 - **Rôle :** Extraction intelligente des sous-instructions
 - **Patterns supportés :**
   ```typescript
@@ -65,7 +65,7 @@ Le système de reconstruction hiérarchique de `roo-state-manager` est une archi
   ];
   ```
 
-#### 3. **[`TaskInstructionIndex`](src/utils/task-instruction-index.ts)**
+#### 3. **[`TaskInstructionIndex`](../src/utils/task-instruction-index.ts)**
 - **Rôle :** Index RadixTree pour recherche par préfixes
 - **Architecture :** Implémentation avec bibliothèque `exact-trie`
 - **Fonctionnalités :**
@@ -78,7 +78,7 @@ Le système de reconstruction hiérarchique de `roo-state-manager` est une archi
 ### **Chronologie Technique (2025)**
 
 #### **Mai 2025 - Phase 1 : Architecture Initiale**
-- **Références :** [`2025-05-26-01-PHASE-implementation-phase-1.md`](archives/2025-05/)
+- **Références :** `2025-05-26-01-PHASE-implementation-phase-1.md`
 - **Implémentation :** Système RadixTree de base fonctionnel
 - **Performance :** 4+ relations parent-enfant détectées
 
@@ -88,14 +88,14 @@ Le système de reconstruction hiérarchique de `roo-state-manager` est une archi
 - **Solutions appliquées :** Logique de détection et correction des cycles
 
 #### **Septembre 2025 - Validation Massive**
-- **Références :** [`2025-09-28-01-DOC-TECH-validation-tests-unitaires-reconstruction.md`](archives/2025-09/)
+- **Références :** `2025-09-28-01-DOC-TECH-validation-tests-unitaires-reconstruction.md`
 - **Tests unitaires :** Création suite de tests hiérarchiques
 - **Métriques :** Validation sur milliers de tâches réelles
 
 #### **Octobre 2025 - Mission Triple Grounding SDDD**
 - **Références :** [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md)
 - **Régression critique :** Relations 4→0 (-100%)
-- **Correction majeure :** Réécriture extraction avec [`SubInstructionExtractor`](src/utils/sub-instruction-extractor.ts)
+- **Correction majeure :** Réécriture extraction avec [`SubInstructionExtractor`](../src/utils/sub-instruction-extractor.ts)
 - **Résultat final :** ✅ 2+ relations validées, régression éliminée
 
 ## 🔧 Composants Techniques
@@ -174,7 +174,7 @@ export function extractSubInstructions(parentText: string): string[] {
 ## 🧪 Tests et Validation
 
 ### **Suite de Tests Critique**
-- **Fichier :** [`tests/unit/regression-hierarchy-extraction.test.ts`](tests/unit/regression-hierarchy-extraction.test.ts)
+- **Fichier :** [`tests/unit/regression-hierarchy-extraction.test.ts`](../tests/unit/regression-hierarchy-extraction.test.ts)
 - **Couverture :** 4 tests de validation complets
 - **Validation :** Bug historique + Nouveau système + Extraction regex + Non-régression
 
@@ -203,7 +203,7 @@ node scripts/test-pattern-extraction.mjs
 - **Localisation :** [`src/utils/hierarchy-reconstruction-engine.ts`](src/utils/hierarchy-reconstruction-engine.ts:175-189)  
 - **Nature :** Bug d'indexation - utilisation des 192 premiers caractères au lieu d'extraction des sous-instructions réelles
 - **Impact :** Perte totale des capacités de matching parent-enfant
-- **Résolution :** Création module [`SubInstructionExtractor`](src/utils/sub-instruction-extractor.ts) avec patterns regex
+- **Résolution :** Création module [`SubInstructionExtractor`](../src/utils/sub-instruction-extractor.ts) avec patterns regex
 
 ### **Bug RadixTree Matching**
 - **Symptôme :** 0% taux de succès pour correspondances
@@ -220,7 +220,7 @@ node scripts/test-pattern-extraction.mjs
 ### **Documents Architecturaux Fondamentaux**
 - [`docs/tests/hierarchie-reconstruction-validation.md`](tests/hierarchie-reconstruction-validation.md) - Spécifications validation système
 - [`README.md`](../../README.md) - Vue d'ensemble architecture RadixTree
-- [`tests/fixtures/controlled-hierarchy/`](tests/fixtures/controlled-hierarchy/) - Données test structure parent-enfant
+- [`tests/fixtures/controlled-hierarchy/`](../tests/fixtures/controlled-hierarchy/) - Données test structure parent-enfant
 
 ### **Rapports de Mission SDDD**
 - [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Résolution régression critique

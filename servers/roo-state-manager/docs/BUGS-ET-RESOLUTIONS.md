@@ -132,12 +132,12 @@ export function extractSubInstructions(parentText: string): string[] {
 
 #### **📚 Documentation Associée**
 - [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Rapport complet résolution
-- [`tests/unit/regression-hierarchy-extraction.test.ts`](tests/unit/regression-hierarchy-extraction.test.ts) - Tests anti-régression
+- [`tests/unit/regression-hierarchy-extraction.test.ts`](../tests/unit/regression-hierarchy-extraction.test.ts) - Tests anti-régression
 
 #### **📊 VALIDATION STATISTIQUE POST-CORRECTION** *(OCTOBRE 2025)*
 - **Mission :** Validation efficacité système hiérarchique corrigé sur tous workspaces
 - **Rapport :** [`2025-10-05-05-RAPPORT-stats-parentid-tous-workspaces.md`](archives/2025-10/2025-10-05-05-RAPPORT-stats-parentid-tous-workspaces.md)
-- **Script d'analyse :** [`scripts/analyze-all-workspaces-stats.mjs`](../scripts/analyze-all-workspaces-stats.mjs)
+- **Script d'analyse :** `scripts/analyze-all-workspaces-stats.mjs`
 
 **Résultats validation :**
 ```bash

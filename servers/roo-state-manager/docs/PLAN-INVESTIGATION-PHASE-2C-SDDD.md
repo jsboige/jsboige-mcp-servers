@@ -163,7 +163,7 @@ validate-child-hierarchy.js         # Validation hierarchies
 ```
 
 ### Documentation Technique
-- **Architecture parsing systems** : [roo-state-manager-parsing-refactoring.md](../../docs/architecture/roo-state-manager-parsing-refactoring.md)
+- **Architecture parsing systems** : roo-state-manager-parsing-refactoring.md
 - **Validation massive rapport** : [RAPPORT-MISSION-VALIDATION-MASSIVE-SDDD-20251003.md](./RAPPORT-MISSION-VALIDATION-MASSIVE-SDDD-20251003.md)
 - **Feature flags sécurisés** : [parsing-config.ts](../src/utils/parsing-config.ts)
 

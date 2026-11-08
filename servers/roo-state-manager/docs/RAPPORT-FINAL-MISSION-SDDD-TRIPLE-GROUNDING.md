@@ -91,7 +91,7 @@ const patterns = [
 ### **Logs de Validation Système**
 
 #### **✅ Validation du Fix :**
-- **Script de test :** [`debug-final-fix-test.js`](mcps/internal/servers/roo-state-manager/tmp-debug/debug-final-fix-test.js) (rangé)
+- **Script de test :** `debug-final-fix-test.js` (rangé)
 - **Résultat :** 2/2 relations trouvées avec 100% de précision
 - **Performance :** Extraction instantanée avec patterns regex optimisés
 
@@ -103,15 +103,15 @@ const patterns = [
 
 #### **📚 Documentation Technique Fondamentale :**
 
-1. **[`docs/tests/hierarchie-reconstruction-validation.md`](mcps/internal/servers/roo-state-manager/docs/tests/hierarchie-reconstruction-validation.md:1)**
+1. **[`docs/tests/hierarchie-reconstruction-validation.md`](tests/hierarchie-reconstruction-validation.md)**
    - **Citation exacte :** *"Le système de reconstruction hiérarchique doit identifier les relations parent-enfant avec une précision de 4+ relations minimum"*
    - **Utilisation :** Référence pour comprendre les attentes de performance du système fonctionnel
 
-2. **[`tests/fixtures/controlled-hierarchy/`](mcps/internal/servers/roo-state-manager/tests/fixtures/controlled-hierarchy/)**
+2. **[`tests/fixtures/controlled-hierarchy/`](../tests/fixtures/controlled-hierarchy/)**
    - **Citation exacte :** Données de test avec structure parent-enfant validée
    - **Utilisation :** Base de données de référence pour valider le comportement attendu
 
-3. **[`README.md`](mcps/internal/servers/roo-state-manager/README.md:1)**
+3. **`README.md`**
    - **Citation exacte :** *"Architecture RadixTree pour longest-prefix matching parent-child relationships"*
    - **Utilisation :** Compréhension de l'architecture originale qui fonctionnait
 
@@ -123,7 +123,7 @@ const patterns = [
 1. **Extraction intelligente** des sous-instructions depuis le texte parent complet
 2. **Indexation RadixTree** avec préfixes normalisés (192 caractères)
 3. **Recherche longest-prefix** pour retrouver les correspondances parent-enfant
-4. **Validation par trie** avec structure [`exact-trie`](mcps/internal/servers/roo-state-manager/package.json:dependencies)
+4. **Validation par trie** avec structure [`exact-trie`](../package.json) (dépendance)
 
 #### **📐 Schéma Architectural Reconstruit :**
 ```
