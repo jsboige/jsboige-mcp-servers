@@ -27,32 +27,10 @@ import { tryAcquireWorkerALeaderLock, ensureWorkerALeadershipForTick } from './w
 // #4352: PID liveness probe shared by both leader elections (node builtins only).
 import { isProcessAlive } from './pid-liveness.js';
 import { markLeaderLockAttempted } from './lock-participation.js';
+// #4352 W3: shared read-back helper, deduplicated from the local copy that
+// mirrored worker-a-lock.ts (file ai-01 2026-11-08a, item 1).
+import { readLockForAtomicity } from './lock-atomicity.js';
 
-/**
- * #4352 W1: read a lock back after an overwrite, to arbitrate a steal race.
- * The plain-write steal path has no atomic primitive (the wx create is the only
- * one), so the read-back answers "did a rival's overwrite land between our
- * write and this re-read?" — the race window the steal itself opens. When it
- * detects the rival, THIS process demotes to follower instead of believing a
- * leadership its write no longer backs. Residual window: a rival writing AFTER
- * our re-read is undetectable here; the renewal tick bounds that overlap (a
- * stale "leader" reads a foreign live pid at its next tryAcquire and steps
- * down). Null on any read failure: the caller treats an unreadable file as its
- * own win (fail-open toward leadership after a successful write, the pre-W1
- * behavior when nothing races us).
- */
-async function readLockForAtomicity(lockPath: string): Promise<{ pid: number } | null> {
-    try {
-        const content = await fs.readFile(lockPath, 'utf-8');
-        const parsed = JSON.parse(content);
-        if (typeof parsed?.pid === 'number') {
-            return parsed;
-        }
-        return null;
-    } catch {
-        return null;
-    }
-}
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
