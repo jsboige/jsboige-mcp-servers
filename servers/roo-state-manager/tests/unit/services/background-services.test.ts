@@ -1508,6 +1508,42 @@ describe('#4352 — automatic re-arm of failed tasks', () => {
       await runOneTick(follower);
       expect(statusWrites()).toHaveLength(0);
     });
+
+    // #4352 W4 follow-up (queue 20261108b, grain 1): on the indexing-DISABLED
+    // path the tick returns before the lock renewal — an ex-leader whose lock
+    // was stolen kept publishing forever, alternating pid/queueSize with the
+    // real leader in another same-machine host over the SAME per-machine
+    // status file. The publication must verify the lock: renew when it is
+    // still ours, demote when it is not.
+    it('a leader on the indexing-disabled path verifies the lock BEFORE publishing: lock ours → renews and publishes', async () => {
+      const statusWrites = () =>
+        mockFs.writeFile.mock.calls.filter(([p]: unknown[]) =>
+          String(p).includes('roosync-indexer-status'));
+
+      const state = stateWith({});
+      state.isIndexLeader = true;
+      state.isQdrantIndexingEnabled = false; // isIdleForRearm()=false → no other lock check on this tick
+      await runOneTick(state);
+      expect(state.isIndexLeader).toBe(true);
+      expect(statusWrites().length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('a leader on the indexing-disabled path whose lock was stolen demotes and does NOT publish', async () => {
+      const statusWrites = () =>
+        mockFs.writeFile.mock.calls.filter(([p]: unknown[]) =>
+          String(p).includes('roosync-indexer-status'));
+
+      const state = stateWith({});
+      state.isIndexLeader = true;
+      state.isQdrantIndexingEnabled = false;
+      // tryAcquireLeaderLock: create fails (already exists)…
+      mockFs.writeFile.mockRejectedValueOnce(Object.assign(new Error('EEXIST'), { code: 'EEXIST' }));
+      // …held by a provably ALIVE foreign pid (ppid = the vitest worker).
+      mockFs.readFile.mockResolvedValueOnce(JSON.stringify({ pid: process.ppid, timestamp: NOW }));
+      await runOneTick(state);
+      expect(state.isIndexLeader).toBe(false);
+      expect(statusWrites()).toHaveLength(0);
+    });
   });
 
   describe('claudeSessionPresentLocally', () => {

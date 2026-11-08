@@ -918,7 +918,21 @@ async function preflightDedupByChunkId(
  * on sub-chunks (before embedding) instead of PointStructs (after embedding).
  */
 async function preflightDedupByContentHash(
-    subChunks: Array<{ chunk: Chunk; contentHash: string }>
+    subChunks: Array<{ chunk: Chunk; contentHash: string }>,
+    /**
+     * #4352 g5 (leader-indexes-nothing, 08/11): progress + fence for phase B2.
+     * The g5 review (ms#1548) wired onProgress into extraction and the chunk_id
+     * preflight but not into this one — and on a collection past #2209's 5M
+     * threshold the chunk_id preflight is SKIPPED, so B2 inherits EVERY
+     * sub-chunk and runs scroll batch after scroll batch with zero acks: the
+     * 180 s inactivity watchdog fenced healthy big sessions at 0 points
+     * written (ai-01, 07/11 16:36Z→, 70× embedding_timeout, all
+     * last_attempt_written: 0). Each answered scroll batch now acknowledges;
+     * each next batch checks the fence so an aborted run stops scrolling
+     * instead of orphaning the loop.
+     */
+    options?: IndexTaskProgressOptions,
+    taskId?: string
 ): Promise<Array<{ chunk: Chunk; contentHash: string }>> {
     if (subChunks.length === 0) return subChunks;
 
@@ -945,8 +959,12 @@ async function preflightDedupByContentHash(
             const existingHashes = new Set<string>();
             for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
                 const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
+                // #4352 g5: a fenced run stops BEFORE the next scroll batch —
+                // same checkpoint contract as the embedding windows.
+                throwIfIndexingAborted(options, taskId ?? '');
                 try {
                     await collectExistingContentHashes(qdrant, batch, existingHashes, taskId);
+                    options?.onProgress?.(); // #4352 g5: an answered contentHash scroll IS progress
                 } catch (scrollError: any) {
                     console.warn(`[#2369] Preflight contentHash scroll failed for batch ${i} of task ${taskId}: ${scrollError?.message || scrollError}`);
                     // Non-blocking: on failure, keep chunks (will be caught by post-index dedup)
@@ -1247,6 +1265,12 @@ export function throwIfIndexingAborted(options: IndexTaskProgressOptions | undef
 
 export async function indexTask(taskId: string, taskPath: string, source: 'roo' | 'claude-code' | 'zoo-code' = 'roo', metadata?: { workspace?: string; title?: string }, options?: IndexTaskProgressOptions): Promise<PointStruct[]> {
     console.log(`Starting granular indexing for task: ${taskId} (source: ${source})`);
+    // #4352 loop instrumentation (ai-01 queue 08/11): the leader-indexes-nothing
+    // incident (0 point / 70× embedding_timeout, all last_attempt_written: 0)
+    // needs the phase boundaries visible in the leader's logs — where the 180 s
+    // inactivity budget actually goes between "Starting" and the first
+    // acknowledged batch. Every line below is cumulative elapsed since entry.
+    const startedAt = Date.now();
 
     // #4352 g5 follow-up (ai-01 queue 20261028f): hoisted OUT of the try so the
     // catch can read it. A backend that hangs past the 180 s inactivity budget
@@ -1309,6 +1333,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         }
         stats.chunksExtracted = chunks.length;
         options?.onProgress?.(); // #4352 g5: extraction done — progress, not silence
+        console.log(`⏱️ [#4352-loop] ${taskId}: extraction done +${Date.now() - startedAt}ms (${chunks.length} chunks)`);
 
         // #2825 (volet A / G2): no silent drop at the indexer stage. The old behavior
         // truncated `chunks.length = MAX_CHUNKS_PER_TASK` after extracting — meaning
@@ -1347,18 +1372,23 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             }
         }
 
+        console.log(`⏱️ [#4352-loop] ${taskId}: phase A (split+hash) done +${Date.now() - startedAt}ms (${allSubChunks.length} sub-chunks)`);
+
         // Phase B: #2018 Phase 2 — Pre-flight dedup by chunk_id (skip already-indexed chunks BEFORE embeddings)
         const preflight = await preflightDedupByChunkId(allSubChunks, options?.onProgress);
         let subChunksToEmbed = preflight.subChunks;
         stats.subChunksBuilt = allSubChunks.length;
         stats.dedupSkipped += allSubChunks.length - subChunksToEmbed.length;
+        console.log(`⏱️ [#4352-loop] ${taskId}: phase B (chunk_id preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length}/${allSubChunks.length} to embed)`);
 
         // Phase B2: #2369 — Pre-flight dedup by contentHash (catches split sub-chunks
         // with new UUIDs that bypassed chunk_id preflight but whose content already exists)
         if (subChunksToEmbed.length > 0) {
             const beforeContentHashDedup = subChunksToEmbed.length;
-            subChunksToEmbed = await preflightDedupByContentHash(subChunksToEmbed);
+            console.log(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) starting +${Date.now() - startedAt}ms (${subChunksToEmbed.length} sub-chunks)`);
+            subChunksToEmbed = await preflightDedupByContentHash(subChunksToEmbed, options, taskId);
             stats.dedupSkipped += beforeContentHashDedup - subChunksToEmbed.length;
+            console.log(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length} left)`);
         }
 
         // #2165: If the pre-flight dedup could not reach Qdrant, the "needs embedding"
@@ -1417,6 +1447,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         // at the top of indexTask: the catch must see `transport` when a fence preempts
         // this throw.)
         let missingVectors = 0;
+        let firstBatchAcked = false; // #4352 loop instrumentation: one-shot log below
         for (let start = 0; start < subChunksToEmbed.length; start += UPSERT_WINDOW_SUBCHUNKS) {
             // #4352 g5: a fenced run stops here — before embedding a new window.
             throwIfIndexingAborted(options, taskId);
@@ -1445,6 +1476,10 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                         throwIfIndexingAborted(options, taskId);
                         const batchVectors = await embedBatch(batch, embeddingModel, expectedDims, now, embedFailures);
                         options?.onProgress?.(); // #4352 g5: one more acknowledged batch
+                        if (!firstBatchAcked) {
+                            firstBatchAcked = true;
+                            console.log(`⏱️ [#4352-loop] ${taskId}: first embedding batch acknowledged +${Date.now() - startedAt}ms (batch of ${batch.length})`);
+                        }
                         for (let i = 0; i < batch.length; i++) {
                             if (batchVectors[i]) {
                                 cachedResults.set(batch[i].contentHash, batchVectors[i]!);
