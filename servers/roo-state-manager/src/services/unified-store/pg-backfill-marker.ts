@@ -55,7 +55,7 @@ import { createLogger } from '../../utils/logger.js';
 const logger = createLogger('pg-backfill-marker');
 
 /** Which store the marker describes. */
-export type BackfillScope = 'channel' | 'dashboard';
+export type BackfillScope = 'channel' | 'dashboard' | 'harmonization';
 
 /**
  * State of the completeness marker for one scope.
@@ -74,6 +74,15 @@ export const CHANNEL_BACKFILL_META_KEY = 'channel_backfill_complete_at';
 /** Meta key written by `scripts/backfill-roosync-dashboards.mjs`. */
 export const DASHBOARD_BACKFILL_META_KEY = 'dashboard_backfill_complete_at';
 
+/**
+ * Meta key written by `scripts/backfill-harmonization.mjs` (#3544).
+ *
+ * The campaign store lives in `<shared-state>/harmonization/campaigns/` and is
+ * shared, like the dashboards — one backfill of that tree covers the fleet, so
+ * the marker is fleet-wide.
+ */
+export const HARMONIZATION_BACKFILL_META_KEY = 'harmonization_backfill_complete_at';
+
 /** Default TTL of the marker lookup, in ms. */
 const DEFAULT_TTL_MS = 300_000;
 
@@ -83,7 +92,11 @@ export const BACKFILL_MARKER_LOOKUP_TIMEOUT_MS = 3_000;
 const META_KEYS: Record<BackfillScope, string> = {
   channel: CHANNEL_BACKFILL_META_KEY,
   dashboard: DASHBOARD_BACKFILL_META_KEY,
+  harmonization: HARMONIZATION_BACKFILL_META_KEY,
 };
+
+/** Every scope, in one place — the refresh loops iterate this. */
+const ALL_SCOPES: readonly BackfillScope[] = ['channel', 'dashboard', 'harmonization'];
 
 interface CacheEntry {
   state: BackfillMarkerState;
@@ -93,6 +106,7 @@ interface CacheEntry {
 const cache: Record<BackfillScope, CacheEntry> = {
   channel: { state: 'unknown', checkedAt: 0 },
   dashboard: { state: 'unknown', checkedAt: 0 },
+  harmonization: { state: 'unknown', checkedAt: 0 },
 };
 
 /** In-flight refresh — one observer per condition, never a stampede. */
@@ -184,13 +198,13 @@ async function doRefresh(timeoutMs: number): Promise<void> {
     // 16:43-16:57Z: a G:-only send between PG-primary sends of the same
     // process). An unproven scope keeps the fail-safe answer.
     // The warn above already says why: no "marker absent" line on this path.
-    for (const scope of ['channel', 'dashboard'] as BackfillScope[]) {
+    for (const scope of ALL_SCOPES) {
       setState(scope, cache[scope].state === 'complete' ? 'complete' : 'absent', false);
     }
     return;
   }
 
-  for (const scope of ['channel', 'dashboard'] as BackfillScope[]) {
+  for (const scope of ALL_SCOPES) {
     const value = values.get(META_KEYS[scope]);
     setState(scope, value && value.trim().length > 0 ? 'complete' : 'absent');
   }
@@ -262,7 +276,7 @@ export async function ensureBackfillMarkersFresh(
   options: { timeoutMs?: number } = {}
 ): Promise<void> {
   const now = Date.now();
-  const scopes: BackfillScope[] = ['channel', 'dashboard'];
+  const scopes: readonly BackfillScope[] = ALL_SCOPES;
   const fresh = scopes.every(
     (scope) =>
       cache[scope].state !== 'unknown' &&

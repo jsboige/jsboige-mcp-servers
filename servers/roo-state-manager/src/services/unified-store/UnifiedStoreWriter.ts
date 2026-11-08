@@ -31,6 +31,8 @@ import type {
   RooSyncMessageUpdate,
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
+  HarmonizationCampaignRow,
+  HarmonizationConfirmationRow,
 } from './types.js';
 
 export interface UnifiedStoreWriterConfig {
@@ -206,6 +208,39 @@ export interface IUnifiedStoreWriter {
    * is complete.
    */
   setStoreMeta(key: string, value: string): Promise<void>;
+
+  // ─── RooSync harmonization campaigns (#3544, migrations/013) ─────
+
+  /**
+   * Upsert one campaign row (PK `campaign_id`) — the organ's write half of
+   * the "PG is the authority, G: is the mirror" contract of #3544.
+   *
+   * The outcome is RETURNED rather than swallowed: the caller is the organ
+   * that has just decided a campaign exists, dispatched or closed, and it has
+   * to be able to tell "PG holds it" from "PG was silent" before it reports
+   * success (same rationale as syncRooSyncDashboardChecked, rework #1134).
+   * The GDrive write-through still happens on a failed outcome — the mirror
+   * is what keeps a seat without a PG channel working.
+   *
+   * `opts.backfill` switches to INSERT ... DO NOTHING, so replaying the
+   * historical campaign files can never overwrite a campaign the organ has
+   * advanced since (same rule as the dashboard backfill).
+   */
+  syncHarmonizationCampaign(
+    row: HarmonizationCampaignRow,
+    opts?: { backfill?: boolean }
+  ): Promise<UnifiedStoreWriteOutcome>;
+  /**
+   * Append one confirmation to `harmonization_confirmations`.
+   *
+   * Append-only and idempotent on `(campaign_id, event_id)`: a backfill
+   * replay of the same journal files inserts nothing the second time. Only
+   * the organ's `confirm` action calls this, and only after a LIVE re-read —
+   * a claimed hash never reaches this method.
+   */
+  appendHarmonizationConfirmation(
+    row: HarmonizationConfirmationRow
+  ): Promise<UnifiedStoreWriteOutcome>;
 }
 
 /**
@@ -277,6 +312,17 @@ export class NullUnifiedStoreWriter implements IUnifiedStoreWriter {
     return { ok: false, reason: 'disabled' };
   }
   async unretireRooSyncDashboardKeyChecked(_key: string): Promise<UnifiedStoreWriteOutcome> {
+    return { ok: false, reason: 'disabled' };
+  }
+  async syncHarmonizationCampaign(
+    _row: HarmonizationCampaignRow,
+    _opts?: { backfill?: boolean }
+  ): Promise<UnifiedStoreWriteOutcome> {
+    return { ok: false, reason: 'disabled' };
+  }
+  async appendHarmonizationConfirmation(
+    _row: HarmonizationConfirmationRow
+  ): Promise<UnifiedStoreWriteOutcome> {
     return { ok: false, reason: 'disabled' };
   }
 

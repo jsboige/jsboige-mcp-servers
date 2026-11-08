@@ -31,6 +31,8 @@ import type {
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
   DashboardRetirementMark,
+  HarmonizationCampaignRow,
+  HarmonizationConfirmationRow,
 } from './types.js';
 
 /**
@@ -239,6 +241,30 @@ export interface IUnifiedStoreReader {
    * of completeness" and keeps the GDrive path.
    */
   getStoreMeta(key: string): Promise<string | null>;
+
+  // ─── RooSync harmonization campaigns (#3544, migrations/013) ─────
+
+  /**
+   * One campaign by id with its confirmation journal (newest last), or null
+   * when the campaign has no row.
+   *
+   * The row's `payload` is the full campaign record exactly as the organ
+   * wrote it, so a reader reconstructs `HarmonizationCampaignRecord` without
+   * a schema bump when the bookkeeping grows. `null` MUST be read as "PG has
+   * no story for this campaign" (never backfilled / killed switch) and not as
+   * "empty campaign": the caller falls back to the GDrive file — the
+   * under-show protection of pg-read-gates.ts.
+   */
+  getHarmonizationCampaign(campaignId: string): Promise<{
+    campaign: HarmonizationCampaignRow;
+    confirmations: HarmonizationConfirmationRow[];
+  } | null>;
+  /**
+   * Every campaign, newest first. `includeClosed=false` restricts to
+   * `status = 'active'` (the `list` action's default), served by the
+   * (status, updated_at DESC) index of migrations/013.
+   */
+  listHarmonizationCampaigns(includeClosed: boolean): Promise<HarmonizationCampaignRow[]>;
 }
 
 /** Null object for opt-out read path. */
@@ -271,4 +297,9 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   async listRooSyncAttachmentMetadata(_uuids: string[]): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
   async scanRooSyncAttachments(_messageId?: string): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
   async getStoreMeta(_key: string): Promise<string | null> { return null; }
+  async getHarmonizationCampaign(_campaignId: string): Promise<{
+    campaign: HarmonizationCampaignRow;
+    confirmations: HarmonizationConfirmationRow[];
+  } | null> { return null; }
+  async listHarmonizationCampaigns(_includeClosed: boolean): Promise<HarmonizationCampaignRow[]> { return []; }
 }

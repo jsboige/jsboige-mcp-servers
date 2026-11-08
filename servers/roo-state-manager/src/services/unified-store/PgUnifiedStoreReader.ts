@@ -25,6 +25,8 @@ import type {
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
   DashboardRetirementMark,
+  HarmonizationCampaignRow,
+  HarmonizationConfirmationRow,
 } from './types.js';
 import type {
   IUnifiedStoreReader,
@@ -33,6 +35,21 @@ import type {
   ConversationListFilters,
   ConversationListRow,
 } from './UnifiedStoreReader.js';
+
+/**
+ * Normalise a `pg` timestamp to ISO 8601 (strings in, strings out).
+ *
+ * #3544 — the campaign record is round-tripped as JSONB inside `payload`, and
+ * the organ's record carries ISO strings. A `Date` leaking out of the typed
+ * columns would make a PG read shape-different from a GDrive read, so every
+ * timestamp is normalised here, once.
+ */
+function toIsoString(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) return value.toISOString();
+  const parsed = new Date(String(value));
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toISOString();
+}
 
 export class PgUnifiedStoreReader implements IUnifiedStoreReader {
   private pool: pg.Pool | null = null;
@@ -120,6 +137,92 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     if (result.rows.length === 0) return null;
     const value = result.rows[0].value;
     return typeof value === 'string' ? value : String(value ?? '');
+  }
+
+  // ─── RooSync harmonization campaigns (#3544, migrations/013) ─────
+
+  async getHarmonizationCampaign(campaignId: string): Promise<{
+    campaign: HarmonizationCampaignRow;
+    confirmations: HarmonizationConfirmationRow[];
+  } | null> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const campaignResult = await this.pool.query(
+      'SELECT * FROM harmonization_campaigns WHERE campaign_id = $1',
+      [campaignId],
+    );
+    if (campaignResult.rows.length === 0) return null;
+
+    const confirmations = await this.pool.query(
+      `SELECT id, campaign_id, machine_id, workspace, confirmed_at,
+              canon_hash, observed_hash, source, event_id
+       FROM harmonization_confirmations
+       WHERE campaign_id = $1
+       ORDER BY confirmed_at ASC, id ASC`,
+      [campaignId],
+    );
+
+    return {
+      campaign: this.mapHarmonizationCampaignRow(campaignResult.rows[0]),
+      confirmations: confirmations.rows.map(r => this.mapHarmonizationConfirmationRow(r)),
+    };
+  }
+
+  async listHarmonizationCampaigns(includeClosed: boolean): Promise<HarmonizationCampaignRow[]> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query(
+      includeClosed
+        ? `SELECT * FROM harmonization_campaigns ORDER BY created_at DESC`
+        : `SELECT * FROM harmonization_campaigns
+           WHERE status = 'active'
+           ORDER BY created_at DESC`,
+    );
+    return result.rows.map(r => this.mapHarmonizationCampaignRow(r));
+  }
+
+  /**
+   * Map a `harmonization_campaigns` row.
+   *
+   * JSONB columns come back already parsed from `pg`, EXCEPT timestamps, which
+   * arrive as `Date` — normalised to ISO 8601 because the campaign record the
+   * organ round-trips carries strings, and a `Date` leaking into it would
+   * change the shape between a GDrive read and a PG read.
+   */
+  private mapHarmonizationCampaignRow(raw: any): HarmonizationCampaignRow {
+    return {
+      campaign_id: String(raw.campaign_id),
+      target_file: String(raw.target_file),
+      canon_version: String(raw.canon_version),
+      canon_hash: String(raw.canon_hash),
+      canon_mode: String(raw.canon_mode),
+      status: raw.status === 'closed' ? 'closed' : 'active',
+      rev: Number(raw.rev ?? 0),
+      created_by: String(raw.created_by ?? ''),
+      created_at: toIsoString(raw.created_at) ?? '',
+      updated_at: toIsoString(raw.updated_at) ?? undefined,
+      closed_at: toIsoString(raw.closed_at),
+      close_reason: raw.close_reason ?? null,
+      fleet: Array.isArray(raw.fleet) ? raw.fleet.map(String) : [],
+      exceptions: (raw.exceptions && typeof raw.exceptions === 'object') ? raw.exceptions : {},
+      payload: (raw.payload && typeof raw.payload === 'object') ? raw.payload : {},
+    };
+  }
+
+  private mapHarmonizationConfirmationRow(raw: any): HarmonizationConfirmationRow {
+    return {
+      id: raw.id === undefined ? undefined : Number(raw.id),
+      campaign_id: String(raw.campaign_id),
+      machine_id: String(raw.machine_id),
+      workspace: raw.workspace ?? null,
+      confirmed_at: toIsoString(raw.confirmed_at) ?? '',
+      canon_hash: String(raw.canon_hash),
+      observed_hash: String(raw.observed_hash ?? ''),
+      source: 'live-read',
+      event_id: String(raw.event_id),
+    };
   }
 
   isNull(): boolean { return false; }

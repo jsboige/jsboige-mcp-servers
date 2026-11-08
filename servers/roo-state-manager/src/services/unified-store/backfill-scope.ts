@@ -108,6 +108,32 @@ export function evaluateDashboardScope(options: {
   return verdict(reasons);
 }
 
+/**
+ * Verdict for the harmonization backfill (#3544): no limit, no campaign filter.
+ *
+ * Same contract as the two surfaces above. The campaign tree is small (a
+ * handful of `hc-*.json` files plus their event journals), but a `--limit`
+ * smoke run leaves campaigns — and, worse, CONFIRMATIONS — behind, and the
+ * read gate this marker opens would then serve the fleet a campaign whose
+ * proof is still only on one seat's disk.
+ */
+export function evaluateHarmonizationScope(options: {
+  limit?: number;
+  campaignFilter?: string;
+} = {}): ScopeVerdict {
+  const reasons: string[] = [];
+  const { limit, campaignFilter } = options;
+
+  if (typeof limit === 'number' && Number.isFinite(limit) && limit > 0) {
+    reasons.push(`--limit ${limit} stops the sweep early (smoke test)`);
+  }
+  if (campaignFilter) {
+    reasons.push(`--campaign ${campaignFilter} covers a subset of the campaigns`);
+  }
+
+  return verdict(reasons);
+}
+
 export interface MarkerDecision {
   /** True only when the completeness marker may be written. */
   write: boolean;
