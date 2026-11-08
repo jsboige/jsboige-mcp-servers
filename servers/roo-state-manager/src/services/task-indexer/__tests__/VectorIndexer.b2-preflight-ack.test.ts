@@ -193,4 +193,91 @@ describe('VectorIndexer — B2 contentHash preflight acks + fence (#4352)', () =
 		// The run never reached the embedding phase.
 		expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
 	});
+
+	// #4352 (ai-01 review of ms#1695): the fence sat INSIDE B2's outer try —
+	// its abort was swallowed by the non-blocking catch (returned `subChunks`,
+	// mislabeled "[#2369] dedup failed") and the rejection only surfaced at the
+	// next embedding window's fence. Now the catch rethrows watchdogAbort: the
+	// run rejects IMMEDIATELY at the B2 fence, and the mislabel never appears.
+	test('the B2 fence rejects IMMEDIATELY — the outer non-blocking catch rethrows watchdogAbort, no mislabel', async () => {
+		vi.resetModules();
+		const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+		resetCircuitBreakerForTest();
+
+		// 450 unique hashes → 5 B2 scroll batches; a 6th would exist if the
+		// abort were swallowed (run continued past the fence).
+		mockExtractTask.mockResolvedValue(Array.from({ length: 450 }, (_, i) => chunkOf(i)));
+
+		const controller = new AbortController();
+		mockScroll.mockImplementation(async () => {
+			if (mockScroll.mock.calls.length === 2) {
+				controller.abort(new Error(
+					'Indexing timeout for t-b2 — no batch acknowledged for 180000ms (inactivity watchdog #4352 g5)'
+				));
+			}
+			return { points: [], next_page_offset: null };
+		});
+
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		let thrown: any = null;
+		try {
+			await indexTask('t-b2', '/nowhere', 'roo', undefined, { signal: controller.signal });
+		} catch (e) {
+			thrown = e;
+		} finally {
+			logSpy.mockRestore(); warnSpy.mockRestore(); errorSpy.mockRestore();
+		}
+
+		// Immediate rejection: marked watchdog error, exactly 2 scrolls (no
+		// batch 3), zero embedding — and the catch's "[#2369] ... failed
+		// (non-blocking)" mislabel was NEVER logged for this abort.
+		expect(thrown).not.toBeNull();
+		expect(thrown.details?.watchdogAbort).toBe(true);
+		expect(mockScroll.mock.calls.length).toBe(2);
+		expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
+		expect(warnSpy.mock.calls.some(c => String(c[0]).includes('contentHash dedup failed'))).toBe(false);
+	});
+
+	// #4352 (ai-01 amend, 08/11): the leader's host is a Claude session —
+	// console.log → stderr, which Claude Code does NOT journal, so the
+	// [#4352-loop] lines were unreadable on ai-01 (0 occurrence in the mcp
+	// logs). They must reach the persistent channel: the file logger
+	// (roosync-YYYYMMDD.log). Pin: the phase B2 "done" line goes through the
+	// logger, not bare console.log.
+	test('the [#4352-loop] phase lines go through the file logger (readable on ai-01)', async () => {
+		vi.resetModules();
+		const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
+		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		resetCircuitBreakerForTest();
+
+		mockExtractTask.mockResolvedValue(Array.from({ length: 250 }, (_, i) => chunkOf(i)));
+		// resetModules re-instantiates the mocked openai module: re-wire the
+		// shared hoisted mock onto the fresh client (the other tests already
+		// did this for THEIR module instance).
+		mockEmbeddingsCreate.mockImplementation(async (req: any) => {
+			const n = Array.isArray(req.input) ? req.input.length : 1;
+			return { data: Array.from({ length: n }, () => ({ embedding: Array(1536).fill(0.1) })) };
+		});
+
+		// Capture in a local sink: mockRestore() (in the finally) clears the
+		// spy's call history, so reading infoSpy.mock.calls afterwards sees 0.
+		const loopLines: string[] = [];
+		const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((line: string) => {
+			loopLines.push(String(line));
+		});
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		try {
+			await indexTask('t-b2', '/nowhere', 'roo', undefined, {});
+		} finally {
+			infoSpy.mockRestore(); logSpy.mockRestore(); warnSpy.mockRestore(); errorSpy.mockRestore();
+		}
+
+		// extraction + phase A + phase B + B2 starting + B2 done + first batch ack
+		expect(loopLines.length).toBe(6);
+		expect(loopLines.some(l => l.includes('phase B2 (contentHash preflight) done'))).toBe(true);
+	});
 });
