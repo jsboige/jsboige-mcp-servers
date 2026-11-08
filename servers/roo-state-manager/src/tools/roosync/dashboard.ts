@@ -200,6 +200,15 @@ const MAX_INDIVIDUAL_MESSAGE_BYTES = 4 * 1024; // 4 KB per part
 
 // Size limits for LLM outputs (bytes). If exceeded, retry with a stricter prompt.
 const MAX_STATUS_SIZE_BYTES = 15 * 1024;  // 15 KB
+
+// #4434 (critère « refs/Ko >= 4,0 », GO coordinateur c.6723319640) : un statut
+// condensé doit rendre au moins ce nombre d'ancres issues/PR (`#NN`) par Kio.
+// Plancher = P25 arrondi de la distribution mesurée après pivot (n=363 :
+// P25 4,12 / médiane 7,47) — il ne demande rien que la médiane ne livre déjà.
+// WARN-ONLY : mesure et signalement, jamais de rejet ni de rejeu.
+export const STATUS_REF_DENSITY_FLOOR = 4.0;
+// Sous cette taille le ratio refs/Ko n'a pas de sens (filtre du corpus mesuré).
+export const STATUS_REF_DENSITY_MIN_KB = 0.3;
 const MAX_SUMMARY_SIZE_BYTES = 5 * 1024;  // 5 KB
 const LLM_MAX_RETRIES = 3;
 const LLM_INITIAL_BACKOFF_MS = 2000; // 2s, doubles each retry
@@ -4312,6 +4321,16 @@ export interface CondenseAttemptInfo {
   archivedMessageCount: number;
   /** #4434: the status leg died, the previous status was kept and the summary used. */
   statusKept?: true;
+  /** #4434 (critère refs/Ko) : densité d'ancres du statut condensé FINAL —
+   * refs par Kio (`#NN` / taille UTF-8). Présent seulement sur les passes qui
+   * régénèrent le statut ; `belowFloor: true` = prose-drift (WARN-only,
+   * jamais de rejet). */
+  statusRefDensity?: {
+    refs: number;
+    kb: number;
+    density: number;
+    belowFloor: boolean;
+  };
   llm?: {
     summary?: LLMCallStats;
     status?: LLMCallStats;
@@ -5470,6 +5489,23 @@ export function reconcileStatusContradictions(
 
   if (droppedIdx.size === 0) return { status, reconciled: [] };
   return { status: lines.filter((_, i) => !droppedIdx.has(i)).join('\n'), reconciled };
+}
+
+/**
+ * #4434 — densité d'ancres d'un statut condensé : références issues/PR (`#NN`)
+ * par Kio de texte UTF-8. Le corpus mesuré après pivot (n=363 statuts) se
+ * tient à P25 4,12 / médiane 7,47 refs/Ko ; la queue sous-plancher est à
+ * 98,8 % des statuts >= 2 Kio — de la prose HAUTE sans ancres, pas des
+ * petits statuts pénalisés par la division. Helper de mesure pur : aucun
+ * effet de bord, `null` sous la taille minimale où le ratio n'a pas de sens.
+ */
+export function measureStatusRefDensity(
+  status: string
+): { refs: number; kb: number; density: number } | null {
+  const kb = Buffer.byteLength(status, 'utf8') / 1024;
+  if (kb < STATUS_REF_DENSITY_MIN_KB) return null;
+  const refs = (status.match(/#\d{2,5}\b/g) || []).length;
+  return { refs, kb, density: refs / kb };
 }
 
 /**
@@ -7097,6 +7133,31 @@ async function condenseIntercom(
   // (`statusUpdated: false`) — the organ-lies defect ms#1439 closed.
   if (statusUpdated) {
     newStatus = await appendFallbackCensusLine(key, newStatus!);
+  }
+
+  // #4434 (critère « refs/Ko >= 4,0 », WARN-only) : mesurer le statut FINAL —
+  // après chaque garde qui le mute (scrub #3771, réconciliation #3803, census
+  // #3962) — et signaler la prose-drift quand il rend moins de 4 ancres `#NN`
+  // par Kio. Seulement les condensations NOUVELLES : un statut conservé
+  // (#4205 skip, jambe morte) est l'ancien, pas une production de ce passage.
+  // Mesure et signalement uniquement — aucun rejet, aucun rejeu (GO c.6723319640).
+  if (diagnostic && statusUpdated) {
+    const refDensity = measureStatusRefDensity(newStatus!);
+    if (refDensity) {
+      diagnostic.statusRefDensity = {
+        ...refDensity,
+        belowFloor: refDensity.density < STATUS_REF_DENSITY_FLOOR,
+      };
+      if (refDensity.density < STATUS_REF_DENSITY_FLOOR) {
+        logger.warn('Condensed status below ref-density floor — prose drift, not payload (#4434)', {
+          key,
+          refs: refDensity.refs,
+          kb: Number(refDensity.kb.toFixed(1)),
+          density: Number(refDensity.density.toFixed(2)),
+          floor: STATUS_REF_DENSITY_FLOOR,
+        });
+      }
+    }
   }
 
   // Archiver les anciens messages (format Markdown)
