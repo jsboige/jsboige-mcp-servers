@@ -14,6 +14,9 @@
  *      visible in `status` (the fleet reads one journal, not one seat's files).
  *   4. CONCURRENCY — the `rev` CAS compares against PG when it is the store,
  *      so a stale file copy cannot silently overwrite a fresher campaign.
+ *   5. MIRROR — a G: write that throws AFTER PG accepted the mutation stays a
+ *      success (PG holds it; the caller's retry would meet an unknown `rev`).
+ *      Without PG primary, the same throw is still an error.
  *
  * The store module is mocked (no Postgres): this file tests the WIRING, the
  * store's own SQL and gating are covered by
@@ -35,6 +38,23 @@ const store = vi.hoisted(() => ({
   writeConfirmationToPg: vi.fn(),
   isHarmonizationPgPrimary: vi.fn(),
 }));
+
+// #3544 review ms#1691 — a mirror write that throws. The flag turns the
+// module-level `fs.writeFile` into a rejection for the mirror tmp files only
+// (`.tmp-`): every other write in the service goes through a FileHandle
+// (`handle.writeFile`), so the hole is surgical.
+const mirror = vi.hoisted(() => ({ fails: false }));
+
+vi.mock('fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('fs')>();
+  const writeFile = async (path: unknown, data: unknown, enc: unknown) => {
+    if (mirror.fails && typeof path === 'string' && path.includes('.tmp-')) {
+      throw Object.assign(new Error('EPERM: G: mirror unreachable'), { code: 'EPERM' });
+    }
+    return actual.promises.writeFile(path as never, data as never, enc as never);
+  };
+  return { ...actual, default: actual, promises: { ...actual.promises, writeFile } };
+});
 
 vi.mock('../unified-store/roosync-harmonization-store.js', () => ({
   readCampaignFromPg: store.readCampaignFromPg,
@@ -119,6 +139,7 @@ beforeEach(() => {
   store.writeCampaignToPg.mockReset().mockResolvedValue({ ok: true, reason: 'written' });
   store.writeConfirmationToPg.mockReset().mockResolvedValue({ ok: true, reason: 'written' });
   store.isHarmonizationPgPrimary.mockReset().mockReturnValue(false);
+  mirror.fails = false;
 });
 
 afterEach(() => {
@@ -297,5 +318,45 @@ describe('WRITE — the organ mirrors to PG, the CAS follows the authority', () 
       .mockResolvedValue({ ...record, rev: 3 });
 
     await expect(service.dispatch(record.id)).rejects.toMatchObject({ code: 'CONCURRENT_WRITE' });
+  });
+
+  test('MIRROR — PG primary: a G: mirror write that throws stays a success (PG holds the mutation)', async () => {
+    store.isHarmonizationPgPrimary.mockReturnValue(true);
+    const service = makeService();
+    const record = await createMatchingCampaign(service);
+    store.writeCampaignToPg.mockClear();
+    mirror.fails = true; // every `.tmp-` write now throws, starting with save()
+
+    // PG accepted the rev-1 write; the G: file never lands. Throwing here
+    // would report a mutation the fleet already reads as committed, and the
+    // caller's retry would meet a `rev` it no longer recognises — the same
+    // reason the divergent re-read is a warn, not an error.
+    const result = await service.dispatch(record.id);
+    expect(result.failures).toHaveLength(0);
+    const written = store.writeCampaignToPg.mock.calls.at(-1)?.[0] as HarmonizationCampaignRecord;
+    expect(written.rev).toBe(1);
+  });
+
+  test('MIRROR — non-primary: the same throw stays an error (the file IS the store)', async () => {
+    const service = makeService();
+    const record = await createMatchingCampaign(service);
+    mirror.fails = true;
+
+    // Raw error, unchanged behaviour: without PG the file is the only store,
+    // a failed write is a failed mutation.
+    await expect(service.dispatch(record.id)).rejects.toMatchObject({ code: 'EPERM' });
+  });
+
+  test('MIRROR — PG primary but the PG write FAILED: the mirror throw must reject (mutation in no store)', async () => {
+    store.isHarmonizationPgPrimary.mockReturnValue(true);
+    const service = makeService();
+    const record = await createMatchingCampaign(service);
+    // `writeCampaignToPg` never throws — it returns { ok:false }. Combined
+    // with a G: mirror throw, warn-and-return would report success for a
+    // mutation held by NEITHER store (review ms#1693).
+    store.writeCampaignToPg.mockResolvedValue({ ok: false, reason: 'exhausted' });
+    mirror.fails = true;
+
+    await expect(service.dispatch(record.id)).rejects.toMatchObject({ code: 'EPERM' });
   });
 });

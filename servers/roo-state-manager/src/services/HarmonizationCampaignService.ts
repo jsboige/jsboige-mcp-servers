@@ -532,8 +532,25 @@ export class HarmonizationCampaignService {
     }
     const payload = stableJson(next);
     const tmp = `${path}.tmp-${process.pid}-${this.now().getTime()}-${this.eventIdGen().slice(0, 6)}`;
-    await fs.writeFile(tmp, payload, 'utf-8');
-    await fs.rename(tmp, path);
+    try {
+      await fs.writeFile(tmp, payload, 'utf-8');
+      await fs.rename(tmp, path);
+    } catch (err) {
+      // PG must actually hold the mutation before the G: mirror is allowed to
+      // fail: `writeCampaignToPg` returns `{ ok:false }` instead of throwing,
+      // so a mirror error on top of a failed PG write would leave the mutation
+      // in NO store while the caller sees success (review ms#1693).
+      if (!pgPrimary || !outcome.ok) throw err;
+      // The mirror write threw AFTER PG accepted the mutation. Throwing here
+      // would report a mutation the fleet already reads as committed, and the
+      // caller's retry would meet a `rev` it no longer recognises — the same
+      // reason the divergent re-read below is a warn (#3544, review ms#1691).
+      logger.warn(
+        `[harmonization-pg] miroir G: de ${record.id} injoignable (${(err as Error).message}) — ` +
+        `PG fait foi (rev ${next.rev} persistée), le backfill réalignera le fichier`
+      );
+      return;
+    }
     const reread = JSON.parse(await fs.readFile(path, 'utf-8')) as { rev?: number };
     if (reread.rev !== expectedRev + 1 && !pgPrimary) {
       throw new HarmonizationCampaignError(
