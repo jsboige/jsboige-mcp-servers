@@ -1108,12 +1108,15 @@ export function isPassageSlotsEnabled(): boolean {
  * fox guarding the henhouse (same reason q4-rubric.ts re-declares its rule
  * instead of importing one).
  */
-export function isPassageGroup(group: GroupedTask): boolean {
-    const chunk = group?.chunks?.[0];
+function isPassageChunk(chunk: GroupedTask['chunks'][number] | undefined): boolean {
     const text = chunk?.snippet ?? '';
     return text.length >= PASSAGE_SLOT_FLOOR_CHARS
         && (chunk?.machine_output_kind ?? classifyMachineOutput(chunk?.chunk_type, text)) === null
         && chunk?.tool_continuation_status !== 'unknown';
+}
+
+export function isPassageGroup(group: GroupedTask): boolean {
+    return isPassageChunk(group?.chunks?.[0]);
 }
 
 /**
@@ -1144,42 +1147,50 @@ export function isPassageGroup(group: GroupedTask): boolean {
  *   - non-passages in window >= W - P >= M - P = need → demotion never
  *                              starves (algebra, not hope).
  */
-export function composePassageSlots(groups: GroupedTask[], window: number = PASSAGE_SLOT_WINDOW, min: number = PASSAGE_SLOT_MIN, pool: GroupedTask[] = []): {
+export function composePassageSlots(groups: GroupedTask[], window: number = PASSAGE_SLOT_WINDOW, min: number = PASSAGE_SLOT_MIN, pool: GroupedTask[] = [], adjacent?: ReadonlyMap<GroupedTask, GroupedTask['chunks'][number]>): {
     enabled: boolean;
     groups_promoted: number;
     groups_promoted_from_pool: number;
+    groups_promoted_adjacent: number;
     groups_demoted: number;
+    promoted_groups: GroupedTask[];
 } {
+    const empty = { enabled: false, groups_promoted: 0, groups_promoted_from_pool: 0, groups_promoted_adjacent: 0, groups_demoted: 0, promoted_groups: [] };
     if (!isPassageSlotsEnabled()) {
-        return { enabled: false, groups_promoted: 0, groups_promoted_from_pool: 0, groups_demoted: 0 };
+        return empty;
     }
     // A page no longer than the window with no pool either has nothing to
     // promote from — small drill-down pages are left alone. With a pool,
     // even a short page gets its window composed (the PG join may have
     // shrunk a synthesis page below the cut).
     if (groups.length <= window && pool.length === 0) {
-        return { enabled: true, groups_promoted: 0, groups_promoted_from_pool: 0, groups_demoted: 0 };
+        return { ...empty, enabled: true };
     }
+
+    // #2609 q4 (B): a group whose representative is under the floor but which
+    // carries a qualifying adjacent turn (pre-fetched into `adjacent`) is
+    // slot-eligible — the caller swaps its representative after composition.
+    const eligible = (g: GroupedTask) => isPassageGroup(g) || (adjacent?.has(g) ?? false);
 
     const top = groups.slice(0, window);
     const rest = groups.slice(window);
-    const passagesInTop = top.filter(isPassageGroup).length;
+    const passagesInTop = top.filter(eligible).length;
     const need = min - passagesInTop;
     if (need <= 0) {
-        return { enabled: true, groups_promoted: 0, groups_promoted_from_pool: 0, groups_demoted: 0 };
+        return { ...empty, enabled: true };
     }
 
     // groups and pool arrive score-ordered; filter preserves that order.
     // Page candidates outrank pool candidates: they already survived every
     // page-level filter and re-ordering.
-    const fromPage = rest.filter(isPassageGroup);
-    const fromPool = pool.filter(g => isPassageGroup(g) && !groups.includes(g));
+    const fromPage = rest.filter(eligible);
+    const fromPool = pool.filter(g => eligible(g) && !groups.includes(g));
     const candidates = [...fromPage, ...fromPool].slice(0, need);
     if (candidates.length === 0) {
-        return { enabled: true, groups_promoted: 0, groups_promoted_from_pool: 0, groups_demoted: 0 };
+        return { ...empty, enabled: true };
     }
 
-    const demotable = top.filter(g => !isPassageGroup(g));
+    const demotable = top.filter(g => !eligible(g));
     const demoted = demotable.slice(demotable.length - candidates.length);
     const demotedSet = new Set(demoted);
     const candidateSet = new Set(candidates);
@@ -1196,7 +1207,9 @@ export function composePassageSlots(groups: GroupedTask[], window: number = PASS
         enabled: true,
         groups_promoted: candidates.length,
         groups_promoted_from_pool: candidates.filter(c => fromPool.includes(c)).length,
+        groups_promoted_adjacent: candidates.filter(c => !isPassageGroup(c)).length,
         groups_demoted: demoted.length,
+        promoted_groups: candidates,
     };
 }
 
@@ -1307,6 +1320,109 @@ async function attachConversationContext(groups: GroupedTask[], qdrant: any, col
         }
     }
     return attached;
+}
+
+/**
+ * #2609 q4 (B) — adjacent-turn promotion. Measured live (2026-11-08, registre
+ * + historique wordings): the two failing formulations get their substantive
+ * passages as the ADJACENT TURN of a short representative — the answer turn
+ * ("Voici les trois questions ouvertes du registre…") sits at message_index±1
+ * of a sub-100c request that the wording matches almost verbatim. Composing
+ * the page cannot promote what the recall never surfaced as a chunk, but the
+ * adjacent turn costs one scroll and IS the passage the rubric asks for.
+ *
+ * This pre-pass fetches that turn (same exact-index scroll as
+ * attachConversationContext) for at most `shortfall + 3` non-passage
+ * candidates and stashes a derived chunk keyed by group. composePassageSlots
+ * treats stashed groups as slot-eligible (demotion-immune, promotable); the
+ * caller swaps in the derived chunk as chunks[0] for window groups only after
+ * composition, so non-promoted groups keep their legacy payload byte-for-byte.
+ * Gated by the same kill-switch as the lever (never called when
+ * SEMANTIC_PASSAGE_SLOTS=0) and by SEARCH_CONTEXT_EXPANSION=0.
+ */
+async function collectAdjacentPassageCandidates(
+    targets: GroupedTask[],
+    shortfall: number,
+    qdrant: any,
+    collectionName: string,
+    stash: Map<GroupedTask, GroupedTask['chunks'][number]>,
+): Promise<number> {
+    if (shortfall <= 0 || process.env.SEARCH_CONTEXT_EXPANSION === '0') return 0;
+    const maxFetches = shortfall + 3;
+    let fetches = 0;
+    for (const group of targets) {
+        if (stash.size >= shortfall || fetches >= maxFetches) break;
+        const anchor = group.chunks[0]?.message_index;
+        if (typeof anchor !== 'number') continue;
+        fetches++;
+        try {
+            const scrollResult: any = await qdrant.scroll(collectionName, {
+                filter: {
+                    must: [
+                        { key: 'task_id', match: { value: group.taskId } },
+                    ],
+                    should: [
+                        { key: 'message_index', match: { value: anchor - 1 } },
+                        { key: 'message_index', match: { value: anchor + 1 } },
+                    ],
+                },
+                limit: 12,
+                with_vector: false,
+                with_payload: { include: ['message_index', 'role', 'content', 'timestamp', 'chunk_index'] },
+            });
+            const points = Array.isArray(scrollResult?.points)
+                ? scrollResult.points
+                : (Array.isArray(scrollResult) ? scrollResult : []);
+            const byMessage = new Map<number, { chunkIndex: number; payload: any }>();
+            for (const p of points) {
+                const payload = p?.payload ?? p;
+                const mi = payload?.message_index;
+                if (typeof mi !== 'number' || mi === anchor) continue;
+                const ci = typeof payload?.chunk_index === 'number' ? payload.chunk_index : 1;
+                const cur = byMessage.get(mi);
+                if (!cur || ci < cur.chunkIndex) byMessage.set(mi, { chunkIndex: ci, payload });
+            }
+            // Prefer the longer qualifying neighbor; both directions are the
+            // same distance from the anchor, so length is the only criterion.
+            let best: { message_index: number; payload: any; excerpt: string } | undefined;
+            for (const mi of [anchor + 1, anchor - 1]) {
+                const turn = byMessage.get(mi);
+                if (!turn) continue;
+                const role = String(turn.payload?.role ?? 'unknown');
+                if (role !== 'user' && role !== 'assistant') continue;
+                const excerpt = excerptFromStart(String(turn.payload?.content ?? ''), CONTEXT_EXPANSION_EXCERPT_CHARS);
+                if (!isPassageChunk({
+                    snippet: excerpt,
+                    chunk_type: 'message_exchange',
+                    role,
+                    tool_continuation_status: 'not_tool_result',
+                } as GroupedTask['chunks'][number])) continue;
+                if (!best || excerpt.length > best.excerpt.length) {
+                    best = { message_index: mi, payload: turn.payload, excerpt };
+                }
+            }
+            if (!best) continue;
+            const rep = group.chunks[0];
+            stash.set(group, {
+                score: group.best_score,
+                relevance: rep?.relevance ?? group.relevance,
+                snippet: best.excerpt,
+                machine_output_kind: null,
+                tool_continuation_status: 'not_tool_result',
+                chunk_type: 'message_exchange',
+                role: String(best.payload?.role ?? 'unknown'),
+                relative_time: best.payload?.timestamp ?? rep?.relative_time ?? '',
+                message_position: undefined,
+                message_index: best.message_index,
+                drill_down: buildDrillDown(group.taskId, best.message_index, group.conversation_stats?.total_messages),
+                tool_name: undefined,
+                has_error: undefined,
+            });
+        } catch {
+            // Non-blocking: a group without an adjacent passage stays as measured.
+        }
+    }
+    return stash.size;
 }
 
 /**
@@ -1990,6 +2106,39 @@ export const searchTasksByContentTool = {
             // dedupGroupedChunksByContent for rationale and flags.
             const dedupStats = dedupGroupedChunksByContent(groupedResults);
 
+            // #2609 q4 (B): fill the slot shortfall with adjacent turns before
+            // composing — the measured FAIL wordings carry their passage at
+            // message_index±1 of a sub-100c representative. Bounded to the
+            // shortfall (+3 spare fetches for excerpts that fail the form),
+            // skipped entirely when real passage candidates already cover it.
+            const poolForSlots = passageSlotPool?.filter(g => pgJoinTaskIds === null || pgJoinTaskIds.has(g.taskId)) ?? [];
+            const adjacentStash = new Map<GroupedTask, GroupedTask['chunks'][number]>();
+            if (isPassageSlotsEnabled()) {
+                const topGroups = groupedResults.slice(0, PASSAGE_SLOT_WINDOW);
+                const needNow = PASSAGE_SLOT_MIN - topGroups.filter(isPassageGroup).length;
+                if (needNow > 0) {
+                    const restGroups = groupedResults.slice(PASSAGE_SLOT_WINDOW);
+                    const realCandidates = [
+                        ...restGroups.filter(isPassageGroup),
+                        ...poolForSlots.filter(isPassageGroup),
+                    ].length;
+                    const shortfall = Math.max(0, needNow - realCandidates);
+                    if (shortfall > 0) {
+                        await collectAdjacentPassageCandidates(
+                            [
+                                ...topGroups.filter(g => !isPassageGroup(g)),
+                                ...restGroups.filter(g => !isPassageGroup(g)),
+                                ...poolForSlots.filter(g => !isPassageGroup(g)),
+                            ],
+                            shortfall,
+                            qdrant,
+                            collectionName,
+                            adjacentStash,
+                        );
+                    }
+                }
+            }
+
             // #2609 q4 (composition lever, GO ai-01 2026-11-02): reserve the head
             // of the page for passage groups. Runs after EVERY group-removing
             // stage (machine-output filter, per-task cap, PG enrichment join,
@@ -2003,9 +2152,23 @@ export const searchTasksByContentTool = {
                 groupedResults,
                 PASSAGE_SLOT_WINDOW,
                 PASSAGE_SLOT_MIN,
-                passageSlotPool?.filter(g => pgJoinTaskIds === null || pgJoinTaskIds.has(g.taskId)) ?? []
+                poolForSlots,
+                adjacentStash,
             );
-            if (passageSlotStats.groups_promoted > 0) {
+            // #2609 q4 (B): swap the stashed adjacent turn in as representative
+            // for WINDOW groups only — composition is done, so no later stage
+            // reasons about the short representative, and groups outside the
+            // window keep their legacy payload untouched.
+            let adjacentRepresentatives = 0;
+            for (const group of groupedResults.slice(0, PASSAGE_SLOT_WINDOW)) {
+                const derived = adjacentStash.get(group);
+                if (!derived) continue;
+                if (group.chunks[0]?.snippet !== derived.snippet) {
+                    group.chunks.unshift(derived);
+                    adjacentRepresentatives++;
+                }
+            }
+            if (passageSlotStats.groups_promoted > 0 || adjacentRepresentatives > 0) {
                 // A promoted group never went through the stats/dedup stages
                 // (they ran on the pre-composition page): complete its
                 // enrichment, re-check the WHOLE composed page for cross-task
@@ -2177,6 +2340,8 @@ export const searchTasksByContentTool = {
                             floor_chars: PASSAGE_SLOT_FLOOR_CHARS,
                             groups_promoted: passageSlotStats.groups_promoted,
                             groups_promoted_from_pool: passageSlotStats.groups_promoted_from_pool,
+                            groups_promoted_adjacent: passageSlotStats.groups_promoted_adjacent,
+                            adjacent_representatives: adjacentRepresentatives,
                             groups_demoted: passageSlotStats.groups_demoted,
                         }
                     } : {})
