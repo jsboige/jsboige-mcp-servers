@@ -4,7 +4,7 @@
 
 import { Tool, CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { XmlExporterService } from '../../services/XmlExporterService.js';
 
 /**
@@ -62,7 +62,7 @@ export const exportConversationXmlTool: Tool = {
  */
 export async function handleExportConversationXml(
     args: ExportConversationXmlArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     xmlExporterService: XmlExporterService,
     ensureSkeletonCacheIsFresh: () => Promise<void>
 ): Promise<CallToolResult> {
@@ -83,7 +83,7 @@ export async function handleExportConversationXml(
         }
 
         // Collecter toutes les tâches de la conversation
-        const collectTasks = (taskId: string, currentDepth = 0): ConversationSkeleton[] => {
+        const collectTasks = (taskId: string, currentDepth = 0): StoredConversation[] => {
             if (maxDepth && currentDepth >= maxDepth) {
                 return [];
             }

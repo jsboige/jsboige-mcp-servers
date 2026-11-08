@@ -17,7 +17,7 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { handleExportData, exportDataTool, ExportDataArgs, INLINE_EXPORT_MAX_CHARS } from '../export-data.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 /** Helper to extract text from CallToolResult content */
@@ -66,11 +66,11 @@ vi.mock('fs/promises', () => ({
 }));
 
 describe('export_data - CONS-10', () => {
-    let mockCache: Map<string, ConversationSkeleton>;
+    let mockCache: Map<string, StoredConversation>;
     let mockEnsureCache: (options?: { workspace?: string }) => Promise<void>;
-    let mockGetSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>;
+    let mockGetSkeleton: (taskId: string) => Promise<StoredConversation | null>;
 
-    const createMockSkeleton = (taskId: string, parentId?: string): ConversationSkeleton => ({
+    const createMockSkeleton = (taskId: string, parentId?: string): StoredConversation => ({
         taskId,
         parentTaskId: parentId,
         metadata: {
@@ -276,7 +276,7 @@ describe('export_data - CONS-10', () => {
             mockCache.set('task-123', cacheOnlySkeleton);
 
             // Full skeleton loaded from disk HAS sequence
-            const fullSkeleton: ConversationSkeleton = {
+            const fullSkeleton: StoredConversation = {
                 taskId: 'task-123',
                 metadata: {
                     title: 'Full Task',

@@ -16,7 +16,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { handleExportData, ExportDataArgs } from '../export-data.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 function getTextContent(result: CallToolResult): string {
@@ -58,12 +58,12 @@ vi.mock('fs/promises', () => ({
 }));
 
 describe('#2307: export_data conversation json/csv — empty sequence fails loud', () => {
-    let mockCache: Map<string, ConversationSkeleton>;
+    let mockCache: Map<string, StoredConversation>;
     let mockEnsureCache: (options?: { workspace?: string }) => Promise<void>;
-    let mockGetSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>;
+    let mockGetSkeleton: (taskId: string) => Promise<StoredConversation | null>;
 
     /** Skeleton au-dessus du plafond de découverte : fichier jamais lu → séquence vide. */
-    const makeOversizedSkeleton = (taskId: string): ConversationSkeleton => ({
+    const makeOversizedSkeleton = (taskId: string): StoredConversation => ({
         taskId,
         metadata: {
             title: 'Oversized session',
@@ -78,7 +78,7 @@ describe('#2307: export_data conversation json/csv — empty sequence fails loud
     });
 
     /** Stub Tier-3 (#3661) : séquence vide LÉGITIME, corps chargé à la demande. */
-    const makeTier3StubSkeleton = (taskId: string): ConversationSkeleton => ({
+    const makeTier3StubSkeleton = (taskId: string): StoredConversation => ({
         taskId,
         metadata: {
             title: 'Tier-3 archive stub',
@@ -93,7 +93,7 @@ describe('#2307: export_data conversation json/csv — empty sequence fails loud
         sequence: []
     });
 
-    const makePopulatedSkeleton = (taskId: string): ConversationSkeleton => ({
+    const makePopulatedSkeleton = (taskId: string): StoredConversation => ({
         taskId,
         metadata: {
             title: 'Normal session',

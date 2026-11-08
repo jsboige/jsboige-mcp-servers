@@ -9,7 +9,7 @@ import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
 import { TraceSummaryService, SummaryOptions } from '../../services/TraceSummaryService.js';
 import { ExportConfigManager } from '../../services/ExportConfigManager.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import fs from 'fs/promises';
 import path from 'path';
 
@@ -79,7 +79,7 @@ export const exportConversationCsvTool: Tool = {
  */
 export async function handleExportConversationCsv(
     args: ExportConversationCsvArgs,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>
 ): Promise<string> {
     try {
         // Valider les arguments
@@ -92,7 +92,7 @@ export async function handleExportConversationCsv(
             );
         }
 
-        // Récupérer le ConversationSkeleton
+        // Récupérer le StoredConversation
         const conversation = await getConversationSkeleton(args.taskId);
         if (!conversation) {
             throw new StateManagerError(
