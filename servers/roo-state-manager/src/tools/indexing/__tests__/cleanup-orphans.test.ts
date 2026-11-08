@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Mock Qdrant scroll/delete
 const mockScroll = vi.fn();
@@ -72,7 +72,7 @@ const mockFindConversationById = vi.mocked(RooStorageDetector.findConversationBy
 const mockClaudeFindConversationById = vi.mocked(ClaudeStorageDetector.findConversationById);
 const mockListArchivedTasks = vi.mocked(TaskArchiver.listArchivedTasks);
 
-function makeSkeleton(taskId: string): ConversationSkeleton {
+function makeSkeleton(taskId: string): StoredConversation {
 	return {
 		taskId,
 		metadata: {
@@ -83,7 +83,7 @@ function makeSkeleton(taskId: string): ConversationSkeleton {
 			lastActivity: new Date().toISOString(),
 			createdAt: new Date().toISOString(),
 		},
-	} as ConversationSkeleton;
+	} as StoredConversation;
 }
 
 function mockScrollResponse(taskIds: string[], nextOffset?: string) {
@@ -107,7 +107,7 @@ describe('cleanup-orphans', () => {
 		test('returns empty result when no task_ids in Qdrant', async () => {
 			mockScroll.mockResolvedValueOnce({ points: [], next_page_offset: null });
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.total_task_ids_in_qdrant).toBe(0);
@@ -120,7 +120,7 @@ describe('cleanup-orphans', () => {
 			mockScroll.mockResolvedValueOnce(mockScrollResponse(['task-1', 'task-2', 'task-3']));
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.total_task_ids_in_qdrant).toBe(3);
@@ -134,7 +134,7 @@ describe('cleanup-orphans', () => {
 			mockScroll.mockResolvedValueOnce(mockScrollResponse(['task-1', 'task-2', 'task-3']));
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('task-1', makeSkeleton('task-1'));
 			cache.set('task-3', makeSkeleton('task-3'));
 
@@ -150,7 +150,7 @@ describe('cleanup-orphans', () => {
 				.mockResolvedValueOnce({ taskId: 'task-1', path: '/some/path' })
 				.mockResolvedValueOnce(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.on_disk).toBe(1);
@@ -163,7 +163,7 @@ describe('cleanup-orphans', () => {
 			vi.mocked(fs.access).mockResolvedValueOnce(undefined); // .claude/projects exists
 			vi.mocked(fs.access).mockResolvedValueOnce(undefined); // .claude/projects/claude-task-1.jsonl exists
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.on_disk).toBe(1);
@@ -174,7 +174,7 @@ describe('cleanup-orphans', () => {
 			mockScroll.mockResolvedValueOnce(mockScrollResponse(['orphan-1']));
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.orphans).toEqual(['orphan-1']);
@@ -191,7 +191,7 @@ describe('cleanup-orphans', () => {
 			mockFindConversationById.mockResolvedValue(null);
 			mockDelete.mockResolvedValue({ status: 'completed' });
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('keep-1', makeSkeleton('keep-1'));
 			cache.set('keep-2', makeSkeleton('keep-2'));
 			const result = await detectAndCleanupOrphans(cache, false, true);
@@ -207,7 +207,7 @@ describe('cleanup-orphans', () => {
 			mockScroll.mockResolvedValueOnce(mockScrollResponse(['keep-1', 'orphan-1']));
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('keep-1', makeSkeleton('keep-1'));
 			const result = await detectAndCleanupOrphans(cache, false, false);
 
@@ -225,7 +225,7 @@ describe('cleanup-orphans', () => {
 				.mockRejectedValueOnce(new Error('Qdrant timeout'))
 				.mockResolvedValueOnce({ status: 'completed' });
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('keep-1', makeSkeleton('keep-1'));
 			cache.set('keep-2', makeSkeleton('keep-2'));
 			const result = await detectAndCleanupOrphans(cache, false, true);
@@ -244,7 +244,7 @@ describe('cleanup-orphans', () => {
 				.mockResolvedValueOnce(mockScrollResponse(['task-3', 'task-4'], null));
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('task-1', makeSkeleton('task-1'));
 
 			const result = await detectAndCleanupOrphans(cache, true);
@@ -261,7 +261,7 @@ describe('cleanup-orphans', () => {
 				.mockResolvedValueOnce({ points: [], next_page_offset: null });
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.total_task_ids_in_qdrant).toBe(1);
@@ -272,7 +272,7 @@ describe('cleanup-orphans', () => {
 		test('returns error when Qdrant scroll fails', async () => {
 			mockScroll.mockRejectedValue(new Error('Connection refused'));
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.total_task_ids_in_qdrant).toBe(0);
@@ -286,7 +286,7 @@ describe('cleanup-orphans', () => {
 				.mockRejectedValueOnce(new Error('Permission denied'))
 				.mockResolvedValueOnce(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			// task-1 had an error during disk check, so it's not an orphan (safer to keep)
@@ -307,7 +307,7 @@ describe('cleanup-orphans', () => {
 			});
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			// Only the point with valid task_id should be counted
@@ -326,7 +326,7 @@ describe('cleanup-orphans', () => {
 			));
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('fleet-task-0', makeSkeleton('fleet-task-0')); // only 1 known locally
 
 			const result = await detectAndCleanupOrphans(cache, false, true); // confirm=true!
@@ -347,7 +347,7 @@ describe('cleanup-orphans', () => {
 			mockScroll.mockResolvedValueOnce(mockScrollResponse(allIds));
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			for (let i = 0; i < 90; i++) {
 				cache.set(`task-${i}`, makeSkeleton(`task-${i}`));
 			}
@@ -367,7 +367,7 @@ describe('cleanup-orphans', () => {
 			mockScroll.mockResolvedValueOnce(mockScrollResponse(['t1', 't2', 't3', 't4']));
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true); // dry-run
 
 			expect(result.fleet_safety_abort).toBe(true);
@@ -381,7 +381,7 @@ describe('cleanup-orphans', () => {
 			mockScroll.mockResolvedValueOnce(mockScrollResponse(['t1', 't2', 't3', 't4']));
 			mockFindConversationById.mockResolvedValue(null);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('t1', makeSkeleton('t1'));
 			cache.set('t2', makeSkeleton('t2'));
 
@@ -401,7 +401,7 @@ describe('cleanup-orphans', () => {
 			mockFindConversationById.mockResolvedValue(null);
 			mockListArchivedTasks.mockResolvedValue(['owned-by-other']);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.in_archive).toBe(1);
@@ -417,7 +417,7 @@ describe('cleanup-orphans', () => {
 			mockFindConversationById.mockResolvedValue(null);
 			mockListArchivedTasks.mockResolvedValue(['a1', 'a2']);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.in_archive).toBe(2);
@@ -431,7 +431,7 @@ describe('cleanup-orphans', () => {
 			mockFindConversationById.mockResolvedValue(null);
 			mockListArchivedTasks.mockResolvedValue([]);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.in_archive).toBe(0);
@@ -446,7 +446,7 @@ describe('cleanup-orphans', () => {
 			mockFindConversationById.mockResolvedValue(null);
 			mockListArchivedTasks.mockRejectedValue(new Error('shared path unset'));
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('c-1', makeSkeleton('c-1'));
 			cache.set('c-2', makeSkeleton('c-2'));
 
@@ -488,7 +488,7 @@ describe('cleanup-orphans', () => {
 				return [];
 			}) as any);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			// sess-1 lives in proj-a — must NOT be an orphan anymore (#3986)
@@ -507,7 +507,7 @@ describe('cleanup-orphans', () => {
 				return [];
 			}) as any);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.on_disk).toBe(2);
@@ -526,7 +526,7 @@ describe('cleanup-orphans', () => {
 				throw new Error('EACCES'); // proj-a unreadable
 			}) as any);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('keep-1', makeSkeleton('keep-1'));
 			const result = await detectAndCleanupOrphans(cache, true);
 
@@ -544,7 +544,7 @@ describe('cleanup-orphans', () => {
 			mockAccessRootOnly();
 			vi.mocked(fs.readdir).mockRejectedValue(new Error('EPERM'));
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('keep-1', makeSkeleton('keep-1'));
 			cache.set('keep-2', makeSkeleton('keep-2'));
 			const result = await detectAndCleanupOrphans(cache, true);
@@ -594,7 +594,7 @@ describe('cleanup-orphans', () => {
 			mockAccessRootOnly();
 			mockWorktreeHostedSession(liveUuid);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('keep-1', makeSkeleton('keep-1'));
 			const result = await detectAndCleanupOrphans(cache, true);
 
@@ -617,7 +617,7 @@ describe('cleanup-orphans', () => {
 			// mis-read this dead session as live (project dir exists) — pin that it is NOT called.
 			mockClaudeFindConversationById.mockClear();
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('keep-1', makeSkeleton('keep-1'));
 			const result = await detectAndCleanupOrphans(cache, true);
 
@@ -637,7 +637,7 @@ describe('cleanup-orphans', () => {
 			mockClaudeFindConversationById.mockImplementation((async (id: string) =>
 				id === 'claude-d--Dev-roo-extensions' ? { taskId: id } : null) as any);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const result = await detectAndCleanupOrphans(cache, true);
 
 			expect(result.on_disk).toBe(1);
@@ -657,7 +657,7 @@ describe('cleanup-orphans', () => {
 			}) as any);
 			mockClaudeFindConversationById.mockResolvedValueOnce({ taskId: 'claude-d--Dev-roo-extensions' } as any);
 
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('keep-1', makeSkeleton('keep-1'));
 			const result = await detectAndCleanupOrphans(cache, true);
 

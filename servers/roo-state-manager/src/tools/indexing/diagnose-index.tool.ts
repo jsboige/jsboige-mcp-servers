@@ -13,7 +13,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { getEmbeddingModel, getEmbeddingQueryClient } from '../../services/openai.js';
 
@@ -206,7 +206,7 @@ interface PayloadSample {
  * @param options Options de diagnostic. Si `deep: true`, exécute scroll + agrégations.
  */
 export async function handleDiagnoseSemanticIndex(
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     options: DiagnoseIndexOptions = {}
 ): Promise<CallToolResult> {
     const collectionName = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';

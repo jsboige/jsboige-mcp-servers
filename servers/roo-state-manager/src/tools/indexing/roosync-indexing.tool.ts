@@ -11,7 +11,7 @@
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import * as path from 'path';
 import { createHash } from 'crypto';
 
@@ -835,9 +835,9 @@ export interface IndexingState {
 
 export async function handleRooSyncIndexing(
     args: RooSyncIndexingArgs,
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     ensureCacheFreshCallback: () => Promise<boolean>,
-    saveSkeletonCallback: (skeleton: ConversationSkeleton) => Promise<void>,
+    saveSkeletonCallback: (skeleton: StoredConversation) => Promise<void>,
     qdrantIndexQueue: Set<string>,
     setQdrantIndexingEnabled: (enabled: boolean) => void,
     rebuildHandler: (args: any) => Promise<CallToolResult>,

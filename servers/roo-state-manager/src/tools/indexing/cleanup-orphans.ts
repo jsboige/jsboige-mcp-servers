@@ -12,7 +12,7 @@
  * @version 1.0.0
  */
 
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { networkMetrics } from '../../services/task-indexer/QdrantHealthMonitor.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
@@ -202,7 +202,7 @@ async function claudeSessionExists(taskId: string, sessionBasenames?: Set<string
  * @param confirm Required for deletion (must be true when dryRun=false)
  */
 export async function detectAndCleanupOrphans(
-    conversationCache: Map<string, ConversationSkeleton>,
+    conversationCache: Map<string, StoredConversation>,
     dryRun: boolean = true,
     confirm: boolean = false
 ): Promise<OrphanCleanupResult> {

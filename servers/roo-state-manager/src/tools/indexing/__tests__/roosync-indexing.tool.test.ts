@@ -10,7 +10,7 @@ import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Mutable shared-state path so trend_report tests can point at a temp dir.
 // vi.mock is hoisted, so the factory must reference this hoisted holder.
@@ -1829,10 +1829,10 @@ describe('roosync_indexing tool_usage_stats validation', () => {
 // #2766 S2+ P1 follow-up — cleanup_failed action + status retrofit fallback
 // ============================================================
 describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow-up)', () => {
-	// Build a minimal ConversationSkeleton shape for these tests. We only need
+	// Build a minimal StoredConversation shape for these tests. We only need
 	// `metadata.indexingState` to drive the failedTasks scan and the
 	// cleanup_failed candidate scan.
-	const makeSkeleton = (idx: any): ConversationSkeleton => ({
+	const makeSkeleton = (idx: any): StoredConversation => ({
 		taskId: 'stub',
 		metadata: { indexingState: idx },
 		sequence: [],
@@ -1853,7 +1853,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 		// Legacy failure persisted BEFORE #886 — idx.errorClass is undefined.
 		// The status tool must run the message through classifyIndexingError so
 		// the operator sees a real class instead of 'unknown'.
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['legacy-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'Claude Code session abc-123 not found',
@@ -1882,7 +1882,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	test('status: a stored HTTP class is repaired when the message is a timeout (#4440)', async () => {
 		const timeout = (id: string) =>
 			`Indexing timeout for claude-d--x--${id} after 300000ms — session too large or embedding backlog`;
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['t-auth', makeSkeleton({ indexStatus: 'failed', indexError: timeout('e4d401c6'), indexRetryCount: 3, errorClass: 'auth_failed' })],
 			['t-rate', makeSkeleton({ indexStatus: 'failed', indexError: timeout('aaaa429b'), indexRetryCount: 3, errorClass: 'rate_limit' })],
 			['t-503', makeSkeleton({ indexStatus: 'failed', indexError: timeout('bbbb502c'), indexRetryCount: 3, errorClass: 'service_503' })],
@@ -1907,7 +1907,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	// never present a row whose recorded message is a timeout: the operator would
 	// be asked to certify a key rotation (#3984 guard) that cannot repair it.
 	test('cleanup_failed: a timeout row is not selected as auth_failed (#4440)', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['t-timeout', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'Indexing timeout for claude-d--x--e4d401c6 after 300000ms',
@@ -1935,7 +1935,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 		// Stuck retry: indexStatus='retry' AND retryCount >= MAX_RETRY_ATTEMPTS (3).
 		// These tasks pre-date #886 — they never flipped to 'failed' but the
 		// operator needs to see them. isStuckRetry() is the single source of truth.
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['stuck-1', makeSkeleton({
 				indexStatus: 'retry',
 				indexError: 'Indexing timeout 300000ms',
@@ -1962,7 +1962,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	});
 
 	test('status stall hint: queue=0 but failed>0 nudges operator to cleanup_failed', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['failed-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'quota exceeded',
@@ -1991,7 +1991,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	});
 
 	test('cleanup_failed dry_run=true (default) reports candidates without reset', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['f-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'Claude Code session not found',
@@ -2022,7 +2022,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	});
 
 	test('cleanup_failed error_class filter narrows to matching class', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['f-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'Claude Code session not found',
@@ -2047,7 +2047,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	});
 
 	test('cleanup_failed dry_run=false executes reset + dead-letter + save', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['f-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'Claude Code session not found',
@@ -2093,7 +2093,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	});
 
 	test('cleanup_failed g6b: a TRANSIENT class is handed to the leader and NOT parked', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['e-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'Indexing timeout after 300000ms',
@@ -2131,7 +2131,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	});
 
 	test('cleanup_failed skips non-failed and non-stuck-retry tasks', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['healthy', makeSkeleton({
 				indexStatus: 'success',
 				indexError: undefined,
@@ -2162,7 +2162,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	});
 
 	test('cleanup_failed auth_failed emits operator warning note (anti-#1767-self-helix guard)', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['auth-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: '401 Unauthorized',
@@ -2196,7 +2196,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	// #2766 S3: dead-letter mirror is class-conditional. Transient errors must NOT be
 	// dead-lettered (they should re-enter the queue to retry), only permanent ones park.
 	test('cleanup_failed #2766 S3: transient error (rate_limit) is reset-only, NOT dead-lettered', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['t-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'rate limit exceeded',
@@ -2238,7 +2238,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	// say so (measured 28/10, ai-01: [EXECUTED] reset=100, only 1 retried).
 	// ============================================================
 	test('cleanup_failed g6: request-file append failure reports not_persisted + isError (no lying [EXECUTED])', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['f-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'rate limit exceeded',
@@ -2272,7 +2272,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	});
 
 	test('cleanup_failed g6: without host-process state the reset cannot persist — honest isError, no silent in-memory-only [EXECUTED]', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['f-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'rate limit exceeded',
@@ -2294,7 +2294,7 @@ describe('roosync_indexing cleanup_failed + status retrofit (#2766 S2+ P1 follow
 	});
 
 	test('cleanup_failed #2766 S3: mixed permanent + transient splits dead-letter vs reset-for-retry', async () => {
-		const cache = new Map<string, ConversationSkeleton>([
+		const cache = new Map<string, StoredConversation>([
 			['perm-1', makeSkeleton({
 				indexStatus: 'failed',
 				indexError: 'Claude Code session not found',

@@ -49,11 +49,11 @@ vi.mock('../../../services/openai.js', () => ({
 
 // Import the module under test (static import, mocks are hoisted)
 import { handleDiagnoseSemanticIndex, _resetConnectivityCache, _classifyOpenAIError, _classifyDeepDiagnosticError } from '../diagnose-index.tool.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 describe('diagnose-index.tool (unit tests)', () => {
 	const origEnv = { ...process.env };
-	let conversationCache: Map<string, ConversationSkeleton>;
+	let conversationCache: Map<string, StoredConversation>;
 
 	// Helper function to set up default mocks (healthy state)
 	const setupDefaultMocks = () => {

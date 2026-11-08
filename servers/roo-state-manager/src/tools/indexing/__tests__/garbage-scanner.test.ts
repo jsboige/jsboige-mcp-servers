@@ -6,7 +6,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Mock Qdrant client
 vi.mock('../../../services/qdrant.js', () => ({
@@ -70,7 +70,7 @@ describe('garbage-scanner', () => {
 
 	describe('scanForGarbage - death spiral detection', () => {
 		test('detects repeated 502 errors (death spiral)', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('death-spiral-task', {
 				taskId: 'death-spiral-task',
 				metadata: {
@@ -103,7 +103,7 @@ describe('garbage-scanner', () => {
 			// `e4d502c6` inside an ordinary message counted every turn as an error.
 			// ms#1534 fixed the same trap in the indexing classifier; this locks the
 			// scanner onto the shared boundary-aware helper.
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('uuid-502-task', {
 				taskId: 'uuid-502-task',
 				metadata: {
@@ -127,7 +127,7 @@ describe('garbage-scanner', () => {
 		});
 
 		test('a bare 502 still counts as an error turn', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('bare-502-task', {
 				taskId: 'bare-502-task',
 				metadata: {
@@ -150,7 +150,7 @@ describe('garbage-scanner', () => {
 		});
 
 		test('detects repeated timeout errors', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('timeout-spiral', {
 				taskId: 'timeout-spiral',
 				metadata: {
@@ -175,7 +175,7 @@ describe('garbage-scanner', () => {
 		});
 
 		test('does not flag normal errors as death spiral', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('normal-errors', {
 				taskId: 'normal-errors',
 				metadata: {
@@ -207,7 +207,7 @@ describe('garbage-scanner', () => {
 
 	describe('scanForGarbage - duplicate detection', () => {
 		test('detects duplicate skeletons with same metadata', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const baseMetadata = {
 				messageCount: 20,
 				actionCount: 10,
@@ -245,7 +245,7 @@ describe('garbage-scanner', () => {
 		});
 
 		test('keeps first occurrence of duplicate group', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			const baseMetadata = {
 				messageCount: 15,
 				actionCount: 5,
@@ -281,7 +281,7 @@ describe('garbage-scanner', () => {
 
 	describe('scanForGarbage - all categories combined', () => {
 		test('scans all categories when category=all', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 
 			// Death spiral task - 10 identical error messages
 			cache.set('death-spiral', {
@@ -326,7 +326,7 @@ describe('garbage-scanner', () => {
 		});
 
 		test('respects max_results parameter', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 
 			// Create 5 death spiral tasks
 			for (let i = 1; i <= 5; i++) {
@@ -355,7 +355,7 @@ describe('garbage-scanner', () => {
 		});
 
 		test('respects min_messages parameter', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 
 			cache.set('small-task', {
 				taskId: 'small-task',
@@ -388,7 +388,7 @@ describe('garbage-scanner', () => {
 
 	describe('scanForGarbage - summary statistics', () => {
 		test('calculates total_size_flagged correctly', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('task-1', {
 				taskId: 'task-1',
 				metadata: {
@@ -424,7 +424,7 @@ describe('garbage-scanner', () => {
 		});
 
 		test('estimates vectors correctly', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('task-1', {
 				taskId: 'task-1',
 				metadata: {
@@ -453,7 +453,7 @@ describe('garbage-scanner', () => {
 
 	describe('cleanupGarbage', () => {
 		test('does not remove skeletons when remove_skeletons=false', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('keep-task', {
 				taskId: 'keep-task',
 				metadata: {
@@ -492,7 +492,7 @@ describe('garbage-scanner', () => {
 		});
 
 		test('removes tasks from cache when remove_skeletons=true', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('task-to-remove', {
 				taskId: 'task-to-remove',
 				metadata: {
@@ -530,7 +530,7 @@ describe('garbage-scanner', () => {
 		});
 
 		test('accumulates cache size in space_freed_bytes', async () => {
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('task-1', {
 				taskId: 'task-1',
 				metadata: {
@@ -581,7 +581,7 @@ describe('garbage-scanner', () => {
 					...overrides,
 				},
 				sequence,
-			} as ConversationSkeleton;
+			} as StoredConversation;
 		}
 		function makeCandidate(taskId: string, messageCount = 10) {
 			return {
@@ -603,7 +603,7 @@ describe('garbage-scanner', () => {
 		// ─── cleanupGarbage: vector removal path (source L385-405, never exercised before) ───
 		describe('cleanupGarbage — vector removal', () => {
 			test('deletes Qdrant vectors and counts them when remove_vectors=true', async () => {
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				cache.set('vec-task', makeSkeleton('vec-task'));
 				const deleteSpy = vi.fn().mockResolvedValue({ status: 'completed' });
 				const { getQdrantClient } = await import('../../../services/qdrant.js');
@@ -625,7 +625,7 @@ describe('garbage-scanner', () => {
 			});
 
 			test('records an error when Qdrant delete rejects', async () => {
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				cache.set('vec-fail', makeSkeleton('vec-fail'));
 				const deleteSpy = vi.fn().mockRejectedValue(new Error('Qdrant unreachable'));
 				const { getQdrantClient } = await import('../../../services/qdrant.js');
@@ -645,7 +645,7 @@ describe('garbage-scanner', () => {
 		// ─── cleanupGarbage: defaults + edge cases ───
 		describe('cleanupGarbage — defaults & edges', () => {
 			test('defaults to removing both skeletons and vectors when options are unset (source L341-342)', async () => {
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				cache.set('def-task', makeSkeleton('def-task', [], { totalSize: 1000 }));
 			// Module-level mock returns objects, but the real contract is string[] (L72) —
 			// override so path.join(locations[0]) works and the file-removal path is exercised.
@@ -665,7 +665,7 @@ describe('garbage-scanner', () => {
 
 			test('skips a missing skeleton file gracefully (ENOENT) but still clears the cache entry', async () => {
 				vi.mocked(fs.stat).mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				cache.set('missing', makeSkeleton('missing', [], { totalSize: 750 }));
 
 				const result = await cleanupGarbage(cache, [makeCandidate('missing', 10)], {
@@ -695,7 +695,7 @@ describe('garbage-scanner', () => {
 		// ─── detectDeathSpiral: normalization + threshold boundary + streak reset ───
 		describe('scanForGarbage — death spiral deep branches', () => {
 			test('detects a spiral despite differing timestamps (normalization strips them, source L105-110)', async () => {
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				cache.set(
 				'ts-spiral',
 				makeSkeleton(
@@ -719,7 +719,7 @@ describe('garbage-scanner', () => {
 			});
 
 			test('does NOT flag at 4 consecutive identical errors (threshold is 5, source L67/L131)', async () => {
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				cache.set('border', makeSkeleton('border', Array(4).fill({ role: 'assistant', content: 'Error 502 bad gateway' })));
 
 				const result = await scanForGarbage(cache, { category: 'death_spiral', min_messages: 10 });
@@ -728,7 +728,7 @@ describe('garbage-scanner', () => {
 			});
 
 			test('an intervening non-error message resets the streak (source L123-126)', async () => {
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				cache.set(
 				'reset',
 				makeSkeleton('reset', [
@@ -747,7 +747,7 @@ describe('garbage-scanner', () => {
 		// ─── duplicate score cap ───
 		describe('scanForGarbage — duplicate score cap', () => {
 			test('caps duplicate score at 1.0 for large groups (source L285)', async () => {
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				for (let i = 0; i < 10; i++) {
 				cache.set(`d-${i}`, makeSkeleton(`d-${i}`, [], { messageCount: 15, totalSize: 3000 }));
 				}
@@ -769,7 +769,7 @@ describe('garbage-scanner', () => {
 				// unsatisfiable (errorCount<=assistantCount always 	 errorRatio<=assistantRatio). Realistic low_value:
 				// task mostly user retries; assistant barely responds & errors when it does.
 				// 100 msgs = 3 assistant-error + 97 user 	 assistantRatio=0.03<0.05 ∧ errorRatio=3/3=1.0>0.5 	 flagged.
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				cache.set(
 				'lv-flag',
 				makeSkeleton(
@@ -789,7 +789,7 @@ describe('garbage-scanner', () => {
 
 			test('does NOT flag a healthy task with a normal assistantRatio (acceptance #3 — no over-flagging)', async () => {
 				// 100 msgs = 60 assistant (5 errors) + 40 user 	 assistantRatio=0.6 ≥ 0.05 	 first gate fails.
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				cache.set(
 				'lv-healthy',
 				makeSkeleton(
@@ -812,7 +812,7 @@ describe('garbage-scanner', () => {
 			test('does NOT flag an all-assistant-error task: assistantRatio=1.0 ≥ 0.05 (preserves original #686 spirit, correct reasoning)', async () => {
 				// Was the #686 characterization (locked the buggy unreachable behavior). Under #689 this task is
 				// STILL not flagged, but for the right reason: assistantRatio=20/20=1.0 fails the <0.05 gate.
-				const cache = new Map<string, ConversationSkeleton>();
+				const cache = new Map<string, StoredConversation>();
 				cache.set('lv-allassist', makeSkeleton('lv-allassist', Array(20).fill({ role: 'assistant', content: 'Error 502 bad gateway' })));
 
 				const result = await scanForGarbage(cache, { category: 'low_value', min_messages: 10 });
