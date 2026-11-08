@@ -4,7 +4,7 @@
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { buildSkeletonCacheDefinition, handleBuildSkeletonCache } from "../build-skeleton-cache.tool.js";
-import type { StoredConversation } from "../../../types/conversation.js";
+import type { StoredConversation } from "../../../services/unified-store/types.js";
 
 // Mocks
 const mockReaddir = vi.fn();
@@ -526,7 +526,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, vi } from "vit
 import * as pathReal from "path";
 import * as os from "os";
 import { handleBuildSkeletonCache } from "../build-skeleton-cache.tool.js";
-import type { StoredConversation } from "../../../types/conversation.js";
+import type { StoredConversation } from "../../../services/unified-store/types.js";
 
 // Variables pour les vraies fonctions fs (initialisées dans beforeAll)
 // NE PAS importer de "fs" car le mock global intercepte tout
