@@ -77,11 +77,11 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 }));
 
 import { handleRooSyncSummarize, roosyncSummarizeTool } from '../roosync-summarize.tool.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ─────────────────── helpers ───────────────────
 
-function makeConversation(taskId = 'task-001'): ConversationSkeleton {
+function makeConversation(taskId = 'task-001'): StoredConversation {
   return {
     taskId,
     metadata: {
@@ -90,7 +90,7 @@ function makeConversation(taskId = 'task-001'): ConversationSkeleton {
       timestamp: '2026-01-01T00:00:00.000Z',
     },
     messages: [],
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
 const mockGetConversationSkeleton = vi.fn();

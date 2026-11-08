@@ -13,7 +13,7 @@
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { StateManagerError } from '../../types/errors.js';
 import { ConversationAnalysis } from '../../models/synthesis/SynthesisModels.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { SynthesisOrchestratorService } from '../../services/synthesis/SynthesisOrchestratorService.js';
 import { NarrativeContextBuilderService } from '../../services/synthesis/NarrativeContextBuilderService.js';
 import { LLMService } from '../../services/synthesis/LLMService.js';
@@ -70,7 +70,7 @@ export const getConversationSynthesisTool: Tool = {
  */
 export async function handleGetConversationSynthesis(
     args: GetConversationSynthesisArgs,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>
 ): Promise<string | ConversationAnalysis> {
     try {
         // Valider les arguments
@@ -125,7 +125,7 @@ export async function handleGetConversationSynthesis(
  */
 async function generateRealSynthesis(
     taskId: string,
-    getConversationSkeleton: (taskId: string) => Promise<ConversationSkeleton | null>
+    getConversationSkeleton: (taskId: string) => Promise<StoredConversation | null>
 ): Promise<ConversationAnalysis> {
     // Vérifier que la conversation existe
     const skeleton = await getConversationSkeleton(taskId);
@@ -142,7 +142,7 @@ async function generateRealSynthesis(
     const llmService = new LLMService();
     
     // ✅ SDDD FIX: Créer et peupler le cache avec les vraies conversations
-    const conversationCache = new Map<string, ConversationSkeleton>();
+    const conversationCache = new Map<string, StoredConversation>();
     await populateConversationCache(conversationCache);
     
     const contextBuilder = new NarrativeContextBuilderService({
@@ -417,7 +417,7 @@ function generateMockSiblingIds(taskId: string, count: number): string[] {
  *
  * @param conversationCache Cache à peupler
  */
-async function populateConversationCache(conversationCache: Map<string, ConversationSkeleton>): Promise<void> {
+async function populateConversationCache(conversationCache: Map<string, StoredConversation>): Promise<void> {
     console.log('🔄 [SDDD FIX] Chargement du cache des conversations...');
     
     try {
@@ -448,7 +448,7 @@ async function populateConversationCache(conversationCache: Map<string, Conversa
                             skeletonContent = skeletonContent.slice(1);
                         }
                         
-                        const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
+                        const skeleton: StoredConversation = JSON.parse(skeletonContent);
                         if (skeleton && skeleton.taskId) {
                             conversationCache.set(skeleton.taskId, skeleton);
                             totalLoaded++;

@@ -80,7 +80,7 @@ import {
 } from '../get-conversation-synthesis.tool.js';
 import { StateManagerError } from '../../../types/errors.js';
 import { ConversationAnalysis } from '../../../models/synthesis/SynthesisModels.js';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // ============================================================
 // Test data
@@ -106,7 +106,7 @@ const sampleAnalysis: ConversationAnalysis = {
     },
 };
 
-const sampleSkeleton: ConversationSkeleton = {
+const sampleSkeleton: StoredConversation = {
     taskId: 'task-123',
     metadata: {
         lastActivity: '2026-02-20T10:00:00Z',
@@ -116,7 +116,7 @@ const sampleSkeleton: ConversationSkeleton = {
         totalSize: 1024,
         workspace: '/test/workspace',
     },
-} as ConversationSkeleton;
+} as StoredConversation;
 
 // ============================================================
 // Tests
