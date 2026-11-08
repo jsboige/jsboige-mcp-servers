@@ -372,7 +372,34 @@ const MODE_PROMPT_MARKER = /<slug>[^<]{0,60}<\/slug>[\s\S]{0,4}<name>|(?:^|\\r?\
 const JSON_ESCAPED_QUOTES_PER_100 = 1;
 const JSON_KEYS_PER_100 = 1.5;
 
-export type MachineOutputKind = 'tool_call' | 'tool_result' | 'env_details' | 'mode_prompt' | 'json_escaped' | 'json';
+export type MachineOutputKind = 'tool_call' | 'tool_result' | 'env_details' | 'mode_prompt' | 'json_escaped' | 'json' | 'table_render';
+
+/**
+ * #2609 q4: a terminal-rendered table is machine output even when it carries no
+ * JSON and no tool marker — measured 2026-11-08 on the registry wording, where a
+ * 394-char aligned listing (`code-simple 019d4094 14 REGLE ABSOLUE…`, columns
+ * padded with runs of spaces, one hanging continuation line) held a reserved
+ * passage slot as if it were prose.
+ *
+ * The rule is deliberately narrow, because the slot it frees is a slot a lane's
+ * OWN table could occupy (ai-01, 08/11: "sans ce témoin, la règle libère un slot
+ * en en vidant un autre"). Three conjunctive conditions, each excluding a class
+ * of authored content:
+ *   1. no `|`  — a markdown/ASCII table a human writes keeps its pipes;
+ *   2. at least half the lines carry an INTERNAL run of 3+ spaces (column gap
+ *      between two non-spaces), which is column alignment, not justification;
+ *   3. at least one line is INDENTED by 4+ spaces, which is a wrapped cell
+ *      continuing under its column — an authored aligned table starts each row
+ *      at column 0.
+ */
+function looksLikeRenderedTable(content: string): boolean {
+    if (content.includes('|')) return false;
+    const lines = content.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    if (lines.length < 3) return false;
+    const padded = lines.filter((line) => /\S {3,}\S/.test(line)).length;
+    const indented = lines.filter((line) => /^ {4,}\S/.test(line)).length;
+    return padded >= Math.ceil(lines.length / 2) && indented >= 1;
+}
 
 export function classifyMachineOutput(chunkType: unknown, content: string): MachineOutputKind | null {
     if (chunkType === 'tool_interaction') return 'tool_call';
@@ -385,6 +412,7 @@ export function classifyMachineOutput(chunkType: unknown, content: string): Mach
     const per100 = (n: number) => n / Math.max(1, head.length / 100);
     if (per100((head.match(/\\"/g) || []).length) >= JSON_ESCAPED_QUOTES_PER_100) return 'json_escaped';
     if (per100((head.match(/"[A-Za-z_][\w-]*"\s*:/g) || []).length) >= JSON_KEYS_PER_100) return 'json';
+    if (looksLikeRenderedTable(content)) return 'table_render';
     return null;
 }
 

@@ -3440,6 +3440,38 @@ describe('#4352 machine-output de-rank', () => {
 		expect(classifyMachineOutput('message_exchange', 'Le champ "workspace": il manque sur un tiers des points, d\'où le filtre aveugle sur ces conversations anciennes.')).toBeNull();
 	});
 
+	test('#2609 q4: a terminal-rendered table is machine output — an authored table is NOT', () => {
+		// Positive, measured live 2026-11-08 (registry wording, top-3 rank 3): a
+		// 394-char aligned listing, column padding + one hanging continuation line,
+		// holding a reserved passage slot as if it were prose.
+		const RENDERED = "mati                                    \r\n03-30 23:12 code-simple          019d4094   14 REGLE ABSOLUE: JAMAIS demander a l'utilisateur, JAMAIS poser de         \r\n                                               question, JAMAIS demander confirmati                                    \r\n03-30 23:10 code-simple          019d4091    6 REGLE ABSOLUE: JAMAIS demander a l'utilisateur, JAMAIS poser de";
+		expect(RENDERED.length).toBeGreaterThan(100);
+		expect(classifyMachineOutput('message_exchange', RENDERED)).toBe('table_render');
+
+		// Negative controls (ai-01, 08/11: the rule must not free a slot by
+		// emptying another) — the authored shapes a lane actually writes.
+		// 1. a markdown arbitration table keeps its pipes;
+		expect(classifyMachineOutput('message_exchange', [
+			'| Question | Statut | Lane |',
+			'|---|---|---|',
+			'| Q37 fil narratif #17978 | ouverte | po-2023 |',
+			'| Q38 suppression du registre | repondue | po-2026 |',
+		].join('\n'))).toBeNull();
+		// 2. an aligned plain-text table: every row starts at column 0, no hanging
+		//    continuation under a column — that is authorship, not a render;
+		expect(classifyMachineOutput('message_exchange', [
+			'Question                       Statut     Lane',
+			'Q37 fil narratif #17978        ouverte    po-2023',
+			'Q38 suppression du registre    repondue   po-2026',
+		].join('\n'))).toBeNull();
+		// 3. wrapped prose with one indented line is still prose (no column gaps).
+		expect(classifyMachineOutput('message_exchange', [
+			'Le cycle s\'est arrete avant tout travail : le disque D etait sous les cinq pour cent libres.',
+			'    La regle flotte impose l\'arret, et la lane a rendu la main sans rien produire.',
+			'Le lendemain, le disque a ete nettoye et le meme grain est reparti.',
+		].join('\n'))).toBeNull();
+	});
+
 	// ---------------------------------------------------------------
 	// #2609 (measured 2026-11-03): mode prompts are indexed as ordinary
 	// message_exchange text and competed with human passages.
