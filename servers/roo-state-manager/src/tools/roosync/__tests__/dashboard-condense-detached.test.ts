@@ -50,6 +50,22 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   ...mocks,
 }));
 
+// #4608 — spies sur l'état de santé durable de la condensation. La machine à
+// états elle-même vit dans condense-health.test.ts ; ici on vérifie le CÂBLAGE :
+// tentative marquée au départ de la passe, issue marquée à l'atterrissage,
+// passe morte d'un hôte précédent consignée puis relancée au prochain append.
+// Mêmes defaults que le module réel sans PG : « pas d'opinion ».
+const condenseHealthMocks = vi.hoisted(() => ({
+  markCondenseAttempt: vi.fn(async () => {}),
+  markCondenseOutcome: vi.fn(async () => {}),
+  markDeadPassRecovered: vi.fn(async () => {}),
+  isDeadPass: vi.fn(() => false),
+  readCondenseHealth: vi.fn(async () => null),
+  noteOverThreshold: vi.fn(async () => ({ warn: false, hoursOver: 0 })),
+  condenseStallWarnCooldownMs: vi.fn(() => 6 * 60 * 60 * 1000),
+}));
+vi.mock('../condense-health.js', () => condenseHealthMocks);
+
 // #4536 — capture du WARN de l'échec détaché : le diag complet doit voyager
 // dans le log, pas seulement {key, elapsedMs, error}. `vi.hoisted` car
 // `createLogger()` tourne à l'éval de dashboard.ts, avant le corps de ce
@@ -201,6 +217,22 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     mocks.readDashboardSharedLock.mockResolvedValue(null);
     mocks.fetchArchivedDashboardMessageIds.mockResolvedValue(null);
     mocks.getDashboardPgReader.mockReturnValue(null);
+    // #4608 — re-arm des spies condense-health (mockReset wipe les impls des
+    // vi.hoisted, pattern du fichier) : defaults = dégradation sans PG.
+    condenseHealthMocks.markCondenseAttempt.mockReset();
+    condenseHealthMocks.markCondenseAttempt.mockResolvedValue(undefined);
+    condenseHealthMocks.markCondenseOutcome.mockReset();
+    condenseHealthMocks.markCondenseOutcome.mockResolvedValue(undefined);
+    condenseHealthMocks.markDeadPassRecovered.mockReset();
+    condenseHealthMocks.markDeadPassRecovered.mockResolvedValue(undefined);
+    condenseHealthMocks.isDeadPass.mockReset();
+    condenseHealthMocks.isDeadPass.mockReturnValue(false);
+    condenseHealthMocks.readCondenseHealth.mockReset();
+    condenseHealthMocks.readCondenseHealth.mockResolvedValue(null);
+    condenseHealthMocks.noteOverThreshold.mockReset();
+    condenseHealthMocks.noteOverThreshold.mockResolvedValue({ warn: false, hoursOver: 0 });
+    condenseHealthMocks.condenseStallWarnCooldownMs.mockReset();
+    condenseHealthMocks.condenseStallWarnCooldownMs.mockReturnValue(6 * 60 * 60 * 1000);
   });
 
   afterEach(async () => {
@@ -583,5 +615,72 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
         outcome: 'llm-failed-injected',
       },
     });
+  });
+
+  it('marque la tentative au départ de la passe et l\'issue ok à l\'atterrissage (#4608)', async () => {
+    const { key, status } = await populateBelowThreshold();
+
+    const a = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: crossingContent(status, 'SANTE-4608-OK'),
+      tags: ['INFO'],
+    });
+    expect(a.condensationDeferred).toBe(true);
+    // La tentative est déjà visible à l'instant où l'append rend la main :
+    // tout hôte qui touche la clé pendant le vol de la passe sait qu'elle est
+    // vivante (et peut, plus tard, dire qu'elle est morte).
+    expect(condenseHealthMocks.markCondenseAttempt).toHaveBeenCalledWith(key);
+
+    await awaitDetachedCondense(key);
+
+    expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'ok');
+  });
+
+  it('marque l\'issue error durablement quand la passe détachée échoue (#4608)', async () => {
+    const { key, status } = await populateBelowThreshold();
+    fsFail.archiveWriteFails = true;
+
+    await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: crossingContent(status, 'SANTE-4608-ERR'),
+      tags: ['INFO'],
+    });
+    await awaitDetachedCondense(key);
+
+    // L'échec doit survivre au process qui l'a lancé — c'est le cœur de #4608
+    // (`detachedCondenseOutcomes` in-process ne le voyait pas).
+    expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'error');
+  });
+
+  it('consigne puis relance au prochain append une passe morte d\'un hôte précédent (#4608)', async () => {
+    const { key, status } = await populateBelowThreshold();
+    // Un hôte précédent est mort en plein vol : sa marque `attempting` dépasse
+    // l'horizon de passe morte (30 min). Mesuré en prod 08/11 : la seule trace
+    // était la ligne de verrou PG orpheline — aucune reprise automatique.
+    condenseHealthMocks.readCondenseHealth.mockResolvedValue({
+      lastAttemptAt: new Date(Date.now() - 31 * 60_000).toISOString(),
+      lastOutcome: 'attempting',
+      lastSuccessAt: null,
+      overThresholdSince: null,
+      lastWarnAt: null,
+    });
+    condenseHealthMocks.isDeadPass.mockReturnValue(true);
+
+    const a = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: crossingContent(status, 'SANTE-4608-DEAD'),
+      tags: ['INFO'],
+    });
+    expect(a.condensationDeferred).toBe(true);
+    // La mort est consignée (visible pour les opérateurs), puis la nouvelle
+    // passe part normalement — la relance EST la passe de cet append.
+    expect(condenseHealthMocks.markDeadPassRecovered).toHaveBeenCalledWith(key);
+    expect(condenseHealthMocks.markCondenseAttempt).toHaveBeenCalledWith(key);
+
+    await awaitDetachedCondense(key);
+    expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'ok');
   });
 });

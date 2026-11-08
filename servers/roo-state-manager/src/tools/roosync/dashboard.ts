@@ -78,6 +78,17 @@ import {
 } from '../../services/unified-store/roosync-dashboard-store.js';
 import { isPgFlagOn, pgFlagState } from '../../services/unified-store/pg-flags.js';
 import { isDashboardReadPgEnabled } from '../../services/unified-store/pg-read-gates.js';
+// #4608 — état de condensation durable par clé (roosync_store_meta) : passe
+// morte, issue de passe et horloge de station au-dessus du seuil.
+import {
+  isDeadPass,
+  markCondenseAttempt,
+  markCondenseOutcome,
+  markDeadPassRecovered,
+  noteOverThreshold,
+  condenseStallWarnCooldownMs,
+  readCondenseHealth,
+} from './condense-health.js';
 // #3782: journal-level retirement mark (mark, never DELETE — gel des purges)
 import type { DashboardRetirementMark } from '../../services/unified-store/types.js';
 // #3482-follow: the fork predicate + root recovery live in the reconcile
@@ -2171,6 +2182,17 @@ function startDetachedCondense(
             : 'ok',
         diag,
       });
+      // #4608 — même verdict, côté DURABLE : fork/dégradé = l'écriture n'est pas
+      // garantie d'avoir atterri côté canon → `error` (l'horloge continue) ;
+      // sinon le rétrécissement a atterri (`truncated` pour le repli #1792).
+      await markCondenseOutcome(
+        key,
+        condenseWv?.forkSuspected || condenseWv?.gdriveDegraded
+          ? 'error'
+          : diag.outcome === 'fallback-truncated'
+            ? 'truncated'
+            : (diag.archivedMessageCount ?? 0) > 0 ? 'ok' : 'error'
+      );
     } catch (err) {
       diag.outcome = 'llm-failed-injected';
       diag.elapsedMs = Date.now() - startedAt;
@@ -2180,6 +2202,9 @@ function startDetachedCondense(
         error: err instanceof Error ? err.message : String(err),
         diag,
       });
+      // #4608 — l'échec d'une passe détachée mourait avec son hôte ; il est
+      // désormais durable pour le prochain append (relance) et l'organe [WARN].
+      await markCondenseOutcome(key, 'error');
       // #4536 — le diag COMPLET voyage dans le warn : {key, elapsedMs, error}
       // seul ne disait rien de la cause (jambe en échec, tentatives, repli).
       logger.warn('Detached condensation failed — message and previous status intact (#4527)', {
@@ -8868,6 +8893,20 @@ async function handleAppend(
         pid: process.pid,
         acquiredAt: new Date().toISOString()
       };
+      // #4608 — relance de la passe morte : un marqueur `attempting` plus vieux
+      // que l'horizon mort signifie que l'hôte qui portait la passe est mort
+      // avec elle (#4527 : la passe détachée vit dans le process hôte). La
+      // relecture DURABLE remplace la mémoire du process lanceur — invisible
+      // aux autres hôtes ; la passe que cet append s'apprête à lancer EST la
+      // relance. Le vol du verrou à TTL existe déjà (tryAcquireCondenseLock).
+      const prevHealth = await readCondenseHealth(key);
+      if (isDeadPass(prevHealth)) {
+        logger.warn('Dead detached condensation pass detected — relaunching at this append (#4608)', {
+          key,
+          lastAttemptAt: prevHealth?.lastAttemptAt ?? null,
+        });
+        await markDeadPassRecovered(key);
+      }
       const gotCondenseLock = await tryAcquireCondenseLock(key, lockHolder);
       if (!gotCondenseLock) {
         // Another agent holds the condense lock. Skip — message is already on disk
@@ -8888,6 +8927,10 @@ async function handleAppend(
         // que le message est persisté (il l'est déjà, on est après WRITE-FIRST).
         // Le verrou est tenu par la passe et relâché dans son `finally`.
         condensationDeferred = true;
+        // #4608 — marqueur durable AVANT le lancement : si cet hôte meurt avec
+        // la passe, le prochain append (n'importe quel hôte) verra `attempting`
+        // périmé et saura que la relance est à lui.
+        await markCondenseAttempt(key);
         startDetachedCondense(key, updatedDashboard, effectiveKeep, payloadHash, lockHolder);
       } else {
         // #4527 — chemin synchrone historique, conservé sous CONDENSE_DETACHED=0.
@@ -8896,6 +8939,8 @@ async function handleAppend(
         // threw, not a hardcoded 0 (the one path where the LLM's churn time is
         // the signal the operator needs).
         const tCondense = Date.now();
+        // #4608 — même marqueur durable que le chemin détaché.
+        await markCondenseAttempt(key);
         try {
           const beforeCount = updatedDashboard.intercom.messages.length;
           const condenseDiag = newDiagnostic('post-append');
@@ -8905,6 +8950,15 @@ async function handleAppend(
           const newlyArchived = beforeCount - finalDashboard.intercom.messages.length;
           archivedCount = newlyArchived;
           condensed = newlyArchived > 0;
+          // #4608 — issue durable : `truncated` a atterri un rétrécissement lui
+          // aussi (le repli réécrit le dashboard, #1792) et désarme l'horloge
+          // de station ; 0 archivé = la passe n'a rien produit, l'horloge court.
+          await markCondenseOutcome(
+            key,
+            condenseDiag.outcome === 'fallback-truncated'
+              ? 'truncated'
+              : condensed ? 'ok' : 'error'
+          );
 
           // #2464: Update hash cache after successful condensation
           if (condensed) {
@@ -8934,6 +8988,8 @@ async function handleAppend(
             key,
             error: condenseErr instanceof Error ? condenseErr.message : String(condenseErr)
           });
+          // #4608 — issue durable : l'échec doit être visible du prochain hôte.
+          await markCondenseOutcome(key, 'error');
           const failedDiag = newDiagnostic('post-append');
           failedDiag.outcome = 'llm-failed-injected';
           failedDiag.elapsedMs = Date.now() - tCondense; // #4131: real duration, was hardcoded 0
@@ -9458,6 +9514,100 @@ export function classifyMirrorDivergence(
   };
 }
 
+// ─── #4608 — organe de détection de station de condensation ───────────────────
+//
+// Mesuré 08/11 : des dashboards ACTIFS restent >100 % du cap pendant des jours
+// sans qu'aucune passe n'atterrisse et sans aucun signal (po-2027 114 %,
+// po-2025 108 %, web1 105 % ; zero alerte FALLBACK TRUNCATION sur global →
+// les passes meurent avant leur issue, avec leur hôte #4527). L'organe rend
+// la station VISIBLE : horloge durable (condense-health.ts, roosync_store_meta),
+// un seul [WARN] par clé et par cooldown, posé SUR le dashboard concerné — la
+// lane qui le lit voit la panne là où elle travaille.
+
+/**
+ * One list-side sighting of a key over the condensation threshold. Returns
+ * summary annotations on the warn pass (visible in the list result), `{}` in
+ * every other case. Never throws — the list must not fail on the organ.
+ */
+async function condenseStallSighting(
+  key: string,
+  utilizationPct: number
+): Promise<Record<string, unknown>> {
+  try {
+    const verdict = await noteOverThreshold(key, true);
+    if (!verdict.warn) return {};
+    await postCondensationStallWarn(key, utilizationPct, verdict.hoursOver);
+    return { condensationStalled: true, condensationStalledHours: verdict.hoursOver };
+  } catch (err) {
+    logger.debug('Condensation stall sighting failed (non-fatal)', {
+      key,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return {};
+  }
+}
+
+/**
+ * Post the stall [WARN] ON the stalled dashboard (system-authored, same
+ * family as the truncation fleet alert). Best-effort and lock-disciplined:
+ * `withAppendLock` on the target key, read-modify-write, never throws.
+ */
+async function postCondensationStallWarn(
+  key: string,
+  utilizationPct: number,
+  hoursOver: number
+): Promise<void> {
+  const machineId = process.env.ROOSYNC_MACHINE_ID || 'unknown';
+  const alertAuthor: Author = { machineId, workspace: 'rsm' };
+  const holder: CondenseLockInfo = {
+    machineId,
+    workspace: 'rsm',
+    pid: process.pid,
+    acquiredAt: new Date().toISOString(),
+  };
+  const isoNow = new Date().toISOString();
+  const cooldownH = Math.round(condenseStallWarnCooldownMs() / 3_600_000);
+  const message: IntercomMessage = {
+    id: generateMessageId(machineId, 'rsm'),
+    timestamp: isoNow,
+    author: alertAuthor,
+    tags: ['WARN'],
+    content: `**[WARN] CONDENSATION EN STATION** — ${key}\n\n`
+      + `${key} est resté au-dessus du seuil de condensation (92 %) pendant ~${hoursOver} h `
+      + `(actuellement ${Math.round(utilizationPct)} %) sans qu'aucune passe n'atterrisse (#4608).\n`
+      + `Au prochain append, une relance sera tentée (détection de passe morte, marqueur durable `
+      + `\`condense_state:${key}\` dans roosync_store_meta).\n`
+      + `(organe de détection #4608 ; max 1/${cooldownH} h par dashboard)`,
+  };
+  logger.warn('Dashboard stalled over condensation threshold — WARN posted (#4608)', {
+    key,
+    utilizationPct: Math.round(utilizationPct),
+    hoursOver,
+  });
+  try {
+    await withAppendLock(key, holder, async () => {
+      const target = await readDashboardFile(key);
+      if (!target) return; // clé disparue entre la liste et le post : rien à faire
+      const updated: Dashboard = {
+        ...target,
+        lastModified: isoNow,
+        lastModifiedBy: alertAuthor,
+        intercom: {
+          messages: [...target.intercom.messages, message],
+          totalMessages: target.intercom.totalMessages + 1,
+          lastCondensedAt: target.intercom.lastCondensedAt,
+        },
+      };
+      await writeDashboardFile(key, updated);
+    });
+  } catch (err) {
+    logger.warn('Condensation stall WARN post failed (non-fatal)', {
+      key,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
   // #3459: fail-closed. A missing store must never be reported as "0 dashboards".
   try {
@@ -9530,6 +9680,14 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
             intercomLength: sizes.intercomLength,
             totalLength: sizes.totalLength,
             utilizationPct: sizes.utilizationPct,
+            // #4608 — organe de détection : au-dessus du seuil de condensation
+            // (92 % = PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / MAX), l'horloge de
+            // station est durable et le [WARN] part une seule fois par clé et
+            // par cooldown. Les clés repassées sous le seuil sont désarmées par
+            // markCondenseOutcome (le chemin normal qui les fait descendre).
+            ...(sizes.utilizationPct > 92
+              ? await condenseStallSighting(dashboard.key, sizes.utilizationPct)
+              : {}),
             ...(div.diverged ? {
               mirrorDiverged: true,
               // Review ms#1440 : dans cette branche PG, les compteurs servis
