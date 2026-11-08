@@ -244,9 +244,9 @@ Cette consolidation a suivi rigoureusement la méthodologie **SDDD (Semantic-Doc
 
 ## 📚 Références
 
-- [`RAPPORT_ARCHITECTURE_CONSOLIDATION.md`](./RAPPORT_ARCHITECTURE_CONSOLIDATION.md) - Analyse architecturale complète
-- [`SPECIFICATIONS_API_CONSOLIDEE.md`](./SPECIFICATIONS_API_CONSOLIDEE.md) - Spécifications techniques
-- [`tests/test_read_cells_consolidation.py`](./tests/test_read_cells_consolidation.py) - Tests de validation
+- [`RAPPORT_ARCHITECTURE_CONSOLIDATION.md`](../validation/RAPPORT_ARCHITECTURE_CONSOLIDATION.md) - Analyse architecturale complète
+- [`SPECIFICATIONS_API_CONSOLIDEE.md`](../specifications/SPECIFICATIONS_API_CONSOLIDEE.md) - Spécifications techniques
+- [`tests/test_read_cells_consolidation.py`](../../../tests/test_read_cells_consolidation.py) - Tests de validation
 
 ---
 

@@ -358,8 +358,8 @@ git reset --soft HEAD~1
 
 - **Rapport Migration**: [`RAPPORT-MIGRATION-MCP-JUPYTER.md`](./RAPPORT-MIGRATION-MCP-JUPYTER.md)
 - **Scripts Migration**: [`scripts/README.md`](./scripts/README.md)
-- **Architecture**: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
-- **Setup Conda**: [`CONDA_ENVIRONMENT_SETUP.md`](./CONDA_ENVIRONMENT_SETUP.md)
+- **Architecture**: [`ARCHITECTURE.md`](./docs/consolidation/specifications/ARCHITECTURE.md)
+- **Setup Conda**: [`CONDA_ENVIRONMENT_SETUP.md`](./docs/setup/CONDA_ENVIRONMENT_SETUP.md)
 
 ---
 

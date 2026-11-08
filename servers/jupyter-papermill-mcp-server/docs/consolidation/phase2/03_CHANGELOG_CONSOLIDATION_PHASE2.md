@@ -250,9 +250,9 @@ execute_on_kernel(
 ### 1. Grounding Sémantique Initial
 **Recherches effectuées**:
 - ✅ `"consolidation MCP Jupyter Phase 1A read_cells Phase 1B inspect_notebook patterns"`
-- ✅ Lecture [`SPECIFICATIONS_API_CONSOLIDEE.md`](SPECIFICATIONS_API_CONSOLIDEE.md)
-- ✅ Lecture [`CHANGELOG_CONSOLIDATION_PHASE1A.md`](CHANGELOG_CONSOLIDATION_PHASE1A.md)
-- ✅ Lecture [`CHANGELOG_CONSOLIDATION_PHASE1B.md`](CHANGELOG_CONSOLIDATION_PHASE1B.md)
+- ✅ Lecture [`SPECIFICATIONS_API_CONSOLIDEE.md`](../specifications/SPECIFICATIONS_API_CONSOLIDEE.md)
+- ✅ Lecture [`CHANGELOG_CONSOLIDATION_PHASE1A.md`](../phase1a/01_CHANGELOG_CONSOLIDATION_PHASE1A.md)
+- ✅ Lecture [`CHANGELOG_CONSOLIDATION_PHASE1B.md`](../phase1b/02_CHANGELOG_CONSOLIDATION_PHASE1B.md)
 
 **Documents consultés**:
 - `kernel_service.py` - Implémentations execute_cell, execute_notebook_in_kernel, execute_notebook_cell

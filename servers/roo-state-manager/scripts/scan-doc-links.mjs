@@ -21,12 +21,20 @@
  *   node scripts/scan-doc-links.mjs                 # human summary
  *   node scripts/scan-doc-links.mjs --json          # machine-readable
  *   node scripts/scan-doc-links.mjs --fail-on-dead  # exit 1 if any active dead
+ *   node scripts/scan-doc-links.mjs --root ../sk-agent   # scan another server
  */
 
 import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
 import { join, relative, resolve, dirname, basename, normalize } from 'node:path';
 
-const ROOT = resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+const repoRoot = resolve(new URL('..', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'));
+// `--root <dir>` scans another server of the monorepo (lot 2: jupyter-papermill,
+// sk-agent, jinavigator). Without it the instrument can only measure the server
+// it ships in, and "0 dead links" elsewhere would be an unmeasured claim.
+const rootArgIdx = process.argv.indexOf('--root');
+const ROOT = rootArgIdx > -1 && process.argv[rootArgIdx + 1]
+  ? resolve(process.argv[rootArgIdx + 1])
+  : repoRoot;
 const SKIP_DIRS = new Set(['node_modules', '.git', '__test-data__', 'build', 'build-out', 'temp', 'outputs', 'exports']);
 const FROZEN_PREFIXES = ['docs/reports/', 'docs/suivi/', 'docs/archives/', 'docs/consolidated/', 'docs/fixes/'];
 const LINK_RE = /\[([^\]]*)\]\(([^)]+)\)/g;
@@ -53,11 +61,26 @@ function repoRel(p) {
   return relative(ROOT, p).split('\\').join('/');
 }
 
+/**
+ * Drop code before matching. A fenced block or an inline span is CODE, not a
+ * link — jinavigator's USAGE.md holds `dateRegex = /\b(202\d)[-\/](0[1-9]|1[0-2]).../`
+ * and the bare `[1-9](0[1-9]|1[0-2])` shape read as a markdown link, reporting
+ * two dead targets in a file that has none. An unclosed fence is left alone on
+ * purpose: the failure mode we accept is a reported false positive, never a
+ * real dead link silently hidden.
+ */
+function stripCode(text) {
+  const withoutFences = text.replace(/^(`{3,}|~{3,})[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, '');
+  // Inline spans too. A link whose TEXT is backticked (`[`x`](y)`) survives:
+  // only the span is blanked, the `](y)` after it is outside the span.
+  return withoutFences.replace(/`[^`\n]*`/g, '');
+}
+
 const links = [];
 for (const file of walk(ROOT)) {
   const rel = repoRel(file);
   const frozen = FROZEN_PREFIXES.some((pre) => rel.startsWith(pre));
-  const text = readFileSync(file, 'utf8');
+  const text = stripCode(readFileSync(file, 'utf8'));
   let m;
   while ((m = LINK_RE.exec(text)) !== null) {
     const href = m[2].trim();
