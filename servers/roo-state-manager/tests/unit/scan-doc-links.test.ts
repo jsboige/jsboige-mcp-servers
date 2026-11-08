@@ -26,10 +26,14 @@ const SCRIPT = resolve(
 );
 
 let fixtureRoot: string;
+let codeOnlyRoot: string;
 
 function scan(root: string): {
-  totals: { alive: number; dead_active: number; dead_frozen: number; code_ref: number; cross_repo: number };
-  links: Array<{ file: string; href: string; cls: string }>;
+  totals: {
+    alive: number; dead_active: number; dead_frozen: number; code_ref: number;
+    code_ref_in_range: number; code_ref_dead: number; cross_repo: number;
+  };
+  links: Array<{ file: string; href: string; cls: string; reason?: string; frozen?: boolean }>;
 } {
   const out = execFileSync(process.execPath, [SCRIPT, '--root', root, '--json'], {
     encoding: 'utf8',
@@ -71,6 +75,37 @@ beforeAll(() => {
       '',
     ].join('\n')
   );
+
+  // Lot 3 — code refs: a 10-line .ts target exercises every verdict branch.
+  mkdirSync(join(fixtureRoot, 'src'), { recursive: true });
+  writeFileSync(
+    join(fixtureRoot, 'src', 'probe.ts'),
+    Array.from({ length: 10 }, (_, i) => `// line ${i + 1}`).join('\n') + '\n'
+  );
+  // Frozen source: freezing wins BEFORE any check (c.6719230995 §3) — the
+  // cited line is beyond EOF, and the instrument must still not touch it.
+  mkdirSync(join(fixtureRoot, 'docs', 'suivi'), { recursive: true });
+  writeFileSync(join(fixtureRoot, 'docs', 'suivi', 'frozen-code.md'), '# frozen\n\n[old](../../src/probe.ts:999)\n');
+  writeFileSync(
+    join(fixtureRoot, 'CODE-REFS.md'),
+    [
+      '# code refs',
+      '',
+      '1. in range, single line: [a](src/probe.ts:3)',
+      '2. in range, line range: [b](src/probe.ts:2-5)',
+      '3. single line beyond EOF: [c](src/probe.ts:99)',
+      '4. range end beyond EOF: [d](src/probe.ts:1-99)',
+      '5. inverted range: [e](src/probe.ts:5-2)',
+      '6. missing file: [f](src/nope.ts:1)',
+      '',
+    ].join('\n')
+  );
+
+  // Fail-on-dead probe root: a code_ref_dead ALONE must not trip the gate
+  // flag — it is repair-lot inventory, not a CI gate (c.6719230995 §5).
+  codeOnlyRoot = mkdtempSync(join(tmpdir(), 'scan-doc-links-codeonly-'));
+  writeFileSync(join(codeOnlyRoot, 'gone.ts'), '// 1\n');
+  writeFileSync(join(codeOnlyRoot, 'ONLY-CODE.md'), '# only\n\n[dead](gone.ts:9)\n');
 });
 
 afterAll(() => {
@@ -104,5 +139,51 @@ describe('#2639 lot 2 — scan-doc-links.mjs', () => {
     const totals = scan(fixtureRoot).totals;
     expect(totals.dead_active).toBe(1);
     expect(totals.dead_frozen).toBe(1);
+  });
+});
+
+describe('#2639 lot 3 — code-ref control', () => {
+  test('in-range refs are code_ref_in_range — file exists AND every cited line exists', () => {
+    const inRange = scan(fixtureRoot)
+      .links.filter((l) => l.cls === 'code_ref_in_range')
+      .map((l) => l.href)
+      .sort();
+    expect(inRange).toEqual(['src/probe.ts:2-5', 'src/probe.ts:3']);
+  });
+
+  test('dead reasons are discriminated, one per failure mode', () => {
+    const dead = scan(fixtureRoot)
+      .links.filter((l) => l.cls === 'code_ref_dead')
+      .map((l) => `${l.href}:${l.reason}`)
+      .sort();
+    expect(dead).toEqual([
+      'src/nope.ts:1:FILE_MISSING',
+      'src/probe.ts:1-99:RANGE_INVALID',
+      'src/probe.ts:5-2:RANGE_INVALID',
+      'src/probe.ts:99:LINE_OUT_OF_RANGE',
+    ]);
+  });
+
+  test('a frozen source keeps its code ref UNCONTROLLED even when the line is beyond EOF', () => {
+    const links = scan(fixtureRoot).links;
+    const frozenRef = links.find((l) => l.href === '../../src/probe.ts:999');
+    expect(frozenRef?.cls).toBe('code_ref');
+    expect(frozenRef?.frozen).toBe(true);
+    expect(links.filter((l) => l.href === '../../src/probe.ts:999' && l.cls === 'code_ref_dead')).toHaveLength(0);
+  });
+
+  test('self-agreement (c.6719230995 §4): two runs return byte-identical JSON', () => {
+    const a = execFileSync(process.execPath, [SCRIPT, '--root', fixtureRoot, '--json'], { encoding: 'utf8' });
+    const b = execFileSync(process.execPath, [SCRIPT, '--root', fixtureRoot, '--json'], { encoding: 'utf8' });
+    expect(a).toBe(b);
+  });
+
+  test('a code_ref_dead alone never trips --fail-on-dead (repair inventory, not a gate)', () => {
+    // gone.ts has 1 line, the ref cites line 9 → code_ref_dead, and the run
+    // still exits 0: no `dead` link exists in this root.
+    const out = execFileSync(process.execPath, [SCRIPT, '--root', codeOnlyRoot, '--fail-on-dead'], {
+      encoding: 'utf8',
+    });
+    expect(out).toContain('code_ref_dead=1');
   });
 });
