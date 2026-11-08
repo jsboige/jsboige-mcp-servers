@@ -8,10 +8,23 @@ import { validateVectorGlobal, sanitizePayload } from './EmbeddingValidator.js';
 import { extractChunksFromTask, extractChunksFromClaudeSession, splitChunk, Chunk, MAX_CHUNKS_PER_TASK, workspaceBasename } from './ChunkExtractor.js';
 import { networkMetrics } from './QdrantHealthMonitor.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { getDefaultLogger } from '../../utils/logger.js';
 
 type PointStruct = Schemas['PointStruct'];
 
 const COLLECTION_NAME = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+
+/**
+ * #4352 loop instrumentation output (ai-01 amend, 08/11): the leader's host is
+ * a Claude session — `console.log` goes to stderr, which Claude Code does NOT
+ * journal, so the [#4352-loop] lines were unreadable on ai-01 (0 occurrence in
+ * the mcp-logs; the file logger is the only persistent channel). Route them
+ * through the default logger: it writes the roosync-YYYYMMDD.log file AND
+ * echoes to stderr, so both channels carry the line.
+ */
+function loopLog(line: string): void {
+    getDefaultLogger().info(line);
+}
 
 /** Configurable batch size for Qdrant upserts (was hardcoded to 1 for debug) */
 const INDEXING_BATCH_SIZE = Math.max(1, parseInt(process.env.INDEXING_BATCH_SIZE || '50', 10) || 50);
@@ -982,6 +995,13 @@ async function preflightDedupByContentHash(
         _metrics.embeddings_preflight_skipped_total += skipped;
         return kept;
     } catch (error: any) {
+        // #4352 (ai-01 review of ms#1695): a watchdog abort thrown by the fence
+        // above is NOT a scroll/dedup failure — swallowing it here returned the
+        // undeduplicated set and let the run continue to the next embedding
+        // window's fence, mislabeled as "[#2369] dedup failed (non-blocking)"
+        // in the logs. Rethrow: the abort must reject the run HERE, immediately,
+        // keeping the marked error's message and watchdogAbort detail intact.
+        if (error?.details?.watchdogAbort === true) throw error;
         console.warn(`[#2369] Preflight contentHash dedup failed (non-blocking): ${error?.message || error}`);
         return subChunks;
     }
@@ -1333,7 +1353,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         }
         stats.chunksExtracted = chunks.length;
         options?.onProgress?.(); // #4352 g5: extraction done — progress, not silence
-        console.log(`⏱️ [#4352-loop] ${taskId}: extraction done +${Date.now() - startedAt}ms (${chunks.length} chunks)`);
+        loopLog(`⏱️ [#4352-loop] ${taskId}: extraction done +${Date.now() - startedAt}ms (${chunks.length} chunks)`);
 
         // #2825 (volet A / G2): no silent drop at the indexer stage. The old behavior
         // truncated `chunks.length = MAX_CHUNKS_PER_TASK` after extracting — meaning
@@ -1372,23 +1392,23 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             }
         }
 
-        console.log(`⏱️ [#4352-loop] ${taskId}: phase A (split+hash) done +${Date.now() - startedAt}ms (${allSubChunks.length} sub-chunks)`);
+        loopLog(`⏱️ [#4352-loop] ${taskId}: phase A (split+hash) done +${Date.now() - startedAt}ms (${allSubChunks.length} sub-chunks)`);
 
         // Phase B: #2018 Phase 2 — Pre-flight dedup by chunk_id (skip already-indexed chunks BEFORE embeddings)
         const preflight = await preflightDedupByChunkId(allSubChunks, options?.onProgress);
         let subChunksToEmbed = preflight.subChunks;
         stats.subChunksBuilt = allSubChunks.length;
         stats.dedupSkipped += allSubChunks.length - subChunksToEmbed.length;
-        console.log(`⏱️ [#4352-loop] ${taskId}: phase B (chunk_id preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length}/${allSubChunks.length} to embed)`);
+        loopLog(`⏱️ [#4352-loop] ${taskId}: phase B (chunk_id preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length}/${allSubChunks.length} to embed)`);
 
         // Phase B2: #2369 — Pre-flight dedup by contentHash (catches split sub-chunks
         // with new UUIDs that bypassed chunk_id preflight but whose content already exists)
         if (subChunksToEmbed.length > 0) {
             const beforeContentHashDedup = subChunksToEmbed.length;
-            console.log(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) starting +${Date.now() - startedAt}ms (${subChunksToEmbed.length} sub-chunks)`);
+            loopLog(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) starting +${Date.now() - startedAt}ms (${subChunksToEmbed.length} sub-chunks)`);
             subChunksToEmbed = await preflightDedupByContentHash(subChunksToEmbed, options, taskId);
             stats.dedupSkipped += beforeContentHashDedup - subChunksToEmbed.length;
-            console.log(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length} left)`);
+            loopLog(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length} left)`);
         }
 
         // #2165: If the pre-flight dedup could not reach Qdrant, the "needs embedding"
@@ -1478,7 +1498,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                         options?.onProgress?.(); // #4352 g5: one more acknowledged batch
                         if (!firstBatchAcked) {
                             firstBatchAcked = true;
-                            console.log(`⏱️ [#4352-loop] ${taskId}: first embedding batch acknowledged +${Date.now() - startedAt}ms (batch of ${batch.length})`);
+                            loopLog(`⏱️ [#4352-loop] ${taskId}: first embedding batch acknowledged +${Date.now() - startedAt}ms (batch of ${batch.length})`);
                         }
                         for (let i = 0; i < batch.length; i++) {
                             if (batchVectors[i]) {
