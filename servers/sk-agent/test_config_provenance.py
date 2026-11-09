@@ -10,6 +10,7 @@ WHEN the served config was loaded and WHETHER the disk has since drifted.
 """
 
 import asyncio
+import errno
 import json
 import sys
 from pathlib import Path
@@ -115,6 +116,42 @@ def test_diagnostics_flags_deleted_disk_config(monkeypatch, tmp_path):
     assert block["disk_fingerprint"] is None
     assert block["disk_mtime"] is None
     assert block["stale"] is True
+
+
+def test_diagnostics_survives_exists_stat_race(monkeypatch, tmp_path):
+    """TOCTOU (file 09d): exists() returns True, the file vanishes before
+    stat() — diagnostics must answer disk_mtime None, not crash."""
+    cfg = tmp_path / "sk_agent_config.json"
+    cfg.write_text('{"config_version": 2}', encoding="utf-8")
+    monkeypatch.setattr(sk_agent, "CONFIG_PATH", str(cfg))
+    served = SKAgentConfig()
+    served_fp = sk_agent._config_file_fingerprint(str(cfg))
+    monkeypatch.setattr(sk_agent, "_manager", SKAgentManager(served))
+    monkeypatch.setattr(sk_agent, "_config", served)
+    monkeypatch.setattr(sk_agent, "_config_loaded_at", LOADED_AT)
+    monkeypatch.setattr(sk_agent, "_config_loaded_fingerprint", served_fp)
+
+    real_stat = Path.stat
+
+    def racing_stat(self, **kwargs):
+        if self.name == cfg.name:
+            # Real deleted-file stats carry errno=ENOENT (a bare
+            # FileNotFoundError without errno is NOT ignored by
+            # Path.exists() and does not model the race faithfully).
+            raise FileNotFoundError(errno.ENOENT, "stat", str(cfg))
+        return real_stat(self, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", racing_stat)
+    data = json.loads(asyncio.run(sk_agent.diagnostics()))
+    block = data["config_loaded"]
+    # The mtime read loses the race: None, and diagnostics still answers.
+    assert block["disk_mtime"] is None
+    # Only stat() lies here — read_bytes() still sees the real bytes, so
+    # the fingerprint is honest, equal to the served one, no drift flagged.
+    # (The full delete case — fingerprint None, stale True — is covered by
+    # test_diagnostics_flags_deleted_disk_config with a real unlink.)
+    assert block["disk_fingerprint"] == served_fp
+    assert block["stale"] is False
 
 
 def test_get_manager_records_provenance(monkeypatch, tmp_path):

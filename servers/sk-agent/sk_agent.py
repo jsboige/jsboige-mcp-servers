@@ -2944,6 +2944,21 @@ def _config_file_fingerprint(path: str | None = None) -> str | None:
     return hashlib.sha256(data).hexdigest()[:16]
 
 
+def _config_file_mtime_utc(config_path: Path) -> str | None:
+    """Disk mtime as UTC ISO, or None — TOCTOU-safe.
+
+    exists() then stat() races a concurrent delete: stat() raising OSError
+    (FileNotFoundError included) must answer None, never crash diagnostics.
+    """
+    try:
+        return (
+            datetime.fromtimestamp(config_path.stat().st_mtime, timezone.utc)
+            .isoformat(timespec="seconds")
+        )
+    except OSError:
+        return None
+
+
 async def _get_manager() -> SKAgentManager:
     """Get or create the global manager instance.
 
@@ -3701,12 +3716,7 @@ async def diagnostics() -> str:
         "at": _config_loaded_at,
         "served_fingerprint": _config_loaded_fingerprint,
         "disk_fingerprint": disk_fingerprint,
-        "disk_mtime": (
-            datetime.fromtimestamp(config_path.stat().st_mtime, timezone.utc)
-            .isoformat(timespec="seconds")
-            if config_path.exists()
-            else None
-        ),
+        "disk_mtime": _config_file_mtime_utc(config_path),
         "stale": (
             _config_loaded_fingerprint != disk_fingerprint
             if (_manager is not None and _config_loaded_fingerprint is not None)
