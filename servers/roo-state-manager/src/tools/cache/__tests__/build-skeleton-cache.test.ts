@@ -4,7 +4,7 @@
 
 import { describe, test, expect, vi, beforeEach } from "vitest";
 import { buildSkeletonCacheDefinition, handleBuildSkeletonCache } from "../build-skeleton-cache.tool.js";
-import type { ConversationSkeleton } from "../../../types/conversation.js";
+import type { StoredConversation } from "../../../services/unified-store/types.js";
 
 // Mocks
 const mockReaddir = vi.fn();
@@ -526,7 +526,7 @@ import { describe, test, expect, beforeAll, afterAll, beforeEach, vi } from "vit
 import * as pathReal from "path";
 import * as os from "os";
 import { handleBuildSkeletonCache } from "../build-skeleton-cache.tool.js";
-import type { ConversationSkeleton } from "../../../types/conversation.js";
+import type { StoredConversation } from "../../../services/unified-store/types.js";
 
 // Variables pour les vraies fonctions fs (initialisées dans beforeAll)
 // NE PAS importer de "fs" car le mock global intercepte tout
@@ -667,7 +667,7 @@ describe("build-skeleton-cache.tool - REAL CACHE INTEGRATION", () => {
             }));
 
             // Construire le cache initial
-            const cache = new Map<string, ConversationSkeleton>();
+            const cache = new Map<string, StoredConversation>();
             await handleBuildSkeletonCache({ force_rebuild: true }, cache);
 
             // Vérifier que la tâche initiale est dans le cache
@@ -709,7 +709,7 @@ describe("build-skeleton-cache.tool - REAL CACHE INTEGRATION", () => {
                 metadata: { workspace: "test-workspace" },
             });
 
-            const cache = new Map<string, ConversationSkeleton>();
+            const cache = new Map<string, StoredConversation>();
             await handleBuildSkeletonCache({ force_rebuild: true }, cache);
 
             // La tâche doit être trouvée dans tasks/{taskId}/, pas dans le répertoire de base
@@ -741,7 +741,7 @@ describe("build-skeleton-cache.tool - REAL CACHE INTEGRATION", () => {
                 JSON.stringify(skeleton)
             );
 
-            const cache = new Map<string, ConversationSkeleton>();
+            const cache = new Map<string, StoredConversation>();
             await handleBuildSkeletonCache({ force_rebuild: false }, cache);
 
             // Le skeleton frais doit être chargé depuis le disque, pas reconstruit
@@ -786,7 +786,7 @@ describe("build-skeleton-cache.tool - REAL CACHE INTEGRATION", () => {
                 metadata: { workspace: "test-workspace" },
             });
 
-            const cache = new Map<string, ConversationSkeleton>();
+            const cache = new Map<string, StoredConversation>();
             await handleBuildSkeletonCache({ force_rebuild: false }, cache);
 
             // Le skeleton obsolète doit être reconstruit (ou au moins rechargé)
@@ -825,7 +825,7 @@ describe("build-skeleton-cache.tool - REAL CACHE INTEGRATION", () => {
             }));
 
             // Build du cache
-            const cache = new Map<string, ConversationSkeleton>();
+            const cache = new Map<string, StoredConversation>();
             await handleBuildSkeletonCache({ force_rebuild: true }, cache);
 
             // Toutes les tâches doivent être dans le cache
@@ -854,7 +854,7 @@ describe("build-skeleton-cache.tool - REAL CACHE INTEGRATION", () => {
                 metadata: { workspace: "test-workspace" },
             });
 
-            const cache = new Map<string, ConversationSkeleton>();
+            const cache = new Map<string, StoredConversation>();
             await handleBuildSkeletonCache({ force_rebuild: true }, cache);
 
             // Le fichier skeleton doit exister
@@ -889,7 +889,7 @@ describe("build-skeleton-cache.tool - REAL CACHE INTEGRATION", () => {
                 skeletonWithBom
             );
 
-            const cache = new Map<string, ConversationSkeleton>();
+            const cache = new Map<string, StoredConversation>();
             await handleBuildSkeletonCache({ force_rebuild: false }, cache);
 
             // Le skeleton doit être lu correctement malgré la BOM

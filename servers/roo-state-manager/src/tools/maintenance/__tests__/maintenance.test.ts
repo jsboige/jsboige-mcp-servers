@@ -3,7 +3,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../../services/unified-store/types.js';
 
 // Define mock functions at top level
 const mockHandleBuildSkeletonCache = vi.fn();
@@ -29,7 +29,7 @@ vi.mock('../../repair/repair-conversation-bom.tool.js', () => ({
 describe('maintenance tool (CONS-13)', () => {
     let handleMaintenance: typeof import('../maintenance.js').handleMaintenance;
     let maintenanceToolDefinition: typeof import('../maintenance.js').maintenanceToolDefinition;
-    let mockConversationCache: Map<string, ConversationSkeleton>;
+    let mockConversationCache: Map<string, StoredConversation>;
 
     beforeEach(async () => {
         vi.clearAllMocks();
