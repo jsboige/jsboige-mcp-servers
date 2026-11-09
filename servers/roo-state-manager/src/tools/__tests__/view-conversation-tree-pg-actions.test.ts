@@ -67,7 +67,7 @@ vi.mock('../../utils/claude-storage-detector.js', () => ({
 }));
 
 import { viewConversationTree } from '../view-conversation-tree.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 const TASK = 'claude-d--dev-roo-extensions--2191-actions';
 
@@ -136,7 +136,7 @@ describe('#2191 — PG-served view renders stored actions (real loader path)', (
 	test('a row with tool_calls renders its actions inline — no « not stored » disclaimer', async () => {
 		mockGetConversation.mockResolvedValue(convRow);
 		mockGetMessages.mockResolvedValue(messagesWithActions);
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		const result = await viewConversationTree.handler(
 			{ task_id: TASK, view_mode: 'single', detail_level: 'full' },
@@ -166,7 +166,7 @@ describe('#2191 — PG-served view renders stored actions (real loader path)', (
 	test('a pre-ms#1396 row (tool_calls null) renders messages-only, banner unchanged', async () => {
 		mockGetConversation.mockResolvedValue(convRow);
 		mockGetMessages.mockResolvedValue(preMs1396Messages);
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		const result = await viewConversationTree.handler(
 			{ task_id: TASK, view_mode: 'single', detail_level: 'full' },

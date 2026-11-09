@@ -49,11 +49,11 @@ vi.mock('../smart-truncation/index.js', () => ({
 }));
 
 import { viewConversationTree } from '../view-conversation-tree.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 // ─────────────────── helpers ───────────────────
 
-function makeSkeleton(overrides: Partial<ConversationSkeleton> & { taskId: string }): ConversationSkeleton {
+function makeSkeleton(overrides: Partial<StoredConversation> & { taskId: string }): StoredConversation {
   return {
     taskId: overrides.taskId,
     parentTaskId: overrides.parentTaskId,
@@ -69,10 +69,10 @@ function makeSkeleton(overrides: Partial<ConversationSkeleton> & { taskId: strin
     sequence: overrides.sequence ?? [
       { role: 'user', content: 'Hello world', timestamp: '2026-01-01T10:00:00.000Z' }
     ],
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
-function makeCache(skeletons: ConversationSkeleton[]): Map<string, ConversationSkeleton> {
+function makeCache(skeletons: StoredConversation[]): Map<string, StoredConversation> {
   return new Map(skeletons.map(s => [s.taskId, s]));
 }
 
@@ -91,7 +91,7 @@ describe('viewConversationTree.handler', () => {
 
   describe('erreurs', () => {
     test('lève une erreur si cache vide et task_id absent', async () => {
-      const emptyCache = new Map<string, ConversationSkeleton>();
+      const emptyCache = new Map<string, StoredConversation>();
 
       await expect(viewConversationTree.handler({}, emptyCache))
         .rejects.toThrow('Cache is empty');
@@ -300,7 +300,7 @@ describe('viewConversationTree.handler', () => {
           totalSize: 0,
         },
         // sequence is deliberately MISSING (undefined)
-      } as unknown as ConversationSkeleton;
+      } as unknown as StoredConversation;
 
       const cache = makeCache([skeletonWithoutSequence]);
 
@@ -327,7 +327,7 @@ describe('viewConversationTree.handler', () => {
           totalSize: 0,
         },
         // no sequence
-      } as unknown as ConversationSkeleton;
+      } as unknown as StoredConversation;
 
       const child = makeSkeleton({ taskId: 'child-with-seq', parentTaskId: 'parent-no-seq' });
       const cache = makeCache([parentNoSeq, child]);

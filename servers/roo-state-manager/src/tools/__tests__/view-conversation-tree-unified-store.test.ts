@@ -53,11 +53,11 @@ vi.mock('../../utils/claude-storage-detector.js', () => ({
 }));
 
 import { viewConversationTree } from '../view-conversation-tree.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 const CLAUDE_ID = 'claude-d--dev-CoursIA--0f1e2d3c-aaaa-bbbb-cccc-111122223333';
 
-const pgBody = (taskId: string): ConversationSkeleton => ({
+const pgBody = (taskId: string): StoredConversation => ({
 	taskId,
 	metadata: {
 		title: 'question from po-2025',
@@ -76,7 +76,7 @@ const pgBody = (taskId: string): ConversationSkeleton => ({
 });
 
 /** Discovery stub: listed, messageCount > 0, body never loaded. */
-const stub = (taskId: string, extra: Record<string, unknown> = {}): ConversationSkeleton => ({
+const stub = (taskId: string, extra: Record<string, unknown> = {}): StoredConversation => ({
 	taskId,
 	metadata: {
 		title: 'listed elsewhere',
@@ -109,7 +109,7 @@ describe('#2191 — view falls back to the unified store', () => {
 
 	test('task absent from the cache → PG body rendered, labelled with its provenance, cached', async () => {
 		loadPgMock.mockResolvedValue(pgBody('t-pg-only'));
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		const result = await viewConversationTree.handler(
 			{ task_id: 't-pg-only', view_mode: 'single', detail_level: 'full' },
@@ -127,7 +127,7 @@ describe('#2191 — view falls back to the unified store', () => {
 	});
 
 	test('task absent from the cache, store silent → historical « not found »', async () => {
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		await expect(
 			viewConversationTree.handler({ task_id: 't-nowhere' }, cache)
@@ -137,7 +137,7 @@ describe('#2191 — view falls back to the unified store', () => {
 
 	test('Roo stub without a local task directory → PG body instead of skeleton-only', async () => {
 		loadPgMock.mockResolvedValue(pgBody('t-roo'));
-		const cache = new Map<string, ConversationSkeleton>([['t-roo', stub('t-roo')]]);
+		const cache = new Map<string, StoredConversation>([['t-roo', stub('t-roo')]]);
 
 		const result = await viewConversationTree.handler(
 			{ task_id: 't-roo', view_mode: 'single', detail_level: 'full' },
@@ -149,7 +149,7 @@ describe('#2191 — view falls back to the unified store', () => {
 	});
 
 	test('Roo stub without a local task directory, store silent → historical skeleton-only', async () => {
-		const cache = new Map<string, ConversationSkeleton>([['t-roo', stub('t-roo')]]);
+		const cache = new Map<string, StoredConversation>([['t-roo', stub('t-roo')]]);
 
 		const result = await viewConversationTree.handler({ task_id: 't-roo' }, cache);
 
@@ -159,7 +159,7 @@ describe('#2191 — view falls back to the unified store', () => {
 
 	test('Claude stub whose project dir is absent here → PG body instead of skeleton-only', async () => {
 		loadPgMock.mockResolvedValue(pgBody(CLAUDE_ID));
-		const cache = new Map<string, ConversationSkeleton>([[CLAUDE_ID, stub(CLAUDE_ID, { source: 'claude-code' })]]);
+		const cache = new Map<string, StoredConversation>([[CLAUDE_ID, stub(CLAUDE_ID, { source: 'claude-code' })]]);
 
 		const result = await viewConversationTree.handler(
 			{ task_id: CLAUDE_ID, view_mode: 'single', detail_level: 'full' },
@@ -174,7 +174,7 @@ describe('#2191 — view falls back to the unified store', () => {
 		const projectPath = path.join(os.tmpdir(), `rsm-2191-absent-${process.pid}`, 'd--dev-CoursIA');
 		claudeDetectMock.mockResolvedValue([{ projectPath }]);
 		loadPgMock.mockResolvedValue(pgBody(CLAUDE_ID));
-		const cache = new Map<string, ConversationSkeleton>([[CLAUDE_ID, stub(CLAUDE_ID, { source: 'claude-code' })]]);
+		const cache = new Map<string, StoredConversation>([[CLAUDE_ID, stub(CLAUDE_ID, { source: 'claude-code' })]]);
 
 		const result = await viewConversationTree.handler(
 			{ task_id: CLAUDE_ID, view_mode: 'single', detail_level: 'full' },
@@ -188,7 +188,7 @@ describe('#2191 — view falls back to the unified store', () => {
 	test('Claude ghost, store silent → the #3721 ghost error is unchanged', async () => {
 		const projectPath = path.join(os.tmpdir(), `rsm-2191-absent-${process.pid}`, 'd--dev-CoursIA');
 		claudeDetectMock.mockResolvedValue([{ projectPath }]);
-		const cache = new Map<string, ConversationSkeleton>([[CLAUDE_ID, stub(CLAUDE_ID, { source: 'claude-code' })]]);
+		const cache = new Map<string, StoredConversation>([[CLAUDE_ID, stub(CLAUDE_ID, { source: 'claude-code' })]]);
 
 		await expect(
 			viewConversationTree.handler({ task_id: CLAUDE_ID }, cache)
@@ -196,7 +196,7 @@ describe('#2191 — view falls back to the unified store', () => {
 	});
 
 	test('a task with a loaded body never queries the store', async () => {
-		const cache = new Map<string, ConversationSkeleton>([['t-local', pgBody('t-local')]]);
+		const cache = new Map<string, StoredConversation>([['t-local', pgBody('t-local')]]);
 
 		await viewConversationTree.handler({ task_id: 't-local', view_mode: 'single' }, cache);
 

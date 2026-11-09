@@ -1,5 +1,5 @@
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../types/conversation.js';
+import type { StoredConversation } from '../services/unified-store/types.js';
 import {
     SmartTruncationEngine,
     ContentTruncator,
@@ -142,7 +142,7 @@ function injectMessageRangeMetadata(
 /**
   * Trouve la tâche la plus récente dans le cache, optionnellement filtrée par workspace
   */
-function findLatestTask(conversationCache: Map<string, ConversationSkeleton>, workspace?: string): ConversationSkeleton | undefined {
+function findLatestTask(conversationCache: Map<string, StoredConversation>, workspace?: string): StoredConversation | undefined {
      if (conversationCache.size === 0) {
          return undefined;
      }
@@ -166,7 +166,7 @@ function findLatestTask(conversationCache: Map<string, ConversationSkeleton>, wo
  * Graceful degradation when task files are not available locally.
  * Shows skeleton cache metadata with guidance on how to access full content.
  */
-function formatSkeletonOnlyResponse(taskId: string, skeleton: ConversationSkeleton): CallToolResult {
+function formatSkeletonOnlyResponse(taskId: string, skeleton: StoredConversation): CallToolResult {
     const meta = skeleton.metadata;
     const lines = [
         `⚠️ Task '${taskId}' — Skeleton Only (Files Not Available Locally)`,
@@ -204,7 +204,7 @@ function formatSkeletonOnlyResponse(taskId: string, skeleton: ConversationSkelet
 async function renderFromUnifiedStore(
     taskId: string,
     args: ViewConversationTreeArgs,
-    conversationCache: Map<string, ConversationSkeleton>
+    conversationCache: Map<string, StoredConversation>
 ): Promise<CallToolResult | null> {
     const stored = await loadPgConversationBody(taskId);
     if (!stored) return null;
@@ -225,7 +225,7 @@ async function renderFromUnifiedStore(
  */
 async function handleViewConversationTreeExecutionAsync(
     args: ViewConversationTreeArgs,
-    conversationCache: Map<string, ConversationSkeleton>
+    conversationCache: Map<string, StoredConversation>
 ): Promise<CallToolResult> {
     const { view_mode = 'chain', detail_level = 'skeleton', max_output_length = 300000, current_task_id } = args;
     let { truncate = 0 } = args;
@@ -271,8 +271,8 @@ async function handleViewConversationTreeExecutionAsync(
     // n'a pas encore son timestamp mis à jour. Pour une détection fiable, passer current_task_id.
     const currentTaskId: string | null = current_task_id || null;
 
-    const getTaskChain = (startTaskId: string): ConversationSkeleton[] => {
-        const chain: ConversationSkeleton[] = [];
+    const getTaskChain = (startTaskId: string): StoredConversation[] => {
+        const chain: StoredConversation[] = [];
         let currentId: string | undefined = startTaskId;
         while (currentId) {
             const skeleton = skeletonMap.get(currentId);
@@ -286,7 +286,7 @@ async function handleViewConversationTreeExecutionAsync(
         return chain;
     };
 
-    const formatTask = (skeleton: ConversationSkeleton, indent: string): string => {
+    const formatTask = (skeleton: StoredConversation, indent: string): string => {
         // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
         const nodeShortId = (skeleton.taskId || '').substring(0, 8);
         const currentShortId = (currentTaskId || '').substring(0, 8);
@@ -385,7 +385,7 @@ async function handleViewConversationTreeExecutionAsync(
     };
 
     // Estimation intelligente de la taille de sortie
-    const estimateOutputSize = (skeletons: ConversationSkeleton[]): number => {
+    const estimateOutputSize = (skeletons: StoredConversation[]): number => {
         let totalSize = 0;
         for (const skeleton of skeletons) {
             totalSize += 200; // En-tête de tâche
@@ -400,7 +400,7 @@ async function handleViewConversationTreeExecutionAsync(
         return totalSize;
     };
 
-    let tasksToDisplay: ConversationSkeleton[] = [];
+    let tasksToDisplay: StoredConversation[] = [];
     let mainTask = skeletonMap.get(task_id);
     if (!mainTask) {
         // #3661 AC8 — une archive Tier 3 listée (stub dans le SkeletonCacheService,
@@ -622,7 +622,7 @@ async function handleViewConversationTreeExecutionAsync(
         isPaged = effectiveMessageStart > 0 || effectiveMessageEnd < totalMessages;
 
         if (isPaged) {
-            const pagedMainTask: ConversationSkeleton = {
+            const pagedMainTask: StoredConversation = {
                 ...mainTask,
                 sequence: (mainTask.sequence ?? []).slice(effectiveMessageStart, effectiveMessageEnd),
             };
@@ -698,7 +698,7 @@ async function handleViewConversationTreeExecutionAsync(
  */
 function handleViewConversationTreeExecution(
     args: ViewConversationTreeArgs,
-    conversationCache: Map<string, ConversationSkeleton>
+    conversationCache: Map<string, StoredConversation>
 ): CallToolResult {
     const { view_mode = 'chain', detail_level = 'skeleton', max_output_length = 300000, current_task_id } = args;
     let { truncate = 0 } = args;
@@ -741,8 +741,8 @@ function handleViewConversationTreeExecution(
 
     const currentTaskId: string | null = current_task_id || null;
 
-    const getTaskChain = (startTaskId: string): ConversationSkeleton[] => {
-        const chain: ConversationSkeleton[] = [];
+    const getTaskChain = (startTaskId: string): StoredConversation[] => {
+        const chain: StoredConversation[] = [];
         let currentId: string | undefined = startTaskId;
         while (currentId) {
             const skeleton = skeletonMap.get(currentId);
@@ -756,7 +756,7 @@ function handleViewConversationTreeExecution(
         return chain;
     };
 
-    let tasksToDisplay: ConversationSkeleton[] = [];
+    let tasksToDisplay: StoredConversation[] = [];
     let mainTask = skeletonMap.get(task_id);
     if (!mainTask) {
         throw new GenericError(`Task with ID '${task_id}' not found in cache.`, GenericErrorCode.INVALID_ARGUMENT);
@@ -788,7 +788,7 @@ function handleViewConversationTreeExecution(
         isPaged = effectiveMessageStart > 0 || effectiveMessageEnd < totalMessages;
 
         if (isPaged) {
-            const pagedMainTask: ConversationSkeleton = {
+            const pagedMainTask: StoredConversation = {
                 ...mainTask,
                 sequence: (mainTask.sequence ?? []).slice(effectiveMessageStart, effectiveMessageEnd),
             };
@@ -907,7 +907,7 @@ function saveErrorText(error: string, treeOutput: string): string {
  * Wrapper pour rendre handleLegacyTruncation asynchrone
  */
 async function handleLegacyTruncationAsync(
-    tasksToDisplay: ConversationSkeleton[],
+    tasksToDisplay: StoredConversation[],
     args: ViewConversationTreeArgs,
     view_mode: string,
     detail_level: string,
@@ -954,7 +954,7 @@ async function handleLegacyTruncationAsync(
  * 🔄 ALGORITHME LEGACY (comportement original préservé)
  */
 function handleLegacyTruncation(
-    tasksToDisplay: ConversationSkeleton[],
+    tasksToDisplay: StoredConversation[],
     args: ViewConversationTreeArgs,
     view_mode: string,
     detail_level: string,
@@ -1004,7 +1004,7 @@ function handleLegacyTruncation(
  * Wrapper pour rendre handleSmartTruncation asynchrone
  */
 async function handleSmartTruncationAsync(
-    tasksToDisplay: ConversationSkeleton[],
+    tasksToDisplay: StoredConversation[],
     args: ViewConversationTreeArgs,
     view_mode: string,
     detail_level: string,
@@ -1092,7 +1092,7 @@ const COMPRESSION_ANNOUNCEMENT_RE = /🎯 Compression intelligente: ([\d.]+)% \(
  * ✨ NOUVEL ALGORITHME DE TRONCATURE INTELLIGENTE
  */
 function handleSmartTruncation(
-    tasksToDisplay: ConversationSkeleton[],
+    tasksToDisplay: StoredConversation[],
     args: ViewConversationTreeArgs,
     view_mode: string,
     detail_level: string,
@@ -1189,8 +1189,8 @@ function handleSmartTruncation(
 /**
  * Factory pour créer la fonction formatTask (extraction pour réutilisation)
  */
-function createFormatTaskFunction(detail_level: string, truncate: number, currentTaskId: string | null): (skeleton: ConversationSkeleton, indent: string) => string {
-    return (skeleton: ConversationSkeleton, indent: string): string => {
+function createFormatTaskFunction(detail_level: string, truncate: number, currentTaskId: string | null): (skeleton: StoredConversation, indent: string) => string {
+    return (skeleton: StoredConversation, indent: string): string => {
         // 🎯 Marquer la tâche actuelle - Comparer les 8 premiers caractères (UUIDs courts)
         const nodeShortId = (skeleton.taskId || '').substring(0, 8);
         const currentShortId = (currentTaskId || '').substring(0, 8);
@@ -1320,7 +1320,7 @@ export const viewConversationTree = {
             messageEnd: { type: 'number', description: '#1244 Couche 2.6 — Index 0-based du dernier message a inclure (exclusif). Combiner avec messageStart pour fenetrer la conversation. Si > total, est clampe a total. Defaut: jusqu\'a la fin.' }
         },
     },
-    handler: async (args: any, conversationCache: Map<string, ConversationSkeleton>): Promise<CallToolResult> => {
+    handler: async (args: any, conversationCache: Map<string, StoredConversation>): Promise<CallToolResult> => {
         return handleViewConversationTreeExecutionAsync(args, conversationCache);
     }
 };

@@ -13,7 +13,7 @@
 import { describe, test, expect } from 'vitest';
 import { applyHardCap, viewConversationTree } from '../view-conversation-tree.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 function textResult(texts: string[]): CallToolResult {
     return { content: texts.map(t => ({ type: 'text' as const, text: t })) };
@@ -70,7 +70,7 @@ describe('applyHardCap (#3171)', () => {
 });
 
 describe('view handler e2e (#3171 AC-3) : session > 10 Mo, max_output_length honoré', () => {
-    const bigTask: ConversationSkeleton = {
+    const bigTask: StoredConversation = {
         taskId: 'e2e-big-task',
         parentTaskId: undefined,
         metadata: {
