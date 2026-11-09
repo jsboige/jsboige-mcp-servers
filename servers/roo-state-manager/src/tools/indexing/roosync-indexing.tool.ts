@@ -88,20 +88,33 @@ export function normalizeToolName(rawName: string): string {
 // Errors/retries are stored file-level: the current scan computes them over the
 // WHOLE file's sequential tool_result sequence (user messages are NOT date-filtered),
 // so day-bucketing them would change behavior at the window boundary.
+//
+// #2307 (Utility rising): that file-level storage was the measured defect — a windowed
+// query divided WHOLE-FILE error totals by WINDOWED call counts, publishing rates
+// above 100% (PowerShell 104.5% on web2 09/11: 393 whole-file errors / 376 windowed
+// calls; CronCreate retry_rate 200%). Errors and retries are now attributed to the
+// day of their own line (the tool_result for an error, the retrying tool_use for a
+// retry), so the numerator honors the same window as the denominator. The scan
+// itself stays whole-file sequential — retry detection ("same tool right after an
+// errored call of it") needs the untruncated sequence. A tool_result line re-emitted
+// for an already-counted tool_use_id counts once (duplicate error results were the
+// second, smaller inflation source: 5 duplicate error ids in web2's 12 largest files).
 const NO_TS_DAY = '__untimed__';
-const TOOL_USAGE_CACHE_VERSION = 2;
+const TOOL_USAGE_CACHE_VERSION = 3;
 
 interface DayBucket {
     toolCounts: Record<string, number>;
     rawVariants: Record<string, Record<string, number>>;
     sourceCounts: Record<string, number>;
     downstreamActionCounts: Record<string, number>;
+    /** #2307: per-day errored calls, by tool (deduped per tool_use_id). */
+    errorCounts: Record<string, number>;
+    /** #2307: per-day retries, by tool (attributed to the retrying call's day). */
+    retryCounts: Record<string, number>;
 }
 
 interface FileAggregates {
     perDay: Record<string, DayBucket>;
-    fileErrors: Record<string, number>;
-    fileRetries: Record<string, number>;
 }
 
 interface ToolUsageCacheEntry {
@@ -109,8 +122,6 @@ interface ToolUsageCacheEntry {
     size: number;
     source: 'roo' | 'claude';
     perDay: Record<string, DayBucket>;
-    fileErrors: Record<string, number>;
-    fileRetries: Record<string, number>;
 }
 
 interface ToolUsageCacheFile {
@@ -120,11 +131,11 @@ interface ToolUsageCacheFile {
 }
 
 function emptyDayBucket(): DayBucket {
-    return { toolCounts: {}, rawVariants: {}, sourceCounts: {}, downstreamActionCounts: {} };
+    return { toolCounts: {}, rawVariants: {}, sourceCounts: {}, downstreamActionCounts: {}, errorCounts: {}, retryCounts: {} };
 }
 
 function emptyFileAggregates(): FileAggregates {
-    return { perDay: {}, fileErrors: {}, fileRetries: {} };
+    return { perDay: {} };
 }
 
 /** #753: day key (YYYY-MM-DD, UTC) for a message; NO_TS_DAY when untimed. */
@@ -145,7 +156,7 @@ function getToolUsageNormalizerVersion(): string {
 
 /** Merge one file's cached/parsed aggregates into the running accumulation. */
 function mergeFileAggregates(
-    into: { perDay: Record<string, DayBucket>; errorCounts: Record<string, number>; retryCounts: Record<string, number> },
+    into: { perDay: Record<string, DayBucket> },
     fileAgg: FileAggregates,
 ): void {
     for (const [day, bucket] of Object.entries(fileAgg.perDay)) {
@@ -153,13 +164,13 @@ function mergeFileAggregates(
         addCounters(t.toolCounts, bucket.toolCounts);
         addCounters(t.sourceCounts, bucket.sourceCounts);
         addCounters(t.downstreamActionCounts, bucket.downstreamActionCounts);
+        addCounters(t.errorCounts, bucket.errorCounts);
+        addCounters(t.retryCounts, bucket.retryCounts);
         for (const [tool, rawMap] of Object.entries(bucket.rawVariants)) {
             const rt = t.rawVariants[tool] || (t.rawVariants[tool] = {});
             addCounters(rt, rawMap);
         }
     }
-    addCounters(into.errorCounts, fileAgg.fileErrors);
-    addCounters(into.retryCounts, fileAgg.fileRetries);
 }
 
 /** #753: parse a Roo api_conversation_history.json into per-file aggregates. Throws on unreadable/invalid JSON. */
@@ -187,6 +198,9 @@ function scanRooMessages(messages: any[]): FileAggregates {
     const localIdMap = new Map<string, string>();
     let lastToolName = '';
     const lastCallErrored: Record<string, boolean> = {};
+    // #2307: one error per call — a tool_result line re-emitted for an already
+    // counted tool_use_id must not inflate the error count again.
+    const countedErrorIds = new Set<string>();
     interface ToolUseRecord { toolName: string; msgIdx: number; }
     const toolUseRecords: ToolUseRecord[] = [];
 
@@ -208,8 +222,9 @@ function scanRooMessages(messages: any[]): FileAggregates {
 
                     if (block.id) localIdMap.set(block.id, toolName);
                     // #753: retry only when the same tool is called right after an errored call of it.
+                    // #2307: attributed to the retrying call's day, not the file.
                     if (lastToolName === toolName && lastCallErrored[toolName]) {
-                        agg.fileRetries[toolName] = (agg.fileRetries[toolName] || 0) + 1;
+                        bucket.retryCounts[toolName] = (bucket.retryCounts[toolName] || 0) + 1;
                     }
                     lastToolName = toolName;
                     toolUseRecords.push({ toolName, msgIdx: i });
@@ -224,7 +239,13 @@ function scanRooMessages(messages: any[]): FileAggregates {
                         const toolName = localIdMap.get(toolUseId);
                         if (toolName) {
                             lastCallErrored[toolName] = isError;
-                            if (isError) agg.fileErrors[toolName] = (agg.fileErrors[toolName] || 0) + 1;
+                            if (isError && !countedErrorIds.has(toolUseId)) {
+                                countedErrorIds.add(toolUseId);
+                                // #2307: the error lands on the result's day, so a
+                                // windowed numerator matches the windowed denominator.
+                                const bucket = agg.perDay[dayKey] || (agg.perDay[dayKey] = emptyDayBucket());
+                                bucket.errorCounts[toolName] = (bucket.errorCounts[toolName] || 0) + 1;
+                            }
                         }
                     }
                 }
@@ -256,6 +277,8 @@ async function parseClaudeFileAggregates(jsonlPath: string): Promise<FileAggrega
     const localIdMap = new Map<string, string>();
     let lastToolName = '';
     const lastCallErrored: Record<string, boolean> = {};
+    // #2307: one error per call (duplicate tool_result lines counted once).
+    const countedErrorIds = new Set<string>();
     let prevAssistantToolUses: string[] = [];
     let prevAssistantTs: Date | null = null;
 
@@ -299,7 +322,8 @@ async function parseClaudeFileAggregates(jsonlPath: string): Promise<FileAggrega
                         const toolUseId = block.id || block.toolUse?.id;
                         if (toolUseId) localIdMap.set(toolUseId, toolName);
                         if (lastToolName === toolName && lastCallErrored[toolName]) {
-                            agg.fileRetries[toolName] = (agg.fileRetries[toolName] || 0) + 1;
+                            // #2307: attributed to the retrying call's day, not the file.
+                            bucket.retryCounts[toolName] = (bucket.retryCounts[toolName] || 0) + 1;
                         }
                         lastToolName = toolName;
                         currentToolUses.push(toolName);
@@ -314,6 +338,11 @@ async function parseClaudeFileAggregates(jsonlPath: string): Promise<FileAggrega
                     prevAssistantTs = null;
                 }
             } else if (message.role === 'user' && Array.isArray(message.content)) {
+                // #2307: the error lands on the result line's day, so a windowed
+                // numerator matches the windowed denominator.
+                const userTsRaw = entry.timestamp || message.timestamp;
+                const userTs = userTsRaw ? new Date(userTsRaw) : null;
+                const userDayKey = userTs ? fmtDay(userTs) : NO_TS_DAY;
                 for (const block of message.content) {
                     if (block.type === 'tool_result') {
                         const toolUseId = block.tool_use_id || block.toolResult?.tool_use_id;
@@ -322,7 +351,11 @@ async function parseClaudeFileAggregates(jsonlPath: string): Promise<FileAggrega
                             const toolName = localIdMap.get(toolUseId);
                             if (toolName) {
                                 lastCallErrored[toolName] = isError;
-                                if (isError) agg.fileErrors[toolName] = (agg.fileErrors[toolName] || 0) + 1;
+                                if (isError && !countedErrorIds.has(toolUseId)) {
+                                    countedErrorIds.add(toolUseId);
+                                    const bucket = agg.perDay[userDayKey] || (agg.perDay[userDayKey] = emptyDayBucket());
+                                    bucket.errorCounts[toolName] = (bucket.errorCounts[toolName] || 0) + 1;
+                                }
                             }
                         }
                     }
@@ -359,12 +392,13 @@ function isWellFormedToolUsageCache(parsed: unknown): parsed is ToolUsageCacheFi
     for (const entry of Object.values(parsed.files)) {
         if (!isPlainRecord(entry)) return false;
         if (typeof entry.mtimeMs !== 'number' || typeof entry.size !== 'number') return false;
-        if (!isPlainRecord(entry.perDay) || !isPlainRecord(entry.fileErrors) || !isPlainRecord(entry.fileRetries)) return false;
+        if (!isPlainRecord(entry.perDay)) return false;
         for (const bucket of Object.values(entry.perDay)) {
             if (!isPlainRecord(bucket)) return false;
             if (
                 !isPlainRecord(bucket.toolCounts) || !isPlainRecord(bucket.sourceCounts) ||
-                !isPlainRecord(bucket.downstreamActionCounts) || !isPlainRecord(bucket.rawVariants)
+                !isPlainRecord(bucket.downstreamActionCounts) || !isPlainRecord(bucket.rawVariants) ||
+                !isPlainRecord(bucket.errorCounts) || !isPlainRecord(bucket.retryCounts)
             ) return false;
             for (const rawMap of Object.values(bucket.rawVariants)) {
                 if (!isPlainRecord(rawMap)) return false;
@@ -411,6 +445,8 @@ function aggregateToolUsage(
     rawVariants: Record<string, Record<string, number>>;
     sourceCounts: Record<string, number>;
     downstreamActionCounts: Record<string, number>;
+    errorCounts: Record<string, number>;
+    retryCounts: Record<string, number>;
     totalCalls: number;
 } {
     const toolCounts: Record<string, number> = {};
@@ -418,6 +454,8 @@ function aggregateToolUsage(
     const rawVariants: Record<string, Record<string, number>> = {};
     const sourceCounts: Record<string, number> = {};
     const downstreamActionCounts: Record<string, number> = {};
+    const errorCounts: Record<string, number> = {};
+    const retryCounts: Record<string, number> = {};
     const startDay = fmtDay(startDate);
     const endDay = fmtDay(endDate);
     let totalCalls = 0;
@@ -434,6 +472,10 @@ function aggregateToolUsage(
         addCounters(toolCounts, bucket.toolCounts);
         addCounters(sourceCounts, bucket.sourceCounts);
         addCounters(downstreamActionCounts, bucket.downstreamActionCounts);
+        // #2307: errors and retries ride the same window as calls — a file-level
+        // total here is what published 104.5% error rates.
+        addCounters(errorCounts, bucket.errorCounts);
+        addCounters(retryCounts, bucket.retryCounts);
         for (const [tool, rawMap] of Object.entries(bucket.rawVariants)) {
             const rt = rawVariants[tool] || (rawVariants[tool] = {});
             addCounters(rt, rawMap);
@@ -445,7 +487,7 @@ function aggregateToolUsage(
             addCounters(weeklyBuckets[weekKey], bucket.toolCounts);
         }
     }
-    return { toolCounts, weeklyBuckets, rawVariants, sourceCounts, downstreamActionCounts, totalCalls };
+    return { toolCounts, weeklyBuckets, rawVariants, sourceCounts, downstreamActionCounts, errorCounts, retryCounts, totalCalls };
 }
 
 /**
@@ -2043,8 +2085,6 @@ export async function handleRooSyncIndexing(
                 // files are re-parsed (was a full ~88s scan on every call). Per-day buckets
                 // (po-2025 2026-07-19, Option A) keep arbitrary [start,end] re-filtering.
                 const mergedPerDay: Record<string, DayBucket> = {};
-                const mergedErrorCounts: Record<string, number> = {};
-                const mergedRetryCounts: Record<string, number> = {};
                 const normalizerVersion = getToolUsageNormalizerVersion();
                 const cachePath = getToolUsageCacheFilePath(os.hostname(), os.tmpdir());
                 const usageCache = await loadToolUsageCache(cachePath, normalizerVersion, fs);
@@ -2056,7 +2096,7 @@ export async function handleRooSyncIndexing(
                 let cacheDirty = false;
 
                 const absorbEntry = (fileAgg: FileAggregates): void => {
-                    mergeFileAggregates({ perDay: mergedPerDay, errorCounts: mergedErrorCounts, retryCounts: mergedRetryCounts }, fileAgg);
+                    mergeFileAggregates({ perDay: mergedPerDay }, fileAgg);
                 };
 
                 // --- Scan Roo tasks (api_conversation_history.json) ---
@@ -2077,14 +2117,14 @@ export async function handleRooSyncIndexing(
                         const cached = usageCache.files[apiPath];
                         if (cached && cached.mtimeMs === st.mtimeMs && cached.size === st.size) {
                             cacheHits++;
-                            absorbEntry({ perDay: cached.perDay, fileErrors: cached.fileErrors, fileRetries: cached.fileRetries });
+                            absorbEntry({ perDay: cached.perDay });
                             continue;
                         }
 
                         cacheMisses++;
                         try {
                             const fileAgg = await parseRooFileAggregates(apiPath);
-                            usageCache.files[apiPath] = { mtimeMs: st.mtimeMs, size: st.size, source: 'roo', perDay: fileAgg.perDay, fileErrors: fileAgg.fileErrors, fileRetries: fileAgg.fileRetries };
+                            usageCache.files[apiPath] = { mtimeMs: st.mtimeMs, size: st.size, source: 'roo', perDay: fileAgg.perDay };
                             cacheDirty = true;
                             absorbEntry(fileAgg);
                         } catch {
@@ -2118,14 +2158,14 @@ export async function handleRooSyncIndexing(
                         const cached = usageCache.files[jsonlPath];
                         if (cached && cached.mtimeMs === jstat.mtimeMs && cached.size === jstat.size) {
                             cacheHits++;
-                            absorbEntry({ perDay: cached.perDay, fileErrors: cached.fileErrors, fileRetries: cached.fileRetries });
+                            absorbEntry({ perDay: cached.perDay });
                             continue;
                         }
 
                         cacheMisses++;
                         try {
                             const fileAgg = await parseClaudeFileAggregates(jsonlPath);
-                            usageCache.files[jsonlPath] = { mtimeMs: jstat.mtimeMs, size: jstat.size, source: 'claude', perDay: fileAgg.perDay, fileErrors: fileAgg.fileErrors, fileRetries: fileAgg.fileRetries };
+                            usageCache.files[jsonlPath] = { mtimeMs: jstat.mtimeMs, size: jstat.size, source: 'claude', perDay: fileAgg.perDay };
                             cacheDirty = true;
                             absorbEntry(fileAgg);
                         } catch {
@@ -2156,8 +2196,8 @@ export async function handleRooSyncIndexing(
                 const rawVariants = agg.rawVariants;
                 const sourceCounts = agg.sourceCounts;
                 const downstreamActionCounts = agg.downstreamActionCounts;
-                const errorCounts = mergedErrorCounts;
-                const retryCounts = mergedRetryCounts;
+                const errorCounts = agg.errorCounts;
+                const retryCounts = agg.retryCounts;
                 totalCalls = agg.totalCalls;
 
                 // Sort tools by count descending
