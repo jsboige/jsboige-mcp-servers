@@ -62,6 +62,7 @@ const condenseHealthMocks = vi.hoisted(() => ({
   isDeadPass: vi.fn(() => false),
   readCondenseHealth: vi.fn(async () => null),
   noteOverThreshold: vi.fn(async () => ({ warn: false, hoursOver: 0 })),
+  noteLandingSighting: vi.fn(async () => ({ warn: false, lagMinutes: 0, seat: null, passAt: null })),
   condenseStallWarnCooldownMs: vi.fn(() => 6 * 60 * 60 * 1000),
 }));
 vi.mock('../condense-health.js', () => condenseHealthMocks);

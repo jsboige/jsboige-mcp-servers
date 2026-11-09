@@ -71,6 +71,12 @@ export interface CondenseHealthState {
   /** ISO timestamp of the last stall [WARN] posted for this key. */
   lastWarnAt: string | null;
   /**
+   * ISO timestamp of the last landing-miss [WARN] (contrôle d'atterrissage)
+   * posted for this key — separate latch from `lastWarnAt` so a stall warn
+   * never masks a landing miss (two different failure modes of #4608).
+   */
+  lastLandingWarnAt: string | null;
+  /**
    * `machine:workspace` of the seat that recorded the last attempt / outcome
    * (#4608, measured 09/11). The registry said `ok` for `global` at 07:38:10Z
    * while the G: file still carried `lastCondensedAt` 00:52:45Z, and another
@@ -80,6 +86,15 @@ export interface CondenseHealthState {
    * existed — absence is unknown, never "no seat".
    */
   lastSeat: string | null;
+  /**
+   * `lastAttemptAt` of the last dead pass recovered on this key — copied by
+   * `markDeadPassRecovered` BEFORE the relaunch overwrites the row, so the
+   * #4527 failure mode (a pass dying with its host) stays attributable after
+   * the fact instead of living only in the recovering host's log.
+   */
+  lastDeadPassAt: string | null;
+  /** `lastSeat` of that dead pass — who ran the pass that died. */
+  lastDeadPassSeat: string | null;
 }
 
 const EMPTY_STATE: CondenseHealthState = {
@@ -88,7 +103,10 @@ const EMPTY_STATE: CondenseHealthState = {
   lastSuccessAt: null,
   overThresholdSince: null,
   lastWarnAt: null,
+  lastLandingWarnAt: null,
   lastSeat: null,
+  lastDeadPassAt: null,
+  lastDeadPassSeat: null,
 };
 
 /** How long a dashboard may sit over the threshold before the [WARN] fires (default 6 h). */
@@ -125,7 +143,10 @@ function parseState(raw: string | null): CondenseHealthState | null {
       lastSuccessAt: typeof parsed.lastSuccessAt === 'string' ? parsed.lastSuccessAt : null,
       overThresholdSince: typeof parsed.overThresholdSince === 'string' ? parsed.overThresholdSince : null,
       lastWarnAt: typeof parsed.lastWarnAt === 'string' ? parsed.lastWarnAt : null,
+      lastLandingWarnAt: typeof parsed.lastLandingWarnAt === 'string' ? parsed.lastLandingWarnAt : null,
       lastSeat: typeof parsed.lastSeat === 'string' ? parsed.lastSeat : null,
+      lastDeadPassAt: typeof parsed.lastDeadPassAt === 'string' ? parsed.lastDeadPassAt : null,
+      lastDeadPassSeat: typeof parsed.lastDeadPassSeat === 'string' ? parsed.lastDeadPassSeat : null,
     };
   } catch {
     return null;
@@ -190,11 +211,23 @@ export async function markCondenseAttempt(key: string, seat?: string): Promise<v
 /**
  * Mark a dead `attempting` row as recovered. The relaunch is the pass the
  * caller is about to start — this write only makes the death durable and
- * visible instead of letting the row say `attempting` forever.
+ * visible instead of letting the row say `attempting` forever. The dead
+ * pass's attempt time and seat are copied to `lastDeadPassAt` /
+ * `lastDeadPassSeat` FIRST: the `markCondenseAttempt` that follows within
+ * milliseconds overwrites `lastAttemptAt`/`lastSeat` with the relaunch's
+ * own facts, and without the copy the identity of the pass that died would
+ * live only in the recovering host's log (measured 09/11: forensics on the
+ * landing gap had to stop at "it lagged somewhere" for exactly this kind
+ * of missing attribution).
  */
 export async function markDeadPassRecovered(key: string): Promise<void> {
   const prev = (await readCondenseHealth(key)) ?? EMPTY_STATE;
-  await writeState(key, { ...prev, lastOutcome: 'dead-pass-recovered' });
+  const deadFacts: Partial<CondenseHealthState> = {};
+  if (prev.lastOutcome === 'attempting') {
+    if (prev.lastAttemptAt) deadFacts.lastDeadPassAt = prev.lastAttemptAt;
+    if (prev.lastSeat) deadFacts.lastDeadPassSeat = prev.lastSeat;
+  }
+  await writeState(key, { ...prev, ...deadFacts, lastOutcome: 'dead-pass-recovered' });
 }
 
 /**
@@ -280,4 +313,112 @@ export async function noteOverThreshold(
 
   await writeState(key, { ...prev, lastWarnAt: new Date(now).toISOString() });
   return { warn: true, hoursOver: Math.round(hoursOver) };
+}
+
+// ─── #4608 — contrôle d'atterrissage (landing control) ────────────────────────
+//
+// Mesuré 09/11 (web2) : `condense_state:global` disait `ok` à 07:38:10Z alors
+// que le fichier G: portait encore `lastCondensedAt` 00:52:45Z (mtime 04:16:44)
+// — et `workspace-CoursIA` suivait normalement dans la même fenêtre. Le verrou
+// `ok` de la passe ne prouve donc PAS que la moitié fichier a reçu l'écriture :
+// soit l'écrivain a rendu la main avant absorption DriveFS, soit l'écriture
+// s'est perdue. Ce contrôle rend l'écart VISIBLE et ATTRIBUÉ (lastSeat) au
+// premier `list` qui le constate, au lieu d'attendre qu'un opérateur compare
+// les deux surfaces à la main.
+
+/**
+ * How long after a pass's success stamp the file half may lag before the
+ * miss is real (default 60 min). DriveFS absorption is minutes; the measured
+ * incidents were 3 h to 6.5 h. Also the freshness bar for the zero-cost
+ * pre-filter: a file written inside this window can never produce a warn.
+ */
+export function condenseLandingGraceMs(): number {
+  const raw = Number(process.env.CONDENSE_LANDING_GRACE_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 60 * 60 * 1000;
+}
+
+/**
+ * Slack when comparing the file's mtime against the pass's success stamp —
+ * both come from the SAME writer clock (the pass writes the file, then
+ * stamps the outcome), so the pass's own write always has mtime ≤ success
+ * stamp; the slack only absorbs clock steps and mtime granularity.
+ */
+const LANDING_MTIME_SKEW_MS = 5 * 60 * 1000;
+
+export interface LandingSightingVerdict {
+  /** Post the landing-miss [WARN] now (file untouched since before the pass, pass older than grace, cooldown elapsed). */
+  warn: boolean;
+  /** Minutes since the file half was last written — for the message. */
+  lagMinutes: number;
+  /** Seat that recorded the ok/truncated pass — the attribution. */
+  seat: string | null;
+  /** ISO of the pass's success stamp — for the message. */
+  passAt: string | null;
+}
+
+const NO_LANDING_OPINION: LandingSightingVerdict = {
+  warn: false,
+  lagMinutes: 0,
+  seat: null,
+  passAt: null,
+};
+
+/**
+ * One list-side sighting of a key's FILE half, against the durable verdict
+ * of its last condensation pass. The file is fresh enough when it was
+ * written at/after the pass (any later write — append, mirror export,
+ * repair — carries the condensed state); a file untouched since BEFORE a
+ * pass that succeeded more than a grace window ago is a landing miss.
+ *
+ * Zero-PG-read fast path: `mirrorOff` (file mirror deliberately cut) and a
+ * file written inside the grace window both return "no opinion" WITHOUT
+ * touching the store. Never throws — the sighting must not fail the list.
+ */
+export async function noteLandingSighting(
+  key: string,
+  facts: { fileMtimeMs?: number; mirrorOff?: boolean },
+  now: number = Date.now()
+): Promise<LandingSightingVerdict> {
+  try {
+    if (facts.mirrorOff || facts.fileMtimeMs === undefined) return NO_LANDING_OPINION;
+    const fileMtimeMs = facts.fileMtimeMs;
+
+    // Fresh file ⇒ nothing to say, whatever the row says: a warn requires a
+    // pass older than the grace whose file write predates it.
+    if (now - fileMtimeMs < condenseLandingGraceMs()) return NO_LANDING_OPINION;
+
+    const prev = (await readCondenseHealth(key)) ?? EMPTY_STATE;
+    if (prev.lastOutcome !== 'ok' && prev.lastOutcome !== 'truncated') return NO_LANDING_OPINION;
+    if (!prev.lastSuccessAt) return NO_LANDING_OPINION;
+    const successMs = new Date(prev.lastSuccessAt).getTime();
+    if (!Number.isFinite(successMs)) return NO_LANDING_OPINION;
+
+    // Written at/after the pass ⇒ the condensed state landed on this half.
+    if (fileMtimeMs >= successMs - LANDING_MTIME_SKEW_MS) return NO_LANDING_OPINION;
+
+    // Pass younger than grace ⇒ DriveFS may still be absorbing — not an incident yet.
+    if (now - successMs < condenseLandingGraceMs()) return NO_LANDING_OPINION;
+
+    // Landing miss. Cooldown on its own latch — a stall warn must never mask it.
+    const lagMinutes = Math.max(0, Math.round((now - fileMtimeMs) / 60_000));
+    const verdict: LandingSightingVerdict = {
+      warn: false,
+      lagMinutes,
+      seat: prev.lastSeat,
+      passAt: prev.lastSuccessAt,
+    };
+    const lastWarnMs = prev.lastLandingWarnAt
+      ? now - new Date(prev.lastLandingWarnAt).getTime()
+      : Number.POSITIVE_INFINITY;
+    if (lastWarnMs < condenseStallWarnCooldownMs()) return verdict;
+
+    await writeState(key, { ...prev, lastLandingWarnAt: new Date(now).toISOString() });
+    return { ...verdict, warn: true };
+  } catch (err) {
+    getLogger().debug('condense-health landing sighting failed (non-fatal)', {
+      key,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return NO_LANDING_OPINION;
+  }
 }
