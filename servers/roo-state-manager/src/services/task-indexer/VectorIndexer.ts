@@ -33,6 +33,28 @@ const INDEXING_BATCH_SIZE = Math.max(1, parseInt(process.env.INDEXING_BATCH_SIZE
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 2000; // 2 seconds
 const CIRCUIT_BREAKER_TIMEOUT_MS = 30000; // 30 seconds
+
+// --- #4352 (c.325): bounded in-task upsert recovery at the WINDOW boundary ---
+// One breaker window (+ margin) between recovery re-entries: after
+// `recordFailure()` at MAX_RETRY_ATTEMPTS the breaker is OPEN for
+// CIRCUIT_BREAKER_TIMEOUT_MS, so a re-entry landing just past that window
+// probes HALF_OPEN with exactly one batch — the breaker's own semantics.
+const UPSERT_RECOVERY_PAUSE_MS = CIRCUIT_BREAKER_TIMEOUT_MS + 5000;
+
+/**
+ * #4352 (c.325): total wall-clock budget a single indexTask ATTEMPT may spend
+ * recovering a failed window upsert, in ms. Read at attempt start so tests can
+ * set it per-test via env. `0` (or any unparsable value) is the kill-switch
+ * restoring the pre-#4352 behaviour: fail the window immediately.
+ * Default 600000 (10 min) — measured against the 09/11 optimizer wedge
+ * (median: minutes; the ~90 min tail stays covered by the task-level retry +
+ * B2 pre-flight dedup, which is why those are kept unchanged).
+ */
+export function upsertRecoveryBudgetMs(): number {
+    const parsed = Number.parseInt(process.env.QDRANT_UPSERT_RECOVERY_MS ?? '600000', 10);
+    if (!Number.isFinite(parsed) || parsed < 0) return 0;
+    return parsed;
+}
 type CircuitBreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 let circuitBreakerState: CircuitBreakerState = 'CLOSED';
 let failureCount = 0;
@@ -492,7 +514,17 @@ async function ensureFilteredPayloadIndexes(): Promise<void> {
 /**
  * Appel sécurisé à Qdrant avec circuit breaker, retry et batching intelligent
  */
-export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> {
+/**
+ * #4352 (c.325): optional out-channel distinguishing the PERMANENT upsert
+ * failure (HTTP 400, #2209 — bad payload, retrying is waste) from the
+ * transient ones (breaker OPEN at entry, batch retries exhausted). Optional so
+ * the exported boolean contract is unchanged for every other caller and test.
+ */
+export interface UpsertFailureContext {
+    permanentFailure?: boolean;
+}
+
+export async function safeQdrantUpsert(points: PointStruct[], failureContext?: UpsertFailureContext): Promise<boolean> {
     const startTime = Date.now();
 
     // 📊 LOGGING DÉTAILLÉ - État initial
@@ -637,6 +669,10 @@ export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> 
                     console.error(`🔴 [safeQdrantUpsert] Durée totale: ${totalDuration}ms`);
                     console.error(`🔴 [safeQdrantUpsert] Circuit breaker activé - État: ${circuitBreakerState}`);
 
+                    // #4352 (c.325): permanent — the window-recovery loop must NOT
+                    // spend its budget retrying a payload Qdrant will keep rejecting.
+                    if (failureContext) failureContext.permanentFailure = true;
+
                     return false;
                 }
 
@@ -671,6 +707,82 @@ export async function safeQdrantUpsert(points: PointStruct[]): Promise<boolean> 
     console.log(`🔄 [safeQdrantUpsert] Circuit breaker réinitialisé - État: CLOSED`);
 
     return true;
+}
+
+/**
+ * #4352 (c.325) — bounded in-task recovery at the WINDOW boundary.
+ *
+ * Measured 09/11 (ai-01, task 0c3b8a34): during a Qdrant segment-optimization
+ * wedge the window upsert exhausted its 3 batch attempts (2/4/8 s backoff) in
+ * seconds, `indexTask` threw immediately, and a task carrying 1 h 53 of
+ * embeddings went back to the END of a serial queue — the real cost of a
+ * `qdrant_upsert_failed` is queue latency, not lost points (B2 pre-flight
+ * dedup resumes after what was written).
+ *
+ * This wrapper adds patience WITHOUT re-embedding: on a failed window upsert
+ * it waits out one breaker window (30 s + margin) and re-attempts the SAME
+ * window — its vectors are still hot in the caller's `cachedResults`.
+ *
+ * Guards, in order:
+ * - `QDRANT_UPSERT_RECOVERY_MS` (default 600 000, `0` = kill-switch back to
+ *   the pre-#4352 immediate failure) bounds the TOTAL recovery wall clock per
+ *   indexTask attempt; the budget object is owned by the caller so it is
+ *   spent ONCE per attempt, not per window.
+ * - An HTTP 400 (`#2209` permanent) is surfaced through `failureContext` and
+ *   never recovered — retrying a payload Qdrant keeps rejecting is waste.
+ * - The g5 inactivity fence is checked between every wait
+ *   (`throwIfIndexingAborted`): a fenced run exits at its next checkpoint,
+ *   exactly as before.
+ * - `onProgress` fires on every re-entry, deliberately: the loop is alive and
+ *   fence-checked, not hung. The watchdog keeps its authority over a probe
+ *   that genuinely hangs (one upsert call stuck past the inactivity budget
+ *   fires the fence → abort, unchanged).
+ *
+ * Wall-clock overshoot beyond the nominal budget is bounded by ONE in-flight
+ * `safeQdrantUpsert` call (its own 3 attempts ≈ 3 min against a hung store) —
+ * the elapsed-time accounting below charges the probe to the budget.
+ */
+export interface UpsertRecoveryBudget {
+    /** ms left in this attempt's recovery budget; mutated in place. */
+    remainingMs: number;
+}
+
+export async function safeQdrantUpsertWithWindowRecovery(
+    points: PointStruct[],
+    taskId: string,
+    options: IndexTaskProgressOptions | undefined,
+    budget: UpsertRecoveryBudget,
+    upsert: (p: PointStruct[], failureContext?: UpsertFailureContext) => Promise<boolean> = safeQdrantUpsert,
+): Promise<boolean> {
+    const failureContext: UpsertFailureContext = {};
+    let success = await upsert(points, failureContext);
+    if (success) return true;
+    if (failureContext.permanentFailure) return false;
+    if (budget.remainingMs <= 0) return false;
+
+    const startedAt = Date.now();
+    console.warn(`⏳ [#4352-recovery] ${taskId}: window upsert failed — bounded in-task recovery (${budget.remainingMs}ms budget), embeddings kept hot`);
+    while (budget.remainingMs > 0) {
+        const iterStart = Date.now();
+        const pause = Math.min(UPSERT_RECOVERY_PAUSE_MS, budget.remainingMs);
+        await new Promise(resolve => setTimeout(resolve, pause));
+        // g5 fence between waits — a fenced run must not sleep through its abort.
+        throwIfIndexingAborted(options, taskId);
+        // Alive + fence-checked: this is deliberate bounded waiting, not a hang.
+        options?.onProgress?.();
+        success = await upsert(points, failureContext);
+        budget.remainingMs -= Date.now() - iterStart;
+        if (success) {
+            console.log(`✅ [#4352-recovery] ${taskId}: window upsert recovered after ${Date.now() - startedAt}ms`);
+            return true;
+        }
+        if (failureContext.permanentFailure) {
+            console.warn(`🚫 [#4352-recovery] ${taskId}: permanent upsert failure (HTTP 400) during recovery — stopping, no retry can fix the payload`);
+            return false;
+        }
+    }
+    console.warn(`🔴 [#4352-recovery] ${taskId}: recovery budget exhausted after ${Date.now() - startedAt}ms — failing the window (task-level retry + B2 pre-flight take over)`);
+    return false;
 }
 
 /**
@@ -1468,6 +1580,9 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
         // this throw.)
         let missingVectors = 0;
         let firstBatchAcked = false; // #4352 loop instrumentation: one-shot log below
+        // #4352 (c.325): ONE recovery budget per attempt — armed here, spent by
+        // whichever window upsert fails first; later windows see what's left.
+        const upsertRecovery: UpsertRecoveryBudget = { remainingMs: upsertRecoveryBudgetMs() };
         for (let start = 0; start < subChunksToEmbed.length; start += UPSERT_WINDOW_SUBCHUNKS) {
             // #4352 g5: a fenced run stops here — before embedding a new window.
             throwIfIndexingAborted(options, taskId);
@@ -1549,7 +1664,13 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
 
             if (pointsToIndex.length > 0) {
                 console.log(`📤 Préparation upsert Qdrant: ${pointsToIndex.length} points (de ${chunks.length} chunks originaux) pour tâche ${taskId}`);
-                const success = await safeQdrantUpsert(pointsToIndex);
+                // #4352 (c.325): bounded recovery instead of an immediate throw —
+                // the window's vectors are hot in cachedResults; on a transient
+                // store wedge (breaker OPEN) we wait out the breaker and re-try
+                // THIS window rather than re-queueing the whole task behind the
+                // serial leader. Budget exhausted / HTTP 400 → false → the throw
+                // below is unchanged.
+                const success = await safeQdrantUpsertWithWindowRecovery(pointsToIndex, taskId, options, upsertRecovery);
                 if (!success) {
                     // #1273: Propagate error instead of swallowing it silently
                     // Previously returned [] which caller treated as "success with 0 points"
