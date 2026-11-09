@@ -293,6 +293,10 @@ describe('GDrive borné, PG inconditionnel (#4131 G-B lot 1)', () => {
     // site — `isDashboardFileMirrorDeferrable`, qui décide si la moitié fichier
     // peut quitter le chemin critique. Un site de plus sans mise à jour de la
     // borne se verrait ici.
-    expect(src.match(/isDashboardPgPrimary\(\)/g)?.length).toBe(5);
+    // #4131 G-MES — le 6e site est le tampon d'export de l'append incrémental
+    // (ai-01 c.6728973761 : sous PG-primaire, la moitié fichier est un export).
+    // Il ne décide PAS d'une écriture, il décide de la présence du marqueur
+    // dans le frontmatter — mais il lit la même porte, donc il se compte ici.
+    expect(src.match(/isDashboardPgPrimary\(\)/g)?.length).toBe(6);
   });
 });

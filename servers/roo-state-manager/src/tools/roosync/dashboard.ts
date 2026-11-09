@@ -3904,12 +3904,24 @@ async function appendDashboardIncremental(
       }
     }
 
+    // #4131 G-MES — l'incrément EST une écriture de miroir quand PG a tenu CET
+    // append : sous la porte PG-primaire le fichier n'est qu'une projection de
+    // PG (périmètre élargi, ai-01 c.6728973761 — « tous les chemins RSM, sauf
+    // la réparation »). Hors de ce cas (GDrive-first, ou PG en échec — repli)
+    // le fichier est la surface primaire : pas de marqueur, sinon l'instrument
+    // Phase D compterait comme export une écriture qui n'en est pas une.
+    // Le tampon est posé à l'instant de la moitié fichier : en mode différé
+    // (#4286) elle court après le retour de l'append, parfois ~8 min plus tard.
+    const incrementalStamp = isDashboardPgPrimary() && pgPrimaryOk
+      ? { mirrorExportAt: new Date().toISOString() }
+      : undefined;
     const frontmatter: DashboardFrontmatter = {
       type: dashboard.type,
       lastModified: dashboard.lastModified,
       lastModifiedBy: dashboard.lastModifiedBy,
       totalMessages: dashboard.intercom.totalMessages,
-      lastCondensedAt: dashboard.intercom.lastCondensedAt
+      lastCondensedAt: dashboard.intercom.lastCondensedAt,
+      ...(incrementalStamp ?? {})
     };
     const newFm = `---\n${yaml.dump(frontmatter).trim()}\n---`;
 
