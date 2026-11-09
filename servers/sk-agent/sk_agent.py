@@ -2917,6 +2917,32 @@ _conversation_runner: ConversationRunner | None = None
 
 _init_error: str | None = None
 
+# Config provenance telemetry (#4289): the host reads the config ONCE (first
+# _get_manager) and never re-reads it, while diagnostics() re-reads the disk.
+# Those two views can silently diverge — the "standalone OK / session KO" trap
+# measured 2026-11-08 (hosts born before a config edit kept serving stale
+# credentials in session while a standalone probe read the fixed file and
+# answered 200). These fields record WHEN the served config was loaded and a
+# fingerprint of the bytes it was loaded from, so diagnostics can flag the
+# divergence without a restart.
+_config_loaded_at: str | None = None
+_config_loaded_fingerprint: str | None = None
+
+
+def _config_file_fingerprint(path: str | None = None) -> str | None:
+    """sha256[:16] of the config file bytes, or None if unreadable.
+
+    A content hash, not an mtime: rewriting identical bytes is not a drift,
+    and a fingerprint is safe to publish (no config content, no secrets).
+    """
+    import hashlib
+
+    try:
+        data = Path(path or CONFIG_PATH).read_bytes()
+    except OSError:
+        return None
+    return hashlib.sha256(data).hexdigest()[:16]
+
 
 async def _get_manager() -> SKAgentManager:
     """Get or create the global manager instance.
@@ -2925,9 +2951,14 @@ async def _get_manager() -> SKAgentManager:
     The last error is stored in _init_error for diagnostics.
     """
     global _manager, _config, _conversation_runner, _init_error
+    global _config_loaded_at, _config_loaded_fingerprint
     if _manager is None:
         try:
+            _config_loaded_fingerprint = _config_file_fingerprint()
             _config = load_config()
+            _config_loaded_at = datetime.now(timezone.utc).isoformat(
+                timespec="seconds"
+            )
             _manager = SKAgentManager(_config)
             await _manager.start()
             # Create conversation runner with the manager's agents and lazy factory
@@ -2950,6 +2981,8 @@ async def _get_manager() -> SKAgentManager:
             # Reset so next call retries instead of returning a broken instance
             _manager = None
             _conversation_runner = None
+            _config_loaded_at = None
+            _config_loaded_fingerprint = None
             _init_error = f"{type(exc).__name__}: {exc}"
             log.exception("SK Agent Manager initialization failed")
             raise
@@ -3655,6 +3688,33 @@ async def diagnostics() -> str:
             result["config_file"] = f"parse_error: {exc}"
     else:
         result["config_file"] = "missing"
+
+    # Config provenance (#4289): compare the config the manager SERVES
+    # (loaded once at init, never re-read) with the one on DISK (read just
+    # above). agents_configured reflects the disk; agents_served reflects
+    # the host. When they diverge, the host was born before the config
+    # edit and only a restart serves the new values — visible here
+    # without guessing. Fingerprints only, never config content.
+    disk_fingerprint = _config_file_fingerprint()
+    served_config = _manager.config if _manager is not None else None
+    result["config_loaded"] = {
+        "at": _config_loaded_at,
+        "served_fingerprint": _config_loaded_fingerprint,
+        "disk_fingerprint": disk_fingerprint,
+        "disk_mtime": (
+            datetime.fromtimestamp(config_path.stat().st_mtime, timezone.utc)
+            .isoformat(timespec="seconds")
+            if config_path.exists()
+            else None
+        ),
+        "stale": (
+            _config_loaded_fingerprint != disk_fingerprint
+            if (_manager is not None and _config_loaded_fingerprint is not None)
+            else None
+        ),
+        "agents_served": len(served_config.agents) if served_config else None,
+        "models_served": len(served_config.models) if served_config else None,
+    }
 
     # Recursion depth telemetry (#3409). Counts only — no model, prompt, or
     # agent identifiers that could leak configuration.
