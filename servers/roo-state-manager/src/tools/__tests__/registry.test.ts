@@ -14,7 +14,7 @@ import { GenericError, GenericErrorCode } from '../../types/errors.js';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { ServerState } from '../../services/state-manager.service.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { getServerCapabilities } from '../../utils/server-capabilities.js';
 
 // Mock du Server SDK MCP
@@ -169,7 +169,7 @@ describe('registry.ts - Tool Registration', () => {
             };
 
             mockState = {
-                conversationCache: new Map<string, ConversationSkeleton>(),
+                conversationCache: new Map<string, StoredConversation>(),
                 qdrantIndexQueue: new Set<string>(),
                 isQdrantIndexingEnabled: false,
                 xmlExporterService: {},
@@ -601,7 +601,7 @@ describe('registry.ts - Tool Registration', () => {
             };
 
             mockState = {
-                conversationCache: new Map<string, ConversationSkeleton>(),
+                conversationCache: new Map<string, StoredConversation>(),
                 qdrantIndexQueue: new Set<string>(),
                 isQdrantIndexingEnabled: false,
                 xmlExporterService: {},
@@ -708,7 +708,7 @@ describe('registry.ts - Tool Registration', () => {
             };
 
             mockState = {
-                conversationCache: new Map<string, ConversationSkeleton>(),
+                conversationCache: new Map<string, StoredConversation>(),
                 qdrantIndexQueue: new Set<string>(),
                 isQdrantIndexingEnabled: false,
                 xmlExporterService: {},
@@ -980,7 +980,7 @@ describe('registry.ts - Tool Registration', () => {
             };
 
             mockState = {
-                conversationCache: new Map<string, ConversationSkeleton>(),
+                conversationCache: new Map<string, StoredConversation>(),
                 qdrantIndexQueue: new Set<string>(),
                 isQdrantIndexingEnabled: false,
                 xmlExporterService: {},
@@ -1142,7 +1142,7 @@ describe('registry.ts - Tool Registration', () => {
             }
             mockServer = { setRequestHandler: vi.fn() };
             mockState = {
-                conversationCache: new Map<string, ConversationSkeleton>(),
+                conversationCache: new Map<string, StoredConversation>(),
                 qdrantIndexQueue: new Set<string>(),
                 isQdrantIndexingEnabled: false,
                 xmlExporterService: {},
@@ -1219,7 +1219,7 @@ describe('registry.ts - Tool Registration', () => {
             registerCallToolHandler(
                 mockServer,
                 {
-                    conversationCache: new Map<string, ConversationSkeleton>(),
+                    conversationCache: new Map<string, StoredConversation>(),
                     qdrantIndexQueue: new Set<string>(),
                     isQdrantIndexingEnabled: false,
                     xmlExporterService: {},

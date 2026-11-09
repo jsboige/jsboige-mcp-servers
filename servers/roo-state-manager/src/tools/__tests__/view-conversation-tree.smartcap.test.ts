@@ -25,7 +25,7 @@
 import { describe, test, expect } from 'vitest';
 import { viewConversationTree } from '../view-conversation-tree.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 function textTotal(result: CallToolResult): number {
     return result.content
@@ -45,7 +45,7 @@ describe('view handler e2e (#3280) : session ≥ 10 Mo, summary + smart_truncati
     const MSG_COUNT = 1200;   // × ~10 099 chars multi-lignes
     const ACTION_COUNT = 600; // × params JSON ~1,2 ko
 
-    const bigOverheadTask: ConversationSkeleton = {
+    const bigOverheadTask: StoredConversation = {
         taskId: 'e2e-overhead-task',
         parentTaskId: undefined,
         metadata: {

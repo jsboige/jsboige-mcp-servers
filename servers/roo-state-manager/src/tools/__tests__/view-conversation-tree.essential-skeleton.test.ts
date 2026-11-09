@@ -24,7 +24,7 @@
 import { describe, test, expect } from 'vitest';
 import { viewConversationTree } from '../view-conversation-tree.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 function firstText(result: CallToolResult): string {
     const first = result.content[0];
@@ -38,7 +38,7 @@ function countRoleMarkers(text: string): number {
 describe('view handler e2e (#2609 V4) : squelette essentiel, marqueurs vides omis', () => {
     // 7 messages dont 4 vides (2 strings vides, 1 whitespace-only, 1 de plus) :
     // la baseline live montrait exactement cette classe de bruit.
-    const noisyTask: ConversationSkeleton = {
+    const noisyTask: StoredConversation = {
         taskId: 'v4-essential-skeleton',
         parentTaskId: undefined,
         metadata: {
@@ -117,7 +117,7 @@ describe('view handler e2e (#2609 V4) : squelette essentiel, marqueurs vides omi
     });
 
     test('aucun message vide : aucune note d\'omission (pas de régression silencieuse)', async () => {
-        const cleanTask: ConversationSkeleton = {
+        const cleanTask: StoredConversation = {
             ...noisyTask,
             taskId: 'v4-essential-skeleton-clean',
             metadata: { ...noisyTask.metadata, messageCount: 2 },

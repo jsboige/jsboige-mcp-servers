@@ -49,11 +49,11 @@ vi.mock('../smart-truncation/index.js', () => ({
 }));
 
 import { viewConversationTree } from '../view-conversation-tree.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 // ─────────────────── helpers ───────────────────
 
-function makeSkeletonWithoutFiles(taskId: string, overrides?: Partial<ConversationSkeleton['metadata']>): ConversationSkeleton {
+function makeSkeletonWithoutFiles(taskId: string, overrides?: Partial<StoredConversation['metadata']>): StoredConversation {
     return {
         taskId,
         parentTaskId: undefined,
@@ -70,7 +70,7 @@ function makeSkeletonWithoutFiles(taskId: string, overrides?: Partial<Conversati
             ...overrides,
         },
         sequence: [],
-    } as ConversationSkeleton;
+    } as StoredConversation;
 }
 
 // ─────────────────── tests ───────────────────
@@ -155,7 +155,7 @@ describe('conversation_browser view: graceful degradation for deleted/remote tas
         // When stat succeeds (directory found), normal flow continues.
         // Use messageCount: 0 to bypass lazy loading entirely (existing behavior).
         const taskId = 'roo-task-normal';
-        const skeleton: ConversationSkeleton = {
+        const skeleton: StoredConversation = {
             taskId,
             parentTaskId: undefined,
             metadata: {
@@ -166,7 +166,7 @@ describe('conversation_browser view: graceful degradation for deleted/remote tas
                 totalSize: 100,
             },
             sequence: [{ role: 'user', content: 'Hello', timestamp: '2026-01-01T10:00:00.000Z' }],
-        } as ConversationSkeleton;
+        } as StoredConversation;
         const cache = new Map([[taskId, skeleton]]);
 
         const result = await viewConversationTree.handler({ task_id: taskId }, cache);

@@ -43,7 +43,7 @@ vi.mock('../../utils/roo-storage-detector.js', () => ({
 }));
 
 import { viewConversationTree } from '../view-conversation-tree.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 const tier3Stub = (taskId: string) => ({
 	taskId,
@@ -82,7 +82,7 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 	test('stub chaud → view hydrate, publie le corps dans conversationCache et le rend', async () => {
 		peekMock.mockReturnValueOnce(tier3Stub('t-web1')).mockReturnValueOnce(tier3Body('t-web1'));
 		hydrateMock.mockResolvedValue(true);
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		const result = await viewConversationTree.handler(
 			{ task_id: 't-web1', view_mode: 'single', detail_level: 'full' },
@@ -99,7 +99,7 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 
 	test('hôte froid (stub absent) → l\'erreur historique « not found » demeure', async () => {
 		peekMock.mockReturnValue(undefined);
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		await expect(
 			viewConversationTree.handler({ task_id: 't-web1' }, cache)
@@ -110,7 +110,7 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 	test('hydratation échouée → « not found », jamais une archive vide rendue', async () => {
 		peekMock.mockReturnValue(tier3Stub('t-web1'));
 		hydrateMock.mockResolvedValue(false);
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		await expect(
 			viewConversationTree.handler({ task_id: 't-web1' }, cache)
@@ -120,7 +120,7 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 	test('stub survivant après éviction (hydrated=false) → « not found », pas un arbre vide', async () => {
 		peekMock.mockReturnValue(tier3Stub('t-web1'));
 		hydrateMock.mockResolvedValue(true);
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 
 		await expect(
 			viewConversationTree.handler({ task_id: 't-web1' }, cache)
@@ -135,7 +135,7 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 
 	test('re-view après éviction LRU (stub déshydraté dans conversationCache) → ré-hydrate et rend le corps', async () => {
 		const evicted = tier3Stub('t-web1');
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 		cache.set('t-web1', evicted);
 		peekMock.mockReturnValueOnce(evicted).mockReturnValueOnce(tier3Body('t-web1'));
 		hydrateMock.mockResolvedValue(true);
@@ -151,7 +151,7 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 
 	test('ré-hydratation impossible (helper null) sur stub en cache → dégradation skeleton-only, pas de crash', async () => {
 		const evicted = tier3Stub('t-web1');
-		const cache = new Map<string, ConversationSkeleton>();
+		const cache = new Map<string, StoredConversation>();
 		cache.set('t-web1', evicted);
 		peekMock.mockReturnValue(tier3Stub('t-web1'));
 		hydrateMock.mockResolvedValue(false);
@@ -177,7 +177,7 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 		await fs.writeFile(path.join(taskDir, 'ui_messages.json'), '[]');
 		try {
 			const evicted = tier3Stub('t-web1');
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('t-web1', evicted);
 			peekMock.mockReturnValue(tier3Stub('t-web1'));
 			hydrateMock.mockResolvedValue(true);
@@ -210,7 +210,7 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 		await fs.mkdir(path.join(tmpBase, 'tasks', 't-web1'), { recursive: true });
 		try {
 			const evicted = tier3Stub('t-web1');
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('t-web1', evicted);
 			peekMock.mockReturnValueOnce(tier3Stub('t-web1')).mockReturnValueOnce(tier3Body('t-web1'));
 			hydrateMock.mockResolvedValue(true);
@@ -239,7 +239,7 @@ describe('#3661 AC8 — view d\'une archive Tier 3', () => {
 		await fs.writeFile(path.join(taskDir, 'ui_messages.json'), '');
 		try {
 			const evicted = tier3Stub('t-web1');
-			const cache = new Map<string, ConversationSkeleton>();
+			const cache = new Map<string, StoredConversation>();
 			cache.set('t-web1', evicted);
 			peekMock.mockReturnValueOnce(tier3Stub('t-web1')).mockReturnValueOnce(tier3Body('t-web1'));
 			hydrateMock.mockResolvedValue(true);

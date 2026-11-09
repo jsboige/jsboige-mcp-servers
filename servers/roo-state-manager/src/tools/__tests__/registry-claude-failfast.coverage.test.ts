@@ -73,7 +73,7 @@ vi.mock('../summary/get-conversation-synthesis.tool.js', () => ({
 
 import { registerCallToolHandler } from '../registry.js';
 import { ServerState } from '../../services/state-manager.service.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 // Id au format réel des sessions Claude Code (projet -- uuid).
 const CLAUDE_ID = 'claude-c--dev-CoursIA-2--6b175c67-1f2a-4c3d-9e4f-0a1b2c3d4e5f';
@@ -107,7 +107,7 @@ describe('#2191 — resolver conversation_browser: pas de scan Roo pour claude-*
 
         mockServer = { setRequestHandler: vi.fn() };
         mockState = {
-            conversationCache: new Map<string, ConversationSkeleton>(),
+            conversationCache: new Map<string, StoredConversation>(),
             qdrantIndexQueue: new Set<string>(),
             isQdrantIndexingEnabled: false,
             xmlExporterService: {},
@@ -170,7 +170,7 @@ describe('#2191 — resolver conversation_browser: pas de scan Roo pour claude-*
         // étant désormais vide, le chemin cluster d'une racine claude-* ne
         // touche plus le disque Roo : le root est servi par le cache RAM, les
         // enfants par le cache RAM (garde findChildTasks #1328).
-        const root: ConversationSkeleton = {
+        const root: StoredConversation = {
             taskId: CLAUDE_ID,
             sequence: [{ role: 'user', content: 'hello' } as any],
             metadata: {

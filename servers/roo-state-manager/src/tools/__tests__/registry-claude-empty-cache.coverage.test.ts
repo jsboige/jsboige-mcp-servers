@@ -70,12 +70,12 @@ vi.mock('../summary/get-conversation-synthesis.tool.js', () => ({
 
 import { registerCallToolHandler } from '../registry.js';
 import { ServerState } from '../../services/state-manager.service.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 const CLAUDE_ID = 'claude-c--dev-CoursIA-2--6b175c67-1f2a-4c3d-9e4f-0a1b2c3d4e5f';
 
 /** Header en cache tel que le scanner l'indexe pour une session vide/à 0 : pas de séquence, messageCount=0. */
-function makeEmptyHeader(): ConversationSkeleton {
+function makeEmptyHeader(): StoredConversation {
     return {
         taskId: CLAUDE_ID,
         metadata: {
@@ -92,7 +92,7 @@ function makeEmptyHeader(): ConversationSkeleton {
 }
 
 /** Conversation Claude réelle que le detector SAIT charger (fichier lisible, séquence non vide). */
-function makeRealClaudeSkeleton(): ConversationSkeleton {
+function makeRealClaudeSkeleton(): StoredConversation {
     return {
         taskId: CLAUDE_ID,
         sequence: [
@@ -138,7 +138,7 @@ describe('#2307 — resolver: header claude-* en cache à messageCount=0 → det
 
         mockServer = { setRequestHandler: vi.fn() };
         mockState = {
-            conversationCache: new Map<string, ConversationSkeleton>(),
+            conversationCache: new Map<string, StoredConversation>(),
             qdrantIndexQueue: new Set<string>(),
             isQdrantIndexingEnabled: false,
             xmlExporterService: {},
@@ -211,7 +211,7 @@ describe('#2307 — miroir view_task_details: header claude-* à messageCount=0 
     // un header claude-* indexé à 0 ne déclenchait jamais le chargement.
     test('le detector est consulté et la séquence réelle adoptée', async () => {
         const { viewTaskDetailsTool } = await import('../conversation/view-details.tool.js');
-        const cache = new Map<string, ConversationSkeleton>();
+        const cache = new Map<string, StoredConversation>();
         cache.set(CLAUDE_ID, makeEmptyHeader());
         mockFindConversationById.mockResolvedValue(makeRealClaudeSkeleton());
 

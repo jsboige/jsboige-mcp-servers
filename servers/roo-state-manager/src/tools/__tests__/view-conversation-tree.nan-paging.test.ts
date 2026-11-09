@@ -18,9 +18,9 @@
 
 import { describe, test, expect } from 'vitest';
 import { viewConversationTree } from '../view-conversation-tree.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
-const pagedTask: ConversationSkeleton = {
+const pagedTask: StoredConversation = {
     taskId: 'nan-paging-task',
     parentTaskId: undefined,
     metadata: {

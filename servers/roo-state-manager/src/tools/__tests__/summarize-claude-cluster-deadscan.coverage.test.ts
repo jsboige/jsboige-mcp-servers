@@ -75,11 +75,11 @@ vi.mock('../summary/get-conversation-synthesis.tool.js', () => ({
 }));
 
 import { registerCallToolHandler } from '../registry.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 const CLAUDE_ID = 'claude-c--dev-Cov--6b175c67-1f2a-4c3d-9e4f-0a1b2c3d4e5f';
 
-function makeRoot(): ConversationSkeleton {
+function makeRoot(): StoredConversation {
     return {
         taskId: CLAUDE_ID,
         sequence: [{ role: 'user', content: 'hello' } as any],
@@ -129,7 +129,7 @@ describe('#2191 follow-up — cluster source=claude: zéro scan mort, contrat []
 
         mockServer = { setRequestHandler: vi.fn() };
         mockState = {
-            conversationCache: new Map<string, ConversationSkeleton>(),
+            conversationCache: new Map<string, StoredConversation>(),
             qdrantIndexQueue: new Set<string>(),
             isQdrantIndexingEnabled: false
         };

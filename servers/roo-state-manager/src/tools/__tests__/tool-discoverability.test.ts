@@ -16,7 +16,7 @@ import {
     registerCallToolHandler
 } from '../registry.js';
 import { CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 import { ServerState } from '../../services/state-manager.service.js';
 
 // Mock du Server SDK MCP
@@ -58,7 +58,7 @@ async function getListToolsDefinitions(): Promise<any[]> {
 function createCallToolHandler(): { handler: (request: any) => Promise<any> } {
     const mockServer = { setRequestHandler: vi.fn() } as any;
     const mockState: ServerState = {
-        conversationCache: new Map<string, ConversationSkeleton>(),
+        conversationCache: new Map<string, StoredConversation>(),
         qdrantIndexQueue: new Set<string>(),
         isQdrantIndexingEnabled: false,
         xmlExporterService: {},
