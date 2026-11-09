@@ -3164,13 +3164,16 @@ function redactForPublication(key: string, dashboard: Dashboard): Dashboard {
  * write-back d'hydratation produit des fichiers byte-identiques via UN seul
  * sérialiseur — deux constructeurs dériveraient.
  *
- * #4131 G-MES — `exportStamp` (repairDashboardMirrorFromPg uniquement) ajoute
- * la clé `mirrorExportAt` au frontmatter : sans elle, une écriture d'export
- * PG→fichier est indiscernable d'un écrivain résiduel depuis le système de
- * fichiers (les ticks du daemon sont par hôte : 90 s après son démarrage puis
- * toutes les 6 h, jamais prévisibles de l'extérieur). L'instrument Phase D
- * `measure-gdrive-write-freeze.ps1` reconnaît l'écriture d'export à ce
- * marqueur ≈ mtime. Absent (défaut) : rendu byte-identique à avant.
+ * #4131 G-MES — `exportStamp` ajoute la clé `mirrorExportAt` au frontmatter :
+ * sans elle, une écriture d'export PG→fichier est indiscernable d'un écrivain
+ * résiduel depuis le système de fichiers (les ticks du daemon sont par hôte :
+ * 90 s après son démarrage puis toutes les 6 h, jamais prévisibles de
+ * l'extérieur). L'instrument Phase D `measure-gdrive-write-freeze.ps1`
+ * reconnaît l'écriture d'export à ce marqueur ≈ mtime.
+ * Deux producteurs (cf. writeDashboardFile) : la réparation de miroir, et toute
+ * écriture pleine sous la porte PG-primaire — dont la condensation détachée
+ * #4527, qui écrivait le fichier SANS marqueur sur ai-01 (08/11, c.6727518021).
+ * Absent (défaut, hors porte PG-primaire) : rendu byte-identique à avant.
  */
 export function buildDashboardMarkdown(
   dashboard: Dashboard,
@@ -3384,6 +3387,23 @@ async function writeDashboardFile(
   let gdriveFailure: string | undefined;
   let wv: WriteVerifyResult = { forkSuspected: false };
 
+  // #4131 G-MES — marqueur d'EXPORT du frontmatter. Deux producteurs :
+  //  (a) `internal.mirrorExportAt` — la réparation de miroir, qui connaît déjà
+  //      son heure d'export et la garde ;
+  //  (b) la moitié fichier du chemin PG-premier (posée plus bas, dans la
+  //      branche `pgMirrorMode`) : là, PG est la surface primaire (#4131 G-B
+  //      lot 2) et le fichier n'est qu'une PROJECTION de PG — l'écriture EST un
+  //      export. Mesuré ai-01 08/11 (c.6727518021) : la condensation détachée
+  //      #4527 écrivait `global` 19:41:46Z et `workspace-CoursIA(-2)`
+  //      20:58:07Z sans marqueur, comptées « écrivains résiduels » par Phase D.
+  // Hors de ces deux cas le fichier est la surface PRIMAIRE (GDrive-first, ou
+  // repli après échec PG) : pas de marqueur — stampé là, il rendrait
+  // l'instrument aveugle, un écrivain résiduel y ressemblant à un export.
+  let exportStamp: { mirrorExportAt: string } | undefined =
+    internal?.mirrorExportAt !== undefined
+      ? { mirrorExportAt: internal.mirrorExportAt }
+      : undefined;
+
   const gdriveHalf = (): Promise<WriteVerifyResult> =>
     runGdriveFullWriteHalf(
       key,
@@ -3392,12 +3412,7 @@ async function writeDashboardFile(
       tmpPath,
       writeTimeoutMs,
       landedIds,
-      // #4131 G-MES — la clé n'existe que pour le chemin d'export
-      // (repairDashboardMirrorFromPg) : les autres appelants ne la passent
-      // pas et rendent byte-identique à avant.
-      internal?.mirrorExportAt !== undefined
-        ? { mirrorExportAt: internal.mirrorExportAt }
-        : undefined
+      exportStamp
     );
 
   // #4131 G-B lot 2 — PG-PREMIER : quand la porte write-primary est armée
@@ -3426,6 +3441,10 @@ async function writeDashboardFile(
       }
     }
     if (pgMirrorMode) {
+      // #4131 G-MES — ici seulement, le fichier est le miroir d'une écriture PG
+      // déjà tenue : le marqueur est posé à l'instant du write (la fenêtre PG
+      // peut avoir duré — l'écart mtime↔stamp doit rester celui de l'export).
+      exportStamp ??= { mirrorExportAt: new Date().toISOString() };
       try {
         wv = await withWriteDeadline(gdriveHalf(), writeTimeoutMs, `moitié GDrive (miroir) de l'écriture dashboard '${key}'`);
       } catch (err) {
