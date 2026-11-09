@@ -630,11 +630,11 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     // La tentative est déjà visible à l'instant où l'append rend la main :
     // tout hôte qui touche la clé pendant le vol de la passe sait qu'elle est
     // vivante (et peut, plus tard, dire qu'elle est morte).
-    expect(condenseHealthMocks.markCondenseAttempt).toHaveBeenCalledWith(key);
+    expect(condenseHealthMocks.markCondenseAttempt).toHaveBeenCalledWith(key, expect.stringMatching(/\S/));
 
     await awaitDetachedCondense(key);
 
-    expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'ok');
+    expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'ok', expect.stringMatching(/\S/));
   });
 
   it('marque l\'issue error durablement quand la passe détachée échoue (#4608)', async () => {
@@ -651,7 +651,7 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
 
     // L'échec doit survivre au process qui l'a lancé — c'est le cœur de #4608
     // (`detachedCondenseOutcomes` in-process ne le voyait pas).
-    expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'error');
+    expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'error', expect.stringMatching(/\S/));
   });
 
   it('consigne puis relance au prochain append une passe morte d\'un hôte précédent (#4608)', async () => {
@@ -678,9 +678,9 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     // La mort est consignée (visible pour les opérateurs), puis la nouvelle
     // passe part normalement — la relance EST la passe de cet append.
     expect(condenseHealthMocks.markDeadPassRecovered).toHaveBeenCalledWith(key);
-    expect(condenseHealthMocks.markCondenseAttempt).toHaveBeenCalledWith(key);
+    expect(condenseHealthMocks.markCondenseAttempt).toHaveBeenCalledWith(key, expect.stringMatching(/\S/));
 
     await awaitDetachedCondense(key);
-    expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'ok');
+    expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'ok', expect.stringMatching(/\S/));
   });
 });
