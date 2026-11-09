@@ -39,7 +39,12 @@ import type {
   RooSyncState,
 } from '../types/machine-config.js';
 import type { SystemInfo, McpServerInfo, RooModeInfo } from '../types/inventory.js';
-import { redactValue, looksLikeSecretValue } from './ClaudeSettingsService.js';
+import {
+  redactValue,
+  looksLikeSecretValue,
+  redactUrlCredentials,
+  redactAssignedSecrets,
+} from './ClaudeSettingsService.js';
 import { getGlobalStoragePath, getExtensionId } from '../utils/extension-paths.js';
 
 // ============================================================
@@ -131,6 +136,28 @@ function redactLeaf(path: string, value: unknown): unknown {
 }
 
 /**
+ * Redact a COMMAND-LIKE string we publish: `command`, `url`, `args[]`, `cwd` — the
+ * leaves that are NOT plain env values and therefore bypass `redactRecord`.
+ *
+ * ms#1706 (reviews po-2023 + ai-01): `redactValue` alone is not enough for these.
+ * Its URL-credentials branch is gated on `/BASE_URL$/i.test(path)`, and its
+ * `looksLikeSecretValue` is anchored at the START of the string — so a token in the
+ * MIDDLE of an arg (`-e API_KEY=sk-…`), an inline assignment in a Roo one-string
+ * command (`cmd /c set API_KEY=… && node …`), or the userinfo of an embedded URL
+ * (`http://user:pass@host` as the `command` of a url-type server) would all pass
+ * through raw. Both helpers below are path-independent and idempotent:
+ *  - `redactUrlCredentials` — same markers as `redactValue`'s BASE_URL branch
+ *    (`<credentials:sha256=…>` / `<redacted:sha256=…>`, non-reversible digests);
+ *  - `redactAssignedSecrets` — masks the VALUE of `<SENSITIVE_NAME>=<value>`
+ *    assignments and `Bearer <tok>`, keeping the name readable.
+ * Applied to BOTH sections (Claude `command`/`args`/`cwd`, Roo `command`): no leaf
+ * is published without passing through a redaction path.
+ */
+function redactPublishedString(value: string): string {
+  return redactAssignedSecrets(redactUrlCredentials(value));
+}
+
+/**
  * Redact every string leaf of a record (env blocks, settings objects).
  * Keys are preserved — the caller needs the shape to compare machines.
  */
@@ -174,7 +201,9 @@ interface RooMcpSettingsFile {
   }>;
 }
 
-/** `roo.mcpServers` from Roo's `mcp_settings.json`. Env values are value-redacted. */
+/** `roo.mcpServers` from Roo's `mcp_settings.json`. Env values are value-redacted;
+ * `command` (often a one-string command, e.g. `cmd /c set KEY=… && node …`) is
+ * redacted via `redactPublishedString` (ms#1706, addition ai-01). */
 async function collectRooMcpServers(roots: MachineConfigRoots): Promise<McpServerInfo[]> {
   const settingsPath = join(roots.rooGlobalStorageDir, 'settings', 'mcp_settings.json');
   const settings = await readJsonFile<RooMcpSettingsFile>(settingsPath);
@@ -190,7 +219,9 @@ async function collectRooMcpServers(roots: MachineConfigRoots): Promise<McpServe
         autoStart: cfg?.disabled !== true,
       };
       if (cfg?.description) info.description = cfg.description;
-      if (cfg?.command) info.command = cfg.command;
+      // ms#1706: published raw until now — a Roo one-string command can carry an
+      // inline `KEY=secret` assignment or an embedded URL userinfo.
+      if (cfg?.command) info.command = redactPublishedString(cfg.command);
       const transport = cfg?.transportType ?? (cfg?.url ? 'http' : undefined);
       if (transport) info.transportType = transport;
       if (Array.isArray(cfg?.alwaysAllow)) info.alwaysAllow = cfg.alwaysAllow;
@@ -346,10 +377,13 @@ async function collectClaudeSection(roots: MachineConfigRoots): Promise<ClaudeCo
       const cfg = claudeJson.mcpServers![name];
       const entry: NonNullable<ClaudeCodeConfig['mcpServers']>[number] = {
         name,
-        command: cfg?.command ?? cfg?.url ?? cfg?.type ?? 'unknown',
+        // ms#1706: a url-type server publishes its URL as `command` — userinfo and
+        // sensitive query params must be digested, and a one-string command must
+        // not leak an inline KEY=secret assignment.
+        command: redactPublishedString(cfg?.command ?? cfg?.url ?? cfg?.type ?? 'unknown'),
       };
-      if (Array.isArray(cfg?.args)) entry.args = cfg.args;
-      if (cfg?.cwd) entry.cwd = cfg.cwd;
+      if (Array.isArray(cfg?.args)) entry.args = cfg.args.map(a => (typeof a === 'string' ? redactPublishedString(a) : a));
+      if (cfg?.cwd) entry.cwd = redactPublishedString(cfg.cwd);
       if (cfg?.env) {
         entry.env = redactRecord(cfg.env, `claude.mcpServers.${name}.env`) as Record<string, string>;
       }

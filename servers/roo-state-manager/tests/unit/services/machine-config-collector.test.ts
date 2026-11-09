@@ -345,6 +345,99 @@ describe('MachineConfigCollector — secret masking', () => {
 });
 
 // ============================================================
+// Masking — command / args / url / cwd paths (ms#1706 reviews)
+//
+// The block above feeds secrets ONLY through `settings.env`/BASE_URL — which is
+// exactly why the `command`/`args`/`url`/`cwd` leak went unnoticed: no fixture
+// ever put a secret on those paths. These fixtures FAIL on the pre-ms#1706
+// collector (`command`/`args` were published raw, outside redactLeaf, and
+// redactValue alone cannot see a mid-string token or a non-BASE_URL userinfo).
+// ============================================================
+
+/** A token embedded in a Claude arg — NOT at the start of the string. */
+const ARG_TOKEN = 'sk-argfixture-4f7c9d2e1b8a';
+/** The password half of an embedded-URL userinfo on a url-type server. */
+const GATEWAY_PASSWORD = 'gw-pass-9876fixture';
+/** A secret value assigned inline inside a Roo one-string command. */
+const ROO_SECRET = 'roo-setter-fixture-42';
+
+const LEAK_FILES = {
+  'home/.claude.json': JSON.stringify({
+    mcpServers: {
+      // Arg porteur d'un jeton : le NOM doit rester lisible, la valeur digérée.
+      runner: {
+        command: 'node',
+        args: ['-e', `API_KEY=${ARG_TOKEN}`, 'server.js', '--port=3000'],
+        cwd: 'C:/work/runner',
+      },
+      // Serveur url-type : la `command` publiée EST l'URL, userinfo embarqué —
+      // chemin qui ne finit pas par BASE_URL, invisible pour redactValue.
+      gateway: { type: 'http', url: `http://operator:${GATEWAY_PASSWORD}@127.0.0.1:3914/api` },
+    },
+  }),
+  'globalStorage/settings/mcp_settings.json': JSON.stringify({
+    mcpServers: {
+      // Commande mono-chaîne Roo (addition ai-01) : affectation inline.
+      'roo-setter': { command: `cmd /c set API_KEY=${ROO_SECRET} && node alpha.js` },
+    },
+  }),
+};
+
+describe('MachineConfigCollector — secret masking on command/args/url/cwd paths (ms#1706)', () => {
+  let leakConfig: MachineConfig;
+  let leakSerialized: string;
+
+  beforeAll(async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'machine-config-ms1706-'));
+    await writeTree(base, LEAK_FILES);
+    leakConfig = await collectMachineConfig({
+      machineId: 'machine-leak',
+      roots: rootsOf(base),
+      system: { os: 'Windows_NT', hostname: 'machine-leak', username: 'operator' },
+    });
+    leakSerialized = JSON.stringify(leakConfig);
+  });
+
+  const claudeServer = (name: string) =>
+    leakConfig.claude.mcpServers?.find(s => s.name === name);
+
+  it('masks an inline API_KEY=<token> inside a Claude arg (name kept, value digested)', () => {
+    const args = claudeServer('runner')?.args ?? [];
+    expect(args[1]).toMatch(/^API_KEY=<redacted:sha256=[0-9a-f]{16}>$/);
+    expect(args[1]).not.toContain(ARG_TOKEN);
+  });
+
+  it('masks the embedded userinfo of a url-type server command (host/path kept)', () => {
+    const command = claudeServer('gateway')?.command ?? '';
+    expect(command).toContain('<credentials:sha256=');
+    expect(command).toContain('127.0.0.1:3914/api');
+    expect(command).not.toContain(GATEWAY_PASSWORD);
+    expect(command).not.toContain('operator');
+  });
+
+  it('masks an inline KEY=value inside a Roo one-string command (rest of the command kept)', () => {
+    const command = leakConfig.roo.mcpServers.find(s => s.name === 'roo-setter')?.command ?? '';
+    expect(command).toMatch(/API_KEY=<redacted:sha256=[0-9a-f]{16}>/);
+    expect(command).toContain('cmd /c set ');
+    expect(command).toContain('&& node alpha.js');
+    expect(command).not.toContain(ROO_SECRET);
+  });
+
+  it('never lets these secrets into the serialized config', () => {
+    expect(leakSerialized).not.toContain(ARG_TOKEN);
+    expect(leakSerialized).not.toContain(GATEWAY_PASSWORD);
+    expect(leakSerialized).not.toContain(ROO_SECRET);
+  });
+
+  it('does not over-redact benign command strings', () => {
+    const runner = claudeServer('runner');
+    expect(runner?.command).toBe('node');
+    expect(runner?.args).toEqual(['-e', expect.stringMatching(/^API_KEY=/), 'server.js', '--port=3000']);
+    expect(runner?.cwd).toBe('C:/work/runner');
+  });
+});
+
+// ============================================================
 // Case 14 — two simulated machines, compared, differences by category
 // ============================================================
 

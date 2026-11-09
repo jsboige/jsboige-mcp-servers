@@ -205,6 +205,126 @@ export function looksLikeSecretValue(value: string): boolean {
 }
 
 /**
+ * Marqueurs de redaction déjà posés — une valeur déjà masquée ne se re-digère
+ * pas (sinon `projectSettingsSafe` puis `formatValue` dégraderaient un marqueur
+ * en digest, et les passes embarquées se masqueraient l'une l'autre).
+ */
+function hasRedactionMarkers(value: string): boolean {
+  return (
+    value.includes('<credentials@>') || // marqueurs hérités (anciens snapshots)
+    value.includes('<redacted>') ||
+    value.includes('<credentials:sha256=') || // marqueurs courants (empreinte)
+    value.includes('<redacted:sha256=') ||
+    /^<set:len=\d+:sha256=[0-9a-f]{8}>$/.test(value)
+  );
+}
+
+/**
+ * Cœur « URL » de `redactValue`, INDÉPENDANT DU CHEMIN (extraction demandée par
+ * la review ms#1706) : userinfo → `<credentials:sha256=…>`, valeurs des
+ * paramètres de query sensibles → `<redacted:sha256=…>`. Reconstruit À PARTIR
+ * de la chaîne d'origine pour préserver le path exact (slash final inclus) —
+ * ne normalise pas. `parsed` doit être le résultat de `new URL(value)`.
+ */
+function redactUrlCore(value: string, parsed: URL): string {
+  let out = value;
+  if (parsed.username || parsed.password) {
+    // le userinfo est le premier '//x@' — sûr car url.username/password le
+    // confirment. L'empreinte (non réversible) du userinfo garde la
+    // discrimination : deux credentials différents => deux marqueurs
+    // différents, sans jamais exposer le raw.
+    const m = /\/\/([^@/]+)@/.exec(out);
+    const userinfoSecret = m ? m[1] : `${parsed.username}:${parsed.password}`;
+    out = out.replace(/\/\/[^@/]+@/, `//<credentials:sha256=${secretDigest(userinfoSecret)}>@`);
+  }
+  const sensitiveParams = [...parsed.searchParams.keys()].filter(
+    k => isSensitiveQueryParamName(k) || looksLikeSecretValue(parsed.searchParams.get(k) || '')
+  );
+  if (sensitiveParams.length > 0) {
+    // Reconstruit la query en préservant l'ordre et les valeurs non sensibles,
+    // en remplaçant la VALEUR des paramètres sensibles par un marqueur
+    // EMPREINTE (non réversible : deux valeurs différentes => deux marqueurs
+    // différents) — pas d'encodage URL qui transformerait le marqueur en
+    // '%3C…%3E'.
+    const sensitive = new Set(sensitiveParams);
+    const parts = parsed.search.slice(1).split('&').map(pair => {
+      const eq = pair.indexOf('=');
+      const k = eq >= 0 ? pair.slice(0, eq) : pair;
+      if (sensitive.has(k)) {
+        const decoded = parsed.searchParams.get(k) ?? (eq >= 0 ? pair.slice(eq + 1) : '');
+        return `${k}=<redacted:sha256=${secretDigest(decoded)}>`;
+      }
+      return pair;
+    });
+    out = out.replace(/\?[^#]*/, `?${parts.join('&')}`);
+  }
+  return out;
+}
+
+/**
+ * Masque les credentials des URLs http(s) EMBARQUÉES dans une chaîne quelconque
+ * (review ms#1706) — indépendant du chemin : la branche `BASE_URL` de
+ * `redactValue` ne couvre que les chemins finissant par BASE_URL, donc un
+ * serveur de transport `url` (dont la `command` EST l'URL) ou une URL glissée
+ * dans un arg publiait son userinfo brut. Mêmes marqueurs que `redactValue`,
+ * même discrimination par empreinte. Idempotent.
+ */
+export function redactUrlCredentials(value: string): string {
+  if (hasRedactionMarkers(value)) return value;
+  return value.replace(/https?:\/\/[^\s"'`<>]+/g, (candidate) => {
+    let url: URL;
+    try {
+      url = new URL(candidate);
+    } catch {
+      // Non parsable en URL complète (ponctuation collée, etc.) : repli
+      // textuel sur le seul userinfo — le schéma/host restent lisibles.
+      return candidate.replace(/\/\/([^@/\s"']+)(@)/, (_m, ui: string) =>
+        `//<credentials:sha256=${secretDigest(ui)}>@`);
+    }
+    return redactUrlCore(candidate, url);
+  });
+}
+
+/**
+ * Masque la VALEUR des affectations sensibles EMBARQUÉES dans une chaîne, en
+ * conservant le NOM (review ms#1706) : `looksLikeSecretValue` est ancré en tête
+ * de chaîne, donc un arg réel `-e API_KEY=sk-…` ou une commande Roo
+ * `cmd /c set API_KEY=… && node …` lui échappe. Deux déclencheurs :
+ *  - le NOM est sensible, au sens de la QUERY-STRING (`isSensitiveQueryParamName`,
+ *    mots entiers — `author=…`, `design=…` restent lisibles, `API_KEY=…`,
+ *    `token=…`, `--api-key=…` sont couverts) ;
+ *  - ou la VALEUR est secrète par sa forme (`looksLikeSecretValue`).
+ * La valeur devient `<redacted:sha256=…>` — empreinte non réversible, comme la
+ * query-string de `redactValue` : deux secrets différents restent distinguables.
+ */
+export function redactAssignedSecrets(value: string): string {
+  if (hasRedactionMarkers(value)) return value;
+  let out = value;
+  // Jeton `Bearer <tok>` au milieu de la chaîne (`-H "Authorization: Bearer …"`).
+  out = out.replace(/(Bearer\s+)([A-Za-z0-9._-]{8,})/gi,
+    (_m, lead: string, tok: string) => `${lead}<redacted:sha256=${secretDigest(tok)}>`);
+  // Forme compacte NOM=VALEUR (args `KEY=sk-…`, `--flag=v`, `set KEY=v`) : la
+  // valeur est un token sans espace, borné par les séparateurs de shell. Une
+  // valeur déjà marquée (posée par redactUrlCredentials) n'est pas re-digérée.
+  out = out.replace(/([A-Za-z_][A-Za-z0-9_.-]{0,63})(=)([^\s"'`;|&]{6,})/g,
+    (m, name: string, eq: string, val: string) =>
+      (isSensitiveQueryParamName(name) || looksLikeSecretValue(val)) && !val.startsWith('<redacted:')
+        ? `${name}${eq}<redacted:sha256=${secretDigest(val)}>`
+        : m
+  );
+  // Forme en-tête « NOM: valeur » (`Authorization: xyz…`, sans Bearer) : nom
+  // sensible au sens query-string, valeur = un token. `Bearer` littéral déjà
+  // traité par la passe du dessus (sa valeur est le marqueur, pas un secret).
+  out = out.replace(/([A-Za-z_][A-Za-z0-9_.-]{0,63})(:\s+)([^\s"';|&]{6,})/g,
+    (m, name: string, sep: string, val: string) =>
+      isSensitiveQueryParamName(name) && !/^Bearer$/i.test(val) && !val.startsWith('<redacted:')
+        ? `${name}${sep}<redacted:sha256=${secretDigest(val)}>`
+        : m
+  );
+  return out;
+}
+
+/**
  * Noms de paramètres de query sensibles — matching PAR MOT ENTIER (défaut
  * review #3 + réserve passe 3 : fin de la sur-redaction par sous-chaîne).
  * `auth`, `sig`, `api_key`, `x-api-key`, `access_token`, `secretKey`,
@@ -455,15 +575,7 @@ export function redactValue(path: string, value: unknown): unknown {
   // Idempotence : une valeur déjà redactée doit retourner telle quelle — sinon
   // projectSettingsSafe puis formatValue (même chemin) re-redacteraient et
   // 'https://<credentials:sha256=…>@…' serait dégradé en digest (défaut review #1).
-  if (
-    value.includes('<credentials@>') || // marqueurs hérités (anciens snapshots)
-    value.includes('<redacted>') ||
-    value.includes('<credentials:sha256=') || // marqueurs courants (empreinte)
-    value.includes('<redacted:sha256=') ||
-    /^<set:len=\d+:sha256=[0-9a-f]{8}>$/.test(value)
-  ) {
-    return value;
-  }
+  if (hasRedactionMarkers(value)) return value;
   if (/BASE_URL$/i.test(path)) {
     let url: URL;
     try {
@@ -476,41 +588,11 @@ export function redactValue(path: string, value: unknown): unknown {
       // Protocole non attendu (file:, etc.) — digest, jamais broadcast brut.
       return maskSecretValue(value);
     }
-    // Reconstruit À PARTIR de la chaîne d'origine pour préserver le path exact
-    // (slash final inclus) — ne normalise pas 'https://h' en 'https://h/' qui
-    // fabriquerait une conformité entre des URL distinctes.
-    let out = value;
-    if (url.username || url.password) {
-      // le userinfo est le premier '//x@' — sûr car url.username/password le
-      // confirment. L'empreinte (non réversible) du userinfo garde la
-      // discrimination : deux credentials différents => deux marqueurs
-      // différents (défaut review #1), sans jamais exposer le raw.
-      const m = /\/\/([^@/]+)@/.exec(out);
-      const userinfoSecret = m ? m[1] : `${url.username}:${url.password}`;
-      out = out.replace(/\/\/[^@/]+@/, `//<credentials:sha256=${secretDigest(userinfoSecret)}>@`);
-    }
-    const sensitiveParams = [...url.searchParams.keys()].filter(
-      k => isSensitiveQueryParamName(k) || looksLikeSecretValue(url.searchParams.get(k) || '')
-    );
-    if (sensitiveParams.length > 0) {
-      // Reconstruit la query en préservant l'ordre et les valeurs non sensibles,
-      // en remplaçant la VALEUR des paramètres sensibles par un marqueur
-      // EMPREINTE (non réversible : deux valeurs différentes => deux marqueurs
-      // différents) — pas d'encodage URL qui transformerait le marqueur en
-      // '%3C…%3E'.
-      const sensitive = new Set(sensitiveParams);
-      const parts = url.search.slice(1).split('&').map(pair => {
-        const eq = pair.indexOf('=');
-        const k = eq >= 0 ? pair.slice(0, eq) : pair;
-        if (sensitive.has(k)) {
-          const decoded = url.searchParams.get(k) ?? (eq >= 0 ? pair.slice(eq + 1) : '');
-          return `${k}=<redacted:sha256=${secretDigest(decoded)}>`;
-        }
-        return pair;
-      });
-      out = out.replace(/\?[^#]*/, `?${parts.join('&')}`);
-    }
-    return out;
+    // Le cœur URL (userinfo + query sensible) vit dans redactUrlCore — extrait
+    // ms#1706 pour être réutilisé, indépendant du chemin, par le collecteur
+    // MachineConfig (command/url embarqués). Comportement BASE_URL inchangé :
+    // c'est le même code, déplacé.
+    return redactUrlCore(value, url);
   }
   if (looksLikeSecretValue(value)) return maskSecretValue(value);
   return value;
