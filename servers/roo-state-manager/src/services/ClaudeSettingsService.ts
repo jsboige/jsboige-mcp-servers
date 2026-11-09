@@ -193,7 +193,7 @@ export function isSensitiveKey(key: string): boolean {
 }
 
 const SECRET_VALUE_PATTERNS: RegExp[] = [
-  /^(sk|rk|ghp|gho|ghu|ghs|github_pat|xox[bposa]|AKIA|AIza)[-_][A-Za-z0-9._-]+/,
+  /^(sk|rk|ghp|gho|ghu|ghs|github_pat|xox[bposa]|AKIA|AIza|GOCSPX)[-_][A-Za-z0-9._-]+/,
   /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
   /^[a-f0-9]{40,64}$/i,
   /Bearer\s+[A-Za-z0-9._-]+/i,
