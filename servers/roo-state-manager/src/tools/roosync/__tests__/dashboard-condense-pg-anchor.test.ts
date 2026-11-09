@@ -24,18 +24,26 @@ import * as path from 'path';
 import * as os from 'os';
 import type { Dashboard } from '../dashboard-schemas.js';
 
-const { mockReadDashboardFromPg, mockProbeHydration, mockDualWriteDashboardSync, mockDualWriteDashboardDelete } =
-  vi.hoisted(() => ({
-    mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
-    mockProbeHydration: vi.fn().mockResolvedValue({ kind: 'empty' }),
-    mockDualWriteDashboardSync: vi.fn().mockResolvedValue(undefined),
-    mockDualWriteDashboardDelete: vi.fn().mockResolvedValue(undefined),
-  }));
+const {
+  mockReadDashboardFromPg, mockProbeHydration, mockDualWriteDashboardSync, mockDualWriteDashboardDelete,
+  // #4131 G-MES — la porte write-primary est pilotée par test : c'est elle qui
+  // décide si le fichier est une projection de PG (export → marqueur) ou la
+  // surface primaire (pas de marqueur).
+  mockIsDashboardPgPrimary, mockDualWriteDashboardSyncChecked,
+} = vi.hoisted(() => ({
+  mockReadDashboardFromPg: vi.fn().mockResolvedValue(null),
+  mockProbeHydration: vi.fn().mockResolvedValue({ kind: 'empty' }),
+  mockDualWriteDashboardSync: vi.fn().mockResolvedValue(undefined),
+  mockDualWriteDashboardDelete: vi.fn().mockResolvedValue(undefined),
+  mockIsDashboardPgPrimary: vi.fn().mockReturnValue(false),
+  mockDualWriteDashboardSyncChecked: vi.fn().mockResolvedValue({ ok: true, reason: 'written' }),
+}));
 
 vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   // #4131 G-B lot 2 — exports consommés par dashboard.ts : gate OFF + ungated
   // null par défaut (sémantique lot 1 inchangée pour ces suites).
-  isDashboardPgPrimary: vi.fn().mockReturnValue(false),
+  isDashboardPgPrimary: mockIsDashboardPgPrimary,
+  dualWriteDashboardSyncChecked: mockDualWriteDashboardSyncChecked,
   readDashboardFromPgUngated: vi.fn().mockResolvedValue(null),
   readDashboardFromPg: mockReadDashboardFromPg,
   probeDashboardJournalForHydration: mockProbeHydration,
@@ -79,6 +87,8 @@ describe('condensation anchor × PG divergence (#3151)', () => {
     mockReadDashboardFromPg.mockResolvedValue(null);
     mockDualWriteDashboardSync.mockClear();
     mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
+    mockIsDashboardPgPrimary.mockReturnValue(false);
+    mockDualWriteDashboardSyncChecked.mockResolvedValue({ ok: true, reason: 'written' });
   });
 
   afterEach(async () => {
@@ -147,5 +157,111 @@ describe('condensation anchor × PG divergence (#3151)', () => {
     // The GDrive file is what condensation rewrote: the disk-only message must
     // still be there. With the delta anchored on PG it is gone.
     expect(messageIds(await readFile(filePath, 'utf8'))).toContain(DISK_ONLY_ID);
+  });
+});
+
+describe('#4131 G-MES — la condensation écrit un EXPORT marqué sous PG-primaire', () => {
+  let tmpDir: string;
+
+  beforeEach(async () => {
+    process.env.CONDENSE_DETACHED = '0';
+    tmpDir = await mkdtemp(testTmpBase);
+    process.env.ROOSYNC_SHARED_PATH = tmpDir;
+    process.env.ROOSYNC_MACHINE_ID = 'test-machine';
+    process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+    mockReadDashboardFromPg.mockResolvedValue(null);
+    mockDualWriteDashboardSync.mockClear();
+    mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
+    mockIsDashboardPgPrimary.mockReturnValue(false);
+    mockDualWriteDashboardSyncChecked.mockResolvedValue({ ok: true, reason: 'written' });
+  });
+
+  afterEach(async () => {
+    await rm(tmpDir, { recursive: true, force: true });
+    delete process.env.ROOSYNC_SHARED_PATH;
+    delete process.env.ROOSYNC_MACHINE_ID;
+    delete process.env.ROOSYNC_WORKSPACE_ID;
+    vi.clearAllMocks();
+  });
+
+  /** A view large enough to cross the 92 % threshold — same lever as the #3151 case. */
+  function overThresholdView(key: string): Dashboard {
+    const messages = Array.from({ length: 20 }, (_, i) => ({
+      id: `bulk-${i}`,
+      timestamp: new Date(Date.now() - (20 - i) * 60_000).toISOString(),
+      author: { machineId: 'other-machine', workspace: 'other-workspace' },
+      content: `Bulk message ${i}: ${'b'.repeat(2600)}`,
+    }));
+    return {
+      type: 'workspace',
+      key,
+      lastModified: new Date().toISOString(),
+      lastModifiedBy: { machineId: 'other-machine', workspace: 'other-workspace' },
+      status: { markdown: 'bulk status' },
+      intercom: { messages, totalMessages: messages.length },
+    };
+  }
+
+  /** Trip a real condensation (truncation fallback) and return the rewritten file. */
+  async function condenseOnce(): Promise<{ landed: string; before: number; after: number }> {
+    const write = await roosyncDashboard({
+      action: 'write', type: 'workspace', content: 'status', createIfNotExists: true,
+    });
+    const filePath = path.join(tmpDir, 'dashboards', `${write.key}.md`);
+    for (let i = 0; i < 4; i++) {
+      await roosyncDashboard({
+        action: 'append', type: 'workspace', content: `File message ${i}`, tags: ['INFO'],
+      });
+    }
+    // The dashboard the append sees is over the cap: the condensation runs.
+    mockReadDashboardFromPg.mockImplementation(async () => overThresholdView(write.key as string));
+    const before = Date.now();
+    const result = await roosyncDashboard({
+      action: 'append', type: 'workspace', content: 'Message that trips condensation', tags: ['INFO'],
+    });
+    const after = Date.now();
+    expect(result.success).toBe(true);
+    expect(result.condensed).toBe(true);
+    return { landed: await readFile(filePath, 'utf8'), before, after };
+  }
+
+  it('sous la porte PG-primaire, le fichier condensé porte mirrorExportAt (mesuré ai-01 08/11)', async () => {
+    // Mesure de la revue #4131 (c.6727518021) : la passe détachée #4527 écrivait
+    // `global` 19:41:46Z et `workspace-CoursIA(-2)` 20:58:07Z SANS marqueur ;
+    // l'instrument Phase D les comptait donc comme écrivains résiduels.
+    mockIsDashboardPgPrimary.mockReturnValue(true);
+
+    const { landed, before, after } = await condenseOnce();
+
+    const fm = landed.match(/^---\n([\s\S]+?)\n---/);
+    expect(fm).not.toBeNull();
+    const stamp = fm![1].match(/^mirrorExportAt:\s*'?([^'\s]+)'?/m);
+    // Mutant : retirer `exportStamp ??= …` de la branche pgMirrorMode de
+    // writeDashboardFile rend ce test rouge — c'est lui qui referme le finding.
+    expect(stamp).not.toBeNull();
+    const stampMs = Date.parse(stamp![1]);
+    expect(Number.isFinite(stampMs)).toBe(true);
+    // Le marqueur est l'heure de l'EXPORT (le write), pas celle de la vue PG.
+    expect(stampMs).toBeGreaterThanOrEqual(before);
+    expect(stampMs).toBeLessThanOrEqual(after);
+  });
+
+  it('porte armée mais écriture PG en échec : repli GDrive-first, donc PAS de marqueur', async () => {
+    // Le marqueur dit « cette écriture est une projection de PG ». Quand PG a
+    // échoué et que le fichier porte seul le message, l'écriture est redevenue
+    // PRIMAIRE : la stamper mentirait à l'instrument Phase D.
+    mockIsDashboardPgPrimary.mockReturnValue(true);
+    mockDualWriteDashboardSyncChecked.mockResolvedValue({ ok: false, reason: 'pg down' });
+
+    const { landed } = await condenseOnce();
+    expect(landed).not.toContain('mirrorExportAt');
+  });
+
+  it('hors porte (GDrive-first), le fichier reste la surface primaire : aucun marqueur', async () => {
+    // L'autre direction : si tout était stampé, le marqueur ne distinguerait
+    // plus un export d'un écrivain résiduel et l'instrument Phase D perdrait
+    // tout pouvoir de discrimination.
+    const { landed } = await condenseOnce();
+    expect(landed).not.toContain('mirrorExportAt');
   });
 });
