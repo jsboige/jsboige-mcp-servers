@@ -58,6 +58,7 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
 const condenseHealthMocks = vi.hoisted(() => ({
   markCondenseAttempt: vi.fn(async () => {}),
   markCondenseOutcome: vi.fn(async () => {}),
+  markCondenseLanding: vi.fn(async () => {}),
   markDeadPassRecovered: vi.fn(async () => {}),
   isDeadPass: vi.fn(() => false),
   readCondenseHealth: vi.fn(async () => null),
@@ -80,7 +81,7 @@ vi.mock('../../../utils/logger.js', () => ({
 // rejette à la demande. Les échecs LLM sont absorbés en interne par la passe
 // (truncation fallback) ; c'est l'erreur d'écriture d'archive qui fait
 // sortir `condenseIntercom` par le throw et atteint le catch détaché.
-const fsFail = vi.hoisted(() => ({ archiveWriteFails: false }));
+const fsFail = vi.hoisted(() => ({ archiveWriteFails: false, readFails: false }));
 
 // #4527 review (ai-01, 04/11) — point d'injection du test de verrou : chaque
 // écriture de dashboard se termine par une copie in-place (staging → copyFile).
@@ -133,6 +134,19 @@ vi.mock('fs/promises', async (importOriginal) => {
       }
       return actual.writeFile(file, data, options);
     },
+    readFile: async (
+      file: Parameters<typeof actual.readFile>[0],
+      options?: Parameters<typeof actual.readFile>[1]
+    ) => {
+      // #4131 — le read-back de la moitié fichier doit dégrader en `unknown`
+      // (pas d'opinion), jamais faire échouer la passe. Cible : les fichiers
+      // dashboards/ hors archive (la passe relit aussi les archives).
+      const p = String(file).replace(/\\/g, '/');
+      if (fsFail.readFails && p.includes('/dashboards/') && !p.includes('/archive/')) {
+        throw new Error('injected read failure (#4131)');
+      }
+      return actual.readFile(file, options);
+    },
   };
 });
 
@@ -164,7 +178,7 @@ vi.mock('@/services/openai', () => ({
   getFallbackLLMModelId: () => 'test-fallback-model',
 }));
 
-import { roosyncDashboard, awaitDetachedCondense, resetCondenseCircuitBreaker, resetDetachedCondenseOutcomes } from '../dashboard.js';
+import { roosyncDashboard, awaitDetachedCondense, resetCondenseCircuitBreaker, resetDetachedCondenseOutcomes, verifyCondenseLanding } from '../dashboard.js';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-condense-detached-');
 const PREEMPTIVE_THRESHOLD = Math.floor(50 * 1024 * 0.92); // ~46 KB, cf. dashboard.ts
@@ -189,6 +203,7 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     llmMode = 'ok';
     llmCalls = 0;
     fsFail.archiveWriteFails = false;
+    fsFail.readFails = false;
     warn.mockClear();
     // #4536 — le registre des issues détachées est un état de module : sans
     // reset, un test lirait le verdict de la passe du test précédent.
@@ -224,6 +239,8 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     condenseHealthMocks.markCondenseAttempt.mockResolvedValue(undefined);
     condenseHealthMocks.markCondenseOutcome.mockReset();
     condenseHealthMocks.markCondenseOutcome.mockResolvedValue(undefined);
+    condenseHealthMocks.markCondenseLanding.mockReset();
+    condenseHealthMocks.markCondenseLanding.mockResolvedValue(undefined);
     condenseHealthMocks.markDeadPassRecovered.mockReset();
     condenseHealthMocks.markDeadPassRecovered.mockResolvedValue(undefined);
     condenseHealthMocks.isDeadPass.mockReset();
@@ -636,6 +653,11 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     await awaitDetachedCondense(key);
 
     expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'ok', expect.stringMatching(/\S/));
+    // #4131 — le read-back de la moitié fichier voit le tampon frais que la
+    // passe VIENT d'écrire dans le tmpDir (fs réel du harnais) → landed, avec
+    // le siège qui a vérifié. `ok` seul ne prouvait pas que le fichier avait
+    // suivi (mesuré 09/11 : global ok@07:38Z, fichier lastCondensedAt 00:52Z).
+    expect(condenseHealthMocks.markCondenseLanding).toHaveBeenCalledWith(key, 'landed', expect.stringMatching(/\S/));
   });
 
   it('marque l\'issue error durablement quand la passe détachée échoue (#4608)', async () => {
@@ -683,5 +705,59 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
 
     await awaitDetachedCondense(key);
     expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'ok', expect.stringMatching(/\S/));
+  });
+
+  it('contrôle d\'atterrissage unitaire : le prédicat lit la moitié fichier seule (#4131)', async () => {
+    const { key, status } = await populateBelowThreshold();
+    await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: crossingContent(status, 'VERIFY-LANDING-4131'),
+      tags: ['INFO'],
+    });
+    await awaitDetachedCondense(key);
+    // La passe vient d'écrire le fichier : un tampon de passe PLUS ANCIEN (une
+    // collision gagnée par une condensation concurrente) et plus récent que
+    // l'an 2000 voient tous deux « landed » ; un tampon futur → stale.
+    expect(await verifyCondenseLanding(key, '2000-01-01T00:00:00.000Z')).toBe('landed');
+    expect(await verifyCondenseLanding(key, '2999-01-01T00:00:00.000Z')).toBe('stale');
+  });
+
+  it('contrôle d\'atterrissage : fichier absent après une écriture réussie → stale (#4131)', async () => {
+    // readDashboardFromGdrive rend null (ENOENT) : le fichier n'a pas suivi.
+    expect(await verifyCondenseLanding('workspace-never-written', '2026-11-09T00:00:00Z')).toBe('stale');
+  });
+
+  it('contrôle d\'atterrissage : relecture en échec → unknown, pas un verdict d\'échec (#4131)', async () => {
+    fsFail.readFails = true;
+    try {
+      // Les 3 tentatives bornées échouent → throw capturé → pas d'opinion.
+      expect(await verifyCondenseLanding('workspace-unreadable', '2026-11-09T00:00:00Z')).toBe('unknown');
+    } finally {
+      fsFail.readFails = false;
+    }
+  });
+
+  it('contrôle d\'atterrissage : passe sans tampon → null, rien à vérifier (#4131)', async () => {
+    expect(await verifyCondenseLanding('global', undefined)).toBeNull();
+  });
+
+  it('voie synchrone (CONDENSE_DETACHED=0) : atterrissage vérifié et marqué après la passe inline (#4131)', async () => {
+    // Recommandation review ms#1719 — le chemin détaché avait ses témoins, le
+    // synchrone n'en avait AUCUN : retirer l'appel markCondenseLanding de la
+    // branche inline (dashboard.ts, chemin historique #4527) passerait en silence.
+    const { key, status } = await populateBelowThreshold();
+    process.env.CONDENSE_DETACHED = '0';
+    const a = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: crossingContent(status, 'LANDING-SYNC-4131'),
+      tags: ['INFO'],
+    });
+    // La passe a tourné DANS l'appel (pas de défèrement), le fichier a suivi :
+    // le verdict durable doit être posé avec le siège de la passe.
+    expect(a.condensationDeferred).toBeUndefined();
+    expect(a.condensed).toBe(true);
+    expect(condenseHealthMocks.markCondenseLanding).toHaveBeenCalledWith(key, 'landed', expect.stringMatching(/\S/));
   });
 });

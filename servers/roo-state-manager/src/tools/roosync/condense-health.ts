@@ -95,6 +95,20 @@ export interface CondenseHealthState {
   lastDeadPassAt: string | null;
   /** `lastSeat` of that dead pass — who ran the pass that died. */
   lastDeadPassSeat: string | null;
+  /**
+   * Verdict of the last landing check (#4131, measured 09/11): `ok` in this
+   * registry meant "the mirror write RETURNED without error", not "the file
+   * followed" (`condense_state:global` ok @ 07:38:10Z while the file still
+   * carried `lastCondensedAt` 00:52:45Z — another key followed fine in the
+   * same window). Written by the writer seat right after the pass's file
+   * write, from the FILE half only (reading PG would always say landed).
+   * `unknown` = the read-back itself failed (DriveFS degraded, bounded read
+   * timeout) — no opinion, never a verdict of failure. Null on rows written
+   * before the field existed.
+   */
+  lastLanding: 'landed' | 'stale' | 'unknown' | null;
+  /** ISO timestamp of the last landing check (`lastLanding`). */
+  lastLandingCheckedAt: string | null;
 }
 
 const EMPTY_STATE: CondenseHealthState = {
@@ -107,6 +121,8 @@ const EMPTY_STATE: CondenseHealthState = {
   lastSeat: null,
   lastDeadPassAt: null,
   lastDeadPassSeat: null,
+  lastLanding: null,
+  lastLandingCheckedAt: null,
 };
 
 /** How long a dashboard may sit over the threshold before the [WARN] fires (default 6 h). */
@@ -147,6 +163,11 @@ function parseState(raw: string | null): CondenseHealthState | null {
       lastSeat: typeof parsed.lastSeat === 'string' ? parsed.lastSeat : null,
       lastDeadPassAt: typeof parsed.lastDeadPassAt === 'string' ? parsed.lastDeadPassAt : null,
       lastDeadPassSeat: typeof parsed.lastDeadPassSeat === 'string' ? parsed.lastDeadPassSeat : null,
+      lastLanding:
+        parsed.lastLanding === 'landed' || parsed.lastLanding === 'stale' || parsed.lastLanding === 'unknown'
+          ? parsed.lastLanding
+          : null,
+      lastLandingCheckedAt: typeof parsed.lastLandingCheckedAt === 'string' ? parsed.lastLandingCheckedAt : null,
     };
   } catch {
     return null;
@@ -249,6 +270,27 @@ export async function markCondenseOutcome(
     ...prev,
     lastOutcome: outcome,
     ...(landed ? { lastSuccessAt: now, overThresholdSince: null } : {}),
+    ...(seat ? { lastSeat: seat } : {}),
+  });
+}
+
+/**
+ * Record the landing verdict of the last pass (#4131). Called by the pass
+ * right after its file write with the verdict of the read-back — the row then
+ * answers "did the file follow?" without re-reading anything, and `lastSeat`
+ * says which seat checked. Writer-side view by construction: cross-seat
+ * DriveFS propagation remains the export tick's business.
+ */
+export async function markCondenseLanding(
+  key: string,
+  landing: 'landed' | 'stale' | 'unknown',
+  seat?: string
+): Promise<void> {
+  const prev = (await readCondenseHealth(key)) ?? EMPTY_STATE;
+  await writeState(key, {
+    ...prev,
+    lastLanding: landing,
+    lastLandingCheckedAt: new Date().toISOString(),
     ...(seat ? { lastSeat: seat } : {}),
   });
 }

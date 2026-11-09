@@ -84,6 +84,7 @@ import { isDashboardReadPgEnabled } from '../../services/unified-store/pg-read-g
 import {
   isDeadPass,
   markCondenseAttempt,
+  markCondenseLanding,
   markCondenseOutcome,
   markDeadPassRecovered,
   noteOverThreshold,
@@ -2138,6 +2139,56 @@ function condenseSeat(holder: CondenseLockInfo): string {
   return holder.workspace ? `${holder.machineId}:${holder.workspace}` : holder.machineId;
 }
 
+/**
+ * #4131 — contrôle d'atterrissage : la passe enregistrait `ok` dès que
+ * l'écriture miroir RENDAIT sans erreur, mais « sans erreur » ≠ « le fichier
+ * a suivi » (mesuré 09/11 : `condense_state:global` ok @ 07:38:10Z pendant
+ * que le fichier portait `lastCondensedAt` 00:52:45Z — et `workspace-CoursIA`
+ * suivait normalement dans la même fenêtre). Relit la MOITIÉ FICHIER seule
+ * (jamais PG : le store primaire dirait toujours « atterri ») et compare le
+ * tampon de condensation du fichier à celui de la passe.
+ *
+ *   landed — le fichier porte un tampon ≥ celui de la passe (une collision
+ *            gagnée par une passe concurrente compte : quelqu'un a atterri
+ *            plus récent) ;
+ *   stale  — fichier présent au tampon plus ancien, ou ABSENT alors que
+ *            l'écriture a réussi : le fichier n'a pas suivi ;
+ *   unknown — la relecture elle-même a échoué (DriveFS dégradé, lecture
+ *            bornée en timeout) : pas d'opinion, jamais un verdict d'échec.
+ *
+ * `passStamp` absent (passe sans tampon) → null : rien à vérifier. Vue du
+ * siège écrivain par construction — la propagation inter-sièges DriveFS
+ * reste l'affaire du tick d'export.
+ *
+ * Cas mesuré 10/11 (8 clés, scan condense_state × fichiers G:) : PG porte le
+ * tampon de la passe, le fichier reste des HEURES à des JOURS en arrière —
+ * `workspace-CoursIA-2` PG 10/11 00:38:38Z vs fichier 08/09 19:55:41Z
+ * (~62 jours), `workspace-Maintenance` PG 09/11 23:56:34Z vs fichier
+ * 06/10 (~34 jours) — alors que les mtimes bougent toutes les ~4 h (append /
+ * export miroir). Une écriture post-passe NE PORTE donc pas forcément
+ * l'état condensé : l'hypothèse mtime de noteLandingSighting (#4608) retourne
+ * « no opinion » sur ces clés pour toujours. Le read-back du tampon est le
+ * seul instrument qui mesure l'atterrissage du CONTENU condensé.
+ */
+export async function verifyCondenseLanding(
+  key: string,
+  passStamp: string | undefined
+): Promise<'landed' | 'stale' | 'unknown' | null> {
+  if (!passStamp) return null;
+  try {
+    const fileDashboard = await readDashboardFromGdrive(key);
+    const fileStamp = fileDashboard?.intercom.lastCondensedAt;
+    if (!fileStamp) return 'stale';
+    return fileStamp >= passStamp ? 'landed' : 'stale';
+  } catch (err) {
+    logger.debug('condense landing read-back failed (no opinion)', {
+      key,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return 'unknown';
+  }
+}
+
 function startDetachedCondense(
   key: string,
   snapshot: Dashboard,
@@ -2193,6 +2244,24 @@ function startDetachedCondense(
             error: condenseWv.gdriveDegraded,
             diag,
           });
+        }
+        // #4131 — contrôle d'atterrissage : le `ok` durable était écrit dès que
+        // l'écriture rendait sans erreur ; la preuve que le FICHIER a suivi
+        // manquait (mesuré 09/11). Read-back de la moitié fichier seule, le
+        // verdict part au registre durable avec le siège qui l'a mesuré.
+        const landing = await verifyCondenseLanding(
+          key,
+          condensedDashboard.intercom.lastCondensedAt
+        );
+        if (landing) {
+          await markCondenseLanding(key, landing, condenseSeat(lockHolder));
+          if (landing === 'stale') {
+            logger.warn('[#4131] condensation détachée enregistrée mais le fichier n\'a pas suivi — read-back stale', {
+              key,
+              passStamp: condensedDashboard.intercom.lastCondensedAt,
+              seat: condenseSeat(lockHolder),
+            });
+          }
         }
       }
       // #4536 — verdict retenu par clé : l'append qui a lancé cette passe a déjà
@@ -9356,6 +9425,23 @@ async function handleAppend(
                     forkDetail: `${writeVerify.forkDetail} | (post-condensation) ${condenseWv.forkDetail ?? 'détection sans détail'}`
                   }
                 : condenseWv;
+            }
+            // #4131 — même contrôle d'atterrissage que la passe détachée :
+            // `markCondenseOutcome` ci-dessus a déjà pu écrire `ok` ; si le
+            // fichier n'a pas suivi, le verdict d'atterrissage le dit.
+            const landing = await verifyCondenseLanding(
+              key,
+              finalDashboard.intercom.lastCondensedAt
+            );
+            if (landing) {
+              await markCondenseLanding(key, landing, condenseSeat(lockHolder));
+              if (landing === 'stale') {
+                logger.warn('[#4131] condensation synchrone enregistrée mais le fichier n\'a pas suivi — read-back stale', {
+                  key,
+                  passStamp: finalDashboard.intercom.lastCondensedAt,
+                  seat: condenseSeat(lockHolder),
+                });
+              }
             }
           }
         } catch (condenseErr) {
