@@ -7,6 +7,7 @@ of concerns and independent testing capabilities.
 
 import logging
 import os
+import sys
 import threading
 import uuid
 import subprocess
@@ -225,8 +226,10 @@ class AsyncJobService:
             if env_overrides:
                 env.update(env_overrides)
 
-            # Construire la commande conda run
-            conda_python = "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/python.exe"
+            # Interpréteur résolu (MCP_JUPYTER_PYTHON > sys.executable) —
+            # remplace le chemin utilisateur hardcodé qui produisait WinError 2
+            # sur tout siège sans l'env conda d'origine (rapport po-2028 2026-11-09)
+            conda_python = self._resolve_interpreter()
             cmd = [
                 conda_python,
                 "-m",
@@ -631,21 +634,62 @@ class AsyncJobService:
             )
             return 120  # Default fallback
 
+    def _resolve_interpreter(self) -> str:
+        """
+        Résout l'interpréteur Python pour l'exécution asynchrone des notebooks.
+
+        Priorité : variable d'environnement `MCP_JUPYTER_PYTHON` (si le chemin
+        existe) > `sys.executable` (l'interpréteur qui fait tourner ce serveur
+        MCP — par construction il peut importer papermill, ce que
+        `python -m papermill` exige).
+
+        Remplace le chemin utilisateur hardcodé (`C:/Users/jsboi/.conda/envs/
+        mcp-jupyter-py310/python.exe`) qui cassait `execute_notebook(mode=async)`
+        sur tout siège où cet utilisateur/env n'existe pas (WinError 2 en ~0,01 s,
+        rapport po-2028 2026-11-09). Le chemin synchrone utilise déjà
+        `sys.executable` (`papermill_executor.py`).
+        """
+        override = os.getenv("MCP_JUPYTER_PYTHON")
+        if override:
+            if Path(override).exists():
+                return str(Path(override).resolve())
+            logger.warning(
+                "MCP_JUPYTER_PYTHON=%r does not exist, falling back to sys.executable",
+                override,
+            )
+        return str(Path(sys.executable).resolve())
+
     def _build_complete_environment(self) -> Dict[str, str]:
         """
-        Construit un environnement complet (réutilise la logique existante).
+        Construit un environnement complet dérivé de l'interpréteur résolu.
+
+        Toutes les variables liées à l'env Python/conda (CONDA_*, JUPYTER_*_DIR,
+        entrées PATH, PYTHONPATH) sont reconstruites depuis le préfixe de
+        l'interpréteur résolu par `_resolve_interpreter()` et depuis l'arbre
+        source — plus aucun chemin utilisateur ou machine hardcodé.
         """
         env = os.environ.copy()
 
-        # Variables critiques pour conda
+        # Préfixe de l'environnement Python résolu (plus de chemin hardcodé)
+        python_exe = Path(self._resolve_interpreter())
+        env_prefix = python_exe.parent
+        env_prefix_posix = env_prefix.as_posix()
+        env_name = env_prefix.name
+
+        # Variables critiques pour conda (dérivées du préfixe résolu)
         conda_vars = {
-            "CONDA_DEFAULT_ENV": "mcp-jupyter-py310",
-            "CONDA_PREFIX": "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310",
-            "CONDA_PROMPT_MODIFIER": "(mcp-jupyter-py310) ",
-            "CONDA_PYTHON_EXE": "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/python.exe",
+            "CONDA_DEFAULT_ENV": env_name,
+            "CONDA_PREFIX": env_prefix_posix,
+            "CONDA_PROMPT_MODIFIER": f"({env_name}) ",
+            "CONDA_PYTHON_EXE": python_exe.as_posix(),
             "CONDA_SHLVL": "1",
-            "CONDA_EXE": "C:/Users/jsboi/.conda/Scripts/conda.exe",
         }
+        # CONDA_EXE : candidat local du préfixe, sinon la valeur héritée de
+        # os.environ fait foi (rien n'appelle conda ici — ne jamais poser un
+        # chemin mort par-dessus une valeur héritée valide)
+        conda_exe = env_prefix / "Scripts" / "conda.exe"
+        if conda_exe.exists():
+            conda_vars["CONDA_EXE"] = conda_exe.as_posix()
 
         # Variables critiques pour .NET
         dotnet_vars = {
@@ -661,11 +705,12 @@ class AsyncJobService:
             "DOTNET_SKIP_FIRST_TIME_EXPERIENCE": "1",
         }
 
-        # Variables pour Jupyter et Python
+        # Variables pour Jupyter et Python (chemins dérivés, plus de littéral machine)
+        server_root = Path(__file__).resolve().parents[2]
         python_vars = {
-            "PYTHONPATH": "D:/dev/roo-extensions/mcps/internal/servers/jupyter-papermill-mcp-server",
-            "JUPYTER_DATA_DIR": "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/share/jupyter",
-            "JUPYTER_CONFIG_DIR": "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/etc/jupyter",
+            "PYTHONPATH": server_root.as_posix(),
+            "JUPYTER_DATA_DIR": (env_prefix / "share" / "jupyter").as_posix(),
+            "JUPYTER_CONFIG_DIR": (env_prefix / "etc" / "jupyter").as_posix(),
             "PYTHONUNBUFFERED": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
@@ -674,13 +719,13 @@ class AsyncJobService:
         workspace_dir = os.getenv("ROO_WORKSPACE_DIR", "d:/dev/CoursIA")
         roo_vars = {"ROO_WORKSPACE_DIR": workspace_dir}
 
-        # Construire le PATH complet
+        # Construire le PATH complet (entrées env Python dérivées du préfixe)
         path_components = [
-            "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/Scripts",
-            "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/Library/mingw-w64/bin",
-            "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/Library/usr/bin",
-            "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310/Library/bin",
-            "C:/Users/jsboi/.conda/envs/mcp-jupyter-py310",
+            (env_prefix / "Scripts").as_posix(),
+            (env_prefix / "Library" / "mingw-w64" / "bin").as_posix(),
+            (env_prefix / "Library" / "usr" / "bin").as_posix(),
+            (env_prefix / "Library" / "bin").as_posix(),
+            env_prefix_posix,
             "C:\\Program Files\\dotnet",
             env.get("PATH", ""),
         ]
