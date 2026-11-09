@@ -74,6 +74,24 @@ describe('#2609 q4 rubric (a): a request is excluded by its form, never by a sub
     expect(isHumanDecisionPassage({ snippet: OFF_TOPIC_PROSE })).toBe(false);
   });
 
+  test('the english flexion counts — "arbitration(s)" is the form of the word the rule already carries', () => {
+    // Measured live 2026-11-08: two on-topic top-3 passages of the english
+    // wording ("…arbitrations may have landed since 08-31…", "Planning user
+    // arbitration questions…") failed the vocabulary gate alone. Decision
+    // ai-01, 08/11 20:18Z: it is a flexion of `arbitrage`, not a widening.
+    const ENGLISH_ARBITRATION =
+      'Full body retrieved. Now reading all 15 comments (arbitrations may have landed since 08-31) '
+      + 'and delegating the dashboard/inbox read to a subagent in parallel.';
+    expect(ENGLISH_ARBITRATION.length).toBeGreaterThanOrEqual(PASSAGE_FLOOR_CHARS);
+    expect(isHumanDecisionPassage({ snippet: ENGLISH_ARBITRATION })).toBe(true);
+    // The stem is matched, not every word that starts with "arbitr": an
+    // unrelated english sentence stays out.
+    const FALSE_FRIEND =
+      'Arbitrary selection of three files from the workspace, and the run continued for a while before stopping on its own.';
+    expect(FALSE_FRIEND.length).toBeGreaterThanOrEqual(PASSAGE_FLOOR_CHARS);
+    expect(isHumanDecisionPassage({ snippet: FALSE_FRIEND })).toBe(false);
+  });
+
   test('a missing chunk does not count', () => {
     expect(isHumanDecisionPassage(undefined)).toBe(false);
     expect(isHumanDecisionPassage({})).toBe(false);

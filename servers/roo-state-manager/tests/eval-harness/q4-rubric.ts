@@ -23,7 +23,14 @@ import { classifyMachineOutput } from '../../src/tools/search/search-semantic.to
 /** Epic #2609 rubric (a): a passage is at least this long; a shorter chunk is a fragment or a bare request. */
 export const PASSAGE_FLOOR_CHARS = 100;
 
-const DECISION_VOCABULARY = /arbitrage|décision|decision|en attente|pending|ouverte?/i;
+// `arbitration` is the English form of the word the rubric already carries
+// (`arbitrage`), not a widening of the topic: the english wording under test is
+// "open user arbitrations still waiting for an answer", and the rule was
+// missing it by flexion (measured 2026-11-08: two on-topic top-3 passages,
+// "…reading all 15 comments (arbitrations may have landed since 08-31)…" and
+// "Planning user arbitration questions…", failed the vocabulary gate alone).
+// Decision ai-01, 08/11 20:18Z.
+const DECISION_VOCABULARY = /arbitrage|arbitration|décision|decision|en attente|pending|ouverte?/i;
 
 export interface RubricChunk {
   snippet?: string;
