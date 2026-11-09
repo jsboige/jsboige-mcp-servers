@@ -466,6 +466,13 @@ const GWS_CLIENT_SECRET = ['GOCSPX', 'fixture-7dQk9mZr2tXw4vN6bYh8'].join('-');
 /** Proxy key embedded in a multi-line headers value — hex64 on line 2. */
 const PROXY_KEY_HEX = 'e088' + '0123456789abcdef'.repeat(3) + '0123456789ab';
 
+/**
+ * Real-token shapes for the "a real token stays masked" guard — assembled by
+ * join for the same push-protection reason as GWS_CLIENT_SECRET.
+ */
+const API_TOKEN_VALUE = ['sk', 'fixture-4f3e2d1c0b9a87654321fedcba0123456789'].join('-');
+const MODEL_TOKENS_VALUE = ['sk', 'fixture-5a4b3c2d1e0f987654321abcdef0123456789'].join('-');
+
 const NAME_BACKSTOP_FILES = {
   'home/.claude.json': JSON.stringify({
     mcpServers: {
@@ -485,6 +492,16 @@ const NAME_BACKSTOP_FILES = {
       SEARXNG_URL: 'http://127.0.0.1:8888/search',
       ROO_FLEET_ROSTER: 'myia-ai-01,myia-po-204',
       BACKUP_NOTE: GWS_CLIENT_SECRET,
+      // Budget knobs caught by /TOKEN/ and /AUTH/ motifs (review ai-01 de ms#1713):
+      // numeric budgets, NOT credentials — must stay readable.
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: '330000',
+      MAX_THINKING_TOKENS: '16000',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32000',
+      OAUTHLIB_INSECURE_TRANSPORT: '1',
+      // Real-token guards: singular _TOKEN is NOT exempt; a token-shaped value
+      // under an exempted (_TOKENS) name is still caught by the value layer.
+      API_TOKEN: API_TOKEN_VALUE,
+      MODEL_TOKENS: MODEL_TOKENS_VALUE,
     },
   }),
 };
@@ -530,6 +547,26 @@ describe('MachineConfigCollector — name backstop + embedded assignments (#4611
   it('does not over-redact benign env values', () => {
     expect(nbConfig.claude.settings?.env?.SEARXNG_URL).toBe('http://127.0.0.1:8888/search');
     expect(nbConfig.claude.settings?.env?.ROO_FLEET_ROSTER).toBe('myia-ai-01,myia-po-204');
+  });
+
+  // ---- _TOKENS exemption (review ai-01 de ms#1713) ----
+  // /TOKEN/ and /AUTH/ motifs were masking budget knobs: numbers, not credentials.
+
+  it('keeps the 4 budget-knob names readable (_TOKENS / OAUTHLIB exemption)', () => {
+    expect(nbConfig.claude.settings?.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe('330000');
+    expect(nbConfig.claude.settings?.env?.MAX_THINKING_TOKENS).toBe('16000');
+    expect(nbConfig.claude.settings?.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('32000');
+    expect(nbConfig.claude.settings?.env?.OAUTHLIB_INSECURE_TRANSPORT).toBe('1');
+  });
+
+  it('still masks a real token — singular _TOKEN is NOT exempt', () => {
+    expect(nbConfig.claude.settings?.env?.API_TOKEN).toMatch(/^<set:len=\d+:sha256=[0-9a-f]{8}>$/);
+    expect(nbSerialized).not.toContain(API_TOKEN_VALUE);
+  });
+
+  it('still masks a token-shaped VALUE under an exempted _TOKENS name (value layer never turns off)', () => {
+    expect(nbConfig.claude.settings?.env?.MODEL_TOKENS).toMatch(/^<set:len=\d+:sha256=[0-9a-f]{8}>$/);
+    expect(nbSerialized).not.toContain(MODEL_TOKENS_VALUE);
   });
 });
 

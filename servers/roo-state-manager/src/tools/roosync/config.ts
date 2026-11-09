@@ -4,6 +4,7 @@ import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../
 import type { ConfigTarget } from '../../types/config-sharing.js';
 import { EnvRotationService } from '../../services/EnvRotationService.js';
 import { collectMachineConfig } from '../../services/MachineConfigCollector.js';
+import { machineConfigApplyBindings } from '../../services/MachineConfigAppliers.js';
 import { hostname } from 'os';
 import { promises as fs } from 'fs';
 import { basename, join } from 'path';
@@ -375,10 +376,15 @@ export async function roosyncConfig(args: ConfigArgs) {
 
           const rooServerCount = machineConfig.roo.mcpServers.length;
           const claudeServerCount = machineConfig.claude.mcpServers?.length ?? 0;
+          // #4611 case 8 — every section bound to its EXISTING apply target (or an
+          // explicit read-only verdict). No new write path: applying stays
+          // `action:"apply", targets:[...]` with the same vocabulary.
+          const applyBindings = machineConfigApplyBindings(machineConfig);
           return {
             status: 'success',
-            message: `MachineConfig collectée pour ${machineConfig.machineId} — ${rooServerCount} serveurs MCP Roo, ${claudeServerCount} serveurs MCP Claude`,
+            message: `MachineConfig collectée pour ${machineConfig.machineId} — ${rooServerCount} serveurs MCP Roo, ${claudeServerCount} serveurs MCP Claude, ${applyBindings.filter(b => b.target !== null).length}/${applyBindings.length} sections rattachées à une cible apply`,
             machineConfig,
+            applyBindings,
           };
         }
 
