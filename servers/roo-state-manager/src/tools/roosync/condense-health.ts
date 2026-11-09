@@ -70,6 +70,16 @@ export interface CondenseHealthState {
   overThresholdSince: string | null;
   /** ISO timestamp of the last stall [WARN] posted for this key. */
   lastWarnAt: string | null;
+  /**
+   * `machine:workspace` of the seat that recorded the last attempt / outcome
+   * (#4608, measured 09/11). The registry said `ok` for `global` at 07:38:10Z
+   * while the G: file still carried `lastCondensedAt` 00:52:45Z, and another
+   * key's file followed fine — the landing gap cannot be attributed to a
+   * writer or to its mount without this field, which is why the forensics had
+   * to stop at "it lagged somewhere". Absent on rows written before the field
+   * existed — absence is unknown, never "no seat".
+   */
+  lastSeat: string | null;
 }
 
 const EMPTY_STATE: CondenseHealthState = {
@@ -78,6 +88,7 @@ const EMPTY_STATE: CondenseHealthState = {
   lastSuccessAt: null,
   overThresholdSince: null,
   lastWarnAt: null,
+  lastSeat: null,
 };
 
 /** How long a dashboard may sit over the threshold before the [WARN] fires (default 6 h). */
@@ -114,6 +125,7 @@ function parseState(raw: string | null): CondenseHealthState | null {
       lastSuccessAt: typeof parsed.lastSuccessAt === 'string' ? parsed.lastSuccessAt : null,
       overThresholdSince: typeof parsed.overThresholdSince === 'string' ? parsed.overThresholdSince : null,
       lastWarnAt: typeof parsed.lastWarnAt === 'string' ? parsed.lastWarnAt : null,
+      lastSeat: typeof parsed.lastSeat === 'string' ? parsed.lastSeat : null,
     };
   } catch {
     return null;
@@ -164,13 +176,14 @@ export function isDeadPass(state: CondenseHealthState | null, now: number = Date
  * acquisition, so the next host to touch the key can tell a live pass from a
  * dead one. Preserves the stall clock (`overThresholdSince`).
  */
-export async function markCondenseAttempt(key: string): Promise<void> {
+export async function markCondenseAttempt(key: string, seat?: string): Promise<void> {
   const prev = (await readCondenseHealth(key)) ?? EMPTY_STATE;
   const now = new Date().toISOString();
   await writeState(key, {
     ...prev,
     lastAttemptAt: now,
     lastOutcome: 'attempting',
+    ...(seat ? { lastSeat: seat } : {}),
   });
 }
 
@@ -193,7 +206,8 @@ export async function markDeadPassRecovered(key: string): Promise<void> {
  */
 export async function markCondenseOutcome(
   key: string,
-  outcome: Exclude<CondensePassOutcome, 'attempting' | 'dead-pass-recovered'>
+  outcome: Exclude<CondensePassOutcome, 'attempting' | 'dead-pass-recovered'>,
+  seat?: string
 ): Promise<void> {
   const prev = (await readCondenseHealth(key)) ?? EMPTY_STATE;
   const now = new Date().toISOString();
@@ -202,6 +216,7 @@ export async function markCondenseOutcome(
     ...prev,
     lastOutcome: outcome,
     ...(landed ? { lastSuccessAt: now, overThresholdSince: null } : {}),
+    ...(seat ? { lastSeat: seat } : {}),
   });
 }
 

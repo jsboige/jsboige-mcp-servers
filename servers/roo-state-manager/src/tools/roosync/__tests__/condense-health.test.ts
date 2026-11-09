@@ -138,6 +138,42 @@ describe('#4608 dead-pass detection (relaunch-at-next-append organ)', () => {
   });
 });
 
+describe('#4608 lastSeat — which seat ran the pass (measured 09/11)', () => {
+  it('an attempt records the seat that owns the pass', async () => {
+    await markCondenseAttempt(KEY, 'myia-web2:roo-extensions');
+    const state = await readCondenseHealth(KEY);
+    expect(state?.lastOutcome).toBe('attempting');
+    expect(state?.lastSeat).toBe('myia-web2:roo-extensions');
+  });
+
+  it('an outcome records the seat alongside the verdict', async () => {
+    await markCondenseOutcome(KEY, 'ok', 'myia-ai-01:roo-extensions');
+    const state = await readCondenseHealth(KEY);
+    expect(state?.lastOutcome).toBe('ok');
+    expect(state?.lastSeat).toBe('myia-ai-01:roo-extensions');
+  });
+
+  it('a caller that passes no seat never erases the seat already known', async () => {
+    await markCondenseAttempt(KEY, 'myia-po-2023:roo-extensions');
+    await markCondenseOutcome(KEY, 'error');
+    const state = await readCondenseHealth(KEY);
+    expect(state?.lastOutcome).toBe('error');
+    expect(state?.lastSeat).toBe('myia-po-2023:roo-extensions');
+  });
+
+  it('a row written before the field existed reads as null, not undefined', async () => {
+    meta.set(condenseHealthMetaKey(KEY), JSON.stringify({
+      lastAttemptAt: '2026-11-09T07:36:16.354Z',
+      lastOutcome: 'ok',
+      lastSuccessAt: '2026-11-09T07:38:10.370Z',
+      overThresholdSince: null,
+      lastWarnAt: null,
+    }));
+    const state = await readCondenseHealth(KEY);
+    expect(state?.lastSeat).toBeNull();
+  });
+});
+
 describe('#4608 fail-safety', () => {
   it('an unreadable row degrades to the pre-#4608 state (no opinion)', async () => {
     meta.set(condenseHealthMetaKey(KEY), 'not-json{');

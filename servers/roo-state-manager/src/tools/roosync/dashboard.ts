@@ -2123,6 +2123,18 @@ export function resetDetachedCondenseOutcomes(): void {
   detachedCondenseOutcomes.clear();
 }
 
+/**
+ * #4608 — `machine:workspace` of the seat that owns a pass, recorded in the
+ * durable `condense_state` row. Measured 09/11: `condense_state:global` said
+ * `ok` at 07:38:10Z while the G: file still carried `lastCondensedAt`
+ * 00:52:45Z, and `workspace-CoursIA` followed normally in the same window —
+ * telling a writer-side gap from a mount-side lag needs to know WHICH seat
+ * ran the pass, and the registry carried no seat at all.
+ */
+function condenseSeat(holder: CondenseLockInfo): string {
+  return holder.workspace ? `${holder.machineId}:${holder.workspace}` : holder.machineId;
+}
+
 function startDetachedCondense(
   key: string,
   snapshot: Dashboard,
@@ -2200,7 +2212,8 @@ function startDetachedCondense(
           ? 'error'
           : diag.outcome === 'fallback-truncated'
             ? 'truncated'
-            : (diag.archivedMessageCount ?? 0) > 0 ? 'ok' : 'error'
+            : (diag.archivedMessageCount ?? 0) > 0 ? 'ok' : 'error',
+        condenseSeat(lockHolder)
       );
     } catch (err) {
       diag.outcome = 'llm-failed-injected';
@@ -2213,7 +2226,7 @@ function startDetachedCondense(
       });
       // #4608 — l'échec d'une passe détachée mourait avec son hôte ; il est
       // désormais durable pour le prochain append (relance) et l'organe [WARN].
-      await markCondenseOutcome(key, 'error');
+      await markCondenseOutcome(key, 'error', condenseSeat(lockHolder));
       // #4536 — le diag COMPLET voyage dans le warn : {key, elapsedMs, error}
       // seul ne disait rien de la cause (jambe en échec, tentatives, repli).
       logger.warn('Detached condensation failed — message and previous status intact (#4527)', {
@@ -9021,8 +9034,10 @@ async function handleAppend(
         condensationDeferred = true;
         // #4608 — marqueur durable AVANT le lancement : si cet hôte meurt avec
         // la passe, le prochain append (n'importe quel hôte) verra `attempting`
-        // périmé et saura que la relance est à lui.
-        await markCondenseAttempt(key);
+        // périmé et saura que la relance est à lui. Le siège est enregistré avec
+        // l'heure : sans lui, un `ok` dont le fichier ne suit pas ne s'attribue
+        // ni à l'écrivain ni à son montage (mesuré 09/11 sur `global`).
+        await markCondenseAttempt(key, condenseSeat(lockHolder));
         startDetachedCondense(key, updatedDashboard, effectiveKeep, payloadHash, lockHolder);
       } else {
         // #4527 — chemin synchrone historique, conservé sous CONDENSE_DETACHED=0.
@@ -9032,7 +9047,7 @@ async function handleAppend(
         // the signal the operator needs).
         const tCondense = Date.now();
         // #4608 — même marqueur durable que le chemin détaché.
-        await markCondenseAttempt(key);
+        await markCondenseAttempt(key, condenseSeat(lockHolder));
         try {
           const beforeCount = updatedDashboard.intercom.messages.length;
           const condenseDiag = newDiagnostic('post-append');
@@ -9049,7 +9064,8 @@ async function handleAppend(
             key,
             condenseDiag.outcome === 'fallback-truncated'
               ? 'truncated'
-              : condensed ? 'ok' : 'error'
+              : condensed ? 'ok' : 'error',
+            condenseSeat(lockHolder)
           );
 
           // #2464: Update hash cache after successful condensation
@@ -9081,7 +9097,7 @@ async function handleAppend(
             error: condenseErr instanceof Error ? condenseErr.message : String(condenseErr)
           });
           // #4608 — issue durable : l'échec doit être visible du prochain hôte.
-          await markCondenseOutcome(key, 'error');
+          await markCondenseOutcome(key, 'error', condenseSeat(lockHolder));
           const failedDiag = newDiagnostic('post-append');
           failedDiag.outcome = 'llm-failed-injected';
           failedDiag.elapsedMs = Date.now() - tCondense; // #4131: real duration, was hardcoded 0
