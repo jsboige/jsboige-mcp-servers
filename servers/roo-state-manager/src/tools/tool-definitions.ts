@@ -472,7 +472,7 @@ export const roosyncBaselineDefinition = {
 
 export const roosyncConfigDefinition = {
     name: 'roosync_config',
-    description: 'Config management. Actions: collect (local), publish (GDrive), apply (from GDrive), apply_profile. Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings (masked snapshot of ~/.claude/settings.json for COMPARISON only — apply requires an explicit canon, #3545), modes-yaml, mcp:<name>.',
+    description: 'Config management. Actions: collect (local), publish (GDrive), apply (from GDrive), apply_profile. Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings (masked snapshot of ~/.claude/settings.json for COMPARISON only — apply requires an explicit canon, #3545), modes-yaml, mcp:<name>. Target "all" (collect only, exclusive): returns the unified MachineConfig built from this machine real files (cases 7/14 of #603), secrets masked by value.',
     inputSchema: {
         type: 'object',
         properties: {
@@ -480,7 +480,7 @@ export const roosyncConfigDefinition = {
             machineId: { type: 'string' },
             dryRun: { type: 'boolean' },
             scope: { type: 'string', enum: ['user', 'project', 'settings'], description: 'user=~/.claude.json, project=.mcp.json, settings=~/.claude/settings.json' },
-            targets: { type: 'array', items: { type: 'string' }, description: 'Default: ["modes", "mcp"]. claude-settings = masked snapshot (collect/publish). Apply of claude-settings requires claude-settings/canon.json in the package (explicit allow-listed keys) — a comparison snapshot is rejected as apply payload (#3545)' },
+            targets: { type: 'array', items: { type: 'string' }, description: 'Default: ["modes", "mcp"]. claude-settings = masked snapshot (collect/publish). Apply of claude-settings requires claude-settings/canon.json in the package (explicit allow-listed keys) — a comparison snapshot is rejected as apply payload (#3545). "all" = unified MachineConfig (collect only, exclusive with the other targets) (#4611)' },
             packagePath: { type: 'string', description: 'Publish only. Omit with targets for collect+publish atomically' },
             version: { type: 'string', description: 'Required for publish. Default for apply: "latest"' },
             description: { type: 'string', description: 'Required for publish' },

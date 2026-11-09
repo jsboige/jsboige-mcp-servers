@@ -3,6 +3,8 @@ import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
 import type { ConfigTarget } from '../../types/config-sharing.js';
 import { EnvRotationService } from '../../services/EnvRotationService.js';
+import { collectMachineConfig } from '../../services/MachineConfigCollector.js';
+import { hostname } from 'os';
 import { promises as fs } from 'fs';
 import { basename, join } from 'path';
 import { isValidDottedVersion } from '../../utils/int-validator.js';
@@ -32,6 +34,12 @@ export const ConfigArgsSchema = z.object({
   targets: z.array(z.string()).optional().refine(
     (targets) => {
       if (!targets) return true;
+      // #4611 — target "all": collecte la MachineConfig unifiée (cases 7/14 de #603).
+      // Collect-only, et exclusif avec les autres cibles (le vocabulaire paquets et
+      // le vocabulaire MachineConfig ne se mélangent pas dans un même appel).
+      if (targets.includes('all')) {
+        return targets.length === 1;
+      }
       return targets.every(target => {
         if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'claude-settings' || target === 'modes-yaml' || target === 'schtasks' || target === 'schedules') {
           return true;
@@ -54,9 +62,9 @@ export const ConfigArgsSchema = z.object({
       });
     },
     {
-      message: "Target invalide. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings, modes-yaml, schtasks, schedules, mcp:<server>, services:<name>, env:<service>"
+      message: "Target invalide. Valeurs acceptées: all (collect uniquement, exclusif), modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings, modes-yaml, schtasks, schedules, mcp:<server>, services:<name>, env:<service>"
     }
-  ).describe('Targets: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings (snapshot masqué de ~/.claude/settings.json, #3545), modes-yaml, schtasks, schedules (.roo/schedules.json, #2411 ID-based merge), mcp:<server>, services:<name>, env:<service>. Default: ["modes", "mcp"]'),
+  ).describe('Targets: all (#4611 — MachineConfig complète en un appel, collect uniquement), modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings (snapshot masqué de ~/.claude/settings.json, #3545), modes-yaml, schtasks, schedules (.roo/schedules.json, #2411 ID-based merge), mcp:<server>, services:<name>, env:<service>. Default: ["modes", "mcp"]'),
 
   // Pour publish (requiert collect préalable OU packagePath)
   packagePath: z.string().optional().describe('Package path from collect. If omitted with publish+targets, does collect+publish atomically'),
@@ -77,6 +85,13 @@ export const ConfigArgsSchema = z.object({
   targetExtension: z.enum(['roo', 'zoo']).optional().describe('Target extension for vscdb writes. "roo" = RooVeterinaryInc.roo-cline, "zoo" = ZooCodeOrganization.zoo-code. Default: "roo"')
 }).refine(
   (data) => {
+    // #4611 — la target "all" est COLLECT-ONLY : elle rend la MachineConfig unifiée
+    // (un objet en mémoire), pas un paquet de fichiers. La laisser passer en
+    // publish/apply enverrait `['all']` au collecteur de paquets, qui ne connaît
+    // pas cette cible — l'échec serait obscur et tardif.
+    if (data.targets?.includes('all') && data.action !== 'collect') {
+      return false;
+    }
     // Validation spécifique par action
     if (data.action === 'publish') {
       // publish requiert version et description
@@ -97,7 +112,7 @@ export const ConfigArgsSchema = z.object({
     return true;
   },
   {
-    message: "Pour action=publish: 'version' et 'description' requis + 'packagePath' OU 'targets'. Pour action=apply_profile: 'profileName' requis."
+    message: "Pour action=publish: 'version' et 'description' requis + 'packagePath' OU 'targets'. Pour action=apply_profile: 'profileName' requis. La target 'all' est collect-only (#4611)."
   }
 );
 
@@ -336,6 +351,36 @@ export async function roosyncConfig(args: ConfigArgs) {
       case 'collect': {
         // Action collect: Collecte la configuration locale
         const { targets = ['modes', 'mcp'] } = args;
+
+        // #4611 (cases 7 + 14 de #603) — targets:["all"] returns the unified
+        // MachineConfig built from the real files of this machine, instead of a
+        // file package. Same tool, no new MCP tool surface, so RSM stays at 18
+        // exposed tools (explicit constraint of #4611).
+        if (targets.includes('all')) {
+          const configService = rooSyncService.getConfigService();
+          const homeDir = process.env.USERPROFILE || process.env.HOME;
+          const machineConfig = await collectMachineConfig({
+            machineId: machineId
+              || process.env.ROOSYNC_MACHINE_ID
+              || process.env.COMPUTERNAME
+              || hostname().toLowerCase(),
+            role: process.env.ROOSYNC_ROLE === 'coordinator' ? 'coordinator' : 'executor',
+            roots: {
+              ...(homeDir ? { homeDir } : {}),
+              projectPath: process.cwd(),
+              rooExtensionsPath: process.env.ROOSYNC_WORKSPACE_PATH || process.cwd(),
+              sharedStatePath: configService.getSharedStatePath(),
+            },
+          });
+
+          const rooServerCount = machineConfig.roo.mcpServers.length;
+          const claudeServerCount = machineConfig.claude.mcpServers?.length ?? 0;
+          return {
+            status: 'success',
+            message: `MachineConfig collectée pour ${machineConfig.machineId} — ${rooServerCount} serveurs MCP Roo, ${claudeServerCount} serveurs MCP Claude`,
+            machineConfig,
+          };
+        }
 
         // #2964 (point 3) — best-effort retention sweep (throttled hourly).
         // Runs before collectConfig so stale packages are reclaimed even on
