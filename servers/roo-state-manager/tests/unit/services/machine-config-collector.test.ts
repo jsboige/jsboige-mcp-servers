@@ -8,8 +8,10 @@
  *
  * Three properties are guarded here, each of which was a deliberate constraint of #4611:
  *  1. the collected `MachineConfig` really reflects the machine's files (not a stub);
- *  2. secrets are masked BY VALUE — a token under an innocent key is masked, an
- *     innocuous string under a scary key is not, and no raw secret reaches the diff;
+ *  2. secrets are masked BY VALUE first, with a KEY-NAME backstop (#4611) — a
+ *     token under an innocent key is masked, a sensitive-named leaf is digested
+ *     whatever its value (`*_CLIENT_ID` public identifiers stay readable), and
+ *     no raw secret reaches the diff;
  *  3. the diff classifies differences by category (critical / warning / info), which
  *     is what makes `compare_config` usable rather than a flat list.
  *
@@ -124,7 +126,9 @@ const MACHINE_A_FILES = {
   'home/.claude.json': JSON.stringify({
     model: 'sonnet',
     env: {
-      // A scary KEY carrying an innocuous VALUE: masking is by value, so this stays readable.
+      // A scary KEY carrying an innocuous VALUE: the #4611 name backstop digests
+      // it (measured escape: GOOGLE_OAUTH_CLIENT_SECRET=GOCSPX-… matched no value
+      // shape). Same fixture value on A and B => same digest => no false drift.
       ANTHROPIC_API_KEY: 'placeholder-not-a-secret',
     },
     mcpServers: {
@@ -315,8 +319,13 @@ describe('MachineConfigCollector — secret masking', () => {
     expect(value).not.toContain('ghp_');
   });
 
-  it('leaves an innocuous VALUE readable even under a sensitive-looking key', () => {
-    expect(configA.claude.userConfig?.env?.ANTHROPIC_API_KEY).toBe('placeholder-not-a-secret');
+  it('digests an innocuous VALUE under a sensitive KEY (name backstop, #4611)', () => {
+    // Value-only masking let GOCSPX-… secrets through (measure po-204), so a
+    // sensitive KEY now digests its value whatever the shape. The key stays
+    // readable and equal inputs give equal markers — cross-seat comparison
+    // survives (see the Differ "aligned" test below).
+    const value = configA.claude.userConfig?.env?.ANTHROPIC_API_KEY ?? '';
+    expect(value).toMatch(/^<set:len=\d+:sha256=[0-9a-f]{8}>$/);
   });
 
   it('strips the credentials embedded in a BASE_URL', () => {
@@ -434,6 +443,93 @@ describe('MachineConfigCollector — secret masking on command/args/url/cwd path
     expect(runner?.command).toBe('node');
     expect(runner?.args).toEqual(['-e', expect.stringMatching(/^API_KEY=/), 'server.js', '--port=3000']);
     expect(runner?.cwd).toBe('C:/work/runner');
+  });
+});
+
+// ============================================================
+// Masking — name backstop + embedded assignments on plain env leaves (#4611)
+//
+// Measure po-204 (c.6745148700) found two in-service secrets escaping the
+// value-only policy: a GOOGLE_OAUTH_CLIENT_SECRET holding a `GOCSPX-…` value
+// (prefix unlisted, no other shape match) and a multi-line
+// ANTHROPIC_CUSTOM_HEADERS embedding `x-proxy-key: <hex64>` (the hex pattern
+// anchors on the WHOLE string, so line 2 never matches it). These fixtures
+// FAIL on the pre-#4611 collector.
+// ============================================================
+
+/**
+ * Google OAuth client secret shape — GOCSPX prefix, no other listed marker.
+ * Assembled by join so the FILE never carries the contiguous literal
+ * (GitHub push protection + secret scanners flag even fake fixtures).
+ */
+const GWS_CLIENT_SECRET = ['GOCSPX', 'fixture-7dQk9mZr2tXw4vN6bYh8'].join('-');
+/** Proxy key embedded in a multi-line headers value — hex64 on line 2. */
+const PROXY_KEY_HEX = 'e088' + '0123456789abcdef'.repeat(3) + '0123456789ab';
+
+const NAME_BACKSTOP_FILES = {
+  'home/.claude.json': JSON.stringify({
+    mcpServers: {
+      'google-workspace': {
+        command: 'npx',
+        args: ['gw.js'],
+        env: {
+          GOOGLE_OAUTH_CLIENT_ID: '1234567890-fixture.apps.googleusercontent.com',
+          GOOGLE_OAUTH_CLIENT_SECRET: GWS_CLIENT_SECRET,
+        },
+      },
+    },
+  }),
+  'home/.claude/settings.json': JSON.stringify({
+    env: {
+      ANTHROPIC_CUSTOM_HEADERS: `X-Claudish-Machine: myia-po-204\nx-proxy-key: ${PROXY_KEY_HEX}`,
+      SEARXNG_URL: 'http://127.0.0.1:8888/search',
+      ROO_FLEET_ROSTER: 'myia-ai-01,myia-po-204',
+      BACKUP_NOTE: GWS_CLIENT_SECRET,
+    },
+  }),
+};
+
+describe('MachineConfigCollector — name backstop + embedded assignments (#4611)', () => {
+  let nbConfig: MachineConfig;
+  let nbSerialized: string;
+
+  beforeAll(async () => {
+    const base = await fs.mkdtemp(join(tmpdir(), 'machine-config-4611-name-'));
+    await writeTree(base, NAME_BACKSTOP_FILES);
+    nbConfig = await collectMachineConfig({
+      machineId: 'machine-name-backstop',
+      roots: rootsOf(base),
+      system: { os: 'Windows_NT', hostname: 'machine-nb', username: 'operator' },
+    });
+    nbSerialized = JSON.stringify(nbConfig);
+  });
+
+  const gwsEnv = () =>
+    (nbConfig.claude.mcpServers?.find(s => s.name === 'google-workspace')?.env ?? {}) as Record<string, string>;
+
+  it('digests a GOCSPX secret under a sensitive KEY (name backstop)', () => {
+    expect(gwsEnv().GOOGLE_OAUTH_CLIENT_SECRET).toMatch(/^<set:len=\d+:sha256=[0-9a-f]{8}>$/);
+    expect(nbSerialized).not.toContain(GWS_CLIENT_SECRET);
+  });
+
+  it('keeps the OAuth CLIENT_ID readable (public identifier exemption)', () => {
+    expect(gwsEnv().GOOGLE_OAUTH_CLIENT_ID).toBe('1234567890-fixture.apps.googleusercontent.com');
+  });
+
+  it('digests the x-proxy-key line of a multi-line headers VALUE (other lines kept readable)', () => {
+    const headers = nbConfig.claude.settings?.env?.ANTHROPIC_CUSTOM_HEADERS ?? '';
+    expect(headers).toContain('X-Claudish-Machine: myia-po-204');
+    expect(headers).toMatch(/x-proxy-key: <redacted:sha256=[0-9a-f]{16}>/);
+    expect(headers).not.toContain(PROXY_KEY_HEX);
+  });
+
+  it('masks a GOCSPX-shaped VALUE even under an innocent key (prefix list extended)', () => {
+    expect(nbConfig.claude.settings?.env?.BACKUP_NOTE).toMatch(/^<set:len=\d+:sha256=[0-9a-f]{8}>$/);
+  });
+
+  it('does not over-redact benign env values', () => {
+    expect(nbConfig.claude.settings?.env?.SEARXNG_URL).toBe('http://127.0.0.1:8888/search');
+    expect(nbConfig.claude.settings?.env?.ROO_FLEET_ROSTER).toBe('myia-ai-01,myia-po-204');
   });
 });
 

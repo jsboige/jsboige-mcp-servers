@@ -10,11 +10,15 @@
  *
  * Design constraints (from #4611):
  *  - **No new MCP tool.** The collector is a service; the tool surface is unchanged.
- *  - **Secrets masked by value, never by name.** We reuse
+ *  - **Secrets masked by value FIRST, key name as backstop.** We reuse
  *    `redactValue`/`looksLikeSecretValue` from `ClaudeSettingsService` (#3545), which
  *    decide from the VALUE (and, for URLs, the non-reversible digest of the userinfo /
- *    sensitive query params). A key called `ANTHROPIC_API_KEY` holding an innocuous
- *    string is published as-is; a key called `NOTE` holding a token is masked.
+ *    sensitive query params): a key called `NOTE` holding a token is masked. #4611
+ *    (measure po-204) adds a name backstop: a leaf whose KEY is itself sensitive
+ *    (`isSensitiveKey`) is digest-masked even when its value matches no known shape —
+ *    measured escape: `GOOGLE_OAUTH_CLIENT_SECRET` = `GOCSPX-…`. Public identifiers
+ *    (`*_CLIENT_ID`) stay readable under the backstop; digests keep equality
+ *    comparable across machines.
  *  - **Pure file reading.** No PowerShell, no schtasks, no network: the host-specific
  *    `system` section is injected by the caller (InventoryService in the tool layer,
  *    a fixture in tests). That is what makes the two-machine usage test (#603 case 14)
@@ -44,6 +48,8 @@ import {
   looksLikeSecretValue,
   redactUrlCredentials,
   redactAssignedSecrets,
+  isSensitiveKey,
+  maskSecretValue,
 } from './ClaudeSettingsService.js';
 import { getGlobalStoragePath, getExtensionId } from '../utils/extension-paths.js';
 
@@ -129,11 +135,40 @@ async function readYamlFile<T = unknown>(path: string): Promise<T | undefined> {
  * `redactValue` is path-aware (it treats `*BASE_URL*` specially and otherwise decides
  * from the VALUE via `looksLikeSecretValue`). We call it for every leaf we publish, so
  * a secret is masked because of what it *is*, not because of the key it sits under.
+ *
+ * #4611 (measure po-204, c.6745148700): value-only masking lets two in-service
+ * secrets through — `GOOGLE_OAUTH_CLIENT_SECRET` = `GOCSPX-…` (prefix unlisted, no
+ * shape match) and a multi-line `ANTHROPIC_CUSTOM_HEADERS` embedding
+ * `x-proxy-key: <hex64>` (the hex pattern anchors on the WHOLE string). Two guards:
+ *  - **name backstop**: when the leaf's KEY is sensitive (`isSensitiveKey`, #3545 —
+ *    exported but previously unwired), the value becomes a digest marker whatever
+ *    it looks like. The key stays readable (same philosophy as ms#1706: the name
+ *    remains, only the value is fingerprinted). `*_CLIENT_ID` public identifiers
+ *    are exempted so seat-to-seat comparison of which OAuth app is deployed
+ *    survives.
+ *  - **assigned-secrets pass**: `redactAssignedSecrets` (path-independent,
+ *    idempotent via `hasRedactionMarkers`) now also runs on plain string leaves, so
+ *    `Name: value` assignments embedded in a multi-line value are masked inline
+ *    (`x-proxy-key: e088…` → `x-proxy-key: <redacted:sha256=…>`) while the
+ *    surrounding lines stay readable. This subsumes the per-line re-anchoring of
+ *    proposal point (3) for the measured escape — the header pass is line-safe
+ *    because its token class excludes `\n`.
  */
-function redactLeaf(path: string, value: unknown): unknown {
-  if (typeof value === 'string') return redactValue(path, value);
+function redactLeaf(path: string, value: unknown, key?: string): unknown {
+  if (typeof value === 'string') {
+    if (key !== undefined && isSensitiveKey(key) && !CLIENT_ID_SUFFIX.test(key)) {
+      return maskSecretValue(value);
+    }
+    const masked = redactValue(path, value);
+    // `redactValue` is typed `unknown` but returns a string for a string input
+    // (raw passthrough or digest marker) — re-narrow instead of casting.
+    return typeof masked === 'string' ? redactAssignedSecrets(masked) : masked;
+  }
   return value;
 }
+
+/** Public OAuth client identifiers — readable under the name backstop (#4611). */
+const CLIENT_ID_SUFFIX = /CLIENT_ID$/i;
 
 /**
  * Redact a COMMAND-LIKE string we publish: `command`, `url`, `args[]`, `cwd` — the
@@ -168,10 +203,10 @@ function redactRecord(record: Record<string, unknown>, prefix: string): Record<s
       out[key] = redactRecord(value as Record<string, unknown>, `${prefix}.${key}`);
     } else if (Array.isArray(value)) {
       out[key] = value.map((item, i) =>
-        typeof item === 'string' ? redactLeaf(`${prefix}.${key}.${i}`, item) : item
+        typeof item === 'string' ? redactLeaf(`${prefix}.${key}.${i}`, item, key) : item
       );
     } else {
-      out[key] = redactLeaf(`${prefix}.${key}`, value);
+      out[key] = redactLeaf(`${prefix}.${key}`, value, key);
     }
   }
   return out;
