@@ -5886,7 +5886,8 @@ function blockersMaxShare(): number | null {
 export function blockerDropRank(line: string, now: Date = new Date()): number {
   // The negator (NON / PAS) is a whole word, followed by any run of blanks
   // and dashes (NBSP, tab, `-`, `–`, `—` included) before the marker.
-  if (/(?:^|[^A-Za-zÀ-ÿ])(?<!(?:^|[^A-Za-zÀ-ÿ])(?:[Nn][Oo][Nn]|[Pp][Aa][Ss])[\s\-\u2010-\u2015]+)(?:REFUT[EÉ]E?S?|R[EÉ]SOLUE?S?)(?![A-Za-zÀ-ÿ])/.test(line)) {
+  // (Semantics shared with the budget pass via REFUTE_RESOLU_MARKER_RE, #4434 09/11.)
+  if (REFUTE_RESOLU_MARKER_RE.test(line)) {
     return Number.NEGATIVE_INFINITY;
   }
   const m = /\[v[ée]rifi[ée]e?\s+(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2})Z?)?/i.exec(line);
@@ -6016,6 +6017,240 @@ export function truncateBySections(text: string, maxSizeBytes: number, label: st
     linesRemoved: lines.length - out.split('\n').length,
   });
   return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// #4434 (09/11) — passe de budget de statut déterministe, sans LLM.
+//
+// Mesuré par ai-01 le 09/11 (commentaire c.6739556626) : le générateur dépasse
+// le budget par section du prompt DANS CHAQUE section (×1,4 à ×6,8 — un nombre
+// dans le prompt ne lie pas le modèle), et les sections protégées de la perte
+// (« JAMAIS sacrifiées », silence ≠ obsolescence) ne peuvent plus que croître
+// sous un plafond d'octets fixe : 7 passes sur 8 finissaient au plancher. Cette
+// passe court ENTRE generateStatusUpdate et condenseTextIfTooLarge — avant le
+// plafond, donc AVANT que la seule issue ne soit la perte :
+//   1. Blocages — les lignes marquées RÉSOLU/REFUTE de plus de 24 h partent
+//      (règle #4082 : 24 h d'affichage suffisent à les voir). Un blocage actif
+//      n'est JAMAIS coupé, et une ligne marquée sans date lisible reste (on ne
+//      retire que ce qu'on sait âgé).
+//   2. Sections sur budget en mots — les puces ENTIÈRES (jamais coupées au
+//      milieu) partent vers l'archive de la passe, verbatim : rien n'est
+//      supprimé, « silence ≠ obsolescence » tient parce que l'entrée reste
+//      lisible dans l'archive. Les puces portant le marqueur de date le plus
+//      ancien partent d'abord (`JJ/MM`, `[vérifié …]`) ; les non datées sortent
+//      par la queue de la section. On s'arrête dès que la section est revenue
+//      sous budget, et une section n'est jamais vidée (au moins une puce reste).
+// Le plancher par sections (04/11, truncateBySections ci-dessus) reste le
+// dernier recours en OCTETS : cette passe en réduit le besoin en MOTS.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Shared #4082 marker semantics: REFUTE/RÉSOLU in capitals (plurals and
+ * feminines included), unless negated by a whole-word NON/PAS followed by any
+ * run of blanks and dashes. One source of truth for the floor's drop ranking
+ * and the budget pass's retirement — the two must not drift apart.
+ */
+const REFUTE_RESOLU_MARKER_RE =
+  /(?:^|[^A-Za-zÀ-ÿ])(?<!(?:^|[^A-Za-zÀ-ÿ])(?:[Nn][Oo][Nn]|[Pp][Aa][Ss])[\s\-\u2010-\u2015]+)(?:REFUT[EÉ]E?S?|R[EÉ]SOLUE?S?)(?![A-Za-zÀ-ÿ])/;
+
+/** Une puce markdown est une ligne commençant par `- ` ou `* ` suivi de texte. */
+const STATUS_BULLET_RE = /^\s*[-*]\s+\S/;
+
+/** Mots d'une puce : le marqueur de puce ne compte pas (mesure ai-01 09/11 : « les mots des puces »). */
+function countBulletWords(line: string): number {
+  return line.replace(/^\s*[-*]\s+/, '').split(/\s+/).filter(Boolean).length;
+}
+
+/**
+ * Budgets par section en mots — miroir exact du bloc « BUDGET PAR SECTION
+ * (#4434) » du prompt de generateStatusUpdate (dashboard.ts ~L4883) : la passe
+ * déterministe applique ce que le prompt demande et que le modèle dépasse.
+ * « Blocages structurels » n'y figure pas : aucun plafond total en mots, seule
+ * la retraite des marqueurs RÉSOLU/REFUTE > 24 h s'y applique.
+ * Contrat de libellé (même philosophie que findBlocagesSection) : seuls ces
+ * libellés canoniques ouvrent le droit au déplacement — une section portant le
+ * même contenu sous un autre libellé est un contenu ordinaire, hors passe.
+ */
+const STATUS_SECTION_WORD_BUDGETS: ReadonlyArray<{ name: string; test: RegExp; budget: number }> = [
+  // La frontière est `(?![A-Za-zÀ-ÿ])` et non `\b` : le \b de JS est défini
+  // sur [A-Za-z0-9_] — après un caractère accentué (« Résumé »), il n'existe
+  // pas (mesuré : la section Résumé n'était jamais appariée avec \b).
+  { name: 'Résumé', test: /^#{1,6}\s*R[ée]sum[ée](?![A-Za-zÀ-ÿ])/i, budget: 40 },
+  { name: 'État des systèmes', test: /^#{1,6}\s*État des syst[èe]mes(?![A-Za-zÀ-ÿ])/i, budget: 100 },
+  { name: 'Décisions actées', test: /^#{1,6}\s*D[ée]cisions act[ée]es(?![A-Za-zÀ-ÿ])/i, budget: 90 },
+  { name: 'Livrables récents', test: /^#{1,6}\s*Livrables r[ée]cents(?![A-Za-zÀ-ÿ])/i, budget: 55 },
+  { name: 'En cours', test: /^#{1,6}\s*En cours(?![A-Za-zÀ-ÿ])/i, budget: 60 },
+  { name: 'Métriques de référence', test: /^#{1,6}\s*M[ée]triques de r[ée]f[ée]rence(?![A-Za-zÀ-ÿ])/i, budget: 85 },
+  { name: 'Patterns appris', test: /^#{1,6}\s*Patterns appris(?![A-Za-zÀ-ÿ])/i, budget: 55 }
+];
+
+/** RÉSOLU/REFUTE : 24 h d'affichage suffisent (règle #4082, spec #4434 09/11). */
+const STALE_MARKER_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Date portée par un marqueur RÉSOLU/REFUTE : premier JJ/MM (heure optionnelle)
+ * ou ISO après le marqueur. Null quand la ligne n'en porte pas — l'appelant
+ * garde alors la ligne (on ne retire que ce qu'on sait âgé). L'année d'un
+ * JJ/MM suit l'heurétique du plancher (mois futur = année passée) ; un tampon
+ * futur reste daté du futur et ne franchit donc jamais les 24 h.
+ */
+function staleMarkerDate(line: string, now: Date): Date | null {
+  const marker = REFUTE_RESOLU_MARKER_RE.exec(line);
+  if (!marker) return null;
+  const rest = line.slice(marker.index + marker[0].length);
+  const iso = /(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(rest);
+  if (iso) {
+    const [, y, mo, d, hh, mm] = iso;
+    const month = Number(mo); const day = Number(d);
+    if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+    return new Date(Date.UTC(Number(y), month - 1, day, Number(hh ?? 0), Number(mm ?? 0)));
+  }
+  const dm = /(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2})Z?)?/.exec(rest);
+  if (!dm) return null;
+  const day = Number(dm[1]); const month = Number(dm[2]);
+  if (day < 1 || day > 31 || month < 1 || month > 12) return null;
+  const year = now.getUTCFullYear() - (month > now.getUTCMonth() + 1 ? 1 : 0);
+  return new Date(Date.UTC(year, month - 1, day, Number(dm[3] ?? 0), Number(dm[4] ?? 0)));
+}
+
+/**
+ * Rang du marqueur de date LE PLUS ANCIEN d'une puce (`[vérifié JJ/MM …]`,
+ * tampon `JJ/MM` nu — la spec cite les deux). MIN_SAFE_INTEGER si non datée.
+ * Mêmes unités que blockerDropRank : comparables, épinglees par les mêmes tests.
+ */
+function oldestStampRank(line: string, now: Date): number {
+  const re = /(\d{1,2})\/(\d{1,2})(?:\s+(\d{1,2}):(\d{2})Z?)?/g;
+  let best = Number.MIN_SAFE_INTEGER;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(line)) !== null) {
+    const day = Number(m[1]); const month = Number(m[2]);
+    if (day < 1 || day > 31 || month < 1 || month > 12) continue;
+    const hh = m[3] !== undefined ? Number(m[3]) : 0;
+    const mm = m[4] !== undefined ? Number(m[4]) : 0;
+    const yearOffset = month > now.getUTCMonth() + 1 ? -1 : 0;
+    const rank = (((yearOffset * 13 + month) * 32 + day) * 24 + hh) * 60 + mm;
+    if (best === Number.MIN_SAFE_INTEGER || rank < best) best = rank;
+  }
+  return best;
+}
+
+/** Puce déplacée hors budget d'une section (verbatim, jamais coupée). */
+export interface StatusBudgetSectionMove {
+  section: string;
+  moved: number;
+  bullets: string[];
+}
+
+/** Résultat de la passe de budget #4434 — la télémétrie vit dedans. */
+export interface StatusBudgetPassResult {
+  status: string;
+  bytesBefore: number;
+  bytesAfter: number;
+  moved: StatusBudgetSectionMove[];
+  /** Lignes de blocages RÉSOLU/REFUTE retirées (> 24 h), verbatim pour l'archive. */
+  retiredBlockerLines: string[];
+}
+
+/**
+ * #4434 (09/11) — passe de budget déterministe du statut, sans LLM. Pure et
+ * testable : aucun log, aucun I/O ; l'appelant télémètre et archive.
+ */
+export function enforceStatusBudget(status: string, now: Date = new Date()): StatusBudgetPassResult {
+  const bytesBefore = Buffer.byteLength(status, 'utf8');
+  const lines = status.split('\n');
+  const headingIdx: number[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (/^#{1,6}\s/.test(lines[i])) headingIdx.push(i);
+  }
+  const sectionEnd = (start: number): number => {
+    for (const h of headingIdx) if (h > start) return h;
+    return lines.length;
+  };
+  const removeIdx = new Set<number>();
+  const retiredBlockerLines: string[] = [];
+  const moved: StatusBudgetSectionMove[] = [];
+
+  // 1 — Blocages : retraite des lignes RÉSOLU/REFUTE de plus de 24 h. Un
+  // marqueur sans date lisible reste (on ne retire que ce qu'on sait âgé) ;
+  // « NON/PAS RÉSOLU » est un blocage ACTIF et ne sort jamais d'ici.
+  const blocages = findBlocagesSection(lines);
+  if (blocages) {
+    for (let i = blocages.start + 1; i < blocages.end; i++) {
+      const when = staleMarkerDate(lines[i], now);
+      if (when !== null && now.getTime() - when.getTime() > STALE_MARKER_MS) {
+        removeIdx.add(i);
+        retiredBlockerLines.push(lines[i]);
+      }
+    }
+  }
+
+  // 2 — sections sur budget : puces ENTIÈRES déplacées, jamais coupées.
+  for (const def of STATUS_SECTION_WORD_BUDGETS) {
+    const start = lines.findIndex((l) => def.test.test(l));
+    if (start === -1) continue;
+    const end = sectionEnd(start);
+    const bullets: number[] = [];
+    let words = 0;
+    for (let i = start + 1; i < end; i++) {
+      if (STATUS_BULLET_RE.test(lines[i])) {
+        bullets.push(i);
+        words += countBulletWords(lines[i]);
+      }
+    }
+    if (words <= def.budget || bullets.length <= 1) continue;
+    // Datées d'abord (la plus ancienne en tête ; à égalité, la plus haute),
+    // puis non datées par la QUEUE de la section (spec 09/11).
+    const ranked = bullets
+      .map((i) => ({ i, rank: oldestStampRank(lines[i], now) }))
+      .sort((a, b) => (a.rank - b.rank) || (a.i - b.i));
+    const order = [
+      ...ranked.filter((r) => r.rank !== Number.MIN_SAFE_INTEGER),
+      ...ranked.filter((r) => r.rank === Number.MIN_SAFE_INTEGER).reverse()
+    ];
+    const sectionMoved: string[] = [];
+    for (const { i } of order) {
+      if (words <= def.budget) break; // revenu sous budget : stop immédiat
+      if (bullets.length - sectionMoved.length <= 1) break; // jamais vider une section
+      removeIdx.add(i);
+      sectionMoved.push(lines[i]);
+      words -= countBulletWords(lines[i]);
+    }
+    if (sectionMoved.length > 0) {
+      moved.push({ section: def.name, moved: sectionMoved.length, bullets: sectionMoved });
+    }
+  }
+
+  if (removeIdx.size === 0) {
+    return { status, bytesBefore, bytesAfter: bytesBefore, moved, retiredBlockerLines };
+  }
+  const out = lines.filter((_, i) => !removeIdx.has(i)).join('\n');
+  return { status: out, bytesBefore, bytesAfter: Buffer.byteLength(out, 'utf8'), moved, retiredBlockerLines };
+}
+
+/**
+ * #4434 (09/11) — section d'archive de la passe : les puces déplacées et les
+ * lignes retirées y atterrissent VERBATIM, lues sous leur section d'origine.
+ * C'est la moitié « rien n'est supprimé » du contrat : le statut racine
+ * n'hérite que du budget, l'archive porte la mémoire. Null quand la passe
+ * n'a rien fait — pas de section fantôme dans l'archive.
+ */
+export function buildStatusBudgetArchiveSection(result: StatusBudgetPassResult, now: Date = new Date()): string | null {
+  if (result.moved.length === 0 && result.retiredBlockerLines.length === 0) return null;
+  const parts: string[] = ['## Statut — entrées sorties du budget (#4434)', ''];
+  const movedSummary = result.moved.length > 0
+    ? `puces déplacées — ${result.moved.map((m) => `${m.section} : ${m.moved}`).join(', ')}`
+    : 'aucune puce déplacée';
+  const retiredSummary = result.retiredBlockerLines.length > 0
+    ? `${result.retiredBlockerLines.length} ligne(s) de blocages RÉSOLU/REFUTE retirée(s) (> 24 h)`
+    : null;
+  parts.push(`Passe déterministe du ${now.toISOString()} : ${result.bytesBefore} → ${result.bytesAfter} octets ; ${movedSummary}${retiredSummary ? ` ; ${retiredSummary}` : ''}.`);
+  for (const m of result.moved) {
+    parts.push('', `### ${m.section}`, m.bullets.join('\n'));
+  }
+  if (result.retiredBlockerLines.length > 0) {
+    parts.push('', '### Blocages — lignes RÉSOLU/REFUTE retirées', result.retiredBlockerLines.join('\n'));
+  }
+  return parts.join('\n');
 }
 
 /**
@@ -7111,6 +7346,24 @@ async function condenseIntercom(
     else condenseCBRecordSuccess();
   }
 
+  // #4434 (09/11) — passe de budget déterministe, sans LLM, ENTRE le générateur
+  // et le plafond d'octets : le modèle dépasse le budget par section du prompt
+  // dans CHAQUE section (mesure ai-01 09/11, ×1,4 à ×6,8) ; cette passe ramène
+  // chaque section sous son budget en MOTS en déplaçant des puces ENTIÈRES vers
+  // l'archive de la passe (rien n'est supprimé), et retire les lignes de
+  // blocages RÉSOLU/REFUTE de plus de 24 h (règle #4082). Court aussi sur un
+  // statut gardé verbatim (skip #4205) : déjà sous budget, la passe est no-op ;
+  // sinon elle y ramène — le plafond d'octets reste le dernier recours.
+  const statusBudgetPass = enforceStatusBudget(newStatus!);
+  logger.info('Status budget pass (#4434)', {
+    key,
+    bytesBefore: statusBudgetPass.bytesBefore,
+    bytesAfter: statusBudgetPass.bytesAfter,
+    movedBySection: Object.fromEntries(statusBudgetPass.moved.map((m) => [m.section, m.moved])),
+    retiredBlockerLines: statusBudgetPass.retiredBlockerLines.length
+  });
+  newStatus = statusBudgetPass.status;
+
   // Both operations succeeded — now auto-condense if outputs exceed size limits
   newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status', passDeadlineMs);
   llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary', passDeadlineMs);
@@ -7263,6 +7516,11 @@ async function condenseIntercom(
   // ligne [msg: id] DOIT survivre à l'archivage — cf. buildArchiveMessagesMarkdown.
   const archiveMessages = buildArchiveMessagesMarkdown(toArchive);
 
+  // #4434 (09/11) — moitié « rien n'est supprimé » : les puces sorties du
+  // budget et les lignes RÉSOLU/REFUTE retirées atterrissent ici, verbatim.
+  // Null quand la passe n'a rien fait (pas de section fantôme).
+  const statusBudgetArchiveSection = buildStatusBudgetArchiveSection(statusBudgetPass);
+
   const archiveContent = `---
 ${archiveFrontmatter.trim()}
 ---
@@ -7279,7 +7537,7 @@ Messages : ${toArchive.length}
 ${previousStatus}
 
 ---
-
+${statusBudgetArchiveSection ? `\n${statusBudgetArchiveSection}\n\n---\n` : ''}
 ${archiveMessages}
 `;
 
