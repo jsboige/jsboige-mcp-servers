@@ -75,7 +75,7 @@ vi.mock('@/services/openai', () => ({
     getFallbackLLMModelId: () => 'test-fallback-model',
 }));
 
-import { roosyncDashboard } from '../dashboard.js';
+import { roosyncDashboard, STATUS_SECTION_WORD_BUDGETS, STATUS_BUDGET_PROMPT_BLOCKERS_AT, statusBudgetPromptLines } from '../dashboard.js';
 
 const STATUS_PROMPT_MARKER = 'synthèse de dashboards';
 
@@ -178,6 +178,23 @@ describe('generateStatusUpdate — budget par section (#4434)', () => {
             expect(line, `ligne de budget pour « ${name} »`).toBeTruthy();
             expect(line!).toMatch(/≤\s*\d+\s*mots/);
         }
+        // Source unique (suite ms#1712) : les lignes du bloc budget sont DÉRIVÉES
+        // de la table STATUS_SECTION_WORD_BUDGETS — ce témoin rougit le jour où
+        // une révision du budget passe dans la table sans se propager au prompt
+        // (ou l'inverse : un prompt édité à la main qui diverge de la table).
+        for (const line of statusBudgetPromptLines()) {
+            expect(system.split('\n')).toContain(line);
+        }
+    });
+
+    it('source unique : la table ne peut plus porter « Blocages structurels » ni un libellé hors canevas', async () => {
+        // Le prompt promet un plafond sur exactement 7 sections : la table qui
+        // les génère doit couvrir le canevas hors Blocages, ni plus ni moins —
+        // un libellé dérivé y déplacerait une ligne de budget fantôme.
+        expect(STATUS_SECTION_WORD_BUDGETS.map((d) => d.name)).toEqual(CANON.filter(n => n !== 'Blocages structurels'));
+        // La ligne Blocages (littérale) est intercalée à SA position canonique :
+        // l'index du split doit suivre le canevas, pas rester un nombre magique.
+        expect(STATUS_BUDGET_PROMPT_BLOCKERS_AT).toBe(CANON.indexOf('Blocages structurels'));
     });
 
     it('blocages structurels : PAS de plafond de mots — une ligne par blocage actif, date conservée (review ms#1633)', async () => {

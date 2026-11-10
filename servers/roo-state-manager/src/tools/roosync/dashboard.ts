@@ -4953,14 +4953,9 @@ Format : "- **entité** : état (source: [date])"
 [Anti-patterns identifiés, conventions établies, leçons consolidées — mémoire durable du projet]
 
 BUDGET PAR SECTION (#4434) — LIMITE STRICTE : la sortie doit tenir dans ~600 mots (~4 200 caractères) HORS lignes de blocage :
-- Résumé : ≤ 40 mots
-- État des systèmes : ≤ 100 mots (une ligne par entité, dernier état connu)
-- Décisions actées : ≤ 90 mots
+${statusBudgetPromptLines().slice(0, STATUS_BUDGET_PROMPT_BLOCKERS_AT).join('\n')}
 - Blocages structurels : PAS de plafond de mots — RECOPIE une ligne par blocage actif du statut précédent (même sujet, même date de vérification, format « … [vérifié JJ/MM HH:MMZ] »), détail condensé à ≤ 25 mots par ligne ; cette section PEUT dépasser le budget sans limite. Une ligne de blocage ne disparaît jamais silencieusement : elle ne sort que si un message la réfute ou la clôt, et dans ce cas elle RESTE, marquée « REFUTE <date> » (réfutation citée) ou « RÉSOLU <date> »
-- Livrables récents : ≤ 55 mots (synthèse par thème)
-- En cours : ≤ 60 mots
-- Métriques de référence : ≤ 85 mots
-- Patterns appris : ≤ 55 mots
+${statusBudgetPromptLines().slice(STATUS_BUDGET_PROMPT_BLOCKERS_AT).join('\n')}
 Règles du budget :
 - Avant d'écrire, ESTIME le total prévu ; s'il dépasse le budget, condense davantage AVANT de commencer — un dépassement en cours de rédaction ne se rattrape pas.
 - Les 8 sections apparaissent TOUJOURS, dans cet ordre, CHACUNE COMPLÈTE — jamais une section omise, jamais une section coupée en cours de rédaction.
@@ -6134,27 +6129,59 @@ function countBulletWords(line: string): number {
 }
 
 /**
- * Budgets par section en mots — miroir exact du bloc « BUDGET PAR SECTION
- * (#4434) » du prompt de generateStatusUpdate (dashboard.ts ~L4883) : la passe
- * déterministe applique ce que le prompt demande et que le modèle dépasse.
+ * Budgets par section en mots — SOURCE UNIQUE #4434 (suite ms#1712) : le bloc
+ * « BUDGET PAR SECTION » du prompt de generateStatusUpdate est DÉRIVÉ de cette
+ * table via statusBudgetPromptLines(), et les tests verrouillent la parité —
+ * les trois copies d'origine (prompt littéral, table, attentes de test)
+ * dérivaient en silence. La passe déterministe applique ce que le prompt
+ * demande et que le modèle dépasse.
  * « Blocages structurels » n'y figure pas : aucun plafond total en mots, seule
  * la retraite des marqueurs RÉSOLU/REFUTE > 24 h s'y applique.
  * Contrat de libellé (même philosophie que findBlocagesSection) : seuls ces
  * libellés canoniques ouvrent le droit au déplacement — une section portant le
  * même contenu sous un autre libellé est un contenu ordinaire, hors passe.
  */
-const STATUS_SECTION_WORD_BUDGETS: ReadonlyArray<{ name: string; test: RegExp; budget: number }> = [
+export const STATUS_SECTION_WORD_BUDGETS: ReadonlyArray<{
+  name: string;
+  test: RegExp;
+  budget: number;
+  /** Guidage de rédaction porté par la ligne du prompt (aucun rôle dans la passe). */
+  hint?: string;
+}> = [
   // La frontière est `(?![A-Za-zÀ-ÿ])` et non `\b` : le \b de JS est défini
   // sur [A-Za-z0-9_] — après un caractère accentué (« Résumé »), il n'existe
   // pas (mesuré : la section Résumé n'était jamais appariée avec \b).
   { name: 'Résumé', test: /^#{1,6}\s*R[ée]sum[ée](?![A-Za-zÀ-ÿ])/i, budget: 40 },
-  { name: 'État des systèmes', test: /^#{1,6}\s*État des syst[èe]mes(?![A-Za-zÀ-ÿ])/i, budget: 100 },
+  { name: 'État des systèmes', test: /^#{1,6}\s*État des syst[èe]mes(?![A-Za-zÀ-ÿ])/i, budget: 100, hint: 'une ligne par entité, dernier état connu' },
   { name: 'Décisions actées', test: /^#{1,6}\s*D[ée]cisions act[ée]es(?![A-Za-zÀ-ÿ])/i, budget: 90 },
-  { name: 'Livrables récents', test: /^#{1,6}\s*Livrables r[ée]cents(?![A-Za-zÀ-ÿ])/i, budget: 55 },
+  { name: 'Livrables récents', test: /^#{1,6}\s*Livrables r[ée]cents(?![A-Za-zÀ-ÿ])/i, budget: 55, hint: 'synthèse par thème' },
   { name: 'En cours', test: /^#{1,6}\s*En cours(?![A-Za-zÀ-ÿ])/i, budget: 60 },
   { name: 'Métriques de référence', test: /^#{1,6}\s*M[ée]triques de r[ée]f[ée]rence(?![A-Za-zÀ-ÿ])/i, budget: 85 },
   { name: 'Patterns appris', test: /^#{1,6}\s*Patterns appris(?![A-Za-zÀ-ÿ])/i, budget: 55 }
 ];
+
+/**
+ * Lignes « - {section} : ≤ N mots » du bloc budget du prompt, dérivées de la
+ * table ci-dessus (source unique #4434, suite ms#1712). Appelée à l'intérieur
+ * du template de generateStatusUpdate — jamais au niveau module : la table est
+ * déclarée plus bas dans le fichier, un accès au chargement lèverait la TDZ.
+ */
+export function statusBudgetPromptLines(): string[] {
+  return STATUS_SECTION_WORD_BUDGETS.map(
+    (d) => `- ${d.name} : ≤ ${d.budget} mots${d.hint ? ` (${d.hint})` : ''}`
+  );
+}
+
+/**
+ * Position de la ligne « Blocages structurels » (littérale, sans plafond) dans
+ * l'ordre canonique du bloc budget du prompt : le prompt intercale la ligne
+ * littérale ENTRE les lignes dérivées de la table, à cet index, pour que le
+ * budget suive le MÊME ordre que le canevas (un seul ordre jamais contradictoire
+ * — test dashes « budget dans le MÊME ordre canonique »). Épingle la cohérence
+ * avec CANON : si « Blocages structurels » bouge dans le canevas, ce témoin
+ * rougit avant l'ordre du prompt.
+ */
+export const STATUS_BUDGET_PROMPT_BLOCKERS_AT = 3;
 
 /** RÉSOLU/REFUTE : 24 h d'affichage suffisent (règle #4082, spec #4434 09/11). */
 const STALE_MARKER_MS = 24 * 60 * 60 * 1000;
@@ -6206,7 +6233,7 @@ function oldestStampRank(line: string, now: Date): number {
   return best;
 }
 
-/** Puce déplacée hors budget d'une section (verbatim, jamais coupée). */
+/** Puce déplacée hors budget d'une section (verbatim, jamais coupée — une puce multi-lignes part en bloc, suite ms#1712). */
 export interface StatusBudgetSectionMove {
   section: string;
   moved: number;
@@ -6256,36 +6283,46 @@ export function enforceStatusBudget(status: string, now: Date = new Date()): Sta
     }
   }
 
-  // 2 — sections sur budget : puces ENTIÈRES déplacées, jamais coupées.
+  // 2 — sections sur budget : puces ENTIÈRES déplacées, jamais coupées. Une
+  // puce multi-lignes (suite non vide — ni puce ni titre — sous la ligne
+  // « - ») est un BLOC : déplacer la seule ligne marquée orphelinerait sa
+  // suite dans la section — le bloc part entier, mots et rang daté compris
+  // (suite ms#1712). Une puce imbriquée reste une puce à part entière.
   for (const def of STATUS_SECTION_WORD_BUDGETS) {
     const start = lines.findIndex((l) => def.test.test(l));
     if (start === -1) continue;
     const end = sectionEnd(start);
-    const bullets: number[] = [];
+    const blocks: { first: number; last: number; words: number }[] = [];
     let words = 0;
     for (let i = start + 1; i < end; i++) {
-      if (STATUS_BULLET_RE.test(lines[i])) {
-        bullets.push(i);
-        words += countBulletWords(lines[i]);
+      if (!STATUS_BULLET_RE.test(lines[i])) continue;
+      let last = i;
+      while (last + 1 < end && lines[last + 1].trim() !== ''
+        && !STATUS_BULLET_RE.test(lines[last + 1]) && !/^#{1,6}\s/.test(lines[last + 1])) {
+        last++;
       }
+      const blockWords = lines.slice(i, last + 1).reduce((a, l) => a + countBulletWords(l), 0);
+      blocks.push({ first: i, last, words: blockWords });
+      words += blockWords;
+      i = last;
     }
-    if (words <= def.budget || bullets.length <= 1) continue;
+    if (words <= def.budget || blocks.length <= 1) continue;
     // Datées d'abord (la plus ancienne en tête ; à égalité, la plus haute),
     // puis non datées par la QUEUE de la section (spec 09/11).
-    const ranked = bullets
-      .map((i) => ({ i, rank: oldestStampRank(lines[i], now) }))
-      .sort((a, b) => (a.rank - b.rank) || (a.i - b.i));
+    const ranked = blocks
+      .map((b) => ({ b, rank: oldestStampRank(lines.slice(b.first, b.last + 1).join('\n'), now) }))
+      .sort((x, y) => (x.rank - y.rank) || (x.b.first - y.b.first));
     const order = [
       ...ranked.filter((r) => r.rank !== Number.MIN_SAFE_INTEGER),
       ...ranked.filter((r) => r.rank === Number.MIN_SAFE_INTEGER).reverse()
     ];
     const sectionMoved: string[] = [];
-    for (const { i } of order) {
+    for (const { b } of order) {
       if (words <= def.budget) break; // revenu sous budget : stop immédiat
-      if (bullets.length - sectionMoved.length <= 1) break; // jamais vider une section
-      removeIdx.add(i);
-      sectionMoved.push(lines[i]);
-      words -= countBulletWords(lines[i]);
+      if (blocks.length - sectionMoved.length <= 1) break; // jamais vider une section
+      for (let i = b.first; i <= b.last; i++) removeIdx.add(i);
+      sectionMoved.push(lines.slice(b.first, b.last + 1).join('\n'));
+      words -= b.words;
     }
     if (sectionMoved.length > 0) {
       moved.push({ section: def.name, moved: sectionMoved.length, bullets: sectionMoved });
@@ -6710,6 +6747,23 @@ async function executeTruncationFallback(
   // ligne [msg: id] DOIT survivre à l'archivage — cf. buildArchiveMessagesMarkdown.
   const archiveMessages = buildArchiveMessagesMarkdown(toArchive);
 
+  // #4434 (suite ms#1712) : la passe de budget court AUSSI sur le statut gardé
+  // du fallback — sans elle, un statut sur budget file droit au plafond
+  // d'octets (truncateToMaxSize), qui décapite des sections que la passe
+  // aurait réduites en mots. Les puces déplacées partent dans CETTE archive :
+  // même contrat « rien n'est supprimé » que le chemin de succès.
+  const fallbackBudgetPass = enforceStatusBudget(stripStatusFallbackMarker(dashboard.status.markdown));
+  if (fallbackBudgetPass.moved.length > 0 || fallbackBudgetPass.retiredBlockerLines.length > 0) {
+    logger.info('Status budget pass on fallback (#4434)', {
+      key,
+      bytesBefore: fallbackBudgetPass.bytesBefore,
+      bytesAfter: fallbackBudgetPass.bytesAfter,
+      movedBySection: Object.fromEntries(fallbackBudgetPass.moved.map((m) => [m.section, m.moved])),
+      retiredBlockerLines: fallbackBudgetPass.retiredBlockerLines.length,
+    });
+  }
+  const fallbackBudgetArchive = buildStatusBudgetArchiveSection(fallbackBudgetPass);
+
   const archiveContent = `---
 ${archiveFrontmatter.trim()}
 ---
@@ -6729,7 +6783,7 @@ ${fallbackSummary}
 ${maskSecretText(dashboard.status.markdown)}
 
 ---
-
+${fallbackBudgetArchive ? `\n${fallbackBudgetArchive}\n\n---\n` : '\n'}
 ${archiveMessages}
 `;
 
@@ -6883,7 +6937,7 @@ ${archiveMessages}
   }, { count: truncCounter.count, firstAt: truncCounter.firstAt });
   const markerBytes = Buffer.byteLength(statusMarker + '\n', 'utf8');
   const truncatedStatus = truncateToMaxSize(
-    stripStatusFallbackMarker(dashboard.status.markdown),
+    fallbackBudgetPass.status, // passe de budget #4434 déjà appliquée ci-dessus
     Math.max(0, MAX_STATUS_SIZE_BYTES - markerBytes),
     'Status (fallback)'
   );
