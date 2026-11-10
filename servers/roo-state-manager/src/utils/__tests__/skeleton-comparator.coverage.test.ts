@@ -23,9 +23,9 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { SkeletonComparator } from '../skeleton-comparator.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
-function createSkeleton(overrides?: Partial<ConversationSkeleton>): ConversationSkeleton {
+function createSkeleton(overrides?: Partial<StoredConversation>): StoredConversation {
     return {
         taskId: 'task-001',
         metadata: {

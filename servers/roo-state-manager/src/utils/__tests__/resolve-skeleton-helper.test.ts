@@ -16,7 +16,8 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { resolveFullConversationSkeleton } from '../server-helpers.js';
-import { ConversationSkeleton, SkeletonHeader } from '../../types/conversation.js';
+import type { SkeletonHeader } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 // Mock RooStorageDetector via vi.mock pour éviter l'I/O disque réel.
 const { mockDetectStorageLocations, mockAnalyzeConversation } = vi.hoisted(() => ({
@@ -76,7 +77,7 @@ describe('resolveFullConversationSkeleton — #3007 helper', () => {
     // Sans la branche claude-, ces tests échouent (findConversationById jamais
     // appelé → null au lieu d'une séquence non vide).
     test('claude-* cache MISS: findConversationById resolves non-empty sequence', async () => {
-        const claudeFull: ConversationSkeleton = {
+        const claudeFull: StoredConversation = {
             taskId: 'claude-test-project',
             metadata: {
                 lastActivity: '2026-07-29T10:00:00Z',
@@ -120,7 +121,7 @@ describe('resolveFullConversationSkeleton — #3007 helper', () => {
         };
         cache.set('claude-measured-task', headerOnly);
 
-        const claudeFull: ConversationSkeleton = {
+        const claudeFull: StoredConversation = {
             ...headerOnly,
             sequence: [
                 { role: 'user', content: 'first', timestamp: '2026-07-29T10:00:00Z', isTruncated: false },
@@ -168,7 +169,7 @@ describe('resolveFullConversationSkeleton — #3007 helper', () => {
         };
         cache.set('claude-indexed-empty-counts', indexingHeader);
 
-        const claudeFull: ConversationSkeleton = {
+        const claudeFull: StoredConversation = {
             ...indexingHeader,
             metadata: { ...indexingHeader.metadata, messageCount: 11368 },
             sequence: [
@@ -216,7 +217,7 @@ describe('resolveFullConversationSkeleton — #3007 helper', () => {
     });
 
     test('Tier 2/3: returns full skeleton from cache when sequence is non-empty', async () => {
-        const fullInCache: ConversationSkeleton = {
+        const fullInCache: StoredConversation = {
             taskId: 'tier2-task',
             metadata: {
                 lastActivity: '2026-07-29T10:00:00Z',
@@ -253,7 +254,7 @@ describe('resolveFullConversationSkeleton — #3007 helper', () => {
         };
         cache.set('tier1-task', headerOnly);
 
-        const fullDisk: ConversationSkeleton = {
+        const fullDisk: StoredConversation = {
             ...headerOnly,
             sequence: [
                 { role: 'user', content: 'first', timestamp: '2026-07-29T10:00:00Z', isTruncated: false },
@@ -341,7 +342,7 @@ describe('resolveFullConversationSkeleton — #3007 helper', () => {
 
     test('Cache miss + disk fallback: RooStorageDetector.analyzeConversation populates cache', async () => {
         // Cache complètement vide — la tâche n'a jamais été vue.
-        const expected: ConversationSkeleton = {
+        const expected: StoredConversation = {
             taskId: 'disk-only-task',
             metadata: {
                 lastActivity: '2026-07-29T10:00:00Z',

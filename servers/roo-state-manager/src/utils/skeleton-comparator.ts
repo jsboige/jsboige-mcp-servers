@@ -4,7 +4,7 @@
  * @module skeleton-comparator
  */
 
-import { ConversationSkeleton } from '../types/conversation.js';
+import type { StoredConversation } from '../services/unified-store/types.js';
 import { validateComparisonResults } from './parsing-config.js';
 
 /**
@@ -44,8 +44,8 @@ export class SkeletonComparator {
    * @returns Résultat de comparaison avec différences détaillées
    */
   compare(
-    oldSkeleton: ConversationSkeleton,
-    newSkeleton: ConversationSkeleton
+    oldSkeleton: StoredConversation,
+    newSkeleton: StoredConversation
   ): SkeletonComparisonResult {
     const differences: SkeletonComparisonResult['differences'] = [];
     
@@ -258,8 +258,8 @@ export class SkeletonComparator {
    * Identifie les améliorations apportées par le nouveau système
    */
   identifyImprovements(
-    oldSkeleton: ConversationSkeleton,
-    newSkeleton: ConversationSkeleton
+    oldSkeleton: StoredConversation,
+    newSkeleton: StoredConversation
   ): string[] {
     const improvements: string[] = [];
     
@@ -296,8 +296,8 @@ export class SkeletonComparator {
    * Compare avec validation des améliorations
    */
   compareWithImprovements(
-    oldSkeleton: ConversationSkeleton,
-    newSkeleton: ConversationSkeleton
+    oldSkeleton: StoredConversation,
+    newSkeleton: StoredConversation
   ): SkeletonComparisonResult & { improvements: string[]; isValidUpgrade: boolean; validationReason: string } {
     const baseComparison = this.compare(oldSkeleton, newSkeleton);
     const improvements = this.identifyImprovements(oldSkeleton, newSkeleton);

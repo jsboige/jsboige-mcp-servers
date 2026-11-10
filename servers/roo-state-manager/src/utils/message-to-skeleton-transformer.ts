@@ -1,7 +1,7 @@
 /**
  * MessageToSkeletonTransformer - Phase 2a
  * 
- * Transforme les messages UI désérialisés en ConversationSkeleton
+ * Transforme les messages UI désérialisés en StoredConversation
  * Compatible avec le système de cache existant
  * 
  * Architecture: docs/architecture/message-to-skeleton-transformer.md
@@ -9,7 +9,7 @@
 
 import { UIMessage, ToolCallInfo, ApiReqInfo, NewTaskInfo } from './message-types.js';
 import { UIMessagesDeserializer } from './ui-messages-deserializer.js';
-import { ConversationSkeleton } from '../types/conversation.js';
+import type { StoredConversation } from '../services/unified-store/types.js';
 import { computeInstructionPrefix } from './task-instruction-index.js';
 import { WorkspaceDetector } from './workspace-detector.js';
 import { GenericError, GenericErrorCode } from '../types/errors.js';
@@ -30,7 +30,7 @@ export interface TransformerOptions {
  * Résultat de la transformation avec métadonnées
  */
 export interface TransformationResult {
-  skeleton: ConversationSkeleton;
+  skeleton: StoredConversation;
   metadata: {
     messageCount: number;
     userMessageCount: number;
@@ -99,7 +99,7 @@ export class MessageToSkeletonTransformer {
     const { startedAt, completedAt } = this.extractTimestamps(messages, isCompleted);
 
     // 7. Construire le skeleton
-    const skeleton: ConversationSkeleton = {
+    const skeleton: StoredConversation = {
       taskId,
       sequence: [], // Simplifié pour Phase 2a
       metadata: {
@@ -259,7 +259,7 @@ export class MessageToSkeletonTransformer {
   /**
    * Valide la compatibilité du skeleton avec le système existant
    */
-  private validateSkeletonCompatibility(skeleton: ConversationSkeleton): void {
+  private validateSkeletonCompatibility(skeleton: StoredConversation): void {
     // Validation 1 : taskId requis
     if (!skeleton.taskId) {
       throw new GenericError('Skeleton validation failed: taskId is required', GenericErrorCode.INVALID_ARGUMENT);

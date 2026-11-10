@@ -15,7 +15,8 @@ import {
     ProcessingState,
     ParsedSubtaskInstructions
 } from '../types/enhanced-hierarchy.js';
-import { ConversationSkeleton, NewTaskInstruction } from '../types/conversation.js';
+import type { NewTaskInstruction } from '../types/conversation.js';
+import type { StoredConversation } from '../services/unified-store/types.js';
 import { TaskInstructionIndex, computeInstructionPrefix } from './task-instruction-index.js';
 
 /**
@@ -49,7 +50,7 @@ export class HierarchyReconstructionEngine {
     public static async reconstructHierarchy(
         workspacePath?: string,
         forceRebuild: boolean = false
-    ): Promise<ConversationSkeleton[]> {
+    ): Promise<StoredConversation[]> {
         const engine = new HierarchyReconstructionEngine({
             forceRebuild,
             workspaceFilter: workspacePath,
@@ -67,9 +68,9 @@ export class HierarchyReconstructionEngine {
         // Exécuter la reconstruction
         const enhancedSkeletons = await engine.doReconstruction(skeletons);
 
-        // Convertir en ConversationSkeleton standard avec les parentIds reconstruits
+        // Convertir en StoredConversation standard avec les parentIds reconstruits
         return enhancedSkeletons.map(enhanced => {
-            const skeleton: ConversationSkeleton = {
+            const skeleton: StoredConversation = {
                 ...enhanced,
                 parentTaskId: enhanced.reconstructedParentId || enhanced.parentTaskId
             };
@@ -81,7 +82,7 @@ export class HierarchyReconstructionEngine {
      * Point d'entrée principal : reconstruit la hiérarchie complète (méthode d'instance)
      */
     public async doReconstruction(
-        skeletons: ConversationSkeleton[]
+        skeletons: StoredConversation[]
     ): Promise<EnhancedConversationSkeleton[]> {
         const startTime = Date.now();
 
@@ -1040,7 +1041,7 @@ export class HierarchyReconstructionEngine {
     /**
      * Convertit les skeletons standards en EnhancedConversationSkeleton
      */
-    private enhanceSkeletons(skeletons: ConversationSkeleton[]): EnhancedConversationSkeleton[] {
+    private enhanceSkeletons(skeletons: StoredConversation[]): EnhancedConversationSkeleton[] {
         return skeletons.map(skeleton => ({
             ...skeleton,
             processingState: {

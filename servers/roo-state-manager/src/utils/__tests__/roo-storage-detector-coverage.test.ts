@@ -14,7 +14,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { RooStorageDetector } from '../roo-storage-detector.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 // ─────────────────── Mocks ───────────────────
 
@@ -268,7 +268,7 @@ describe('RooStorageDetector — Phase E Coverage', () => {
     // ============================================================
 
     describe('calculateTreeDepth', () => {
-        const calcDepth = (skeletons: ConversationSkeleton[]) =>
+        const calcDepth = (skeletons: StoredConversation[]) =>
             (RooStorageDetector as any).calculateTreeDepth(skeletons);
 
         test('returns 0 for empty array', () => {
@@ -276,14 +276,14 @@ describe('RooStorageDetector — Phase E Coverage', () => {
         });
 
         test('returns 0 for single root (no parent)', () => {
-            const skeletons: ConversationSkeleton[] = [
+            const skeletons: StoredConversation[] = [
                 { taskId: 'root', metadata: {} as any, parentTaskId: undefined } as any,
             ];
             expect(calcDepth(skeletons)).toBe(0);
         });
 
         test('returns 1 for parent-child pair', () => {
-            const skeletons: ConversationSkeleton[] = [
+            const skeletons: StoredConversation[] = [
                 { taskId: 'parent', metadata: {} as any, parentTaskId: undefined } as any,
                 { taskId: 'child', metadata: {} as any, parentTaskId: 'parent' } as any,
             ];
@@ -291,7 +291,7 @@ describe('RooStorageDetector — Phase E Coverage', () => {
         });
 
         test('returns 2 for 3-level tree', () => {
-            const skeletons: ConversationSkeleton[] = [
+            const skeletons: StoredConversation[] = [
                 { taskId: 'grandparent', metadata: {} as any, parentTaskId: undefined } as any,
                 { taskId: 'parent', metadata: {} as any, parentTaskId: 'grandparent' } as any,
                 { taskId: 'child', metadata: {} as any, parentTaskId: 'parent' } as any,
@@ -300,7 +300,7 @@ describe('RooStorageDetector — Phase E Coverage', () => {
         });
 
         test('returns max depth with multiple branches', () => {
-            const skeletons: ConversationSkeleton[] = [
+            const skeletons: StoredConversation[] = [
                 { taskId: 'root', metadata: {} as any, parentTaskId: undefined } as any,
                 { taskId: 'child1', metadata: {} as any, parentTaskId: 'root' } as any,
                 { taskId: 'child2', metadata: {} as any, parentTaskId: 'root' } as any,
@@ -311,7 +311,7 @@ describe('RooStorageDetector — Phase E Coverage', () => {
         });
 
         test('handles orphaned child (parent not in list)', () => {
-            const skeletons: ConversationSkeleton[] = [
+            const skeletons: StoredConversation[] = [
                 { taskId: 'orphan', metadata: {} as any, parentTaskId: 'missing-parent' } as any,
             ];
             // Parent not in map → recursive call returns currentDepth = 1

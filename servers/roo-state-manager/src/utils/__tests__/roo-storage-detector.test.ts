@@ -12,7 +12,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { RooStorageDetector } from '../roo-storage-detector.js';
-import type { ConversationSkeleton, StorageStats, NewTaskInstruction } from '../../types/conversation.js';
+import type { StorageStats, NewTaskInstruction } from '../../types/conversation.js';
 
 // ─────────────────── Mocks ───────────────────
 
