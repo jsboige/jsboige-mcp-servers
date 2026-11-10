@@ -2402,7 +2402,18 @@ class TestComplementaryLocalProfiles2002:
     profile would think anyway.
     """
 
-    CHEAP_TASK_AGENTS = ("summarizer-local", "classifier-local", "formatter-local")
+    # #1748-G casting: summarizer-local now runs on frognano-4b, measured as the
+    # fastest local profile on concise_summary (2.5 s median vs 29.8 s) with no
+    # oracle deviation. The #2002 property is unchanged — a cheap-task lane must
+    # not think — so the pin map names the profile AND the test verifies the
+    # pinned model DECLARES enable_thinking=false, which is a stronger check
+    # than the historical literal name (a future remap onto a thinking model
+    # would fail here even if the literal pin were updated).
+    CHEAP_TASK_AGENT_PINS = {
+        "summarizer-local": "frognano-4b",
+        "classifier-local": "swift-1.5-27b-no-thinking",
+        "formatter-local": "swift-1.5-27b-no-thinking",
+    }
 
     def _load_template(self) -> dict:
         template_path = Path(__file__).parent / "sk_agent_config.template.json"
@@ -2442,13 +2453,26 @@ class TestComplementaryLocalProfiles2002:
         raw = self._load_template()
         agents_by_id = {a["id"]: a for a in raw.get("agents", [])}
         prompts = set()
-        for agent_id in self.CHEAP_TASK_AGENTS:
+        for agent_id, expected_model in self.CHEAP_TASK_AGENT_PINS.items():
             assert agent_id in agents_by_id, (
                 f"#2002: cheap-task agent '{agent_id}' missing from template"
             )
             agent = agents_by_id[agent_id]
-            assert agent.get("model") == "swift-1.5-27b-no-thinking", (
-                f"Agent '{agent_id}' must run on the non-thinking local profile"
+            assert agent.get("model") == expected_model, (
+                f"Agent '{agent_id}' must run on its pinned non-thinking "
+                f"profile '{expected_model}'"
+            )
+            pinned = self._get_model(raw, expected_model)
+            assert pinned["thinking"] is False, (
+                f"#2002: pinned model '{expected_model}' for '{agent_id}' "
+                f"must declare thinking=false"
+            )
+            assert pinned.get("extra_body", {}).get("chat_template_kwargs", {}).get(
+                "enable_thinking"
+            ) is False, (
+                f"#2002: pinned model '{expected_model}' for '{agent_id}' must "
+                f"declare enable_thinking=false (the conversation path only "
+                f"applies declared extra_body)"
             )
             assert agent.get("mcps", []) == [], (
                 f"Agent '{agent_id}' is a cheap-task lane: no tools expected"
