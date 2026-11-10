@@ -300,7 +300,7 @@
     {
       "_comment": "=== #2002 cheap-task lane: task-tuned no-thinking profiles on the same local model as analyst (thinking). Short outputs, no tools, no memory — offloading epic #2404 ===",
       "id": "summarizer-local",
-      "description": "Condenses logs, conversations, dumps and documents into short structured summaries — frognano-4b since #1748 casting (concise_summary measured: fastest of the park at 2.5 s median, 4.5/5 heuristic, no oracle gap on this task; swift-1.5-27b-no-thinking was 29.8 s). 32k context: inputs beyond ~30k tokens are chunked by the caller or stay on swift-1.5-27b (fallback). Cheap lane of #2002/#2404",
+      "description": "Condenses logs, conversations, dumps and documents into short structured summaries — frognano-4b since #1748 casting (concise_summary measured: fastest of the park at 2.5 s median, 4.5/5 heuristic, no oracle gap on this task; swift-1.5-27b-no-thinking was 29.8 s). 32k context (frognano window 32,768): no caller-side chunking or swift fallback is implemented in sk-agent — the caller keeps inputs within the window. Cheap lane of #2002/#2404",
       "model": "frognano-4b",
       "system_prompt": "You are a summarizer. Condense the provided material into a short, faithful summary: key facts first, then decisions and open points. Never invent content, never drop a decision. Always respond in the same language as the user.",
       "mcps": [],

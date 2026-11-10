@@ -258,7 +258,12 @@ as a thinking / non-thinking pair under the canonical ids (`swift-1.5-27b`,
 | Profile | Model entry | Use |
 |---------|-------------|-----|
 | Thinking | `swift-1.5-27b` | analysis and review — chain-of-thought (`analyst`, `qwen-local`, `fast-local-thinking`) |
-| Non-thinking | `swift-1.5-27b-no-thinking` | short, cheap tasks: summaries, classification, formatting (`summarizer-local`, `classifier-local`, `formatter-local`, `fast`, `fast-local`, `coder`) |
+| Non-thinking | `swift-1.5-27b-no-thinking` | short, cheap tasks: classification, formatting (`classifier-local`, `formatter-local`, `fast`, `fast-local`, `coder`) |
+
+Since the #1748 casting (11/10), `summarizer-local` runs on `frognano-4b`
+(fastest measured on concise_summary: 2.5 s median vs 29.8 s on the
+non-thinking pair, no oracle gap on the task); `classifier-local` and
+`formatter-local` stay on the non-thinking entry.
 
 The non-thinking entry declares `extra_body.chat_template_kwargs.enable_thinking = false`
 via the #3797 passthrough. `call_agent` already injects that flag from
@@ -459,7 +464,7 @@ Purged (dead): `omnicoder-9b` + `owui-omnicoder-9b` (GPU 2 freed 30/04), `owui-g
 |----|-------|------|
 | `config-auditor` | glm-5.3 | Configuration audit |
 | `log-analyzer` | glm-5.3 | Log analysis |
-| `commit-reviewer` | glm-5.3 | Code review |
+| `commit-reviewer` | glm-5.3-flash | Code review (#1748 casting: oracle top score, 4.60) |
 | `guardian-sentinel` | glm-5.3 | System health surveillance |
 
 ### Deep Search Agents (3)
