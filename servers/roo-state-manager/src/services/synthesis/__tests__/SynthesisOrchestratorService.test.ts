@@ -23,6 +23,7 @@ class MockLLMService {
 	condenseSyntheses = mockCondenseSyntheses;
 }
 
+import type { StoredConversation } from '../../unified-store/types.js';
 import {
 	SynthesisOrchestratorService,
 	SynthesisOrchestratorOptions
@@ -238,7 +239,7 @@ describe('SynthesisOrchestratorService', () => {
 	describe('updateSynthesisMetadata', () => {
 		test('updates skeleton with synthesis metadata', async () => {
 			const service = createService();
-			const skeleton: ConversationSkeleton = {
+			const skeleton: StoredConversation = {
 				taskId: 'test-task',
 				workspace: 'test-workspace',
 				messages: [],

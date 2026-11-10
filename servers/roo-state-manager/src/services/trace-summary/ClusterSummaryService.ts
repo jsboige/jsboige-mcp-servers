@@ -5,20 +5,12 @@
  * Gère la logique spécifique aux résumés multi-tâches (clusters).
  */
 
-import {
-    ConversationSkeleton,
-    MessageSkeleton,
-    ClusterSummaryOptions,
-    ClusterSummaryStatistics,
-    ClusterSummaryResult,
-    OrganizedClusterTasks,
-    ClassifiedClusterContent,
-    CrossTaskPattern
-} from '../../types/conversation.js';
+import { MessageSkeleton, ClusterSummaryOptions, ClusterSummaryStatistics, ClusterSummaryResult, OrganizedClusterTasks, ClassifiedClusterContent, CrossTaskPattern } from '../../types/conversation.js';
 import { SummaryOptions, SummaryResult, SummaryStatistics } from '../../types/trace-summary.js';
 import { toUnifiedTask } from '../../types/unified-task.js';
 import { ContentClassifier, ClassifiedContent } from './ContentClassifier.js';
 import { SummaryGenerator } from './SummaryGenerator.js';
+import type { StoredConversation } from '../unified-store/types.js';
 import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '../../types/errors.js';
 
 /**
@@ -26,7 +18,7 @@ import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '../../ty
  * (évite la dépendance circulaire avec TraceSummaryService)
  */
 export type GenerateSummaryCallback = (
-    conversation: ConversationSkeleton,
+    conversation: StoredConversation,
     options: Partial<SummaryOptions>
 ) => Promise<SummaryResult>;
 
@@ -52,8 +44,8 @@ export class ClusterSummaryService {
      * @returns Résumé structuré de la grappe complète
      */
     async generateClusterSummary(
-        rootTask: ConversationSkeleton,
-        childTasks: ConversationSkeleton[],
+        rootTask: StoredConversation,
+        childTasks: StoredConversation[],
         options: Partial<ClusterSummaryOptions> = {},
         generateSummary?: GenerateSummaryCallback
     ): Promise<ClusterSummaryResult> {
@@ -110,7 +102,7 @@ export class ClusterSummaryService {
     /**
      * Valide les entrées pour la génération de résumé de grappe
      */
-    private validateClusterInput(rootTask: ConversationSkeleton, childTasks: ConversationSkeleton[]): void {
+    private validateClusterInput(rootTask: StoredConversation, childTasks: StoredConversation[]): void {
         if (!rootTask || !rootTask.taskId) {
             throw new TraceSummaryServiceError(
                 'Root task is required and must have a taskId',
@@ -168,8 +160,8 @@ export class ClusterSummaryService {
      * Organise et trie les tâches de la grappe selon les options
      */
     private organizeClusterTasks(
-        rootTask: ConversationSkeleton,
-        childTasks: ConversationSkeleton[],
+        rootTask: StoredConversation,
+        childTasks: StoredConversation[],
         options: ClusterSummaryOptions
     ): OrganizedClusterTasks {
 
@@ -182,7 +174,7 @@ export class ClusterSummaryService {
         const sortedTasks = this.sortClusterTasks(allTasks, options.clusterSortBy);
 
         // Construction de la hiérarchie
-        const taskHierarchy = new Map<string, ConversationSkeleton[]>();
+        const taskHierarchy = new Map<string, StoredConversation[]>();
         taskHierarchy.set(rootTask.taskId, childTasks);
 
         return {
@@ -204,9 +196,9 @@ export class ClusterSummaryService {
      * l'ordre relatif d'entrée, comme les implémentations legacy.
      */
     private sortClusterTasks(
-        tasks: ConversationSkeleton[],
+        tasks: StoredConversation[],
         sortBy: 'chronological' | 'size' | 'activity' | 'alphabetical' = 'chronological'
-    ): ConversationSkeleton[] {
+    ): StoredConversation[] {
         const pairs = tasks.map(skeleton => ({ skeleton, task: toUnifiedTask(skeleton) }));
         switch (sortBy) {
             case 'size':
@@ -371,7 +363,7 @@ export class ClusterSummaryService {
     /**
      * Calcule la distribution des tâches par différents critères
      */
-    private calculateTaskDistribution(tasks: ConversationSkeleton[]) {
+    private calculateTaskDistribution(tasks: StoredConversation[]) {
         const byMode: Record<string, number> = {};
         const bySize = { small: 0, medium: 0, large: 0 };
         const byActivity: Record<string, number> = {};
@@ -401,7 +393,7 @@ export class ClusterSummaryService {
      * #2946: endTime uses `lastActivity` (not `createdAt`) so a single-task cluster
      * reports the actual session span rather than 0 (min(createdAt)===max(createdAt)).
      */
-    private calculateClusterTimeSpan(tasks: ConversationSkeleton[]) {
+    private calculateClusterTimeSpan(tasks: StoredConversation[]) {
         const startTimes = tasks.map(task => new Date(task.metadata.createdAt).getTime());
         const endTimes = tasks.map(task => new Date(task.metadata.lastActivity).getTime());
         const startTime = new Date(Math.min(...startTimes));
@@ -418,7 +410,7 @@ export class ClusterSummaryService {
     /**
      * Agrège les statistiques de contenu de toutes les tâches
      */
-    private aggregateContentStats(tasks: ConversationSkeleton[]) {
+    private aggregateContentStats(tasks: StoredConversation[]) {
         let totalUserMessages = 0;
         let totalAssistantMessages = 0;
         let totalToolResults = 0;
@@ -589,7 +581,7 @@ export class ClusterSummaryService {
      * Rendu de l'en-tête de grappe avec métadonnées principales
      */
     private renderClusterHeader(
-        rootTask: ConversationSkeleton,
+        rootTask: StoredConversation,
         statistics: ClusterSummaryStatistics,
         options: ClusterSummaryOptions
     ): string {

@@ -17,7 +17,8 @@ import {
     CsvMessageRecord,
     CsvToolRecord
 } from '../../types/trace-summary.js';
-import { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
+import { MessageSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../unified-store/types.js';
 import { ContentClassifier } from './ContentClassifier.js';
 
 /**
@@ -41,13 +42,13 @@ export class JsonCsvExporter {
      * Génère un résumé au format JSON
      */
     public async generateJsonSummary(
-        conversation: ConversationSkeleton,
+        conversation: StoredConversation,
         options: SummaryOptions,
         helpers: {
             truncateContent: (content: string, maxChars: number) => string;
             isContentTruncated: (content: string, maxChars: number) => boolean;
             getEmptyStatistics: () => SummaryStatistics;
-            getOriginalContentSize: (conversation: ConversationSkeleton) => number;
+            getOriginalContentSize: (conversation: StoredConversation) => number;
             calculateCompressionRatio: (original: number, final: number) => number;
         }
     ): Promise<SummaryResult> {
@@ -121,7 +122,7 @@ export class JsonCsvExporter {
      * Génère un résumé au format CSV
      */
     public async generateCsvSummary(
-        conversation: ConversationSkeleton,
+        conversation: StoredConversation,
         options: SummaryOptions,
         helpers: {
             isContentTruncated: (content: string, maxChars: number) => boolean;
@@ -178,7 +179,7 @@ export class JsonCsvExporter {
     // MÉTHODES PRIVÉES JSON
     // ============================================================================
 
-    private calculateJsonLightSummary(conversations: ConversationSkeleton[]) {
+    private calculateJsonLightSummary(conversations: StoredConversation[]) {
         const totalMessages = conversations.reduce((sum, conv) => sum + conv.metadata.messageCount, 0);
         const totalSize = conversations.reduce((sum, conv) => sum + conv.metadata.totalSize, 0);
 
@@ -197,7 +198,7 @@ export class JsonCsvExporter {
         };
     }
 
-    private convertToJsonSkeleton(conversation: ConversationSkeleton): JsonConversationSkeleton {
+    private convertToJsonSkeleton(conversation: StoredConversation): JsonConversationSkeleton {
         const firstUserMessage = this.extractFirstUserMessage(conversation);
 
         return {
@@ -214,7 +215,7 @@ export class JsonCsvExporter {
         };
     }
 
-    private extractFirstUserMessage(conversation: ConversationSkeleton): string {
+    private extractFirstUserMessage(conversation: StoredConversation): string {
         const userMessages = (conversation.sequence ?? []).filter(item =>
             'role' in item && item.role === 'user'
         ) as MessageSkeleton[];
@@ -228,7 +229,7 @@ export class JsonCsvExporter {
     }
 
     private convertToJsonMessages(
-        conversation: ConversationSkeleton,
+        conversation: StoredConversation,
         options: SummaryOptions,
         helpers: {
             truncateContent: (content: string, maxChars: number) => string;
@@ -304,7 +305,7 @@ export class JsonCsvExporter {
     // ============================================================================
 
     private generateCsvConversations(
-        conversations: ConversationSkeleton[],
+        conversations: StoredConversation[],
         helpers: { truncateText: (text: string, maxLength: number) => string; }
     ): string {
         const headers = [
@@ -331,7 +332,7 @@ export class JsonCsvExporter {
     }
 
     private generateCsvMessages(
-        conversation: ConversationSkeleton,
+        conversation: StoredConversation,
         options: SummaryOptions,
         helpers: { isContentTruncated: (content: string, maxChars: number) => boolean; }
     ): string {
@@ -362,7 +363,7 @@ export class JsonCsvExporter {
         return this.formatCsvOutput(headers, rows);
     }
 
-    private generateCsvTools(conversation: ConversationSkeleton, options: SummaryOptions): string {
+    private generateCsvTools(conversation: StoredConversation, options: SummaryOptions): string {
         const headers = [
             'taskId', 'messageIndex', 'toolName', 'serverName', 'executionTime',
             'success', 'argsCount', 'resultLength', 'workspace'
@@ -432,7 +433,7 @@ export class JsonCsvExporter {
     // ============================================================================
 
     private calculateJsonStatistics(
-        conversations: ConversationSkeleton[],
+        conversations: StoredConversation[],
         classifier: ContentClassifier
     ): SummaryStatistics {
         let totalMessages = 0;

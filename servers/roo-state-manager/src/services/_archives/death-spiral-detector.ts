@@ -5,8 +5,8 @@
  * Recovery: Move back to src/services/ and add to barrel export if needed.
  */
 
-import { ConversationSkeleton, MessageSkeleton, ActionMetadata } from '../types/conversation.js';
-
+import type { StoredConversation } from '../unified-store/types.js';
+import { MessageSkeleton, ActionMetadata } from '../types/conversation.js';
 /**
  * Service pour détecter les "death spiral tasks" en temps réel
  * #1786 Phase 3: Prévention de la pollution du cache par les exploded tasks
@@ -28,7 +28,7 @@ export class DeathSpiralDetector {
      */
     static async analyzeTasksForDeathSpiral(
         taskIds: string[],
-        conversationCache: Map<string, ConversationSkeleton>,
+        conversationCache: Map<string, StoredConversation>,
         customThresholds: Partial<{ errorRatio: number; assistantOutputRatio: number; rapidErrorCount: number; timeWindowMinutes: number; consecutiveErrors: number }> = {}
     ): Promise<{
         deathSpirals: Array<{
@@ -134,7 +134,7 @@ export class DeathSpiralDetector {
      * Analyse les messages d'une tâche pour détecter les patterns de death spiral
      */
     private static analyzeTaskMessages(
-        skeleton: ConversationSkeleton,
+        skeleton: StoredConversation,
         thresholds: { errorRatio: number; assistantOutputRatio: number; rapidErrorCount: number; timeWindowMinutes: number; consecutiveErrors: number }
     ): {
         isDeathSpiral: boolean;

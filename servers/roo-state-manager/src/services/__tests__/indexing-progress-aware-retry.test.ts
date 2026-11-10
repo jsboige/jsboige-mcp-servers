@@ -10,10 +10,9 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { IndexingDecisionService } from '../indexing-decision.js';
+import type { StoredConversation } from '../unified-store/types.js';
 import { MAX_RETRY_ATTEMPTS } from '../../types/indexing.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
-
-function createSkeleton(retryCount?: number): ConversationSkeleton {
+function createSkeleton(retryCount?: number): StoredConversation {
   return {
     taskId: 'test-task-4531',
     metadata: {

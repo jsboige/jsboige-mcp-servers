@@ -4,7 +4,7 @@
  * @module services/extraction/claude-task-extractor
  * @issue #1392 (#1360-2)
  *
- * Wraps ClaudeStorageDetector and converts ConversationSkeleton → UnifiedTask
+ * Wraps ClaudeStorageDetector and converts StoredConversation → UnifiedTask
  * via the toUnifiedTask() conversion helper from #1391.
  */
 

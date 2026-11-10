@@ -103,12 +103,12 @@ import {
 import { classifyIndexingError, isRearmableFailureClass } from '../background-services.js';
 import { getUnifiedStoreWriter } from '../unified-store/writer-factory.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
 import type { ServerState } from '../state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../../config/server-config.js';
 // #4352 amend1: the loop lines go through the file logger — spy its singleton.
 import { getDefaultLogger } from '../../utils/logger.js';
 // TaskIndexer is mocked above, no need to import the actual class
+import type { StoredConversation } from '../unified-store/types.js';
 import { TaskIndexer } from '../task-indexer.js';
 
 // Helper to access the spies attached to the mock
@@ -135,7 +135,7 @@ const mockDetector = RooStorageDetector as unknown as {
   analyzeConversation: ReturnType<typeof vi.fn>;
 };
 
-function createMockSkeleton(taskId: string, overrides?: Partial<ConversationSkeleton>): ConversationSkeleton {
+function createMockSkeleton(taskId: string, overrides?: Partial<StoredConversation>): StoredConversation {
   return {
     taskId,
     metadata: {
@@ -209,7 +209,7 @@ describe('background-services', () => {
     // instead of reading individual skeleton files. Skeletons are loaded with sequence: [].
 
     it('should load skeleton metadata from index file', async () => {
-      const cache = new Map<string, ConversationSkeleton>();
+      const cache = new Map<string, StoredConversation>();
       const skeleton1 = createMockSkeleton('task-001');
       const skeleton2 = createMockSkeleton('task-002');
 
@@ -235,7 +235,7 @@ describe('background-services', () => {
     });
 
     it('should handle no storage locations', async () => {
-      const cache = new Map<string, ConversationSkeleton>();
+      const cache = new Map<string, StoredConversation>();
 
       mockDetector.detectStorageLocations.mockResolvedValue([]);
 
@@ -245,7 +245,7 @@ describe('background-services', () => {
     });
 
     it('should handle missing index file gracefully', async () => {
-      const cache = new Map<string, ConversationSkeleton>();
+      const cache = new Map<string, StoredConversation>();
 
       mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
       mockFs.readFile.mockRejectedValueOnce(new Error('ENOENT'));
@@ -257,7 +257,7 @@ describe('background-services', () => {
     });
 
     it('should handle corrupt index file gracefully', async () => {
-      const cache = new Map<string, ConversationSkeleton>();
+      const cache = new Map<string, StoredConversation>();
 
       mockDetector.detectStorageLocations.mockResolvedValue(['/mock/storage']);
       mockFs.readFile.mockResolvedValueOnce('not valid json {{{');
@@ -268,7 +268,7 @@ describe('background-services', () => {
     });
 
     it('should handle detectStorageLocations failure', async () => {
-      const cache = new Map<string, ConversationSkeleton>();
+      const cache = new Map<string, StoredConversation>();
 
       mockDetector.detectStorageLocations.mockRejectedValue(new Error('Detection failed'));
 
@@ -278,7 +278,7 @@ describe('background-services', () => {
     });
 
     it('should strip BOM UTF-8 from index file content', async () => {
-      const cache = new Map<string, ConversationSkeleton>();
+      const cache = new Map<string, StoredConversation>();
       const skeleton = createMockSkeleton('task-bom');
 
       const index = {
@@ -1423,7 +1423,7 @@ describe('background-services', () => {
       mockFs.readFile.mockResolvedValue(JSON.stringify(fullSkeleton));
 
       const writer: any = getUnifiedStoreWriter();
-      const cache = new Map<string, ConversationSkeleton>();
+      const cache = new Map<string, StoredConversation>();
 
       const result = await loadFullSkeleton('disk-task', cache as any);
 
@@ -1443,7 +1443,7 @@ describe('background-services', () => {
 
     it('caches only the toHeader() partial but dual-writes the full skeleton (not the header)', async () => {
       // The cache must still hold a SkeletonHeader (sequence dropped), while the
-      // dual-write receives the full ConversationSkeleton data. This is the #692 caveat:
+      // dual-write receives the full StoredConversation data. This is the #692 caveat:
       // toHeader() partials must not be dual-written; the in-scope full skeleton is.
       const fullSkeleton = createMockSkeleton('caveat-task', {
         sequence: [{ role: 'user', content: 'msg' }, { role: 'assistant', content: 'reply' }] as any,
@@ -1454,7 +1454,7 @@ describe('background-services', () => {
       mockFs.readFile.mockResolvedValue(JSON.stringify(fullSkeleton));
 
       const writer: any = getUnifiedStoreWriter();
-      const cache = new Map<string, ConversationSkeleton>();
+      const cache = new Map<string, StoredConversation>();
 
       await loadFullSkeleton('caveat-task', cache as any);
 

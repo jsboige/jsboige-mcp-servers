@@ -24,8 +24,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { ClusterSummaryService } from '../ClusterSummaryService.js';
-import type { ConversationSkeleton, MessageSkeleton } from '../../../types/conversation.js';
-
+import type { StoredConversation } from '../../unified-store/types.js';
+import type { MessageSkeleton } from '../../../types/conversation.js';
 // Typed view onto the private pure-utility methods under test (avoids `any`).
 interface ClusterSummaryServiceInternals {
   formatBytes(bytes: number): string;
@@ -37,7 +37,7 @@ interface ClusterSummaryServiceInternals {
 function task(
   id: string,
   opts: { parent?: string; title?: string; size?: number; createdAt?: string; lastActivity?: string; mode?: string } = {}
-): ConversationSkeleton {
+): StoredConversation {
   const now = opts.createdAt ?? new Date('2026-07-01T10:00:00Z').toISOString();
   return {
     taskId: id,

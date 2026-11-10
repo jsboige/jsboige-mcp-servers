@@ -56,7 +56,8 @@ vi.mock('fs/promises', () => ({
 }));
 
 import { XmlExporterService } from '../XmlExporterService.js';
-import type { ConversationSkeleton, MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
+import type { MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
+import type { StoredConversation } from '../unified-store/types.js';
 import { StateManagerError } from '../../types/errors.js';
 
 // ─────────────────── helpers ───────────────────
@@ -82,7 +83,7 @@ function makeAction(overrides: Partial<ActionMetadata> = {}): ActionMetadata {
   };
 }
 
-function makeSkeleton(overrides: Partial<ConversationSkeleton> = {}): ConversationSkeleton {
+function makeSkeleton(overrides: Partial<StoredConversation> = {}): StoredConversation {
   return {
     taskId: 'task-001',
     metadata: {

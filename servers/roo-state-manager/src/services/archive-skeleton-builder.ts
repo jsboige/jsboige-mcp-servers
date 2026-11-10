@@ -1,10 +1,10 @@
 /**
- * Archive → ConversationSkeleton conversion helper.
+ * Archive → StoredConversation conversion helper.
  *
  * Issue #1244 - Couche 1.1: Multi-tier skeleton cache
  *
  * Converts an `ArchivedTask` (cross-machine archive format on GDrive) into a
- * `ConversationSkeleton` so it can be merged into the standard skeleton cache.
+ * `StoredConversation` so it can be merged into the standard skeleton cache.
  *
  * The archive format is intentionally minimal (metadata + plain messages) and
  * loses tool/action structure. We surface that by marking each message as
@@ -13,9 +13,10 @@
  * downstream tools know this skeleton came from a cold-tier source.
  */
 
-import { ConversationSkeleton, MessageSkeleton } from '../types/conversation.js';
+import { MessageSkeleton } from '../types/conversation.js';
 import { ArchivedTask } from './task-archiver/types.js';
 import { stripXmlTags, truncateAtBoundary } from '../utils/text-preview.js';
+import type { StoredConversation } from './unified-store/types.js';
 import { deriveWorkspaceFromClaudeTaskId } from '../utils/claude-project-workspace.js';
 
 /**
@@ -32,9 +33,9 @@ const PREVIEW_LAST_MESSAGE_MAX = 500;
 let archiveToSkeletonDeprecationWarned = false;
 
 /**
- * Convert an `ArchivedTask` (cross-machine GDrive archive) into a `ConversationSkeleton`.
+ * Convert an `ArchivedTask` (cross-machine GDrive archive) into a `StoredConversation`.
  *
- * #1395 J+0 : le type retourné (ConversationSkeleton) est déprécié —
+ * #1395 J+0 : le type retourné (StoredConversation) est déprécié —
  * remplacement : unified store PG (src/services/unified-store/), warn-once dans le corps.
  *
  * Notes:
@@ -44,11 +45,11 @@ let archiveToSkeletonDeprecationWarned = false;
  * - `actionCount` and `totalSize` are 0 because the archive does not contain
  *   tool/action metadata or original byte sizes.
  */
-export function archiveToSkeleton(archive: ArchivedTask): ConversationSkeleton {
+export function archiveToSkeleton(archive: ArchivedTask): StoredConversation {
     if (!archiveToSkeletonDeprecationWarned) {
         archiveToSkeletonDeprecationWarned = true;
         console.warn(
-            '[Deprecation] archiveToSkeleton() returns the deprecated Roo-specific ConversationSkeleton format ' +
+            '[Deprecation] archiveToSkeleton() returns the deprecated Roo-specific StoredConversation format ' +
             '(roo-extensions #1360/#1395). Replacement: unified PG-backed task extraction ' +
             '(src/services/unified-store/, docs/MIGRATION-UNIFIED-TASK-EXTRACTION.md). ' +
             'Removal no earlier than 2026-10-28, gated on roo-extensions #1394.'
@@ -99,7 +100,7 @@ export function archiveToSkeleton(archive: ArchivedTask): ConversationSkeleton {
  * `lastAction`/`completionMessage` ne sont pas portés : les archives ne
  * contiennent pas de structure d'outils (messages simples role+content).
  */
-export function archiveToStub(archive: ArchivedTask, filePath: string): ConversationSkeleton {
+export function archiveToStub(archive: ArchivedTask, filePath: string): StoredConversation {
     const fallbackTimestamp = archive.archivedAt;
 
     const messages = archive.messages || [];
@@ -153,7 +154,7 @@ export function archiveToStub(archive: ArchivedTask, filePath: string): Conversa
         _stubLastMessageRole: lastMessageRole,
         _stubUserCount: userMessageCount,
         _stubAssistantCount: assistantMessageCount,
-    } as ConversationSkeleton & {
+    } as StoredConversation & {
         _stubFirstUserMessage?: string;
         _stubLastUserMessage?: string;
         _stubLastMessage?: string;

@@ -1,5 +1,5 @@
-import { ConversationSkeleton } from '../../types/conversation.js';
 import { SummaryOptions, SummaryStatistics, MsgType } from '../../types/trace-summary.js';
+import type { StoredConversation } from '../unified-store/types.js';
 import { ClassifiedContent, ContentClassifier } from './ContentClassifier.js';
 
 /**
@@ -261,7 +261,7 @@ export class ExportRenderer {
      * Génère le contenu du résumé selon les options
      */
     public async renderSummary(
-        conversation: ConversationSkeleton,
+        conversation: StoredConversation,
         classifiedContent: ClassifiedContent[],
         statistics: SummaryStatistics,
         options: SummaryOptions
@@ -312,7 +312,7 @@ export class ExportRenderer {
     /**
      * Génère l'en-tête du résumé
      */
-    public generateHeader(conversation: ConversationSkeleton, options: SummaryOptions): string {
+    public generateHeader(conversation: StoredConversation, options: SummaryOptions): string {
         const dateStr = new Date().toLocaleString('fr-FR', {
             day: '2-digit',
             month: '2-digit',
@@ -340,7 +340,7 @@ export class ExportRenderer {
     /**
      * Génère les métadonnées de base
      */
-    public generateMetadata(conversation: ConversationSkeleton, statistics: SummaryStatistics): string {
+    public generateMetadata(conversation: StoredConversation, statistics: SummaryStatistics): string {
         return `**Taille totale du contenu :** ${Math.round(statistics.totalContentSize / 1024 * 10) / 10} KB
 **Nombre total d'échanges :** ${statistics.totalSections}
 **Créé le :** ${new Date(conversation.metadata.createdAt).toLocaleString('fr-FR')}

@@ -16,7 +16,8 @@ import { ExportRenderer } from '../ExportRenderer.js';
 import { JsonCsvExporter } from '../JsonCsvExporter.js';
 import { ContentClassifier } from '../ContentClassifier.js';
 import type { ClassifiedContent } from '../ContentClassifier.js';
-import type { ConversationSkeleton, MessageSkeleton } from '../../../types/conversation.js';
+import type { MessageSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../unified-store/types.js';
 import { handleRooSyncSummarize } from '../../../tools/summary/roosync-summarize.tool.js';
 
 describe('Issue #3178 — contre-épreuves', () => {
@@ -143,7 +144,7 @@ describe('Issue #3178 — contre-épreuves', () => {
                 { role: 'user', content: 'A'.repeat(500) },
                 { role: 'user', content: 'B'.repeat(500) },
             ];
-            const conv: ConversationSkeleton = makeConversationWithMessages(messages, 1000);
+            const conv: StoredConversation = makeConversationWithMessages(messages, 1000);
 
             const exporter = new JsonCsvExporter(new ContentClassifier());
             const stats = callCalculateJsonStatistics(exporter, [conv]);
@@ -165,7 +166,7 @@ describe('Issue #3178 — contre-épreuves', () => {
                 { role: 'user', content: 'short' }, // 5 chars
                 { role: 'assistant', content: 'X'.repeat(9000) }, // 9000 chars
             ];
-            const conv: ConversationSkeleton = makeConversationWithMessages(messages, 9005);
+            const conv: StoredConversation = makeConversationWithMessages(messages, 9005);
 
             const exporter = new JsonCsvExporter(new ContentClassifier());
             const stats = callCalculateJsonStatistics(exporter, [conv]);
@@ -185,7 +186,7 @@ describe('Issue #3178 — contre-épreuves', () => {
                 { role: 'user', content: 'world' },
                 { role: 'assistant', content: 'A'.repeat(1000) },
             ];
-            const conv: ConversationSkeleton = makeConversationWithMessages(messages, 1010);
+            const conv: StoredConversation = makeConversationWithMessages(messages, 1010);
 
             const exporter = new JsonCsvExporter(new ContentClassifier());
             const stats = callCalculateJsonStatistics(exporter, [conv]);
@@ -204,7 +205,7 @@ describe('Issue #3178 — contre-épreuves', () => {
                 { role: 'user', content: 'tiny' },
                 { role: 'assistant', content: 'X'.repeat(100000) },
             ];
-            const conv: ConversationSkeleton = makeConversationWithMessages(messages, 100004);
+            const conv: StoredConversation = makeConversationWithMessages(messages, 100004);
 
             // Le chemin de test passe par JsonCsvExporter (utilisé en runtime via TraceSummaryService).
             // Le doublon interne de TraceSummaryService n'est pas exporté, mais la fonction de
@@ -221,12 +222,12 @@ describe('Issue #3178 — contre-épreuves', () => {
     });
 
     describe('(d) cluster outputFormat json — enveloppe parsable de bout en bout (ai-01, #3178)', () => {
-        const getSkeleton = async (id: string): Promise<ConversationSkeleton | null> => {
+        const getSkeleton = async (id: string): Promise<StoredConversation | null> => {
             if (id === 'root-3178') return makeClusterConversation('root-3178', undefined);
             if (id === 'child-3178-a') return makeClusterConversation('child-3178-a', 'root-3178');
             return null;
         };
-        const findChildTasks = async (rootId: string): Promise<ConversationSkeleton[]> =>
+        const findChildTasks = async (rootId: string): Promise<StoredConversation[]> =>
             rootId === 'root-3178' ? [makeClusterConversation('child-3178-a', 'root-3178')] : [];
 
         test('la sortie ENTIÈRE passe JSON.parse (repro ai-01 : Unexpected token "<")', async () => {
@@ -270,7 +271,7 @@ describe('Issue #3178 — contre-épreuves', () => {
 // Helpers
 // ============================================================
 
-function makeClusterConversation(taskId: string, parentTaskId: string | undefined): ConversationSkeleton {
+function makeClusterConversation(taskId: string, parentTaskId: string | undefined): StoredConversation {
     return {
         taskId,
         parentTaskId,
@@ -307,7 +308,7 @@ function makeClassified(
     };
 }
 
-function makeAiTitleConversation(): ConversationSkeleton {
+function makeAiTitleConversation(): StoredConversation {
     return {
         taskId: 'test-task-001',
         metadata: {
@@ -346,7 +347,7 @@ function makeAiTitleStatistics() {
 function makeConversationWithMessages(
     messages: MessageSkeleton[],
     totalSize: number
-): ConversationSkeleton {
+): StoredConversation {
     return {
         taskId: 'test-conv',
         metadata: {
@@ -368,7 +369,7 @@ function makeConversationWithMessages(
  */
 function callCalculateJsonStatistics(
     exporter: JsonCsvExporter,
-    conversations: ConversationSkeleton[]
+    conversations: StoredConversation[]
 ) {
     // @ts-expect-error — accès au membre privé documenté par le test
     return exporter.calculateJsonStatistics(conversations, exporter['classifier']);

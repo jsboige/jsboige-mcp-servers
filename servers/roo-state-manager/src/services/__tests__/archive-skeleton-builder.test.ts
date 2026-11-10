@@ -5,8 +5,8 @@
 import { describe, it, expect } from 'vitest';
 import { archiveToSkeleton, archiveToStub } from '../archive-skeleton-builder.js';
 import { ArchivedTask } from '../task-archiver/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
 import { matchesWorkspace } from '../../utils/workspace-match.js';
+import type { StoredConversation } from '../unified-store/types.js';
 import { deriveWorkspaceFromClaudeProjectSlug } from '../../utils/claude-project-workspace.js';
 
 describe('archiveToSkeleton', () => {

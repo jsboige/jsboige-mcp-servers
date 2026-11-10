@@ -77,15 +77,14 @@ vi.mock('../task-archiver/index.js', () => ({
 	}
 }));
 
+import type { StoredConversation } from '../unified-store/types.js';
 import { SkeletonCacheService, TIER3_SNAPSHOT_VERSION } from '../skeleton-cache.service.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
-
 // Absolu sur l'OS courant : le service n'honore l'override que s'il passe
 // `path.isAbsolute` — un 'C:/...' littéral est relatif sous POSIX (runner CI Linux).
 // fs est entièrement mocké : aucun accès disque réel.
 const SNAPSHOT_PATH = path.join(os.tmpdir(), 'fake-home', '.roo-state-manager', 'tier3-stub-snapshot.json');
 
-function makeStub(taskId: string, machineId: string): ConversationSkeleton {
+function makeStub(taskId: string, machineId: string): StoredConversation {
 	return {
 		taskId,
 		sequence: [],
@@ -102,10 +101,10 @@ function makeStub(taskId: string, machineId: string): ConversationSkeleton {
 			hydrated: false,
 			archiveFilePath: `G:/fake/task-archive/${machineId}/${taskId}.json.gz`,
 		},
-	} as ConversationSkeleton;
+	} as StoredConversation;
 }
 
-function snapshotPayload(stubs: ConversationSkeleton[], savedAt = Date.now()): string {
+function snapshotPayload(stubs: StoredConversation[], savedAt = Date.now()): string {
 	// #1353 : adossé à la constante — un bump de version doit invalider les
 	// snapshots persistés (re-seed), et le test suit sans retoucher la fixture.
 	return JSON.stringify({ version: TIER3_SNAPSHOT_VERSION, savedAt, stubs });

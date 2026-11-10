@@ -30,13 +30,12 @@
  */
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { StoredConversation } from '../unified-store/types.js';
 import { IndexingDecisionService } from '../indexing-decision.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
-
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_BACKOFF_BASE_MS = 60000;
 
-function createSkeleton(overrides?: Partial<ConversationSkeleton>): ConversationSkeleton {
+function createSkeleton(overrides?: Partial<StoredConversation>): StoredConversation {
     return {
         taskId: 'cov-task-001',
         metadata: {
@@ -74,7 +73,7 @@ describe('IndexingDecisionService — branch coverage (#833 C3, source-grounded)
     // ============================================================
     describe('no-metadata guards', () => {
         test('shouldIndex returns the no-metadata skip when metadata is absent (L33-35)', () => {
-            const noMeta = { taskId: 'x', metadata: undefined } as unknown as ConversationSkeleton;
+            const noMeta = { taskId: 'x', metadata: undefined } as unknown as StoredConversation;
             const decision = service.shouldIndex(noMeta);
 
             expect(decision.shouldIndex).toBe(false);
@@ -84,26 +83,26 @@ describe('IndexingDecisionService — branch coverage (#833 C3, source-grounded)
         });
 
         test('markIndexingSuccess no-ops when metadata is absent (L177)', () => {
-            const noMeta = { taskId: 'x', metadata: undefined } as unknown as ConversationSkeleton;
+            const noMeta = { taskId: 'x', metadata: undefined } as unknown as StoredConversation;
             // Should not throw; void return. No indexingState created.
             expect(() => service.markIndexingSuccess(noMeta)).not.toThrow();
             expect((noMeta as any).metadata).toBeUndefined();
         });
 
         test('markIndexingFailure no-ops when metadata is absent (L207)', () => {
-            const noMeta = { taskId: 'x', metadata: undefined } as unknown as ConversationSkeleton;
+            const noMeta = { taskId: 'x', metadata: undefined } as unknown as StoredConversation;
             expect(() => service.markIndexingFailure(noMeta, 'err', false)).not.toThrow();
             expect((noMeta as any).metadata).toBeUndefined();
         });
 
         test('resetIndexingState no-ops when metadata is absent (L251)', () => {
-            const noMeta = { taskId: 'x', metadata: undefined } as unknown as ConversationSkeleton;
+            const noMeta = { taskId: 'x', metadata: undefined } as unknown as StoredConversation;
             expect(() => service.resetIndexingState(noMeta)).not.toThrow();
             expect((noMeta as any).metadata).toBeUndefined();
         });
 
         test('migrateLegacyIndexingState returns false when metadata is absent (L270-272)', () => {
-            const noMeta = { taskId: 'x', metadata: undefined } as unknown as ConversationSkeleton;
+            const noMeta = { taskId: 'x', metadata: undefined } as unknown as StoredConversation;
             expect(service.migrateLegacyIndexingState(noMeta)).toBe(false);
         });
     });

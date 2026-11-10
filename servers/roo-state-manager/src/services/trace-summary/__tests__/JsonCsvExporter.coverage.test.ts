@@ -31,7 +31,8 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { JsonCsvExporter } from '../JsonCsvExporter.js';
-import type { ConversationSkeleton, MessageSkeleton } from '../../../types/conversation.js';
+import type { MessageSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../unified-store/types.js';
 import type { SummaryOptions, SummaryStatistics } from '../../../types/trace-summary.js';
 
 // ---------- Mock ContentClassifier (same as nominal) ----------
@@ -50,7 +51,7 @@ function makeMessage(role: 'user' | 'assistant', content: string, timestamp = '2
     return { role, content, timestamp, isTruncated: false };
 }
 
-function makeSkeleton(messages: MessageSkeleton[] = [], taskId = 'cov-task-001'): ConversationSkeleton {
+function makeSkeleton(messages: MessageSkeleton[] = [], taskId = 'cov-task-001'): StoredConversation {
     return {
         taskId,
         metadata: {
@@ -77,7 +78,7 @@ const defaultJsonHelpers = {
         userSizePercentage: 0, assistantSizePercentage: 0, toolResultsSizePercentage: 0,
         userMessagePercentage: 0, assistantMessagePercentage: 0, toolResultsMessagePercentage: 0,
     }),
-    getOriginalContentSize: (conv: ConversationSkeleton) => conv.metadata.totalSize,
+    getOriginalContentSize: (conv: StoredConversation) => conv.metadata.totalSize,
     calculateCompressionRatio: (original: number, final: number) =>
         original > 0 ? Math.round((final / original) * 100) / 100 : 0,
 };

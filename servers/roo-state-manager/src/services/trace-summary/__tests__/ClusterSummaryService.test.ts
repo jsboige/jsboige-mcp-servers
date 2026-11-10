@@ -6,7 +6,8 @@
 
 import { describe, test, expect, beforeEach } from 'vitest';
 import { ClusterSummaryService } from '../ClusterSummaryService.js';
-import type { ConversationSkeleton, MessageSkeleton } from '../../../types/conversation.js';
+import type { MessageSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../unified-store/types.js';
 import type { SummaryResult } from '../../../types/trace-summary.js';
 
 describe('ClusterSummaryService', { timeout: 60000 }, () => {
@@ -26,7 +27,7 @@ describe('ClusterSummaryService', { timeout: 60000 }, () => {
         title?: string,
         messageCount: number = 5,
         createdAt?: string
-    ): ConversationSkeleton {
+    ): StoredConversation {
         const now = createdAt || new Date().toISOString();
         return {
             taskId: id,
@@ -109,7 +110,7 @@ describe('ClusterSummaryService', { timeout: 60000 }, () => {
 
         test('generates summary for single root task with no children', async () => {
             const rootTask = createMockTask('root-1', undefined, 'Root Task');
-            const childTasks: ConversationSkeleton[] = [];
+            const childTasks: StoredConversation[] = [];
 
             const result = await service.generateClusterSummary(
                 rootTask,
@@ -142,7 +143,7 @@ describe('ClusterSummaryService', { timeout: 60000 }, () => {
 
         test('uses provided callback for individual summaries', async () => {
             const rootTask = createMockTask('root-1');
-            const childTasks: ConversationSkeleton[] = [];
+            const childTasks: StoredConversation[] = [];
 
             let callbackCalled = false;
             const mockCallback = async () => {
@@ -376,7 +377,7 @@ describe('ClusterSummaryService', { timeout: 60000 }, () => {
         test('throws on null root task (documented behavior)', async () => {
             await expect(async () => {
                 await service.generateClusterSummary(
-                    null as unknown as ConversationSkeleton,
+                    null as unknown as StoredConversation,
                     [],
                     {}
                 );
@@ -387,7 +388,7 @@ describe('ClusterSummaryService', { timeout: 60000 }, () => {
             const rootTask = createMockTask('root-1');
             const result = await service.generateClusterSummary(
                 rootTask,
-                undefined as unknown as ConversationSkeleton[],
+                undefined as unknown as StoredConversation[],
                 {}
             );
 
@@ -525,7 +526,7 @@ describe('ClusterSummaryService', { timeout: 60000 }, () => {
 
         test('handles deeply nested task hierarchy', async () => {
             const rootTask = createMockTask('root');
-            const childTasks: ConversationSkeleton[] = [];
+            const childTasks: StoredConversation[] = [];
 
             // Create a chain of 5 levels
             let currentId = 'root';

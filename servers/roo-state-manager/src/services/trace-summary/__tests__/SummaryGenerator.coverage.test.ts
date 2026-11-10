@@ -30,9 +30,8 @@
 
 import { describe, test, expect, beforeEach } from 'vitest';
 import { SummaryGenerator } from '../SummaryGenerator.js';
+import type { StoredConversation } from '../../unified-store/types.js';
 import type { ClassifiedContent } from '../ContentClassifier.js';
-import type { ConversationSkeleton } from '../../../../types/conversation.js';
-
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeClassified(
@@ -64,9 +63,9 @@ describe('SummaryGenerator — coverage complement', () => {
 
   describe('getOriginalContentSize — nullish + filter edges', () => {
     test('returns 0 when sequence is undefined (nullish `?? []` L202)', () => {
-      // Cast: ConversationSkeleton.sequence is typed required, but the guard
+      // Cast: StoredConversation.sequence is typed required, but the guard
       // exists precisely for runtime-undefined inputs.
-      const conv = { taskId: 't1' } as unknown as ConversationSkeleton;
+      const conv = { taskId: 't1' } as unknown as StoredConversation;
       expect(generator.getOriginalContentSize(conv)).toBe(0);
     });
 
@@ -77,7 +76,7 @@ describe('SummaryGenerator — coverage complement', () => {
           { role: 'user' }, // no `content` → filtered
           { role: 'assistant', content: 'yes' }, // 3 chars — kept
         ],
-      } as unknown as ConversationSkeleton;
+      } as unknown as StoredConversation;
       expect(generator.getOriginalContentSize(conv)).toBe(3);
     });
 
@@ -88,7 +87,7 @@ describe('SummaryGenerator — coverage complement', () => {
           { content: 'orphan' }, // no `role` → filtered
           { role: 'user', content: 'kept' }, // 4 chars — kept
         ],
-      } as unknown as ConversationSkeleton;
+      } as unknown as StoredConversation;
       expect(generator.getOriginalContentSize(conv)).toBe(4);
     });
   });
@@ -178,7 +177,7 @@ describe('SummaryGenerator — coverage complement', () => {
           { role: 'user', content: 'Hello world' },
           { role: 'assistant', content: 'Hi there' },
         ],
-      } as unknown as ConversationSkeleton;
+      } as unknown as StoredConversation;
 
       const result = await generator.generateSummary(conv);
 
@@ -205,7 +204,7 @@ describe('SummaryGenerator — coverage complement', () => {
           { role: 'user', content: 'Ping' },
           { role: 'assistant', content: 'Pong' },
         ],
-      } as unknown as ConversationSkeleton;
+      } as unknown as StoredConversation;
 
       const result = await generator.generateSummary(conv, { enableDetailLevels: false });
 
@@ -219,7 +218,7 @@ describe('SummaryGenerator — coverage complement', () => {
       const conv = {
         taskId: 't3',
         sequence: [{ role: 'user', content: 'x' }],
-      } as unknown as ConversationSkeleton;
+      } as unknown as StoredConversation;
 
       // classifyConversationContent (ContentClassifier L38) rejects endIndex < 0.
       // generateSummary catch (L101-108) must surface it as a structured error result.
