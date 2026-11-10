@@ -52,7 +52,9 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   enforceStatusBudget,
-  buildStatusBudgetArchiveSection
+  buildStatusBudgetArchiveSection,
+  STATUS_SECTION_WORD_BUDGETS,
+  statusBudgetPromptLines
 } from '../dashboard.js';
 
 // Miroir du mock minimal de dashboard.truncation-fixtures.test.ts : l'import
@@ -249,6 +251,62 @@ describe('#4434 (09/11) — passe de budget de statut déterministe', () => {
       expect(out.moved).toEqual([]);
     });
 
+    it('BM1 — puce multi-lignes : le BLOC part entier, la suite n\'est pas orpheline (suite ms#1712)', () => {
+      // Sans le groupement en blocs, seule la ligne « - » partait : sa suite
+      // restait dans la section, tête coupée — et son décompte de mots aussi.
+      // Arithmétique : bloc m-old = 20 (marquée) + 8 (suite) = 28 ; +20 +20 = 68
+      // pour un budget de 55 → UN départ (le bloc daté le plus ancien) → 40.
+      const multi = [bullet('m-old', 20, ' [vérifié 02/11 08:00Z]'), '  suite de la puce sur une deuxième ligne'].join('\n');
+      const status = [
+        '### Patterns appris',
+        multi,
+        bullet('m-frais', 20, ' [vérifié 09/11 08:00Z]'),
+        bullet('m-trois', 20),
+      ].join('\n');
+      const out = enforceStatusBudget(status, now);
+      // Le bloc multi-lignes compte ses DEUX lignes (20 + 8 mots de suite).
+      expect(out.moved[0].bullets).toEqual([multi]);
+      // Aucune orpheline : la suite a suivi la ligne marquée.
+      expect(out.status).not.toContain('suite de la puce');
+      expect(out.status).toContain('- [m-frais]');
+      expect(out.status).toContain('- [m-trois]');
+    });
+
+    it('BM2 — rang daté lu sur la SUITE du bloc, pas seulement sur la ligne marquée', () => {
+      // La date vit sur la continuation : un rang calculé sur la seule ligne
+      // « - » verrait la puce comme non datée — et la sortirait par la queue.
+      // Bloc = 20 + 10 = 30 ; +20 +20 = 70 pour 55 → UN départ, et ce départ
+      // doit être le BLOC (daté 02/11 par sa suite), pas b-frais (09/11).
+      const head = bullet('b-head', 20);
+      const cont = '  détail vérifié le 02/11 08:00Z sur la ligne de suite';
+      const status = [
+        '### Patterns appris',
+        [head, cont].join('\n'),
+        bullet('b-frais', 20, ' [vérifié 09/11 08:00Z]'),
+        bullet('b-nodate', 20),
+      ].join('\n');
+      const out = enforceStatusBudget(status, now);
+      expect(out.moved[0].bullets).toEqual([[head, cont].join('\n')]); // la datée (par sa suite) part avant la non datée
+      expect(out.status).toContain('- [b-nodate]');
+    });
+
+    it('BM3 — frontière du bloc : ligne vide, puce suivante et titre ferment la suite', () => {
+      // Bloc p-old = 20 + 7 = 27 ; +20 +20 = 67 pour 55 → UN départ (p-old).
+      const status = [
+        '### Patterns appris',
+        bullet('p-old', 20, ' [vérifié 02/11 08:00Z]'),
+        '  suite absorbée par le bloc de p-old',
+        '',
+        'prose libre entre deux puces — ni puce ni suite : reste',
+        bullet('p-frais', 20, ' [vérifié 09/11 08:00Z]'),
+        bullet('p-trois', 20),
+      ].join('\n');
+      const out = enforceStatusBudget(status, now);
+      expect(out.moved[0].bullets).toEqual([[bullet('p-old', 20, ' [vérifié 02/11 08:00Z]'), '  suite absorbée par le bloc de p-old'].join('\n')]);
+      expect(out.status).toContain('prose libre entre deux puces'); // hors bloc : jamais déplacée
+      expect(out.status).toContain('- [p-frais]');
+    });
+
     it('B7 — les 8 sections canoniques survivent à une passe lourde', () => {
       const mk = (h: string, n: number, stamp?: string) =>
         [`### ${h}`, ...Array.from({ length: n }, (_, i) => bullet(`${h}-${i}`, 25, stamp))].join('\n');
@@ -270,11 +328,12 @@ describe('#4434 (09/11) — passe de budget de statut déterministe', () => {
       ]) {
         expect(out.status).toContain(`### ${h}`);
       }
-      // Et chaque section budgétée revient sous son budget.
-      const budgets: Record<string, number> = {
-        'Résumé': 40, 'État des systèmes': 100, 'Décisions actées': 90,
-        'Livrables récents': 55, 'En cours': 60, 'Métriques de référence': 85, 'Patterns appris': 55
-      };
+      // Et chaque section budgétée revient sous son budget — budgets lus dans
+      // la TABLE (source unique #4434, suite ms#1712) : ce test ne peut plus
+      // rester vert si la table et la passe divergent.
+      const budgets: Record<string, number> = Object.fromEntries(
+        STATUS_SECTION_WORD_BUDGETS.map((d) => [d.name, d.budget])
+      );
       for (const [h, b] of Object.entries(budgets)) {
         expect(sectionWords(out.status, h)).toBeLessThanOrEqual(b);
       }
@@ -431,6 +490,22 @@ describe('#4434 (09/11) — passe de budget de statut déterministe', () => {
       const out = enforceStatusBudget(status, jan);
       // 60 mots, budget 55 : 1 départ — décembre 2026 (le plus ancien), pas janvier.
       expect(out.moved[0].bullets).toEqual([dec]);
+    });
+  });
+
+  describe('SU — source unique des budgets (suite ms#1712 : 3 copies → 1)', () => {
+    it('SU1 — statusBudgetPromptLines émet exactement une ligne par section de la table, budget compris', () => {
+      const lines = statusBudgetPromptLines();
+      expect(lines).toHaveLength(STATUS_SECTION_WORD_BUDGETS.length);
+      for (const d of STATUS_SECTION_WORD_BUDGETS) {
+        const line = lines.find((l) => l.startsWith(`- ${d.name} :`));
+        expect(line, `ligne prompt pour « ${d.name} »`).toBeTruthy();
+        expect(line).toBe(`- ${d.name} : ≤ ${d.budget} mots${d.hint ? ` (${d.hint})` : ''}`);
+      }
+    });
+
+    it('SU2 — la table ne porte pas « Blocages structurels » (aucun plafond de mots ne doit exister)', () => {
+      expect(STATUS_SECTION_WORD_BUDGETS.find((d) => d.name === 'Blocages structurels')).toBeUndefined();
     });
   });
 });

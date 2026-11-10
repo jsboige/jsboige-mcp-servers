@@ -2246,6 +2246,56 @@ describe('roosync_dashboard', () => {
       expect(afterSize).toBeLessThanOrEqual(15 * 1024);
     });
 
+    it('runs the #4434 budget pass on the kept status in the fallback path (suite ms#1712)', async () => {
+      // Sans la passe au fallback, un statut sur budget en mots (mais sous le
+      // plafond 15 KB) survit INTACT à la condensation dégradée : le plafond
+      // d'octets ne le toucherait jamais. La passe doit réduire en mots, avec
+      // le même contrat d'archive « rien n'est supprimé » que le chemin de
+      // succès. Résumé : budget 40 mots ; 3 puces de 20 (=60) → UN départ
+      // (la datée la plus ancienne) ramène à 40.
+      const body = (id: string, n: number) => Array.from({ length: n }, (_, i) => `${id}-mot${i}`).join(' ');
+      const vieux = `- [r-vieux] ${body('vieux', 16)} [vérifié 01/11 09:00Z]`;   // 1+16+3 = 20 mots
+      const frais = `- [r-frais] ${body('frais', 19)}`;                          // 1+19     = 20 mots
+      const nodate = `- [r-nodate] ${body('nodate', 19)}`;                       // 1+19     = 20 mots
+      const overBudgetStatus = [
+        '## [global] — État au 2026-11-10T09:00Z',
+        '### Résumé',
+        vieux,
+        frais,
+        nodate,
+        '### Patterns appris',
+        '- [p-keep] tenu sous budget sans touche',
+      ].join('\n');
+      await roosyncDashboard({ action: 'write', type: 'global', content: overBudgetStatus });
+
+      // Trigger fallback condensation (LLM throws by default in this suite).
+      const largeContent = 'Y'.repeat(2500);
+      for (let i = 0; i < 25; i++) {
+        await roosyncDashboard({ action: 'append', type: 'global', content: `Msg ${i}: ${largeContent}` });
+      }
+
+      // Statut gardé : la passe a réduit « Résumé » en mots — la puce la plus
+      // ancienne est sortie, les autres restent, la section survit.
+      const after = await roosyncDashboard({ action: 'read', type: 'global', section: 'status' });
+      const md = after.data?.status?.markdown ?? '';
+      expect(md).toContain('### Résumé');
+      expect(md).not.toContain('[r-vieux]');
+      expect(md).toContain('[r-frais]');
+      expect(md).toContain('[r-nodate]');
+      expect(md).toContain('[p-keep]');
+
+      // Contrat d'archive : la puce déplacée atterrit dans la section budget
+      // de l'archive fallback — verbatim, jamais supprimée. read_archive ne
+      // rend que les messages parsés : le fichier se lit directement.
+      const fsp = await import('fs/promises');
+      const archiveDir = path.join(tmpDir, 'dashboards', 'archive');
+      const archives = (await fsp.readdir(archiveDir)).filter((n) => /^global-.*-fallback\.md$/.test(n)).sort();
+      expect(archives.length).toBeGreaterThanOrEqual(1);
+      const archiveMd = await fsp.readFile(path.join(archiveDir, archives[archives.length - 1]), 'utf8');
+      expect(archiveMd).toContain('## Statut — entrées sorties du budget (#4434)');
+      expect(archiveMd).toContain('[r-vieux]');
+    });
+
     it('breaks the vicious circle: status < threshold allows next condensation to succeed', async () => {
       // Simulate: status starts > 15 KB, condensation truncates it,
       // then a second condensation cycle should NOT fail due to status size
