@@ -1735,7 +1735,12 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
                 consumedRepairs++;
             }
             noteIndexEnqueue(state);
-            state.qdrantIndexQueue.add(taskId);
+            // #4352 g9: NO per-item add here — `Set.add` appends, and the drain
+            // (see QDRANT_INDEX_BATCH_SIZE slice) follows insertion order, so a
+            // consumed operator request landed at the BACK of the queue and
+            // waited ~k/5 passes behind the scan backlog (~5 h each, measured
+            // ai-01, issue #4352 c.6747563570). Consumed requests are placed at
+            // the FRONT once, after the loop.
             if (!consumed.includes(taskId)) consumed.push(taskId);
         }
         if (consumedResets > 0 || consumedRepairs > 0) {
@@ -1759,6 +1764,15 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
     }
     if (dropped > 0) {
         console.warn(`⚠️ [#4352 g6b] Dropped ${dropped} request(s) after ${MAX_INDEX_REQUEST_ATTEMPTS} attempts — the task never appeared in the cache`);
+    }
+    if (consumed.length > 0) {
+        // #4352 g9: operator requests take priority over the scan backlog.
+        // Consumed IDs first, then whatever was already queued; a task present
+        // in both keeps its consumed (front) position — Set preserves the
+        // first insertion.
+        const backlog = Array.from(state.qdrantIndexQueue.values());
+        state.qdrantIndexQueue = new Set([...consumed, ...backlog]);
+        console.log(`⚡ [#4352 g9] Operator priority: ${consumed.length} consumed request(s) placed at the FRONT of the index queue (backlog behind: ${backlog.length})`);
     }
     if (consumed.length > 0) {
         console.log(`📨 [#4352 g3/g6/g8] Leader consumed ${consumed.length} request(s)${consumedResets > 0 ? ` (${consumedResets} reset before requeue)` : ''}${consumedRepairs > 0 ? ` (${consumedRepairs} headless repair armed)` : ''}: ${consumed.join(', ')}`);
