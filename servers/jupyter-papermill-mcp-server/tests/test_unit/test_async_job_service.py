@@ -1,5 +1,6 @@
 import pytest
 import asyncio
+import sys
 import time
 import subprocess
 from unittest.mock import MagicMock, patch, ANY, mock_open
@@ -324,7 +325,36 @@ class TestAsyncJobService:
         with patch("builtins.open", mock_open(read_data="import tensorflow as tf")):
             assert manager._calculate_optimal_timeout(path) >= 180
 
-    def test_build_complete_environment(self):
+    def test_resolve_interpreter_default(self, monkeypatch):
+        """Sans override, l'interpréteur est celui du serveur (sys.executable)."""
+        monkeypatch.delenv("MCP_JUPYTER_PYTHON", raising=False)
+        manager = AsyncJobService()
+        assert Path(manager._resolve_interpreter()) == Path(sys.executable).resolve()
+
+    def test_resolve_interpreter_override(self, monkeypatch, tmp_path):
+        """MCP_JUPYTER_PYTHON existant EST honoré — valeur distincte du fallback.
+
+        Le fichier pointé n'est PAS sys.executable : si la branche override était
+        supprimée de _resolve_interpreter(), ce test rougit (review ai-01 ms#1716).
+        """
+        fake = tmp_path / "python.exe"
+        fake.touch()
+        monkeypatch.setenv("MCP_JUPYTER_PYTHON", str(fake))
+        manager = AsyncJobService()
+        resolved = Path(manager._resolve_interpreter())
+        assert resolved == fake.resolve()
+        assert resolved != Path(sys.executable).resolve()
+
+    def test_resolve_interpreter_override_dead_path(self, monkeypatch):
+        """Un override inexistant retombe sur sys.executable (jamais WinError 2)."""
+        monkeypatch.setenv("MCP_JUPYTER_PYTHON", "C:/definitely/not/here/python.exe")
+        manager = AsyncJobService()
+        assert Path(manager._resolve_interpreter()) == Path(sys.executable).resolve()
+
+    def test_build_complete_environment(self, monkeypatch):
+        # L'override du siège ne doit pas polluer les assertions (elles supposent
+        # le fallback sys.executable) — review ai-01 ms#1716.
+        monkeypatch.delenv("MCP_JUPYTER_PYTHON", raising=False)
         manager = AsyncJobService()
         env = manager._build_complete_environment()
 
@@ -333,7 +363,23 @@ class TestAsyncJobService:
         assert "PYTHONPATH" in env
         assert "ROO_WORKSPACE_DIR" in env
         assert "PATH" in env
-        assert "mcp-jupyter-py310" in env["CONDA_PREFIX"]
+        # Fix async (rapport po-2028 2026-11-09) : toutes les variables Python/
+        # conda dérivent de l'interpréteur résolu — plus aucun chemin utilisateur
+        # hardcodé, PYTHONPATH dérivé de l'arbre source (plus de littéral D:/dev)
+        resolved = Path(sys.executable).resolve()
+        assert env["CONDA_PREFIX"] == resolved.parent.as_posix()
+        assert env["CONDA_PYTHON_EXE"] == resolved.as_posix()
+        assert env["CONDA_DEFAULT_ENV"] == resolved.parent.name
+        assert env["JUPYTER_DATA_DIR"] == (resolved.parent / "share" / "jupyter").as_posix()
+        assert env["JUPYTER_CONFIG_DIR"] == (resolved.parent / "etc" / "jupyter").as_posix()
+        # Littéraux morts d'origine, formes précises : le nom d'org "jsboige"
+        # contient "jsboi" en sous-chaîne — une garde nue faux-positiverait sur
+        # tout chemin de checkout CI sous l'org (vu en CI run 42724807735).
+        assert "C:/Users/jsboi" not in env["CONDA_PREFIX"]
+        assert "Users/jsboi" not in env["PYTHONPATH"]
+        assert ".conda/envs" not in env["PYTHONPATH"]
+        assert env["PYTHONPATH"].endswith("jupyter-papermill-mcp-server")
+        assert env["PATH"].startswith(resolved.parent.as_posix())
 
     def test_count_running_jobs(self):
         manager = AsyncJobService()
