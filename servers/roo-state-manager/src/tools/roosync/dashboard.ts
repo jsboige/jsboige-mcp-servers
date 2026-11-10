@@ -79,16 +79,19 @@ import {
 import { isPgFlagOn, pgFlagState } from '../../services/unified-store/pg-flags.js';
 import { isDashboardReadPgEnabled } from '../../services/unified-store/pg-read-gates.js';
 // #4608 — état de condensation durable par clé (roosync_store_meta) : passe
-// morte, issue de passe et horloge de station au-dessus du seuil.
+// morte, issue de passe, horloge de station au-dessus du seuil et contrôle
+// d'atterrissage (verdict ok vs moitié fichier qui n'a pas suivi).
 import {
   isDeadPass,
   markCondenseAttempt,
   markCondenseOutcome,
   markDeadPassRecovered,
   noteOverThreshold,
+  noteLandingSighting,
   condenseStallWarnCooldownMs,
   readCondenseHealth,
 } from './condense-health.js';
+import type { LandingSightingVerdict } from './condense-health.js';
 // #3782: journal-level retirement mark (mark, never DELETE — gel des purges)
 import type { DashboardRetirementMark } from '../../services/unified-store/types.js';
 // #3482-follow: the fork predicate + root recovery live in the reconcile
@@ -7677,6 +7680,13 @@ export interface DashboardSummary {
    */
   mirrorDiverged?: boolean;
   mirrorDivergedDetail?: string;
+  /**
+   * #4608 — la dernière passe de condensation est enregistrée `ok`/`truncated`
+   * dans le registre durable mais la moitié fichier n'a pas été écrite depuis
+   * avant la passe (au-delà de la grâce) : le rétrécissement n'est garanti que
+   * côté PG. Un [WARN] attribué (lastSeat) a été posté sur la clé.
+   */
+  condensationLandingMissed?: boolean;
 }
 
 /** Echo of effective request parameters (after defaults applied) */
@@ -9974,6 +9984,102 @@ async function postCondensationStallWarn(
   }
 }
 
+// ─── #4608 — contrôle d'atterrissage (landing control, mesuré 09/11) ──────────
+//
+// `condense_state` disait `ok` pour `global` à 07:38:10Z pendant que le
+// fichier G: portait encore un `lastCondensedAt` de 00:52:45Z — et
+// `workspace-CoursIA` suivait normalement dans la même fenêtre. Le verdict
+// `ok` de la passe ne garantit donc pas que la moitié fichier a reçu
+// l'écriture. Ce contrôle compare, au `list`, le verdict durable au mtime
+// fichier (déjà sous la main côté PG) et poste UN [WARN] attribué (lastSeat)
+// quand l'écart dépasse la grâce.
+
+/**
+ * One list-side landing sighting for a key whose file mtime is known.
+ * Returns a summary annotation on the miss, `{}` in every other case.
+ * Never throws — the list must not fail on the organ.
+ */
+async function condenseLandingSighting(
+  key: string,
+  fileMtimeMs: number | undefined,
+  mirrorOff: boolean
+): Promise<Record<string, unknown>> {
+  try {
+    const verdict = await noteLandingSighting(key, { fileMtimeMs, mirrorOff });
+    if (!verdict.warn) return {};
+    await postCondensationLandingWarn(key, verdict);
+    return { condensationLandingMissed: true };
+  } catch (err) {
+    logger.debug('Condensation landing sighting failed (non-fatal)', {
+      key,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return {};
+  }
+}
+
+/**
+ * Post the landing-miss [WARN] ON the affected dashboard (system-authored,
+ * same family as the stall WARN). The read-modify-write starts from the PG
+ * view, so the WARN write itself re-exports the condensed state to the file
+ * half — the alert doubles as the first mirror repair.
+ */
+async function postCondensationLandingWarn(
+  key: string,
+  verdict: LandingSightingVerdict
+): Promise<void> {
+  const machineId = process.env.ROOSYNC_MACHINE_ID || 'unknown';
+  const alertAuthor: Author = { machineId, workspace: 'rsm' };
+  const holder: CondenseLockInfo = {
+    machineId,
+    workspace: 'rsm',
+    pid: process.pid,
+    acquiredAt: new Date().toISOString(),
+  };
+  const isoNow = new Date().toISOString();
+  const cooldownH = Math.round(condenseStallWarnCooldownMs() / 3_600_000);
+  const message: IntercomMessage = {
+    id: generateMessageId(machineId, 'rsm'),
+    timestamp: isoNow,
+    author: alertAuthor,
+    tags: ['WARN'],
+    content: `**[WARN] CONDENSATION SANS ATTERRISSAGE FICHIER** — ${key}\n\n`
+      + `Une passe de condensation a été enregistrée \`${verdict.passAt}\` par `
+      + `\`${verdict.seat ?? 'siège inconnu (ligne antérieure à lastSeat)'}\`, mais la moitié fichier `
+      + `n'a pas été écrite depuis ~${verdict.lagMinutes} min (constaté depuis ${machineId}) : `
+      + `le rétrécissement n'est garanti que côté PG (#4608, contrôle d'atterrissage).\n`
+      + `Les sièges READ_PG servent déjà l'état frais ; ce message ré-exporte l'état condensé vers le fichier. `
+      + `Si l'écart revient au cooldown suivant, suspecter l'absorption DriveFS du siège écrivain nommé ci-dessus.\n`
+      + `(organe de détection #4608 ; max 1/${cooldownH} h par dashboard)`,
+  };
+  logger.warn('Condensation verdict ok but the file half never landed — WARN posted (#4608)', {
+    key,
+    ...verdict,
+  });
+  try {
+    await withAppendLock(key, holder, async () => {
+      const target = await readDashboardFile(key);
+      if (!target) return; // clé disparue entre la liste et le post : rien à faire
+      const updated: Dashboard = {
+        ...target,
+        lastModified: isoNow,
+        lastModifiedBy: alertAuthor,
+        intercom: {
+          messages: [...target.intercom.messages, message],
+          totalMessages: target.intercom.totalMessages + 1,
+          lastCondensedAt: target.intercom.lastCondensedAt,
+        },
+      };
+      await writeDashboardFile(key, updated);
+    });
+  } catch (err) {
+    logger.warn('Condensation landing WARN post failed (non-fatal)', {
+      key,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
 async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
   // #3459: fail-closed. A missing store must never be reported as "0 dashboards".
   try {
@@ -10054,6 +10160,13 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
             ...(sizes.utilizationPct > 92
               ? await condenseStallSighting(dashboard.key, sizes.utilizationPct)
               : {}),
+            // #4608 — contrôle d'atterrissage : le verdict `ok`/`truncated` de
+            // la dernière passe est comparé au mtime fichier (déjà sous la
+            // main) ; un fichier intact depuis avant la passe au-delà de la
+            // grâce = l'écriture n'a atterri que côté PG → un seul [WARN]
+            // attribué (lastSeat) par cooldown. Zéro lecture PG tant que le
+            // fichier est frais ; miroir coupé = pas d'opinion.
+            ...(await condenseLandingSighting(dashboard.key, fileMtimeMs, mirrorOff)),
             ...(div.diverged ? {
               mirrorDiverged: true,
               // Review ms#1440 : dans cette branche PG, les compteurs servis
@@ -10125,6 +10238,13 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
       const expectedLagNote = expectedLagKeys > 0
         ? ` — ℹ️ ${expectedLagKeys} clé(s) en écart d'export ATTENDU (miroir fichier coupé, ${DASHBOARD_APPEND_MIRROR_ENV} non défini — contrôle #4187 suspendu)`
         : '';
+      // #4608 — les atterrissages manqués sont nommés dans le message : le
+      // témoin doit être lisible dans le résumé, pas seulement sur le
+      // dashboard concerné (même exigence que #4187 pour les divergences).
+      const landingMissEntries = summaries.filter(s => s.condensationLandingMissed);
+      const landingMissNote = landingMissEntries.length > 0
+        ? ` — ⚠️ ${landingMissEntries.length} clé(s) condensationLandingMissed (#4608): ${landingMissEntries.map(s => s.key).join(', ')} — passe ok enregistrée mais moitié fichier non écrite (WARN attribué posté sur la clé)`
+        : '';
 
       return {
         success: true,
@@ -10134,7 +10254,7 @@ async function handleList(requestEcho: DashboardRequestEcho): Promise<DashboardR
         request: requestEcho,
         dashboards: summaries,
         ...(forks.length > 0 ? { forks } : {}),
-        message: `${summaries.length} dashboard(s) trouvé(s) [source: PG]${cleanupNote}${forkNote}${divergedNote}${expectedLagNote}`
+        message: `${summaries.length} dashboard(s) trouvé(s) [source: PG]${cleanupNote}${forkNote}${divergedNote}${expectedLagNote}${landingMissNote}`
       };
     }
 
