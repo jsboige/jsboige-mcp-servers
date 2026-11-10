@@ -19,7 +19,7 @@
 // =============================================================================
 
 /**
- * Métadonnées de synthèse intégrées au ConversationSkeleton existant.
+ * Métadonnées de synthèse intégrées au StoredConversation existant.
  * Optimisé pour le lazy loading et l'efficacité mémoire.
  */
 export interface SynthesisMetadata {
