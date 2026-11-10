@@ -331,11 +331,19 @@ class TestAsyncJobService:
         manager = AsyncJobService()
         assert Path(manager._resolve_interpreter()) == Path(sys.executable).resolve()
 
-    def test_resolve_interpreter_override(self, monkeypatch):
-        """MCP_JUPYTER_PYTHON existant est honoré (résolu en chemin absolu)."""
-        monkeypatch.setenv("MCP_JUPYTER_PYTHON", sys.executable)
+    def test_resolve_interpreter_override(self, monkeypatch, tmp_path):
+        """MCP_JUPYTER_PYTHON existant EST honoré — valeur distincte du fallback.
+
+        Le fichier pointé n'est PAS sys.executable : si la branche override était
+        supprimée de _resolve_interpreter(), ce test rougit (review ai-01 ms#1716).
+        """
+        fake = tmp_path / "python.exe"
+        fake.touch()
+        monkeypatch.setenv("MCP_JUPYTER_PYTHON", str(fake))
         manager = AsyncJobService()
-        assert Path(manager._resolve_interpreter()) == Path(sys.executable).resolve()
+        resolved = Path(manager._resolve_interpreter())
+        assert resolved == fake.resolve()
+        assert resolved != Path(sys.executable).resolve()
 
     def test_resolve_interpreter_override_dead_path(self, monkeypatch):
         """Un override inexistant retombe sur sys.executable (jamais WinError 2)."""
@@ -343,7 +351,10 @@ class TestAsyncJobService:
         manager = AsyncJobService()
         assert Path(manager._resolve_interpreter()) == Path(sys.executable).resolve()
 
-    def test_build_complete_environment(self):
+    def test_build_complete_environment(self, monkeypatch):
+        # L'override du siège ne doit pas polluer les assertions (elles supposent
+        # le fallback sys.executable) — review ai-01 ms#1716.
+        monkeypatch.delenv("MCP_JUPYTER_PYTHON", raising=False)
         manager = AsyncJobService()
         env = manager._build_complete_environment()
 

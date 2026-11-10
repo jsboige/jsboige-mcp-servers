@@ -692,6 +692,9 @@ class AsyncJobService:
             conda_vars["CONDA_EXE"] = conda_exe.as_posix()
 
         # Variables critiques pour .NET
+        # GRAIN SUIVANT (hors périmètre du fix async, review ai-01 ms#1716) :
+        # NUGET_PACKAGES / MSBuildUserExtensionsPath / versions du SDK restent des
+        # littéraux machine — grain « papermill-dotnet-env » à livrer séparément.
         dotnet_vars = {
             "DOTNET_ROOT": "C:\\Program Files\\dotnet",
             "DOTNET_HOST_PATH": "C:\\Program Files\\dotnet\\dotnet.exe",
@@ -720,6 +723,11 @@ class AsyncJobService:
         roo_vars = {"ROO_WORKSPACE_DIR": workspace_dir}
 
         # Construire le PATH complet (entrées env Python dérivées du préfixe)
+        # Hypothèse Windows-only (conda layout Scripts/ + Library/*/bin) : non
+        # fatale car la commande exécutée est « <python> -m papermill » en chemin
+        # absolu ; ces entrées PATH sont un confort pour les kernels enfants.
+        # POSIX (bin/) non dérivé — review ai-01 ms#1716, suivi si un siège POSIX
+        # est provisionné un jour.
         path_components = [
             (env_prefix / "Scripts").as_posix(),
             (env_prefix / "Library" / "mingw-w64" / "bin").as_posix(),
