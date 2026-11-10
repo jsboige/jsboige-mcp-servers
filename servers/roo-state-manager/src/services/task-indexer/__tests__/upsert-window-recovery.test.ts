@@ -15,9 +15,13 @@
  *   6. HTTP 400 (`#2209` permanent) is never recovered,
  *   7. `upsertRecoveryBudgetMs()` env parsing incl. the kill-switch values.
  *
- * The upsert function is injected — no Qdrant client mocking needed here; the
- * boolean contract of `safeQdrantUpsert` itself is covered by
- * circuit-breaker.test.ts.
+ * The upsert function is injected for tests 1-7 — no Qdrant client mocking
+ * needed there; the boolean contract of `safeQdrantUpsert` itself is covered by
+ * circuit-breaker.test.ts. The closing describe (file 09d item 3, ai-01
+ * 09/11) exercises the REAL `safeQdrantUpsert` with a mocked Qdrant client:
+ * the HTTP 400 → `UpsertFailureContext.permanentFailure` liaison was only
+ * ever tested through an injected stub — the production line that SETS the
+ * flag (VectorIndexer #2209 branch) never ran under test.
  *
  * @module services/task-indexer/__tests__/upsert-window-recovery
  */
@@ -31,6 +35,31 @@ import {
 } from '../VectorIndexer.js';
 import type { IndexTaskProgressOptions } from '../VectorIndexer.js';
 import { GenericError } from '../../../types/errors.js';
+
+// Real-path mocks (file 09d item 3) — same set as circuit-breaker.test.ts,
+// the proven harness for importing VectorIndexer.js with a stub Qdrant client.
+const mockUpsert = vi.fn();
+
+vi.mock('../../qdrant.js', () => ({
+    getQdrantClient: vi.fn(() => ({
+        upsert: mockUpsert,
+    })),
+}));
+
+vi.mock('../../openai.js', () => ({
+    default: vi.fn(),
+    getEmbeddingModel: vi.fn(() => 'text-embedding-3-small'),
+    getEmbeddingDimensions: vi.fn(() => 1536),
+}));
+
+vi.mock('../EmbeddingValidator.js', () => ({
+    validateVectorGlobal: vi.fn(),
+    sanitizePayload: vi.fn((p: any) => p || {}),
+}));
+
+vi.mock('../QdrantHealthMonitor.js', () => ({
+    networkMetrics: { qdrantCalls: 0, bytesTransferred: 0 },
+}));
 
 // Keep the recovery pauses real but short: the tests shrink the budget to a
 // few tens of ms so Math.min(PAUSE, remaining) never waits the full 35 s.
@@ -173,5 +202,58 @@ describe('#4352 c.325 — window upsert recovery', () => {
         expect(upsertRecoveryBudgetMs()).toBe(0);
         process.env.QDRANT_UPSERT_RECOVERY_MS = '120000';
         expect(upsertRecoveryBudgetMs()).toBe(120_000);
+    });
+});
+
+describe('#4352 — REAL safeQdrantUpsert: HTTP 400 sets permanentFailure (file 09d item 3)', () => {
+    // Tests 6/6b above inject an upsert stub that sets the flag by hand — the
+    // PRODUCTION line that sets it (the #2209 branch of the real
+    // safeQdrantUpsert) never ran. Here the real function runs against a
+    // mocked Qdrant client that answers 400, and the wrapper uses its DEFAULT
+    // upsert (undefined) — the full production chain end to end.
+
+    const http400 = () => Object.assign(new Error('Bad Request'), {
+        response: { status: 400, statusText: 'Bad Request', data: {} },
+    });
+
+    const onePoint = () => [{
+        id: 'pt-400',
+        vector: new Array(1536).fill(0.1),
+        payload: { task_id: 't-400', content: 'x' },
+    }] as any[];
+
+    beforeEach(() => {
+        vi.resetModules(); // fresh circuit-breaker state per test
+    });
+
+    afterEach(() => {
+        delete process.env.QDRANT_UPSERT_RECOVERY_MS;
+    });
+
+    test('8. a real 400 from the Qdrant client marks the failure permanent — no retry, breaker intact', async () => {
+        const { safeQdrantUpsert } = await import('../VectorIndexer.js');
+        mockUpsert.mockReset();
+        mockUpsert.mockRejectedValue(http400());
+
+        const ctx: UpsertFailureContext = {};
+        const ok = await safeQdrantUpsert(onePoint(), ctx);
+
+        expect(ok).toBe(false);
+        expect(ctx.permanentFailure).toBe(true);          // the production line, exercised
+        expect(mockUpsert).toHaveBeenCalledTimes(1);       // 400 short-circuits BEFORE the 3 batch retries
+    });
+
+    test('9. the wrapper with its DEFAULT upsert never recovers a real 400 — full chain', async () => {
+        const { safeQdrantUpsertWithWindowRecovery } = await import('../VectorIndexer.js');
+        mockUpsert.mockReset();
+        mockUpsert.mockRejectedValue(http400());
+
+        const budget: UpsertRecoveryBudget = { remainingMs: 600_000 };
+        // upsert deliberately omitted → the REAL safeQdrantUpsert runs inside.
+        const ok = await safeQdrantUpsertWithWindowRecovery(onePoint(), 't-400-real', undefined, budget);
+
+        expect(ok).toBe(false);
+        expect(mockUpsert).toHaveBeenCalledTimes(1);       // first attempt → 400 → permanent, loop never entered
+        expect(budget.remainingMs).toBe(600_000);          // no pause charged, budget untouched
     });
 });
