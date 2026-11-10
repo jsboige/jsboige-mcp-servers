@@ -45,6 +45,17 @@ const GENERIC_XML_BLOCK_ALL = new RegExp(GENERIC_XML_BLOCK.source, 'gi');
 export const GENERIC_XML_MAX_CHARS = 64 * 1024;
 
 /**
+ * #4636: GENERIC_XML_BLOCK needs all four delimiters, so a text missing one of them cannot
+ * match and skips the scan (same result). Under the size bound, the costliest shapes left
+ * were texts without `<mode>` or with an unclosed `<mode>`/`<message>` (0.7-1.5 s at 64 KB,
+ * measured by the independent review of ms#1725); each check below is a single linear pass.
+ */
+const GENERIC_XML_DELIMITERS = [/<\s*mode\s*>/i, /<\/\s*mode\s*>/i, /<\s*message\s*>/i, /<\/\s*message\s*>/i];
+export function mayHoldGenericXmlBlock(text: string): boolean {
+    return text.length <= GENERIC_XML_MAX_CHARS && GENERIC_XML_DELIMITERS.every((d) => d.test(text));
+}
+
+/**
  * Moteur principal de reconstruction hiérarchique
  */
 export class HierarchyReconstructionEngine {
@@ -804,7 +815,7 @@ export class HierarchyReconstructionEngine {
                     // Exemple: <orchestrator_complex><mode>debug</mode><message>...</message></orchestrator_complex>
                     if (message.text || message.content) {
                         const contentAny = message.text || message.content;
-                        const genericXmlMatches = typeof contentAny === 'string' && contentAny.length <= GENERIC_XML_MAX_CHARS
+                        const genericXmlMatches = typeof contentAny === 'string' && mayHoldGenericXmlBlock(contentAny)
                             ? contentAny.match(GENERIC_XML_BLOCK_ALL) : null;
                         if (genericXmlMatches) {
                             for (const block of genericXmlMatches) {

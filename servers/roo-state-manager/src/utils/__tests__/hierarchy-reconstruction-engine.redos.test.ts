@@ -6,13 +6,15 @@
  *   1. a pathological message above the size bound crosses extractSubtaskInstructions fast;
  *   2. a pathological message under the bound (tempered path) stays fast;
  *   3. the tempered pattern returns exactly what the legacy pattern returned (oracle);
- *   4. a well-formed generic block is still extracted.
+ *   4. a well-formed generic block is still extracted;
+ *   5. the delimiter guard skips the costliest sub-bound shapes and never hides a match.
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import {
     HierarchyReconstructionEngine,
     GENERIC_XML_BLOCK,
     GENERIC_XML_MAX_CHARS,
+    mayHoldGenericXmlBlock,
 } from '../hierarchy-reconstruction-engine.js';
 import type { EnhancedConversationSkeleton } from '../../types/enhanced-hierarchy.js';
 
@@ -93,6 +95,24 @@ describe('#4636 generic XML pattern — bounded cost', () => {
         expect(performance.now() - t0).toBeLessThan(1000);
     });
 
+    // Costliest shapes under the bound before the delimiter guard (0.7-1.6 s each at 64 KB,
+    // measured on ai-01 by the independent review of ms#1725). With the guard they cost ~0 ms;
+    // without it each one exceeds 250 ms (mutation measured: 670 / 831 / 1 598 ms).
+    test.each([
+        ['no <mode> at all', '<x>'.repeat(21845)],
+        ['<mode> never closed', '<a><mode>x'.repeat(5957) + '<a><mode>'],
+        ['<message> never closed', '<a><mode>m</mode><message>z'.repeat(2340)],
+    ])('sub-bound pathological shape (%s) crosses extraction in < 250 ms', async (_label, text) => {
+        expect(text.length).toBeLessThanOrEqual(GENERIC_XML_MAX_CHARS);
+        expect(mayHoldGenericXmlBlock(text)).toBe(false);
+        serveMessages([{ type: 'say', say: 'command_output', ts: 2, text }]);
+
+        const engine = new HierarchyReconstructionEngine({ debugMode: false });
+        const t0 = performance.now();
+        await (engine as any).extractSubtaskInstructions(skeleton('redos-shape'));
+        expect(performance.now() - t0).toBeLessThan(250);
+    });
+
     test('a well-formed generic block is still extracted', async () => {
         serveMessages([{ type: 'say', ts: 1700000000, text: 'x <orchestrator_complex k="v"><mode>architect</mode><message>Design the new schema for storage</message><todos>t</todos></orchestrator_complex> y' }]);
 
@@ -125,6 +145,8 @@ describe('#4636 tempered pattern ≡ legacy pattern (oracle)', () => {
             for (let j = 0; j < k; j++) s += block() + pick(['', '\n', ' x ']);
             const legacy = s.match(legacyAll);
             if (legacy) withMatch++;
+            // The delimiter guard never hides a match the legacy pattern found.
+            if (!mayHoldGenericXmlBlock(s)) expect(legacy).toBeNull();
             expect(s.match(temperedAll)).toEqual(legacy);
             const a = s.match(LEGACY_GENERIC_XML); const b = s.match(GENERIC_XML_BLOCK);
             expect(b && [b.index, ...b]).toEqual(a && [a.index, ...a]);
