@@ -48,12 +48,29 @@ def get_model_config(model_id: str) -> dict | None:
     return None
 
 
+def resolve_benchmark_api_key(model_cfg: dict, environ=None) -> str:
+    """Resolve the API key for a benchmark model, mirroring resolve_api_key()
+    (sk_agent_config.py:280).
+
+    #3401: when ``api_key_env`` is set, the env var is read FIRST and the
+    ``api_key`` literal is only a fallback. The previous form (literal first,
+    env only when the literal is empty) used the DECOY literals present in
+    seat configs (po-2028): the benchmark then measured 401s, not the models.
+    Exact parity with resolve_api_key: an env var that is SET but empty
+    resolves to "" (no literal fallback) — the decoy fix targets a present
+    env var, not an empty one.
+    """
+    if environ is None:
+        environ = os.environ
+    if model_cfg.get("api_key_env"):
+        return environ.get(model_cfg["api_key_env"], model_cfg.get("api_key", ""))
+    return model_cfg.get("api_key", "")
+
+
 def call_model(model_cfg: dict, prompt: str, timeout: float = 120) -> dict:
     """Call a model via OpenAI-compatible chat completions API."""
     base_url = model_cfg["base_url"].rstrip("/")
-    api_key = model_cfg.get("api_key", "")
-    if not api_key and model_cfg.get("api_key_env"):
-        api_key = os.environ.get(model_cfg["api_key_env"], "")
+    api_key = resolve_benchmark_api_key(model_cfg)
 
     model_id = model_cfg["model_id"]
     thinking = model_cfg.get("thinking", False)

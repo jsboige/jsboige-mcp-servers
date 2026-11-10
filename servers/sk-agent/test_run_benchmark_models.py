@@ -52,3 +52,44 @@ def test_runner_skips_no_model_the_loaded_config_enables():
         m["id"] for m in run_benchmark.config.get("models", []) if m.get("enabled", False)
     ]
     assert run_benchmark.BENCHMARK_MODEL_IDS == enabled
+
+
+# --- #3401: key resolution reads env FIRST when api_key_env is set ---
+
+
+def test_api_key_env_wins_over_a_decoy_literal():
+    """The regression: a decoy literal must NOT be used when env is set.
+
+    The old form read the literal first and only fell back to env when the
+    literal was empty — so a present-but-decoy literal was used as-is and the
+    benchmark measured 401s, not the models.
+    """
+    cfg = {"api_key": "decoy-literal-24c", "api_key_env": "REAL_KEY"}
+    assert run_benchmark.resolve_benchmark_api_key(cfg, environ={"REAL_KEY": "real-env-32c"}) == "real-env-32c"
+
+
+def test_api_key_env_absent_falls_back_to_literal():
+    """No env var set -> the literal is the fallback (resolve_api_key parity)."""
+    cfg = {"api_key": "literal-fallback", "api_key_env": "MISSING_KEY"}
+    assert run_benchmark.resolve_benchmark_api_key(cfg, environ={}) == "literal-fallback"
+
+
+def test_api_key_env_set_but_empty_resolves_empty():
+    """Exact resolve_api_key parity: env SET but empty resolves to "".
+
+    This pins the real behaviour (no literal fallback on empty), so the decoy
+    fix stays scoped to a present env var and never silently changes the
+    empty-env case.
+    """
+    cfg = {"api_key": "literal-fallback", "api_key_env": "EMPTY_KEY"}
+    assert run_benchmark.resolve_benchmark_api_key(cfg, environ={"EMPTY_KEY": ""}) == ""
+
+
+def test_no_api_key_env_uses_literal():
+    """Without api_key_env, the literal is used as-is (unchanged behaviour)."""
+    cfg = {"api_key": "plain-literal"}
+    assert run_benchmark.resolve_benchmark_api_key(cfg, environ={"IGNORED": "x"}) == "plain-literal"
+
+
+def test_no_key_at_all_returns_empty():
+    assert run_benchmark.resolve_benchmark_api_key({}, environ={}) == ""
