@@ -361,9 +361,12 @@ class TestAsyncJobService:
         assert env["CONDA_DEFAULT_ENV"] == resolved.parent.name
         assert env["JUPYTER_DATA_DIR"] == (resolved.parent / "share" / "jupyter").as_posix()
         assert env["JUPYTER_CONFIG_DIR"] == (resolved.parent / "etc" / "jupyter").as_posix()
-        assert "jsboi" not in env["CONDA_PREFIX"]
-        assert "jsboi" not in env["PYTHONPATH"]
-        assert ".conda" not in env["PYTHONPATH"]
+        # Littéraux morts d'origine, formes précises : le nom d'org "jsboige"
+        # contient "jsboi" en sous-chaîne — une garde nue faux-positiverait sur
+        # tout chemin de checkout CI sous l'org (vu en CI run 42724807735).
+        assert "C:/Users/jsboi" not in env["CONDA_PREFIX"]
+        assert "Users/jsboi" not in env["PYTHONPATH"]
+        assert ".conda/envs" not in env["PYTHONPATH"]
         assert env["PYTHONPATH"].endswith("jupyter-papermill-mcp-server")
         assert env["PATH"].startswith(resolved.parent.as_posix())
 
