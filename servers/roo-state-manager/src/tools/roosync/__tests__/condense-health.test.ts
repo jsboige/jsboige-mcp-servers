@@ -27,6 +27,7 @@ import {
   noteLandingSighting,
   isDeadPass,
   markCondenseAttempt,
+  markCondenseLanding,
   markCondenseOutcome,
   markDeadPassRecovered,
   readCondenseHealth,
@@ -172,6 +173,48 @@ describe('#4608 lastSeat — which seat ran the pass (measured 09/11)', () => {
     }));
     const state = await readCondenseHealth(KEY);
     expect(state?.lastSeat).toBeNull();
+    // #4131 — même contrat pour les champs d'atterrissage : absence = inconnu,
+    // jamais undefined qui fuiterait dans un JSON.stringify.
+    expect(state?.lastLanding).toBeNull();
+    expect(state?.lastLandingCheckedAt).toBeNull();
+  });
+});
+
+describe('#4131 markCondenseLanding — the landing verdict (measured 09/11)', () => {
+  it('landed stamps the verdict, the check time, and the checking seat', async () => {
+    await markCondenseOutcome(KEY, 'ok', 'myia-web2:roo-extensions');
+    await markCondenseLanding(KEY, 'landed', 'myia-web2:roo-extensions');
+    const state = await readCondenseHealth(KEY);
+    expect(state?.lastLanding).toBe('landed');
+    expect(state?.lastLandingCheckedAt).toBeTypeOf('string');
+    expect(state?.lastSeat).toBe('myia-web2:roo-extensions');
+  });
+
+  it('stale and unknown are recorded as-is — unknown is no-opinion, never failure', async () => {
+    await markCondenseOutcome(KEY, 'ok', 'myia-web2:roo-extensions');
+    await markCondenseLanding(KEY, 'stale', 'myia-web2:roo-extensions');
+    expect((await readCondenseHealth(KEY))?.lastLanding).toBe('stale');
+    await markCondenseLanding(KEY, 'unknown', 'myia-web2:roo-extensions');
+    const state = await readCondenseHealth(KEY);
+    expect(state?.lastLanding).toBe('unknown');
+    // unknown n'est PAS un échec : l'issue `ok` reste, l'horloge reste désarmée.
+    expect(state?.lastOutcome).toBe('ok');
+    expect(state?.overThresholdSince).toBeNull();
+  });
+
+  it('the landing write never touches the outcome or the stall clock', async () => {
+    await noteOverThreshold(KEY, true, 1_000_000);
+    await markCondenseOutcome(KEY, 'error', 'myia-po-2025:roo-extensions');
+    await markCondenseLanding(KEY, 'landed');
+    const state = await readCondenseHealth(KEY);
+    expect(state?.lastOutcome).toBe('error');
+    expect(state?.overThresholdSince).toBeTypeOf('string');
+  });
+
+  it('a caller that passes no seat keeps the seat already known', async () => {
+    await markCondenseAttempt(KEY, 'myia-ai-01:roo-extensions');
+    await markCondenseLanding(KEY, 'landed');
+    expect((await readCondenseHealth(KEY))?.lastSeat).toBe('myia-ai-01:roo-extensions');
   });
 });
 
