@@ -20,6 +20,31 @@ import type { StoredConversation } from '../services/unified-store/types.js';
 import { TaskInstructionIndex, computeInstructionPrefix } from './task-instruction-index.js';
 
 /**
+ * Generic XML delegation block: <tag ...> ... <mode>X</mode> ... <message>Y</message> ... </tag>
+ *
+ * #4636: the former pattern used four lazy `[\s\S]*?` spans plus the `\1` backreference.
+ * When the closing `</tag>` is missing, the engine retried every combination of
+ * `<mode>`/`</mode>`/`<message>`/`</message>` positions, for every opening `<`:
+ * catastrophic backtracking (5.8k chars = 2.9 s, 11.7k > 97 s, measured). A 1.1 MB
+ * command output froze the MCP host's main thread.
+ *
+ * Each span is now a tempered token that cannot cross the delimiter that follows it,
+ * so it stops at the FIRST occurrence. Every span of the former pattern was an
+ * unrestricted `[\s\S]*?`, so its first match always took the earliest delimiter
+ * at each step: the match set is identical. Randomized oracle: 350k inputs,
+ * 6 078 with a match, 0 differences.
+ */
+export const GENERIC_XML_BLOCK = /<\s*([a-z_][\w\-]*)\b[^>]*>(?:(?!<\s*mode\s*>)[\s\S])*<\s*mode\s*>((?:(?!<\/\s*mode\s*>)[\s\S])*)<\/\s*mode\s*>(?:(?!<\s*message\s*>)[\s\S])*<\s*message\s*>((?:(?!<\/\s*message\s*>)[\s\S])*)<\/\s*message\s*>(?:(?!<\/\s*\1\s*>)[\s\S])*<\/\s*\1\s*>/i;
+const GENERIC_XML_BLOCK_ALL = new RegExp(GENERIC_XML_BLOCK.source, 'gi');
+
+/**
+ * #4636: the tempered pattern is still O(length × opening tags) when closing tags are
+ * missing (365k dense chars = 0.47 s). Delegation instructions are short; texts beyond
+ * this bound are tool outputs (command results, file reads) and skip this fallback pattern.
+ */
+export const GENERIC_XML_MAX_CHARS = 64 * 1024;
+
+/**
  * Moteur principal de reconstruction hiérarchique
  */
 export class HierarchyReconstructionEngine {
@@ -779,10 +804,11 @@ export class HierarchyReconstructionEngine {
                     // Exemple: <orchestrator_complex><mode>debug</mode><message>...</message></orchestrator_complex>
                     if (message.text || message.content) {
                         const contentAny = message.text || message.content;
-                        const genericXmlMatches = typeof contentAny === 'string' ? contentAny.match(/<\s*([a-z_][\w\-]*)\b[^>]*>[\s\S]*?<\s*mode\s*>([\s\S]*?)<\/\s*mode\s*>[\s\S]*?<\s*message\s*>([\s\S]*?)<\/\s*message\s*>[\s\S]*?<\/\s*\1\s*>/gi) : null;
+                        const genericXmlMatches = typeof contentAny === 'string' && contentAny.length <= GENERIC_XML_MAX_CHARS
+                            ? contentAny.match(GENERIC_XML_BLOCK_ALL) : null;
                         if (genericXmlMatches) {
                             for (const block of genericXmlMatches) {
-                                const m = block.match(/<\s*([a-z_][\w\-]*)\b[^>]*>[\s\S]*?<\s*mode\s*>([\s\S]*?)<\/\s*mode\s*>[\s\S]*?<\s*message\s*>([\s\S]*?)<\/\s*message\s*>[\s\S]*?<\/\s*\1\s*>/i);
+                                const m = block.match(GENERIC_XML_BLOCK);
                                 if (m) {
                                     const parentTag = String(m[1] || '').trim().toLowerCase();
                                     // Évite les doublons avec le pattern dédié <new_task>
