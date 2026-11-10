@@ -57,10 +57,9 @@ vi.mock('../unified-store/dual-write.js', () => ({
   dualWriteConversationToStore: mockDualWrite,
 }));
 
+import type { StoredConversation } from '../unified-store/types.js';
 import { SkeletonCacheService } from '../skeleton-cache.service.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
-
-const skel = (taskId: string, extra: any = {}): ConversationSkeleton =>
+const skel = (taskId: string, extra: any = {}): StoredConversation =>
   ({ taskId, metadata: {}, sequence: [], ...extra } as any);
 
 describe('SkeletonCacheService — write/persist/build coverage (#833 C3)', () => {

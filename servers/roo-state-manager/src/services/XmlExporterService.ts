@@ -1,5 +1,6 @@
 import { create } from 'xmlbuilder2';
-import { ConversationSkeleton, MessageSkeleton, ActionMetadata } from '../types/conversation.js';
+import { MessageSkeleton, ActionMetadata } from '../types/conversation.js';
+import type { StoredConversation } from './unified-store/types.js';
 import { validateExportFilePath } from '../utils/export-file-path.js';
 
 /**
@@ -21,14 +22,14 @@ export interface ProjectExportOptions extends XmlExportOptions {
 }
 
 /**
- * Service responsable de la génération de fichiers XML à partir des données ConversationSkeleton
+ * Service responsable de la génération de fichiers XML à partir des données StoredConversation
  */
 export class XmlExporterService {
     
     /**
      * Génère le XML pour une tâche individuelle
      */
-    generateTaskXml(skeleton: ConversationSkeleton, options: XmlExportOptions = {}): string {
+    generateTaskXml(skeleton: StoredConversation, options: XmlExportOptions = {}): string {
         const { prettyPrint = true, includeContent = false } = options;
         
         const root = create({ version: '1.0', encoding: 'UTF-8' })
@@ -100,7 +101,7 @@ export class XmlExporterService {
     /**
      * Génère le XML pour une conversation complète (tâche racine + enfants)
      */
-    generateConversationXml(rootSkeleton: ConversationSkeleton, children: ConversationSkeleton[], options: XmlExportOptions = {}): string {
+    generateConversationXml(rootSkeleton: StoredConversation, children: StoredConversation[], options: XmlExportOptions = {}): string {
         const { prettyPrint = true, maxDepth = Infinity } = options;
         
         const root = create({ version: '1.0', encoding: 'UTF-8' })
@@ -110,11 +111,11 @@ export class XmlExporterService {
             });
 
         // Générer l'arbre hiérarchique des tâches
-        const taskMap = new Map<string, ConversationSkeleton>();
+        const taskMap = new Map<string, StoredConversation>();
         taskMap.set(rootSkeleton.taskId, rootSkeleton);
         children.forEach(child => taskMap.set(child.taskId, child));
 
-        const addTaskToXml = (parentElement: any, skeleton: ConversationSkeleton, depth: number) => {
+        const addTaskToXml = (parentElement: any, skeleton: StoredConversation, depth: number) => {
             if (depth > maxDepth) return;
 
             const taskElement = parentElement.ele('task', {
@@ -192,7 +193,7 @@ export class XmlExporterService {
     /**
      * Génère le XML pour un projet complet (résumé de toutes les conversations)
      */
-    generateProjectXml(skeletons: ConversationSkeleton[], projectPath: string, options: ProjectExportOptions = {}): string {
+    generateProjectXml(skeletons: StoredConversation[], projectPath: string, options: ProjectExportOptions = {}): string {
         const { prettyPrint = true, startDate, endDate } = options;
         
         // Filtrer par date si spécifié

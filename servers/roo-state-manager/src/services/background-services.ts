@@ -8,7 +8,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
 import lockfile from 'proper-lockfile';
-import { ConversationSkeleton, SkeletonHeader } from '../types/conversation.js';
+import { SkeletonHeader } from '../types/conversation.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import { ServerState } from './state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../config/server-config.js';
@@ -32,16 +32,17 @@ import { markLeaderLockAttempted } from './lock-participation.js';
 import { readLockForAtomicity } from './lock-atomicity.js';
 
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
+import type { StoredConversation } from './unified-store/types.js';
 import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
 // Only needed when HEARTBEAT_AUTO_START=true (disabled by default).
 // import { RooSyncService } from './RooSyncService.js';
 
 /**
- * Extract the SkeletonHeader from a full ConversationSkeleton.
+ * Extract the SkeletonHeader from a full StoredConversation.
  * Only metadata, prefixes, and flags — no sequence.
  */
-export function toHeader(skeleton: ConversationSkeleton): SkeletonHeader {
+export function toHeader(skeleton: StoredConversation): SkeletonHeader {
     return {
         taskId: skeleton.taskId,
         parentTaskId: skeleton.parentTaskId,
@@ -145,7 +146,7 @@ async function loadSkeletonsFromIndex(
 export async function loadFullSkeleton(
     taskId: string,
     conversationCache: Map<string, SkeletonHeader>
-): Promise<ConversationSkeleton | null> {
+): Promise<StoredConversation | null> {
     try {
         const storageLocations = await RooStorageDetector.detectStorageLocations();
         if (storageLocations.length === 0) return null;
@@ -157,7 +158,7 @@ export async function loadFullSkeleton(
         if (content.charCodeAt(0) === 0xFEFF) {
             content = content.slice(1);
         }
-        const skeleton: ConversationSkeleton = JSON.parse(content);
+        const skeleton: StoredConversation = JSON.parse(content);
 
         // #1325: Validate that the loaded skeleton actually has a sequence.
         // saveSkeletonToDisk can create header-only files when no existing
@@ -2255,7 +2256,7 @@ export async function runIndexingWithInactivityWatchdog<T>(
  * `dualWriteConversationToStore` lit `skeleton.metadata.source` directement.
  */
 export function deriveIndexSource(
-    metadata?: Partial<Pick<NonNullable<ConversationSkeleton['metadata']>, 'source' | 'dataSource'>>
+    metadata?: Partial<Pick<NonNullable<StoredConversation['metadata']>, 'source' | 'dataSource'>>
 ): 'roo' | 'claude-code' | 'zoo-code' {
     if (metadata?.source === 'zoo-code') return 'zoo-code';
     if (metadata?.source === 'claude-code' || metadata?.dataSource === 'claude') return 'claude-code';
@@ -2941,7 +2942,7 @@ export function isPermanentIndexingError(error: any): boolean {
  * Sauvegarde un squelette sur le disque.
  * Accepts SkeletonHeader (from cache) — merges updated metadata into the
  * existing on-disk full skeleton so the sequence is preserved.
- * Also accepts ConversationSkeleton (full) which is written directly.
+ * Also accepts StoredConversation (full) which is written directly.
  */
 export async function saveSkeletonToDisk(skeleton: SkeletonHeader): Promise<void> {
     try {
@@ -2961,7 +2962,7 @@ export async function saveSkeletonToDisk(skeleton: SkeletonHeader): Promise<void
 
         const filePath = path.join(skeletonsCacheDir, `${skeleton.taskId}.json`);
 
-        // If the input already has a sequence (ConversationSkeleton), write directly.
+        // If the input already has a sequence (StoredConversation), write directly.
         // Otherwise merge header metadata into existing on-disk skeleton to preserve sequence.
         let toWrite: any = skeleton;
         if (!('sequence' in skeleton)) {

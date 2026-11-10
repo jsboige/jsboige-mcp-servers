@@ -17,7 +17,8 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ContentClassifier } from '../ContentClassifier.js';
-import type { ConversationSkeleton, MessageSkeleton } from '../../../types/conversation.js';
+import type { MessageSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../unified-store/types.js';
 import type { SummaryOptions } from '../../../types/trace-summary.js';
 
 // ---------- Helpers (mirror base test) ----------
@@ -26,7 +27,7 @@ function makeMessage(role: 'user' | 'assistant', content: string): MessageSkelet
     return { role, content, timestamp: '2026-01-01T00:00:00Z', isTruncated: false };
 }
 
-function makeSkeleton(sequence: any[], taskId = 'test-task-001'): ConversationSkeleton {
+function makeSkeleton(sequence: any[], taskId = 'test-task-001'): StoredConversation {
     return {
         taskId,
         metadata: {

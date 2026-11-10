@@ -1,4 +1,5 @@
-import { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
+import { MessageSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../unified-store/types.js';
 import { SummaryOptions } from '../../types/trace-summary.js';
 
 /**
@@ -22,7 +23,7 @@ export class ContentClassifier {
     /**
      * Classifie le contenu de la conversation en sections typées
      */
-    public classifyConversationContent(conversation: ConversationSkeleton, options?: SummaryOptions): ClassifiedContent[] {
+    public classifyConversationContent(conversation: StoredConversation, options?: SummaryOptions): ClassifiedContent[] {
         const classified: ClassifiedContent[] = [];
         let index = 0;
 
@@ -88,7 +89,7 @@ export class ContentClassifier {
      * NOUVELLE MÉTHODE : Classifie le contenu depuis un fichier .md source ou fallback JSON
      * Réplique la logique du script PowerShell de référence
      */
-    public async classifyContentFromMarkdownOrJson(conversation: ConversationSkeleton, options?: SummaryOptions): Promise<ClassifiedContent[]> {
+    public async classifyContentFromMarkdownOrJson(conversation: StoredConversation, options?: SummaryOptions): Promise<ClassifiedContent[]> {
         return this.classifyConversationContent(conversation, options);
     }
 

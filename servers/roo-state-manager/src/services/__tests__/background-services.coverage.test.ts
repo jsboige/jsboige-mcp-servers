@@ -80,15 +80,15 @@ import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
 import { shouldIndexTask } from '../task-partition.js';
 import { dualWriteConversationToStore } from '../unified-store/dual-write.js';
 import type { ServerState } from '../state-manager.service.js';
-import type { ConversationSkeleton, SkeletonHeader } from '../../types/conversation.js';
-
+import type { StoredConversation } from '../unified-store/types.js';
+import type { SkeletonHeader } from '../../types/conversation.js';
 const mockFs = fs as unknown as Record<'readdir' | 'readFile' | 'writeFile' | 'stat' | 'access' | 'mkdir' | 'unlink', ReturnType<typeof vi.fn>>;
 const mockRoo = RooStorageDetector as unknown as { detectStorageLocations: ReturnType<typeof vi.fn>; analyzeConversation: ReturnType<typeof vi.fn> };
 const mockClaude = ClaudeStorageDetector as unknown as { detectStorageLocations: ReturnType<typeof vi.fn>; analyzeConversation: ReturnType<typeof vi.fn> };
 const mockShouldIndex = shouldIndexTask as unknown as ReturnType<typeof vi.fn>;
 const mockDualWrite = dualWriteConversationToStore as unknown as ReturnType<typeof vi.fn>;
 
-function makeSkeleton(taskId: string, over?: Partial<ConversationSkeleton>): ConversationSkeleton {
+function makeSkeleton(taskId: string, over?: Partial<StoredConversation>): StoredConversation {
     return {
         taskId,
         metadata: {
@@ -101,7 +101,7 @@ function makeSkeleton(taskId: string, over?: Partial<ConversationSkeleton>): Con
         },
         sequence: [{ role: 'user', content: 'hi' } as any],
         ...over,
-    } as ConversationSkeleton;
+    } as StoredConversation;
 }
 
 function makeState(over?: Partial<ServerState>): ServerState {

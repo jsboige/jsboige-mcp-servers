@@ -1,7 +1,8 @@
-import { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
+import { MessageSkeleton } from '../../types/conversation.js';
 import { SummaryOptions, SummaryResult, SummaryStatistics } from '../../types/trace-summary.js';
 import { ContentClassifier, ClassifiedContent } from './ContentClassifier.js';
 import { ExportRenderer } from './ExportRenderer.js';
+import type { StoredConversation } from '../unified-store/types.js';
 import { InteractiveFeatures } from './InteractiveFeatures.js';
 
 /**
@@ -20,10 +21,10 @@ export class SummaryGenerator {
     }
 
     /**
-     * Génère un résumé intelligent à partir d'un ConversationSkeleton
+     * Génère un résumé intelligent à partir d'un StoredConversation
      */
     public async generateSummary(
-        conversation: ConversationSkeleton,
+        conversation: StoredConversation,
         options: Partial<SummaryOptions> = {}
     ): Promise<SummaryResult> {
         try {
@@ -204,7 +205,7 @@ export class SummaryGenerator {
     /**
      * Calcule la taille du contenu original
      */
-    public getOriginalContentSize(conversation: ConversationSkeleton): number {
+    public getOriginalContentSize(conversation: StoredConversation): number {
         const messages = (conversation.sequence ?? []).filter((item): item is MessageSkeleton =>
             'role' in item && 'content' in item);
 

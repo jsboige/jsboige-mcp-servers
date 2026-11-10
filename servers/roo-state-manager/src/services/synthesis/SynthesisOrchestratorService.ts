@@ -22,11 +22,11 @@ import {
     ContextBuildingResult,
     ExportOptions
 } from '../../models/synthesis/SynthesisModels.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
 import { NarrativeContextBuilderService } from './NarrativeContextBuilderService.js';
 import { LLMService } from './LLMService.js';
 import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
 import * as fs from 'fs/promises';
+import type { StoredConversation } from '../unified-store/types.js';
 import * as path from 'path';
 
 /**
@@ -325,7 +325,7 @@ export class SynthesisOrchestratorService {
     }
 
     /**
-     * Met à jour les métadonnées de synthèse dans un ConversationSkeleton.
+     * Met à jour les métadonnées de synthèse dans un StoredConversation.
      *
      * Phase 1 : Méthode squelette pour la structure.
      * Phase 2 : Implémentera la logique de mise à jour des métadonnées.
@@ -335,9 +335,9 @@ export class SynthesisOrchestratorService {
      * @returns Promise du squelette mis à jour
      */
     async updateSynthesisMetadata(
-        skeleton: ConversationSkeleton,
+        skeleton: StoredConversation,
         analysis: ConversationAnalysis
-    ): Promise<ConversationSkeleton> {
+    ): Promise<StoredConversation> {
         // Créer les métadonnées de synthèse à partir de l'analyse
         const synthesisMetadata: SynthesisMetadata = {
             status: 'completed',
@@ -351,7 +351,7 @@ export class SynthesisOrchestratorService {
         this.totalBatchesProcessedCount++;
 
         // Mettre à jour le squelette avec les nouvelles métadonnées
-        const updatedSkeleton: ConversationSkeleton = {
+        const updatedSkeleton: StoredConversation = {
             ...skeleton,
             metadata: {
                 ...skeleton.metadata,

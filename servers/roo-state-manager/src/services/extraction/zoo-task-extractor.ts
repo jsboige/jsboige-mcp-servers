@@ -127,7 +127,7 @@ export class ZooTaskExtractor implements TaskExtractor {
    * Extract a single Zoo task from its directory.
    *
    * Strategy: read task_metadata.json for core fields, then delegate
-   * to RooStorageDetector.analyzeConversation for full ConversationSkeleton
+   * to RooStorageDetector.analyzeConversation for full StoredConversation
    * parsing (format-identical). Falls back to metadata-only if analyzeConversation
    * fails (e.g. corrupted api_conversation_history).
    */

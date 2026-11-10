@@ -6,10 +6,9 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
+import type { StoredConversation } from '../unified-store/types.js';
 import { TaskNavigator, TreeNode } from '../task-navigator.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
-
-function createSkeleton(taskId: string, parentId?: string): ConversationSkeleton {
+function createSkeleton(taskId: string, parentId?: string): StoredConversation {
 	return {
 		taskId,
 		parentId: parentId,
@@ -19,7 +18,7 @@ function createSkeleton(taskId: string, parentId?: string): ConversationSkeleton
 }
 
 describe('TaskNavigator', () => {
-	let cache: Map<string, ConversationSkeleton>;
+	let cache: Map<string, StoredConversation>;
 
 	beforeEach(() => {
 		cache = new Map();

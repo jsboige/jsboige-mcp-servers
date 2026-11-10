@@ -9,10 +9,9 @@
  * - resetIndexingState / migrateLegacyIndexingState
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import type { StoredConversation } from '../unified-store/types.js';
 import { IndexingDecisionService } from '../indexing-decision.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
-
-function createSkeleton(overrides?: Partial<ConversationSkeleton>): ConversationSkeleton {
+function createSkeleton(overrides?: Partial<StoredConversation>): StoredConversation {
   return {
     taskId: 'test-task-001',
     metadata: {

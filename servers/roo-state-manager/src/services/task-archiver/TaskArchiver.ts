@@ -17,7 +17,7 @@ import { promisify } from 'util';
 import { createReadStream, existsSync } from 'fs';
 import { createInterface } from 'readline';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../unified-store/types.js';
 import { ArchivedTask, ArchivedTaskMessage, ARCHIVE_CURRENT_VERSION } from './types.js';
 
 const gzipAsync = promisify(gzip);
@@ -262,7 +262,7 @@ export class TaskArchiver {
     static async archiveTask(
         taskId: string,
         taskPath: string,
-        skeleton: ConversationSkeleton
+        skeleton: StoredConversation
     ): Promise<void> {
         const machineId = getMachineId();
         const archiveDir = path.join(getArchiveBasePath(), machineId);

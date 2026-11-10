@@ -14,28 +14,28 @@
  */
 
 import { describe, test, expect } from 'vitest';
-import { ConversationSkeleton } from '../../../types/conversation.js';
+import type { StoredConversation } from '../../unified-store/types.js';
 import { ClusterSummaryService } from '../ClusterSummaryService.js';
 
 // ─── Path A (legacy, congelé verbatim de ClusterSummaryService.ts pré-#1394) ──
 
-function legacySortByChronology(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
+function legacySortByChronology(tasks: StoredConversation[]): StoredConversation[] {
     return [...tasks].sort((a, b) =>
         new Date(a.metadata.createdAt).getTime() - new Date(b.metadata.createdAt).getTime()
     );
 }
 
-function legacySortBySize(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
+function legacySortBySize(tasks: StoredConversation[]): StoredConversation[] {
     return [...tasks].sort((a, b) => b.metadata.totalSize - a.metadata.totalSize);
 }
 
-function legacySortByActivity(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
+function legacySortByActivity(tasks: StoredConversation[]): StoredConversation[] {
     return [...tasks].sort((a, b) =>
         new Date(b.metadata.lastActivity).getTime() - new Date(a.metadata.lastActivity).getTime()
     );
 }
 
-function legacySortAlphabetically(tasks: ConversationSkeleton[]): ConversationSkeleton[] {
+function legacySortAlphabetically(tasks: StoredConversation[]): StoredConversation[] {
     return [...tasks].sort((a, b) => {
         const titleA = a.metadata.title || a.taskId;
         const titleB = b.metadata.title || b.taskId;
@@ -53,7 +53,7 @@ function makeSkeleton(overrides: {
     createdAt: string;
     lastActivity: string;
     totalSize: number;
-}): ConversationSkeleton {
+}): StoredConversation {
     return {
         taskId: overrides.taskId,
         metadata: {
@@ -66,12 +66,12 @@ function makeSkeleton(overrides: {
             source: 'roo',
         },
         sequence: [],
-    } as ConversationSkeleton;
+    } as StoredConversation;
 }
 
 /** Corpus : ex æquo createdAt (stabilité), ex æquo totalSize, titres absents
  *  (repli taskId), accents pour localeCompare, activités désordonnées. */
-const CORPUS: ConversationSkeleton[] = [
+const CORPUS: StoredConversation[] = [
     makeSkeleton({
         taskId: 'zeta-titled',
         title: 'Zébra task',
@@ -111,10 +111,10 @@ const CORPUS: ConversationSkeleton[] = [
 ];
 
 const service = new ClusterSummaryService();
-const unifiedSort = (tasks: ConversationSkeleton[], sortBy: SortBy): ConversationSkeleton[] =>
+const unifiedSort = (tasks: StoredConversation[], sortBy: SortBy): StoredConversation[] =>
     (service as any).sortClusterTasks(tasks, sortBy);
 
-const LEGACY: Record<SortBy, (t: ConversationSkeleton[]) => ConversationSkeleton[]> = {
+const LEGACY: Record<SortBy, (t: StoredConversation[]) => StoredConversation[]> = {
     chronological: legacySortByChronology,
     size: legacySortBySize,
     activity: legacySortByActivity,

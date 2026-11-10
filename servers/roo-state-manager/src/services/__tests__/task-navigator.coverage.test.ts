@@ -33,11 +33,10 @@
  */
 
 import { describe, test, expect, beforeEach } from 'vitest';
+import type { StoredConversation } from '../unified-store/types.js';
 import { TaskNavigator } from '../task-navigator.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
-
 /** Skeleton that carries ONLY parentTaskId (no parentId) — the cold arm of L19/L30. */
-function skeletonWithParentTaskId(taskId: string, parentTaskId?: string): ConversationSkeleton {
+function skeletonWithParentTaskId(taskId: string, parentTaskId?: string): StoredConversation {
     return {
         taskId,
         parentTaskId,
@@ -47,7 +46,7 @@ function skeletonWithParentTaskId(taskId: string, parentTaskId?: string): Conver
 }
 
 /** Skeleton that carries ONLY parentId (matches the base helper's shape). */
-function skeletonWithParentId(taskId: string, parentId?: string): ConversationSkeleton {
+function skeletonWithParentId(taskId: string, parentId?: string): StoredConversation {
     return {
         taskId,
         parentId,
@@ -61,7 +60,7 @@ function skeletonWithBoth(
     taskId: string,
     parentId: string,
     parentTaskId: string,
-): ConversationSkeleton {
+): StoredConversation {
     return {
         taskId,
         parentId,
@@ -72,7 +71,7 @@ function skeletonWithBoth(
 }
 
 describe('TaskNavigator — branch coverage (#833 C3, source-grounded)', () => {
-    let cache: Map<string, ConversationSkeleton>;
+    let cache: Map<string, StoredConversation>;
 
     beforeEach(() => {
         cache = new Map();

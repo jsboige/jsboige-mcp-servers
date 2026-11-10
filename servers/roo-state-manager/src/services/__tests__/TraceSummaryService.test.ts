@@ -17,8 +17,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
-
+import { MessageSkeleton } from '../../types/conversation.js';
 // ─────────────────── mocks ───────────────────
 // Use class literals (not vi.fn().mockImplementation) so that mockReset:true
 // in vitest config does not destroy the constructor implementations.
@@ -55,6 +54,7 @@ vi.mock('../trace-summary/ExportRenderer.js', () => ({
 
 // ─────────────────── import SUT ───────────────────
 
+import type { StoredConversation } from '../unified-store/types.js';
 import { TraceSummaryService } from '../TraceSummaryService.js';
 
 // ─────────────────── helpers ───────────────────
@@ -73,7 +73,7 @@ const makeSkeleton = (taskId: string, opts: {
     createdAt?: string;
     lastActivity?: string;
     title?: string;
-} = {}): ConversationSkeleton => ({
+} = {}): StoredConversation => ({
     taskId,
     parentTaskId: opts.parentTaskId,
     metadata: {
@@ -224,7 +224,7 @@ describe('TraceSummaryService', () => {
         });
 
         test('json light falls back to metadata.title when no user message in sequence (#3174)', async () => {
-            const conv: ConversationSkeleton = {
+            const conv: StoredConversation = {
                 ...makeSkeleton('task-3174'),
                 // Slash-command session shape: no user message survives in the
                 // sequence — extractFirstUserMessage must fall back to the title.

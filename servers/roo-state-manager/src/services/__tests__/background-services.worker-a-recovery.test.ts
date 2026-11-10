@@ -82,9 +82,8 @@ import {
 } from '../background-services.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
+import type { StoredConversation } from '../unified-store/types.js';
 import type { ServerState } from '../state-manager.service.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
-
 const mockFs = fs as unknown as Record<'readdir' | 'readFile' | 'writeFile' | 'stat', ReturnType<typeof vi.fn>>;
 const mockRoo = RooStorageDetector as unknown as { detectStorageLocations: ReturnType<typeof vi.fn>; analyzeConversation: ReturnType<typeof vi.fn> };
 const mockClaude = ClaudeStorageDetector as unknown as { detectStorageLocations: ReturnType<typeof vi.fn> };
@@ -152,7 +151,7 @@ function dirent(name: string, isDir = true): any {
     return { name, isDirectory: () => isDir };
 }
 
-function makeSkeleton(taskId: string): ConversationSkeleton {
+function makeSkeleton(taskId: string): StoredConversation {
     return {
         taskId,
         metadata: {
@@ -164,7 +163,7 @@ function makeSkeleton(taskId: string): ConversationSkeleton {
             totalSize: 128,
         },
         sequence: [{ role: 'user', content: 'hi' } as any],
-    } as ConversationSkeleton;
+    } as StoredConversation;
 }
 
 let logs: string[];

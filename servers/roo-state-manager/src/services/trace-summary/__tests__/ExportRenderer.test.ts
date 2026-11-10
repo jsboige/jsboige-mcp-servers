@@ -18,9 +18,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { escapeHtml, unescapeHtml, sanitizeSectionHtml, ExportRenderer } from '../ExportRenderer.js';
 import type { RenderItem } from '../ExportRenderer.js';
 import type { SummaryOptions, SummaryStatistics, MsgType } from '../../TraceSummaryService.js';
+import type { StoredConversation } from '../../unified-store/types.js';
 import type { ClassifiedContent } from '../ContentClassifier.js';
-import type { ConversationSkeleton } from '../../../types/conversation.js';
-
 // ---------- Mocks ----------
 
 vi.mock('../ContentClassifier.js', () => {
@@ -80,7 +79,7 @@ function makeStatistics(overrides: Partial<SummaryStatistics> = {}): SummaryStat
     };
 }
 
-function makeConversation(overrides: Partial<ConversationSkeleton> = {}): ConversationSkeleton {
+function makeConversation(overrides: Partial<StoredConversation> = {}): StoredConversation {
     return {
         taskId: 'test-task-001',
         metadata: {

@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { DeathSpiralDetector } from '../death-spiral-detector.js';
-import { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
-
-// Build a ConversationSkeleton with the real type structure:
+import type { StoredConversation } from '../../unified-store/types.js';
+import { MessageSkeleton } from '../../types/conversation.js';
+// Build a StoredConversation with the real type structure:
 // sequence: (MessageSkeleton | ActionMetadata)[]
 // MessageSkeleton: { role, content: string, timestamp: string, isTruncated }
-function makeSkeleton(entries: Partial<MessageSkeleton>[]): ConversationSkeleton {
+function makeSkeleton(entries: Partial<MessageSkeleton>[]): StoredConversation {
 	return {
 		taskId: 'test-task-id',
 		metadata: {
@@ -39,7 +39,7 @@ function errorMsg(text: string, ts: number) { return msg('user', text, ts); }
 const NOW = new Date('2026-04-28T12:00:00Z').getTime();
 
 describe('DeathSpiralDetector', () => {
-	let cache: Map<string, ConversationSkeleton>;
+	let cache: Map<string, StoredConversation>;
 
 	beforeEach(() => {
 		cache = new Map();

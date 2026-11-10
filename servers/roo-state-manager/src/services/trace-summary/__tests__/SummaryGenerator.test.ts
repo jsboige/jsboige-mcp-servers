@@ -8,8 +8,8 @@
 import { describe, test, expect } from 'vitest';
 import { SummaryGenerator } from '../SummaryGenerator.js';
 import type { ClassifiedContent } from '../ContentClassifier.js';
-import type { ConversationSkeleton, MessageSkeleton } from '../../../types/conversation.js';
-
+import type { StoredConversation } from '../../unified-store/types.js';
+import type { MessageSkeleton } from '../../../types/conversation.js';
 describe('SummaryGenerator', () => {
 	let generator: SummaryGenerator;
 
@@ -224,7 +224,7 @@ describe('SummaryGenerator', () => {
 					{ role: 'user', content: 'OK' }           // 2 chars
 				] as MessageSkeleton[],
 				isCompleted: true
-			} as ConversationSkeleton;
+			} as StoredConversation;
 			expect(generator.getOriginalContentSize(conversation)).toBe(14);
 		});
 
@@ -234,7 +234,7 @@ describe('SummaryGenerator', () => {
 				taskId: 'test-task',
 				sequence: [],
 				isCompleted: true
-			} as ConversationSkeleton;
+			} as StoredConversation;
 			expect(generator.getOriginalContentSize(conversation)).toBe(0);
 		});
 

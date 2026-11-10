@@ -28,11 +28,12 @@ interface NarrativeContext {
     contextSummary: string;
     [key: string]: any; // Flexible pour l'enrichissement
 }
-import { ConversationSkeleton, MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
+import { MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
 import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
 import { TaskNavigator } from '../task-navigator.js';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs/promises';
+import type { StoredConversation } from '../unified-store/types.js';
 import * as path from 'path';
 
 /**
@@ -59,7 +60,7 @@ export interface NarrativeContextBuilderOptions {
  */
 export interface TreeTraversalResult {
     /** Squelettes collectés pendant le parcours */
-    collectedSkeletons: ConversationSkeleton[];
+    collectedSkeletons: StoredConversation[];
     
     /** Analyses de synthèse collectées (si disponibles) */
     collectedAnalyses: ConversationAnalysis[];
@@ -189,7 +190,7 @@ export class NarrativeContextBuilderService {
      * Cache global des squelettes de conversation (injecté depuis le serveur principal).
      * Partagé avec tous les services pour éviter les re-lectures coûteuses.
      */
-    private conversationCache: Map<string, ConversationSkeleton>;
+    private conversationCache: Map<string, StoredConversation>;
     
     /**
      * Cache des analyses de synthèse pour éviter les re-lectures.
@@ -221,7 +222,7 @@ export class NarrativeContextBuilderService {
      */
     constructor(
         options: NarrativeContextBuilderOptions,
-        conversationCache: Map<string, ConversationSkeleton>
+        conversationCache: Map<string, StoredConversation>
     ) {
         this.options = options;
         this.conversationCache = conversationCache;
@@ -871,13 +872,13 @@ export class NarrativeContextBuilderService {
     async collectSiblingTasks(
         taskId: string,
         includeSubsequent: boolean = false
-    ): Promise<ConversationSkeleton[]> {
+    ): Promise<StoredConversation[]> {
         const targetTask = await this.getConversationSkeleton(taskId);
         if (!targetTask || !targetTask.parentTaskId) {
             return [];
         }
 
-        const siblings: ConversationSkeleton[] = [];
+        const siblings: StoredConversation[] = [];
         const targetTimestamp = new Date(targetTask.metadata.lastActivity).getTime();
 
         // Parcourir toutes les conversations pour trouver les sœurs
@@ -1280,7 +1281,7 @@ export class NarrativeContextBuilderService {
      * @param taskId ID de la tâche à charger
      * @returns Promise du squelette ou null si non trouvé
      */
-    async getConversationSkeleton(taskId: string): Promise<ConversationSkeleton | null> {
+    async getConversationSkeleton(taskId: string): Promise<StoredConversation | null> {
         return this.conversationCache.get(taskId) || null;
     }
 
@@ -1330,7 +1331,7 @@ export class NarrativeContextBuilderService {
      * Construit une ConversationAnalysis basique à partir des métadonnées du squelette.
      * Utilisé quand aucune synthèse LLM n'existe sur disque.
      */
-    private buildAnalysisFromSkeleton(skeleton: ConversationSkeleton): ConversationAnalysis {
+    private buildAnalysisFromSkeleton(skeleton: StoredConversation): ConversationAnalysis {
         return {
             taskId: skeleton.taskId,
             analysisEngineVersion: '1.0.0-skeleton-derived',
@@ -1539,7 +1540,7 @@ export class NarrativeContextBuilderService {
      * Construit le résumé de contexte narratif complet
      */
     private async buildContextSummary(
-        conversation: ConversationSkeleton,
+        conversation: StoredConversation,
         options: ContextBuildingOptions
     ): Promise<string> {
         const parts: string[] = [];
@@ -1579,7 +1580,7 @@ export class NarrativeContextBuilderService {
     /**
      * Analyse le contenu d'une conversation en utilisant les patterns de TraceSummaryService
      */
-    private async analyzeConversationContent(conversation: ConversationSkeleton): Promise<string> {
+    private async analyzeConversationContent(conversation: StoredConversation): Promise<string> {
         const messages = (conversation.sequence ?? []).filter((item): item is any =>
             'role' in item && 'content' in item);
 
@@ -1918,8 +1919,8 @@ export class NarrativeContextBuilderService {
     /**
      * Génère une synthèse à la volée pour une tâche sans synthèse existante.
      */
-    private async generateOnDemandSummary(skeleton: ConversationSkeleton): Promise<string> {
-        // Utiliser les données réelles de ConversationSkeleton
+    private async generateOnDemandSummary(skeleton: StoredConversation): Promise<string> {
+        // Utiliser les données réelles de StoredConversation
         const messageCount = skeleton.metadata.messageCount;
         const actionCount = skeleton.metadata.actionCount;
         const workspace = skeleton.metadata.workspace || 'workspace inconnu';

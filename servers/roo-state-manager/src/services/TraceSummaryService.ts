@@ -9,13 +9,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs';
-import {
-    ConversationSkeleton,
-    MessageSkeleton,
-    ActionMetadata,
-    ClusterSummaryOptions,
-    ClusterSummaryResult
-} from '../types/conversation.js';
+import { MessageSkeleton, ActionMetadata, ClusterSummaryOptions, ClusterSummaryResult } from '../types/conversation.js';
 import { ExportConfigManager } from './ExportConfigManager.js';
 import { DetailLevelStrategyFactory } from './reporting/DetailLevelStrategyFactory.js';
 import { IReportingStrategy } from './reporting/IReportingStrategy.js';
@@ -31,6 +25,7 @@ import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '../types
 export { sanitizeSectionHtml };
 
 // Import types depuis le fichier dédié
+import type { StoredConversation } from './unified-store/types.js';
 import {
     ExportFormat,
     JsonVariant,
@@ -98,10 +93,10 @@ export class TraceSummaryService {
     }
 
     /**
-     * Génère un résumé intelligent à partir d'un ConversationSkeleton
+     * Génère un résumé intelligent à partir d'un StoredConversation
      */
     async generateSummary(
-        conversation: ConversationSkeleton,
+        conversation: StoredConversation,
         options: Partial<SummaryOptions> = {}
     ): Promise<SummaryResult> {
         try {
@@ -149,8 +144,8 @@ export class TraceSummaryService {
      * Délègue au ClusterSummaryService
      */
     async generateClusterSummary(
-        rootTask: ConversationSkeleton,
-        childTasks: ConversationSkeleton[],
+        rootTask: StoredConversation,
+        childTasks: StoredConversation[],
         options: Partial<ClusterSummaryOptions> = {}
     ): Promise<ClusterSummaryResult> {
         return this.clusterSummaryService.generateClusterSummary(
@@ -167,7 +162,7 @@ export class TraceSummaryService {
      * Génère un résumé au format JSON (light ou full)
      */
     private async generateJsonSummary(
-        conversation: ConversationSkeleton,
+        conversation: StoredConversation,
         options: SummaryOptions
     ): Promise<SummaryResult> {
         const variant = options.jsonVariant || 'light';
@@ -242,7 +237,7 @@ export class TraceSummaryService {
      * Génère un résumé au format CSV (conversations, messages, ou tools)
      */
     private async generateCsvSummary(
-        conversation: ConversationSkeleton,
+        conversation: StoredConversation,
         options: SummaryOptions
     ): Promise<SummaryResult> {
         const variant = options.csvVariant || 'conversations';
@@ -295,7 +290,7 @@ export class TraceSummaryService {
     /**
      * Calcule les statistiques de résumé pour les formats JSON
      */
-    private calculateJsonLightSummary(conversations: ConversationSkeleton[]) {
+    private calculateJsonLightSummary(conversations: StoredConversation[]) {
         const totalMessages = conversations.reduce((sum, conv) => sum + conv.metadata.messageCount, 0);
         const totalSize = conversations.reduce((sum, conv) => sum + conv.metadata.totalSize, 0);
 
@@ -315,9 +310,9 @@ export class TraceSummaryService {
     }
 
     /**
-     * Convertit un ConversationSkeleton en JsonConversationSkeleton
+     * Convertit un StoredConversation en JsonConversationSkeleton
      */
-    private convertToJsonSkeleton(conversation: ConversationSkeleton): JsonConversationSkeleton {
+    private convertToJsonSkeleton(conversation: StoredConversation): JsonConversationSkeleton {
         // Récupérer le premier message utilisateur
         const firstUserMessage = this.extractFirstUserMessage(conversation);
 
@@ -338,7 +333,7 @@ export class TraceSummaryService {
     /**
      * Extrait le premier message utilisateur d'une conversation
      */
-    private extractFirstUserMessage(conversation: ConversationSkeleton): string {
+    private extractFirstUserMessage(conversation: StoredConversation): string {
         const userMessages = (conversation.sequence ?? []).filter(item =>
             'role' in item && item.role === 'user'
         ) as MessageSkeleton[];
@@ -352,7 +347,7 @@ export class TraceSummaryService {
     /**
      * Convertit les messages en format JSON avec extraction des tool calls
      */
-    private convertToJsonMessages(conversation: ConversationSkeleton, options: SummaryOptions): JsonMessage[] {
+    private convertToJsonMessages(conversation: StoredConversation, options: SummaryOptions): JsonMessage[] {
         const messages = (conversation.sequence ?? []).filter(item =>
             'role' in item && 'content' in item
         ) as MessageSkeleton[];
@@ -423,7 +418,7 @@ export class TraceSummaryService {
     /**
      * Génère un CSV de conversations
      */
-    private generateCsvConversations(conversations: ConversationSkeleton[]): string {
+    private generateCsvConversations(conversations: StoredConversation[]): string {
         const headers = [
             'taskId', 'workspace', 'isCompleted', 'createdAt', 'lastActivity',
             'messageCount', 'actionCount', 'totalSize', 'firstUserMessage'
@@ -450,7 +445,7 @@ export class TraceSummaryService {
     /**
      * Génère un CSV de messages
      */
-    private generateCsvMessages(conversation: ConversationSkeleton, options: SummaryOptions): string {
+    private generateCsvMessages(conversation: StoredConversation, options: SummaryOptions): string {
         const headers = [
             'taskId', 'messageIndex', 'role', 'timestamp', 'contentLength',
             'isTruncated', 'toolCount', 'workspace'
@@ -481,7 +476,7 @@ export class TraceSummaryService {
     /**
      * Génère un CSV d'outils
      */
-    private generateCsvTools(conversation: ConversationSkeleton, options: SummaryOptions): string {
+    private generateCsvTools(conversation: StoredConversation, options: SummaryOptions): string {
         const headers = [
             'taskId', 'messageIndex', 'toolName', 'serverName', 'executionTime',
             'success', 'argsCount', 'resultLength', 'workspace'
@@ -580,7 +575,7 @@ export class TraceSummaryService {
      * produisaient des % dJSON figés 40/40/20 quel que soit le contenu. Les % de taille
      * dérivent désormais des vraies sommes, et les % de comptage sont ajoutés.
      */
-    private calculateJsonStatistics(conversations: ConversationSkeleton[]): SummaryStatistics {
+    private calculateJsonStatistics(conversations: StoredConversation[]): SummaryStatistics {
         let totalMessages = 0;
         let totalSize = 0;
         let userMessages = 0;
@@ -672,7 +667,7 @@ export class TraceSummaryService {
     /**
      * Calcule la taille du contenu original
      */
-    private getOriginalContentSize(conversation: ConversationSkeleton): number {
+    private getOriginalContentSize(conversation: StoredConversation): number {
         const messages = (conversation.sequence ?? []).filter((item): item is MessageSkeleton =>
             'role' in item && 'content' in item);
 

@@ -17,8 +17,8 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ContentClassifier, ClassifiedContent } from '../ContentClassifier.js';
-import type { ConversationSkeleton, MessageSkeleton } from '../../../types/conversation.js';
-
+import type { StoredConversation } from '../../unified-store/types.js';
+import type { MessageSkeleton } from '../../../types/conversation.js';
 // ---------- Mocks ----------
 
 vi.mock('fs', () => {
@@ -51,7 +51,7 @@ function makeMessage(role: 'user' | 'assistant', content: string): MessageSkelet
     };
 }
 
-function makeSkeleton(messages: MessageSkeleton[], taskId = 'test-task-001'): ConversationSkeleton {
+function makeSkeleton(messages: MessageSkeleton[], taskId = 'test-task-001'): StoredConversation {
     return {
         taskId,
         metadata: {

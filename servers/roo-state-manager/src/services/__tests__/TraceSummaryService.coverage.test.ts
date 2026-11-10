@@ -50,8 +50,7 @@
  */
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { ConversationSkeleton, MessageSkeleton } from '../../types/conversation.js';
-
+import { MessageSkeleton } from '../../types/conversation.js';
 // ─────────────────── mocks (mirror base suite — real JsonCsvExporter/ClusterSummaryService) ───────────────────
 
 const mockGenerateSummaryFn = vi.fn();
@@ -84,6 +83,7 @@ vi.mock('../trace-summary/ExportRenderer.js', () => ({
     sanitizeSectionHtml: (html: string) => html,
 }));
 
+import type { StoredConversation } from '../unified-store/types.js';
 import { TraceSummaryService } from '../TraceSummaryService.js';
 
 // ─────────────────── helpers ───────────────────
@@ -95,7 +95,7 @@ const makeMessage = (role: 'user' | 'assistant', content: string): MessageSkelet
     isTruncated: false,
 });
 
-const makeSkeleton = (taskId: string, sequence: MessageSkeleton[] = []): ConversationSkeleton => ({
+const makeSkeleton = (taskId: string, sequence: MessageSkeleton[] = []): StoredConversation => ({
     taskId,
     parentTaskId: undefined,
     metadata: {

@@ -17,11 +17,11 @@
  * Priorite de merge en cas de collision de taskId: local (Tier 1/2) > archive (Tier 3).
  */
 
-import { ConversationSkeleton } from '../types/conversation.js';
 import { RooStorageDetector } from '../utils/roo-storage-detector.js';
 import path from 'path';
 import os from 'os';
 import { createHash } from 'crypto';
+import type { StoredConversation } from './unified-store/types.js';
 import { promises as fs } from 'fs';
 
 const SKELETON_CACHE_DIR_NAME = '.skeletons';
@@ -65,7 +65,7 @@ export class SkeletonCacheService {
     // #1395 J+0 — warn-once : le format servi est déprécié (voir MIGRATION-UNIFIED-TASK-EXTRACTION.md)
     private static deprecationWarned = false;
     private static config: SkeletonCacheServiceConfig = {};
-    private cache: Map<string, ConversationSkeleton> = new Map();
+    private cache: Map<string, StoredConversation> = new Map();
     private lastRefreshTime: number = 0;
     /** Tier 3 cold-start: in-progress full-load promise. Reused by concurrent callers
      *  so a boot pre-warm and a first tool call never launch two full Tier 1/2/3 loads
@@ -147,14 +147,14 @@ export class SkeletonCacheService {
 
     /**
      * Obtenir l'instance unique du service.
-     * #1395 J+0 : le format servi (ConversationSkeleton) est déprécié —
+     * #1395 J+0 : le format servi (StoredConversation) est déprécié —
      * remplacement : unified store PG (src/services/unified-store/), warn-once ci-dessous.
      */
     public static getInstance(): SkeletonCacheService {
         if (!SkeletonCacheService.deprecationWarned) {
             SkeletonCacheService.deprecationWarned = true;
             console.warn(
-                '[Deprecation] SkeletonCacheService serves the deprecated Roo-specific ConversationSkeleton format ' +
+                '[Deprecation] SkeletonCacheService serves the deprecated Roo-specific StoredConversation format ' +
                 '(roo-extensions #1360/#1395). Replacement: unified PG-backed task extraction ' +
                 '(src/services/unified-store/, docs/MIGRATION-UNIFIED-TASK-EXTRACTION.md). ' +
                 'Removal no earlier than 2026-10-28, gated on roo-extensions #1394.'
@@ -170,7 +170,7 @@ export class SkeletonCacheService {
      * Obtenir le cache de conversations
      * Garantit que le cache est frais avant de le retourner
      */
-    public async getCache(): Promise<Map<string, ConversationSkeleton>> {
+    public async getCache(): Promise<Map<string, StoredConversation>> {
         await this.ensureFreshCache();
         return this.cache;
     }
@@ -184,14 +184,14 @@ export class SkeletonCacheService {
      * probe de fraîcheur réussi — contrairement à getCache(), aucun rattrapage
      * n'est déclenché si le cache est vide.
      */
-    public getCacheImmediate(): Map<string, ConversationSkeleton> {
+    public getCacheImmediate(): Map<string, StoredConversation> {
         return this.cache;
     }
 
     /**
      * Obtenir un skeleton spécifique par taskId
      */
-    public async getSkeleton(taskId: string): Promise<ConversationSkeleton | undefined> {
+    public async getSkeleton(taskId: string): Promise<StoredConversation | undefined> {
         await this.ensureFreshCache();
         return this.cache.get(taskId);
     }
@@ -202,7 +202,7 @@ export class SkeletonCacheService {
      * cold load : hôte froid → undefined (dégradation identique au comportement
      * sans ce chemin), hôte chaud → le stub tel quel.
      */
-    public peekSkeleton(taskId: string): ConversationSkeleton | undefined {
+    public peekSkeleton(taskId: string): StoredConversation | undefined {
         return this.cache.get(taskId);
     }
 
@@ -217,7 +217,7 @@ export class SkeletonCacheService {
     /**
      * Obtenir tous les skeletons sous forme de tableau
      */
-    public async getAllSkeletons(): Promise<ConversationSkeleton[]> {
+    public async getAllSkeletons(): Promise<StoredConversation[]> {
         await this.ensureFreshCache();
         return Array.from(this.cache.values());
     }
@@ -230,7 +230,7 @@ export class SkeletonCacheService {
      * fire-and-forget (non-blocking) — failure is absorbed by the writer's
      * circuit-breaker and never blocks the local cache path.
      */
-    public async addOrUpdate(taskId: string, skeleton: ConversationSkeleton): Promise<void> {
+    public async addOrUpdate(taskId: string, skeleton: StoredConversation): Promise<void> {
         this.cache.set(taskId, skeleton);
         await this.saveSkeleton(taskId, skeleton);
 
@@ -248,7 +248,7 @@ export class SkeletonCacheService {
      * production callers — see jsboige/jsboige-mcp-servers#692. The live dual-write fires
      * from the production paths that import dualWriteConversationToStore directly.
      */
-    private async dualWriteToStore(taskId: string, skeleton: ConversationSkeleton): Promise<void> {
+    private async dualWriteToStore(taskId: string, skeleton: StoredConversation): Promise<void> {
       const { dualWriteConversationToStore } = await import('./unified-store/dual-write.js');
       await dualWriteConversationToStore(taskId, skeleton);
     }
@@ -256,7 +256,7 @@ export class SkeletonCacheService {
     /**
      * Save a single skeleton to disk with retry
      */
-    public async saveSkeleton(taskId: string, skeleton?: ConversationSkeleton): Promise<boolean> {
+    public async saveSkeleton(taskId: string, skeleton?: StoredConversation): Promise<boolean> {
         const toSave = skeleton || this.cache.get(taskId);
         if (!toSave) return false;
 
@@ -593,7 +593,7 @@ export class SkeletonCacheService {
                         if (content.charCodeAt(0) === 0xFEFF) {
                             content = content.slice(1);
                         }
-                        const skeleton: ConversationSkeleton = JSON.parse(content);
+                        const skeleton: StoredConversation = JSON.parse(content);
 
                         if (skeleton.taskId) {
                             this.cache.set(skeleton.taskId, skeleton);
@@ -901,13 +901,13 @@ export class SkeletonCacheService {
             const parsed = JSON.parse(content) as {
                 version?: number;
                 savedAt?: number;
-                stubs?: ConversationSkeleton[];
+                stubs?: StoredConversation[];
             };
             if (parsed.version !== TIER3_SNAPSHOT_VERSION || !Array.isArray(parsed.stubs)) {
                 console.warn('[SkeletonCacheService] Tier 3 (snapshot): format inconnu, ignore');
                 return 0;
             }
-            const seededStubs: ConversationSkeleton[] = [];
+            const seededStubs: StoredConversation[] = [];
             for (const stub of parsed.stubs) {
                 const taskId = stub?.taskId;
                 const filePath = (stub as any)?.metadata?.archiveFilePath;
@@ -953,7 +953,7 @@ export class SkeletonCacheService {
         const snapshotPath = this.getTier3SnapshotPath();
         if (!snapshotPath) return;
         try {
-            const stubs: ConversationSkeleton[] = [];
+            const stubs: StoredConversation[] = [];
             for (const skeleton of this.cache.values()) {
                 if ((skeleton as any).metadata?.dataSource !== 'gdrive-archive') continue;
                 if (skeleton.metadata?.hydrated === true || (skeleton.sequence?.length ?? 0) > 0) {
@@ -963,7 +963,7 @@ export class SkeletonCacheService {
                         ...skeleton,
                         sequence: [],
                         metadata: { ...skeleton.metadata, hydrated: false },
-                    } as ConversationSkeleton;
+                    } as StoredConversation;
                     delete sanitized.metadata.hydratedFrom;
                     stubs.push(sanitized);
                 } else {
@@ -990,7 +990,7 @@ export class SkeletonCacheService {
      * #1747 E — Sérialisation canonique des stubs (triés par taskId, l'ordre
      * d'insertion du cache varie entre seed et scan) et son empreinte sha256.
      */
-    private tier3StubsSignature(stubs: ConversationSkeleton[]): { body: string; signature: string } {
+    private tier3StubsSignature(stubs: StoredConversation[]): { body: string; signature: string } {
         const sorted = [...stubs].sort((a, b) => (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0));
         const body = JSON.stringify(sorted);
         return { body, signature: createHash('sha256').update(body).digest('hex') };

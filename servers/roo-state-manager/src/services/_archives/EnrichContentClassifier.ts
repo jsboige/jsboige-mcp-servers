@@ -14,14 +14,14 @@
  */
 
 import { ClassifiedContent, ToolCallDetails, ToolResultDetails } from '../types/enhanced-conversation.js';
-import { ConversationSkeleton, MessageSkeleton } from '../types/conversation.js';
-
+import type { StoredConversation } from '../unified-store/types.js';
+import { MessageSkeleton } from '../types/conversation.js';
 export class EnrichContentClassifier {
 
 	/**
 	 * Classifie une conversation complète
 	 */
-	async classifyConversationContent(conversation: ConversationSkeleton): Promise<ClassifiedContent[]> {
+	async classifyConversationContent(conversation: StoredConversation): Promise<ClassifiedContent[]> {
 		const classified: ClassifiedContent[] = [];
 		let index = 0;
 

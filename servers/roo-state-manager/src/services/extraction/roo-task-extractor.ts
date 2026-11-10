@@ -4,7 +4,7 @@
  * @module services/extraction/roo-task-extractor
  * @issue #1392 (#1360-2)
  *
- * Wraps RooStorageDetector and converts ConversationSkeleton → UnifiedTask
+ * Wraps RooStorageDetector and converts StoredConversation → UnifiedTask
  * via the toUnifiedTask() conversion helper from #1391.
  */
 
