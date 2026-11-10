@@ -90,11 +90,17 @@ describe('#4352 g9 — operator priority: consumed requests at the FRONT of the 
 
         // 2. Leader tick consumes with the backlog already queued.
         const state = leaderState();
+        // ms#1721 review (ai-01): the rebuild must happen IN PLACE — tool
+        // handlers hold this very Set object as a parameter and .add() on it
+        // after awaits; a reassignment orphans them and silently loses tasks.
+        const queueBefore = state.qdrantIndexQueue;
         const drainedBefore = Array.from(state.qdrantIndexQueue.values())
             .slice(0, QDRANT_INDEX_BATCH_SIZE);
         expect(drainedBefore).not.toContain('d5be00ef'); // the defect's premise
 
         const consumed = await consumePendingIndexRequests(state);
+
+        expect(state.qdrantIndexQueue).toBe(queueBefore); // same object, always
 
         expect(consumed).toEqual(['d5be00ef']);
 

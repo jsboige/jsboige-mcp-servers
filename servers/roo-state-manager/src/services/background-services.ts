@@ -1770,12 +1770,15 @@ export async function consumePendingIndexRequests(state: ServerState): Promise<s
         // Consumed IDs first, then whatever was already queued; a task present
         // in both keeps its consumed (front) position — Set preserves the
         // first insertion.
+        // Rebuild IN PLACE (clear + re-add): tool handlers receive the SAME Set
+        // object as a parameter and call `.add()` on it after awaits
+        // (roosync-indexing.tool.ts index path, reset-collection.tool.ts reset
+        // loop) — reassigning `state.qdrantIndexQueue` would orphan their
+        // reference and silently lose those tasks (ms#1721 review, ai-01).
         const backlog = Array.from(state.qdrantIndexQueue.values());
-        state.qdrantIndexQueue = new Set([...consumed, ...backlog]);
-        console.log(`⚡ [#4352 g9] Operator priority: ${consumed.length} consumed request(s) placed at the FRONT of the index queue (backlog behind: ${backlog.length})`);
-    }
-    if (consumed.length > 0) {
-        console.log(`📨 [#4352 g3/g6/g8] Leader consumed ${consumed.length} request(s)${consumedResets > 0 ? ` (${consumedResets} reset before requeue)` : ''}${consumedRepairs > 0 ? ` (${consumedRepairs} headless repair armed)` : ''}: ${consumed.join(', ')}`);
+        state.qdrantIndexQueue.clear();
+        for (const id of [...consumed, ...backlog]) state.qdrantIndexQueue.add(id);
+        console.log(`📨 [#4352 g3/g6/g8/g9] Leader consumed ${consumed.length} request(s)${consumedResets > 0 ? ` (${consumedResets} reset before requeue)` : ''}${consumedRepairs > 0 ? ` (${consumedRepairs} headless repair armed)` : ''}: ${consumed.join(', ')} → placed at the FRONT of the index queue (backlog behind: ${backlog.length})`);
     }
     return consumed;
 }
