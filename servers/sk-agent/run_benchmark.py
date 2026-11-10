@@ -91,9 +91,20 @@ def call_model(model_cfg: dict, prompt: str, timeout: float = 120) -> dict:
         "temperature": 0.3,
     }
 
-    # For z.ai thinking models, add thinking budget
-    if thinking and "z.ai" in base_url:
-        payload["extra_body"] = {"enable_thinking": True}
+    # Mirror sk_agent.py:2231-2281: model-specific vLLM parameters and the
+    # non-thinking flag must reach a direct benchmark call too. Without this,
+    # both thinking variants run under the server's default and H(ii) measures
+    # the same profile twice.
+    if model_cfg.get("extra_body"):
+        payload["extra_body"] = model_cfg["extra_body"]
+    if not thinking:
+        extra_body = dict(payload.get("extra_body") or {})
+        template_kwargs = extra_body.get("chat_template_kwargs")
+        extra_body["chat_template_kwargs"] = {
+            **(template_kwargs if isinstance(template_kwargs, dict) else {}),
+            "enable_thinking": False,
+        }
+        payload["extra_body"] = extra_body
 
     start = time.time()
     try:
@@ -130,7 +141,12 @@ def call_model(model_cfg: dict, prompt: str, timeout: float = 120) -> dict:
 
 
 def score_response(task_name: str, task: dict, response: str) -> float:
-    """Simple automated scoring (1-5) based on task criteria."""
+    """Heuristic score (1-5): surface criteria, NOT semantic equivalence.
+
+    In particular, this is not an expert judge: a wrong complexity or a weak
+    explanation can still earn a high score when the expected words are present.
+    Report availability/latency separately and do not use this score alone for G.
+    """
     if not response:
         return 0.0
 
@@ -213,7 +229,7 @@ def main():
                     "response_length": 0,
                     "response_preview": "",
                     "error": "model not found or disabled",
-                    "quality_score": 0,
+                    "quality_score": None,
                 })
                 done += 1
             continue
@@ -240,7 +256,8 @@ def main():
                 "response_length": result.get("response_length", 0),
                 "response_preview": result.get("response_preview", ""),
                 "error": error,
-                "quality_score": quality,
+                # Errored cells are UNMEASURED, not zero-quality responses.
+                "quality_score": quality if not error else None,
                 "tokens_used": result.get("tokens_used", 0),
             })
 

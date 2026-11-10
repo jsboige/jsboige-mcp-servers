@@ -93,3 +93,95 @@ def test_no_api_key_env_uses_literal():
 
 def test_no_key_at_all_returns_empty():
     assert run_benchmark.resolve_benchmark_api_key({}, environ={}) == ""
+
+
+# --- #1748 H(ii): direct calls preserve model modes; errors are unmeasured ---
+
+
+def test_direct_call_passes_model_extra_body(monkeypatch):
+    """Model-specific vLLM arguments reach the direct HTTP request."""
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json, headers):
+            captured.update(json)
+            return FakeResponse()
+
+    monkeypatch.setattr(run_benchmark.httpx, "Client", FakeClient)
+    model = {
+        "model_id": "swift",
+        "base_url": "http://localhost/v1",
+        "thinking": True,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": True}},
+    }
+    result = run_benchmark.call_model(model, "probe")
+    assert result["response"] == "ok"
+    assert captured["extra_body"]["chat_template_kwargs"]["enable_thinking"] is True
+
+
+def test_direct_call_disables_thinking_without_clobbering_model_kwargs(monkeypatch):
+    """Parity with sk_agent.py: thinking=false wins, other kwargs survive."""
+    captured = {}
+
+    class FakeResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+        def post(self, url, json, headers):
+            captured.update(json)
+            return FakeResponse()
+
+    monkeypatch.setattr(run_benchmark.httpx, "Client", FakeClient)
+    model = {
+        "model_id": "swift",
+        "base_url": "http://localhost/v1",
+        "thinking": False,
+        "extra_body": {"chat_template_kwargs": {"enable_thinking": True, "other": 1}},
+    }
+    run_benchmark.call_model(model, "probe")
+    assert captured["extra_body"]["chat_template_kwargs"] == {
+        "enable_thinking": False,
+        "other": 1,
+    }
+
+
+def test_scorer_is_not_mistaken_for_a_semantic_judge():
+    """Pin the limitation that the report must disclose, not hide.
+
+    A surface heuristic can award 5/5 to a valid JSON carrying a wrong O(n^3)
+    complexity; this is why G needs a real judge rather than this raw score.
+    """
+    wrong_complexity = '{"complexity":"O(n^3)","bug_risk":"low","suggestion":"use set"}'
+    assert run_benchmark.score_response("json_output", TASK_FOR_SCORE, wrong_complexity) == 5.0
+
+
+TASK_FOR_SCORE = {"prompt": "not used by the heuristic"}
