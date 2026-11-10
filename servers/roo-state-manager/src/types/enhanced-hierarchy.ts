@@ -3,7 +3,8 @@
  * Résout le problème des 47 tâches orphelines en reconstruisant les parentIds
  */
 
-import { ConversationSkeleton, NewTaskInstruction } from './conversation.js';
+import type { StoredConversation } from '../services/unified-store/types.js';
+import { NewTaskInstruction } from './conversation.js';
 
 /**
  * Informations sur les fichiers sources d'une conversation
@@ -59,9 +60,9 @@ export interface ParsedSubtaskInstructions {
 }
 
 /**
- * Extension de ConversationSkeleton pour le système de reconstruction hiérarchique
+ * Extension de StoredConversation pour le système de reconstruction hiérarchique
  */
-export interface EnhancedConversationSkeleton extends ConversationSkeleton {
+export interface EnhancedConversationSkeleton extends StoredConversation {
     /**
      * Instructions de sous-tâches parsées depuis les ui_messages
      * Utilisé en PASSE 1 pour extraire et stocker les instructions
