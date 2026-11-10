@@ -466,6 +466,13 @@ const GWS_CLIENT_SECRET = ['GOCSPX', 'fixture-7dQk9mZr2tXw4vN6bYh8'].join('-');
 /** Proxy key embedded in a multi-line headers value — hex64 on line 2. */
 const PROXY_KEY_HEX = 'e088' + '0123456789abcdef'.repeat(3) + '0123456789ab';
 
+/**
+ * Real-token shapes for the "a real token stays masked" guard — assembled by
+ * join for the same push-protection reason as GWS_CLIENT_SECRET.
+ */
+const API_TOKEN_VALUE = ['sk', 'fixture-4f3e2d1c0b9a87654321fedcba0123456789'].join('-');
+const MODEL_TOKENS_VALUE = ['sk', 'fixture-5a4b3c2d1e0f987654321abcdef0123456789'].join('-');
+
 const NAME_BACKSTOP_FILES = {
   'home/.claude.json': JSON.stringify({
     mcpServers: {
@@ -485,6 +492,24 @@ const NAME_BACKSTOP_FILES = {
       SEARXNG_URL: 'http://127.0.0.1:8888/search',
       ROO_FLEET_ROSTER: 'myia-ai-01,myia-po-204',
       BACKUP_NOTE: GWS_CLIENT_SECRET,
+      // Budget knobs caught by /TOKEN/ and /AUTH/ motifs (review ai-01 de ms#1713):
+      // numeric budgets, NOT credentials — must stay readable.
+      CLAUDE_CODE_MAX_CONTEXT_TOKENS: '330000',
+      MAX_THINKING_TOKENS: '16000',
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: '32000',
+      OAUTHLIB_INSECURE_TRANSPORT: '1',
+      // Real-token guards: singular _TOKEN is NOT exempt; a token-shaped value
+      // under an exempted (_TOKENS) name is still caught by the value layer.
+      API_TOKEN: API_TOKEN_VALUE,
+      MODEL_TOKENS: MODEL_TOKENS_VALUE,
+      // SECRET_WORD guard (review ai-01 de ms#1715): names carrying a secret
+      // word are NEVER exempted — opaque PREFIXLESS values, so the test proves
+      // the NAME layer masks (the value layer would recognize no shape here).
+      OAUTHLIB_CLIENT_SECRET: '9f3k2m8d5q7w1z4c',
+      SECRET_TOKENS: '8d2m5q8w1z4c9f3k',
+      MY_ACCESS_TOKENS: '7c1z4k9f3d2m8q5w',
+      REFRESH_TOKENS: '6b0y3j8e2i1h7g4f',
+      API_KEY_TOKENS: '5a9x2i7d1h0g6f3e',
     },
   }),
 };
@@ -530,6 +555,49 @@ describe('MachineConfigCollector — name backstop + embedded assignments (#4611
   it('does not over-redact benign env values', () => {
     expect(nbConfig.claude.settings?.env?.SEARXNG_URL).toBe('http://127.0.0.1:8888/search');
     expect(nbConfig.claude.settings?.env?.ROO_FLEET_ROSTER).toBe('myia-ai-01,myia-po-204');
+  });
+
+  // ---- _TOKENS exemption (review ai-01 de ms#1713) ----
+  // /TOKEN/ and /AUTH/ motifs were masking budget knobs: numbers, not credentials.
+
+  it('keeps the 4 budget-knob names readable (_TOKENS / OAUTHLIB exemption)', () => {
+    expect(nbConfig.claude.settings?.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe('330000');
+    expect(nbConfig.claude.settings?.env?.MAX_THINKING_TOKENS).toBe('16000');
+    expect(nbConfig.claude.settings?.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('32000');
+    expect(nbConfig.claude.settings?.env?.OAUTHLIB_INSECURE_TRANSPORT).toBe('1');
+  });
+
+  it('still masks a real token — singular _TOKEN is NOT exempt', () => {
+    expect(nbConfig.claude.settings?.env?.API_TOKEN).toMatch(/^<set:len=\d+:sha256=[0-9a-f]{8}>$/);
+    expect(nbSerialized).not.toContain(API_TOKEN_VALUE);
+  });
+
+  it('still masks a token-shaped VALUE under an exempted _TOKENS name (value layer never turns off)', () => {
+    expect(nbConfig.claude.settings?.env?.MODEL_TOKENS).toMatch(/^<set:len=\d+:sha256=[0-9a-f]{8}>$/);
+    expect(nbSerialized).not.toContain(MODEL_TOKENS_VALUE);
+  });
+
+  // ---- SECRET_WORD guard (review ai-01 de ms#1715) ----
+  // A secret WORD in the name always beats the exemption. Values are opaque
+  // and prefixless on purpose: the value layer recognizes no shape here, so
+  // only the NAME layer can mask them — which is exactly what is asserted.
+
+  it('never exempts a name carrying a secret word — opaque values stay masked by NAME', () => {
+    const masked = ['OAUTHLIB_CLIENT_SECRET', 'SECRET_TOKENS', 'MY_ACCESS_TOKENS', 'REFRESH_TOKENS', 'API_KEY_TOKENS'];
+    for (const name of masked) {
+      expect(nbConfig.claude.settings?.env?.[name], `${name} must be digest-masked`).toMatch(/^<set:len=\d+:sha256=[0-9a-f]{8}>$/);
+    }
+    for (const raw of ['9f3k2m8d5q7w1z4c', '8d2m5q8w1z4c9f3k', '7c1z4k9f3d2m8q5w', '6b0y3j8e2i1h7g4f', '5a9x2i7d1h0g6f3e']) {
+      expect(nbSerialized).not.toContain(raw);
+    }
+  });
+
+  it('keeps the exemption working for clean names after the SECRET_WORD guard', () => {
+    expect(nbConfig.claude.settings?.env?.CLAUDE_CODE_MAX_CONTEXT_TOKENS).toBe('330000');
+    expect(nbConfig.claude.settings?.env?.MAX_THINKING_TOKENS).toBe('16000');
+    expect(nbConfig.claude.settings?.env?.CLAUDE_CODE_MAX_OUTPUT_TOKENS).toBe('32000');
+    expect(nbConfig.claude.settings?.env?.OAUTHLIB_INSECURE_TRANSPORT).toBe('1');
+    expect(gwsEnv().GOOGLE_OAUTH_CLIENT_ID).toBe('1234567890-fixture.apps.googleusercontent.com');
   });
 });
 

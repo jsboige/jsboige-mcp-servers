@@ -143,9 +143,10 @@ async function readYamlFile<T = unknown>(path: string): Promise<T | undefined> {
  *  - **name backstop**: when the leaf's KEY is sensitive (`isSensitiveKey`, #3545 —
  *    exported but previously unwired), the value becomes a digest marker whatever
  *    it looks like. The key stays readable (same philosophy as ms#1706: the name
- *    remains, only the value is fingerprinted). `*_CLIENT_ID` public identifiers
- *    are exempted so seat-to-seat comparison of which OAuth app is deployed
- *    survives.
+ *    remains, only the value is fingerprinted). Non-secret names are exempted
+ *    (`NAME_BACKSTOP_EXEMPT`: `*_TOKENS` budget knobs, `*_CLIENT_ID` public OAuth
+ *    identifiers, `OAUTHLIB_*` library flags — review ai-01 de ms#1713) so
+ *    seat-to-seat comparison of tuning and deployed app survives.
  *  - **assigned-secrets pass**: `redactAssignedSecrets` (path-independent,
  *    idempotent via `hasRedactionMarkers`) now also runs on plain string leaves, so
  *    `Name: value` assignments embedded in a multi-line value are masked inline
@@ -156,7 +157,7 @@ async function readYamlFile<T = unknown>(path: string): Promise<T | undefined> {
  */
 function redactLeaf(path: string, value: unknown, key?: string): unknown {
   if (typeof value === 'string') {
-    if (key !== undefined && isSensitiveKey(key) && !CLIENT_ID_SUFFIX.test(key)) {
+    if (key !== undefined && isSensitiveKey(key) && !isNameBackstopExempt(key)) {
       return maskSecretValue(value);
     }
     const masked = redactValue(path, value);
@@ -167,8 +168,33 @@ function redactLeaf(path: string, value: unknown, key?: string): unknown {
   return value;
 }
 
-/** Public OAuth client identifiers — readable under the name backstop (#4611). */
-const CLIENT_ID_SUFFIX = /CLIENT_ID$/i;
+/**
+ * Names the backstop leaves READABLE (#4611, review ai-01 de ms#1713) :
+ *  - `*_TOKENS` / `*_CLIENT_ID` suffixes — budget/limit knobs and public OAuth
+ *    identifiers (`CLAUDE_CODE_MAX_CONTEXT_TOKENS`, `MAX_THINKING_TOKENS`,
+ *    `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `GOOGLE_OAUTH_CLIENT_ID`), not secrets.
+ *    The SINGULAR `_TOKEN$` is deliberately NOT exempt.
+ *  - `OAUTHLIB_*` — public runtime flags of the oauthlib library
+ *    (`OAUTHLIB_INSECURE_TRANSPORT='1'`), matched by /AUTH/ otherwise.
+ * A secret-shaped VALUE under an exempted name is still masked by the
+ * composition below (value layer never turns off).
+ */
+const NAME_BACKSTOP_EXEMPT = /(?:(?:^|_)(TOKENS|CLIENT_ID)$|^OAUTHLIB_)/i;
+
+/**
+ * A secret WORD in the name ALWAYS wins over the exemption above (review
+ * ai-01 de ms#1715 : `_TOKENS$` alone made `SECRET_TOKENS`, `REFRESH_TOKENS`,
+ * `MY_ACCESS_TOKENS`, `API_KEY_TOKENS` readable, and the unbounded `^OAUTHLIB_`
+ * prefix exempted `OAUTHLIB_CLIENT_SECRET`). The value layer only recognizes
+ * SHAPES (prefixes, hex, JWT…) — an opaque prefixless value under such a name
+ * would come out readable in a fleet-shared collect. Over-masking a budget knob
+ * was cosmetic; this leak would be real. We don't trade one for the other.
+ */
+const SECRET_WORD = /(SECRET|PASSW|PRIVATE|CREDENTIAL|ACCESS|REFRESH|SESSION|BEARER|API_?KEY|(^|_)KEY(_|$))/i;
+
+/** Exemption applies only when the name carries NO secret word — invariant: a secret word always beats the exemption. */
+const isNameBackstopExempt = (name: string): boolean =>
+  !SECRET_WORD.test(name) && NAME_BACKSTOP_EXEMPT.test(name);
 
 /**
  * Redact a COMMAND-LIKE string we publish: `command`, `url`, `args[]`, `cwd` — the

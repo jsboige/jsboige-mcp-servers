@@ -4,6 +4,7 @@ import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../
 import type { ConfigTarget } from '../../types/config-sharing.js';
 import { EnvRotationService } from '../../services/EnvRotationService.js';
 import { collectMachineConfig } from '../../services/MachineConfigCollector.js';
+import { machineConfigApplyBindings } from '../../services/MachineConfigAppliers.js';
 import { hostname } from 'os';
 import { promises as fs } from 'fs';
 import { basename, join } from 'path';
@@ -14,6 +15,18 @@ import { isValidDottedVersion } from '../../utils/int-validator.js';
  * Issue #601 - Support scopes officiels Claude Code
  */
 export type ClaudeCodeScope = 'user' | 'project' | 'settings';
+
+/**
+ * Vocabulaire des cibles apply de BASE (sans les formes préfixées `mcp:`,
+ * `services:`, `env:`) — source unique pour la validation du schema ET pour
+ * `parseTargets`. Exportée pour que les garde-dérive des tests importent le
+ * VRAI vocabulaire au lieu d'une copie à la main (review ai-01 de ms#1715).
+ */
+export const VALID_BASE_TARGETS: readonly string[] = [
+  'modes', 'mcp', 'profiles', 'roomodes', 'model-configs', 'rules',
+  'settings', 'claude-config', 'claude-settings', 'modes-yaml',
+  'schtasks', 'schedules',
+];
 
 /**
  * Schema Zod pour roosync_config - Outil unifié de gestion de configuration
@@ -41,7 +54,7 @@ export const ConfigArgsSchema = z.object({
         return targets.length === 1;
       }
       return targets.every(target => {
-        if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'claude-settings' || target === 'modes-yaml' || target === 'schtasks' || target === 'schedules') {
+        if (VALID_BASE_TARGETS.includes(target)) {
           return true;
         }
         if (target.startsWith('mcp:')) {
@@ -166,7 +179,7 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | 'scht
       return target as `env:${string}`;
     }
 
-    if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'claude-settings' || target === 'modes-yaml' || target === 'schtasks' || target === 'schedules') {
+    if (VALID_BASE_TARGETS.includes(target)) {
       return target as any;
     }
 
@@ -375,10 +388,15 @@ export async function roosyncConfig(args: ConfigArgs) {
 
           const rooServerCount = machineConfig.roo.mcpServers.length;
           const claudeServerCount = machineConfig.claude.mcpServers?.length ?? 0;
+          // #4611 case 8 — every section bound to its EXISTING apply target (or an
+          // explicit read-only verdict). No new write path: applying stays
+          // `action:"apply", targets:[...]` with the same vocabulary.
+          const applyBindings = machineConfigApplyBindings(machineConfig);
           return {
             status: 'success',
-            message: `MachineConfig collectée pour ${machineConfig.machineId} — ${rooServerCount} serveurs MCP Roo, ${claudeServerCount} serveurs MCP Claude`,
+            message: `MachineConfig collectée pour ${machineConfig.machineId} — ${rooServerCount} serveurs MCP Roo, ${claudeServerCount} serveurs MCP Claude, ${applyBindings.filter(b => b.target !== null).length}/${applyBindings.length} sections rattachées à une cible apply`,
             machineConfig,
+            applyBindings,
           };
         }
 
