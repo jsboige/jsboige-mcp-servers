@@ -14,7 +14,7 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 // Mock fs before importing module
 vi.mock('fs', async () => {
@@ -212,7 +212,7 @@ describe('server-helpers', () => {
     // handleExportConversationJson
     // ============================================================
     describe('handleExportConversationJson', () => {
-        let conversationCache: Map<string, ConversationSkeleton>;
+        let conversationCache: Map<string, StoredConversation>;
 
         beforeEach(() => {
             conversationCache = new Map();
@@ -293,7 +293,7 @@ describe('server-helpers', () => {
     // handleExportConversationCsv
     // ============================================================
     describe('handleExportConversationCsv', () => {
-        let conversationCache: Map<string, ConversationSkeleton>;
+        let conversationCache: Map<string, StoredConversation>;
 
         beforeEach(() => {
             conversationCache = new Map();

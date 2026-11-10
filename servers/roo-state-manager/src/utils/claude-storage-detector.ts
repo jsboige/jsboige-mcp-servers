@@ -12,11 +12,8 @@ import * as readline from 'readline';
 import * as path from 'path';
 import * as os from 'os';
 import { stripBOM } from './encoding-helpers.js';
-import {
-    ConversationSkeleton,
-    MessageSkeleton,
-    ActionMetadata,
-} from '../types/conversation.js';
+import type { MessageSkeleton, ActionMetadata } from '../types/conversation.js';
+import type { StoredConversation } from '../services/unified-store/types.js';
 import {
     ClaudeStorageLocation,
     ClaudeJsonlEntry,
@@ -183,14 +180,14 @@ export class ClaudeStorageDetector {
     }
 
     /**
-     * Analyse une conversation et la transforme en ConversationSkeleton
+     * Analyse une conversation et la transforme en StoredConversation
      * Compatible avec l'architecture Roo existante
      */
     public static async analyzeConversation(
         taskId: string,
         projectPath: string,
         options: ClaudeParsingOptions = {}
-    ): Promise<ConversationSkeleton | null> {
+    ): Promise<StoredConversation | null> {
         const {
             includeToolResults = true,
             maxContentLength = 400,
@@ -606,7 +603,7 @@ export class ClaudeStorageDetector {
         taskId: string,
         projectPath: string,
         totalSize: number
-    ): ConversationSkeleton['metadata'] {
+    ): StoredConversation['metadata'] {
         const messageCount = entries.filter(e => e.type === 'user' || e.type === 'assistant').length;
         const actionCount = entries.filter(e =>
             e.type === 'command_result' ||
@@ -718,7 +715,7 @@ export class ClaudeStorageDetector {
         taskId: string,
         projectPath: string,
         totalSize: number = 0
-    ): ConversationSkeleton {
+    ): StoredConversation {
         const now = new Date().toISOString();
         return {
             taskId,
@@ -739,7 +736,7 @@ export class ClaudeStorageDetector {
      * Analyse une conversation par son ID
      * #852 FIX: Only return the conversation if the project name matches the taskId
      */
-    public static async findConversationById(taskId: string): Promise<ConversationSkeleton | null> {
+    public static async findConversationById(taskId: string): Promise<StoredConversation | null> {
         const locations = await this.detectStorageLocations();
 
         // #852: Extract project name from taskId (format: claude-{projectName})

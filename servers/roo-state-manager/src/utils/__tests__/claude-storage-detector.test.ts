@@ -131,8 +131,8 @@ describe('ClaudeStorageDetector - TDD Suite', () => {
         });
     });
 
-    describe('Transformation vers ConversationSkeleton', () => {
-        it('DEVRAIT transformer un fichier JSONL en ConversationSkeleton', async () => {
+    describe('Transformation vers StoredConversation', () => {
+        it('DEVRAIT transformer un fichier JSONL en StoredConversation', async () => {
             const jsonlContent = [
                 JSON.stringify({ type: 'user', message: { role: 'user', content: 'Initial request' }, timestamp: '2024-01-01T10:00:00.000Z', uuid: 'uuid-1' }),
                 JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'Response' }, timestamp: '2024-01-01T10:01:00.000Z', uuid: 'uuid-2' }),
@@ -280,7 +280,7 @@ describe('ClaudeStorageDetector - TDD Suite', () => {
     });
 
     describe('Intégration', () => {
-        it('DEVRAIT être compatible avec linterface ConversationSkeleton', async () => {
+        it('DEVRAIT être compatible avec linterface StoredConversation', async () => {
             const jsonlContent = [
                 JSON.stringify({ type: 'user', message: { role: 'user', content: 'Test' }, timestamp: new Date().toISOString(), uuid: '1' }),
                 JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: 'Response' }, timestamp: new Date().toISOString(), uuid: '2' }),

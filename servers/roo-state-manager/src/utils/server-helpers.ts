@@ -8,7 +8,8 @@ import path from 'path';
 import os from 'os';
 import { exec } from 'child_process'; // kept for potential future use
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton, SkeletonHeader } from '../types/conversation.js';
+import type { SkeletonHeader } from '../types/conversation.js';
+import type { StoredConversation } from '../services/unified-store/types.js';
 import { RooStorageDetector } from './roo-storage-detector.js';
 import { OUTPUT_CONFIG } from '../config/server-config.js';
 import { existsSync, statSync } from 'fs';
@@ -175,7 +176,7 @@ export async function handleExportConversationJson(
         jsonVariant?: 'light' | 'full';
         truncationChars?: number;
     },
-    conversationCache: Map<string, ConversationSkeleton>
+    conversationCache: Map<string, StoredConversation>
 ): Promise<CallToolResult> {
     try {
         const { taskId } = args;
@@ -220,7 +221,7 @@ export async function handleExportConversationCsv(
         csvVariant?: 'conversations' | 'messages' | 'tools';
         truncationChars?: number;
     },
-    conversationCache: Map<string, ConversationSkeleton>
+    conversationCache: Map<string, StoredConversation>
 ): Promise<CallToolResult> {
     try {
         const { taskId } = args;
@@ -256,7 +257,7 @@ export async function handleExportConversationCsv(
 }
 
 /**
- * #3007: Resolve a full ConversationSkeleton from cache + disk on demand.
+ * #3007: Resolve a full StoredConversation from cache + disk on demand.
  *
  * The in-memory `conversationCache` is populated as `SkeletonHeader` (no
  * `sequence` field) for Tier 1 (Roo local) sources — see state-manager.service.ts
@@ -299,7 +300,7 @@ export async function handleExportConversationCsv(
 export async function hydrateTier3SkeletonFromCache(
     id: string,
     cache?: Map<string, SkeletonHeader>
-): Promise<ConversationSkeleton | null> {
+): Promise<StoredConversation | null> {
     try {
         const { SkeletonCacheService } = await import('../services/skeleton-cache.service.js');
         const scs = SkeletonCacheService.getInstance();
@@ -351,7 +352,7 @@ export async function hydrateTier3SkeletonFromCache(
 export async function resolveFullConversationSkeleton(
     id: string,
     cache: Map<string, SkeletonHeader>
-): Promise<ConversationSkeleton | null> {
+): Promise<StoredConversation | null> {
     try {
         const cached = cache.get(id);
 
@@ -360,7 +361,7 @@ export async function resolveFullConversationSkeleton(
             const cachedAny = cached as any;
             const hasFullSequence = Array.isArray(cachedAny.sequence) && cachedAny.sequence.length > 0;
             if (hasFullSequence) {
-                return cached as any as ConversationSkeleton;
+                return cached as any as StoredConversation;
             }
         }
 
@@ -389,7 +390,7 @@ export async function resolveFullConversationSkeleton(
             }
             // Negative lookup + empty cached header — no further disk read needed.
             if (cached && cached.metadata.messageCount === 0) {
-                return { ...cached, sequence: [] } as any as ConversationSkeleton;
+                return { ...cached, sequence: [] } as any as StoredConversation;
             }
             // Not found in Claude storage — fall through to Roo paths (rare).
         }
@@ -403,7 +404,7 @@ export async function resolveFullConversationSkeleton(
                 // Fall through to disk scan if the disk file is missing/corrupt.
             } else {
                 // Empty conversation — return header with empty sequence (no disk read needed).
-                return { ...cached, sequence: [] } as any as ConversationSkeleton;
+                return { ...cached, sequence: [] } as any as StoredConversation;
             }
         }
 

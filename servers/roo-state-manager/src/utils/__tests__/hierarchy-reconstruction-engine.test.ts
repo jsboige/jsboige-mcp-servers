@@ -13,7 +13,8 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { HierarchyReconstructionEngine } from '../hierarchy-reconstruction-engine.js';
-import type { ConversationSkeleton, EnhancedConversationSkeleton } from '../../types/enhanced-hierarchy.js';
+import type { EnhancedConversationSkeleton } from '../../types/enhanced-hierarchy.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 // ─────────────────── Mocks ───────────────────
 
@@ -49,7 +50,7 @@ beforeEach(() => {
 
 // ─────────────────── Helpers ───────────────────
 
-function createMockSkeleton(taskId: string, options?: Partial<ConversationSkeleton>): ConversationSkeleton {
+function createMockSkeleton(taskId: string, options?: Partial<StoredConversation>): StoredConversation {
     return {
         taskId,
         parentTaskId: options?.parentTaskId,

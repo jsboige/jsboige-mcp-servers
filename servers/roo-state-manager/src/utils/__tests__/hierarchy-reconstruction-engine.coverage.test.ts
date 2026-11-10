@@ -37,7 +37,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { HierarchyReconstructionEngine } from '../hierarchy-reconstruction-engine.js';
-import type { ConversationSkeleton, EnhancedConversationSkeleton } from '../../types/enhanced-hierarchy.js';
+import type { EnhancedConversationSkeleton } from '../../types/enhanced-hierarchy.js';
 
 const mockReadFile = vi.fn();
 const mockReadFileSync = vi.fn();

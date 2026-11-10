@@ -10,19 +10,9 @@ import * as os from 'os';
 import * as readline from 'readline';
 import { stripBOM } from './encoding-helpers.js';
 import { glob } from 'glob';
-import {
-    RooStorageLocation,
-    ConversationSummary,
-    RooStorageDetectionResult,
-    TaskMetadata,
-    RooStorageError,
-    InvalidStoragePathError,
-    StorageStats,
-    ConversationSkeleton,
-    MessageSkeleton,
-    ActionMetadata,
-    NewTaskInstruction,
-} from '../types/conversation.js';
+import type { RooStorageLocation, ConversationSummary, RooStorageDetectionResult, TaskMetadata, InvalidStoragePathError, StorageStats, MessageSkeleton, ActionMetadata, NewTaskInstruction } from '../types/conversation.js';
+import { RooStorageError } from '../types/conversation.js';
+import type { StoredConversation } from '../services/unified-store/types.js';
 import { globalCacheManager } from './cache-manager.js';
 import { globalTaskInstructionIndex, computeInstructionPrefix } from './task-instruction-index.js';
 import { MessageToSkeletonTransformer } from './message-to-skeleton-transformer.js';
@@ -175,7 +165,7 @@ export class RooStorageDetector {
             const stats = await fs.stat(taskPath);
             if (!stats.isDirectory()) continue;
 
-            // Note: analyzeConversation retourne maintenant un ConversationSkeleton,
+            // Note: analyzeConversation retourne maintenant un StoredConversation,
             // mais l'ancienne interface ConversationSummary est toujours utilisée ici.
             // Ceci devra être adapté dans une tâche future.
             const skeleton = await this.analyzeConversation(taskId, taskPath);
@@ -369,7 +359,7 @@ export class RooStorageDetector {
     taskId: string,
     taskPath: string,
     useProductionHierarchy: boolean = true
-  ): Promise<ConversationSkeleton | null> {
+  ): Promise<StoredConversation | null> {
     const config = getParsingConfig();
 
     const metadataPath = path.join(taskPath, 'task_metadata.json');
@@ -414,7 +404,7 @@ export class RooStorageDetector {
     taskPath: string,
     useProductionHierarchy: boolean,
     paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string; historyItemPath: string }
-  ): Promise<ConversationSkeleton | null> {
+  ): Promise<StoredConversation | null> {
     try {
       // Charger les messages UI
       const messages = await this.loadUIMessages(paths.uiMessagesPath);
@@ -474,7 +464,7 @@ export class RooStorageDetector {
     taskPath: string,
     useProductionHierarchy: boolean,
     paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string; historyItemPath: string }
-  ): Promise<ConversationSkeleton | null> {
+  ): Promise<StoredConversation | null> {
     const { metadataPath, apiHistoryPath, uiMessagesPath, historyItemPath } = paths;
 
     try {
@@ -711,7 +701,7 @@ export class RooStorageDetector {
             createdAt = new Date();
         }
 
-        const skeleton: ConversationSkeleton = {
+        const skeleton: StoredConversation = {
             taskId,
             parentTaskId: parentTaskId, // Utilise la valeur inférée si disponible
             sequence,
@@ -798,7 +788,7 @@ export class RooStorageDetector {
     taskPath: string,
     useProductionHierarchy: boolean,
     paths: { metadataPath: string; apiHistoryPath: string; uiMessagesPath: string; historyItemPath: string }
-  ): Promise<ConversationSkeleton | null> {
+  ): Promise<StoredConversation | null> {
     const config = getParsingConfig();
 
     try {
@@ -936,13 +926,13 @@ export class RooStorageDetector {
    * Architecture en deux passes avec index radix-tree intégré
    * @param workspacePath - Chemin du workspace à analyser
    * @param useFullVolume - Traiter toutes les tâches (défaut: true)
-   * @returns Promise<ConversationSkeleton[]> - Liste des squelettes avec hiérarchies
+   * @returns Promise<StoredConversation[]> - Liste des squelettes avec hiérarchies
    */
   public static async buildHierarchicalSkeletons(
     workspacePath?: string,
     useFullVolume: boolean = true,
     forceRebuild: boolean = false
-  ): Promise<ConversationSkeleton[]> {
+  ): Promise<StoredConversation[]> {
     console.log(`[buildHierarchicalSkeletons] 🏗️ DÉMARRAGE reconstruction hiérarchique ${workspacePath || 'TOUS WORKSPACES'}`);
 
     // NOUVEAU : Utiliser le HierarchyReconstructionEngine pour la reconstruction en deux passes
@@ -958,8 +948,8 @@ export class RooStorageDetector {
       console.log(`[buildHierarchicalSkeletons] ✅ Reconstruction terminée avec ${reconstructedSkeletons.length} squelettes`);
 
       // Statistiques de validation
-      const orphanTasks = reconstructedSkeletons.filter((c: ConversationSkeleton) => !c.parentTaskId);
-      const withParents = reconstructedSkeletons.filter((c: ConversationSkeleton) => c.parentTaskId);
+      const orphanTasks = reconstructedSkeletons.filter((c: StoredConversation) => !c.parentTaskId);
+      const withParents = reconstructedSkeletons.filter((c: StoredConversation) => c.parentTaskId);
 
       console.log(`[buildHierarchicalSkeletons] 📊 STATISTIQUES:`);
       console.log(`   📋 ${reconstructedSkeletons.length} tâches totales`);
@@ -984,8 +974,8 @@ export class RooStorageDetector {
   /**
    * Calcule la profondeur maximale de l'arbre des tâches
    */
-  private static calculateTreeDepth(skeletons: ConversationSkeleton[]): number {
-    const taskMap = new Map<string, ConversationSkeleton>();
+  private static calculateTreeDepth(skeletons: StoredConversation[]): number {
+    const taskMap = new Map<string, StoredConversation>();
     for (const skeleton of skeletons) {
       taskMap.set(skeleton.taskId, skeleton);
     }
@@ -1016,10 +1006,10 @@ export class RooStorageDetector {
   private static async buildHierarchicalSkeletonsLegacy(
     workspacePath?: string,
     useFullVolume: boolean = true
-  ): Promise<ConversationSkeleton[]> {
+  ): Promise<StoredConversation[]> {
     console.log(`[buildHierarchicalSkeletonsLegacy] 📋 Utilisation de l'ancienne méthode`);
 
-    const conversations: ConversationSkeleton[] = [];
+    const conversations: StoredConversation[] = [];
     const storageLocations = await this.detectStorageLocations();
 
     // PHASE 1: Reconstruction de l'index à partir des squelettes existants
@@ -1145,7 +1135,7 @@ export class RooStorageDetector {
       }
     );
 
-    conversations.push(...processedSkeletons.filter(s => s !== null) as ConversationSkeleton[]);
+    conversations.push(...processedSkeletons.filter(s => s !== null) as StoredConversation[]);
 
     // 📊 DIAGNOSTIC POST-FILTRAGE : Résultats du filtrage workspace
     if (workspacePath !== undefined) {
@@ -1196,7 +1186,7 @@ export class RooStorageDetector {
     console.log(`STRICT MODE: linking pass2 started`);
 
     // File de liaisons différées pour les enfants sans parent trouvé en strict pendant passe 1
-    const deferredLinkings: Array<{child: ConversationSkeleton, truncatedInstruction: string}> = [];
+    const deferredLinkings: Array<{child: StoredConversation, truncatedInstruction: string}> = [];
 
     // Pass 2: Tentative de résolution strict uniquement via exact prefix matching
     for (const orphan of orphanTasks) {
@@ -1283,7 +1273,7 @@ export class RooStorageDetector {
       async (skeletonPath) => {
         try {
           const skeletonContent = stripBOM(await fs.readFile(skeletonPath, 'utf-8'));
-          const skeleton: ConversationSkeleton = JSON.parse(skeletonContent);
+          const skeleton: StoredConversation = JSON.parse(skeletonContent);
 
           if (skeleton.childTaskInstructionPrefixes && skeleton.childTaskInstructionPrefixes.length > 0) {
             return { taskId: skeleton.taskId, prefixes: skeleton.childTaskInstructionPrefixes };
@@ -1319,7 +1309,7 @@ export class RooStorageDetector {
   private static async getAllConversationsInWorkspace(
     workspacePath: string,
     maxTasks: number = 100
-  ): Promise<ConversationSkeleton[]> {
+  ): Promise<StoredConversation[]> {
     // Rediriger vers la nouvelle méthode de production
     return this.buildHierarchicalSkeletons(workspacePath, maxTasks < 1000);
   }
@@ -1560,8 +1550,8 @@ export class RooStorageDetector {
    * Les relations parent-enfant sont définies par les parents, pas devinées
    */
   private static async analyzeParentForNewTaskInstructions(
-    parentTask: ConversationSkeleton,
-    childTask: ConversationSkeleton
+    parentTask: StoredConversation,
+    childTask: StoredConversation
   ): Promise<boolean> {
     // 🛡️ CORRECTION ARCHITECTURE : Toujours retourner false
     return false;
