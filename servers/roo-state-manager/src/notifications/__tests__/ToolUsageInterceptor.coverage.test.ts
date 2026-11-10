@@ -39,7 +39,7 @@ vi.mock('../../utils/message-helpers.js', () => ({
 import { ToolUsageInterceptor } from '../ToolUsageInterceptor.js';
 import { NotificationService } from '../NotificationService.js';
 import type { InterceptorConfig } from '../ToolUsageInterceptor.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 const flushMicrotasks = async () => {
   await Promise.resolve();
@@ -83,7 +83,7 @@ function makeMessage(overrides: any = {}) {
 }
 
 let notificationService: NotificationService;
-let conversationCache: Map<string, ConversationSkeleton>;
+let conversationCache: Map<string, StoredConversation>;
 
 beforeEach(() => {
   vi.clearAllMocks();
