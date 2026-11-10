@@ -17,6 +17,18 @@ import { isValidDottedVersion } from '../../utils/int-validator.js';
 export type ClaudeCodeScope = 'user' | 'project' | 'settings';
 
 /**
+ * Vocabulaire des cibles apply de BASE (sans les formes préfixées `mcp:`,
+ * `services:`, `env:`) — source unique pour la validation du schema ET pour
+ * `parseTargets`. Exportée pour que les garde-dérive des tests importent le
+ * VRAI vocabulaire au lieu d'une copie à la main (review ai-01 de ms#1715).
+ */
+export const VALID_BASE_TARGETS: readonly string[] = [
+  'modes', 'mcp', 'profiles', 'roomodes', 'model-configs', 'rules',
+  'settings', 'claude-config', 'claude-settings', 'modes-yaml',
+  'schtasks', 'schedules',
+];
+
+/**
  * Schema Zod pour roosync_config - Outil unifié de gestion de configuration
  * Issue #601 - Ajout support scope Claude Code
  */
@@ -42,7 +54,7 @@ export const ConfigArgsSchema = z.object({
         return targets.length === 1;
       }
       return targets.every(target => {
-        if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'claude-settings' || target === 'modes-yaml' || target === 'schtasks' || target === 'schedules') {
+        if (VALID_BASE_TARGETS.includes(target)) {
           return true;
         }
         if (target.startsWith('mcp:')) {
@@ -167,7 +179,7 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | 'scht
       return target as `env:${string}`;
     }
 
-    if (target === 'modes' || target === 'mcp' || target === 'profiles' || target === 'roomodes' || target === 'model-configs' || target === 'rules' || target === 'settings' || target === 'claude-config' || target === 'claude-settings' || target === 'modes-yaml' || target === 'schtasks' || target === 'schedules') {
+    if (VALID_BASE_TARGETS.includes(target)) {
       return target as any;
     }
 

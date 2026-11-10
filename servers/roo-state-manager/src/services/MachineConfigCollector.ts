@@ -157,7 +157,7 @@ async function readYamlFile<T = unknown>(path: string): Promise<T | undefined> {
  */
 function redactLeaf(path: string, value: unknown, key?: string): unknown {
   if (typeof value === 'string') {
-    if (key !== undefined && isSensitiveKey(key) && !NAME_BACKSTOP_EXEMPT.test(key)) {
+    if (key !== undefined && isSensitiveKey(key) && !isNameBackstopExempt(key)) {
       return maskSecretValue(value);
     }
     const masked = redactValue(path, value);
@@ -180,6 +180,21 @@ function redactLeaf(path: string, value: unknown, key?: string): unknown {
  * composition below (value layer never turns off).
  */
 const NAME_BACKSTOP_EXEMPT = /(?:(?:^|_)(TOKENS|CLIENT_ID)$|^OAUTHLIB_)/i;
+
+/**
+ * A secret WORD in the name ALWAYS wins over the exemption above (review
+ * ai-01 de ms#1715 : `_TOKENS$` alone made `SECRET_TOKENS`, `REFRESH_TOKENS`,
+ * `MY_ACCESS_TOKENS`, `API_KEY_TOKENS` readable, and the unbounded `^OAUTHLIB_`
+ * prefix exempted `OAUTHLIB_CLIENT_SECRET`). The value layer only recognizes
+ * SHAPES (prefixes, hex, JWT…) — an opaque prefixless value under such a name
+ * would come out readable in a fleet-shared collect. Over-masking a budget knob
+ * was cosmetic; this leak would be real. We don't trade one for the other.
+ */
+const SECRET_WORD = /(SECRET|PASSW|PRIVATE|CREDENTIAL|ACCESS|REFRESH|SESSION|BEARER|API_?KEY|(^|_)KEY(_|$))/i;
+
+/** Exemption applies only when the name carries NO secret word — invariant: a secret word always beats the exemption. */
+const isNameBackstopExempt = (name: string): boolean =>
+  !SECRET_WORD.test(name) && NAME_BACKSTOP_EXEMPT.test(name);
 
 /**
  * Redact a COMMAND-LIKE string we publish: `command`, `url`, `args[]`, `cwd` — the

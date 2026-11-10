@@ -19,17 +19,16 @@
 import { describe, it, expect } from 'vitest';
 
 import { machineConfigApplyBindings } from '../../../src/services/MachineConfigAppliers.js';
+import { VALID_BASE_TARGETS } from '../../../src/tools/roosync/config.js';
 import type { MachineConfig } from '../../../src/types/machine-config.js';
 
 // ============================================================
-// The apply target vocabulary, mirrored from ConfigArgsSchema / parseTargets
-// (src/tools/roosync/config.ts). A binding naming anything else is a bug.
+// The apply target vocabulary, IMPORTED from the validator itself
+// (src/tools/roosync/config.ts — review ai-01 de ms#1715: a hand-copied
+// set would let this drift guard drift). A binding naming anything
+// outside this vocabulary (or the mcp:/services:/env: prefixes) is a bug.
 // ============================================================
-const EXISTING_TARGETS = new Set([
-  'modes', 'mcp', 'profiles', 'roomodes', 'model-configs', 'rules',
-  'settings', 'claude-config', 'claude-settings', 'modes-yaml',
-  'schtasks', 'schedules',
-]);
+const EXISTING_TARGETS = new Set<string>(VALID_BASE_TARGETS);
 
 function binding(config: MachineConfig, section: string) {
   const found = machineConfigApplyBindings(config).find(b => b.section === section);
