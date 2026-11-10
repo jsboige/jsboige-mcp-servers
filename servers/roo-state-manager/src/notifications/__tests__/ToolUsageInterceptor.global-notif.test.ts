@@ -43,7 +43,7 @@ vi.mock('../../tools/roosync/dashboard.js', () => ({
 import { ToolUsageInterceptor } from '../ToolUsageInterceptor.js';
 import { NotificationService } from '../NotificationService.js';
 import type { InterceptorConfig } from '../ToolUsageInterceptor.js';
-import type { ConversationSkeleton } from '../../types/conversation.js';
+import type { StoredConversation } from '../../services/unified-store/types.js';
 
 function makeConfig(overrides: Partial<InterceptorConfig> = {}): InterceptorConfig {
   return {
@@ -63,7 +63,7 @@ function makeInterceptor(config: Partial<InterceptorConfig> = {}) {
       readInbox: vi.fn().mockResolvedValue([]),
       getMessage: vi.fn().mockResolvedValue(null),
     } as any,
-    new Map<string, ConversationSkeleton>(),
+    new Map<string, StoredConversation>(),
     makeConfig(config)
   );
 }
@@ -226,7 +226,7 @@ test('inbox and global footers combine on one response', async () => {
       }]),
       isInboxCachePartial: vi.fn().mockReturnValue(false),
     } as any,
-    new Map<string, ConversationSkeleton>(),
+    new Map<string, StoredConversation>(),
     makeConfig({ checkInbox: true })
   );
   mockReadGlobalIntercomMessages.mockResolvedValue(globalMessages());
