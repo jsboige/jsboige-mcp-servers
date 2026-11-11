@@ -6121,6 +6121,17 @@ const REFUTE_RESOLU_MARKER_RE =
 /** Une puce markdown est une ligne commençant par `- ` ou `* ` suivi de texte. */
 const STATUS_BULLET_RE = /^\s*[-*]\s+\S/;
 
+/**
+ * Puce de PREMIER niveau (non indentée) — départ de bloc pour les sections
+ * `topLevelBlocks` (#4434 C1, review 11/11) : un blocage parent et ses
+ * sous-puces indentées forment UN seul bloc. STATUS_BULLET_RE matche aussi les
+ * puces indentées (`\s*` initial) : s'en servir comme départ de bloc sur
+ * Blocages séparait le parent daté de ses sous-puces non datées — le parent
+ * partait seul (classement « anciennement vérifié d'abord ») et le détail
+ * restait orphelin dans le statut vivant (motif réel : statuts Argumentum).
+ */
+const TOP_LEVEL_BULLET_RE = /^[-*]\s+\S/;
+
 /** Mots d'une puce : le marqueur de puce ne compte pas (mesure ai-01 09/11 : « les mots des puces »). */
 function countBulletWords(line: string): number {
   return line.replace(/^\s*[-*]\s+/, '').split(/\s+/).filter(Boolean).length;
@@ -6151,6 +6162,13 @@ export const STATUS_SECTION_WORD_BUDGETS: ReadonlyArray<{
   budget: number;
   /** Guidage de rédaction porté par la ligne du prompt (aucun rôle dans la passe). */
   hint?: string;
+  /**
+   * Départ de bloc sur puce de PREMIER niveau uniquement, l'extension avale
+   * les sous-puces indentées (parent + enfants = UN bloc déplacé ensemble).
+   * #4434 C1 (review 11/11) : sans lui, un parent daté partait seul et ses
+   * sous-puces non datées restaient orphelines dans le statut vivant.
+   */
+  topLevelBlocks?: boolean;
 }> = [
   // La frontière est `(?![A-Za-zÀ-ÿ])` et non `\b` : le \b de JS est défini
   // sur [A-Za-z0-9_] — après un caractère accentué (« Résumé »), il n'existe
@@ -6158,7 +6176,7 @@ export const STATUS_SECTION_WORD_BUDGETS: ReadonlyArray<{
   { name: 'Résumé', test: /^#{1,6}\s*R[ée]sum[ée](?![A-Za-zÀ-ÿ])/i, budget: 40 },
   { name: 'État des systèmes', test: /^#{1,6}\s*État des syst[èe]mes(?![A-Za-zÀ-ÿ])/i, budget: 100, hint: 'une ligne par entité, dernier état connu' },
   { name: 'Décisions actées', test: /^#{1,6}\s*D[ée]cisions act[ée]es(?![A-Za-zÀ-ÿ])/i, budget: 90 },
-  { name: 'Blocages structurels', test: /^#{1,6}\s*Blocages structur(?:els|es)(?![A-Za-zÀ-ÿ])/i, budget: 300, hint: 'une ligne par blocage actif, ≤ 25 mots par ligne' },
+  { name: 'Blocages structurels', test: /^#{1,6}\s*Blocages structur(?:els|es)(?![A-Za-zÀ-ÿ])/i, budget: 300, hint: 'une ligne par blocage actif, ≤ 25 mots par ligne', topLevelBlocks: true },
   { name: 'Livrables récents', test: /^#{1,6}\s*Livrables r[ée]cents(?![A-Za-zÀ-ÿ])/i, budget: 55, hint: 'synthèse par thème' },
   { name: 'En cours', test: /^#{1,6}\s*En cours(?![A-Za-zÀ-ÿ])/i, budget: 60 },
   { name: 'Métriques de référence', test: /^#{1,6}\s*M[ée]triques de r[ée]f[ée]rence(?![A-Za-zÀ-ÿ])/i, budget: 85 },
@@ -6281,18 +6299,26 @@ export function enforceStatusBudget(status: string, now: Date = new Date()): Sta
   // puce multi-lignes (suite non vide — ni puce ni titre — sous la ligne
   // « - ») est un BLOC : déplacer la seule ligne marquée orphelinerait sa
   // suite dans la section — le bloc part entier, mots et rang daté compris
-  // (suite ms#1712). Une puce imbriquée reste une puce à part entière.
+  // (suite ms#1712). Une puce imbriquée reste une puce à part entière —
+  // SAUF pour « Blocages structurels » (topLevelBlocks, review 11/11) : un
+  // blocage et ses sous-puces forment un SEUL bloc, déplacer le parent seul
+  // orphelinerait le détail qu'il porte (statuts réels à sous-puces, Argumentum
+  // 10/11). Une sous-puce sans parent ouvert n'ouvre pas de bloc : jamais
+  // comptée, jamais déplacée.
   for (const def of STATUS_SECTION_WORD_BUDGETS) {
     const start = lines.findIndex((l) => def.test.test(l));
     if (start === -1) continue;
     const end = sectionEnd(start);
+    const isBlockStart = def.topLevelBlocks
+      ? (l: string) => TOP_LEVEL_BULLET_RE.test(l)
+      : (l: string) => STATUS_BULLET_RE.test(l);
     const blocks: { first: number; last: number; words: number }[] = [];
     let words = 0;
     for (let i = start + 1; i < end; i++) {
-      if (!STATUS_BULLET_RE.test(lines[i])) continue;
+      if (!isBlockStart(lines[i])) continue;
       let last = i;
       while (last + 1 < end && lines[last + 1].trim() !== ''
-        && !STATUS_BULLET_RE.test(lines[last + 1]) && !/^#{1,6}\s/.test(lines[last + 1])) {
+        && !isBlockStart(lines[last + 1]) && !/^#{1,6}\s/.test(lines[last + 1])) {
         last++;
       }
       // Déjà retirée à l'étape 1 (RÉSOLU/REFUTE > 24 h — possible depuis que

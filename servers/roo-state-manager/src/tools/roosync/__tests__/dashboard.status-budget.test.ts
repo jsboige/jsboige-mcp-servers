@@ -51,6 +51,8 @@
  *   M12 archive : section écrite même sans action           → A3 rouge
  *   M13 puce déjà retirée comptée/re-déplacée (budget
  *       Blocages + retraite 24 h composées)                 → R8 rouge
+ *   M14 topLevelBlocks retiré (parent daté parti seul,
+ *       sous-puces orphelines dans le statut vivant)        → R9 rouge
  *
  * @module tools/roosync/__tests__/dashboard.status-budget
  */
@@ -504,6 +506,36 @@ describe('#4434 (09/11) — passe de budget de statut déterministe', () => {
       expect(out.moved[0].section).toBe('Blocages structurels');
       expect(out.moved[0].moved).toBe(3);
       expect(sectionWords(out.status, 'Blocages structurels')).toBe(280);
+    });
+
+    it('R9 — topLevelBlocks : parent daté + sous-puces indentées = UN bloc, aucune orpheline (review 11/11)', () => {
+      // Finding de la review lane (00:46Z) : STATUS_BULLET_RE matche les
+      // puces indentées → sur Blocages, le parent daté partait seul
+      // (classement « anciennement vérifié d'abord ») et ses sous-puces non
+      // datées restaient orphelines dans le statut vivant — motif réel :
+      // statuts Argumentum (« - **#2229 / #2230** : … [vérifié …] » suivi de
+      // sous-puces indentées). topLevelBlocks : départ de bloc au premier
+      // niveau uniquement, l'extension avale les sous-puces.
+      expect(STATUS_SECTION_WORD_BUDGETS.find((d) => d.name === 'Blocages structurels')!.topLevelBlocks).toBe(true);
+      const parent = bullet('parent', 40, ' [vérifié 02/11 08:00Z]');
+      const sub1 = '  - [sub1] d0 d1 d2 d3 d4 d5 d6 d7 d8 d9'; // 11 mots comptés
+      const sub2 = '  - [sub2] e0 e1 e2 e3 e4 e5 e6 e7 e8 e9'; // 11 mots comptés
+      const others = Array.from({ length: 6 }, (_, i) => bullet(`o${i}`, 45, ` [vérifié 0${i + 3}/11 09:00Z]`));
+      const status = ['### Blocages structurels', parent, sub1, sub2, ...others].join('\n');
+      // 40 + 11 + 11 + 6×45 = 332 > 300 : le parent (tampon le plus ancien,
+      // 02/11) part EN PREMIER — son bloc de 62 mots ramène à 270 ≤ 300.
+      const out = enforceStatusBudget(status, now);
+      expect(out.moved).toHaveLength(1);
+      expect(out.moved[0].section).toBe('Blocages structurels');
+      expect(out.moved[0].moved).toBe(1);
+      expect(out.moved[0].bullets[0]).toBe([parent, sub1, sub2].join('\n'));
+      // AUCUNE orpheline : les sous-puces partent AVEC leur parent.
+      expect(out.status).not.toContain('[sub1]');
+      expect(out.status).not.toContain('[sub2]');
+      // Les autres blocages restent, section revenue sous le plafond.
+      expect(out.status).toContain('- [o5]');
+      expect(sectionWords(out.status, 'Blocages structurels')).toBe(270);
+      expect(out.retiredBlockerLines).toEqual([]);
     });
   });
 
