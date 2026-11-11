@@ -300,8 +300,8 @@
     {
       "_comment": "=== #2002 cheap-task lane: task-tuned no-thinking profiles on the same local model as analyst (thinking). Short outputs, no tools, no memory — offloading epic #2404 ===",
       "id": "summarizer-local",
-      "description": "Condenses logs, conversations, dumps and documents into short structured summaries — local Swift-1.5-27B no-thinking (fleet vLLM ai-01, 262K ctx). Cheap lane of #2002/#2404",
-      "model": "swift-1.5-27b-no-thinking",
+      "description": "Condenses logs, conversations, dumps and documents into short structured summaries — frognano-4b since #1748 casting (concise_summary measured: fastest of the park at 2.5 s median, 4.5/5 heuristic, no oracle gap on this task; swift-1.5-27b-no-thinking was 29.8 s). 32k context (frognano window 32,768): no caller-side chunking or swift fallback is implemented in sk-agent — the caller keeps inputs within the window. Cheap lane of #2002/#2404",
+      "model": "frognano-4b",
       "system_prompt": "You are a summarizer. Condense the provided material into a short, faithful summary: key facts first, then decisions and open points. Never invent content, never drop a decision. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -467,8 +467,8 @@
     },
     {
       "id": "commit-reviewer",
-      "description": "Specialized code reviewer for git diffs with structured findings table",
-      "model": "glm-5.3",
+      "description": "Specialized code reviewer for git diffs with structured findings table. glm-5.3-flash since #1748 casting (code_review measured: flash 9.60/10 oracle, 4.3 s median, no factual error; glm-5.3 9.40 remains the fallback on tier-2/3 reviewers whose input exceeds the 131k flash window)",
+      "model": "glm-5.3-flash",
       "system_prompt": "You are a senior code reviewer. Given a git diff, you perform a thorough review focusing on: (1) correctness - logic errors, off-by-one, null handling, (2) security - injection, XSS, exposed secrets, OWASP Top 10, (3) edge cases - empty inputs, concurrent access, error paths, (4) maintainability - naming, complexity, missing tests. Output a structured review with: Summary (2-3 sentences), Findings Table (severity | category | file:line | description | suggestion), and Verdict (APPROVE / APPROVE WITH FIXES / REQUEST CHANGES). Be specific with line numbers and fix suggestions. Acknowledge good practices when you see them.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -802,8 +802,8 @@
       "inline_agents": [
         {
           "id": "review-synthesizer",
-          "description": "Formats review findings into structured JSON",
-          "model": "swift-1.5-27b-no-thinking",
+          "description": "Formats review findings into structured JSON. glm-5.3-flash since #1748 casting (json_output measured: flash is the only model qualified exact on the complexity answer; swift-1.5-27b-no-thinking carried the bare O(n^3) factual error)",
+          "model": "glm-5.3-flash",
           "system_prompt": "Given code review findings, format them into a clean JSON with: verdict (APPROVE/COMMENT/REQUEST_CHANGES), confidence, summary, blocking_issues, suggestions. Keep it concise."
         }
       ]
