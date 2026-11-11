@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { HierarchyValidator } from '../validate-full-reconstruction.js';
-import { ConversationSkeleton } from '../types/conversation.js';
+import type { StoredConversation } from '../services/unified-store/types.js';
 import { HierarchyReconstructionEngine } from '../utils/hierarchy-reconstruction-engine.js';
 
 // Mock dependencies
@@ -14,13 +14,13 @@ vi.mock('path', () => ({ default: { join: vi.fn((...args: string[]) => args.join
 
 const MockedEngine = HierarchyReconstructionEngine as any;
 
-function makeSkeleton(taskId: string, parentTaskId?: string, workspace?: string): ConversationSkeleton {
+function makeSkeleton(taskId: string, parentTaskId?: string, workspace?: string): StoredConversation {
     return {
         taskId,
         parentTaskId,
         metadata: { workspace: workspace ?? '/test/workspace' },
         sequence: []
-    } as ConversationSkeleton;
+    } as StoredConversation;
 }
 
 describe('HierarchyValidator', () => {
