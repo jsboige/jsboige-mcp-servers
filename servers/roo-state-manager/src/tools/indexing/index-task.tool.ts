@@ -113,7 +113,9 @@ export const indexTaskSemanticTool = {
                 subChunksBuilt: 0,
                 dedupSkipped: 0,
                 pointsIndexed: 0,
-                missingVectors: 0
+                missingVectors: 0,
+                pending: 0,
+                batchesAcked: 0
             };
             const indexedPoints = await indexTask(task_id, taskPath, source, undefined, { stats });
             console.log(`[DEBUG] indexTask completed, returned ${indexedPoints.length} points`);

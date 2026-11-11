@@ -17,8 +17,11 @@ export type IndexStatus = 'success' | 'retry' | 'failed' | 'skip';
  *   `quota_exceeded` / `auth_failed` → permanent (dead-letter, no retry)
  * - `network_timeout` / `service_503` / `rate_limit` / `connection_reset` /
  *   `dns_failure` / `embedding_timeout` / `embedding_incomplete` /
- *   `qdrant_upsert_failed` / `unknown`
- *   → transient (retry with backoff, NEVER rotate key)
+ *   `qdrant_upsert_failed` / `zero_points_written` / `unknown`
+ *   → transient (retry with backoff, NEVER rotate key). `zero_points_written`
+ *   (#4352 grain code, 11/11) is never classified from a message — the
+ *   zero-points guard in indexTaskInQdrant sets it directly: a pass that had
+ *   sub-chunks to embed (pending > 0) and wrote ZERO points is not a success.
  *
  * Adding a new class = extend this union + classifyIndexingError() map +
  * tests. The status tool groups failed tasks by this field.
@@ -40,6 +43,7 @@ export type IndexingErrorClass =
     | 'embedding_timeout'
     | 'embedding_incomplete'
     | 'qdrant_upsert_failed'
+    | 'zero_points_written'
     | 'unknown';
 
 export interface IndexingState {

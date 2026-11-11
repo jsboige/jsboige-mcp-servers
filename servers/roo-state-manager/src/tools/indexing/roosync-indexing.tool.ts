@@ -621,7 +621,7 @@ export interface RooSyncIndexingArgs {
      * fixing the underlying key rotates the task back into the queue only to
      * re-fail — see the doc comment on the case below.
      */
-    error_class?: 'all' | 'claude_session_not_found' | 'file_not_found' | 'access_denied' | 'permission_denied' | 'invalid_format' | 'corrupted_data' | 'quota_exceeded' | 'auth_failed' | 'network_timeout' | 'service_503' | 'rate_limit' | 'connection_reset' | 'dns_failure' | 'embedding_timeout' | 'embedding_incomplete' | 'qdrant_upsert_failed' | 'unknown';
+    error_class?: 'all' | 'claude_session_not_found' | 'file_not_found' | 'access_denied' | 'permission_denied' | 'invalid_format' | 'corrupted_data' | 'quota_exceeded' | 'auth_failed' | 'network_timeout' | 'service_503' | 'rate_limit' | 'connection_reset' | 'dns_failure' | 'embedding_timeout' | 'embedding_incomplete' | 'qdrant_upsert_failed' | 'zero_points_written' | 'unknown';
 
     /** #2766 S2+ P1 follow-up — `cleanup_failed` action: cap on skeletons to reset per call (defensive against huge backlogs). Défaut: 100 */
     max_cleanup_tasks?: number;
