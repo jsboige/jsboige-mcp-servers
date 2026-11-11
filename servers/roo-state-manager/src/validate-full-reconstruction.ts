@@ -1,6 +1,6 @@
 import { HierarchyReconstructionEngine } from './utils/hierarchy-reconstruction-engine.js';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
-import { ConversationSkeleton } from './types/conversation.js';
+import type { StoredConversation } from './services/unified-store/types.js';
 import { createLogger } from './utils/logger.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -31,8 +31,8 @@ interface ValidationStats {
 class HierarchyValidator {
     private workspace: string;
     private stats: ValidationStats;
-    private beforeSkeletons: Map<string, ConversationSkeleton> = new Map();
-    private afterSkeletons: Map<string, ConversationSkeleton> = new Map();
+    private beforeSkeletons: Map<string, StoredConversation> = new Map();
+    private afterSkeletons: Map<string, StoredConversation> = new Map();
 
     constructor(workspace: string) {
         this.workspace = workspace;
@@ -111,7 +111,7 @@ class HierarchyValidator {
                 false // pas de forceRebuild, juste récupérer l'état actuel
             );
 
-            skeletons.forEach((skeleton: ConversationSkeleton) => {
+            skeletons.forEach((skeleton: StoredConversation) => {
                 this.beforeSkeletons.set(skeleton.taskId, skeleton);
             });
 
@@ -125,7 +125,7 @@ class HierarchyValidator {
         }
     }
 
-    private async analyzeResults(skeletons: ConversationSkeleton[]): Promise<void> {
+    private async analyzeResults(skeletons: StoredConversation[]): Promise<void> {
         // Stocker les résultats après reconstruction
         skeletons.forEach(skeleton => {
             this.afterSkeletons.set(skeleton.taskId, skeleton);
@@ -191,7 +191,7 @@ class HierarchyValidator {
         logger.info(`  • Score de confiance moyen: ${this.stats.averageConfidenceScore.toFixed(2)}`);
     }
 
-    private async calculateDepth(skeleton: ConversationSkeleton, allSkeletons: ConversationSkeleton[]): Promise<number> {
+    private async calculateDepth(skeleton: StoredConversation, allSkeletons: StoredConversation[]): Promise<number> {
         let depth = 0;
         let currentId = skeleton.parentTaskId;
         const visited = new Set<string>();
@@ -263,7 +263,7 @@ class HierarchyValidator {
         logger.info(`  ✅ Arbre généré: ${outputPath}`);
     }
 
-    private generateTreeNode(skeleton: ConversationSkeleton, allSkeletons: ConversationSkeleton[], depth: number): string {
+    private generateTreeNode(skeleton: StoredConversation, allSkeletons: StoredConversation[], depth: number): string {
         const indent = '  '.repeat(depth);
         const icon = depth === 0 ? '📁' : '📄';
         const confidence = (skeleton as any).hierarchyMetadata?.confidence ||

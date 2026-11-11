@@ -9,7 +9,6 @@
 
 import { globalTaskInstructionIndex } from './utils/task-instruction-index.js';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
-import { ConversationSkeleton } from './types/conversation.js';
 
 console.log('====================================');
 console.log('🔍 VALIDATION DE L\'ARCHITECTURE DES PARENTIDS');
