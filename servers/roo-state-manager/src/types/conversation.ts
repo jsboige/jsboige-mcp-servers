@@ -35,7 +35,7 @@ export interface MessageSkeleton {
 }
 
 /**
- * Metadata shared between SkeletonHeader (cache) and ConversationSkeleton (full).
+ * Metadata shared by the skeleton types (cache headers, full stored conversations).
  */
 export interface SkeletonMetadata {
     title?: string;
@@ -75,23 +75,6 @@ export interface SkeletonHeader {
    truncatedInstruction?: string;
 }
 
-/**
- * Full skeleton with conversation sequence. Loaded on-demand from disk.
- * Never stored in the cache — only used transiently by view/summarize/export.
- *
- * @deprecated Roo-specific conversation format — superseded by the unified
- * PG-backed task extraction (roo-extensions #1360 / #1395). Do not add new
- * consumers. Removal is gated on MEASURED prerequisites, not a date
- * (roo-extensions #1395): the unified PG store is decoupled since 2026-11-05
- * (P2 — it declares its own `StoredConversation` exchange type in
- * services/unified-store/types.ts); src/tools must reach zero references
- * (100 of 182 files, measured 2026-10-31).
- * See docs/MIGRATION-UNIFIED-TASK-EXTRACTION.md.
- */
-export interface ConversationSkeleton extends SkeletonHeader {
-   sequence: (MessageSkeleton | ActionMetadata)[];
-}
-
 // Représente les métadonnées complètes d'une tâche.
 export interface TaskMetadata {
     parentTaskId?: string; // camelCase est la nouvelle norme
@@ -111,7 +94,7 @@ export interface TaskMetadata {
 // Représente une conversation complète avec toutes les données pour l'analyse.
 /** @deprecated */
 export interface ConversationSummary {
-    // Fields from the old ConversationSkeleton to maintain compatibility during transition
+    // Fields from the legacy pre-unification format, kept for transition compatibility
     taskId: string;
     parentTaskId?: string;
     prompt: string;
@@ -282,17 +265,6 @@ export interface ClusterSummaryResult {
     // Format et taille
     format: string;
     size: number;
-}
-
-/**
- * Structure d'organisation des tâches dans une grappe
- */
-export interface OrganizedClusterTasks {
-    rootTask: ConversationSkeleton;
-    allTasks: ConversationSkeleton[];
-    sortedTasks: ConversationSkeleton[];
-    taskHierarchy: Map<string, ConversationSkeleton[]>;
-    taskOrder: string[];
 }
 
 /**

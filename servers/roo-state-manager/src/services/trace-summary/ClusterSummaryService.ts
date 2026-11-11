@@ -5,13 +5,30 @@
  * Gère la logique spécifique aux résumés multi-tâches (clusters).
  */
 
-import { MessageSkeleton, ClusterSummaryOptions, ClusterSummaryStatistics, ClusterSummaryResult, OrganizedClusterTasks, ClassifiedClusterContent, CrossTaskPattern } from '../../types/conversation.js';
+import { MessageSkeleton, ClusterSummaryOptions, ClusterSummaryStatistics, ClusterSummaryResult, ClassifiedClusterContent, CrossTaskPattern } from '../../types/conversation.js';
 import { SummaryOptions, SummaryResult, SummaryStatistics } from '../../types/trace-summary.js';
 import { toUnifiedTask } from '../../types/unified-task.js';
 import { ContentClassifier, ClassifiedContent } from './ContentClassifier.js';
 import { SummaryGenerator } from './SummaryGenerator.js';
 import type { StoredConversation } from '../unified-store/types.js';
 import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '../../types/errors.js';
+
+/**
+ * Structure d'organisation des tâches dans une grappe.
+ *
+ * #1395 P4 : ce type vivait dans `types/conversation.ts`, ancré sur l'interface
+ * dépréciée du squelette Roo-spécifique (retirée du pivot par ce même grain).
+ * Les données réelles qui le peuplent sont des `StoredConversation` (voir
+ * `organizeClusterTasks`), qui portent le même champ `sequence` — le type suit
+ * la donnée et déménage chez son unique consommateur.
+ */
+export interface OrganizedClusterTasks {
+    rootTask: StoredConversation;
+    allTasks: StoredConversation[];
+    sortedTasks: StoredConversation[];
+    taskHierarchy: Map<string, StoredConversation[]>;
+    taskOrder: string[];
+}
 
 /**
  * Type de callback pour la génération de résumé individuel
