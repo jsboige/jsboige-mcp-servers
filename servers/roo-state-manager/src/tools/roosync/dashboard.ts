@@ -2189,6 +2189,26 @@ export async function verifyCondenseLanding(
   }
 }
 
+/**
+ * #2464/#4608 — empreinte du payload de condensation (messages à archiver +
+ * statut courant). Partagée entre le bloc CONDENSE-AFTER de handleAppend et
+ * l'armeur du sweep (#4608 option b) : les deux chemins doivent sauter
+ * exactement le même contenu, sinon une passe armée par le sweep peut
+ * re-condenser ce que l'append vient de sauter (et réciproquement) — la
+ * dérive des deux formules serait un skip creux dans un sens, une boucle de
+ * passes dans l'autre.
+ */
+function condensePayloadHashOf(dashboard: Dashboard, effectiveKeep: number): string {
+  const toArchiveCount = dashboard.intercom.messages.length - effectiveKeep;
+  const condensePayload = dashboard.intercom.messages
+    .slice(0, toArchiveCount)
+    .map(m => `${m.timestamp || ''}|${m.content || ''}`)
+    .join('\n')
+    + '\n[STATUS]\n'
+    + (dashboard.status?.markdown || '');
+  return createHash('sha256').update(condensePayload).digest('hex').substring(0, 16);
+}
+
 function startDetachedCondense(
   key: string,
   snapshot: Dashboard,
@@ -9349,14 +9369,9 @@ async function handleAppend(
     // changed since the last successful condensation, skip the LLM calls entirely.
     // This prevents the observed loop where condensation fires 3-4× per 30min on
     // unchanged content, burning ~350KB prompts + 12K output tokens each time.
-    const toArchiveCount = updatedDashboard.intercom.messages.length - effectiveKeep;
-    const condensePayload = updatedDashboard.intercom.messages
-      .slice(0, toArchiveCount)
-      .map(m => `${m.timestamp || ''}|${m.content || ''}`)
-      .join('\n')
-      + '\n[STATUS]\n'
-      + (updatedDashboard.status?.markdown || '');
-    const payloadHash = createHash('sha256').update(condensePayload).digest('hex').substring(0, 16);
+    // #4608 — formule déportée dans condensePayloadHashOf : l'armeur du sweep
+    // saute exactement le même payload.
+    const payloadHash = condensePayloadHashOf(updatedDashboard, effectiveKeep);
     const lastHash = lastCondenseHash.get(key);
 
     if (lastHash === payloadHash) {
@@ -9805,8 +9820,17 @@ async function handleAppend(
     // l'autre.
     warning: [
       guardAWarning,
+      // #4608 (volet 3) — la formule suit needsCondense : mesuré au-dessus du
+      // plafond (« 124 % … sous le seuil de condensation 46 Ko »), la clause
+      // statique mentait dans les deux sens. Trois états réels : passe requise
+      // (needsCondense), taille au-dessus mais fenêtre conservée déjà atteinte
+      // (pas de passe requise), sous le seuil.
       fillWarnCrossed
-        ? `[WARN #4527] dashboard à ${Math.round((estimatedSize / MAX_DASHBOARD_SIZE_BYTES) * 100)} % du plafond (${Math.round(estimatedSize / 1024)} Ko) — au-dessus du seuil d'avis ${Math.round(fillWarnThreshold / 1024)} Ko, sous le seuil de condensation ${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)} Ko.`
+        ? `[WARN #4527] dashboard à ${Math.round((estimatedSize / MAX_DASHBOARD_SIZE_BYTES) * 100)} % du plafond (${Math.round(estimatedSize / 1024)} Ko) — au-dessus du seuil d'avis ${Math.round(fillWarnThreshold / 1024)} Ko, ${needsCondense
+          ? `au-dessus du seuil de condensation ${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)} Ko — une passe est requise à cet append (issue dans condensationDeferred/condensationStalled)`
+          : estimatedSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES
+            ? `taille au-dessus du seuil de condensation ${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)} Ko mais fenêtre conservée déjà atteinte — pas de passe requise`
+            : `sous le seuil de condensation ${Math.round(PREEMPTIVE_CONDENSE_THRESHOLD_BYTES / 1024)} Ko`}.`
         : undefined,
       storeMissing ? "[B2 #4131] store G: absent à l'entrée — écriture tentée en mode PG-seul" : undefined,
     ].filter((w): w is string => typeof w === 'string' && w.length > 0).join(' ') || undefined,
@@ -10044,16 +10068,35 @@ export function classifyMirrorDivergence(
  * One list-side sighting of a key over the condensation threshold. Returns
  * summary annotations on the warn pass (visible in the list result), `{}` in
  * every other case. Never throws — the list must not fail on the organ.
+ *
+ * #4608 (fix racine, option b) — le sweep ARME la passe lui-même avant de
+ * poster le [WARN] : les écrivains système (organe, listener, preflight,
+ * crossPost) écrivent via withAppendLock sans passer par handleAppend, donc
+ * le bloc CONDENSE-AFTER n'était jamais atteint sur ces dashboards et la
+ * promesse « au prochain append » était structuellement fausse (mesuré
+ * po-2024 : passe morte 18:32Z sans relance possible depuis ai-01 #4135).
+ * Le [WARN] dit maintenant ce que le sweep a FAIT : passe lancée, ou passe
+ * refusée et pourquoi.
  */
-async function condenseStallSighting(
+export async function condenseStallSighting(
   key: string,
   utilizationPct: number
 ): Promise<Record<string, unknown>> {
   try {
     const verdict = await noteOverThreshold(key, true);
     if (!verdict.warn) return {};
-    await postCondensationStallWarn(key, utilizationPct, verdict.hoursOver);
-    return { condensationStalled: true, condensationStalledHours: verdict.hoursOver };
+    const arm = await sweepArmCondensePass(key);
+    await postCondensationStallWarn(key, utilizationPct, verdict.hoursOver, arm);
+    return {
+      condensationStalled: true,
+      condensationStalledHours: verdict.hoursOver,
+      ...(arm.armed
+        ? {
+            condensationStallSweepArmed: true,
+            condensationStallSweepSeat: arm.seat,
+          }
+        : { condensationStallSweepRefused: arm.reason }),
+    };
   } catch (err) {
     logger.debug('Condensation stall sighting failed (non-fatal)', {
       key,
@@ -10063,15 +10106,144 @@ async function condenseStallSighting(
   }
 }
 
+/** Verdict de l'armement du sweep (#4608 option b) — jamais un throw. */
+type SweepArmResult =
+  | { armed: true; seat: string; deadPassRecovered: boolean }
+  | { armed: false; reason: string; detail?: string; deadPassRecovered: boolean };
+
+/**
+ * #4608 (fix racine, option b) — l'organe de détection arme la passe
+ * lui-même. Mêmes primitives que le bloc CONDENSE-AFTER de handleAppend
+ * (passe détachée, verrou condense PG, marqueur durable, skip #2464) : la
+ * cooldown 1/6 h de noteOverThreshold borne le tout — ce sweep ne peut pas
+ * armer plus souvent que l'append ne le pouvait. Refus MOTIVÉ dans le
+ * verdict : le [WARN] qui suit rapporte ce refus au lieu de promettre un
+ * append qui ne viendra pas. Jamais un throw — une panne de l'armeur ne doit
+ * pas faire perdre le [WARN].
+ */
+async function sweepArmCondensePass(key: string): Promise<SweepArmResult> {
+  const machineId = process.env.ROOSYNC_MACHINE_ID || 'unknown';
+  const holder: CondenseLockInfo = {
+    machineId,
+    workspace: 'rsm',
+    pid: process.pid,
+    acquiredAt: new Date().toISOString(),
+  };
+  let deadPassRecovered = false;
+  try {
+    // Passe morte d'un hôte précédent : même discipline que la relance du
+    // CONDENSE-AFTER — la passe que CE sweep s'apprête à lancer EST la relance.
+    const prevHealth = await readCondenseHealth(key);
+    deadPassRecovered = isDeadPass(prevHealth);
+    if (deadPassRecovered) {
+      logger.warn('Dead detached condensation pass detected — sweep arming the relaunch (#4608)', {
+        key,
+        lastAttemptAt: prevHealth?.lastAttemptAt ?? null,
+      });
+      await markDeadPassRecovered(key);
+    }
+
+    // La condensation réécrit la MOITIÉ FICHIER : pas de fichier, rien à armer
+    // (jumelle de casse, vestige PG, clé disparue entre la liste et le sweep).
+    const target = await readDashboardFile(key);
+    if (!target) return { armed: false, reason: 'no-file', deadPassRecovered };
+
+    // Même gate que le CONDENSE-AFTER : la liste a vu la clé au-dessus du seuil,
+    // mais l'état a pu changer depuis (condensation concurrente atterrie).
+    const estimatedSize = estimateDashboardSize(target);
+    const effectiveKeep = computeKeepCount(target.intercom.messages);
+    const needsCondense = estimatedSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES
+      && target.intercom.messages.length > effectiveKeep;
+    if (!needsCondense) {
+      return { armed: false, reason: 'under-threshold', deadPassRecovered };
+    }
+
+    // #2464 — même skip par empreinte que l'append (formule partagée
+    // condensePayloadHashOf) : la passe ne re-condense pas un contenu inchangé
+    // depuis la dernière passe de CE process.
+    const payloadHash = condensePayloadHashOf(target, effectiveKeep);
+    if (lastCondenseHash.get(key) === payloadHash) {
+      return { armed: false, reason: 'unchanged-hash', deadPassRecovered };
+    }
+
+    // #2818 — verrou inter-processus : une seule passe à la fois par clé. Le
+    // détenteur est nommé dans le refus (fresh = concurrente saine, près du
+    // TTL = horizon de vol).
+    const gotLock = await tryAcquireCondenseLock(key, holder);
+    if (!gotLock) {
+      const lockInfo = await readCondenseLockHolderInfo(key);
+      return {
+        armed: false,
+        reason: 'lock-held',
+        detail: lockInfo
+          ? `${lockInfo.holder} depuis ${Math.round(lockInfo.ageMs / 60_000)} min`
+          : undefined,
+        deadPassRecovered,
+      };
+    }
+
+    // Détaché UNIQUEMENT : le list ne doit pas bloquer ~2 min sur une passe
+    // inline (CONDENSE_DETACHED=0 est le siège healthcheck #4639 — l'append
+    // reste son chemin d'armement ; le verrou pris ci-dessus est rendu).
+    if (!isDetachedCondenseEnabled()) {
+      await releaseCondenseLock(key, holder);
+      return { armed: false, reason: 'detached-disabled', deadPassRecovered };
+    }
+
+    // Marqueur durable AVANT le lancement (#4608) : si cet hôte meurt avec la
+    // passe, le prochain balayage verra `attempting` périmé et saura que la
+    // relance est à lui. La passe relâche le verrou dans son `finally`.
+    await markCondenseAttempt(key, condenseSeat(holder));
+    startDetachedCondense(key, target, effectiveKeep, payloadHash, holder);
+    logger.info('Sweep armed the detached condensation pass (#4608)', {
+      key,
+      estimatedSize: `${Math.round(estimatedSize / 1024)}KB`,
+      messageCount: target.intercom.messages.length,
+      seat: condenseSeat(holder),
+      deadPassRecovered,
+    });
+    return { armed: true, seat: condenseSeat(holder), deadPassRecovered };
+  } catch (err) {
+    return {
+      armed: false,
+      reason: 'error',
+      detail: err instanceof Error ? err.message : String(err),
+      deadPassRecovered,
+    };
+  }
+}
+
+/** Phrasé humain du refus d'armement (#4608) — le [WARN] nomme la cause. */
+function sweepArmRefusalText(arm: Extract<SweepArmResult, { armed: false }>): string {
+  switch (arm.reason) {
+    case 'no-file':
+      return `clé sans fichier vivant (jumelle de casse ou vestige PG)`;
+    case 'under-threshold':
+      return `repassée sous le seuil de condensation depuis la liste`;
+    case 'unchanged-hash':
+      return `contenu inchangé depuis la dernière passe de ce process (#2464)`;
+    case 'lock-held':
+      return `verrou condense détenu${arm.detail ? ` par ${arm.detail}` : ''} — une passe est en vol ou son verrou n'a pas expiré`;
+    case 'detached-disabled':
+      return `CONDENSE_DETACHED=0 sur ce siège — passe détachée désactivée, l'append reste le chemin d'armement (#4639)`;
+    default:
+      return `erreur d'armement${arm.detail ? ` (${arm.detail})` : ''}`;
+  }
+}
+
 /**
  * Post the stall [WARN] ON the stalled dashboard (system-authored, same
  * family as the truncation fleet alert). Best-effort and lock-disciplined:
  * `withAppendLock` on the target key, read-modify-write, never throws.
+ * #4608 option b — le message dit ce que le sweep a fait (passe lancée /
+ * refusée et pourquoi), jamais « au prochain append » : les écrivains
+ * système ne passent pas par handleAppend, la promesse était fausse.
  */
 async function postCondensationStallWarn(
   key: string,
   utilizationPct: number,
-  hoursOver: number
+  hoursOver: number,
+  arm: SweepArmResult
 ): Promise<void> {
   const machineId = process.env.ROOSYNC_MACHINE_ID || 'unknown';
   const alertAuthor: Author = { machineId, workspace: 'rsm' };
@@ -10083,6 +10255,11 @@ async function postCondensationStallWarn(
   };
   const isoNow = new Date().toISOString();
   const cooldownH = Math.round(condenseStallWarnCooldownMs() / 3_600_000);
+  const armLine = arm.armed
+    ? `Ce sweep a lancé la passe lui-même : détachée, siège ${arm.seat}`
+      + `${arm.deadPassRecovered ? ` (relance d'une passe morte d'un hôte précédent)` : ''}`
+      + ` — plus besoin d'attendre un append.`
+    : `Passe NON lancée par ce sweep : ${sweepArmRefusalText(arm)}.`;
   const message: IntercomMessage = {
     id: generateMessageId(machineId, 'rsm'),
     timestamp: isoNow,
@@ -10091,30 +10268,37 @@ async function postCondensationStallWarn(
     content: `**[WARN] CONDENSATION EN STATION** — ${key}\n\n`
       + `${key} est resté au-dessus du seuil de condensation (92 %) pendant ~${hoursOver} h `
       + `(actuellement ${Math.round(utilizationPct)} %) sans qu'aucune passe n'atterrisse (#4608).\n`
-      + `Au prochain append, une relance sera tentée (détection de passe morte, marqueur durable `
-      + `\`condense_state:${key}\` dans roosync_store_meta).\n`
+      + `${armLine}\n`
       + `(organe de détection #4608 ; max 1/${cooldownH} h par dashboard)`,
   };
   logger.warn('Dashboard stalled over condensation threshold — WARN posted (#4608)', {
     key,
     utilizationPct: Math.round(utilizationPct),
     hoursOver,
+    sweepArmed: arm.armed,
+    sweepRefusal: arm.armed ? undefined : arm.reason,
   });
   try {
     await withAppendLock(key, holder, async () => {
-      const target = await readDashboardFile(key);
-      if (!target) return; // clé disparue entre la liste et le post : rien à faire
-      const updated: Dashboard = {
-        ...target,
-        lastModified: isoNow,
-        lastModifiedBy: alertAuthor,
-        intercom: {
-          messages: [...target.intercom.messages, message],
-          totalMessages: target.intercom.totalMessages + 1,
-          lastCondensedAt: target.intercom.lastCondensedAt,
-        },
-      };
-      await writeDashboardFile(key, updated);
+      // #4608 — withKeyLock en PLUS du verrou append : le RMW et le merge de
+      // la passe armée par ce sweep vivent dans le même process ; sans lui,
+      // lecture du WARN avant le merge + écriture après resurrecterait les
+      // messages archivés (même discipline que appendDashboardIncremental).
+      await withKeyLock(key, async () => {
+        const target = await readDashboardFile(key);
+        if (!target) return; // clé disparue entre la liste et le post : rien à faire
+        const updated: Dashboard = {
+          ...target,
+          lastModified: isoNow,
+          lastModifiedBy: alertAuthor,
+          intercom: {
+            messages: [...target.intercom.messages, message],
+            totalMessages: target.intercom.totalMessages + 1,
+            lastCondensedAt: target.intercom.lastCondensedAt,
+          },
+        };
+        await writeDashboardFile(key, updated);
+      });
     });
   } catch (err) {
     logger.warn('Condensation stall WARN post failed (non-fatal)', {
