@@ -173,6 +173,26 @@ def inject_keys_into_template(
         if mid and api_key and not api_key.startswith("YOUR_"):
             local_models_by_id[mid] = model
 
+    # Seat-local api_key_env bindings survive the template rebuild (#1748,
+    # po-2028, 10/11 14:49Z): the template does not declare api_key_env on
+    # every id, and env-first seats (ms#1723) carry their ONLY key material
+    # there — the local literal api_key can legitimately stay a YOUR_*
+    # placeholder (po-2028 qwens: api_key=YOUR_*, api_key_env=VLLM_API_KEY_
+    # MEDIUM). The rebuild used to drop the binding, runtime resolution fell
+    # back to the literal — a decoy that never authenticates on such seats —
+    # and the server 401'd (20 benchmark cells). Local wins when set; when
+    # the local entry has no binding, deepcopy already carries the template's
+    # own through untouched.
+    local_env_bindings = {
+        m["id"]: m["api_key_env"]
+        for m in local_config.get("models", [])
+        if m.get("id") and m.get("api_key_env")
+    }
+    for model in result.get("models", []):
+        env_binding = local_env_bindings.get(model.get("id", ""))
+        if env_binding:
+            model["api_key_env"] = env_binding
+
     # Inject model API keys
     for model in result.get("models", []):
         mid = model.get("id", "")

@@ -542,3 +542,139 @@ def test_markitdown_mcp_declares_dedicated_venv_path():
     ), mcp["command"]
     pin = (SK_AGENT_DIR / "requirements-markitdown.txt").read_text(encoding="utf-8")
     assert "markitdown-mcp==0.0.1a7" in pin, pin
+
+
+# --- #1748: api_key_env survives the sync on the same-id path ----------------
+# po-2028 incident 10/11 15:49:45: the seat carried seat-local api_key_env
+# bindings on swift/qwen models (ms#1723 env-first key resolution — the seat's
+# literal api_key values are decoys that never authenticate). The template
+# does not declare api_key_env on those ids, so inject_keys_into_template,
+# which rebuilds each model from deepcopy(template), dropped the binding on
+# the same-id path (it copied api_key/base_url/enabled only). Runtime key
+# resolution fell back to the literal decoy and 20 benchmark cells went 401
+# (pre-sync .bak, written at 15:49:45 by the sync itself, still carried the
+# bindings — the sync is the writer that removed them).
+
+LOCAL_WITH_ENV_BINDINGS = {
+    "models": [
+        {
+            # Same id as a template model WITHOUT api_key_env: the seat-local
+            # binding must survive the rebuild.
+            "id": "qwen3.6-35b-a3b",
+            "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+            "api_key": "sk-medium-real-key",
+            "api_key_env": "VLLM_API_KEY_MEDIUM",
+        },
+        {
+            # Same id as a template model WITH api_key_env=ZAI_API_KEY: the
+            # seat overrides the env var name — local wins.
+            "id": "glm-5.3",
+            "base_url": "http://192.168.0.50:3000/v1",
+            "api_key": "sk-glm-real-key",
+            "api_key_env": "ZAI_API_KEY_SEAT",
+        },
+    ],
+    "agents": [],
+    "conversations": [],
+    "mcps": [],
+}
+
+
+def test_same_id_local_api_key_env_binding_survives_sync():
+    """The 15:49:45 incident, replayed: a seat-local api_key_env must carry
+    over the template rebuild with the key/base_url/enabled — not doing so
+    silently downgrades the model to its decoy literal api_key."""
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(Path(td), LOCAL_WITH_ENV_BINDINGS)
+        assert proc.returncode == 0, (
+            f"env-binding sync must stay healthy — stderr={proc.stderr!r}"
+        )
+        assert "MISSING API KEYS" not in proc.stderr
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        by_id = {m["id"]: m for m in written["models"]}
+        qwen = by_id["qwen3.6-35b-a3b"]
+        assert qwen["api_key_env"] == "VLLM_API_KEY_MEDIUM", (
+            "seat-local api_key_env on a template id without one was dropped "
+            f"(model={qwen!r})"
+        )
+        assert qwen["api_key"] == "sk-medium-real-key"
+        glm = by_id["glm-5.3"]
+        assert glm["api_key_env"] == "ZAI_API_KEY_SEAT", (
+            "seat-local api_key_env must override the template binding "
+            f"(model={glm!r})"
+        )
+        assert glm["api_key"] == "sk-glm-real-key"
+
+
+def test_template_api_key_env_survives_when_local_has_none():
+    """Mirror guard: a local same-id entry WITHOUT api_key_env must not blank
+    the template's binding — deepcopy carries it and the fix must not remove
+    what it did not replace."""
+    local = {
+        "models": [
+            {
+                "id": "glm-5.3",  # same id, real key, NO api_key_env locally
+                "base_url": "http://192.168.0.50:3000/v1",
+                "api_key": "sk-glm-real-key",
+            },
+            {
+                "id": "qwen3.6-35b-a3b-local",
+                "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+                "api_key": "sk-medium-real-key",
+            },
+        ],
+        "agents": [],
+        "conversations": [],
+        "mcps": [],
+    }
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(Path(td), local)
+        assert proc.returncode == 0, f"stderr={proc.stderr!r}"
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        by_id = {m["id"]: m for m in written["models"]}
+        glm = by_id["glm-5.3"]
+        assert glm["api_key"] == "sk-glm-real-key"
+        assert glm["api_key_env"] == "ZAI_API_KEY", glm
+
+
+def test_env_binding_survives_when_literal_key_is_placeholder():
+    """The full po-2028 qwen shape: env-first seats carry their ONLY key
+    material in api_key_env while the local literal api_key stays a YOUR_*
+    placeholder — such models never enter the same-id lookup (real key
+    required), so the binding must survive via its own path. The missing-key
+    guard still fires (loud contract — the literal IS a placeholder, and the
+    banner hint names the env var to provision), but the written config keeps
+    the binding so runtime env-first resolution authenticates."""
+    local = {
+        "models": [
+            {
+                "id": "qwen3.6-35b-a3b",  # same id as template, PLACEHOLDER literal
+                "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+                "api_key": "YOUR_MEDIUM_API_KEY_HERE",
+                "api_key_env": "VLLM_API_KEY_MEDIUM",
+            },
+            {
+                "id": "glm-5.3-local",
+                "base_url": "http://192.168.0.50:3000/v1",
+                "api_key": "sk-hub-real-key",
+            },
+        ],
+        "agents": [],
+        "conversations": [],
+        "mcps": [],
+    }
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(Path(td), local)
+        # Loud contract: the placeholder literal is reported, non-zero exit.
+        assert proc.returncode == 1
+        assert "MISSING API KEYS" in proc.stderr
+        assert "VLLM_API_KEY_MEDIUM" in proc.stderr, (
+            f"banner must hint the env var to provision: {proc.stderr!r}"
+        )
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        qwen = next(m for m in written["models"] if m["id"] == "qwen3.6-35b-a3b")
+        assert qwen["api_key_env"] == "VLLM_API_KEY_MEDIUM", (
+            "the incident regression: placeholder-literal env-bound model lost "
+            f"its api_key_env in the rebuild (model={qwen!r})"
+        )
+        assert qwen["api_key"] == "YOUR_MEDIUM_API_KEY_HERE"
