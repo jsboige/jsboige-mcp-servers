@@ -25,11 +25,15 @@
  * perdue (mandat 8-sections-toujours-complètes), queue protégée
  * (« Patterns appris » jamais sacrifiée), plafond NON relevé
  * (max_tokens reste CONDENSE_LLM_MAX_TOKENS = 7200).
- * Review ms#1633 (ai-01, 02/11) : « Blocages structurels » n'a PAS de plafond
- * de mots — une ligne par blocage actif, date de vérification conservée
- * (~25 mots/ligne, sortie sur réfutation seule, règle #4082) ; l'enveloppe
- * ~600 mots EXCLUT les lignes de blocage ; compensation sur « Livrables
- * récents » (80→55) et « Patterns appris » (85→55).
+ * Review ms#1633 (ai-01, 02/11) : « Blocages structurels » sans plafond de
+ * mots — une ligne par blocage actif, date de vérification conservée. #4434
+ * résiduel C1 (ai-01, 11/11) : sans plafond, la section mesurait 833 mots /
+ * 57 puces actives (65 % du statut workspace-CoursIA) et le fallback ne
+ * convergait plus sous le plafond d'octets — « Blocages structurels » porte
+ * désormais SON plafond dans la table (300 mots), l'excédent part verbatim à
+ * l'archive #4434 par la passe (jamais supprimé) ; l'enveloppe ~600 mots
+ * couvre les 7 autres sections ; compensation sur « Livrables récents »
+ * (80→55) et « Patterns appris » (85→55) inchangée.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -75,7 +79,7 @@ vi.mock('@/services/openai', () => ({
     getFallbackLLMModelId: () => 'test-fallback-model',
 }));
 
-import { roosyncDashboard, STATUS_SECTION_WORD_BUDGETS, STATUS_BUDGET_PROMPT_BLOCKERS_AT, statusBudgetPromptLines } from '../dashboard.js';
+import { roosyncDashboard, STATUS_SECTION_WORD_BUDGETS, statusBudgetPromptLines } from '../dashboard.js';
 
 const STATUS_PROMPT_MARKER = 'synthèse de dashboards';
 
@@ -161,18 +165,20 @@ describe('generateStatusUpdate — budget par section (#4434)', () => {
         delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
     });
 
-    it('bloc BUDGET PAR SECTION présent, total HORS lignes de blocage, plafond de mots sur 7/8 sections', async () => {
+    it('bloc BUDGET PAR SECTION présent, enveloppe hors Blocages, plafond de mots sur 8/8 sections', async () => {
         const { system } = await captureStatusCall();
         expect(system).toContain('BUDGET PAR SECTION (#4434)');
         expect(system).toContain('LIMITE STRICTE');
-        // L'enveloppe globale EXCLUT les lignes de blocage : sinon un statut
-        // portant ~20 blocages dater forcerait de nouveau l'abandon de blocages
-        // non réfutés (review ms#1633).
+        // L'enveloppe ~600 mots couvre les 7 sections hors Blocages : la 8e
+        // (« Blocages structurels ») porte son PROPRE plafond dans la même
+        // liste depuis #4434 résiduel C1 — sans lui, mesuré 833 mots / 57
+        // puces actives, le fallback ne convergeait plus sous le plafond d'octets.
         expect(system).toContain('~600 mots');
-        expect(system).toContain('HORS lignes de blocage');
-        // 7 sections sur 8 portent un plafond de mots ; « Blocages structurels »
-        // est l'exception volontaire (règle par-ligne, test dédié ci-dessous).
-        for (const name of CANON.filter(n => n !== 'Blocages structurels')) {
+        expect(system).toContain('hors « Blocages structurels », qui porte son propre plafond');
+        // Les 8 sections canoniques portent chacune une ligne de budget
+        // « - <nom> : ≤ N mots » — y compris Blocages (le plafond n'est plus
+        // une exception : c'est la ligne de la table, source unique).
+        for (const name of CANON) {
             // Chaque section canonique porte SA ligne de budget « - <nom> : ≤ N mots »
             const line = system.split('\n').find(l => l.trim().startsWith('-') && l.includes(name) && l.includes('mots'));
             expect(line, `ligne de budget pour « ${name} »`).toBeTruthy();
@@ -187,37 +193,47 @@ describe('generateStatusUpdate — budget par section (#4434)', () => {
         }
     });
 
-    it('source unique : la table ne peut plus porter « Blocages structurels » ni un libellé hors canevas', async () => {
-        // Le prompt promet un plafond sur exactement 7 sections : la table qui
-        // les génère doit couvrir le canevas hors Blocages, ni plus ni moins —
-        // un libellé dérivé y déplacerait une ligne de budget fantôme.
-        expect(STATUS_SECTION_WORD_BUDGETS.map((d) => d.name)).toEqual(CANON.filter(n => n !== 'Blocages structurels'));
-        // La ligne Blocages (littérale) est intercalée à SA position canonique :
-        // l'index du split doit suivre le canevas, pas rester un nombre magique.
-        expect(STATUS_BUDGET_PROMPT_BLOCKERS_AT).toBe(CANON.indexOf('Blocages structurels'));
+    it('source unique : la table porte les 8 sections dans l\'ordre du canevas (Blocages inclus)', async () => {
+        // Depuis #4434 résiduel C1, « Blocages structurels » vit dans la table :
+        // plus de ligne littérale intercalée, la parité table ↔ canevas est
+        // TOTALE — un libellé dérivé ou un ordre divergent y déplacerait une
+        // ligne de budget fantôme ou deux ordres contradictoires.
+        expect(STATUS_SECTION_WORD_BUDGETS.map((d) => d.name)).toEqual(CANON);
+        // Le plafond Blocages est un VRAI plafond, lu à la source : l'ancienne
+        // littérale « PAS de plafond » ne doit pas revenir par la table.
+        const blocagesDef = STATUS_SECTION_WORD_BUDGETS.find((d) => d.name === 'Blocages structurels');
+        expect(blocagesDef).toBeTruthy();
+        expect(blocagesDef!.budget).toBeGreaterThan(0);
     });
 
-    it('blocages structurels : PAS de plafond de mots — une ligne par blocage actif, date conservée (review ms#1633)', async () => {
+    it('blocages structurels : plafond propre dans la table, règles RECOPIE/archive/refutation dans les règles du budget (#4434 C1)', async () => {
         const { system } = await captureStatusCall();
-        const line = system.split('\n').find(l => l.trim().startsWith('-') && l.includes('Blocages structurels'));
-        expect(line, 'ligne budget « Blocages structurels »').toBeTruthy();
-        // Un plafond de mots sur cette section force l'abandon de blocages non
-        // réfutés — exactement ce que la règle #4082 interdit (un blocage daté
-        // ne sort du statut que sur réfutation).
-        expect(line!).toContain('PAS de plafond de mots');
-        expect(line!).not.toMatch(/Blocages structurels\s*:\s*≤\s*\d+\s*mots/);
-        expect(line!).toContain('RECOPIE une ligne par blocage actif du statut précédent');
-        expect(line!).toContain('même sujet, même date de vérification');
-        expect(line!).toMatch(/≤\s*25\s*mots par ligne/);
-        expect(line!).toContain('PEUT dépasser le budget sans limite');
-        // Jamais de disparition silencieuse : la ligne reste, marquée.
-        expect(line!).toContain('ne disparaît jamais silencieusement');
-        expect(line!).toContain('REFUTE <date>');
-        expect(line!).toContain('RÉSOLU <date>');
-        // La règle anti-rogne : les lignes de blocage ne se sacrifient jamais
-        // au budget — c'est ce qui rend l'absence de plafond effective.
-        expect(system).toContain('Les lignes de blocage ne se rognent JAMAIS pour tenir le budget');
-        expect(system).toContain('garde SA ligne et sa date');
+        // La ligne de budget vient de la table (source unique) : elle porte le
+        // plafond et le guidage par-ligne, comme les 7 autres sections.
+        const blocagesDef = STATUS_SECTION_WORD_BUDGETS.find((d) => d.name === 'Blocages structurels')!;
+        const expectedLine = `- Blocages structurels : ≤ ${blocagesDef.budget} mots${blocagesDef.hint ? ` (${blocagesDef.hint})` : ''}`;
+        expect(system.split('\n')).toContain(expectedLine);
+        expect(blocagesDef.budget).toBe(300); // 833 mots mesurés / 57 puces → ~20 puces gardées
+        // Les anciennes consignes non bornées sont REMPLACÉES, pas cumulées.
+        expect(system).not.toContain('PAS de plafond de mots');
+        expect(system).not.toContain('PEUT dépasser le budget sans limite');
+        // La sémantique par-ligne vit dans les règles du budget : recopie,
+        // date conservée, jamais rognée, excédent ARCHIVÉ (pas supprimé),
+        // jamais de disparition silencieuse, REFUTE/RÉSOLU marqués.
+        const rule = system.split('\n').find(l => l.includes('RECOPIE une ligne par blocage actif du statut précédent'));
+        expect(rule, 'règle blocages du bloc Règles du budget').toBeTruthy();
+        expect(rule!).toContain('même sujet, même date de vérification');
+        expect(rule!).toMatch(/≤\s*25\s*mots par ligne/);
+        expect(rule!).toContain('ne se rogne JAMAIS');
+        expect(rule!).toContain('archive #4434');
+        expect(rule!).toContain('verbatim');
+        expect(rule!).toContain('ne disparaît jamais silencieusement');
+        expect(rule!).toContain('REFUTE <date>');
+        expect(rule!).toContain('RÉSOLU <date>');
+        // L'excédent part vers l'archive #4434 : c'est ce qui rend le plafond
+        // compatible avec « un blocage daté ne sort que sur réfutation » —
+        // il ne SORT PAS du dashboard, il monte à l'archive.
+        expect(rule!).toContain('garde en tête les blocages les plus récemment vérifiés');
     });
 
     it('budget dans le MÊME ordre canonique que le canevas STRUCTURE (jamais deux ordres contradictoires)', async () => {
