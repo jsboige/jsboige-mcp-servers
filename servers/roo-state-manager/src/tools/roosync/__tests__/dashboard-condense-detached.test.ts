@@ -884,4 +884,43 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     expect(r.warning).toContain('pas de passe requise');
     expect(r.warning).not.toContain('sous le seuil de condensation');
   });
+
+  it('sweep sur overage à fenêtre pleine : refus window-full, pas de « repassée sous le seuil » mensonger (review po-204, #4608)', async () => {
+    // Même état que le test fill-notice ci-dessus : statut immense → taille
+    // AU-DESSUS du seuil, fenêtre conservée ≥ messages. Mesuré avant fix : le
+    // sweep refusait 'under-threshold' et le WARN disait « repassée sous le
+    // seuil » juste après « resté au-dessus du seuil depuis ~36 h » — le
+    // mensonge statique exact que ce PR élimine de la fill notice.
+    const bigStatus = `S`.repeat(47.5 * 1024);
+    const w = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      content: bigStatus,
+      createIfNotExists: true,
+    });
+    await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: 'petit message sur statut immense',
+      tags: ['INFO'],
+    });
+    condenseHealthMocks.noteOverThreshold.mockResolvedValue({ warn: true, hoursOver: 36 });
+
+    const annotations = await condenseStallSighting(w.key, 118);
+
+    // Refus DISTINCT de under-threshold : l'état est au-dessus du seuil.
+    expect(annotations.condensationStallSweepRefused).toBe('window-full');
+    // Refus AVANT le marqueur durable et le lancement : rien n'est armé.
+    expect(condenseHealthMocks.markCondenseAttempt).not.toHaveBeenCalled();
+    await awaitDetachedCondense(w.key);
+    expect(llmCalls).toBe(0);
+
+    // Le WARN reste cohérent avec lui-même : au-dessus du seuil + fenêtre
+    // pleine + seule une réduction du statut peut aider — jamais l'inverse.
+    const finalRaw = await readFile(getDashboardFilePath(w.key), 'utf8');
+    expect(finalRaw).toContain('Passe NON lancée par ce sweep');
+    expect(finalRaw).toContain('fenêtre conservée déjà pleine');
+    expect(finalRaw).toContain('seule une réduction du statut');
+    expect(finalRaw).not.toContain('repassée sous le seuil');
+  });
 });

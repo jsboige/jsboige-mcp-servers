@@ -10155,6 +10155,14 @@ async function sweepArmCondensePass(key: string): Promise<SweepArmResult> {
     const needsCondense = estimatedSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES
       && target.intercom.messages.length > effectiveKeep;
     if (!needsCondense) {
+      // Miroir de la ternaire fill notice (#4527, review po-204) : « plus rien
+      // à condenser » couvre deux états distincts. Une taille au-dessus du seuil
+      // avec fenêtre conservée déjà pleine n'est PAS « repassée sous le seuil » —
+      // le WARN ne doit pas contredire sa propre ligne « au-dessus du seuil
+      // depuis ~N h » ; seule une réduction du statut peut aider cette clé.
+      if (estimatedSize >= PREEMPTIVE_CONDENSE_THRESHOLD_BYTES) {
+        return { armed: false, reason: 'window-full', deadPassRecovered };
+      }
       return { armed: false, reason: 'under-threshold', deadPassRecovered };
     }
 
@@ -10220,6 +10228,8 @@ function sweepArmRefusalText(arm: Extract<SweepArmResult, { armed: false }>): st
       return `clé sans fichier vivant (jumelle de casse ou vestige PG)`;
     case 'under-threshold':
       return `repassée sous le seuil de condensation depuis la liste`;
+    case 'window-full':
+      return `toujours au-dessus du seuil mais fenêtre conservée déjà pleine — la condensation ne peut pas l'aider, seule une réduction du statut le peut`;
     case 'unchanged-hash':
       return `contenu inchangé depuis la dernière passe de ce process (#2464)`;
     case 'lock-held':
