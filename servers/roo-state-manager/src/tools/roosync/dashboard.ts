@@ -4952,15 +4952,13 @@ Format : "- **entité** : état (source: [date])"
 ### Patterns appris
 [Anti-patterns identifiés, conventions établies, leçons consolidées — mémoire durable du projet]
 
-BUDGET PAR SECTION (#4434) — LIMITE STRICTE : la sortie doit tenir dans ~600 mots (~4 200 caractères) HORS lignes de blocage :
-${statusBudgetPromptLines().slice(0, STATUS_BUDGET_PROMPT_BLOCKERS_AT).join('\n')}
-- Blocages structurels : PAS de plafond de mots — RECOPIE une ligne par blocage actif du statut précédent (même sujet, même date de vérification, format « … [vérifié JJ/MM HH:MMZ] »), détail condensé à ≤ 25 mots par ligne ; cette section PEUT dépasser le budget sans limite. Une ligne de blocage ne disparaît jamais silencieusement : elle ne sort que si un message la réfute ou la clôt, et dans ce cas elle RESTE, marquée « REFUTE <date> » (réfutation citée) ou « RÉSOLU <date> »
-${statusBudgetPromptLines().slice(STATUS_BUDGET_PROMPT_BLOCKERS_AT).join('\n')}
+BUDGET PAR SECTION (#4434) — LIMITE STRICTE : la sortie doit tenir dans ~600 mots (~4 200 caractères) hors « Blocages structurels », qui porte son propre plafond dans la liste ci-dessous :
+${statusBudgetPromptLines().join('\n')}
 Règles du budget :
 - Avant d'écrire, ESTIME le total prévu ; s'il dépasse le budget, condense davantage AVANT de commencer — un dépassement en cours de rédaction ne se rattrape pas.
 - Les 8 sections apparaissent TOUJOURS, dans cet ordre, CHACUNE COMPLÈTE — jamais une section omise, jamais une section coupée en cours de rédaction.
 - Pour tenir un budget : condense DANS la section (fusionner les entrées, garder le dernier état, chasser le détail tactique) — jamais supprimer la section ni son titre.
-- Les lignes de blocage ne se rognent JAMAIS pour tenir le budget : chaque blocage actif garde SA ligne et sa date — compense en condensant les autres sections.
+- Blocages structurels : RECOPIE une ligne par blocage actif du statut précédent (même sujet, même date de vérification, format « … [vérifié JJ/MM HH:MMZ] »), détail condensé à ≤ 25 mots par ligne ; une ligne ne se rogne JAMAIS (sujet et date intacts). Au-delà du plafond de mots, garde en tête les blocages les plus récemment vérifiés — la passe déterministe déplace l'excédent (les plus anciennement vérifiés d'abord), verbatim, vers l'archive #4434. Une ligne de blocage ne disparaît jamais silencieusement : elle ne sort que vers cette archive, ou sur réfutation/clôture — et dans ce cas elle RESTE, marquée « REFUTE <date> » (réfutation citée) ou « RÉSOLU <date> »
 - En cas de tension : « Patterns appris » et « Métriques de référence » ne sont JAMAIS sacrifiées — rogne « Résumé » et « Livrables récents » d'abord.
 
 INTERDIT :
@@ -6135,8 +6133,14 @@ function countBulletWords(line: string): number {
  * les trois copies d'origine (prompt littéral, table, attentes de test)
  * dérivaient en silence. La passe déterministe applique ce que le prompt
  * demande et que le modèle dépasse.
- * « Blocages structurels » n'y figure pas : aucun plafond total en mots, seule
- * la retraite des marqueurs RÉSOLU/REFUTE > 24 h s'y applique.
+ * « Blocages structurels » y figure depuis #4434 résiduel C1 (ai-01, 11/11) :
+ * sans plafond, la section mesurait 833 mots / 57 puces actives sur
+ * workspace-CoursIA (65 % du statut) et le fallback ne convergait plus sous le
+ * plafond d'octets — plancher systématique (4/10 non-convergences C1). Son
+ * budget est volontairement le plus large de la table (300 mots ≈ 20 puces) :
+ * les blocages les plus récemment vérifiés restent dans le statut, l'excédent
+ * part verbatim à l'archive #4434 par la même passe (rien n'est supprimé), et
+ * la retraite RÉSOLU/REFUTE > 24 h s'applique toujours avant le budget.
  * Contrat de libellé (même philosophie que findBlocagesSection) : seuls ces
  * libellés canoniques ouvrent le droit au déplacement — une section portant le
  * même contenu sous un autre libellé est un contenu ordinaire, hors passe.
@@ -6154,6 +6158,7 @@ export const STATUS_SECTION_WORD_BUDGETS: ReadonlyArray<{
   { name: 'Résumé', test: /^#{1,6}\s*R[ée]sum[ée](?![A-Za-zÀ-ÿ])/i, budget: 40 },
   { name: 'État des systèmes', test: /^#{1,6}\s*État des syst[èe]mes(?![A-Za-zÀ-ÿ])/i, budget: 100, hint: 'une ligne par entité, dernier état connu' },
   { name: 'Décisions actées', test: /^#{1,6}\s*D[ée]cisions act[ée]es(?![A-Za-zÀ-ÿ])/i, budget: 90 },
+  { name: 'Blocages structurels', test: /^#{1,6}\s*Blocages structur(?:els|es)(?![A-Za-zÀ-ÿ])/i, budget: 300, hint: 'une ligne par blocage actif, ≤ 25 mots par ligne' },
   { name: 'Livrables récents', test: /^#{1,6}\s*Livrables r[ée]cents(?![A-Za-zÀ-ÿ])/i, budget: 55, hint: 'synthèse par thème' },
   { name: 'En cours', test: /^#{1,6}\s*En cours(?![A-Za-zÀ-ÿ])/i, budget: 60 },
   { name: 'Métriques de référence', test: /^#{1,6}\s*M[ée]triques de r[ée]f[ée]rence(?![A-Za-zÀ-ÿ])/i, budget: 85 },
@@ -6171,17 +6176,6 @@ export function statusBudgetPromptLines(): string[] {
     (d) => `- ${d.name} : ≤ ${d.budget} mots${d.hint ? ` (${d.hint})` : ''}`
   );
 }
-
-/**
- * Position de la ligne « Blocages structurels » (littérale, sans plafond) dans
- * l'ordre canonique du bloc budget du prompt : le prompt intercale la ligne
- * littérale ENTRE les lignes dérivées de la table, à cet index, pour que le
- * budget suive le MÊME ordre que le canevas (un seul ordre jamais contradictoire
- * — test dashes « budget dans le MÊME ordre canonique »). Épingle la cohérence
- * avec CANON : si « Blocages structurels » bouge dans le canevas, ce témoin
- * rougit avant l'ordre du prompt.
- */
-export const STATUS_BUDGET_PROMPT_BLOCKERS_AT = 3;
 
 /** RÉSOLU/REFUTE : 24 h d'affichage suffisent (règle #4082, spec #4434 09/11). */
 const STALE_MARKER_MS = 24 * 60 * 60 * 1000;
@@ -6301,6 +6295,11 @@ export function enforceStatusBudget(status: string, now: Date = new Date()): Sta
         && !STATUS_BULLET_RE.test(lines[last + 1]) && !/^#{1,6}\s/.test(lines[last + 1])) {
         last++;
       }
+      // Déjà retirée à l'étape 1 (RÉSOLU/REFUTE > 24 h — possible depuis que
+      // « Blocages structurels » porte un budget) : ni comptée, ni re-déplacée
+      // — comptée elle gonflerait le déficit, déplacée elle atterrirait en
+      // DOUBLON dans l'archive (une fois retirée, une fois déplacée).
+      if (removeIdx.has(i)) { i = last; continue; }
       const blockWords = lines.slice(i, last + 1).reduce((a, l) => a + countBulletWords(l), 0);
       blocks.push({ first: i, last, words: blockWords });
       words += blockWords;

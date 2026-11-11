@@ -15,8 +15,12 @@
  *       QUEUE de la section ; une section n'est jamais vidée.
  *   R.  Blocages — les lignes RÉSOLU/REFUTE de plus de 24 h partent (règle
  *       #4082) ; tout le reste reste : marqueur frais, marqueur sans date
- *       lisible, « NON/PAS RÉSOLU » (blocage ACTIF), blocage non marqué, et
- *       AUCUN plafond de mots sur la section (le prompt ne lui en donne pas).
+ *       lisible, « NON/PAS RÉSOLU » (blocage ACTIF), blocage non marqué. La
+ *       section porte un plafond de mots DEPUIS #4434 résiduel C1 (mesuré
+ *       833 mots / 57 puces actives : le fallback ne convergeait plus) :
+ *       l'excédent part en puces ENTIÈRES verbatim vers l'archive #4434,
+ *       les plus anciennement vérifiées d'abord — jamais supprimé, jamais
+ *       la section vidée.
  *   A.  archive — les puces déplacées et les lignes retirées atterrissent
  *       VERBATIM sous leur section d'origine ; null quand la passe est no-op.
  *   C.  contrats de comptage — le marqueur de puce ne compte pas comme mot ;
@@ -45,6 +49,8 @@
  *   M10 année glissante retirée                             → C4 rouge
  *   M11 archive : puces reformulées au lieu de verbatim     → A2 rouge
  *   M12 archive : section écrite même sans action           → A3 rouge
+ *   M13 puce déjà retirée comptée/re-déplacée (budget
+ *       Blocages + retraite 24 h composées)                 → R8 rouge
  *
  * @module tools/roosync/__tests__/dashboard.status-budget
  */
@@ -385,13 +391,35 @@ describe('#4434 (09/11) — passe de budget de statut déterministe', () => {
       }
     });
 
-    it('R5 — pas de plafond de mots : 500 mots de blocages actifs restent entiers', () => {
+    it('R5 — plafond de mots (#4434 C1) : 500 mots de blocages actifs → ≤ 300, l\'excédent part verbatim, jamais vide', () => {
+      // Avant #4434 résiduel C1, cette section n'avait AUCUN plafond : 833
+      // mots mesurés sur workspace-CoursIA, le fallback ne convergeait plus
+      // sous le plafond d'octets. Le plafond est 300 (table, source unique).
+      const bullets = Array.from({ length: 10 }, (_, i) => bullet(`b${i}`, 50, ` [vérifié 0${(i % 8) + 1}/11 09:00Z]`));
+      const status = ['### Blocages structurels', ...bullets].join('\n');
+      const out = enforceStatusBudget(status, now);
+      // Revenu sous le plafond, section jamais vidée.
+      expect(sectionWords(out.status, 'Blocages structurels')).toBeLessThanOrEqual(300);
+      expect(out.status).toContain('### Blocages structurels');
+      expect(sectionWords(out.status, 'Blocages structurels')).toBe(300); // 500 − 4×50 exactement
+      // Tampons 01/11 (b0, b8) puis 02/11 (b1, b9) : les plus anciennement
+      // vérifiés partent d'abord, à égalité la plus haute — 4 départs (500→300).
+      expect(out.moved).toHaveLength(1);
+      expect(out.moved[0].section).toBe('Blocages structurels');
+      expect(out.moved[0].bullets).toEqual([bullets[0], bullets[8], bullets[1], bullets[9]]);
+      // Les récentes (03/11 → 08/11) restent dans le statut.
+      for (const i of [2, 3, 4, 5, 6, 7]) expect(out.status).toContain(`- [b${i}]`);
+      // Rien n'est retiré par la retraite : toutes ACTIVES.
+      expect(out.retiredBlockerLines).toEqual([]);
+    });
+
+    it('R5b — sous le plafond : 250 mots de blocages actifs restent entiers (no-op)', () => {
       const status = [
         '### Blocages structurels',
-        ...Array.from({ length: 10 }, (_, i) => bullet(`b${i}`, 50, ` [vérifié 0${(i % 8) + 1}/11 09:00Z]`)),
+        ...Array.from({ length: 5 }, (_, i) => bullet(`b${i}`, 50, ` [vérifié 0${i + 1}/11 09:00Z]`)),
       ].join('\n');
       const out = enforceStatusBudget(status, now);
-      expect(out.status).toBe(status); // 500 mots, aucun départ : aucun budget total
+      expect(out.status).toBe(status); // 250 ≤ 300 : aucun départ
       expect(out.moved).toEqual([]);
     });
 
@@ -400,6 +428,82 @@ describe('#4434 (09/11) — passe de budget de statut déterministe', () => {
       const status = ['### Blocages structurels', future].join('\n');
       const out = enforceStatusBudget(status, now);
       expect(out.status).toContain('- **futur**');
+    });
+
+    it('R7 — test du dispatch C1 : statut à Blocages volumineux ramené sous le plancher d\'octets par la SEULE passe, sans plancher ni perte', () => {
+      // Dispatch ai-01 11/11 (#4434 résiduel C1) : « un test qui fait entrer un
+      // statut à Blocages volumineux sous le budget sans plancher ». Reproduit
+      // la mesure fondatrice à échelle synthétique : Blocages domine le statut
+      // (réel : 57 puces actives / 833 mots / 65 % du statut workspace-CoursIA,
+      // tokens français plus longs que les nôtres — d'où 100 puces × 25 mots
+      // pour franchir DÉTERMINISTEMENT le plancher d'octets), les 7 autres
+      // sections en dépassement de génération ×4 (mesure ai-01 09/11 : ×1,4 à
+      // ×6,8 sur CHAQUE section).
+      const MAX = 15 * 1024; // miroir de MAX_STATUS_SIZE_BYTES (dashboard.ts) — hors export, épingle la valeur
+      const blockerBullets = Array.from({ length: 100 }, (_, i) =>
+        bullet(`blk${i}`, 25, ` [vérifié 0${(i % 8) + 1}/11 09:00Z]`));
+      const mk4x = (h: string) => {
+        const def = STATUS_SECTION_WORD_BUDGETS.find((d) => d.name === h)!;
+        const per = Math.max(1, Math.floor((def.budget * 4) / 5)); // 5 puces → ×4 le budget
+        return [`### ${h}`, ...Array.from({ length: 5 }, (_, i) => bullet(`${h}-${i}`, per))].join('\n');
+      };
+      const status = [
+        '## [workspace-coursia] — État au 2026-11-09T12:00Z',
+        mk4x('Résumé'),
+        mk4x('État des systèmes'),
+        mk4x('Décisions actées'),
+        ['### Blocages structurels', ...blockerBullets].join('\n'),
+        mk4x('Livrables récents'),
+        mk4x('En cours'),
+        mk4x('Métriques de référence'),
+        mk4x('Patterns appris'),
+      ].join('\n');
+      expect(bytes(status)).toBeGreaterThan(MAX); // l'entrée dépasse le plancher d'octets
+      const out = enforceStatusBudget(status, now);
+      // La passe SEULE ramène sous le plancher : condenseTextIfTooLarge /
+      // truncateToMaxSize n'a plus rien à couper — « sans plancher », aucune
+      // ligne perdue.
+      expect(out.bytesAfter).toBeLessThanOrEqual(MAX);
+      // Les 8 sections canoniques survivent, habitées.
+      for (const h of ['Résumé', 'État des systèmes', 'Décisions actées', 'Blocages structurels',
+        'Livrables récents', 'En cours', 'Métriques de référence', 'Patterns appris']) {
+        expect(out.status).toContain(`### ${h}`);
+      }
+      expect(sectionWords(out.status, 'Blocages structurels')).toBeLessThanOrEqual(300);
+      // AUCUNE perte : chaque puce d'entrée est soit dans le statut rendu, soit
+      // déplacée verbatim (archive #4434) — la retraite n'a rien ici (actives).
+      const movedLines = new Set(out.moved.flatMap((m) => m.bullets.flatMap((b) => b.split('\n'))));
+      const rendered = new Set(out.status.split('\n'));
+      for (const line of status.split('\n')) {
+        if (!/^\s*[-*]\s+\S/.test(line)) continue;
+        expect(rendered.has(line) || movedLines.has(line), `puce perdue : ${line}`).toBe(true);
+      }
+      expect(out.retiredBlockerLines).toEqual([]);
+    });
+
+    it('R8 — pas de doublon d\'archive : une puce RÉSOLU > 24 h dans un Blocages sur budget part UNE fois (retraite), jamais déplacée', () => {
+      // Composition des deux étapes depuis que Blocages porte un budget : la
+      // puce retirée à l'étape 1 ne doit être NI comptée (elle gonflerait le
+      // déficit) NI re-déplacée (elle atterrirait deux fois dans l'archive —
+      // une fois retirée, une fois déplacée). Témoin M13.
+      const retired = blocker('resolu-old', 'RÉSOLU 01/10 10:00Z');
+      const bullets = [retired, ...Array.from({ length: 10 }, (_, i) => bullet(`a${i}`, 40, ` [vérifié 0${(i % 8) + 1}/11 09:00Z]`))];
+      const status = ['### Blocages structurels', ...bullets].join('\n');
+      const out = enforceStatusBudget(status, now);
+      // Retraite UNE fois…
+      expect(out.retiredBlockerLines).toEqual([retired]);
+      // …et JAMAIS dans les déplacements : 400 mots d'actives (la retirée ne
+      // compte pas) → 3 départs de 40 → 280 ≤ 300. La retirée porte le tampon
+      // le PLUS ANCIEN de la section (01/10 < 01/11) : un mutant qui ne la
+      // saute pas la classe EN TÊTE du classement et la DÉPLACE en plus de la
+      // retraite — doublon d'archive (deux fois le même verbatim), et 411
+      // mots comptés au lieu de 400.
+      const movedFlattened = out.moved.flatMap((m) => m.bullets).join('\n');
+      expect(movedFlattened).not.toContain('resolu-old');
+      expect(out.moved).toHaveLength(1);
+      expect(out.moved[0].section).toBe('Blocages structurels');
+      expect(out.moved[0].moved).toBe(3);
+      expect(sectionWords(out.status, 'Blocages structurels')).toBe(280);
     });
   });
 
@@ -504,8 +608,14 @@ describe('#4434 (09/11) — passe de budget de statut déterministe', () => {
       }
     });
 
-    it('SU2 — la table ne porte pas « Blocages structurels » (aucun plafond de mots ne doit exister)', () => {
-      expect(STATUS_SECTION_WORD_BUDGETS.find((d) => d.name === 'Blocages structurels')).toBeUndefined();
+    it('SU2 — la table porte « Blocages structurels » AVEC un plafond positif (#4434 C1 : 300)', () => {
+      // Inversé par #4434 résiduel C1 : l'absence de plafond (l'ancien SU2)
+      // laissait la section dépasser 800 mots mesurés et tuait la convergence
+      // du fallback. Le plafond vit dans la table comme les 7 autres — si sa
+      // valeur change, c'est ICI et dans le prompt (source unique) ensemble.
+      const def = STATUS_SECTION_WORD_BUDGETS.find((d) => d.name === 'Blocages structurels');
+      expect(def).toBeTruthy();
+      expect(def!.budget).toBe(300);
     });
   });
 });
