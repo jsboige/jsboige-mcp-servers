@@ -24,7 +24,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, readFile, readdir } from 'fs/promises';
+import { mkdtemp, rm, readFile, readdir, writeFile } from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
@@ -178,7 +178,7 @@ vi.mock('@/services/openai', () => ({
   getFallbackLLMModelId: () => 'test-fallback-model',
 }));
 
-import { roosyncDashboard, awaitDetachedCondense, resetCondenseCircuitBreaker, resetDetachedCondenseOutcomes, verifyCondenseLanding } from '../dashboard.js';
+import { roosyncDashboard, awaitDetachedCondense, resetCondenseCircuitBreaker, resetDetachedCondenseOutcomes, verifyCondenseLanding, condenseStallSighting } from '../dashboard.js';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-condense-detached-');
 const PREEMPTIVE_THRESHOLD = Math.floor(50 * 1024 * 0.92); // ~46 KB, cf. dashboard.ts
@@ -759,5 +759,168 @@ describe('condensation détachée de la réponse d\'append (#4527)', () => {
     expect(a.condensationDeferred).toBeUndefined();
     expect(a.condensed).toBe(true);
     expect(condenseHealthMocks.markCondenseLanding).toHaveBeenCalledWith(key, 'landed', expect.stringMatching(/\S/));
+  });
+
+  // ─── #4608 fix racine, option b — le sweep de l'organe arme la passe ────────
+  //
+  // Cause racine (mesurée c.143/144) : les écrivains système (organe WARN,
+  // listener FLEET-ALERT, preflight, crossPost) écrivent via withAppendLock en
+  // read-modify-write direct, SANS passer par handleAppend — le bloc
+  // CONDENSE-AFTER n'était donc jamais atteint sur les dashboards alimentés
+  // uniquement par ces writers, aucune passe n'était jamais armée, et le WARN
+  // de l'organe promettait « Au prochain append » en vain.
+
+  /** Franchit le seuil SANS handleAppend : splice fichier direct, la surface exacte des écrivains système. */
+  async function crossThresholdWithoutAppend(key: string, token: string): Promise<void> {
+    const filePath = getDashboardFilePath(key);
+    const raw = await readFile(filePath, 'utf8');
+    const iso = new Date().toISOString();
+    const block = `### [${iso}] test-machine|test-workspace\n[msg: sweep-cross-${Date.now()}]\n[tags: INFO]\n\n${token}: ${'v'.repeat(8000)}`;
+    const bumped = raw
+      .replace(/^(totalMessages: )(\d+)$/m, (_m, p1, p2) => `${p1}${Number(p2) + 1}`)
+      .replace(/## Intercom \((\d+) messages\)/, (_m, n) => `## Intercom (${Number(n) + 1} messages)`);
+    await writeFile(filePath, `${bumped.trimEnd()}\n\n---\n\n${block}\n`, 'utf8');
+  }
+
+  it('le sweep arme lui-même la passe d\'un dashboard franchi sans handleAppend (#4608)', async () => {
+    const { key } = await populateBelowThreshold();
+    // Le franchissement se fait par écriture directe (withAppendLock-like),
+    // PAS par append : c'est l'état exact des dashboards alimentés par les
+    // seuls écrivains système — celui que le CONDENSE-AFTER ne voit jamais.
+    await crossThresholdWithoutAppend(key, 'SWEEP-CROSS-4608');
+    // L'horloge de l'organe dit STATION (cooldown consommé → warn).
+    condenseHealthMocks.noteOverThreshold.mockResolvedValue({ warn: true, hoursOver: 36 });
+
+    const annotations = await condenseStallSighting(key, 118);
+
+    // La passe est armée par le SWEEP — marqueur durable posé au départ.
+    expect(annotations.condensationStalled).toBe(true);
+    expect(annotations.condensationStalledHours).toBe(36);
+    expect(annotations.condensationStallSweepArmed).toBe(true);
+    expect(condenseHealthMocks.markCondenseAttempt).toHaveBeenCalledWith(key, expect.stringMatching(/\S/));
+
+    await awaitDetachedCondense(key);
+
+    // La passe a réellement tourné et atterri : LLM appelé, issue ok durable,
+    // atterrissage vérifié sur la moitié fichier.
+    expect(llmCalls).toBeGreaterThan(0);
+    expect(condenseHealthMocks.markCondenseOutcome).toHaveBeenCalledWith(key, 'ok', expect.stringMatching(/\S/));
+    expect(condenseHealthMocks.markCondenseLanding).toHaveBeenCalledWith(key, 'landed', expect.stringMatching(/\S/));
+
+    // Le fichier est condensé : repassé sous le seuil de condensation.
+    const finalRaw = await readFile(getDashboardFilePath(key), 'utf8');
+    expect(Buffer.byteLength(finalRaw, 'utf8')).toBeLessThan(PREEMPTIVE_THRESHOLD);
+
+    // Le WARN rapporte le FAIT (passe lancée par le sweep), pas la promesse
+    // « Au prochain append » — structurellement fausse pour ces dashboards.
+    expect(finalRaw).toContain('Ce sweep a lancé la passe lui-même');
+    expect(finalRaw).not.toContain('Au prochain append');
+    // Aucune perte : le message de franchissement survit (vue ou archive).
+    expect(await messageSurvivesAnywhere('SWEEP-CROSS-4608')).toBe(true);
+  });
+
+  it('sweep sous CONDENSE_DETACHED=0 : passe refusée avec son motif, verrou rendu, WARN factuel (#4608)', async () => {
+    const { key } = await populateBelowThreshold();
+    await crossThresholdWithoutAppend(key, 'SWEEP-SYNC-4608');
+    condenseHealthMocks.noteOverThreshold.mockResolvedValue({ warn: true, hoursOver: 36 });
+    // Siège healthcheck (#4639) : passe détachée désactivée — le list ne doit
+    // NI bloquer sur une passe inline, NI armer.
+    process.env.CONDENSE_DETACHED = '0';
+
+    const annotations = await condenseStallSighting(key, 118);
+
+    expect(annotations.condensationStallSweepRefused).toBe('detached-disabled');
+    // Refus AVANT le marqueur durable et le lancement : rien n'est armé.
+    expect(condenseHealthMocks.markCondenseAttempt).not.toHaveBeenCalled();
+    await awaitDetachedCondense(key);
+    expect(llmCalls).toBe(0);
+
+    // Le WARN nomme le motif au lieu de la promesse — l'opérateur sait où
+    // reprendre (l'append reste le chemin d'armement de ce siège).
+    const finalRaw = await readFile(getDashboardFilePath(key), 'utf8');
+    expect(finalRaw).toContain('Passe NON lancée par ce sweep');
+    expect(finalRaw).toContain('CONDENSE_DETACHED=0');
+    expect(finalRaw).not.toContain('Au prochain append');
+
+    // Le verrou pris puis rendu : un armement ultérieur (détaché réactivé)
+    // ne serait pas bloqué par un résidu — le refus 'lock-held' serait un
+    // silence de 6 h de plus sur la clé. Une seconde tentative ACQUIERT.
+    delete process.env.CONDENSE_DETACHED;
+    condenseHealthMocks.noteOverThreshold.mockResolvedValue({ warn: true, hoursOver: 37 });
+    const second = await condenseStallSighting(key, 118);
+    expect(second.condensationStallSweepArmed).toBe(true);
+    await awaitDetachedCondense(key);
+  });
+
+  it('avis de remplissage : la formule suit needsCondense — au-dessus du seuil mais fenêtre pleine (#4527 volet #4608)', async () => {
+    // Un statut immense pousse la taille AU-DESSUS du seuil de condensation
+    // avec une fenêtre conservée déjà ≥ aux messages : aucune passe requise.
+    // Mesuré avant fix : « 124 % du plafond … sous le seuil de condensation
+    // 46 Ko » — la clause statique mentait ; elle doit suivre needsCondense.
+    const bigStatus = `S`.repeat(47.5 * 1024);
+    const w = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      content: bigStatus,
+      createIfNotExists: true,
+    });
+    const r = await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: 'petit message sur statut immense',
+      tags: ['INFO'],
+    });
+
+    expect(r.success).toBe(true);
+    // Pas de passe : la fenêtre conservée couvre déjà tous les messages.
+    expect(r.condensationDeferred).toBeUndefined();
+    expect(r.condensed).toBe(false);
+    await awaitDetachedCondense(w.key);
+    expect(llmCalls).toBe(0);
+    // L'avis dit l'état RÉEL : au-dessus du seuil, fenêtre pleine, pas de
+    // passe requise — jamais « sous le seuil de condensation ».
+    expect(r.warning).toContain('#4527');
+    expect(r.warning).toContain('fenêtre conservée déjà atteinte');
+    expect(r.warning).toContain('pas de passe requise');
+    expect(r.warning).not.toContain('sous le seuil de condensation');
+  });
+
+  it('sweep sur overage à fenêtre pleine : refus window-full, pas de « repassée sous le seuil » mensonger (review po-204, #4608)', async () => {
+    // Même état que le test fill-notice ci-dessus : statut immense → taille
+    // AU-DESSUS du seuil, fenêtre conservée ≥ messages. Mesuré avant fix : le
+    // sweep refusait 'under-threshold' et le WARN disait « repassée sous le
+    // seuil » juste après « resté au-dessus du seuil depuis ~36 h » — le
+    // mensonge statique exact que ce PR élimine de la fill notice.
+    const bigStatus = `S`.repeat(47.5 * 1024);
+    const w = await roosyncDashboard({
+      action: 'write',
+      type: 'workspace',
+      content: bigStatus,
+      createIfNotExists: true,
+    });
+    await roosyncDashboard({
+      action: 'append',
+      type: 'workspace',
+      content: 'petit message sur statut immense',
+      tags: ['INFO'],
+    });
+    condenseHealthMocks.noteOverThreshold.mockResolvedValue({ warn: true, hoursOver: 36 });
+
+    const annotations = await condenseStallSighting(w.key, 118);
+
+    // Refus DISTINCT de under-threshold : l'état est au-dessus du seuil.
+    expect(annotations.condensationStallSweepRefused).toBe('window-full');
+    // Refus AVANT le marqueur durable et le lancement : rien n'est armé.
+    expect(condenseHealthMocks.markCondenseAttempt).not.toHaveBeenCalled();
+    await awaitDetachedCondense(w.key);
+    expect(llmCalls).toBe(0);
+
+    // Le WARN reste cohérent avec lui-même : au-dessus du seuil + fenêtre
+    // pleine + seule une réduction du statut peut aider — jamais l'inverse.
+    const finalRaw = await readFile(getDashboardFilePath(w.key), 'utf8');
+    expect(finalRaw).toContain('Passe NON lancée par ce sweep');
+    expect(finalRaw).toContain('fenêtre conservée déjà pleine');
+    expect(finalRaw).toContain('seule une réduction du statut');
+    expect(finalRaw).not.toContain('repassée sous le seuil');
   });
 });
