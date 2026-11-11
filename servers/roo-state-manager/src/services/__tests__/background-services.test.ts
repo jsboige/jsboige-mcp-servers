@@ -838,7 +838,12 @@ describe('background-services', () => {
       expect(mockIndexTask.mock.calls.some(call => call[0] === 'task-001')).toBe(true);
       const loopLines = lines.filter(s => s.includes('[#4352-loop]'));
       // #4352 amend1 grain 1: ONE outcome line per task (success or error class)…
-      expect(loopLines.some(s => /task task-001: indexed in \d+ms/.test(s))).toBe(true);
+      // #4352 grain code (11/11): the counters ride the line — the format gains
+      // ` (pending=, indexed=, missing=, batches=)` between the outcome and the
+      // duration. `indexed in Nms` (the bare form) is no longer the line.
+      expect(loopLines.some(s =>
+        /task task-001: indexed \(pending=\d+, indexed=\d+, missing=\d+, batches=\d+\) in \d+ms/.test(s)
+      )).toBe(true);
       // …and the pass-done line — both on the file-logger channel now.
       expect(loopLines.filter(s => s.includes('pass done:')).length).toBeGreaterThanOrEqual(1);
       expect(loopLines.find(s => s.includes('pass done:'))).toMatch(/pass done: 1 task\(s\) in \d+ms/);

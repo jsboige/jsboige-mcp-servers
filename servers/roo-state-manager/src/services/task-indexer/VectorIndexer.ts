@@ -1328,6 +1328,16 @@ export interface IndexTaskStats {
     pointsIndexed: number;
     /** Sub-chunks that got no vector (embedding failure) — run fails when > 0. */
     missingVectors: number;
+    /**
+     * #4352 grain code (GO ai-01 20261111-1205): sub-chunks this attempt still
+     * had to embed AFTER both pre-flight dedups (the input of the embedding
+     * loop). pending > 0 with pointsIndexed === 0 is the "empty success"
+     * signature the caller's guard rejects — without this counter that case is
+     * indistinguishable from "already indexed" (pending == 0).
+     */
+    pending: number;
+    /** #4352 grain code: embedding batches acknowledged by the backend. */
+    batchesAcked: number;
 }
 
 /**
@@ -1341,7 +1351,9 @@ export function emptyStats(): IndexTaskStats {
         subChunksBuilt: 0,
         dedupSkipped: 0,
         pointsIndexed: 0,
-        missingVectors: 0
+        missingVectors: 0,
+        pending: 0,
+        batchesAcked: 0
     };
 }
 
@@ -1522,6 +1534,11 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             stats.dedupSkipped += beforeContentHashDedup - subChunksToEmbed.length;
             loopLog(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length} left)`);
         }
+        // #4352 grain code (GO ai-01 20261111-1205): the embedding loop's input,
+        // recorded after BOTH pre-flight dedups so `pending == 0` means "nothing
+        // to do" (already indexed) and never "embedded nothing". The caller's
+        // zero-points guard keys on exactly this distinction.
+        stats.pending = subChunksToEmbed.length;
 
         // #2165: If the pre-flight dedup could not reach Qdrant, the "needs embedding"
         // set is unreliable — it most likely contains chunks already indexed. Embedding
@@ -1611,6 +1628,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                         throwIfIndexingAborted(options, taskId);
                         const batchVectors = await embedBatch(batch, embeddingModel, expectedDims, now, embedFailures);
                         options?.onProgress?.(); // #4352 g5: one more acknowledged batch
+                        stats.batchesAcked++; // #4352 grain code: batch-level progress counter
                         if (!firstBatchAcked) {
                             firstBatchAcked = true;
                             loopLog(`⏱️ [#4352-loop] ${taskId}: first embedding batch acknowledged +${Date.now() - startedAt}ms (batch of ${batch.length})`);

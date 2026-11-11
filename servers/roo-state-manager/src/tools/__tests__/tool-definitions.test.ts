@@ -87,6 +87,7 @@ const UNION_MEMBERS: Record<IndexingErrorClass, true> = {
     embedding_timeout: true,
     embedding_incomplete: true,
     qdrant_upsert_failed: true,
+    zero_points_written: true, // #4352 grain code (11/11) — set by the zero-points guard, never classified from a message
     unknown: true
 };
 
@@ -669,7 +670,7 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect([...servedClasses].sort()).toEqual([...unionValues].sort());
             expect(servedClasses).toContain('qdrant_upsert_failed');
             expect(servedClasses).toContain('embedding_incomplete');
-            expect(servedClasses).toHaveLength(17);
+            expect(servedClasses).toHaveLength(18); // 17 + zero_points_written (#4352 grain code, 11/11)
         });
 
         it('roosync_indexing must expose the index_code_supplement params on the wire (#4352 a3)', () => {

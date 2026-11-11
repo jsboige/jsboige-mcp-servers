@@ -2125,7 +2125,14 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
                 // completion-gated): d5be00ef sat queued since 18:11:42Z with no
                 // line at all. These lines land in roosync-YYYYMMDD.log whatever
                 // the host process does with stderr.
-                loopLog(`⏱️ [#4352-loop] task ${taskId}: ${outcome.outcome}${outcome.errorClass ? ` [${outcome.errorClass}]` : ''} in ${Date.now() - taskStartedAt}ms`);
+                // #4352 grain code (GO ai-01 20261111-1205): the per-task line
+                // carries the attempt's counters — pending vs indexed vs missing
+                // vs batches acked — so a pass that lands nothing says WHY on
+                // its own line, whatever the host process does with stderr.
+                const statsSuffix = outcome.stats
+                    ? ` (pending=${outcome.stats.pending}, indexed=${outcome.stats.pointsIndexed}, missing=${outcome.stats.missingVectors}, batches=${outcome.stats.batchesAcked})`
+                    : '';
+                loopLog(`⏱️ [#4352-loop] task ${taskId}: ${outcome.outcome}${outcome.errorClass ? ` [${outcome.errorClass}]` : ''}${statsSuffix} in ${Date.now() - taskStartedAt}ms`);
                 // #4352 W4: published observability — the leader's status file says
                 // when it last completed an index task (a follower has no drain of
                 // its own, so only the leader's number is meaningful).
@@ -2194,14 +2201,17 @@ export function startQdrantIndexingBackgroundProcess(state: ServerState): void {
 export async function runIndexingWithInactivityWatchdog<T>(
     taskId: string,
     start: (options: { signal: AbortSignal; onProgress: () => void; stats: IndexTaskStats }) => Promise<T>,
+    /**
+     * #4352 grain code (GO ai-01 20261111-1205): the stats object is now owned
+     * by the CALLER (defaults to a fresh one for direct callers). #4531
+     * follow-up 1 made the watchdog seed it so what the attempt wrote survived
+     * the abort — but on SUCCESS the object died inside the watchdog and the
+     * caller's loop line never saw the counters. The caller passes its own
+     * reference now; the #4531 `details.written` contract is unchanged (same
+     * object, same mutation-in-place).
+     */
+    stats: IndexTaskStats = emptyStats(),
 ): Promise<T> {
-    // #4531 follow-up 1: the watchdog owns the stats object it hands to the run,
-    // so what the attempt actually wrote survives the abort. Without it the
-    // timeout error carries no `written`, the caller's catch reads 0, and a pass
-    // that wrote points is charged to the retry budget like a pass that wrote
-    // nothing — the exact asymmetry #4531 removed for the `Embedding incomplete`
-    // path, left open on the watchdog path.
-    const stats = emptyStats();
     const inactivityMs = Number.parseInt(process.env.INDEX_TASK_INACTIVITY_MS ?? '180000', 10);
     if (!Number.isFinite(inactivityMs) || inactivityMs <= 0) {
         // Kill-switch: legacy wall-clock race, unchanged (no abort — the orphan
@@ -2300,9 +2310,22 @@ export interface IndexTaskOutcome {
         | 'missing_skeleton'   // not in cache
         | 'missing_on_disk';   // in cache but file gone
     errorClass?: string;       // set on retry_fail/permanent_fail
+    /**
+     * #4352 grain code (GO ai-01 20261111-1205): the attempt's own counters,
+     * carried to the drain loop so the `[#4352-loop] task ...` line says WHY a
+     * pass wrote nothing instead of only that it ended. Present on outcomes
+     * that ran an attempt ('indexed', 'retry_fail', 'permanent_fail'); absent
+     * on early exits (skipped/missing_skeleton/...) where no attempt ran.
+     */
+    stats?: IndexTaskStats;
 }
 
 export async function indexTaskInQdrant(taskId: string, state: ServerState): Promise<IndexTaskOutcome> {
+    // #4352 grain code (GO ai-01 20261111-1205): caller-owned stats — the
+    // attempt's counters must survive BOTH exit paths (success AND catch), so
+    // the drain loop's `[#4352-loop]` line can say why a pass wrote nothing,
+    // and the zero-points guard below can key on pending vs pointsIndexed.
+    const stats = emptyStats();
     try {
         const skeleton = state.conversationCache.get(taskId);
         if (!skeleton) {
@@ -2367,8 +2390,35 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             ? { workspace: skeleton.metadata.workspace, title: skeleton.metadata.title }
             : undefined;
         // #4352 g5: inactivity watchdog (default) — see runIndexingWithInactivityWatchdog.
+        // #4352 grain code: stats is OUR reference — the watchdog fills it in place.
         await runIndexingWithInactivityWatchdog(taskId, (options) =>
-            taskIndexer.indexTask(taskId, source, indexingMetadata, options));
+            taskIndexer.indexTask(taskId, source, indexingMetadata, options), stats);
+
+        // #4352 grain code (GO ai-01 20261111-1205): a pass that had sub-chunks
+        // to embed (pending > 0) and wrote ZERO points is NOT a success.
+        // markIndexingSuccess would arm the reindex TTL and the empty "success"
+        // would self-perpetuate — the web1 canary signature (session visible on
+        // old chunks, no new point landing pass after pass, no error raised:
+        // the `Embedding incomplete` throw only fires when missingVectors > 0).
+        // Transient failure: the retry budget is charged, backoff applies, and
+        // the next attempt's pre-flight dedups either skip everything (pending
+        // 0 → success) or embed what is actually missing.
+        // Guard rail: pending == 0 (nothing to embed after both dedups) stays a
+        // success — that is the "already indexed" case, not a defect.
+        if (stats.pending > 0 && stats.pointsIndexed === 0) {
+            const zeroPointsMessage =
+                `Zero points written for task ${taskId}: ${stats.pending} sub-chunk(s) pending after pre-flight dedup ` +
+                `but none landed in Qdrant (points written=${stats.pointsIndexed}, missing vectors=${stats.missingVectors}, ` +
+                `batches acked=${stats.batchesAcked}, dedup skipped=${stats.dedupSkipped}, chunks extracted=${stats.chunksExtracted})`;
+            state.indexingDecisionService.markIndexingFailure(skeleton, zeroPointsMessage, false);
+            if (skeleton.metadata?.indexingState) {
+                skeleton.metadata.indexingState.errorClass = 'zero_points_written';
+            }
+            await saveSkeletonToDisk(skeleton);
+            state.indexingMetrics.failedTasks++;
+            console.error(`[RETRY_FAIL] Task ${taskId}: [zero_points_written] ${zeroPointsMessage} - not marked indexed, TTL not armed`);
+            return { outcome: 'retry_fail', errorClass: 'zero_points_written', stats };
+        }
 
         state.indexingDecisionService.markIndexingSuccess(skeleton);
         await saveSkeletonToDisk(skeleton);
@@ -2390,7 +2440,7 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             console.warn(`[ARCHIVE] Non-blocking archive failed for ${taskId}:`, archiveError);
         }
 
-        return { outcome: 'indexed' };
+        return { outcome: 'indexed', stats };
 
     } catch (error: any) {
         if (error.message && error.message.includes('not found in any storage location')) {
@@ -2455,7 +2505,9 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             }
 
             console.error(`[ERROR] Failed to index task ${taskId} in Qdrant:`, error);
-            return { outcome: classification.isPermanent ? 'permanent_fail' : 'retry_fail', errorClass: classification.errorClass };
+            // #4352 grain code: the throw path carries the partial counters too —
+            // a failed attempt that DID write points is visible in the loop line.
+            return { outcome: classification.isPermanent ? 'permanent_fail' : 'retry_fail', errorClass: classification.errorClass, stats };
         }
     }
 }
