@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { TaskNavigator, TreeNode } from '../../../src/services/task-navigator.js';
 import { globalCacheManager } from '../../../src/utils/cache-manager.js';
-import { ConversationSkeleton } from '../../../src/types/conversation.js';
+import { StoredConversation } from '../../../src/services/unified-store/types.js';
 
 // Mock du cache manager global
 vi.mock('../../../src/utils/cache-manager', () => ({
@@ -17,7 +17,7 @@ const createMockConversation = (
   taskId: string,
   parentTaskId?: string,
   title?: string
-): ConversationSkeleton => ({
+): StoredConversation => ({
   taskId,
   parentTaskId,
   metadata: {
@@ -33,10 +33,10 @@ const createMockConversation = (
 
 describe('TaskNavigator', () => {
   let taskNavigator: TaskNavigator;
-  let cache: Map<string, ConversationSkeleton>;
+  let cache: Map<string, StoredConversation>;
 
   beforeEach(() => {
-    cache = new Map<string, ConversationSkeleton>();
+    cache = new Map<string, StoredConversation>();
     taskNavigator = new TaskNavigator(cache);
     vi.clearAllMocks();
   });

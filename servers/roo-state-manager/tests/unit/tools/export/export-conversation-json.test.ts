@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { exportConversationJsonTool } from '../../../../src/tools/export/export-conversation-json';
 import { handleExportConversationJson } from '../../../../src/tools/export/export-conversation-json';
-import type { ConversationSkeleton } from '../../../../src/types/conversation';
+import type { StoredConversation } from '../../../../src/services/unified-store/types.js';
 
 // Mock fs pour vérifier les appels
 const mockFs = vi.hoisted(() => ({
@@ -153,7 +153,7 @@ describe('export-conversation-json.tool', () => {
                 jsonVariant: 'light' as const
             };
 
-            const mockConversation: ConversationSkeleton = {
+            const mockConversation: StoredConversation = {
                 taskId: 'test-task-id',
                 metadata: {
                     title: 'Test Task',
@@ -185,7 +185,7 @@ describe('export-conversation-json.tool', () => {
                 jsonVariant: 'light' as const
             };
 
-            const mockConversation: ConversationSkeleton = {
+            const mockConversation: StoredConversation = {
                 taskId: 'test-task-id',
                 metadata: {
                     title: 'Test Task',
@@ -205,7 +205,7 @@ describe('export-conversation-json.tool', () => {
         });
 
         it('devrait gérer les variantes JSON', async () => {
-            const mockConversation: ConversationSkeleton = {
+            const mockConversation: StoredConversation = {
                 taskId: 'test-task-id',
                 metadata: {
                     title: 'Test Task',
@@ -258,7 +258,7 @@ describe('export-conversation-json.tool', () => {
         });
 
         it('devrait gérer la variante full', async () => {
-            const mockConversation: ConversationSkeleton = {
+            const mockConversation: StoredConversation = {
                 taskId: 'test-task-id',
                 metadata: {
                     title: 'Test Task',
@@ -317,7 +317,7 @@ describe('export-conversation-json.tool', () => {
         });
 
         it('devrait écrire le fichier JSON avec le bon format', async () => {
-            const mockConversation: ConversationSkeleton = {
+            const mockConversation: StoredConversation = {
                 taskId: 'test-task-id',
                 metadata: {
                     title: 'Test Task',
@@ -365,7 +365,7 @@ describe('export-conversation-json.tool', () => {
         });
 
         it('devrait retourner une confirmation avec statistiques', async () => {
-            const mockConversation: ConversationSkeleton = {
+            const mockConversation: StoredConversation = {
                 taskId: 'test-task-id',
                 metadata: {
                     title: 'Test Task',

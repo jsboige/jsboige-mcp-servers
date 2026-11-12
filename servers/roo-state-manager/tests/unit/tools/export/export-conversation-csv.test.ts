@@ -16,7 +16,7 @@ vi.mock('fs/promises', () => ({
 }));
 import { exportConversationCsvTool } from '../../../../src/tools/export/export-conversation-csv';
 import { handleExportConversationCsv } from '../../../../src/tools/export/export-conversation-csv';
-import type { ConversationSkeleton } from '../../../../src/types/conversation';
+import type { StoredConversation } from '../../../../src/services/unified-store/types.js';
 import { TraceSummaryService } from '../../../../src/services/TraceSummaryService';
 
 // Mock des services

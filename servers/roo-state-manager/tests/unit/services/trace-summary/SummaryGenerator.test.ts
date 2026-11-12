@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SummaryGenerator } from '../../../../src/services/trace-summary/SummaryGenerator.js';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 import { ContentClassifier } from '../../../../src/services/trace-summary/ContentClassifier.js';
 import { ExportRenderer } from '../../../../src/services/trace-summary/ExportRenderer.js';
 import { InteractiveFeatures } from '../../../../src/services/trace-summary/InteractiveFeatures.js';
@@ -16,7 +16,7 @@ describe('SummaryGenerator', () => {
     let mockRenderer: any;
     let mockInteractive: any;
 
-    const mockConversation: ConversationSkeleton = {
+    const mockConversation: StoredConversation = {
         taskId: 'test-id',
         truncatedInstruction: 'Test Conversation',
         parentTaskId: '',

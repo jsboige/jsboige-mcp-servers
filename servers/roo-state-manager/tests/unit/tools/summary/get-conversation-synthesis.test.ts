@@ -17,13 +17,13 @@ import {
     getConversationSynthesisTool,
     GetConversationSynthesisArgs
 } from '../../../../src/tools/summary/get-conversation-synthesis.tool.js';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 import { StateManagerError } from '../../../../src/types/errors.js';
 import fs from 'fs/promises';
 import path from 'path';
 
 // Mock du skeleton de conversation
-function createMockSkeleton(taskId: string): ConversationSkeleton {
+function createMockSkeleton(taskId: string): StoredConversation {
     return {
         taskId,
         metadata: {
@@ -34,11 +34,11 @@ function createMockSkeleton(taskId: string): ConversationSkeleton {
             totalSize: 1024
         },
         sequence: []
-    } as ConversationSkeleton;
+    } as StoredConversation;
 }
 
 // Helper function mock pour récupérer les skeletons
-async function getConversationSkeletonMock(taskId: string): Promise<ConversationSkeleton | null> {
+async function getConversationSkeletonMock(taskId: string): Promise<StoredConversation | null> {
     if (taskId === 'non-existent-task') {
         return null;
     }

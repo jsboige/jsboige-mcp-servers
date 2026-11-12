@@ -1,10 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { XmlExporterService } from '../../../src/services/XmlExporterService.js';
-import { ConversationSkeleton, MessageSkeleton, ActionSkeleton } from '../../../src/types/conversation.js';
+import { MessageSkeleton, ActionSkeleton } from '../../../src/types/conversation.js';
+import { StoredConversation } from '../../../src/services/unified-store/types.js';
 import { promises as fs } from 'fs';
 import { join } from 'path';
 
-function makeSkeleton(overrides: Partial<ConversationSkeleton> = {}): ConversationSkeleton {
+function makeSkeleton(overrides: Partial<StoredConversation> = {}): StoredConversation {
 	return {
 		taskId: 'task-001',
 		parentTaskId: undefined,

@@ -19,7 +19,7 @@ import type { ToolVerdict, CheckResult } from '../verdict.js';
 import { handleRooSyncSearch } from '../../../src/tools/search/roosync-search.tool.js';
 import { handleDiagnoseSemanticIndex } from '../../../src/tools/indexing/diagnose-index.tool.js';
 import { handleSearchTasksSemanticFallback } from '../../../src/tools/search/search-fallback.tool.js';
-import type { ConversationSkeleton } from '../../../src/types/conversation.js';
+import type { StoredConversation } from '../../../src/services/unified-store/types.js';
 
 // Module-level verdict accumulator (for structured reporting)
 const verdicts: ToolVerdict[] = [];
@@ -42,10 +42,10 @@ describe('roosync_search — golden query eval', () => {
 
     // Build minimal noop callbacks matching handleRooSyncSearch signature
     const noopEnsureFresh = async (_args?: { workspace?: string }) => true;
-    const realFallbackHandler = async (args: any, cache: Map<string, ConversationSkeleton>) =>
+    const realFallbackHandler = async (args: any, cache: Map<string, StoredConversation>) =>
       handleSearchTasksSemanticFallback(args, cache);
     const diagnoseHandler = async () =>
-      handleDiagnoseSemanticIndex(new Map<string, ConversationSkeleton>());
+      handleDiagnoseSemanticIndex(new Map<string, StoredConversation>());
 
     let parsed: any = {};
     let rawText = '';
@@ -54,7 +54,7 @@ describe('roosync_search — golden query eval', () => {
     try {
       const result = await handleRooSyncSearch(
         ROOSYNC_SEARCH_QUERY.args as any,
-        new Map<string, ConversationSkeleton>(),
+        new Map<string, StoredConversation>(),
         noopEnsureFresh,
         realFallbackHandler,
         diagnoseHandler

@@ -12,7 +12,7 @@
 import { roosyncIndexingTool, handleRooSyncIndexing } from '../../../../src/tools/indexing/roosync-indexing.tool.js';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 
 // Mock des services d'indexation.
 // NB: la config vitest pose `mockReset: true` — les implémentations posées via
@@ -58,7 +58,7 @@ vi.mock('../../../../src/services/openai.js', () => ({
 }));
 
 describe('roosync_indexing - CONS-11', () => {
-    let conversationCache: Map<string, ConversationSkeleton>;
+    let conversationCache: Map<string, StoredConversation>;
     let ensureCacheFreshCallback: any;
     let saveSkeletonCallback: any;
     let qdrantIndexQueue: Set<string>;
@@ -175,7 +175,7 @@ describe('roosync_indexing - CONS-11', () => {
                 taskId: 'task-123',
                 metadata: {},
                 sequence: []
-            } as ConversationSkeleton);
+            } as StoredConversation);
 
             const result = await handleRooSyncIndexing(
                 // #4352 g3: queued is the DEFAULT (user rule 27/10) — this test
@@ -379,7 +379,7 @@ describe('roosync_indexing - CONS-11', () => {
                 taskId: 'task-1',
                 metadata: {},
                 sequence: []
-            } as ConversationSkeleton);
+            } as StoredConversation);
 
             await handleRooSyncIndexing(
                 { action: 'index', task_id: 'task-1' },

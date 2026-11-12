@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ExportRenderer, escapeHtml, unescapeHtml, sanitizeSectionHtml } from '../../../../src/services/trace-summary/ExportRenderer.js';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 import { SummaryOptions, SummaryStatistics } from '../../../../src/types/trace-summary.js';
 
 describe('ExportRenderer', () => {
@@ -91,7 +91,7 @@ describe('ExportRenderer', () => {
 
     describe('generateHeader', () => {
         it('should generate header with correct information', () => {
-            const conversation: ConversationSkeleton = {
+            const conversation: StoredConversation = {
                 taskId: 'test-task',
                 metadata: {
                     totalSize: 1024,
@@ -108,7 +108,7 @@ describe('ExportRenderer', () => {
         });
 
         it('should include generation date', () => {
-            const conversation: ConversationSkeleton = {
+            const conversation: StoredConversation = {
                 taskId: 'test-task',
                 metadata: {
                     totalSize: 2048,
@@ -122,7 +122,7 @@ describe('ExportRenderer', () => {
         });
 
         it('should format large sizes correctly', () => {
-            const conversation: ConversationSkeleton = {
+            const conversation: StoredConversation = {
                 taskId: 'test-task',
                 metadata: {
                     totalSize: 1024 * 1024,
@@ -138,7 +138,7 @@ describe('ExportRenderer', () => {
 
     describe('generateMetadata', () => {
         it('should include total content size', () => {
-            const conversation: ConversationSkeleton = {
+            const conversation: StoredConversation = {
                 taskId: 'test-task',
                 metadata: { totalSize: 0, createdAt: 0, lastActivity: 0 } as any,
                 sequence: []
@@ -168,7 +168,7 @@ describe('ExportRenderer', () => {
         });
 
         it('should include creation and last activity dates', () => {
-            const conversation: ConversationSkeleton = {
+            const conversation: StoredConversation = {
                 taskId: 'test-task',
                 metadata: {
                     totalSize: 0,

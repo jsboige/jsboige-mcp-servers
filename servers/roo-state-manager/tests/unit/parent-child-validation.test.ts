@@ -13,7 +13,7 @@ import { describe, it, expect, beforeAll, beforeEach } from 'vitest';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
-import type { ConversationSkeleton } from '../../src/types/conversation.js';
+import type { StoredConversation } from '../../src/services/unified-store/types.js';
 import { globalTaskInstructionIndex, computeInstructionPrefix } from '../../src/utils/task-instruction-index.js';
 
 describe('Parent-Child Validation - RadixTree Matching', () => {
@@ -111,7 +111,7 @@ describe('Parent-Child Validation - RadixTree Matching', () => {
             
             console.log(`📁 Tâches de test: ${taskDirs.length}`);
             
-            const testSkeletons: ConversationSkeleton[] = [];
+            const testSkeletons: StoredConversation[] = [];
             
             // Analyser chaque tâche individuellement
             for (let i = 0; i < taskDirs.length; i++) {

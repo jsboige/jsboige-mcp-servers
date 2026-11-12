@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { TaskArchiver } from '../../../../src/services/task-archiver/TaskArchiver.js';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 
 // Mock fs
 vi.mock('fs', () => ({
@@ -50,7 +50,7 @@ vi.mock('os', () => ({
 
 import { promises as fs } from 'fs';
 
-function createMockSkeleton(overrides: Partial<ConversationSkeleton> = {}): ConversationSkeleton {
+function createMockSkeleton(overrides: Partial<StoredConversation> = {}): StoredConversation {
     return {
         taskId: 'test-task-123',
         parentTaskId: undefined,
