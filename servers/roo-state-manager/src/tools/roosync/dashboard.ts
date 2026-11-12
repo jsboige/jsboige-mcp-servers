@@ -1536,12 +1536,20 @@ function getArchiveDir(): string {
  * lecture d'archives élargie (`lookupMachineActivityInArchives`), fabriquant
  * une activité fantôme capable de fausser `lastSeen` de n'importe quelle
  * machine du registre.
+ *
+ * #4643 (grain writer) : la ligne [tags:] DOIT survivre à l'archivage, au même
+ * titre que [msg:]. Le lecteur read_archive la parse (#4003) mais seul
+ * l'écrivain vivant l'émettait : une déclaration `[DEGRADED]`/`[REPAIRED]`
+ * posée par l'API (tags sans jeton dans le corps) devenait invisible une fois
+ * archivée — l'organe check-degraded-escalations ne pouvait plus fermer une
+ * escalade sur un [REPAIRED] consommé par la condensation. Même position que
+ * le writer vivant ([msg:]→[reply-to:]→[ack:]→[tags:]).
  */
 export function buildArchiveMessagesMarkdown(messages: IntercomMessage[]): string {
   return messages
     .map(
       (msg) =>
-        `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]\n\n${msg.content.replace(/^### \[/gm, '\\#\\#\\# [').replace(/^## /gm, '\\#\\# ')}`
+        `### [${msg.timestamp}] ${msg.author.machineId}|${msg.author.workspace}\n[msg: ${msg.id}]${msg.tags && msg.tags.length > 0 ? `\n[tags: ${msg.tags.join(', ')}]` : ''}\n\n${msg.content.replace(/^### \[/gm, '\\#\\#\\# [').replace(/^## /gm, '\\#\\# ')}`
     )
     .join('\n\n---\n\n');
 }
@@ -11778,15 +11786,19 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         archives,
         message: `${archives.length} archive(s) trouvée(s) pour '${key}'`
       };
-    } catch {
+    } catch (error) {
+      // #4643 : un readdir en échec n'est PAS « aucune archive » — la liste
+      // VIDE légitime passe déjà par le try (0 archive(s) trouvée(s)). Servir
+      // success:true/[] ici rendait l'échec de listing indistinguable d'une
+      // absence, et le consommateur fail-closed (check-degraded-escalations)
+      // ne pouvait pas voir sa « fenêtre d'archives AVEUGLE ».
       return {
-        success: true,
+        success: false,
         action: 'read_archive',
         key,
         type: args.type ?? '',
         request: requestEcho,
-        archives: [],
-        message: `Aucune archive pour '${key}'`
+        message: `Impossible de lister les archives de '${key}' (${(error as Error).message})`
       };
     }
   }
