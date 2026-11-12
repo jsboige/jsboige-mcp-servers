@@ -263,4 +263,116 @@ describe('#4352 zero-points guard — pending > 0 && pointsIndexed === 0', () =>
     expect(state.indexingDecisionService.markIndexingFailure).not.toHaveBeenCalled();
     expect(state.indexingMetrics.failedTasks).toBe(0);
   });
+
+  // ms#1736 review suite 1 (ai-01): postEmbedDedupSkipped >= pending with 0
+  // points is the "already indexed" case — the pre-flight contentHash dedup
+  // let already-indexed sub-chunks through, they were embedded, then the
+  // post-embedding dedup removed every one of them. NOT a defect. RED on the
+  // pre-suite base (5375d0cb): the guard there fired on pending alone. The
+  // guard keys on postEmbedDedupSkipped (== pending here), NOT on
+  // dedupSkipped — see the pre-flight-dominant test below for why.
+  it('RED on pre-suite base: post-embedding dedup covered every pending sub-chunk with 0 points written IS a success — already indexed', async () => {
+    const { state } = primeState('task-004');
+    TaskIndexerSpy.indexTask.mockImplementation(async (_id: string, _src: unknown, _meta: unknown, options: StatsBag) => {
+      options.stats.pending = 134;
+      options.stats.pointsIndexed = 0;
+      options.stats.dedupSkipped = 284; // 150 pre-flight + 134 post-embedding
+      options.stats.postEmbedDedupSkipped = 134; // == pending: every pending sub-chunk was deduped
+      options.stats.batchesAcked = 9;
+    });
+
+    const outcome = await indexTaskInQdrant('task-004', state);
+
+    expect(outcome.outcome).toBe('indexed');
+    expect(state.indexingDecisionService.markIndexingSuccess).toHaveBeenCalledTimes(1);
+    expect(state.indexingDecisionService.markIndexingFailure).not.toHaveBeenCalled();
+    expect(state.indexingMetrics.failedTasks).toBe(0);
+  });
+
+  // ms#1736 review suite 1 (ai-01): dedupSkipped accumulates the PRE-FLIGHT
+  // dedups too, which run before `pending` is fixed. The web1 canary pass
+  // (c.6806908470): 30 266 sub-chunks removed pre-flight, 516 pending, 0
+  // points written, 0 removed post-embedding — dedupSkipped (30 266) >=
+  // pending (516), so a guard keyed on dedupSkipped counts the empty pass as
+  // "already indexed" and disarms exactly when the anomaly it exists to catch
+  // shows up. postEmbedDedupSkipped (0) < pending (516) tells the truth.
+  // RED on dbccb6c5: the guard there keys on dedupSkipped >= pending.
+  it('RED on dbccb6c5: pre-flight dedup >= pending with 0 points written and 0 post-embedding dedup is NOT a success — retry_fail [zero_points_written]', async () => {
+    const { state, skeleton } = primeState('task-007');
+    TaskIndexerSpy.indexTask.mockImplementation(async (_id: string, _src: unknown, _meta: unknown, options: StatsBag) => {
+      options.stats.pending = 516;
+      options.stats.pointsIndexed = 0;
+      options.stats.dedupSkipped = 30266; // all pre-flight, none post-embedding
+      options.stats.postEmbedDedupSkipped = 0;
+      options.stats.missingVectors = 0;
+      options.stats.batchesAcked = 0;
+    });
+
+    const outcome = await indexTaskInQdrant('task-007', state);
+
+    expect(outcome.outcome).toBe('retry_fail');
+    expect(outcome.errorClass).toBe('zero_points_written');
+    expect(state.indexingDecisionService.markIndexingSuccess).not.toHaveBeenCalled();
+    expect(state.indexingDecisionService.markIndexingFailure).toHaveBeenCalledTimes(1);
+    expect(skeleton.metadata?.indexingState?.errorClass).toBe('zero_points_written');
+  });
+
+  // ms#1734 review suite 2 (ai-01): once the zero-write retry budget is
+  // exhausted (3rd attempt), markIndexingFailure flips the skeleton to
+  // 'failed' and the task must land in the dead-letter, like the throw path
+  // does for permanent errors. RED on the pre-suite base: the guard never
+  // registered a dead-letter entry.
+  it('RED on pre-suite base: 3rd zero-points failure lands in the dead-letter', async () => {
+    const { state, skeleton } = primeState('task-005');
+    // Budget already at the ceiling: the next markIndexingFailure call (this
+    // attempt) flips indexStatus to 'failed' — mock the real decision's effect.
+    skeleton.metadata = {
+      ...skeleton.metadata,
+      indexingState: { indexStatus: 'retry' as const, indexRetryCount: 2 },
+    };
+    (state.indexingDecisionService.markIndexingFailure as any).mockImplementation(
+      (sk: any, _msg: string) => {
+        sk.metadata.indexingState = {
+          ...sk.metadata.indexingState,
+          indexStatus: 'failed',
+        };
+      }
+    );
+    TaskIndexerSpy.indexTask.mockImplementation(async (_id: string, _src: unknown, _meta: unknown, options: StatsBag) => {
+      options.stats.pending = 50;
+      options.stats.pointsIndexed = 0;
+      options.stats.dedupSkipped = 0;
+    });
+
+    const outcome = await indexTaskInQdrant('task-005', state);
+
+    expect(outcome.outcome).toBe('retry_fail');
+    // The dead-letter is lazily initialized by registerDeadLetter (#2766 S2+).
+    expect(state.deadLetterQueue?.has('task-005')).toBe(true);
+    expect(state.deadLetterDetails?.get('task-005')?.errorClass).toBe('zero_points_written');
+  });
+
+  // Symmetry for suite 2: a FIRST zero-points failure (budget not exhausted)
+  // must NOT dead-letter — the task is still in its retry window.
+  it('1st zero-points failure does NOT dead-letter — retry window still open', async () => {
+    const { state } = primeState('task-006');
+    (state.indexingDecisionService.markIndexingFailure as any).mockImplementation(
+      (sk: any, _msg: string) => {
+        sk.metadata.indexingState = {
+          ...sk.metadata.indexingState,
+          indexStatus: 'retry',
+        };
+      }
+    );
+    TaskIndexerSpy.indexTask.mockImplementation(async (_id: string, _src: unknown, _meta: unknown, options: StatsBag) => {
+      options.stats.pending = 50;
+      options.stats.pointsIndexed = 0;
+      options.stats.dedupSkipped = 0;
+    });
+
+    const outcome = await indexTaskInQdrant('task-006', state);
+
+    expect(outcome.outcome).toBe('retry_fail');
+    expect(state.deadLetterQueue?.has('task-006') ?? false).toBe(false);
+  });
 });

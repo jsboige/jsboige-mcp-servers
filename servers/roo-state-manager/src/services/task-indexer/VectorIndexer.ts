@@ -1324,6 +1324,14 @@ export interface IndexTaskStats {
     subChunksBuilt: number;
     /** Sub-chunks not embedded because Qdrant already held them (either dedup). */
     dedupSkipped: number;
+    /**
+     * ms#1736 review suite 1 (ai-01): sub-chunks embedded then removed by the
+     * POST-embedding dedup (#1985) — the only dedup that can account for a
+     * pending sub-chunk. `dedupSkipped` alone mixes pre-flight counts (which
+     * predate `pending`), so a 30k-chunk pre-flight sweep makes it dwarf
+     * `pending` even when zero of the pending sub-chunks were deduped.
+     */
+    postEmbedDedupSkipped: number;
     /** Points actually written to Qdrant in this attempt. */
     pointsIndexed: number;
     /** Sub-chunks that got no vector (embedding failure) — run fails when > 0. */
@@ -1350,6 +1358,7 @@ export function emptyStats(): IndexTaskStats {
         chunksExtracted: 0,
         subChunksBuilt: 0,
         dedupSkipped: 0,
+        postEmbedDedupSkipped: 0,
         pointsIndexed: 0,
         missingVectors: 0,
         pending: 0,
@@ -1677,6 +1686,12 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                     console.log(`[#1985] Dedup: ${pointsToIndex.length - deduplicated.length}/${pointsToIndex.length} points already indexed, indexing ${deduplicated.length} new`);
                 }
                 stats.dedupSkipped += pointsToIndex.length - deduplicated.length;
+                // ms#1736 review suite 1 (ai-01): this is the ONLY dedup that
+                // can explain a pending sub-chunk vanishing before the upsert —
+                // the caller's zero-points guard keys on this counter, not on
+                // dedupSkipped (which also accumulates pre-flight dedups that
+                // predate `pending`).
+                stats.postEmbedDedupSkipped += pointsToIndex.length - deduplicated.length;
                 pointsToIndex = deduplicated;
             }
 

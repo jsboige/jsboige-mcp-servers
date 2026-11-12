@@ -2405,19 +2405,46 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
         // 0 → success) or embed what is actually missing.
         // Guard rail: pending == 0 (nothing to embed after both dedups) stays a
         // success — that is the "already indexed" case, not a defect.
-        if (stats.pending > 0 && stats.pointsIndexed === 0) {
+        // ms#1736 review suite 1 (ai-01): the guard keys on
+        // postEmbedDedupSkipped, NOT on dedupSkipped — dedupSkipped also
+        // accumulates the pre-flight dedups (chunk_id then contentHash), which
+        // run BEFORE `pending` is fixed. A 30k-chunk pre-flight sweep makes
+        // dedupSkipped dwarf `pending` even when zero of the pending
+        // sub-chunks were deduped, disarming the guard exactly when the
+        // zero-write anomaly it exists to catch shows up. Only the
+        // post-embedding dedup (#1985) can account for a pending sub-chunk:
+        // postEmbedDedupSkipped >= pending is the "already indexed" case
+        // (success), postEmbedDedupSkipped < pending with 0 written is a real
+        // zero-write anomaly.
+        if (stats.pending > 0 && stats.pointsIndexed === 0 && stats.postEmbedDedupSkipped < stats.pending) {
             const zeroPointsMessage =
                 `Zero points written for task ${taskId}: ${stats.pending} sub-chunk(s) pending after pre-flight dedup ` +
                 `but none landed in Qdrant (points written=${stats.pointsIndexed}, missing vectors=${stats.missingVectors}, ` +
-                `batches acked=${stats.batchesAcked}, dedup skipped=${stats.dedupSkipped}, chunks extracted=${stats.chunksExtracted})`;
+                `batches acked=${stats.batchesAcked}, post-embedding dedup skipped=${stats.postEmbedDedupSkipped}, ` +
+                `pre-flight dedup skipped=${stats.dedupSkipped - stats.postEmbedDedupSkipped}, chunks extracted=${stats.chunksExtracted})`;
             state.indexingDecisionService.markIndexingFailure(skeleton, zeroPointsMessage, false);
             if (skeleton.metadata?.indexingState) {
                 skeleton.metadata.indexingState.errorClass = 'zero_points_written';
+            }
+            // ms#1734 review suite 2 (ai-01): align with the throw path — once
+            // the zero-write retry budget is exhausted (3rd attempt),
+            // markIndexingFailure flips the skeleton to 'failed' and the task
+            // must land in the dead-letter like any other terminal failure, or
+            // operators never see it in `roosync_indexing` status.
+            if (skeleton.metadata?.indexingState?.indexStatus === 'failed') {
+                registerDeadLetter(state, taskId, skeleton, zeroPointsMessage, 'zero_points_written');
             }
             await saveSkeletonToDisk(skeleton);
             state.indexingMetrics.failedTasks++;
             console.error(`[RETRY_FAIL] Task ${taskId}: [zero_points_written] ${zeroPointsMessage} - not marked indexed, TTL not armed`);
             return { outcome: 'retry_fail', errorClass: 'zero_points_written', stats };
+        }
+
+        if (stats.pending > 0 && stats.pointsIndexed === 0 && stats.postEmbedDedupSkipped >= stats.pending) {
+            console.log(
+                `[#4352-suite] Task ${taskId}: ${stats.postEmbedDedupSkipped} point(s) removed by post-embedding dedup ` +
+                `with ${stats.pending} pending — already indexed, counted as success`
+            );
         }
 
         state.indexingDecisionService.markIndexingSuccess(skeleton);
