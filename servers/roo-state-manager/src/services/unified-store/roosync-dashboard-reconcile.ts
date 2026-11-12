@@ -775,6 +775,21 @@ export async function reconcileDashboardsFromGDrive(
   const corruptFileKeys = new Set<string>();
 
   for (const file of keyed) {
+    // #4596 — a DriveFS conflict copy is a stale COPY of an export, never a
+    // source. Parsing it used to backfill-insert its rows under the fork key,
+    // which is exactly what kept twin keys alive in PG (measured:
+    // `workspace-vllm (1)` — a live PG key whose fork file was long gone).
+    // Skip ALL per-file PG work for forks — insert, mirror repair, archive
+    // heal, archival — and report the file instead. The mirror-repair and
+    // archival fork guards below stay as defense in depth; the materialization
+    // pass still counts fork files as present BY NAME (its `fileKeys` derives
+    // from `keyed`, untouched here), so this skip never becomes a rewrite of
+    // a fork file from PG. No PG row is deleted: existing twin keys remain
+    // the merge remedy's domain (#3782).
+    if (isGdriveConflictCopyFile(file)) {
+      result.forkFiles.push(file);
+      continue;
+    }
     const key = file.replace(/\.md$/, '');
     try {
       let content = await readFile(join(options.dashboardsDir, file), 'utf-8');

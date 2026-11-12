@@ -335,6 +335,31 @@ describe('roosync-dashboard-reconcile (#3151 Phase C)', () => {
     expect(archiveCalls).toHaveLength(0);
   });
 
+  test('#4596 conflict copy is never a backfill source — no sync call under the fork key', async () => {
+    // Twin-key mechanics: the fork file parses under its fork key, PG knows
+    // nothing about that key → every id looked like a gap → the insert pass
+    // created/refreshed the PG twin every pass. The fork must be invisible to
+    // the whole per-file pass instead.
+    writeFileSync(join(dashboardsDir, 'workspace-a.md'), fixture('workspace-a', ['id-1', 'id-2']));
+    writeFileSync(join(dashboardsDir, 'workspace-a (1).md'), fixture('workspace-a (1)', ['id-twin']));
+    readerViewing('workspace-a', ['id-1']);
+    const result = await reconcileDashboardsFromGDrive({
+      dashboardsDir,
+      reader: readerDouble as never,
+      writer: writerDouble as never,
+    });
+    // Zero writer call under the fork key — the PG twin is neither created
+    // nor maintained. Mutant: without the head-of-loop skip, id-twin counts
+    // as a gap under the unknown fork key and this assertion fails.
+    expect(writerCalls.filter((c) => c.key === 'workspace-a (1)')).toHaveLength(0);
+    // Canonical healing intact: id-2 is a real gap, imported exactly once.
+    expect(writerCalls).toHaveLength(1);
+    expect(writerCalls[0].key).toBe('workspace-a');
+    expect(writerCalls[0].messages.map((m) => m.message_id)).toEqual(['id-2']);
+    // The fork stays visible to operators.
+    expect(result.forkFiles).toEqual(['workspace-a (1).md']);
+  });
+
   test('rows younger than the min age are deferred (racing-append protection)', async () => {
     // Fresh file (message @now); PG alive: id-1 slightly older than the file
     // (gate passes) + a 1 h-old hole — too young for the 24 h default.
@@ -384,11 +409,14 @@ describe('roosync-dashboard-reconcile (#3151 Phase C)', () => {
       writer: writerDouble as never,
     });
     expect(result.archivedRows).toBe(0);
-    expect(result.forkFiles).toEqual([]);
+    // #4596 — forks are classified by the file scan itself now (they gate the
+    // insert pass too), not only by the archival pass behind this kill-switch.
+    expect(result.forkFiles).toEqual(['workspace-b (1).md']);
     expect(result.staleFileKeys).toEqual([]);
     expect(archiveCalls).toHaveLength(0);
-    // The insert pass keeps running (fork key never backfilled → import).
-    expect(result.keysWithGap).toBe(1);
+    // The insert pass keeps running for canonicals; the fork key is skipped at
+    // the head of the file loop — never imported, never a twin (#4596).
+    expect(result.keysWithGap).toBe(0);
   });
 
   test('daemon: start is idempotent, stop keeps lastRun readable', async () => {
