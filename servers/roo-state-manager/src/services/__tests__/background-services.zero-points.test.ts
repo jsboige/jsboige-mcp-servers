@@ -264,17 +264,20 @@ describe('#4352 zero-points guard — pending > 0 && pointsIndexed === 0', () =>
     expect(state.indexingMetrics.failedTasks).toBe(0);
   });
 
-  // ms#1734 review suite 1 (ai-01): dedupSkipped >= pending with 0 points is
-  // the "already indexed" case — the pre-flight contentHash dedup let
-  // already-indexed sub-chunks through, they were embedded, then the
+  // ms#1736 review suite 1 (ai-01): postEmbedDedupSkipped >= pending with 0
+  // points is the "already indexed" case — the pre-flight contentHash dedup
+  // let already-indexed sub-chunks through, they were embedded, then the
   // post-embedding dedup removed every one of them. NOT a defect. RED on the
-  // pre-suite base (5375d0cb): the guard there fired on pending alone.
-  it('RED on pre-suite base: dedupSkipped >= pending with 0 points written IS a success — already indexed', async () => {
+  // pre-suite base (5375d0cb): the guard there fired on pending alone. The
+  // guard keys on postEmbedDedupSkipped (== pending here), NOT on
+  // dedupSkipped — see the pre-flight-dominant test below for why.
+  it('RED on pre-suite base: post-embedding dedup covered every pending sub-chunk with 0 points written IS a success — already indexed', async () => {
     const { state } = primeState('task-004');
     TaskIndexerSpy.indexTask.mockImplementation(async (_id: string, _src: unknown, _meta: unknown, options: StatsBag) => {
       options.stats.pending = 134;
       options.stats.pointsIndexed = 0;
-      options.stats.dedupSkipped = 150;
+      options.stats.dedupSkipped = 284; // 150 pre-flight + 134 post-embedding
+      options.stats.postEmbedDedupSkipped = 134; // == pending: every pending sub-chunk was deduped
       options.stats.batchesAcked = 9;
     });
 
@@ -284,6 +287,34 @@ describe('#4352 zero-points guard — pending > 0 && pointsIndexed === 0', () =>
     expect(state.indexingDecisionService.markIndexingSuccess).toHaveBeenCalledTimes(1);
     expect(state.indexingDecisionService.markIndexingFailure).not.toHaveBeenCalled();
     expect(state.indexingMetrics.failedTasks).toBe(0);
+  });
+
+  // ms#1736 review suite 1 (ai-01): dedupSkipped accumulates the PRE-FLIGHT
+  // dedups too, which run before `pending` is fixed. The web1 canary pass
+  // (c.6806908470): 30 266 sub-chunks removed pre-flight, 516 pending, 0
+  // points written, 0 removed post-embedding — dedupSkipped (30 266) >=
+  // pending (516), so a guard keyed on dedupSkipped counts the empty pass as
+  // "already indexed" and disarms exactly when the anomaly it exists to catch
+  // shows up. postEmbedDedupSkipped (0) < pending (516) tells the truth.
+  // RED on dbccb6c5: the guard there keys on dedupSkipped >= pending.
+  it('RED on dbccb6c5: pre-flight dedup >= pending with 0 points written and 0 post-embedding dedup is NOT a success — retry_fail [zero_points_written]', async () => {
+    const { state, skeleton } = primeState('task-007');
+    TaskIndexerSpy.indexTask.mockImplementation(async (_id: string, _src: unknown, _meta: unknown, options: StatsBag) => {
+      options.stats.pending = 516;
+      options.stats.pointsIndexed = 0;
+      options.stats.dedupSkipped = 30266; // all pre-flight, none post-embedding
+      options.stats.postEmbedDedupSkipped = 0;
+      options.stats.missingVectors = 0;
+      options.stats.batchesAcked = 0;
+    });
+
+    const outcome = await indexTaskInQdrant('task-007', state);
+
+    expect(outcome.outcome).toBe('retry_fail');
+    expect(outcome.errorClass).toBe('zero_points_written');
+    expect(state.indexingDecisionService.markIndexingSuccess).not.toHaveBeenCalled();
+    expect(state.indexingDecisionService.markIndexingFailure).toHaveBeenCalledTimes(1);
+    expect(skeleton.metadata?.indexingState?.errorClass).toBe('zero_points_written');
   });
 
   // ms#1734 review suite 2 (ai-01): once the zero-write retry budget is

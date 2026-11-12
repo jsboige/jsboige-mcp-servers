@@ -112,6 +112,7 @@ export const indexTaskSemanticTool = {
                 chunksExtracted: 0,
                 subChunksBuilt: 0,
                 dedupSkipped: 0,
+                postEmbedDedupSkipped: 0,
                 pointsIndexed: 0,
                 missingVectors: 0,
                 pending: 0,

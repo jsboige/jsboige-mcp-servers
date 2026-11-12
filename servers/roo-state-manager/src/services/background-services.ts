@@ -2405,18 +2405,23 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
         // 0 → success) or embed what is actually missing.
         // Guard rail: pending == 0 (nothing to embed after both dedups) stays a
         // success — that is the "already indexed" case, not a defect.
-        // ms#1734 review suite 1 (ai-01): dedupSkipped >= pending is ALSO a
-        // success — the pre-flight contentHash dedup let already-indexed
-        // sub-chunks through, they were embedded, then the post-embedding dedup
-        // removed every one of them. pointsIndexed == 0 with
-        // dedupSkipped >= pending is the "already indexed" case too, not a
-        // defect; only sub-chunks that neither landed nor were dedup-skipped
-        // (dedupSkipped < pending) are a real zero-write anomaly.
-        if (stats.pending > 0 && stats.pointsIndexed === 0 && stats.dedupSkipped < stats.pending) {
+        // ms#1736 review suite 1 (ai-01): the guard keys on
+        // postEmbedDedupSkipped, NOT on dedupSkipped — dedupSkipped also
+        // accumulates the pre-flight dedups (chunk_id then contentHash), which
+        // run BEFORE `pending` is fixed. A 30k-chunk pre-flight sweep makes
+        // dedupSkipped dwarf `pending` even when zero of the pending
+        // sub-chunks were deduped, disarming the guard exactly when the
+        // zero-write anomaly it exists to catch shows up. Only the
+        // post-embedding dedup (#1985) can account for a pending sub-chunk:
+        // postEmbedDedupSkipped >= pending is the "already indexed" case
+        // (success), postEmbedDedupSkipped < pending with 0 written is a real
+        // zero-write anomaly.
+        if (stats.pending > 0 && stats.pointsIndexed === 0 && stats.postEmbedDedupSkipped < stats.pending) {
             const zeroPointsMessage =
                 `Zero points written for task ${taskId}: ${stats.pending} sub-chunk(s) pending after pre-flight dedup ` +
                 `but none landed in Qdrant (points written=${stats.pointsIndexed}, missing vectors=${stats.missingVectors}, ` +
-                `batches acked=${stats.batchesAcked}, dedup skipped=${stats.dedupSkipped}, chunks extracted=${stats.chunksExtracted})`;
+                `batches acked=${stats.batchesAcked}, post-embedding dedup skipped=${stats.postEmbedDedupSkipped}, ` +
+                `pre-flight dedup skipped=${stats.dedupSkipped - stats.postEmbedDedupSkipped}, chunks extracted=${stats.chunksExtracted})`;
             state.indexingDecisionService.markIndexingFailure(skeleton, zeroPointsMessage, false);
             if (skeleton.metadata?.indexingState) {
                 skeleton.metadata.indexingState.errorClass = 'zero_points_written';
@@ -2435,9 +2440,9 @@ export async function indexTaskInQdrant(taskId: string, state: ServerState): Pro
             return { outcome: 'retry_fail', errorClass: 'zero_points_written', stats };
         }
 
-        if (stats.pending > 0 && stats.pointsIndexed === 0 && stats.dedupSkipped >= stats.pending) {
+        if (stats.pending > 0 && stats.pointsIndexed === 0 && stats.postEmbedDedupSkipped >= stats.pending) {
             console.log(
-                `[#4352-suite] Task ${taskId}: ${stats.dedupSkipped} point(s) removed by post-embedding dedup ` +
+                `[#4352-suite] Task ${taskId}: ${stats.postEmbedDedupSkipped} point(s) removed by post-embedding dedup ` +
                 `with ${stats.pending} pending — already indexed, counted as success`
             );
         }
