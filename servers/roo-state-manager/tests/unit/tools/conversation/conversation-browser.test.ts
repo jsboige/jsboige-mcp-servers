@@ -17,7 +17,7 @@ import {
     ConversationBrowserArgs,
     ConversationBrowserAction
 } from '../../../../src/tools/conversation/conversation-browser.js';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 
 // Mock des handlers sous-jacents
 vi.mock('../../../../src/tools/task/browse.js', () => ({
@@ -50,7 +50,7 @@ import { viewConversationTree } from '../../../../src/tools/view-conversation-tr
 import { handleRooSyncSummarize } from '../../../../src/tools/summary/roosync-summarize.tool.js';
 
 describe('conversation_browser - CONS-X (#457)', () => {
-    let mockCache: Map<string, ConversationSkeleton>;
+    let mockCache: Map<string, StoredConversation>;
     let mockEnsureCache: Mock;
     let mockGetSkeleton: Mock;
     let mockFindChildTasks: Mock;

@@ -5,12 +5,12 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { IndexingDecisionService } from '../../../src/services/indexing-decision.js';
-import { ConversationSkeleton } from '../../../src/types/conversation.js';
+import { StoredConversation } from '../../../src/services/unified-store/types.js';
 import { IndexStatus, INDEX_VERSION_CURRENT } from '../../../src/types/indexing.js';
 
 describe('IndexingDecisionService', () => {
     let service: IndexingDecisionService;
-    let mockSkeleton: ConversationSkeleton;
+    let mockSkeleton: StoredConversation;
 
     beforeEach(() => {
         // Reset des variables d'environnement
@@ -175,7 +175,7 @@ describe('IndexingDecisionService', () => {
         });
 
         it('devrait migrer le format legacy qdrantIndexedAt sans faux succès (#2165)', () => {
-            const skeleton: ConversationSkeleton = {
+            const skeleton: StoredConversation = {
                 ...mockSkeleton,
                 metadata: {
                     ...mockSkeleton.metadata,

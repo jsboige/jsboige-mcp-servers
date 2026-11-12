@@ -76,7 +76,7 @@ async function testHierarchyReconstruction() {
     try {
         const engine = new HierarchyReconstructionEngine({ debugMode: true });
         
-        // Convertir nos données en format ConversationSkeleton
+        // Convertir nos données en format StoredConversation
         const skeletons = conversations.map(conv => {
             // Extraire la VRAIE instruction qui a créé cette tâche (premier message "say")
             let firstUserMessage = '';

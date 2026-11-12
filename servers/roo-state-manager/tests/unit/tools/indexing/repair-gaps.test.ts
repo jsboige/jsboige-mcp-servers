@@ -13,7 +13,7 @@
 
 import { handleRooSyncIndexing } from '../../../../src/tools/indexing/roosync-indexing.tool.js';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 
 const {
     mockCount,
@@ -55,9 +55,9 @@ vi.mock('../../../../src/utils/roo-storage-detector.js', () => ({
 }));
 
 function makeCache(
-    tasks: Record<string, Partial<NonNullable<ConversationSkeleton['metadata']>>>
-): Map<string, ConversationSkeleton> {
-    const cache = new Map<string, ConversationSkeleton>();
+    tasks: Record<string, Partial<NonNullable<StoredConversation['metadata']>>>
+): Map<string, StoredConversation> {
+    const cache = new Map<string, StoredConversation>();
     for (const [taskId, meta] of Object.entries(tasks)) {
         cache.set(taskId, {
             taskId,
@@ -70,7 +70,7 @@ function makeCache(
                 ...(meta as any),
             },
             sequence: [],
-        } as ConversationSkeleton);
+        } as StoredConversation);
     }
     return cache;
 }
@@ -84,7 +84,7 @@ const noopArgs = {
 };
 
 async function callRepairGaps(
-    cache: Map<string, ConversationSkeleton>,
+    cache: Map<string, StoredConversation>,
     extra: Record<string, unknown> = {}
 ) {
     return handleRooSyncIndexing(

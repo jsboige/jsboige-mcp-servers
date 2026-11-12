@@ -33,7 +33,7 @@ import { writeVerdictArtifact } from '../verdict-artifact.js';
 import { handleRooSyncSearch } from '../../../src/tools/search/roosync-search.tool.js';
 import { handleDiagnoseSemanticIndex } from '../../../src/tools/indexing/diagnose-index.tool.js';
 import { handleSearchTasksSemanticFallback } from '../../../src/tools/search/search-fallback.tool.js';
-import type { ConversationSkeleton } from '../../../src/types/conversation.js';
+import type { StoredConversation } from '../../../src/services/unified-store/types.js';
 import { gradeSnippetBoundary } from '../../../src/utils/snippet-boundary.js';
 import { classifyMachineOutput, isClassifiedInfrastructureError, INFRASTRUCTURE_ERROR_MODES } from '../../../src/tools/search/search-semantic.tool.js';
 
@@ -68,15 +68,15 @@ describe('roosync_search — Epic #2609 scenario 2 (decision passage)', () => {
     }
 
     const noopEnsureFresh = async (_args?: { workspace?: string }) => true;
-    const realFallbackHandler = async (args: any, cache: Map<string, ConversationSkeleton>) =>
+    const realFallbackHandler = async (args: any, cache: Map<string, StoredConversation>) =>
       handleSearchTasksSemanticFallback(args, cache);
     const diagnoseHandler = async () =>
-      handleDiagnoseSemanticIndex(new Map<string, ConversationSkeleton>());
+      handleDiagnoseSemanticIndex(new Map<string, StoredConversation>());
 
     const startMs = Date.now();
     const result = await handleRooSyncSearch(
       SCENARIO_2_ARGS as any,
-      new Map<string, ConversationSkeleton>(),
+      new Map<string, StoredConversation>(),
       noopEnsureFresh,
       realFallbackHandler,
       diagnoseHandler

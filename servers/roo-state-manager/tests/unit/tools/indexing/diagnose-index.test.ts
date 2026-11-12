@@ -35,7 +35,7 @@ vi.mock('../../../../src/services/openai.js', () => ({
 }));
 
 import { handleDiagnoseSemanticIndex, _resetConnectivityCache } from '../../../../src/tools/indexing/diagnose-index.tool.js';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 
 // ============================================================
 // Helpers
@@ -95,7 +95,7 @@ function createMockOpenAI(overrides: Partial<{
 // ============================================================
 
 describe('handleDiagnoseSemanticIndex', () => {
-    let conversationCache: Map<string, ConversationSkeleton>;
+    let conversationCache: Map<string, StoredConversation>;
     let savedEnv: NodeJS.ProcessEnv;
 
     beforeEach(() => {
@@ -975,7 +975,7 @@ describe('handleDiagnoseSemanticIndex', () => {
                 taskId: 'task-1',
                 metadata: {},
                 sequence: []
-            } as ConversationSkeleton);
+            } as StoredConversation);
 
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);

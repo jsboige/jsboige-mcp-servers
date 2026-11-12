@@ -29,7 +29,7 @@ vi.mock('path', () => ({
 
 import { HierarchyReconstructionEngine } from '../../src/utils/hierarchy-reconstruction-engine.js';
 import { TaskInstructionIndex } from '../../src/utils/task-instruction-index.js';
-import type { ConversationSkeleton } from '../../src/types/conversation.js';
+import type { StoredConversation } from '../../src/services/unified-store/types.js';
 import type { EnhancedConversationSkeleton } from '../../src/types/enhanced-hierarchy.js';
 import {
     mockSkeletons,
@@ -112,8 +112,8 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
 
         it('should handle 47 orphan tasks scenario', async () => {
             // Cr?er 47 t?ches orphelines + quelques parents potentiels
-            const orphans: ConversationSkeleton[] = [];
-            const parents: ConversationSkeleton[] = [];
+            const orphans: StoredConversation[] = [];
+            const parents: StoredConversation[] = [];
             
             // Cr?er 5 parents
             for (let i = 0; i < 5; i++) {
@@ -192,7 +192,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
             } as any);
 
             // Ex?cuter la reconstruction
-            const result = await engine.doReconstruction(allSkeletons as ConversationSkeleton[]);
+            const result = await engine.doReconstruction(allSkeletons as StoredConversation[]);
 
             // V?rifications
             const resolvedOrphans = result.filter(s => 
@@ -216,7 +216,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
 
         it('should generate tree with depth > 0', async () => {
             // Cr?er une hi?rarchie profonde
-            const deepHierarchy: ConversationSkeleton[] = [];
+            const deepHierarchy: StoredConversation[] = [];
             
             // Racine
             deepHierarchy.push({
@@ -283,7 +283,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
             }
 
             const enhanced = deepHierarchy.map(enhanceSkeleton);
-            const result = await engine.doReconstruction(enhanced as ConversationSkeleton[]);
+            const result = await engine.doReconstruction(enhanced as StoredConversation[]);
 
             // Calculer la profondeur de l'arbre
             function calculateDepth(taskId: string, skeletons: EnhancedConversationSkeleton[], depth: number = 0): number {
@@ -358,13 +358,13 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
                         totalSize: 100
                     },
                     sequence: []
-                } as ConversationSkeleton,
+                } as StoredConversation,
                 ...mockSkeletons.slice(2, 4)
             ].map(enhanceSkeleton);
 
             mockFs.existsSync.mockReturnValue(false);
 
-            const result = await engine.doReconstruction(mixedData as ConversationSkeleton[]);
+            const result = await engine.doReconstruction(mixedData as StoredConversation[]);
 
             // Devrait traiter les valides et g?rer les corrompus
             expect(result).toHaveLength(mixedData.length);
@@ -434,7 +434,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
                 (s as any).parentTaskId = undefined;
             });
 
-            const result = await engine.doReconstruction(multiWorkspace as ConversationSkeleton[]);
+            const result = await engine.doReconstruction(multiWorkspace as StoredConversation[]);
 
             // V?rifier qu'aucune t?che de project-a n'a un parent dans project-b
             result.forEach(task => {
@@ -631,7 +631,7 @@ describe('Hierarchy Reconstruction - Integration Tests', () => {
                 isCompleted: false
             })).map(enhanceSkeleton);
 
-            const result = await engine.doReconstruction(allOrphans as ConversationSkeleton[]);
+            const result = await engine.doReconstruction(allOrphans as StoredConversation[]);
             
             // Certains devraient ?tre identifi?s comme racines
             const roots = result.filter(s => s.isRootTask);

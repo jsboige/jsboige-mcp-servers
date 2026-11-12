@@ -1,20 +1,20 @@
 /**
  * Tests for SkeletonComparator
  *
- * Validates comparison of ConversationSkeleton objects including field-level
+ * Validates comparison of StoredConversation objects including field-level
  * diff detection, severity classification, tolerance checks, improvement
  * identification, and the combined compareWithImprovements flow.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SkeletonComparator } from '../../../src/utils/skeleton-comparator.js';
-import type { ConversationSkeleton } from '../../../src/types/conversation.js';
+import type { StoredConversation } from '../../../src/services/unified-store/types.js';
 
 // ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
-function makeSkeleton(overrides: Partial<ConversationSkeleton> = {}): ConversationSkeleton {
+function makeSkeleton(overrides: Partial<StoredConversation> = {}): StoredConversation {
   return {
     taskId: 'task-001',
     metadata: {
@@ -293,7 +293,7 @@ describe('SkeletonComparator', () => {
     });
 
     it('calculates similarityScore correctly when most fields differ', () => {
-      const oldSk: ConversationSkeleton = {
+      const oldSk: StoredConversation = {
         taskId: 'old-task',
         metadata: {
           workspace: 'old-ws',
@@ -308,7 +308,7 @@ describe('SkeletonComparator', () => {
         isCompleted: false,
         sequence: [],
       };
-      const newSk: ConversationSkeleton = {
+      const newSk: StoredConversation = {
         taskId: 'new-task',
         metadata: {
           workspace: 'new-ws',
@@ -670,7 +670,7 @@ describe('SkeletonComparator', () => {
     });
 
     it('handles multiple differences simultaneously with correct score', () => {
-      const oldSk: ConversationSkeleton = {
+      const oldSk: StoredConversation = {
         taskId: 'task-001',
         metadata: {
           workspace: 'ws-1',
@@ -685,7 +685,7 @@ describe('SkeletonComparator', () => {
         isCompleted: false,
         sequence: [],
       };
-      const newSk: ConversationSkeleton = {
+      const newSk: StoredConversation = {
         taskId: 'task-001',  // same
         metadata: {
           workspace: 'ws-2',  // different

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, Mock } from 'vitest';
 import { getTaskTreeTool, handleGetTaskTree } from '../../../../src/tools/task/get-tree.tool';
-import { ConversationSkeleton } from '../../../../src/types/conversation';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 import { globalTaskInstructionIndex } from '../../../../src/utils/task-instruction-index';
 
 // Mock globalTaskInstructionIndex
@@ -13,7 +13,7 @@ vi.mock('../../../../src/utils/task-instruction-index', () => ({
 }));
 
 describe('get_task_tree tool', () => {
-    let mockCache: Map<string, ConversationSkeleton>;
+    let mockCache: Map<string, StoredConversation>;
     let mockEnsureCache: Mock;
 
     beforeEach(() => {
@@ -22,7 +22,7 @@ describe('get_task_tree tool', () => {
         mockEnsureCache = vi.fn().mockResolvedValue(undefined);
 
         // Setup mock data
-        const rootTask: ConversationSkeleton = {
+        const rootTask: StoredConversation = {
             taskId: 'root-task',
             sequence: [],
             metadata: {
@@ -35,7 +35,7 @@ describe('get_task_tree tool', () => {
             }
         };
 
-        const childTask: ConversationSkeleton = {
+        const childTask: StoredConversation = {
             taskId: 'child-task',
             parentTaskId: 'root-task',
             sequence: [],
@@ -72,7 +72,7 @@ describe('get_task_tree tool', () => {
     });
 
     it('should handle empty cache', async () => {
-        const emptyCache = new Map<string, ConversationSkeleton>();
+        const emptyCache = new Map<string, StoredConversation>();
         const result = await handleGetTaskTree(
             { conversation_id: 'any-id' },
             emptyCache,

@@ -11,11 +11,11 @@
 
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { handleGetTaskTree } from '../../../../src/tools/task/get-tree.tool.js';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 
 // Mock cache
-const createMockCache = (): Map<string, ConversationSkeleton> => {
-  const cache = new Map<string, ConversationSkeleton>();
+const createMockCache = (): Map<string, StoredConversation> => {
+  const cache = new Map<string, StoredConversation>();
 
   // Créer une hiérarchie de test complexe
   const root = {
@@ -116,7 +116,7 @@ const createMockCache = (): Map<string, ConversationSkeleton> => {
 };
 
 describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
-  let mockCache: Map<string, ConversationSkeleton>;
+  let mockCache: Map<string, StoredConversation>;
   let consoleLogSpy: any;
 
   beforeEach(() => {
@@ -295,7 +295,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
 
   describe('Génération d\'arbre ASCII - Gestion des cas limites', () => {
     test('should handle empty cache gracefully', async () => {
-      const emptyCache = new Map<string, ConversationSkeleton>();
+      const emptyCache = new Map<string, StoredConversation>();
 
       const result = await handleGetTaskTree(
         { conversation_id: 'nonexistent', output_format: 'ascii-tree' },
@@ -310,7 +310,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
 
     test('should handle circular references gracefully', async () => {
       // Créer une référence circulaire : child1 -> root -> child1
-      const circularCache = new Map<string, ConversationSkeleton>();
+      const circularCache = new Map<string, StoredConversation>();
       const childWithCircularParent = {
         taskId: 'child1',
         parentTaskId: 'root',
@@ -340,7 +340,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
       };
 
       // 🎯 CORRECTION : Utiliser un cache normal pour éviter les logs de reconstruction
-      const normalCache = new Map<string, ConversationSkeleton>();
+      const normalCache = new Map<string, StoredConversation>();
       normalCache.set('child1', childWithCircularParent);
       normalCache.set('root', rootWithCircularChild);
 
@@ -365,7 +365,7 @@ describe('🌳 get_task_tree - Génération d\'Arbre ASCII Corrigée', () => {
 
     test('should handle very deep hierarchies efficiently', async () => {
       // Créer une hiérarchie profonde (5 niveaux)
-      const deepCache = new Map<string, ConversationSkeleton>();
+      const deepCache = new Map<string, StoredConversation>();
 
       // Niveau 0
       const level0 = {

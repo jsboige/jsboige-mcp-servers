@@ -8,7 +8,8 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { TraceSummaryService } from '../../../src/services/TraceSummaryService.js';
-import { ConversationSkeleton, MessageSkeleton } from '../../../src/types/conversation.js';
+import { MessageSkeleton } from '../../../src/types/conversation.js';
+import { StoredConversation } from '../../../src/services/unified-store/types.js';
 import { ExportConfigManager } from '../../../src/services/ExportConfigManager.js';
 
 describe('TraceSummaryService - Main Methods', () => {
@@ -31,7 +32,7 @@ describe('TraceSummaryService - Main Methods', () => {
 
   describe('generateSummary - Interface and Error Handling', () => {
     it('should return a SummaryResult structure with all required fields', async () => {
-      const mockConversation: ConversationSkeleton = {
+      const mockConversation: StoredConversation = {
         taskId: 'test-task-123',
         parentTaskId: null,
         metadata: {
@@ -100,7 +101,7 @@ describe('TraceSummaryService - Main Methods', () => {
     });
 
     it('should accept different output formats', async () => {
-      const mockConversation: ConversationSkeleton = {
+      const mockConversation: StoredConversation = {
         taskId: 'test-task-formats',
         parentTaskId: null,
         metadata: {
@@ -156,7 +157,7 @@ describe('TraceSummaryService - Main Methods', () => {
       // ne valide que la présence de la conversation (catch : TraceSummaryService.ts:133-138,
       // uniquement sur null/undefined). Le markdown est rendu avec des valeurs
       // dégradées. Contrat mesuré par sonde (2026-10-03) : succès nominal.
-      const problematicConversation: ConversationSkeleton = {
+      const problematicConversation: StoredConversation = {
         taskId: '',
         parentTaskId: null,
         metadata: {
@@ -191,7 +192,7 @@ describe('TraceSummaryService - Main Methods', () => {
 
   describe('generateClusterSummary - Interface and Validation', () => {
     it('should return a ClusterSummaryResult structure with all required fields', async () => {
-      const rootTask: ConversationSkeleton = {
+      const rootTask: StoredConversation = {
         taskId: 'root-task',
         parentTaskId: null,
         metadata: {
@@ -205,7 +206,7 @@ describe('TraceSummaryService - Main Methods', () => {
         sequence: [],
       };
 
-      const childTask1: ConversationSkeleton = {
+      const childTask1: StoredConversation = {
         taskId: 'child-task-1',
         parentTaskId: 'root-task',
         metadata: {
@@ -244,7 +245,7 @@ describe('TraceSummaryService - Main Methods', () => {
     });
 
     it('should handle empty child tasks array', async () => {
-      const rootTask: ConversationSkeleton = {
+      const rootTask: StoredConversation = {
         taskId: 'root-task-no-children',
         parentTaskId: null,
         metadata: {
@@ -280,7 +281,7 @@ describe('TraceSummaryService - Main Methods', () => {
     });
 
     it('should handle invalid root task gracefully', async () => {
-      const invalidRootTask: ConversationSkeleton = {
+      const invalidRootTask: StoredConversation = {
         taskId: '',
         parentTaskId: null,
         metadata: {
@@ -318,7 +319,7 @@ describe('TraceSummaryService - Main Methods', () => {
     });
 
     it('should accept different sort options', { timeout: 30000 }, async () => {
-      const rootTask: ConversationSkeleton = {
+      const rootTask: StoredConversation = {
         taskId: 'root-task-sort',
         parentTaskId: null,
         metadata: {
@@ -332,7 +333,7 @@ describe('TraceSummaryService - Main Methods', () => {
         sequence: [],
       };
 
-      const childTask: ConversationSkeleton = {
+      const childTask: StoredConversation = {
         taskId: 'child-task',
         parentTaskId: 'root-task-sort',
         metadata: {
@@ -384,7 +385,7 @@ describe('TraceSummaryService - Main Methods', () => {
     });
 
     it('should include cluster statistics in result', async () => {
-      const rootTask: ConversationSkeleton = {
+      const rootTask: StoredConversation = {
         taskId: 'root-task-stats',
         parentTaskId: null,
         metadata: {
@@ -398,7 +399,7 @@ describe('TraceSummaryService - Main Methods', () => {
         sequence: [],
       };
 
-      const childTask: ConversationSkeleton = {
+      const childTask: StoredConversation = {
         taskId: 'child-task-stats',
         parentTaskId: 'root-task-stats',
         metadata: {
@@ -446,7 +447,7 @@ describe('TraceSummaryService - Main Methods', () => {
     });
 
     it('should handle missing options parameter', async () => {
-      const mockConversation: ConversationSkeleton = {
+      const mockConversation: StoredConversation = {
         taskId: 'test-task-no-options',
         parentTaskId: null,
         metadata: {
@@ -471,7 +472,7 @@ describe('TraceSummaryService - Main Methods', () => {
     it('should handle very large content sizes', async () => {
       const largeContent = 'x'.repeat(10000000); // 10 MB
 
-      const mockConversation: ConversationSkeleton = {
+      const mockConversation: StoredConversation = {
         taskId: 'large-content-task',
         parentTaskId: null,
         metadata: {

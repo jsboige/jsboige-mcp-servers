@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { viewConversationTree } from '../../../src/tools/view-conversation-tree.js';
-import { ConversationSkeleton } from '../../../src/types/conversation.js';
+import { StoredConversation } from '../../../src/services/unified-store/types.js';
 import { ClaudeStorageDetector } from '../../../src/utils/claude-storage-detector.js';
 
 // Mock fs (promises as fs) - use vi.hoisted to create mock references before mock definition
@@ -19,7 +19,7 @@ vi.mock('fs', () => ({
     },
 }));
 
-const createMockSkeleton = (taskId: string, parentTaskId?: string, title?: string, lastActivity?: string, sequenceContent: string = ''): ConversationSkeleton => ({
+const createMockSkeleton = (taskId: string, parentTaskId?: string, title?: string, lastActivity?: string, sequenceContent: string = ''): StoredConversation => ({
     taskId,
     parentTaskId,
     metadata: {
@@ -34,10 +34,10 @@ const createMockSkeleton = (taskId: string, parentTaskId?: string, title?: strin
 });
 
 describe('view_conversation_tree Tool', () => {
-    let mockCache: Map<string, ConversationSkeleton>;
+    let mockCache: Map<string, StoredConversation>;
 
     beforeEach(async () => {
-        mockCache = new Map<string, ConversationSkeleton>();
+        mockCache = new Map<string, StoredConversation>();
         const root = createMockSkeleton('root', undefined, 'Root Task', '2025-01-01T10:00:00Z', 'root content');
         const child1 = createMockSkeleton('child1', 'root', 'Child 1', '2025-01-01T11:00:00Z', 'child1 content');
         const child2 = createMockSkeleton('child2', 'root', 'Child 2', '2025-01-01T12:00:00Z', 'child2 content');
@@ -191,7 +191,7 @@ describe('view_conversation_tree Tool', () => {
     });
 
     it('should throw error when cache is empty and no task_id provided', async () => {
-        const emptyCache = new Map<string, ConversationSkeleton>();
+        const emptyCache = new Map<string, StoredConversation>();
 
         try {
             await viewConversationTree.handler({}, emptyCache);
@@ -260,7 +260,7 @@ describe('view_conversation_tree Tool', () => {
 
         // --- Couche 2.6: pagination → messageRange header ---------------------
         it('[#1244 2.6] messageStart/messageEnd return messageRange header with navigation hints', async () => {
-            const paginatedTask: ConversationSkeleton = {
+            const paginatedTask: StoredConversation = {
                 taskId: 'paged_task',
                 parentTaskId: undefined,
                 metadata: {
@@ -336,7 +336,7 @@ describe('view_conversation_tree Tool', () => {
 
             // Inject a shell skeleton in cache with empty sequence but messageCount > 0
             // so the lazy-load branch fires on first handler call.
-            const claudeShell: ConversationSkeleton = {
+            const claudeShell: StoredConversation = {
                 taskId: 'claude-myproject-abc',
                 parentTaskId: undefined,
                 metadata: {
@@ -366,7 +366,7 @@ describe('view_conversation_tree Tool', () => {
         });
 
         // --- #3721: ghost sessions (file deleted) must be diagnosed as deleted, not corrupted ---
-        const makeClaudeGhostShell = (taskId: string): ConversationSkeleton => ({
+        const makeClaudeGhostShell = (taskId: string): StoredConversation => ({
             taskId,
             parentTaskId: undefined,
             metadata: {

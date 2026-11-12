@@ -2,7 +2,7 @@
  * dual-write helper — unit tests (#692).
  *
  * The helper extracted from SkeletonCacheService.dualWriteToStore() maps a full
- * ConversationSkeleton → ConversationRow and fire-and-forget upserts it. These tests
+ * StoredConversation → ConversationRow and fire-and-forget upserts it. These tests
  * pin the row mapping and the never-throws contract independently of the production
  * call sites (the call-site anti-dead-branch guard lives in background-services.test.ts).
  *
@@ -23,9 +23,9 @@ vi.mock('../../../../src/services/unified-store/writer-factory.js', () => ({
 }));
 
 import { dualWriteConversationToStore } from '../../../../src/services/unified-store/dual-write.js';
-import type { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import type { StoredConversation } from '../../../../src/services/unified-store/types.js';
 
-function makeSkeleton(overrides: Partial<ConversationSkeleton> = {}): ConversationSkeleton {
+function makeSkeleton(overrides: Partial<StoredConversation> = {}): StoredConversation {
   return {
     taskId: 'task-x',
     metadata: {
@@ -38,7 +38,7 @@ function makeSkeleton(overrides: Partial<ConversationSkeleton> = {}): Conversati
     },
     sequence: [{ role: 'user', content: 'hi' }],
     ...overrides,
-  } as ConversationSkeleton;
+  } as StoredConversation;
 }
 
 describe('dualWriteConversationToStore (#692)', () => {
@@ -92,7 +92,7 @@ describe('dualWriteConversationToStore (#692)', () => {
     // already covered above; this asserts the outer try/catch swallows pre-upsert errors too
     // by passing a skeleton that would make mapping throw (undefined metadata handled).
     await expect(
-      dualWriteConversationToStore('t', { taskId: 't' } as ConversationSkeleton)
+      dualWriteConversationToStore('t', { taskId: 't' } as StoredConversation)
     ).resolves.toEqual({ ok: true });
     // Writer still called with best-effort defaults
     expect(upsertConversationOnly).toHaveBeenCalled();

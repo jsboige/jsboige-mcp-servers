@@ -22,7 +22,7 @@ import { classifyStormGuard, resolveStormGuardThresholds } from './storm-guard-c
 import { handleDiagnoseSemanticIndex } from '../../src/tools/indexing/diagnose-index.tool.js';
 import { getQdrantClient } from '../../src/services/qdrant.js';
 import getOpenAIClient, { getEmbeddingModel } from '../../src/services/openai.js';
-import type { ConversationSkeleton } from '../../src/types/conversation.js';
+import type { StoredConversation } from '../../src/services/unified-store/types.js';
 
 /** Module-level storm state — set by runStormGuard, read by tool tests. */
 export let STORM_ACTIVE = false;
@@ -50,7 +50,7 @@ export async function runStormGuard(): Promise<StormGuardResult> {
 
   // ---- Probe 1: Diagnose index health ----
   try {
-    const diagnoseResult = await handleDiagnoseSemanticIndex(new Map<string, ConversationSkeleton>());
+    const diagnoseResult = await handleDiagnoseSemanticIndex(new Map<string, StoredConversation>());
     const rawItem = diagnoseResult.content?.[0];
     const text: string = (rawItem && 'text' in rawItem) ? (rawItem as { text: string }).text : '';
     let parsed: any = {};

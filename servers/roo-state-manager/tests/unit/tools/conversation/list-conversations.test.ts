@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { listConversationsTool } from '../../../../src/tools/conversation/list-conversations.tool';
-import { ConversationSkeleton } from '../../../../src/types/conversation';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 import { normalizePath } from '../../../../src/utils/path-normalizer';
 import { RooStorageDetector } from '../../../../src/utils/roo-storage-detector';
 import { promises as fs } from 'fs';
@@ -26,7 +26,7 @@ vi.mock('os', () => ({
 }));
 
 describe('list_conversations tool', () => {
-    let mockCache: Map<string, ConversationSkeleton>;
+    let mockCache: Map<string, StoredConversation>;
 
     beforeEach(() => {
         vi.clearAllMocks();
@@ -36,7 +36,7 @@ describe('list_conversations tool', () => {
         vi.spyOn(RooStorageDetector, 'detectStorageLocations').mockResolvedValue(['/mock/storage']);
 
         // Setup mock data
-        const task1: ConversationSkeleton = {
+        const task1: StoredConversation = {
             taskId: 'task-1',
             sequence: [],
             metadata: {
@@ -49,7 +49,7 @@ describe('list_conversations tool', () => {
             }
         };
 
-        const task2: ConversationSkeleton = {
+        const task2: StoredConversation = {
             taskId: 'task-2',
             sequence: [],
             metadata: {

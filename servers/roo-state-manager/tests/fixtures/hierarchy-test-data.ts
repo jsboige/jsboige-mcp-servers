@@ -3,13 +3,14 @@
  * Contient des données réalistes pour valider le bon fonctionnement
  */
 
-import type { ConversationSkeleton, NewTaskInstruction } from '../../src/types/conversation.js';
+import type { NewTaskInstruction } from '../../src/types/conversation.js';
+import type { StoredConversation } from '../../src/services/unified-store/types.js';
 import type { EnhancedConversationSkeleton } from '../../src/types/enhanced-hierarchy.js';
 
 /**
  * Données de test pour les skeletons de conversations
  */
-export const mockSkeletons: ConversationSkeleton[] = [
+export const mockSkeletons: StoredConversation[] = [
     // Tâche racine
     {
         taskId: 'root-task-001',
@@ -398,7 +399,7 @@ export const mockUiMessages = {
 /**
  * Cas de test pour validation de cycles
  */
-export const mockCyclicSkeletons: ConversationSkeleton[] = [
+export const mockCyclicSkeletons: StoredConversation[] = [
     {
         taskId: 'cycle-a',
         parentTaskId: 'cycle-c', // Crée un cycle : A -> C -> B -> A
@@ -486,8 +487,8 @@ export const complexXmlPatterns = [
 /**
  * Données pour tests de performance (1000+ entrées)
  */
-export function generateLargeDataset(count: number = 1000): ConversationSkeleton[] {
-    const skeletons: ConversationSkeleton[] = [];
+export function generateLargeDataset(count: number = 1000): StoredConversation[] {
+    const skeletons: StoredConversation[] = [];
     const baseTime = new Date('2025-01-15T10:00:00Z').getTime();
     
     // Créer une hiérarchie profonde
@@ -520,9 +521,9 @@ export function generateLargeDataset(count: number = 1000): ConversationSkeleton
 }
 
 /**
- * Helper pour créer un EnhancedConversationSkeleton à partir d'un ConversationSkeleton
+ * Helper pour créer un EnhancedConversationSkeleton à partir d'un StoredConversation
  */
-export function enhanceSkeleton(skeleton: ConversationSkeleton): EnhancedConversationSkeleton {
+export function enhanceSkeleton(skeleton: StoredConversation): EnhancedConversationSkeleton {
     return {
         ...skeleton,
         processingState: {
@@ -546,7 +547,7 @@ export const corruptedData = {
         // metadata manquant volontairement
         sequence: [],
         isCompleted: false
-    } as any as ConversationSkeleton,
+    } as any as StoredConversation,
     
     // Skeleton avec taskId invalide
     invalidTaskId: {

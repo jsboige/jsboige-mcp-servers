@@ -10,7 +10,7 @@ import * as path from 'path';
 vi.unmock('fs');
 import { fileURLToPath } from 'url';
 import { HierarchyReconstructionEngine } from '../../src/utils/hierarchy-reconstruction-engine.js';
-import type { ConversationSkeleton } from '../../src/types/conversation.js';
+import type { StoredConversation } from '../../src/services/unified-store/types.js';
 import type { EnhancedConversationSkeleton } from '../../src/types/enhanced-hierarchy.js';
 
 // Support ES modules
@@ -34,7 +34,7 @@ const CONTROLLED_DATA_PATH = path.join(__dirname, '..', 'fixtures', 'controlled-
 
 describe('Hierarchy Reconstruction - Real Data Tests', () => {
     let engine: HierarchyReconstructionEngine;
-    let realControlledSkeletons: ConversationSkeleton[];
+    let realControlledSkeletons: StoredConversation[];
 
     beforeEach(async () => {
         // Réinitialiser l'engine avec mode strict
@@ -152,8 +152,8 @@ describe('Hierarchy Reconstruction - Real Data Tests', () => {
 
 // Fonctions utilitaires
 
-async function loadRealControlledData(): Promise<ConversationSkeleton[]> {
-    const skeletons: ConversationSkeleton[] = [];
+async function loadRealControlledData(): Promise<StoredConversation[]> {
+    const skeletons: StoredConversation[] = [];
 
     // Exclure la tâche de collecte
     const taskIds = Object.values(TEST_HIERARCHY_IDS).filter(id => id !== TEST_HIERARCHY_IDS.COLLECTE);
@@ -223,7 +223,7 @@ async function loadRealControlledData(): Promise<ConversationSkeleton[]> {
     return skeletons;
 }
 
-function enhanceSkeleton(skeleton: ConversationSkeleton): EnhancedConversationSkeleton {
+function enhanceSkeleton(skeleton: StoredConversation): EnhancedConversationSkeleton {
     return {
         ...skeleton,
         processingState: {

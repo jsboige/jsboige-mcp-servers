@@ -33,7 +33,7 @@ import * as path from 'path';
 import { fileURLToPath } from 'url';
 import { HierarchyReconstructionEngine } from '../../../src/utils/hierarchy-reconstruction-engine.js';
 import { TaskInstructionIndex, computeInstructionPrefix, globalTaskInstructionIndex } from '../../../src/utils/task-instruction-index.js';
-import type { ConversationSkeleton } from '../../../src/types/conversation.js';
+import type { StoredConversation } from '../../../src/services/unified-store/types.js';
 import type { EnhancedConversationSkeleton } from '../../../src/types/enhanced-hierarchy.js';
 
 // Support ES modules
@@ -66,7 +66,7 @@ const CONTROLLED_DATA_PATH = path.join(__dirname, '..', '..', 'fixtures', 'contr
 
 describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
     let engine: HierarchyReconstructionEngine;
-    let realControlledSkeletons: ConversationSkeleton[];
+    let realControlledSkeletons: StoredConversation[];
 
     beforeEach(async () => {
         // Debug logging disabled (#832) — was emitting 613 lines of ENGINE-PHASE noise
@@ -379,8 +379,8 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
             const patchedSkeletons = testSkeletons.map(s => enhanceSkeleton(s));
 
             const engine = new HierarchyReconstructionEngine({ debugMode: false, strictMode: true });
-            // Cast nécessaire car doReconstruction attend ConversationSkeleton[] mais on passe EnhancedConversationSkeleton[]
-            // C'est compatible car Enhanced étend ConversationSkeleton
+            // Cast nécessaire car doReconstruction attend StoredConversation[] mais on passe EnhancedConversationSkeleton[]
+            // C'est compatible car Enhanced étend StoredConversation
             const enhancedSkeletons = await engine.doReconstruction(patchedSkeletons as any);
 
             // 2. Calculer les profondeurs attendues
@@ -437,8 +437,8 @@ describe('Controlled Hierarchy Reconstruction - TEST-HIERARCHY Dataset', () => {
 
 // Fonctions utilitaires
 
-async function loadControlledTestData(): Promise<ConversationSkeleton[]> {
-    const skeletons: ConversationSkeleton[] = [];
+async function loadControlledTestData(): Promise<StoredConversation[]> {
+    const skeletons: StoredConversation[] = [];
 
     // Exclure la tâche de collecte (e73ea764) car elle n'est pas partie de la hiérarchie de test
     const taskIds = Object.values(TEST_HIERARCHY_IDS).filter(id => id !== TEST_HIERARCHY_IDS.COLLECTE);
@@ -482,7 +482,7 @@ async function loadControlledTestData(): Promise<ConversationSkeleton[]> {
 
 // Pas de mocks nécessaires - les vrais fichiers sont lus directement
 
-function enhanceSkeleton(skeleton: ConversationSkeleton): EnhancedConversationSkeleton {
+function enhanceSkeleton(skeleton: StoredConversation): EnhancedConversationSkeleton {
     // 🔧 CRITICAL FIX: Ajouter les métadonnées manquantes pour la reconstruction
     const taskId = skeleton.taskId;
     let childTaskInstructionPrefixes: string[] = [];

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ContentClassifier } from '../../../../src/services/trace-summary/ContentClassifier.js';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 
 describe('ContentClassifier', () => {
     let classifier: ContentClassifier;
@@ -11,7 +11,7 @@ describe('ContentClassifier', () => {
 
     describe('classifyConversationContent', () => {
         it('should classify user messages correctly', () => {
-            const conversation: ConversationSkeleton = {
+            const conversation: StoredConversation = {
                 taskId: 'test-task',
                 metadata: {} as any,
                 sequence: [
@@ -30,7 +30,7 @@ describe('ContentClassifier', () => {
         });
 
         it('should classify assistant messages correctly', () => {
-            const conversation: ConversationSkeleton = {
+            const conversation: StoredConversation = {
                 taskId: 'test-task',
                 metadata: {} as any,
                 sequence: [

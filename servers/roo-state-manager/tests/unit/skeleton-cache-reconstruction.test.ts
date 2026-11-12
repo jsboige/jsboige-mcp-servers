@@ -16,7 +16,7 @@ vi.unmock('fs/promises');
 import * as fs from 'fs/promises';
 
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
-import type { ConversationSkeleton } from '../../src/types/conversation.js';
+import type { StoredConversation } from '../../src/services/unified-store/types.js';
 import { globalTaskInstructionIndex } from '../../src/utils/task-instruction-index.js';
 
 describe('Skeleton Cache Reconstruction - buildHierarchicalSkeletons', () => {

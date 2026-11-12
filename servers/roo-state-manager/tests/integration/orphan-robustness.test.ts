@@ -27,7 +27,7 @@ vi.mock('path', async () => {
 });
 
 import { HierarchyReconstructionEngine } from '../../src/utils/hierarchy-reconstruction-engine.js';
-import type { ConversationSkeleton } from '../../src/types/conversation.js';
+import type { StoredConversation } from '../../src/services/unified-store/types.js';
 import type { EnhancedConversationSkeleton } from '../../src/types/enhanced-hierarchy.js';
 
 // Accéder aux mocks après import
@@ -79,8 +79,8 @@ describe('Orphan Robustness Tests - Mission WEB', () => {
          */
         it.skip('should handle 20 orphan tasks with 70% resolution rate', async () => {
             // Créer 20 orphelines + 2 parents potentiels
-            const orphans: ConversationSkeleton[] = [];
-            const parents: ConversationSkeleton[] = [];
+            const orphans: StoredConversation[] = [];
+            const parents: StoredConversation[] = [];
 
             // Créer 2 parents avec des instructions variées
             for (let i = 0; i < 2; i++) {
@@ -231,7 +231,7 @@ describe('Orphan Robustness Tests - Mission WEB', () => {
         it('should handle orphan clusters with different workspaces', async () => {
             // Créer des orphelines dans différents workspaces pour tester l'isolation
             const workspaces = ['./project-a', './project-b', './project-c'];
-            const allSkeletons: ConversationSkeleton[] = [];
+            const allSkeletons: StoredConversation[] = [];
 
             workspaces.forEach((workspace, wsIndex) => {
                 // Parents pour chaque workspace
@@ -360,7 +360,7 @@ describe('Orphan Robustness Tests - Mission WEB', () => {
 
     describe('Performance avec Orphelins', () => {
         it('should process 500 orphans in under 10 seconds', async () => {
-            const orphans: ConversationSkeleton[] = [];
+            const orphans: StoredConversation[] = [];
 
             // Créer 500 orphelines
             for (let i = 0; i < 500; i++) {
@@ -402,7 +402,7 @@ describe('Orphan Robustness Tests - Mission WEB', () => {
         });
 
         it('should handle memory efficiently with large orphan datasets', async () => {
-            const largeOrphans: ConversationSkeleton[] = [];
+            const largeOrphans: StoredConversation[] = [];
 
             // Créer 1000 orphelines pour tester l'utilisation mémoire
             for (let i = 0; i < 1000; i++) {
@@ -502,7 +502,7 @@ describe('Orphan Robustness Tests - Mission WEB', () => {
                     },
                     sequence: [],
                     isCompleted: false
-                } as ConversationSkeleton,
+                } as StoredConversation,
                 // Orpheline avec caractères spéciaux
                 {
                     taskId: 'special-orphan',
@@ -545,7 +545,7 @@ describe('Orphan Robustness Tests - Mission WEB', () => {
         });
 
         it('should maintain deterministic results with orphans', async () => {
-            const orphans: ConversationSkeleton[] = [];
+            const orphans: StoredConversation[] = [];
 
             // Créer 50 orphelines reproductibles
             for (let i = 0; i < 50; i++) {

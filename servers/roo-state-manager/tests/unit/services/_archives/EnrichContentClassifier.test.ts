@@ -7,7 +7,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import { EnrichContentClassifier } from '../../../src/services/EnrichContentClassifier.js';
-import { ConversationSkeleton } from '../../../src/types/conversation.js';
+import { StoredConversation } from '../../../src/services/unified-store/types.js';
 import { ClassifiedContent } from '../../../src/types/enhanced-conversation.js';
 
 describe('EnrichContentClassifier', () => {
@@ -19,7 +19,7 @@ describe('EnrichContentClassifier', () => {
 
 	// ─── Helper ────────────────────────────────────────────────────────
 
-	function makeConversation(...messages: { role: 'user' | 'assistant'; content: string }[]): ConversationSkeleton {
+	function makeConversation(...messages: { role: 'user' | 'assistant'; content: string }[]): StoredConversation {
 		return {
 			taskId: 'test-task',
 			metadata: {} as any,
@@ -657,7 +657,7 @@ describe('EnrichContentClassifier', () => {
 		});
 
 		it('filters out non-message items (ActionMetadata)', async () => {
-			const conversation: ConversationSkeleton = {
+			const conversation: StoredConversation = {
 				taskId: 'test-task',
 				metadata: {} as any,
 				sequence: [
@@ -683,7 +683,7 @@ describe('EnrichContentClassifier', () => {
 		});
 
 		it('handles null sequence gracefully', async () => {
-			const conversation: ConversationSkeleton = {
+			const conversation: StoredConversation = {
 				taskId: 'test-task',
 				metadata: {} as any,
 				sequence: null as any,
@@ -695,7 +695,7 @@ describe('EnrichContentClassifier', () => {
 		});
 
 		it('handles undefined sequence gracefully', async () => {
-			const conversation: ConversationSkeleton = {
+			const conversation: StoredConversation = {
 				taskId: 'test-task',
 				metadata: {} as any,
 				sequence: undefined as any,

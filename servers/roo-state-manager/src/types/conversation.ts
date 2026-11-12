@@ -75,9 +75,6 @@ export interface SkeletonHeader {
    truncatedInstruction?: string;
 }
 
-/** @deprecated #1395 — use StoredConversation (unified-store/types). Kept as an alias until tests/ migrate. */
-export type ConversationSkeleton = import('../services/unified-store/types.js').StoredConversation;
-
 // Représente les métadonnées complètes d'une tâche.
 export interface TaskMetadata {
     parentTaskId?: string; // camelCase est la nouvelle norme

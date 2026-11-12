@@ -164,7 +164,8 @@ import { TaskInstructionIndex, computeInstructionPrefix } from '../../src/utils/
 import { HierarchyReconstructionEngine } from '../../src/utils/hierarchy-reconstruction-engine.js';
 import { RooStorageDetector } from '../../src/utils/roo-storage-detector.js';
 import { TaskNavigator } from '../../src/services/task-navigator.js';
-import { ConversationSkeleton, NewTaskInstruction } from '../../src/types/conversation.js';
+import { NewTaskInstruction } from '../../src/types/conversation.js';
+import { StoredConversation } from '../../src/services/unified-store/types.js';
 import { EnhancedConversationSkeleton } from '../../src/types/enhanced-hierarchy.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -352,7 +353,7 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
                     actionCount: 5,
                     dataSource: './test/parent-001'
                 }
-            } as Partial<ConversationSkeleton>;
+            } as Partial<StoredConversation>;
 
             const childSkeleton = {
                 taskId: 'child-001',
@@ -370,9 +371,9 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
                     actionCount: 2,
                     dataSource: './test/child-001'
                 }
-            } as Partial<ConversationSkeleton>;
+            } as Partial<StoredConversation>;
 
-            const skeletons = [parentSkeleton, childSkeleton] as ConversationSkeleton[];
+            const skeletons = [parentSkeleton, childSkeleton] as StoredConversation[];
 
             // Phase 1 : Extraction (simulée via childTaskInstructionPrefixes)
             const enhancedSkeletons = skeletons.map(s => ({
@@ -438,9 +439,9 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
                     actionCount: 0,
                     dataSource: './test/self-001'
                 }
-            } as Partial<ConversationSkeleton>;
+            } as Partial<StoredConversation>;
 
-            const skeletons = [selfRefSkeleton] as ConversationSkeleton[];
+            const skeletons = [selfRefSkeleton] as StoredConversation[];
             const enhanced = skeletons.map(s => ({
                 ...s,
                 processingState: { phase1Completed: false, phase2Completed: false, processingErrors: [], lastProcessedAt: new Date().toISOString() },
@@ -474,7 +475,7 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
                     actionCount: 0
                 },
                 sequence: []
-            } as ConversationSkeleton));
+            } as StoredConversation));
 
             const expectedSavedCount = modifiedSkeletons.length;
             // Vérifie que TOUS les squelettes modifiés sont sauvegardés (pas de limite MAX_SAVES)
@@ -485,9 +486,9 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
     describe('6. TaskNavigator - Dépend du Cache Mémoire', () => {
 
         it('devrait naviguer dans la hiérarchie parent-enfant', () => {
-            const cache = new Map<string, ConversationSkeleton>();
+            const cache = new Map<string, StoredConversation>();
 
-            const parent: ConversationSkeleton = {
+            const parent: StoredConversation = {
                 taskId: 'parent-001',
                 parentTaskId: undefined,
                 sequence: [],
@@ -502,7 +503,7 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
                 }
             };
 
-            const child: ConversationSkeleton = {
+            const child: StoredConversation = {
                 taskId: 'child-001',
                 parentTaskId: 'parent-001',
                 sequence: [],
@@ -570,7 +571,7 @@ describe('Pipeline Complet de Reconstruction Hiérarchique', () => {
             // Charger les tâches depuis les fixtures
             const taskDirs = await fs.promises.readdir(FIXTURES_DIR, { withFileTypes: true });
             console.log('DEBUG: taskDirs type:', typeof taskDirs, 'isArray:', Array.isArray(taskDirs));
-            const skeletons: ConversationSkeleton[] = [];
+            const skeletons: StoredConversation[] = [];
 
             // Ensure taskDirs is iterable
             const entries = Array.isArray(taskDirs) ? taskDirs : [];
@@ -664,7 +665,7 @@ Valider le fonctionnement correct du système après correction, documenter les 
 
         it('devrait gérer les parents sans bloc attempt_completion', () => {
             // Cas réel : parent encore en cours (dernier enfant)
-            const parentSkeleton: ConversationSkeleton = {
+            const parentSkeleton: StoredConversation = {
                 taskId: 'parent-ongoing',
                 parentTaskId: undefined,
                 sequence: [
@@ -719,8 +720,8 @@ describe('Tests d\'Intégration avec Vraies Données', () => {
                 return;
             }
 
-            let rootSkeleton: ConversationSkeleton | null = null;
-            let childSkeleton: ConversationSkeleton | null = null;
+            let rootSkeleton: StoredConversation | null = null;
+            let childSkeleton: StoredConversation | null = null;
 
             for (const location of storageLocations) {
                 const tasksDir = path.join(location, 'tasks');

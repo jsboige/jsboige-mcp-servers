@@ -18,7 +18,7 @@ function deprecationWarnCalls(): string[] {
         .filter((msg: string) => msg.includes('#1395'));
 }
 
-describe('#1395 Phase 5 J+0 — warn-once dépréciation ConversationSkeleton', () => {
+describe('#1395 Phase 5 J+0 — warn-once dépréciation StoredConversation', () => {
     beforeEach(() => {
         (console.warn as Mock).mockClear();
     });

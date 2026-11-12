@@ -3,7 +3,8 @@ import { TaskNavigator } from '../../../src/services/task-navigator.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
-import { TaskMetadata, ConversationSummary, ConversationSkeleton } from '../../../src/types/conversation.js';
+import { TaskMetadata, ConversationSummary } from '../../../src/types/conversation.js';
+import { StoredConversation } from '../../../src/services/unified-store/types.js';
 import { globalCacheManager } from '../../../src/utils/cache-manager.js';
 import { fileURLToPath } from 'url';
 
@@ -16,11 +17,11 @@ const TEST_STORAGE_PATH = path.join(__dirname, 'test-storage-nav');
 RooStorageDetector.customStoragePath = TEST_STORAGE_PATH;
 
 // Crée une tâche simulée et la met en cache, imitant le comportement du vrai système
-const createMockTask = async (taskId: string, parentId: string | null = null, title: string = ''): Promise<ConversationSkeleton> => {
+const createMockTask = async (taskId: string, parentId: string | null = null, title: string = ''): Promise<StoredConversation> => {
     const taskDir = path.join(TEST_STORAGE_PATH, 'tasks', taskId);
     await fs.mkdir(taskDir, { recursive: true });
 
-    const skeleton: ConversationSkeleton = {
+    const skeleton: StoredConversation = {
       taskId,
       parentTaskId: parentId || undefined,
       metadata: {
@@ -55,7 +56,7 @@ describe('Navigation Arborescente des Tâches E2E', () => {
         await fs.mkdir(path.join(TEST_STORAGE_PATH, 'tasks'), { recursive: true });
         // Le TaskNavigator doit être instancié avec le cache qui sera utilisé dans les tests.
         // Ici, nous simulons le comportement en pré-remplissant une Map.
-        const cache = new Map<string, ConversationSkeleton>();
+        const cache = new Map<string, StoredConversation>();
         await setupHierarchy(cache); // Remplir le cache
         taskNavigator = new TaskNavigator(cache);
     });
@@ -74,7 +75,7 @@ describe('Navigation Arborescente des Tâches E2E', () => {
     // ├── child-1
     // │   └── grandchild-1
     // └── child-2
-    const setupHierarchy = async (cache: Map<string, ConversationSkeleton>) => {
+    const setupHierarchy = async (cache: Map<string, StoredConversation>) => {
         const root = await createMockTask('root', null, 'Tâche Racine');
         const child1 = await createMockTask('child-1', 'root', 'Enfant 1');
         const child2 = await createMockTask('child-2', 'root', 'Enfant 2');

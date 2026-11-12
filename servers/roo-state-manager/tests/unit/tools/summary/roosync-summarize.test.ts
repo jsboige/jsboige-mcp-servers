@@ -13,11 +13,11 @@
 
 import { describe, it, expect } from 'vitest';
 import { handleRooSyncSummarize } from '../../../../src/tools/summary/roosync-summarize.tool.js';
-import { ConversationSkeleton } from '../../../../src/types/conversation.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
 import { StateManagerError } from '../../../../src/types/errors.js';
 
 // Helper function minimale pour les tests de validation
-async function getConversationSkeletonMock(taskId: string): Promise<ConversationSkeleton | null> {
+async function getConversationSkeletonMock(taskId: string): Promise<StoredConversation | null> {
     if (taskId === 'non-existent-task') {
         return null;
     }
@@ -32,7 +32,7 @@ async function getConversationSkeletonMock(taskId: string): Promise<Conversation
             totalSize: 0
         },
         sequence: []
-    } as ConversationSkeleton;
+    } as StoredConversation;
 }
 
 describe('roosync_summarize - CONS-12', () => {

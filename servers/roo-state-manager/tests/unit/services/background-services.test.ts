@@ -2,7 +2,7 @@
  * Unit tests for background-services.ts
  *
  * Covers:
- * - toHeader: pure function extracting SkeletonHeader from ConversationSkeleton
+ * - toHeader: pure function extracting SkeletonHeader from StoredConversation
  * - loadSkeletonsFromDisk: loads skeleton index from _skeleton_index.json
  *   (exercises the private loadSkeletonsFromIndex internally)
  * - saveSkeletonIndex: writes index from cache to disk
@@ -94,7 +94,8 @@ import {
   MAX_FAILED_REARM_PER_TICK,
 } from '../../../src/services/background-services.js';
 import { RooStorageDetector } from '../../../src/utils/roo-storage-detector.js';
-import type { ConversationSkeleton, SkeletonHeader, SkeletonMetadata } from '../../../src/types/conversation.js';
+import type { SkeletonHeader, SkeletonMetadata } from '../../../src/types/conversation.js';
+import type { StoredConversation } from '../../../src/services/unified-store/types.js';
 // #2766 S2+: ServerState is a structural type used by registerDeadLetter() —
 // we import the type for type-checking the test stub's shape below.
 import type { ServerState } from '../../../src/services/state-manager.service.js';
@@ -132,7 +133,7 @@ function makeMetadata(overrides?: Partial<SkeletonMetadata>): SkeletonMetadata {
   };
 }
 
-function makeSkeleton(taskId: string, overrides?: Partial<ConversationSkeleton>): ConversationSkeleton {
+function makeSkeleton(taskId: string, overrides?: Partial<StoredConversation>): StoredConversation {
   return {
     taskId,
     parentTaskId: undefined,
@@ -208,7 +209,7 @@ describe('toHeader', () => {
   });
 
   it('should handle missing optional fields', () => {
-    const skeleton: ConversationSkeleton = {
+    const skeleton: StoredConversation = {
       taskId: 'task-minimal',
       metadata: makeMetadata(),
       isCompleted: false,
