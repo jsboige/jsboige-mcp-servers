@@ -6,9 +6,9 @@
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { EnrichContentClassifier } from '../../../src/services/EnrichContentClassifier.js';
-import { StoredConversation } from '../../../src/services/unified-store/types.js';
-import { ClassifiedContent } from '../../../src/types/enhanced-conversation.js';
+import { EnrichContentClassifier } from '../../../../src/services/_archives/EnrichContentClassifier.js';
+import { StoredConversation } from '../../../../src/services/unified-store/types.js';
+import { ClassifiedContent } from '../../../../src/types/enhanced-conversation.js';
 
 describe('EnrichContentClassifier', () => {
 	let classifier: EnrichContentClassifier;
