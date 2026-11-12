@@ -98,8 +98,20 @@ describe('dashboard copy-in-place #3782', () => {
   it('static drift-guard: the write path never renames the tmp over the canonical', async () => {
     const src = await readFile(sourcePath, 'utf8');
 
+    // #4643 — writeArchiveAtomically is a sanctioned tmp→final rename, for
+    // ARCHIVES (write-once artifacts; temp+rename is the requested anti-husk
+    // mechanic, dispatch ai-01 12/11). Strip its block so the guard below
+    // stays about the CANONICAL dashboard write path. The strip MUST remove
+    // something — a helper renamed or reshaped fails loudly instead of
+    // silently scanning nothing.
+    const canonicalSrc = src.replace(
+      /export async function writeArchiveAtomically\([\s\S]*?\r?\n\}\r?\n/,
+      ''
+    );
+    expect(canonicalSrc.length).toBeLessThan(src.length);
+
     // The exact regression: fs.rename(tmpPath, filePath) on either write site.
-    expect(src).not.toContain('fs.rename(tmpPath');
+    expect(canonicalSrc).not.toContain('fs.rename(tmpPath');
 
     // The replacement mechanic and the staging naming must both be present on
     // the two write sites (writeDashboardFile + appendDashboardIncremental).
@@ -117,9 +129,10 @@ describe('dashboard copy-in-place #3782', () => {
     expect(src).toContain("path.join(os.tmpdir(), 'rsm-dashboard-staging')");
     expect(src).toContain('`${path.basename(filePath)}.${process.pid}.${++dashboardStagingSeq}.tmp`');
 
-    // The only rename left in the store layer is the archive move (new path,
-    // not rename-over-existing) — assert it stays the sole one.
+    // Two sanctioned renames in the store layer, both ARCHIVE-side (new path
+    // or write-once artifact — never rename-over-existing on the canonical):
+    // the archive move and writeArchiveAtomically's temp→final (#4643).
     const renames = src.match(/fs\.rename\(/g) ?? [];
-    expect(renames.length).toBe(1);
+    expect(renames.length).toBe(2);
   });
 });

@@ -81,10 +81,19 @@ describe('dashboard #4003 — tmp staging hygiene', () => {
 
   it('static drift-guard: both staging write sites unlink the tmp in a finally', async () => {
     const src = await readFile(sourcePath, 'utf8');
+    // #4643 — writeArchiveAtomically unlinks its own tmp too (on rename
+    // failure, in a catch): strip its block so the counts below stay about
+    // the TWO canonical staging write sites. Fail loudly if the strip
+    // removed nothing (helper renamed or reshaped).
+    const canonicalSrc = src.replace(
+      /export async function writeArchiveAtomically\([\s\S]*?\r?\n\}\r?\n/,
+      ''
+    );
+    expect(canonicalSrc.length).toBeLessThan(src.length);
     // Each copyFile is immediately followed by the finally that owns the unlink.
-    const guarded = src.match(/fs\.copyFile\(tmpPath, filePath\);\r?\n\s*\} finally \{/g) ?? [];
+    const guarded = canonicalSrc.match(/fs\.copyFile\(tmpPath, filePath\);\r?\n\s*\} finally \{/g) ?? [];
     expect(guarded.length).toBe(2);
-    const finallyUnlinks = src.match(/await fs\.unlink\(tmpPath\)\.catch/g) ?? [];
+    const finallyUnlinks = canonicalSrc.match(/await fs\.unlink\(tmpPath\)\.catch/g) ?? [];
     expect(finallyUnlinks.length).toBe(2);
   });
 
