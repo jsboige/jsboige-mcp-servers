@@ -1518,6 +1518,31 @@ function getArchiveDir(): string {
 }
 
 /**
+ * #4643 — écriture d'archive ATOMIQUE : temp puis rename. Un `writeFile`
+ * direct interrompu (crash hôte, DriveFS gelé en profondeur) laisse une
+ * COQUE de 0 octet que read_archive rejette en « Format archive invalide:
+ * frontmatter manquant » (5 coques relevées le 12/11 sur G:, sans
+ * contrepartie PG — condensations avortées). Le temporaire `.md.tmp` ne
+ * matche ni le filtre `endsWith('.md')` du listing read_archive ni
+ * ARCHIVE_FILE_RE du reconcile : jamais listé, jamais servi. En cas
+ * d'échec du rename, le temporaire est retiré — le fichier final
+ * n'apparaît qu'entier ou pas du tout.
+ */
+export async function writeArchiveAtomically(
+  archivePath: string,
+  content: string
+): Promise<void> {
+  const tmpPath = `${archivePath}.tmp`;
+  await fs.writeFile(tmpPath, content, 'utf8');
+  try {
+    await fs.rename(tmpPath, archivePath);
+  } catch (error) {
+    await fs.unlink(tmpPath).catch(() => undefined);
+    throw error;
+  }
+}
+
+/**
  * Blocs markdown d'une archive de condensation — extrait pour être testable.
  *
  * #3151 Phase C residual (incident po-2025 07/10, message « adjoint » sur
@@ -6840,7 +6865,8 @@ ${fallbackBudgetArchive ? `\n${fallbackBudgetArchive}\n\n---\n` : '\n'}
 ${archiveMessages}
 `;
 
-  await fs.writeFile(archivePath, archiveContent, 'utf8');
+  // #4643 : atomique (temp+rename) — jamais de coque de 0 octet.
+  await writeArchiveAtomically(archivePath, archiveContent);
   logger.info('Fallback truncation archive written', { key, count: toArchive.length, archivePath });
 
   // #2825 (volet A / G5+G6): write a synthetic "task" mirroring the archive content
@@ -7720,7 +7746,8 @@ ${statusBudgetArchiveSection ? `\n${statusBudgetArchiveSection}\n\n---\n` : ''}
 ${archiveMessages}
 `;
 
-  await fs.writeFile(archivePath, archiveContent, 'utf8');
+  // #4643 : atomique (temp+rename) — jamais de coque de 0 octet.
+  await writeArchiveAtomically(archivePath, archiveContent);
   logger.info('Messages archivés', { key, count: toArchive.length, archivePath });
 
   // Créer les messages système de condensation
@@ -10792,7 +10819,8 @@ async function cleanupStaleWorktreeDashboards(): Promise<number> {
           const originalPath = path.join(dir, file);
           const content = await fs.readFile(originalPath, 'utf8');
           // #3584 (rétention) — copie hors writeDashboardFile : masquer (cf. pre-delete).
-          await fs.writeFile(archivePath, maskSecretText(content), 'utf8');
+          // #4643 : atomique (temp+rename) — jamais de coque de 0 octet.
+          await writeArchiveAtomically(archivePath, maskSecretText(content));
           await fs.unlink(originalPath);
           archived++;
           logger.info('Archived stale worktree dashboard', {
@@ -11427,12 +11455,12 @@ async function handleMerge(
         // round-trip identique sous yaml.load de read_archive) : la garde ne
         // refuse que `\/:`, `..` — une clé porteuse d'un contrôle (retour
         // ligne…) s'interpolerait en LIGNES arbitraires du frontmatter.
-        await fs.writeFile(
+        // #4643 : atomique (temp+rename) — jamais de coque de 0 octet.
+        await writeArchiveAtomically(
           archivePath,
           maskSecretText(`---\ntype: ${source.type}\nlastModified: ${source.lastModified}\nsourceKey: ${JSON.stringify(sourceKey)}\nmergedInto: ${key}\n---\n\n## Status\n\n${source.status.markdown || '*Aucun contenu.*'}\n\n## Intercom (${source.intercom.messages.length} messages)\n\n${source.intercom.messages
             .map(m => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n[msg: ${m.id}]\n\n${m.content}`)
-            .join('\n\n---\n\n')}\n`),
-          'utf8'
+            .join('\n\n---\n\n')}\n`)
         );
       } else {
         archiveFile = null; // rien à préserver : ni fichier, ni contenu PG
@@ -11658,7 +11686,8 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
         // #3584 (rétention) — cette copie ne traverse PAS writeDashboardFile :
         // masquer ici, sinon un secret publié avant le garde #1144 repart en
         // copie intégrale au moment même où l'original est détruit.
-        await fs.writeFile(archivePath, maskSecretText(originalContent), 'utf8');
+        // #4643 : atomique (temp+rename) — jamais de coque de 0 octet.
+        await writeArchiveAtomically(archivePath, maskSecretText(originalContent));
         logger.info('Dashboard archived before deletion', { key, archivePath, messageCount: dashboard.intercom.messages.length });
       }
     }
@@ -11714,7 +11743,8 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
     const archivePath = path.join(archiveDir, preDeleteUnreadableArchiveName(key, now));
     // Même raison qu'au #3584 ci-dessus : la copie ne traverse pas
     // writeDashboardFile, donc le masquage se fait ici.
-    await fs.writeFile(archivePath, maskSecretText(salvaged), 'utf8');
+    // #4643 : atomique (temp+rename) — jamais de coque de 0 octet.
+    await writeArchiveAtomically(archivePath, maskSecretText(salvaged));
     logger.warn('Dashboard illisible archivé brut avant suppression', { key, archivePath, bytes: salvaged.length });
   }
 

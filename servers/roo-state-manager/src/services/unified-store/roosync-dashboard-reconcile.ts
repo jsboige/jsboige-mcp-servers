@@ -478,6 +478,11 @@ export interface ParsedArchiveMessage {
   machineId: string;
   workspace: string;
   content: string;
+  /** #4643 — `[tags: …]` meta line carried into the field (canonical
+   * `tags` form) instead of leaking into `content`. Empty for archives
+   * written before the writer fix (ms#1737) — the message then had no
+   * serialized tags to lose. */
+  tags: string[];
 }
 
 /**
@@ -522,12 +527,29 @@ export function parseArchiveIdBearingMessages(content: string): {
       idless++;
       continue;
     }
+    // #4643 — meta-line traversal mirrors the canonical reader
+    // (handleReadArchive): [msg:]→[reply-to:]→[ack:]→[tags:]. The `[tags:]`
+    // line is carried into the field (canonical `tags` form for the healed
+    // PG row) instead of leaking into `content`; reply-to/ack are skipped,
+    // not content.
+    let remaining = msg[2];
+    const replyMatch = remaining.match(/^\[reply-to: ([^\]]+)\]\n([\s\S]*)/);
+    if (replyMatch) remaining = replyMatch[2];
+    const ackMatch = remaining.match(/^\[ack: ([^\]]+)\]\n([\s\S]*)/);
+    if (ackMatch) remaining = ackMatch[2];
+    let tags: string[] = [];
+    const tagsMatch = remaining.match(/^\[tags: ([^\]]*)\]\n?([\s\S]*)$/);
+    if (tagsMatch) {
+      tags = tagsMatch[1].split(',').map((t) => t.trim()).filter((t) => t !== '');
+      remaining = tagsMatch[2];
+    }
     messages.push({
       id: msg[1],
       timestamp,
       machineId: machineId.trim(),
       workspace,
-      content: msg[2].replace(/^\n/, '').trim(),
+      content: remaining.replace(/^\n/, '').trim(),
+      tags,
     });
   }
   return { messages, idless };
@@ -925,6 +947,10 @@ export async function reconcileDashboardsFromGDrive(
                   timestamp: m.timestamp,
                   author: { machineId: m.machineId, workspace: m.workspace },
                   content: m.content,
+                  // #4643 — les tags parsés de la ligne [tags:] survivent à
+                  // la guérison : une déclaration archivée puis guérie
+                  // garde son tag dans la ligne PG.
+                  ...(m.tags.length > 0 ? { tags: m.tags } : {}),
                 });
               }
             } catch (error) {
