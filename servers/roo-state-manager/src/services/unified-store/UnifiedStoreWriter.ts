@@ -247,6 +247,12 @@ export interface IUnifiedStoreWriter {
  * Discriminated outcome of a checked write (rework #1134, review ask 2).
  *
  * - `written` — the transaction committed.
+ * - `retired-skip` — #4596 (ii): an ACTIVE retirement mark (#3782) was found
+ *   for the dashboard key inside the transaction; the sync was a designed
+ *   no-op (empty transaction committed, nothing written). Gate semantics:
+ *   `ok: true` WITHOUT a write — callers gating a destructive follow-up on
+ *   "PG now holds this" must NOT treat it as persisted (handleMerge refuses
+ *   a retired target up front for exactly that reason).
  * - `disabled` — no PG half configured on this host (Null writer): nothing was
  *   expected, nothing was lost. Callers gate destructive follow-ups on
  *   `ok || reason === 'disabled'`.
@@ -256,6 +262,7 @@ export interface IUnifiedStoreWriter {
  */
 export type UnifiedStoreWriteOutcome =
   | { ok: true; reason: 'written' }
+  | { ok: true; reason: 'retired-skip' }
   | { ok: false; reason: 'disabled' }
   | { ok: false; reason: 'breaker-skip'; detail: string }
   | { ok: false; reason: 'deterministic'; detail: string }

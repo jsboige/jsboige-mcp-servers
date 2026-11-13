@@ -645,7 +645,7 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     row: RooSyncDashboardRow,
     messages: RooSyncDashboardMessageRow[],
     opts?: { backfill?: boolean; condensed?: boolean }
-  ): Promise<void> {
+  ): Promise<UnifiedStoreWriteOutcome | void> {
     // Backfill mode: pure INSERT DO NOTHING everywhere, no archive stamping —
     // see the interface doc. A file snapshot racing a live sync must never
     // overwrite fresher PG state or archive live messages.
@@ -659,6 +659,27 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
       const client = await this.pool.connect();
       try {
         await client.query('BEGIN');
+
+        // #4596 (ii) retired-skip — an ACTIVE retirement mark (#3782) means
+        // this key was merged into another: NO write path (reconcile backfill,
+        // archive heal, live sync, condensation) may persist under it anymore.
+        // One indexed lookup inside the SAME transaction; a found mark commits
+        // the (empty) transaction and returns the named no-op — the checked
+        // caller distinguishes it from 'written', the void caller just stops.
+        // `roosync_dashboard merge` stays the one writer allowed near retired
+        // keys (it re-marks via retireDashboardKeyChecked), and handleMerge
+        // refuses a retired TARGET up front so an union never lands on a key
+        // whose PG half would silently skip it.
+        const retiredMark = await client.query(
+          `SELECT 1 FROM roosync_dashboard_retirements
+           WHERE source_key = $1 AND lifted_at IS NULL
+           LIMIT 1`,
+          [row.key]
+        );
+        if (retiredMark.rows.length > 0) {
+          await client.query('COMMIT');
+          return { ok: true, reason: 'retired-skip' };
+        }
 
         await client.query(
           `INSERT INTO roosync_dashboards
@@ -1105,7 +1126,10 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
    * Legacy best-effort wrapper (void contract unchanged for all existing
    * callers): runs the work through withRetryResult and DISCARDS the outcome.
    */
-  private async withRetry(label: string, fn: () => Promise<void>): Promise<void> {
+  private async withRetry(
+    label: string,
+    fn: () => Promise<UnifiedStoreWriteOutcome | void>
+  ): Promise<void> {
     await this.withRetryResult(label, fn);
   }
 
@@ -1115,8 +1139,16 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
    * 2): breaker-skip, deterministic #3342 fail-fast, and retry exhaustion are
    * distinguishable from a commit. The legacy void path delegates here, so the
    * two can never drift apart.
+   *
+   * #4596 (ii): `fn` MAY return its own outcome — a designed no-op that
+   * completed successfully (e.g. `retired-skip` from the dashboard sync) is
+   * returned as-is, still counting as a success for the breaker/metrics. A
+   * void return keeps the historical 'written'.
    */
-  private async withRetryResult(label: string, fn: () => Promise<void>): Promise<UnifiedStoreWriteOutcome> {
+  private async withRetryResult(
+    label: string,
+    fn: () => Promise<UnifiedStoreWriteOutcome | void>
+  ): Promise<UnifiedStoreWriteOutcome> {
     this.metrics.upsertsTotal++;
 
     if (!this.breaker.allow()) {
@@ -1130,10 +1162,10 @@ export class PgUnifiedStoreWriter implements IUnifiedStoreWriter {
     let lastError: Error | null = null;
     for (let attempt = 0; attempt <= this.maxRetries; attempt++) {
       try {
-        await fn();
+        const outcome = await fn();
         this.breaker.recordSuccess();
         this.metrics.upsertsSuccess++;
-        return { ok: true, reason: 'written' };
+        return outcome ?? { ok: true, reason: 'written' };
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
 
