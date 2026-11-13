@@ -495,6 +495,33 @@ export async function roosyncConfig(args: ConfigArgs) {
         // matches our collect temp pattern = collect→publish flow). External
         // caller paths are never deleted.
         const shouldCleanup = autoCollected || isCollectTempPackage(finalPackagePath);
+
+        // #4695 — dryRun: a preview must not publish. publishConfig has no
+        // dryRun support (it copies the package into the shared state), so the
+        // tool layer short-circuits before the call — mirroring the collect
+        // dryRun contract (#2964): same summary fields, packagePath withheld,
+        // nothing persisted. The finally-style teardown below still reclaims
+        // an auto-collected temp package (the collect DID stage one locally).
+        if (dryRun) {
+          const previewMachineId = machineId
+            || process.env.ROOSYNC_MACHINE_ID
+            || process.env.COMPUTERNAME
+            || 'local';
+          try {
+            return {
+              status: 'success',
+              message: `dry-run : publication de la version ${version} pour ${previewMachineId} simulée — rien n'a été écrit dans le stockage partagé (#4695).`,
+              dryRun: true,
+              version,
+              machineId: previewMachineId
+            };
+          } finally {
+            if (shouldCleanup) {
+              await safeCleanupTempPackage(finalPackagePath!);
+            }
+          }
+        }
+
         try {
           const result = await configSharingService.publishConfig({
             packagePath: finalPackagePath,
