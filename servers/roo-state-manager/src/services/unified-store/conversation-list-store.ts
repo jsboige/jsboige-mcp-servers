@@ -83,6 +83,38 @@ export function getConversationListPgReader(): IUnifiedStoreReader | null {
   return reader;
 }
 
+/** Health-facing state of the conversation PG tier (#4701). */
+export interface PgConversationTierStatus {
+  /** `disabled` when the gate is off or no store URL is configured. */
+  status: 'ready' | 'failed' | 'disabled';
+  /** Conversation rows in the store; null unless status === 'ready'. */
+  conversations: number | null;
+  /** Present only when status === 'failed'. */
+  error?: string;
+}
+
+/**
+ * Probe the conversation PG tier for `roosync_diagnose(action:"health")` (#4701).
+ *
+ * `health` reads only the in-memory skeleton cache, while `list` serves this
+ * tier — so a never-refreshed cache reported "Total: 0" next to a `list`
+ * answer of 4,753 conversations. A COUNT(*) is used rather than replaying the
+ * last `list` measurement: a fresh process holds no such measurement, and the
+ * health probe must not depend on a prior call. Never throws; an unreachable
+ * store degrades to `failed` within the reader's connection/statement timeouts
+ * (15 s each), never a silent 0.
+ */
+export async function getPgConversationTierStatus(): Promise<PgConversationTierStatus> {
+  const reader = getConversationListPgReader();
+  if (!reader) return { status: 'disabled', conversations: null };
+  try {
+    return { status: 'ready', conversations: await reader.countConversations() };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: 'failed', conversations: null, error: message };
+  }
+}
+
 /** Collapse whitespace and cap, so a label never carries newlines into the list output. */
 function toLabel(text: string): string {
   const flat = text.replace(/\s+/g, ' ').trim();

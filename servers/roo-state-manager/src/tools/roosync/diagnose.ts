@@ -33,7 +33,7 @@ async function getLazyModule(): Promise<LazyRooSyncModule> {
 
 export const DiagnoseArgsSchema = z.object({
   action: z.enum(['env', 'debug', 'reset', 'test', 'health', 'lifecycle', 'recovery', 'analyze', 'best-practices', 'reload'])
-    .describe('Operation: env, debug, reset, test, health (skeleton CACHE Tier1/2/3 stats only — NOT cluster health; for cluster use roosync_inventory type="health"), lifecycle (agent state #1320), recovery (recovery-before-escalation decision #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into this live process)'),
+    .describe('Operation: env, debug, reset, test, health (skeleton cache Tier1/2/3 stats — measured source named in the message — plus the PostgreSQL conversation tier state/count that `list` serves; NOT cluster health, for cluster use roosync_inventory type="health"), lifecycle (agent state #1320), recovery (recovery-before-escalation decision #1320), analyze (roadmap), best-practices (MCP guide), reload (re-read .env credentials/endpoints into this live process)'),
   // Paramètres pour action: 'env'
   checkDiskSpace: z.boolean().optional()
     .describe('Inclure espace disque libre/total par répertoire critique (fs.statfs, action: env — #3993)'),
@@ -686,6 +686,11 @@ async function handleTestAction(
 /**
  * #1747 sub-issue B: Health-check du cache skeleton 3-tier.
  * Retourne le nombre de skeletons par tier et la configuration active.
+ *
+ * #4701 — l'action nomme la source qu'elle mesure (le cache mémoire des
+ * squelettes) et mesure aussi la source que `list` sert : le tier PostgreSQL.
+ * Sans lui, un cache jamais rafraîchi rendait « Total: 0 » à côté d'un `list`
+ * à 4 753 conversations (ai-01, 13/11), et un opérateur lisait « 0 conversation ».
  */
 async function handleHealthAction(
   _args: DiagnoseArgs,
@@ -694,6 +699,16 @@ async function handleHealthAction(
   const { SkeletonCacheService } = await import('../../services/skeleton-cache.service.js');
   const instance = SkeletonCacheService.getInstance();
   const stats = await instance.getCacheTierStats();
+
+  // #4701 — état du tier PostgreSQL, compté par une requête d'agrégat (le
+  // choix est expliqué dans `getPgConversationTierStatus`). Never throws.
+  const { getPgConversationTierStatus } = await import('../../services/unified-store/conversation-list-store.js');
+  const pgTier = await getPgConversationTierStatus();
+  const pgSummary = pgTier.status === 'ready'
+    ? `ready — ${pgTier.conversations} conversations`
+    : pgTier.status === 'failed'
+      ? `failed — ${pgTier.error}`
+      : 'disabled (gate off or no store URL)';
 
   const tierSummary =
     `Tier1(Roo): ${stats.tier1_roo} | ` +
@@ -727,8 +742,10 @@ async function handleHealthAction(
     success: true,
     action: 'health',
     timestamp,
-    message: `Skeleton cache health: ${tierSummary} — Total: ${stats.total}${freshness}`,
+    message: `Skeleton cache health (measured source: memory skeleton cache): ${tierSummary} — Total: ${stats.total}${freshness} | PostgreSQL conversation tier (source served by list when enabled): ${pgSummary}`,
     data: {
+      measuredSource: 'memory-skeleton-cache',
+      pgConversationTier: pgTier,
       tiers: {
         tier1_roo: { enabled: true, count: stats.tier1_roo },
         tier2_claude: { enabled: stats.config.enableClaudeTier, count: stats.tier2_claude },

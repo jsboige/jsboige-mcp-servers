@@ -33,11 +33,13 @@ const mockIsNull = vi.fn().mockReturnValue(false);
 const mockInit = vi.fn().mockResolvedValue(undefined);
 const mockGetConversation = vi.fn().mockResolvedValue(null);
 const mockGetMessages = vi.fn().mockResolvedValue([]);
+const mockCountConversations = vi.fn().mockResolvedValue(0);
 
 vi.mock('../reader-factory.js', () => ({
   getUnifiedStoreReader: () => ({
     isNull: () => mockIsNull(),
     listConversations: mockListConversations,
+    countConversations: mockCountConversations,
     init: mockInit,
     getConversation: mockGetConversation,
     getMessages: mockGetMessages,
@@ -69,6 +71,7 @@ vi.mock('../../../utils/logger.js', () => ({
 import { PgUnifiedStoreReader } from '../PgUnifiedStoreReader.js';
 import {
   getConversationListPgReader,
+  getPgConversationTierStatus,
   resolveLabel,
   mapRowToSkeleton,
   loadPgConversationTier,
@@ -106,6 +109,7 @@ beforeEach(() => {
   mockInit.mockResolvedValue(undefined);
   mockGetConversation.mockResolvedValue(null);
   mockGetMessages.mockResolvedValue([]);
+  mockCountConversations.mockResolvedValue(0);
   // clearAllMocks wipes implementations too — re-arm the pg double so the
   // SQL-shape block below gets a usable pool on every test.
   mockQuery.mockResolvedValue({ rows: [] });
@@ -166,6 +170,28 @@ describe('getConversationListPgReader — the gate', () => {
     expect(getConversationListPgReader()).toBeNull();
     process.env.UNIFIED_STORE_CONVERSATION_READ_PG = '1';
     expect(getConversationListPgReader()).not.toBeNull();
+  });
+});
+
+// ─── Health probe (#4701) ───────────────────────────────────────────
+
+describe('getPgConversationTierStatus — the health probe', () => {
+  test('disabled when the gate is off — no reader, no query', async () => {
+    process.env.UNIFIED_STORE_CONVERSATION_READ_PG = '0';
+    expect(await getPgConversationTierStatus()).toEqual({ status: 'disabled', conversations: null });
+    expect(mockCountConversations).not.toHaveBeenCalled();
+  });
+
+  test('ready carries the store count the aggregate query returned', async () => {
+    mockCountConversations.mockResolvedValueOnce(4753);
+    expect(await getPgConversationTierStatus()).toEqual({ status: 'ready', conversations: 4753 });
+  });
+
+  test('failed surfaces the error verbatim — never a silent 0', async () => {
+    mockCountConversations.mockRejectedValueOnce(new Error('connect ECONNREFUSED'));
+    expect(await getPgConversationTierStatus()).toEqual({
+      status: 'failed', conversations: null, error: 'connect ECONNREFUSED',
+    });
   });
 });
 

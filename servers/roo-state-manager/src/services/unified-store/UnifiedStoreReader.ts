@@ -125,6 +125,11 @@ export interface IUnifiedStoreReader {
    * first, each carrying its first user message as a label fallback.
    */
   listConversations(filters?: ConversationListFilters): Promise<ConversationListRow[]>;
+  /**
+   * Total conversation rows the store holds, for health surfaces (#4701).
+   * One aggregate query — never materializes rows.
+   */
+  countConversations(): Promise<number>;
   /** Lookup messages for a conversation, ordered by seq ASC. */
   getMessages(taskId: string, opts?: { limit?: number; offset?: number }): Promise<MessageRow[]>;
   /**
@@ -273,6 +278,7 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   async close(): Promise<void> {}
   async getConversation(_taskId: string): Promise<ConversationRow | null> { return null; }
   async listConversations(_filters?: ConversationListFilters): Promise<ConversationListRow[]> { return []; }
+  async countConversations(): Promise<number> { return 0; }
   async getMessages(_taskId: string, _opts?: { limit?: number; offset?: number }): Promise<MessageRow[]> { return []; }
   async joinFromQdrant(
     _qdrantHits: Array<{ task_id: string; score: number }>,
