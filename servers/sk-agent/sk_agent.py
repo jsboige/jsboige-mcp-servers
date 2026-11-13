@@ -146,6 +146,7 @@ from sk_agent_specs import (
     parse_agent_spec,
     resolve_agent_spec,
 )
+from sk_agent_capacity_gate import check_model_capacity_gate
 
 # GitHub PR review plugin
 try:
@@ -1936,6 +1937,28 @@ class SKAgentManager:
             gate = self._rate_gate(agent_cfg)
             if gate is not None:
                 return gate
+
+            # #4712: per-model capacity gate — the single point where the
+            # EFFECTIVE model of this call is known on every path (agent
+            # default, model_override, or agent_spec resolution, all joined
+            # above) and no LLM request has been issued yet. Refusal is a
+            # typed error naming the verdict; a model without the field
+            # keeps exactly today's behaviour. Typed-string check for the
+            # same reason as the rate/config-error gates: an untyped model
+            # ref on a test double must not gate, and must not crash.
+            gate_model_ref = (
+                spec_model_used
+                if spec_active
+                else (model_override or (agent_cfg.model if agent_cfg else None))
+            )
+            if isinstance(gate_model_ref, str) and gate_model_ref:
+                gate_model_cfg = self.config.get_model(gate_model_ref)
+                if gate_model_cfg is not None:
+                    refusal = await check_model_capacity_gate(
+                        gate_model_cfg, agent_id=effective_id
+                    )
+                    if refusal is not None:
+                        return refusal
 
             needs_temp_agent = (not spec_active) and (
                 bool(model_override) or bool(mcp_overrides)

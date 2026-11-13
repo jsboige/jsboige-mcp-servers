@@ -40,6 +40,10 @@ except ImportError:  # pragma: no cover - exercised only when pydantic missing
     _HAS_PYDANTIC_SCHEMA = False
     SCHEMA_VERSION = 2
 
+# #4712: per-model capacity gate parser (module has no config dependency,
+# imported here so ModelConfig.from_dict can validate at parse time).
+from sk_agent_capacity_gate import parse_capacity_gate
+
 log = logging.getLogger("sk-agent.config")
 
 # ---------------------------------------------------------------------------
@@ -230,6 +234,10 @@ class ModelConfig:
     connect_timeout_s: float | None = None
     max_tokens: int | None = None  # None → global sampling.max_tokens
     extra_body: dict[str, Any] = field(default_factory=dict)  # vLLM passthrough
+    # #4712: per-model capacity gate (optional; absent = no gate, exact
+    # legacy behaviour). Validated at parse by parse_capacity_gate, which
+    # raises on a malformed entry (a dead gate would silently dispatch).
+    capacity_gate: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> ModelConfig:
@@ -249,6 +257,7 @@ class ModelConfig:
             connect_timeout_s=data.get("connect_timeout_s"),
             max_tokens=data.get("max_tokens"),
             extra_body=dict(data.get("extra_body") or {}),
+            capacity_gate=parse_capacity_gate(data.get("capacity_gate")),
         )
 
     def to_dict(self) -> dict:
@@ -275,6 +284,8 @@ class ModelConfig:
             d["max_tokens"] = self.max_tokens
         if self.extra_body:
             d["extra_body"] = dict(self.extra_body)
+        if self.capacity_gate:
+            d["capacity_gate"] = dict(self.capacity_gate)
         return d
 
     def resolve_api_key(self) -> str:
