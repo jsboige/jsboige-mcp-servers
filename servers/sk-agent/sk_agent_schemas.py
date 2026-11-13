@@ -294,6 +294,63 @@ class RateLimitSpec(_StrictModel):
     )
 
 
+class CapacityGateSpec(_StrictModel):
+    """Per-model capacity gate probe (#4712).
+
+    Declared on ``ModelSpec`` (``extra="forbid"``), absent = no gate =
+    exact legacy behaviour. Ranges and strictness mirror
+    ``sk_agent_capacity_gate.parse_capacity_gate`` so this layer is never
+    *looser* than the parser: a gate the schema accepts but the parser
+    refuses would surface as a warning-free crash at load. The probe's
+    exit code is authoritative (0 green / 1 yellow / 2 red, anything else
+    unknown); stdout JSON is informational detail only.
+    """
+
+    command: list[Annotated[str, Field(min_length=1, max_length=512)]] = Field(
+        min_length=1,
+        max_length=32,
+        description=(
+            "Probe command + args, executed without a shell between two "
+            "turns. Exit code: 0 green, 1 yellow, 2 red, else unknown."
+        ),
+    )
+    env: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Extra environment for the probe child, merged over the "
+            "server's own environment (e.g. SWIFT_GATE_URL)."
+        ),
+    )
+    allow_yellow: bool = Field(
+        default=False,
+        strict=True,
+        description="Dispatch on a yellow verdict (default: refuse).",
+    )
+    cache_s: float = Field(
+        default=10.0, ge=0.0, description="Verdict cache lifetime, seconds."
+    )
+    timeout_s: float = Field(
+        default=10.0,
+        gt=0.0,
+        description="Probe budget, seconds; overrun kills the child (unknown).",
+    )
+    retry_after_s: int = Field(
+        default=60,
+        ge=0,
+        strict=True,
+        description="Advisory delay carried by a refusal, seconds.",
+    )
+
+    @field_validator("cache_s", "timeout_s", mode="before")
+    @classmethod
+    def _numbers_not_bool_or_string(cls, value: Any) -> Any:
+        """Keep parity with the parser: ``true``/``"10"`` are refused here
+        too (lax Pydantic would otherwise coerce both into numbers)."""
+        if isinstance(value, (bool, str)):
+            raise ValueError("must be a JSON number, not a boolean or string")
+        return value
+
+
 # ---------------------------------------------------------------------------
 # Spec models
 # ---------------------------------------------------------------------------
@@ -360,6 +417,15 @@ class ModelSpec(_StrictModel):
             "Generic vLLM passthrough merged into the request extra_body "
             "(e.g. a reasoning budget key). Model keys override "
             "sampling-derived keys; chat_template_kwargs is deep-merged."
+        ),
+    )
+    # #4712: opt-in capacity gate consulted before each agent dispatch on
+    # this model. None (default) = no gate = today's behaviour.
+    capacity_gate: CapacityGateSpec | None = Field(
+        default=None,
+        description=(
+            "Optional capacity gate probe consulted before each dispatch "
+            "to this model (#4712). Absent = no gate."
         ),
     )
 
