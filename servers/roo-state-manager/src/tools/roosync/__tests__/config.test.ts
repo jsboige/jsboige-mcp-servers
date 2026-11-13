@@ -300,6 +300,46 @@ describe('roosyncConfig', { testTimeout: 30000 }, () => {
         await roosyncConfig(parsed);
       }).rejects.toThrow();
     });
+
+    test('#4695: dryRun publish returns a preview and never calls publishConfig', async () => {
+      mockCollectConfig.mockResolvedValue({
+        packagePath: '/tmp/config-dryrun-publish',
+        filesCount: 2,
+        totalSize: 256,
+        manifest: { files: [] }
+      });
+
+      const args: ConfigArgs = {
+        action: 'publish',
+        version: '3.0.0',
+        description: 'Dry-run publish',
+        targets: ['modes'],
+        dryRun: true
+      };
+
+      const result = await roosyncConfig(args);
+
+      expect(result.status).toBe('success');
+      expect(mockPublishConfig).not.toHaveBeenCalled();
+      expect(result.dryRun).toBe(true);
+      expect(result.version).toBe('3.0.0');
+    });
+
+    test('#4695: dryRun publish with explicit packagePath also never calls publishConfig', async () => {
+      const args: ConfigArgs = {
+        action: 'publish',
+        version: '3.0.1',
+        description: 'Dry-run publish, explicit path',
+        packagePath: '/tmp/explicit-package',
+        dryRun: true
+      };
+
+      const result = await roosyncConfig(args);
+
+      expect(result.status).toBe('success');
+      expect(mockPublishConfig).not.toHaveBeenCalled();
+      expect(result.dryRun).toBe(true);
+    });
   });
 
   describe('action: apply', () => {
