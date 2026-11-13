@@ -281,6 +281,41 @@ describe('codebase_search — Epic #2609 scenario 3 (block granularity)', () => 
 			observed: String(parsed.block_expansion_applied),
 		});
 
+		// ---- #2609 residual (measured live 2026-11-13): match_lines ↔ lines relation ----
+		// The rendered block must CONTAIN the vector-matched span, and a hit whose
+		// stored anchor drifted must say so: match_lines points at the text's
+		// current position, stored_match_lines keeps the stale indexed position.
+		// The live baseline caught both divergences: a 722-line gap (relocation was
+		// honest, match_lines reported the stale position) and a block ending
+		// mid-chunk (808-813 vs match 812-816).
+		const parseLineRange = (v: unknown): [number, number] | null => {
+			const m = typeof v === 'string' ? v.match(/^(\d+)(?:-(\d+))?$/) : null;
+			return m ? [Number(m[1]), Number(m[2] ?? m[1])] : null;
+		};
+		const expandedSourceHits = sourceClassHits.filter((r: any) => typeof r.match_lines === 'string');
+		const relationBroken: string[] = [];
+		for (const hit of expandedSourceHits) {
+			const match = parseLineRange(hit.match_lines);
+			if (!match) {
+				relationBroken.push(`${hit.file_path}: match_lines unparseable (${String(hit.match_lines)})`);
+				continue;
+			}
+			if (typeof hit.start_line !== 'number' || typeof hit.end_line !== 'number'
+				|| match[0] < hit.start_line || match[1] > hit.end_line) {
+				relationBroken.push(`${hit.file_path}: match ${hit.match_lines} outside rendered ${hit.start_line}-${hit.end_line}`);
+			}
+			if (hit.relocated === true && typeof hit.stored_match_lines !== 'string') {
+				relationBroken.push(`${hit.file_path}: relocated without stored_match_lines`);
+			}
+		}
+		checks.push({
+			name: 'rendered block contains its match span (match_lines ⊆ lines); relocated hits carry stored_match_lines',
+			ok: relationBroken.length === 0,
+			observed: relationBroken.length
+				? relationBroken.slice(0, 3).join(' ; ')
+				: `${expandedSourceHits.length} expanded hit(s) coherent`,
+		});
+
 		function hasExecutableJoinInDeclaredRange(hit: any): boolean {
 			if (typeof hit?.start_line !== 'number' || typeof hit?.end_line !== 'number' || hit.end_line <= hit.start_line) return false;
 			try {

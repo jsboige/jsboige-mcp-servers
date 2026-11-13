@@ -3407,6 +3407,37 @@ describe('#3344 transport resilience + hash convergence', () => {
 			expect(renderBlock(lines, range, 2)).toBeNull();
 		});
 
+		test('renderBlock: the char-budget shrink never cuts the mustCover span (#2609, 2026-11-13)', () => {
+			// Long lines force the budget loop; the matched span (idx 10-12 = v9-v11,
+			// line 0 being the declaration) must survive every trim — the window
+			// collapses onto it instead of past it.
+			const lines: string[] = ['export function wide() {'];
+			for (let i = 0; i < 20; i++) lines.push(`\tconst v${i} = '${'y'.repeat(590)}';`);
+			lines.push('}');
+			const range = { startIdx: 0, endIdx: 21 };
+			const mustCover = { spanStart: 10, spanEnd: 12 };
+			const rendered = renderBlock(lines, range, 10, mustCover)!;
+			expect(rendered).not.toBeNull();
+			// All three span lines are in the rendered window
+			expect(rendered.text).toContain('const v9 =');
+			expect(rendered.text).toContain('const v10 =');
+			expect(rendered.text).toContain('const v11 =');
+			expect(rendered.startLine).toBeLessThanOrEqual(11);
+			expect(rendered.endLine).toBeGreaterThanOrEqual(13);
+		});
+
+		test('renderBlock: a span that cannot fit the char budget degrades to null, never cuts the match', () => {
+			// The span itself (3 lines x 2 000 chars) exceeds the 3 000-char budget:
+			// pinning both sides stops the loop and the final check degrades to null
+			// (caller keeps the bounded raw chunk) rather than dropping span lines.
+			const lines: string[] = ['export function wide() {'];
+			for (let i = 0; i < 15; i++) lines.push(`\tconst v${i} = '${'y'.repeat(2000)}';`);
+			lines.push('}');
+			const range = { startIdx: 0, endIdx: 16 };
+			const mustCover = { spanStart: 10, spanEnd: 12 };
+			expect(renderBlock(lines, range, 10, mustCover)).toBeNull();
+		});
+
 		test('handler: a hit on a minified one-liner keeps the bounded raw snippet (no 500 KB result)', async () => {
 			const minified = 'var a=' + 'x'.repeat(500_000) + ';';
 			mockReadFileSync.mockReturnValue(minified);
@@ -3549,10 +3580,98 @@ describe('#3344 transport resilience + hash convergence', () => {
 			// to closing brace line 15), not the drifted stored line 2
 			expect(hit.start_line).toBe(11);
 			expect(hit.end_line).toBe(15);
-			// The stored (drifted) position stays visible in match_lines
-			expect(hit.match_lines).toBe('2-2');
+			// #2609 residual (2026-11-13): match_lines reports where the matched text
+			// lives NOW (inside the rendered block); the stale indexed position moves
+			// to stored_match_lines with the per-hit relocated flag.
+			expect(hit.match_lines).toBe('13-13');
+			expect(hit.relocated).toBe(true);
+			expect(hit.stored_match_lines).toBe('2-2');
 			expect(hit.snippet).toContain('export async function searchSemantic');
 			expect(hit.snippet.length).toBeGreaterThan(150);
+		});
+
+		test('block covers the whole stored chunk span (live 2026-11-13 case: window ended mid-chunk)', async () => {
+			// Live shape measured on the golden JOIN query: the stored chunk spans
+			// 5 lines INCLUDING an internal blank and a follow-up declaration line;
+			// the blank-line fallback window stopped at the blank, rendering a block
+			// that ended mid-chunk (808-813 vs match 812-816). The block must extend
+			// to cover the whole matched span.
+			const content = [
+				'const upstream = 1;',
+				'',
+				'const result = await handleWidget();',
+				'const parsed = JSON.parse(result);',
+				'const check = parsed.results[0];',
+				'',
+				'test(\'follow-up expectation\', async () => {',
+				'\tconst body = 1;',
+				'});',
+				'',
+				'const downstream = 2;'
+			].join('\n');
+			mockReadFileSync.mockReturnValue(content);
+			const chunk = [
+				'const parsed = JSON.parse(result);',
+				'const check = parsed.results[0];',
+				'',
+				'test(\'follow-up expectation\', async () => {',
+				'\tconst body = 1;'
+			].join('\n');
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.8,
+					payload: { filePath: 'src/widget.ts', codeChunk: chunk, startLine: 4, endLine: 8 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'widget parse', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+
+			expect(parsed.block_expansion_applied).toBe(1);
+			const hit = parsed.results[0];
+			// The block extends past the internal blank to the chunk's tail line 8
+			expect(hit.start_line).toBe(3);
+			expect(hit.end_line).toBe(8);
+			expect(hit.match_lines).toBe('4-8');
+			// The chunk's tail lines — what the vector matched — are IN the passage
+			expect(hit.snippet).toContain("test('follow-up expectation'");
+			expect(hit.snippet).toContain('const body = 1;');
+		});
+
+		test('within-tolerance anchor reports the refined position, not the stored one', async () => {
+			// Stored startLine 4, true content at line 7 — inside the ±5 window, so
+			// verifyAnchor passes and no relocation happens, but the stored position
+			// is still 3 lines off. match_lines must report where the text IS.
+			const drifted = [
+				'const filler0 = 0;',
+				'const filler1 = 1;',
+				'const filler2 = 2;',
+				'const filler3 = 3;',
+				'export async function searchSemantic(query: string): Promise<Result> {',
+				'\tconst filter = buildFilter(query);',
+				'\tconst rows = await joinWithPostgres(filter);', // true position, line 7
+				'\treturn { rows, filter };',
+				'}'
+			].join('\n');
+			mockReadFileSync.mockReturnValue(drifted);
+			mockQdrant.query.mockResolvedValue({
+				points: [{
+					score: 0.8,
+					payload: { filePath: 'src/search-semantic.tool.ts', codeChunk: '\tconst rows = await joinWithPostgres(filter);', startLine: 4, endLine: 4 }
+				}]
+			});
+
+			const result = await handleCodebaseSearch({ query: 'postgres join', workspace: '/ws' });
+			const parsed = JSON.parse(result.content[0].text);
+
+			expect(parsed.block_expansion_applied).toBe(1);
+			expect(parsed.stale_anchors_relocated).toBeUndefined();
+			const hit = parsed.results[0];
+			expect(hit.start_line).toBe(5);
+			expect(hit.end_line).toBe(9);
+			expect(hit.match_lines).toBe('7-7');
+			expect(hit.relocated).toBeUndefined();
+			expect(hit.stored_match_lines).toBeUndefined();
 		});
 
 		test('ambiguous stale anchor (chunk text twice in the file) degrades to the raw chunk', async () => {

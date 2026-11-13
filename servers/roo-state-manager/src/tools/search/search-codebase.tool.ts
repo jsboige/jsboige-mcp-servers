@@ -1340,9 +1340,7 @@ export function computeBlockRange(lines: string[], anchorIdx: number): { startId
  * chunk's first non-empty 40 chars, not equality.
  */
 export function verifyAnchor(lines: string[], anchorIdx: number, codeChunk: string): boolean {
-	const firstChunkLine = codeChunk.split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0);
-	if (!firstChunkLine) return false;
-	const probe = firstChunkLine.slice(0, 40);
+	const probe = chunkHeadProbe(codeChunk);
 	if (!probe) return false;
 	const from = Math.max(0, anchorIdx - BLOCK_EXPANSION_ANCHOR_TOLERANCE);
 	const to = Math.min(lines.length - 1, anchorIdx + BLOCK_EXPANSION_ANCHOR_TOLERANCE);
@@ -1350,6 +1348,39 @@ export function verifyAnchor(lines: string[], anchorIdx: number, codeChunk: stri
 		if (lines[i].includes(probe)) return true;
 	}
 	return false;
+}
+
+/**
+ * The chunk-head probe shared by verifyAnchor/refineAnchorInWindow: the first
+ * non-empty chunk line, trimmed to 40 chars. A stored chunk segment of a long
+ * line is a substring of the file line, so containment (not equality) is the test.
+ */
+function chunkHeadProbe(codeChunk: string): string | null {
+	const firstChunkLine = codeChunk.split(/\r?\n/).map(l => l.trim()).find(l => l.length > 0);
+	if (!firstChunkLine) return null;
+	const probe = firstChunkLine.slice(0, 40);
+	return probe || null;
+}
+
+/**
+ * #2609 residual (measured live 2026-11-13): refine a WITHIN-TOLERANCE anchor
+ * to its exact line. verifyAnchor accepts the stored position when the chunk
+ * head sits anywhere in [stored−5, stored+5], but the match span the block
+ * covers and reports must start where the text actually sits — the live
+ * measurement caught a hit rendered 808-813 whose verified chunk spanned
+ * 812-816: the anchor verified, yet the rendered block ended mid-chunk.
+ * Returns the first containing line in the tolerance window, or null when
+ * none holds the probe (caller keeps the stored index).
+ */
+export function refineAnchorInWindow(lines: string[], anchorIdx: number, codeChunk: string): number | null {
+	const probe = chunkHeadProbe(codeChunk);
+	if (!probe) return null;
+	const from = Math.max(0, anchorIdx - BLOCK_EXPANSION_ANCHOR_TOLERANCE);
+	const to = Math.min(lines.length - 1, anchorIdx + BLOCK_EXPANSION_ANCHOR_TOLERANCE);
+	for (let i = from; i <= to; i++) {
+		if (lines[i].includes(probe)) return i;
+	}
+	return null;
 }
 
 /**
@@ -1420,7 +1451,8 @@ export function relocateAnchor(lines: string[], codeChunk: string): number | nul
 export function renderBlock(
 	lines: string[],
 	range: { startIdx: number; endIdx: number },
-	anchorIdx: number
+	anchorIdx: number,
+	mustCover?: { spanStart: number; spanEnd: number }
 ): { text: string; startLine: number; endLine: number } | null {
 	let s = range.startIdx;
 	let e = range.endIdx;
@@ -1428,9 +1460,24 @@ export function renderBlock(
 		s = Math.max(range.startIdx, anchorIdx - Math.floor(BLOCK_EXPANSION_MAX_RENDER_LINES / 2));
 		e = Math.min(range.endIdx, s + BLOCK_EXPANSION_MAX_RENDER_LINES - 1);
 	}
-	// Char budget: shrink the window around the anchor, line by line, until it fits.
-	while (e - s + 1 > 5 && lines.slice(s, e + 1).join('\n').length > BLOCK_EXPANSION_MAX_RENDER_CHARS) {
-		if (anchorIdx - s >= e - anchorIdx) s++;
+	// #2609 (measured live 2026-11-13): the vector-matched span never leaves the
+	// window — the rendered passage must contain what the embedding matched (the
+	// live catch: a block rendered 808-813 dropping matched lines 814-816).
+	if (mustCover) {
+		s = Math.min(s, mustCover.spanStart);
+		e = Math.max(e, mustCover.spanEnd);
+	}
+	// Char budget: shrink the window around the anchor, line by line, until it
+	// fits — never past the matched span. Without a span the historical 5-line
+	// floor stops the shrink (a floor still over budget → null below); with one,
+	// the span pin IS the floor: trimming non-span lines to save the match beats
+	// keeping five lines that cut it.
+	while (lines.slice(s, e + 1).join('\n').length > BLOCK_EXPANSION_MAX_RENDER_CHARS) {
+		const canTrimTop = !mustCover || s < mustCover.spanStart;
+		const canTrimBottom = !mustCover || e > mustCover.spanEnd;
+		if (!canTrimTop && !canTrimBottom) break;
+		if (!mustCover && e - s + 1 <= 5) break;
+		if (canTrimTop && (!canTrimBottom || anchorIdx - s >= e - anchorIdx)) s++;
 		else e--;
 	}
 	// The loop above stops at a 5-line floor, whatever those lines weigh: a minified
@@ -1455,6 +1502,12 @@ export function renderBlock(
  * verified at the stored position AND can't be uniquely relocated by content
  * (see relocateAnchor — file drifted since indexing), or no line-bounded
  * window fits the char budget (minified / very long lines).
+ *
+ * The returned match span (matchStartLine/matchEndLine) is where the chunk's
+ * text lives in the CURRENT file: refined around a verified anchor, at the
+ * relocated position after drift. The block range and its render window are
+ * extended to contain it (#2609 residual, 2026-11-13): the rendered passage
+ * always carries what the vector matched.
  */
 export function expandHitBlock(
 	filePath: string,
@@ -1462,7 +1515,7 @@ export function expandHitBlock(
 	codeChunk: string,
 	workspaceRoot: string,
 	fileLinesCache: Map<string, string[] | null>
-): { text: string; startLine: number; endLine: number; relocated?: true } | null {
+): { text: string; startLine: number; endLine: number; matchStartLine: number; matchEndLine: number; relocated?: true } | null {
 	if (!blockExpansionEnabled()) return null;
 	try {
 		const abs = isAbsolute(filePath) ? filePath : join(workspaceRoot, filePath);
@@ -1493,11 +1546,34 @@ export function expandHitBlock(
 			if (relocatedIdx === null) return null;
 			anchor = relocatedIdx;
 			relocated = true;
+		} else {
+			// Within tolerance the stored line can still be a few lines off; the
+			// span below must start where the head actually sits (#2609, 2026-11-13).
+			const refined = refineAnchorInWindow(lines, anchorIdx, codeChunk);
+			if (refined !== null) anchor = refined;
 		}
-		const range = computeBlockRange(lines, anchor);
-		if (!range) return null;
-		const rendered = renderBlock(lines, range, anchor);
-		return rendered ? { ...rendered, ...(relocated ? { relocated: true } : {}) } : null;
+		// #2609 (2026-11-13): the vector-matched chunk's CURRENT span. The block
+		// range and the render window are extended to contain it, and it is what
+		// match_lines reports. Trailing blank split artifacts don't count.
+		const rawChunkLines = codeChunk.split(/\r?\n/);
+		while (rawChunkLines.length && rawChunkLines[rawChunkLines.length - 1].trim() === '') rawChunkLines.pop();
+		const spanStart = anchor;
+		const spanEnd = Math.min(lines.length - 1, spanStart + Math.max(0, rawChunkLines.length - 1));
+		const blockRange = computeBlockRange(lines, anchor);
+		if (!blockRange) return null;
+		const range = {
+			startIdx: Math.min(blockRange.startIdx, spanStart),
+			endIdx: Math.max(blockRange.endIdx, spanEnd),
+		};
+		const rendered = renderBlock(lines, range, anchor, { spanStart, spanEnd });
+		return rendered
+			? {
+				...rendered,
+				matchStartLine: spanStart + 1,
+				matchEndLine: spanEnd + 1,
+				...(relocated ? { relocated: true as const } : {}),
+			}
+			: null;
 	} catch {
 		return null;
 	}
@@ -2249,10 +2325,17 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// read from the CURRENT file on disk (anchor-verified against the stored chunk;
 			// see expandHitBlock). The rendered snippet becomes the block passage, and
 			// start_line/end_line become the BLOCK range — the honest handle an agent can
-			// open directly. The line(s) the vector actually matched stay as `match_lines`.
-			// Skipped for fixtures (embedded code inside a JSON container — #3172 contract:
-			// line fields stay omitted), archives (stale-by-design docs) and data/config
-			// files (no block structure); those keep the raw extractSnippet shape.
+			// open directly. `match_lines` reports where the matched text lives in the
+			// CURRENT file (refined span in place, relocated span after drift) — always
+			// inside the rendered block; a relocated hit also carries `relocated: true`
+			// and `stored_match_lines` (the stale indexed position), so drift stays
+			// visible without pointing the reader at text that isn't there (#2609
+			// residual, measured live 2026-11-13: match_lines 1261 next to a block at
+			// 1983-2013 read as a broken anchor — the relocation was honest, the report
+			// wasn't). Skipped for fixtures (embedded code inside a JSON container —
+			// #3172 contract: line fields stay omitted), archives (stale-by-design docs)
+			// and data/config files (no block structure); those keep the raw
+			// extractSnippet shape.
 			// #2609 V2 follow-up: the expansion now runs in the PRE-PASS above (the merge
 			// needs the block ranges before the cap) — reuse it here, never re-expand.
 			const expanded = hit.expanded;
@@ -2266,9 +2349,13 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				start_line: expanded.startLine,
 				end_line: expanded.endLine,
 				lines: `${expanded.startLine}-${expanded.endLine}`,
-				match_lines: point.payload.startLine && point.payload.endLine
-					? `${point.payload.startLine}-${point.payload.endLine}`
-					: String(point.payload.startLine)
+				match_lines: `${expanded.matchStartLine}-${expanded.matchEndLine}`,
+				...(expanded.relocated ? {
+					relocated: true as const,
+					stored_match_lines: point.payload.startLine && point.payload.endLine
+						? `${point.payload.startLine}-${point.payload.endLine}`
+						: String(point.payload.startLine)
+				} : {})
 			} : {
 				start_line: point.payload.startLine,
 				end_line: point.payload.endLine,
@@ -2404,8 +2491,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// expanded hits, how many had their stored startLine drifted beyond the ±5
 			// verification tolerance and were re-anchored by UNIQUE content match
 			// (relocateAnchor). Index drift stays visible instead of hiding behind
-			// green blocks; the stored position remains readable in each hit's
-			// match_lines.
+			// green blocks; each relocated hit carries `relocated: true` and its
+			// stale indexed position in `stored_match_lines`.
 			...(staleAnchorsRelocated > 0 ? { stale_anchors_relocated: staleAnchorsRelocated } : {}),
 			// #2609 V2 follow-up: overlapping-window merge observability — same-file
 			// chunks whose line windows overlap (or abut ≤2 lines) were folded into the
