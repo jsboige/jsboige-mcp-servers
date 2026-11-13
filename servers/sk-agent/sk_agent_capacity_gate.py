@@ -233,7 +233,12 @@ async def evaluate_capacity_gate(
         else:
             verdict = _EXIT_CODE_VERDICTS.get(proc.returncode, VERDICT_UNKNOWN)
             detail = _parse_detail(stdout or b"")
-    except (FileNotFoundError, NotImplementedError, OSError, ValueError) as exc:
+    except (
+        FileNotFoundError, NotImplementedError, OSError, ValueError, TypeError,
+        KeyError,
+    ) as exc:
+        # TypeError/KeyError: a gate dict built in code (not via
+        # parse_capacity_gate) with an empty or missing command.
         log.warning(
             "capacity gate for model '%s' could not run: %s", model_id, exc
         )
@@ -257,8 +262,23 @@ async def check_model_capacity_gate(
     Returns ``None`` when the call may proceed (no gate declared, or an
     allowed verdict); a typed refusal dict otherwise. Anything that is not
     a parsed ``capacity_gate`` dict is ignored — a config that does not
-    declare the field keeps exactly today's behaviour.
+    declare the field keeps exactly today's behaviour. A gate rejected at
+    parse (``capacity_gate_error``) refuses as ``unknown`` without spawning
+    anything: fail-closed for this model only.
     """
+    gate_error = getattr(model_cfg, "capacity_gate_error", None)
+    if isinstance(gate_error, str) and gate_error:
+        return {
+            "error": (
+                f"capacity gate of model '{model_cfg.id}' is malformed "
+                f"({gate_error}); dispatch refused until the config is fixed"
+            ),
+            "error_type": f"capacity_gate_{VERDICT_UNKNOWN}",
+            "retry_after_s": 60,
+            "model_used": model_cfg.id,
+            "agent_used": agent_id,
+            "gate_detail": {"config_error": gate_error},
+        }
     gate = getattr(model_cfg, "capacity_gate", None)
     if not isinstance(gate, dict) or not gate:
         return None

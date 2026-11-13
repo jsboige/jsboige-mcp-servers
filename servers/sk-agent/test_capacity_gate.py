@@ -127,7 +127,7 @@ class TestGateParsing:
     def test_full_gate_parses_and_roundtrips(self):
         raw = {
             "command": ["probe"],
-            "env": {"SWIFT_GATE_URL": "http://127.0.0.1:5002/metrics"},
+            "env": {"SWIFT_GATE_URL": "http://localhost:5002/metrics"},
             "allow_yellow": True,
             "cache_s": 30,
             "timeout_s": 2.5,
@@ -136,7 +136,7 @@ class TestGateParsing:
         m = ModelConfig.from_dict({"id": "m", "capacity_gate": raw})
         assert m.capacity_gate == {
             "command": ["probe"],
-            "env": {"SWIFT_GATE_URL": "http://127.0.0.1:5002/metrics"},
+            "env": {"SWIFT_GATE_URL": "http://localhost:5002/metrics"},
             "allow_yellow": True,
             "cache_s": 30.0,
             "timeout_s": 2.5,
@@ -172,13 +172,76 @@ class TestGateParsing:
     )
     def test_invalid_refused_at_parse(self, bad):
         with pytest.raises(ValueError, match="capacity_gate"):
-            ModelConfig.from_dict({"id": "m", "capacity_gate": bad})
+            parse_capacity_gate(bad)
+        # The model entry is isolated, not fatal: it loads, carries the
+        # error, and keeps the operator's raw entry for save_config.
+        m = ModelConfig.from_dict({"id": "m", "capacity_gate": bad})
+        assert m.capacity_gate_error and "capacity_gate" in m.capacity_gate_error
+        assert m.to_dict()["capacity_gate"] == bad
 
     def test_missing_command_refused(self):
         with pytest.raises(ValueError, match="command"):
-            ModelConfig.from_dict(
-                {"id": "m", "capacity_gate": {"cache_s": 5}}
-            )
+            parse_capacity_gate({"cache_s": 5})
+
+
+class TestMalformedGateIsolation:
+    """One typo'd gate must neither take the seat down (the agents' #1748
+    isolation contract) nor fail open on the model it was meant to bound."""
+
+    def test_config_load_survives_and_other_models_stay_free(self):
+        from sk_agent_config import _parse_config
+
+        cfg = _parse_config(
+            {
+                "models": [
+                    {"id": "m-typo", "capacity_gate": {"command": "probe"}},
+                    {"id": "m-free"},
+                ]
+            }
+        )
+        typo, free = cfg.get_model("m-typo"), cfg.get_model("m-free")
+        assert typo is not None and typo.capacity_gate_error
+        assert free is not None and free.capacity_gate_error is None
+        assert asyncio.run(check_model_capacity_gate(free)) is None
+
+    def test_rejected_gate_refuses_unknown_without_spawning(self, tmp_path):
+        counter = tmp_path / "spawns.txt"
+        m = ModelConfig.from_dict(
+            {
+                "id": "m-typo",
+                # a runnable probe, but cache_s is invalid: must never run
+                "capacity_gate": {
+                    "command": _counter_probe(str(counter)),
+                    "cache_s": -1,
+                },
+            }
+        )
+        refusal = asyncio.run(check_model_capacity_gate(m, agent_id="a-x"))
+        assert refusal["error_type"] == "capacity_gate_unknown"
+        assert refusal["model_used"] == "m-typo"
+        assert refusal["agent_used"] == "a-x"
+        assert "cache_s" in refusal["gate_detail"]["config_error"]
+        assert "malformed" in refusal["error"]
+        assert not counter.exists()
+
+    @pytest.mark.parametrize("gate", [{"command": []}, {"cache_s": 0}])
+    def test_unvalidated_gate_dict_is_unknown_not_an_exception(self, gate):
+        """A gate built in code, bypassing parse_capacity_gate, must still
+        fail closed as unknown — never raise into the dispatch path."""
+        result = asyncio.run(evaluate_capacity_gate("m-raw", gate))
+        assert result.verdict == "unknown" and result.allowed is False
+
+    def test_call_agent_refuses_the_rejected_model_only(self):
+        typo = ModelConfig.from_dict(
+            {"id": "m-x", "capacity_gate": {"command": []}}
+        )
+        manager = _call_manager([typo], _agent())
+
+        result = asyncio.run(manager.call_agent(prompt="hi"))
+
+        assert result["error_type"] == "capacity_gate_unknown"
+        assert "config_error" in result["gate_detail"]
+        assert manager._handle_text.call_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -211,8 +274,8 @@ class TestSchemaKnowsTheField:
         errors = validate_config(
             _schema_payload(
                 {
-                    "command": ["probe", "--url", "http://127.0.0.1:5002/metrics"],
-                    "env": {"SWIFT_GATE_URL": "http://127.0.0.1:5002/metrics"},
+                    "command": ["probe", "--url", "http://localhost:5002/metrics"],
+                    "env": {"SWIFT_GATE_URL": "http://localhost:5002/metrics"},
                     "allow_yellow": True,
                     "cache_s": 30,
                     "timeout_s": 2.5,
@@ -674,13 +737,13 @@ class TestAgentSpecPath:
                 ModelConfig(
                     id="text-model",
                     model_id="glm-5",
-                    base_url="http://127.0.0.1:9/v1",
+                    base_url="http://localhost:9/v1",
                     capacity_gate=capacity_gate,
                 ),
                 ModelConfig(
                     id="alt-model",
                     model_id="alt",
-                    base_url="http://127.0.0.1:9/v1",
+                    base_url="http://localhost:9/v1",
                 ),
             ],
             agents=[

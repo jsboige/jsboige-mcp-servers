@@ -235,12 +235,28 @@ class ModelConfig:
     max_tokens: int | None = None  # None → global sampling.max_tokens
     extra_body: dict[str, Any] = field(default_factory=dict)  # vLLM passthrough
     # #4712: per-model capacity gate (optional; absent = no gate, exact
-    # legacy behaviour). Validated at parse by parse_capacity_gate, which
-    # raises on a malformed entry (a dead gate would silently dispatch).
-    capacity_gate: dict[str, Any] | None = None
+    # legacy behaviour). Validated at parse by parse_capacity_gate. A
+    # malformed entry is isolated like a rejected agent (#1748): it neither
+    # takes the seat down nor fails open — the raw entry is kept verbatim
+    # (so save_config never destroys it) and capacity_gate_error makes
+    # every dispatch to THIS model refuse, naming the error.
+    capacity_gate: Any = None
+    capacity_gate_error: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> ModelConfig:
+        raw_gate = data.get("capacity_gate")
+        gate_error: str | None = None
+        try:
+            gate = parse_capacity_gate(raw_gate)
+        except ValueError as exc:
+            log.error(
+                "models '%s': capacity_gate rejected: %s — dispatch to this "
+                "model will be refused; the other models stay callable",
+                data.get("id", "unknown"),
+                exc,
+            )
+            gate, gate_error = raw_gate, str(exc)
         return cls(
             id=data.get("id", "unknown"),
             base_url=data.get("base_url", "https://api.medium.text-generation-webui.myia.io/v1"),
@@ -257,7 +273,8 @@ class ModelConfig:
             connect_timeout_s=data.get("connect_timeout_s"),
             max_tokens=data.get("max_tokens"),
             extra_body=dict(data.get("extra_body") or {}),
-            capacity_gate=parse_capacity_gate(data.get("capacity_gate")),
+            capacity_gate=gate,
+            capacity_gate_error=gate_error,
         )
 
     def to_dict(self) -> dict:
@@ -284,7 +301,9 @@ class ModelConfig:
             d["max_tokens"] = self.max_tokens
         if self.extra_body:
             d["extra_body"] = dict(self.extra_body)
-        if self.capacity_gate:
+        if self.capacity_gate_error is not None:
+            d["capacity_gate"] = self.capacity_gate  # rejected: kept verbatim
+        elif self.capacity_gate:
             d["capacity_gate"] = dict(self.capacity_gate)
         return d
 
