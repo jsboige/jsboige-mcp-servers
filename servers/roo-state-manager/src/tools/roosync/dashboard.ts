@@ -652,8 +652,12 @@ export function isRetryableFallbackError(error: unknown): boolean {
 
 /** Result of a single cloud fallback attempt. */
 type CloudCondenseOnceResult =
-  | { ok: true; content: string; elapsedMs: number; model: string }
-  | { ok: false; retryable: boolean; error: string; elapsedMs: number; model: string }
+  // #4434 G2: `usage` carries the tokens of the answered response when the
+  // provider reports it (some gateways omit it) — on success AND on the
+  // answered-but-rejected shapes: an empty 200 body is a billed round-trip
+  // (claudish#713 measured the hub answering empty two calls out of three).
+  | { ok: true; content: string; elapsedMs: number; model: string; usage?: LLMTokenUsage }
+  | { ok: false; retryable: boolean; error: string; elapsedMs: number; model: string; usage?: LLMTokenUsage }
   | null; // unconfigured (no API key)
 
 /**
@@ -670,6 +674,8 @@ export function fallbackApiFormat(): 'openai' | 'anthropic' {
 interface AnthropicMessageResponse {
   content?: Array<{ type?: string; text?: string }>;
   stop_reason?: string | null;
+  /** #4434 G2: Anthropic Messages name usage input_tokens/output_tokens. */
+  usage?: { input_tokens?: number; output_tokens?: number };
 }
 
 /**
@@ -745,6 +751,10 @@ async function cloudCondenseOnce(
   try {
     let content: string | null | undefined;
     let finishReason: string | null | undefined;
+    // #4434 G2: tokens of the answered response, whatever the tier does with the
+    // content afterwards (delivered, guard-rejected or empty — the input is spent
+    // either way). Unset when the provider omits `usage`.
+    let responseUsage: LLMTokenUsage | undefined;
     if (fallbackApiFormat() === 'anthropic') {
       // #3962 piste 4 (user 22/10: the fleet's rescue is claudish under its Sonnet
       // role, which has its own failover cascade): Anthropic /v1/messages route. The
@@ -770,6 +780,7 @@ async function cloudCondenseOnce(
       });
       content = extractAnthropicText(message);
       finishReason = message?.stop_reason;
+      responseUsage = anthropicUsageToTokenUsage(message?.usage);
     } else {
       // gpt-5 / o-series reasoning models reject `max_tokens` (require
       // `max_completion_tokens`) and any `temperature` != 1. Classic OpenAI-compat /
@@ -810,6 +821,7 @@ async function cloudCondenseOnce(
       );
       content = response.choices[0]?.message?.content;
       finishReason = response.choices[0]?.finish_reason;
+      responseUsage = chatUsageToTokenUsage(response.usage);
     }
     const elapsedMs = Date.now() - fbStart;
     if (content && isBudgetTruncatedFinish(finishReason)) {
@@ -819,7 +831,7 @@ async function cloudCondenseOnce(
       logger.warn('#2719 cloud fallback stopped on its output budget — moving to the next model', {
         fbModel, finishReason, contentLength: content.length, elapsed: `${elapsedMs}ms`,
       });
-      return { ok: false, retryable: false, error: `truncated (finish_reason=${finishReason}, ${content.length} chars)`, elapsedMs, model: fbModel };
+      return { ok: false, retryable: false, error: `truncated (finish_reason=${finishReason}, ${content.length} chars)`, elapsedMs, model: fbModel, usage: responseUsage };
     }
     if (!content) {
       logger.warn('#2719 cloud fallback returned empty content', { fbModel, elapsed: `${elapsedMs}ms` });
@@ -830,15 +842,17 @@ async function cloudCondenseOnce(
       // an empty body is a SUCCESSFUL HTTP round-trip — the model chose to emit
       // nothing, and a backoff is unlikely to change that (contrast with 429/5xx
       // where the transport itself was rejected and retrying may heal).
-      return { ok: false, retryable: false, error: 'empty-content (HTTP 200, 0-byte completion)', elapsedMs, model: fbModel };
+      return { ok: false, retryable: false, error: 'empty-content (HTTP 200, 0-byte completion)', elapsedMs, model: fbModel, usage: responseUsage };
     }
     logger.info('#2719 cloud fallback condensation succeeded', {
       fbModel,
       elapsed: `${elapsedMs}ms`,
       sizeKB: `${(Buffer.byteLength(content, 'utf8') / 1024).toFixed(1)}KB`,
       finishReason: finishReason ?? 'unreported',
+      // #4434 G2: per-call token volume — the measure the cost accounting reads.
+      usage: responseUsage ?? 'unreported',
     });
-    return { ok: true, content, elapsedMs, model: fbModel };
+    return { ok: true, content, elapsedMs, model: fbModel, usage: responseUsage };
   } catch (error: unknown) {
     const errStr = safeErrorString(error);
     const elapsedMs = Date.now() - fbStart;
@@ -885,9 +899,12 @@ async function cloudCondenseWithRetry(
     // rescue model sits untried behind it.
     validate?: (content: string) => string | null;
   },
-): Promise<{ content: string; elapsedMs: number; model: string } | { error: string; attempts: number } | null> {
+): Promise<{ content: string; elapsedMs: number; model: string; usage?: LLMTokenUsage } | { error: string; attempts: number; usage?: LLMTokenUsage } | null> {
   const modelErrors: string[] = [];
   let attempts = 0;
+  // #4434 G2: tokens of the LAST answered cloud response — kept across models so a
+  // chain that fails entirely still reports what it billed (empty 200s included).
+  let lastAnsweredUsage: LLMTokenUsage | undefined;
   // #2719 borne: computed once — the prompt size is fixed for the whole retry/chain.
   const promptBytes = Buffer.byteLength(systemPrompt + userPrompt, 'utf8');
   budgetExhausted: for (const [position, fbModel] of getFallbackModelChain().entries()) {
@@ -917,6 +934,7 @@ async function cloudCondenseWithRetry(
         if (guardReason !== null) {
           attempts++;
           lastError = `guard-rejected (${guardReason})`;
+          if (result.usage) lastAnsweredUsage = result.usage;
           logger.warn('#3962 cloud fallback content rejected by the caller guard — moving to the next model', {
             model: result.model,
             reason: guardReason,
@@ -929,6 +947,7 @@ async function cloudCondenseWithRetry(
       }
       attempts++;
       lastError = result.error;
+      if (result.usage) lastAnsweredUsage = result.usage;
       if (!result.retryable || attempt >= maxAttempts) break;
       const backoff = FB_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
       logger.info(`#2998 cloud fallback retrying in ${backoff}ms (attempt ${attempt}/${maxAttempts})`, {
@@ -942,7 +961,7 @@ async function cloudCondenseWithRetry(
   const error = modelErrors.length === 1
     ? modelErrors[0].slice(modelErrors[0].indexOf(': ') + 2)
     : modelErrors.join(' | ');
-  return { error, attempts };
+  return { error, attempts, usage: lastAnsweredUsage };
 }
 
 /**
@@ -966,6 +985,8 @@ async function tryCloudCondenseFallback(
     stats.fallbackUsed = true;
     stats.fallbackModel = fb.model;
     stats.fallbackElapsedMs = fb.elapsedMs;
+    // #4434 G2: tokens of the cloud tier's answered response, when reported.
+    if (fb.usage) stats.fallbackTokens = fb.usage;
     stats.finalOutcome = 'ok-with-fallback';
     stats.elapsedMs = Date.now() - callStart;
     return { content: fb.content, stats };
@@ -975,6 +996,10 @@ async function tryCloudCondenseFallback(
   if (fb && 'error' in fb) {
     stats.fallbackAttempted = true;
     stats.fallbackError = fb.error;
+    // #4434 G2: an answered-but-rejected cloud response still spent tokens (empty
+    // 200s, guard-rejected content) — stamp them so the 24h cost measure sees the
+    // failed round-trips too, not only the salvaged ones.
+    if (fb.usage) stats.fallbackTokens = fb.usage;
   }
   return null;
 }
@@ -4580,6 +4605,42 @@ export interface LLMCallStats {
   fallbackAttempted?: boolean;
   /** Error message from the last failed fallback attempt (truncated). */
   fallbackError?: string;
+  // #4434 G2: per-tier token accounting, from the API `usage` of the last response
+  // that tier ANSWERED — delivered content, guard-rejected, or null-content (thinking
+  // burns the input before the output budget cuts it). Attempts that threw
+  // (timeout/5xx) leave the field untouched: no response, no usage. Input and
+  // output only; the cache split stays a hub-side measurement (claudish#713).
+  primaryTokens?: LLMTokenUsage;
+  /** Same accounting for the cloud tier's last answered response. */
+  fallbackTokens?: LLMTokenUsage;
+}
+
+/**
+ * #4434 G2: token usage of one condensation LLM response — input and output only.
+ * What the issue needs published is the per-leg volume (summary/status ×
+ * primary/fallback); tokens→cost conversion with dated tariffs is G5's table.
+ */
+export interface LLMTokenUsage {
+  input: number;
+  output: number;
+}
+
+/** Extract LLMTokenUsage from an OpenAI-compat `chat.completions` response `usage`.
+ * Structural typing on purpose — no static SDK import, so the test suite's module
+ * mocks stay unaffected (see isLLMTimeoutError for the precedent). */
+function chatUsageToTokenUsage(
+  usage: { prompt_tokens?: number; completion_tokens?: number } | undefined | null,
+): LLMTokenUsage | undefined {
+  if (!usage || (usage.prompt_tokens === undefined && usage.completion_tokens === undefined)) return undefined;
+  return { input: usage.prompt_tokens ?? 0, output: usage.completion_tokens ?? 0 };
+}
+
+/** Extract LLMTokenUsage from an Anthropic Messages response `usage`. */
+function anthropicUsageToTokenUsage(
+  usage: { input_tokens?: number; output_tokens?: number } | undefined | null,
+): LLMTokenUsage | undefined {
+  if (!usage || (usage.input_tokens === undefined && usage.output_tokens === undefined)) return undefined;
+  return { input: usage.input_tokens ?? 0, output: usage.output_tokens ?? 0 };
 }
 
 /**
@@ -4833,9 +4894,13 @@ FORMAT :
       });
 
       const summary = response.choices[0]?.message?.content;
+      // #4434 G2: stamp the primary's tokens on every ANSWERED response — a
+      // null-content attempt (thinking overran max_tokens) still spends the input.
+      const usage = chatUsageToTokenUsage(response.usage);
+      if (usage) stats.primaryTokens = usage;
       if (!summary) {
         stats.nullCount += 1;
-        logger.warn('LLM returned empty summary', { attempt, finishReason: response.choices[0]?.finish_reason });
+        logger.warn('LLM returned empty summary', { attempt, finishReason: response.choices[0]?.finish_reason, usage: usage ?? 'unreported' });
         if (attempt < LLM_MAX_RETRIES) {
           const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
           logger.info(`Retrying summary in ${backoff}ms...`, { attempt, backoff });
@@ -4853,7 +4918,7 @@ FORMAT :
 
       const sizeBytes = Buffer.byteLength(summary, 'utf8');
       const elapsed = Date.now() - startTime;
-      logger.info('LLM summary generated', { attempt, elapsed: `${elapsed}ms`, summaryLength: summary.length, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
+      logger.info('LLM summary generated', { attempt, elapsed: `${elapsed}ms`, summaryLength: summary.length, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB`, usage: usage ?? 'unreported' });
       stats.finalOutcome = 'ok';
       stats.elapsedMs = Date.now() - callStart;
       return { content: summary, stats };
@@ -5158,9 +5223,12 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       });
 
       const newStatus = response.choices[0]?.message?.content;
+      // #4434 G2: same accounting as the summary leg — every answered response.
+      const usage = chatUsageToTokenUsage(response.usage);
+      if (usage) stats.primaryTokens = usage;
       if (!newStatus) {
         stats.nullCount += 1;
-        logger.warn('LLM returned empty status update', { attempt, finishReason: response.choices[0]?.finish_reason });
+        logger.warn('LLM returned empty status update', { attempt, finishReason: response.choices[0]?.finish_reason, usage: usage ?? 'unreported' });
         if (attempt < LLM_MAX_RETRIES) {
           const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
           logger.info(`Retrying status update in ${backoff}ms...`, { attempt, backoff });
@@ -5178,7 +5246,7 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
 
       const sizeBytes = Buffer.byteLength(newStatus, 'utf8');
       const elapsed = Date.now() - startTime;
-      logger.info('LLM status update generated', { attempt, elapsed: `${elapsed}ms`, newStatusLength: newStatus.length, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
+      logger.info('LLM status update generated', { attempt, elapsed: `${elapsed}ms`, newStatusLength: newStatus.length, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB`, usage: usage ?? 'unreported' });
       stats.finalOutcome = 'ok';
       stats.elapsedMs = Date.now() - callStart;
       return { content: newStatus, stats };
@@ -7711,10 +7779,16 @@ async function condenseIntercom(
     summaryOutcome: summaryCall.stats.finalOutcome,
     ...(statusCall.stats.fallbackModel ? { statusFallbackModel: statusCall.stats.fallbackModel } : {}),
     ...(statusCall.stats.cloudFirst === true ? { statusCloudFirst: true } : {}),
+    // #4434 G2: per-leg token volume survives the pass on disk (same doctrine as
+    // statusFallbackModel above) — the 24h cost measure reads archives, not memory.
+    ...(statusCall.stats.primaryTokens ? { statusPrimaryTokens: statusCall.stats.primaryTokens } : {}),
+    ...(statusCall.stats.fallbackTokens ? { statusFallbackTokens: statusCall.stats.fallbackTokens } : {}),
     // #4434: a kept status still says why its leg died, as the truncation archive's
     // fallbackError did before this pass stopped truncating.
     ...(statusKeptOnLegFailure ? { statusLegError: truncateError(statusLegError) } : {}),
-    ...(summaryCall.stats.fallbackModel ? { summaryFallbackModel: summaryCall.stats.fallbackModel } : {})
+    ...(summaryCall.stats.fallbackModel ? { summaryFallbackModel: summaryCall.stats.fallbackModel } : {}),
+    ...(summaryCall.stats.primaryTokens ? { summaryPrimaryTokens: summaryCall.stats.primaryTokens } : {}),
+    ...(summaryCall.stats.fallbackTokens ? { summaryFallbackTokens: summaryCall.stats.fallbackTokens } : {})
   });
 
   // #3151 Phase C residual (incident po-2025 07/10, message « adjoint ») : la
