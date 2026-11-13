@@ -593,6 +593,20 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     }));
   }
 
+  /**
+   * Count conversations for health surfaces (#4701). One aggregate query —
+   * node-pg returns BIGINT as a string, hence the Number() coercion. Self-init
+   * and throw like `listConversations`: a failed probe must read `failed`,
+   * not a silent 0.
+   */
+  async countConversations(): Promise<number> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query('SELECT COUNT(*) AS count FROM conversations');
+    return Number(result.rows[0]?.count ?? 0);
+  }
+
   async getMessages(
     taskId: string,
     opts?: { limit?: number; offset?: number },

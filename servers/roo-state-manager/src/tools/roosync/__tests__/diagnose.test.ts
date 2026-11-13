@@ -20,7 +20,14 @@ vi.mock('../../../services/config-reload.js', () => ({
   reloadConfig: vi.fn()
 }));
 
+// #4701: health probes the PG conversation tier through this helper. Mocked so
+// the unit tests never reach a database; each test re-arms the default below.
+vi.mock('../../../services/unified-store/conversation-list-store.js', () => ({
+  getPgConversationTierStatus: vi.fn(),
+}));
+
 import { reloadConfig } from '../../../services/config-reload.js';
+import { getPgConversationTierStatus } from '../../../services/unified-store/conversation-list-store.js';
 
 // Mock du module os
 vi.mock('os', async (importOriginal) => {
@@ -60,6 +67,9 @@ describe('roosync_diagnose', () => {
     vi.clearAllMocks();
     vi.mocked(RooSyncService.getInstance).mockReturnValue(mockService as any);
     mockService.getConfig.mockReturnValue({ machineId: 'test-machine' });
+    // #4701 — `restoreAllMocks` in afterEach wipes the implementation of the
+    // module-mock factory's vi.fn, so the default is re-armed before each test.
+    vi.mocked(getPgConversationTierStatus).mockResolvedValue({ status: 'disabled', conversations: null });
   });
 
   afterEach(() => {
@@ -455,6 +465,79 @@ describe('roosync_diagnose', () => {
       // The data field preserves the null so consumers can branch on it.
       expect(result.data.cacheAgeMs).toBeNull();
       expect(result.data.stale).toBe(true);
+    });
+
+    // #4701 — health must name the source it measures, and measure the tier
+    // `list` actually serves. On ai-01 (13/11) it said "Total: 0" while `list`
+    // answered 4,753 conversations from PostgreSQL.
+    it('#4701: names both sources and reports the PG tier count when ready', async () => {
+      const mockStats = {
+        tier1_roo: 0, tier2_claude: 0, tier3_archives: 0, total: 0,
+        config: { enableClaudeTier: false, enableArchiveTier: false },
+        cacheAgeMs: null,  // empty / never-refreshed skeleton cache
+        stale: true,
+        tier3_snapshot: { seeded: false, savedAt: null, ageMs: null, entries: 0 },
+      };
+      vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
+        getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
+      } as any);
+      vi.mocked(getPgConversationTierStatus).mockResolvedValueOnce({
+        status: 'ready',
+        conversations: 4753,
+      });
+
+      const result = await roosyncDiagnose({ action: 'health' });
+
+      // Both sources are named, and the served count is present.
+      expect(result.message).toContain('memory skeleton cache');
+      expect(result.message).toContain('PostgreSQL conversation tier');
+      expect(result.message).toContain('4753');
+      // Not "Total: 0" as the whole answer — the served tier follows it.
+      expect(result.message.indexOf('PostgreSQL conversation tier'))
+        .toBeGreaterThan(result.message.indexOf('Total: 0'));
+      expect(result.message).toContain('NOT YET MEASURED');
+      expect(result.data.measuredSource).toBe('memory-skeleton-cache');
+      expect(result.data.pgConversationTier).toEqual({ status: 'ready', conversations: 4753 });
+    });
+
+    it('#4701: reports the PG tier as disabled when its gate is off', async () => {
+      const mockStats = {
+        tier1_roo: 0, tier2_claude: 0, tier3_archives: 0, total: 0,
+        config: { enableClaudeTier: false, enableArchiveTier: false },
+        cacheAgeMs: 1000, stale: false,
+        tier3_snapshot: { seeded: false, savedAt: null, ageMs: null, entries: 0 },
+      };
+      vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
+        getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
+      } as any);
+
+      const result = await roosyncDiagnose({ action: 'health' });
+
+      expect(result.message).toContain('PostgreSQL conversation tier');
+      expect(result.message).toContain('disabled');
+      expect(result.data.pgConversationTier).toEqual({ status: 'disabled', conversations: null });
+    });
+
+    it('#4701: surfaces a PG tier failure verbatim, never a silent 0', async () => {
+      const mockStats = {
+        tier1_roo: 0, tier2_claude: 0, tier3_archives: 0, total: 0,
+        config: { enableClaudeTier: false, enableArchiveTier: false },
+        cacheAgeMs: 1000, stale: false,
+        tier3_snapshot: { seeded: false, savedAt: null, ageMs: null, entries: 0 },
+      };
+      vi.spyOn(SkeletonCacheService, 'getInstance').mockReturnValue({
+        getCacheTierStats: vi.fn(() => Promise.resolve(mockStats)),
+      } as any);
+      vi.mocked(getPgConversationTierStatus).mockResolvedValueOnce({
+        status: 'failed', conversations: null, error: 'connect ECONNREFUSED',
+      });
+
+      const result = await roosyncDiagnose({ action: 'health' });
+
+      expect(result.message).toContain('failed — connect ECONNREFUSED');
+      expect(result.data.pgConversationTier).toEqual({
+        status: 'failed', conversations: null, error: 'connect ECONNREFUSED',
+      });
     });
   });
 
