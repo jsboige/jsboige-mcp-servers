@@ -231,6 +231,27 @@ class TestMalformedGateIsolation:
         result = asyncio.run(evaluate_capacity_gate("m-raw", gate))
         assert result.verdict == "unknown" and result.allowed is False
 
+    def test_unvalidated_timeout_is_unknown_and_spawns_nothing(self, tmp_path):
+        """A non-numeric timeout_s is coerced BEFORE the spawn: nothing is
+        left running without a bound."""
+        counter = tmp_path / "spawns.txt"
+        gate = {"command": _counter_probe(str(counter)), "timeout_s": "abc"}
+        result = asyncio.run(evaluate_capacity_gate("m-raw", gate))
+        assert result.verdict == "unknown" and result.allowed is False
+        # A child spawned before the coercion would be detached and still
+        # starting: give it time to write before asserting it never ran.
+        time.sleep(3)
+        assert not counter.exists()
+
+    def test_unvalidated_cache_s_does_not_raise_or_cache(self, tmp_path):
+        counter = tmp_path / "spawns.txt"
+        gate = {"command": _counter_probe(str(counter)), "cache_s": "abc"}
+        first = asyncio.run(evaluate_capacity_gate("m-raw", gate))
+        second = asyncio.run(evaluate_capacity_gate("m-raw", gate))
+        assert first.verdict == second.verdict == "green"
+        assert second.from_cache is False
+        assert counter.read_text().count("x") == 2
+
     def test_call_agent_refuses_the_rejected_model_only(self):
         typo = ModelConfig.from_dict(
             {"id": "m-x", "capacity_gate": {"command": []}}

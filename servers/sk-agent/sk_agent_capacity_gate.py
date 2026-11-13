@@ -210,6 +210,9 @@ async def evaluate_capacity_gate(
     verdict = VERDICT_UNKNOWN
     detail: dict[str, Any] | None = None
     try:
+        # Coerce the bound BEFORE spawning: a bad value must not leave a
+        # child running with nobody to kill it.
+        timeout_s = float(gate.get("timeout_s", 10.0))
         child_env = dict(os.environ)
         child_env.update(gate.get("env") or {})
         proc = await asyncio.create_subprocess_exec(
@@ -220,7 +223,7 @@ async def evaluate_capacity_gate(
         )
         try:
             stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=float(gate.get("timeout_s", 10.0))
+                proc.communicate(), timeout=timeout_s
             )
         except asyncio.TimeoutError:
             # A probe that overruns its bound must not keep accumulating
@@ -243,7 +246,10 @@ async def evaluate_capacity_gate(
             "capacity gate for model '%s' could not run: %s", model_id, exc
         )
 
-    cache_s = float(gate.get("cache_s", 10.0))
+    try:
+        cache_s = float(gate.get("cache_s", 10.0))
+    except (TypeError, ValueError):
+        cache_s = 0.0  # unvalidated in-code gate: never cache, never raise
     if cache_s > 0:
         _GATE_CACHE[model_id] = (now + cache_s, verdict, detail)
     return CapacityGateResult(
