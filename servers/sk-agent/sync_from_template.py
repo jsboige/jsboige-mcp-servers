@@ -396,6 +396,84 @@ def inject_mcp_install_paths(config: dict, script_dir: Path) -> int:
     return rewritten
 
 
+# --- F1 runtime launch flattening (#4699, parent #4149 pt 4) ------------------
+# The template ships the two child plugins as `npx -y <pkg>` chains: one failed
+# spawn leaves FOUR processes behind (census 05/11, myia-po-2027). Seats that
+# run F1 (deploy-claude-mcp-settings.ps1) have the packages installed once
+# under <runtimes-root>/<name>; those seats launch the manifest bin with
+# `node <entry>` — one process, no registry access at start. The sync performs
+# the same flattening when the runtime is present and its entry resolves;
+# otherwise the template npx declaration survives VERBATIM (the seat has no F1
+# install for that plugin) and the report says so — never a half-resolution.
+
+RUNTIME_PLUGIN_SPECS = {
+    "searxng": {"name": "searxng", "package": "mcp-searxng"},
+    "playwright": {"name": "playwright", "package": "@playwright/mcp"},
+}
+
+DEFAULT_RUNTIMES_ROOT = Path.home() / ".claude" / "mcp-runtimes"
+
+
+def resolve_runtime_entry(runtimes_root: Path, spec: dict):
+    """READ side of Resolve-McpRuntimeEntry (mcp-runtime.lib.ps1), no install.
+
+    Bin resolution mirrors npm: manifest name key first, then the UNSCOPED
+    name, then the single entry. The entry file must exist — a manifest
+    without its bin on disk does not resolve (returns None, npx survives).
+    """
+    pkg_dir = runtimes_root / spec["name"] / "node_modules" / spec["package"]
+    manifest_path = pkg_dir / "package.json"
+    if not manifest_path.is_file():
+        return None
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    bin_value = manifest.get("bin")
+    if not bin_value:
+        return None
+    if isinstance(bin_value, dict):
+        pkg_name = manifest.get("name") or spec["package"]
+        unscoped = pkg_name.rsplit("/", 1)[-1]
+        chosen = bin_value.get(pkg_name)
+        if chosen is None:
+            chosen = bin_value.get(unscoped)
+        if chosen is None and len(bin_value) == 1:
+            chosen = next(iter(bin_value.values()))
+        if chosen is None:
+            return None
+        bin_value = chosen
+    if not isinstance(bin_value, str):
+        return None
+    entry = pkg_dir / bin_value
+    return entry if entry.is_file() else None
+
+
+def inject_runtime_node_commands(config: dict, runtimes_root: Path):
+    """Rewrite npx child-plugin declarations to `node <entry>` when the F1
+    runtime resolves. Only command+args change (env and every other field
+    survive, per the searxng-takeover contract). Declarations that are not
+    the template's plain `npx` are left alone. Returns (flattened, notes).
+    """
+    flattened = 0
+    notes: list[str] = []
+    for mcp in config.get("mcps", []):
+        spec = RUNTIME_PLUGIN_SPECS.get(mcp.get("id"))
+        if spec is None or mcp.get("command") != "npx":
+            continue
+        entry = resolve_runtime_entry(runtimes_root, spec)
+        if entry is None:
+            notes.append(
+                f"{mcp['id']}: no F1 runtime under {runtimes_root} — "
+                "template npx declaration kept"
+            )
+            continue
+        mcp["command"] = "node"
+        mcp["args"] = [str(entry)]
+        flattened += 1
+    return flattened, notes
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sync sk_agent_config.json from template")
     parser.add_argument("--dry-run", action="store_true", help="Print diff instead of writing")
@@ -405,6 +483,10 @@ def main():
                         help="Comma-separated local-only agent ids to DROP "
                              "instead of preserving (their template-absent "
                              "model/MCP dependencies go with them)")
+    parser.add_argument("--runtimes-root", default="",
+                        help="F1 runtimes root to flatten npx child plugins "
+                             "to node <entry> (default: ~/.claude/mcp-runtimes); "
+                             "tests point this at a fixture directory")
     args = parser.parse_args()
     prune_ids = {p.strip() for p in args.prune_local.split(",") if p.strip()}
 
@@ -466,6 +548,19 @@ def main():
     # preserved-local + additions) so seats synced before the fix heal too.
     rewritten_path_fields = inject_mcp_install_paths(new_config, SCRIPT_DIR)
 
+    # F1 runtime flattening (#4699): same FINAL-config timing as #4085 — a
+    # preserved local-only agent's searxng/playwright reference flattens too.
+    # Only the template's plain `npx` declarations are rewritten; anything
+    # else (an operator's explicit node/uvx launch) is left untouched.
+    runtimes_root = (
+        Path(args.runtimes_root) if args.runtimes_root else DEFAULT_RUNTIMES_ROOT
+    )
+    flattened_runtimes, runtime_notes = inject_runtime_node_commands(
+        new_config, runtimes_root
+    )
+    for note in runtime_notes:
+        print(f"[RUNTIME] {note}", file=sys.stderr)
+
     # Report changes
     template_models = {m["id"] for m in template.get("models", [])}
     local_models = {m["id"] for m in local.get("models", [])}
@@ -494,7 +589,8 @@ def main():
 
     print(
         f"MCPs: {len(new_config.get('mcps', []))} declarations, "
-        f"{rewritten_path_fields} install-path placeholder field(s) rewritten"
+        f"{rewritten_path_fields} install-path placeholder field(s) rewritten, "
+        f"{flattened_runtimes} npx child plugin(s) flattened to node"
     )
 
     # Missing-keys guard (sk-agent thread 27/09): a template placeholder left in the

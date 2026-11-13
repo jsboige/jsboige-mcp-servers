@@ -678,3 +678,109 @@ def test_env_binding_survives_when_literal_key_is_placeholder():
             f"its api_key_env in the rebuild (model={qwen!r})"
         )
         assert qwen["api_key"] == "YOUR_MEDIUM_API_KEY_HERE"
+
+
+# --- #4699: F1 runtime flattening of the npx child plugins -------------------
+#
+# The template ships searxng/playwright as `npx -y <pkg>` chains (one failed
+# spawn leaves FOUR processes behind, census 05/11). Seats running F1 have the
+# packages installed once under <runtimes-root>/<name>; the sync flattens the
+# declaration to `node <entry>` when the runtime resolves and keeps the npx
+# declaration VERBATIM otherwise — never a half-resolution.
+
+
+def _template_with_npx_plugins():
+    template = json.loads(json.dumps(TEMPLATE))
+    template["mcps"] = [
+        {
+            "id": "searxng",
+            "command": "npx",
+            "args": ["-y", "mcp-searxng"],
+            "env": {"SEARXNG_URL": "https://search.myia.io"},
+        },
+        {
+            "id": "playwright",
+            "command": "npx",
+            "args": ["-y", "@playwright/mcp@latest"],
+        },
+    ]
+    return template
+
+
+def _make_fake_runtime(root, name, package, bin_value, manifest_name=None):
+    """Mirror the F1 layout: <root>/<name>/node_modules/<package>/ with a
+    package.json manifest and the bin entry actually on disk."""
+    pkg_dir = root / name / "node_modules" / package
+    pkg_dir.mkdir(parents=True)
+    entry_rel = bin_value if isinstance(bin_value, str) else next(iter(bin_value.values()))
+    (pkg_dir / entry_rel).parent.mkdir(parents=True, exist_ok=True)
+    (pkg_dir / entry_rel).write_text("#!/usr/bin/env node", encoding="utf-8")
+    manifest = {
+        "name": manifest_name or package,
+        "version": "1.0.0",
+        "bin": bin_value,
+    }
+    (pkg_dir / "package.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return pkg_dir / entry_rel
+
+
+def test_npx_child_plugins_flattened_to_node_when_runtime_resolves():
+    template = _template_with_npx_plugins()
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        runtimes = tmp / "runtimes"
+        # searxng: string bin (real mcp-searxng shape). playwright: dict bin
+        # with a single entry under an unrelated key (real @playwright/mcp
+        # shape) — exercises the single-entry fallback of the npm resolution.
+        searx_entry = _make_fake_runtime(
+            runtimes, "searxng", "mcp-searxng", "dist/cli.js"
+        )
+        pw_entry = _make_fake_runtime(
+            runtimes, "playwright", "@playwright/mcp", {"mcp-server": "cli.js"}
+        )
+        proc, config_path = _run_sync(
+            tmp,
+            LOCAL_HEALTHY,
+            extra_args=("--runtimes-root", str(runtimes)),
+            template=template,
+        )
+        assert proc.returncode == 0, (
+            f"flattening must keep the sync healthy — stderr={proc.stderr!r}"
+        )
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        searx = next(m for m in written["mcps"] if m["id"] == "searxng")
+        assert searx["command"] == "node", searx
+        assert searx["args"] == [str(searx_entry)], searx["args"]
+        # Only command+args change — the env binding survives untouched.
+        assert searx["env"] == {"SEARXNG_URL": "https://search.myia.io"}, searx["env"]
+        pw = next(m for m in written["mcps"] if m["id"] == "playwright")
+        assert pw["command"] == "node", pw
+        assert pw["args"] == [str(pw_entry)], pw["args"]
+        assert "npx child plugin(s) flattened to node" in proc.stdout
+
+
+def test_missing_runtimes_root_keeps_npx_declarations_verbatim():
+    template = _template_with_npx_plugins()
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        absent_root = tmp / "no-such-runtimes"
+        proc, config_path = _run_sync(
+            tmp,
+            LOCAL_HEALTHY,
+            extra_args=("--runtimes-root", str(absent_root)),
+            template=template,
+        )
+        assert proc.returncode == 0, (
+            f"a seat without the runtimes must sync fine — stderr={proc.stderr!r}"
+        )
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        for expected_args in (["-y", "mcp-searxng"], ["-y", "@playwright/mcp@latest"]):
+            mcp = next(m for m in written["mcps"] if m["args"] == expected_args)
+            assert mcp["command"] == "npx", mcp
+        # The report says the template declaration was KEPT, per plugin.
+        kept = [line for line in proc.stderr.splitlines() if "[RUNTIME]" in line]
+        assert len(kept) == 2, f"expected one note per plugin — stderr={proc.stderr!r}"
+        for plugin in ("searxng", "playwright"):
+            assert any(
+                plugin in line and "npx declaration kept" in line for line in kept
+            ), kept
