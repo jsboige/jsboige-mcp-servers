@@ -23,6 +23,10 @@ import { createHash } from 'crypto';
 import { classifyIndexingError, reconcileErrorClass, readLeaderLockInfo, readIndexerQueueStatus, noteIndexEnqueue } from '../../services/background-services.js';
 import { isStuckRetry } from '../../types/indexing.js';
 import { sanitizeInt } from '../../utils/int-validator.js';
+// #4691: what ListTools actually serves — the reference for "this call could
+// not resolve". Static schemas only (tool-definitions.ts imports no handlers),
+// so this does not reintroduce the #1145 barrel chain.
+import { allToolDefinitions } from '../tool-definitions.js';
 
 // Import des handlers existants
 import { indexTaskSemanticTool } from './index-task.tool.js';
@@ -2219,6 +2223,30 @@ export async function handleRooSyncIndexing(
                         downstream_action_rate: count > 0 ? +((downstreamActionCounts[name] || 0) / count * 100).toFixed(1) : 0,
                     }));
 
+                // #4691: signal calls to a tool that does not exist on this server.
+                // normalizeToolName drops the server prefix (and must stay untouched — its
+                // source keys the per-file cache, #753), so a call to
+                // `mcp__roo-state-manager__CronList` — no such tool here — folds into the
+                // `CronList` counts as if the built-in tool had been called, and nothing in
+                // the output says the call could not resolve. Raw names survive in
+                // rawVariants: flag every raw name under this server's prefix whose tool
+                // part is absent from allToolDefinitions. Detection lives at render time;
+                // counting is unchanged.
+                const SERVER_TOOL_PREFIX = 'mcp__roo-state-manager__';
+                const knownServerToolNames = new Set(allToolDefinitions.map((d) => d.name));
+                const unknownServerToolCounts: Record<string, number> = {};
+                for (const rawMap of Object.values(rawVariants)) {
+                    for (const [rawName, rawCount] of Object.entries(rawMap)) {
+                        if (!rawName.startsWith(SERVER_TOOL_PREFIX)) continue;
+                        if (knownServerToolNames.has(rawName.slice(SERVER_TOOL_PREFIX.length))) continue;
+                        unknownServerToolCounts[rawName] = (unknownServerToolCounts[rawName] || 0) + rawCount;
+                    }
+                }
+                const unknownServerTools = Object.entries(unknownServerToolCounts)
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([rawName, calls]) => ({ raw_name: rawName, calls }));
+                const unknownServerToolsTotal = unknownServerTools.reduce((s, t) => s + t.calls, 0);
+
                 // Sort weeks chronologically
                 const sortedWeeks = Object.entries(weeklyBuckets)
                     .sort((a, b) => a[0].localeCompare(b[0]))
@@ -2249,9 +2277,11 @@ export async function handleRooSyncIndexing(
                             total_tool_calls: totalCalls,
                             unique_tools: Object.keys(toolCounts).length,
                             source_distribution: sourceCounts,
+                            unknown_server_tools: unknownServerTools,
+                            unknown_server_tools_total: unknownServerToolsTotal,
                             tools: sortedTools,
                             weekly_trend: sortedWeeks,
-                            summary: `${totalCalls} tool calls across ${Object.keys(toolCounts).length} tools, ${sortedWeeks.length} weeks (${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}). Errors: ${Object.values(errorCounts).reduce((s, c) => s + c, 0)}, Retries: ${Object.values(retryCounts).reduce((s, c) => s + c, 0)}, Downstream actions: ${Object.values(downstreamActionCounts).reduce((s, c) => s + c, 0)}`,
+                            summary: `${totalCalls} tool calls across ${Object.keys(toolCounts).length} tools, ${sortedWeeks.length} weeks (${startDate.toISOString().slice(0, 10)} → ${endDate.toISOString().slice(0, 10)}). Errors: ${Object.values(errorCounts).reduce((s, c) => s + c, 0)}, Retries: ${Object.values(retryCounts).reduce((s, c) => s + c, 0)}, Downstream actions: ${Object.values(downstreamActionCounts).reduce((s, c) => s + c, 0)}, Unknown server tools: ${unknownServerToolsTotal}`,
                         }, null, 2)
                     }]
                 };
