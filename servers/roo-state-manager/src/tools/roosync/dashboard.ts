@@ -902,9 +902,10 @@ async function cloudCondenseWithRetry(
 ): Promise<{ content: string; elapsedMs: number; model: string; usage?: LLMTokenUsage } | { error: string; attempts: number; usage?: LLMTokenUsage } | null> {
   const modelErrors: string[] = [];
   let attempts = 0;
-  // #4434 G2: tokens of the LAST answered cloud response — kept across models so a
-  // chain that fails entirely still reports what it billed (empty 200s included).
-  let lastAnsweredUsage: LLMTokenUsage | undefined;
+  // #4434 G2 (review 13/11): ACCUMULATED tokens of every answered cloud response,
+  // across models and retries — a chain that fails entirely still reports all it
+  // billed (empty 200s included), not just the last round-trip.
+  let answeredUsageTotal: LLMTokenUsage | undefined;
   // #2719 borne: computed once — the prompt size is fixed for the whole retry/chain.
   const promptBytes = Buffer.byteLength(systemPrompt + userPrompt, 'utf8');
   budgetExhausted: for (const [position, fbModel] of getFallbackModelChain().entries()) {
@@ -934,7 +935,7 @@ async function cloudCondenseWithRetry(
         if (guardReason !== null) {
           attempts++;
           lastError = `guard-rejected (${guardReason})`;
-          if (result.usage) lastAnsweredUsage = result.usage;
+          if (result.usage) answeredUsageTotal = addTokenUsage(answeredUsageTotal, result.usage);
           logger.warn('#3962 cloud fallback content rejected by the caller guard — moving to the next model', {
             model: result.model,
             reason: guardReason,
@@ -947,7 +948,7 @@ async function cloudCondenseWithRetry(
       }
       attempts++;
       lastError = result.error;
-      if (result.usage) lastAnsweredUsage = result.usage;
+      if (result.usage) answeredUsageTotal = addTokenUsage(answeredUsageTotal, result.usage);
       if (!result.retryable || attempt >= maxAttempts) break;
       const backoff = FB_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
       logger.info(`#2998 cloud fallback retrying in ${backoff}ms (attempt ${attempt}/${maxAttempts})`, {
@@ -961,7 +962,7 @@ async function cloudCondenseWithRetry(
   const error = modelErrors.length === 1
     ? modelErrors[0].slice(modelErrors[0].indexOf(': ') + 2)
     : modelErrors.join(' | ');
-  return { error, attempts, usage: lastAnsweredUsage };
+  return { error, attempts, usage: answeredUsageTotal };
 }
 
 /**
@@ -4605,13 +4606,18 @@ export interface LLMCallStats {
   fallbackAttempted?: boolean;
   /** Error message from the last failed fallback attempt (truncated). */
   fallbackError?: string;
-  // #4434 G2: per-tier token accounting, from the API `usage` of the last response
-  // that tier ANSWERED — delivered content, guard-rejected, or null-content (thinking
-  // burns the input before the output budget cuts it). Attempts that threw
-  // (timeout/5xx) leave the field untouched: no response, no usage. Input and
-  // output only; the cache split stays a hub-side measurement (claudish#713).
+  // #4434 G2: per-tier token accounting — the leg's ACCUMULATED volume over every
+  // response that tier ANSWERED (delivered content, guard-rejected, or null-content:
+  // thinking burns the input before the output budget cuts it). Retries that answer
+  // 200 are billed, so they ADD — assignment kept only the last attempt and
+  // undercounted exactly in the most expensive passes (review 13/11, #3958).
+  // Attempts that threw (timeout/5xx) leave the field untouched: no response, no
+  // usage. Input and output only; the cache split stays a hub-side measurement
+  // (claudish#713). Caveat for the G5 aggregate: a half-reported usage (one field
+  // missing) maps to 0 on the missing side, so a summed 0 means "unreported or
+  // zero", never proof of a true zero.
   primaryTokens?: LLMTokenUsage;
-  /** Same accounting for the cloud tier's last answered response. */
+  /** Same accounting for the cloud tier's answered responses. */
   fallbackTokens?: LLMTokenUsage;
 }
 
@@ -4633,6 +4639,15 @@ function chatUsageToTokenUsage(
 ): LLMTokenUsage | undefined {
   if (!usage || (usage.prompt_tokens === undefined && usage.completion_tokens === undefined)) return undefined;
   return { input: usage.prompt_tokens ?? 0, output: usage.completion_tokens ?? 0 };
+}
+
+/** #4434 G2 (review 13/11): fold one ANSWERED response's usage into the leg's
+ * running total. Retries that answer 200 with null content are billed all the
+ * same — overwriting kept only the last attempt and understated the pass.
+ * A 0 on one side stays "unreported or zero" (chatUsageToTokenUsage maps a
+ * half-reported usage to 0) — documented for the G5 aggregate. */
+function addTokenUsage(prev: LLMTokenUsage | undefined, next: LLMTokenUsage): LLMTokenUsage {
+  return { input: (prev?.input ?? 0) + next.input, output: (prev?.output ?? 0) + next.output };
 }
 
 /** Extract LLMTokenUsage from an Anthropic Messages response `usage`. */
@@ -4896,8 +4911,9 @@ FORMAT :
       const summary = response.choices[0]?.message?.content;
       // #4434 G2: stamp the primary's tokens on every ANSWERED response — a
       // null-content attempt (thinking overran max_tokens) still spends the input.
+      // ACCUMULATED per leg (review 13/11): billed retries add, not overwrite.
       const usage = chatUsageToTokenUsage(response.usage);
-      if (usage) stats.primaryTokens = usage;
+      if (usage) stats.primaryTokens = addTokenUsage(stats.primaryTokens, usage);
       if (!summary) {
         stats.nullCount += 1;
         logger.warn('LLM returned empty summary', { attempt, finishReason: response.choices[0]?.finish_reason, usage: usage ?? 'unreported' });
@@ -5223,9 +5239,10 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
       });
 
       const newStatus = response.choices[0]?.message?.content;
-      // #4434 G2: same accounting as the summary leg — every answered response.
+      // #4434 G2: same accounting as the summary leg — every answered response,
+      // ACCUMULATED (review 13/11): billed retries add, not overwrite.
       const usage = chatUsageToTokenUsage(response.usage);
-      if (usage) stats.primaryTokens = usage;
+      if (usage) stats.primaryTokens = addTokenUsage(stats.primaryTokens, usage);
       if (!newStatus) {
         stats.nullCount += 1;
         logger.warn('LLM returned empty status update', { attempt, finishReason: response.choices[0]?.finish_reason, usage: usage ?? 'unreported' });

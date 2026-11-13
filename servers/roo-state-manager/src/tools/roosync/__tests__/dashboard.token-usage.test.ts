@@ -22,6 +22,8 @@
  *   (t6) cloud answers empty-content WITH usage (billed 200, rejected by the
  *        chain) → `fallbackTokens` is stamped on the failed legs too: a rejected
  *        round-trip is still a billed one (claudish#713: 2 empty bodies in 3)
+ *   (t7) primary null-content retry then success → `primaryTokens` ACCUMULATED
+ *        across attempts (review 13/11): billed retries add, not overwrite
  *
  * @module tools/roosync/__tests__/dashboard.token-usage
  */
@@ -235,8 +237,10 @@ describe('#4434 G2 — per-leg token accounting (primary + fallback tiers)', { t
     );
     expect(pass).toBeDefined();
     expect(pass.llm).toBeDefined();
-    expect(pass.llm.summary.primaryTokens).toEqual({ input: 12345, output: 4096 });
-    expect(pass.llm.status.primaryTokens).toEqual({ input: 12345, output: 4096 });
+    // Review 13/11: usage ACCUMULATES across the 3 billed null-content attempts
+    // (LLM_MAX_RETRIES) — 3 × (12345, 4096) per leg, not the last attempt's value.
+    expect(pass.llm.summary.primaryTokens).toEqual({ input: 37035, output: 12288 });
+    expect(pass.llm.status.primaryTokens).toEqual({ input: 37035, output: 12288 });
   });
 
   it('(t6) cloud answers empty-content WITH usage (billed 200, rejected) → fallbackTokens stamped on the failed legs', async () => {
@@ -262,5 +266,34 @@ describe('#4434 G2 — per-leg token accounting (primary + fallback tiers)', { t
     expect(pass.llm.status.fallbackTokens).toEqual({ input: 3000, output: 5 });
     expect(pass.llm.summary.fallbackAttempted).toBe(true);
     expect(String(pass.llm.summary.fallbackError)).toContain('empty-content');
+  });
+
+  it('(t7) primary null-content retry then success → usage ACCUMULATED across attempts (review 13/11)', async () => {
+    // The exact scenario of the review: attempt 1 answers 200 with usage but no
+    // content (thinking overran max_tokens) — billed — attempt 2 succeeds.
+    // Overwrite kept only attempt 2's usage; the accumulator adds both.
+    mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+    let summaryCalls = 0;
+    mockPrimaryCreate.mockImplementation(async (req: any) => {
+      if (isSummaryRequest(req)) {
+        summaryCalls += 1;
+        if (summaryCalls === 1) {
+          return {
+            choices: [{ message: { content: null }, finish_reason: 'length' }],
+            usage: { prompt_tokens: 1000, completion_tokens: 100 },
+          };
+        }
+        return chatAnswer('summary recovered on retry', { prompt_tokens: 2000, completion_tokens: 200 });
+      }
+      return chatAnswer('status from primary', { prompt_tokens: 7000, completion_tokens: 900 });
+    });
+
+    const condensed = await driveOneCondensedPass();
+    const pass = condensed.condenseDiagnostic.find((d: any) => d.outcome === 'condensed');
+    expect(pass).toBeDefined();
+    // The billed retry ADDS: 1000+2000 input, 100+200 output — not just the last.
+    expect(pass.llm.summary.primaryTokens).toEqual({ input: 3000, output: 300 });
+    // The status leg answered once — its single usage passes through unchanged.
+    expect(pass.llm.status.primaryTokens).toEqual({ input: 7000, output: 900 });
   });
 });
