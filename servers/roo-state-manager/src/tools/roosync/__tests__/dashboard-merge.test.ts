@@ -288,6 +288,64 @@ describe('action merge — refus (aucune écriture)', () => {
   });
 });
 
+describe('action merge — #4596 (ii) cible retirée (garde retired-skip)', () => {
+  it('cible portant une marque de retraite ACTIVE → refus dispatcher en amont, aucun artefact touché', async () => {
+    // Cible vivante côté fichier, mais marquée retirée (déjà fusionnée ailleurs).
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-01T00:00:00.000Z', [M.m2]);
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-02T00:00:00.000Z', [M.m1old]);
+    // Marque pour la CIBLE uniquement (la garde source du dispatcher lit la
+    // même fonction — un mock global ferait refuser la source à la place).
+    getRetirementSpy.mockImplementation(async (k: string) =>
+      k === 'machine-myia-po-2025'
+        ? {
+            sourceKey: 'machine-myia-po-2025',
+            targetKey: 'machine-myia-po-2024',
+            retiredBy: 'myia-po-2024:roo-extensions',
+            retiredAt: '2026-11-01T00:00:00.000Z',
+          }
+        : null
+    );
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    expect(result.success).toBe(false);
+    expect(String(result.message)).toContain('la cible \'machine-myia-po-2025\' est elle-même retirée');
+    expect(String(result.message)).toContain('merger directement vers \'machine-myia-po-2024\'');
+    expect(dualWriteSyncSpy).not.toHaveBeenCalled();
+    expect(pgSyncCheckedSpy).not.toHaveBeenCalled();
+    expect(retireCheckedSpy).not.toHaveBeenCalled();
+    // Les deux fichiers restent intacts — aucune disposition.
+    expect(fileExists('machine-myia-po-2025.md')).toBe(true);
+    expect(fileExists('machine-myia-po-2025 (1).md')).toBe(true);
+  });
+
+  it('retired-skip au sync de l’union (race de marque) → source NON disposée — ok sans écriture n’est pas une persistance', async () => {
+    seedDashboard('machine-myia-po-2025.md', 'machine', '2026-09-01T00:00:00.000Z', [M.m2]);
+    seedDashboard('machine-myia-po-2025 (1).md', 'machine', '2026-09-02T00:00:00.000Z', [M.m1old]);
+    // La garde d'entrée ne voit rien (pas de marque au moment de la lecture),
+    // mais le writer PG skip : la marque a été posée dans la fenêtre — c'est
+    // exactement ce que retired-skip rapporte.
+    pgSyncCheckedSpy.mockResolvedValue({ ok: true, reason: 'retired-skip' });
+
+    const result = await roosyncDashboard({
+      action: 'merge', type: 'machine', machineId: 'myia-po-2025',
+      sourceKey: 'machine-myia-po-2025 (1)'
+    }) as any;
+
+    // Le merge RÉUSSIT côté fichier, mais rapporte honnêtement que PG n'a
+    // rien persisté — et surtout ne dispose PAS la source.
+    expect(result.success).toBe(true);
+    expect(String(result.message)).toContain("n'a PAS persisté");
+    expect(retireCheckedSpy).not.toHaveBeenCalled();
+    expect(dualWriteDeleteSpy).not.toHaveBeenCalled();
+    // Le fichier source reste en place (suppression différée).
+    expect(fileExists('machine-myia-po-2025 (1).md')).toBe(true);
+  });
+});
+
 describe('action merge — #3782 tombstones d’archive (résurrection CoursIA 26/09)', () => {
   // Reproduction du scénario mesuré : la vue source (fichier fork périmé OU
   // journal fork jamais condensé) porte des messages que la cible a déjà

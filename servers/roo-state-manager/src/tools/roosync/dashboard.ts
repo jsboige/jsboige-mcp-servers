@@ -11228,8 +11228,16 @@ async function handleMerge(
   // #3342 ou épuisement des retries, l'union n'est pas garanties en PG —
   // retirer la source détruirait alors des messages qui n'existent plus que
   // dans son journal PG.
+  // #4596 (ii) — `retired-skip` est ok SANS écriture : sous race (une marque
+  // de retraite posée sur la cible ENTRE la garde d'entrée et ce sync), la
+  // moitié PG n'a rien persisté — ne pas disposer la source pour un union
+  // qui ne vit que dans le fichier.
   const pgOutcome = await dualWriteDashboardSyncChecked(merged);
-  const pgPersisted = pgOutcome.ok || pgOutcome.reason === 'disabled';
+  const pgPersisted =
+    (pgOutcome.ok && pgOutcome.reason !== 'retired-skip') || pgOutcome.reason === 'disabled';
+  // #4596 (ii) — retired-skip n'a pas de detail ; l'accès direct ne compile
+  // plus sur l'union narrowed (ok:true sans detail).
+  const pgOutcomeDetail = 'detail' in pgOutcome ? pgOutcome.detail : undefined;
   if (!pgPersisted) {
     logger.error(
       `[MERGE] #3537 §6.2 — union écrite dans le FICHIER cible mais PG ne l'a PAS persistée : suppression de la source DIFFÉRÉE`,
@@ -11248,7 +11256,7 @@ async function handleMerge(
       message:
         `Clé '${sourceKey}' fusionnée dans '${key}' côté FICHIER : ${mergedMessages.length} msg après union ` +
         `(${deduped} doublon(s) par id, ${newerSourceWins} résolu(s) vers la copie plus récente). ` +
-        `⛔ MAIS la moitié PG n'a PAS persisté l'union (${pgOutcome.reason}${pgOutcome.detail ? ` : ${pgOutcome.detail}` : ''}) — ` +
+        `⛔ MAIS la moitié PG n'a PAS persisté l'union (${pgOutcome.reason}${pgOutcomeDetail ? ` : ${pgOutcomeDetail}` : ''}) — ` +
         `SUPPRESSION DE LA SOURCE DIFFÉRÉE : son journal PG reste la seule trace des messages non encore dans la cible. ` +
         `Source INTACTE. Réessayer le merge une fois PG revenu (l'union est idempotente).`
     };
@@ -11505,10 +11513,15 @@ async function handleMerge(
           // quand même et détruirait la seule ligne PG détentrice de ces messages ;
           // les writes suivants rejoueraient la même erreur : pas de cicatrisation.
           const reSyncOutcome = await dualWriteDashboardSyncChecked(merged);
-          const reSyncPersisted = reSyncOutcome.ok || reSyncOutcome.reason === 'disabled';
+          // #4596 (ii) — retired-skip n'est pas une persistance (voir la gate
+          // nominale ci-dessus) : sous race de marque, ne pas disposer la source.
+          const reSyncPersisted =
+            (reSyncOutcome.ok && reSyncOutcome.reason !== 'retired-skip') ||
+            reSyncOutcome.reason === 'disabled';
           reUnionPersisted = reSyncPersisted;
           if (!reSyncPersisted) {
-            reUnionFailDetail = ` (${reSyncOutcome.reason}${reSyncOutcome.detail ? ` : ${reSyncOutcome.detail}` : ''})`;
+            const reSyncDetail = 'detail' in reSyncOutcome ? reSyncOutcome.detail : undefined;
+            reUnionFailDetail = ` (${reSyncOutcome.reason}${reSyncDetail ? ` : ${reSyncDetail}` : ''})`;
             logger.error(
               `[MERGE] #3537 §6.2 — re-union post-rename écrite dans le FICHIER cible mais PG ne l'a PAS persistée : suppression de la ligne PG source DIFFÉRÉE`,
               {
