@@ -248,6 +248,79 @@ bumps into the 300 s client budget, with a raised thinking budget:
 Deploying real values is a per-model operations decision, made one model at
 a time (nothing is activated in the shipped template).
 
+### Seat-local additions — nb-coder, and the per-model capacity gate (#4712, #4725)
+
+The nb-coder harness (CoursIA#26534) adds four agent entries plus their
+model and MCP dependencies to the seat that runs it — **myia-ai-01 first**;
+other seats are not concerned until the pilot concludes. The entries live in
+the LIVE `sk_agent_config.json` (gitignored, carries keys), NOT in this
+template: a template entry would invalidate every other seat's config, since
+`validate_config` rejects an agent whose MCPs are undeclared (so
+`jupyter_papermill` must ride along) and that MCP is an ai-01-only
+interpreter path. This is the `notebook-auditor` pattern — local agents and
+their model/MCP dependencies survive `sync_from_template.py`
+(`--prune-local` removes them).
+
+The reviewable, sanitized source is
+[`nb_coder_seat_entries.example.json`](nb_coder_seat_entries.example.json)
+and [`test_nb_coder_entries.py`](test_nb_coder_entries.py) validates it with
+the same `validate_config` the seat runs at load. The four agents —
+`notebook-coder`, `notebook-coder-luna`, `notebook-coder-minimax`,
+`notebook-coder-haiku` — are the SAME entry; the model reference is the only
+difference. All four declare `github_read` only: the write function lives on
+`GitHubWritePlugin` (#4725), so a read-only agent's kernel function list
+does not even advertise it.
+
+| Variant | Model entry | Backend |
+|---------|-------------|---------|
+| `notebook-coder` | `qwen3.6-35b-a3b-nbcoder` | Swift engine (`model_id: qwen3.6-35b-a3b`, medium vLLM) **with the declared capacity gate** |
+| `notebook-coder-luna` | `nb-luna` | claudish stable alias via the fleet hub |
+| `notebook-coder-minimax` | `nb-minimax` | claudish stable alias via the fleet hub |
+| `notebook-coder-haiku` | `nb-haiku` | claudish stable alias via the fleet hub |
+
+**The gate sits on a dedicated model id on purpose.** `capacity_gate` is
+evaluated per MODEL ID (`sk_agent_capacity_gate.check_model_capacity_gate`),
+before any LLM call: exit 0 green, 1 yellow (refused unless
+`allow_yellow`), 2 red, anything else unknown — refused, fail-closed.
+Declaring it on the shared `qwen3.6-35b-a3b` / `-audit` entry would
+collaterally gate the auditor and every other Swift consumer; the
+`-nbcoder` id reuses the same engine and endpoint, so a red probe refuses
+only nb-coder dispatches.
+
+**Apply on ai-01** (the seat owner merges; a seat's live config is that
+seat's to change):
+
+1. Copy the `models`, `mcps` and `agents` entries into the live
+   `sk_agent_config.json`. Merge rule: **add what is absent** — a live
+   declaration wins over the copy here (the fragment is self-contained only
+   so `validate_config` can run on it standalone). For
+   `qwen3.6-35b-a3b-nbcoder`, derive from the live auditor model entry
+   (keys, endpoint, sampling) and add `capacity_gate`; fill the real
+   `jupyter_papermill` `PYTHONPATH` and API keys.
+2. Validate (from this directory — `load_config` only LOGS warnings, so
+   call the validator directly):
+   `python -c "import json,sys; from sk_agent_config import validate_config; e=validate_config(json.load(open('sk_agent_config.json',encoding='utf-8'))); print('\n'.join(e) or 'OK'); sys.exit(1 if e else 0)"`
+   — expect `OK`: no `[schema]` error, no unknown model/MCP reference.
+3. Restart the sk-agent process so the MCP host serves the new entries.
+4. Verify: `call_agent` on each variant reports the expected `model_used`;
+   with a red probe the Swift variant returns
+   `error_type: capacity_gate_red` and makes no LLM call; on a sandbox
+   notebook a variant writes a cell (`add_cell`) and the harness runs it
+   with `execute_on_kernel` on the requested kernel; the agent's tool list
+   has no GitHub write function.
+
+**#4716 prerequisite** — jupyter-papermill has two `KernelService`
+registries: `execute_notebook_cell` returns "Kernel not found" on a kernel
+started by `manage_kernel`. The only correct execution path is
+**`execute_on_kernel`**; the system prompt names the defect so a coder
+model does not rediscover it.
+
+**claudish alias contract** (volet jsboige/claudish#1055, g3 pending): the
+`nb-<model>` ids follow the existing routing-key convention (`nb-minimax`).
+Until g3 publishes them the hub 404s on these three ids — expected, the
+variants arm themselves once the aliases land. If g3 ships different names,
+the edit is the three `model` references in the agents (one line each).
+
 ### Complementary local profiles (#2002)
 
 The same local vLLM model (Swift-1.5-27B, fleet vLLM on ai-01) is exposed

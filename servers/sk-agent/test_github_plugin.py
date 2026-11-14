@@ -6,12 +6,19 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from github_plugin import GitHubPlugin
+from semantic_kernel.functions.kernel_plugin import KernelPlugin
+
+from github_plugin import GitHubPlugin, GitHubWritePlugin
 
 
 @pytest.fixture
 def plugin():
     return GitHubPlugin(default_repo="test-owner/test-repo")
+
+
+@pytest.fixture
+def write_plugin():
+    return GitHubWritePlugin(default_repo="test-owner/test-repo")
 
 
 class TestGitHubPluginInit:
@@ -139,17 +146,17 @@ class TestListPrComments:
 
 class TestPostReviewComment:
     @patch("github_plugin.subprocess.run")
-    def test_posts_comment(self, mock_run, plugin):
+    def test_posts_comment(self, mock_run, write_plugin):
         mock_run.return_value = MagicMock(returncode=0, stdout="Comment posted")
-        result = plugin.post_review_comment(100, "Looks good!")
+        result = write_plugin.post_review_comment(100, "Looks good!")
         data = json.loads(result)
         assert data["status"] == "posted"
         assert data["pr"] == 100
 
     @patch("github_plugin.subprocess.run")
-    def test_handles_post_error(self, mock_run, plugin):
+    def test_handles_post_error(self, mock_run, write_plugin):
         mock_run.return_value = MagicMock(returncode=1, stderr="Forbidden")
-        result = plugin.post_review_comment(100, "comment")
+        result = write_plugin.post_review_comment(100, "comment")
         data = json.loads(result)
         assert "error" in data
 
@@ -314,24 +321,46 @@ class TestRunGhEdgeCases:
 
 
 class TestWriteGate:
-    """``allow_write`` gates ``post_review_comment`` (issue #3408: gh
-    read-only outside a profile explicitly declaring ``github_write``)."""
+    """``github_write`` gates the write surface (#3408, split by #4725).
 
-    def test_post_review_comment_allowed_by_default(self):
-        p = GitHubPlugin(default_repo="a/b")
+    The write function now lives on ``GitHubWritePlugin``: a read-only agent's
+    kernel function list must not ADVERTISE what it may not call — the old
+    shape registered it and refused at call time, so the model could see and
+    burn a turn on a forbidden tool.
+    """
+
+    def test_write_plugin_posts_by_default(self):
+        p = GitHubWritePlugin(default_repo="a/b")
         with patch("github_plugin.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=0, stdout="")
             result = p.post_review_comment(1, "nit: typo")
         assert json.loads(result)["status"] == "posted"
         mock_run.assert_called_once()
 
-    def test_post_review_comment_refused_without_allow_write(self):
-        p = GitHubPlugin(default_repo="a/b", allow_write=False)
+    def test_write_plugin_refuses_without_allow_write(self):
+        """Second, in-process guard: constructing the write class without the
+        grant must refuse rather than post."""
+        p = GitHubWritePlugin(default_repo="a/b", allow_write=False)
         with patch("github_plugin.subprocess.run") as mock_run:
             with pytest.raises(ValueError) as exc_info:
                 p.post_review_comment(1, "nit: typo")
             mock_run.assert_not_called()
         assert "github_write" in str(exc_info.value)
+
+    def test_read_only_plugin_does_not_expose_the_write_function(self):
+        """#4725 criterion 5: the agent's tool list is the verification
+        surface — ``post_review_comment`` must not be registered at all."""
+        kernel_plugin = KernelPlugin.from_object(
+            "github", GitHubPlugin(default_repo="a/b", allow_write=False)
+        )
+        assert "post_review_comment" not in kernel_plugin.functions
+        assert "get_pr_diff" in kernel_plugin.functions  # read surface intact
+
+    def test_write_granted_plugin_exposes_the_write_function(self):
+        kernel_plugin = KernelPlugin.from_object(
+            "github", GitHubWritePlugin(default_repo="a/b", allow_write=True)
+        )
+        assert "post_review_comment" in kernel_plugin.functions
 
     def test_read_functions_unaffected_by_allow_write(self):
         p = GitHubPlugin(default_repo="a/b", allow_write=False)
