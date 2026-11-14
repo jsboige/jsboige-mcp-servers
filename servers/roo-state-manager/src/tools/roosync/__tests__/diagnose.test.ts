@@ -199,6 +199,40 @@ describe('roosync_diagnose', () => {
         expect.objectContaining({ error: 'STATFS_UNAVAILABLE' })
       );
     });
+
+    it('names the resolved identity and each half\'s provenance (#4707)', async () => {
+      // Une lane qui se voit attribuer une identité inattendue n'avait aucun
+      // moyen de la lire — le rapport nomme maintenant les deux moitiés et la
+      // source qui les a produites.
+      vi.mocked(fs.access).mockResolvedValue(undefined);
+      const savedMachine = process.env.ROOSYNC_MACHINE_ID;
+      const savedWorkspace = process.env.ROOSYNC_WORKSPACE_ID;
+      process.env.ROOSYNC_MACHINE_ID = 'myia-web1';
+      process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+      try {
+        const result = await roosyncDiagnose({ action: 'env' });
+
+        expect(result.success).toBe(true);
+        expect(result.data.identity).toEqual(expect.objectContaining({
+          machineId: 'myia-web1',
+          workspaceId: 'test-workspace',
+          fullId: 'myia-web1:test-workspace',
+          machineSource: 'ROOSYNC_MACHINE_ID',
+          workspaceSource: 'ROOSYNC_WORKSPACE_ID',
+        }));
+        // État de la liste de confiance : présence + nombre d'entrées, jamais
+        // les valeurs (ce n'est pas un secret, mais le rapport n'en a pas besoin).
+        expect(result.data.identity.trustedCallerIds).toEqual(expect.objectContaining({
+          present: expect.any(Boolean),
+          entries: expect.any(Number),
+        }));
+      } finally {
+        if (savedMachine === undefined) delete process.env.ROOSYNC_MACHINE_ID;
+        else process.env.ROOSYNC_MACHINE_ID = savedMachine;
+        if (savedWorkspace === undefined) delete process.env.ROOSYNC_WORKSPACE_ID;
+        else process.env.ROOSYNC_WORKSPACE_ID = savedWorkspace;
+      }
+    });
   });
 
   // ============================================================

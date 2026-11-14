@@ -15,6 +15,7 @@ import { fileURLToPath } from 'url';
 import { getEmbeddingMetrics } from '../../services/task-indexer/VectorIndexer.js';
 import { tryGetSharedStatePath } from '../../utils/shared-state-path.js';
 import { getServerCapabilities } from '../../utils/server-capabilities.js';
+import { getLocalIdentityDiagnostic } from '../../utils/message-helpers.js';
 
 // Lazy imports — only loaded when needed by debug/reset actions.
 // Static import was causing hangs on action="test" when RooSyncService init blocked (#1910).
@@ -431,6 +432,11 @@ async function handleEnvAction(
       hasPath: !!process.env.PATH,
       cwd: process.cwd()
     },
+    // #4707 : l'identité que le serveur calcule, AVEC sa provenance. Une lane
+    // qui se voyait attribuer une identité inattendue (héritage d'env, cwd du
+    // daemon, worktree) n'avait aucun moyen de la lire : le rapport nomme
+    // maintenant chaque moitié et la source qui l'a produite.
+    identity: getLocalIdentityDiagnostic(),
     status: 'OK'
   };
 
