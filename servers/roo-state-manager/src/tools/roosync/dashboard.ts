@@ -944,7 +944,15 @@ async function cloudCondenseWithRetry(
           });
           break; // the chain is the retry
         }
-        return result; // success
+        // #4434 G5 (ai-01, 14/11): the SUCCESS path must also report what the chain
+        // already billed. Model A answers with a usage then the guard rejects it (:938
+        // folds it into answeredUsageTotal); model B succeeds — returning B's object
+        // untouched dropped A's tokens, contradicting the JSDoc ("every response that
+        // tier ANSWERED"). Keep the historical shape when nothing was accumulated.
+        const successUsage = result.usage
+          ? addTokenUsage(answeredUsageTotal, result.usage)
+          : answeredUsageTotal;
+        return successUsage ? { ...result, usage: successUsage } : result;
       }
       attempts++;
       lastError = result.error;
