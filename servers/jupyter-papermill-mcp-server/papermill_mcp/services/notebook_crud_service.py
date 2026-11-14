@@ -7,6 +7,7 @@ Extracted from notebook_service.py for better modularity.
 
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 
@@ -31,6 +32,38 @@ class NotebookCRUDService:
             workspace_dir: Root workspace directory for path resolution
         """
         self.workspace_dir = workspace_dir
+        # #4716 (second defect, measured 14/11 by ai-01:vllm): every mutating
+        # method does read -> mutate -> write with no serialization. Two
+        # concurrent writers on the same notebook (MCP tool calls run in
+        # separate OS threads) both report success while the last writer
+        # silently discards the other's edit. One lock per resolved path
+        # serializes the whole cycle at the single choke point every writer
+        # of this server goes through.
+        self._path_locks: Dict[str, threading.Lock] = {}
+        self._path_locks_guard = threading.Lock()
+
+    def _lock_for(self, resolved_path: Union[str, Path]) -> "threading.Lock":
+        """
+        Return the write lock for one notebook path (#4716).
+
+        Callers pass the already-resolved absolute path. The key is normcased
+        so case variants of one Windows path share a single lock. Locks are
+        never pruned: one small object per notebook ever written is an
+        accepted cost for a long-lived server.
+
+        Args:
+            resolved_path: Absolute path (as returned by resolve_path)
+
+        Returns:
+            The threading.Lock guarding that notebook's read-modify-write cycle
+        """
+        key = os.path.normcase(os.path.abspath(str(resolved_path)))
+        with self._path_locks_guard:
+            lock = self._path_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                self._path_locks[key] = lock
+            return lock
 
     def resolve_path(self, path: Union[str, Path]) -> str:
         """
@@ -145,52 +178,53 @@ class NotebookCRUDService:
             resolved_path = Path(self.resolve_path(path))
             logger.info(f"Writing notebook: {path} -> {resolved_path}")
 
-            # Convert dictionary to NotebookNode
-            from nbformat.v4 import new_notebook
+            with self._lock_for(resolved_path):
+                # Convert dictionary to NotebookNode
+                from nbformat.v4 import new_notebook
 
-            notebook = new_notebook()
-            notebook.nbformat = content.get("nbformat", 4)
-            notebook.nbformat_minor = content.get("nbformat_minor", 5)
-            notebook.metadata.update(content.get("metadata", {}))
+                notebook = new_notebook()
+                notebook.nbformat = content.get("nbformat", 4)
+                notebook.nbformat_minor = content.get("nbformat_minor", 5)
+                notebook.metadata.update(content.get("metadata", {}))
 
-            # Add cells
-            from nbformat.v4 import new_code_cell, new_markdown_cell, new_raw_cell
+                # Add cells
+                from nbformat.v4 import new_code_cell, new_markdown_cell, new_raw_cell
 
-            for cell_data in content.get("cells", []):
-                cell_type = cell_data["cell_type"]
-                source = cell_data["source"]
-                metadata = cell_data.get("metadata", {})
+                for cell_data in content.get("cells", []):
+                    cell_type = cell_data["cell_type"]
+                    source = cell_data["source"]
+                    metadata = cell_data.get("metadata", {})
 
-                if cell_type == "code":
-                    cell = new_code_cell(source=source, metadata=metadata)
-                    # Restore execution info if present
-                    if "execution_count" in cell_data:
-                        cell.execution_count = cell_data["execution_count"]
-                    if "outputs" in cell_data:
-                        cell.outputs = cell_data["outputs"]
-                elif cell_type == "markdown":
-                    cell = new_markdown_cell(source=source, metadata=metadata)
-                elif cell_type == "raw":
-                    cell = new_raw_cell(source=source, metadata=metadata)
-                else:
-                    raise ValueError(f"Unknown cell type: {cell_type}")
+                    if cell_type == "code":
+                        cell = new_code_cell(source=source, metadata=metadata)
+                        # Restore execution info if present
+                        if "execution_count" in cell_data:
+                            cell.execution_count = cell_data["execution_count"]
+                        if "outputs" in cell_data:
+                            cell.outputs = cell_data["outputs"]
+                    elif cell_type == "markdown":
+                        cell = new_markdown_cell(source=source, metadata=metadata)
+                    elif cell_type == "raw":
+                        cell = new_raw_cell(source=source, metadata=metadata)
+                    else:
+                        raise ValueError(f"Unknown cell type: {cell_type}")
 
-                if "id" in cell_data:
-                    cell["id"] = cell_data["id"]
-                notebook.cells.append(cell)
+                    if "id" in cell_data:
+                        cell["id"] = cell_data["id"]
+                    notebook.cells.append(cell)
 
-            # Write notebook using FileUtils
-            written_path = FileUtils.write_notebook(notebook, resolved_path)
+                # Write notebook using FileUtils
+                written_path = FileUtils.write_notebook(notebook, resolved_path)
 
-            # Get file stats
-            stat = written_path.stat()
+                # Get file stats
+                stat = written_path.stat()
 
-            result = {
-                "path": str(written_path),
-                "size": stat.st_size,
-                "cell_count": len(notebook.cells),
-                "success": True,
-            }
+                result = {
+                    "path": str(written_path),
+                    "size": stat.st_size,
+                    "cell_count": len(notebook.cells),
+                    "success": True,
+                }
 
             logger.info(f"Successfully wrote notebook with {len(notebook.cells)} cells")
             return result
@@ -217,22 +251,23 @@ class NotebookCRUDService:
             resolved_path = Path(self.resolve_path(path))
             logger.info(f"Creating new notebook: {path} -> {resolved_path}")
 
-            # Create empty notebook using FileUtils
-            notebook = FileUtils.create_empty_notebook(kernel)
+            with self._lock_for(resolved_path):
+                # Create empty notebook using FileUtils
+                notebook = FileUtils.create_empty_notebook(kernel)
 
-            # Write to file
-            written_path = FileUtils.write_notebook(notebook, resolved_path)
+                # Write to file
+                written_path = FileUtils.write_notebook(notebook, resolved_path)
 
-            # Get file stats
-            stat = written_path.stat()
+                # Get file stats
+                stat = written_path.stat()
 
-            result = {
-                "path": str(written_path),
-                "kernel": kernel,
-                "size": stat.st_size,
-                "cell_count": 0,
-                "success": True,
-            }
+                result = {
+                    "path": str(written_path),
+                    "kernel": kernel,
+                    "size": stat.st_size,
+                    "cell_count": 0,
+                    "success": True,
+                }
 
             logger.info(f"Successfully created empty notebook with kernel {kernel}")
             return result
@@ -267,21 +302,22 @@ class NotebookCRUDService:
             path = Path(resolved_path)
             logger.info(f"Adding {cell_type} cell to notebook: {path}")
 
-            # Read existing notebook
-            notebook = FileUtils.read_notebook(path)
+            with self._lock_for(resolved_path):
+                # Read existing notebook
+                notebook = FileUtils.read_notebook(path)
 
-            # Add cell using FileUtils
-            notebook = FileUtils.add_cell(notebook, cell_type, source, metadata, index)
+                # Add cell using FileUtils
+                notebook = FileUtils.add_cell(notebook, cell_type, source, metadata, index)
 
-            # Write back to file
-            FileUtils.write_notebook(notebook, path)
+                # Write back to file
+                FileUtils.write_notebook(notebook, path)
 
-            result = {
-                "path": str(path),
-                "cell_type": cell_type,
-                "cell_count": len(notebook.cells),
-                "success": True,
-            }
+                result = {
+                    "path": str(path),
+                    "cell_type": cell_type,
+                    "cell_count": len(notebook.cells),
+                    "success": True,
+                }
 
             logger.info(
                 f"Successfully added {cell_type} cell, total cells: {len(notebook.cells)}"
@@ -308,27 +344,28 @@ class NotebookCRUDService:
             path = Path(resolved_path)
             logger.info(f"Removing cell {index} from notebook: {path}")
 
-            # Read existing notebook
-            notebook = FileUtils.read_notebook(path)
+            with self._lock_for(resolved_path):
+                # Read existing notebook
+                notebook = FileUtils.read_notebook(path)
 
-            # Check bounds
-            if index < 0 or index >= len(notebook.cells):
-                raise IndexError(
-                    f"Cell index {index} out of range (0-{len(notebook.cells)-1})"
-                )
+                # Check bounds
+                if index < 0 or index >= len(notebook.cells):
+                    raise IndexError(
+                        f"Cell index {index} out of range (0-{len(notebook.cells)-1})"
+                    )
 
-            # Remove cell using FileUtils
-            notebook = FileUtils.remove_cell(notebook, index)
+                # Remove cell using FileUtils
+                notebook = FileUtils.remove_cell(notebook, index)
 
-            # Write back to file
-            FileUtils.write_notebook(notebook, path)
+                # Write back to file
+                FileUtils.write_notebook(notebook, path)
 
-            result = {
-                "path": str(path),
-                "removed_index": index,
-                "cell_count": len(notebook.cells),
-                "success": True,
-            }
+                result = {
+                    "path": str(path),
+                    "removed_index": index,
+                    "cell_count": len(notebook.cells),
+                    "success": True,
+                }
 
             logger.info(
                 f"Successfully removed cell {index}, remaining cells: {len(notebook.cells)}"
@@ -363,21 +400,22 @@ class NotebookCRUDService:
             path = Path(resolved_path)
             logger.info(f"Updating cell {index} in notebook: {path}")
 
-            # Read existing notebook
-            notebook = FileUtils.read_notebook(path)
+            with self._lock_for(resolved_path):
+                # Read existing notebook
+                notebook = FileUtils.read_notebook(path)
 
-            # Update cell using FileUtils
-            notebook = FileUtils.update_cell(notebook, index, source, metadata)
+                # Update cell using FileUtils
+                notebook = FileUtils.update_cell(notebook, index, source, metadata)
 
-            # Write back to file
-            FileUtils.write_notebook(notebook, path)
+                # Write back to file
+                FileUtils.write_notebook(notebook, path)
 
-            result = {
-                "path": str(path),
-                "updated_index": index,
-                "cell_count": len(notebook.cells),
-                "success": True,
-            }
+                result = {
+                    "path": str(path),
+                    "updated_index": index,
+                    "cell_count": len(notebook.cells),
+                    "success": True,
+                }
 
             logger.info(f"Successfully updated cell {index}")
             return result
