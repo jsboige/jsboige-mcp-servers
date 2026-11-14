@@ -27,6 +27,7 @@ import asyncio
 import ctypes
 import json
 import os
+import subprocess
 import sys
 import time
 from unittest.mock import AsyncMock
@@ -492,6 +493,48 @@ class TestTimeout:
                 time.sleep(0.2)
                 alive = _windows_process_alive(pid)
             assert alive is False, "sleeper child must be killed on timeout"
+
+
+class TestProbeStdin:
+    def test_probe_does_not_inherit_the_server_stdin(self, tmp_path):
+        """#4712 regression: under the stdio transport the server's stdin is
+        the MCP client's pipe, open for the whole session. A probe that
+        inherited it never saw EOF and every call timed out to ``unknown``.
+        The driver below holds such a pipe as its stdin (never written, never
+        closed); the probe reads stdin to EOF. Inherited -> blocks -> unknown;
+        DEVNULL -> immediate EOF -> green."""
+        module_dir = os.path.dirname(os.path.abspath(__file__))
+        probe = [
+            sys.executable,
+            "-c",
+            "import sys; sys.exit(0 if sys.stdin.read() == '' else 3)",
+        ]
+        driver = (
+            "import asyncio, sys\n"
+            f"sys.path.insert(0, {module_dir!r})\n"
+            "from sk_agent_capacity_gate import evaluate_capacity_gate\n"
+            f"gate = {{'command': {probe!r}, 'cache_s': 0, 'timeout_s': 5.0}}\n"
+            "print(asyncio.run(evaluate_capacity_gate('m', gate)).verdict)\n"
+        )
+        err_path = tmp_path / "driver-stderr.txt"
+        with open(err_path, "w", encoding="utf-8") as err:
+            proc = subprocess.Popen(
+                [sys.executable, "-c", driver],
+                stdin=subprocess.PIPE,  # deliberately left OPEN until the end
+                stdout=subprocess.PIPE,
+                stderr=err,
+                text=True,
+            )
+            try:
+                verdict = proc.stdout.read().strip()
+                proc.wait(timeout=30)
+            finally:
+                proc.stdin.close()
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+
+        assert verdict == "green", (verdict, err_path.read_text(encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
