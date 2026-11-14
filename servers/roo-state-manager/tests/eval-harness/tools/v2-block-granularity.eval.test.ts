@@ -77,7 +77,7 @@ const SCENARIO_3_ARGS = {
 } as const;
 
 // Same classification the tool applies (kept in sync by the block-expansion contract)
-const TEST_FILE_RE = /[\\/]__tests__[\\/]|\.test\.|\.spec\./;
+const TEST_FILE_RE = /[\\/]__tests__[\\/]|\.test\.|\.spec\.|(^|[\\/])tests[\\/]manual[\\/]/;
 const FIXTURE_FILE_RE = /(^|[\\/])tests[\\/]fixtures[\\/]/;
 const ARCHIVE_FILE_RE = /(^|[\\/])docs[\\/]archive[\\/]/;
 const BUILD_DIR_RE = /(^|[\\/])build(-[a-z0-9]+)?[\\/]/i;

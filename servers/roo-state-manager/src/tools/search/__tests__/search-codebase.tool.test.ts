@@ -812,6 +812,25 @@ describe('search-codebase.tool', () => {
 				expect(parsed.test_file_malus_applied).toBe(1);
 			});
 
+			test('test-file detection covers tests/manual/ — no .test. suffix needed', async () => {
+				// #2609 step 5(a): manual test scripts live under tests/manual/ without any
+				// .test./.spec. suffix or __tests__ dir, so they ranked as source. The regex
+				// must catch the directory form on both separators, including a repo-root
+				// tests/manual path (start-of-string anchor, same as FIXTURE_FILE_RE).
+				mockQdrant.query.mockResolvedValue({
+					points: [
+						{ score: 0.80, payload: { filePath: 'tests\\manual\\probe-search.cjs', codeChunk: 'manual probe script', startLine: 1, endLine: 1 } },
+						{ score: 0.78, payload: { filePath: 'src/widget.ts', codeChunk: 'export class Widget {}', startLine: 1, endLine: 5 } }
+					]
+				});
+
+				const result = await handleCodebaseSearch({ query: 'widget probe', workspace: '/ws' });
+				const parsed = JSON.parse(result.content[0].text);
+				// manual script at 0.80 → malused to 0.76 < source 0.78 → source ranks first.
+				expect(parsed.results[0].file_path).toBe('src/widget.ts');
+				expect(parsed.test_file_malus_applied).toBe(1);
+			});
+
 			test('min_score is re-applied on the post-malus score — a borderline test hit is dropped', async () => {
 				// Qdrant filters on the RAW score (score_threshold). A test file at raw 0.71
 				// passes a 0.70 raw threshold, but the ×0.95 malus drops it to 0.6745 < 0.70.
@@ -965,8 +984,11 @@ describe('search-codebase.tool', () => {
 				expect(parsed.results_count).toBe(5);
 				const paths = parsed.results.map((r: any) => r.file_path);
 
-				// The code hit the query was actually about now leads.
-				expect(paths[0]).toBe('mcps\\internal\\servers\\roo-state-manager\\tests\\manual\\validate-batch-handlers.js');
+				// The code hit the query was actually about now leads. Since #2609 step 5(a)
+				// the manual .js is a test file (×0.95 → 0.80316), so the defining .ts source
+				// (0.82117, unmalused) takes rank 0 and the manual script follows at rank 1.
+				expect(paths[0]).toBe('mcps\\internal\\servers\\roo-state-manager\\src\\tools\\tool-definitions.ts');
+				expect(paths[1]).toBe('mcps\\internal\\servers\\roo-state-manager\\tests\\manual\\validate-batch-handlers.js');
 
 				// Both config baselines are pushed to the tail — they held ranks 0 and 1 before.
 				const ai01Idx = paths.indexOf('roo-config\\baselines\\myia-ai-01-settings-baseline.json');
