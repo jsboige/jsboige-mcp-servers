@@ -36,7 +36,7 @@
 - [`CONVENTION-NOMMAGE-DOCUMENTATION.md`](../CONVENTION-NOMMAGE-DOCUMENTATION.md) - Convention réorganisation
 
 ### 📊 Rapports Critiques Récents
-- [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](../RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Mission Phase 2C finale
+- [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](../reports/RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Mission Phase 2C finale
 - [`SYNTHESE-PHASE2C-FINAL.md`](../SYNTHESE-PHASE2C-FINAL.md) - Synthèse consolidée
 
 ### 🛠️ Documentation Technique Active

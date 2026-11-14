@@ -392,7 +392,7 @@ node scripts/validate-real-world-matching.mjs
 ## 📚 Références Chronologiques
 
 ### **Documents Algorithmiques Fondamentaux**
-- [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Résolution bug critique RadixTree
+- [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](reports/RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Résolution bug critique RadixTree
 - [`README.md`](../../README.md) - Vue d'ensemble architecture RadixTree pour longest-prefix matching
 - [`tests/hierarchie-reconstruction-validation.md`](tests/hierarchie-reconstruction-validation.md) - Validation algorithmes
 

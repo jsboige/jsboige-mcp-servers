@@ -1,306 +1,326 @@
-# 🔧 Mécanisme d'Auto-Rebuild des Squelettes
+# 🔧 Mécanisme d'auto-rafraîchissement des squelettes
 
 ## 📋 Vue d'ensemble
 
-Ce document décrit le mécanisme d'auto-reconstruction automatique des squelettes de conversations dans le MCP `roo-state-manager`, implémenté pour corriger le problème de construction manuelle identifié.
+Ce document décrit comment le cache de squelettes de conversations du MCP `roo-state-manager`
+reste frais sans intervention manuelle.
+
+Depuis #1244, le mécanisme n'est plus porté par un appel synchrone dans chaque handler : la
+fraîcheur est garantie par un **worker périodique (Worker A)**, et le chemin d'appel des outils ne
+porte plus qu'un **filet de sécurité rapide et non bloquant**.
+
+> **v2.0.0 (2026-11-14)** — Le document décrivait le mécanisme d'origine (v1.x, octobre 2025) :
+> handlers monolithiques dans `src/index.ts`, vérification synchrone à chaque appel, cache de
+> validité de 5 minutes. Le code a été ré-architecturé depuis ; les ancres ont été reprises sur
+> les symboles actuels (#4687).
 
 ## 🎯 Problème résolu
 
-**Avant** : Les squelettes devaient être construits manuellement via l'outil `build_skeleton_cache`, ce qui causait :
-- Visibilité conditionnelle dans les outils
-- Fonctionnement non fiable
-- Nécessité d'intervention manuelle
+**Avant** : les squelettes devaient être construits manuellement via l'outil `build_skeleton_cache`,
+d'où une visibilité conditionnelle dans les outils et des interventions manuelles.
 
-**Après** : Chaque appel d'outil déclenche automatiquement une vérification et reconstruction conditionnelle du cache.
+**Après** : le cache se rafraîchit en tâche de fond ; les outils lisent un cache déjà chaud et ne
+bloquent jamais dessus.
+
+`build_skeleton_cache` **n'est plus exposé** comme outil MCP (`src/tools/registry.ts:201`, retiré en
+#625). Le handler reste disponible en interne : c'est lui que le worker et le filet de sécurité
+appellent.
 
 ## 🏗️ Architecture
 
-### Méthode principale : `_ensureSkeletonCacheIsFresh()`
+Le mécanisme est à deux couches.
 
-Située dans [`index.ts`](../src/index.ts:3175-3249), cette méthode privée est le cœur du mécanisme :
+### Couche 1 — Worker A, garant de la fraîcheur
+
+| Élément | Ancre |
+|---|---|
+| Worker de rafraîchissement | [`startSkeletonRefreshWorker()`](../src/services/background-services.ts:643) |
+| Intervalle (2 min) | [`SKELETON_REFRESH_INTERVAL_MS`](../src/services/background-services.ts:610) |
+| Démarrage au boot | [`initializeBackgroundServices()`](../src/services/background-services.ts:925) |
+| Appel du démarrage | [`src/index.ts:362-364`](../src/index.ts:362-364) |
+
+Le worker repart d'un **checkpoint** — `state.lastSkeletonRefreshAt`
+([`state-manager.service.ts:31`](../src/services/state-manager.service.ts:31)) — et ne relit que les
+fichiers dont le `mtime` est postérieur au dernier tick (scan **incrémental**). Le checkpoint est
+persisté entre deux démarrages par [`persistIndexerCursor()`](../src/services/background-services.ts:348)
+et relu par [`loadPersistedIndexerCursors()`](../src/services/background-services.ts:381) — sans quoi
+un redémarrage relirait tout le disque.
+
+`ROO_INDEX_FORCE=1` contourne le filtre incrémental et force un scan complet (découverte de fichiers
+anciens, par exemple des sessions Claude Code jamais vues).
+
+### Couche 2 — `ensureSkeletonCacheIsFresh()`, filet de sécurité non bloquant
+
+Méthode privée du serveur : [`src/index.ts:824-870`](../src/index.ts:824-870).
 
 ```typescript
-private async _ensureSkeletonCacheIsFresh(args?: { workspace?: string }): Promise<boolean>
+private async ensureSkeletonCacheIsFresh(args?: { workspace?: string }): Promise<boolean>
 ```
 
-#### Paramètres
-- `args.workspace` (optionnel) : Filtre par workspace pour optimiser les performances
+Comportement réel :
 
-#### Logique de vérification
+1. **Throttle** — au plus une vérification par minute
+   ([`CACHE_CHECK_THROTTLE_MS`](../src/index.ts:216)) ; en deçà, retour immédiat `false`.
+2. **État non initialisé** → retour immédiat : c'est l'enveloppe `CallTool` qui a déjà attendu
+   `ensureInitialized()`.
+3. **Cache non vide** → retour immédiat (cas nominal, < 5 ms) : Worker A fait le travail.
+4. **Cache vide** (premier run, index absent, chargement de fond inachevé) → planifie un
+   remplissage en tâche de fond via `setImmediate`, **jamais attendu**.
 
-1. **Cache vide** → Reconstruction différentielle immédiate
-2. **Cache existant** → Vérification des modifications récentes (5 minutes)
-3. **Nouvelles conversations détectées** → Reconstruction différentielle
+> ⚠️ **Les outils ne doivent pas compter sur cette méthode pour obtenir de la fraîcheur.** Elle ne
+> reconstruit rien sur le chemin d'appel ; elle évite seulement qu'un cache vide le reste.
 
 #### Stratégie de reconstruction
 
-La méthode appelle [`handleBuildSkeletonCache()`](../src/index.ts:948) avec :
-- `force_rebuild: false` → Construction conditionnelle (rapide)
-- `workspace_filter: args?.workspace` → Filtrage optionnel
+Le remplissage de fond et le worker appellent tous deux
+[`handleBuildSkeletonCache()`](../src/tools/cache/build-skeleton-cache.tool.ts:190) avec :
+
+- `force_rebuild: false` → construction conditionnelle (rapide)
+- `workspace_filter` → filtrage optionnel, quand l'appelant en fournit un
 
 ## 🔌 Intégration dans les handlers
 
-### Handlers modifiés
+### Injection du callback
 
-Tous les handlers dépendants du `conversationCache` ont été modifiés pour appeler `_ensureSkeletonCacheIsFresh()` **avant** toute opération :
+Les handlers ne sont plus des méthodes du serveur : ils vivent dans `src/tools/**` et reçoivent le
+callback en paramètre.
 
-#### Liste complète des handlers intégrés :
+| Élément | Ancre |
+|---|---|
+| Liaison au démarrage | [`src/index.ts:721`](../src/index.ts:721) |
+| Paramètre du dispatcher | [`registry.ts:125`](../src/tools/registry.ts:125) |
 
-1. [`handleListConversations()`](../src/index.ts:740-898)
-   - Appel sans filtre workspace
-   
-2. [`handleGetTaskTree()`](../src/index.ts:1465-1605)
-   - Appel sans filtre workspace
+Le dispatcher `registerCallToolHandler()` injecte ensuite ce callback, outil par outil
+([`registry.ts:209`](../src/tools/registry.ts:209), [`363`](../src/tools/registry.ts:363),
+[`383`](../src/tools/registry.ts:383), [`402`](../src/tools/registry.ts:402),
+[`469`](../src/tools/registry.ts:469), [`520`](../src/tools/registry.ts:520)).
 
-3. [`handleSearchTasksSemantic()`](../src/index.ts:1689-1821)
-   - Appel **avec** filtre workspace si fourni
-   
-4. [`handleIndexTaskSemantic()`](../src/index.ts:1884-1938)
-   - Appel sans filtre workspace
+### Consommateurs actuels
 
-5. [`handleExportTaskXml()`](../src/index.ts:2137-2185)
-   - Appel sans filtre workspace
+| Outil MCP | Handler | Site d'appel |
+|---|---|---|
+| `conversation_browser` — `tree` | [`handleGetTaskTree()`](../src/tools/task/get-tree.tool.ts:87) | [`get-tree.tool.ts:103`](../src/tools/task/get-tree.tool.ts:103) |
+| `conversation_browser` — `current` | [`getCurrentTaskTool`](../src/tools/task/get-current-task.tool.ts:87) | [`get-current-task.tool.ts:114-121`](../src/tools/task/get-current-task.tool.ts:114-121) (callback **optionnel**) |
+| `roosync_search` — `semantic` / `text` | [`handleRooSyncSearch()`](../src/tools/search/roosync-search.tool.ts:167) | [`269`](../src/tools/search/roosync-search.tool.ts:269), [`376`](../src/tools/search/roosync-search.tool.ts:376) — **avec** filtre workspace |
+| `roosync_indexing` | [`handleRooSyncIndexing()`](../src/tools/indexing/roosync-indexing.tool.ts:882) | via le callback injecté (registre, `469`/`520`) |
+| `index_task_semantic` | [`indexTaskSemanticTool`](../src/tools/indexing/index-task.tool.ts:41) | via le callback injecté |
+| `export_data` | [`handleExportData()`](../src/tools/export/export-data.ts:783) | [`export-tasks-xml.ts:67`](../src/tools/export/export-tasks-xml.ts:67), [`export-conversation-xml.ts:73`](../src/tools/export/export-conversation-xml.ts:73), [`export-project-xml.ts:73`](../src/tools/export/export-project-xml.ts:73), [`export-tree-md.tool.ts:117`](../src/tools/task/export-tree-md.tool.ts:117) |
+| `task_export` | [`handleTaskExport()`](../src/tools/task/export.ts:158) | [`export.ts:183`](../src/tools/task/export.ts:183) |
 
-6. [`handleExportConversationXml()`](../src/index.ts:2190-2265)
-   - Appel sans filtre workspace
+Seul `export_project_xml` (via `export_data`) passe un **filtre workspace** — cf.
+[`export-project-xml.ts:73`](../src/tools/export/export-project-xml.ts:73).
 
-7. [`handleExportProjectXml()`](../src/index.ts:2270-2345)
-   - Appel **avec** filtre workspace (optimisation critique)
-   
-8. [`handleViewTaskDetails()`](../src/index.ts:2697-2764)
-   - Appel sans filtre workspace
+### Ce qui n'appelle plus le callback
 
-9. [`handleGenerateTraceSummary()`](../src/index.ts:2769-2810)
-   - Via handler externe, pas d'appel direct
-
-10. [`handleGenerateClusterSummary()`](../src/index.ts:2429-2555)
-    - Appel sans filtre workspace
-
-11. [`handleGetConversationSynthesis()`](../src/index.ts:2876-2915)
-    - Appel sans filtre workspace
-
-12. [`handleExportTaskTreeMarkdown()`](../src/index.ts:2920-3042)
-    - Appel sans filtre workspace
-
-13. [`handleGetCurrentTask()`](../src/tools/task/get-current-task.tool.ts:82-134)
-     - ✅ **AJOUT 2025-10-16** : Intégration du mécanisme auto-rebuild
-     - ✅ **AMÉLIORATION 2025-10-16** : Scan disque complémentaire via [`disk-scanner.ts`](../src/tools/task/disk-scanner.ts)
-     - Appel **avec** filtre workspace (args.workspace)
-     - Pattern: Callback async passé via registry.ts
-     - **Double détection** : Cache rebuild + scan disque pour conversations orphelines
+- **`conversation_browser` — `list`** : `listConversationsTool.handler()` est appelé sans callback
+  ([`conversation-browser.ts:500`](../src/tools/conversation/conversation-browser.ts:500)) ; la
+  liste lit le cache tel que Worker A l'a laissé.
+- **`view_task_details`** : dispatché sans callback
+  ([`registry.ts:373-375`](../src/tools/registry.ts:373-375)).
+- **`generate_trace_summary`, `generate_cluster_summary`, `get_conversation_synthesis`** : **retirés
+  de la surface MCP** (CLEANUP-2, [`registry.ts:533`](../src/tools/registry.ts:533)). Leurs fichiers
+  subsistent comme bibliothèques, mais aucun dispatch ne les atteint. Les versions v1.x de ce
+  document les citaient comme intégrés : ce n'est plus vrai.
 
 ### Pattern d'intégration
 
 ```typescript
-async handleExampleTool(args: { ... }): Promise<CallToolResult> {
+export async function handleExampleTool(
+    args: ExampleArgs,
+    conversationCache: Map<string, StoredConversation>,
+    ensureSkeletonCacheIsFresh: () => Promise<void>
+): Promise<CallToolResult> {
     try {
-        // **FAILSAFE: Auto-rebuild cache si nécessaire**
-        await this._ensureSkeletonCacheIsFresh();
-        
-        // Reste de la logique du handler...
-        const skeleton = this.conversationCache.get(args.taskId);
+        // FAILSAFE: rafraîchissement best-effort avant lecture du cache
+        await ensureSkeletonCacheIsFresh();
+
+        const skeleton = conversationCache.get(args.taskId);
         // ...
     }
 }
 ```
 
-### Pattern avec filtrage workspace
+Variante avec filtre workspace :
 
 ```typescript
-async handleExportProjectXml(args: { projectPath: string, ... }): Promise<CallToolResult> {
-    try {
-        // **FAILSAFE: Auto-rebuild cache avec filtre workspace**
-        await this._ensureSkeletonCacheIsFresh({ workspace: projectPath });
-        
-        // Filtrer les conversations par workspace...
-    }
+export async function handleExportProjectXml(
+    args: { projectPath: string },
+    conversationCache: Map<string, StoredConversation>,
+    ensureSkeletonCacheIsFresh: (options?: { workspace?: string }) => Promise<void>
+): Promise<CallToolResult> {
+    await ensureSkeletonCacheIsFresh({ workspace: args.projectPath });
+    // ...
 }
 ```
 
 ## ⚡ Optimisations de performance
 
 ### 1. Construction conditionnelle (`force_rebuild: false`)
-- Vérifie les timestamps des squelettes existants
-- Ne reconstruit que les squelettes obsolètes ou manquants
-- Skip les squelettes à jour
+- Ne reconstruit que les squelettes obsolètes ou manquants.
 
 ### 2. Filtrage par workspace
-- Limite le scope de la reconstruction
-- Crucial pour `export_project_xml` qui ne traite qu'un seul workspace
-- Réduit significativement le temps de traitement
+- Limite le périmètre du scan ; critique pour `export_project_xml`, qui ne traite qu'un workspace.
 
-### 3. Cache de validité (5 minutes)
-- Évite les reconstructions répétées
-- Balance entre fraîcheur et performance
+### 3. Throttle de la vérification (1 minute)
+- [`CACHE_CHECK_THROTTLE_MS`](../src/index.ts:216) — évite de brûler des cycles sur des appels
+  répétés. Ce n'est **pas** un cache de validité de 5 minutes : la fraîcheur vient du worker.
 
-### 4. Vérification limitée (10 premières conversations)
-- Évite de scanner tout le système de fichiers
-- Performance optimale pour les cas courants
+### 4. Scan incrémental par `mtime`
+- Le worker ne relit que les fichiers postérieurs à `lastSkeletonRefreshAt`, au lieu de rescanner
+  tout le système de fichiers à chaque tick.
 
 ## 🧪 Tests de validation
 
-### Test 1 : Cache vide
-```typescript
-// Condition : conversationCache.size === 0
-// Résultat attendu : Reconstruction différentielle déclenchée
-```
+- Construction du cache et comportement conditionnel :
+  [`build-skeleton-cache.test.ts`](../src/tools/cache/__tests__/build-skeleton-cache.test.ts)
+- Arbre de tâches (chemin `tree`) : [`get-tree.test.ts`](../src/tools/task/__tests__/get-tree.test.ts)
 
-### Test 2 : Cache à jour
-```typescript
-// Condition : Cache existant, pas de nouvelles conversations
-// Résultat attendu : Skip reconstruction, retour immédiat
-```
+Les scénarios à couvrir lors d'une modification :
 
-### Test 3 : Nouvelles conversations
-```typescript
-// Condition : Conversations récentes (<5min) non cachées
-// Résultat attendu : Reconstruction différentielle déclenchée
-```
+1. **Cache vide** → remplissage de fond planifié, retour immédiat.
+2. **Cache à jour** → aucun travail, retour < 5 ms.
+3. **Throttle** → deux appels dans la même minute ne déclenchent qu'une vérification.
+4. **Filtre workspace** → le périmètre de reconstruction est limité au workspace demandé.
 
-### Test 4 : Performance avec workspace filter
-```typescript
-// Condition : export_project_xml avec workspace spécifique
-// Résultat attendu : Reconstruction limitée au workspace, < 2s
-```
+## 📊 Impact
 
-## 📊 Impact mesuré
-
-### Avant (construction manuelle)
-- ❌ Outils non fonctionnels si cache vide
-- ❌ Nécessite intervention manuelle de l'utilisateur
-- ❌ Expérience utilisateur dégradée
-
-### Après (auto-rebuild)
-- ✅ Outils toujours fonctionnels
-- ✅ Aucune intervention manuelle nécessaire
-- ✅ Overhead acceptable : < 100ms (cache à jour), < 2s (reconstruction)
-- ✅ Filtrage workspace : optimisation critique pour projets volumineux
+- ✅ Les outils restent fonctionnels sans intervention manuelle.
+- ✅ Le chemin d'appel ne bloque plus sur une reconstruction.
+- ⚠️ Les chiffres de la v1.x (« < 100 ms », « < 2 s ») ont été mesurés sur l'architecture
+  précédente ; ils n'ont **pas** été re-mesurés depuis #1244 et ne doivent pas être cités comme
+  mesures courantes.
 
 ## 🛡️ Robustesse
 
 ### Gestion d'erreurs
+
 ```typescript
-try {
-    console.log('[FAILSAFE] Checking skeleton cache freshness...');
-    // Logique de vérification...
 } catch (error) {
-    console.error('[FAILSAFE] Error checking skeleton cache freshness:', error);
+    logger.error('[FAILSAFE] Error in fast freshness check:', { error });
     return false; // N'empêche pas l'exécution du handler
 }
 ```
 
 ### Fallback gracieux
-- En cas d'erreur, retourne `false` sans bloquer
-- Le handler peut continuer avec le cache existant
-- Logs détaillés pour diagnostic
+- En cas d'erreur, retourne `false` sans bloquer.
+- Le handler continue avec le cache existant.
+- Les échecs de remplissage de fond sont journalisés en `warn`, sans propagation.
 
 ## 🔄 Flux d'exécution typique
 
 ```
-Appel outil (ex: get_task_tree)
+Démarrage du serveur
+    ↓
+initializeBackgroundServices() → Worker A (toutes les 2 min)
+    ↓
+scan incrémental (mtime > lastSkeletonRefreshAt) → mise à jour du cache
+
+
+Appel outil (ex: conversation_browser action=tree)
     ↓
 handleGetTaskTree()
     ↓
-_ensureSkeletonCacheIsFresh()
+ensureSkeletonCacheIsFresh()   ← throttlé, non bloquant
     ↓
-Cache vide ? → OUI → handleBuildSkeletonCache(force: false)
-    ↓                      ↓
-    NON              Reconstruction différentielle
-    ↓                      ↓
-Nouvelles conversations ? → OUI → handleBuildSkeletonCache(force: false)
-    ↓                      ↓
-    NON              Reconstruction différentielle
-    ↓                      ↓
-Cache frais ✅            Cache mis à jour ✅
-    ↓                      ↓
-Utilisation du conversationCache
+cache non vide ? → OUI → retour immédiat
+    ↓
+    NON → setImmediate(handleBuildSkeletonCache(force: false))  (jamais attendu)
+    ↓
+lecture du conversationCache
     ↓
 Résultat retourné à l'utilisateur
 ```
 
 ## 📝 Notes de maintenance
 
-### Ajout de nouveaux handlers
+### Ajouter l'auto-rafraîchissement à un nouvel outil
 
-Pour ajouter l'auto-rebuild à un nouveau handler :
-
-1. Identifier si le handler utilise `conversationCache`
-2. Ajouter l'appel au début de la méthode :
+1. Ajouter le paramètre au handler :
    ```typescript
-   await this._ensureSkeletonCacheIsFresh();
+   ensureSkeletonCacheIsFresh: () => Promise<void>
    ```
-3. Si le handler filtre par workspace, passer le paramètre :
+2. L'appeler au début de la méthode :
    ```typescript
-   await this._ensureSkeletonCacheIsFresh({ workspace: args.workspace });
+   await ensureSkeletonCacheIsFresh();
    ```
-4. Marquer l'async/await dans le switch statement :
+3. Si le handler filtre par workspace, transmettre l'option :
    ```typescript
-   case 'new_handler':
-       result = await this.handleNewHandler(args as any);
+   await ensureSkeletonCacheIsFresh({ workspace: args.workspace });
+   ```
+4. Câbler l'injection dans le case du dispatcher :
+   ```typescript
+   case 'new_tool': {
+       const m = await import('./chemin/du/module.js');
+       result = await m.handleNewTool(args as any, cache, ensureSkeletonCacheIsFresh);
        break;
+   }
    ```
 
 ### Monitoring
 
 Logs à surveiller :
-- `[FAILSAFE] Checking skeleton cache freshness...` : Vérification déclenchée
-- `[FAILSAFE] Cache empty, triggering differential rebuild...` : Reconstruction nécessaire
-- `[FAILSAFE] Cache outdated, triggering differential rebuild...` : Nouvelles conversations
-- `[FAILSAFE] Skeleton cache is fresh` : Cache à jour, skip reconstruction
+- `[FAILSAFE] Cache empty — scheduling background populate (non-blocking)` : cache vide détecté
+- `[FAILSAFE] Background populate complete` : remplissage terminé
+- `[FAILSAFE] Background populate failed (non-blocking)` : échec, sans impact sur l'appel
+- `[FAILSAFE] Error in fast freshness check` : erreur dans le filet de sécurité
+- `🔄 Worker A (skeleton refresh) started — interval: 120s` : worker démarré
 
-## 🆕 Amélioration : Scan disque complémentaire (2025-10-16)
+## 🆕 Scan disque complémentaire (`get_current_task`)
 
 ### Contexte
 
-Le mécanisme auto-rebuild reconstruit efficacement le cache, mais avec une latence de détection (~5 minutes). Pour l'outil `get_current_task`, cette latence est inacceptable car il doit retourner **immédiatement** la tâche en cours.
+Le rafraîchissement périodique a une latence de détection (jusqu'à 2 minutes). Pour
+`get_current_task`, cette latence est inacceptable : l'outil doit retourner **immédiatement** la
+tâche en cours.
 
-### Solution : Scan disque dynamique
+### Solution
 
-Un module complémentaire [`disk-scanner.ts`](../src/tools/task/disk-scanner.ts) a été développé pour :
+Un module complémentaire, [`disk-scanner.ts`](../src/tools/task/disk-scanner.ts), fournit :
 
-1. **Scanner le système de fichiers** à chaque appel de `get_current_task`
-2. **Détecter les conversations orphelines** non présentes dans le cache
-3. **Créer des squelettes légers** sans traitement lourd
-4. **Enrichir temporairement le cache** pour la durée de l'appel
+- [`scanDiskForNewTasks()`](../src/tools/task/disk-scanner.ts:122) — détecte les conversations
+  orphelines absentes du cache et crée des squelettes légers ;
+- [`invalidateDiskScanCache()`](../src/tools/task/disk-scanner.ts:108) — invalide le cache de scan ;
+- [`evictGoneLocalTasks()`](../src/tools/task/disk-scanner.ts:249) — purge les tâches locales
+  disparues du disque.
 
 ### Complémentarité des mécanismes
 
-| Mécanisme | Auto-Rebuild | Scan Disque |
-|-----------|-------------|-------------|
-| **Déclenchement** | Périodique (5 min) | À chaque appel |
+| Mécanisme | Worker A | Scan disque |
+|---|---|---|
+| **Déclenchement** | Périodique (2 min) | À chaque appel de `get_current_task` |
 | **Scope** | Toutes les conversations | Conversations orphelines |
-| **Performance** | Optimisée (conditionnelle) | Ultra-rapide (vérification existence) |
-| **Complétude** | 100% des métadonnées | Métadonnées minimales |
+| **Performance** | Incrémentale (`mtime`) | Vérification d'existence |
+| **Complétude** | Métadonnées complètes | Métadonnées minimales |
 | **Usage** | Cache global persistant | Enrichissement temporaire |
 
 ### Outils bénéficiaires
 
-Actuellement, seul `get_current_task` utilise le scan disque car :
-- C'est le seul outil nécessitant une détection **temps réel** absolue
-- Les autres outils peuvent tolérer la latence de 5 minutes de l'auto-rebuild
-- Le scan disque ajoute un overhead léger (~20-50ms) acceptable pour cet outil critique
+Seul `get_current_task` (via `conversation_browser` action `current`) utilise le scan disque : c'est
+le seul outil exigeant une détection temps réel. Les autres tolèrent la latence du worker.
 
 ### Extension future possible
 
-D'autres outils pourraient bénéficier du scan disque si nécessaire :
-- `list_conversations` avec filtre `created_recently=true`
-- `search_tasks_semantic` pour inclure les tâches très récentes
-- Tout nouvel outil nécessitant une fraîcheur absolue des données
+- `conversation_browser` action `list` avec filtre de récence
+- `roosync_search` action `semantic` pour inclure les tâches très récentes
 
 ## 🔗 Références
 
-- Code source : [`src/index.ts`](../src/index.ts)
-- Méthode principale : [`_ensureSkeletonCacheIsFresh()`](../src/index.ts:3175-3249)
-- Méthode de reconstruction : [`handleBuildSkeletonCache()`](../src/index.ts:948-1350)
+- Serveur : [`src/index.ts`](../src/index.ts)
+- Filet de sécurité : [`ensureSkeletonCacheIsFresh()`](../src/index.ts:824-870)
+- Worker de rafraîchissement : [`background-services.ts`](../src/services/background-services.ts)
+- Reconstruction : [`handleBuildSkeletonCache()`](../src/tools/cache/build-skeleton-cache.tool.ts:190)
+- Dispatcher et injection : [`registry.ts`](../src/tools/registry.ts)
 - Module scan disque : [`disk-scanner.ts`](../src/tools/task/disk-scanner.ts)
-- Outil amélioré : [`get-current-task.tool.ts`](../src/tools/task/get-current-task.tool.ts)
-- Issue tracking : Mission correction auto-construction squelettes + scan disque
+- Outil concerné : [`get-current-task.tool.ts`](../src/tools/task/get-current-task.tool.ts)
+- Issue tracking : #1244 (ré-architecture), #4687 (réparation des ancres de ce document)
 
 ---
 
-**Version** : 1.1.0
-**Dernière mise à jour** : 2025-10-16
+**Version** : 2.0.0
+**Dernière mise à jour** : 2026-11-14
 **Auteur** : Équipe roo-state-manager
 **Changelog** :
-- v1.1.0 (2025-10-16) : Ajout scan disque complémentaire pour `get_current_task`
-- v1.0.0 (2025-01-11) : Version initiale du mécanisme auto-rebuild
+- v2.0.0 (2026-11-14) : ré-architecture #1244 documentée (Worker A + filet de sécurité non bloquant) ;
+  ancres reprises sur les symboles actuels (#4687) ; outils retirés de la surface MCP signalés
+- v1.1.0 (2025-10-16) : ajout du scan disque complémentaire pour `get_current_task`
+- v1.0.0 (2025-01-11) : version initiale du mécanisme auto-rebuild

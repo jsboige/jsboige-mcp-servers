@@ -208,7 +208,7 @@ private enrichSkeleton(skeleton: TaskSkeleton, message: UIMessage): TaskSkeleton
 - **Validation :** Tests sur méga-conversations 9381 messages
 
 #### **Octobre 2025 - Correction Critique**
-- **Référence :** [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md)
+- **Référence :** [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](reports/RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md)
 - **Bug majeur :** Système extraction 192 caractères défaillant
 - **Solution :** Réécriture complète avec [`SubInstructionExtractor`](../src/utils/sub-instruction-extractor.ts)
 - **Résultat :** Restauration capacités extraction + performance

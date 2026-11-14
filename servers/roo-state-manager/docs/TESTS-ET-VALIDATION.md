@@ -397,7 +397,7 @@ export const VALIDATION_TARGETS = {
 
 ### **Documents de Validation Principaux**
 - [`tests/hierarchie-reconstruction-validation.md`](tests/hierarchie-reconstruction-validation.md) - Synthèse complète tests
-- [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Validation post-correction
+- [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](reports/RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Validation post-correction
 
 ### **Tests Techniques Détaillés**
 - Documents dans [`tests/`](tests/) - Suites de tests et organisation

@@ -93,7 +93,7 @@ Le système de reconstruction hiérarchique de `roo-state-manager` est une archi
 - **Métriques :** Validation sur milliers de tâches réelles
 
 #### **Octobre 2025 - Mission Triple Grounding SDDD**
-- **Références :** [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md)
+- **Références :** [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](reports/RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md)
 - **Régression critique :** Relations 4→0 (-100%)
 - **Correction majeure :** Réécriture extraction avec [`SubInstructionExtractor`](../src/utils/sub-instruction-extractor.ts)
 - **Résultat final :** ✅ 2+ relations validées, régression éliminée
@@ -200,7 +200,7 @@ node scripts/test-pattern-extraction.mjs
 ## 🚨 Problèmes Résolus
 
 ### **Régression Critique Relations 4→0**
-- **Localisation :** [`src/utils/hierarchy-reconstruction-engine.ts`](src/utils/hierarchy-reconstruction-engine.ts:175-189)  
+- **Localisation :** [`src/utils/hierarchy-reconstruction-engine.ts`](../src/utils/hierarchy-reconstruction-engine.ts:175-189)  
 - **Nature :** Bug d'indexation - utilisation des 192 premiers caractères au lieu d'extraction des sous-instructions réelles
 - **Impact :** Perte totale des capacités de matching parent-enfant
 - **Résolution :** Création module [`SubInstructionExtractor`](../src/utils/sub-instruction-extractor.ts) avec patterns regex
@@ -223,7 +223,7 @@ node scripts/test-pattern-extraction.mjs
 - [`tests/fixtures/controlled-hierarchy/`](../tests/fixtures/controlled-hierarchy/) - Données test structure parent-enfant
 
 ### **Rapports de Mission SDDD**
-- [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Résolution régression critique
+- [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](reports/RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Résolution régression critique
 - Documents Phase 2C dans [`archives/2025-10/`](archives/2025-10/) - Évolutions récentes
 
 ### **Documentation Technique Parsing**
