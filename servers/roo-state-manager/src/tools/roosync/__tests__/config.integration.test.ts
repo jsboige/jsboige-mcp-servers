@@ -98,9 +98,11 @@ describe('roosyncConfig (integration)', () => {
       // #2507: warning is valid when target files don't exist on this machine
       expect(['success', 'warning']).toContain(result.status);
       expect(result.message).toContain('Configuration collectée');
-      expect(result.packagePath).toBeDefined();
       // manifest comes from configSharingService.collectConfig() result
-      expect(result.manifest).toBeDefined();
+      expect(result.manifest).toMatchObject({ version: '0.0.0', files: expect.any(Array) });
+      // #2766: an empty collect tears its package down — no dangling packagePath.
+      if (result.status === 'success') expect(result.packagePath).toContain('config-collect-');
+      else expect(result.packagePath).toBeUndefined();
     });
 
     test('should collect specified targets', async () => {
@@ -111,8 +113,9 @@ describe('roosyncConfig (integration)', () => {
 
       // #2507: warning is valid when target files don't exist on this machine
       expect(['success', 'warning']).toContain(result.status);
-      // The manifest structure depends on ConfigSharingService internals
-      expect(result.manifest).toBeDefined();
+      // The manifest structure is ConfigSharingService's contract: version stamp,
+// author, and a file list — even when the list is empty.
+      expect(result.manifest).toMatchObject({ version: '0.0.0', files: expect.any(Array) });
     });
 
     test('should collect multiple target types', async () => {
@@ -123,7 +126,7 @@ describe('roosyncConfig (integration)', () => {
 
       // #2507: warning is valid when target files don't exist on this machine
       expect(['success', 'warning']).toContain(result.status);
-      expect(result.manifest).toBeDefined();
+      expect(result.manifest).toMatchObject({ version: '0.0.0', files: expect.any(Array) });
     });
 
     test('should support dryRun mode', async () => {
@@ -155,11 +158,11 @@ describe('roosyncConfig (integration)', () => {
           action: 'collect',
           targets: ['invalid-target'] as any
         });
-        // If it doesn't throw, it should still return a result
-        expect(result).toBeDefined();
+        // If it doesn't throw, it must still report a known status.
+        expect(['success', 'warning']).toContain(result.status);
       } catch (error) {
-        // If it throws, that's also valid behavior
-        expect(error).toBeDefined();
+        // If it throws, that's also valid behavior — but it must be a real Error.
+        expect(error).toBeInstanceOf(Error);
       }
     });
 
@@ -170,9 +173,9 @@ describe('roosyncConfig (integration)', () => {
           action: 'collect',
           targets: ['mcp:'] as any
         });
-        expect(result).toBeDefined();
+        expect(['success', 'warning']).toContain(result.status);
       } catch (error) {
-        expect(error).toBeDefined();
+        expect(error).toBeInstanceOf(Error);
       }
     });
   });
@@ -207,7 +210,8 @@ describe('roosyncConfig (integration)', () => {
       expect(result.status).toBe('success');
       expect(result.message).toContain('publiée avec succès');
       expect(result.version).toBe('1.0.0');
-      expect(result.targetPath).toBeDefined();
+      // Published next to the shared state, under a semver directory (#4010).
+      expect(result.targetPath).toContain('1.0.0');
     });
 
     test('should perform atomic collect+publish when targets provided without packagePath', async () => {
@@ -286,7 +290,11 @@ describe('roosyncConfig (integration)', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
+      // #2413: three documented outcomes — applied, applied-but-drift, failed.
+      expect(result).toMatchObject({
+        status: expect.stringMatching(/^(success|drift|error)$/),
+        filesApplied: expect.any(Number),
+      });
     });
 
     test('should handle apply with version that matches current', async () => {
@@ -298,10 +306,10 @@ describe('roosyncConfig (integration)', () => {
           version: 'latest',
           dryRun: true
         });
-        expect(result).toBeDefined();
+        expect(result).toMatchObject({ status: expect.stringMatching(/^(success|drift|error)$/) });
       } catch (error) {
         // Version mismatch throws, which is valid behavior
-        expect(error).toBeDefined();
+        expect(error).toBeInstanceOf(Error);
       }
     });
 
@@ -312,7 +320,10 @@ describe('roosyncConfig (integration)', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
+      expect(result).toMatchObject({
+        status: expect.stringMatching(/^(success|drift|error)$/),
+        filesApplied: expect.any(Number),
+      });
     });
 
     test('should skip backup when backup is false', async () => {
@@ -322,7 +333,10 @@ describe('roosyncConfig (integration)', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
+      expect(result).toMatchObject({
+        status: expect.stringMatching(/^(success|drift|error)$/),
+        filesApplied: expect.any(Number),
+      });
     });
 
     test('should apply specific targets only', async () => {
@@ -332,7 +346,10 @@ describe('roosyncConfig (integration)', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
+      expect(result).toMatchObject({
+        status: expect.stringMatching(/^(success|drift|error)$/),
+        filesApplied: expect.any(Number),
+      });
     });
 
     test.skip('should throw on incompatible major version - SKIP: ConfigService cache sharedStatePath à la construction (ConfigService.ts:41), pas de resetInstance → currentVersion null (vérifié #2642, ref #609)', async () => {
@@ -365,8 +382,12 @@ describe('roosyncConfig (integration)', () => {
         dryRun: true
       });
 
-      expect(result).toBeDefined();
-      // In a real scenario, filesApplied would contain the list
+      // `filesApplied` is the apply contract: always a COUNT (0 when nothing
+      // was written, e.g. an empty package in this test environment).
+      expect(result).toMatchObject({
+        status: expect.stringMatching(/^(success|drift|error)$/),
+        filesApplied: expect.any(Number),
+      });
     });
   });
 
@@ -424,13 +445,15 @@ describe('roosyncConfig (integration)', () => {
           profileName: 'Production (Qwen 3.5 local + GLM-5 cloud)',
           dryRun: true
         });
-        expect(result).toBeDefined();
-        if (result.profileName) {
-          expect(result.profileName).toBeDefined();
-        }
+        // #4689: the profile is looked up by EXACT name (p.name === profileName),
+        // so a success path echoes the requested name; status is one of three.
+        expect(['success', 'drift', 'error']).toContain(result.status);
+        expect(result.profileName).toBe('Production (Qwen 3.5 local + GLM-5 cloud)');
+        expect(result.modesConfigured).toBeTypeOf('number');
       } catch (error: any) {
         // Profile might not be applicable in test environment
-        expect(error.message).toBeDefined();
+        expect(error).toBeInstanceOf(Error);
+        expect(error.message.length).toBeGreaterThan(0);
       }
     });
   });
@@ -463,7 +486,8 @@ describe('roosyncConfig (integration)', () => {
       });
 
       // Should return warning when no files collected
-      expect(result).toBeDefined();
+      // #4689: the warning's REASON is the contract — 0 files for these targets.
+      expect(result.message).toContain('Aucun fichier collecté');
       expect(result.status).toBe('warning');
     });
   });
@@ -486,7 +510,8 @@ describe('roosyncConfig (integration)', () => {
       // #2766: warning (0 files) cleans up temp dir + omits packagePath;
       // only success guarantees a publishable packagePath.
       if (collectResult.status === 'success') {
-        expect(collectResult.packagePath).toBeDefined();
+        // #4689: success guarantees a temp package dir named config-collect-*.
+        expect(collectResult.packagePath).toContain('config-collect-');
         const publishResult = await roosyncConfig({
           action: 'publish',
           version: '1.0.0',
@@ -510,7 +535,8 @@ describe('roosyncConfig (integration)', () => {
       expect(['success', 'warning']).toContain(result.status);
       if (result.status === 'success') {
         expect(result.version).toBe('2.0.0');
-        expect(result.targetPath).toBeDefined();
+        // #4689: the published path carries the version it was published under.
+        expect(result.targetPath).toContain('2.0.0');
       }
     });
 
@@ -524,9 +550,9 @@ describe('roosyncConfig (integration)', () => {
 
       const instance2 = RooSyncService.getInstance({ enabled: false });
 
-      // Les instances devraient être les mêmes (singleton)
-      expect(instance1).toBeDefined();
-      expect(instance2).toBeDefined();
+      // Les instances devraient être les mêmes (singleton) — c'est le contrat.
+      expect(instance1).toBe(instance2);
+      expect(instance1.getConfig).toBeTypeOf('function');
     });
 
     test('should handle multiple sequential collect operations', async () => {
@@ -587,7 +613,8 @@ describe('roosyncConfig (integration)', () => {
         expect(result.status).toBe('success');
       } catch (error: any) {
         // May throw if .roomodes file doesn't exist or isn't valid JSON
-        expect(error.message).toBeDefined();
+        expect(error).toBeInstanceOf(Error);
+        expect(error.message.length).toBeGreaterThan(0);
       }
     });
 
@@ -619,9 +646,10 @@ describe('roosyncConfig (integration)', () => {
           action: 'collect',
           targets: ['invalid:test'] as any
         });
-        expect(result).toBeDefined();
+        expect(['success', 'warning']).toContain(result.status);
       } catch (error) {
-        expect(error).toBeDefined();
+        expect(error).toBeInstanceOf(Error);
+        expect((error as Error).message.length).toBeGreaterThan(0);
       }
     });
   });

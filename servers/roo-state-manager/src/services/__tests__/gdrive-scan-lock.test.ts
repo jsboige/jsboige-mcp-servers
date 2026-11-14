@@ -35,7 +35,7 @@ describe('gdrive-scan-lock (#4131 B16)', () => {
 
   test('excludes a second acquirer while held, and release frees it', async () => {
     const release = await acquireGdriveScanLock(scope);
-    expect(release).not.toBeNull();
+    expect(typeof release).toBe('function');
     try {
       // Second process on the same host: same real lock file → refused.
       const second = await acquireGdriveScanLock(scope);
@@ -43,7 +43,7 @@ describe('gdrive-scan-lock (#4131 B16)', () => {
 
       // Distinct scopes do not collide (inbox-pool vs channel-reconcile).
       const other = await acquireGdriveScanLock(`${scope}-other`);
-      expect(other).not.toBeNull();
+      expect(typeof other).toBe('function');
       await other!();
     } finally {
       await release!();
@@ -51,7 +51,7 @@ describe('gdrive-scan-lock (#4131 B16)', () => {
 
     // Released: the lock is acquirable again.
     const third = await acquireGdriveScanLock(scope);
-    expect(third).not.toBeNull();
+    expect(typeof third).toBe('function');
     await third!();
   });
 
@@ -64,14 +64,14 @@ describe('gdrive-scan-lock (#4131 B16)', () => {
     utimesSync(target, longAgo, longAgo);
 
     const release = await acquireGdriveScanLock(scope);
-    expect(release).not.toBeNull();
+    expect(typeof release).toBe('function');
     await release!();
     expect(existsSync(target)).toBe(true); // target file stays; only the sibling lock is released
   });
 
   test('the lock is a real file under the resolved directory (not a mock)', async () => {
     const release = await acquireGdriveScanLock(scope);
-    expect(release).not.toBeNull();
+    expect(typeof release).toBe('function');
     try {
       expect(existsSync(join(lockDir, `gdrive-scan-${scope}.lock`))).toBe(true);
       expect(existsSync(join(lockDir, `gdrive-scan-${scope}.lock.lock`))).toBe(true);

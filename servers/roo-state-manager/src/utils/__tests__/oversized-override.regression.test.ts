@@ -90,8 +90,8 @@ describe('#2428 — garde 10 Mo : ROOSYNC_OVERSIZED_TASK_IDS override', () => {
             ]),
         });
         const skeleton = await RooStorageDetector.analyzeConversation('task-unlisted', dir, false);
-        expect(skeleton).not.toBeNull();
-        expect(skeleton!.metadata.oversizedFiles).toBeDefined();
+        expect(skeleton!.taskId).toBe('task-unlisted');
+        expect(skeleton!.metadata.oversizedFiles).toHaveLength(1);
         expect(skeleton!.metadata.oversizedFiles!.join(',')).toContain('ui_messages.json');
         expect(skeleton!.metadata.oversizedFiles!.join(',')).not.toContain('api_conversation_history.json');
     });
@@ -101,7 +101,7 @@ describe('#2428 — garde 10 Mo : ROOSYNC_OVERSIZED_TASK_IDS override', () => {
         const dir = await makeTaskDir({ 'ui_messages.json': oversizedUiJson() });
         const skeleton = await RooStorageDetector.analyzeConversation('task-override-1', dir, false);
         // Fichier LUI-MÊME lu : ui-only dir rend une séquence — un skip rendrait messageCount 0.
-        expect(skeleton).not.toBeNull();
+        expect(skeleton!.taskId).toBe('task-override-1');
         expect(skeleton!.sequence.length).toBeGreaterThan(0);
         expect(skeleton!.metadata.messageCount).toBeGreaterThan(0);
         expect(skeleton!.metadata.oversizedFiles).toBeUndefined();
@@ -114,7 +114,7 @@ describe('#2428 — garde 10 Mo : ROOSYNC_OVERSIZED_TASK_IDS override', () => {
             'api_conversation_history.json': oversizedApiJson(),
         });
         const skeleton = await RooStorageDetector.analyzeConversation('task-override-2', dir, false);
-        expect(skeleton).not.toBeNull();
+        expect(skeleton!.taskId).toBe('task-override-2');
         expect(skeleton!.metadata.messageCount).toBeGreaterThan(0);
         expect(skeleton!.metadata.oversizedFiles).toBeUndefined();
     });
@@ -126,8 +126,8 @@ describe('#2428 — garde 10 Mo : ROOSYNC_OVERSIZED_TASK_IDS override', () => {
             'api_conversation_history.json': smallValidUiJson(),
         });
         const skeleton = await RooStorageDetector.analyzeConversation('task-not-mine', dir, false);
-        expect(skeleton).not.toBeNull();
-        expect(skeleton!.metadata.oversizedFiles).toBeDefined();
+        expect(skeleton!.taskId).toBe('task-not-mine');
+        expect(skeleton!.metadata.oversizedFiles).toHaveLength(1);
         expect(skeleton!.metadata.oversizedFiles!.join(',')).toContain('ui_messages.json');
     });
 
@@ -138,8 +138,8 @@ describe('#2428 — garde 10 Mo : ROOSYNC_OVERSIZED_TASK_IDS override', () => {
             'api_conversation_history.json': smallValidUiJson(),
         });
         const skeleton = await RooStorageDetector.analyzeConversation('task-any', dir, false);
-        expect(skeleton).not.toBeNull();
-        expect(skeleton!.metadata.oversizedFiles).toBeDefined();
+        expect(skeleton!.taskId).toBe('task-any');
+        expect(skeleton!.metadata.oversizedFiles).toHaveLength(1);
         expect(skeleton!.metadata.oversizedFiles!.join(',')).toContain('ui_messages.json');
     });
 });
