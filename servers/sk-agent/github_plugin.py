@@ -4,9 +4,18 @@ Native Semantic Kernel plugin for GitHub PR operations via `gh` CLI.
 Provides structured access to PR diffs, metadata, and review posting
 for multi-tier automated code reviews (Issue #1587).
 
+Read/write split (#4725, extends the #3408 capability gate): ``GitHubPlugin``
+carries the READ surface only — an agent granted ``github_read`` never sees a
+write function in its kernel function list. ``GitHubWritePlugin`` adds
+``post_review_comment`` and is only instantiated when the agent declares
+``github_write``. The old behaviour kept the write function registered and
+refused it at call time; a read-only agent could thus see (and burn a turn
+on) a tool it was never allowed to use.
+
 Usage in sk-agent:
-    from github_plugin import GitHubPlugin
-    plugin = GitHubPlugin()
+    from github_plugin import GitHubPlugin, GitHubWritePlugin
+    plugin = GitHubPlugin()            # read-only surface
+    plugin = GitHubWritePlugin()       # read + governed write surface
     agent_plugins.append(plugin)
     # SK auto-discovers @kernel_function decorated methods.
 """
@@ -24,10 +33,16 @@ log = logging.getLogger("sk-agent.github")
 
 
 class GitHubPlugin:
-    """GitHub PR operations via `gh` CLI for automated code reviews."""
+    """Read-only GitHub operations via `gh` CLI for automated code reviews.
+
+    Write functions live on ``GitHubWritePlugin`` (#4725): a read-only
+    agent's kernel function list must not advertise what it may not call.
+    """
 
     def __init__(self, default_repo: str = "", allow_write: bool = True):
         self._default_repo = default_repo
+        # Kept on the base class: the write subclass (and any seat-local
+        # subclass reaching for it) reads this as its belt-and-braces guard.
         self._allow_write = allow_write
 
     def _run_gh(self, args: list[str], timeout: int = 30) -> str:
@@ -168,38 +183,6 @@ class GitHubPlugin:
             return output
 
     @kernel_function(
-        description="Post a review comment on a pull request. Returns confirmation or error.",
-        name="post_review_comment",
-    )
-    def post_review_comment(
-        self,
-        pr_number: int,
-        body: str,
-        repo: str = "",
-    ) -> str:
-        """Post a review comment on a PR.
-
-        Args:
-            pr_number: PR number
-            body: Comment body (markdown)
-            repo: Repository in owner/repo format
-        """
-        if not self._allow_write:
-            raise ValueError(
-                "post_review_comment refused: capability 'github_write' not "
-                "granted (issue #3408 — gh stays read-only outside a "
-                "governed profile)"
-            )
-        repo = repo or self._default_repo
-        args = ["pr", "comment", str(pr_number), "--body", body]
-        if repo:
-            args.extend(["--repo", repo])
-        output = self._run_gh(args, timeout=15)
-        if output.startswith('{"error"'):
-            return output
-        return json.dumps({"status": "posted", "pr": pr_number})
-
-    @kernel_function(
         description="Get the content of a file at a specific branch/tag/commit. Returns file content or error.",
         name="read_file",
     )
@@ -310,3 +293,45 @@ class GitHubPlugin:
             return json.dumps(simplified, indent=2)
         except json.JSONDecodeError:
             return output
+
+
+class GitHubWritePlugin(GitHubPlugin):
+    """Adds the governed write surface (#3408) on top of the read plugin.
+
+    Only instantiated by sk-agent when the agent declares ``github_write``
+    (#4725). ``allow_write`` is kept as a second, in-process guard: a caller
+    that constructs this class without the grant still gets a refusal rather
+    than a posted comment.
+    """
+
+    @kernel_function(
+        description="Post a review comment on a pull request. Returns confirmation or error.",
+        name="post_review_comment",
+    )
+    def post_review_comment(
+        self,
+        pr_number: int,
+        body: str,
+        repo: str = "",
+    ) -> str:
+        """Post a review comment on a PR.
+
+        Args:
+            pr_number: PR number
+            body: Comment body (markdown)
+            repo: Repository in owner/repo format
+        """
+        if not self._allow_write:
+            raise ValueError(
+                "post_review_comment refused: capability 'github_write' not "
+                "granted (issue #3408 — gh stays read-only outside a "
+                "governed profile)"
+            )
+        repo = repo or self._default_repo
+        args = ["pr", "comment", str(pr_number), "--body", body]
+        if repo:
+            args.extend(["--repo", repo])
+        output = self._run_gh(args, timeout=15)
+        if output.startswith('{"error"'):
+            return output
+        return json.dumps({"status": "posted", "pr": pr_number})

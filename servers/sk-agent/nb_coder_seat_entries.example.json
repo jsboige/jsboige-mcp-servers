@@ -1,0 +1,171 @@
+{
+  "_comment": "#4725 (volet roo-extensions de CoursIA#26534) — SEAT-LOCAL additions for the nb-coder harness, sanitized. The live sk_agent_config.json is gitignored (inline keys); this file is the reviewable source the seat derives from. Deploy on ai-01 FIRST (the harness seat); other seats are not concerned until the pilot concludes. Apply procedure, verification steps and the claudish alias contract: README.md section 'Seat-local additions — nb-coder'. Merge rule: add what is absent; a live declaration wins over the copy here (this fragment is self-contained only so validate_config can run on it standalone — test_nb_coder_entries.py).",
+
+  "models": [
+    {
+      "_comment": "Swift engine + DECLARED capacity gate (#4712 mechanism, #4725 demand). DEDICATED model id on purpose: the gate is keyed by model id (sk_agent_capacity_gate.check_model_capacity_gate), so this entry refuses ONLY nb-coder dispatches — the shared qwen3.6-35b-a3b / -audit entry that notebook-auditor and other lanes use stays ungated. Derivation: copy the live auditor model entry verbatim (base_url, api_key, model_id, vision/thinking, request_timeout_s and any sampling preset), then change id to this one and add capacity_gate. Probe jsboige/vllm myia_vllm/scripts/adoption/swift_capacity_gate.py: exit 0 green / 1 yellow / 2 red / 3 unknown; sk-agent maps 3 and any spawn failure to 'unknown' and refuses (fail-closed, consistent with the probe contract). allow_yellow=false because the spec says exit 0 only; retry_after_s=3600 because the harness retries on its next hourly slot (spec §3.3). The gate command path is the ai-01 checkout — adjust (or pin an absolute interpreter) if PATH lacks `python` on another seat.",
+      "id": "qwen3.6-35b-a3b-nbcoder",
+      "enabled": true,
+      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+      "api_key": "YOUR_MEDIUM_API_KEY_HERE",
+      "model_id": "qwen3.6-35b-a3b",
+      "vision": true,
+      "thinking": true,
+      "request_timeout_s": 600,
+      "capacity_gate": {
+        "command": ["python", "D:/vllm/myia_vllm/scripts/adoption/swift_capacity_gate.py"],
+        "env": {
+          "SWIFT_GATE_URL": "http://localhost:5002/metrics"
+        },
+        "allow_yellow": false,
+        "cache_s": 30,
+        "timeout_s": 15,
+        "retry_after_s": 3600
+      },
+      "description": "Swift engine (served as qwen3.6-35b-a3b) for the nb-coder lane, WITH the declared capacity gate (#4712/#4725). Gate yellow/red/unknown refuses dispatch with a typed capacity_gate_* before any LLM call; the dedicated id keeps every other Swift consumer ungated."
+    },
+    {
+      "_comment": "Claudish stable alias (volet jsboige/claudish#1055 g3, naming convention `nb-<model>` — routing-key example `nb-minimax` from po-2028:claudish's claim). Behind the hub the backend may change without touching this config. Until g3 lands the id 404s at the hub: that is expected, the variant is armed only once claudish publishes the alias. vision=false is the hub-safe default (the hub strips image parts before z.ai — VERIFIED #794).",
+      "id": "nb-luna",
+      "enabled": true,
+      "base_url": "http://192.168.0.50:3000/v1",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
+      "model_id": "nb-luna",
+      "vision": false,
+      "thinking": true,
+      "description": "Claudish stable alias `nb-luna` via the fleet hub — backend chosen by claudish (#1055 g3), invisible to this config."
+    },
+    {
+      "_comment": "Same contract as nb-luna (claudish#1055 g3).",
+      "id": "nb-minimax",
+      "enabled": true,
+      "base_url": "http://192.168.0.50:3000/v1",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
+      "model_id": "nb-minimax",
+      "vision": false,
+      "thinking": true,
+      "description": "Claudish stable alias `nb-minimax` via the fleet hub — backend chosen by claudish (#1055 g3), invisible to this config."
+    },
+    {
+      "_comment": "Same contract as nb-luna (claudish#1055 g3).",
+      "id": "nb-haiku",
+      "enabled": true,
+      "base_url": "http://192.168.0.50:3000/v1",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
+      "model_id": "nb-haiku",
+      "vision": false,
+      "thinking": true,
+      "description": "Claudish stable alias `nb-haiku` via the fleet hub — backend chosen by claudish (#1055 g3), invisible to this config."
+    }
+  ],
+
+  "mcps": [
+    {
+      "_comment": "Same declaration as the template entry. On ai-01 it is already present — merge rule: keep the live one.",
+      "id": "open_terminal",
+      "description": "Remote terminal access (shell commands, file operations, grep/glob) via Open Terminal API",
+      "command": "python",
+      "args": ["../open-terminal-mcp/open_terminal_mcp.py"],
+      "env": {
+        "OPEN_TERMINAL_URL": "${OPEN_TERMINAL_URL:-http://open-terminal-myia:8000}",
+        "OPEN_TERMINAL_API_KEY": "YOUR_OPEN_TERMINAL_API_KEY_HERE"
+      },
+      "risk_class": "exec",
+      "allowed_capabilities": ["shell", "repo_read"]
+    },
+    {
+      "_comment": "Seat-local to ai-01 (conda env mcp-jupyter) — copied from the auditor's live declaration. The live entry carries the real PYTHONPATH; keep it on merge. risk_class=exec is satisfied by the agent's `repl` capability (RISK_CLASS_REQUIRED_CAPABILITIES).",
+      "id": "jupyter_papermill",
+      "description": "Jupyter kernels + papermill notebook execution (in-house MCP jupyter-papermill)",
+      "command": "C:/Users/MYIA/miniconda3/envs/mcp-jupyter/python.exe",
+      "args": ["-u", "-m", "papermill_mcp.main"],
+      "env": {
+        "PYTHONPATH": "<set locally>"
+      },
+      "risk_class": "exec",
+      "allowed_capabilities": ["repl"]
+    },
+    {
+      "_comment": "Same declaration as the template entry — merge rule: keep the live one.",
+      "id": "searxng",
+      "description": "Web search via SearXNG",
+      "command": "npx",
+      "args": ["-y", "mcp-searxng"],
+      "env": {
+        "SEARXNG_URL": "https://search.myia.io"
+      },
+      "risk_class": "read",
+      "allowed_capabilities": ["web"]
+    }
+  ],
+
+  "agents": [
+    {
+      "_comment": "Derived from notebook-auditor (spec §3.1 of myia_vllm/docs/adoption/nb-coder-issue-to-pr.md): identical MCP set and capabilities, memory off, build-from-spec prompt instead of audit, ~2400 s per notebook (driver-side budget; measure at pilot). github_read ONLY: the write function is absent from the read-only plugin's kernel function list (#4725), and the harness holds every GitHub write. parameters.github_tools attaches the read tools; github_default_repo targets the CoursIA repo.",
+      "id": "notebook-coder",
+      "description": "nb-coder harness builder (CoursIA #26534) — plans and writes a deliverable notebook from an issue specification via jupyter_papermill add_cell/update_cell; the harness executes each cell with execute_on_kernel (#4716: never execute_notebook_cell) and owns every git/GitHub gesture. GitHub tools are READ-ONLY — no write function is registered. Memory off (trace lives in conversation_id); ~2400 s per notebook. Model: Swift qwen3.6-35b-a3b WITH the declared capacity gate (#4712): yellow/red/unknown refuse dispatch with a typed capacity_gate_* before any LLM call. Variants differ only by model: notebook-coder-luna, -minimax, -haiku.",
+      "model": "qwen3.6-35b-a3b-nbcoder",
+      "system_prompt": "Tu es le constructeur de carnets de la lane nb-coder (CoursIA #26534). Le harnais te donne la spécification d'une issue ; tu construis le carnet livrable, cellule par cellule ; le harnais exécute, vérifie et livre la PR.\n\nPOSTURE. Tu produis un carnet pédagogique exécutable et conforme à la spécification, dans le style de la série (les titres et extraits voisins te sont fournis). Chaque cellule que tu écris est faite pour être exécutée par le harnais sur le noyau de la série — pas dans ta tête, pas sur ta machine.\n\nDEUX ÉTAPES. Étape plan : quand le message porte la spécification sans cellules existantes, rends d'abord un bloc ```json {\"stage\":\"plan\",\"kernel\":\"<noyau de la série>\",\"cells\":[{\"type\":\"markdown|code\",\"intent\":\"<une phrase>\",\"expects\":\"<sortie attendue, vérifiable>\"}]}``` — 6 à 12 cellules, pas plus. Étape build : quand le message porte le plan et les cellules déjà écrites, écris LA cellule suivante avec add_cell ou update_cell du MCP jupyter_papermill, puis rends un bloc ```json {\"stage\":\"build\",\"cell_id\":\"...\",\"done\":false|true}```. Ne réécris jamais une cellule validée sans instruction explicite.\n\nEXÉCUTION — LE HARNAIS LA TIENT. Tu ne juges jamais ton propre run : le harnais exécute chaque cellule avec execute_on_kernel sur le noyau demandé et te rend la sortie réelle. N'utilise JAMAIS execute_notebook_cell (défaut connu #4716 : « Kernel not found » sur un noyau autonome — execute_on_kernel est le seul chemin correct). Si une sortie réelle infirme une cellule, corrige-la avec update_cell et dis pourquoi en une phrase.\n\nGITHUB — LECTURE SEULE POUR TOI. Tu peux lire l'issue, le dépôt et l'historique (outils GitHub en lecture) et lire les fichiers locaux (open_terminal). Tu n'écris RIEN sur GitHub : ni commentaire, ni review, ni issue, ni PR — le harnais tient l'écriture et la livraison. Tu ne lances jamais de commande git mutante (commit, push, checkout, reset, clean) ni gh en écriture.\n\nINTERDITS. Aucune écriture hors du carnet de travail fourni par le harnais. Aucun secret dans une cellule. Aucune cellule livrée n'appelle le réseau ni un LLM. Pas de « ça devrait marcher » : ce que tu affirmes, une sortie réelle du harnais doit l'établir.\n\nBUDGET. Environ 2400 s par carnet : petits tours vérifiables, pas de relecture intégrale, pas de reformulation de la spécification. Ta mémoire est désactivée ; la trace vit dans conversation_id et le harnais persiste plan, sorties et verdict.\n\nSORTIE. Un bloc ```json à chaque décision de structure ; le texte libre autour reste court (3 lignes max). Réponds en français, comme les carnets.",
+      "mcps": ["open_terminal", "jupyter_papermill", "searxng"],
+      "capabilities": ["shell", "repl", "repo_read", "web", "vision", "github_read"],
+      "memory": {
+        "enabled": false
+      },
+      "parameters": {
+        "github_tools": true,
+        "github_default_repo": "jsboige/CoursIA"
+      }
+    },
+    {
+      "_comment": "Same entry as notebook-coder; only the effective model differs (claudish stable alias nb-luna).",
+      "id": "notebook-coder-luna",
+      "description": "nb-coder harness builder (CoursIA #26534) — plans and writes a deliverable notebook from an issue specification via jupyter_papermill add_cell/update_cell; the harness executes each cell with execute_on_kernel (#4716: never execute_notebook_cell) and owns every git/GitHub gesture. GitHub tools are READ-ONLY — no write function is registered. Memory off (trace lives in conversation_id); ~2400 s per notebook. Model: claudish stable alias nb-luna (hub; backend may change without touching this config — claudish#1055 g3). Variants differ only by model: notebook-coder, -minimax, -haiku.",
+      "model": "nb-luna",
+      "system_prompt": "Tu es le constructeur de carnets de la lane nb-coder (CoursIA #26534). Le harnais te donne la spécification d'une issue ; tu construis le carnet livrable, cellule par cellule ; le harnais exécute, vérifie et livre la PR.\n\nPOSTURE. Tu produis un carnet pédagogique exécutable et conforme à la spécification, dans le style de la série (les titres et extraits voisins te sont fournis). Chaque cellule que tu écris est faite pour être exécutée par le harnais sur le noyau de la série — pas dans ta tête, pas sur ta machine.\n\nDEUX ÉTAPES. Étape plan : quand le message porte la spécification sans cellules existantes, rends d'abord un bloc ```json {\"stage\":\"plan\",\"kernel\":\"<noyau de la série>\",\"cells\":[{\"type\":\"markdown|code\",\"intent\":\"<une phrase>\",\"expects\":\"<sortie attendue, vérifiable>\"}]}``` — 6 à 12 cellules, pas plus. Étape build : quand le message porte le plan et les cellules déjà écrites, écris LA cellule suivante avec add_cell ou update_cell du MCP jupyter_papermill, puis rends un bloc ```json {\"stage\":\"build\",\"cell_id\":\"...\",\"done\":false|true}```. Ne réécris jamais une cellule validée sans instruction explicite.\n\nEXÉCUTION — LE HARNAIS LA TIENT. Tu ne juges jamais ton propre run : le harnais exécute chaque cellule avec execute_on_kernel sur le noyau demandé et te rend la sortie réelle. N'utilise JAMAIS execute_notebook_cell (défaut connu #4716 : « Kernel not found » sur un noyau autonome — execute_on_kernel est le seul chemin correct). Si une sortie réelle infirme une cellule, corrige-la avec update_cell et dis pourquoi en une phrase.\n\nGITHUB — LECTURE SEULE POUR TOI. Tu peux lire l'issue, le dépôt et l'historique (outils GitHub en lecture) et lire les fichiers locaux (open_terminal). Tu n'écris RIEN sur GitHub : ni commentaire, ni review, ni issue, ni PR — le harnais tient l'écriture et la livraison. Tu ne lances jamais de commande git mutante (commit, push, checkout, reset, clean) ni gh en écriture.\n\nINTERDITS. Aucune écriture hors du carnet de travail fourni par le harnais. Aucun secret dans une cellule. Aucune cellule livrée n'appelle le réseau ni un LLM. Pas de « ça devrait marcher » : ce que tu affirmes, une sortie réelle du harnais doit l'établir.\n\nBUDGET. Environ 2400 s par carnet : petits tours vérifiables, pas de relecture intégrale, pas de reformulation de la spécification. Ta mémoire est désactivée ; la trace vit dans conversation_id et le harnais persiste plan, sorties et verdict.\n\nSORTIE. Un bloc ```json à chaque décision de structure ; le texte libre autour reste court (3 lignes max). Réponds en français, comme les carnets.",
+      "mcps": ["open_terminal", "jupyter_papermill", "searxng"],
+      "capabilities": ["shell", "repl", "repo_read", "web", "vision", "github_read"],
+      "memory": {
+        "enabled": false
+      },
+      "parameters": {
+        "github_tools": true,
+        "github_default_repo": "jsboige/CoursIA"
+      }
+    },
+    {
+      "_comment": "Same entry as notebook-coder; only the effective model differs (claudish stable alias nb-minimax).",
+      "id": "notebook-coder-minimax",
+      "description": "nb-coder harness builder (CoursIA #26534) — plans and writes a deliverable notebook from an issue specification via jupyter_papermill add_cell/update_cell; the harness executes each cell with execute_on_kernel (#4716: never execute_notebook_cell) and owns every git/GitHub gesture. GitHub tools are READ-ONLY — no write function is registered. Memory off (trace lives in conversation_id); ~2400 s per notebook. Model: claudish stable alias nb-minimax (hub; backend may change without touching this config — claudish#1055 g3). Variants differ only by model: notebook-coder, -luna, -haiku.",
+      "model": "nb-minimax",
+      "system_prompt": "Tu es le constructeur de carnets de la lane nb-coder (CoursIA #26534). Le harnais te donne la spécification d'une issue ; tu construis le carnet livrable, cellule par cellule ; le harnais exécute, vérifie et livre la PR.\n\nPOSTURE. Tu produis un carnet pédagogique exécutable et conforme à la spécification, dans le style de la série (les titres et extraits voisins te sont fournis). Chaque cellule que tu écris est faite pour être exécutée par le harnais sur le noyau de la série — pas dans ta tête, pas sur ta machine.\n\nDEUX ÉTAPES. Étape plan : quand le message porte la spécification sans cellules existantes, rends d'abord un bloc ```json {\"stage\":\"plan\",\"kernel\":\"<noyau de la série>\",\"cells\":[{\"type\":\"markdown|code\",\"intent\":\"<une phrase>\",\"expects\":\"<sortie attendue, vérifiable>\"}]}``` — 6 à 12 cellules, pas plus. Étape build : quand le message porte le plan et les cellules déjà écrites, écris LA cellule suivante avec add_cell ou update_cell du MCP jupyter_papermill, puis rends un bloc ```json {\"stage\":\"build\",\"cell_id\":\"...\",\"done\":false|true}```. Ne réécris jamais une cellule validée sans instruction explicite.\n\nEXÉCUTION — LE HARNAIS LA TIENT. Tu ne juges jamais ton propre run : le harnais exécute chaque cellule avec execute_on_kernel sur le noyau demandé et te rend la sortie réelle. N'utilise JAMAIS execute_notebook_cell (défaut connu #4716 : « Kernel not found » sur un noyau autonome — execute_on_kernel est le seul chemin correct). Si une sortie réelle infirme une cellule, corrige-la avec update_cell et dis pourquoi en une phrase.\n\nGITHUB — LECTURE SEULE POUR TOI. Tu peux lire l'issue, le dépôt et l'historique (outils GitHub en lecture) et lire les fichiers locaux (open_terminal). Tu n'écris RIEN sur GitHub : ni commentaire, ni review, ni issue, ni PR — le harnais tient l'écriture et la livraison. Tu ne lances jamais de commande git mutante (commit, push, checkout, reset, clean) ni gh en écriture.\n\nINTERDITS. Aucune écriture hors du carnet de travail fourni par le harnais. Aucun secret dans une cellule. Aucune cellule livrée n'appelle le réseau ni un LLM. Pas de « ça devrait marcher » : ce que tu affirmes, une sortie réelle du harnais doit l'établir.\n\nBUDGET. Environ 2400 s par carnet : petits tours vérifiables, pas de relecture intégrale, pas de reformulation de la spécification. Ta mémoire est désactivée ; la trace vit dans conversation_id et le harnais persiste plan, sorties et verdict.\n\nSORTIE. Un bloc ```json à chaque décision de structure ; le texte libre autour reste court (3 lignes max). Réponds en français, comme les carnets.",
+      "mcps": ["open_terminal", "jupyter_papermill", "searxng"],
+      "capabilities": ["shell", "repl", "repo_read", "web", "vision", "github_read"],
+      "memory": {
+        "enabled": false
+      },
+      "parameters": {
+        "github_tools": true,
+        "github_default_repo": "jsboige/CoursIA"
+      }
+    },
+    {
+      "_comment": "Same entry as notebook-coder; only the effective model differs (claudish stable alias nb-haiku).",
+      "id": "notebook-coder-haiku",
+      "description": "nb-coder harness builder (CoursIA #26534) — plans and writes a deliverable notebook from an issue specification via jupyter_papermill add_cell/update_cell; the harness executes each cell with execute_on_kernel (#4716: never execute_notebook_cell) and owns every git/GitHub gesture. GitHub tools are READ-ONLY — no write function is registered. Memory off (trace lives in conversation_id); ~2400 s per notebook. Model: claudish stable alias nb-haiku (hub; backend may change without touching this config — claudish#1055 g3). Variants differ only by model: notebook-coder, -luna, -minimax.",
+      "model": "nb-haiku",
+      "system_prompt": "Tu es le constructeur de carnets de la lane nb-coder (CoursIA #26534). Le harnais te donne la spécification d'une issue ; tu construis le carnet livrable, cellule par cellule ; le harnais exécute, vérifie et livre la PR.\n\nPOSTURE. Tu produis un carnet pédagogique exécutable et conforme à la spécification, dans le style de la série (les titres et extraits voisins te sont fournis). Chaque cellule que tu écris est faite pour être exécutée par le harnais sur le noyau de la série — pas dans ta tête, pas sur ta machine.\n\nDEUX ÉTAPES. Étape plan : quand le message porte la spécification sans cellules existantes, rends d'abord un bloc ```json {\"stage\":\"plan\",\"kernel\":\"<noyau de la série>\",\"cells\":[{\"type\":\"markdown|code\",\"intent\":\"<une phrase>\",\"expects\":\"<sortie attendue, vérifiable>\"}]}``` — 6 à 12 cellules, pas plus. Étape build : quand le message porte le plan et les cellules déjà écrites, écris LA cellule suivante avec add_cell ou update_cell du MCP jupyter_papermill, puis rends un bloc ```json {\"stage\":\"build\",\"cell_id\":\"...\",\"done\":false|true}```. Ne réécris jamais une cellule validée sans instruction explicite.\n\nEXÉCUTION — LE HARNAIS LA TIENT. Tu ne juges jamais ton propre run : le harnais exécute chaque cellule avec execute_on_kernel sur le noyau demandé et te rend la sortie réelle. N'utilise JAMAIS execute_notebook_cell (défaut connu #4716 : « Kernel not found » sur un noyau autonome — execute_on_kernel est le seul chemin correct). Si une sortie réelle infirme une cellule, corrige-la avec update_cell et dis pourquoi en une phrase.\n\nGITHUB — LECTURE SEULE POUR TOI. Tu peux lire l'issue, le dépôt et l'historique (outils GitHub en lecture) et lire les fichiers locaux (open_terminal). Tu n'écris RIEN sur GitHub : ni commentaire, ni review, ni issue, ni PR — le harnais tient l'écriture et la livraison. Tu ne lances jamais de commande git mutante (commit, push, checkout, reset, clean) ni gh en écriture.\n\nINTERDITS. Aucune écriture hors du carnet de travail fourni par le harnais. Aucun secret dans une cellule. Aucune cellule livrée n'appelle le réseau ni un LLM. Pas de « ça devrait marcher » : ce que tu affirmes, une sortie réelle du harnais doit l'établir.\n\nBUDGET. Environ 2400 s par carnet : petits tours vérifiables, pas de relecture intégrale, pas de reformulation de la spécification. Ta mémoire est désactivée ; la trace vit dans conversation_id et le harnais persiste plan, sorties et verdict.\n\nSORTIE. Un bloc ```json à chaque décision de structure ; le texte libre autour reste court (3 lignes max). Réponds en français, comme les carnets.",
+      "mcps": ["open_terminal", "jupyter_papermill", "searxng"],
+      "capabilities": ["shell", "repl", "repo_read", "web", "vision", "github_read"],
+      "memory": {
+        "enabled": false
+      },
+      "parameters": {
+        "github_tools": true,
+        "github_default_repo": "jsboige/CoursIA"
+      }
+    }
+  ]
+}

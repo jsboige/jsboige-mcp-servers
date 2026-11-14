@@ -150,7 +150,7 @@ from sk_agent_capacity_gate import check_model_capacity_gate
 
 # GitHub PR review plugin
 try:
-    from github_plugin import GitHubPlugin
+    from github_plugin import GitHubPlugin, GitHubWritePlugin
 
     HAS_GITHUB_PLUGIN = True
 except ImportError:
@@ -1096,7 +1096,12 @@ class SKAgentManager:
                 )
             else:
                 gh_repo = agent_cfg.parameters.get("github_default_repo", "")
-                gh_plugin = GitHubPlugin(
+                # #4725: the write function lives on the write subclass, so a
+                # read-only agent's kernel function list does not advertise it.
+                gh_cls = (
+                    GitHubWritePlugin if "github_write" in caps else GitHubPlugin
+                )
+                gh_plugin = gh_cls(
                     default_repo=gh_repo, allow_write="github_write" in caps
                 )
                 agent_plugins.append(gh_plugin)
@@ -1287,8 +1292,12 @@ class SKAgentManager:
                 )
             else:
                 gh_repo = agent_cfg.parameters.get("github_default_repo", "")
+                # #4725: same read/write split as the persistent-agent path.
+                gh_cls = (
+                    GitHubWritePlugin if "github_write" in caps else GitHubPlugin
+                )
                 plugins.append(
-                    GitHubPlugin(
+                    gh_cls(
                         default_repo=gh_repo, allow_write="github_write" in caps
                     )
                 )
