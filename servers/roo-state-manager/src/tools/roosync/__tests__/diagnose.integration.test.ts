@@ -163,12 +163,11 @@ describe('roosyncDiagnose (integration)', () => {
       });
 
       expect(result.action).toBe('env');
-      expect(result.data).toBeDefined();
-      // data.system contains platform, arch, nodeVersion (not data.systemInfo)
-      expect(result.data?.system).toBeDefined();
-      expect(result.data?.system.platform).toBeDefined();
-      expect(result.data?.system.arch).toBeDefined();
-      expect(result.data?.system.nodeVersion).toBeDefined();
+      // #4689: the system block is read from the running process — assert the
+      // VALUES, not their presence (presence is what `toBeDefined` already said).
+      expect(result.data!.system.platform).toBe(process.platform);
+      expect(result.data!.system.arch).toBe(process.arch);
+      expect(result.data!.system.nodeVersion).toBe(process.version);
     });
 
     test('should detect directories presence', async () => {
@@ -176,12 +175,17 @@ describe('roosyncDiagnose (integration)', () => {
         action: 'env'
       });
 
-      expect(result.data?.directories).toBeDefined();
       // directories[x] returns { exists: bool, writable: bool } objects, NOT plain booleans
       // #3993: clés renommées cwd/sharedState — plus de collision sur '.'
-      expect(result.data?.directories['cwd']).toBeDefined();
-      expect(result.data?.directories['cwd'].exists).toBeDefined();
-      expect(result.data?.directories['sharedState']).toBeDefined();
+      // #4689: chaque répertoire critique est TOUJOURS rapporté (existe ou non) —
+      // l'ensemble des clés est donc le contrat, pas leur simple présence.
+      expect(Object.keys(result.data!.directories).sort()).toEqual(
+        ['cwd', 'logs', 'mcps', 'roo-config', 'sharedState']
+      );
+      expect(result.data!.directories['cwd']).toMatchObject({
+        exists: expect.any(Boolean),
+        writable: expect.any(Boolean),
+      });
     });
 
     test('should report missing directories with WARNING status', async () => {
@@ -194,8 +198,7 @@ describe('roosyncDiagnose (integration)', () => {
 
       // Note: directories check uses cwd-relative paths, not testSharedStatePath
       // The result data.status is 'OK' or 'WARNING' (uppercase)
-      expect(result.data).toBeDefined();
-      expect(result.data?.status).toBeDefined();
+      expect(['OK', 'WARNING']).toContain(result.data!.status);
     });
 
     test('should check disk space when checkDiskSpace is true', async () => {
@@ -204,9 +207,8 @@ describe('roosyncDiagnose (integration)', () => {
         checkDiskSpace: true
       });
 
-      expect(result.data).toBeDefined();
       // env action always returns system info regardless of checkDiskSpace
-      expect(result.data?.system).toBeDefined();
+      expect(result.data!.system.platform).toBe(process.platform);
     });
   });
 
@@ -235,9 +237,8 @@ describe('roosyncDiagnose (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data).toBeDefined();
       // cacheDisabled is nested under data.debugInfo
-      expect(result.data?.debugInfo?.cacheDisabled).toBe(true);
+      expect(result.data!.debugInfo!.cacheDisabled).toBe(true);
     });
 
     test('should return standard information when verbose is false', async () => {
@@ -247,7 +248,7 @@ describe('roosyncDiagnose (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.message).toBeDefined();
+      expect(result.message).toContain('Dashboard');
     });
 
     test('should include debugInfo with cacheDisabled', async () => {
@@ -257,8 +258,7 @@ describe('roosyncDiagnose (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data?.debugInfo).toBeDefined();
-      expect(result.data?.debugInfo?.cacheDisabled).toBe(true);
+      expect(result.data!.debugInfo).toMatchObject({ cacheDisabled: true });
     });
   });
 
@@ -336,7 +336,7 @@ describe('roosyncDiagnose (integration)', () => {
       expect(result.success).toBe(true);
       expect(result.action).toBe('test');
       expect(result.message).toContain('Test minimal');
-      expect(result.data?.mcpStatus).toBeDefined();
+      expect(result.data!.mcpStatus).toBe('OK');
     });
 
     test('should store custom message in data.testMessage', async () => {
@@ -357,8 +357,8 @@ describe('roosyncDiagnose (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.data?.mcpStatus).toBeDefined();
-      expect(result.timestamp).toBeDefined();
+      expect(result.data!.mcpStatus).toBe('OK');
+      expect(Number.isNaN(Date.parse(result.timestamp))).toBe(false);
     });
 
     test('should handle empty message gracefully', async () => {
@@ -368,7 +368,8 @@ describe('roosyncDiagnose (integration)', () => {
       });
 
       expect(result.success).toBe(true);
-      expect(result.message).toBeDefined();
+      // Empty message falls back to the default — the fallback is the contract.
+      expect(result.data!.testMessage).toBe('Test minimal OK');
     });
   });
 
@@ -390,8 +391,7 @@ describe('roosyncDiagnose (integration)', () => {
       });
 
       // Should return a result (either OK or WARNING)
-      expect(result.data).toBeDefined();
-      expect(result.data?.status).toBeDefined();
+      expect(['OK', 'WARNING']).toContain(result.data!.status);
     });
 
     test('should handle filesystem oddities gracefully', async () => {
@@ -409,8 +409,8 @@ describe('roosyncDiagnose (integration)', () => {
         action: 'env'
       });
 
-      // Should return a result without crashing
-      expect(result.data).toBeDefined();
+      // Should return a result without crashing — and the report is still complete.
+      expect(result.data!.system.platform).toBe(process.platform);
     });
   });
 
@@ -422,7 +422,7 @@ describe('roosyncDiagnose (integration)', () => {
     test('should handle complete diagnostic workflow: env → debug → reset', async () => {
       // Step 1: Diagnostic environnement
       const envResult = await roosyncDiagnose({ action: 'env' });
-      expect(envResult.data?.system).toBeDefined();
+      expect(envResult.data!.system.platform).toBe(process.platform);
 
       // Step 2: Debug avec verbose
       const debugResult = await roosyncDiagnose({
@@ -453,9 +453,10 @@ describe('roosyncDiagnose (integration)', () => {
       // Vérifier qu'une nouvelle instance est créée après le reset
       const instance2 = RooSyncService.getInstance({ enabled: false });
 
-      // Les instances devraient être différentes (après reset)
-      expect(instance1).toBeDefined();
-      expect(instance2).toBeDefined();
+      // Les instances devraient être différentes (après reset) — c'est le contrat
+      // du singleton : `debug` le réinitialise, donc `getInstance` en rend un neuf.
+      expect(instance1).not.toBe(instance2);
+      expect(instance2.getConfig).toBeTypeOf('function');
     });
 
     test('should return WARNING status when resources are missing', async () => {
@@ -466,10 +467,11 @@ describe('roosyncDiagnose (integration)', () => {
         checkDiskSpace: false
       });
 
-      expect(result.data?.directories).toBeDefined();
-      expect(result.data?.status).toBeDefined();
+      expect(Object.keys(result.data!.directories).sort()).toEqual(
+        ['cwd', 'logs', 'mcps', 'roo-config', 'sharedState']
+      );
       // status is either 'OK' or 'WARNING'
-      expect(['OK', 'WARNING']).toContain(result.data?.status);
+      expect(['OK', 'WARNING']).toContain(result.data!.status);
     });
   });
 });

@@ -61,8 +61,10 @@ storeSuite('#2428 — PG listConversations honours the date window before the ca
     // Same bounds the tool computes — end-of-day widening included, so SQL and
     // the in-memory filter agree on what "2026-05-31" means.
     const { start, end } = resolveDateRangeBounds('2026-05-01', '2026-05-31');
-    expect(start).not.toBeNull();
-    expect(end).not.toBeNull();
+    // #4689: the bounds ARE the fixture — parseFilterDate puts start at midnight
+    // UTC and endOfDayIfMidnight widens a midnight end to 23:59:59.999 UTC.
+    expect(start!.toISOString()).toBe('2026-05-01T00:00:00.000Z');
+    expect(end!.toISOString()).toBe('2026-05-31T23:59:59.999Z');
 
     const rows = await reader.listConversations({
       startDate: start!,
@@ -76,8 +78,10 @@ storeSuite('#2428 — PG listConversations honours the date window before the ca
     // Biting: every row is inside the window. Pre-fix the tier returned the
     // newest 5 000 rows (all >= 2026-07-25) and this assertion goes red.
     for (const row of rows) {
-      expect(row.last_ts).not.toBeNull();
       const ts = new Date(row.last_ts as unknown as string).getTime();
+      // #4689: an unparseable timestamp is not "inside the window" — NaN would
+      // silently pass neither bound, so assert parseability explicitly first.
+      expect(Number.isNaN(ts)).toBe(false);
       expect(ts).toBeGreaterThanOrEqual(start!.getTime());
       expect(ts).toBeLessThanOrEqual(end!.getTime());
     }
@@ -91,10 +95,11 @@ storeSuite('#2428 — PG listConversations honours the date window before the ca
     // unfiltered read truncate, and what the windowed read must escape.)
     expect(rows.length).toBe(DEFAULT_PG_LIST_LIMIT);
     // And the newest row is newer than the window we just read, which is the
-    // asymmetry the bug hid.
-    const newest = rows[0]?.last_ts;
-    expect(newest).toBeTruthy();
-    expect(new Date(newest as unknown as string).getTime()).toBeGreaterThan(
+    // asymmetry the bug hid. (#4689: rows[0] exists — the cap assertion above
+    // pins the length — so read its timestamp and check it parses.)
+    const newestTs = new Date(rows[0].last_ts as unknown as string).getTime();
+    expect(Number.isNaN(newestTs)).toBe(false);
+    expect(newestTs).toBeGreaterThan(
       new Date('2026-06-01T00:00:00.000Z').getTime(),
     );
   }, TEST_TIMEOUT_MS);
