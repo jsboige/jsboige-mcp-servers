@@ -17,12 +17,12 @@ SyntaxError: The requested module './tools/index.js' does not provide an export 
 - **Exploration architecture:** Compréhension de la structure MCP et des exports
 
 ### Phase 2: Diagnostic Précis
-1. **Vérification source:** Le fichier [`src/tools/view-conversation-tree.ts`](src/tools/view-conversation-tree.ts:1) existe et exporte correctement `viewConversationTree`
-2. **Vérification barrel:** Le fichier [`src/tools/index.ts`](src/tools/index.ts:1) re-exporte correctement la fonction
+1. **Vérification source:** Le fichier [`src/tools/view-conversation-tree.ts`](../../src/tools/view-conversation-tree.ts:1) existe et exporte correctement `viewConversationTree`
+2. **Vérification barrel:** Le fichier [`src/tools/index.ts`](../../src/tools/index.ts:1) re-exporte correctement la fonction
 3. **Problème identifié:** Les fichiers compilés JavaScript étaient absents du répertoire `build/`
 
 ### Phase 3: Analyse Build
-- **Cause racine:** Configuration TypeScript dans [`tsconfig.json`](tsconfig.json:1)
+- **Cause racine:** Configuration TypeScript dans [`tsconfig.json`](../../tsconfig.json:1)
 - **Problème:** `"rootDir": "."` causait une structure de répertoire incorrecte
 - **Résultat:** Compilation dans `build/src/` au lieu de `build/`
 

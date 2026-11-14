@@ -62,7 +62,7 @@ Cette documentation centralise l'historique complet des bugs majeurs rencontrés
 ```
 
 #### **🔧 Localisation Bug**
-- **Fichier :** [`src/utils/hierarchy-reconstruction-engine.ts`](src/utils/hierarchy-reconstruction-engine.ts:175-189)
+- **Fichier :** [`src/utils/hierarchy-reconstruction-engine.ts`](../src/utils/hierarchy-reconstruction-engine.ts:175-189)
 - **Lignes affectées :** 175-189 (ancien code défaillant)
 - **Module :** Indexation RadixTree dans HierarchyReconstructionEngine
 
@@ -131,7 +131,7 @@ export function extractSubInstructions(parentText: string): string[] {
 ```
 
 #### **📚 Documentation Associée**
-- [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Rapport complet résolution
+- [`RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md`](reports/RAPPORT-FINAL-MISSION-SDDD-TRIPLE-GROUNDING.md) - Rapport complet résolution
 - [`tests/unit/regression-hierarchy-extraction.test.ts`](../tests/unit/regression-hierarchy-extraction.test.ts) - Tests anti-régression
 
 #### **📊 VALIDATION STATISTIQUE POST-CORRECTION** *(OCTOBRE 2025)*
