@@ -215,8 +215,13 @@ async def evaluate_capacity_gate(
         timeout_s = float(gate.get("timeout_s", 10.0))
         child_env = dict(os.environ)
         child_env.update(gate.get("env") or {})
+        # stdin=DEVNULL: under the stdio transport the server's stdin IS the
+        # MCP client's JSON-RPC pipe. A probe inheriting it hung until
+        # timeout_s on Windows (measured #4712: 15.03 s → unknown, every call;
+        # 0.26 s → green with DEVNULL). A probe never has anything to read.
         proc = await asyncio.create_subprocess_exec(
             *gate["command"],
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             env=child_env,
