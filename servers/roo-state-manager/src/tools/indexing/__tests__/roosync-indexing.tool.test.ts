@@ -149,10 +149,10 @@ describe('roosyncIndexingTool', () => {
 		expect(roosyncIndexingTool.inputSchema.required).toEqual(['action']);
 	});
 
-	test('has action enum with 16 values', () => {
+	test('has action enum with 17 values', () => {
 		const actionProp = (roosyncIndexingTool.inputSchema.properties as any).action;
-		// #4352 (a3): index_code_supplement is the 16th action.
-		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement']);
+		// #4352 (a3): index_code_supplement is the 16th action; #4736 P1: probe_code_index is the 17th.
+		expect(actionProp.enum).toEqual(['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index']);
 	});
 
 	// ============================================================
