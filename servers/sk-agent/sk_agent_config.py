@@ -205,8 +205,9 @@ def expand_env_placeholders(
     return expanded
 
 
-# #4740: RFC 7230 token for a header name.
-_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]+$")
+# #4740: RFC 7230 token for a header name. Used with fullmatch: a ``$``
+# anchor would accept a trailing "\n".
+_HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 
 
 def parse_default_headers(raw: Any) -> dict[str, str] | None:
@@ -225,7 +226,7 @@ def parse_default_headers(raw: Any) -> dict[str, str] | None:
         )
     headers: dict[str, str] = {}
     for name, value in raw.items():
-        if not isinstance(name, str) or not _HEADER_NAME_RE.match(name):
+        if not isinstance(name, str) or not _HEADER_NAME_RE.fullmatch(name):
             raise ValueError(f"default_headers: invalid header name {name!r}")
         if not isinstance(value, str):
             raise ValueError(

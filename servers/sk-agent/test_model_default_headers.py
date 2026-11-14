@@ -40,6 +40,10 @@ class TestParseDefaultHeaders(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_default_headers({"bad name": "v"})
 
+    def test_trailing_newline_in_name_is_refused(self):
+        with self.assertRaises(ValueError):
+            parse_default_headers({"x-claudish-lane\n": "nb-coder"})
+
     def test_crlf_injection_is_refused(self):
         with self.assertRaises(ValueError):
             parse_default_headers({"x-claudish-lane": "nb-coder\r\nX-Evil: 1"})
