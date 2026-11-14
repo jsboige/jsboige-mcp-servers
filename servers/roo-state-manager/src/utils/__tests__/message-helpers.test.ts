@@ -22,7 +22,10 @@ import {
   getPriorityIcon,
   getStatusIcon,
   resolveWorkspaceFromWorktree,
-  resolveCallerIdentity
+  resolveCallerIdentity,
+  resolveMachineIdentity,
+  resolveWorkspaceIdentity,
+  getLocalIdentityDiagnostic
 } from '../message-helpers.js';
 import { StateManagerError } from '../../types/errors.js';
 
@@ -518,6 +521,132 @@ describe('message-helpers', () => {
     test('une assertion sans `as` reste l\'identité locale — la liste de confiance n\'intervient pas', () => {
       process.env[ENV] = 'myia-ai-01:hermes-agent';
       expect(resolveCallerIdentity().fullId).toBe('myia-web1:test-workspace');
+    });
+  });
+
+  // ============================================================
+  // #4707 — s'affirmer SOI-MÊME ne doit pas exiger une entrée de confiance
+  // ============================================================
+  describe('resolveCallerIdentity — assertion égale à l\'identité locale (#4707)', () => {
+    const ENV = 'ROOSYNC_TRUSTED_CALLER_IDS';
+    let savedEnv: string | undefined;
+    let savedMachine: string | undefined;
+    let savedWorkspace: string | undefined;
+
+    beforeEach(() => {
+      savedEnv = process.env[ENV];
+      savedMachine = process.env.ROOSYNC_MACHINE_ID;
+      savedWorkspace = process.env.ROOSYNC_WORKSPACE_ID;
+      process.env.ROOSYNC_MACHINE_ID = 'myia-web1';
+      process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+      // Liste VIDE — c'est la condition du témoin : sans entrée de confiance,
+      // seule la branche « identité locale » peut autoriser l'assertion.
+      delete process.env[ENV];
+    });
+
+    afterEach(() => {
+      if (savedEnv === undefined) delete process.env[ENV];
+      else process.env[ENV] = savedEnv;
+      if (savedMachine === undefined) delete process.env.ROOSYNC_MACHINE_ID;
+      else process.env.ROOSYNC_MACHINE_ID = savedMachine;
+      if (savedWorkspace === undefined) delete process.env.ROOSYNC_WORKSPACE_ID;
+      else process.env.ROOSYNC_WORKSPACE_ID = savedWorkspace;
+    });
+
+    const expectRefused = (as: string) =>
+      expect(() => resolveCallerIdentity(as)).toThrow(StateManagerError);
+
+    test('s\'affirmer soi-même passe sans AUCUNE entrée de confiance', () => {
+      const id = resolveCallerIdentity('myia-web1:test-workspace');
+      expect(id.machineId).toBe('myia-web1');
+      expect(id.workspaceId).toBe('test-workspace');
+      expect(id.fullId).toBe('myia-web1:test-workspace');
+      // L'appelant a asserté : `derived` reste absent (ms#1339), pas `false`.
+      expect(id.derived).toBeUndefined();
+    });
+
+    test('la comparaison est normalisée (casse, repli de chemin)', () => {
+      expect(resolveCallerIdentity('MYIA-WEB1:TEST-WORKSPACE').fullId).toBe('myia-web1:test-workspace');
+      expect(resolveCallerIdentity('myia-web1:C:\\dev\\test-workspace').fullId).toBe('myia-web1:test-workspace');
+    });
+
+    test('la graphie installée est la LOCALE, pas celle de l\'appelant', () => {
+      process.env.ROOSYNC_WORKSPACE_ID = 'Test-Workspace';
+      // L'appelant écrit en minuscules ; la destination du dépôt garde la
+      // casse locale — sinon on forke `workspace-test-workspace`.
+      const id = resolveCallerIdentity('myia-web1:test-workspace');
+      expect(id.workspaceId).toBe('Test-Workspace');
+      expect(id.fullId).toBe('myia-web1:Test-Workspace');
+    });
+
+    test('une AUTRE machine reste refusée sans entrée de confiance', () => {
+      expectRefused('myia-ai-01:test-workspace');
+      expectRefused('myia-ai-01');
+    });
+
+    test('un AUTRE workspace de MA machine reste refusé sans entrée de confiance', () => {
+      expectRefused('myia-web1:other-workspace');
+      expectRefused('myia-web1:hermes-agent');
+    });
+
+    test('l\'assertion machine seule n\'est PAS couverte — elle n\'est pas `getLocalFullId()`', () => {
+      // La branche #4707 exige la forme complète : une assertion sans
+      // workspace ne dit pas quelle voie parle, et reste soumise à la liste.
+      expectRefused('myia-web1');
+      expectRefused('myia-web1:');
+    });
+
+    test('une entrée de confiance garde exactement son comportement #3591', () => {
+      process.env[ENV] = 'myia-ai-01:hermes-agent';
+      expect(resolveCallerIdentity('myia-ai-01:hermes-agent').fullId).toBe('myia-ai-01:hermes-agent');
+      expectRefused('myia-ai-01:roo-extensions');
+    });
+  });
+
+  describe('provenance de l\'identité locale (#4707)', () => {
+    let savedMachine: string | undefined;
+    let savedWorkspace: string | undefined;
+    let savedEnv: string | undefined;
+
+    beforeEach(() => {
+      savedMachine = process.env.ROOSYNC_MACHINE_ID;
+      savedWorkspace = process.env.ROOSYNC_WORKSPACE_ID;
+      savedEnv = process.env.ROOSYNC_TRUSTED_CALLER_IDS;
+    });
+
+    afterEach(() => {
+      if (savedMachine === undefined) delete process.env.ROOSYNC_MACHINE_ID;
+      else process.env.ROOSYNC_MACHINE_ID = savedMachine;
+      if (savedWorkspace === undefined) delete process.env.ROOSYNC_WORKSPACE_ID;
+      else process.env.ROOSYNC_WORKSPACE_ID = savedWorkspace;
+      if (savedEnv === undefined) delete process.env.ROOSYNC_TRUSTED_CALLER_IDS;
+      else process.env.ROOSYNC_TRUSTED_CALLER_IDS = savedEnv;
+    });
+
+    test('resolveMachineIdentity nomme la source de la moitié machine', () => {
+      process.env.ROOSYNC_MACHINE_ID = 'myia-web1';
+      expect(resolveMachineIdentity()).toEqual({ machineId: 'myia-web1', source: 'ROOSYNC_MACHINE_ID' });
+      delete process.env.ROOSYNC_MACHINE_ID;
+      expect(resolveMachineIdentity().source).toBe('hostname');
+    });
+
+    test('resolveWorkspaceIdentity nomme la source de la moitié workspace', () => {
+      process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+      expect(resolveWorkspaceIdentity()).toEqual({ workspaceId: 'test-workspace', source: 'ROOSYNC_WORKSPACE_ID' });
+    });
+
+    test('getLocalIdentityDiagnostic expose l\'identité complète, les sources et l\'état de la liste', () => {
+      process.env.ROOSYNC_MACHINE_ID = 'myia-web1';
+      process.env.ROOSYNC_WORKSPACE_ID = 'test-workspace';
+      delete process.env.ROOSYNC_TRUSTED_CALLER_IDS;
+      const empty = getLocalIdentityDiagnostic();
+      expect(empty.fullId).toBe('myia-web1:test-workspace');
+      expect(empty.machineSource).toBe('ROOSYNC_MACHINE_ID');
+      expect(empty.workspaceSource).toBe('ROOSYNC_WORKSPACE_ID');
+      expect(empty.trustedCallerIds).toEqual({ present: false, entries: 0 });
+
+      process.env.ROOSYNC_TRUSTED_CALLER_IDS = 'myia-ai-01, myia-ai-01:hermes-agent';
+      expect(getLocalIdentityDiagnostic().trustedCallerIds).toEqual({ present: true, entries: 2 });
     });
   });
 

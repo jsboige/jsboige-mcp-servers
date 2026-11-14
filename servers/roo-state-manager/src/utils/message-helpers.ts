@@ -10,6 +10,36 @@ import path from 'path';
 import { StateManagerError } from '../types/errors.js';
 import { getCallerContext } from '../transport/caller-context.js';
 
+/** Provenance de la machine résolue (#4707) — ordre de précédence de `resolveMachineIdentity`. */
+export type MachineIdentitySource = 'request-context' | 'ROOSYNC_MACHINE_ID' | 'hostname';
+
+/**
+ * Résout la machine locale ET sa provenance (#4707).
+ *
+ * Une seule définition de la chaîne de précédence : `getLocalMachineId()` en
+ * est le projection valeur, et `roosync_diagnose` action `env` lit la source
+ * pour dire à une lane ce que le serveur pense qu'elle est, et pourquoi.
+ */
+export function resolveMachineIdentity(): { machineId: string; source: MachineIdentitySource } {
+  // #4149 F2 : identité de la requête courante (daemon HTTP) — prioritaire.
+  const caller = getCallerContext();
+  if (caller?.machineId) {
+    return { machineId: caller.machineId.toLowerCase(), source: 'request-context' };
+  }
+
+  // Priorité à la variable d'environnement (pour les tests)
+  // Normalisation lowercase pour cohérence (évite doublons case-sensitive)
+  if (process.env.ROOSYNC_MACHINE_ID) {
+    return { machineId: process.env.ROOSYNC_MACHINE_ID.toLowerCase(), source: 'ROOSYNC_MACHINE_ID' };
+  }
+
+  // Fallback vers le hostname OS
+  return {
+    machineId: os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '-'),
+    source: 'hostname',
+  };
+}
+
 /**
  * Récupère l'ID de la machine locale depuis le hostname OS
  *
@@ -29,20 +59,79 @@ import { getCallerContext } from '../transport/caller-context.js';
  * ```
  */
 export function getLocalMachineId(): string {
-  // #4149 F2 : identité de la requête courante (daemon HTTP) — prioritaire.
+  return resolveMachineIdentity().machineId;
+}
+
+/** Provenance du workspace résolu (#4707) — ordre de précédence de `resolveWorkspaceIdentity`. */
+export type WorkspaceIdentitySource =
+  | 'request-context'
+  | 'ROOSYNC_WORKSPACE_ID'
+  | 'WORKSPACE_PATH'
+  | 'cwd'
+  | 'default';
+
+/**
+ * Résout le workspace local ET sa provenance (#4707).
+ *
+ * Une seule définition de la chaîne de précédence : `getLocalWorkspaceId()` en
+ * est la projection valeur, et `roosync_diagnose` action `env` lit la source
+ * pour dire à une lane ce que le serveur pense qu'elle est, et pourquoi.
+ */
+export function resolveWorkspaceIdentity(): {
+  workspaceId: string;
+  source: WorkspaceIdentitySource;
+} {
+  // 0. #4149 F2 : identité de la requête courante (daemon HTTP) — prioritaire.
+  //    Le workspace asserté par le client (`x-roosync-as: machine:workspace`)
+  //    prime sur l'env et sur le cwd : sur un daemon, le cwd est celui du
+  //    daemon, pas celui du client.
   const caller = getCallerContext();
-  if (caller?.machineId) {
-    return caller.machineId.toLowerCase();
+  if (caller?.workspaceId) {
+    return { workspaceId: caller.workspaceId, source: 'request-context' };
   }
 
-  // Priorité à la variable d'environnement (pour les tests)
-  // Normalisation lowercase pour cohérence (évite doublons case-sensitive)
-  if (process.env.ROOSYNC_MACHINE_ID) {
-    return process.env.ROOSYNC_MACHINE_ID.toLowerCase();
+  // 1. Override manuel via env var (pour tests ou cas spéciaux)
+  if (process.env.ROOSYNC_WORKSPACE_ID) {
+    return { workspaceId: process.env.ROOSYNC_WORKSPACE_ID, source: 'ROOSYNC_WORKSPACE_ID' };
   }
 
-  // Fallback vers le hostname OS
-  return os.hostname().toLowerCase().replace(/[^a-z0-9-]/g, '-');
+  // 2. WORKSPACE_PATH from launcher (mcp-wrapper captures original cwd,
+  //    or Roo injects ${workspaceFolder} via config)
+  if (process.env.WORKSPACE_PATH) {
+    const normalized = process.env.WORKSPACE_PATH.replace(/\\/g, '/');
+    // Worktree detection (#1364 regression fix): WORKSPACE_PATH may itself
+    // point inside .claude/worktrees/* (when the wrapper captured cwd from
+    // a worktree). Resolve to parent workspace before using basename.
+    const worktreeWorkspace = resolveWorkspaceFromWorktree(normalized);
+    if (worktreeWorkspace) {
+      return { workspaceId: worktreeWorkspace, source: 'WORKSPACE_PATH' };
+    }
+    const wsName = path.basename(normalized);
+    if (wsName && wsName !== '.' && wsName.length >= 2) {
+      return { workspaceId: wsName, source: 'WORKSPACE_PATH' };
+    }
+  }
+
+  // 3. Auto-détection depuis le répertoire courant
+  const cwd = process.cwd();
+
+  // 3a. Worktree detection (#1364): if cwd is inside .claude/worktrees/,
+  //     resolve to the parent workspace name instead of the worktree name.
+  const worktreeWorkspace = resolveWorkspaceFromWorktree(cwd);
+  if (worktreeWorkspace) {
+    return { workspaceId: worktreeWorkspace, source: 'cwd' };
+  }
+
+  // 3b. Standard: use basename of current directory
+  const workspaceName = path.basename(cwd);
+
+  // Validation basique : le nom doit être significatif
+  if (workspaceName && workspaceName !== '.' && workspaceName.length >= 2) {
+    return { workspaceId: workspaceName, source: 'cwd' };
+  }
+
+  // 4. Fallback ultime (ne devrait jamais arriver en production)
+  return { workspaceId: 'default', source: 'default' };
 }
 
 /**
@@ -69,57 +158,7 @@ export function getLocalMachineId(): string {
  * ```
  */
 export function getLocalWorkspaceId(): string {
-  // 0. #4149 F2 : identité de la requête courante (daemon HTTP) — prioritaire.
-  //    Le workspace asserté par le client (`x-roosync-as: machine:workspace`)
-  //    prime sur l'env et sur le cwd : sur un daemon, le cwd est celui du
-  //    daemon, pas celui du client.
-  const caller = getCallerContext();
-  if (caller?.workspaceId) {
-    return caller.workspaceId;
-  }
-
-  // 1. Override manuel via env var (pour tests ou cas spéciaux)
-  if (process.env.ROOSYNC_WORKSPACE_ID) {
-    return process.env.ROOSYNC_WORKSPACE_ID;
-  }
-
-  // 2. WORKSPACE_PATH from launcher (mcp-wrapper captures original cwd,
-  //    or Roo injects ${workspaceFolder} via config)
-  if (process.env.WORKSPACE_PATH) {
-    const normalized = process.env.WORKSPACE_PATH.replace(/\\/g, '/');
-    // Worktree detection (#1364 regression fix): WORKSPACE_PATH may itself
-    // point inside .claude/worktrees/* (when the wrapper captured cwd from
-    // a worktree). Resolve to parent workspace before using basename.
-    const worktreeWorkspace = resolveWorkspaceFromWorktree(normalized);
-    if (worktreeWorkspace) {
-      return worktreeWorkspace;
-    }
-    const wsName = path.basename(normalized);
-    if (wsName && wsName !== '.' && wsName.length >= 2) {
-      return wsName;
-    }
-  }
-
-  // 3. Auto-détection depuis le répertoire courant
-  const cwd = process.cwd();
-
-  // 3a. Worktree detection (#1364): if cwd is inside .claude/worktrees/,
-  //     resolve to the parent workspace name instead of the worktree name.
-  const worktreeWorkspace = resolveWorkspaceFromWorktree(cwd);
-  if (worktreeWorkspace) {
-    return worktreeWorkspace;
-  }
-
-  // 3b. Standard: use basename of current directory
-  const workspaceName = path.basename(cwd);
-
-  // Validation basique : le nom doit être significatif
-  if (workspaceName && workspaceName !== '.' && workspaceName.length >= 2) {
-    return workspaceName;
-  }
-
-  // 4. Fallback ultime (ne devrait jamais arriver en production)
-  return 'default';
+  return resolveWorkspaceIdentity().workspaceId;
 }
 
 /**
@@ -170,6 +209,38 @@ export function getLocalFullId(): string {
   const machineId = getLocalMachineId();
   const workspaceId = getLocalWorkspaceId();
   return `${machineId}:${workspaceId}`;
+}
+
+/**
+ * Full local identity + provenance of each half (#4707).
+ *
+ * `roosync_diagnose` action `env` renders this so a lane can see what the
+ * server thinks it is, and WHY — an identity resolved from a stale inherited
+ * environment variable looks exactly like a correct one until the source is
+ * named. Read-only, no side effects: safe to call from any diagnostic path.
+ */
+export function getLocalIdentityDiagnostic(): {
+  machineId: string;
+  workspaceId: string;
+  fullId: string;
+  machineSource: MachineIdentitySource;
+  workspaceSource: WorkspaceIdentitySource;
+  trustedCallerIds: { present: boolean; entries: number };
+} {
+  const machine = resolveMachineIdentity();
+  const workspace = resolveWorkspaceIdentity();
+  const rawTrusted = process.env[TRUSTED_CALLER_IDS_ENV];
+  return {
+    machineId: machine.machineId,
+    workspaceId: workspace.workspaceId,
+    fullId: `${machine.machineId}:${workspace.workspaceId}`,
+    machineSource: machine.source,
+    workspaceSource: workspace.source,
+    trustedCallerIds: {
+      present: Boolean(rawTrusted && rawTrusted.trim()),
+      entries: parseTrustedCallerIds().length,
+    },
+  };
 }
 
 /**
@@ -347,6 +418,30 @@ export function resolveCallerIdentity(as?: string): {
   const assertedWorkspace = parsed.workspaceId === undefined
     ? undefined
     : normalizeWorkspaceId(parsed.workspaceId.trim()) || undefined;
+  // #4707 : une identité assertée ÉGALE à celle que le serveur calcule lui-même
+  // est acceptée sans entrée dans ROOSYNC_TRUSTED_CALLER_IDS. Le gate #3591
+  // empêche un siège d'affirmer une identité qu'il n'a pas ; il n'a rien à
+  // protéger contre une lane qui affirme exactement la sienne — jusqu'ici cette
+  // lane devait obtenir une entrée de confiance pour se nommer elle-même.
+  // Comparaison sur la forme normalisée (machine canonique, workspace en
+  // basename insensible à la casse) ; l'assertion doit porter un workspace —
+  // une assertion machine seule n'est pas `getLocalFullId()` et reste soumise
+  // à la liste. La graphie RETOURNÉE est la locale, jamais celle de
+  // l'appelant : la destination du dépôt préserve la casse, et réinstaller la
+  // graphie brute forkerait les clés (`workspace-coursia` vs `workspace-CoursIA`).
+  const localMachine = getLocalMachineId().toLowerCase();
+  const localWorkspace = normalizeWorkspaceId(getLocalWorkspaceId());
+  if (
+    machine === localMachine &&
+    assertedWorkspace !== undefined &&
+    assertedWorkspace === localWorkspace
+  ) {
+    return {
+      machineId: getLocalMachineId(),
+      workspaceId: getLocalWorkspaceId(),
+      fullId: getLocalFullId(),
+    };
+  }
   const trusted = parseTrustedCallerIds();
   // Trust matrix:
   //   entry "machine"           → any `as` on that machine passes, with or
