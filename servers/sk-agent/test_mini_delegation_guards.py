@@ -6,7 +6,8 @@ test_recursion_guard.py (mutation-measured); this file locks the other two:
 Guard 2 — no orphan process: an MCP child (here: a recursive sk-agent child
 or any plugin server) whose handshake fails must be *terminated*, not just
 dropped from the plugin map. The connect-timeout tests assert the bounded
-failure; this asserts the process itself is gone.
+failure; this asserts the process itself is gone — measured while the event
+loop is still alive, because loop teardown would mask a leak (#4085 C5).
 
 Guard 3 — a mini error surfaces without breaking the medium's task: a model
 call that raises (mini endpoint 500/timeout) must come back as an ``error``
@@ -101,10 +102,14 @@ def test_pid_liveness_probe_detects_both_states():
 def test_hanging_mcp_child_leaves_no_orphan_process(tmp_path):
     """Guard 2: the timed-out child server process must be terminated.
 
-    The spawned server records its own PID then hangs. After the bounded
-    handshake failure (timeout path calls plugin.close()), the process must
-    be gone — a dropped-but-alive child is exactly the orphan the fleet
-    measured accumulating on delegation storms (#4107).
+    The spawned server records its own PID then hangs. Liveness is measured
+    WHILE THE EVENT LOOP IS STILL ALIVE: ``asyncio.run`` tears surviving
+    children down with the loop (measured — the child of a leaked plugin is
+    dead the moment the loop closes), so an assertion placed after the run
+    passes even when the production path leaks the process. That is exactly
+    how this guard stayed green over a real leak (#4085 C5): with
+    ``plugin.close()`` neutralized the mutation survived, because loop
+    teardown — not the production path — was doing the terminating.
     """
     pidfile = tmp_path / "hanging-child.pid"
     # Forward slashes only: the path is embedded in Python source (-c), where
@@ -121,24 +126,28 @@ def test_hanging_mcp_child_leaves_no_orphan_process(tmp_path):
     )
     mgr = SKAgentManager(SKAgentConfig(mcps=[hanging]))
 
-    loaded = asyncio.run(mgr._ensure_mcp_loaded("orphan-check-server"))
+    async def scenario():
+        loaded = await mgr._ensure_mcp_loaded("orphan-check-server")
+        # The child writes its pid right after spawn; poll briefly for it.
+        deadline = time.monotonic() + 10.0
+        while not pidfile.exists() and time.monotonic() < deadline:
+            await asyncio.sleep(0.05)
+        assert pidfile.exists(), "child never recorded its pid (spawn itself failed)"
+        pid = int(pidfile.read_text().strip())
+        # Reap window, still inside the loop: the production path must be the
+        # thing that killed it.
+        deadline = time.monotonic() + 10.0
+        while _pid_alive(pid) and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+        return loaded, pid, _pid_alive(pid)
+
+    loaded, pid, alive = asyncio.run(scenario())
     assert loaded is False, "hanging server must fail its handshake"
-
-    # The child writes its pid right after spawn; poll briefly for it.
-    deadline = time.monotonic() + 10.0
-    while not pidfile.exists() and time.monotonic() < deadline:
-        time.sleep(0.05)
-    assert pidfile.exists(), "child never recorded its pid (spawn itself failed)"
-    pid = int(pidfile.read_text().strip())
-
-    # plugin.close() after the timeout must terminate it; allow a short reap.
-    deadline = time.monotonic() + 10.0
-    while _pid_alive(pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    assert not _pid_alive(pid), (
-        f"orphan process {pid} still alive {time.monotonic():.0f}s after the "
-        "failed MCP handshake — the timeout path must terminate the child, "
-        "not just drop it from the plugin map"
+    assert not alive, (
+        f"orphan process {pid} still alive after a 10 s reap window WITH the "
+        "event loop up — a timed-out MCP child must be terminated by the "
+        "production path (SK close() hangs on its detached _inner_connect "
+        "task, so the exit stack has to be closed), not by loop teardown"
     )
 
 
