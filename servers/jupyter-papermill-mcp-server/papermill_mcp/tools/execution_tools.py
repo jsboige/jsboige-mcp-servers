@@ -26,11 +26,22 @@ _kernel_service: Optional[KernelService] = None
 
 def initialize_execution_tools(
     config: MCPConfig,
+    kernel_service: Optional[KernelService] = None,
 ) -> tuple[NotebookService, KernelService]:
-    """Initialize services for execution tools."""
+    """Initialize services for execution tools.
+
+    #4716: when the caller already holds the server's kernel service (the one
+    built by initialize_kernel_tools), it MUST pass it here. Each KernelService
+    builds its own JupyterManager, and the active-kernel registry
+    (JupyterManager._active_kernels) is a per-instance dict — a second service
+    makes every kernel started via manage_kernel invisible to
+    execute_notebook_cell / get_kernel_status / cleanup_all_kernels ("Kernel
+    not found" while list_kernels sees it). The default stays for standalone
+    callers and tests that exercise this module alone.
+    """
     global _notebook_service, _kernel_service
     _notebook_service = NotebookService(config)
-    _kernel_service = KernelService(config)
+    _kernel_service = kernel_service if kernel_service is not None else KernelService(config)
     return _notebook_service, _kernel_service
 
 

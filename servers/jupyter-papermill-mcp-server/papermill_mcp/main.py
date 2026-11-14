@@ -116,10 +116,12 @@ class JupyterPapermillMCPServer:
             initialize_notebook_tools(self.config)
 
             logger.info("Initializing kernel tools...")
-            initialize_kernel_tools(self.config)
+            # #4716: hand the SAME kernel service to the execution tools — one
+            # JupyterManager, one active-kernel registry for the whole server.
+            kernel_service = initialize_kernel_tools(self.config)
 
             logger.info("Initializing execution tools...")
-            initialize_execution_tools(self.config)
+            initialize_execution_tools(self.config, kernel_service=kernel_service)
 
             # Phase 2: Register all tools with the FastMCP app
             logger.info("[NOTE] Registering notebook tools (13 tools)...")
