@@ -2064,7 +2064,10 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		//     the original (measured ai-01: fixture 0.702 above source, 2026-08-19). A fixture
 		//     is never the actionable answer to "find the code that does X" — stronger malus
 		//     than tests, still visible (degraded, not removed), multiplicative if both apply.
-		const TEST_FILE_RE = /[\\/]__tests__[\\/]|\.test\.|\.spec\./;
+		// #2609 step 5(a) — tests/manual/: manual test scripts carry no .test./.spec.
+		//     suffix and no __tests__ dir, so they ranked as source. Same anchoring as
+		//     FIXTURE_FILE_RE below (start-of-path or after a separator, both OS slashes).
+		const TEST_FILE_RE = /[\\/]__tests__[\\/]|\.test\.|\.spec\.|(^|[\\/])tests[\\/]manual[\\/]/;
 		const TEST_FILE_MALUS = 0.95;
 		const FIXTURE_FILE_RE = /(^|[\\/])tests[\\/]fixtures[\\/]/;
 		const FIXTURE_FILE_MALUS = 0.8;
