@@ -31,6 +31,9 @@ import { closeSync, openSync, readFileSync, readSync, statSync } from 'fs';
 import { join } from 'path';
 import { classifyZooPath } from './zoo-eligibility.js';
 import { listGitVisiblePaths, readOriginUrl } from './git-visible.js';
+// #4736 P1: the vectors-config parser is shared with the ws-* probe so the sup-
+// template read and the ws-* probe can never drift on the shape they parse.
+import { parseVectorsConfig } from './collection-naming.js';
 
 /** Collection prefix. `ws-` is Zoo's; `sup-` is ours — never the same namespace. */
 export const SUPPLEMENT_COLLECTION_PREFIX = 'sup-';
@@ -525,14 +528,7 @@ export async function readTemplateVectorConfig(
 	if (!templateCollection || !client.getCollection) return null;
 	try {
 		const info: any = await client.getCollection(templateCollection);
-		const params = info?.config?.params?.vectors ?? info?.result?.config?.params?.vectors;
-		const named = params && typeof params === 'object' && !Array.isArray(params) && typeof params.size !== 'number'
-			? (Object.values(params)[0] as any)
-			: params;
-		if (named && typeof named.size === 'number') {
-			return { size: named.size, distance: String(named.distance ?? 'Cosine') };
-		}
-		return null;
+		return parseVectorsConfig(info);
 	} catch {
 		return null;
 	}
