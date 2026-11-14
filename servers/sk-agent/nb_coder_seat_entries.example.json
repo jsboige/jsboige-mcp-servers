@@ -80,7 +80,7 @@
       "_comment": "Seat-local to ai-01 (conda env mcp-jupyter) — copied from the auditor's live declaration. The live entry carries the real PYTHONPATH; keep it on merge. risk_class=exec is satisfied by the agent's `repl` capability (RISK_CLASS_REQUIRED_CAPABILITIES).",
       "id": "jupyter_papermill",
       "description": "Jupyter kernels + papermill notebook execution (in-house MCP jupyter-papermill)",
-      "command": "C:/Users/MYIA/miniconda3/envs/mcp-jupyter/python.exe",
+      "command": "<set locally: python.exe of the mcp-jupyter conda env>",
       "args": ["-u", "-m", "papermill_mcp.main"],
       "env": {
         "PYTHONPATH": "<set locally>"
