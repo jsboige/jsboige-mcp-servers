@@ -25,6 +25,14 @@ vi.unmock('../ConfigSharingService.js');
 
 import { RooSyncService, RooSyncServiceError } from '../RooSyncService.js';
 import type { CacheOptions } from '../RooSyncService.js';
+import { ConfigService } from '../ConfigService.js';
+// #4688 Lot A: the delegated-module tests now assert the concrete class of each
+// private field (source-grounded, ctor L162-171) instead of "an object exists".
+import { SyncDecisionManager } from '../roosync/SyncDecisionManager.js';
+import { ConfigComparator } from '../roosync/ConfigComparator.js';
+import { BaselineManager } from '../roosync/BaselineManager.js';
+import { PresenceManager } from '../roosync/PresenceManager.js';
+import { HeartbeatService } from '../roosync/HeartbeatService.js';
 
 // Real fs/path/os for the cache + path-helper tests below (#833 coverage).
 // Not mocked: these tests exercise getFileHash/checkFileExists against real temp files.
@@ -85,7 +93,9 @@ describe('RooSyncService', () => {
         test('getInstance initialise le service au premier appel', async () => {
             const service = await RooSyncService.getInstance();
 
-            expect(service).toBeDefined();
+            // "Initialise au premier appel" = the ctor consumed loadRooSyncConfig()'s
+            // output: the mocked machineId reaches the instance (beforeEach L60).
+            expect((service as any).config.machineId).toBe('test-machine');
             expect(service).toBeInstanceOf(RooSyncService);
         });
     });
@@ -106,14 +116,21 @@ describe('RooSyncService', () => {
 
             const service = await RooSyncService.getInstance(options);
 
-            expect(service).toBeDefined();
+            // The caller's options reach the instance (ctor L130-133).
+            expect((service as any).cacheOptions).toMatchObject({ ttl: 60000, enabled: true });
         });
 
         test('le cache a une TTL par défaut', async () => {
+            // #4688 Lot A: reset BEFORE reading the default — without it the singleton
+            // created by the previous test (ttl: 60000) was reused, so this test never
+            // exercised the ctor default at all (the old toBeDefined() could not tell).
+            (RooSyncService as any).instance = null;
+
             const service = await RooSyncService.getInstance();
 
             // Vérifier que le service a un cache
-            expect(service).toBeDefined();
+            expect((service as any).cache).toBeInstanceOf(Map);
+            expect((service as any).cacheOptions).toEqual({ ttl: 300000, enabled: true });
         });
 
         test('le cache peut être désactivé', async () => {
@@ -126,7 +143,8 @@ describe('RooSyncService', () => {
 
             const service = await RooSyncService.getInstance(options);
 
-            expect(service).toBeDefined();
+            // "Désactivé" is a state of the instance, not of the variable: the flag landed.
+            expect((service as any).cacheOptions.enabled).toBe(false);
         });
     });
 
@@ -164,15 +182,21 @@ describe('RooSyncService', () => {
         test('le service a accès aux modules délégués', async () => {
             const service = await RooSyncService.getInstance();
 
-            // Vérifier que le service est initialisé avec ses modules
-            expect(service).toBeDefined();
+            // "Initialisé avec ses modules" = each delegated field holds its class
+            // (ctor L162-171), not merely that the service object exists.
+            expect((service as any).syncDecisionManager).toBeInstanceOf(SyncDecisionManager);
+            expect((service as any).configComparator).toBeInstanceOf(ConfigComparator);
+            expect((service as any).baselineManager).toBeInstanceOf(BaselineManager);
+            expect((service as any).presenceManager).toBeInstanceOf(PresenceManager);
+            expect((service as any).heartbeatService).toBeInstanceOf(HeartbeatService);
         });
 
         test('getConfigService retourne une instance', async () => {
             const service = await RooSyncService.getInstance();
             const configService = service.getConfigService();
 
-            expect(configService).toBeDefined();
+            expect(configService).toBeInstanceOf(ConfigService);
+            expect(configService).toBe((service as any).configService);
         });
 
         // KEPT SKIPPED (#2642 follow-on): getBaselineService() n'est pas exposé publiquement.
@@ -255,8 +279,18 @@ describe('RooSyncService', () => {
             const service = await RooSyncService.getInstance();
 
             // Le service devrait avoir un mécanisme d'invalidation
-            // basé sur les hashes de fichiers
-            expect(service).toBeDefined();
+            // basé sur les hashes de fichiers : exercer le hash réel (L485-488)
+            // plutôt que constater que le service est un objet.
+            const f = tmpPath('roosync-invalidation');
+            writeFileSync(f, 'abc');
+            try {
+                const hash = (service as any).getFileHash(f);
+                const st = statSync(f);
+                expect(hash).toBe(`${st.mtimeMs}-${st.size}`);
+            } finally {
+                unlinkSync(f);
+            }
+            expect((service as any).isCacheValid).toBeTypeOf('function');
         });
 
         test('supporte le TTL personnalisé', async () => {
@@ -270,7 +304,7 @@ describe('RooSyncService', () => {
 
             const service = await RooSyncService.getInstance(options);
 
-            expect(service).toBeDefined();
+            expect((service as any).cacheOptions.ttl).toBe(120000);
         });
     });
 
@@ -279,35 +313,37 @@ describe('RooSyncService', () => {
     // ============================================================
 
     describe('Intégration modules délégués', () => {
+        // #4688 Lot A: "est accessible" is asserted on the concrete instance held by
+        // the service (private field, ctor L162-171) — no public accessor exists for
+        // these managers, and adding one would be speculative code (#1936).
         test('SyncDecisionManager est accessible', async () => {
             const service = await RooSyncService.getInstance();
 
-            // Le service devrait exposer une méthode pour accéder au manager
-            expect(service).toBeDefined();
+            expect((service as any).syncDecisionManager).toBeInstanceOf(SyncDecisionManager);
         });
 
         test('ConfigComparator est accessible', async () => {
             const service = await RooSyncService.getInstance();
 
-            expect(service).toBeDefined();
+            expect((service as any).configComparator).toBeInstanceOf(ConfigComparator);
         });
 
         test('BaselineManager est accessible', async () => {
             const service = await RooSyncService.getInstance();
 
-            expect(service).toBeDefined();
+            expect((service as any).baselineManager).toBeInstanceOf(BaselineManager);
         });
 
         test('PresenceManager est accessible', async () => {
             const service = await RooSyncService.getInstance();
 
-            expect(service).toBeDefined();
+            expect((service as any).presenceManager).toBeInstanceOf(PresenceManager);
         });
 
         test('HeartbeatService est accessible', async () => {
             const service = await RooSyncService.getInstance();
 
-            expect(service).toBeDefined();
+            expect((service as any).heartbeatService).toBeInstanceOf(HeartbeatService);
         });
     });
 
@@ -449,7 +485,8 @@ describe('RooSyncService', () => {
 
         test('getConfig returns the loaded config object (L424-425)', () => {
             const cfg = svc.getConfig();
-            expect(cfg).toBeDefined();
+            // Content of the mocked config (beforeEach L60), not just its presence.
+            expect(cfg).toMatchObject({ machineId: 'test-machine' });
             expect(cfg).toBe((svc as any).config);
         });
     });
