@@ -201,6 +201,22 @@ export class ConfigSharingService implements IConfigSharingService {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const versionDir = join(machineConfigDir, `v${version}-${timestamp}`);
 
+    // #4695 : dryRun au niveau SERVICE. ms#1746 avait corrigé la couche outil
+    // seulement — tout autre appelant de publishConfig (script, futur outil)
+    // publiait réellement avec un dryRun silencieusement ignoré. En simulation :
+    // rien de créé, copié, écrit ni purgé ; on rend le dossier cible et la
+    // version qui auraient été publiés. Placé avant le warning « sera écrasée »
+    // pour ne pas annoncer un écrasement qui n'aura pas lieu.
+    if (options.dryRun) {
+      this.logger.info('Publication simulée (dryRun) — rien n\'a été écrit', { machineId, version, path: versionDir });
+      return {
+        success: true,
+        version,
+        path: versionDir,
+        machineId
+      };
+    }
+
     if (existsSync(versionDir)) {
       this.logger.warn(`La version ${version} existe déjà pour ${machineId}, elle sera écrasée.`);
     }

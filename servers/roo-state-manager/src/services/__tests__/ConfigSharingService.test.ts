@@ -625,6 +625,57 @@ describe('ConfigSharingService', () => {
       expect(versionDirs).toHaveLength(3);            // pruned from 4 → 3
       expect(existsSync(join(machineDir, 'latest.json'))).toBe(true); // latest.json preserved
     });
+
+    it('#4695 dryRun writes nothing — tree and latest.json identical, returns target dir + version', async () => {
+      process.env.ROOSYNC_MACHINE_ID = 'dry-machine';
+      const machineDir = join(realSharedState, 'configs', 'dry-machine');
+      // Seed the store under test: existing version dirs + latest.json
+      const seeds: Array<[string, string]> = [
+        ['1.0.0', '2026-01-01T00-00-00-000Z'],
+        ['1.1.0', '2026-02-01T00-00-00-000Z']
+      ];
+      for (const [v, ts] of seeds) {
+        const dir = join(machineDir, `v${v}-${ts}`);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(join(dir, 'manifest.json'), JSON.stringify({ version: v, author: 'dry-machine' }), 'utf-8');
+      }
+      await fs.writeFile(join(machineDir, 'latest.json'), JSON.stringify({ version: '1.1.0', seeded: true }), 'utf-8');
+
+      // Snapshot the whole shared-state tree (relative paths, sorted)
+      const listTree = async (root: string): Promise<string[]> => {
+        const out: string[] = [];
+        const walk = async (dir: string, prefix: string): Promise<void> => {
+          for (const e of await fs.readdir(dir)) {
+            const rel = prefix ? `${prefix}/${e}` : e;
+            out.push(rel);
+            const abs = join(dir, e);
+            if ((await fs.stat(abs)).isDirectory()) await walk(abs, rel);
+          }
+        };
+        await walk(root, '');
+        return out.sort();
+      };
+      const beforeTree = await listTree(realSharedState);
+      const beforeLatest = await fs.readFile(join(machineDir, 'latest.json'), 'utf-8');
+
+      const result = await service.publishConfig({
+        packagePath: pkgDir,
+        version: '2.0.0',
+        description: 'dry-run publish',
+        dryRun: true
+      });
+
+      // Preview contract (#4695): success + target dir + version, nothing created
+      expect(result.success).toBe(true);
+      expect(result.version).toBe('2.0.0');
+      expect(result.machineId).toBe('dry-machine');
+      expect(basename(result.path)).toMatch(/^v2\.0\.0-/);
+      expect(existsSync(result.path)).toBe(false); // the returned target dir was NOT created
+
+      // Store untouched: identical tree, byte-identical latest.json
+      expect(await listTree(realSharedState)).toEqual(beforeTree);
+      expect(await fs.readFile(join(machineDir, 'latest.json'), 'utf-8')).toBe(beforeLatest);
+    });
   });
 
   // ==================================================================

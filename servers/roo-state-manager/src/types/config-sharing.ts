@@ -45,6 +45,8 @@ export interface PublishConfigOptions {
   version: string;
   description: string;
   machineId?: string; // CORRECTION SDDD : Optionnel, utilise ROOSYNC_MACHINE_ID par défaut
+  /** #4695 — Simulation sans écriture : rien n'est créé, copié ni purgé ; rend le dossier cible et la version */
+  dryRun?: boolean;
 }
 
 export interface PublishConfigResult {

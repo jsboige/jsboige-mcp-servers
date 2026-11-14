@@ -527,7 +527,12 @@ export async function roosyncConfig(args: ConfigArgs) {
             packagePath: finalPackagePath,
             version: version!,
             description: description!,
-            machineId
+            machineId,
+            // #4695 — le flag est transmis au service. La preview outil
+            // ci-dessus court-circuite avant cet appel (contrat ms#1746),
+            // donc dryRun est toujours faux ici aujourd'hui : le garde-fou
+            // effectif vit dans le service, qui couvre tout autre appelant.
+            dryRun
           });
 
           return {
