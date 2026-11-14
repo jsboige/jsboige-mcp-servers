@@ -49,9 +49,22 @@ describe('export-project-xml.tool', () => {
       prettyPrint: mockPrettyPrint
     }, mockConversationCache, mockXmlExporterService, vi.fn().mockResolvedValue(undefined));
 
-    expect(result.content).toBeDefined();
+    // #4688 Lot A: the MCP result is a one-element text block (handler L112-118),
+    // and the generated XML is the one handed to saveXmlToFile.
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]).toMatchObject({ type: 'text' });
     expect(result.content[0].text).toContain('sauvegardé dans');
-    expect(mockXmlExporterService.generateProjectXml).toHaveBeenCalled();
+    expect(result.content[0].text).toBe(
+      "Export XML du projet '/test/workspace' sauvegardé dans 'test-project.xml'.",
+    );
+    expect(mockXmlExporterService.saveXmlToFile).toHaveBeenCalledWith('<project>...</project>', mockFilePath);
+    // Date filtering + option pass-through: task-2 (2025-12-31T15:30Z) is past the
+    // endDate ceiling (2025-12-31T00:00Z), so only task-1 reaches the exporter.
+    expect(mockXmlExporterService.generateProjectXml).toHaveBeenCalledWith(
+      [expect.objectContaining({ taskId: 'task-1' })],
+      '/test/workspace',
+      { startDate: mockStartDate, endDate: mockEndDate, prettyPrint: mockPrettyPrint },
+    );
   });
 
   it('devrait gérer les erreurs de service', async () => {
@@ -70,7 +83,13 @@ describe('export-project-xml.tool', () => {
       prettyPrint: true
     }, mockConversationCache, mockXmlExporterService, vi.fn().mockResolvedValue(undefined));
 
-    expect(result.content).toBeDefined();
+    // #4688 Lot A: the error path returns the same one-block shape, carrying the
+    // service message verbatim inside the handler's prefix (export-project-xml.ts L128-136).
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0]).toMatchObject({ type: 'text' });
     expect(result.content[0].text).toContain('Service error');
+    expect(result.content[0].text).toBe(
+      "Erreur lors de l'export XML du projet : Service error",
+    );
   });
 });

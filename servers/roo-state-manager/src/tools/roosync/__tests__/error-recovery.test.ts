@@ -109,9 +109,13 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
         body: 'Test body'
       });
 
-      // Should either succeed (if writable) or return proper error
+      // #4688 Lot A: Windows chmod does not reliably make the directory unwritable,
+      // so the tool may legitimately succeed. Both documented outcomes are pinned
+      // by content instead of "some text exists".
       expect(result.content).toHaveLength(1);
-      expect((result.content[0] as any).text).toBeDefined();
+      expect((result.content[0] as any).text).toMatch(
+        /envoyé avec succès|Erreur lors de l'opération RooSync Send/,
+      );
 
       // Restore permissions
       try {
@@ -130,8 +134,8 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      // Should indicate missing/invalid recipient
-      expect((result.content[0] as any).text).toBeDefined();
+      // Should indicate missing/invalid recipient (send.ts L155-162)
+      expect((result.content[0] as any).text).toContain('Paramètre "to" requis');
     });
 
     test('handles missing subject gracefully', async () => {
@@ -143,8 +147,8 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      // Should indicate missing subject
-      expect((result.content[0] as any).text).toBeDefined();
+      // Should indicate missing subject (send.ts L186-192)
+      expect((result.content[0] as any).text).toContain('Paramètre "subject" requis');
     });
 
     test('handles missing body gracefully', async () => {
@@ -156,8 +160,8 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      // Should indicate missing body
-      expect((result.content[0] as any).text).toBeDefined();
+      // Should indicate missing body (send.ts L194-200)
+      expect((result.content[0] as any).text).toContain('Paramètre "body" requis');
     });
 
     test('reply to non-existent message returns graceful error', async () => {
@@ -179,8 +183,10 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      // Should not crash
-      expect((result.content[0] as any).text).toBeDefined();
+      // Should not crash: the throw is converted into the graceful error envelope
+      // (send.ts L895-902) instead of escaping roosyncSend.
+      expect((result.content[0] as any).text).toContain("Erreur lors de l'opération RooSync Send");
+      expect((result.content[0] as any).text).toContain('msg-nonexistent-12345');
     });
   });
 
@@ -196,8 +202,8 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      // Should indicate empty inbox or show 0 messages
-      expect((result.content[0] as any).text).toBeDefined();
+      // Should indicate empty inbox or show 0 messages (read.ts L294)
+      expect((result.content[0] as any).text).toContain('Aucun message dans votre boîte de réception');
     });
 
     test('handles non-existent message gracefully', async () => {
@@ -207,8 +213,9 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      // Should indicate message not found
-      expect((result.content[0] as any).text).toBeDefined();
+      // Should indicate message not found (read.ts L434)
+      expect((result.content[0] as any).text).toContain('Message introuvable');
+      expect((result.content[0] as any).text).toContain('msg-does-not-exist-99999');
     });
 
     test('handles corrupted message file gracefully', async () => {
@@ -223,9 +230,11 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
         status: 'all'
       });
 
-      // Should not crash, may skip corrupted file
+      // Should not crash, may skip corrupted file: the unparsable entry must never be
+      // surfaced as a message (it has no id to appear under), so the response cannot
+      // list it as if it were readable.
       expect(result.content).toHaveLength(1);
-      expect((result.content[0] as any).text).toBeDefined();
+      expect((result.content[0] as any).text).not.toContain('msg-corrupted-test');
     });
 
     test('handles missing messages directory', async () => {
@@ -269,8 +278,9 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
       });
 
       expect(result.content).toHaveLength(1);
-      // Should indicate invalid mode or show error
-      expect((result.content[0] as any).text).toBeDefined();
+      // Should indicate invalid mode or show error (read.ts L693-700)
+      expect((result.content[0] as any).text).toContain('Mode invalide');
+      expect((result.content[0] as any).text).toContain('"inbox", "message" ou "attachments"');
     });
 
     test('missing message_id for message mode returns error', async () => {
@@ -280,8 +290,8 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
       } as any);
 
       expect(result.content).toHaveLength(1);
-      // Should indicate missing message_id
-      expect((result.content[0] as any).text).toBeDefined();
+      // Should indicate missing message_id (read.ts L701-708)
+      expect((result.content[0] as any).text).toContain('Paramètre "message_id" requis pour le mode "message"');
     });
   });
 
@@ -336,15 +346,21 @@ describe('Error Recovery - GDrive Indisponible (Issue #531)', () => {
         'utf-8'
       );
 
+      // #4688 Lot A: the fixture declares `to: 'test-machine'`, and the read path
+      // resolves the seat identity through resolveCallerIdentity (env-first), which
+      // is NOT the mocked getLocalMachineId. Ask for the identity the fixture was
+      // written for — otherwise this test only ever asserted "some text exists".
       const result = await roosyncRead({
         mode: 'inbox',
-        status: 'all'
+        status: 'all',
+        to_machine: 'test-machine'
       });
 
       // Should return at least the valid message
       expect(result.content).toHaveLength(1);
-      // Should contain the valid message
-      expect((result.content[0] as any).text).toBeDefined();
+      // Should contain the valid message — and only the parseable one.
+      expect((result.content[0] as any).text).toContain('Valid message');
+      expect((result.content[0] as any).text).not.toContain('msg-corrupted-002');
     });
   });
 });
