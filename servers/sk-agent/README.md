@@ -219,7 +219,7 @@ v1 configs (without `config_version`) are auto-migrated: each model becomes an a
 
 ### Per-model budget overrides (#3797)
 
-A model entry may declare four OPTIONAL fields — absent fields keep the
+A model entry may declare five OPTIONAL fields — absent fields keep the
 current behaviour exactly (no ceiling change, global budget, sampling-only
 `extra_body`):
 
@@ -229,6 +229,7 @@ current behaviour exactly (no ceiling change, global budget, sampling-only
 | `connect_timeout_s` | `null` (= 5 s) | #4085 — separate bound for the TCP/TLS **connect phase only** (`read`/`write`/`pool` keep the request budget above). An unreachable endpoint (e.g. a LAN-only hub from an off-LAN seat) fails within this bound instead of holding the whole window with no error. |
 | `max_tokens` | `null` (= global `sampling.max_tokens`, 4096) | Default output budget for the model. Precedence: per-call / `agent_spec` sampling override > model default > global. |
 | `extra_body` | `{}` | Generic vLLM passthrough merged into the request `extra_body`. Model keys override sampling-derived keys (`top_k`/`min_p`/`repetition_penalty` — per-model is more specific than server-wide); `chat_template_kwargs` is deep-merged, so the code-injected `enable_thinking` keeps winning on its key without clobbering other keys. |
+| `default_headers` | `null` (= none) | #4740 — extra HTTP headers sent with every request to this model, passed to `AsyncOpenAI(default_headers=…)`. Used by the `nb-*` entries for the claudish lane/seat attribution (`{"x-claudish-lane": "nb-coder", "X-Claudish-Machine": "<seat>"}`, claudish#1055 g4 §2), without which the lane budget, stop and per-lane table stay inert. Names must be HTTP tokens and values strings without CR/LF; a malformed value leaves **that model** out of the pool (fail closed: no traffic without its declared attribution), the other models stay up. |
 
 Example — the notebook-auditor case: a local model under parallel load that
 bumps into the 300 s client budget, with a raised thinking budget:

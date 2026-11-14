@@ -813,6 +813,17 @@ class SKAgentManager:
             if not model_cfg.enabled:
                 continue
 
+            if model_cfg.default_headers_error is not None:
+                # #4740: fail closed — a model whose declared attribution
+                # headers are malformed must not send traffic without them.
+                log.error(
+                    "Model pool: SKIPPED model '%s': default_headers rejected "
+                    "(%s)",
+                    model_cfg.id,
+                    model_cfg.default_headers_error,
+                )
+                continue
+
             try:
                 api_key = model_cfg.resolve_api_key()
                 # #1587: explicit client budget — openai-python defaults to 600s
@@ -849,6 +860,9 @@ class SKAgentManager:
                         pool=request_budget_s,
                     ),
                     max_retries=1,
+                    # #4740: declared per-model headers (claudish lane/seat
+                    # attribution); None keeps the legacy client.
+                    default_headers=model_cfg.default_headers or None,
                 )
                 self._openai_clients[model_cfg.id] = client
 
