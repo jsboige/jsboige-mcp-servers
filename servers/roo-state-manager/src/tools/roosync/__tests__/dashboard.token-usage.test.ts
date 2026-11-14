@@ -296,4 +296,57 @@ describe('#4434 G2 — per-leg token accounting (primary + fallback tiers)', { t
     // The status leg answered once — its single usage passes through unchanged.
     expect(pass.llm.status.primaryTokens).toEqual({ input: 7000, output: 900 });
   });
+
+  it('(t8) #4434 G5 — guard-rejected model A then succeeding model B → the success path reports A+B', async () => {
+    // ai-01, 14/11: on the SUCCESS path, `return result` (dashboard.ts:947) bypassed
+    // answeredUsageTotal — model A answers (billed), the caller guard rejects it, model
+    // B salvages the leg, and A's tokens vanished. JSDoc contract: "every response
+    // that tier ANSWERED". Sum expected: A + B, not B alone.
+    // NOTE: not driveOneCondensedPass() — its initial `write '# Init'` would overwrite
+    // the long previous status the retention guard compares against.
+    await roosyncDashboard({ action: 'write', type: 'global', content: `# Statut\n\n${'S'.repeat(1000)}` });
+    mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM down'));
+    mockFallbackModelId.mockImplementation(() => 'model-a,model-b');
+    mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+    // Status leg: model-a answers far under the 20% retention floor (the guard bites),
+    // model-b answers a compliant status. Summary leg: model-a's summary is complete,
+    // so that leg succeeds on the FIRST model and its usage passes through untouched.
+    const shortStatus = `## Statut cloud trop court\n\n${'c'.repeat(60)}`;
+    const validStatus = `## Statut\n\n${formatted('status salvaged by b')}\n${'v'.repeat(600)}`;
+    mockFallbackCreate.mockImplementation(async (req: any) => {
+      if (isSummaryRequest(req)) {
+        return chatAnswer(`summary by ${req.model}`, { prompt_tokens: 500, completion_tokens: 50 });
+      }
+      return req.model === 'model-a'
+        ? {
+            choices: [{ message: { content: shortStatus } }],
+            usage: { prompt_tokens: 100, completion_tokens: 20 },
+          }
+        : {
+            choices: [{ message: { content: validStatus } }],
+            usage: { prompt_tokens: 300, completion_tokens: 60 },
+          };
+    });
+
+    const filler = 'X'.repeat(3000);
+    let condensed: any = null;
+    for (let i = 0; i < 20; i++) {
+      const result = await roosyncDashboard({
+        action: 'append', type: 'global', content: `${filler} message-${i}`,
+      });
+      if ((result as any).condensed && !condensed) condensed = result;
+    }
+    expect(condensed).not.toBeNull();
+    const pass = condensed.condenseDiagnostic.find((d: any) => d.outcome === 'fallback-cloud');
+    expect(pass).toBeDefined();
+    // The rescuer is model-b…
+    expect(pass.llm.status.fallbackModel).toBe('model-b');
+    // …and the reported volume is A + B (100+300, 20+60), not B's 300/60 alone.
+    expect(pass.llm.status.fallbackTokens).toEqual({ input: 400, output: 80 });
+    // Chain order faithful: the rejected model was asked first.
+    const statusModels = mockFallbackCreate.mock.calls.map((c: any[]) => c[0].model);
+    expect(statusModels.indexOf('model-a')).toBeGreaterThanOrEqual(0);
+    expect(statusModels.indexOf('model-a')).toBeLessThan(statusModels.indexOf('model-b'));
+  });
 });
