@@ -250,6 +250,61 @@ def _disarm_freeze_dump() -> None:
     _FAULT_DUMP_DEPTH = max(0, _FAULT_DUMP_DEPTH - 1)
     if _FAULT_DUMP_DEPTH == 0:
         faulthandler.cancel_dump_traceback_later()
+
+
+async def _close_timed_out_plugin(plugin: Any, mcp_id: str) -> None:
+    """Close a timed-out MCP plugin AND terminate its child process (#4085 C5).
+
+    ``plugin.close()`` alone does not terminate the child: SK's close() awaits
+    the detached ``_inner_connect`` task, which is blocked inside
+    ``session.initialize()`` when the server never answers — the bounded wait
+    below expires and the spawned process survives for the life of the server.
+    Measured on the guard scenario: child still alive 20 s after the failed
+    handshake, killed only by event-loop teardown (which is why the pre-C5
+    test, running under ``asyncio.run``, could not see it).
+
+    So: best-effort ``close()``, then cancel the detached task and close the
+    plugin's exit stack. That runs ``stdio_client``'s teardown, which
+    terminates the process. anyio raises RuntimeError when a cancel scope is
+    exited from a different task than the one that entered it; measured, the
+    child is already gone when that fires, so it is logged at debug and
+    swallowed rather than degrading the caller's log with a false failure.
+    """
+    try:
+        await asyncio.wait_for(plugin.close(), timeout=_MCP_CLOSE_TIMEOUT_S)
+        return
+    except (asyncio.TimeoutError, TimeoutError):
+        log.warning(
+            "MCP '%s': close() did not complete in %.1fs — forcing the child "
+            "process down",
+            mcp_id,
+            _MCP_CLOSE_TIMEOUT_S,
+        )
+    except Exception:
+        log.exception("Failed to close timed-out MCP plugin: %s", mcp_id)
+        return
+
+    task = getattr(plugin, "_current_task", None)
+    if task is not None:
+        task.cancel()
+        # asyncio.wait never propagates the task's own exception/cancellation;
+        # a cancellation of OUR task still propagates, which is correct.
+        await asyncio.wait({task}, timeout=_MCP_CLOSE_TIMEOUT_S)
+    exit_stack = getattr(plugin, "_exit_stack", None)
+    if exit_stack is None:
+        return
+    try:
+        await asyncio.wait_for(exit_stack.aclose(), timeout=_MCP_CLOSE_TIMEOUT_S)
+    except (asyncio.TimeoutError, TimeoutError):
+        log.warning("MCP '%s': exit-stack close timed out", mcp_id)
+    except RuntimeError:
+        # anyio: cancel scope exited from another task. The child is already
+        # terminated by stdio_client's teardown when this fires (measured).
+        log.debug("MCP '%s': cross-task cancel-scope exit after force close", mcp_id)
+    except Exception:
+        log.exception("MCP '%s': error while forcing the child down", mcp_id)
+
+
 # How long a failed plugin stays refused before a retry is allowed. Long
 # enough that agent creations inside one session stop paying the connect
 # budget, short enough that an operator fix (installing the binary) is
@@ -945,13 +1000,10 @@ class SKAgentManager:
             except (asyncio.TimeoutError, TimeoutError):
                 # wait_for cancels the awaiting side; the plugin's detached
                 # _inner_connect task survives, so close it explicitly before
-                # degrading (agent proceeds without this plugin).
-                try:
-                    await asyncio.wait_for(plugin.close(), timeout=_MCP_CLOSE_TIMEOUT_S)
-                except Exception:
-                    log.exception(
-                        "Failed to close timed-out MCP plugin: %s", mcp_id
-                    )
+                # degrading (agent proceeds without this plugin). close() alone
+                # does not kill the child when it hangs — the helper forces it
+                # down so a failed handshake leaves no orphan (#4085 C5).
+                await _close_timed_out_plugin(plugin, mcp_id)
                 log.warning(
                     "MCP '%s': connect handshake not completed in %.1fs — plugin unavailable",
                     mcp_id,
