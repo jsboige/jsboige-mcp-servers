@@ -77,7 +77,8 @@
         "OPEN_TERMINAL_API_KEY": "YOUR_OPEN_TERMINAL_API_KEY_HERE"
       },
       "risk_class": "exec",
-      "allowed_capabilities": ["shell", "repo_read"]
+      "allowed_capabilities": ["shell", "repo_read"],
+      "runtimes": ["stdio"]
     },
     {
       "_comment": "Seat-local to ai-01 (conda env mcp-jupyter) — copied from the auditor's live declaration. The live entry carries the real PYTHONPATH; keep it on merge. risk_class=exec is satisfied by the agent's `repl` capability (RISK_CLASS_REQUIRED_CAPABILITIES). #4741 runtimes [stdio]: papermill and papermill_mcp are absent from the container image (2 GB cap — running Linux Jupyter kernels there is not an objective); an agent requiring this MCP in the container is refused (typed) instead of running stripped.",

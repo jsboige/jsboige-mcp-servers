@@ -784,3 +784,118 @@ def test_missing_runtimes_root_keeps_npx_declarations_verbatim():
             assert any(
                 plugin in line and "npx declaration kept" in line for line in kept
             ), kept
+
+
+# ---------------------------------------------------------------------------
+# #4758 — template env placeholders survive the sync
+#
+# ai-01's live config carried a LITERAL OPEN_TERMINAL_URL (docker service
+# name) instead of the template's `${OPEN_TERMINAL_URL:-...}` placeholder.
+# extract_api_keys treated the literal as a secret to preserve, so every
+# sync re-wrote it over the placeholder — the env var (#1317) could never
+# override again. The template placeholder is the canonical form; a seat
+# overrides through its environment, never through the shared config file
+# (the container mounts it too).
+# ---------------------------------------------------------------------------
+
+OPEN_TERMINAL_PLACEHOLDER = (
+    "${OPEN_TERMINAL_URL:-http://open-terminal-myia:8000}"
+)
+
+
+def _template_with_open_terminal():
+    return dict(
+        TEMPLATE,
+        mcps=[
+            {
+                "id": "open_terminal",
+                "command": "python",
+                "args": ["../open-terminal-mcp/open_terminal_mcp.py"],
+                "env": {
+                    "OPEN_TERMINAL_URL": OPEN_TERMINAL_PLACEHOLDER,
+                    "OPEN_TERMINAL_API_KEY": "YOUR_OPEN_TERMINAL_API_KEY_HERE",
+                },
+                "risk_class": "exec",
+                "allowed_capabilities": ["shell", "repo_read"],
+            }
+        ],
+    )
+
+
+def _local_with_open_terminal(url_value):
+    return dict(
+        LOCAL_HEALTHY,
+        mcps=[
+            {
+                "id": "open_terminal",
+                "command": "python",
+                "args": ["../open-terminal-mcp/open_terminal_mcp.py"],
+                "env": {
+                    "OPEN_TERMINAL_URL": url_value,
+                    "OPEN_TERMINAL_API_KEY": "sk-open-terminal-real-key",
+                },
+                "risk_class": "exec",
+                "allowed_capabilities": ["shell", "repo_read"],
+            }
+        ],
+    )
+
+
+def test_env_placeholder_restored_over_local_literal():
+    """The regression: a local literal must not survive a sync over the
+    template's `${VAR:-default}` (#4758). The placeholder comes back; the
+    secret env key is still injected; the drop is named on stderr."""
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(
+            Path(td),
+            _local_with_open_terminal("http://open-terminal-myia:8000"),
+            template=_template_with_open_terminal(),
+        )
+        assert proc.returncode == 0, (
+            f"restoring a placeholder is healing, not degradation — "
+            f"stderr={proc.stderr!r}"
+        )
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        mcp = next(m for m in written["mcps"] if m["id"] == "open_terminal")
+        assert mcp["env"]["OPEN_TERMINAL_URL"] == OPEN_TERMINAL_PLACEHOLDER, (
+            mcp["env"]
+        )
+        # Secrets are still injected — only placeholder-shaped template
+        # values refuse the local literal.
+        assert mcp["env"]["OPEN_TERMINAL_API_KEY"] == "sk-open-terminal-real-key"
+        assert "ENV PLACEHOLDERS RESTORED" in proc.stderr, proc.stderr
+        assert "open_terminal: env OPEN_TERMINAL_URL" in proc.stderr, proc.stderr
+
+
+def test_env_literal_local_value_still_injected_without_template_placeholder():
+    """Legacy behaviour unchanged: when the template value is a plain
+    literal (no `${}`), the local value still wins (seat-specific URLs)."""
+    template = _template_with_open_terminal()
+    template["mcps"][0]["env"]["OPEN_TERMINAL_URL"] = "http://template.lan:8000"
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(
+            Path(td),
+            _local_with_open_terminal("http://seat-specific.lan:8000"),
+            template=template,
+        )
+        assert proc.returncode == 0, proc.stderr
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        mcp = next(m for m in written["mcps"] if m["id"] == "open_terminal")
+        assert mcp["env"]["OPEN_TERMINAL_URL"] == "http://seat-specific.lan:8000"
+        assert "ENV PLACEHOLDERS RESTORED" not in proc.stderr
+
+
+def test_env_placeholder_steady_state_syncs_silently():
+    """A local config already carrying the placeholder (the steady state
+    after the fix) syncs without a banner — nothing was dropped."""
+    with tempfile.TemporaryDirectory() as td:
+        proc, config_path = _run_sync(
+            Path(td),
+            _local_with_open_terminal(OPEN_TERMINAL_PLACEHOLDER),
+            template=_template_with_open_terminal(),
+        )
+        assert proc.returncode == 0, proc.stderr
+        written = json.loads(config_path.read_text(encoding="utf-8"))
+        mcp = next(m for m in written["mcps"] if m["id"] == "open_terminal")
+        assert mcp["env"]["OPEN_TERMINAL_URL"] == OPEN_TERMINAL_PLACEHOLDER
+        assert "ENV PLACEHOLDERS RESTORED" not in proc.stderr

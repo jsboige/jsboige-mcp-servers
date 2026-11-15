@@ -109,11 +109,18 @@ def extract_api_keys(local_config: dict) -> dict[str, str]:
     if qd.get("api_key") and not qd["api_key"].startswith("YOUR_"):
         keys["qdrant"] = qd["api_key"]
 
-    # MCP env keys
+    # MCP env keys. #4758: a `${VAR:-default}` value is a runtime
+    # placeholder (#1317), never a secret — extracting it as a "key" made
+    # the injection below able to write a placeholder where the template
+    # has none.
     for mcp in local_config.get("mcps", []):
         mid = mcp.get("id", "")
         for env_key, env_val in mcp.get("env", {}).items():
-            if env_val and not env_val.startswith("YOUR_"):
+            if (
+                env_val
+                and not env_val.startswith("YOUR_")
+                and "${" not in env_val
+            ):
                 keys[f"mcp:{mid}:{env_key}"] = env_val
 
     return keys
@@ -144,10 +151,12 @@ def inject_keys_into_template(
 ) -> tuple[dict, list[str]]:
     """Inject API keys from local config into template structure.
 
-    Returns (config, preserved_endpoint_notes) — each note names a model whose
-    local base_url was kept over the template's (same-id off-LAN seats,
-    #3411 web2; or a declared successor inheriting its alias's endpoint,
-    ms#1421).
+    Returns (config, preserved_endpoint_notes, restored_placeholder_notes) —
+    endpoint notes name a model whose local base_url was kept over the
+    template's (same-id off-LAN seats, #3411 web2; or a declared successor
+    inheriting its alias's endpoint, ms#1421); placeholder notes name an MCP
+    env entry whose template `${VAR:-default}` was kept over a local literal
+    (#4758).
     """
     result = deepcopy(template)
     preserved_endpoint_notes: list[str] = []
@@ -262,16 +271,35 @@ def inject_keys_into_template(
     if "qdrant" in result and "qdrant" in local_keys:
         result["qdrant"]["api_key"] = local_keys["qdrant"]
 
-    # Inject MCP env keys
+    # Inject MCP env keys. #4758: a template value that is itself a
+    # `${VAR:-default}` placeholder is the canonical form — a seat overrides
+    # it through its ENVIRONMENT (#1317), never through a literal in the
+    # config file (the container mounts the same one). A local literal —
+    # hand edit, or a value resolved before #1317 existed — used to
+    # overwrite the placeholder on every sync, so the env var could never
+    # override again: ai-01's open_terminal was pinned to a docker service
+    # name that neither the Windows stdio seat nor the container resolves.
+    # The placeholder wins; the dropped literal is named on stderr (ids and
+    # field names only, never values).
+    restored_placeholder_notes: list[str] = []
     for mcp in result.get("mcps", []):
         mid = mcp.get("id", "")
         env = mcp.get("env", {})
         for env_key in env:
+            template_val = env[env_key]
             mcp_key = f"mcp:{mid}:{env_key}"
+            if isinstance(template_val, str) and "${" in template_val:
+                local_val = local_keys.get(mcp_key)
+                if local_val is not None and local_val != template_val:
+                    restored_placeholder_notes.append(
+                        f"{mid}: env {env_key} keeps template placeholder "
+                        "(local literal dropped)"
+                    )
+                continue
             if mcp_key in local_keys:
                 env[env_key] = local_keys[mcp_key]
 
-    return result, preserved_endpoint_notes
+    return result, preserved_endpoint_notes, restored_placeholder_notes
 
 
 def add_oracle_additions(config: dict, local_config: dict) -> dict:
@@ -497,9 +525,11 @@ def main():
     local_keys = extract_api_keys(local)
 
     # Build new config from template + local secrets
-    new_config, preserved_endpoint_notes = inject_keys_into_template(
-        template, local_keys, local
-    )
+    (
+        new_config,
+        preserved_endpoint_notes,
+        restored_placeholder_notes,
+    ) = inject_keys_into_template(template, local_keys, local)
 
     # Local-only agents survive the sync (#3411): preserve them and their
     # template-absent dependencies unless explicitly pruned.
@@ -527,6 +557,24 @@ def main():
         print("=" * 62, file=sys.stderr)
         print("PRESERVED LOCAL ENDPOINTS (local key set — same id or declared successor):", file=sys.stderr)
         for note in preserved_endpoint_notes:
+            print(f"  - {note}", file=sys.stderr)
+        print("=" * 62, file=sys.stderr)
+
+    # #4758: env placeholders restored over local literals — the operator
+    # whose literal was dropped must see it and move the override to the
+    # seat's environment (#1317), never back into the config file.
+    if restored_placeholder_notes:
+        print("", file=sys.stderr)
+        print("=" * 62, file=sys.stderr)
+        print(
+            "ENV PLACEHOLDERS RESTORED (local literal dropped; override via",
+            file=sys.stderr,
+        )
+        print(
+            "the seat ENVIRONMENT, #1317 — the container mounts this file):",
+            file=sys.stderr,
+        )
+        for note in restored_placeholder_notes:
             print(f"  - {note}", file=sys.stderr)
         print("=" * 62, file=sys.stderr)
 
