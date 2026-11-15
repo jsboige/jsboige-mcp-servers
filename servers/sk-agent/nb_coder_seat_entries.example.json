@@ -34,6 +34,7 @@
       "model_id": "nb-luna",
       "vision": false,
       "thinking": true,
+      "default_headers": {"x-claudish-lane": "nb-coder", "X-Claudish-Machine": "<seat machine name>"},
       "description": "Claudish stable alias `nb-luna` via the fleet hub — backend chosen by claudish (#1055 g3), invisible to this config."
     },
     {
@@ -46,6 +47,7 @@
       "model_id": "nb-minimax",
       "vision": false,
       "thinking": true,
+      "default_headers": {"x-claudish-lane": "nb-coder", "X-Claudish-Machine": "<seat machine name>"},
       "description": "Claudish stable alias `nb-minimax` via the fleet hub — backend chosen by claudish (#1055 g3), invisible to this config."
     },
     {
@@ -58,6 +60,7 @@
       "model_id": "nb-haiku",
       "vision": false,
       "thinking": true,
+      "default_headers": {"x-claudish-lane": "nb-coder", "X-Claudish-Machine": "<seat machine name>"},
       "description": "Claudish stable alias `nb-haiku` via the fleet hub — backend chosen by claudish (#1055 g3), invisible to this config."
     }
   ],

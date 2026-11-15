@@ -205,6 +205,40 @@ def expand_env_placeholders(
     return expanded
 
 
+# #4740: RFC 7230 token for a header name. Used with fullmatch: a ``$``
+# anchor would accept a trailing "\n".
+_HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+
+
+def parse_default_headers(raw: Any) -> dict[str, str] | None:
+    """Validate a model's ``default_headers`` (#4740).
+
+    None or an empty mapping means "no extra header" (legacy behaviour).
+    Otherwise every name must be an HTTP token and every value a string
+    without CR/LF (no header injection). Raises ValueError otherwise.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"default_headers must be an object of name -> string "
+            f"(got {type(raw).__name__})"
+        )
+    headers: dict[str, str] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not _HEADER_NAME_RE.fullmatch(name):
+            raise ValueError(f"default_headers: invalid header name {name!r}")
+        if not isinstance(value, str):
+            raise ValueError(
+                f"default_headers['{name}'] must be a string "
+                f"(got {type(value).__name__})"
+            )
+        if "\r" in value or "\n" in value:
+            raise ValueError(f"default_headers['{name}'] must not contain CR/LF")
+        headers[name] = value
+    return headers or None
+
+
 # ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
@@ -242,9 +276,29 @@ class ModelConfig:
     # every dispatch to THIS model refuse, naming the error.
     capacity_gate: Any = None
     capacity_gate_error: str | None = None
+    # #4740: per-model HTTP headers passed to AsyncOpenAI(default_headers=…)
+    # — e.g. the claudish lane/seat attribution of the nb-* entries
+    # (claudish#1055 g4 §2). Absent = client built exactly as before. A
+    # malformed value is isolated like a rejected capacity_gate: kept
+    # verbatim, and the model is left out of the pool (fail closed — no
+    # traffic without its declared attribution), the other models stay up.
+    default_headers: Any = None
+    default_headers_error: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> ModelConfig:
+        raw_headers = data.get("default_headers")
+        headers_error: str | None = None
+        try:
+            headers = parse_default_headers(raw_headers)
+        except ValueError as exc:
+            log.error(
+                "models '%s': default_headers rejected: %s — this model is "
+                "left out of the pool; the other models stay callable",
+                data.get("id", "unknown"),
+                exc,
+            )
+            headers, headers_error = raw_headers, str(exc)
         raw_gate = data.get("capacity_gate")
         gate_error: str | None = None
         try:
@@ -275,6 +329,8 @@ class ModelConfig:
             extra_body=dict(data.get("extra_body") or {}),
             capacity_gate=gate,
             capacity_gate_error=gate_error,
+            default_headers=headers,
+            default_headers_error=headers_error,
         )
 
     def to_dict(self) -> dict:
@@ -305,6 +361,10 @@ class ModelConfig:
             d["capacity_gate"] = self.capacity_gate  # rejected: kept verbatim
         elif self.capacity_gate:
             d["capacity_gate"] = dict(self.capacity_gate)
+        if self.default_headers_error is not None:
+            d["default_headers"] = self.default_headers  # rejected: verbatim
+        elif self.default_headers:
+            d["default_headers"] = dict(self.default_headers)
         return d
 
     def resolve_api_key(self) -> str:

@@ -428,6 +428,15 @@ class ModelSpec(_StrictModel):
             "to this model (#4712). Absent = no gate."
         ),
     )
+    # #4740: per-model HTTP headers for the OpenAI client (e.g. claudish
+    # lane/seat attribution). Absent = no extra header.
+    default_headers: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Extra HTTP headers sent with every request to this model "
+            "(#4740), e.g. {\"x-claudish-lane\": \"nb-coder\"}. Absent = none."
+        ),
+    )
 
     @field_validator("base_url")
     @classmethod
