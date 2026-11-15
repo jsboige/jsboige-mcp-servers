@@ -499,7 +499,7 @@ function aggregateToolUsage(
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'repair_workspace' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report' | 'index_code_supplement';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'repair_workspace' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report' | 'index_code_supplement' | 'probe_code_index';
 
     /**
      * #4352 (a3) — action=index_code_supplement: the workspace whose supplement
@@ -656,8 +656,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), repair_workspace (backfill workspace_name on existing points #3344), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows), index_code_supplement (#4352: build the sup- collection for files Zoo never indexes — .ps1, .sh, .yml, .mjs/.cjs and hidden dirs; dry_run defaults to TRUE here)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), repair_workspace (backfill workspace_name on existing points #3344), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows), index_code_supplement (#4352: build the sup- collection for files Zoo never indexes — .ps1, .sh, .yml, .mjs/.cjs and hidden dirs; dry_run defaults to TRUE here), probe_code_index (#4736: read-only probe of the ws-* collections a workspace resolves to — naming ladder, content-match fallback, vector size/distance; never writes)'
             },
             task_id: {
                 type: 'string',
@@ -689,7 +689,7 @@ export const roosyncIndexingTool: Tool = {
             },
             workspace: {
                 type: 'string',
-                description: 'For index_code_supplement (#4352): workspace whose sup- collection is built. Resolved like codebase_search when omitted.'
+                description: 'For index_code_supplement (#4352) and probe_code_index (#4736): workspace whose code collections are resolved. Resolved like codebase_search when omitted.'
             },
             takeover: {
                 type: 'boolean',
@@ -893,14 +893,14 @@ export async function handleRooSyncIndexing(
     if (!args.action) {
         return {
             isError: true,
-            content: [{ type: 'text', text: 'Le paramètre "action" est requis. Valeurs possibles: index, reset, rebuild, diagnose, archive, status' }]
+            content: [{ type: 'text', text: 'Le paramètre "action" est requis. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, probe_code_index' }]
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, repair_workspace, cleanup_failed, tool_usage_stats, save_snapshot, trend_report, index_code_supplement` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, repair_workspace, cleanup_failed, tool_usage_stats, save_snapshot, trend_report, index_code_supplement, probe_code_index` }]
         };
     }
 
@@ -1149,6 +1149,94 @@ export async function handleRooSyncIndexing(
                             status: 'supplement_index_failed',
                             message: error instanceof Error ? error.message : String(error),
                             hint: 'index_code_supplement needs: a workspace with an origin remote (the collection is keyed on it), a served ws- collection to mirror the vector size from, and no foreign writer on the sup- collection.',
+                        }, null, 2)
+                    }]
+                };
+            }
+        }
+
+        /**
+         * #4736 P1 — probe_code_index: the READ-ONLY ws-* contract probe.
+         *
+         * RSM takes over the ws-* code indexing Zoo Code left behind (user decision,
+         * 14/11/2026). Before any writer exists, this action pins the shared contract:
+         * the naming/resolution functions live in services/code-index/collection-naming.ts
+         * (imported by codebase_search — one function set for reader and future writer),
+         * and this probe replays that resolution end-to-end WITHOUT WRITING. It returns,
+         * per path-spelling variant: existence, points_count and the VECTOR CONFIG
+         * (size, distance) the future writer must mirror and never recreate (risk 2),
+         * plus the collection the reader serves today (hash ladder or content-match,
+         * risk 1) and the sup-* supplement name for the same workspace.
+         */
+        case 'probe_code_index': {
+            const { resolveWorkspace } = await import('../../utils/workspace-resolver.js');
+            const { getQdrantClient } = await import('../../services/qdrant.js');
+            const { probeWorkspaceCollections } = await import('../../services/code-index/collection-naming.js');
+            const { supplementCollectionName } = await import('../../services/code-index/supplement-index.js');
+            const { readOriginUrl } = await import('../../services/code-index/git-visible.js');
+
+            try {
+                const { workspace: workspaceRoot, source } = await resolveWorkspace(args.workspace);
+                const client: any = getQdrantClient();
+                const probe = await probeWorkspaceCollections(client, workspaceRoot);
+                // Honest instrument: every variant failing on the transport means
+                // Qdrant was never reached — "resolved: null" would then read as
+                // "no collection exists", which was not measured.
+                if (probe.variants.length > 0 && probe.variants.every(v => v.error)) {
+                    return {
+                        isError: true,
+                        content: [{
+                            type: 'text',
+                            text: JSON.stringify({
+                                status: 'probe_code_index_unreachable',
+                                workspace: workspaceRoot,
+                                first_error: probe.variants[0].error,
+                                hint: 'Qdrant did not answer a single getCollection — this is a transport failure, not an absent collection. The probe wrote nothing.',
+                            }, null, 2)
+                        }]
+                    };
+                }
+                let supplementCollection: string | null = null;
+                try {
+                    const remote = await readOriginUrl(workspaceRoot);
+                    supplementCollection = supplementCollectionName(remote);
+                } catch {
+                    // not a git workspace — no supplement, reported as null
+                }
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            action: 'probe_code_index',
+                            workspace: workspaceRoot,
+                            workspace_source: source,
+                            writes: probe.writes,
+                            contract: {
+                                collection_prefix: 'ws-',
+                                formula: 'ws- + sha256(fsPath)[0:16] — shared functions in services/code-index/collection-naming.ts, imported by the reader (codebase_search) and the future writer',
+                            },
+                            primary_hash: probe.primary,
+                            resolved: probe.resolved,
+                            resolved_by: probe.resolved_by,
+                            resolved_vectors: probe.resolved_vectors,
+                            hash_resolution: probe.hash_resolution,
+                            content_match: probe.content_match,
+                            collection_variants: probe.variants,
+                            supplement_collection: supplementCollection,
+                            next: '#4736 P2/P3 — the writer must target `resolved` with `resolved_vectors` mirrored exactly; never recreate the collection.',
+                        }, null, 2)
+                    }]
+                };
+            } catch (error) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            status: 'probe_code_index_failed',
+                            message: error instanceof Error ? error.message : String(error),
+                            hint: 'probe_code_index needs a workspace (explicit or resolvable) and a reachable Qdrant. It never writes.',
                         }, null, 2)
                     }]
                 };
