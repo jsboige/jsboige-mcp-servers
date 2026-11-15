@@ -397,6 +397,55 @@ fields (no global sampling, no `enable_thinking` injection — conversation
 agents never had either). The shared agents that `call_agent` reuses are
 never modified, and a model declaring neither field runs exactly as before.
 
+**#4742 amendment:** `run_conversation` now runs under its own ceiling —
+`options {"timeout": N}` (default 900 s, `0` = no limit) — and passes the
+same pre-dispatch gates as `call_agent` (per-agent rate limit, per-model
+capacity gate) before any model call.
+
+## Turn control (#4742)
+
+Fine-grained, resumable control of `call_agent` turns, built for the vllm
+nb-coder contract (live round admission, defer/resume, no in-flight kill):
+
+- **Envelope.** Every `call_agent` response carries `conversation_id`,
+  `turn_index`, `round_index`, `status` (`completed` | `paused` | `error`);
+  a pause adds `resumable: true` and a `paused` block (`reason`
+  `capacity_gate` | `round_budget`, `round_index`, gate verdict).
+- **Round admission (pull).** The capacity gate (#4712) is evaluated
+  before the first model call (as before) and after every round's tools
+  complete — a red/yellow verdict mid-conversation PAUSES the turn
+  instead of erroring. `options {"max_rounds": N}` bounds the tool rounds
+  admitted during this call (pause when reached).
+- **Pause is clean.** The pause is implemented with SK's
+  `terminate`: the round's tools all complete (`asyncio.gather` finishes
+  before the terminate check), the loop stops before the next model
+  call, and everything is committed to the thread — nothing in flight is
+  killed.
+- **Resume.** `call_agent(prompt="", conversation_id=X, options={"continue":
+  true})` re-enters the loop over the committed history: no new user
+  message, tools already executed never re-run, and a fresh round budget.
+- **Durable conversations (opt-in).** `SK_AGENT_CONVERSATION_DIR` points
+  at a directory where each conversation's user/assistant messages and
+  the current turn's tool journal are persisted. After a restart, a
+  resumed turn rebuilds by replaying model calls; journaled tool calls
+  are answered from the journal (idempotent defer — no double
+  execution). `end_conversation` removes the persisted state.
+- **Concurrency lock.** Two concurrent turns on one conversation: the
+  second is refused as `conversation_busy` — never interleaved history.
+- **Timeout rollback.** A timed-out or cancelled turn rolls back its
+  pending user message under the lock, and the error names the
+  `conversation_id` so the caller retries clean.
+- **Probe-absent is `unknown`, not `red`.** A gate probe whose script is
+  missing fails inside its interpreter (python exits 2); the stderr
+  launcher-failure signature reclassifies it `unknown` (still refused —
+  fail-closed) instead of lying "saturated".
+
+Implementation: `sk_agent_turns.py` (controller, filter, durable store,
+journal), the `AUTO_FUNCTION_INVOCATION` filter installed on every agent
+kernel, and `_begin_turn`/`_finish_turn`/`_rollback_turn` in the manager.
+Tests: `test_turn_control.py` (real SK loop, scripted model — pause,
+resume, restart replay, rollback, lock, gates).
+
 ## Vector Memory
 
 When `memory.enabled: true` on an agent, it gets a `TextMemoryPlugin` with:
@@ -413,6 +462,7 @@ Each agent has its own collection: `{prefix}-{collection}` (e.g., `sk-agent-anal
 |----------|-------------|---------|
 | `SK_AGENT_CONFIG` | Path to config file | `sk_agent_config.json` |
 | `SK_AGENT_DEPTH` | Current recursion depth (internal) | `0` |
+| `SK_AGENT_CONVERSATION_DIR` | Opt-in durable conversation store (#4742): directory where conversations and turn journals survive restarts | disabled |
 | `ZAI_API_KEY` | z.ai API key (if using `api_key_env`) — also the **cluster hub client key** the mini lane rides on (`frognano-4b`), like the `glm-*` entries | - |
 | `EMBEDDINGS_API_KEY` | Embeddings endpoint key | - |
 | `OPEN_TERMINAL_URL` | Open Terminal API URL handed to the `open_terminal` MCP. Set it on the **host** launch of sk-agent (e.g. `http://localhost:8000`, the container's published port): the default is a Docker-network hostname that only resolves inside the `sk-agent` container | `http://open-terminal-myia:8000` |

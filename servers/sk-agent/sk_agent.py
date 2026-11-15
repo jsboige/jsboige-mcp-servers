@@ -147,6 +147,19 @@ from sk_agent_specs import (
     resolve_agent_spec,
 )
 from sk_agent_capacity_gate import check_model_capacity_gate
+from sk_agent_turns import (
+    CONVERSATION_DIR_ENV,
+    STATUS_COMPLETED,
+    STATUS_ERROR,
+    STATUS_PAUSED,
+    ConversationStore,
+    EpochState,
+    TurnCallOptions,
+    TurnContext,
+    TurnController,
+    install_turn_filter,
+    journal_payload,
+)
 
 # GitHub PR review plugin
 try:
@@ -451,6 +464,11 @@ _TEXT_SOURCE_EXTENSIONS = {
 # the cap per call via options.source_max_chars (hard ceiling below).
 _SOURCE_FILE_DEFAULT_MAX_CHARS = 100_000
 _SOURCE_FILE_ABSOLUTE_MAX_CHARS = 2_000_000
+
+#: Default ceiling for run_conversation seconds (#4742 P-b3) — generous
+#: enough for multi-round multi-agent presets, but bounded: the tool no
+#: longer runs unbounded. options {"timeout": 0} lifts it explicitly.
+_RUN_CONVERSATION_DEFAULT_TIMEOUT_S = 900
 # A UTF-8 character is at most 4 bytes: this is the byte envelope of the
 # largest admissible cap, checked with getsize() BEFORE any read so a
 # multi-GB log is never pulled into RAM.
@@ -745,6 +763,35 @@ def build_list_agents_description(config: SKAgentConfig) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _parse_turn_options(options: dict[str, Any]) -> TurnCallOptions | dict[str, Any]:
+    """Extract #4742 turn-control keys from call options.
+
+    Returns a :class:`TurnCallOptions`, or an error dict for malformed
+    values (bool-excluded integers only — JSON ``true`` coerces to 1).
+    Unknown keys are left in place: they may be type-specific params.
+    """
+    raw_continue = options.get("continue")
+    if raw_continue is not None and not isinstance(raw_continue, bool):
+        return {
+            "error": "options.continue must be a boolean",
+            "error_type": "invalid_options",
+            "status": STATUS_ERROR,
+        }
+    raw_budget = options.get("max_rounds")
+    if raw_budget is not None and (
+        isinstance(raw_budget, bool) or not isinstance(raw_budget, int) or raw_budget < 1
+    ):
+        return {
+            "error": "options.max_rounds must be an integer >= 1",
+            "error_type": "invalid_options",
+            "status": STATUS_ERROR,
+        }
+    return TurnCallOptions(
+        continue_turn=bool(raw_continue),
+        round_budget=raw_budget,
+    )
+
+
 class SKAgentManager:
     """Manages agent-centric resources: shared model/MCP pools and per-agent kernels."""
 
@@ -764,6 +811,16 @@ class SKAgentManager:
 
         # Conversation threads
         self._threads: dict[str, ChatHistoryAgentThread] = {}
+
+        # Turn control (#4742): per-conversation locks (never two
+        # concurrent turns on one thread), turn counters, paused epochs,
+        # and the opt-in durable store (SK_AGENT_CONVERSATION_DIR).
+        self._conv_locks: dict[str, asyncio.Lock] = {}
+        self._turn_counts: dict[str, int] = {}
+        self._epochs: dict[str, EpochState] = {}
+        self._store = ConversationStore.from_env()
+        if self._store.enabled:
+            log.info("Durable conversation store enabled: %s", self._store.root)
 
         # Per-agent context condensers (#3944 — config-driven compaction)
         self._condensers: dict[str, ContextCondenser] = {}
@@ -1065,6 +1122,7 @@ class SKAgentManager:
 
         # Create kernel with the agent's model service
         kernel = Kernel()
+        install_turn_filter(kernel)
         service = self._services.get(model_cfg.id)
         if service:
             kernel.add_service(service)
@@ -1270,6 +1328,7 @@ class SKAgentManager:
             return None
 
         kernel = Kernel()
+        install_turn_filter(kernel)
         kernel.add_service(service)
 
         plugins = await self._collect_mcp_plugins(agent_cfg.mcps, agent_cfg.id)
@@ -1633,14 +1692,222 @@ class SKAgentManager:
     def _get_or_create_thread(
         self, conversation_id: str | None
     ) -> tuple[str, ChatHistoryAgentThread]:
-        """Get existing thread or create new one."""
+        """Get existing thread or create new one.
+
+        With the durable store enabled (#4742), a known conversation_id
+        that is not in memory (server restarted) is rebuilt from its
+        persisted user/assistant messages; its turn counter is restored
+        with it.
+        """
         if conversation_id and conversation_id in self._threads:
             return conversation_id, self._threads[conversation_id]
 
         new_id = conversation_id or str(uuid.uuid4())
         thread = ChatHistoryAgentThread()
+        if conversation_id and self._store.enabled:
+            data = self._store.load(new_id)
+            if data is not None:
+                self._rebuild_thread_from_store(thread, data)
+                self._turn_counts.setdefault(new_id, int(data.get("turn_index", 0)))
+                log.info(
+                    "Conversation '%s' restored from durable store (%d messages)",
+                    new_id,
+                    len(data.get("messages", [])),
+                )
         self._threads[new_id] = thread
         return new_id, thread
+
+    def _rebuild_thread_from_store(
+        self, thread: ChatHistoryAgentThread, data: dict[str, Any]
+    ) -> None:
+        """Rehydrate a thread from persisted user/assistant texts.
+
+        ChatHistoryAgentThread grew no public bulk-load API on the SK
+        versions in flight (1.39/1.47); ``_chat_history`` is the same
+        attribute the thread itself reads messages from. Tool-call
+        internals of past turns are deliberately not persisted — a
+        resumed paused turn rebuilds them from the journal instead.
+        """
+        history = getattr(thread, "_chat_history", None)
+        if history is None:
+            return
+        role_map = {"user": AuthorRole.USER, "assistant": AuthorRole.ASSISTANT}
+        for record in data.get("messages", []):
+            role = role_map.get(str(record.get("role", "")).lower())
+            content = str(record.get("content", "") or "")
+            if role is None or not content.strip():
+                continue
+            history.add_message(
+                ChatMessageContent(role=role, content=content)
+            )
+
+    # ------------------------------------------------------------------
+    # Turn control (#4742) — begin/finish/rollback of one agent turn
+    # ------------------------------------------------------------------
+
+    def _begin_turn(
+        self,
+        conv_id: str,
+        agent_id: str,
+        model_ref: str | None,
+        turn: TurnCallOptions | None,
+    ) -> TurnController:
+        """Build the controller for the turn about to run.
+
+        A fresh turn (any call without ``options.continue``) starts a new
+        epoch: stale journals are dropped so replay can never serve a
+        previous turn's results. A continuing turn reuses the in-memory
+        epoch, or — after a restart — the one rebuilt from the durable
+        journal, which alone enables replay.
+        """
+        continue_turn = bool(turn and turn.continue_turn)
+        budget = turn.round_budget if turn else None
+
+        if not continue_turn:
+            self._epochs.pop(conv_id, None)
+            self._store.clear_journal(conv_id)
+            self._turn_counts[conv_id] = self._turn_counts.get(conv_id, 0) + 1
+            base_rounds, entries, log, replay = 0, {}, [], False
+        else:
+            epoch = self._epochs.get(conv_id)
+            if epoch is None:
+                epoch = self._load_journal_epoch(conv_id) or EpochState(
+                    agent_id=agent_id
+                )
+            base_rounds = epoch.base_rounds
+            entries = dict(epoch.entries)
+            log = list(epoch.log)
+            replay = epoch.replay_from_disk
+
+        gate_check = None
+        model_cfg = self.config.get_model(model_ref) if model_ref else None
+        if (
+            model_cfg is not None
+            and isinstance(getattr(model_cfg, "capacity_gate", None), dict)
+            and model_cfg.capacity_gate
+        ):
+            async def gate_check():  # noqa: F811 — one per controller
+                return await check_model_capacity_gate(
+                    model_cfg, agent_id=agent_id
+                )
+
+        return TurnController(
+            conversation_id=conv_id,
+            agent_id=agent_id,
+            base_rounds=base_rounds,
+            round_budget=budget,
+            gate_check=gate_check,
+            journal=entries,
+            journal_log=log,
+            replay_enabled=replay,
+        )
+
+    def _load_journal_epoch(self, conv_id: str) -> EpochState | None:
+        """Rebuild a paused epoch from the durable journal after a restart."""
+        if not self._store.enabled:
+            return None
+        data = self._store.load_journal(conv_id)
+        if not data or not data.get("entries"):
+            return None
+        entries = {e["key"]: e["result"] for e in data["entries"] if "key" in e}
+        return EpochState(
+            base_rounds=int(data.get("base_rounds", 0)),
+            entries=entries,
+            log=list(data.get("entries", [])),
+            replay_from_disk=True,
+            agent_id=str(data.get("agent_id", "")),
+        )
+
+    async def _finish_turn(
+        self,
+        conv_id: str,
+        thread: ChatHistoryAgentThread,
+        controller: TurnController,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Post-invoke bookkeeping: thread, envelope, epoch, persistence.
+
+        Called on the normal return path of every handler — pause is a
+        normal return (the loop terminates cleanly), so a paused turn is
+        persisted exactly like a completed one.
+        """
+        self._threads[conv_id] = thread
+        await self._persist_conversation(conv_id, thread)
+        result["conversation_id"] = conv_id
+        result["turn_index"] = self._turn_counts.get(conv_id, 0)
+        if controller.pause is not None:
+            result["status"] = STATUS_PAUSED
+            result["resumable"] = True
+            result["round_index"] = controller.pause.round_index
+            result["paused"] = controller.pause.to_dict()
+            self._epochs[conv_id] = EpochState(
+                base_rounds=controller.pause.round_index,
+                entries=controller.journal,
+                log=controller.journal_log,
+                replay_from_disk=False,
+                agent_id=controller.agent_id,
+            )
+            self._store.save_journal(
+                conv_id,
+                journal_payload(
+                    controller.pause.round_index,
+                    controller.journal_log,
+                    controller.agent_id,
+                ),
+            )
+        else:
+            result["status"] = STATUS_COMPLETED
+            result["round_index"] = (
+                controller.base_rounds + controller.rounds_this_invoke
+            )
+            self._epochs.pop(conv_id, None)
+            self._store.clear_journal(conv_id)
+        return result
+
+    async def _persist_conversation(
+        self, conv_id: str, thread: ChatHistoryAgentThread
+    ) -> None:
+        """Persist user/assistant texts of the thread (opt-in store)."""
+        if not self._store.enabled:
+            return
+        try:
+            messages = []
+            async for msg in thread.get_messages():
+                role = getattr(msg, "role", None)
+                if role not in (AuthorRole.USER, AuthorRole.ASSISTANT):
+                    continue
+                text = str(msg)
+                if text.strip():
+                    role_name = getattr(role, "value", str(role))
+                    messages.append({"role": role_name, "content": text})
+            self._store.save(
+                conv_id, messages, self._turn_counts.get(conv_id, 0)
+            )
+        except Exception:
+            log.exception("Failed to persist conversation '%s'", conv_id)
+
+    async def _rollback_turn(self, conv_id: str) -> None:
+        """Undo the pending user message of an interrupted turn.
+
+        A timeout or cancellation kills the invoke mid-loop: SK committed
+        the user message up front but drained nothing else, so the thread
+        ends with a dangling user message. Under the conversation lock the
+        trailing USER message is the interrupted turn's own — remove it,
+        decrement the turn counter and drop the epoch so a retry starts
+        clean instead of stacking duplicate prompts.
+        """
+        thread = self._threads.get(conv_id)
+        history = getattr(thread, "_chat_history", None) if thread else None
+        if history is not None and history.messages:
+            last = history.messages[-1]
+            if getattr(last, "role", None) == AuthorRole.USER:
+                history.messages.pop()
+                self._turn_counts[conv_id] = max(
+                    0, self._turn_counts.get(conv_id, 1) - 1
+                )
+                self._epochs.pop(conv_id, None)
+                self._store.clear_journal(conv_id)
+                log.info("Rolled back pending user message of '%s'", conv_id)
 
     def _resolve_call_model_cfg(
         self,
@@ -1833,13 +2100,51 @@ class SKAgentManager:
         if not self.config.agents:
             return {"error": "No agents configured"}
 
+        # Test doubles built via __new__ (no __init__): bring the #4742
+        # turn state into existence lazily, store disabled.
+        self._ensure_turn_state()
+
         spec_active = agent_spec is not None
         spec_effective: dict | None = None
         spec_model_used: str | None = None
 
+        # Turn-control options (#4742): options.continue resumes a paused
+        # epoch on the same conversation_id; options.max_rounds bounds the
+        # tool rounds admitted during this call.
+        options = options or {}
+        turn_opts = _parse_turn_options(options)
+        if isinstance(turn_opts, dict):
+            return turn_opts
+        continue_turn = turn_opts.continue_turn
+        if continue_turn and not conversation_id:
+            return {
+                "error": "options.continue requires a conversation_id",
+                "error_type": "invalid_options",
+                "status": STATUS_ERROR,
+            }
+
+        # The conversation id is allocated BEFORE execution so every exit
+        # path (refusal, timeout, error) can name it (#4742: a refusal
+        # must return the conversation_id).
+        conv_id = conversation_id or str(uuid.uuid4())
+
+        # Per-conversation lock: never two concurrent turns on one thread
+        # (#4742). Held for the whole call; a concurrent caller on the
+        # same conversation gets a typed busy refusal, never interleaved
+        # history mutations.
+        conv_lock = self._conv_locks.setdefault(conv_id, asyncio.Lock())
+        if conv_lock.locked():
+            return {
+                "error": (
+                    f"conversation '{conv_id}' already has a turn in flight"
+                ),
+                "error_type": "conversation_busy",
+                "conversation_id": conv_id,
+                "status": STATUS_ERROR,
+            }
+
         async def _execute() -> dict[str, Any]:
             nonlocal options, spec_effective, spec_model_used
-            options = options or {}
 
             # An explicitly requested agent whose entry was rejected is refused
             # BEFORE resolution (#1748 review item 2): _get_or_create_agent
@@ -2033,6 +2338,24 @@ class SKAgentManager:
                         gate_model_cfg, agent_id=effective_id
                     )
                     if refusal is not None:
+                        # #4742: a runtime gate verdict is a resumable
+                        # pause, not an error — the turn has not started,
+                        # nothing was executed, and the caller holds the
+                        # conversation_id to retry or continue with. A
+                        # malformed capacity_gate config is different: a
+                        # config fix, not a retry, is the way out.
+                        refusal = dict(refusal)
+                        refusal["conversation_id"] = conv_id
+                        refusal["turn_index"] = self._turn_counts.get(conv_id, 0)
+                        refusal["round_index"] = 0
+                        is_config_error = "config_error" in (
+                            refusal.get("gate_detail") or {}
+                        )
+                        refusal["status"] = (
+                            STATUS_ERROR if is_config_error else STATUS_PAUSED
+                        )
+                        if not is_config_error:
+                            refusal["resumable"] = True
                         return refusal
 
             needs_temp_agent = (not spec_active) and (
@@ -2058,6 +2381,7 @@ class SKAgentManager:
 
                 # Build temporary agent: new kernel + override model
                 temp_kernel = Kernel()
+                install_turn_filter(temp_kernel)
                 temp_kernel.add_service(override_service)
 
                 # Resolve effective MCPs
@@ -2134,6 +2458,7 @@ class SKAgentManager:
                         options.get("zoom_context"),
                         handler_model_override,
                         spec_sampling_overrides,
+                        turn_opts,
                     )
                 else:
                     # Pass single image or list of images
@@ -2147,6 +2472,7 @@ class SKAgentManager:
                         include_steps,
                         handler_model_override,
                         spec_sampling_overrides,
+                        turn_opts,
                     )
             elif attachment_type == "video":
                 return await self._handle_video(
@@ -2159,6 +2485,7 @@ class SKAgentManager:
                     options.get("num_frames", 8),
                     handler_model_override,
                     spec_sampling_overrides,
+                    turn_opts,
                 )
             elif attachment_type == "document":
                 return await self._handle_document(
@@ -2171,6 +2498,7 @@ class SKAgentManager:
                     options,
                     handler_model_override,
                     spec_sampling_overrides,
+                    turn_opts,
                 )
             else:
                 return await self._handle_text(
@@ -2181,6 +2509,7 @@ class SKAgentManager:
                     include_steps,
                     handler_model_override,
                     spec_sampling_overrides,
+                    turn_opts,
                 )
 
         # #3797: the wait_for ceiling must not sit below the resolved model's
@@ -2195,68 +2524,148 @@ class SKAgentManager:
             agent_spec=agent_spec,
         )
 
-        try:
-            if effective_timeout is not None and effective_timeout > 0:
-                # #4085: wait_for cannot fire while the loop is frozen — arm
-                # the faulthandler watchdog alongside the normal ceiling. The
-                # dump only fires if the error has NOT come back by ceiling +
-                # grace (healthy timeouts cancel it in the finally below).
-                _arm_freeze_dump(effective_timeout)
-                try:
-                    result = await asyncio.wait_for(_execute(), timeout=effective_timeout)
-                finally:
-                    _disarm_freeze_dump()
-            else:
-                result = await _execute()
+        async with conv_lock:
+            try:
+                if effective_timeout is not None and effective_timeout > 0:
+                    # #4085: wait_for cannot fire while the loop is frozen — arm
+                    # the faulthandler watchdog alongside the normal ceiling. The
+                    # dump only fires if the error has NOT come back by ceiling +
+                    # grace (healthy timeouts cancel it in the finally below).
+                    _arm_freeze_dump(effective_timeout)
+                    try:
+                        result = await asyncio.wait_for(_execute(), timeout=effective_timeout)
+                    finally:
+                        _disarm_freeze_dump()
+                else:
+                    result = await _execute()
 
-            # Post-process: inject override info into result
-            if model_override and "error" not in result:
-                result["model_override"] = model_override
-                result["model_used"] = model_override
-            if spec_active and "error" not in result:
-                result["agent_spec_applied"] = True
-                result["effective_config"] = spec_effective
-                if spec_model_used:
-                    result["model_used"] = spec_model_used
-            # Fallback visibility (#3411 web2/po-2024 cells): an explicitly
-            # requested agent that is not in the served catalogue silently
-            # resolved to the default agent — the call "succeeds" on the wrong
-            # (costly) agent and post-deployment smokes validate the default,
-            # not the agent under test. Surface the substitution as data:
-            # `fallback_from` names what was asked, `agent_used` still names
-            # what answered. Compare on the base id — model_override appends
-            # a "[model]" suffix that is NOT a fallback.
-            if agent_id and "error" not in result:
-                used = result.get("agent_used")
-                used_base = used.split("[")[0] if used and "[" in used else used
-                if used_base and used_base != agent_id:
-                    result["fallback_from"] = agent_id
-                    result["fallback_reason"] = (
-                        f"agent '{agent_id}' not in the served catalogue; "
-                        f"served '{used_base}' instead"
-                    )
-                    log.warning(
-                        "call_agent fallback: requested '%s' not configured, "
-                        "served '%s'",
-                        agent_id,
-                        used_base,
-                    )
+                # Post-process: inject override info into result
+                if model_override and "error" not in result:
+                    result["model_override"] = model_override
+                    result["model_used"] = model_override
+                if spec_active and "error" not in result:
+                    result["agent_spec_applied"] = True
+                    result["effective_config"] = spec_effective
+                    if spec_model_used:
+                        result["model_used"] = spec_model_used
+                # Fallback visibility (#3411 web2/po-2024 cells): an explicitly
+                # requested agent that is not in the served catalogue silently
+                # resolved to the default agent — the call "succeeds" on the wrong
+                # (costly) agent and post-deployment smokes validate the default,
+                # not the agent under test. Surface the substitution as data:
+                # `fallback_from` names what was asked, `agent_used` still names
+                # what answered. Compare on the base id — model_override appends
+                # a "[model]" suffix that is NOT a fallback.
+                if agent_id and "error" not in result:
+                    used = result.get("agent_used")
+                    used_base = used.split("[")[0] if used and "[" in used else used
+                    if used_base and used_base != agent_id:
+                        result["fallback_from"] = agent_id
+                        result["fallback_reason"] = (
+                            f"agent '{agent_id}' not in the served catalogue; "
+                            f"served '{used_base}' instead"
+                        )
+                        log.warning(
+                            "call_agent fallback: requested '%s' not configured, "
+                            "served '%s'",
+                            agent_id,
+                            used_base,
+                        )
+                return self._apply_turn_envelope(result, conv_id)
+            except asyncio.TimeoutError:
+                # #4742: the interrupted turn's pending user message is
+                # rolled back under the lock, and the error names the
+                # conversation so the caller can retry it cleanly.
+                await self._rollback_turn(conv_id)
+                return {
+                    "error": f"call_agent timed out after {effective_timeout}s",
+                    "timeout": effective_timeout,
+                    "conversation_id": conv_id,
+                    "turn_index": self._turn_counts.get(conv_id, 0),
+                    "round_index": self._epoch_rounds(conv_id),
+                    "status": STATUS_ERROR,
+                }
+            except asyncio.CancelledError:
+                await self._rollback_turn(conv_id)
+                raise
+            except Exception as e:
+                # #4107 guard 3 (volet C of #4085): a failing model call — the mini
+                # endpoint returning 500 mid-delegation — must surface as error
+                # DATA, never propagate out of call_agent. The medium's session
+                # keeps running and reads the failure as a normal tool result,
+                # mirroring the broad catch _handle_image already carries.
+                # Logged: a broad catch must not swallow a bug silently — the
+                # traceback is what separates an endpoint 500 from a KeyError.
+                log.exception("call_agent failed (agent=%s): %s", agent_id, e)
+                return self._apply_turn_envelope(
+                    {"error": str(e)}, conv_id
+                )
+
+    def _ensure_turn_state(self) -> None:
+        """Lazily create the #4742 turn state on partially-built doubles."""
+        if not hasattr(self, "_conv_locks"):
+            self._conv_locks = {}
+        if not hasattr(self, "_turn_counts"):
+            self._turn_counts = {}
+        if not hasattr(self, "_epochs"):
+            self._epochs = {}
+        if not hasattr(self, "_store"):
+            self._store = ConversationStore(None)
+
+    def _epoch_rounds(self, conv_id: str) -> int:
+        """Rounds completed in the conversation's current epoch, if any."""
+        epoch = self._epochs.get(conv_id)
+        return epoch.base_rounds if epoch else 0
+
+    async def conversation_pre_flight(self, conv_config: Any) -> dict[str, Any] | None:
+        """Pre-dispatch refusal seam for run_conversation (#4742 P-b3).
+
+        Same gates as call_agent, evaluated after agent resolution and
+        before any model call: per-agent rate limit (#1748) then the
+        per-model capacity gate (#4712) over the conversation's distinct
+        models. Returns a typed refusal dict or None to proceed.
+        """
+        agent_cfgs = []
+        for agent_id in getattr(conv_config, "agents", []) or []:
+            cfg = self.config.get_agent(agent_id)
+            if cfg is not None:
+                agent_cfgs.append(cfg)
+        if not agent_cfgs:
+            return None
+        for cfg in agent_cfgs:
+            gate = self._rate_gate(cfg)
+            if gate is not None:
+                return gate
+        seen_models: set[str] = set()
+        for cfg in agent_cfgs:
+            if cfg.model in seen_models:
+                continue
+            seen_models.add(cfg.model)
+            model_cfg = self.config.get_model(cfg.model)
+            if model_cfg is None:
+                continue
+            refusal = await check_model_capacity_gate(model_cfg, agent_id=cfg.id)
+            if refusal is not None:
+                return refusal
+        return None
+
+    def _apply_turn_envelope(
+        self, result: dict[str, Any], conv_id: str
+    ) -> dict[str, Any]:
+        """Fill the #4742 envelope keys the handler paths did not set.
+
+        Successful and paused turns get their envelope from
+        ``_finish_turn``; pre-dispatch refusals build it inline. What
+        remains here: error results from handlers and late failures —
+        they still name the conversation and count their turn.
+        """
+        if not isinstance(result, dict):
             return result
-        except asyncio.TimeoutError:
-            return {
-                "error": f"call_agent timed out after {effective_timeout}s",
-                "timeout": effective_timeout,
-            }
-        except Exception as e:
-            # #4107 guard 3 (volet C of #4085): a failing model call — the mini
-            # endpoint returning 500 mid-delegation — must surface as error
-            # DATA, never propagate out of call_agent. The medium's session
-            # keeps running and reads the failure as a normal tool result,
-            # mirroring the broad catch _handle_image already carries.
-            # Logged: a broad catch must not swallow a bug silently — the
-            # traceback is what separates an endpoint 500 from a KeyError.
-            log.exception("call_agent failed (agent=%s): %s", agent_id, e)
-            return {"error": str(e)}
+        result.setdefault("conversation_id", conv_id)
+        result.setdefault("turn_index", self._turn_counts.get(conv_id, 0))
+        result.setdefault("round_index", self._epoch_rounds(conv_id))
+        result.setdefault("status", STATUS_ERROR if "error" in result else STATUS_COMPLETED)
+        return result
 
     # -----------------------------------------------------------------------
     # Handler Methods
@@ -2403,44 +2812,56 @@ class SKAgentManager:
         include_steps: bool,
         model_override: str | None = None,
         sampling_override: dict | None = None,
+        turn: TurnCallOptions | None = None,
     ) -> dict[str, Any]:
         """Handle text-only prompt."""
         conv_id, thread = self._get_or_create_thread(conversation_id)
-        items = [TextContent(text=prompt)]
-        message = ChatMessageContent(role=AuthorRole.USER, items=items)
+        controller = self._begin_turn(
+            conv_id,
+            agent_id,
+            model_override or self._get_agent_model_id(agent_id),
+            turn,
+        )
+        # options.continue (#4742): resume the paused epoch — no new user
+        # message, the loop re-enters over the committed history.
+        message = None
+        if not (turn and turn.continue_turn):
+            items = [TextContent(text=prompt)]
+            message = ChatMessageContent(role=AuthorRole.USER, items=items)
 
         steps = []
         final_response = None
         invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
-        async for response in agent.invoke(
-            messages=message,
-            thread=thread,
-            on_intermediate_message=self._make_step_handler(steps)
-            if include_steps
-            else None,
-            **invoke_kwargs,
-        ):
-            final_response = response
-            thread = response.thread
+        async with TurnContext(controller):
+            async for response in agent.invoke(
+                messages=message,
+                thread=thread,
+                on_intermediate_message=self._make_step_handler(steps)
+                if include_steps
+                else None,
+                **invoke_kwargs,
+            ):
+                final_response = response
+                thread = response.thread
 
-        self._threads[conv_id] = thread
-        if final_response is None or not str(final_response).strip():
-            # #1587: an invoke loop that produced no output is an error, not a
-            # silent success with response="".
-            return {
-                "error": "empty model response — agent.invoke produced no output",
-                "conversation_id": conv_id,
-                "agent_used": agent_id,
-                "model_used": self._get_agent_model_id(agent_id),
-            }
         result = {
-            "response": str(final_response),
-            "conversation_id": conv_id,
             "agent_used": agent_id,
             "model_used": self._get_agent_model_id(agent_id),
         }
+        if controller.pause is None and (
+            final_response is None or not str(final_response).strip()
+        ):
+            # #1587: an invoke loop that produced no output is an error, not a
+            # silent success with response="".
+            await self._finish_turn(conv_id, thread, controller, result)
+            result["error"] = "empty model response — agent.invoke produced no output"
+            result["status"] = STATUS_ERROR
+            return result
+        if final_response is not None:
+            result["response"] = str(final_response)
         if include_steps:
             result["steps"] = steps
+        await self._finish_turn(conv_id, thread, controller, result)
         return await self._maybe_condense_thread(agent_id, thread, result)
 
     async def _handle_image(
@@ -2453,6 +2874,7 @@ class SKAgentManager:
         include_steps: bool,
         model_override: str | None = None,
         sampling_override: dict | None = None,
+        turn: TurnCallOptions | None = None,
     ) -> dict[str, Any]:
         """Handle image analysis. Supports single image or list of images."""
         try:
@@ -2471,40 +2893,49 @@ class SKAgentManager:
             items.append(TextContent(text=prompt))
 
             conv_id, thread = self._get_or_create_thread(conversation_id)
-            message = ChatMessageContent(role=AuthorRole.USER, items=items)
+            controller = self._begin_turn(
+                conv_id,
+                agent_id,
+                model_override or self._get_agent_model_id(agent_id),
+                turn,
+            )
+            message = None
+            if not (turn and turn.continue_turn):
+                message = ChatMessageContent(role=AuthorRole.USER, items=items)
 
             steps = []
             final_response = None
             invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
-            async for response in agent.invoke(
-                messages=message,
-                thread=thread,
-                on_intermediate_message=self._make_step_handler(steps)
-                if include_steps
-                else None,
-                **invoke_kwargs,
-            ):
-                final_response = response
-                thread = response.thread
+            async with TurnContext(controller):
+                async for response in agent.invoke(
+                    messages=message,
+                    thread=thread,
+                    on_intermediate_message=self._make_step_handler(steps)
+                    if include_steps
+                    else None,
+                    **invoke_kwargs,
+                ):
+                    final_response = response
+                    thread = response.thread
 
-            self._threads[conv_id] = thread
-            if final_response is None or not str(final_response).strip():
-                # #1587: same empty-output guard as _handle_text.
-                return {
-                    "error": "empty model response — agent.invoke produced no output",
-                    "conversation_id": conv_id,
-                    "agent_used": agent_id,
-                    "model_used": self._get_agent_model_id(agent_id),
-                }
             result = {
-                "response": str(final_response),
-                "conversation_id": conv_id,
                 "agent_used": agent_id,
                 "model_used": self._get_agent_model_id(agent_id),
                 "images_analyzed": len(image_sources),
             }
+            if controller.pause is None and (
+                final_response is None or not str(final_response).strip()
+            ):
+                # #1587: same empty-output guard as _handle_text.
+                await self._finish_turn(conv_id, thread, controller, result)
+                result["error"] = "empty model response — agent.invoke produced no output"
+                result["status"] = STATUS_ERROR
+                return result
+            if final_response is not None:
+                result["response"] = str(final_response)
             if include_steps:
                 result["steps"] = steps
+            await self._finish_turn(conv_id, thread, controller, result)
             return await self._maybe_condense_thread(agent_id, thread, result)
         except Exception as e:
             return {"error": str(e)}
@@ -2521,6 +2952,7 @@ class SKAgentManager:
         zoom_context: str | None = None,
         model_override: str | None = None,
         sampling_override: dict | None = None,
+        turn: TurnCallOptions | None = None,
     ) -> dict[str, Any]:
         """Handle image region analysis (zoom)."""
         try:
@@ -2556,35 +2988,44 @@ class SKAgentManager:
             image_item = ImageContent(data_uri=data_url)
 
             conv_id, thread = self._get_or_create_thread(conversation_id)
+            controller = self._begin_turn(
+                conv_id,
+                agent_id,
+                model_override or self._get_agent_model_id(agent_id),
+                turn,
+            )
             items = [image_item, TextContent(text=context_msg)]
-            message = ChatMessageContent(role=AuthorRole.USER, items=items)
+            message = None
+            if not (turn and turn.continue_turn):
+                message = ChatMessageContent(role=AuthorRole.USER, items=items)
 
             steps = []
             final_response = None
             invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
-            async for response in agent.invoke(
-                messages=message,
-                thread=thread,
-                on_intermediate_message=self._make_step_handler(steps)
-                if include_steps
-                else None,
-                **invoke_kwargs,
-            ):
-                final_response = response
-                thread = response.thread
+            async with TurnContext(controller):
+                async for response in agent.invoke(
+                    messages=message,
+                    thread=thread,
+                    on_intermediate_message=self._make_step_handler(steps)
+                    if include_steps
+                    else None,
+                    **invoke_kwargs,
+                ):
+                    final_response = response
+                    thread = response.thread
 
-            self._threads[conv_id] = thread
             result = {
-                "response": str(final_response) if final_response else "",
-                "conversation_id": conv_id,
                 "agent_used": agent_id,
                 "model_used": self._get_agent_model_id(agent_id),
                 "region_analyzed": region,
             }
+            if final_response is not None:
+                result["response"] = str(final_response)
             if zoom_context:
                 result["zoom_context"] = zoom_context
             if include_steps:
                 result["steps"] = steps
+            await self._finish_turn(conv_id, thread, controller, result)
             return await self._maybe_condense_thread(agent_id, thread, result)
         except Exception as e:
             return {"error": str(e)}
@@ -2600,6 +3041,7 @@ class SKAgentManager:
         num_frames: int = 8,
         model_override: str | None = None,
         sampling_override: dict | None = None,
+        turn: TurnCallOptions | None = None,
     ) -> dict[str, Any]:
         """Handle video analysis."""
         # Convert file:/// URI to local path
@@ -2622,6 +3064,12 @@ class SKAgentManager:
             return {"error": "No frames could be extracted from video"}
 
         conv_id, thread = self._get_or_create_thread(conversation_id)
+        controller = self._begin_turn(
+            conv_id,
+            agent_id,
+            model_override or self._get_agent_model_id(agent_id),
+            turn,
+        )
 
         content_items = [
             TextContent(text=f"{prompt}\n\nThe video has {len(frames)} frames:")
@@ -2632,38 +3080,40 @@ class SKAgentManager:
             content_items.append(TextContent(text=f"\n[Frame {i + 1}]"))
             content_items.append(ImageContent(data_uri=data_url))
 
-        message = ChatMessageContent(role=AuthorRole.USER, items=content_items)
+        message = None
+        if not (turn and turn.continue_turn):
+            message = ChatMessageContent(role=AuthorRole.USER, items=content_items)
 
         steps = []
         final_response = None
         invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
-        async for response in agent.invoke(
-            messages=message,
-            thread=thread,
-            on_intermediate_message=self._make_step_handler(steps)
-            if include_steps
-            else None,
-            **invoke_kwargs,
-        ):
-            final_response = response
-            thread = response.thread
+        async with TurnContext(controller):
+            async for response in agent.invoke(
+                messages=message,
+                thread=thread,
+                on_intermediate_message=self._make_step_handler(steps)
+                if include_steps
+                else None,
+                **invoke_kwargs,
+            ):
+                final_response = response
+                thread = response.thread
 
-        self._threads[conv_id] = thread
-        if final_response is None or not str(final_response).strip():
-            # #1587: same empty-output guard as _handle_text.
-            return {
-                "error": "empty model response — agent.invoke produced no output",
-                "conversation_id": conv_id,
-                "agent_used": agent_id,
-                "model_used": self._get_agent_model_id(agent_id),
-            }
         result = {
-            "response": str(final_response),
-            "conversation_id": conv_id,
             "agent_used": agent_id,
             "model_used": self._get_agent_model_id(agent_id),
             "frames_analyzed": len(frames),
         }
+        if controller.pause is None and (
+            final_response is None or not str(final_response).strip()
+        ):
+            # #1587: same empty-output guard as _handle_text.
+            await self._finish_turn(conv_id, thread, controller, result)
+            result["error"] = "empty model response — agent.invoke produced no output"
+            result["status"] = STATUS_ERROR
+            return result
+        if final_response is not None:
+            result["response"] = str(final_response)
         if video_info:
             result["video_info"] = {
                 "duration": video_info.duration,
@@ -2671,6 +3121,7 @@ class SKAgentManager:
             }
         if include_steps:
             result["steps"] = steps
+        await self._finish_turn(conv_id, thread, controller, result)
         return await self._maybe_condense_thread(agent_id, thread, result)
 
     async def _handle_document(
@@ -2684,6 +3135,7 @@ class SKAgentManager:
         options: dict,
         model_override: str | None = None,
         sampling_override: dict | None = None,
+        turn: TurnCallOptions | None = None,
     ) -> dict[str, Any]:
         """Handle document analysis."""
         mode = options.get("mode", "auto")
@@ -2765,33 +3217,37 @@ class SKAgentManager:
                 content_items.append(ImageContent(data_uri=data_url))
 
         conv_id, thread = self._get_or_create_thread(conversation_id)
-        message = ChatMessageContent(role=AuthorRole.USER, items=content_items)
+        controller = self._begin_turn(conv_id, agent_id, model_id, turn)
+        message = None
+        if not (turn and turn.continue_turn):
+            message = ChatMessageContent(role=AuthorRole.USER, items=content_items)
 
         steps = []
         final_response = None
         invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
-        async for response in agent.invoke(
-            messages=message,
-            thread=thread,
-            on_intermediate_message=self._make_step_handler(steps)
-            if include_steps
-            else None,
-            **invoke_kwargs,
-        ):
-            final_response = response
-            thread = response.thread
+        async with TurnContext(controller):
+            async for response in agent.invoke(
+                messages=message,
+                thread=thread,
+                on_intermediate_message=self._make_step_handler(steps)
+                if include_steps
+                else None,
+                **invoke_kwargs,
+            ):
+                final_response = response
+                thread = response.thread
 
-        self._threads[conv_id] = thread
         result = {
-            "response": str(final_response) if final_response else "",
-            "conversation_id": conv_id,
             "agent_used": agent_id,
             "model_used": model_id,
             "pages_analyzed": len(pages),
             "mode": mode,
         }
+        if final_response is not None:
+            result["response"] = str(final_response)
         if include_steps:
             result["steps"] = steps
+        await self._finish_turn(conv_id, thread, controller, result)
         return await self._maybe_condense_thread(agent_id, thread, result)
 
     # -----------------------------------------------------------------------
@@ -2870,9 +3326,23 @@ class SKAgentManager:
         return "\n".join(lines) if lines else "No tools loaded."
 
     def end_conversation(self, conversation_id: str) -> bool:
-        """End and clean up a conversation thread."""
-        if conversation_id in self._threads:
+        """End and clean up a conversation thread.
+
+        With the durable store enabled, the conversation's persisted state
+        (messages + journal) is removed too — ending a conversation ends
+        it everywhere (#4742).
+        """
+        existed = conversation_id in self._threads
+        durable_existed = self._store.enabled and (
+            self._store.load(conversation_id) is not None
+        )
+        if existed:
             del self._threads[conversation_id]
+        self._turn_counts.pop(conversation_id, None)
+        self._epochs.pop(conversation_id, None)
+        self._conv_locks.pop(conversation_id, None)
+        self._store.delete(conversation_id)
+        if existed or durable_existed:
             log.info("Ended conversation: %s", conversation_id)
             return True
         return False
@@ -2883,6 +3353,9 @@ class SKAgentManager:
         self._mcp_plugins.clear()
         self._mcp_plugin_list.clear()
         self._threads.clear()
+        self._conv_locks.clear()
+        self._turn_counts.clear()
+        self._epochs.clear()
         self._kernels.clear()
         self._sk_agents.clear()
         self._openai_clients.clear()
@@ -3086,6 +3559,7 @@ async def _get_manager() -> SKAgentManager:
                 _manager._sk_agents,
                 _manager._get_or_create_agent,
                 spec_agent_builder=_spec_agent_builder,
+                pre_flight=_manager.conversation_pre_flight,
             )
             # Update tool descriptions dynamically
             _update_tool_descriptions(_config)
@@ -3173,8 +3647,17 @@ async def call_agent(
                    raise per call via options {"source_max_chars": N} (ceiling 2M).
                    The response echoes {path, chars, truncated}.
         options: JSON string with type-specific params (region, mode, max_pages, page_range, num_frames,
-                 source_max_chars for the source_file channel).
-        conversation_id: Continue previous conversation.
+                 source_max_chars for the source_file channel), plus turn
+                 control (#4742): "continue" (bool) resumes the paused loop
+                 of this conversation_id — no new user message, tools
+                 already executed are never re-run; "max_rounds" (int >= 1)
+                 bounds the tool rounds admitted this call, pausing the
+                 turn resumably when reached.
+        conversation_id: Continue previous conversation. Every response
+                 carries the turn envelope: turn_index, round_index,
+                 status (completed | paused | error), and resumable=true
+                 on a pause. A capacity-gate refusal is a pause, not an
+                 error: retry or continue with the same conversation_id.
         include_steps: Show intermediate tool/reasoning steps.
         timeout: Max seconds to wait for response (default 120, 0 = no limit).
         model_override: Use a different model for this call (model ID from config).
@@ -3682,7 +4165,9 @@ async def run_conversation(
         prompt: The research question or topic to deliberate.
         conversation: Conversation preset ID (default: deep-search). Ignored
             when conversation_spec carries its own extends.
-        options: JSON string with overrides (max_rounds).
+        options: JSON string with overrides (max_rounds, timeout). timeout
+            bounds the whole conversation in seconds (default 900, 0 = no
+            limit) — run_conversation no longer runs unbounded (#4742).
         conversation_id: Reserved for future thread continuity.
         conversation_spec: JSON string to compose a conversation à la carte
             (#3407): agents + coordination + prompts, optionally specializing
@@ -3694,6 +4179,9 @@ async def run_conversation(
 
     Returns:
         JSON string with: response, conversation_type, agents_used, rounds, steps.
+        A red capacity gate or a tripped rate limit on a participating
+        model refuses before any model call (#4742 P-b3); a timeout
+        surfaces as a typed error.
     """
     runner = await _get_conversation_runner()
 
@@ -3703,6 +4191,15 @@ async def run_conversation(
             opts = json.loads(options)
         except json.JSONDecodeError:
             return json.dumps({"error": "Invalid options JSON"}, ensure_ascii=False)
+
+    # #4742 P-b3: the conversation runs under the same bounded ceiling as
+    # call_agent instead of running unbounded.
+    timeout_s = opts.pop("timeout", _RUN_CONVERSATION_DEFAULT_TIMEOUT_S)
+    if isinstance(timeout_s, bool) or not isinstance(timeout_s, int) or timeout_s < 0:
+        return json.dumps(
+            {"error": "options.timeout must be an integer >= 0"},
+            ensure_ascii=False,
+        )
 
     parsed_conversation_spec = None
     if conversation_spec:
@@ -3718,12 +4215,25 @@ async def run_conversation(
         except json.JSONDecodeError:
             return json.dumps({"error": "Invalid conversation_spec JSON"}, ensure_ascii=False)
 
-    result = await runner.run(
-        prompt=prompt,
-        conversation_id=conversation if conversation else None,
-        options=opts,
-        conversation_spec=parsed_conversation_spec,
-    )
+    try:
+        result = await asyncio.wait_for(
+            runner.run(
+                prompt=prompt,
+                conversation_id=conversation if conversation else None,
+                options=opts,
+                conversation_spec=parsed_conversation_spec,
+            ),
+            timeout=timeout_s or None,
+        )
+    except asyncio.TimeoutError:
+        return json.dumps(
+            {
+                "error": f"run_conversation timed out after {timeout_s}s",
+                "error_type": "timeout",
+                "timeout": timeout_s,
+            },
+            ensure_ascii=False,
+        )
 
     # #1587 (conversations): a thinking model that exhausts its budget (observed
     # glm-5.3, 4096-token thinking budget) returns a valid assistant message
