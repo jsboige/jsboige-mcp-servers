@@ -12,10 +12,12 @@ vllm nb-coder contract:
   returns normally, committing the round's messages to the thread. The
   current round always completes; nothing in flight is killed.
 - **Resumable pause.** A paused turn answers with the envelope
-  ``status:"paused"``, ``resumable:true``, the ``conversation_id`` and the
-  round where the loop stopped. ``options={"continue": true}`` on the next
-  ``call_agent`` re-enters the loop over the committed history — no new
-  user message, no replayed tools.
+  ``status:"paused"``, ``paused:true``, ``resumable:true``, a non-empty
+  ``"[paused: ...]"`` response, the ``conversation_id`` and the ``pause``
+  block (reason, round where the loop stopped).
+  ``options={"continue": true}`` on the next ``call_agent`` re-enters the
+  loop over the committed history — no new user message, no replayed
+  tools.
 - **Idempotent defer across restarts.** Every executed tool call of the
   current turn epoch is journaled (name + arguments -> result). After a
   server restart, a resumed turn rebuilds its context by replaying model
@@ -38,6 +40,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -46,6 +49,9 @@ log = logging.getLogger("sk-agent.turns")
 
 #: Env var enabling the durable conversation store (opt-in, #4742 P-a).
 CONVERSATION_DIR_ENV = "SK_AGENT_CONVERSATION_DIR"
+
+#: Conversation ids used verbatim as store file names; others are hashed.
+_PLAIN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 #: Gate refusal reasons surfaced in the pause envelope.
 PAUSE_REASON_CAPACITY_GATE = "capacity_gate"
@@ -93,8 +99,9 @@ class TurnCallOptions:
     """Per-call turn-control options parsed from ``call_agent``'s options.
 
     ``continue_turn`` resumes the paused epoch of the same conversation:
-    no new user message, the loop re-enters where it paused. A turn
-    without a paused epoch simply continues the thread's loop.
+    no new user message, the loop re-enters where it paused. Without a
+    paused epoch there is nothing to resume: ``call_agent`` refuses the
+    call as ``no_paused_epoch``.
     """
 
     continue_turn: bool = False
@@ -369,12 +376,19 @@ class ConversationStore:
         return self.root is not None
 
     def _path(self, conversation_id: str, suffix: str = ".json") -> Path:
-        # Conversation ids are caller-supplied: confine them to a single
-        # path segment so ".." or separators cannot escape the root.
-        safe = "".join(c for c in conversation_id if c.isalnum() or c in "-_")
-        if not safe:
-            raise ValueError("invalid conversation_id")
-        return self.root / f"{safe}{suffix}"
+        # Conversation ids are caller-supplied. A plain id (ASCII letters,
+        # digits, "-", "_", 1-128 chars) is its own file name; any other id
+        # is named by its sha256 hex — one path segment, so ".." or
+        # separators cannot escape the root, and nothing is stripped, so
+        # distinct ids never share a file ("a.b" vs "ab", "../evil" vs
+        # "evil").
+        if _PLAIN_ID.fullmatch(conversation_id):
+            name = conversation_id
+        else:
+            name = hashlib.sha256(
+                conversation_id.encode("utf-8", "surrogatepass")
+            ).hexdigest()
+        return self.root / f"{name}{suffix}"
 
     def _write_atomic(self, path: Path, payload: dict[str, Any]) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

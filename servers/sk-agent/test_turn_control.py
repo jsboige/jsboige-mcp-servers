@@ -28,6 +28,7 @@ installed on the kernel. Only the network is fake.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -198,6 +199,16 @@ def _gate_dict(probe: list[str]) -> dict:
     }
 
 
+def _user_texts(manager, conv_id: str) -> list[str]:
+    """USER messages of a conversation's in-memory thread."""
+    thread = manager._threads[conv_id]
+    return [
+        str(m)
+        for m in thread._chat_history.messages
+        if getattr(m, "role", None) == AuthorRole.USER
+    ]
+
+
 @pytest.fixture(autouse=True)
 def _fresh_gate_cache():
     clear_capacity_gate_cache()
@@ -242,7 +253,8 @@ class TestPauseAndResume:
 
         assert first["status"] == "paused", first
         assert first["resumable"] is True
-        assert first["paused"]["reason"] == "capacity_gate"
+        assert first["paused"] is True
+        assert first["pause"]["reason"] == "capacity_gate"
         assert first["round_index"] == 1
         assert first["turn_index"] == 1
         conv = first["conversation_id"]
@@ -295,7 +307,7 @@ class TestPauseAndResume:
         first, second = asyncio.run(scenario())
 
         assert first["status"] == "paused", first
-        assert first["paused"]["reason"] == "round_budget"
+        assert first["pause"]["reason"] == "round_budget"
         assert first["round_index"] == 1
         assert first["resumable"] is True
         # Resume: round 2 admitted (fresh budget), tool runs a second
@@ -371,7 +383,9 @@ class TestEnvelopeAndRefusals:
 
         assert result["error_type"] == "capacity_gate_red"
         assert result["status"] == "paused"
-        assert result["resumable"] is True
+        # Nothing was committed: retry the call, never continue it (C3).
+        assert result["resumable"] is False
+        assert result["retry_only"] is True
         assert result["conversation_id"]
         assert result["round_index"] == 0
         assert result["turn_index"] == 0  # the turn never started
@@ -474,6 +488,251 @@ class TestTimeoutRollback:
             if getattr(m, "role", None) == AuthorRole.USER
         ]
         assert user_texts == ["again"], "pending user message must be rolled back"
+
+
+class TestAllocatedConversationId:
+    """C1: a call WITHOUT conversation_id keys its thread, lock, rollback
+    and envelope by the one id it returns."""
+
+    def test_timeout_without_conversation_id(self, tmp_path):
+        state = tmp_path / "gate-state.txt"
+        state.write_text("green")
+        manager, service, counter = _turn_manager(
+            _gate_dict(_state_probe(state)), sleep_s=0.7
+        )
+
+        async def scenario():
+            timed_out = await manager.call_agent(
+                prompt="slow", agent_id="a-x", timeout=1
+            )
+            conv = timed_out["conversation_id"]
+            # The rollback hit the thread the caller can name.
+            assert conv in manager._threads
+            assert _user_texts(manager, conv) == []
+            assert set(manager._conv_locks) == {conv}
+            service.sleep_s = 0.0
+            again = await manager.call_agent(
+                prompt="again", agent_id="a-x", conversation_id=conv
+            )
+            more = await manager.call_agent(
+                prompt="more", agent_id="a-x", conversation_id=conv
+            )
+            return timed_out, again, more
+
+        timed_out, again, more = asyncio.run(scenario())
+
+        conv = timed_out["conversation_id"]
+        assert "timed out" in timed_out["error"]
+        assert again["conversation_id"] == more["conversation_id"] == conv
+        assert again["turn_index"] == 1  # the timed-out turn gave it back
+        assert _user_texts(manager, conv) == ["again", "more"]
+        # One conversation, one lock — no orphan entry per call.
+        assert set(manager._conv_locks) == set(manager._threads) == {conv}
+
+    def test_pause_without_conversation_id_resumes_on_returned_id(self, tmp_path):
+        state = tmp_path / "gate-state.txt"
+        state.write_text("green")
+        manager, service, counter = _turn_manager(
+            _gate_dict(_state_probe(state))
+        )
+
+        async def scenario():
+            paused = await manager.call_agent(
+                prompt="go", agent_id="a-x", options={"max_rounds": 1}
+            )
+            conv = paused["conversation_id"]
+            assert conv in manager._threads
+            assert set(manager._conv_locks) == {conv}
+            done = await manager.call_agent(
+                prompt="",
+                agent_id="a-x",
+                conversation_id=conv,
+                options={"continue": True},
+            )
+            return paused, done
+
+        paused, done = asyncio.run(scenario())
+
+        conv = paused["conversation_id"]
+        assert paused["status"] == "paused"
+        assert done["status"] == "completed", done
+        assert done["response"] == "final-answer"
+        assert counter["calls"] == 1
+        assert set(manager._conv_locks) == set(manager._threads) == {conv}
+        manager.end_conversation(conv)
+        assert manager._conv_locks == {} and manager._threads == {}
+
+
+class TestResumeTimeoutKeepsEpoch:
+    """C2: a timed-out RESUME rolls back only what the resume added."""
+
+    def test_restart_continue_timeout_keeps_prompt_and_journal(self, tmp_path):
+        state = tmp_path / "gate-state.txt"
+        state.write_text("green")
+        store_root = tmp_path / "store"
+        store = ConversationStore(store_root)
+
+        # Process 1: budget-pause after round 1 (tool ran once, journaled).
+        m1, s1, c1 = _turn_manager(
+            _gate_dict(_state_probe(state)), store_root=store_root
+        )
+        first = asyncio.run(
+            m1.call_agent(prompt="go", agent_id="a-x", options={"max_rounds": 1})
+        )
+        assert first["status"] == "paused"
+        cid = first["conversation_id"]
+        assert c1["calls"] == 1
+        assert store.load_journal(cid) is not None
+
+        # Process 2 (restart): the resume times out mid replay.
+        m2, s2, c2 = _turn_manager(
+            _gate_dict(_state_probe(state)), store_root=store_root, sleep_s=1.5
+        )
+        timed_out = asyncio.run(
+            m2.call_agent(
+                prompt="",
+                agent_id="a-x",
+                conversation_id=cid,
+                options={"continue": True},
+                timeout=1,
+            )
+        )
+        assert "timed out" in timed_out["error"]
+        assert store.load_journal(cid) is not None, (
+            "a timed-out resume must keep the durable journal"
+        )
+        assert _user_texts(m2, cid) == ["go"], "the paused turn's prompt is kept"
+        assert timed_out["turn_index"] == 1
+        assert m2._turn_counts[cid] == 1, "a resume never gives a turn back"
+
+        # Relaunch the resume: journaled tool replayed, never re-executed.
+        s2.sleep_s = 0.0
+        done = asyncio.run(
+            m2.call_agent(
+                prompt="",
+                agent_id="a-x",
+                conversation_id=cid,
+                options={"continue": True},
+            )
+        )
+        assert done["status"] == "completed", done
+        assert done["response"] == "final-answer"
+        assert done["turn_index"] == 1
+        assert c1["calls"] + c2["calls"] == 1, "the tool ran exactly once in total"
+        assert _user_texts(m2, cid) == ["go"]
+        assert store.load_journal(cid) is None  # completed turn clears it
+
+
+class TestContinueRequiresPausedEpoch:
+    """C3: continue resumes a paused epoch only; a refused fresh turn is
+    retry-only."""
+
+    def test_refused_fresh_turn_is_retry_only(self, tmp_path):
+        state = tmp_path / "gate-state.txt"
+        state.write_text("red")
+        manager, service, counter = _turn_manager(
+            _gate_dict(_state_probe(state))
+        )
+
+        refusal = asyncio.run(
+            manager.call_agent(
+                prompt="the-real-prompt", agent_id="a-x", conversation_id="r4"
+            )
+        )
+        assert refusal["status"] == "paused"
+        assert refusal["resumable"] is False
+        assert refusal["retry_only"] is True
+        assert refusal["conversation_id"] == "r4"
+
+        state.write_text("green")
+        cont = asyncio.run(
+            manager.call_agent(
+                prompt="",
+                agent_id="a-x",
+                conversation_id="r4",
+                options={"continue": True},
+            )
+        )
+        assert cont["error_type"] == "no_paused_epoch", cont
+        assert cont["status"] == "error"
+        assert cont["conversation_id"] == "r4"
+        assert service.model_calls == 0, "continue must not run the loop"
+
+        retry = asyncio.run(
+            manager.call_agent(
+                prompt="the-real-prompt", agent_id="a-x", conversation_id="r4"
+            )
+        )
+        assert retry["status"] == "completed", retry
+        assert _user_texts(manager, "r4") == ["the-real-prompt"]
+
+    def test_refused_continue_keeps_its_paused_epoch(self, tmp_path):
+        state = tmp_path / "gate-state.txt"
+        state.write_text("green")
+        manager, service, counter = _turn_manager(
+            _gate_dict(_state_probe(state))
+        )
+
+        async def scenario():
+            paused = await manager.call_agent(
+                prompt="go", agent_id="a-x", options={"max_rounds": 1}
+            )
+            conv = paused["conversation_id"]
+            state.write_text("red")
+            refused = await manager.call_agent(
+                prompt="",
+                agent_id="a-x",
+                conversation_id=conv,
+                options={"continue": True},
+            )
+            state.write_text("green")
+            done = await manager.call_agent(
+                prompt="",
+                agent_id="a-x",
+                conversation_id=conv,
+                options={"continue": True},
+            )
+            return paused, refused, done
+
+        paused, refused, done = asyncio.run(scenario())
+
+        assert paused["status"] == "paused"
+        assert refused["status"] == "paused"
+        assert refused["resumable"] is True  # the epoch is still paused
+        assert "retry_only" not in refused
+        assert done["status"] == "completed", done
+        assert counter["calls"] == 1
+
+
+class TestPauseIsExplicit:
+    """W1: a mid-turn pause is never an empty success (#1587)."""
+
+    def test_mid_turn_pause_has_paused_flag_and_response(self, tmp_path):
+        state = tmp_path / "gate-state.txt"
+        state.write_text("green")
+
+        def flip_red_after_first(calls):
+            if calls == 1:
+                state.write_text("red")
+
+        manager, service, counter = _turn_manager(
+            _gate_dict(_state_probe(state)), on_tool=flip_red_after_first
+        )
+
+        paused = asyncio.run(manager.call_agent(prompt="go", agent_id="a-x"))
+
+        assert paused["status"] == "paused"
+        assert paused["paused"] is True
+        assert "error" not in paused
+        assert paused["response"].startswith("[paused: capacity_gate]")
+        assert paused["pause"]["reason"] == "capacity_gate"
+
+        # A non-paused response is unchanged.
+        state.write_text("green")
+        done = asyncio.run(manager.call_agent(prompt="hi", agent_id="a-x"))
+        assert done["status"] == "completed"
+        assert done["response"] == "final-answer"
+        assert "paused" not in done and "pause" not in done
 
 
 # ---------------------------------------------------------------------------
@@ -661,8 +920,29 @@ class TestConversationStore:
     def test_path_confinement(self, tmp_path):
         store = ConversationStore(tmp_path)
         store.save("../evil", [], 0)
-        assert (tmp_path / "evil.json").exists()
+        hashed = hashlib.sha256(b"../evil").hexdigest()
+        # Not stripped to "evil": named by its hash, inside the root.
+        assert [p.name for p in tmp_path.iterdir()] == [f"{hashed}.json"]
+        assert not (tmp_path / "evil.json").exists()
         assert not (tmp_path.parent / "evil.json").exists()
+        assert store.load("../evil")["conversation_id"] == "../evil"
+
+    def test_distinct_ids_never_share_a_file(self, tmp_path):
+        """W3: stripping made "a.b"/"ab" and "../evil"/"evil" collide."""
+        store = ConversationStore(tmp_path)
+        for a, b in (("a.b", "ab"), ("../evil", "evil"), ("a/b", "a_b")):
+            assert store._path(a) != store._path(b), (a, b)
+            store.save(a, [], 1)
+            store.save(b, [], 2)
+            assert store.load(a)["conversation_id"] == a
+            assert store.load(b)["conversation_id"] == b
+        for weird in ("../evil", "..\\evil", "a/b", "x" * 129, "é"):
+            assert store._path(weird).parent == tmp_path, weird
+        # Plain ids keep their readable name; others are hashed.
+        assert store._path("pr-review_tier2").name == "pr-review_tier2.json"
+        assert store._path("x" * 129).name == (
+            hashlib.sha256(("x" * 129).encode()).hexdigest() + ".json"
+        )
 
     def test_disabled_store_is_noop(self):
         store = ConversationStore(None)

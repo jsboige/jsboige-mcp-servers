@@ -409,8 +409,14 @@ nb-coder contract (live round admission, defer/resume, no in-flight kill):
 
 - **Envelope.** Every `call_agent` response carries `conversation_id`,
   `turn_index`, `round_index`, `status` (`completed` | `paused` | `error`);
-  a pause adds `resumable: true` and a `paused` block (`reason`
-  `capacity_gate` | `round_budget`, `round_index`, gate verdict).
+  a mid-turn pause adds `paused: true`, `resumable: true`, a non-empty
+  `response` (`"[paused: <reason>] resume with options.continue ..."`, so a
+  pause never reads as an empty success, #1587) and a `pause` block
+  (`reason` `capacity_gate` | `round_budget`, `round_index`, gate verdict).
+  A capacity-gate refusal BEFORE a fresh turn starts is `status: "paused"`
+  with `retry_only: true`, `resumable: false`: nothing was committed, so
+  repeat the same call (same prompt) — `options.continue` without a paused
+  turn is refused as `no_paused_epoch`.
 - **Round admission (pull).** The capacity gate (#4712) is evaluated
   before the first model call (as before) and after every round's tools
   complete — a red/yellow verdict mid-conversation PAUSES the turn
@@ -432,9 +438,11 @@ nb-coder contract (live round admission, defer/resume, no in-flight kill):
   execution). `end_conversation` removes the persisted state.
 - **Concurrency lock.** Two concurrent turns on one conversation: the
   second is refused as `conversation_busy` — never interleaved history.
-- **Timeout rollback.** A timed-out or cancelled turn rolls back its
-  pending user message under the lock, and the error names the
-  `conversation_id` so the caller retries clean.
+- **Timeout rollback.** A timed-out or cancelled turn is truncated back,
+  under the lock, to the exact thread length it started from, and the
+  error names the `conversation_id` so the caller retries clean. A
+  timed-out resume (`options.continue`) keeps its paused turn — prompt,
+  `turn_index` and durable journal — so it can be continued again.
 - **Probe-absent is `unknown`, not `red`.** A gate probe whose script is
   missing fails inside its interpreter (python exits 2); the stderr
   launcher-failure signature reclassifies it `unknown` (still refused —

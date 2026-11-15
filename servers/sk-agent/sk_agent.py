@@ -817,6 +817,10 @@ class SKAgentManager:
         self._conv_locks: dict[str, asyncio.Lock] = {}
         self._turn_counts: dict[str, int] = {}
         self._epochs: dict[str, EpochState] = {}
+        # Rollback mark of the turn in flight: (history length before the
+        # invoke, resumed?) — set by _begin_turn, consumed by
+        # _rollback_turn, dropped by _finish_turn.
+        self._turn_marks: dict[str, tuple[int, bool]] = {}
         self._store = ConversationStore.from_env()
         if self._store.enabled:
             log.info("Durable conversation store enabled: %s", self._store.root)
@@ -1762,6 +1766,15 @@ class SKAgentManager:
         continue_turn = bool(turn and turn.continue_turn)
         budget = turn.round_budget if turn else None
 
+        # Rollback mark (#4742 C2): the thread's exact length before this
+        # invoke — an interrupted turn is truncated back to it, never more.
+        thread = self._threads.get(conv_id)
+        history = getattr(thread, "_chat_history", None) if thread else None
+        self._turn_marks[conv_id] = (
+            len(history.messages) if history is not None else 0,
+            continue_turn,
+        )
+
         if not continue_turn:
             self._epochs.pop(conv_id, None)
             self._store.clear_journal(conv_id)
@@ -1830,6 +1843,8 @@ class SKAgentManager:
         normal return (the loop terminates cleanly), so a paused turn is
         persisted exactly like a completed one.
         """
+        # The turn reached its normal end: nothing left to roll back.
+        self._turn_marks.pop(conv_id, None)
         self._threads[conv_id] = thread
         await self._persist_conversation(conv_id, thread)
         result["conversation_id"] = conv_id
@@ -1838,7 +1853,15 @@ class SKAgentManager:
             result["status"] = STATUS_PAUSED
             result["resumable"] = True
             result["round_index"] = controller.pause.round_index
-            result["paused"] = controller.pause.to_dict()
+            # A pause is never an empty success (#1587): a caller that does
+            # not read ``status`` still sees it, in ``paused`` and in a
+            # non-empty ``response``. Where/why it stopped: ``pause``.
+            result["paused"] = True
+            result["pause"] = controller.pause.to_dict()
+            result["response"] = (
+                f"[paused: {controller.pause.reason}] resume with "
+                f"options.continue on conversation_id '{conv_id}'"
+            )
             self._epochs[conv_id] = EpochState(
                 base_rounds=controller.pause.round_index,
                 entries=controller.journal,
@@ -1886,27 +1909,43 @@ class SKAgentManager:
             log.exception("Failed to persist conversation '%s'", conv_id)
 
     async def _rollback_turn(self, conv_id: str) -> None:
-        """Undo the pending user message of an interrupted turn.
+        """Undo what an interrupted turn added to its conversation.
 
-        A timeout or cancellation kills the invoke mid-loop: SK committed
-        the user message up front but drained nothing else, so the thread
-        ends with a dangling user message. Under the conversation lock the
-        trailing USER message is the interrupted turn's own — remove it,
-        decrement the turn counter and drop the epoch so a retry starts
-        clean instead of stacking duplicate prompts.
+        A timeout or cancellation kills the invoke mid-loop. Under the
+        conversation lock, the thread is truncated back to exactly the
+        length ``_begin_turn`` recorded before the invoke, so a retry
+        starts clean instead of stacking duplicate prompts. A fresh turn
+        also gives its turn index back. A resumed turn (``options.continue``)
+        added no prompt of its own: the original prompt, the turn index,
+        the paused epoch and the durable journal are left untouched, so
+        the turn stays resumable and journaled tools are never re-run.
         """
+        mark = self._turn_marks.pop(conv_id, None)
+        if mark is None:
+            return  # interrupted before the turn began: nothing to undo
+        length, resumed = mark
         thread = self._threads.get(conv_id)
         history = getattr(thread, "_chat_history", None) if thread else None
-        if history is not None and history.messages:
-            last = history.messages[-1]
-            if getattr(last, "role", None) == AuthorRole.USER:
-                history.messages.pop()
-                self._turn_counts[conv_id] = max(
-                    0, self._turn_counts.get(conv_id, 1) - 1
-                )
-                self._epochs.pop(conv_id, None)
-                self._store.clear_journal(conv_id)
-                log.info("Rolled back pending user message of '%s'", conv_id)
+        if history is not None and len(history.messages) > length:
+            del history.messages[length:]
+            log.info(
+                "Rolled back interrupted turn of '%s' to %d messages",
+                conv_id,
+                length,
+            )
+        if not resumed:
+            self._turn_counts[conv_id] = max(
+                0, self._turn_counts.get(conv_id, 1) - 1
+            )
+            self._epochs.pop(conv_id, None)
+            self._store.clear_journal(conv_id)
+
+    def _has_paused_epoch(self, conv_id: str) -> bool:
+        """True when the conversation holds a paused turn epoch to resume
+        (in memory, or in the durable journal after a restart)."""
+        if conv_id in self._epochs:
+            return True
+        return self._load_journal_epoch(conv_id) is not None
 
     def _resolve_call_model_cfg(
         self,
@@ -2145,6 +2184,21 @@ class SKAgentManager:
         async def _execute() -> dict[str, Any]:
             nonlocal options, spec_effective, spec_model_used
 
+            # options.continue resumes a PAUSED epoch only (#4742 C3).
+            # Without one there is nothing committed to resume: continuing
+            # would run the loop with no prompt and report success. Checked
+            # under the conversation lock, before any model call.
+            if continue_turn and not self._has_paused_epoch(conv_id):
+                return {
+                    "error": (
+                        f"conversation '{conv_id}' has no paused turn to "
+                        "continue; send the prompt again without "
+                        "options.continue"
+                    ),
+                    "error_type": "no_paused_epoch",
+                    "status": STATUS_ERROR,
+                }
+
             # An explicitly requested agent whose entry was rejected is refused
             # BEFORE resolution (#1748 review item 2): _get_or_create_agent
             # returns None for it, and resolution would then fall through to
@@ -2337,12 +2391,16 @@ class SKAgentManager:
                         gate_model_cfg, agent_id=effective_id
                     )
                     if refusal is not None:
-                        # #4742: a runtime gate verdict is a resumable
-                        # pause, not an error — the turn has not started,
-                        # nothing was executed, and the caller holds the
-                        # conversation_id to retry or continue with. A
-                        # malformed capacity_gate config is different: a
-                        # config fix, not a retry, is the way out.
+                        # #4742: a runtime gate verdict is a pause, not an
+                        # error — the turn has not started and nothing was
+                        # executed. A refused fresh turn committed nothing
+                        # (no prompt, no epoch): it is RETRY-ONLY — repeat
+                        # the same call; options.continue would resume
+                        # without the prompt and is refused as
+                        # no_paused_epoch (C3). A refused continue leaves
+                        # its paused epoch intact: continue stays the way
+                        # out. A malformed capacity_gate config is
+                        # different: a config fix, not a retry.
                         refusal = dict(refusal)
                         refusal["conversation_id"] = conv_id
                         refusal["turn_index"] = self._turn_counts.get(conv_id, 0)
@@ -2354,7 +2412,9 @@ class SKAgentManager:
                             STATUS_ERROR if is_config_error else STATUS_PAUSED
                         )
                         if not is_config_error:
-                            refusal["resumable"] = True
+                            refusal["resumable"] = continue_turn
+                            if not continue_turn:
+                                refusal["retry_only"] = True
                         return refusal
 
             needs_temp_agent = (not spec_active) and (
@@ -2452,7 +2512,7 @@ class SKAgentManager:
                         first_attachment,
                         region,
                         effective_prompt,
-                        conversation_id,
+                        conv_id,
                         include_steps,
                         options.get("zoom_context"),
                         handler_model_override,
@@ -2467,7 +2527,7 @@ class SKAgentManager:
                         effective_agent,
                         image_source,
                         effective_prompt,
-                        conversation_id,
+                        conv_id,
                         include_steps,
                         handler_model_override,
                         spec_sampling_overrides,
@@ -2479,7 +2539,7 @@ class SKAgentManager:
                     effective_agent,
                     first_attachment,
                     effective_prompt,
-                    conversation_id,
+                    conv_id,
                     include_steps,
                     options.get("num_frames", 8),
                     handler_model_override,
@@ -2492,7 +2552,7 @@ class SKAgentManager:
                     effective_agent,
                     first_attachment,
                     effective_prompt,
-                    conversation_id,
+                    conv_id,
                     include_steps,
                     options,
                     handler_model_override,
@@ -2504,7 +2564,7 @@ class SKAgentManager:
                     effective_id,
                     effective_agent,
                     effective_prompt,
-                    conversation_id,
+                    conv_id,
                     include_steps,
                     handler_model_override,
                     spec_sampling_overrides,
@@ -2572,9 +2632,9 @@ class SKAgentManager:
                         )
                 return self._apply_turn_envelope(result, conv_id)
             except asyncio.TimeoutError:
-                # #4742: the interrupted turn's pending user message is
-                # rolled back under the lock, and the error names the
-                # conversation so the caller can retry it cleanly.
+                # #4742: the interrupted turn is rolled back under the
+                # lock (a resumed turn keeps its paused epoch), and the
+                # error names the conversation so the caller can retry.
                 await self._rollback_turn(conv_id)
                 return {
                     "error": f"call_agent timed out after {effective_timeout}s",
@@ -2599,6 +2659,9 @@ class SKAgentManager:
                 return self._apply_turn_envelope(
                     {"error": str(e)}, conv_id
                 )
+            finally:
+                # A rollback mark never outlives its call (#4742 C2).
+                self._turn_marks.pop(conv_id, None)
 
     def _ensure_turn_state(self) -> None:
         """Lazily create the #4742 turn state on partially-built doubles."""
@@ -2608,6 +2671,8 @@ class SKAgentManager:
             self._turn_counts = {}
         if not hasattr(self, "_epochs"):
             self._epochs = {}
+        if not hasattr(self, "_turn_marks"):
+            self._turn_marks = {}
         if not hasattr(self, "_store"):
             self._store = ConversationStore(None)
 
@@ -3649,14 +3714,19 @@ async def call_agent(
                  source_max_chars for the source_file channel), plus turn
                  control (#4742): "continue" (bool) resumes the paused loop
                  of this conversation_id — no new user message, tools
-                 already executed are never re-run; "max_rounds" (int >= 1)
-                 bounds the tool rounds admitted this call, pausing the
-                 turn resumably when reached.
+                 already executed are never re-run; refused as
+                 no_paused_epoch when no turn is paused; "max_rounds"
+                 (int >= 1) bounds the tool rounds admitted this call,
+                 pausing the turn resumably when reached.
         conversation_id: Continue previous conversation. Every response
                  carries the turn envelope: turn_index, round_index,
-                 status (completed | paused | error), and resumable=true
-                 on a pause. A capacity-gate refusal is a pause, not an
-                 error: retry or continue with the same conversation_id.
+                 status (completed | paused | error). A mid-turn pause
+                 adds paused=true, resumable=true, a pause block and a
+                 non-empty "[paused: ...]" response: resume with
+                 options.continue. A capacity-gate refusal before a fresh
+                 turn starts is a pause too, but retry_only=true and
+                 resumable=false: repeat the same call (same prompt) with
+                 the same conversation_id.
         include_steps: Show intermediate tool/reasoning steps.
         timeout: Max seconds to wait for response (default 120, 0 = no limit).
         model_override: Use a different model for this call (model ID from config).
