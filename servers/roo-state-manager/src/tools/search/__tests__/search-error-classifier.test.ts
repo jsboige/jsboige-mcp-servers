@@ -497,3 +497,53 @@ describe('isTimeoutLikeError', () => {
 		expect(isTimeoutLikeError(makeError('Not Found', { status: 404 }))).toBe(false);
 	});
 });
+
+// ── #4736 P2 review follow-ups (a)+(b): classifier-level routing of the
+// 'Request Timeout' family — the predicate truth table above is necessary but
+// not sufficient; the classifier itself must route these to the probe branch,
+// case-aligned, and on HTTP 408 too. ─────────────────────────────────────────
+
+describe('classifySearchError — Request Timeout family (#4736 P2 follow-ups)', () => {
+	const originalQdrantUrl = process.env.QDRANT_URL;
+	beforeEach(() => { mockFetch.mockReset(); });
+	afterEach(() => {
+		if (originalQdrantUrl === undefined) delete process.env.QDRANT_URL;
+		else process.env.QDRANT_URL = originalQdrantUrl;
+	});
+
+	// (a) the literal Qdrant JS client message; (b) any case variant of it —
+	// aligned on the one case-insensitive predicate.
+	it.each([
+		['Request Timeout'],   // the client's exact wording (capital T, no period)
+		['request timeout'],   // lowercase variant
+		['REQUEST TIMEOUT'],   // uppercase variant
+	])('classifies %j on codebase_search as qdrant_backend_slow on a loopback Qdrant', async (msg) => {
+		process.env.QDRANT_URL = 'http://localhost:6333';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const result = await classifySearchError(makeError(msg), 'codebase_search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+	});
+
+	it('classifies an HTTP 408 status into the timeout branch even with a plain message (follow-up b)', async () => {
+		process.env.QDRANT_URL = 'http://localhost:6333';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const result = await classifySearchError(makeError('upstream returned 408', { status: 408 }), 'search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+	});
+
+	it("'Request Timeout' under operation='embedding' is an embedding_timeout, not unknown (case alignment)", async () => {
+		const result = await classifySearchError(makeError('Request Timeout'), 'embedding');
+		expect(result.mode).toBe('embedding_timeout');
+	});
+
+	// The contract the exclusion protects: the OpenAI SDK's phrasing (lowercase,
+	// with a period) reported under 'search' by roosync_search stays OUT of the
+	// Qdrant branches. Case alignment must not swallow this distinction.
+	it('the embedding SDK "Request timed out." stays NOT blamed on Qdrant (regression pin)', async () => {
+		process.env.QDRANT_URL = 'http://localhost:6333';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const result = await classifySearchError(makeError('Request timed out.'), 'search');
+		expect(result.mode).not.toBe('qdrant_backend_slow');
+		expect(result.mode).not.toBe('qdrant_proxy_drop');
+	});
+});

@@ -248,8 +248,10 @@ export async function classifySearchError(
 				hint: `Check EMBEDDING_API_BASE_URL (${process.env.EMBEDDING_API_BASE_URL || 'not set'}). DNS/TCP failure.`,
 			};
 		}
-		if (errorMsg.includes('abort') || errorMsg.includes('timeout') || errorMsg.includes('ETIMEDOUT') ||
-			errorCode === 'UND_ERR_CONNECT_TIMEOUT') {
+		// #4736 P2 review follow-up (b): case-aligned with isTimeoutLikeError —
+		// 'Request Timeout' (capital T) under operation='embedding' used to fall
+		// through to 'unknown'; the ONE predicate now decides this branch too.
+		if (isTimeoutLikeError(error)) {
 			return {
 				mode: 'embedding_timeout',
 				originalError: errorMsg,
@@ -288,16 +290,19 @@ export async function classifySearchError(
 			};
 		}
 
-		// Abort/timeout → probe health to distinguish proxy_drop vs unreachable
-		if (errorMsg.includes('abort') || errorMsg.includes('timeout') ||
-			QDRANT_OWN_SEARCH_TIMEOUT.test(errorMsg) || // #4352
-			errorMsg.includes('This operation was aborted') ||
-			errorCode === 'UND_ERR_CONNECT_TIMEOUT' ||
-			// #4736 P2: the Qdrant JS client's literal timeout message (capital T,
-			// no period) — the case-sensitive checks above miss it. EXACT match on
-			// purpose: "Request timed out." is the embedding SDK's phrasing and
-			// must NOT be blamed on Qdrant (test: "not blamed on Qdrant").
-			errorMsg === 'Request Timeout' ||
+		// Abort/timeout → probe health to distinguish proxy_drop vs unreachable.
+		// #4736 P2 + review follow-up (b): the timeout family is detected by the
+		// ONE case-insensitive predicate (isTimeoutLikeError), so every case
+		// variant of the Qdrant client's 'Request Timeout' reaches the probe
+		// branch (the case-sensitive includes above missed them), and HTTP 408
+		// (status computed at the top) joins it. The ONE exclusion is the OpenAI
+		// SDK's phrasing "Request timed out." — an embedding timeout that
+		// roosync_search reports under 'search' must NOT be blamed on Qdrant
+		// (test: "not blamed on Qdrant"); every other 'timed out' message
+		// (Qdrant's own "Operation 'Search' timed out", #4352) still enters.
+		const isEmbeddingSdkTimeout = /^request timed out\.?$/i.test(errorMsg);
+		if ((!isEmbeddingSdkTimeout && isTimeoutLikeError(error)) ||
+			errorStatus === 408 ||
 			isHttpServerError(error)) {
 			// Probe health endpoint to classify
 			try {
