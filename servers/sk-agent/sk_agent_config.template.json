@@ -200,11 +200,12 @@
       "allowed_capabilities": ["browser", "web"]
     },
     {
-      "_comment": "Self-inclusion: DEPLOYMENT MUST REPLACE the placeholder paths below with actual installation paths",
+      "_comment": "Self-inclusion: DEPLOYMENT MUST REPLACE the placeholder paths below with actual installation paths. #4741 runtimes [stdio]: the container (:8100) does not serve self-inclusion — its command is a Windows path and a container-spawning-itself chain is not a supported topology; an agent requiring it there is refused (typed) instead of running stripped.",
       "id": "sk_agent",
       "description": "Self-inclusion for recursive tool chaining",
       "command": "VENV_PATH/Scripts/python.exe",
       "args": ["INSTALLATION_PATH/sk_agent.py"],
+      "runtimes": ["stdio"],
       "risk_class": "stateful",
       "allowed_capabilities": ["recursive_agents", "memory"]
     },
@@ -221,11 +222,15 @@
       "allowed_capabilities": ["shell", "repo_read"]
     },
     {
-      "_comment": "#3411: dedicated venv — markitdown-mcp 0.0.1a7 requires mcp>=2.1.1 while sk_agent.py uses the mcp 1.x API (mcp.server.fastmcp, removed in mcp 2.x), so it cannot live in the main venv. The MCP server is a separate stdio process (no library sharing); deploy-sk-agent.ps1 provisions venv-markitdown/ from requirements-markitdown.txt.",
+      "_comment": "#3411: dedicated venv — markitdown-mcp 0.0.1a7 requires mcp>=2.1.1 while sk_agent.py uses the mcp 1.x API (mcp.server.fastmcp, removed in mcp 2.x), so it cannot live in the main venv. The MCP server is a separate stdio process (no library sharing); deploy-sk-agent.ps1 provisions venv-markitdown/ from requirements-markitdown.txt. #4741 container override: the Dockerfile builds the same isolation as /opt/venv-markitdown (same requirements file, same mcp 2.x pin), so one declaration serves both runtimes — the host spawns the exe below, the container spawns the venv's console script.",
       "id": "markitdown",
       "description": "Document conversion (PDF/DOCX/XLSX/PPTX/HTML/images) to Markdown via Microsoft markitdown",
       "command": "INSTALLATION_PATH/venv-markitdown/Scripts/markitdown-mcp.exe",
       "args": [],
+      "container": {
+        "command": "/opt/venv-markitdown/bin/markitdown-mcp",
+        "args": []
+      },
       "risk_class": "read",
       "allowed_capabilities": ["document_text", "document_visual"]
     },
@@ -644,6 +649,7 @@
       "model": "swift-1.5-27b",
       "system_prompt": "You are the fleet medium model and you work BY DELEGATION. The mini tier (FrogNano-4B, presets mini-coder-fix, mini-repo-scan, mini-summarizer, mini-web-research) is far cheaper per token; you are the one that decides. Rules: (1) Delegate a sub-task only when it is SHORT (one file, one document, one question), TOOLED (the child has an MCP that can actually answer it) and VERIFIABLE (you can tell a right answer from a wrong one without redoing the work). (2) Pass the child everything it needs in the prompt: the mini cannot see your context, and source code must be pasted in the prompt because attachments refuse source files. (3) Keep for yourself everything that is judgement: architecture, arbitration between contradictory findings, anything the user will act on. (4) Never delegate a task whose result you could not check. (5) When a delegated call fails or returns nothing usable, say so and do the sub-task yourself — a child failure never becomes a silent gap. (6) When you delegate the CHECKING of a producer's output to a review preset: pick a reviewer at least one tier ABOVE the producer — a weaker reviewer invents findings instead of catching them — and include the SOURCE material in the reviewer's prompt, not only the productions to compare. (7) Report which preset handled which sub-task. Answer in the language of the request.",
       "mcps": ["sk_agent"],
+      "optional_mcps": ["sk_agent"],
       "capabilities": ["recursive_agents", "memory"],
       "memory": { "enabled": false }
     }
