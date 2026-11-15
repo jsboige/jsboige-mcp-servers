@@ -338,6 +338,13 @@ class RooStateManagerServer {
         // UNIFIED_STORE_DASHBOARD_READ_PG (#3230).
         await this.initializeDashboardReconcile();
 
+        // #4736 P4 — post-commit refresh loop for the ws-* code index.
+        // OPT-IN per seat (env-gated, default off): exactly one seat is the
+        // writer of a served collection, and that seat's host polls its
+        // workspace HEAD and runs one incremental writer pass per new commit.
+        // Non-fatal: a misconfigured seat logs and boots without the loop.
+        await this.initializeWsRefreshLoop();
+
         // #4131 + review ms#1540 — the backfill COMPLETENESS MARKERS decide
         // whether the DEFAULT read surface is PG or GDrive (a default gated on
         // DATA, not on a human flag). Awaited: the tool handlers wait on
@@ -573,6 +580,83 @@ class RooStateManagerServer {
             intervalHours,
             writeMirror: (key, dashboard) => repairDashboardMirrorFromPg(key, dashboard),
         });
+    }
+
+    /**
+     * #4736 P4 — the post-commit refresh loop for the ws-* code index.
+     *
+     * Arms ONLY on explicit env (default off — the loop belongs on the one
+     * writer seat of a served collection, nowhere else):
+     *   WS_INDEX_REFRESH_ENABLED=true
+     *   WS_INDEX_REFRESH_WORKSPACE=<absolute workspace root to watch>
+     *   WS_INDEX_REFRESH_HASH_PREFIX=<historical Zoo prefix, e.g. d:\dev\roo-extensions>
+     *   WS_INDEX_REFRESH_POLL_SECONDS=<cadence, default 120>
+     *
+     * The writer pass itself is injected here (the loop module stays free of
+     * the qdrant/embedding chains) and is the SAME runWsIndexWriter the
+     * index_code_ws tool action runs — guards included: a foreign writer, a
+     * wrong prefix or an embedding-model switch refuses the run, the loop
+     * records it, backs off and retries; it never writes past a guard.
+     */
+    private async initializeWsRefreshLoop(): Promise<void> {
+        try {
+            if (process.env.WS_INDEX_REFRESH_ENABLED !== 'true') {
+                return; // default off — not a warning, the loop is opt-in per seat
+            }
+            const workspaceRoot = process.env.WS_INDEX_REFRESH_WORKSPACE;
+            const hashPathPrefix = process.env.WS_INDEX_REFRESH_HASH_PREFIX;
+            if (!workspaceRoot || !hashPathPrefix) {
+                logger.warn(
+                    '⚠️ [WsRefresh] WS_INDEX_REFRESH_ENABLED=true mais WS_INDEX_REFRESH_WORKSPACE/' +
+                    'WS_INDEX_REFRESH_HASH_PREFIX manquant — boucle non démarrée'
+                );
+                return;
+            }
+            const pollSeconds = Math.max(
+                10,
+                parseInt(process.env.WS_INDEX_REFRESH_POLL_SECONDS || '120', 10) || 120,
+            );
+            const [
+                { startWsRefreshLoop },
+                { runWsIndexWriter },
+                { getQdrantClient },
+                { embedCodebaseTexts, getCodebaseEmbeddingModel, getCodebaseEmbeddingEndpoint },
+                pathModule,
+            ] = await Promise.all([
+                import('./services/code-index/ws-refresh-loop.js'),
+                import('./services/code-index/ws-index-writer.js'),
+                import('./services/qdrant.js'),
+                import('./services/code-index/embedding-client.js'),
+                import('path'),
+            ]);
+            const machineId = process.env.COMPUTERNAME || process.env.HOSTNAME || 'unknown-machine';
+            const writer = `${machineId}:${pathModule.basename(workspaceRoot)}`;
+            startWsRefreshLoop({
+                workspaceRoot,
+                writer,
+                hashPathPrefix,
+                pollSeconds,
+                runWriter: () => runWsIndexWriter({
+                    client: getQdrantClient() as any,
+                    workspaceRoot,
+                    writer,
+                    hashPathPrefix,
+                    dryRun: false, // the loop IS the live writer — never dry here
+                    embeddingModelId: getCodebaseEmbeddingModel(),
+                    embeddingEndpoint: getCodebaseEmbeddingEndpoint(),
+                    embed: embedCodebaseTexts,
+                }),
+                log: (message) => logger.info(message),
+            });
+            logger.info(
+                `🔄 [WsRefresh] boucle armée sur ${workspaceRoot} (poll ${pollSeconds}s, writer ${writer})`
+            );
+        } catch (error) {
+            // Non-fatal by design: the loop is an accelerator, never a boot dependency.
+            logger.error(
+                `❌ [WsRefresh] démarrage impossible: ${error instanceof Error ? error.message : String(error)}`
+            );
+        }
     }
 
     /**
