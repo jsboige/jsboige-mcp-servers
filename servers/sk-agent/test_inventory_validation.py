@@ -90,7 +90,8 @@ def test_template_counts_match_expected_baseline():
     11->9 models (9/9 enabled, #3401 item 3, 2026-11-15): the pre-rename
     alias entries retired from the template (the succeeds fields stay for
     key inheritance at sync); the OWUI entry renamed in place to
-    owui-swift-1.5-27b (model_id Local.swift-1.5-27b) — count unchanged.
+    owui-swift-1.5-27b (model_id kept on the OWUI-served id — the swift
+    Local.* id does not exist OWUI-side) — count unchanged.
     """
     cfg = load_config(str(TEMPLATE_PATH))
     assert len(cfg.models) == 9, f"models: {len(cfg.models)}"
