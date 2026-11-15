@@ -477,6 +477,12 @@ class McpConfig:
     # command is a host path get their container counterpart here instead of
     # duplicating the entry. Only used when current_runtime() == "container".
     container: dict[str, Any] | None = None
+    # Set when this entry was REJECTED at parse time (#4741 review d, same
+    # isolation as agents via _parse_agent_at / #1748): one malformed MCP
+    # entry must not take down the whole seat. The placeholder keeps the id
+    # so references still resolve; spawning it is refused loudly. Never
+    # serialized — a rejected entry is not a valid entry.
+    config_error: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> McpConfig:
@@ -733,6 +739,11 @@ class AgentConfig:
     model: str = ""  # Reference to a ModelConfig.id
     system_prompt: str = ""
     mcps: list[str] = field(default_factory=list)  # References to McpConfig.id
+    # #4741 review (b): MCP ids this agent DECLARES but can be served without.
+    # When such a plugin is unavailable in the current runtime (e.g.
+    # sk_agent in container), the agent is created WITHOUT it instead of
+    # being refused — non-optional ids keep the typed refusal.
+    optional_mcps: list[str] = field(default_factory=list)
     capabilities: list[str] = field(default_factory=list)  # see #3408
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     parameters: dict[str, Any] = field(default_factory=dict)
@@ -752,6 +763,7 @@ class AgentConfig:
             model=data.get("model", ""),
             system_prompt=data.get("system_prompt", ""),
             mcps=data.get("mcps", []),
+            optional_mcps=list(data.get("optional_mcps") or []),
             capabilities=list(data.get("capabilities", [])),
             memory=MemoryConfig.from_dict(data.get("memory")),
             parameters=data.get("parameters", {}),
@@ -769,6 +781,8 @@ class AgentConfig:
             "memory": self.memory.to_dict(),
             "parameters": self.parameters,
         }
+        if self.optional_mcps:
+            d["optional_mcps"] = list(self.optional_mcps)
         if self.capabilities:
             d["capabilities"] = list(self.capabilities)
         if self.condensation:
@@ -1318,7 +1332,10 @@ def _parse_config(raw: dict) -> SKAgentConfig:
     other agents keep working.
     """
     models = [ModelConfig.from_dict(m) for m in raw.get("models", [])]
-    mcps = [McpConfig.from_dict(m) for m in raw.get("mcps", [])]
+    mcps = [
+        _parse_mcp_at(index, entry)
+        for index, entry in enumerate(raw.get("mcps", []))
+    ]
     agents = [
         _parse_agent_at(index, entry)
         for index, entry in enumerate(raw.get("agents", []))
@@ -1341,6 +1358,32 @@ def _parse_config(raw: dict) -> SKAgentConfig:
         qdrant=QdrantConfig.from_dict(raw.get("qdrant")),
         sampling=SamplingConfig.from_dict(raw.get("sampling")),
     )
+
+
+def _parse_mcp_at(index: int, entry: Any) -> McpConfig:
+    """Parse one MCP entry; a rejected entry becomes an inert placeholder.
+
+    Same isolation as ``_parse_agent_at`` (#1748) for agents, per the #4741
+    review (d): a malformed entry (e.g. ``runtimes: "stdio"``) used to raise
+    out of ``_parse_config`` and take down the WHOLE seat over one typo.
+    The placeholder keeps the id (when it has one) so agent references still
+    resolve; ``_ensure_mcp_loaded`` refuses to spawn it, loudly — never
+    silently degraded.
+    """
+    try:
+        return McpConfig.from_dict(entry)
+    except (ValueError, TypeError, AttributeError) as exc:
+        mcp_id = None
+        if isinstance(entry, dict):
+            mcp_id = entry.get("id") or entry.get("name")
+        log.error(
+            "mcps[%d] '%s' rejected: %s — this plugin will refuse to spawn; "
+            "the other MCPs and agents stay usable",
+            index,
+            mcp_id,
+            exc,
+        )
+        return McpConfig(id=mcp_id or "", config_error=str(exc))
 
 
 def _parse_agent_at(index: int, entry: Any) -> AgentConfig:

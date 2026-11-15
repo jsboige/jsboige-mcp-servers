@@ -644,6 +644,16 @@ class AgentPreset(_StrictModel):
     )
     system_prompt: str = Field(default="", max_length=32_768)
     mcps: list[RefId] = Field(default_factory=list, max_length=64)
+    optional_mcps: list[RefId] = Field(
+        default_factory=list,
+        max_length=64,
+        description=(
+            "MCP ids this agent declares but can be served without (#4741): "
+            "when a plugin is unavailable in the current runtime, the agent "
+            "is created WITHOUT it instead of being refused. Non-optional "
+            "ids keep the typed refusal."
+        ),
+    )
     capabilities: list[CapabilityName] = Field(
         default_factory=list,
         max_length=len(CAPABILITY_CATALOG),

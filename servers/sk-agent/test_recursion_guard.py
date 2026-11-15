@@ -135,6 +135,9 @@ class _SelfMcpConfig:
         # is runtime-agnostic here (served in every runtime).
         self.runtimes = None
         self.container = None
+        # #4741 review (d): real McpConfig carries the parse-time rejection
+        # marker; this fake entry is valid.
+        self.config_error = None
 
     def available_in(self, runtime: str) -> bool:
         return not self.runtimes or runtime in self.runtimes

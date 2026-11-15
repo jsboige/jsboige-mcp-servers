@@ -987,6 +987,18 @@ class SKAgentManager:
             log.warning("MCP '%s' not found in config", mcp_id)
             return False
 
+        # #4741 review (d): an entry rejected at config load is inert — the
+        # rest of the seat loaded instead of dying with it. Never spawn it
+        # (it carries no trustworthy command), and never let it reach the
+        # negative cache: the refusal is permanent, not a retryable failure.
+        if mcp_cfg.config_error:
+            log.error(
+                "MCP '%s' was rejected at config load (%s) — spawn refused",
+                mcp_id,
+                mcp_cfg.config_error,
+            )
+            return False
+
         # #4741: a plugin whose declared runtimes exclude the one this
         # process serves never spawns here — no connect budget spent, no
         # orphan child, and the negative cache stays untouched so the
@@ -1277,9 +1289,17 @@ class SKAgentManager:
         return effective
 
     async def _collect_mcp_plugins(
-        self, mcp_ids: list[str], agent_id: str
+        self,
+        mcp_ids: list[str],
+        agent_id: str,
+        optional_mcp_ids: list[str] | None = None,
     ) -> list[Any]:
-        """Lazy-load and collect MCP plugins for the given IDs."""
+        """Lazy-load and collect MCP plugins for the given IDs.
+
+        ``optional_mcp_ids`` (#4741 review b) are skipped instead of refused
+        when out of runtime: the agent declared them but can live without
+        them (e.g. swift-delegator -> sk_agent in container).
+        """
         plugins = []
         # #4741: the override/spec path must refuse on an out-of-runtime MCP
         # exactly like the configured-agent path (_get_or_create_agent): an
@@ -1288,9 +1308,19 @@ class SKAgentManager:
         # raises the typed error so the CALL fails instead of the agent
         # quietly shipping without the plugin the override asked for.
         runtime = current_runtime()
+        optional = set(optional_mcp_ids or ())
         for mcp_id in mcp_ids:
             mcp_cfg = self._mcp_configs.get(mcp_id)
             if mcp_cfg is not None and not mcp_cfg.available_in(runtime):
+                if mcp_id in optional:
+                    log.info(
+                        "Agent '%s': optional MCP '%s' not served in runtime "
+                        "'%s' — skipped (#4741)",
+                        agent_id,
+                        mcp_id,
+                        runtime,
+                    )
+                    continue
                 raise McpRuntimeUnavailableError(
                     agent_id, mcp_id, mcp_cfg.runtimes, runtime
                 )
@@ -1343,7 +1373,9 @@ class SKAgentManager:
         kernel = Kernel()
         kernel.add_service(service)
 
-        plugins = await self._collect_mcp_plugins(agent_cfg.mcps, agent_cfg.id)
+        plugins = await self._collect_mcp_plugins(
+            agent_cfg.mcps, agent_cfg.id, optional_mcp_ids=agent_cfg.optional_mcps
+        )
 
         memory_attached = False
         if agent_cfg.memory.enabled and HAS_MEMORY:
@@ -1426,9 +1458,24 @@ class SKAgentManager:
         # to _create_agent would only degrade (agent served without the
         # plugin, one warning line) — the exact silent-strip #4741 closes.
         runtime = current_runtime()
+        optional = set(agent_cfg.optional_mcps)
         for mcp_id in agent_cfg.mcps:
             mcp_cfg = self._mcp_configs.get(mcp_id)
             if mcp_cfg is not None and not mcp_cfg.available_in(runtime):
+                if mcp_id in optional:
+                    # #4741 review (b): declared but optional in this
+                    # agent — serve the agent WITHOUT it instead of
+                    # refusing. The plugin still shows up in diagnostics'
+                    # mcp_plugins_out_of_runtime.
+                    log.info(
+                        "Agent '%s': optional MCP '%s' not served in runtime "
+                        "'%s' (declared runtimes: %s) — serving without it",
+                        agent_id,
+                        mcp_id,
+                        runtime,
+                        mcp_cfg.runtimes or "all",
+                    )
+                    continue
                 log.error(
                     "Agent '%s': MCP '%s' is not served in runtime '%s' "
                     "(declared runtimes: %s) — refusing agent creation (#4741)",
@@ -2165,7 +2212,13 @@ class SKAgentManager:
                     )
                 except ValueError as cap_err:
                     return {"error": f"mcp_overrides refused: {cap_err}"}
-                temp_plugins = await self._collect_mcp_plugins(effective_mcps, resolved_id)
+                temp_plugins = await self._collect_mcp_plugins(
+                    effective_mcps,
+                    resolved_id,
+                    optional_mcp_ids=(
+                        list(agent_cfg.optional_mcps) if agent_cfg else None
+                    ),
+                )
 
                 # Add memory if enabled (#3408: gated on ``memory`` capability)
                 if (
@@ -2603,13 +2656,6 @@ class SKAgentManager:
             if include_steps:
                 result["steps"] = steps
             return await self._maybe_condense_thread(agent_id, thread, result)
-        except McpRuntimeUnavailableError as e:
-            # #4741: same typed refusal as call_agent — run_conversation
-            # resolves agents through the same guarded path.
-            log.warning("run_conversation refused (#4741): %s", e)
-            payload = e.to_payload()
-            payload["conversation_id"] = conversation_id
-            return payload
         except Exception as e:
             return {"error": str(e)}
 
@@ -3822,12 +3868,22 @@ async def run_conversation(
         except json.JSONDecodeError:
             return json.dumps({"error": "Invalid conversation_spec JSON"}, ensure_ascii=False)
 
-    result = await runner.run(
-        prompt=prompt,
-        conversation_id=conversation if conversation else None,
-        options=opts,
-        conversation_spec=parsed_conversation_spec,
-    )
+    try:
+        result = await runner.run(
+            prompt=prompt,
+            conversation_id=conversation if conversation else None,
+            options=opts,
+            conversation_spec=parsed_conversation_spec,
+        )
+    except McpRuntimeUnavailableError as e:
+        # #4741: conversations resolve agents through the same guarded path as
+        # call_agent — surface the typed refusal here, where run_conversation
+        # can return its JSON-string contract (never a successful-looking
+        # empty answer).
+        log.warning("run_conversation refused (#4741): %s", e)
+        payload = e.to_payload()
+        payload["conversation_id"] = conversation_id or conversation or None
+        return json.dumps(payload, ensure_ascii=False)
 
     # #1587 (conversations): a thinking model that exhausts its budget (observed
     # glm-5.3, 4096-token thinking budget) returns a valid assistant message
