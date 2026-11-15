@@ -3382,6 +3382,8 @@ async def review_pr(
 
     Returns:
         JSON string with: response, agent_used, model_used, tier, duration_seconds.
+        Tiers >= 2 add: conversation_used, conversation_type, agents_used (they
+        run the tier's multi-agent conversation preset, not a single agent).
     """
     import time
 
@@ -3450,12 +3452,24 @@ async def review_pr(
     if timeout == 120:  # default value — override with tier-appropriate timeout
         effective_timeout = {1: 60, 2: 180, 3: 300}.get(tier, 120)
 
-    result = await manager.call_agent(
-        prompt=prompt,
-        agent_id=agent_id,
-        conversation_id=conv_id if tier >= 2 else "",
-        timeout=effective_timeout,
-    )
+    # #1587 (tier routing): tiers >= 2 are multi-agent conversation presets —
+    # they must run through the ConversationRunner. The previous code passed
+    # the preset name (e.g. "pr-review-tier2") as conversation_id to a
+    # mono-agent call_agent, where it acted as a thread filter: the group
+    # chat never ran. Tier 1 stays mono-agent by design.
+    if tier >= 2:
+        runner = await _get_conversation_runner()
+        result = await runner.run(
+            prompt=prompt,
+            conversation_id=conv_id,
+            options=opts,
+        )
+    else:
+        result = await manager.call_agent(
+            prompt=prompt,
+            agent_id=agent_id,
+            timeout=effective_timeout,
+        )
 
     elapsed = round(time.time() - start, 1)
 
@@ -3484,13 +3498,18 @@ async def review_pr(
             "timeout_used": effective_timeout,
         }, indent=2, ensure_ascii=False)
 
-    return json.dumps({
+    payload = {
         "response": response_text,
         "agent_used": agent_id,
         "model_used": result.get("model_used", "") if isinstance(result, dict) else "",
         "tier": tier,
         "duration_seconds": elapsed,
-    }, indent=2, ensure_ascii=False)
+    }
+    if tier >= 2 and isinstance(result, dict):
+        payload["conversation_used"] = conv_id
+        payload["conversation_type"] = result.get("conversation_type", "")
+        payload["agents_used"] = result.get("agents_used", [])
+    return json.dumps(payload, indent=2, ensure_ascii=False)
 
 
 @mcp_server.tool()

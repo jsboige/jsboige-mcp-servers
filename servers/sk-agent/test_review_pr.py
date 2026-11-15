@@ -361,19 +361,22 @@ class TestReviewPrRealFunction:
         return mgr
 
     def test_timeout_error_propagated(self):
+        # Tier 1 = the mono-agent path since the #1587 tier-routing fix
+        # (tiers >= 2 go through the ConversationRunner — covered in
+        # TestTierRouting). call_agent errors still must propagate.
         mgr = self._manager_returning(
             {"error": "call_agent timed out after 180s", "timeout": 180}
         )
         with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
             out = asyncio.run(
-                review_pr(repo="jsboige/roo-extensions", pr_number=123, tier=2)
+                review_pr(repo="jsboige/roo-extensions", pr_number=123, tier=1)
             )
         parsed = json.loads(out)
         assert "error" in parsed
         assert "timed out" in parsed["error"]
         assert "response" not in parsed
-        assert parsed["agent_used"] == "integration-reviewer"
-        assert parsed["tier"] == 2
+        assert parsed["agent_used"] == "fast-reviewer"
+        assert parsed["tier"] == 1
         assert parsed["timeout_used"] == 180
 
     def test_timeout_used_reports_the_coupled_ceiling(self):
@@ -383,7 +386,7 @@ class TestReviewPrRealFunction:
             {"error": "call_agent timed out after 630.0s", "timeout": 630.0}
         )
         with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
-            out = asyncio.run(review_pr(repo="x", pr_number=7, tier=2))
+            out = asyncio.run(review_pr(repo="x", pr_number=7, tier=1))
         parsed = json.loads(out)
         assert parsed["timeout_used"] == 630.0
 
@@ -410,15 +413,17 @@ class TestReviewPrRealFunction:
     def test_empty_response_becomes_error(self):
         """#1587 fault bench: a call_agent result with an empty body (what
         _handle_text used to return when agent.invoke produced nothing) must
-        surface as an error, never as a successful-looking empty review."""
+        surface as an error, never as a successful-looking empty review.
+        Tier 1 = the mono-agent path since the #1587 tier-routing fix (the
+        runner path's empty-body guard is covered in TestTierRouting)."""
         mgr = self._manager_returning({"response": "", "model_used": "glm-5"})
         with patch("sk_agent._get_manager", AsyncMock(return_value=mgr)):
-            out = asyncio.run(review_pr(repo="x", pr_number=7, tier=2))
+            out = asyncio.run(review_pr(repo="x", pr_number=7, tier=1))
         parsed = json.loads(out)
         assert "error" in parsed
         assert "empty model response" in parsed["error"]
         assert "response" not in parsed
-        assert parsed["timeout_used"] == 180  # tier 2 adaptive timeout
+        assert parsed["timeout_used"] == 60  # tier 1 adaptive timeout
 
     def test_whitespace_response_becomes_error(self):
         mgr = self._manager_returning({"response": "   \n  ", "model_used": "glm-5"})
@@ -450,3 +455,91 @@ class TestReviewPrRealFunction:
         parsed = json.loads(out)
         assert parsed["response"] == "LGTM"
         assert "error" not in parsed
+
+
+class TestTierRouting:
+    """#1587 tier routing: tiers >= 2 must run the ConversationRunner preset.
+
+    The bug: the preset name was passed as conversation_id to a mono-agent
+    call_agent (a thread filter) — the group conversation never ran.
+    """
+
+    def _runner_returning(self, response=None):
+        runner = MagicMock()
+        runner.run = AsyncMock(return_value={
+            "response": response or "review ok",
+            "agents_used": ["integration-reviewer", "review-synthesizer-t2"],
+            "conversation_type": "group_chat",
+            "steps": [],
+        })
+        return runner
+
+    def _run(self, tier, runner, manager):
+        with patch("sk_agent._get_manager", AsyncMock(return_value=manager)), \
+             patch("sk_agent._get_conversation_runner", AsyncMock(return_value=runner)):
+            out = asyncio.run(review_pr(repo="x", pr_number=7, tier=tier))
+        return json.loads(out)
+
+    def test_tier2_calls_conversation_runner_with_preset(self):
+        manager = MagicMock()
+        manager.call_agent = AsyncMock(return_value={"response": "mono", "model_used": "m"})
+        runner = self._runner_returning()
+        out = self._run(2, runner, manager)
+        runner.run.assert_awaited_once()
+        assert runner.run.await_args.kwargs["conversation_id"] == "pr-review-tier2"
+        manager.call_agent.assert_not_awaited()
+        assert out["response"] == "review ok"
+        assert out["conversation_used"] == "pr-review-tier2"
+        assert out["conversation_type"] == "group_chat"
+        assert out["agents_used"] == ["integration-reviewer", "review-synthesizer-t2"]
+
+    def test_tier3_calls_conversation_runner_with_preset(self):
+        manager = MagicMock()
+        manager.call_agent = AsyncMock(return_value={"response": "mono", "model_used": "m"})
+        runner = self._runner_returning()
+        out = self._run(3, runner, manager)
+        assert runner.run.await_args.kwargs["conversation_id"] == "pr-review-tier3"
+        manager.call_agent.assert_not_awaited()
+        assert out["conversation_used"] == "pr-review-tier3"
+
+    def test_tier1_stays_mono_agent(self):
+        manager = MagicMock()
+        manager.call_agent = AsyncMock(return_value={"response": "mono ok", "model_used": "m"})
+        runner = self._runner_returning()
+        out = self._run(1, runner, manager)
+        manager.call_agent.assert_awaited_once()
+        assert manager.call_agent.await_args.kwargs["agent_id"] == "fast-reviewer"
+        assert manager.call_agent.await_args.kwargs.get("conversation_id", "") == ""
+        runner.run.assert_not_awaited()
+        assert out["response"] == "mono ok"
+        assert "conversation_used" not in out
+
+    def test_tier2_options_passed_to_runner(self):
+        """Caller options (e.g. max_rounds) reach the conversation runner."""
+        manager = MagicMock()
+        manager.call_agent = AsyncMock()
+        runner = self._runner_returning()
+        with patch("sk_agent._get_manager", AsyncMock(return_value=manager)), \
+             patch("sk_agent._get_conversation_runner", AsyncMock(return_value=runner)):
+            asyncio.run(
+                review_pr(repo="x", pr_number=7, tier=2, options='{"max_rounds": 3}')
+            )
+        assert runner.run.await_args.kwargs["options"] == {"max_rounds": 3}
+
+    def test_tier2_runner_error_propagates(self):
+        manager = MagicMock()
+        manager.call_agent = AsyncMock()
+        runner = MagicMock()
+        runner.run = AsyncMock(return_value={"error": "boom"})
+        out = self._run(2, runner, manager)
+        assert out["error"] == "boom"
+        assert "response" not in out
+        assert out["tier"] == 2
+
+    def test_tier2_empty_runner_response_is_error(self):
+        manager = MagicMock()
+        manager.call_agent = AsyncMock()
+        runner = self._runner_returning(response="   ")
+        out = self._run(2, runner, manager)
+        assert "error" in out
+        assert "empty model response" in out["error"]
