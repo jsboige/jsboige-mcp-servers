@@ -3536,6 +3536,7 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
             try:
                 result = subprocess.run(
                     [custom_path, "--version"],
+                    stdin=subprocess.DEVNULL,
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -3556,6 +3557,7 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
         try:
             result = subprocess.run(
                 [libreoffice_cmd, "--version"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -3583,6 +3585,7 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
                     "--accept-source-agreements",
                     "--accept-package-agreements",
                 ],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=300,
@@ -3601,6 +3604,7 @@ async def install_libreoffice(force: bool = False, custom_path: str = "") -> str
         try:
             result = subprocess.run(
                 [choco_path, "install", "libreoffice", "-y"],
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=300,
