@@ -148,7 +148,6 @@ from sk_agent_specs import (
 )
 from sk_agent_capacity_gate import check_model_capacity_gate
 from sk_agent_turns import (
-    CONVERSATION_DIR_ENV,
     STATUS_COMPLETED,
     STATUS_ERROR,
     STATUS_PAUSED,
