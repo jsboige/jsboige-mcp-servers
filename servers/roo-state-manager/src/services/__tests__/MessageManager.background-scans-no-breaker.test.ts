@@ -76,6 +76,7 @@ import {
   resetChannelPgBreakerForTests,
   channelPgBreakerState,
   noteChannelPgReadFailure,
+  noteChannelPgReminderProbe,
   noteChannelPgSweepDuration,
 } from '../unified-store/channel-pg-breaker.js';
 
@@ -91,6 +92,7 @@ const ENV_KEYS = [
   'UNIFIED_STORE_PG_URL',
   'CHANNEL_PG_BREAKER_MS',
   'CHANNEL_PG_SWEEP_SLOW_MS',
+  'CHANNEL_PG_REMINDER_BUDGET_MS',
 ] as const;
 
 const PG_MESSAGE = {
@@ -133,6 +135,7 @@ describe('#4731 lever (a) — background sweeps never fail the interactive inbox
     delete process.env.UNIFIED_STORE_DUAL_WRITE;
     delete process.env.UNIFIED_STORE_PG_URL;
     delete process.env.CHANNEL_PG_SWEEP_SLOW_MS;
+    delete process.env.CHANNEL_PG_REMINDER_BUDGET_MS;
     resetChannelPgBreakerForTests();
 
     manager = new MessageManager(mocks.sharedPath);
@@ -244,5 +247,38 @@ describe('#4731 lever (a) — background sweeps never fail the interactive inbox
     expect(channelPgBreakerState().open).toBe(false);
     expect(channelPgBreakerState().backgroundFailures).toBe(0);
     expect(channelPgBreakerState().sweepSlow).toBe(false);
+  });
+
+  test('non-primary READ_PG seat: the cleanup sweep does NOT defer under backoff (PG_PRIMARY-only guard)', async () => {
+    // On a non-primary seat (CHANNEL_PG_PRIMARY unset) the per-call GDrive
+    // fallback IS the design (B16 doctrine, MessageManager l.2636), so the
+    // sweep keeps its contract even while the breaker is open. Dropping
+    // `isChannelPgPrimary() &&` from the guard would defer it here — red.
+    process.env.UNIFIED_STORE_CHANNEL_READ_PG = '1';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://unit-test.invalid:5432/rsm';
+    noteChannelPgReadFailure(); // breaker open (interactive PG failures)
+    expect(channelPgBreakerState().open).toBe(true);
+    mocks.wholeFails = false;
+
+    expect(await manager.cleanupExpiredMessages()).toBe(0);
+    expect(mocks.wholeCalls).toBe(1); // the sweep probed: not deferred
+    expect(channelPgBreakerState().cleanupDeferred).toBe(0);
+  });
+
+  test('non-primary READ_PG seat: the reminder sweep keeps probing after its budget probe is spent', async () => {
+    // Same non-primary seat. The own-budget probe is spent FIRST, so a guard
+    // stripped to `backoffHeld && !due` would defer this call: this test pins
+    // the PG_PRIMARY-only scope of BOTH reminder guards (l.2717-2728).
+    process.env.UNIFIED_STORE_CHANNEL_READ_PG = '1';
+    process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+    process.env.UNIFIED_STORE_PG_URL = 'postgres://unit-test.invalid:5432/rsm';
+    noteChannelPgReadFailure(); // breaker open
+    noteChannelPgReminderProbe(); // budget window consumed: not due anymore
+    mocks.wholeFails = false;
+
+    expect(await manager.sendExpiryReminders()).toBe(0);
+    expect(mocks.wholeCalls).toBe(1); // probed despite backoff + spent budget
+    expect(channelPgBreakerState().reminderDeferred).toBe(0);
   });
 });

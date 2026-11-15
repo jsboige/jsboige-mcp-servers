@@ -24,6 +24,7 @@ import {
 describe('channel-pg-breaker (#4131 B16)', () => {
   let savedMs: string | undefined;
   let savedSlowMs: string | undefined;
+  let savedBudgetMs: string | undefined;
 
   beforeEach(() => {
     resetChannelPgBreakerForTests();
@@ -31,6 +32,10 @@ describe('channel-pg-breaker (#4131 B16)', () => {
     process.env.CHANNEL_PG_BREAKER_MS = '60000';
     savedSlowMs = process.env.CHANNEL_PG_SWEEP_SLOW_MS;
     delete process.env.CHANNEL_PG_SWEEP_SLOW_MS;
+    // The W1 budget test below trusts the DEFAULT (2 × trip): a real
+    // CHANNEL_PG_REMINDER_BUDGET_MS inherited from a seat .env would flip it.
+    savedBudgetMs = process.env.CHANNEL_PG_REMINDER_BUDGET_MS;
+    delete process.env.CHANNEL_PG_REMINDER_BUDGET_MS;
   });
 
   afterEach(() => {
@@ -39,6 +44,8 @@ describe('channel-pg-breaker (#4131 B16)', () => {
     else process.env.CHANNEL_PG_BREAKER_MS = savedMs;
     if (savedSlowMs === undefined) delete process.env.CHANNEL_PG_SWEEP_SLOW_MS;
     else process.env.CHANNEL_PG_SWEEP_SLOW_MS = savedSlowMs;
+    if (savedBudgetMs === undefined) delete process.env.CHANNEL_PG_REMINDER_BUDGET_MS;
+    else process.env.CHANNEL_PG_REMINDER_BUDGET_MS = savedBudgetMs;
   });
 
   test('closed by default; a failure opens it for the configured window', () => {
