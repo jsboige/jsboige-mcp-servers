@@ -210,6 +210,7 @@
       "allowed_capabilities": ["recursive_agents", "memory"]
     },
     {
+      "_comment": "#4758 runtimes [stdio]: the launcher ../open-terminal-mcp/open_terminal_mcp.py is not COPYed into the container image, and the OPEN_TERMINAL_URL default (docker service name) only resolves on the open-terminal network — neither the Windows stdio seat nor the container resolves it. An agent requiring this MCP in the container is refused (typed) instead of failing per call. The URL override lives in the seat environment (#1317), never as a literal in this file.",
       "id": "open_terminal",
       "description": "Remote terminal access (shell commands, file operations, grep/glob) via Open Terminal API",
       "command": "python",
@@ -219,7 +220,8 @@
         "OPEN_TERMINAL_API_KEY": "YOUR_OPEN_TERMINAL_API_KEY_HERE"
       },
       "risk_class": "exec",
-      "allowed_capabilities": ["shell", "repo_read"]
+      "allowed_capabilities": ["shell", "repo_read"],
+      "runtimes": ["stdio"]
     },
     {
       "_comment": "#3411: dedicated venv — markitdown-mcp 0.0.1a7 requires mcp>=2.1.1 while sk_agent.py uses the mcp 1.x API (mcp.server.fastmcp, removed in mcp 2.x), so it cannot live in the main venv. The MCP server is a separate stdio process (no library sharing); deploy-sk-agent.ps1 provisions venv-markitdown/ from requirements-markitdown.txt. #4741 container override: the Dockerfile builds the same isolation as /opt/venv-markitdown (same requirements file, same mcp 2.x pin), so one declaration serves both runtimes — the host spawns the exe below, the container spawns the venv's console script.",

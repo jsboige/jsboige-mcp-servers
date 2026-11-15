@@ -629,6 +629,11 @@ class TestTemplateDeclarations:
             "command": "/opt/venv-markitdown/bin/markitdown-mcp",
             "args": [],
         }
+        # #4758: open_terminal's launcher is not COPYed into the image and
+        # its URL default (docker service name) resolves on neither the
+        # Windows stdio seat nor the container's network — stdio-only, so
+        # the container refuses it typed instead of failing per call.
+        assert by_id["open_terminal"]["runtimes"] == ["stdio"]
         # #4741 review (b): swift-delegator declares sk_agent as functional
         # in stdio only — it must be served WITHOUT it in the container.
         agents = {a["id"]: a for a in data.get("agents", [])}
@@ -642,6 +647,8 @@ class TestTemplateDeclarations:
         )
         by_id = {m["id"]: m for m in data.get("mcps", [])}
         assert by_id["jupyter_papermill"].get("runtimes") == ["stdio"]
+        # #4758: same stdio-only declaration as the template entry
+        assert by_id["open_terminal"].get("runtimes") == ["stdio"]
 
 
 # ---------------------------------------------------------------------------
