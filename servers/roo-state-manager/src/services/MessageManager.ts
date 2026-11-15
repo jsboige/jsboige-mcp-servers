@@ -70,8 +70,11 @@ import {
 // scan lock + degraded routing under PG_PRIMARY.
 import {
   channelPgBreakerOpen,
+  channelPgSweepSlow,
+  noteChannelPgBackgroundFailure,
   noteChannelPgReadFailure,
   noteChannelPgReadSuccess,
+  noteChannelPgSweepDuration,
 } from './unified-store/channel-pg-breaker.js';
 import { acquireGdriveScanLock } from './gdrive-scan-lock.js';
 import type { RooSyncMessageUpdate } from './unified-store/types.js';
@@ -2620,14 +2623,33 @@ export class MessageManager {
     // null = PG unavailable → GDrive pool below.
     const pgReader = getChannelPgReader();
     if (pgReader) {
+      // #4731 lever (a) — housekeeping defers while the process serves
+      // degraded: an open breaker (interactive PG failures) or a
+      // measured-slow previous sweep means a full-pool scan would pile load
+      // on the seat exactly when it cannot afford it. Deferral is not a
+      // failure — nothing is counted. PG_PRIMARY-only, per B16 doctrine: on
+      // a non-primary READ_PG seat the per-call GDrive fallback IS the
+      // design (l.1841), so the sweeps keep their #4302 contract there.
+      if (isChannelPgPrimary() && (channelPgBreakerOpen() || channelPgSweepSlow())) {
+        logger.warn(
+          `[channel-pg] #4731: cleanup scan deferred — ${channelPgBreakerOpen() ? 'breaker open' : 'previous sweep slow'} (background sweeps back off)`
+        );
+        return 0;
+      }
       const startedAt = Date.now();
       const pgPool = await readWholeChannelFromPg(pgReader);
+      noteChannelPgSweepDuration(Date.now() - startedAt);
       if (pgPool !== null) {
         noteChannelPgReadSuccess();
         logger.info(`[channel-pg] cleanup scan served from PG in ${Date.now() - startedAt}ms (${pgPool.length} messages)`);
         return this.cleanupExpiredIn(pgPool, now);
       }
-      noteChannelPgReadFailure();
+      // #4731 lever (a) — a background sweep failure no longer opens the
+      // shared breaker: this scan runs inline before the inbox listing
+      // (read.ts), and a slow scan failing the interactive inbox closed was
+      // the 209-opens/24h regression. Separate accounting; B16 deferral
+      // below unchanged.
+      noteChannelPgBackgroundFailure();
       if (isChannelPgPrimary()) {
         // #4131 B16 — under PG_PRIMARY this sweep's transitions ARE PG writes;
         // with PG down there is nothing to commit, and rebuilding the GDrive
@@ -2682,13 +2704,25 @@ export class MessageManager {
     // pass reads, and a Null writer must never be mistaken for a persisted flag.
     const pgReader = getChannelPgReader();
     if (pgReader) {
+      // #4731 lever (a) — same deferral as cleanupExpiredMessages: the
+      // reminder scan is housekeeping too, and must not probe (nor fail)
+      // while the seat is degraded. PG_PRIMARY-only, same B16 doctrine.
+      if (isChannelPgPrimary() && (channelPgBreakerOpen() || channelPgSweepSlow())) {
+        logger.warn(
+          `[channel-pg] #4731: reminder scan deferred — ${channelPgBreakerOpen() ? 'breaker open' : 'previous sweep slow'} (background sweeps back off)`
+        );
+        return 0;
+      }
       const startedAt = Date.now();
       const pgPool = await readWholeChannelFromPg(pgReader);
+      noteChannelPgSweepDuration(Date.now() - startedAt);
       if (pgPool !== null) {
         logger.info(`[channel-pg] reminder scan served from PG in ${Date.now() - startedAt}ms (${pgPool.length} messages)`);
         return this.sendExpiryRemindersFromPg(pgPool);
       }
-      noteChannelPgReadFailure();
+      // #4731 lever (a) — separate accounting, same rationale as the cleanup
+      // sweep: never fail the interactive inbox closed.
+      noteChannelPgBackgroundFailure();
       if (isChannelPgPrimary()) {
         // #4131 B16 — same deferral as cleanupExpiredMessages: the reminder
         // flag is a PG column on a PG_PRIMARY seat, and the GDrive pass below
