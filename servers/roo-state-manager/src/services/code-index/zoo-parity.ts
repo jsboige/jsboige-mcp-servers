@@ -50,6 +50,12 @@
  * and never cuts a surrogate pair). Those divergences are correct for sup-*
  * but would break ws-* id parity — which is why this port is separate and
  * literal instead of shared.
+ *
+ * REFERENCE COMMIT (review follow-up, pinned so a future Zoo checkout cannot
+ * drift under this port): Zoo Code 3.92, submodule `roo-code` @67df9f9c —
+ * src/services/code-index/{constants/index.ts, parser.ts, markdownParser.ts,
+ * scanner.ts}. The same pin already governs supplement-index.ts; both files
+ * describe the same upstream code and must stay on the same commit.
  */
 import { createHash } from 'crypto';
 import { v5 as uuidv5 } from 'uuid';
