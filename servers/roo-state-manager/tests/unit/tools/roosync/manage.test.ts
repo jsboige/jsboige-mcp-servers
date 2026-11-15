@@ -5,8 +5,17 @@
  * bulk_archive, cleanup, stats, error handling
  */
 
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { roosyncManage } from '../../../../src/tools/roosync/manage.js';
+// #4731 W3 — real breaker accounting (unmocked in this harness): the mocks
+// below reproduce the exact state transitions the real sweeps perform.
+import {
+    channelPgBreakerState,
+    noteChannelPgBackgroundFailure,
+    noteChannelPgSweepDeferred,
+    resetChannelPgBreakerForTests,
+} from '../../../../src/services/unified-store/channel-pg-breaker.js';
+void channelPgBreakerState;
 
 const {
     mockGetMessageManager,
@@ -276,6 +285,86 @@ describe('roosync_manage', () => {
             });
             const result = await roosyncManage({ action: 'cleanup' });
             expect(result.content[0].text).toContain('Aucune action nécessaire');
+        });
+
+        // #4731 W3 — a degraded sweep returns 0 BY DESIGN (B16 deferral):
+        // the tool must SAY so; a silent "nothing" would read as a clean pass.
+        describe('#4731 W3 — degraded zero is reported, never silent', () => {
+            let savedEnv: Record<string, string | undefined>;
+
+            beforeEach(() => {
+                resetChannelPgBreakerForTests();
+                savedEnv = {
+                    UNIFIED_STORE_CHANNEL_PG_PRIMARY: process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY,
+                    UNIFIED_STORE_DUAL_WRITE: process.env.UNIFIED_STORE_DUAL_WRITE,
+                    UNIFIED_STORE_PG_URL: process.env.UNIFIED_STORE_PG_URL,
+                };
+                // The DEGRADED branch only fires on a PG_PRIMARY seat; on a
+                // READ_PG seat the GDrive fallback serves a REAL count.
+                process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY = '1';
+                process.env.UNIFIED_STORE_DUAL_WRITE = '1';
+                process.env.UNIFIED_STORE_PG_URL = 'postgres://unit-test.invalid:5432/rsm';
+                mockBulkOperation.mockResolvedValue({
+                    operation: 'mark_read', matched: 0, processed: 0, errors: 0, message_ids: [], failed_ids: [],
+                });
+                mockGetInboxStats.mockResolvedValue({
+                    total: 0, unread: 0, read: 0,
+                    by_priority: {}, by_sender: {},
+                });
+            });
+
+            afterEach(() => {
+                resetChannelPgBreakerForTests();
+                for (const [k, v] of Object.entries(savedEnv)) {
+                    if (v === undefined) delete process.env[k];
+                    else process.env[k] = v;
+                }
+            });
+
+            it('reports a DEFERRED cleanup sweep (backoff) instead of a silent 0', async () => {
+                // The real sweep defers under PG_PRIMARY backoff: counted in
+                // the breaker state, returns 0. The mock reproduces exactly
+                // that state transition.
+                mockCleanupExpiredMessages.mockImplementation(async () => {
+                    noteChannelPgSweepDeferred('cleanup');
+                    return 0;
+                });
+                mockSendExpiryReminders.mockResolvedValue(0);
+                const result = await roosyncManage({ action: 'cleanup' });
+                const text = result.content[0].text;
+                expect(text).toContain('Auto-destruct cleanup DIFFÉRÉ');
+                expect(text).toContain('rien n\'a été scanné');
+            });
+
+            it('reports a DEGRADED cleanup sweep (PG read failure) instead of a silent 0', async () => {
+                mockCleanupExpiredMessages.mockImplementation(async () => {
+                    noteChannelPgBackgroundFailure();
+                    return 0;
+                });
+                mockSendExpiryReminders.mockResolvedValue(0);
+                const result = await roosyncManage({ action: 'cleanup' });
+                const text = result.content[0].text;
+                expect(text).toContain('Auto-destruct cleanup DÉGRADÉ');
+            });
+
+            it('reports a DEFERRED reminder sweep the same way', async () => {
+                mockCleanupExpiredMessages.mockResolvedValue(0);
+                mockSendExpiryReminders.mockImplementation(async () => {
+                    noteChannelPgSweepDeferred('reminder');
+                    return 0;
+                });
+                const result = await roosyncManage({ action: 'cleanup' });
+                expect(result.content[0].text).toContain('Rappels d\'expiration DIFFÉRÉS');
+            });
+
+            it('a REAL zero stays silent — no false degradation line', async () => {
+                mockCleanupExpiredMessages.mockResolvedValue(0);
+                mockSendExpiryReminders.mockResolvedValue(0);
+                const result = await roosyncManage({ action: 'cleanup' });
+                const text = result.content[0].text;
+                expect(text).not.toContain('DIFFÉRÉ');
+                expect(text).not.toContain('DÉGRADÉ');
+            });
         });
     });
 

@@ -15,11 +15,17 @@
  * Contract pinned here:
  *   1. a FAILED sweep counts as a background failure only — the shared
  *      breaker stays closed, so the inbox right after still serves from PG;
- *   2. with the breaker already open (interactive PG failures), the sweeps
- *      defer WITHOUT probing PG — they back off while the seat is degraded
- *      (PG_PRIMARY only, per B16 doctrine: on a non-primary READ_PG seat the
- *      per-call GDrive fallback is the design, pinned by
- *      tests/unit/services/unified-store/channel-pg-paths-4302.test.ts);
+ *   2. with the breaker already open (interactive PG failures), the cleanup
+ *      sweep defers WITHOUT probing PG (PG_PRIMARY only, per B16 doctrine:
+ *      on a non-primary READ_PG seat the per-call GDrive fallback is the
+ *      design, pinned by tests/unit/services/unified-store/
+ *      channel-pg-paths-4302.test.ts) — and the deferral is COUNTED, not
+ *      silent (W3 measurement);
+ *   2b. W1 (#4731 review) — the reminder sweep has its OWN budget: at least
+ *      one PG probe per budget window (default 2× the breaker trip) is
+ *      forced through even under backoff, so a chronically degraded seat
+ *      cannot starve expiry reminders forever; a failed forced probe counts
+ *      a background failure and never re-trips the breaker;
  *   3. a measured-slow previous sweep defers the next one the same way
  *      ("ils reculent quand la latence mesurée est haute");
  *   4. a successful sweep still closes an open breaker (pool evidence) and
@@ -170,26 +176,62 @@ describe('#4731 lever (a) — background sweeps never fail the interactive inbox
     expect(channelPgBreakerState().backgroundFailures).toBe(1);
   });
 
-  test('breaker already open → sweeps defer WITHOUT probing PG', async () => {
+  test('breaker already open → cleanup defers WITHOUT probing; the reminder sweep spends its own-budget probe (W1)', async () => {
     setPgPrimaryEnv();
     noteChannelPgReadFailure(); // interactive PG failures opened the breaker
     expect(channelPgBreakerState().open).toBe(true);
-    mocks.wholeFails = false; // PG would answer — the sweep must not ask
+    mocks.wholeFails = false; // PG would answer
 
     expect(await manager.cleanupExpiredMessages()).toBe(0);
+    expect(mocks.wholeCalls).toBe(0); // cleanup: no full-pool probe while degraded
+    expect(channelPgBreakerState().cleanupDeferred).toBe(1); // measured, not silent
+
+    // W1 (#4731 review): the reminder sweep has its OWN budget — fresh
+    // process, budget never consumed → exactly one forced probe despite the
+    // open breaker, so reminders cannot be starved forever.
     expect(await manager.sendExpiryReminders()).toBe(0);
-    expect(mocks.wholeCalls).toBe(0); // no full-pool probe while degraded
-    expect(channelPgBreakerState().backgroundFailures).toBe(0); // deferral ≠ failure
+    expect(mocks.wholeCalls).toBe(1);
+    expect(channelPgBreakerState().reminderDeferred).toBe(0);
+    expect(channelPgBreakerState().backgroundFailures).toBe(0); // the probe succeeded
   });
 
-  test('measured-slow previous sweep → next sweep defers without probing (latency backoff)', async () => {
+  test('W1 — once the budget probe is spent, the immediate reminder retry defers and is counted', async () => {
+    setPgPrimaryEnv();
+    noteChannelPgReadFailure(); // breaker open
+    mocks.wholeFails = false;
+
+    await manager.sendExpiryReminders(); // budget probe spent
+    expect(mocks.wholeCalls).toBe(1);
+
+    const second = await manager.sendExpiryReminders(); // within budget window
+    expect(second).toBe(0);
+    expect(mocks.wholeCalls).toBe(1); // no second probe
+    expect(channelPgBreakerState().reminderDeferred).toBe(1); // starvation measured
+  });
+
+  test('W1 — a forced reminder probe that FAILS counts a background failure and never re-trips the breaker', async () => {
+    setPgPrimaryEnv();
+    noteChannelPgReadFailure(); // breaker open from an interactive failure
+    const openUntilBefore = channelPgBreakerState().openUntilMs;
+    mocks.wholeFails = true; // the forced probe fails too
+
+    const sent = await manager.sendExpiryReminders();
+    expect(sent).toBe(0);
+    expect(mocks.wholeCalls).toBe(1); // the budget forced the probe
+    expect(channelPgBreakerState().backgroundFailures).toBe(1);
+    // The sweep failure must not extend the breaker window (lever (a) intact).
+    expect(channelPgBreakerState().openUntilMs).toBe(openUntilBefore);
+  });
+
+  test('measured-slow previous sweep → the cleanup sweep defers without probing (latency backoff)', async () => {
     setPgPrimaryEnv();
     noteChannelPgSweepDuration(45_000); // measured: full scans ran 5-73 s
     mocks.wholeFails = false;
 
     expect(await manager.cleanupExpiredMessages()).toBe(0);
-    expect(await manager.sendExpiryReminders()).toBe(0);
     expect(mocks.wholeCalls).toBe(0);
+    // The reminder sweep is NOT pinned here: its own budget (W1) may force a
+    // probe under slow-backoff — that carve-out has its own tests above.
   });
 
   test('control — seat healthy: sweep runs, serves from PG, counts nothing as failure', async () => {

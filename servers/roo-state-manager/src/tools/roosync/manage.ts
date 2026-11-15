@@ -11,6 +11,10 @@ import { MessageManager, getMessageManager } from '../../services/MessageManager
 import { createLogger, Logger } from '../../utils/logger.js';
 import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
+// #4731 W3 — the cleanup action must not render a degraded "0" as a result:
+// the breaker state deltas tell deferred (nothing scanned) from a real 0.
+import { channelPgBreakerState } from '../../services/unified-store/channel-pg-breaker.js';
+import { isChannelPgPrimary } from '../../services/unified-store/roosync-channel-write.js';
 import {
   formatDate,
   formatDateFull,
@@ -409,10 +413,20 @@ async function cleanupMessages(
   const allFailedReasons: Record<string, string> = {};
 
   // 0a. Cleanup expired auto-destruct messages (#629)
+  // #4731 W3 — a sweep that defers or fails under PG_PRIMARY returns 0 BY
+  // DESIGN (B16): the tool must say so, a silent "nothing" would read as a
+  // clean pass. On a non-primary READ_PG seat a PG failure falls back to the
+  // GDrive pool, which serves a REAL count — not degraded.
   try {
+    const before = channelPgBreakerState();
     const expiredCount = await messageManager.cleanupExpiredMessages();
+    const after = channelPgBreakerState();
     if (expiredCount > 0) {
       results.push(`- 💀 Messages auto-destruct expirés détruits : **${expiredCount}**`);
+    } else if (after.cleanupDeferred > before.cleanupDeferred) {
+      results.push('- ⚠️ Auto-destruct cleanup DIFFÉRÉ — siège dégradé (#4731 : breaker ouvert / balayage lent), **rien n\'a été scanné** : « 0 » n\'est pas un résultat.');
+    } else if (isChannelPgPrimary() && after.backgroundFailures > before.backgroundFailures) {
+      results.push('- ❌ Auto-destruct cleanup DÉGRADÉ — lecture PG du pool en échec, **rien n\'a été scanné** : « 0 » n\'est pas un résultat.');
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -421,10 +435,17 @@ async function cleanupMessages(
   }
 
   // 0b. Send expiry reminders for approaching TTL (#629)
+  // #4731 W3 — same distinction as 0a for the reminder sweep.
   try {
+    const before = channelPgBreakerState();
     const remindersCount = await messageManager.sendExpiryReminders();
+    const after = channelPgBreakerState();
     if (remindersCount > 0) {
       results.push(`- ⏰ Rappels d'expiration envoyés : **${remindersCount}**`);
+    } else if (after.reminderDeferred > before.reminderDeferred) {
+      results.push('- ⚠️ Rappels d\'expiration DIFFÉRÉS — siège dégradé (#4731 : breaker ouvert / balayage lent, budget propre non échu), **aucun scan** : « 0 » n\'est pas un résultat.');
+    } else if (isChannelPgPrimary() && after.backgroundFailures > before.backgroundFailures) {
+      results.push('- ❌ Rappels d\'expiration DÉGRADÉS — lecture PG du pool en échec : « 0 » n\'est pas un résultat.');
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
