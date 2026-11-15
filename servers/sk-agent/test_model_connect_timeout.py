@@ -181,7 +181,10 @@ class TestFreezeDumpWatchdog(unittest.TestCase):
         # handler's own result, ceiling blown. In production the freeze is
         # usually permanent (unreachable hub), so neither this result nor a
         # timeout ever arrives — which is why the dump matters.
-        self.assertEqual(result, {"response": "ok"})
+        # (#4742: every result now carries the turn envelope alongside the
+        # handler's own payload — assert on the payload, not exact keys.)
+        self.assertEqual(result.get("response"), "ok")
+        self.assertNotIn("error", result)
         # Watchdog: armed at ceiling + grace, cancelled on completion.
         fh.dump_traceback_later.assert_called_once_with(
             0.1 + sk_agent._FAULT_DUMP_GRACE_S, exit=False

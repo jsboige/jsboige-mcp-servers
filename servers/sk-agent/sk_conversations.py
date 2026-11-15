@@ -201,6 +201,7 @@ class ConversationRunner:
         sk_agents: dict[str, ChatCompletionAgent],
         agent_factory: Callable[[str], Awaitable[ChatCompletionAgent | None]] | None = None,
         spec_agent_builder: Callable[[AgentConfig], Awaitable[ChatCompletionAgent | None]] | None = None,
+        pre_flight: Callable[[ConversationConfig], Awaitable[dict[str, Any] | None]] | None = None,
     ):
         """
         Args:
@@ -211,11 +212,18 @@ class ConversationRunner:
                 resolved AgentConfig (#3407) — used for inline conversation
                 agents that pin a model or carry their own MCPs (reuses the
                 manager's shared pools).
+            pre_flight: Async refusal seam (#4742 P-b3) consulted after
+                agent resolution, before ANY model call: returns a typed
+                refusal dict (capacity gate / rate limit) or None to run.
+                Covers the conversation's configured agents' models;
+                inline spec agents extending unbounded presets are the
+                spec path's own concern.
         """
         self.config = config
         self.sk_agents = sk_agents
         self._agent_factory = agent_factory
         self._spec_agent_builder = spec_agent_builder
+        self._pre_flight = pre_flight
 
     def list_conversations(self) -> list[dict]:
         """List available conversation presets."""
@@ -329,6 +337,14 @@ class ConversationRunner:
         agents = await self._resolve_conversation_agents(conv_config)
         if not agents:
             return {"error": f"No agents available for conversation '{conv_config.id}'"}
+
+        # #4742 P-b3: run_conversation passes the same pre-dispatch gates
+        # as call_agent — capacity gate per distinct model, rate limit per
+        # agent — before any model call is issued.
+        if self._pre_flight is not None:
+            refusal = await self._pre_flight(conv_config)
+            if refusal is not None:
+                return refusal
 
         # Build and run the group chat
         try:

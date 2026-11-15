@@ -32,6 +32,7 @@ RUN python -m venv /opt/venv-markitdown && \
 # Copy application code
 COPY sk_agent.py sk_agent_config.py sk_agent_schemas.py sk_agent_specs.py \
      sk_agent_capacity_gate.py sk_conversations.py sk_context_condensation.py \
+     sk_agent_turns.py \
      github_plugin.py document_processing.py media_processing.py ./
 
 # Guard: fail the BUILD if this list drifts from the real import graph.

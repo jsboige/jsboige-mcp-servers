@@ -41,6 +41,37 @@ VERDICT_UNKNOWN = "unknown"
 #: Authoritative verdict map — the exit code, never the stdout payload.
 _EXIT_CODE_VERDICTS = {0: VERDICT_GREEN, 1: VERDICT_YELLOW, 2: VERDICT_RED}
 
+#: Launcher-failure signatures (#4742): a probe whose SCRIPT is missing
+#: dies inside its interpreter with the interpreter's own error code —
+#: ``python missing_probe.py`` exits 2, which would read as "red / Swift
+#: saturated" when nothing was measured. The stderr line proves the probe
+#: never ran: such an exit is ``unknown`` (still refused — fail-closed),
+#: never red. Keep the list tight; a probe's real saturation output goes
+#: to stdout, not to these strings.
+_LAUNCHER_FAILURE_SIGNATURES = (
+    "can't open file",  # python: missing script
+    "no such file or directory",  # python/sh: missing script or interpreter arg
+    "is not recognized",  # powershell/pwsh: missing command or script
+    "cannot find the file specified",  # cmd: missing script
+    "cannot find the path specified",  # cmd: missing script directory
+)
+
+
+def _probe_failed_to_start(stderr: bytes) -> str | None:
+    """Last non-empty stderr line when it names a launcher failure."""
+    if not stderr:
+        return None
+    lines = stderr.decode("utf-8", "replace").splitlines()
+    for line in reversed(lines):
+        text = line.strip()
+        if not text:
+            continue
+        lowered = text.lower()
+        if any(sig in lowered for sig in _LAUNCHER_FAILURE_SIGNATURES):
+            return text[:200]
+        return None
+    return None
+
 #: In-process cache: model id -> (expires_at monotonic, verdict, detail).
 _GATE_CACHE: dict[str, tuple[float, str, dict[str, Any] | None]] = {}
 
@@ -223,11 +254,11 @@ async def evaluate_capacity_gate(
             *gate["command"],
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             env=child_env,
         )
         try:
-            stdout, _ = await asyncio.wait_for(
+            stdout, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=timeout_s
             )
         except asyncio.TimeoutError:
@@ -241,6 +272,18 @@ async def evaluate_capacity_gate(
         else:
             verdict = _EXIT_CODE_VERDICTS.get(proc.returncode, VERDICT_UNKNOWN)
             detail = _parse_detail(stdout or b"")
+            launcher_error = _probe_failed_to_start(stderr or b"")
+            if launcher_error is not None:
+                # The probe never measured anything — an interpreter exit
+                # code is not a verdict (#4742: "red" said Swift was
+                # saturated when the sonde file was simply absent).
+                log.warning(
+                    "capacity gate probe for model '%s' failed to start: %s",
+                    model_id,
+                    launcher_error,
+                )
+                verdict = VERDICT_UNKNOWN
+                detail = {"probe_stderr": launcher_error}
     except (
         FileNotFoundError, NotImplementedError, OSError, ValueError, TypeError,
         KeyError,

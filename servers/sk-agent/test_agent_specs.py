@@ -154,7 +154,7 @@ def make_manager(monkeypatch):
 def capture_text_handler(manager, captured: dict):
     async def fake_handle_text(
         agent_id, agent, prompt, conversation_id, include_steps,
-        model_override=None, sampling_override=None,
+        model_override=None, sampling_override=None, turn=None,
     ):
         captured.update(
             agent_id=agent_id,
@@ -497,6 +497,7 @@ class TestVisionGuard:
         async def fake_image(
             agent_id, agent, image_source, prompt, conversation_id,
             include_steps, model_override=None, sampling_override=None,
+            turn=None,
         ):
             captured.update(agent_id=agent_id, model_override=model_override)
             return {
@@ -1420,7 +1421,12 @@ class TestToolLayerCompat:
         assert params["conversation_spec"].default is None
 
     def test_handler_signatures_back_compat(self):
-        """Pre-existing handler params keep name/position; sampling is last."""
+        """Pre-existing handler params keep name/position; sampling then turn last.
+
+        #4742 appended the trailing ``turn`` (TurnCallOptions) parameter
+        after ``sampling_override`` on every handler — legacy positional
+        call sites are unchanged.
+        """
         import sk_agent
 
         for name, legacy in (
@@ -1431,7 +1437,7 @@ class TestToolLayerCompat:
         ):
             params = list(inspect.signature(getattr(sk_agent.SKAgentManager, name)).parameters)
             assert params[: len(legacy)] == legacy, name
-            assert params[-1] == "sampling_override", name
+            assert params[-2:] == ["sampling_override", "turn"], name
 
 
 class TestMcpWideningRefused:
