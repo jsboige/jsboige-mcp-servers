@@ -2662,6 +2662,13 @@ class SKAgentManager:
             finally:
                 # A rollback mark never outlives its call (#4742 C2).
                 self._turn_marks.pop(conv_id, None)
+                # A call without conversation_id that ended before its
+                # thread existed (refusal, early error) leaves no lock
+                # behind (#4742 W-c). Its freshly allocated id is unknown
+                # to any other caller, and no await separates this pop
+                # from the lock release.
+                if not conversation_id and conv_id not in self._threads:
+                    self._conv_locks.pop(conv_id, None)
 
     def _ensure_turn_state(self) -> None:
         """Lazily create the #4742 turn state on partially-built doubles."""

@@ -40,7 +40,6 @@ import hashlib
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -49,9 +48,6 @@ log = logging.getLogger("sk-agent.turns")
 
 #: Env var enabling the durable conversation store (opt-in, #4742 P-a).
 CONVERSATION_DIR_ENV = "SK_AGENT_CONVERSATION_DIR"
-
-#: Conversation ids used verbatim as store file names; others are hashed.
-_PLAIN_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 #: Gate refusal reasons surfaced in the pause envelope.
 PAUSE_REASON_CAPACITY_GATE = "capacity_gate"
@@ -173,7 +169,11 @@ class TurnController:
     journal_log: list[dict[str, Any]] = field(default_factory=list)
 
     pause: PauseInfo | None = None
+    #: Rounds of THIS invoke that ran a tool for real (replay excluded).
     rounds_this_invoke: int = 0
+    #: SK request index of the first round that ran a tool for real —
+    #: requests before it only rebuilt journaled rounds (restart replay).
+    first_real_request: int | None = None
     replay_enabled: bool = False
     #: Round watermark — admission is checked at most once per round: a
     #: round's tools complete concurrently (asyncio.gather) and each runs
@@ -183,12 +183,20 @@ class TurnController:
     # -- round accounting ---------------------------------------------------
 
     def note_round(self, request_sequence_index: int) -> int:
-        """Record that round ``request_sequence_index + 1``'s tools ran.
+        """Record that the round of SK request ``request_sequence_index``
+        ran a tool for real.
 
         Returns the epoch-round count (base + local). The loop calls this
         once per tool of the round (gather fan-out); the value only grows.
+        SK's index also counts the requests that, after a restart, rebuild
+        the paused rounds from the journal — those are answered by the
+        filter without reaching here, are already in ``base_rounds``, and
+        all precede the first real execution (replay stops there). Local
+        rounds are therefore counted from that first real request.
         """
-        local = request_sequence_index + 1
+        if self.first_real_request is None:
+            self.first_real_request = request_sequence_index
+        local = request_sequence_index - self.first_real_request + 1
         if local > self.rounds_this_invoke:
             self.rounds_this_invoke = local
         return self.base_rounds + self.rounds_this_invoke
@@ -210,9 +218,14 @@ class TurnController:
 
         Order: budget first (free, deterministic), then the capacity gate
         (cached probe). Returns a refusal dict shaping :class:`PauseInfo`,
-        or None when the next round is admitted.
+        or None when the next round is admitted. The budget counts the
+        rounds of THIS call (a resume gets a fresh budget); ``rounds_done``
+        is the cumulative epoch count reported in the pause.
         """
-        if self.round_budget is not None and rounds_done >= self.round_budget:
+        if (
+            self.round_budget is not None
+            and self.rounds_this_invoke >= self.round_budget
+        ):
             return {"reason": PAUSE_REASON_ROUND_BUDGET, "round_index": rounds_done}
         if self.gate_check is not None:
             refusal = await self.gate_check()
@@ -356,12 +369,14 @@ def install_turn_filter(kernel) -> None:
 class ConversationStore:
     """File-backed persistence for conversations and turn journals.
 
-    Layout under the root directory:
-    - ``<conversation_id>.json`` — durable messages + turn counter.
-    - ``<conversation_id>.journal.json`` — the current turn epoch's
-      executed-tool journal (deleted when the turn completes).
+    Layout under the root directory, ``<h>`` = sha256 hex of the id:
+    - ``<h>.json`` — durable messages + turn counter.
+    - ``<h>.journal.json`` — the current turn epoch's executed-tool
+      journal (deleted when the turn completes).
 
-    Writes are atomic (tmp + ``os.replace``), UTF-8 without BOM.
+    Both files carry the readable ``conversation_id``; a file whose stored
+    id differs from the requested one is treated as absent. Writes are
+    atomic (tmp + ``os.replace``), UTF-8 without BOM.
     """
 
     def __init__(self, root: str | Path | None):
@@ -376,18 +391,15 @@ class ConversationStore:
         return self.root is not None
 
     def _path(self, conversation_id: str, suffix: str = ".json") -> Path:
-        # Conversation ids are caller-supplied. A plain id (ASCII letters,
-        # digits, "-", "_", 1-128 chars) is its own file name; any other id
-        # is named by its sha256 hex — one path segment, so ".." or
-        # separators cannot escape the root, and nothing is stripped, so
-        # distinct ids never share a file ("a.b" vs "ab", "../evil" vs
-        # "evil").
-        if _PLAIN_ID.fullmatch(conversation_id):
-            name = conversation_id
-        else:
-            name = hashlib.sha256(
-                conversation_id.encode("utf-8", "surrogatepass")
-            ).hexdigest()
+        # Conversation ids are caller-supplied. EVERY id is named by its
+        # sha256 hex: one lowercase path segment, so ".." or separators
+        # cannot escape the root, nothing is stripped ("a.b" vs "ab"), case
+        # never folds on a case-insensitive FS ("Conv" vs "conv"), and no
+        # id can name another id's file (an id equal to sha256("a.b") is
+        # hashed again). The readable id lives inside the file.
+        name = hashlib.sha256(
+            conversation_id.encode("utf-8", "surrogatepass")
+        ).hexdigest()
         return self.root / f"{name}{suffix}"
 
     def _write_atomic(self, path: Path, payload: dict[str, Any]) -> None:
@@ -405,12 +417,19 @@ class ConversationStore:
             return None
         return data if isinstance(data, dict) else None
 
+    def _read_owned(self, path: Path, conversation_id: str) -> dict[str, Any] | None:
+        """Read ``path`` only if it belongs to ``conversation_id``."""
+        data = self._read(path)
+        if data is None or data.get("conversation_id") != conversation_id:
+            return None
+        return data
+
     # -- conversation state ---------------------------------------------------
 
     def load(self, conversation_id: str) -> dict[str, Any] | None:
         if not self.enabled:
             return None
-        return self._read(self._path(conversation_id))
+        return self._read_owned(self._path(conversation_id), conversation_id)
 
     def save(
         self, conversation_id: str, messages: list[dict[str, Any]], turn_index: int
@@ -443,12 +462,17 @@ class ConversationStore:
     def load_journal(self, conversation_id: str) -> dict[str, Any] | None:
         if not self.enabled:
             return None
-        return self._read(self._path(conversation_id, ".journal.json"))
+        return self._read_owned(
+            self._path(conversation_id, ".journal.json"), conversation_id
+        )
 
     def save_journal(self, conversation_id: str, payload: dict[str, Any]) -> None:
         if not self.enabled:
             return
-        self._write_atomic(self._path(conversation_id, ".journal.json"), payload)
+        self._write_atomic(
+            self._path(conversation_id, ".journal.json"),
+            {**payload, "conversation_id": conversation_id},
+        )
 
     def clear_journal(self, conversation_id: str) -> None:
         if not self.enabled:

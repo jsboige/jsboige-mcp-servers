@@ -199,6 +199,77 @@ def _gate_dict(probe: list[str]) -> dict:
     }
 
 
+class StepChatCompletion(ChatCompletionClientBase):
+    """Scripted model whose round k calls ``step(n=k)`` — distinct
+    arguments per round, so a replayed round and a real one never share a
+    journal key — and answers once ``final_after`` results are visible."""
+
+    final_after: int = 3
+    model_calls: int = 0
+    SUPPORTS_FUNCTION_CALLING = True
+
+    def __init__(self, final_after: int = 3):
+        super().__init__(ai_model_id="fake-step-model", final_after=final_after)
+
+    async def _inner_get_chat_message_contents(self, chat_history, settings):
+        self.model_calls += 1
+        done = sum(
+            isinstance(item, FunctionResultContent)
+            for msg in chat_history.messages
+            for item in msg.items
+        )
+        if done >= self.final_after:
+            return [
+                ChatMessageContent(role=AuthorRole.ASSISTANT, content="final-answer")
+            ]
+        return [
+            ChatMessageContent(
+                role=AuthorRole.ASSISTANT,
+                items=[
+                    FunctionCallContent(
+                        id=f"step_{self.model_calls}",
+                        name="probe-step",
+                        arguments=json.dumps({"n": done + 1}),
+                    )
+                ],
+            )
+        ]
+
+    async def _inner_get_streaming_chat_message_contents(self, chat_history, settings):
+        raise NotImplementedError("streaming not used in these tests")
+
+
+def _step_manager(gate: dict | None, store_root: Path | None, execs: dict):
+    """_turn_manager double over StepChatCompletion; ``execs[n]`` counts
+    the real executions of ``step(n)`` (shared across restarts)."""
+    manager, _, _ = _turn_manager(gate, store_root=store_root)
+    service = StepChatCompletion()
+
+    class StepPlugin:
+        @kernel_function(description="step")
+        async def step(self, n: int) -> str:
+            execs[n] = execs.get(n, 0) + 1
+            return f"step-{n}"
+
+    async def fake_resolve(**kwargs):
+        kernel = Kernel()
+        sk_agent_turns.install_turn_filter(kernel)
+        kernel.add_service(service)
+        kernel.add_plugin(StepPlugin(), plugin_name="probe")
+        return (
+            "a-x",
+            ChatCompletionAgent(
+                kernel=kernel,
+                name="sk-agent-fake",
+                instructions="test",
+                function_choice_behavior=FunctionChoiceBehavior.Auto(),
+            ),
+        )
+
+    manager._resolve_agent = fake_resolve
+    return manager
+
+
 def _user_texts(manager, conv_id: str) -> list[str]:
     """USER messages of a conversation's in-memory thread."""
     thread = manager._threads[conv_id]
@@ -360,6 +431,80 @@ class TestPauseAndResume:
         # ran exactly once overall.
         assert c2["calls"] == 0, "journaled call must replay, not re-execute"
         assert c1["calls"] + c2["calls"] == 1
+
+    def test_resume_gets_a_fresh_round_budget(self, tmp_path):
+        """W-a: max_rounds bounds the rounds of THIS call — a resume after
+        a pause at round 2 admits 2 more rounds, not 2 - 2 + 1."""
+        state = tmp_path / "gate-state.txt"
+        state.write_text("green")
+        manager, service, counter = _turn_manager(
+            _gate_dict(_state_probe(state)), always_tools=True
+        )
+
+        async def scenario():
+            first = await manager.call_agent(
+                prompt="go", agent_id="a-x", options={"max_rounds": 2}
+            )
+            calls_first = counter["calls"]
+            second = await manager.call_agent(
+                prompt="",
+                agent_id="a-x",
+                conversation_id=first["conversation_id"],
+                options={"continue": True, "max_rounds": 2},
+            )
+            return first, calls_first, second
+
+        first, calls_first, second = asyncio.run(scenario())
+
+        assert first["status"] == "paused" and first["round_index"] == 2
+        assert calls_first == 2
+        assert second["status"] == "paused", second
+        assert second["round_index"] == 4
+        assert counter["calls"] - calls_first == 2, "fresh budget: 2 rounds"
+
+    def test_replayed_rounds_do_not_advance_round_index(self, tmp_path):
+        """W-b: after a restart, SK's request index also counts the replayed
+        requests; they must not advance round_index nor eat the budget."""
+        state = tmp_path / "gate-state.txt"
+        state.write_text("green")
+        gate = _gate_dict(_state_probe(state))
+        store_root = tmp_path / "store"
+        execs: dict = {}
+
+        m1 = _step_manager(gate, store_root, execs)
+        first = asyncio.run(
+            m1.call_agent(prompt="go", agent_id="a-x", options={"max_rounds": 1})
+        )
+        assert first["status"] == "paused" and first["round_index"] == 1
+        cid = first["conversation_id"]
+
+        m2 = _step_manager(gate, store_root, execs)  # restart
+        second = asyncio.run(
+            m2.call_agent(
+                prompt="",
+                agent_id="a-x",
+                conversation_id=cid,
+                options={"continue": True, "max_rounds": 1},
+            )
+        )
+        # Round 1 replayed from the journal, round 2 ran for real: the
+        # budget of 1 is spent by round 2, which is the TRUE epoch round 2.
+        assert second["status"] == "paused", second
+        assert second["round_index"] == 2
+        assert execs == {1: 1, 2: 1}
+
+        third = asyncio.run(
+            m2.call_agent(
+                prompt="",
+                agent_id="a-x",
+                conversation_id=cid,
+                options={"continue": True},
+            )
+        )
+        assert third["status"] == "completed", third
+        assert third["round_index"] == 3
+        assert third["response"] == "final-answer"
+        assert execs == {1: 1, 2: 1, 3: 1}, "every step ran exactly once"
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +706,39 @@ class TestAllocatedConversationId:
         assert set(manager._conv_locks) == set(manager._threads) == {conv}
         manager.end_conversation(conv)
         assert manager._conv_locks == {} and manager._threads == {}
+
+    def test_refusals_without_conversation_id_leave_no_lock(self, tmp_path):
+        """W-c: a refused call without conversation_id, ended before its
+        thread exists, must not leave its lock behind."""
+        state = tmp_path / "gate-state.txt"
+        state.write_text("red")
+        manager, service, counter = _turn_manager(
+            _gate_dict(_state_probe(state))
+        )
+
+        async def scenario():
+            refusals = [
+                await manager.call_agent(prompt="x", agent_id="a-x")
+                for _ in range(5)
+            ]
+            assert manager._conv_locks == {} and manager._threads == {}
+            # The named id still works: retry it once the gate is green.
+            state.write_text("green")
+            conv = refusals[-1]["conversation_id"]
+            retry = await manager.call_agent(
+                prompt="x", agent_id="a-x", conversation_id=conv
+            )
+            return refusals, retry
+
+        refusals, retry = asyncio.run(scenario())
+
+        ids = {r["conversation_id"] for r in refusals}
+        assert len(ids) == 5
+        assert all(r["retry_only"] is True for r in refusals)
+        assert retry["status"] == "completed", retry
+        assert set(manager._conv_locks) == set(manager._threads) == {
+            refusals[-1]["conversation_id"]
+        }
 
 
 class TestResumeTimeoutKeepsEpoch:
@@ -928,24 +1106,76 @@ class TestConversationStore:
         assert store.load("../evil")["conversation_id"] == "../evil"
 
     def test_distinct_ids_never_share_a_file(self, tmp_path):
-        """W3: stripping made "a.b"/"ab" and "../evil"/"evil" collide."""
+        """W3/W-e: stripping made "a.b"/"ab" collide; a case-insensitive FS
+        folded "Conv"/"conv"; an id equal to sha256("a.b") named a.b's
+        file. Every id is now hashed — on every FS, no pair shares a file."""
         store = ConversationStore(tmp_path)
-        for a, b in (("a.b", "ab"), ("../evil", "evil"), ("a/b", "a_b")):
-            assert store._path(a) != store._path(b), (a, b)
+        h_ab = hashlib.sha256(b"a.b").hexdigest()
+        pairs = (
+            ("a.b", "ab"),
+            ("../evil", "evil"),
+            ("a/b", "a_b"),
+            ("Conv", "conv"),
+            ("a.b", h_ab),
+        )
+        for a, b in pairs:
+            assert store._path(a).name.lower() != store._path(b).name.lower(), (a, b)
             store.save(a, [], 1)
             store.save(b, [], 2)
             assert store.load(a)["conversation_id"] == a
+            assert store.load(a)["turn_index"] == 1
             assert store.load(b)["conversation_id"] == b
         for weird in ("../evil", "..\\evil", "a/b", "x" * 129, "é"):
             assert store._path(weird).parent == tmp_path, weird
-        # Plain ids keep their readable name; others are hashed.
-        assert store._path("pr-review_tier2").name == "pr-review_tier2.json"
-        assert store._path("x" * 129).name == (
-            hashlib.sha256(("x" * 129).encode()).hexdigest() + ".json"
+        # Every id — plain ones included — is named by its hash.
+        for cid in ("pr-review_tier2", "x" * 129, "Conv"):
+            assert store._path(cid).name == (
+                hashlib.sha256(cid.encode()).hexdigest() + ".json"
+            )
+
+    def test_stored_id_mismatch_is_absent(self, tmp_path):
+        """W-e: a file that holds ANOTHER conversation is never returned."""
+        store = ConversationStore(tmp_path)
+        store.save("conv", [{"role": "user", "content": "secret"}], 3)
+        store.save_journal("conv", {"base_rounds": 1, "entries": [{"key": "k"}]})
+        # Simulate a collision: Conv's files hold conv's state.
+        store._path("Conv").write_bytes(store._path("conv").read_bytes())
+        store._path("Conv", ".journal.json").write_bytes(
+            store._path("conv", ".journal.json").read_bytes()
         )
+        assert store.load("Conv") is None
+        assert store.load_journal("Conv") is None
+        assert store.load("conv")["turn_index"] == 3
+        assert store.load_journal("conv")["conversation_id"] == "conv"
 
     def test_disabled_store_is_noop(self):
         store = ConversationStore(None)
         assert not store.enabled
         store.save("c1", [], 0)  # must not raise
         assert store.load("c1") is None
+
+
+# ---------------------------------------------------------------------------
+# CI wiring — these tests must actually run in the test-sk-agent job
+# ---------------------------------------------------------------------------
+
+
+class TestCiRunsTurnControl:
+    def test_ci_sk_agent_job_runs_this_file(self):
+        """The test-sk-agent job runs an explicit file list; this file was
+        missing from it, so no turn-control test ran in CI."""
+        ci = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "ci.yml"
+        if not ci.exists():
+            pytest.skip("server copied without its repository (no ci.yml)")
+        lines = ci.read_text(encoding="utf-8").splitlines()
+        start = lines.index("  test-sk-agent:")
+        job = []
+        for line in lines[start + 1 :]:
+            if line.startswith("  ") and not line.startswith("   ") and line.rstrip().endswith(":"):
+                break  # next job
+            job.append(line)
+        pytest_lines = [line for line in job if "python -m pytest" in line]
+        assert pytest_lines, "test-sk-agent job runs no pytest command"
+        assert any(
+            os.path.basename(__file__) in line.split() for line in pytest_lines
+        ), "test_turn_control.py is missing from the test-sk-agent pytest list"

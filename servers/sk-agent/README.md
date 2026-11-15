@@ -429,13 +429,18 @@ nb-coder contract (live round admission, defer/resume, no in-flight kill):
   killed.
 - **Resume.** `call_agent(prompt="", conversation_id=X, options={"continue":
   true})` re-enters the loop over the committed history: no new user
-  message, tools already executed never re-run, and a fresh round budget.
+  message, tools already executed never re-run, and a fresh round budget
+  (`max_rounds` counts the rounds of that call only).
 - **Durable conversations (opt-in).** `SK_AGENT_CONVERSATION_DIR` points
   at a directory where each conversation's user/assistant messages and
   the current turn's tool journal are persisted. After a restart, a
   resumed turn rebuilds by replaying model calls; journaled tool calls
   are answered from the journal (idempotent defer — no double
-  execution). `end_conversation` removes the persisted state.
+  execution), and the replayed rounds are not counted again in
+  `round_index` or against `max_rounds`. Files are named by the sha256 of
+  the conversation id (`<h>.json`, `<h>.journal.json`); the readable id is
+  stored inside and checked on load — a mismatch reads as absent.
+  `end_conversation` removes the persisted state.
 - **Concurrency lock.** Two concurrent turns on one conversation: the
   second is refused as `conversation_busy` — never interleaved history.
 - **Timeout rollback.** A timed-out or cancelled turn is truncated back,
@@ -452,7 +457,32 @@ Implementation: `sk_agent_turns.py` (controller, filter, durable store,
 journal), the `AUTO_FUNCTION_INVOCATION` filter installed on every agent
 kernel, and `_begin_turn`/`_finish_turn`/`_rollback_turn` in the manager.
 Tests: `test_turn_control.py` (real SK loop, scripted model — pause,
-resume, restart replay, rollback, lock, gates).
+resume, restart replay, rollback, lock, gates), run by the CI job
+`test-sk-agent`.
+
+### Known limits
+
+- **A tool run inside an interrupted turn runs again.** Executions are
+  journaled durably only when a turn pauses. A resumed turn that times
+  out (or is cancelled) is rolled back to its paused epoch, so a tool it
+  had already executed runs again on the next `continue` (measured: 3
+  executions for 2 committed rounds). A timed-out fresh turn is rolled
+  back whole, and its retry re-runs every tool. Prefer idempotent tools,
+  and set `timeout` above the longest expected round.
+- **No eviction.** Finished conversations stay in memory, and with the
+  durable store on disk (`<h>.json`), until `end_conversation` removes
+  them.
+- **Raw tool results on disk.** While a turn is paused, its journal
+  (`<h>.journal.json`) stores raw tool results — a secret printed by a
+  shell tool lands on disk. The store is opt-in: point
+  `SK_AGENT_CONVERSATION_DIR` at a protected directory.
+- **Replay needs identical arguments; the journal is written on pause
+  only.** A journaled call is matched by tool name plus byte-identical
+  arguments: a model that serializes the same arguments differently on
+  replay runs the tool again. A crash before the turn pauses leaves no
+  journal, so the tools of that turn re-run.
+- **`run_conversation` ceiling.** It is capped at 900 s by default (see
+  the #4742 amendment above).
 
 ## Vector Memory
 
