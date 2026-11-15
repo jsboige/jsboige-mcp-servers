@@ -84,10 +84,10 @@
       "base_url": "https://open-webui.myia.io/openai",
       "api_key": "YOUR_OWUI_API_KEY_HERE",
       "succeeds": "owui-qwen3.6-35b",
-      "model_id": "Local.qwen3.6-35b-a3b",
+      "model_id": "Local.swift-1.5-27b",
       "vision": true,
       "thinking": true,
-      "description": "Fleet medium model (Swift-1.5-27B) via OWUI proxy (bénéficie des filters/pipelines OWUI). Entrée renommée owui-qwen3.6-35b -> owui-swift-1.5-27b (#3401) : le model_id reste l'ID RÉEL servi par OWUI (Local.qwen3.6-35b-a3b, vérifié 200 par ai-01 15/11 05:10Z — Local.swift-1.5-27b n'existe pas côté OWUI ; renommer l'ID OWUI est un geste opérateur OWUI). succeeds hérite la clé et la base_url de l'entrée locale pré-renommage au sync (ms#1421). Fallback direct vLLM via id swift-1.5-27b.",
+      "description": "Fleet medium model (Swift-1.5-27B) via OWUI proxy (bénéficie des filters/pipelines OWUI). Entrée renommée owui-qwen3.6-35b -> owui-swift-1.5-27b (#3401), model_id audité Local.swift-1.5-27b : vérifié chat-level 200 par ai-01 15/11 12:10Z (contrôle nom-inconnu -> 404, pas de fallback ; Local.* ids servis par la connexion OWUI->vLLM, invisibles dans la table custom — d'où les lectures divergentes du 15/11 matin). succeeds hérite la clé et la base_url de l'entrée locale pré-renommage au sync (ms#1421). Fallback direct vLLM via id swift-1.5-27b.",
       "context_window": 262144
     },
 

@@ -597,7 +597,7 @@ Since 25/09 the fleet medium model is **Swift-1.5-27B** (`ukisai/Swift-1.5-Qwen3
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
-| `owui-swift-1.5-27b` | Swift-1.5-27B via OWUI (served id `Local.qwen3.6-35b-a3b` — OWUI-side naming) | ✅ | ✅ | 262K |
+| `owui-swift-1.5-27b` | Swift-1.5-27B via OWUI (model_id `Local.swift-1.5-27b`, chat-level 200 by ai-01 15/11 with unknown-name 404 control; both `Local.*` ids resolve to the same vLLM backend) | ✅ | ✅ | 262K |
 
 ### OWUI Custom Models (3)
 
@@ -730,7 +730,7 @@ debugging plugin wiring, not for a per-agent inventory.
 ### v2.5 (2026-11-15) — alias retirement + OWUI rename (#3401 item 3)
 
 - **Aliases retired**: the template no longer ships the deprecated `qwen3.6-35b-a3b` / `qwen3.6-35b-no-thinking` entries (30-day window from v2.4 closed). A live config still citing an old id renames the reference to the canonical id — the `succeeds` fields stay so a not-yet-synced seat inherits its local pre-rename key AND endpoint (ms#1421)
-- **OWUI entry renamed**: `owui-qwen3.6-35b` → `owui-swift-1.5-27b` with `"succeeds": "owui-qwen3.6-35b"` for key inheritance; the three `owui-*` agents citing it follow. `model_id` stays on the OWUI-served id `Local.qwen3.6-35b-a3b` (verified 200 by ai-01 15/11 — `Local.swift-1.5-27b` does not exist on the OWUI side; renaming it is an OWUI operator gesture)
+- **OWUI entry renamed**: `owui-qwen3.6-35b` → `owui-swift-1.5-27b` with `"succeeds": "owui-qwen3.6-35b"` for key inheritance; the three `owui-*` agents citing it follow. `model_id` audited to `Local.swift-1.5-27b` — verified chat-level 200 by ai-01 15/11 12:10Z with an unknown-name 404 control (no fallback; `Local.*` ids are served by the OWUI→vLLM connection, which is why earlier preset-table reads missed them)
 - **nb-coder example**: the gated Swift entry is `swift-1.5-27b-nbcoder` (`model_id: swift-1.5-27b`); a seat already carrying the old id renames its live entry in place
 - `deploy-sk-agent.ps1` inline fallback and `benchmark_models.py` roster aligned; 9 models / 42 agents
 
