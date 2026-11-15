@@ -25,43 +25,43 @@
       "description": "Swift engine (served as qwen3.6-35b-a3b) for the nb-coder lane, WITH the declared capacity gate (#4712/#4725). Gate yellow/red/unknown refuses dispatch with a typed capacity_gate_* before any LLM call; the dedicated id keeps every other Swift consumer ungated."
     },
     {
-      "_comment": "Claudish stable alias (volet jsboige/claudish#1055 g3, naming convention `nb-<model>` — routing-key example `nb-minimax` from po-2028:claudish's claim). Behind the hub the backend may change without touching this config. Until g3 lands the id 404s at the hub: that is expected, the variant is armed only once claudish publishes the alias. vision=false is the hub-safe default (the hub strips image parts before z.ai — VERIFIED #794).",
+      "_comment": "Claudish stable alias (volet jsboige/claudish#1055 g3, naming convention `nb-<model>` — routing-key example `nb-minimax` from po-2028:claudish's claim). Behind the hub the backend may change without touching this config. Until g3 lands the id 404s at the hub: that is expected, the variant is armed only once claudish publishes the alias. vision=false is the hub-safe default (the hub strips image parts before z.ai — VERIFIED #794). g4 (CoursIA#26534 c.6885222101): base_url points at the SEAT SIDECAR (127.0.0.1, port per seat), not the hub in direct — the sidecar injects the cluster key and keeps the AUTONOMOUS fallback if the hub is down. default_headers (#4740, ms#1765): the relay copies incoming headers but never adds the machine itself, so the entry carries the lane + seat attribution.",
       "id": "nb-luna",
       "enabled": true,
-      "base_url": "http://<fleet-hub-host>:3000/v1",
+      "base_url": "http://127.0.0.1:<sidecar-port>/v1",
       "api_key_env": "ZAI_API_KEY",
       "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
       "model_id": "nb-luna",
       "vision": false,
       "thinking": true,
       "default_headers": {"x-claudish-lane": "nb-coder", "X-Claudish-Machine": "<seat machine name>"},
-      "description": "Claudish stable alias `nb-luna` via the fleet hub — backend chosen by claudish (#1055 g3), invisible to this config."
+      "description": "Claudish stable alias `nb-luna` via the seat sidecar — backend chosen by claudish (#1055 g3), invisible to this config; carries the nb-coder lane + seat attribution headers (g4)."
     },
     {
-      "_comment": "Same contract as nb-luna (claudish#1055 g3).",
+      "_comment": "Same contract as nb-luna (claudish#1055 g3; g4 sidecar base_url + attribution headers).",
       "id": "nb-minimax",
       "enabled": true,
-      "base_url": "http://<fleet-hub-host>:3000/v1",
+      "base_url": "http://127.0.0.1:<sidecar-port>/v1",
       "api_key_env": "ZAI_API_KEY",
       "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
       "model_id": "nb-minimax",
       "vision": false,
       "thinking": true,
       "default_headers": {"x-claudish-lane": "nb-coder", "X-Claudish-Machine": "<seat machine name>"},
-      "description": "Claudish stable alias `nb-minimax` via the fleet hub — backend chosen by claudish (#1055 g3), invisible to this config."
+      "description": "Claudish stable alias `nb-minimax` via the seat sidecar — backend chosen by claudish (#1055 g3), invisible to this config; carries the nb-coder lane + seat attribution headers (g4)."
     },
     {
-      "_comment": "Same contract as nb-luna (claudish#1055 g3).",
+      "_comment": "Same contract as nb-luna (claudish#1055 g3; g4 sidecar base_url + attribution headers). NOT PUBLISHED for now (coordinator 14/11: the native Anthropic path requires the client's own account, sk-agent has none — question at the user registry; step 2 runs on MiniMax then Luna). Entry kept armed-shaped so enabling it later is the alias landing, not a config edit.",
       "id": "nb-haiku",
       "enabled": true,
-      "base_url": "http://<fleet-hub-host>:3000/v1",
+      "base_url": "http://127.0.0.1:<sidecar-port>/v1",
       "api_key_env": "ZAI_API_KEY",
       "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
       "model_id": "nb-haiku",
       "vision": false,
       "thinking": true,
       "default_headers": {"x-claudish-lane": "nb-coder", "X-Claudish-Machine": "<seat machine name>"},
-      "description": "Claudish stable alias `nb-haiku` via the fleet hub — backend chosen by claudish (#1055 g3), invisible to this config."
+      "description": "Claudish stable alias `nb-haiku` via the seat sidecar — backend chosen by claudish (#1055 g3), invisible to this config; carries the nb-coder lane + seat attribution headers (g4). NOT PUBLISHED yet (see _comment)."
     }
   ],
 
