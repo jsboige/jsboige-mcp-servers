@@ -70,10 +70,13 @@ import {
 // scan lock + degraded routing under PG_PRIMARY.
 import {
   channelPgBreakerOpen,
+  channelPgReminderProbeDue,
   channelPgSweepSlow,
   noteChannelPgBackgroundFailure,
   noteChannelPgReadFailure,
   noteChannelPgReadSuccess,
+  noteChannelPgReminderProbe,
+  noteChannelPgSweepDeferred,
   noteChannelPgSweepDuration,
 } from './unified-store/channel-pg-breaker.js';
 import { acquireGdriveScanLock } from './gdrive-scan-lock.js';
@@ -2631,6 +2634,7 @@ export class MessageManager {
       // a non-primary READ_PG seat the per-call GDrive fallback IS the
       // design (l.1841), so the sweeps keep their #4302 contract there.
       if (isChannelPgPrimary() && (channelPgBreakerOpen() || channelPgSweepSlow())) {
+        noteChannelPgSweepDeferred('cleanup');
         logger.warn(
           `[channel-pg] #4731: cleanup scan deferred — ${channelPgBreakerOpen() ? 'breaker open' : 'previous sweep slow'} (background sweeps back off)`
         );
@@ -2704,15 +2708,23 @@ export class MessageManager {
     // pass reads, and a Null writer must never be mistaken for a persisted flag.
     const pgReader = getChannelPgReader();
     if (pgReader) {
-      // #4731 lever (a) — same deferral as cleanupExpiredMessages: the
-      // reminder scan is housekeeping too, and must not probe (nor fail)
-      // while the seat is degraded. PG_PRIMARY-only, same B16 doctrine.
-      if (isChannelPgPrimary() && (channelPgBreakerOpen() || channelPgSweepSlow())) {
+      // #4731 lever (a) + W1 — same deferral as cleanupExpiredMessages, with
+      // one carve-out: the reminder sweep has its OWN budget and forces one
+      // PG probe per budget window (default 2× the breaker trip) even under
+      // backoff, so a chronically degraded seat cannot starve expiry
+      // reminders forever. PG_PRIMARY-only, same B16 doctrine.
+      const backoffHeld = channelPgBreakerOpen() || channelPgSweepSlow();
+      if (isChannelPgPrimary() && backoffHeld && !channelPgReminderProbeDue()) {
+        noteChannelPgSweepDeferred('reminder');
         logger.warn(
-          `[channel-pg] #4731: reminder scan deferred — ${channelPgBreakerOpen() ? 'breaker open' : 'previous sweep slow'} (background sweeps back off)`
+          `[channel-pg] #4731: reminder scan deferred — ${channelPgBreakerOpen() ? 'breaker open' : 'previous sweep slow'} (own budget not yet due)`
         );
         return 0;
       }
+      if (isChannelPgPrimary() && backoffHeld) {
+        logger.warn('[channel-pg] #4731 W1: reminder own budget due — forcing one PG probe despite backoff');
+      }
+      noteChannelPgReminderProbe();
       const startedAt = Date.now();
       const pgPool = await readWholeChannelFromPg(pgReader);
       noteChannelPgSweepDuration(Date.now() - startedAt);

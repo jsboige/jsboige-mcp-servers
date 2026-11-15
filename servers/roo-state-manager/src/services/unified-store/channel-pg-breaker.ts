@@ -46,6 +46,11 @@ let lastBackgroundFailureAt = 0;
 let lastSweepDurationMs: number | null = null;
 /** #4731 — slow-sweep backoff: further sweeps deferred until this epoch ms. */
 let sweepSlowUntil = 0;
+/** #4731 W1 — deferral counters per sweep (measurement + tool reporting). */
+let cleanupDeferred = 0;
+let reminderDeferred = 0;
+/** #4731 W1 — reminder own budget: epoch ms of its last PG probe. */
+let reminderLastProbeAt = 0;
 
 /** Breaker trip duration. Default 5 min; tunable via CHANNEL_PG_BREAKER_MS. */
 function breakerTripMs(): number {
@@ -112,10 +117,47 @@ export function channelPgSweepSlow(now: number = Date.now()): boolean {
   return now < sweepSlowUntil;
 }
 
-/** Duration at or above which a sweep arms the backoff. Default 30 s; CHANNEL_PG_SWEEP_SLOW_MS. */
+/**
+ * #4731 W1 — a sweep records a deferral. Counted per kind so starvation is
+ * MEASURED (state) and reported (manage tool) instead of silent.
+ */
+export function noteChannelPgSweepDeferred(kind: 'cleanup' | 'reminder'): void {
+  if (kind === 'cleanup') cleanupDeferred++;
+  else reminderDeferred++;
+  logger.warn(
+    `[channel-pg-breaker] ${kind} sweep deferred (#4731 backoff) — deferrals: cleanup=${cleanupDeferred}, reminder=${reminderDeferred}`
+  );
+}
+
+/**
+ * #4731 W1 — the reminder sweep's OWN budget: true when a PG probe is due
+ * even under backoff. A chronically degraded seat must not starve expiry
+ * reminders forever: at least one probe per budget window is forced through.
+ * Default: twice the breaker trip window. CHANNEL_PG_REMINDER_BUDGET_MS.
+ */
+export function channelPgReminderProbeDue(now: number = Date.now()): boolean {
+  return now - reminderLastProbeAt >= reminderBudgetMs();
+}
+
+/** #4731 W1 — the reminder sweep is about to probe PG: budget consumed. */
+export function noteChannelPgReminderProbe(now: number = Date.now()): void {
+  reminderLastProbeAt = now;
+}
+
+function reminderBudgetMs(): number {
+  const raw = Number(process.env.CHANNEL_PG_REMINDER_BUDGET_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2 * breakerTripMs();
+}
+
+/**
+ * Duration at or above which a sweep arms the backoff. Default 30 s.
+ * CHANNEL_PG_SWEEP_SLOW_MS must be > 0 — 0 or negative values are REJECTED
+ * (#4731 I4): a 0 threshold would mark every sweep slow and defer both
+ * sweeps forever (self-starvation footgun).
+ */
 function sweepSlowThresholdMs(): number {
   const raw = Number(process.env.CHANNEL_PG_SWEEP_SLOW_MS);
-  return Number.isFinite(raw) && raw >= 0 ? raw : 30_000;
+  return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
 }
 
 /** Breaker state for tests and diagnostics. */
@@ -128,6 +170,9 @@ export function channelPgBreakerState(now: number = Date.now()): {
   lastBackgroundFailureAt: number;
   lastSweepDurationMs: number | null;
   sweepSlow: boolean;
+  cleanupDeferred: number;
+  reminderDeferred: number;
+  reminderLastProbeAt: number;
 } {
   return {
     open: channelPgBreakerOpen(now),
@@ -138,6 +183,9 @@ export function channelPgBreakerState(now: number = Date.now()): {
     lastBackgroundFailureAt,
     lastSweepDurationMs,
     sweepSlow: channelPgSweepSlow(now),
+    cleanupDeferred,
+    reminderDeferred,
+    reminderLastProbeAt,
   };
 }
 
@@ -149,4 +197,7 @@ export function resetChannelPgBreakerForTests(): void {
   lastBackgroundFailureAt = 0;
   lastSweepDurationMs = null;
   sweepSlowUntil = 0;
+  cleanupDeferred = 0;
+  reminderDeferred = 0;
+  reminderLastProbeAt = 0;
 }
