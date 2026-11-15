@@ -8,7 +8,7 @@
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { classifySearchError, formatClassifiedError, isNetworkErrorLike } from './search-error-classifier.js';
+import { classifySearchError, formatClassifiedError, isNetworkErrorLike, isTimeoutLikeError } from './search-error-classifier.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { resolveWorkspace } from '../../utils/workspace-resolver.js';
 import { listGitVisiblePaths } from '../../services/code-index/git-visible.js';
@@ -124,8 +124,12 @@ export async function listWorkspaceCollections(): Promise<string[]> {
 		// #2636: a Qdrant *outage* (network/TLS) must surface as qdrant_unreachable
 		// via the outer classifier, not be folded into an empty list — which the caller
 		// then reports as collection_not_found, masking the outage as a missing index.
+		// #4736 P2: a TIMED-OUT listing must surface the same way
+		// (qdrant_backend_slow) — the swallow used to turn it into
+		// existing_collections: [] / "0 of 0 ws-* collections" while the
+		// collections existed (measured on a cold Qdrant, 15/11).
 		// A genuinely empty / 404 listing is still swallowed → [].
-		if (isNetworkErrorLike(err)) throw err;
+		if (isNetworkErrorLike(err) || isTimeoutLikeError(err)) throw err;
 		return [];
 	}
 }

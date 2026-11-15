@@ -249,6 +249,24 @@ describe('search-codebase.tool', () => {
 				const collections = await listWorkspaceCollections();
 				expect(collections).toEqual([]);
 			});
+
+			// #4736 P2: a TIMED-OUT listing must propagate too. The Qdrant JS
+			// client rejects with `Request Timeout` (capital T) on a cold/slow
+			// backend — not a NETWORK_ERROR_PATTERNS match — so the old swallow
+			// folded it into [] and the reader reported collection_not_found
+			// with existing_collections: [] / "0 of 0 ws-* collections" while
+			// 65 candidates existed (measured 15/11). It must reach the outer
+			// classifier and surface as qdrant_backend_slow, like #2636 did for
+			// outages.
+			test('rethrows a timed-out listing so a slow Qdrant surfaces as qdrant_backend_slow (#4736)', async () => {
+				mockQdrant.getCollections.mockRejectedValue(new Error('Request Timeout'));
+				await expect(listWorkspaceCollections()).rejects.toThrow('Request Timeout');
+			});
+
+			test('still swallows a genuine 404/unknown listing error into []', async () => {
+				mockQdrant.getCollections.mockRejectedValue(new Error('unexpected endpoint shape'));
+				await expect(listWorkspaceCollections()).resolves.toEqual([]);
+			});
 		});
 
 		// ============================================================
