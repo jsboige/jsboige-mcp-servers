@@ -584,7 +584,7 @@ The mini tier is the cheapest budget in the fleet: it takes the reading and the 
 
 Key: `ZAI_API_KEY` (`api_key_env`) — the **cluster hub client key**, the same env var as the `glm-*` entries; **never** the MINI key, which is the hub→vLLM transport credential and must not leave the hub. The template ships a placeholder only.
 
-### vLLM Local Direct (4)
+### vLLM Local Direct (2)
 
 Since 25/09 the fleet medium model is **Swift-1.5-27B** (`ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ`), served on ai-01 as `swift-1.5-27b`. Qwen3.6 35B MoE is retired. Since 11/10 (#3411 option A) the template's canonical ids are the served engine names; the pre-rename alias entries were **retired from the template on 2026-11-15 (#3401)** — a live config that still cites an old id renames the reference to the canonical id (same engine, same endpoint). The canonical entries declare `"succeeds": "<pre-rename id>"` — on a seat that has not synced since the rename and whose local medium `base_url` diverges from the template, the sync inherits the old entry's local key AND endpoint, so a renamed id never deploys keyless (ms#1421 review).
 
@@ -740,7 +740,7 @@ debugging plugin wiring, not for a per-agent inventory.
 - **Deprecated aliases**: `qwen3.6-35b-a3b` and `qwen3.6-35b-no-thinking` kept ~30 days (removal ~2026-11-10) — ad hoc agent_specs (extends + model) citing them keep resolving; the server keeps serving both names
 - **Successor key inheritance** (sync, ms#1421 review): the canonical ids carry `"succeeds": "<alias id>"` — on a seat whose local medium `base_url` diverges from the template (ai-01 `host.docker.internal`), `sync_from_template.py` step 4 inherits the alias's local key AND endpoint, so a renamed id never deploys keyless against an unreachable URL
 - **Presets re-pointed**: the 8 thinking and 7 no-thinking medium presets (incl. the pr-review-tier1 inline synthesizer) now cite the canonical ids; OWUI entries unchanged (OWUI-side naming, changes when OWUI renames)
-- 11 models / 42 agents
+- 9 models / 42 agents
 
 ### v2.3 (2026-10-07) — mini tier + delegation (#4107, volet C of #4085)
 
