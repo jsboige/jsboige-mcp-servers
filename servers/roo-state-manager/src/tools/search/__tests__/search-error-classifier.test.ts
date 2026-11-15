@@ -466,3 +466,34 @@ describe('failureComponent (#4438)', () => {
 		}
 	});
 });
+
+// ── #4736 P2: isTimeoutLikeError ─────────────────────────────────────────────
+
+describe('isTimeoutLikeError', () => {
+	// The Qdrant JS client's timeout message: 'Request Timeout' with a capital
+	// T — the case-sensitive `includes('timeout')` checks in the classifier
+	// missed it, which is why listWorkspaceCollections used to swallow it.
+	it('recognizes the Qdrant client Request Timeout message', async () => {
+		const { isTimeoutLikeError } = await import('../search-error-classifier.js');
+		expect(isTimeoutLikeError(new Error('Request Timeout'))).toBe(true);
+	});
+
+	it('recognizes lowercase variants, timed out, and aborts', async () => {
+		const { isTimeoutLikeError } = await import('../search-error-classifier.js');
+		expect(isTimeoutLikeError(new Error('request timeout of 30000ms exceeded'))).toBe(true);
+		expect(isTimeoutLikeError(new Error('The operation timed out'))).toBe(true);
+		expect(isTimeoutLikeError(new Error('This operation was aborted'))).toBe(true);
+	});
+
+	it('recognizes the timeout error codes', async () => {
+		const { isTimeoutLikeError } = await import('../search-error-classifier.js');
+		expect(isTimeoutLikeError(makeError('generic', { code: 'ETIMEDOUT' }))).toBe(true);
+		expect(isTimeoutLikeError(makeError('generic', { code: 'UND_ERR_CONNECT_TIMEOUT' }))).toBe(true);
+	});
+
+	it('does NOT claim a generic connection error or a 404', async () => {
+		const { isTimeoutLikeError } = await import('../search-error-classifier.js');
+		expect(isTimeoutLikeError(new Error('connection failed'))).toBe(false);
+		expect(isTimeoutLikeError(makeError('Not Found', { status: 404 }))).toBe(false);
+	});
+});

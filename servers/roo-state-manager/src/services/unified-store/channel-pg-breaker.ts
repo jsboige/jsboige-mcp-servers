@@ -20,6 +20,14 @@
  *
  * State is process-local by design: PG reachability is per-host (per-seat PG
  * URL), and cross-process coordination would need the very PG that is down.
+ *
+ * #4731 lever (a) — background sweeps (expired-message cleanup, expiry
+ * reminders) report to their OWN failure accounting and defer while this
+ * breaker is open or their previous run measured slow: those sweeps run inline
+ * before the inbox listing (tools/roosync/read.ts), and a slow sweep tripping
+ * the breaker was failing the very inbox read that followed it (209 opens in
+ * 24 h on one seat). They must never be what fails the interactive inbox
+ * closed.
  */
 
 import { createLogger } from '../../utils/logger.js';
@@ -30,6 +38,14 @@ const logger = createLogger('channel-pg-breaker');
 let openUntil = 0;
 /** Total trips this process — observability (diagnose env / tests). */
 let trips = 0;
+/** #4731 — background sweep failures: counted separately, never open the breaker. */
+let backgroundFailures = 0;
+/** #4731 — epoch ms of the last background sweep failure (diagnostics). */
+let lastBackgroundFailureAt = 0;
+/** #4731 — last background sweep duration in ms; null before the first sweep. */
+let lastSweepDurationMs: number | null = null;
+/** #4731 — slow-sweep backoff: further sweeps deferred until this epoch ms. */
+let sweepSlowUntil = 0;
 
 /** Breaker trip duration. Default 5 min; tunable via CHANNEL_PG_BREAKER_MS. */
 function breakerTripMs(): number {
@@ -59,18 +75,78 @@ export function noteChannelPgReadSuccess(): void {
   }
 }
 
+/**
+ * #4731 lever (a) — a background sweep's PG read failed. Counted separately:
+ * a slow or failing housekeeping scan must not open the breaker that fails
+ * the interactive inbox closed (the sweeps run inline before the inbox
+ * listing, so a sweep failure was tripping the very read that followed it).
+ */
+export function noteChannelPgBackgroundFailure(now: number = Date.now()): void {
+  backgroundFailures++;
+  lastBackgroundFailureAt = now;
+  logger.warn(
+    `[channel-pg-breaker] background sweep PG read failed (#4731 separate accounting, breaker untouched) — count=${backgroundFailures}`
+  );
+}
+
+/**
+ * #4731 — a background sweep reports its measured duration. A duration at or
+ * above the slow threshold arms the backoff window (same length as the
+ * breaker trip): the next sweeps defer instead of piling a full-pool scan on
+ * a path that just measured slow ("ils reculent quand la latence mesurée est
+ * haute").
+ */
+export function noteChannelPgSweepDuration(durationMs: number, now: number = Date.now()): void {
+  lastSweepDurationMs = durationMs;
+  const slow = durationMs >= sweepSlowThresholdMs();
+  sweepSlowUntil = slow ? now + breakerTripMs() : 0;
+  if (slow) {
+    logger.warn(
+      `[channel-pg-breaker] background sweep took ${Math.round(durationMs)}ms (≥ ${sweepSlowThresholdMs()}ms) — further sweeps deferred ${Math.round(breakerTripMs() / 1000)}s (#4731 latency backoff)`
+    );
+  }
+}
+
+/** True while the previous sweep measured slow and the backoff window holds. */
+export function channelPgSweepSlow(now: number = Date.now()): boolean {
+  return now < sweepSlowUntil;
+}
+
+/** Duration at or above which a sweep arms the backoff. Default 30 s; CHANNEL_PG_SWEEP_SLOW_MS. */
+function sweepSlowThresholdMs(): number {
+  const raw = Number(process.env.CHANNEL_PG_SWEEP_SLOW_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 30_000;
+}
+
 /** Breaker state for tests and diagnostics. */
 export function channelPgBreakerState(now: number = Date.now()): {
   open: boolean;
   openUntilMs: number;
   trips: number;
   tripMs: number;
+  backgroundFailures: number;
+  lastBackgroundFailureAt: number;
+  lastSweepDurationMs: number | null;
+  sweepSlow: boolean;
 } {
-  return { open: channelPgBreakerOpen(now), openUntilMs: openUntil, trips, tripMs: breakerTripMs() };
+  return {
+    open: channelPgBreakerOpen(now),
+    openUntilMs: openUntil,
+    trips,
+    tripMs: breakerTripMs(),
+    backgroundFailures,
+    lastBackgroundFailureAt,
+    lastSweepDurationMs,
+    sweepSlow: channelPgSweepSlow(now),
+  };
 }
 
 /** Test seam: reset to a pristine closed state. */
 export function resetChannelPgBreakerForTests(): void {
   openUntil = 0;
   trips = 0;
+  backgroundFailures = 0;
+  lastBackgroundFailureAt = 0;
+  lastSweepDurationMs = null;
+  sweepSlowUntil = 0;
 }

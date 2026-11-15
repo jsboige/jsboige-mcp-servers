@@ -275,9 +275,9 @@ does not even advertise it.
 | Variant | Model entry | Backend |
 |---------|-------------|---------|
 | `notebook-coder` | `qwen3.6-35b-a3b-nbcoder` | Swift engine (`model_id: qwen3.6-35b-a3b`, medium vLLM) **with the declared capacity gate** |
-| `notebook-coder-luna` | `nb-luna` | claudish stable alias via the fleet hub |
-| `notebook-coder-minimax` | `nb-minimax` | claudish stable alias via the fleet hub |
-| `notebook-coder-haiku` | `nb-haiku` | claudish stable alias via the fleet hub |
+| `notebook-coder-luna` | `nb-luna` | claudish stable alias via the **seat sidecar** (g4) |
+| `notebook-coder-minimax` | `nb-minimax` | claudish stable alias via the **seat sidecar** (g4) |
+| `notebook-coder-haiku` | `nb-haiku` | claudish stable alias via the **seat sidecar** (g4) — NOT PUBLISHED yet (native Anthropic path requires the client's own account) |
 
 **The gate sits on a dedicated model id on purpose.** `capacity_gate` is
 evaluated per MODEL ID (`sk_agent_capacity_gate.check_model_capacity_gate`),
@@ -297,7 +297,9 @@ seat's to change):
    so `validate_config` can run on it standalone). For
    `qwen3.6-35b-a3b-nbcoder`, derive from the live auditor model entry
    (keys, endpoint, sampling) and add `capacity_gate`; fill the real
-   `jupyter_papermill` `PYTHONPATH` and API keys.
+   `jupyter_papermill` `PYTHONPATH` and API keys. On each `nb-*` entry,
+   replace `<sidecar-port>` with the seat's claudish sidecar port and
+   `<seat machine name>` with the seat's machine id (e.g. `myia-ai-01`).
 2. Validate (from this directory — `load_config` only LOGS warnings, so
    call the validator directly):
    `python -c "import json,sys; from sk_agent_config import validate_config; e=validate_config(json.load(open('sk_agent_config.json',encoding='utf-8'))); print('\n'.join(e) or 'OK'); sys.exit(1 if e else 0)"`
@@ -321,6 +323,15 @@ model does not rediscover it.
 Until g3 publishes them the hub 404s on these three ids — expected, the
 variants arm themselves once the aliases land. If g3 ships different names,
 the edit is the three `model` references in the agents (one line each).
+
+**Why the sidecar, not the hub in direct (g4, CoursIA#26534
+c.6885222101):** routing the `nb-*` entries at the seat sidecar
+(`http://127.0.0.1:<port>/v1`) instead of the fleet hub gives two things the
+direct hop cannot — the sidecar injects the **cluster key** (the entry's own
+key placeholder never leaves the seat) and keeps the **AUTONOMOUS fallback**
+when the hub is down. The lane/seat attribution headers themselves are
+`default_headers` (#4740): the relay copies incoming headers but never adds
+the machine, so the entry carries its own attribution.
 
 ### Complementary local profiles (#2002)
 

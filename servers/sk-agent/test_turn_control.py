@@ -574,6 +574,61 @@ class TestEnvelopeAndRefusals:
         assert opts.round_budget == 3
 
 
+class TestMcpRuntimeRefusalEnvelope:
+    """#4741 x #4742: the typed out-of-runtime refusal raised by agent
+    resolution reaches the caller with the turn envelope, counts no turn,
+    calls no model and leaves no lock behind."""
+
+    @staticmethod
+    async def _refusing_resolve(**kwargs):
+        raise sk_agent.McpRuntimeUnavailableError(
+            "a-x", "jupyter_papermill", ["stdio"], "container"
+        )
+
+    def test_refusal_carries_envelope_and_counts_no_turn(self):
+        manager, service, _ = _turn_manager(None)
+        real_resolve = manager._resolve_agent
+        manager._resolve_agent = self._refusing_resolve
+
+        async def scenario():
+            refused = await manager.call_agent(
+                prompt="hi", agent_id="a-x", conversation_id="r-1"
+            )
+            calls_after_refusal = service.model_calls
+            manager._resolve_agent = real_resolve
+            served = await manager.call_agent(
+                prompt="hi", agent_id="a-x", conversation_id="r-1"
+            )
+            return refused, calls_after_refusal, served
+
+        refused, calls_after_refusal, served = asyncio.run(scenario())
+
+        assert refused["error"] == "mcp_unavailable_in_runtime"
+        assert refused["mcp_id"] == "jupyter_papermill"
+        assert refused["runtime"] == "container"
+        # A config fix, not a retry and not a pause.
+        assert refused["status"] == "error"
+        assert "retry_only" not in refused
+        assert "resumable" not in refused
+        assert refused["conversation_id"] == "r-1"
+        assert refused["turn_index"] == 0
+        assert refused["round_index"] == 0
+        assert calls_after_refusal == 0
+        # The refused call consumed no turn index.
+        assert served["status"] == "completed", served
+        assert served["turn_index"] == 1
+
+    def test_refusal_without_conversation_id_leaves_no_lock(self):
+        manager, _, _ = _turn_manager(None)
+        manager._resolve_agent = self._refusing_resolve
+
+        refused = asyncio.run(manager.call_agent(prompt="hi", agent_id="a-x"))
+
+        assert refused["error"] == "mcp_unavailable_in_runtime"
+        assert refused["conversation_id"]
+        assert manager._conv_locks == {}
+
+
 class TestConversationLock:
     def test_concurrent_second_turn_is_refused_busy(self, tmp_path):
         state = tmp_path / "gate-state.txt"

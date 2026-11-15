@@ -247,3 +247,45 @@ class TestPromptCarriesTheKnownGotcha:
     def test_memory_is_disabled(self, fragment):
         for agent_id in VARIANTS:
             assert _agent_by_id(fragment, agent_id)["memory"]["enabled"] is False
+
+
+NB_ALIASES = ("nb-luna", "nb-minimax", "nb-haiku")
+
+
+class TestNbAliasesCarryLaneHeaders:
+    """g4 (CoursIA#26534 c.6885222101): the claudish aliases must attribute
+    themselves — the relay copies incoming headers but never adds the
+    machine, so without client-side headers the per-lane ceiling, the
+    emergency stop and the capture attribution have no hold — and they must
+    ride the SEAT SIDECAR, which injects the cluster key and keeps the
+    AUTONOMOUS fallback. Headers field itself: #4740 (ms#1765)."""
+
+    def test_nb_aliases_declare_lane_and_machine_headers(self, fragment):
+        for alias in NB_ALIASES:
+            headers = _model_by_id(fragment, alias)["default_headers"]
+            assert headers["x-claudish-lane"] == "nb-coder", alias
+            machine = headers["X-Claudish-Machine"]
+            assert machine and not machine.startswith("http"), alias
+
+    def test_nb_aliases_target_the_seat_sidecar_not_the_hub(self, fragment):
+        """Direct-to-hub routing bypasses the seat sidecar: no cluster key
+        injection, no AUTONOMOUS fallback. The placeholder keeps the port
+        per-seat — the apply step fills it."""
+        for alias in NB_ALIASES:
+            base_url = _model_by_id(fragment, alias)["base_url"]
+            assert base_url.startswith("http://127.0.0.1:"), (alias, base_url)
+            assert "<sidecar-port>" in base_url, alias
+            assert "<fleet-hub-host>" not in base_url, alias
+
+    def test_swift_entry_stays_headerless(self, fragment):
+        """The Swift engine entry targets the vLLM endpoint directly —
+        no claudish relay on that path, nothing to attribute."""
+        swift = _model_by_id(fragment, SWIFT_MODEL_ID)
+        assert "default_headers" not in swift
+
+    def test_haiku_entry_is_noted_unpublished(self, fragment):
+        """Coordinator 14/11: the native Anthropic path requires the
+        client's own account — the entry stays armed-shaped but documented
+        NOT PUBLISHED until that question is settled."""
+        comment = _model_by_id(fragment, "nb-haiku")["_comment"]
+        assert "NOT PUBLISHED" in comment

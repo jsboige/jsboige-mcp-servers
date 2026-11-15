@@ -83,6 +83,24 @@ export function isNetworkErrorLike(error: unknown): boolean {
 }
 
 /**
+ * #4736 P2: true when an error looks like a timeout/abort — including the
+ * Qdrant JS client's `Request Timeout` (capital T: the case-sensitive
+ * `includes('timeout')` checks elsewhere in this file miss it) and undici's
+ * UND_ERR_CONNECT_TIMEOUT. Lets callers re-throw a timed-out call instead of
+ * folding it into an empty result: listWorkspaceCollections() swallowed the
+ * timeout and the reader then reported `collection_not_found` with
+ * `existing_collections: []` while 65 ws-* candidates existed (measured on a
+ * cold Qdrant, 15/11) — a slow backend masked as a missing index.
+ */
+export function isTimeoutLikeError(error: unknown): boolean {
+	const errorMsg = error instanceof Error ? error.message : String(error);
+	const errorCode = (error as any)?.code || '';
+	return errorCode === 'ETIMEDOUT'
+		|| errorCode === 'UND_ERR_CONNECT_TIMEOUT'
+		|| /timeout|timed out|abort/i.test(errorMsg);
+}
+
+/**
  * Quick health probe to distinguish proxy_drop from qdrant_unreachable.
  * Returns { ok, latencyMs, status } or throws.
  * Timeout: 5 seconds (short, for diagnostic only).
@@ -275,6 +293,11 @@ export async function classifySearchError(
 			QDRANT_OWN_SEARCH_TIMEOUT.test(errorMsg) || // #4352
 			errorMsg.includes('This operation was aborted') ||
 			errorCode === 'UND_ERR_CONNECT_TIMEOUT' ||
+			// #4736 P2: the Qdrant JS client's literal timeout message (capital T,
+			// no period) — the case-sensitive checks above miss it. EXACT match on
+			// purpose: "Request timed out." is the embedding SDK's phrasing and
+			// must NOT be blamed on Qdrant (test: "not blamed on Qdrant").
+			errorMsg === 'Request Timeout' ||
 			isHttpServerError(error)) {
 			// Probe health endpoint to classify
 			try {
