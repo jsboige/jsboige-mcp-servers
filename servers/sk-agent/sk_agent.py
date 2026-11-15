@@ -245,6 +245,37 @@ class McpRuntimeUnavailableError(Exception):
         }
 
 
+class McpConfigRejectedError(Exception):
+    """An agent requires an MCP entry rejected at config load (#4755 W1).
+
+    The #4741 isolation (#1773 review d) turns a malformed entry into an
+    inert placeholder so one typo cannot take down the seat — but the
+    placeholder carries ``runtimes=None``, so it PASSES the out-of-runtime
+    gate and an agent that requires it used to be served silently stripped
+    of the plugin (one warning line), the exact silent strip #1773 exists
+    to remove. This refusal closes that gap for rejected entries: same
+    typed-error contract as McpRuntimeUnavailableError, different cause.
+    """
+
+    def __init__(self, agent_id: str, mcp_id: str, reason: str):
+        self.agent_id = agent_id
+        self.mcp_id = mcp_id
+        self.reason = reason
+        super().__init__(
+            f"agent '{agent_id}' requires MCP '{mcp_id}' rejected at config "
+            f"load ({reason})"
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        """Typed refusal payload for the tool-call surface (#4755)."""
+        return {
+            "error": "mcp_config_rejected",
+            "agent_id": self.agent_id,
+            "mcp_id": self.mcp_id,
+            "reason": self.reason,
+        }
+
+
 def _sanitize_agent_name(name: str) -> str:
     sanitized = _INVALID_NAME_CHARS.sub("-", name)
     return sanitized.strip("-")
@@ -1120,14 +1151,17 @@ class SKAgentManager:
             # explicit cwd the child inherits ours: under Claude Code that is
             # the session workspace, where those paths do not exist and the
             # plugin silently drops out of every preset that needs it (vllm#63).
+            # #4755 W2.5: resolved once — the old form called
+            # effective_command_args twice per spawn.
+            spawn_command, spawn_args = mcp_cfg.effective_command_args(runtime)
             plugin = SchemaNormalizingMCPStdioPlugin(
                 name=mcp_cfg.id,
                 description=mcp_cfg.description,
                 # #4741: in the container runtime a declared ``container``
                 # override replaces the host command/args — one config file,
                 # two launch shapes. No override -> host fields as-is.
-                command=mcp_cfg.effective_command_args(runtime)[0],
-                args=mcp_cfg.effective_command_args(runtime)[1],
+                command=spawn_command,
+                args=spawn_args,
                 env=env,
                 cwd=str(Path(CONFIG_PATH).resolve().parent),
             )
@@ -1372,6 +1406,22 @@ class SKAgentManager:
         optional = set(optional_mcp_ids or ())
         for mcp_id in mcp_ids:
             mcp_cfg = self._mcp_configs.get(mcp_id)
+            # #4755 W1 parity: a rejected entry must refuse the override
+            # path too — the placeholder passes available_in (runtimes=None)
+            # and would otherwise degrade exactly like the configured path.
+            if mcp_cfg is not None and mcp_cfg.config_error:
+                if mcp_id in optional:
+                    log.info(
+                        "Agent '%s': optional MCP '%s' rejected at config "
+                        "load (%s) — skipped (#4755)",
+                        agent_id,
+                        mcp_id,
+                        mcp_cfg.config_error,
+                    )
+                    continue
+                raise McpConfigRejectedError(
+                    agent_id, mcp_id, mcp_cfg.config_error
+                )
             if mcp_cfg is not None and not mcp_cfg.available_in(runtime):
                 if mcp_id in optional:
                     log.info(
@@ -1519,10 +1569,33 @@ class SKAgentManager:
         # agent requires an MCP this runtime does not serve. Falling through
         # to _create_agent would only degrade (agent served without the
         # plugin, one warning line) — the exact silent-strip #4741 closes.
+        # #4755 W1: same refusal for a REJECTED entry — its placeholder has
+        # ``runtimes=None`` so the out-of-runtime gate below would pass it
+        # and _create_agent would serve the agent stripped (one warning).
         runtime = current_runtime()
         optional = set(agent_cfg.optional_mcps)
         for mcp_id in agent_cfg.mcps:
             mcp_cfg = self._mcp_configs.get(mcp_id)
+            if mcp_cfg is not None and mcp_cfg.config_error:
+                if mcp_id in optional:
+                    log.info(
+                        "Agent '%s': optional MCP '%s' rejected at config "
+                        "load (%s) — serving without it",
+                        agent_id,
+                        mcp_id,
+                        mcp_cfg.config_error,
+                    )
+                    continue
+                log.error(
+                    "Agent '%s': MCP '%s' was rejected at config load (%s) "
+                    "— refusing agent creation (#4755)",
+                    agent_id,
+                    mcp_id,
+                    mcp_cfg.config_error,
+                )
+                raise McpConfigRejectedError(
+                    agent_id, mcp_id, mcp_cfg.config_error
+                )
             if mcp_cfg is not None and not mcp_cfg.available_in(runtime):
                 if mcp_id in optional:
                     # #4741 review (b): declared but optional in this
@@ -2799,6 +2872,11 @@ class SKAgentManager:
                 # there is nothing to roll back. A config fix, not a retry:
                 # the envelope reports status=error (#4742), never a pause.
                 log.warning("call_agent refused (#4741): %s", e)
+                return self._apply_turn_envelope(e.to_payload(), conv_id)
+            except McpConfigRejectedError as e:
+                # #4755 W1: same contract for an entry rejected at load —
+                # typed refusal, no LLM call, nothing to roll back.
+                log.warning("call_agent refused (#4755): %s", e)
                 return self._apply_turn_envelope(e.to_payload(), conv_id)
             except Exception as e:
                 # #4107 guard 3 (volet C of #4085): a failing model call — the mini
@@ -4472,6 +4550,12 @@ async def run_conversation(
         payload = e.to_payload()
         payload["conversation_id"] = conversation_id or conversation or None
         return json.dumps(payload, ensure_ascii=False)
+    except McpConfigRejectedError as e:
+        # #4755 W1: same contract for an entry rejected at config load.
+        log.warning("run_conversation refused (#4755): %s", e)
+        payload = e.to_payload()
+        payload["conversation_id"] = conversation_id or conversation or None
+        return json.dumps(payload, ensure_ascii=False)
 
     # #1587 (conversations): a thinking model that exhausts its budget (observed
     # glm-5.3, 4096-token thinking budget) returns a valid assistant message
@@ -4620,6 +4704,14 @@ async def diagnostics() -> str:
         )
         result["mcp_plugins_unavailable"] = [
             m for m in configured_mcps if m not in _manager._mcp_plugins
+        ]
+        # #4755 W1: rejected entries with their reason — before this, a
+        # malformed entry only surfaced in mcp_plugins_unavailable with no
+        # cause attached, and an agent requiring it was served stripped.
+        result["mcp_plugins_rejected"] = [
+            {"id": m.id, "reason": m.config_error}
+            for m in (_manager.config.mcps if _manager.config else [])
+            if m.config_error
         ]
         # #4741: runtime identity + the plugins this runtime does not serve.
         # A plugin listed here is DECLARED but unservable here — agents

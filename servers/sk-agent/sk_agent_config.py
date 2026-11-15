@@ -44,6 +44,16 @@ except ImportError:  # pragma: no cover - exercised only when pydantic missing
 # imported here so ModelConfig.from_dict can validate at parse time).
 from sk_agent_capacity_gate import parse_capacity_gate
 
+# #4755 W2.4: runtime/container validators shared with sk_agent_schemas so
+# the dataclass facade and the Pydantic layer cannot drift (#1773 review).
+# Aliased ``parse_runtimes`` -> ``_parse_runtimes`` keeps the historical
+# private name used by McpConfig.from_dict.
+from sk_agent_runtimes import (
+    KNOWN_RUNTIMES,
+    parse_container_override,
+    parse_runtimes as _parse_runtimes,
+)
+
 log = logging.getLogger("sk-agent.config")
 
 # ---------------------------------------------------------------------------
@@ -261,61 +271,6 @@ def current_runtime() -> str:
     """
     value = os.environ.get(SK_AGENT_RUNTIME_ENV, "")
     return value.strip().lower() or "stdio"
-
-
-def parse_container_override(raw: Any) -> dict[str, Any] | None:
-    """Validate an MCP entry's ``container`` override (``#4741``).
-
-    None or an empty mapping means "no override" (legacy behaviour). A
-    mapping must carry a non-empty string ``command`` and may carry an
-    ``args`` list of strings — the same shapes ``McpConfig.command`` /
-    ``McpConfig.args`` already accept. Raises ValueError otherwise: a typo in
-    this key would otherwise only surface as a silent spawn failure inside
-    the container, the exact defect #4741 exists to make visible.
-    """
-    if raw is None:
-        return None
-    if not isinstance(raw, dict):
-        raise ValueError(
-            f"container must be an object of {{command, args}} "
-            f"(got {type(raw).__name__})"
-        )
-    if not raw:
-        return None
-    command = raw.get("command")
-    if not isinstance(command, str) or not command.strip():
-        raise ValueError("container.command must be a non-empty string")
-    args = raw.get("args", [])
-    if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
-        raise ValueError("container.args must be a list of strings")
-    override: dict[str, Any] = {"command": command, "args": list(args)}
-    extra = set(raw) - {"command", "args"}
-    if extra:
-        raise ValueError(
-            f"container has unknown keys {sorted(extra)}; "
-            "only command and args are accepted"
-        )
-    return override
-
-
-def _parse_runtimes(raw: Any) -> list[str] | None:
-    """Validate an MCP entry's ``runtimes`` list (#4741).
-
-    None (absent), an empty list, or an empty string entry is rejected only
-    for the malformed shapes: None -> None (all runtimes, legacy), a list of
-    non-empty strings -> that list, anything else -> ValueError. Runtime
-    names are compared case-insensitively (``current_runtime`` lowercases),
-    so the validation stores them lowercased too.
-    """
-    if raw is None:
-        return None
-    if not isinstance(raw, list) or not all(
-        isinstance(r, str) and r.strip() for r in raw
-    ):
-        raise ValueError(
-            "runtimes must be a list of non-empty strings (e.g. [\"stdio\"])"
-        )
-    return [r.strip().lower() for r in raw] or None
 
 
 # ---------------------------------------------------------------------------
@@ -1213,6 +1168,15 @@ def validate_config(raw: dict) -> list[str]:
                 errors.append(f"{key}[{i}]: duplicate id '{mid}'")
             else:
                 mcp_ids.add(mid)
+            # #4755 W2.1: a misspelled runtime name ("stdoi") is refused at
+            # parse time (entry becomes a rejected placeholder); surface it
+            # here too so the load-time log names the typo before any agent
+            # is refused with the typed error.
+            if m.get("runtimes") is not None:
+                try:
+                    _parse_runtimes(m.get("runtimes"))
+                except ValueError as exc:
+                    errors.append(f"{key}[{i}] '{mid}': {exc}")
 
     # Validate agents
     agent_ids = set()
@@ -1234,6 +1198,17 @@ def validate_config(raw: dict) -> list[str]:
         for mcp_ref in a.get("mcps", []):
             if mcp_ref not in mcp_ids:
                 errors.append(f"agents[{i}] '{aid}': mcp '{mcp_ref}' not found in mcps")
+
+        # #4755 W2.8: optional_mcps only modulates ids already declared in
+        # ``mcps`` — an id outside that list is a no-op the author believes
+        # is doing something. Refuse it at load instead.
+        declared = set(a.get("mcps", []))
+        for opt_ref in a.get("optional_mcps", []) or []:
+            if opt_ref not in declared:
+                errors.append(
+                    f"agents[{i}] '{aid}': optional_mcps '{opt_ref}' is not "
+                    "declared in mcps — remove it or add it to mcps"
+                )
 
     # Validate default agents
     default_agent = raw.get("default_agent", "")

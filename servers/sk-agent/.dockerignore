@@ -6,3 +6,4 @@ sk_agent_config.json
 *.log
 .git
 test_*.py
+venv-markitdown/
