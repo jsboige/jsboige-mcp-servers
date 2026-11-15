@@ -19,10 +19,17 @@ _kernel_service: Optional[KernelService] = None
 _config: Optional[MCPConfig] = None
 
 
-def initialize_kernel_tools(config: MCPConfig) -> KernelService:
-    """Initialize the kernel service for tools."""
+def initialize_kernel_tools(
+    config: MCPConfig, notebook_crud: Optional[Any] = None
+) -> KernelService:
+    """Initialize the kernel service for tools.
+
+    #4716 (third defect): pass the server's NotebookCRUDService so the
+    kernel output persistence shares its per-path write lock. Standalone
+    callers omit it and keep the previous (unserialized) behavior.
+    """
     global _kernel_service, _config
-    _kernel_service = KernelService(config)
+    _kernel_service = KernelService(config, notebook_crud=notebook_crud)
     _config = config
     return _kernel_service
 

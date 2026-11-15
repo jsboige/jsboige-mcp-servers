@@ -21,15 +21,20 @@ logger = logging.getLogger(__name__)
 class KernelService:
     """Service class for kernel operations."""
 
-    def __init__(self, config: MCPConfig):
+    def __init__(self, config: MCPConfig, notebook_crud: Optional[Any] = None):
         """
         Initialize the kernel service.
 
         Args:
             config: MCP configuration object
+            notebook_crud: The server's NotebookCRUDService, whose per-path
+                write lock (#4716) the output persistence must share. When
+                None (standalone/test callers), persistence runs unserialized
+                exactly as before -- no hidden global is invented here.
         """
         self.config = config
         self.jupyter_manager = JupyterManager(config)
+        self.notebook_crud = notebook_crud
 
     async def list_kernels(self) -> Dict[str, Any]:
         """
@@ -632,67 +637,81 @@ class KernelService:
             return info
 
         try:
-            # Fresh read: never clobber concurrent edits to other cells.
-            nb = FileUtils.read_notebook(notebook_path)
-            if cell_index < 0 or cell_index >= len(nb.cells):
-                info["reason"] = (
-                    f"cell {cell_index} out of range after re-read "
-                    f"({len(nb.cells)} cells) -- notebook changed during execution"
-                )
-                return info
-            cell = nb.cells[cell_index]
-            if cell.cell_type != "code":
-                info["reason"] = (
-                    f"cell {cell_index} is no longer a code cell -- "
-                    f"notebook changed during execution"
-                )
-                return info
-            if cell.source != expected_source:
-                info["reason"] = (
-                    "cell source changed on disk during execution -- "
-                    f"outputs not persisted for cell {cell_index}"
-                )
-                return info
+            # #4716 (third defect): this read-modify-write cycle must hold the
+            # SAME per-path lock as the CRUD mutators. Without it, an
+            # update_cell/add_cell racing the persistence on one notebook
+            # reads pre-persistence state, completes its edit, then gets
+            # clobbered by this write -- the nb-coder flow (write during
+            # execution) hits exactly this interleaving.
+            from contextlib import nullcontext
 
-            ec = cell_result.execution_count
-            if not isinstance(ec, int) or ec <= 0:
-                # #4481 (C1): no honest execution counter means this run cannot
-                # account for the cell -- a foreign `idle` after an in-flight
-                # restart, or a shell reply that never arrived. Writing here
-                # replaced the outputs already on disk with an empty list and
-                # still reported `written: true, reason: null`.
-                info["reason"] = (
-                    "no execution_count from the kernel "
-                    f"(got {ec!r}) -- outputs not persisted, "
-                    f"cell {cell_index} left exactly as it was on disk"
-                )
-                logger.warning(f"#4481 {info['reason']}")
-                return info
-
-            cell.outputs = self._outputs_to_nbformat(cell_result.outputs)
-            cell.execution_count = ec
-            info["execution_count"] = cell.execution_count
-            info["outputs_written"] = len(cell.outputs)
-
-            # This rewrite is NOT a Papermill pass: a metadata.papermill /
-            # metadata.execution left by an earlier Papermill run would keep
-            # dating the outputs just written to that old run (STALE_BLOCK,
-            # CoursIA #11155). Strip them via the shared organ before the
-            # write (#12722) -- the locations are reported so the caller can
-            # see the notebook was cleaned, not silently altered.
-            from ..utils.papermill_meta import strip_stale_papermill_metadata
-
-            info["stale_papermill_metadata_stripped"] = self._stale_papermill_locations(nb)
-            strip_stale_papermill_metadata(nb)
-
-            FileUtils.write_notebook(nb, notebook_path)
-            raw = Path(notebook_path).read_bytes()
-            info["written"] = True
-            info["sha256"] = hashlib.sha256(raw).hexdigest()
-            logger.info(
-                f"#4481 persisted cell {cell_index} of {notebook_path}: "
-                f"ec={cell.execution_count}, {len(cell.outputs)} output(s)"
+            lock_ctx = (
+                self.notebook_crud.path_write_lock(notebook_path)
+                if self.notebook_crud is not None
+                else nullcontext()
             )
+            with lock_ctx:
+                # Fresh read: never clobber concurrent edits to other cells.
+                nb = FileUtils.read_notebook(notebook_path)
+                if cell_index < 0 or cell_index >= len(nb.cells):
+                    info["reason"] = (
+                        f"cell {cell_index} out of range after re-read "
+                        f"({len(nb.cells)} cells) -- notebook changed during execution"
+                    )
+                    return info
+                cell = nb.cells[cell_index]
+                if cell.cell_type != "code":
+                    info["reason"] = (
+                        f"cell {cell_index} is no longer a code cell -- "
+                        f"notebook changed during execution"
+                    )
+                    return info
+                if cell.source != expected_source:
+                    info["reason"] = (
+                        "cell source changed on disk during execution -- "
+                        f"outputs not persisted for cell {cell_index}"
+                    )
+                    return info
+
+                ec = cell_result.execution_count
+                if not isinstance(ec, int) or ec <= 0:
+                    # #4481 (C1): no honest execution counter means this run cannot
+                    # account for the cell -- a foreign `idle` after an in-flight
+                    # restart, or a shell reply that never arrived. Writing here
+                    # replaced the outputs already on disk with an empty list and
+                    # still reported `written: true, reason: null`.
+                    info["reason"] = (
+                        "no execution_count from the kernel "
+                        f"(got {ec!r}) -- outputs not persisted, "
+                        f"cell {cell_index} left exactly as it was on disk"
+                    )
+                    logger.warning(f"#4481 {info['reason']}")
+                    return info
+
+                cell.outputs = self._outputs_to_nbformat(cell_result.outputs)
+                cell.execution_count = ec
+                info["execution_count"] = cell.execution_count
+                info["outputs_written"] = len(cell.outputs)
+
+                # This rewrite is NOT a Papermill pass: a metadata.papermill /
+                # metadata.execution left by an earlier Papermill run would keep
+                # dating the outputs just written to that old run (STALE_BLOCK,
+                # CoursIA #11155). Strip them via the shared organ before the
+                # write (#12722) -- the locations are reported so the caller can
+                # see the notebook was cleaned, not silently altered.
+                from ..utils.papermill_meta import strip_stale_papermill_metadata
+
+                info["stale_papermill_metadata_stripped"] = self._stale_papermill_locations(nb)
+                strip_stale_papermill_metadata(nb)
+
+                FileUtils.write_notebook(nb, notebook_path)
+                raw = Path(notebook_path).read_bytes()
+                info["written"] = True
+                info["sha256"] = hashlib.sha256(raw).hexdigest()
+                logger.info(
+                    f"#4481 persisted cell {cell_index} of {notebook_path}: "
+                    f"ec={cell.execution_count}, {len(cell.outputs)} output(s)"
+                )
         except Exception as e:
             info["reason"] = f"persistence failed: {e}"
             logger.error(f"#4481 {info['reason']}")

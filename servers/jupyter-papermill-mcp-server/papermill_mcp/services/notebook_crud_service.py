@@ -65,6 +65,25 @@ class NotebookCRUDService:
                 self._path_locks[key] = lock
             return lock
 
+    def path_write_lock(self, path: Union[str, Path]) -> "threading.Lock":
+        """
+        Return the write lock for one notebook path, resolved the same way
+        the CRUD mutators resolve it (#4716, third defect).
+
+        Writers OUTSIDE this service (kernel output persistence in
+        KernelService) must take this lock instead of duplicating the lock
+        map: the key has to be derived identically (resolve_path against the
+        workspace, then normcase(abspath)) or the two "locks" guard nothing.
+
+        Args:
+            path: Notebook path exactly as the external writer knows it
+                (absolute, or workspace-relative like the tool layer's input)
+
+        Returns:
+            The threading.Lock shared with every CRUD mutator of that notebook
+        """
+        return self._lock_for(self.resolve_path(path))
+
     def resolve_path(self, path: Union[str, Path]) -> str:
         """
         Resolve path to absolute path, handling workspace-relative paths.
