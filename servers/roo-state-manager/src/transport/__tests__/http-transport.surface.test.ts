@@ -46,7 +46,7 @@ const MUTATING_ACTIONS = new Set([
     'bulk_mark_read', 'bulk_archive', 'cleanup', 'attachments_delete',
     'create', 'dispatch', 'remind', 'apply', 'apply_profile', 'publish',
     'restore', 'repair', 'repair_gaps', 'repair_workspace', 'rebuild',
-    'reset', 'index', 'index_code_supplement', 'install', 'set', 'remove',
+    'reset', 'index', 'index_code_supplement', 'index_code_ws', 'install', 'set', 'remove',
     'save', 'save_snapshot', 'init', 'touch', 'maintenance', 'confirm',
     'close', 'lifecycle', 'recovery', 'reload', 'execute', 'run', 'import',
     'download', 'upload', 'load', 'garbage_scan', 'cleanup_orphans',

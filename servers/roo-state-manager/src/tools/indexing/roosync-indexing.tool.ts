@@ -499,7 +499,7 @@ function aggregateToolUsage(
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'repair_workspace' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report' | 'index_code_supplement' | 'probe_code_index';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'repair_workspace' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report' | 'index_code_supplement' | 'probe_code_index' | 'index_code_ws';
 
     /**
      * #4352 (a3) — action=index_code_supplement: the workspace whose supplement
@@ -520,6 +520,15 @@ export interface RooSyncIndexingArgs {
 
     /** #4352 (a3): chunks per embedding/upsert batch. Default 32. */
     batch_size?: number;
+
+    /**
+     * #4736 P3 — action=index_code_ws: the ABSOLUTE writer path prefix Zoo's
+     * scanner hashed under (on this corpus: `d:\dev\roo-extensions`). Zoo's
+     * segmentHash embeds the absolute path, so point-id parity is only possible
+     * under the exact historical prefix. REQUIRED for index_code_ws; a wrong
+     * prefix is refused by evidence (stored hashes fail to recompute).
+     */
+    hash_path_prefix?: string;
 
     /** ID de la tâche à indexer (requis pour action=index) */
     task_id?: string;
@@ -656,8 +665,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), repair_workspace (backfill workspace_name on existing points #3344), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows), index_code_supplement (#4352: build the sup- collection for files Zoo never indexes — .ps1, .sh, .yml, .mjs/.cjs and hidden dirs; dry_run defaults to TRUE here), probe_code_index (#4736: read-only probe of the ws-* collections a workspace resolves to — naming ladder, content-match fallback, vector size/distance; never writes)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index', 'index_code_ws'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), repair_workspace (backfill workspace_name on existing points #3344), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows), index_code_supplement (#4352: build the sup- collection for files Zoo never indexes — .ps1, .sh, .yml, .mjs/.cjs and hidden dirs; dry_run defaults to TRUE here), probe_code_index (#4736: read-only probe of the ws-* collections a workspace resolves to — naming ladder, content-match fallback, vector size/distance; never writes), index_code_ws (#4736 P3: guarded INCREMENTAL writer for the SERVED ws- collection — Zoo-parity markdown point ids, stale-point purge by filePath, per-file hash cache; NEVER bootstraps a collection, NEVER recreates config; one writer per collection; dry_run defaults to TRUE here; hash_path_prefix is REQUIRED — the absolute prefix Zoo hashed under, e.g. d:\\dev\\roo-extensions)'
             },
             task_id: {
                 type: 'string',
@@ -689,11 +698,15 @@ export const roosyncIndexingTool: Tool = {
             },
             workspace: {
                 type: 'string',
-                description: 'For index_code_supplement (#4352) and probe_code_index (#4736): workspace whose code collections are resolved. Resolved like codebase_search when omitted.'
+                description: 'For index_code_supplement (#4352), probe_code_index (#4736) and index_code_ws (#4736 P3): workspace whose code collections are resolved. Resolved like codebase_search when omitted.'
+            },
+            hash_path_prefix: {
+                type: 'string',
+                description: 'For index_code_ws (#4736 P3), REQUIRED: the ABSOLUTE writer path prefix Zoo Code hashed under (on this corpus: d:\\dev\\roo-extensions). Zoo\'s segmentHash embeds the absolute path, so point-id parity is only possible under the exact historical prefix. Forward slashes are normalized to backslashes; a wrong prefix is refused by evidence (stored segmentHashes fail to recompute under it).'
             },
             takeover: {
                 type: 'boolean',
-                description: 'For index_code_supplement (#4352). One writer per sup- collection is enforced in code by a sentinel record: set this ONLY to take ownership from another lane (the previous writer is recorded). Default: false.',
+                description: 'For index_code_supplement (#4352) and index_code_ws (#4736 P3). One writer per collection is enforced in code by a sentinel record: set this ONLY to take ownership from another lane (the previous writer is recorded). A takeover does NOT cross an embedding-model change. Default: false.',
                 default: false
             },
             max_files: {
@@ -713,7 +726,7 @@ export const roosyncIndexingTool: Tool = {
             },
             dry_run: {
                 type: 'boolean',
-                description: 'Simulation mode (for rebuild, garbage_scan, cleanup_orphans, repair_workspace). INVERTED default for index_code_supplement (#4352): omitting it means dry_run=TRUE — that action writes to Qdrant only when dry_run is explicitly false.',
+                description: 'Simulation mode (for rebuild, garbage_scan, cleanup_orphans, repair_workspace). INVERTED default for index_code_supplement (#4352) and index_code_ws (#4736 P3): omitting it means dry_run=TRUE — those actions write to Qdrant only when dry_run is explicitly false.',
                 default: false
             },
             machine_id: {
@@ -897,10 +910,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index', 'index_code_ws'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, repair_workspace, cleanup_failed, tool_usage_stats, save_snapshot, trend_report, index_code_supplement, probe_code_index` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, repair_workspace, cleanup_failed, tool_usage_stats, save_snapshot, trend_report, index_code_supplement, probe_code_index, index_code_ws` }]
         };
     }
 
@@ -1237,6 +1250,93 @@ export async function handleRooSyncIndexing(
                             status: 'probe_code_index_failed',
                             message: error instanceof Error ? error.message : String(error),
                             hint: 'probe_code_index needs a workspace (explicit or resolvable) and a reachable Qdrant. It never writes.',
+                        }, null, 2)
+                    }]
+                };
+            }
+        }
+
+        /**
+         * #4736 P3 — index_code_ws: the guarded incremental writer for the
+         * SERVED ws- collection (the one probe_code_index resolves). Zoo-parity
+         * markdown point ids (zoo-parity.ts), stale-point purge by filePath
+         * BEFORE upsert, per-file hash cache, mono-writer sentinel. Refuses to
+         * bootstrap a collection that does not resolve (risk 2) and to write
+         * under a hash-path prefix the stored points contradict (id parity).
+         * dry_run is INVERTED like index_code_supplement: omit = TRUE.
+         */
+        case 'index_code_ws': {
+            const { resolveWorkspace } = await import('../../utils/workspace-resolver.js');
+            const { getQdrantClient } = await import('../../services/qdrant.js');
+            const { embedCodebaseTexts, getCodebaseEmbeddingModel, getCodebaseEmbeddingEndpoint } = await import('../../services/code-index/embedding-client.js');
+            const { runWsIndexWriter } = await import('../../services/code-index/ws-index-writer.js');
+
+            // The prefix is the id-parity parameter — refusing without it is
+            // cheaper than minting a whole corpus of twin points.
+            if (!args.hash_path_prefix || typeof args.hash_path_prefix !== 'string') {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            status: 'ws_writer_refused',
+                            message: "hash_path_prefix is REQUIRED for index_code_ws: Zoo's segmentHash embeds the absolute writer path, so point-id parity is only possible under the exact historical prefix (on this corpus: d:\\dev\\roo-extensions, recovered by replay in #4736 P2).",
+                            hint: 'Run probe_code_index first, and pass hash_path_prefix with the absolute prefix Zoo hashed under. A wrong prefix is refused by evidence (stored segmentHashes fail to recompute).',
+                        }, null, 2)
+                    }]
+                };
+            }
+
+            try {
+                const { workspace: workspaceRoot, source } = await resolveWorkspace(args.workspace);
+                const client: any = getQdrantClient();
+                const machineId = indexingState?.machineId
+                    || process.env.COMPUTERNAME
+                    || process.env.HOSTNAME
+                    || 'unknown-machine';
+                const writer = `${machineId}:${path.basename(workspaceRoot)}`;
+                const report = await runWsIndexWriter({
+                    client,
+                    workspaceRoot,
+                    writer,
+                    hashPathPrefix: args.hash_path_prefix,
+                    // INVERTED default — same contract as index_code_supplement.
+                    dryRun: args.dry_run !== false,
+                    takeover: args.takeover === true,
+                    // Recorded in the sentinel; a later run under a different
+                    // model or endpoint refuses instead of mixing embedding
+                    // spaces into the shared collection.
+                    embeddingModelId: getCodebaseEmbeddingModel(),
+                    embeddingEndpoint: getCodebaseEmbeddingEndpoint(),
+                    embed: embedCodebaseTexts,
+                    batchSize: args.batch_size,
+                    maxFiles: args.max_files,
+                });
+                return {
+                    // Same convention as index_code_supplement (ms#1545): only
+                    // 'failed' is an error; 'partial' still returns data that landed.
+                    isError: report.status === 'failed',
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            workspace: workspaceRoot,
+                            workspace_source: source,
+                            ...report,
+                            ...(report.dry_run
+                                ? { hint: 'DRY RUN — nothing was written. Pass dry_run: false to write (one writer per collection is enforced; use takeover: true only to take ownership from another lane — it does NOT cross an embedding-model change).' }
+                                : {}),
+                        }, null, 2)
+                    }]
+                };
+            } catch (error) {
+                return {
+                    isError: true,
+                    content: [{
+                        type: 'text',
+                        text: JSON.stringify({
+                            status: 'ws_writer_failed',
+                            message: error instanceof Error ? error.message : String(error),
+                            hint: 'index_code_ws needs: a workspace whose ws- collection RESOLVES (it never bootstraps one — probe_code_index shows what resolves), a hash_path_prefix the stored segmentHashes verify under, no foreign writer (takeover only for ownership transfer), and the embedding model the collection was built with.',
                         }, null, 2)
                     }]
                 };

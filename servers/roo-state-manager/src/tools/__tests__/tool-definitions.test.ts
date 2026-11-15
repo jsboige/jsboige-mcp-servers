@@ -682,6 +682,21 @@ describe('tool-definitions.ts — Schema Validation', () => {
             expect(props.batch_size).toMatchObject({ type: 'number', default: 32 });
         });
 
+        // #4736 P3: index_code_ws — the ws-* writer is unusable from a conforming
+        // client without its REQUIRED id-parity param on the wire (the handler
+        // refuses the call without it, so a missing property here = a tool that
+        // can only ever answer "refused").
+        it('roosync_indexing must expose the index_code_ws hash_path_prefix param on the wire (#4736 P3)', () => {
+            const props = roosyncIndexingDefinition.inputSchema.properties as Record<string, { type?: string; description?: string }>;
+            expect(props).toHaveProperty('hash_path_prefix');
+            expect(props.hash_path_prefix?.type).toBe('string');
+            expect(props.hash_path_prefix?.description).toMatch(/REQUIRED/i);
+            // The tool-module schema (what an in-process client sees) must say it too.
+            const handlerProps = (roosyncIndexingTool.inputSchema.properties as Record<string, { type?: string }>);
+            expect(handlerProps).toHaveProperty('hash_path_prefix');
+            expect(handlerProps.hash_path_prefix?.type).toBe('string');
+        });
+
         // The inverted default is a behaviour, not a default value in the schema
         // (dry_run:false stays the literal default so the other actions keep their
         // meaning). A conforming caller can only learn it from the description —
