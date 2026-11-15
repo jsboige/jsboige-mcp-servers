@@ -119,7 +119,7 @@ Attendu: 160+ tests passed, 3 skipped
 
 **Structure v2:**
 - `config_version`: 2
-- `models`: 8 modèles (2 GLM via hub flotte + 2 vLLM direct + 1 OWUI proxy + 3 OWUI custom)
+- `models`: 9 modèles (2 GLM via hub flotte + 1 mini + 2 vLLM direct + 1 OWUI proxy + 3 OWUI custom)
 - `embeddings`: Qwen3-4B-AWQ @ embeddings.myia.io (dim 2560)
 - `qdrant`: qdrant.myia.io:443 (API key)
 - `agents`: 32 agents (13 core + 3 deep-search + 4 deep-think + 4 operational + 3 OWUI custom + 5 PR-review)

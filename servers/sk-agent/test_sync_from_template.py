@@ -200,6 +200,10 @@ def test_same_id_local_model_keeps_local_endpoint():
 
 
 # --- Declared successor (renamed id) key/endpoint inheritance (ms#1421) --
+# "medium-alias-retired" is a synthetic predecessor id (test artifact,
+# #3401): the real retired aliases left the template, but step 4 only
+# fires on a DISTINCT id — a self-referential succeeds is short-circuited
+# by the same-id step 0 and proves nothing.
 
 TEMPLATE_WITH_SUCCESSOR = {
     "models": [
@@ -213,10 +217,10 @@ TEMPLATE_WITH_SUCCESSOR = {
             "id": "swift-1.5-27b",
             "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
             "api_key": "YOUR_MEDIUM_API_KEY_HERE",
-            "succeeds": "swift-1.5-27b",
+            "succeeds": "medium-alias-retired",
         },
         {
-            "id": "swift-1.5-27b",
+            "id": "medium-alias-retired",
             "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
             "api_key": "YOUR_MEDIUM_API_KEY_HERE",
         },
@@ -236,7 +240,7 @@ LOCAL_DIVERGENT_ALIAS = {
             "api_key": "sk-hub-real-key",
         },
         {
-            "id": "swift-1.5-27b",
+            "id": "medium-alias-retired",
             "base_url": "http://host.docker.internal:5002/v1",
             "api_key": "sk-medium-real-key",
         },
@@ -270,7 +274,7 @@ def test_new_id_succeeding_alias_inherits_key_and_divergent_base_url():
             "renamed id must inherit the alias's local endpoint, not the template URL"
         )
         # The alias itself keeps its own key + endpoint via the same-id path.
-        alias = by_id["swift-1.5-27b"]
+        alias = by_id["medium-alias-retired"]
         assert alias["api_key"] == "sk-medium-real-key"
         assert alias["base_url"] == "http://host.docker.internal:5002/v1"
         # Sibling model unaffected (exact URL match still serves the hub key).
@@ -279,7 +283,7 @@ def test_new_id_succeeding_alias_inherits_key_and_divergent_base_url():
         # only, no endpoint values on stderr.
         assert "PRESERVED LOCAL ENDPOINTS" in proc.stderr
         assert "swift-1.5-27b" in proc.stderr
-        assert "swift-1.5-27b" in proc.stderr
+        assert "medium-alias-retired" in proc.stderr
         assert "host.docker.internal" not in proc.stderr
 
 
