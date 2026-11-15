@@ -629,6 +629,89 @@ class TestMcpRuntimeRefusalEnvelope:
         assert manager._conv_locks == {}
 
 
+class TestMcpConfigRejectedRefusalEnvelope:
+    """#4755 W1 on the main tool path: the typed refusal for an MCP entry
+    rejected at config load reaches the ``call_agent`` caller with the turn
+    envelope — not the untyped ``{"error": str(e)}`` of the generic handler —
+    counts no turn, calls no model and leaves no lock behind."""
+
+    @staticmethod
+    async def _refusing_resolve(**kwargs):
+        raise sk_agent.McpConfigRejectedError(
+            "a-x", "broken", "runtimes must be a list"
+        )
+
+    def test_refusal_carries_envelope_and_counts_no_turn(self):
+        manager, service, _ = _turn_manager(None)
+        real_resolve = manager._resolve_agent
+        manager._resolve_agent = self._refusing_resolve
+
+        async def scenario():
+            refused = await manager.call_agent(
+                prompt="hi", agent_id="a-x", conversation_id="r-1"
+            )
+            calls_after_refusal = service.model_calls
+            manager._resolve_agent = real_resolve
+            served = await manager.call_agent(
+                prompt="hi", agent_id="a-x", conversation_id="r-1"
+            )
+            return refused, calls_after_refusal, served
+
+        refused, calls_after_refusal, served = asyncio.run(scenario())
+
+        assert refused["error"] == "mcp_config_rejected", refused
+        assert refused["mcp_id"] == "broken"
+        assert refused["reason"] == "runtimes must be a list"
+        assert refused["status"] == "error"
+        assert "retry_only" not in refused
+        assert "resumable" not in refused
+        assert refused["conversation_id"] == "r-1"
+        assert refused["turn_index"] == 0
+        assert refused["round_index"] == 0
+        assert calls_after_refusal == 0
+        assert served["status"] == "completed", served
+        assert served["turn_index"] == 1
+
+    def test_refusal_without_conversation_id_leaves_no_lock(self):
+        manager, _, _ = _turn_manager(None)
+        manager._resolve_agent = self._refusing_resolve
+
+        refused = asyncio.run(manager.call_agent(prompt="hi", agent_id="a-x"))
+
+        assert refused["error"] == "mcp_config_rejected", refused
+        assert refused["conversation_id"]
+        assert manager._conv_locks == {}
+
+    def test_rejected_entry_through_real_resolution(self, monkeypatch):
+        """Real SKAgentManager: _resolve_agent -> _get_or_create_agent raises
+        on the rejected placeholder, call_agent returns the typed payload."""
+        import sk_agent_config
+        from sk_agent_config import (
+            AgentConfig,
+            McpConfig,
+            ModelConfig,
+            SKAgentConfig,
+        )
+
+        monkeypatch.delenv(sk_agent_config.SK_AGENT_RUNTIME_ENV, raising=False)
+        cfg = SKAgentConfig(
+            models=[ModelConfig(id="test-model")],
+            mcps=[McpConfig(id="broken", config_error="runtimes must be a list")],
+            agents=[AgentConfig(id="needer", model="test-model", mcps=["broken"])],
+        )
+        manager = SKAgentManager(cfg)
+
+        refused = asyncio.run(
+            manager.call_agent(prompt="hi", agent_id="needer", conversation_id="r-2")
+        )
+
+        assert refused["error"] == "mcp_config_rejected", refused
+        assert refused["mcp_id"] == "broken"
+        assert refused["status"] == "error"
+        assert refused["turn_index"] == 0
+        assert refused["conversation_id"] == "r-2"
+
+
 class TestConversationLock:
     def test_concurrent_second_turn_is_refused_busy(self, tmp_path):
         state = tmp_path / "gate-state.txt"
