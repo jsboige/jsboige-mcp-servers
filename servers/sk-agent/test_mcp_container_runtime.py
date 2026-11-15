@@ -11,8 +11,20 @@ Covers:
 - diagnostics reporting runtime + mcp_plugins_out_of_runtime,
 - template/example declarations.
 
-The two core behavioural tests (refusal + spawn refusal) are RED on the
+#4755 follow-ups (ms#1773 review):
+- W1: an agent requiring a REJECTED entry is refused typed
+  (McpConfigRejectedError), diagnostics lists rejected entries with their
+  reason,
+- W2.1: unknown runtime names refused at load (shared validator),
+- W2.2/W2.3: image build probe for the markitdown launcher, venv-markitdown/
+  excluded from the build context,
+- W2.4: one validator, two layers (config dataclass + pydantic schema),
+- W2.5: effective_command_args resolved once per spawn,
+- W2.8: optional_mcps must be a subset of mcps.
+
+The core behavioural tests (refusal + spawn refusal) are RED on the
 pre-#4741 base: the agent used to be served silently stripped of the plugin.
+The W1 refusal test is likewise RED on 374b0066 (#4741 merged, #4755 open).
 """
 
 import asyncio
@@ -238,9 +250,14 @@ class TestOptionalMcps:
     """
 
     def test_optional_mcp_served_without_in_container(self, monkeypatch):
+        """#4755 W2.7: strengthened — the agent is actually BUILT.
+
+        The pre-#4755 form only proved the gate does not raise (it stopped
+        at the missing model); here the model exists so _create_agent runs
+        end-to-end: the agent is created, the optional plugin never spawns.
+        """
         monkeypatch.setenv(sk_agent_config.SK_AGENT_RUNTIME_ENV, "container")
         mgr = _make_manager(
-            models=[],  # resolution stops AFTER the runtime gate, at the model
             mcps=[
                 McpConfig(
                     id="sk_agent", command="no-such-binary-4741", runtimes=["stdio"]
@@ -249,14 +266,24 @@ class TestOptionalMcps:
             agents=[
                 AgentConfig(
                     id="swift-delegator",
-                    model="missing-model",
+                    model="test-model",
                     mcps=["sk_agent"],
                     optional_mcps=["sk_agent"],
                 )
             ],
         )
-        # No McpRuntimeUnavailableError: the gate skips the optional id.
-        assert asyncio.run(mgr._get_or_create_agent("swift-delegator")) is None
+        spawns = []
+        monkeypatch.setattr(
+            sk_agent,
+            "SchemaNormalizingMCPStdioPlugin",
+            lambda *a, **k: spawns.append((a, k)),
+            raising=True,
+        )
+        agent = asyncio.run(mgr._get_or_create_agent("swift-delegator"))
+        assert agent is not None  # built, not refused
+        assert "swift-delegator" in mgr._sk_agents
+        assert spawns == []  # the out-of-runtime plugin never spawned
+        assert "sk_agent" not in mgr._mcp_plugins
 
     def test_same_agent_without_optional_is_still_refused(self, monkeypatch):
         """The other branch: non-optional references keep the typed refusal."""
@@ -487,29 +514,31 @@ class TestEnsureMcpLoadedRefusal:
         captured = {}
 
         class _FakePlugin:
+            # No __aenter__: _ensure_mcp_loaded fails past the constructor
+            # (caught by its own except, negative-cache set). The point of
+            # this test is what the constructor RECEIVED, not registration.
             def __init__(self, command, args, **kwargs):
                 captured["command"] = command
                 captured["args"] = args
-                # Simulate successful registration on the manager:
-                # _ensure_mcp_loaded stores the plugin by id.
-
-        async def _fake_register(self, mcp_id, plugin):  # pragma: no cover
-            pass
 
         monkeypatch.setattr(
             sk_agent, "SchemaNormalizingMCPStdioPlugin", _FakePlugin, raising=True
         )
-        # Run the gate; the plugin object is stored by _ensure_mcp_loaded's
-        # post-construction code, so reaching the constructor with the
-        # OVERRIDE command is the assertion that matters.
-        try:
-            asyncio.run(mgr._ensure_mcp_loaded("containerized"))
-        except Exception:
-            # Post-construction registration may need internals we faked;
-            # the command capture below is the point of this test.
-            pass
-        assert captured.get("command") == "/opt/venv/bin/plugin"
-        assert captured.get("args") == ["container-args"]
+        # #4755 W2.5: effective_command_args resolved exactly once per spawn
+        # (the old form called it twice — once per tuple element).
+        calls = []
+        orig = McpConfig.effective_command_args
+
+        def _counting(self, runtime):
+            calls.append(runtime)
+            return orig(self, runtime)
+
+        monkeypatch.setattr(McpConfig, "effective_command_args", _counting)
+
+        assert asyncio.run(mgr._ensure_mcp_loaded("containerized")) is False
+        assert calls == ["container"]
+        assert captured["command"] == "/opt/venv/bin/plugin"
+        assert captured["args"] == ["container-args"]
 
 
 class TestCollectMcpPluginsParity:
@@ -613,6 +642,384 @@ class TestTemplateDeclarations:
         )
         by_id = {m["id"]: m for m in data.get("mcps", [])}
         assert by_id["jupyter_papermill"].get("runtimes") == ["stdio"]
+
+
+# ---------------------------------------------------------------------------
+# #4755 W1 — rejected entries refuse loudly, diagnostics name the reason
+# ---------------------------------------------------------------------------
+
+
+class TestRejectedMcpRefusal:
+    """A REJECTED placeholder (runtimes=None) passes the out-of-runtime gate:
+    without the dedicated check, an agent requiring it was served stripped
+    of the plugin with one warning line — the silent strip #1773 closes,
+    limited to malformed entries. RED on 374b0066.
+    """
+
+    def _rejected_manager(self, agents):
+        return _make_manager(
+            mcps=[
+                McpConfig(id="broken", config_error="runtimes must be a list"),
+                McpConfig(id="good", command="cmd"),
+            ],
+            agents=agents,
+        )
+
+    def test_agent_requiring_rejected_mcp_refused_typed(self, monkeypatch):
+        monkeypatch.delenv(sk_agent_config.SK_AGENT_RUNTIME_ENV, raising=False)
+        mgr = self._rejected_manager(
+            [AgentConfig(id="needer", model="test-model", mcps=["broken"])]
+        )
+        with pytest.raises(sk_agent.McpConfigRejectedError) as ei:
+            asyncio.run(mgr._get_or_create_agent("needer"))
+        assert ei.value.to_payload() == {
+            "error": "mcp_config_rejected",
+            "agent_id": "needer",
+            "mcp_id": "broken",
+            "reason": "runtimes must be a list",
+        }
+        # Refusal happens BEFORE creation: no agent may exist afterwards.
+        assert "needer" not in mgr._sk_agents
+
+    def test_optional_rejected_mcp_served_without(self, monkeypatch):
+        """Optional contract holds for rejected entries too: no refusal."""
+        monkeypatch.delenv(sk_agent_config.SK_AGENT_RUNTIME_ENV, raising=False)
+        mgr = self._rejected_manager(
+            [
+                AgentConfig(
+                    id="swift-delegator",
+                    model="test-model",
+                    mcps=["broken"],
+                    optional_mcps=["broken"],
+                )
+            ],
+        )
+        spawns = []
+        monkeypatch.setattr(
+            sk_agent,
+            "SchemaNormalizingMCPStdioPlugin",
+            lambda *a, **k: spawns.append((a, k)),
+            raising=True,
+        )
+        agent = asyncio.run(mgr._get_or_create_agent("swift-delegator"))
+        assert agent is not None
+        assert spawns == []  # the rejected entry never spawns
+        assert "broken" not in mgr._mcp_plugins
+
+    def test_collect_mcp_plugins_parity_rejected(self):
+        """The override/spec path refuses a rejected entry typed too."""
+        mgr = self._rejected_manager([])
+        with pytest.raises(sk_agent.McpConfigRejectedError) as ei:
+            asyncio.run(mgr._collect_mcp_plugins(["broken"], "spec-agent"))
+        assert ei.value.mcp_id == "broken"
+        # Optional override ids are skipped, not refused.
+        assert (
+            asyncio.run(
+                mgr._collect_mcp_plugins(
+                    ["broken"], "spec-agent", optional_mcp_ids=["broken"]
+                )
+            )
+            == []
+        )
+
+    def test_rejected_entry_not_confused_with_runtime_refusal(self, monkeypatch):
+        """The rejected check precedes available_in: a stdio runtime refusing
+        a rejected entry must still carry mcp_config_rejected (the runtime is
+        NOT the cause), not mcp_unavailable_in_runtime."""
+        monkeypatch.delenv(sk_agent_config.SK_AGENT_RUNTIME_ENV, raising=False)
+        mgr = self._rejected_manager(
+            [AgentConfig(id="needer", model="test-model", mcps=["broken"])]
+        )
+        with pytest.raises(sk_agent.McpConfigRejectedError):
+            asyncio.run(mgr._get_or_create_agent("needer"))
+
+    def test_diagnostics_lists_rejected_with_reason(self, monkeypatch, tmp_path):
+        monkeypatch.delenv(sk_agent_config.SK_AGENT_RUNTIME_ENV, raising=False)
+        mgr = _make_manager(
+            mcps=[
+                McpConfig(id="broken", config_error="runtimes must be a list"),
+                McpConfig(id="good", command="cmd"),
+            ],
+            agents=[],
+        )
+        monkeypatch.setattr(sk_agent, "CONFIG_PATH", str(tmp_path / "absent.json"))
+        monkeypatch.setattr(
+            sk_agent, "_config_file_fingerprint", lambda: "fp", raising=True
+        )
+        monkeypatch.setattr(
+            sk_agent, "_config_file_mtime_utc", lambda p: "never", raising=True
+        )
+        monkeypatch.setattr(sk_agent, "_manager", mgr, raising=True)
+        monkeypatch.setattr(sk_agent, "_config_loaded_at", None, raising=True)
+        monkeypatch.setattr(
+            sk_agent, "_config_loaded_fingerprint", None, raising=True
+        )
+
+        result = json.loads(asyncio.run(sk_agent.diagnostics()))
+        assert result["mcp_plugins_rejected"] == [
+            {"id": "broken", "reason": "runtimes must be a list"}
+        ]
+        # The generic unavailable list still carries the id (no reason there).
+        assert "broken" in result["mcp_plugins_unavailable"]
+
+    def test_run_conversation_surfaces_rejected_refusal_as_json(
+        self, monkeypatch
+    ):
+        monkeypatch.delenv(sk_agent_config.SK_AGENT_RUNTIME_ENV, raising=False)
+        mgr = self._rejected_manager(
+            [AgentConfig(id="needer", model="test-model", mcps=["broken"])]
+        )
+        mgr.config.conversations = [
+            ConversationConfig(id="conv4755", type="sequential", agents=["needer"])
+        ]
+        runner = sk_conversations.ConversationRunner(
+            mgr.config, mgr._sk_agents, mgr._get_or_create_agent
+        )
+
+        async def _fake_runner():
+            return runner
+
+        monkeypatch.setattr(sk_agent, "_get_conversation_runner", _fake_runner)
+
+        raw = asyncio.run(
+            sk_agent.run_conversation(prompt="hello", conversation="conv4755")
+        )
+        assert isinstance(raw, str)  # JSON-string contract preserved
+        payload = json.loads(raw)
+        assert payload["error"] == "mcp_config_rejected"
+        assert payload["agent_id"] == "needer"
+        assert payload["mcp_id"] == "broken"
+        assert payload["conversation_id"] == "conv4755"
+        assert "needer" not in mgr._sk_agents
+
+
+# ---------------------------------------------------------------------------
+# #4755 W2.1 — unknown runtime names refused at load
+# ---------------------------------------------------------------------------
+
+
+class TestRuntimeNameValidation:
+    def test_known_names_accepted_case_insensitively(self):
+        cfg = McpConfig.from_dict(
+            {"id": "x", "command": "cmd", "runtimes": ["STDIO", "Container"]}
+        )
+        assert cfg.runtimes == ["stdio", "container"]
+
+    @pytest.mark.parametrize("bad", [["stdoi"], ["stdio", "contianer"], ["web"]])
+    def test_unknown_name_refused_with_known_set_quoted(self, bad):
+        with pytest.raises(ValueError) as ei:
+            McpConfig.from_dict({"id": "x", "command": "cmd", "runtimes": bad})
+        assert "unknown name" in str(ei.value)
+        for name in bad:
+            assert name in str(ei.value)
+        assert "stdio" in str(ei.value) and "container" in str(ei.value)
+
+    def test_schema_layer_refuses_unknown_name_too(self):
+        from sk_agent_schemas import ToolSpec
+
+        with pytest.raises(ValueError):
+            ToolSpec(id="x", command="cmd", runtimes=["stdoi"])
+
+    def test_misspelled_runtime_isolated_at_load(self, tmp_path):
+        """load-level behaviour: the entry is rejected (placeholder), the
+        structural validator names the typo — the seat survives, the error
+        is loud."""
+        raw = {
+            "config_version": 2,
+            "models": [{"id": "m"}],
+            "mcps": [
+                {"id": "typo", "command": "cmd", "runtimes": ["stdoi"]},
+            ],
+            "agents": [{"id": "a", "model": "m", "mcps": ["typo"]}],
+        }
+        path = tmp_path / "cfg.json"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+
+        loaded = sk_agent_config.load_config(str(path))  # must not raise
+        by_id = {m.id: m for m in loaded.mcps}
+        assert "stdoi" in by_id["typo"].config_error
+        assert by_id["typo"].command == ""  # inert placeholder
+
+        errors = sk_agent_config.validate_config(raw)
+        assert any("stdoi" in e and "typo" in e for e in errors)
+
+    def test_known_runtimes_constant_matches_runtime_reader(self):
+        from sk_agent_runtimes import KNOWN_RUNTIMES
+
+        assert KNOWN_RUNTIMES == {"stdio", "container"}
+        # The runtime this process can be pinned to must be in the set —
+        # a name accepted by the validator but never produced by
+        # current_runtime would silently mask the plugin everywhere.
+        assert sk_agent_config.current_runtime() in KNOWN_RUNTIMES
+
+
+# ---------------------------------------------------------------------------
+# #4755 W2.4 — one validator, two layers
+# ---------------------------------------------------------------------------
+
+
+class TestValidatorSingleSource:
+    """config dataclass and pydantic schema must reject identically."""
+
+    @pytest.mark.parametrize(
+        "field,bad",
+        [
+            ("runtimes", "stdio"),
+            ("runtimes", [""]),
+            ("runtimes", [42]),
+            ("runtimes", ["stdoi"]),
+            ("container", "not-a-dict"),
+            ("container", {"command": "  "}),
+            ("container", {"command": "c", "unknown": 1}),
+            ("container", {"args": ["a"]}),
+        ],
+    )
+    def test_config_and_schema_error_messages_match(self, field, bad):
+        from sk_agent_schemas import ToolSpec
+
+        with pytest.raises(ValueError) as config_exc:
+            McpConfig.from_dict({"id": "x", "command": "cmd", field: bad})
+        with pytest.raises(ValueError) as schema_exc:
+            ToolSpec(id="x", command="cmd", **{field: bad})
+        # Pydantic wraps in ValidationError but preserves the inner message:
+        # identical strings prove both layers run the same validator.
+        assert str(config_exc.value) in str(schema_exc.value)
+
+    def test_layers_bind_the_shared_functions_not_copies(self):
+        import sk_agent_runtimes as shared
+
+        assert sk_agent_config._parse_runtimes is shared.parse_runtimes
+        assert sk_agent_config.parse_container_override is shared.parse_container_override
+
+    def test_schema_validator_routes_through_the_shared_name(self, monkeypatch):
+        """Patching the shared name in the schemas namespace moves the
+        pydantic layer — proof of delegation, not a copied body."""
+        import sk_agent_schemas
+
+        def _boom(raw):
+            raise ValueError("shared-layer-sentinel")
+
+        monkeypatch.setattr(
+            sk_agent_schemas, "parse_runtimes", _boom, raising=True
+        )
+        from sk_agent_schemas import ToolSpec
+
+        with pytest.raises(ValueError, match="shared-layer-sentinel"):
+            ToolSpec(id="x", command="cmd", runtimes=["stdio"])
+
+
+# ---------------------------------------------------------------------------
+# #4755 W2.2 / W2.3 — image build guards
+# ---------------------------------------------------------------------------
+
+
+class TestImageBuildGuards:
+    """Nobody builds the image in CI (see test_dockerfile_copy_guard); the
+    build-time probe must therefore be pinned by a text guard so it cannot
+    silently disappear from the Dockerfile."""
+
+    def test_dockerfile_probes_markitdown_launcher(self):
+        text = (HERE / "Dockerfile").read_text(encoding="utf-8")
+        # The probe must (a) check the launcher exists and is executable,
+        # (b) resolve+import the console-script entry point with the venv's
+        # own interpreter — import errors fail the build instead of the
+        # first agent call inside a running container (#4755 W2.2).
+        assert "test -x /opt/venv-markitdown/bin/markitdown-mcp" in text
+        assert "/opt/venv-markitdown/bin/python -c" in text
+        assert "entry_points" in text
+        assert "eps[0].load()" in text
+
+    def test_dockerignore_excludes_host_markitdown_venv(self):
+        """#4755 W2.3: venv-markitdown/ is a HOST-side provisioning artifact
+        (#3411) — shipping it into the build context bloats the context and
+        can shadow the image-side /opt/venv-markitdown."""
+        lines = {
+            line.strip()
+            for line in (HERE / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        }
+        assert "venv-markitdown/" in lines
+
+
+# ---------------------------------------------------------------------------
+# #4755 W2.8 — optional_mcps subset of mcps
+# ---------------------------------------------------------------------------
+
+
+class TestOptionalMcpsSubset:
+    def _payload(self, agent_extra=None):
+        return {
+            "config_version": 2,
+            "models": [{"id": "m"}],
+            "tools": [{"id": "t1", "command": "c"}, {"id": "t2", "command": "c"}],
+            "agents": [
+                {"id": "a", "model": "m", "mcps": ["t1"], **(agent_extra or {})}
+            ],
+        }
+
+    def test_schema_refuses_stray_optional(self):
+        from pydantic import ValidationError
+
+        from sk_agent_schemas import SKAgentConfig
+
+        with pytest.raises(ValidationError) as ei:
+            SKAgentConfig.model_validate(self._payload({"optional_mcps": ["t2"]}))
+        assert "optional_mcps" in str(ei.value)
+        assert "not declared in mcps" in str(ei.value)
+
+    def test_schema_accepts_subset(self):
+        from sk_agent_schemas import SKAgentConfig
+
+        cfg = SKAgentConfig.model_validate(self._payload({"optional_mcps": ["t1"]}))
+        assert cfg.agents[0].optional_mcps == ["t1"]
+
+    def test_schema_refuses_stray_optional_on_inline_agent(self):
+        from pydantic import ValidationError
+
+        from sk_agent_schemas import SKAgentConfig
+
+        payload = self._payload()
+        payload["conversations"] = [
+            {
+                "id": "c",
+                "agents": ["inline-a"],
+                "inline_agents": [
+                    {
+                        "id": "inline-a",
+                        "model": "m",
+                        "mcps": ["t1"],
+                        "optional_mcps": ["t2"],
+                    }
+                ],
+            }
+        ]
+        with pytest.raises(ValidationError) as ei:
+            SKAgentConfig.model_validate(payload)
+        assert "inline agent 'inline-a'" in str(ei.value)
+
+    def test_structural_validator_reports_stray_optional(self):
+        raw = {
+            "config_version": 2,
+            "mcps": [{"id": "t1", "command": "c"}, {"id": "t2", "command": "c"}],
+            "agents": [
+                {"id": "a", "model": "m", "mcps": ["t1"], "optional_mcps": ["t2"]}
+            ],
+        }
+        errors = sk_agent_config.validate_config(raw)
+        assert any(
+            "optional_mcps 't2' is not declared in mcps" in e for e in errors
+        )
+
+    def test_structural_validator_clean_when_subset(self):
+        raw = {
+            "config_version": 2,
+            "mcps": [{"id": "t1", "command": "c"}],
+            "agents": [
+                {"id": "a", "model": "m", "mcps": ["t1"], "optional_mcps": ["t1"]}
+            ],
+        }
+        assert not [
+            e for e in sk_agent_config.validate_config(raw) if "optional_mcps" in e
+        ]
 
 
 # ---------------------------------------------------------------------------

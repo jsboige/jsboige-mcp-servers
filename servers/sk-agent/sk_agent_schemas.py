@@ -44,6 +44,11 @@ from pydantic import (
     model_validator,
 )
 
+# #4755 W2.4: the runtime/container validators live in one dependency-free
+# module shared with the dataclass facade (sk_agent_config) — the schema
+# layer delegates instead of carrying a drifting copy.
+from sk_agent_runtimes import parse_container_override, parse_runtimes
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -561,40 +566,16 @@ class ToolSpec(_StrictModel):
     @field_validator("runtimes", mode="before")
     @classmethod
     def _validate_runtimes(cls, value: Any) -> Any:
-        if value is None:
-            return None
-        if not isinstance(value, list) or not all(
-            isinstance(r, str) and r.strip() for r in value
-        ):
-            raise ValueError(
-                'runtimes must be a list of non-empty strings (e.g. ["stdio"])'
-            )
-        return [r.strip().lower() for r in value] or None
+        # #4755 W2.4: delegated to the shared validator (same rules as the
+        # dataclass facade, including the unknown-name refusal of W2.1).
+        return parse_runtimes(value)
 
     @field_validator("container", mode="before")
     @classmethod
     def _validate_container(cls, value: Any) -> Any:
-        if value is None:
-            return None
-        if not isinstance(value, dict):
-            raise ValueError("container must be an object of {command, args}")
-        if not value:
-            return None
-        command = value.get("command")
-        if not isinstance(command, str) or not command.strip():
-            raise ValueError("container.command must be a non-empty string")
-        args = value.get("args", [])
-        if not isinstance(args, list) or any(
-            not isinstance(a, str) for a in args
-        ):
-            raise ValueError("container.args must be a list of strings")
-        extra = set(value) - {"command", "args"}
-        if extra:
-            raise ValueError(
-                f"container has unknown keys {sorted(extra)}; "
-                "only command and args are accepted"
-            )
-        return {"command": command, "args": list(args)}
+        # #4755 W2.4: delegated to the shared validator (same rules as the
+        # dataclass facade).
+        return parse_container_override(value)
 
     @field_validator("env", mode="before")
     @classmethod
@@ -942,6 +923,9 @@ class SKAgentConfig(_StrictModel):
                     f"agent {agent.id!r} references unknown tools {unknown_mcps}; "
                     f"known tools: {sorted(tool_ids)}"
                 )
+            # #4755 W2.8: optional_mcps modulates ids already in ``mcps``;
+            # anything else is a silent no-op the author believes is active.
+            _validate_optional_mcps_subset(agent, where=f"agent {agent.id!r}")
 
         if self.default_agent and self.default_agent not in agent_ids:
             raise ValueError(
@@ -1002,6 +986,11 @@ class SKAgentConfig(_StrictModel):
             _validate_capability_matrix_inline(
                 conv.id, inline_agents=conv.inline_agents, tools=self.tools
             )
+            # #4755 W2.8: same optional_mcps subset rule for inline agents.
+            for inline in conv.inline_agents:
+                _validate_optional_mcps_subset(
+                    inline, where=f"conversation {conv.id!r} inline agent {inline.id!r}"
+                )
 
         # Capability matrix (issue #3408) for top-level agents — accepts
         # the whole validated config in one call so the helper is reusable
@@ -1112,6 +1101,22 @@ def _side_channel_requirements(agent: "AgentPreset") -> dict[str, list[str]]:
     if agent.execution.memory_collection:
         required["memory"] = ["memory"]
     return required
+
+
+def _validate_optional_mcps_subset(agent: AgentPreset, where: str) -> None:
+    """#4755 W2.8: ``optional_mcps`` must be a subset of ``mcps``.
+
+    An optional id outside ``mcps`` never reaches the runtime gate — the
+    agent does not declare the plugin at all, so the entry is a silent
+    no-op its author believes is active. Refuse it at validation.
+    """
+    declared = set(agent.mcps)
+    stray = [m for m in agent.optional_mcps if m not in declared]
+    if stray:
+        raise ValueError(
+            f"{where}: optional_mcps {stray} not declared in mcps — "
+            "remove the id or add it to mcps"
+        )
 
 
 def _validate_capability_matrix_inline(

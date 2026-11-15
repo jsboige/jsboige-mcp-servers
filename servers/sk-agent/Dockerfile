@@ -29,10 +29,18 @@ COPY requirements-markitdown.txt .
 RUN python -m venv /opt/venv-markitdown && \
     /opt/venv-markitdown/bin/pip install --no-cache-dir -r requirements-markitdown.txt
 
+# #4755 W2.2: fail the BUILD when the markitdown launcher does not start.
+# The console script must exist AND its entry point must import cleanly —
+# dependency drift or a wheel without the script would otherwise only
+# surface at the first agent call inside a running container (config
+# template points at /opt/venv-markitdown/bin/markitdown-mcp).
+RUN test -x /opt/venv-markitdown/bin/markitdown-mcp && \
+    /opt/venv-markitdown/bin/python -c "from importlib.metadata import distribution; eps=[e for e in distribution('markitdown-mcp').entry_points if e.name == 'markitdown-mcp']; assert eps, 'markitdown-mcp console script missing from the wheel'; eps[0].load()"
+
 # Copy application code
 COPY sk_agent.py sk_agent_config.py sk_agent_schemas.py sk_agent_specs.py \
-     sk_agent_capacity_gate.py sk_conversations.py sk_context_condensation.py \
-     sk_agent_turns.py \
+     sk_agent_capacity_gate.py sk_agent_runtimes.py sk_conversations.py \
+     sk_context_condensation.py sk_agent_turns.py \
      github_plugin.py document_processing.py media_processing.py ./
 
 # Guard: fail the BUILD if this list drifts from the real import graph.
