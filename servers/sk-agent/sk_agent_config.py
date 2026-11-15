@@ -240,6 +240,85 @@ def parse_default_headers(raw: Any) -> dict[str, str] | None:
 
 
 # ---------------------------------------------------------------------------
+# Runtime identity (#4741)
+# ---------------------------------------------------------------------------
+
+#: The runtime this server process serves. "stdio" is the default: the same
+#: config file is read by the host-side stdio server and by the Linux
+#: container (:8100); the Dockerfile is the only place that sets the marker.
+SK_AGENT_RUNTIME_ENV = "SK_AGENT_RUNTIME"
+
+
+def current_runtime() -> str:
+    """Return the runtime this process serves (``#4741``).
+
+    Read from the environment on every call (no caching): the value is set
+    once by the launcher and never changes within a process, but reading it
+    live keeps tests and probes able to pin a runtime with ``monkeypatch``
+    instead of import-order tricks. Anything unset or blank means ``stdio``
+    — the historical behaviour, so every existing seat keeps it without
+    touching its launcher.
+    """
+    value = os.environ.get(SK_AGENT_RUNTIME_ENV, "")
+    return value.strip().lower() or "stdio"
+
+
+def parse_container_override(raw: Any) -> dict[str, Any] | None:
+    """Validate an MCP entry's ``container`` override (``#4741``).
+
+    None or an empty mapping means "no override" (legacy behaviour). A
+    mapping must carry a non-empty string ``command`` and may carry an
+    ``args`` list of strings — the same shapes ``McpConfig.command`` /
+    ``McpConfig.args`` already accept. Raises ValueError otherwise: a typo in
+    this key would otherwise only surface as a silent spawn failure inside
+    the container, the exact defect #4741 exists to make visible.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"container must be an object of {{command, args}} "
+            f"(got {type(raw).__name__})"
+        )
+    if not raw:
+        return None
+    command = raw.get("command")
+    if not isinstance(command, str) or not command.strip():
+        raise ValueError("container.command must be a non-empty string")
+    args = raw.get("args", [])
+    if not isinstance(args, list) or any(not isinstance(a, str) for a in args):
+        raise ValueError("container.args must be a list of strings")
+    override: dict[str, Any] = {"command": command, "args": list(args)}
+    extra = set(raw) - {"command", "args"}
+    if extra:
+        raise ValueError(
+            f"container has unknown keys {sorted(extra)}; "
+            "only command and args are accepted"
+        )
+    return override
+
+
+def _parse_runtimes(raw: Any) -> list[str] | None:
+    """Validate an MCP entry's ``runtimes`` list (#4741).
+
+    None (absent), an empty list, or an empty string entry is rejected only
+    for the malformed shapes: None -> None (all runtimes, legacy), a list of
+    non-empty strings -> that list, anything else -> ValueError. Runtime
+    names are compared case-insensitively (``current_runtime`` lowercases),
+    so the validation stores them lowercased too.
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not all(
+        isinstance(r, str) and r.strip() for r in raw
+    ):
+        raise ValueError(
+            "runtimes must be a list of non-empty strings (e.g. [\"stdio\"])"
+        )
+    return [r.strip().lower() for r in raw] or None
+
+
+# ---------------------------------------------------------------------------
 # Dataclasses
 # ---------------------------------------------------------------------------
 
@@ -388,6 +467,16 @@ class McpConfig:
     # None -> DEFAULT_MCP_CONNECT_TIMEOUT_S in sk_agent (bound handshake,
     # po-203 finding: a spawned-but-silent server otherwise hangs forever)
     connect_timeout_s: float | None = None
+    # #4741: runtimes that serve this plugin. None (or empty) = every
+    # runtime — the legacy behaviour, so no existing entry changes meaning.
+    # A plugin whose list excludes the current runtime never spawns here:
+    # agent creation refuses it (typed) instead of degrading silently.
+    runtimes: list[str] | None = None
+    # #4741: launch override for the container runtime. One config file is
+    # read by the Windows stdio seat and the Linux container; entries whose
+    # command is a host path get their container counterpart here instead of
+    # duplicating the entry. Only used when current_runtime() == "container".
+    container: dict[str, Any] | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> McpConfig:
@@ -400,6 +489,8 @@ class McpConfig:
             risk_class=data.get("risk_class", "read"),
             allowed_capabilities=list(data.get("allowed_capabilities", [])),
             connect_timeout_s=data.get("connect_timeout_s"),
+            runtimes=_parse_runtimes(data.get("runtimes")),
+            container=parse_container_override(data.get("container")),
         )
 
     def to_dict(self) -> dict:
@@ -417,7 +508,37 @@ class McpConfig:
             d["allowed_capabilities"] = list(self.allowed_capabilities)
         if self.connect_timeout_s is not None:
             d["connect_timeout_s"] = self.connect_timeout_s
+        if self.runtimes:
+            d["runtimes"] = list(self.runtimes)
+        if self.container is not None:
+            d["container"] = {
+                "command": self.container["command"],
+                "args": list(self.container.get("args", [])),
+            }
         return d
+
+    def available_in(self, runtime: str) -> bool:
+        """True when this runtime serves the plugin (#4741).
+
+        No declared ``runtimes`` (or an empty list) means every runtime —
+        a config written before #4741 must keep its meaning.
+        """
+        return not self.runtimes or runtime in self.runtimes
+
+    def effective_command_args(self, runtime: str) -> tuple[str, list[str]]:
+        """Resolve the (command, args) this runtime must spawn (#4741).
+
+        In the container runtime, a declared ``container`` override wins over
+        the host ``command``/``args``; everywhere else (and when no override
+        is declared) the host fields are used as-is — an entry that works in
+        both runtimes (``npx …``) declares no override at all.
+        """
+        if runtime == "container" and self.container:
+            return (
+                self.container["command"],
+                list(self.container.get("args", [])),
+            )
+        return self.command, self.args
 
 
 @dataclass

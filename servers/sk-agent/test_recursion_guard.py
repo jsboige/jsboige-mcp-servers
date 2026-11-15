@@ -131,6 +131,21 @@ class _SelfMcpConfig:
         self.command = "python"
         self.args = args
         self.env: dict = {}
+        # #4741: the real McpConfig declares these; the self-inclusion entry
+        # is runtime-agnostic here (served in every runtime).
+        self.runtimes = None
+        self.container = None
+
+    def available_in(self, runtime: str) -> bool:
+        return not self.runtimes or runtime in self.runtimes
+
+    def effective_command_args(self, runtime: str):
+        if runtime == "container" and self.container:
+            return (
+                self.container["command"],
+                list(self.container.get("args", [])),
+            )
+        return self.command, self.args
 
 
 class _SpyPlugin:

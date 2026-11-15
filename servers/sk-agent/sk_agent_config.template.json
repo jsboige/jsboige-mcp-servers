@@ -200,11 +200,12 @@
       "allowed_capabilities": ["browser", "web"]
     },
     {
-      "_comment": "Self-inclusion: DEPLOYMENT MUST REPLACE the placeholder paths below with actual installation paths",
+      "_comment": "Self-inclusion: DEPLOYMENT MUST REPLACE the placeholder paths below with actual installation paths. #4741 runtimes [stdio]: the container (:8100) does not serve self-inclusion — its command is a Windows path and a container-spawning-itself chain is not a supported topology; an agent requiring it there is refused (typed) instead of running stripped.",
       "id": "sk_agent",
       "description": "Self-inclusion for recursive tool chaining",
       "command": "VENV_PATH/Scripts/python.exe",
       "args": ["INSTALLATION_PATH/sk_agent.py"],
+      "runtimes": ["stdio"],
       "risk_class": "stateful",
       "allowed_capabilities": ["recursive_agents", "memory"]
     },
@@ -221,11 +222,15 @@
       "allowed_capabilities": ["shell", "repo_read"]
     },
     {
-      "_comment": "#3411: dedicated venv — markitdown-mcp 0.0.1a7 requires mcp>=2.1.1 while sk_agent.py uses the mcp 1.x API (mcp.server.fastmcp, removed in mcp 2.x), so it cannot live in the main venv. The MCP server is a separate stdio process (no library sharing); deploy-sk-agent.ps1 provisions venv-markitdown/ from requirements-markitdown.txt.",
+      "_comment": "#3411: dedicated venv — markitdown-mcp 0.0.1a7 requires mcp>=2.1.1 while sk_agent.py uses the mcp 1.x API (mcp.server.fastmcp, removed in mcp 2.x), so it cannot live in the main venv. The MCP server is a separate stdio process (no library sharing); deploy-sk-agent.ps1 provisions venv-markitdown/ from requirements-markitdown.txt. #4741 container override: the Dockerfile builds the same isolation as /opt/venv-markitdown (same requirements file, same mcp 2.x pin), so one declaration serves both runtimes — the host spawns the exe below, the container spawns the venv's console script.",
       "id": "markitdown",
       "description": "Document conversion (PDF/DOCX/XLSX/PPTX/HTML/images) to Markdown via Microsoft markitdown",
       "command": "INSTALLATION_PATH/venv-markitdown/Scripts/markitdown-mcp.exe",
       "args": [],
+      "container": {
+        "command": "/opt/venv-markitdown/bin/markitdown-mcp",
+        "args": []
+      },
       "risk_class": "read",
       "allowed_capabilities": ["document_text", "document_visual"]
     },

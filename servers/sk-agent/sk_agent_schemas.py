@@ -540,6 +540,61 @@ class ToolSpec(_StrictModel):
             "be reachable in its ``mcps`` list."
         ),
     )
+    runtimes: list[str] | None = Field(
+        default=None,
+        description=(
+            "Runtimes that serve this tool (issue #4741). None/empty = "
+            "every runtime (legacy). An agent referencing a tool whose "
+            "list excludes the server's runtime is refused with a typed "
+            "error before any LLM call."
+        ),
+    )
+    container: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Launch override for the container runtime (issue #4741): "
+            "``{command, args}`` replaces ``command``/``args`` when the "
+            "server runs runtime 'container'. Ignored elsewhere."
+        ),
+    )
+
+    @field_validator("runtimes", mode="before")
+    @classmethod
+    def _validate_runtimes(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, list) or not all(
+            isinstance(r, str) and r.strip() for r in value
+        ):
+            raise ValueError(
+                'runtimes must be a list of non-empty strings (e.g. ["stdio"])'
+            )
+        return [r.strip().lower() for r in value] or None
+
+    @field_validator("container", mode="before")
+    @classmethod
+    def _validate_container(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if not isinstance(value, dict):
+            raise ValueError("container must be an object of {command, args}")
+        if not value:
+            return None
+        command = value.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError("container.command must be a non-empty string")
+        args = value.get("args", [])
+        if not isinstance(args, list) or any(
+            not isinstance(a, str) for a in args
+        ):
+            raise ValueError("container.args must be a list of strings")
+        extra = set(value) - {"command", "args"}
+        if extra:
+            raise ValueError(
+                f"container has unknown keys {sorted(extra)}; "
+                "only command and args are accepted"
+            )
+        return {"command": command, "args": list(args)}
 
     @field_validator("env", mode="before")
     @classmethod
