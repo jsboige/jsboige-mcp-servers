@@ -108,6 +108,13 @@ export interface PrefixValidation {
 	sampled: number;
 	/** One verifying point, for the report — proof, not just a count. */
 	verified_sample?: { filePath: string; segmentHash: string };
+	/**
+	 * Set when the collection could not be READ at all. A failed read is not an
+	 * empty collection: `runWsIndexWriter` refuses on it. Only a collection that
+	 * was really read and holds no verifiable point is "inconclusive" (#4736 P3
+	 * review — a scroll timeout used to pass as inconclusive and the run wrote).
+	 */
+	read_error?: string;
 }
 
 /**
@@ -134,8 +141,8 @@ export async function validateHashPathPrefix(
 			with_payload: { include: ['filePath', 'segmentHash', 'codeChunk', 'startLine', 'endLine', 'type'] },
 			with_vector: false,
 		});
-	} catch {
-		return { verified: 0, sampled: 0 };
+	} catch (error) {
+		return { verified: 0, sampled: 0, read_error: error instanceof Error ? error.message : String(error) };
 	}
 	const points = res?.points ?? res?.result?.points ?? [];
 	const out: PrefixValidation = { verified: 0, sampled: 0 };
@@ -190,11 +197,18 @@ function parseWriterPayload(payload: any): WsWriterRecord | null {
 	};
 }
 
-/** Reads the ws-writer sentinel; null when the collection is absent or holds none. */
+/**
+ * Reads the ws-writer sentinel; null when the collection was read and holds
+ * none. A READ ERROR throws — it is not "no writer": a foreign owner could be
+ * hidden behind a timeout, and treating that as free would let the run proceed
+ * (#4736 P3 review). The collection is resolved before this is called on the
+ * write path, so an absent collection is a caller bug, not a normal state.
+ */
 export async function readWsWriterRecord(
 	client: QdrantLike,
 	collection: string,
 ): Promise<WsWriterRecord | null> {
+	const describe = (error: unknown) => (error instanceof Error ? error.message : String(error));
 	try {
 		if (typeof client.retrieve === 'function') {
 			const res: any = await client.retrieve(collection, {
@@ -214,8 +228,11 @@ export async function readWsWriterRecord(
 			return parseWriterPayload((res?.points ?? res?.result?.points ?? [])[0]?.payload);
 		}
 		return null;
-	} catch {
-		return null; // collection absent — no writer yet
+	} catch (error) {
+		throw new Error(
+			`cannot read the ws-writer sentinel on ${collection} (${describe(error)}) — a failed read is not ` +
+			`"no writer": a foreign owner could be hidden behind it. Nothing was written.`
+		);
 	}
 }
 
@@ -359,8 +376,15 @@ async function contentPointIdsForFile(client: QdrantLike, collection: string, re
 				with_payload: false,
 				with_vector: false,
 			});
-		} catch {
-			return ids;
+		} catch (error) {
+			// Same class as the prefix guard (#4736 P3 review): an empty id list
+			// would silently skip the stale purge and the upsert would then ADD a
+			// new generation beside the old one — the exact P2 duplication this
+			// writer exists to prevent. Refuse instead.
+			throw new Error(
+				`cannot read existing points of ${relNative} in ${collection} ` +
+				`(${error instanceof Error ? error.message : String(error)}) — refusing to skip the stale purge.`
+			);
 		}
 		for (const p of res?.points ?? res?.result?.points ?? []) ids.push(String(p.id));
 		offset = res?.next_page_offset ?? res?.result?.next_page_offset;
@@ -387,8 +411,13 @@ async function scrollCachePoints(
 				with_payload: { include: ['filePath', 'fileHash'] },
 				with_vector: false,
 			});
-		} catch {
-			return out;
+		} catch (error) {
+			// An empty cache set is not "nothing managed": it would re-embed the
+			// whole corpus AND miss the deleted-file GC. Refuse like the others.
+			throw new Error(
+				`cannot read the writer cache points of ${collection} ` +
+				`(${error instanceof Error ? error.message : String(error)}) — refusing to re-index blind.`
+			);
 		}
 		for (const p of res?.points ?? res?.result?.points ?? []) {
 			if (typeof p?.payload?.filePath === 'string') {
@@ -469,6 +498,20 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 	// purge is id-agnostic (keyed on filePath), so a wrong-prefix generation
 	// remains fully purgeable by a later corrected run.
 	const prefixValidation = await validateHashPathPrefix(deps.client, collection, deps.hashPathPrefix);
+	if (prefixValidation.read_error) {
+		throw new Error(
+			`cannot read ${collection} to validate the hash-path prefix (${prefixValidation.read_error}) — ` +
+			`a failed read is not an empty collection, and an unvalidated prefix would mint TWIN ids for ` +
+			`unchanged content (#4736 P3 review). Nothing was written.`
+		);
+	}
+	if (prefixValidation.sampled === 0) {
+		warnings.push(
+			`hash-path prefix ${JSON.stringify(deps.hashPathPrefix)} could NOT be validated: ${collection} was ` +
+			`read and holds no verifiable content point yet (inconclusive, not refused). The stale purge is ` +
+			`id-agnostic (keyed on filePath), so a wrong-prefix generation stays purgeable by a later corrected run.`
+		);
+	}
 	if (prefixValidation.verified === 0 && prefixValidation.sampled > 0) {
 		throw new Error(
 			`hash-path prefix validation failed on ${collection}: 0 of ${prefixValidation.sampled} sampled ` +
@@ -630,9 +673,33 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 	});
 	if (claim.claimed) report.writer_guard.ok = true;
 
-	// 9. Purge stale points BEFORE any upsert (the P2 ≥2-generations finding).
-	let pointsDeleted = 0;
+	// 8b. Parse blocks and apply the chunk budget to WHOLE FILES, BEFORE any
+	// purge (#4736 P3 review WARNING 2). Purging is only safe for a file the
+	// run fully rewrites: a file the cap excludes keeps its previous
+	// generation, and a file that does not fit must not be purged either.
+	const planned: { item: (typeof toIndex)[number]; blocks: ZooCodeBlock[] }[] = [];
+	let chunkBudget = maxChunks;
 	for (const item of toIndex) {
+		const blocks = parseZooMarkdownContent(
+			joinZooWriterPath(deps.hashPathPrefix, item.relNative),
+			item.content,
+			item.fileHash,
+		);
+		if (blocks.length > chunkBudget) {
+			report.truncated = true;
+			break;
+		}
+		chunkBudget -= blocks.length;
+		if (blocks.length === 0) {
+			warnings.push(`${item.relPath}: no block above the minimum — nothing to embed`);
+		}
+		planned.push({ item, blocks });
+	}
+
+	// 9. Purge stale points BEFORE any upsert (the P2 ≥2-generations finding),
+	// over the files this run fully rewrites.
+	let pointsDeleted = 0;
+	for (const { item } of planned) {
 		const ids = await contentPointIdsForFile(deps.client, collection, item.relNative);
 		await deleteIds(deps.client, collection, ids);
 		pointsDeleted += ids.length;
@@ -647,26 +714,19 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 	await deleteIds(deps.client, collection, removedCacheIds);
 	report.points_deleted = pointsDeleted;
 
-	// 10. Chunk, embed, upsert — Zoo ids, Zoo payload, nothing else.
+	// 10. Embed and upsert — Zoo ids, Zoo payload, nothing else. Every file in
+	// `planned` fits whole: the budget above already excluded the rest.
 	const pending: { id: string; relPath: string; block: ZooCodeBlock; fileHash: string }[] = [];
-	for (const item of toIndex) {
-		const blocks = parseZooMarkdownContent(
-			joinZooWriterPath(deps.hashPathPrefix, item.relNative),
-			item.content,
-			item.fileHash,
-		);
-		if (blocks.length === 0) {
-			warnings.push(`${item.relPath}: no block above the minimum — nothing to embed`);
-		}
+	const plannedByFile = new Map<string, number>();
+	for (const { item, blocks } of planned) {
+		plannedByFile.set(item.relPath, blocks.length);
 		for (const block of blocks) {
-			if (pending.length >= maxChunks) { report.truncated = true; break; }
 			pending.push({ id: zooPointId(block.segmentHash), relPath: item.relPath, block, fileHash: item.fileHash });
 		}
-		if (pending.length >= maxChunks) break;
 	}
 
 	let written = 0;
-	const filesWritten = new Set<string>();
+	const writtenByFile = new Map<string, number>();
 	const batchTotal = Math.ceil(pending.length / batchSize);
 	for (let i = 0; i < pending.length; i += batchSize) {
 		const batch = pending.slice(i, i + batchSize);
@@ -697,7 +757,7 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 			report.batches++;
 			report.chunks_embedded += batch.length;
 			written += batch.length;
-			for (const b of batch) filesWritten.add(b.relPath);
+			for (const b of batch) writtenByFile.set(b.relPath, (writtenByFile.get(b.relPath) ?? 0) + 1);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			report.batches_failed++;
@@ -711,18 +771,23 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 		if (throttleMs > 0 && i + batchSize < pending.length) await sleep(throttleMs);
 	}
 	report.points_written = written;
-	report.files_indexed = filesWritten.size;
+	report.files_indexed = [...plannedByFile].filter(
+		([relPath, total]) => total > 0 && (writtenByFile.get(relPath) ?? 0) === total,
+	).length;
 
-	// 11. Cache points for every file whose blocks landed — the incremental skip
-	// key for the next run. Zero vectors, type metadata: invisible to searches.
+	// 11. Cache points for every file whose blocks ALL landed — the incremental
+	// skip key for the next run. A file spanning several batches that lost one
+	// of them is NEVER cached (#4736 P3 review CRITICAL: it used to be, and the
+	// next run then skipped it as unchanged at 2 of its 3 blocks).
 	const cacheUids: string[] = [];
 	const zeroVector = new Array(vectorConfig.size).fill(0);
-	for (const item of toIndex) {
-		if (!filesWritten.has(item.relPath)) continue;
+	for (const { item } of planned) {
+		const total = plannedByFile.get(item.relPath) ?? 0;
+		if ((writtenByFile.get(item.relPath) ?? 0) !== total) continue;
 		cacheUids.push(wsWriterCachePointId(item.relPath));
 	}
 	if (cacheUids.length > 0 && typeof deps.client.upsert === 'function') {
-		const byPath = new Map(toIndex.map((t) => [wsWriterCachePointId(t.relPath), t]));
+		const byPath = new Map(planned.map(({ item }) => [wsWriterCachePointId(item.relPath), item]));
 		for (let i = 0; i < cacheUids.length; i += 500) {
 			const slice = cacheUids.slice(i, i + 500);
 			await deps.client.upsert(collection, {

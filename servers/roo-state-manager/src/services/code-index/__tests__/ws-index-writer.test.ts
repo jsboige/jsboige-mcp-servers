@@ -430,6 +430,127 @@ describe('runWsIndexWriter (#4736 P3)', () => {
 		expect(points.has(WS_WRITER_SENTINEL_ID)).toBe(true);
 	});
 
+	// ── Review round 2 (ai-01, 15/11) — the four reproduced defects ──────────
+
+	test('PARTIAL WRITE — a file with a failed batch is NEVER cached (it used to be, and the next run skipped it)', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: { size: 4 } });
+		const blocks = expectedBlocks(PREFIX, 'docs/a.md', DOC_V1);
+		expect(blocks.length).toBeGreaterThan(1); // the fixture must span ≥2 batches
+
+		let calls = 0;
+		const flaky = async (texts: string[]) => {
+			calls++;
+			if (calls === 2) throw new Error('Request Timeout'); // transient on batch 2
+			return texts.map(() => [0.1, 0.2, 0.3, 0.4]);
+		};
+		const first = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		const report = await runWsIndexWriter({ ...first, dryRun: false, batchSize: 1, embed: flaky });
+
+		expect(report.status).toBe('partial');
+		expect(report.batches_failed).toBe(1);
+		expect(report.points_written).toBeGreaterThan(0);
+		expect(report.points_written).toBeLessThan(blocks.length);
+		// the decisive assertion: no cache point for a file that lost a batch
+		expect(fake.collections.get(COLLECTION)!.points.has(wsWriterCachePointId('docs/a.md'))).toBe(false);
+
+		// next run must RE-INDEX the file (not skip it as "unchanged") and finish it
+		const second = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		const rerun = await runWsIndexWriter({ ...second, dryRun: false });
+		expect(rerun.files_skipped_unchanged).toBe(0);
+		expect(rerun.files_to_index).toBe(1);
+		expect(rerun.points_written).toBe(blocks.length);
+		expect(fake.collections.get(COLLECTION)!.points.has(wsWriterCachePointId('docs/a.md'))).toBe(true);
+	});
+
+	test('CHUNK CAP — applied to WHOLE FILES before the purge: an excluded file keeps its points', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1, 'docs/b.md': DOC_V1 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: { size: 4 } });
+		const first = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		await runWsIndexWriter({ ...first, dryRun: false });
+
+		// both files change, but the budget only covers the first one's new blocks
+		writeFileSync(join(ws.root, 'docs/a.md'), DOC_V2);
+		writeFileSync(join(ws.root, 'docs/b.md'), DOC_V2);
+		const aNew = expectedBlocks(PREFIX, 'docs/a.md', DOC_V2);
+		const bOld = expectedBlocks(PREFIX, 'docs/b.md', DOC_V1);
+		const bOldIds = bOld.map((b) => zooPointId(b.segmentHash));
+		expect(bOldIds.every((id) => fake.collections.get(COLLECTION)!.points.has(id))).toBe(true);
+
+		const second = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles, maxChunks: aNew.length });
+		const report = await runWsIndexWriter({ ...second, dryRun: false });
+
+		expect(report.truncated).toBe(true);
+		expect(report.points_written).toBe(aNew.length);
+		// a.md fully rewritten; b.md untouched by the purge (its old points survive)
+		const points = fake.collections.get(COLLECTION)!.points;
+		expect(bOldIds.every((id) => points.has(id))).toBe(true);
+		// and b's cache point still carries the OLD hash → the next run re-plans it
+		const bCache = points.get(wsWriterCachePointId('docs/b.md'));
+		expect(bCache?.payload.fileHash).toBe(
+			createHash('sha256').update(DOC_V1).digest('hex'),
+		);
+	});
+
+	test('PREFIX READ ERROR — a failed scroll refuses; it is not "nothing to twin"', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: { size: 4 } });
+		(fake as any).scroll = async () => { throw new Error('Request Timeout'); };
+		const deps = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		await expect(runWsIndexWriter({ ...deps, dryRun: false })).rejects.toThrow(/cannot read .* to validate the hash-path prefix/);
+		expect(fake.upsertCalls).toHaveLength(0);
+	});
+
+	test('SENTINEL READ ERROR — a failed read refuses; it is not "no writer"', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: { size: 4 } });
+		seedZooPoints(fake, COLLECTION, PREFIX, 'docs/a.md', DOC_V1); // prefix gate passes via scroll
+		(fake as any).retrieve = async () => { throw new Error('Request Timeout'); };
+		const deps = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		await expect(runWsIndexWriter({ ...deps, dryRun: false })).rejects.toThrow(/cannot read the ws-writer sentinel/);
+		expect(fake.upsertCalls).toHaveLength(0);
+	});
+
+	test('EMPTY COLLECTION — inconclusive (read, zero verifiable points), proceeds WITH the promised warning', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: { size: 4 } }); // really read, zero points
+		const deps = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		const report = await runWsIndexWriter(deps); // dry run
+		expect(report.status).toBe('dry_run');
+		expect(report.prefix_validation.read_error).toBeUndefined();
+		expect(report.prefix_validation).toMatchObject({ verified: 0, sampled: 0 });
+		expect(report.warnings.some((w) => /could NOT be validated/.test(w))).toBe(true);
+	});
+
+	test('PURGE READ ERROR — refuses instead of skipping the stale purge (a skipped purge duplicates)', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: { size: 4 } });
+		const realScroll = fake.scroll.bind(fake);
+		(fake as any).scroll = async (name: string, body: any) => {
+			if (body?.filter?.must?.some((m: any) => m?.key === 'filePath')) throw new Error('Request Timeout');
+			return realScroll(name, body);
+		};
+		const deps = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		await expect(runWsIndexWriter({ ...deps, dryRun: false })).rejects.toThrow(/refusing to skip the stale purge/);
+		// the sentinel claim may land before the purge, but no CONTENT point may
+		for (const call of fake.upsertCalls) {
+			for (const p of call.points) expect(p.payload.type).toBe('metadata');
+		}
+	});
+
+	test('CACHE READ ERROR — refuses instead of re-indexing blind', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: { size: 4 } });
+		const realScroll = fake.scroll.bind(fake);
+		(fake as any).scroll = async (name: string, body: any) => {
+			if (body?.filter?.must?.some((m: any) => m?.key === 'source')) throw new Error('Request Timeout');
+			return realScroll(name, body);
+		};
+		const deps = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		await expect(runWsIndexWriter({ ...deps, dryRun: false })).rejects.toThrow(/refusing to re-index blind/);
+		expect(fake.upsertCalls).toHaveLength(0);
+	});
+
 	test('non-eligible markdown (hidden dir) and oversized files are skipped, not adopted', async () => {
 		const ws = makeWorkspace({ '.hidden/notes.md': DOC_V1 });
 		writeFileSync(join(ws.root, 'big.md'), 'x'.repeat(MAX_WS_WRITER_FILE_BYTES + 1));
