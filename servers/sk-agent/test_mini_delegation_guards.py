@@ -204,9 +204,9 @@ def _delegation_manager() -> SKAgentManager:
                 "description": "mini", "context_window": 32768,
             }),
             ModelConfig.from_dict({
-                "id": "qwen3.6-35b-a3b", "enabled": True,
+                "id": "swift-1.5-27b", "enabled": True,
                 "base_url": "http://127.0.0.1:9/v1", "api_key": "dummy",
-                "model_id": "qwen3.6-35b-a3b", "vision": False, "thinking": False,
+                "model_id": "swift-1.5-27b", "vision": False, "thinking": False,
                 "description": "medium", "context_window": 262144,
             }),
         ],
@@ -218,7 +218,7 @@ def _delegation_manager() -> SKAgentManager:
             }),
             AgentConfig.from_dict({
                 "id": "swift-delegator", "description": "medium",
-                "model": "qwen3.6-35b-a3b", "system_prompt": "x",
+                "model": "swift-1.5-27b", "system_prompt": "x",
                 "mcps": [], "memory": {"enabled": False},
             }),
         ],

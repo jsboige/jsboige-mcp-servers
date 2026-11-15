@@ -6,7 +6,7 @@
 
   "models": [
     {
-      "_comment": "=== GLM cloud models via the fleet hub (claudish, #3574) === Do NOT route vision through the hub: it strips image_url parts before they reach z.ai (VERIFIED ai-01 22/09, roo-extensions#794) — vision routes local (swift-1.5-27b, historically qwen3.6-35b-a3b). Both ids probed HTTP 200 from po-2025 on 22/09; note glm-5.3-flash is not yet declared in hub /v1/models (claudish lane to declare).",
+      "_comment": "=== GLM cloud models via the fleet hub (claudish, #3574) === Do NOT route vision through the hub: it strips image_url parts before they reach z.ai (VERIFIED ai-01 22/09, roo-extensions#794) — vision routes local (swift-1.5-27b). Both ids probed HTTP 200 from po-2025 on 22/09; note glm-5.3-flash is not yet declared in hub /v1/models (claudish lane to declare).",
       "id": "glm-5.3",
       "enabled": true,
       "base_url": "http://192.168.0.50:3000/v1",
@@ -57,7 +57,7 @@
       "model_id": "swift-1.5-27b",
       "vision": true,
       "thinking": true,
-      "description": "Swift-1.5-27B (Qwen3.8 base, AWQ W4A16) — fleet vLLM medium (ai-01), 262K ctx, vision+thinking. Canonical id since 11/10 (fleet audit #3411, option A): the served engine name, so list_agents states what actually runs. The historical id qwen3.6-35b-a3b (deprecated alias below) resolves to the same engine on the server side. Fleet default since 22/09 (user mandate).",
+      "description": "Swift-1.5-27B (Qwen3.8 base, AWQ W4A16) — fleet vLLM medium (ai-01), 262K ctx, vision+thinking. Canonical id since 11/10 (fleet audit #3411, option A): the served engine name, so list_agents states what actually runs. Supersedes a pre-rename alias id (template alias retired 2026-11-15, #3401) — the succeeds field lets a not-yet-synced seat inherit its local pre-rename entry's key and endpoint. Fleet default since 22/09 (user mandate).",
       "context_window": 262144
     },
     {
@@ -78,48 +78,21 @@
       "context_window": 262144
     },
     {
-      "id": "qwen3.6-35b-a3b",
-      "enabled": true,
-      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
-      "api_key": "YOUR_MEDIUM_API_KEY_HERE",
-      "model_id": "qwen3.6-35b-a3b",
-      "vision": true,
-      "thinking": true,
-      "description": "DEPRECATED alias of swift-1.5-27b (#3411 option A) — removal ~2026-11-10. Swift-1.5-27B (Qwen3.8 base, AWQ W4A16) — fleet vLLM medium (ai-01), 262K ctx, vision+thinking, served under this historical id and as swift-1.5-27b since 25/09, replacing Qwen3.6 35B MoE (retired). Kept 30 days because ad hoc agent_specs (extends + model) may cite it; new specs use swift-1.5-27b.",
-      "context_window": 262144
-    },
-    {
-      "id": "qwen3.6-35b-no-thinking",
-      "enabled": true,
-      "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
-      "api_key": "YOUR_MEDIUM_API_KEY_HERE",
-      "model_id": "qwen3.6-35b-a3b",
-      "vision": false,
-      "thinking": false,
-      "extra_body": {
-        "chat_template_kwargs": {
-          "enable_thinking": false
-        }
-      },
-      "description": "DEPRECATED alias of swift-1.5-27b-no-thinking (#3411 option A) — removal ~2026-11-10. Swift-1.5-27B (fleet vLLM medium, ai-01) — no-thinking mode. Faster inference for short/cheap tasks (summaries, classification, formatting). Same hardware as qwen3.6-35b-a3b. enable_thinking=false also declared via extra_body (#3797) so the profile holds on the conversation path, not just call_agent (#2002). Kept 30 days because ad hoc agent_specs may cite it; new specs use swift-1.5-27b-no-thinking.",
-      "context_window": 262144
-    },
-
-    {
       "_comment": "=== OWUI proxied models (validated 2026-04-19 with OpenAI SDK >=1.109 + base_url ending /openai — SDK does NOT append /v1). Purged: owui-glm-4.7-flash-* (GLM local archivé), owui-omnicoder-9b (GPU 2 libérée 30/04) ===",
-      "id": "owui-qwen3.6-35b",
+      "id": "owui-swift-1.5-27b",
       "enabled": true,
       "base_url": "https://open-webui.myia.io/openai",
       "api_key": "YOUR_OWUI_API_KEY_HERE",
-      "model_id": "Local.qwen3.6-35b-a3b",
+      "succeeds": "owui-qwen3.6-35b",
+      "model_id": "Local.swift-1.5-27b",
       "vision": true,
       "thinking": true,
-      "description": "Fleet medium model (Swift-1.5-27B) via OWUI proxy (bénéficie des filters/pipelines OWUI). Renommé depuis qwen3.5 (OWUI commit 4b8d8d521). Fallback direct vLLM via id qwen3.6-35b-a3b.",
+      "description": "Fleet medium model (Swift-1.5-27B) via OWUI proxy (bénéficie des filters/pipelines OWUI). Renommé depuis son id pré-migration (#3401 : id aligné sur le moteur servi, model_id pointé sur Local.swift-1.5-27b — vérification OWUI en attente, DM ai-01 15/11). succeeds hérite la clé et la base_url de l'entrée locale pré-renommage au sync (ms#1421). Fallback direct vLLM via id swift-1.5-27b.",
       "context_window": 262144
     },
 
     {
-      "_comment": "=== OWUI custom models (validated present 2026-04-19 via GET /api/models). Thin wrappers over qwen3.6-35b-a3b with system prompts spécialisés ===",
+      "_comment": "=== OWUI custom models (validated present 2026-04-19 via GET /api/models). Thin wrappers over the OWUI-proxied Swift engine with system prompts spécialisés ===",
       "id": "owui-expert-analyste",
       "enabled": true,
       "base_url": "https://open-webui.myia.io/openai",
@@ -127,7 +100,7 @@
       "model_id": "expert-analyste",
       "vision": false,
       "thinking": true,
-      "description": "OWUI Expert Analyste (wrapper qwen3.6-35b-a3b, thinking enabled).",
+      "description": "OWUI Expert Analyste (wrapper Swift via owui-swift-1.5-27b, thinking enabled).",
       "context_window": 131072
     },
     {
@@ -138,7 +111,7 @@
       "model_id": "redacteur-technique",
       "vision": false,
       "thinking": true,
-      "description": "OWUI Rédacteur Technique (wrapper qwen3.6-35b-a3b, thinking enabled).",
+      "description": "OWUI Rédacteur Technique (wrapper Swift via owui-swift-1.5-27b, thinking enabled).",
       "context_window": 131072
     },
     {
@@ -149,7 +122,7 @@
       "model_id": "vision-expert",
       "vision": true,
       "thinking": true,
-      "description": "OWUI Expert Vision (wrapper qwen3.6-35b-a3b, vision+thinking).",
+      "description": "OWUI Expert Vision (wrapper Swift via owui-swift-1.5-27b, vision+thinking).",
       "context_window": 131072
     }
   ],
@@ -367,7 +340,7 @@
     {
       "id": "coder-local",
       "description": "Local coding via OWUI proxy to Swift-1.5-27B — vision+thinking+tool calling through OWUI",
-      "model": "owui-qwen3.6-35b",
+      "model": "owui-swift-1.5-27b",
       "system_prompt": "You are a local coding assistant via OWUI proxy with vision and thinking capabilities. When given a coding task: (1) analyze the requirements, (2) plan your approach, (3) implement step by step, (4) verify the result. Leverage your vision capability for UI/code screenshot analysis. Always respond in the same language as the user.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -375,7 +348,7 @@
     {
       "id": "vision-local-owui",
       "description": "Local vision via OWUI proxy to Swift-1.5-27B — highest quality local vision+thinking model",
-      "model": "owui-qwen3.6-35b",
+      "model": "owui-swift-1.5-27b",
       "system_prompt": "You are a vision analysis assistant with advanced reasoning capabilities. Analyze images carefully, describe what you see, and provide detailed insights. Be concise but thorough.",
       "mcps": [],
       "memory": { "enabled": false }
@@ -514,7 +487,7 @@
     {
       "id": "owui-vision",
       "description": "Vision analysis via OWUI proxy to Swift-1.5-27B (vision+thinking, enriched system prompt)",
-      "model": "owui-qwen3.6-35b",
+      "model": "owui-swift-1.5-27b",
       "system_prompt": "[OWUI enriched model: vision-expert] Delegate to the OWUI custom model's built-in methodology for expert image and document analysis.",
       "mcps": [],
       "memory": { "enabled": false }

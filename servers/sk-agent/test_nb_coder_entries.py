@@ -9,7 +9,7 @@ carries keys). These tests pin the contract stated by roo-extensions#4725
   runs at load — criterion 1, mechanically;
 - the four variants differ ONLY by the effective model;
 - the Swift variant carries the DECLARED capacity gate, on a dedicated
-  model id (the shared ``qwen3.6-35b-a3b`` entry stays ungated), and a red
+  model id (the shared ``swift-1.5-27b`` entry stays ungated), and a red
   probe yields a typed ``capacity_gate_red`` refusal with NO LLM call —
   criterion 3;
 - the GitHub surface is read-only: ``github_read`` in capabilities, and
@@ -50,7 +50,7 @@ VARIANTS = (
     "notebook-coder-haiku",
 )
 
-SWIFT_MODEL_ID = "qwen3.6-35b-a3b-nbcoder"
+SWIFT_MODEL_ID = "swift-1.5-27b-nbcoder"
 
 
 @pytest.fixture(scope="module")
@@ -137,12 +137,12 @@ class TestSwiftCapacityGateDeclared:
 
     def test_gate_sits_on_a_dedicated_id_not_the_shared_engine_entry(self, fragment):
         """The probe keys on the model id: gating the shared
-        ``qwen3.6-35b-a3b`` entry would collaterally gate the auditor and
+        ``swift-1.5-27b`` entry would collaterally gate the auditor and
         every other Swift consumer. The fragment must not do that."""
         gated = [m["id"] for m in fragment["models"] if m.get("capacity_gate")]
         assert gated == [SWIFT_MODEL_ID]
         swift = _model_by_id(fragment, SWIFT_MODEL_ID)
-        assert swift["model_id"] == "qwen3.6-35b-a3b"  # same engine as the auditor
+        assert swift["model_id"] == "swift-1.5-27b"  # same engine as the auditor
 
 
 class TestSwiftGateRefusesWithoutCallingTheLLM:

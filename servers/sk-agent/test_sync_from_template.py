@@ -29,7 +29,7 @@ TEMPLATE = {
             "api_key_env": "ZAI_API_KEY",
         },
         {
-            "id": "qwen3.6-35b-a3b",
+            "id": "swift-1.5-27b",
             "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
             "api_key": "YOUR_MEDIUM_API_KEY_HERE",
         },
@@ -47,7 +47,7 @@ LOCAL_HEALTHY = {
             "api_key": "sk-hub-real-key",
         },
         {
-            "id": "qwen3.6-35b-a3b-local",
+            "id": "swift-1.5-27b-local",
             "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
             "api_key": "sk-medium-real-key",
         },
@@ -96,13 +96,13 @@ def test_missing_key_writes_file_but_exits_nonzero_with_stderr_banner():
             f"(stdout={proc.stdout!r}, stderr={proc.stderr!r})"
         )
         assert "MISSING API KEYS" in proc.stderr, f"no banner on stderr: {proc.stderr!r}"
-        assert "qwen3.6-35b-a3b" in proc.stderr, (
+        assert "swift-1.5-27b" in proc.stderr, (
             f"banner must name the degraded model: {proc.stderr!r}"
         )
         # The file IS written (no refusal) — placeholder left visible for hand-fixing.
         written = json.loads(config_path.read_text(encoding="utf-8"))
         by_id = {m["id"]: m for m in written["models"]}
-        assert by_id["qwen3.6-35b-a3b"]["api_key"] == "YOUR_MEDIUM_API_KEY_HERE"
+        assert by_id["swift-1.5-27b"]["api_key"] == "YOUR_MEDIUM_API_KEY_HERE"
         # The healthy model still got its key injected.
         assert by_id["glm-5.3"]["api_key"] == "sk-hub-real-key"
         # Backup of the previous local config exists.
@@ -141,7 +141,7 @@ def test_healthy_sync_exits_zero_without_banner():
         written = json.loads(config_path.read_text(encoding="utf-8"))
         by_id = {m["id"]: m for m in written["models"]}
         assert by_id["glm-5.3"]["api_key"] == "sk-hub-real-key"
-        assert by_id["qwen3.6-35b-a3b"]["api_key"] == "sk-medium-real-key"
+        assert by_id["swift-1.5-27b"]["api_key"] == "sk-medium-real-key"
 
 
 def test_same_id_local_model_keeps_local_endpoint():
@@ -163,7 +163,7 @@ def test_same_id_local_model_keeps_local_endpoint():
                 "enabled": False,
             },
             {
-                "id": "qwen3.6-35b-a3b-local",
+                "id": "swift-1.5-27b-local",
                 "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
                 "api_key": "sk-medium-real-key",
             },
@@ -192,7 +192,7 @@ def test_same_id_local_model_keeps_local_endpoint():
         )
         assert "glm-5.3" in proc.stderr
         # Sibling models unaffected: URL matching still serves the medium key.
-        assert by_id["qwen3.6-35b-a3b"]["api_key"] == "sk-medium-real-key"
+        assert by_id["swift-1.5-27b"]["api_key"] == "sk-medium-real-key"
         # Review note (ai-01): banner carries ids and field names only —
         # no endpoint values on stderr.
         assert "models.myia.io" not in proc.stderr
@@ -213,10 +213,10 @@ TEMPLATE_WITH_SUCCESSOR = {
             "id": "swift-1.5-27b",
             "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
             "api_key": "YOUR_MEDIUM_API_KEY_HERE",
-            "succeeds": "qwen3.6-35b-a3b",
+            "succeeds": "swift-1.5-27b",
         },
         {
-            "id": "qwen3.6-35b-a3b",
+            "id": "swift-1.5-27b",
             "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
             "api_key": "YOUR_MEDIUM_API_KEY_HERE",
         },
@@ -236,7 +236,7 @@ LOCAL_DIVERGENT_ALIAS = {
             "api_key": "sk-hub-real-key",
         },
         {
-            "id": "qwen3.6-35b-a3b",
+            "id": "swift-1.5-27b",
             "base_url": "http://host.docker.internal:5002/v1",
             "api_key": "sk-medium-real-key",
         },
@@ -270,7 +270,7 @@ def test_new_id_succeeding_alias_inherits_key_and_divergent_base_url():
             "renamed id must inherit the alias's local endpoint, not the template URL"
         )
         # The alias itself keeps its own key + endpoint via the same-id path.
-        alias = by_id["qwen3.6-35b-a3b"]
+        alias = by_id["swift-1.5-27b"]
         assert alias["api_key"] == "sk-medium-real-key"
         assert alias["base_url"] == "http://host.docker.internal:5002/v1"
         # Sibling model unaffected (exact URL match still serves the hub key).
@@ -279,7 +279,7 @@ def test_new_id_succeeding_alias_inherits_key_and_divergent_base_url():
         # only, no endpoint values on stderr.
         assert "PRESERVED LOCAL ENDPOINTS" in proc.stderr
         assert "swift-1.5-27b" in proc.stderr
-        assert "qwen3.6-35b-a3b" in proc.stderr
+        assert "swift-1.5-27b" in proc.stderr
         assert "host.docker.internal" not in proc.stderr
 
 
@@ -324,13 +324,13 @@ LOCAL_WITH_AUDITOR = {
             "api_key": "sk-hub-real-key",
         },
         {
-            "id": "qwen3.6-35b-a3b-local",
+            "id": "swift-1.5-27b-local",
             "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
             "api_key": "sk-medium-real-key",
         },
         # Template-absent model referenced ONLY by the local-only agent.
         {
-            "id": "qwen3.6-35b-a3b-audit",
+            "id": "swift-1.5-27b-audit",
             "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
             "api_key": "sk-audit-real-key",
             "request_timeout_s": 600,
@@ -340,7 +340,7 @@ LOCAL_WITH_AUDITOR = {
         {
             "id": "notebook-auditor",
             "description": "seat-local campaign agent",
-            "model": "qwen3.6-35b-a3b-audit",
+            "model": "swift-1.5-27b-audit",
             "system_prompt": "audit notebooks",
             "mcps": ["desktop_commander", "jupyter_papermill"],
             "memory": {"enabled": False},
@@ -377,16 +377,16 @@ def test_local_only_agent_preserved_with_dependencies():
         assert "notebook-auditor" in _agents_of(written), "local-only agent deleted"
         assert "mini-assistant" in _agents_of(written)
         model_ids = {m["id"] for m in written["models"]}
-        assert "qwen3.6-35b-a3b-audit" in model_ids, "template-absent model dropped"
+        assert "swift-1.5-27b-audit" in model_ids, "template-absent model dropped"
         mcp_ids = {m["id"] for m in written["mcps"]}
         assert {"desktop_commander", "jupyter_papermill"} <= mcp_ids
         # The preserved model entry came verbatim (budget field intact).
-        audit_model = next(m for m in written["models"] if m["id"] == "qwen3.6-35b-a3b-audit")
+        audit_model = next(m for m in written["models"] if m["id"] == "swift-1.5-27b-audit")
         assert audit_model["request_timeout_s"] == 600
         # Visibility: ids only on stderr.
         assert "PRESERVED LOCAL-ONLY AGENTS" in proc.stderr
         assert "notebook-auditor" in proc.stderr
-        assert "model:qwen3.6-35b-a3b-audit" in proc.stderr
+        assert "model:swift-1.5-27b-audit" in proc.stderr
         assert "mcp:desktop_commander" in proc.stderr
         # No endpoint/command values leak in the banner (ids and field names only).
         assert "api.medium.text-generation-webui" not in proc.stderr
@@ -406,7 +406,7 @@ def test_prune_local_drops_agent_and_orphaned_dependencies():
         assert "notebook-auditor" in agents, "survivor must stay"
         # notebook-auditor's deps survive; glm-5.3 (template model) unaffected.
         model_ids = {m["id"] for m in written["models"]}
-        assert "qwen3.6-35b-a3b-audit" in model_ids
+        assert "swift-1.5-27b-audit" in model_ids
         assert "glm-5.3" in model_ids
         # The report shows the removal; stderr names the prune.
         assert "mini-assistant" in proc.stdout  # sync report Removed line
@@ -424,7 +424,7 @@ def test_prune_local_lone_agent_takes_its_unique_deps_down():
         written = json.loads(config_path.read_text(encoding="utf-8"))
         assert "notebook-auditor" not in _agents_of(written)
         model_ids = {m["id"] for m in written["models"]}
-        assert "qwen3.6-35b-a3b-audit" not in model_ids, "orphan model kept"
+        assert "swift-1.5-27b-audit" not in model_ids, "orphan model kept"
         mcp_ids = {m["id"] for m in written["mcps"]}
         assert "desktop_commander" not in mcp_ids, "orphan mcp kept"
         assert "jupyter_papermill" not in mcp_ids
@@ -560,7 +560,7 @@ LOCAL_WITH_ENV_BINDINGS = {
         {
             # Same id as a template model WITHOUT api_key_env: the seat-local
             # binding must survive the rebuild.
-            "id": "qwen3.6-35b-a3b",
+            "id": "swift-1.5-27b",
             "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
             "api_key": "sk-medium-real-key",
             "api_key_env": "VLLM_API_KEY_MEDIUM",
@@ -592,7 +592,7 @@ def test_same_id_local_api_key_env_binding_survives_sync():
         assert "MISSING API KEYS" not in proc.stderr
         written = json.loads(config_path.read_text(encoding="utf-8"))
         by_id = {m["id"]: m for m in written["models"]}
-        qwen = by_id["qwen3.6-35b-a3b"]
+        qwen = by_id["swift-1.5-27b"]
         assert qwen["api_key_env"] == "VLLM_API_KEY_MEDIUM", (
             "seat-local api_key_env on a template id without one was dropped "
             f"(model={qwen!r})"
@@ -618,7 +618,7 @@ def test_template_api_key_env_survives_when_local_has_none():
                 "api_key": "sk-glm-real-key",
             },
             {
-                "id": "qwen3.6-35b-a3b-local",
+                "id": "swift-1.5-27b-local",
                 "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
                 "api_key": "sk-medium-real-key",
             },
@@ -648,7 +648,7 @@ def test_env_binding_survives_when_literal_key_is_placeholder():
     local = {
         "models": [
             {
-                "id": "qwen3.6-35b-a3b",  # same id as template, PLACEHOLDER literal
+                "id": "swift-1.5-27b",  # same id as template, PLACEHOLDER literal
                 "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
                 "api_key": "YOUR_MEDIUM_API_KEY_HERE",
                 "api_key_env": "VLLM_API_KEY_MEDIUM",
@@ -672,7 +672,7 @@ def test_env_binding_survives_when_literal_key_is_placeholder():
             f"banner must hint the env var to provision: {proc.stderr!r}"
         )
         written = json.loads(config_path.read_text(encoding="utf-8"))
-        qwen = next(m for m in written["models"] if m["id"] == "qwen3.6-35b-a3b")
+        qwen = next(m for m in written["models"] if m["id"] == "swift-1.5-27b")
         assert qwen["api_key_env"] == "VLLM_API_KEY_MEDIUM", (
             "the incident regression: placeholder-literal env-bound model lost "
             f"its api_key_env in the rebuild (model={qwen!r})"

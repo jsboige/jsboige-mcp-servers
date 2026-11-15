@@ -75,7 +75,7 @@ def test_template_counts_match_expected_baseline():
     consolidated to glm-5.3/glm-5.3-flash via the fleet hub, dead models
     purged (omnicoder-9b, owui-glm-4.7-flash-*, owui-omnicoder-9b).
     32->35 agents: #2002 added the cheap-task lane (summarizer-local,
-    classifier-local, formatter-local) on qwen3.6-35b-no-thinking.
+    classifier-local, formatter-local) on the non-thinking Swift entry.
     5->6 mcps / 35->37 agents: LOT E (vllm#63) added the roo_state_manager
     coordination broker + the terminal-analyst/coordination-agent showcase
     presets.
@@ -85,12 +85,15 @@ def test_template_counts_match_expected_baseline():
     mini-repo-scan, mini-summarizer, mini-web-research) and the Swift
     delegating preset swift-delegator.
     9->11 models (11/11 enabled, #3411 option A): canonical swift-1.5-27b
-    id (+swift-1.5-27b-no-thinking preset) added; qwen3.6-35b-a3b and
-    qwen3.6-35b-no-thinking kept as 30-day deprecated aliases
-    (~2026-11-10) so ad hoc agent_specs citing them keep resolving.
+    id (+swift-1.5-27b-no-thinking preset) added; the pre-rename aliases
+    kept 30 days for ad hoc agent_specs.
+    11->9 models (9/9 enabled, #3401 item 3, 2026-11-15): the pre-rename
+    alias entries retired from the template (the succeeds fields stay for
+    key inheritance at sync); the OWUI entry renamed in place to
+    owui-swift-1.5-27b (model_id Local.swift-1.5-27b) — count unchanged.
     """
     cfg = load_config(str(TEMPLATE_PATH))
-    assert len(cfg.models) == 11, f"models: {len(cfg.models)}"
+    assert len(cfg.models) == 9, f"models: {len(cfg.models)}"
     assert len(cfg.agents) == 42, f"agents: {len(cfg.agents)}"
     assert len(cfg.mcps) == 6, f"mcps: {len(cfg.mcps)}"
     assert len(cfg.conversations) == 11, f"conversations: {len(cfg.conversations)}"
@@ -99,7 +102,7 @@ def test_template_counts_match_expected_baseline():
     assert inline_total == 15, f"inline agents: {inline_total}"
 
     enabled = sum(1 for m in cfg.models if m.enabled)
-    assert enabled == 11, f"enabled models: {enabled}"
+    assert enabled == 9, f"enabled models: {enabled}"
 
     mem_agents = sum(1 for a in cfg.agents if a.memory.enabled)
     assert mem_agents == 5, f"memory-enabled agents: {mem_agents}"
@@ -278,7 +281,7 @@ def test_deployment_doc_check_detects_drift():
     good = (
         "# Deployment\n\n"
         "| Metric | Count | Notes |\n|---|---|---|\n"
-        "| **Models** | 11 | notes |\n"
+        "| **Models** | 9 | notes |\n"
         "| **Top-level agents** | 42 | notes |\n"
         "| **Inline agents** (conversation-scoped) | 15 | notes |\n"
         "| **Memory-enabled agents** | 5 | notes |\n"

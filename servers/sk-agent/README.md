@@ -236,9 +236,9 @@ bumps into the 300 s client budget, with a raised thinking budget:
 
 ```json
 {
-  "id": "qwen3.6-35b-a3b-slow",
+  "id": "swift-1.5-27b-slow",
   "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
-  "model_id": "qwen3.6-35b-a3b",
+  "model_id": "swift-1.5-27b",
   "thinking": true,
   "request_timeout_s": 600,
   "max_tokens": 8000,
@@ -274,7 +274,7 @@ does not even advertise it.
 
 | Variant | Model entry | Backend |
 |---------|-------------|---------|
-| `notebook-coder` | `qwen3.6-35b-a3b-nbcoder` | Swift engine (`model_id: qwen3.6-35b-a3b`, medium vLLM) **with the declared capacity gate** |
+| `notebook-coder` | `swift-1.5-27b-nbcoder` | Swift engine (`model_id: swift-1.5-27b`, medium vLLM) **with the declared capacity gate** |
 | `notebook-coder-luna` | `nb-luna` | claudish stable alias via the **seat sidecar** (g4) |
 | `notebook-coder-minimax` | `nb-minimax` | claudish stable alias via the **seat sidecar** (g4) |
 | `notebook-coder-haiku` | `nb-haiku` | claudish stable alias via the **seat sidecar** (g4) — NOT PUBLISHED yet (native Anthropic path requires the client's own account) |
@@ -283,7 +283,7 @@ does not even advertise it.
 evaluated per MODEL ID (`sk_agent_capacity_gate.check_model_capacity_gate`),
 before any LLM call: exit 0 green, 1 yellow (refused unless
 `allow_yellow`), 2 red, anything else unknown — refused, fail-closed.
-Declaring it on the shared `qwen3.6-35b-a3b` / `-audit` entry would
+Declaring it on the shared Swift / `-audit` entry would
 collaterally gate the auditor and every other Swift consumer; the
 `-nbcoder` id reuses the same engine and endpoint, so a red probe refuses
 only nb-coder dispatches.
@@ -295,7 +295,7 @@ seat's to change):
    `sk_agent_config.json`. Merge rule: **add what is absent** — a live
    declaration wins over the copy here (the fragment is self-contained only
    so `validate_config` can run on it standalone). For
-   `qwen3.6-35b-a3b-nbcoder`, derive from the live auditor model entry
+   `swift-1.5-27b-nbcoder`, derive from the live auditor model entry
    (keys, endpoint, sampling) and add `capacity_gate`; fill the real
    `jupyter_papermill` `PYTHONPATH` and API keys. On each `nb-*` entry,
    replace `<sidecar-port>` with the seat's claudish sidecar port and
@@ -337,8 +337,8 @@ the machine, so the entry carries its own attribution.
 
 The same local vLLM model (Swift-1.5-27B, fleet vLLM on ai-01) is exposed
 as a thinking / non-thinking pair under the canonical ids (`swift-1.5-27b`,
-`swift-1.5-27b-no-thinking` since 11/10, #3411 option A — the historical
-`qwen3.6-35b-a3b*` entries remain as deprecated aliases until ~2026-11-10):
+`swift-1.5-27b-no-thinking` since 11/10, #3411 option A — the pre-rename
+alias entries were retired from the template on 2026-11-15, #3401):
 
 | Profile | Model entry | Use |
 |---------|-------------|-----|
@@ -570,7 +570,7 @@ python -m pytest test_sk_agent.py test_config.py -v
 | `glm-5.3` | GLM-5.3 | ❌ | ✅ | 200K |
 | `glm-5.3-flash` | GLM-5.3-Flash | ❌ | ❌ | 131K |
 
-Vision is **not** served through the hub: it strips `image_url` parts before they reach z.ai (VERIFIED, roo-extensions#794) — vision routes local (`swift-1.5-27b`, historically `qwen3.6-35b-a3b`) until the claudish passthrough fix.
+Vision is **not** served through the hub: it strips `image_url` parts before they reach z.ai (VERIFIED, roo-extensions#794) — vision routes local (`swift-1.5-27b`) until the claudish passthrough fix.
 
 ### Mini tier — FrogNano-4B (1) — economy routing (#4107, volet C of #4085)
 
@@ -586,20 +586,18 @@ Key: `ZAI_API_KEY` (`api_key_env`) — the **cluster hub client key**, the same 
 
 ### vLLM Local Direct (4)
 
-Since 25/09 the fleet medium model is **Swift-1.5-27B** (`ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ`), served on ai-01 as `swift-1.5-27b` and under the historical id `qwen3.6-35b-a3b`. Qwen3.6 35B MoE is retired. Since 11/10 (#3411 option A) the template's canonical ids are the served engine names; the historical entries stay as deprecated aliases until ~2026-11-10 so ad hoc agent_specs citing them keep resolving, and the server keeps serving both names. The canonical entries declare `"succeeds": "<alias id>"` — on a seat whose local medium `base_url` diverges from the template, the sync inherits the alias's local key AND endpoint, so a renamed id never deploys keyless (ms#1421 review).
+Since 25/09 the fleet medium model is **Swift-1.5-27B** (`ukisai/Swift-1.5-Qwen3.8-27b-W4A16-AWQ`), served on ai-01 as `swift-1.5-27b`. Qwen3.6 35B MoE is retired. Since 11/10 (#3411 option A) the template's canonical ids are the served engine names; the pre-rename alias entries were **retired from the template on 2026-11-15 (#3401)** — a live config that still cites an old id renames the reference to the canonical id (same engine, same endpoint). The canonical entries declare `"succeeds": "<pre-rename id>"` — on a seat that has not synced since the rename and whose local medium `base_url` diverges from the template, the sync inherits the old entry's local key AND endpoint, so a renamed id never deploys keyless (ms#1421 review).
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
 | `swift-1.5-27b` | Swift-1.5-27B (canonical id) | ✅ | ✅ | 262K |
 | `swift-1.5-27b-no-thinking` | Swift-1.5-27B, no-thinking | ❌ | ❌ | 262K |
-| `qwen3.6-35b-a3b` | deprecated alias of `swift-1.5-27b` (removal ~2026-11-10) | ✅ | ✅ | 262K |
-| `qwen3.6-35b-no-thinking` | deprecated alias of `swift-1.5-27b-no-thinking` (removal ~2026-11-10) | ❌ | ❌ | 262K |
 
 ### OWUI Proxy (1)
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
-| `owui-qwen3.6-35b` | Swift-1.5-27B via OWUI | ✅ | ✅ | 262K |
+| `owui-swift-1.5-27b` | Swift-1.5-27B via OWUI (`Local.swift-1.5-27b`) | ✅ | ✅ | 262K |
 
 ### OWUI Custom Models (3)
 
@@ -623,9 +621,9 @@ Purged (dead): `omnicoder-9b` + `owui-omnicoder-9b` (GPU 2 freed 30/04), `owui-g
 | `fast-responder` | glm-5.3-flash | ❌ | ❌ | — | ❌ | Quick answers / triage (hub) |
 | `vision-analyst` | swift-1.5-27b | ✅ | ✅ | searxng, playwright, markitdown | ❌ | Vision specialist — **local** (hub strips images, #794) |
 | `vision-local` | swift-1.5-27b | ✅ | ✅ | searxng, playwright, markitdown | ❌ | Local vision+thinking |
-| `vision-local-owui` | owui-qwen3.6-35b | ✅ | ✅ | — | ❌ | OWUI Swift-1.5-27B vision |
+| `vision-local-owui` | owui-swift-1.5-27b | ✅ | ✅ | — | ❌ | OWUI Swift-1.5-27B vision |
 | `coder` | swift-1.5-27b-no-thinking | ❌ | ❌ | open_terminal, searxng | ❌ | Local coding (vLLM direct) |
-| `coder-local` | owui-qwen3.6-35b | ✅ | ✅ | — | ❌ | Local coding (OWUI proxy) |
+| `coder-local` | owui-swift-1.5-27b | ✅ | ✅ | — | ❌ | Local coding (OWUI proxy) |
 | `fast` | swift-1.5-27b-no-thinking | ❌ | ❌ | — | ❌ | Fastest reliable (local no-thinking) |
 | `fast-local` | swift-1.5-27b-no-thinking | ❌ | ❌ | — | ❌ | Fast local (direct vLLM) |
 | `fast-local-thinking` | swift-1.5-27b | ✅ | ✅ | — | ❌ | Local with thinking |
@@ -673,7 +671,7 @@ Purged (dead): `omnicoder-9b` + `owui-omnicoder-9b` (GPU 2 freed 30/04), `owui-g
 |----|-------|------|
 | `owui-analyst` | owui-expert-analyste | Structured French analysis |
 | `owui-writer` | owui-redacteur-technique | Technical documentation |
-| `owui-vision` | owui-qwen3.6-35b | Vision analysis |
+| `owui-vision` | owui-swift-1.5-27b | Vision analysis |
 
 ### Mini tier presets (4) — delegate the mechanical work
 
@@ -728,6 +726,13 @@ debugging plugin wiring, not for a per-agent inventory.
 - **Usage telemetry** (`usage.jsonl`) records tool, duration, agent and model — never content (ms#1387, ms#1612).
 
 ## Changelog
+
+### v2.5 (2026-11-15) — alias retirement + OWUI rename (#3401 item 3)
+
+- **Aliases retired**: the template no longer ships the deprecated `qwen3.6-35b-a3b` / `qwen3.6-35b-no-thinking` entries (30-day window from v2.4 closed). A live config still citing an old id renames the reference to the canonical id — the `succeeds` fields stay so a not-yet-synced seat inherits its local pre-rename key AND endpoint (ms#1421)
+- **OWUI entry renamed**: `owui-qwen3.6-35b` → `owui-swift-1.5-27b`, `model_id` → `Local.swift-1.5-27b`, with `"succeeds": "owui-qwen3.6-35b"` for key inheritance; the three `owui-*` agents citing it follow
+- **nb-coder example**: the gated Swift entry is `swift-1.5-27b-nbcoder` (`model_id: swift-1.5-27b`); a seat already carrying the old id renames its live entry in place
+- `deploy-sk-agent.ps1` inline fallback and `benchmark_models.py` roster aligned; 9 models / 42 agents
 
 ### v2.4 (2026-10-11) — canonical swift-1.5-27b ids (#3411, fleet audit option A)
 
