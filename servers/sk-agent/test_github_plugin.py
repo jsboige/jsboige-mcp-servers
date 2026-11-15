@@ -368,3 +368,89 @@ class TestWriteGate:
             mock_run.return_value = MagicMock(returncode=0, stdout="diff")
             p.get_pr_diff(1)
         mock_run.assert_called_once()
+
+
+# --- Child stdin (#1587; same class as the capacity gate, #4712) -------------
+# A child spawned by the stdio MCP server that inherits stdin inherits the
+# server's JSON-RPC pipe. Measured on the real server (ai-01, 15/11/2026): the
+# plugin's `gh pr diff` timed out at 30 s twice in a row with stdin inherited
+# and answered in 0.98 s with stdin=DEVNULL. Standalone runs never show it.
+
+import ast
+import os
+import stat
+import sys
+import tempfile
+import threading
+from pathlib import Path
+
+_SK_DIR = Path(__file__).resolve().parent
+_SUBPROCESS_FUNCS = {"run", "Popen", "call", "check_output", "check_call"}
+_ASYNCIO_FUNCS = {"create_subprocess_exec", "create_subprocess_shell"}
+
+
+def _child_calls_without_stdin(source: str):
+    """(lineno, call) for every subprocess/asyncio child spawn lacking stdin=."""
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+            continue
+        owner = node.func.value
+        name = owner.id if isinstance(owner, ast.Name) else (
+            owner.attr if isinstance(owner, ast.Attribute) else None)
+        spawns = (name == "subprocess" and node.func.attr in _SUBPROCESS_FUNCS) or (
+            node.func.attr in _ASYNCIO_FUNCS)
+        if spawns and not any(k.arg == "stdin" for k in node.keywords):
+            found.append((node.lineno, f"{name}.{node.func.attr}"))
+    return found
+
+
+class TestChildStdin:
+    def test_every_server_child_spawn_sets_stdin(self):
+        offenders = []
+        for path in sorted(_SK_DIR.glob("*.py")):
+            if path.name.startswith("test_") or path.name == "conftest.py":
+                continue
+            for lineno, call in _child_calls_without_stdin(path.read_text(encoding="utf-8")):
+                offenders.append(f"{path.name}:{lineno} {call}")
+        assert offenders == [], (
+            "child spawned without stdin= (inherits the stdio server's JSON-RPC "
+            "pipe and hangs on Windows): " + ", ".join(offenders))
+
+    def test_guard_detects_a_missing_stdin(self):
+        src = "import subprocess\nsubprocess.run(['x'], capture_output=True)\n"
+        assert _child_calls_without_stdin(src) == [(2, "subprocess.run")]
+
+    @patch("github_plugin.subprocess.run")
+    def test_run_gh_passes_devnull(self, mock_run, plugin):
+        mock_run.return_value = MagicMock(returncode=0, stdout="ok")
+        plugin.get_pr_files(1)
+        assert mock_run.call_args.kwargs["stdin"] is subprocess.DEVNULL
+
+    @pytest.mark.skipif(os.name == "nt", reason="fake gh needs a POSIX shebang script")
+    def test_run_gh_returns_while_parent_stdin_pipe_stays_open(self):
+        """Discriminant: the driver's stdin pipe stays OPEN (never communicate()),
+        and the fake gh reads stdin to EOF. Inherited stdin -> the fake gh blocks
+        until _run_gh's timeout; DEVNULL -> immediate EOF."""
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "gh"
+            fake.write_text("#!/bin/sh\ncat > /dev/null\necho fake-gh-ok\n")
+            fake.chmod(fake.stat().st_mode | stat.S_IEXEC)
+            code = (
+                "import sys; sys.path.insert(0, %r)\n"
+                "from github_plugin import GitHubPlugin\n"
+                "print(GitHubPlugin()._run_gh(['probe'], timeout=5), flush=True)\n"
+            ) % str(_SK_DIR)
+            env = dict(os.environ, PATH=tmp + os.pathsep + os.environ.get("PATH", ""))
+            proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    env=env, text=True)
+            out = []
+            reader = threading.Thread(target=lambda: out.append(proc.stdout.read()))
+            reader.start()
+            reader.join(30)
+            proc.stdin.close()
+            proc.wait(10)
+        text = "".join(out)
+        assert "fake-gh-ok" in text, f"_run_gh did not return the child output: {text!r}"
+        assert "timed out" not in text

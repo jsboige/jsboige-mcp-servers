@@ -197,7 +197,7 @@ def _get_video_info(video_path: str) -> VideoInfo | None:
             "-show_streams",
             video_path,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
 
         if result.returncode != 0:
             return None
@@ -307,7 +307,7 @@ def _extract_video_frames(
                     "2",
                     output_path,
                 ]
-                subprocess.run(cmd, capture_output=True, timeout=30, check=True)
+                subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=True)
 
                 if os.path.exists(output_path):
                     with open(output_path, "rb") as f:
@@ -360,7 +360,7 @@ def _extract_keyframes(video_path: str, num_frames: int = 8) -> list[tuple[bytes
                 str(num_frames),
                 output_pattern,
             ]
-            subprocess.run(cmd, capture_output=True, timeout=60, check=True)
+            subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, timeout=60, check=True)
 
             # Collect extracted frames
             for frame_file in sorted(Path(tmpdir).glob("keyframe_*.jpg")):

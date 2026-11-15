@@ -49,8 +49,12 @@ class GitHubPlugin:
         """Run a gh CLI command and return stdout."""
         cmd = ["gh"] + args
         try:
+            # stdin=DEVNULL: inheriting the stdio MCP server's JSON-RPC pipe
+            # hangs gh on Windows until the timeout (measured on the real
+            # server, #1587; same class as the capacity gate, #4712).
             result = subprocess.run(
                 cmd,
+                stdin=subprocess.DEVNULL,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
