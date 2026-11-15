@@ -113,12 +113,17 @@ class JupyterPapermillMCPServer:
 
             # Phase 1: Initialize all tool services
             logger.info("Initializing notebook tools...")
-            initialize_notebook_tools(self.config)
+            notebook_service = initialize_notebook_tools(self.config)
 
             logger.info("Initializing kernel tools...")
             # #4716: hand the SAME kernel service to the execution tools — one
             # JupyterManager, one active-kernel registry for the whole server.
-            kernel_service = initialize_kernel_tools(self.config)
+            # #4716 (third defect): also hand the kernel service the notebook
+            # CRUD service, so output persistence shares its per-path write
+            # lock with the CRUD mutators instead of racing them.
+            kernel_service = initialize_kernel_tools(
+                self.config, notebook_crud=notebook_service.crud_service
+            )
 
             logger.info("Initializing execution tools...")
             initialize_execution_tools(self.config, kernel_service=kernel_service)
