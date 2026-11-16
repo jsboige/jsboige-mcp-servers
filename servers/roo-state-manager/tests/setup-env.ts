@@ -53,3 +53,17 @@ if (!process.env.ROOSYNC_LOCK_DIR) {
 if (!process.env.ROOSYNC_SCAN_LOCK_DIR) {
   process.env.ROOSYNC_SCAN_LOCK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-scan-locks-'));
 }
+
+// Tool-usage cache isolation — same reasoning as #3782/#4131 above. The
+// tool-usage cache defaults to os.tmpdir()/roo-state-manager-cache keyed by
+// hostname (roosync-indexing.tool.ts getToolUsageCachePath): any test invoking
+// tool_usage_stats (or save_snapshot, which recurses into it) would overwrite
+// the HOST's real production cache at the end of its scan — measured 16/11 on
+// ai-01: a local run of tool-usage-stats-raw-variants.test.ts left a 412-byte
+// cache, and the weekly save_snapshot then exceeded the 300 s MCP timeout on
+// every cold scan. One mkdtemp per worker process; the suites that test the
+// cache itself (tool-usage-cache.test.ts, tool-usage-stats-window-consistency
+// .test.ts) already override with their own dir.
+if (!process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR) {
+  process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-tus-cache-'));
+}
