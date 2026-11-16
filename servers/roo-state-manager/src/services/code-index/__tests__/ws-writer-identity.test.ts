@@ -13,7 +13,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { resolveWsMachineId, resolveWsWriterIdentity } from '../ws-writer-identity.js';
 
-const ROOT = 'C:\\dev\\roo-extensions';
+/**
+ * Forward slashes on purpose: node's `basename` accepts `/` on BOTH platforms
+ * (but `\` only on Windows) — a backslashed root passed locally and failed CI
+ * (POSIX basename returned the whole string). Path-shape portability is part
+ * of what this suite pins.
+ */
+const ROOT = '/dev/roo-extensions';
 
 /** Snapshot/restore the env vars the derivation reads — tests are hermetic. */
 const KEYS = ['ROOSYNC_MACHINE_ID', 'COMPUTERNAME', 'HOSTNAME'] as const;
