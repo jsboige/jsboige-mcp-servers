@@ -96,8 +96,14 @@ class FakeWsQdrant implements QdrantLike {
 	async retrieve(name: string, body: any) {
 		const c = this.col(name);
 		const ids: string[] = body?.ids ?? [];
+		// REAL client shape (@qdrant/js-client-rest): retrieve answers
+		// `{ result: PointStruct[] }` — an ARRAY, unlike scroll's
+		// `{ result: { points, next_page_offset } }`. The fake used to answer
+		// `{ points }`, a shape the live client never produces; that fiction is
+		// exactly how the hash cache stayed silently empty in production
+		// (#4736 P4 measurement, 2026-11-16: three passes, zero skips).
 		return {
-			points: ids.filter((id) => c.points.has(id)).map((id) => ({ id, payload: c.points.get(id)!.payload })),
+			result: ids.filter((id) => c.points.has(id)).map((id) => ({ id, payload: c.points.get(id)!.payload })),
 		};
 	}
 
