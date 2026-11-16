@@ -85,7 +85,7 @@ TASKS = {
 MODELS = [
     "glm-5.3",
     "glm-5.3-flash",
-    "qwen3.6-35b-a3b",
+    "swift-1.5-27b",
 ]
 
 

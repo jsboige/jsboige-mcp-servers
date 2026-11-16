@@ -136,16 +136,6 @@ if (-not $SkipConfig) {
                 vision = $true
                 description = "Vision model (Swift-1.5-27B via myia.io)"
                 context_window = 262144
-            },
-            @{
-                id = "qwen3.6-35b-a3b"
-                enabled = $true
-                base_url = "https://api.medium.text-generation-webui.myia.io/v1"
-                api_key = ""  # À remplir
-                model_id = "qwen3.6-35b-a3b"
-                vision = $true
-                description = "Vision/text (Qwen3.6-35B-A3B via myia.io)"
-                context_window = 262144
             }
         )
     }
