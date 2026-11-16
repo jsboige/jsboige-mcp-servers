@@ -3139,9 +3139,9 @@ class SKAgentManager:
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
-                on_intermediate_message=self._make_step_handler(steps)
-                if include_steps
-                else None,
+                on_intermediate_message=self._make_step_handler(
+                    steps if include_steps else None, meter
+                ),
                 **invoke_kwargs,
             ):
                 meter.add(response)
@@ -3216,9 +3216,9 @@ class SKAgentManager:
                 async for response in agent.invoke(
                     messages=message,
                     thread=thread,
-                    on_intermediate_message=self._make_step_handler(steps)
-                    if include_steps
-                    else None,
+                    on_intermediate_message=self._make_step_handler(
+                        steps if include_steps else None, meter
+                    ),
                     **invoke_kwargs,
                 ):
                     meter.add(response)
@@ -3315,9 +3315,9 @@ class SKAgentManager:
                 async for response in agent.invoke(
                     messages=message,
                     thread=thread,
-                    on_intermediate_message=self._make_step_handler(steps)
-                    if include_steps
-                    else None,
+                    on_intermediate_message=self._make_step_handler(
+                        steps if include_steps else None, meter
+                    ),
                     **invoke_kwargs,
                 ):
                     meter.add(response)
@@ -3403,9 +3403,9 @@ class SKAgentManager:
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
-                on_intermediate_message=self._make_step_handler(steps)
-                if include_steps
-                else None,
+                on_intermediate_message=self._make_step_handler(
+                    steps if include_steps else None, meter
+                ),
                 **invoke_kwargs,
             ):
                 meter.add(response)
@@ -3544,9 +3544,9 @@ class SKAgentManager:
             async for response in agent.invoke(
                 messages=message,
                 thread=thread,
-                on_intermediate_message=self._make_step_handler(steps)
-                if include_steps
-                else None,
+                on_intermediate_message=self._make_step_handler(
+                    steps if include_steps else None, meter
+                ),
                 **invoke_kwargs,
             ):
                 meter.add(response)
@@ -3571,10 +3571,27 @@ class SKAgentManager:
     # Utility Methods
     # -----------------------------------------------------------------------
 
-    def _make_step_handler(self, steps: list):
-        """Create a step handler callback for agent invocation."""
+    def _make_step_handler(self, steps: list | None, meter: UsageMeter):
+        """Create the intermediate-message handler for agent invocation.
+
+        ALWAYS installed, for every invoke site: Semantic Kernel hands the
+        intermediate completions (the tool-call message of each
+        function-invoke attempt) ONLY to ``on_intermediate_message`` —
+        ``agent.invoke`` yields the final response alone (SK 1.39-1.46,
+        ``ChatCompletionAgent._inner_invoke`` / ``_drain_mutated_messages``).
+        A handler installed only when ``include_steps`` is set leaves the
+        meter blind to every completion but the last, under-counting exactly
+        the calls that cost the most (#ms1790 review).
+
+        ``steps`` is ``None`` when the caller did not ask for steps; the
+        meter must still be fed. TOOL messages (``FunctionResultContent``)
+        carry no usage, so ``_usage_of`` ignores them — no double counting.
+        """
 
         async def handler(message) -> None:
+            meter.add(message)
+            if steps is None:
+                return
             step_info = {"role": str(message.role)}
             for item in message.items:
                 if isinstance(item, FunctionCallContent):
@@ -3719,7 +3736,9 @@ mcp_server = FastMCP(**_mcp_kwargs)
 # Usage telemetry
 # ---------------------------------------------------------------------------
 # One JSONL line per tool call -- tool name, outcome, duration, pid, plus
-# agent/model when known.  No prompt or response content is written.  Purpose:
+# agent/model when known, and token usage (prompt/completion, summed over
+# every completion of the call) when the backend reported it.  No prompt or
+# response content is written.  Purpose:
 # answer "is sk-agent usage growing?" with a counter instead of an impression.
 # Best-effort by design -- a telemetry failure must never break an agent call.
 # Same record format and env var as the prototype in jsboige/vllm
@@ -3763,7 +3782,9 @@ class UsageMeter:
     The streaming case needs the opposite care. SK sets the usage on the FINAL chunk of
     a completion and several chunks of the same completion share one
     ``function_invoke_attempt`` — so that case keeps the last non-null value per attempt
-    instead of adding the same total once per chunk.
+    instead of adding the same total once per chunk. That branch is PREPARATION:
+    sk-agent does not stream today (no ``invoke_stream`` call site), so it is not a
+    measured behavior — it exists so the meter stays correct the day streaming lands.
     """
 
     def __init__(self) -> None:
@@ -3795,6 +3816,18 @@ class UsageMeter:
         if totals is not None:
             result["usage"] = totals
         return result
+
+
+def _coerce_token_count(value) -> int | None:
+    """Best-effort int() for a token count; ``None`` when the backend sent junk.
+
+    ``int("12")`` converts (dict-shaped usage), ``int(None)``/``int("abc")``
+    do not — a non-numeric value drops its own field, never the record.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def log_usage(
@@ -3829,12 +3862,17 @@ def log_usage(
             record["model"] = model
         # Token counts ride the same optional-field convention as agent/model: absent
         # when the backend reported none, never zero-filled (a zero would be read as a
-        # measured free call).
+        # measured free call). Conversion is per-field and defensive: one junk value
+        # drops its own field, not the whole record (the try above is broad on
+        # purpose — a telemetry failure must never break the call).
         if usage:
-            record["usage"] = {
-                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
-                "completion_tokens": int(usage.get("completion_tokens") or 0),
-            }
+            tokens = {}
+            for key in ("prompt_tokens", "completion_tokens"):
+                coerced = _coerce_token_count(usage.get(key))
+                if coerced is not None:
+                    tokens[key] = coerced
+            if tokens:
+                record["usage"] = tokens
         with USAGE_LOG.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:

@@ -239,3 +239,186 @@ def test_every_tool_is_tracked_and_keeps_its_schema():
         assert hasattr(tool.fn, "__wrapped__"), f"{name} is not wrapped by track_usage"
         original = inspect.signature(tool.fn.__wrapped__).parameters
         assert set(tool.parameters.get("properties", {})) == set(original), name
+
+
+# ---------------------------------------------------------------------------
+# Real Semantic Kernel loop (ms#1790 review): intermediate completions reach
+# the manager ONLY through on_intermediate_message — agent.invoke yields the
+# final response alone. The step handler must therefore ALWAYS be installed
+# and feed the meter; a handler wired only when include_steps is set counts
+# just the last completion. On the pre-fix head (signature (steps) only) this
+# test failed with totals 1000/5 instead of 2200/12 — the measured undercount.
+# ---------------------------------------------------------------------------
+
+from semantic_kernel import Kernel
+from semantic_kernel.agents import ChatCompletionAgent
+from semantic_kernel.connectors.ai.chat_completion_client_base import (
+    ChatCompletionClientBase,
+)
+from semantic_kernel.connectors.ai.function_choice_behavior import (
+    FunctionChoiceBehavior,
+)
+from semantic_kernel.contents import (
+    AuthorRole,
+    ChatMessageContent,
+    FinishReason,
+    FunctionCallContent,
+    TextContent,
+)
+from semantic_kernel.functions import kernel_function
+
+_TOOL_USAGE = {"prompt_tokens": 1200, "completion_tokens": 7}
+_FINAL_USAGE = {"prompt_tokens": 1000, "completion_tokens": 5}
+
+
+class _ScriptedToolLoopService(ChatCompletionClientBase):
+    """Completion 1 returns a tool call (usage A), completion 2 final text (usage B)."""
+
+    ai_model_id: str = "scripted"
+    calls: int = 0
+    SUPPORTS_FUNCTION_CALLING = True
+
+    async def _inner_get_chat_message_contents(self, chat_history, settings, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            message = ChatMessageContent(
+                role=AuthorRole.ASSISTANT,
+                items=[
+                    FunctionCallContent(
+                        id="call_1",
+                        name="tests-echo",
+                        arguments='{"text": "hi"}',
+                    )
+                ],
+                metadata={"usage": _TOOL_USAGE},
+            )
+            message.finish_reason = FinishReason.TOOL_CALLS
+            return [message]
+        return [
+            ChatMessageContent(
+                role=AuthorRole.ASSISTANT,
+                items=[TextContent(text="done: hi")],
+                metadata={"usage": _FINAL_USAGE},
+            )
+        ]
+
+    async def _inner_get_streaming_chat_message_contents(self, chat_history, settings, **kwargs):
+        raise NotImplementedError("streaming is not exercised by this scripted service")
+
+
+@kernel_function(description="Echo the text back.")
+def _echo(text: str) -> str:
+    """Echo the text back."""
+    return f"echo:{text}"
+
+
+def _wire_handler(manager, steps, meter):
+    """Adapt to the _make_step_handler signature (1 arg = pre-fix, 2 = fixed)."""
+    params = [
+        p for p in inspect.signature(
+            sk_agent.SKAgentManager._make_step_handler
+        ).parameters.values()
+        if p.name != "self"
+    ]
+    if len(params) == 1:
+        return manager._make_step_handler(steps)
+    return manager._make_step_handler(steps, meter)
+
+
+def test_real_sk_loop_sums_usage_across_every_completion():
+    kernel = Kernel()
+    kernel.add_function(plugin_name="tests", function=_echo, function_name="echo")
+    service = _ScriptedToolLoopService()
+    kernel.add_service(service)
+    agent = ChatCompletionAgent(
+        kernel=kernel,
+        name="scripted-agent",
+        instructions="Use the echo tool once, then answer.",
+        function_choice_behavior=FunctionChoiceBehavior.Auto(),
+    )
+
+    meter = sk_agent.UsageMeter()
+    steps = []
+    manager = object.__new__(sk_agent.SKAgentManager)
+    handler = _wire_handler(manager, steps, meter)
+
+    async def run():
+        yields = 0
+        async for response in agent.invoke(on_intermediate_message=handler):
+            meter.add(response)
+            yields += 1
+        return yields
+
+    yields = asyncio.run(run())
+
+    assert service.calls == 2, "the scripted loop must complete twice (tool call + final)"
+    assert yields == 1, "agent.invoke yields only the final response"
+    assert meter.totals() == {
+        "prompt_tokens": 2200,
+        "completion_tokens": 12,
+    }, "usage must be summed over BOTH completions, not the last one"
+
+
+def test_real_sk_loop_meter_fed_even_without_steps():
+    params = [
+        p for p in inspect.signature(
+            sk_agent.SKAgentManager._make_step_handler
+        ).parameters.values()
+        if p.name != "self"
+    ]
+    if len(params) == 1:
+        pytest.skip("pre-fix head: handler takes no meter — see the undercount test above")
+
+    kernel = Kernel()
+    kernel.add_function(plugin_name="tests", function=_echo, function_name="echo")
+    service = _ScriptedToolLoopService()
+    kernel.add_service(service)
+    agent = ChatCompletionAgent(
+        kernel=kernel,
+        name="scripted-agent",
+        instructions="Use the echo tool once, then answer.",
+        function_choice_behavior=FunctionChoiceBehavior.Auto(),
+    )
+
+    meter = sk_agent.UsageMeter()
+    steps = []
+    manager = object.__new__(sk_agent.SKAgentManager)
+    handler = manager._make_step_handler(None, meter)  # include_steps=False
+
+    async def run():
+        async for response in agent.invoke(on_intermediate_message=handler):
+            meter.add(response)
+
+    asyncio.run(run())
+
+    assert meter.totals() == {
+        "prompt_tokens": 2200,
+        "completion_tokens": 12,
+    }, "include_steps=False must not blind the meter"
+    assert steps == [], "steps stay empty when the caller did not ask for them"
+
+
+def test_log_usage_drops_junk_token_field_not_the_record(usage_log):
+    # A non-numeric value must drop its own field, never the whole record.
+    sk_agent.log_usage(
+        "call_agent",
+        True,
+        time.monotonic(),
+        agent="analyst",
+        usage={"prompt_tokens": "abc", "completion_tokens": "12"},
+    )
+    (rec,) = _records(usage_log)
+    assert rec["ok"] is True
+    assert rec["agent"] == "analyst"
+    assert rec["usage"] == {"completion_tokens": 12}, "only the numeric field survives"
+
+
+def test_log_usage_omits_usage_when_both_fields_are_junk(usage_log):
+    sk_agent.log_usage(
+        "call_agent",
+        True,
+        time.monotonic(),
+        usage={"prompt_tokens": None, "completion_tokens": object()},
+    )
+    (rec,) = _records(usage_log)
+    assert "usage" not in rec
