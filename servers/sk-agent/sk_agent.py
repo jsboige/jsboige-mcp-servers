@@ -3133,6 +3133,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
+        meter = UsageMeter()
         invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
         async with TurnContext(controller):
             async for response in agent.invoke(
@@ -3143,6 +3144,7 @@ class SKAgentManager:
                 else None,
                 **invoke_kwargs,
             ):
+                meter.add(response)
                 final_response = response
                 thread = response.thread
 
@@ -3150,6 +3152,7 @@ class SKAgentManager:
             "agent_used": agent_id,
             "model_used": self._get_agent_model_id(agent_id),
         }
+        meter.attach(result)
         if controller.pause is None and (
             final_response is None or not str(final_response).strip()
         ):
@@ -3207,6 +3210,7 @@ class SKAgentManager:
 
             steps = []
             final_response = None
+            meter = UsageMeter()
             invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
             async with TurnContext(controller):
                 async for response in agent.invoke(
@@ -3217,6 +3221,7 @@ class SKAgentManager:
                     else None,
                     **invoke_kwargs,
                 ):
+                    meter.add(response)
                     final_response = response
                     thread = response.thread
 
@@ -3225,6 +3230,7 @@ class SKAgentManager:
                 "model_used": self._get_agent_model_id(agent_id),
                 "images_analyzed": len(image_sources),
             }
+            meter.attach(result)
             if controller.pause is None and (
                 final_response is None or not str(final_response).strip()
             ):
@@ -3303,6 +3309,7 @@ class SKAgentManager:
 
             steps = []
             final_response = None
+            meter = UsageMeter()
             invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
             async with TurnContext(controller):
                 async for response in agent.invoke(
@@ -3313,6 +3320,7 @@ class SKAgentManager:
                     else None,
                     **invoke_kwargs,
                 ):
+                    meter.add(response)
                     final_response = response
                     thread = response.thread
 
@@ -3321,6 +3329,7 @@ class SKAgentManager:
                 "model_used": self._get_agent_model_id(agent_id),
                 "region_analyzed": region,
             }
+            meter.attach(result)
             if final_response is not None:
                 result["response"] = str(final_response)
             if zoom_context:
@@ -3388,6 +3397,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
+        meter = UsageMeter()
         invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
         async with TurnContext(controller):
             async for response in agent.invoke(
@@ -3398,6 +3408,7 @@ class SKAgentManager:
                 else None,
                 **invoke_kwargs,
             ):
+                meter.add(response)
                 final_response = response
                 thread = response.thread
 
@@ -3406,6 +3417,7 @@ class SKAgentManager:
             "model_used": self._get_agent_model_id(agent_id),
             "frames_analyzed": len(frames),
         }
+        meter.attach(result)
         if controller.pause is None and (
             final_response is None or not str(final_response).strip()
         ):
@@ -3526,6 +3538,7 @@ class SKAgentManager:
 
         steps = []
         final_response = None
+        meter = UsageMeter()
         invoke_kwargs = self._get_invoke_kwargs(agent_id, model_override, sampling_override)
         async with TurnContext(controller):
             async for response in agent.invoke(
@@ -3536,6 +3549,7 @@ class SKAgentManager:
                 else None,
                 **invoke_kwargs,
             ):
+                meter.add(response)
                 final_response = response
                 thread = response.thread
 
@@ -3545,6 +3559,7 @@ class SKAgentManager:
             "pages_analyzed": len(pages),
             "mode": mode,
         }
+        meter.attach(result)
         if final_response is not None:
             result["response"] = str(final_response)
         if include_steps:
@@ -3715,6 +3730,73 @@ USAGE_LOG = Path(
 )
 
 
+def _usage_of(response) -> tuple[int, int] | None:
+    """(prompt_tokens, completion_tokens) carried by one agent response, or None.
+
+    Semantic Kernel attaches ``metadata["usage"]`` to the message content of every
+    completion (``open_ai_chat_completion_base._get_metadata_from_chat_response``,
+    and the streaming variant). The value is a ``CompletionUsage``; other connectors
+    may hand a plain dict, so both shapes are read. Absent in, absent out — the
+    record omits the field rather than writing null (#4085 convention).
+    """
+    meta = getattr(response, "metadata", None)
+    usage = meta.get("usage") if isinstance(meta, dict) else None
+    if usage is None:
+        return None
+    if isinstance(usage, dict):
+        prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
+    else:
+        prompt = getattr(usage, "prompt_tokens", None)
+        completion = getattr(usage, "completion_tokens", None)
+    if prompt is None and completion is None:
+        return None
+    return int(prompt or 0), int(completion or 0)
+
+
+class UsageMeter:
+    """Sum token usage across every completion of ONE tool call.
+
+    One ``call_agent`` is not one completion: an agent with tools completes once per
+    function-invoke attempt, and each completion reports its own usage. Reporting only
+    the last would under-count exactly the calls that cost the most.
+
+    The streaming case needs the opposite care. SK sets the usage on the FINAL chunk of
+    a completion and several chunks of the same completion share one
+    ``function_invoke_attempt`` — so that case keeps the last non-null value per attempt
+    instead of adding the same total once per chunk.
+    """
+
+    def __init__(self) -> None:
+        self._completions: list[tuple[int, int]] = []
+        self._per_attempt: dict[int, tuple[int, int]] = {}
+
+    def add(self, response) -> None:
+        usage = _usage_of(response)
+        if usage is None:
+            return
+        attempt = getattr(response, "function_invoke_attempt", None)
+        if attempt is None:
+            self._completions.append(usage)
+        else:
+            self._per_attempt[attempt] = usage
+
+    def totals(self) -> dict[str, int] | None:
+        if not self._completions and not self._per_attempt:
+            return None
+        pairs = [*self._completions, *self._per_attempt.values()]
+        return {
+            "prompt_tokens": sum(p for p, _ in pairs),
+            "completion_tokens": sum(c for _, c in pairs),
+        }
+
+    def attach(self, result: dict) -> dict:
+        """Add ``usage`` to a success payload when known; leave it absent otherwise."""
+        totals = self.totals()
+        if totals is not None:
+            result["usage"] = totals
+        return result
+
+
 def log_usage(
     tool: str,
     ok: bool,
@@ -3722,6 +3804,7 @@ def log_usage(
     error: str = "",
     agent: str | None = None,
     model: str | None = None,
+    usage: dict | None = None,
 ) -> None:
     """Append one usage record.  Swallows every error on purpose.
 
@@ -3744,6 +3827,14 @@ def log_usage(
             record["agent"] = agent
         if model:
             record["model"] = model
+        # Token counts ride the same optional-field convention as agent/model: absent
+        # when the backend reported none, never zero-filled (a zero would be read as a
+        # measured free call).
+        if usage:
+            record["usage"] = {
+                "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+                "completion_tokens": int(usage.get("completion_tokens") or 0),
+            }
         with USAGE_LOG.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception:
@@ -3768,15 +3859,22 @@ def track_usage(fn):
         except Exception as exc:
             log_usage(fn.__name__, False, started, repr(exc), agent=agent)
             raise
-        # Tools return JSON strings; model_used rides on success payloads.
+        # Tools return JSON strings; model_used rides on success payloads, and so does
+        # usage (a {prompt_tokens, completion_tokens} dict the agent loop summed over
+        # every completion of this call).
         model = None
+        usage = None
         try:
             payload = json.loads(result) if isinstance(result, str) else result
             if isinstance(payload, dict):
                 model = payload.get("model_used")
+                usage = payload.get("usage")
+                if not isinstance(usage, dict):
+                    usage = None
         except Exception:
             model = None
-        log_usage(fn.__name__, True, started, agent=agent, model=model)
+            usage = None
+        log_usage(fn.__name__, True, started, agent=agent, model=model, usage=usage)
         return result
 
     return wrapper

@@ -112,6 +112,113 @@ def test_track_usage_ignores_result_without_model_used(usage_log):
     assert "model" not in rec
 
 
+# ---------------------------------------------------------------------------
+# Token usage (calibration of the nb_coder harness — vllm#431)
+# ---------------------------------------------------------------------------
+def test_log_usage_writes_usage_when_given(usage_log):
+    sk_agent.log_usage("call_agent", True, time.monotonic(),
+                       usage={"prompt_tokens": 1200, "completion_tokens": 340})
+    (rec,) = _records(usage_log)
+    assert rec["usage"] == {"prompt_tokens": 1200, "completion_tokens": 340}
+
+
+def test_log_usage_omits_usage_when_absent(usage_log):
+    # Absent, never null and never zero-filled: a zero would be read as
+    # "measured free call" rather than "the backend said nothing".
+    sk_agent.log_usage("call_agent", True, time.monotonic())
+    (rec,) = _records(usage_log)
+    assert "usage" not in rec
+
+
+def test_track_usage_logs_usage_from_payload(usage_log):
+    @sk_agent.track_usage
+    async def call_agent(prompt: str = "", agent: str = "") -> str:
+        return json.dumps({"ok": True, "model_used": "nb-minimax",
+                           "usage": {"prompt_tokens": 10, "completion_tokens": 4}})
+
+    asyncio.run(call_agent("hi", agent="analyst"))
+    (rec,) = _records(usage_log)
+    assert rec["usage"] == {"prompt_tokens": 10, "completion_tokens": 4}
+    assert rec["model"] == "nb-minimax"
+
+
+def test_track_usage_ignores_null_or_foreign_usage(usage_log):
+    # A backend that reports nothing must leave the field out, and a
+    # non-dict value must not be copied into the record as-is.
+    @sk_agent.track_usage
+    async def call_agent(prompt: str = "", agent: str = "") -> str:
+        return json.dumps({"ok": True, "usage": None})
+
+    @sk_agent.track_usage
+    async def other(prompt: str = "", agent: str = "") -> str:
+        return json.dumps({"ok": True, "usage": "n/a"})
+
+    asyncio.run(call_agent("hi"))
+    asyncio.run(other("hi"))
+    first, second = _records(usage_log)
+    assert "usage" not in first
+    assert "usage" not in second
+
+
+def _completion(prompt: int, completion: int, attempt=None):
+    """One message content as SK hands it back: usage in metadata, and on the
+    streaming class only, the loop's own function_invoke_attempt counter."""
+    import types
+    content = types.SimpleNamespace(
+        metadata={"usage": types.SimpleNamespace(prompt_tokens=prompt,
+                                                 completion_tokens=completion)})
+    if attempt is not None:
+        content.function_invoke_attempt = attempt
+    return content
+
+
+def test_usage_meter_sums_every_completion_of_a_call():
+    # A tool-calling loop completes once per function-invoke attempt: the CALL
+    # cost is the sum, and reporting the last one alone would under-count
+    # exactly the calls that cost the most.
+    meter = sk_agent.UsageMeter()
+    meter.add(_completion(1000, 50))
+    meter.add(_completion(1200, 30))
+    assert meter.totals() == {"prompt_tokens": 2200, "completion_tokens": 80}
+
+
+def test_usage_meter_keeps_last_value_per_streamed_completion():
+    # SK puts usage on the FINAL chunk of a streamed completion, and several
+    # chunks share one function_invoke_attempt: the last value per attempt is
+    # the completion's total, not something to add once per chunk.
+    meter = sk_agent.UsageMeter()
+    meter.add(_completion(100, 10, attempt=0))   # earlier chunk, partial
+    meter.add(_completion(900, 40, attempt=0))   # final chunk of completion 0
+    meter.add(_completion(300, 20, attempt=1))   # completion 1
+    assert meter.totals() == {"prompt_tokens": 1200, "completion_tokens": 60}
+
+
+def test_usage_meter_reads_dict_shaped_usage():
+    # Not every connector hands a CompletionUsage object.
+    import types
+    meter = sk_agent.UsageMeter()
+    meter.add(types.SimpleNamespace(metadata={"usage": {"prompt_tokens": 7,
+                                                        "completion_tokens": 3}}))
+    assert meter.totals() == {"prompt_tokens": 7, "completion_tokens": 3}
+
+
+def test_usage_meter_attaches_nothing_when_backend_reported_none():
+    import types
+    meter = sk_agent.UsageMeter()
+    meter.add(types.SimpleNamespace(metadata={"usage": None}))
+    meter.add(types.SimpleNamespace(metadata={}))
+    result = {"agent_used": "analyst"}
+    assert meter.attach(result) == {"agent_used": "analyst"}
+    assert "usage" not in result
+
+
+def test_usage_meter_attach_reports_totals_on_the_payload():
+    meter = sk_agent.UsageMeter()
+    meter.add(_completion(5, 2))
+    result = meter.attach({"agent_used": "analyst"})
+    assert result["usage"] == {"prompt_tokens": 5, "completion_tokens": 2}
+
+
 EXPECTED_TOOLS = {
     "call_agent",
     "list_agents",
