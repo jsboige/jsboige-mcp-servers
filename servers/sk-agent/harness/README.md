@@ -1,5 +1,5 @@
 <!-- provenance (roo-extensions #4781 harness mutualisation)
-     Copied verbatim from jsboige/vllm @ f42c52d8fb5f5d64bbae34df7f83d56f7aa284b8
+     Copied verbatim from jsboige/vllm @ e5f9c76627626ee19b32a203d8d5b92487843939
      Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
      re-copy, do not diverge silently. -->
 
@@ -46,6 +46,13 @@ Every path the harness needs resolves in this order:
 The hourly wrapper's interpreter cascade is the same spirit: `-Python`, then
 `NB_AUDIT_PYTHON`, then the sibling venv (only when `../../sk_agent.py` exists), then
 whatever `python` resolves to.
+
+**One path is deliberately NOT resolved here: the CoursIA checkout.** `--repo` (or
+`NB_AUDIT_REPO` / `NBCODER_REPO`) is an **input of the run**, not a harness binding — the
+harness refuses to start without it rather than inventing a per-seat default. Same for the
+claim lane: `NBCODER_LANE` has no default, so `--claim` fails loud instead of claiming under
+another seat's identity (vllm#438). The hourly wrapper carries the seat's checkout as its
+own `-Repo` parameter — launcher configuration, not harness configuration.
 
 ## Requirements
 

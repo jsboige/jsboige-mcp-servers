@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ f42c52d8fb5f5d64bbae34df7f83d56f7aa284b8
+# Copied verbatim from jsboige/vllm @ e5f9c76627626ee19b32a203d8d5b92487843939
 # original path: myia_vllm/scripts/adoption/nb_coder/issue_from_finding.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.

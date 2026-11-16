@@ -16,7 +16,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE / "harness"
-SHA = "f42c52d8fb5f5d64bbae34df7f83d56f7aa284b8"
+SHA = "e5f9c76627626ee19b32a203d8d5b92487843939"
 
 
 def _load(name: str, path: Path):
@@ -80,6 +80,29 @@ def test_nb_coder_writer_keeps_list_of_lines(tmp_path):
     out = json.loads(p.read_text(encoding="utf-8"))
     assert out["cells"][1]["source"] == ["print(1)\n"]
     assert m.normalize_sources(p) == 0                    # idempotent
+
+
+# ------------------------------------------------------------------ no seat identity
+def test_nb_coder_has_no_lane_default(monkeypatch):
+    """vllm#438/F1: the lane reaches the claim text, the [DELIVERED] marker and the claim
+    guard. A default identity would let a seat that forgot the variable claim under another
+    seat's name — the exact failure the claim registry exists to prevent."""
+    monkeypatch.delenv("NBCODER_LANE", raising=False)
+    m = _load("harness_nb_coder_lane", HARNESS / "nb_coder" / "nb_coder_driver.py")
+    assert m.LANE == ""
+
+
+def test_repo_and_lane_have_no_seat_defaults():
+    """vllm#438/F2: a per-seat checkout path as an argparse default is a fourth resolution
+    path, older than the three documented ones. The checkout is an input of the run."""
+    banned = {
+        "nb_coder/nb_coder_driver.py": ['default="d:/CoursIA"', '"myia-ai-01:nb-coder"'],
+        "nb_audit/nb_audit_runner.py": ['default="d:/dev/CoursIA-skaudit"'],
+        "nb_audit/nb_audit_driver.py": ['default="d:/dev/CoursIA-skaudit"'],
+    }
+    hits = [(rel, needle) for rel, needles in banned.items() for needle in needles
+            if needle in (HARNESS / rel).read_text(encoding="utf-8")]
+    assert hits == []
 
 
 # ------------------------------------------------------------------ copy provenance
