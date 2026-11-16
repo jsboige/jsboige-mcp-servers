@@ -637,3 +637,119 @@ describe('claudishTraffic.handler -- sonde de rotation', () => {
         expect(text).not.toContain('NOMINAL');
     });
 });
+
+// ── Relay mode (#4769) ─────────────────────────────────────────────────────
+//
+// Mesure du 16/11 sur le sidecar claudish de ce siège (relais actif) : 19
+// [Request] jusqu'à 00:08:50Z, puis 3 420 lignes [ttft] en 6 h 29 SANS AUCUNE
+// [Request] — le routage se fait sur le hub, et le sidecar n'écrit pas de ligne
+// [Request] en relais. L'outil rendait « GAP: traffic STOPPED at 00:08:50Z »
+// alors que le sidecar relayait du trafic en continu (constat #4769, ai-01).
+//
+// Fixture synthétique exigée par l'issue : modèles et hôte FICTIFS, aucune
+// adresse réelle.
+describe('relay mode (#4769) — un sidecar en relais n ecrit AUCUNE ligne [Request]', () => {
+    const RELAY_SWITCH = (ts: string) =>
+        `${ts} [Relay] upstream http://relay.invalid:9999 healthy again → NOMINAL (relay resumed) — queue RECOVERED→NOMINAL 61.0s = wait 60.0s (cooldown floor 60s) + probe 1.0s`;
+    const LOCAL_SWITCH = (ts: string) =>
+        `${ts} [Relay] upstream http://relay.invalid:9999 DOWN after 2 failure(s) (forward-connect: Error: socket closed) → AUTONOMOUS`;
+    const RELAY_TTFT = (ts: string, model: string) =>
+        `${ts}   [ttft] anthropic model=${model} reqN=56 headers=1200ms firstEvent=0ms total=1200ms`;
+
+    const RELAY_LINES = [
+        REQ('2026-11-16T00:00:00.000000000Z', 'fict-model-alpha', 'ComposedHandler', 'myia-po-fict', UA_CLI),
+        REQ('2026-11-16T00:05:00.000000000Z', 'fict-model-beta', 'ComposedHandler', 'myia-po-fict', UA_CLI),
+        RELAY_SWITCH('2026-11-16T00:06:00.000000000Z'),
+        RELAY_TTFT('2026-11-16T00:10:00.000000000Z', 'fict-model-alpha'),
+        RELAY_TTFT('2026-11-16T00:11:00.000000000Z', 'fict-model-gamma'),
+        RELAY_TTFT('2026-11-16T00:12:00.000000000Z', 'fict-model-alpha'),
+        RELAY_TTFT('2026-11-16T00:13:00.000000000Z', 'fict-model-gamma'),
+    ];
+    const NOW_RELAY = Date.parse('2026-11-16T00:20:00.000Z');
+    const renderRelay = (lines = RELAY_LINES, now = NOW_RELAY, extra: Record<string, unknown> = {}) =>
+        renderTrafficReport(parseClaudishLogLines(lines), {
+            bucketMinutes: 5,
+            since: '1h',
+            container: 'claudish-sidecar',
+            command: 'docker logs --timestamps --since 1h claudish-sidecar',
+            maxOutputLength: 20000,
+            now,
+            ...extra,
+        });
+
+    it('rend RELAY: et ni "GAP: traffic STOPPED" ni "NOMINAL (silent)"', () => {
+        const report = renderRelay();
+        expect(report).toContain('RELAY: this sidecar forwards to the hub since 2026-11-16T00:06:00Z');
+        expect(report).not.toContain('GAP: traffic STOPPED');
+        expect(report).not.toContain('NOMINAL (silent)');
+    });
+
+    it('cite la bascule comme preuve et compte les [ttft] par modele DEMANDE', () => {
+        const report = renderRelay();
+        expect(report).toContain('relay resumed');            // preuve = ligne mesuree
+        expect(report).toContain('fict-model-alpha 2, fict-model-gamma 2');
+        expect(report).toContain('NOT the model the hub served');
+        // Le modele de la periode pre-relais ne doit pas etre compte comme relaye
+        expect(report).not.toContain('fict-model-beta 1');
+    });
+
+    it('une bascule locale PLUS RECENTE termine le relais : GAP redevient le verdict', () => {
+        const report = renderRelay(
+            [...RELAY_LINES, LOCAL_SWITCH('2026-11-16T00:15:00.000000000Z')],
+            Date.parse('2026-11-16T01:00:00.000Z') // 55 min apres la derniere requete
+        );
+        expect(report).not.toContain('RELAY:');
+        expect(report).toContain('GAP: traffic STOPPED at 2026-11-16T00:05:00Z');
+    });
+
+    it('infere le relais quand la fenetre ne contient AUCUNE ligne de bascule', () => {
+        // --since 30m pendant que le relais dure depuis 6 h : aucune bascule dans
+        // la fenetre, mais des [ttft] sans [Request]. L'ancien rendu : NOMINAL silent.
+        const report = renderRelay(RELAY_LINES.filter(l => !l.includes('[Relay]')));
+        expect(report).toContain('RELAY:');
+        expect(report).toContain('INFERRED');
+        expect(report).not.toContain('NOMINAL');
+        expect(report).not.toContain('GAP: traffic STOPPED');
+    });
+
+    it('un corpus SANS [Request] mais avec des [ttft] infere le relais (pas "NOMINAL (silent)")', () => {
+        const report = renderRelay(RELAY_LINES.filter(l => !l.includes('[Request]') && !l.includes('[Relay]')));
+        expect(report).toContain('RELAY:');
+        expect(report).toContain('no [Request] in window');
+        expect(report).not.toContain('NOMINAL (silent)');
+    });
+
+    it('un [resp] seul avec ZERO requete reste NOMINAL (silent) : response-only n est pas du relais', () => {
+        const report = renderRelay([RESP('2026-11-16T00:10:00.000000000Z')]);
+        expect(report).toContain('NOMINAL (silent)');
+        expect(report).not.toContain('RELAY:');
+    });
+
+    it('un corpus rotationne reste UNKNOWN, jamais RELAY (le passe ne prouve pas le present)', () => {
+        // Derniere ligne du corpus tres ancienne + sonde --tail recente = rotation :
+        // l'invariant rotation prime, meme si la forme du corpus ressemble au relais.
+        const report = renderRelay(
+            [
+                RELAY_SWITCH('2026-11-16T00:06:00.000000000Z'),
+                RELAY_TTFT('2026-11-16T00:10:00.000000000Z', 'fict-model-alpha'),
+            ],
+            NOW_RELAY,
+            { currentTailTs: Date.parse('2026-11-16T00:19:00.000Z') }
+        );
+        expect(report).toContain('ROTATED CORPUS');
+        expect(report).toContain('UNKNOWN: no verdict possible');
+        expect(report).not.toContain('RELAY:');
+    });
+
+    it('handler : un corpus de relais rend RELAY: de bout en bout', async () => {
+        vi.mocked(execFile).mockReset();
+        vi.mocked(execFile).mockImplementation(((_file: string, _args: string[], _opts: any, cb: any) => {
+            cb(null, RELAY_LINES.join('\n'), '');
+            return {} as any;
+        }) as any);
+        const res = await claudishTraffic.handler({ bucket_minutes: 30, since: '1h', container: 'claudish-sidecar' });
+        const text = (res.content as any)[0].text as string;
+        expect(text).toContain('RELAY:');
+        expect(text).not.toContain('GAP: traffic STOPPED');
+    });
+});

@@ -27,6 +27,15 @@
  *      auto-substitutes when the default was NOT explicitly pinned and discovery
  *      is unambiguous (exactly one other candidate); otherwise it names the
  *      candidates instead of reporting a blind infrastructure failure.
+ *   9. Relay mode is NOT silence (#4769, measured 16/11 on po-2028 and ai-01):
+ *      a sidecar in relay mode forwards to the hub and writes NO `[Request]`
+ *      line at all (routing happens on the hub) — only `[ttft]`/`[resp]` lines.
+ *      Counting only `[Request]` made the tool declare "GAP: traffic STOPPED"
+ *      (or "NOMINAL silent") while thousands of requests were being relayed;
+ *      that zero was then relayed as a finding in a retrospective. The relay
+ *      mode gets a DEDICATED verdict that outranks GAP/NOMINAL, carrying the
+ *      [ttft] counts by REQUESTED model with the explicit caveat that the
+ *      served model lives in the hub logs.
  *
  * Format contract (producer read firsthand: claudish
  * packages/cli/src/fork/middleware/request-logger.ts + response-capture.ts):
@@ -40,6 +49,12 @@
  *   - `[resp]` / `[ttft]` lines carry NO machine=; their label is the PARSER
  *     (anthropic/openai/gemini/ollama), not the provider — which is why this
  *     histogram is request-based, never response-based.
+ *   - Relay-mode switches (measured verbatim, po-2028 claudish-proxy 16/11):
+ *       `[Relay] upstream http://… healthy again → NOMINAL (relay resumed) — …`
+ *       `[Relay] upstream http://… DOWN after 2 failure(s) (…) → AUTONOMOUS`
+ *       `[Relay] forward failed (…) → this request served LOCALLY [2/2 before AUTONOMOUS]`
+ *     Capital `[Relay]` = mode switch; lowercase `[claudish] [relay] upstream-nonok`
+ *     is a traffic line and is NOT a switch.
  */
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { execFile } from 'child_process';
@@ -60,6 +75,15 @@ const REQUEST_RE =
     /\[Request\] model=(\S+) handler=(\S+) src=(\S+) (stream|sync) msgs=(\d+) max_tokens=(\S+)(?: machine=(\S+))? ua=(.*)$/;
 const BANNER_RE = /Server started on port \d+/;
 const UA_WORKLOAD_RE = /workload\/([a-zA-Z0-9_-]+)/;
+// Response lines (#4769) — measured shape (po-2028, 16/11):
+//   `  [ttft] anthropic model=claude-haiku-5-5 reqN=56 headers=1875ms firstEvent=0ms total=1875ms`
+//   `  [resp] anthropic model=glm-5.2 reqN=42 events~=38 bytes=12345 closed=true stop=end_turn 5432ms -> …`
+const TTFT_RE = /\[ttft\] (\S+) model=(\S+)/;
+const RESP_RE = /\[resp\] (\S+) model=(\S+)/;
+// Relay-mode switches (#4769): capital `[Relay]` is a MODE line; the lowercase
+// `[claudish] [relay] upstream-nonok …` traffic line must not match.
+const RELAY_RESUMED_RE = /\[Relay\].*relay resumed/i;
+const RELAY_LOCAL_RE = /\[Relay\].*(?:→\s*AUTONOMOUS|served LOCALLY)/;
 
 export interface ClaudishRequest {
     ts: number;
@@ -73,9 +97,28 @@ export interface ClaudishRequest {
     workload: string; // 'cron' | 'interactive' | other workload token
 }
 
+export interface ClaudishResponseLine {
+    ts: number;
+    tsIso: string;
+    kind: 'ttft' | 'resp';
+    /** Parser label + model as logged. The model is the REQUESTED one — the
+     *  served model lives in the hub logs when the sidecar is in relay mode. */
+    model: string;
+}
+
+export interface ClaudishModeSwitch {
+    ts: number;
+    tsIso: string;
+    /** 'relay' = a `relay resumed` switch; 'local' = `→ AUTONOMOUS` / `served LOCALLY`. */
+    mode: 'relay' | 'local';
+    line: string;
+}
+
 export interface ClaudishParseResult {
     requests: ClaudishRequest[];
     lifecycleBanners: { ts: number; tsIso: string; line: string }[];
+    responses: ClaudishResponseLine[];
+    modeSwitches: ClaudishModeSwitch[];
     firstLineTs: number | null;
     lastLineTs: number | null;
     totalLines: number;
@@ -86,6 +129,8 @@ export function parseClaudishLogLines(lines: string[]): ClaudishParseResult {
     const res: ClaudishParseResult = {
         requests: [],
         lifecycleBanners: [],
+        responses: [],
+        modeSwitches: [],
         firstLineTs: null,
         lastLineTs: null,
         totalLines: 0,
@@ -120,6 +165,25 @@ export function parseClaudishLogLines(lines: string[]): ClaudishParseResult {
                 ua,
                 workload: wl ? wl[1] : 'interactive',
             });
+            continue;
+        }
+        // Response lines (#4769): the ONLY trace a relay-mode sidecar leaves.
+        const ttft = TTFT_RE.exec(body);
+        if (ttft) {
+            res.responses.push({ ts, tsIso: toIso(ts), kind: 'ttft', model: ttft[2] });
+            continue;
+        }
+        const resp = RESP_RE.exec(body);
+        if (resp) {
+            res.responses.push({ ts, tsIso: toIso(ts), kind: 'resp', model: resp[2] });
+            continue;
+        }
+        // Relay-mode switches (#4769). A switch without a usable timestamp is
+        // dropped rather than guessed: ordering is what decides the mode.
+        if (!Number.isNaN(ts) && RELAY_RESUMED_RE.test(body)) {
+            res.modeSwitches.push({ ts, tsIso: toIso(ts), mode: 'relay', line: body });
+        } else if (!Number.isNaN(ts) && RELAY_LOCAL_RE.test(body)) {
+            res.modeSwitches.push({ ts, tsIso: toIso(ts), mode: 'local', line: body });
         }
     }
     return res;
@@ -230,6 +294,15 @@ function fmtClock(ts: number): string {
     return new Date(ts).toISOString().slice(11, 19) + 'Z'; // HH:MM:SSZ
 }
 
+/** Newest switch of a given mode (#4769). Ordering is decided by timestamp, never by line order. */
+function lastModeSwitch(switches: ClaudishModeSwitch[], mode: 'relay' | 'local'): ClaudishModeSwitch | null {
+    let last: ClaudishModeSwitch | null = null;
+    for (const s of switches) {
+        if (s.mode === mode && (last === null || s.ts > last.ts)) last = s;
+    }
+    return last;
+}
+
 /**
  * Builds the full text report. Invariants (see file header): histogram up to
  * `now`, span + collection mode always rendered, GAP declarative line,
@@ -306,6 +379,37 @@ export function renderTrafficReport(parse: ClaudishParseResult, opts: RenderOpti
 
     // Verdict (invariant 3) — the incident question answered without a second call
     const lastReq = requests.length > 0 ? requests.reduce((a, r) => (r.ts > a.ts ? r : a)) : null;
+    // Relay mode (#4769) — decided on the UNFILTERED corpus: it is a container
+    // mode, not a per-machine property, and a machine filter would otherwise
+    // hide the very requests whose absence defines the mode.
+    const unfilteredLastReq =
+        parse.requests.length > 0 ? parse.requests.reduce((a, r) => (r.ts > a.ts ? r : a)) : null;
+    const lastRelaySwitch = lastModeSwitch(parse.modeSwitches, 'relay');
+    const lastLocalSwitch = lastModeSwitch(parse.modeSwitches, 'local');
+    const explicitRelay =
+        lastRelaySwitch !== null && (lastLocalSwitch === null || lastRelaySwitch.ts > lastLocalSwitch.ts);
+    const ttftLines = parse.responses.filter(r => r.kind === 'ttft');
+    // Response lines a relay-mode sidecar leaves with no local [Request] line.
+    // A response normally follows its own [Request] by seconds — the 02/09
+    // fixture has a [ttft] 1 s and a [resp] 7 s after the last request, and that
+    // corpus MUST keep rendering GAP — so only traces beyond the tolerance count
+    // as relay evidence. One lone [resp] past the tolerance can be a long
+    // generation closing late; TWO of them cannot belong to the same request.
+    const relayTraces =
+        unfilteredLastReq === null
+            ? ttftLines
+            : parse.responses.filter(r => r.ts - unfilteredLastReq.ts > RELAY_TRAIL_TOLERANCE_MS);
+    // Shape inference is a FALLBACK: when the window carries switch lines at all,
+    // their ordering is the fact (a later `→ AUTONOMOUS` ends the relay even
+    // though the relay period's [ttft] lines are still in the corpus).
+    const inferredRelay =
+        parse.modeSwitches.length > 0
+            ? false
+            : unfilteredLastReq === null
+              ? ttftLines.length > 0
+              : relayTraces.some(r => r.kind === 'ttft') ||
+                relayTraces.filter(r => r.kind === 'resp').length >= 2;
+    const relayActive = explicitRelay || inferredRelay;
     if (rotatedCorpus) {
         // First branch on purpose: a rotated corpus invalidates EVERY verdict below,
         // not just the nominal ones. "GAP: traffic STOPPED at <ts>" read off the old
@@ -313,6 +417,39 @@ export function renderTrafficReport(parse: ClaudishParseResult, opts: RenderOpti
         // state from evidence that stops before the current process. Saying "I do not
         // know" is a different, and more useful, answer than a confident wrong one.
         sections.push(`UNKNOWN: no verdict possible — this corpus does not cover the running process (see ROTATED CORPUS above). Neither silence nor a stop can be concluded from it.`);
+    } else if (relayActive) {
+        // #4769 — a relay sidecar logs NO [Request] line (routing happens on the
+        // hub). "STOPPED" and "silent" are both false assertions here; the zero
+        // is structural, and the response lines prove the traffic exists.
+        const anchor = Math.max(
+            unfilteredLastReq?.ts ?? -Infinity,
+            explicitRelay ? lastRelaySwitch!.ts : -Infinity
+        );
+        const countTtft = ttftLines.filter(r => r.ts > anchor);
+        const counts = new Map<string, number>();
+        for (const r of countTtft) counts.set(r.model, (counts.get(r.model) ?? 0) + 1);
+        const countLine =
+            [...counts.entries()]
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 8)
+                .map(([m, n]) => `${m} ${n}`)
+                .join(', ') || 'none in window';
+        const relaySince = explicitRelay
+            ? lastRelaySwitch!.tsIso
+            : relayTraces.length > 0
+              ? relayTraces.reduce((a, r) => (r.ts < a.ts ? r : a)).tsIso
+              : toIso(anchor);
+        sections.push(
+            `RELAY: this sidecar forwards to the hub since ${relaySince}; [Request] lines are absent BY CONSTRUCTION (routing happens on the hub); served models and per-machine counts live in the HUB logs.`
+        );
+        sections.push(
+            explicitRelay
+                ? `Relay evidence: mode switch "${lastRelaySwitch!.line}" at ${lastRelaySwitch!.tsIso}${lastLocalSwitch ? ` (last local switch: ${lastLocalSwitch.tsIso})` : ''}.`
+                : `Relay evidence: relay mode INFERRED — no [Relay] switch line in this window; ${relayTraces.length} response line(s) beyond ${Math.round(RELAY_TRAIL_TOLERANCE_MS / 60_000)} min after the last [Request] (${unfilteredLastReq ? unfilteredLastReq.tsIso : 'no [Request] in window'}).`
+        );
+        sections.push(
+            `Relayed responses — [ttft] lines by REQUESTED model (the caller's model, NOT the model the hub served): ${countLine} (${countTtft.length} total). The histogram below counts only LOCALLY-logged [Request] lines, so it reads near-zero in relay mode by construction.`
+        );
     } else if (lastReq) {
         const age = now - lastReq.ts;
         if (age > gapThresholdMs) {
@@ -397,6 +534,10 @@ export function boundOutput(text: string, maxOutputLength: number): string {
 // Same 2 min tolerance as the head-gap guard above: below that, clock skew
 // between the two reads is a likelier explanation than a rotation.
 const ROTATION_TOLERANCE_MS = 120_000;
+// #4769: how far past its [Request] a response line can still be that same
+// request's in-flight completion. Beyond this, response lines with no matching
+// [Request] line are relay evidence (a relay sidecar writes none at all).
+const RELAY_TRAIL_TOLERANCE_MS = 120_000;
 // One timestamp is all the probe needs; a small N also keeps docker on the
 // current file — large --tail values fall back to the rotated one (measured).
 const TAIL_PROBE_LINES = 5;
@@ -443,7 +584,7 @@ async function discoverClaudishContainers(contextArgs: string[]): Promise<string
 export const claudishTraffic = {
     name: 'claudish_traffic',
     description:
-        'Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme de trafic TOUJOURS rendu jusqu\u2019à l\u2019heure courante, split cron/interactif par machine, ligne déclarative "GAP: traffic STOPPED at <ts>" quand le trafic est arrêté — répond "ce trafic persiste-t-il ?" sans second appel ni grep (#3391, #3174). handler=NativeHandler = seul chemin facturé Anthropic (ComposedHandler = remappé, non facturé). reqN est remis à zéro à chaque bannière de démarrage process. [resp]/[ttft] ne portent pas machine= — les comptages sont request-based. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, PAS une panne — SAUF corpus rotationné : docker sert l’ancien fichier à `--since` sans prévenir, l’outil sonde alors en `--tail` et rend UNKNOWN plutôt qu’un NOMINAL ou un GAP faux. Ne throw jamais.',
+        'Lecture fiable des traces du proxy claudish (docker logs --timestamps) : histogramme de trafic TOUJOURS rendu jusqu\u2019à l\u2019heure courante, split cron/interactif par machine, ligne déclarative "GAP: traffic STOPPED at <ts>" quand le trafic est arrêté — répond "ce trafic persiste-t-il ?" sans second appel ni grep (#3391, #3174). handler=NativeHandler = seul chemin facturé Anthropic (ComposedHandler = remappé, non facturé). reqN est remis à zéro à chaque bannière de démarrage process. [resp]/[ttft] ne portent pas machine= — les comptages sont request-based. Zéro requête sur conteneur joignable = sidecar NOMINAL silencieux, PAS une panne — SAUF (a) corpus rotationné : docker sert l’ancien fichier à `--since` sans prévenir, l’outil sonde alors en `--tail` et rend UNKNOWN plutôt qu’un NOMINAL ou un GAP faux ; (b) sidecar en mode RELAIS (#4769) : il transmet au hub et n’écrit AUCUNE ligne [Request] (le routage se fait sur le hub) — l’outil le détecte (bascule `[Relay] … relay resumed` / `→ AUTONOMOUS|served LOCALLY`, et flux [ttft] sans [Request]) et rend un verdict `RELAY:` avec le décompte des [ttft] par modèle DEMANDÉ (le modèle servi vit dans les logs du hub) ; un zéro [Request] n’y est PAS un silence. Ne throw jamais.',
     inputSchema: {
         type: 'object',
         properties: {
