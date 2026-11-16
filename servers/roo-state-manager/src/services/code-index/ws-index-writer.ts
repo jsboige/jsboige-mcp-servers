@@ -361,15 +361,22 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 /**
  * Points carried by a Qdrant response, whatever the endpoint's shape.
  *
- * The live client is NOT uniform (#4736 P4 measurement, 2026-11-16):
- *   - `retrieve` answers `{ result: PointStruct[] }` — an ARRAY;
- *   - `scroll`   answers `{ result: { points, next_page_offset } }`.
+ * The pinned SDK (`@qdrant/js-client-rest` 1.16.2, ms#1789 review) UNWRAPS the
+ * HTTP envelope before returning (`qdrant-client.js` returns
+ * `response.data.result`):
+ *   - `retrieve` answers a BARE ARRAY of points;
+ *   - `scroll`   answers `{ points, next_page_offset }` at the top level.
+ * The raw HTTP shapes (what a bare fetch/curl probe sees) differ:
+ *   - `retrieve` → `{ result: PointStruct[] }`;
+ *   - `scroll`   → `{ result: { points, next_page_offset } }`.
  * Reading only `result.points` made `retrieve` return nothing on every call:
  * the hash cache stayed empty (every pass re-indexed the whole corpus — three
  * measured passes, zero skips) and the ws-writer sentinel read as absent
- * (the mono-writer guard was blind). Accept all three shapes.
+ * (the mono-writer guard was blind). Accept all four shapes, SDK-unwrapped
+ * first — that is what the live client hands us.
  */
 function responsePoints(res: any): any[] {
+	if (Array.isArray(res)) return res;
 	if (Array.isArray(res?.result)) return res.result;
 	return res?.result?.points ?? res?.points ?? [];
 }

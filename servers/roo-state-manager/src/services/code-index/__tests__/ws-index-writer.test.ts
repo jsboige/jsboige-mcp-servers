@@ -96,15 +96,19 @@ class FakeWsQdrant implements QdrantLike {
 	async retrieve(name: string, body: any) {
 		const c = this.col(name);
 		const ids: string[] = body?.ids ?? [];
-		// REAL client shape (@qdrant/js-client-rest): retrieve answers
-		// `{ result: PointStruct[] }` — an ARRAY, unlike scroll's
-		// `{ result: { points, next_page_offset } }`. The fake used to answer
-		// `{ points }`, a shape the live client never produces; that fiction is
-		// exactly how the hash cache stayed silently empty in production
-		// (#4736 P4 measurement, 2026-11-16: three passes, zero skips).
-		return {
-			result: ids.filter((id) => c.points.has(id)).map((id) => ({ id, payload: c.points.get(id)!.payload })),
-		};
+		// REAL client shape (@qdrant/js-client-rest 1.16.2, ms#1789 review):
+		// the SDK UNWRAPS the HTTP envelope (`qdrant-client.js` returns
+		// `response.data.result`), so `retrieve` answers a BARE ARRAY of points
+		// and `scroll` answers `{ points, next_page_offset }` — NOT the raw
+		// `{ result: ... }` envelope a fetch/curl probe would show. The earlier
+		// fake answered `{ points }` (a shape the live client never produces)
+		// and its correction `{ result: [...] }` (the RAW HTTP shape, also not
+		// what the SDK returns): both fictions "verified" a guard that
+		// production left blind (#4736 P4: three passes, zero skips). A fake
+		// must be written from the pinned SDK's measured return, not from the
+		// code it doubles — and the hash-cache/sentinel tests below fail if
+		// responsePoints ever stops accepting the bare array.
+		return ids.filter((id) => c.points.has(id)).map((id) => ({ id, payload: c.points.get(id)!.payload }));
 	}
 
 	async scroll(name: string, body: any) {
@@ -366,7 +370,7 @@ describe('runWsIndexWriter (#4736 P3)', () => {
 		expect(record?.takenOverFrom).toBe('web1:roo-extensions');
 	});
 
-	test('UNCHANGED second run embeds nothing and writes no point (hash cache)', async () => {
+	test('UNCHANGED second run embeds nothing and writes no point (hash cache; retrieve = SDK bare array — fails if only `{ result: [...] }` is handled)', async () => {
 		const ws = makeWorkspace({ 'docs/a.md': DOC_V1 });
 		const fake = new FakeWsQdrant({ [COLLECTION]: {} });
 		const deps = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
