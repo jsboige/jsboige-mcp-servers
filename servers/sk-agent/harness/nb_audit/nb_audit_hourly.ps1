@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ f42c52d8fb5f5d64bbae34df7f83d56f7aa284b8
+# Copied verbatim from jsboige/vllm @ e5f9c76627626ee19b32a203d8d5b92487843939
 # original path: myia_vllm/scripts/adoption/nb_audit/nb_audit_hourly.ps1
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -20,7 +20,8 @@
 # The skip list the order named (PR #19868) was stale within hours (closed-superseded by #19854);
 # the runner now derives per pass which notebooks an open PR is about to change and skips those by itself.
 param([int[]]$Series = @(17107, 17239, 17357, 17692, 19451), [int]$PerSeries = 3,
-      [string[]]$Subpath = @('19451:Video/'), [string]$Python = '')
+      [string[]]$Subpath = @('19451:Video/'), [string]$Python = '',
+      [string]$Repo = 'd:/dev/CoursIA-skaudit')
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logDir = Join-Path $env:LOCALAPPDATA 'nbaudit\logs'
 New-Item -ItemType Directory -Force $logDir | Out-Null
@@ -81,6 +82,11 @@ $rcDeliver = -1
 try {
     Stamp 'runner'
     $runnerArgs = @('nb_audit_runner.py', '--series') + $Series + @('--per-series', $PerSeries)
+    # The CoursIA checkout is an INPUT of the run, not a harness binding (F2, vllm#438): the
+    # harness has no default for it, so this launcher passes the seat's path explicitly.
+    if (-not $Repo) { $Repo = $env:NB_AUDIT_REPO }
+    if (-not $Repo) { Stamp 'FAILED: no --Repo and no NB_AUDIT_REPO'; exit 2 }
+    $runnerArgs += @('--repo', $Repo)
     foreach ($sp in $Subpath) { $runnerArgs += @('--subpath', $sp) }
     & $py @runnerArgs *>> $log
     $rcRunner = $LASTEXITCODE

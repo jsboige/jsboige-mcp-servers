@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ f42c52d8fb5f5d64bbae34df7f83d56f7aa284b8
+# Copied verbatim from jsboige/vllm @ e5f9c76627626ee19b32a203d8d5b92487843939
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -91,7 +91,10 @@ PM_CWD = Path(os.environ.get("NBCODER_PM_CWD",
                                  else Path(r"D:\roo-extensions\mcps\internal\servers\jupyter-papermill-mcp-server"))))
 GATE = Path(os.environ.get("NBCODER_GATE",
                            str(VLLM_ROOT / "myia_vllm/scripts/adoption/swift_capacity_gate.py")))
-LANE = os.environ.get("NBCODER_LANE", "myia-ai-01:nb-coder")
+# No seat default (F1, vllm#438): this value reaches the claim text, the [DELIVERED] marker and
+# the claim guard. A seat that forgets the variable would claim under ANOTHER seat's identity —
+# the exact failure the claim registry exists to prevent. Empty means "refuse at --claim time".
+LANE = os.environ.get("NBCODER_LANE", "")
 ENGINE_METRICS = os.environ.get("NBCODER_ENGINE_METRICS", "http://localhost:5002/metrics")
 
 # requirement #3: canonical kernel per series, version read from the neighbours on main.
@@ -1132,7 +1135,9 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--issue", type=int, required=True, help="CoursIA issue number")
     ap.add_argument("--notebook", required=True, help="repo-relative target notebook")
-    ap.add_argument("--repo", default="d:/CoursIA", help="CoursIA checkout (claim guard + worktree source)")
+    ap.add_argument("--repo", default=os.environ.get("NBCODER_REPO", ""),
+                    help="CoursIA checkout (claim guard + worktree source); required — a "
+                         "per-seat default path is not a harness binding (F2, vllm#438)")
     ap.add_argument("--allow-foreign-origin", action="store_true",
                     help="accept a --repo checkout whose origin is not jsboige/CoursIA (default: "
                          "refuse — the claim guard infers its slug from its cwd's origin, so a "
@@ -1148,7 +1153,8 @@ def main() -> int:
     ap.add_argument("--claim", action="store_true", help="post the [CLAIMED] comment (off in dry)")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn")
     ap.add_argument("--lane", default=LANE,
-                    help="claim lane id (default: NBCODER_LANE env, else myia-ai-01:nb-coder)")
+                    help="claim lane id, form <machine>:nb-coder (default: NBCODER_LANE env; "
+                         "no fallback — --claim refuses without it, F1/vllm#438)")
     ap.add_argument("--write-mode", choices=["json", "mcp"], default="json",
                     help="json = harness applies the model's cell sources in one write; "
                          "mcp = the model calls the papermill write tools (lost-update hazard "
@@ -1179,6 +1185,15 @@ def main() -> int:
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
     args = ap.parse_args()
+    # Fail loud, never quiet (F1/F2, vllm#438): a claim under an identity the operator did not
+    # choose breaks the registry guard itself, and a per-seat --repo default is a fourth
+    # resolution path the README does not document.
+    if not args.repo:
+        ap.error("--repo is required (or NBCODER_REPO): the CoursIA checkout is an input of the "
+                 "run, not a harness binding (F2, vllm#438)")
+    if args.claim and not args.lane:
+        ap.error("--claim requires --lane or NBCODER_LANE, form '<machine>:nb-coder' — a default "
+                 "identity would let two seats share one claim lane (F1, vllm#438)")
     try:
         rec = asyncio.run(run(args))
     except Exception as exc:  # a trace is always written: a dead harness must not look like a quiet one
