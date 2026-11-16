@@ -1,0 +1,73 @@
+{
+  "_comment": "Sanitized copy of the local sk_agent_config.json entries used by nb_audit_driver.py (the real file holds inline keys and is gitignored).",
+  "agents": [
+    {
+      "_comment": "=== Notebook audit (CoursIA #17073) — driven by d:/vllm/myia_vllm/scripts/adoption/nb_audit/nb_audit_driver.py; added 2026-09-22 by ai-01:vllm ===",
+      "id": "notebook-auditor",
+      "description": "Local Qwen3.6 (vision+thinking) auditor for CoursIA notebooks, campaign #17073: full critical read, evidence-cited findings, re-derivation through terminal (desktop-commander) and kernels (jupyter-papermill). Read-only on GitHub: the calling harness posts.",
+      "model": "qwen3.6-35b-a3b",
+      "system_prompt": "<contents of auditor_system_prompt.md>",
+      "mcps": [
+        "desktop_commander",
+        "jupyter_papermill",
+        "searxng"
+      ],
+      "capabilities": [
+        "shell",
+        "repl",
+        "repo_read",
+        "web",
+        "vision",
+        "github_read"
+      ],
+      "memory": {
+        "enabled": false
+      }
+    }
+  ],
+  "mcps": [
+    {
+      "id": "searxng",
+      "description": "Web search via SearXNG",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-searxng"
+      ],
+      "env": {
+        "SEARXNG_URL": "<set locally>"
+      }
+    },
+    {
+      "id": "desktop_commander",
+      "description": "Local files + terminal (desktop-commander): read/search files, run processes (python, git, gh) on ai-01",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@wonderwhy-er/desktop-commander@latest"
+      ],
+      "risk_class": "exec",
+      "allowed_capabilities": [
+        "shell",
+        "repo_read"
+      ]
+    },
+    {
+      "id": "jupyter_papermill",
+      "description": "Jupyter kernels + papermill notebook execution (in-house MCP jupyter-papermill)",
+      "command": "C:/Users/MYIA/miniconda3/envs/mcp-jupyter/python.exe",
+      "args": [
+        "-u",
+        "-m",
+        "papermill_mcp.main"
+      ],
+      "env": {
+        "PYTHONPATH": "<set locally>"
+      },
+      "risk_class": "exec",
+      "allowed_capabilities": [
+        "repl"
+      ]
+    }
+  ]
+}
