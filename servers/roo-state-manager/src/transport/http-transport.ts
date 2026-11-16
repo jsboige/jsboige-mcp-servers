@@ -164,7 +164,10 @@ const READ_ONLY_ACTIONS: Record<string, ReadonlySet<string>> = {
     // écriture arbitraire sur l'hôte (revue ms#1578, bloquant 2).
     roosync_baseline: new Set(['list_versions', 'current_version']),
     roosync_config: new Set(['collect']),
-    roosync_indexing: new Set(['status', 'diagnose', 'tool_usage_stats', 'trend_report']),
+    // `ws_refresh_status` reads a local JSON state file + a module flag —
+    // read-only, so it must not require identity on the HTTP transport
+    // (review ms#1782, same-push item).
+    roosync_indexing: new Set(['status', 'diagnose', 'tool_usage_stats', 'trend_report', 'ws_refresh_status']),
     // claim/release/extend écrivent active-claims.json (claims/claim.tool.ts:52) :
     // seule la lecture (list/check) passe sans identité (revue ms#1578, défaut 1 —
     // l'outil était classé pure-read en bloc).

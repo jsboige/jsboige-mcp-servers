@@ -23,6 +23,7 @@ import { createHash } from 'crypto';
 import { classifyIndexingError, reconcileErrorClass, readLeaderLockInfo, readIndexerQueueStatus, noteIndexEnqueue } from '../../services/background-services.js';
 import { isStuckRetry } from '../../types/indexing.js';
 import { sanitizeInt } from '../../utils/int-validator.js';
+import { resolveWsWriterIdentity } from '../../services/code-index/ws-writer-identity.js';
 // #4691: what ListTools actually serves — the reference for "this call could
 // not resolve". Static schemas only (tool-definitions.ts imports no handlers),
 // so this does not reintroduce the #1145 barrel chain.
@@ -499,7 +500,7 @@ function aggregateToolUsage(
  */
 export interface RooSyncIndexingArgs {
     /** Action d'indexation */
-    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'repair_workspace' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report' | 'index_code_supplement' | 'probe_code_index' | 'index_code_ws';
+    action: 'index' | 'reset' | 'rebuild' | 'diagnose' | 'archive' | 'status' | 'cleanup' | 'garbage_scan' | 'cleanup_orphans' | 'repair_gaps' | 'repair_workspace' | 'cleanup_failed' | 'tool_usage_stats' | 'save_snapshot' | 'trend_report' | 'index_code_supplement' | 'probe_code_index' | 'index_code_ws' | 'ws_refresh_status';
 
     /**
      * #4352 (a3) — action=index_code_supplement: the workspace whose supplement
@@ -665,8 +666,8 @@ export const roosyncIndexingTool: Tool = {
         properties: {
             action: {
                 type: 'string',
-                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index', 'index_code_ws'],
-                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), repair_workspace (backfill workspace_name on existing points #3344), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows), index_code_supplement (#4352: build the sup- collection for files Zoo never indexes — .ps1, .sh, .yml, .mjs/.cjs and hidden dirs; dry_run defaults to TRUE here), probe_code_index (#4736: read-only probe of the ws-* collections a workspace resolves to — naming ladder, content-match fallback, vector size/distance; never writes), index_code_ws (#4736 P3: guarded INCREMENTAL writer for the SERVED ws- collection — Zoo-parity markdown point ids, stale-point purge by filePath, per-file hash cache; NEVER bootstraps a collection, NEVER recreates config; one writer per collection; dry_run defaults to TRUE here; hash_path_prefix is REQUIRED — the absolute prefix Zoo hashed under, e.g. d:\\dev\\roo-extensions)'
+                enum: ['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index', 'index_code_ws', 'ws_refresh_status'],
+                description: 'Action: index (Qdrant), reset (collection), rebuild (SQLite index), diagnose (health check), archive (GDrive), status (metrics), cleanup (old vectors), garbage_scan (detect junk), cleanup_orphans (remove orphaned vectors), repair_gaps (detect and fix missing/stale index entries), repair_workspace (backfill workspace_name on existing points #3344), cleanup_failed (operator dead-letter by error class), tool_usage_stats (fleet-wide tool usage aggregation), save_snapshot (persist weekly stats to shared storage), trend_report (compare snapshots with ↑/↓ arrows), index_code_supplement (#4352: build the sup- collection for files Zoo never indexes — .ps1, .sh, .yml, .mjs/.cjs and hidden dirs; dry_run defaults to TRUE here), probe_code_index (#4736: read-only probe of the ws-* collections a workspace resolves to — naming ladder, content-match fallback, vector size/distance; never writes), index_code_ws (#4736 P3: guarded INCREMENTAL writer for the SERVED ws- collection — Zoo-parity markdown point ids, stale-point purge by filePath, per-file hash cache; NEVER bootstraps a collection, NEVER recreates config; one writer per collection; dry_run defaults to TRUE here; hash_path_prefix is REQUIRED — the absolute prefix Zoo hashed under, e.g. d:\\dev\\roo-extensions), ws_refresh_status (#4736 P4: read-only observability of the post-commit refresh loop — whether the loop runs on THIS host, the env-resolved config, the indexed HEAD, the last run and the ANNOUNCED delay; read-only, never writes)'
             },
             task_id: {
                 type: 'string',
@@ -910,10 +911,10 @@ export async function handleRooSyncIndexing(
         };
     }
 
-    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index', 'index_code_ws'].includes(args.action)) {
+    if (!['index', 'reset', 'rebuild', 'diagnose', 'archive', 'status', 'cleanup', 'garbage_scan', 'cleanup_orphans', 'repair_gaps', 'repair_workspace', 'cleanup_failed', 'tool_usage_stats', 'save_snapshot', 'trend_report', 'index_code_supplement', 'probe_code_index', 'index_code_ws', 'ws_refresh_status'].includes(args.action)) {
         return {
             isError: true,
-            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, repair_workspace, cleanup_failed, tool_usage_stats, save_snapshot, trend_report, index_code_supplement, probe_code_index, index_code_ws` }]
+            content: [{ type: 'text', text: `Action "${args.action}" invalide. Valeurs possibles: index, reset, rebuild, diagnose, archive, status, cleanup, garbage_scan, cleanup_orphans, repair_gaps, repair_workspace, cleanup_failed, tool_usage_stats, save_snapshot, trend_report, index_code_supplement, probe_code_index, index_code_ws, ws_refresh_status` }]
         };
     }
 
@@ -1111,11 +1112,11 @@ export async function handleRooSyncIndexing(
                     client,
                     getWorkspaceCollectionVariants(workspaceRoot),
                 );
-                const machineId = indexingState?.machineId
-                    || process.env.COMPUTERNAME
-                    || process.env.HOSTNAME
-                    || 'unknown-machine';
-                const writer = `${machineId}:${path.basename(workspaceRoot)}`;
+                // Review ms#1782, B1: the writer identity comes from ONE shared
+                // helper (state machineId first, everything lowercased) — the
+                // refresh loop derives it the exact same way, so the sentinel
+                // never sees two spellings of the same seat.
+                const writer = resolveWsWriterIdentity(workspaceRoot, indexingState?.machineId);
                 const report = await runSupplementIndex({
                     client,
                     workspaceRoot,
@@ -1290,11 +1291,9 @@ export async function handleRooSyncIndexing(
             try {
                 const { workspace: workspaceRoot, source } = await resolveWorkspace(args.workspace);
                 const client: any = getQdrantClient();
-                const machineId = indexingState?.machineId
-                    || process.env.COMPUTERNAME
-                    || process.env.HOSTNAME
-                    || 'unknown-machine';
-                const writer = `${machineId}:${path.basename(workspaceRoot)}`;
+                // Review ms#1782, B1: same shared derivation as the refresh
+                // loop (ws-writer-identity.ts) — one spelling per seat.
+                const writer = resolveWsWriterIdentity(workspaceRoot, indexingState?.machineId);
                 const report = await runWsIndexWriter({
                     client,
                     workspaceRoot,
@@ -1341,6 +1340,51 @@ export async function handleRooSyncIndexing(
                     }]
                 };
             }
+        }
+
+        case 'ws_refresh_status': {
+            // #4736 P4 — read-only observability of the post-commit refresh
+            // loop: what THIS host runs, what it indexed, and the announced
+            // delay. Never writes anywhere.
+            const { isWsRefreshLoopRunning, readWsRefreshState, defaultWsRefreshStatePath } = await import(
+                '../../services/code-index/ws-refresh-loop.js'
+            );
+            const statePath = defaultWsRefreshStatePath();
+            const state = readWsRefreshState(statePath);
+            const envConfig = {
+                enabled: process.env.WS_INDEX_REFRESH_ENABLED === 'true',
+                workspace: process.env.WS_INDEX_REFRESH_WORKSPACE ?? null,
+                hash_path_prefix: process.env.WS_INDEX_REFRESH_HASH_PREFIX ?? null,
+                // Same clamp as the loop itself (initializeWsRefreshLoop) —
+                // the status must report the cadence that actually runs, not
+                // the raw env value (review ms#1782, same-push item).
+                poll_seconds: Math.max(
+                    10,
+                    parseInt(process.env.WS_INDEX_REFRESH_POLL_SECONDS || '120', 10) || 120,
+                ),
+            };
+            const loopRunning = isWsRefreshLoopRunning();
+            return {
+                isError: false,
+                content: [{
+                    type: 'text',
+                    text: JSON.stringify({
+                        loop_running: loopRunning,
+                        host_config: envConfig,
+                        announced_delay_s: state?.announced_delay_s ?? null,
+                        announced_delay_meaning:
+                            'a commit is served at worst one poll after it lands plus one incremental ' +
+                            'run: poll_seconds + ceil(last successful run seconds). Check it against ' +
+                            'last_refresh_ms, which measures detection→served.',
+                        state,
+                        ...(loopRunning ? {} : {
+                            hint: state
+                                ? 'the loop is NOT running in this host (a restart since the last run?) — the state file survives and the next armed host resumes from indexed_head'
+                                : 'the loop is NOT running in this host. To arm it (writer seat only): WS_INDEX_REFRESH_ENABLED=true + WS_INDEX_REFRESH_WORKSPACE + WS_INDEX_REFRESH_HASH_PREFIX in the host env, then restart the host.',
+                        }),
+                    }, null, 2)
+                }]
+            };
         }
 
         case 'diagnose': {
