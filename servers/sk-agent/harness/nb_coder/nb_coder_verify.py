@@ -1,27 +1,34 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ e5f9c76627626ee19b32a203d8d5b92487843939
+# Copied verbatim from jsboige/vllm @ 15c4b28642a521783f5f673bc92f160631073c61
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_verify.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
 # -----------------------------------------------------------------------------
-"""nb-coder stage 4 — independent verifier (CoursIA #26534, dispatch 14/11).
+"""nb-coder independent verifier (stage 4) — jsboige/vllm#431.
 
-The builder is `notebook-auditor` (Swift, qwen3.6-35b-a3b-audit sampling). The verifier must be
-a GENUINELY DIFFERENT model (producer != verifier, global rule) and must compare the BUILT
-notebook to the SOURCE notebook — never to the builder's prompt or claims. Mechanical facts
-from the builder's trace are passed as claims to be counter-checked against the two views.
+The verifier is a SEPARATE process and a SEPARATE agent from the builder (producer != verifier,
+global rule). Its exit 2 is an INSTRUMENT error, never a reject.
 
-Usage:
-  python nb_coder_verify.py --issue 20250 \
-      --source-nb d:/vllm/.tmp/nbcoder/wt-20250/MyIA.AI.Notebooks/.../nb.ipynb \
-      --built-nb  d:/vllm/.tmp/nbcoder/grain1-try4/nb_20250_built.ipynb \
-      --agent critic --out-dir d:/vllm/.tmp/nbcoder/grain1-try4
+WHAT IT RECEIVES, and why (vllm#440):
+    A per-output-BLOCK fingerprint is not a content comparison. Two executions of the same code
+    can split the same print differently (stdout buffer boundaries): an untouched cell then
+    changes fingerprint although not one byte of content moved. Measured 16/11 (po-2028:claudish,
+    CoursIA#26789): three differences flagged, NONE of them a content drift — a signed zero
+    (+0.000000 vs -0.000000), a buffer boundary (90 bytes vs 89+1), and an EDITED cell whose
+    fingerprint MUST change. No pass could ever be approved on such a notebook.
 
-Exit: 0 approve, 1 reject, 2 error (instrument failure — never read as "reject").
+    So the instrument now gives the verifier what it claims to judge:
+      1. a per-CELL text digest — the concatenated text of the cell's outputs, hashed — not a
+         per-block digest, so a buffer boundary cannot fake a difference;
+      2. the actual TEXT of every cell whose content differs, side by side, bounded — so an
+         edited cell is judged on its text and not on the inevitability of its digest.
 """
+from __future__ import annotations
+
 import argparse
 import asyncio
+import hashlib
 import importlib.util
 import json
 import os
@@ -39,48 +46,149 @@ _spec.loader.exec_module(nbcd)
 from mcp import ClientSession, StdioServerParameters          # noqa: E402
 from mcp.client.stdio import stdio_client                      # noqa: E402
 
+# How much of a differing cell's text is shown to the verifier, per cell and in total.
+CELL_TEXT_CAP = 1200
+TOTAL_TEXT_CAP = 12_000
+
 
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _text(x) -> str:
+    return "".join(x) if isinstance(x, list) else (x or "")
+
+
+def cell_output_text(cell: dict) -> str:
+    """The DISPLAYED text of a cell's outputs, concatenated.
+
+    Concatenation is the point: stdout buffer boundaries are an artefact of the print, not a
+    content difference. What the reader sees is the concatenation.
+
+    Consecutive STREAMS are joined with NO separator (the reader sees one continuous stream);
+    a non-stream output (a result, an error) is separated from its neighbours by a newline so
+    that two different outputs cannot silently merge into the same string.
+    """
+    chunks: list[tuple[bool, str]] = []
+    for o in cell.get("outputs") or []:
+        if not isinstance(o, dict):
+            continue
+        if o.get("output_type") == "stream":
+            chunks.append((True, _text(o.get("text"))))
+            continue
+        data = o.get("data") or {}
+        bits = [_text(data.get(mime)) for mime in ("text/plain", "text/html", "text/markdown")]
+        bits.append(_text(o.get("traceback")))
+        bits.append(str(o.get("evalue") or ""))
+        chunks.append((False, "\n".join(b for b in bits if b)))
+    out: list[str] = []
+    for is_stream, txt in chunks:
+        if not txt:
+            continue
+        if out and not is_stream:
+            out.append("\n")
+        out.append(txt)
+    return "".join(out)
+
+
 def outputs_digest(nb_path: Path) -> list[dict]:
-    """Per-code-cell outputs fingerprint — the views do not show outputs, so the verifier
-    could not check their preservation (it flagged this itself on the grain-1 pass).
-    Bounded: type, count, bytes, sha1[:8] of the outputs payload per code cell."""
-    import hashlib
+    """Per-code-cell OUTPUT TEXT fingerprint (not per block).
+
+    Kept the shape the verifier knows (cell, n, types, bytes, sha) but the sha now covers the
+    CONCATENATED text: a buffer boundary can no longer change it. `text` is the exact string
+    hashed, so the verifier can compare it with the source's byte for byte if it wants.
+    """
     rows = []
     for i, c in enumerate(nbcd._cells(nb_path)):
         if c.get("cell_type") != "code":
             continue
-        outs = c.get("outputs") or []
-        payload = json.dumps(outs, ensure_ascii=False, sort_keys=True)
+        outs = [o for o in (c.get("outputs") or []) if isinstance(o, dict)]
+        text = cell_output_text(c)
         rows.append({"cell": i, "n": len(outs),
-                     "types": sorted({o.get("output_type") for o in outs if isinstance(o, dict)}),
-                     "bytes": len(payload), "sha": hashlib.sha1(payload.encode()).hexdigest()[:8]})
+                     "types": sorted({o.get("output_type") for o in outs}),
+                     "bytes": len(text),
+                     "sha": hashlib.sha1(text.encode()).hexdigest()[:8]})
     return rows
+
+
+def cell_diffs(src_path: Path, built_path: Path) -> list[dict]:
+    """Cells whose displayed output text differs, with the text of both sides.
+
+    An edited cell is judged on its TEXT, not on the inevitability of its digest (vllm#440):
+    the verifier sees what changed and decides whether the change is legitimate.
+    """
+    src_cells, built_cells = nbcd._cells(src_path), nbcd._cells(built_path)
+    src_by_idx = {i: c for i, c in enumerate(src_cells)}
+    built_by_idx = {i: c for i, c in enumerate(built_cells)}
+    diffs = []
+    for i in sorted(set(src_by_idx) | set(built_by_idx)):
+        s, b = src_by_idx.get(i), built_by_idx.get(i)
+        if s is None:
+            diffs.append({"cell": i, "kind": "added",
+                           "src_text": None, "built_text": cell_output_text(b)[:CELL_TEXT_CAP]})
+            continue
+        if b is None:
+            diffs.append({"cell": i, "kind": "removed",
+                           "src_text": cell_output_text(s)[:CELL_TEXT_CAP], "built_text": None})
+            continue
+        st, bt = cell_output_text(s), cell_output_text(b)
+        if st == bt:
+            continue
+        # A cell whose SOURCE code differs is an EDITED cell: its output is expected to change.
+        # Say so, so the verifier does not read the change as an unexplained alteration.
+        edited = _text(s.get("source")) != _text(b.get("source"))
+        diffs.append({"cell": i, "kind": "edited" if edited else "outputs-changed",
+                       "src_text": st[:CELL_TEXT_CAP], "built_text": bt[:CELL_TEXT_CAP]})
+    budget = TOTAL_TEXT_CAP
+    for d in diffs:
+        for k in ("src_text", "built_text"):
+            if not d.get(k):
+                continue
+            if budget <= 0:
+                d[k] = "[tronqué]"          # the marker itself counts against the budget
+                budget -= len(d[k])
+                continue
+            room = min(len(d[k]), budget)
+            d[k] = d[k][:room] + ("…" if room < len(d[k]) else "")
+            budget -= room
+    return diffs
 
 
 def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                   conventions: str, src_digest: list[dict] | None = None,
-                  built_digest: list[dict] | None = None) -> str:
+                  built_digest: list[dict] | None = None,
+                  diffs: list[dict] | None = None) -> str:
+    annex = ""
+    if src_digest is not None and built_digest is not None:
+        annex += ("## Annexe sorties — empreintes par cellule code (source | livrable)\n"
+                  "Chaque entrée : cell, n=nombre de blocs de sortie, types, bytes, "
+                  "sha=empreinte du TEXTE CONCATÉNÉ de la cellule (pas de l'empreinte d'un "
+                  "bloc : la frontière de tampon d'un print n'est pas une différence de "
+                  "contenu). Une cellule code non éditée dont l'empreinte change entre SOURCE "
+                  "et LIVRABLE = sorties réellement altérées. Une cellule code de la SOURCE "
+                  "absente du LIVRABLE = contenu perdu.\n"
+                  f"SOURCE :\n{json.dumps(src_digest, ensure_ascii=False)}\n\n"
+                  f"LIVRABLE :\n{json.dumps(built_digest, ensure_ascii=False)}\n\n")
+    if diffs:
+        annex += ("## Annexe différences — texte de sortie, cellule par cellule\n"
+                  "Pour chaque cellule dont le texte affiché diffère, les DEUX textes sont "
+                  "donnés. `kind` : `edited` = le code source de la cellule a changé (l'issue "
+                  "demandait cette édition, donc la sortie DOIT changer) ; `outputs-changed` = "
+                  "le code est identique mais la sortie a changé (à justifier) ; `added` / "
+                  "`removed` = cellule apparue ou disparue. **Juge sur le TEXTE, pas sur le "
+                  "fait qu'il diffère** : un changement demandé par l'issue n'est pas une "
+                  "altération.\n"
+                  f"{json.dumps(diffs, ensure_ascii=False, indent=1)}\n\n")
     return (
-        "MODE VÉRIFICATION — tu es le vérificateur INDÉPENDANT d'un carnet produit par un autre "
+        "MODE VÉRIFICATION — tu es le vérificateur INDÉPENDENT d'un carnet produit par un autre "
         "agent. Tu n'as pas produit ce carnet et tu ne dois croire AUCUNE de ses affirmations : "
         "ta référence est la SOURCE (carnet d'origine) et les critères d'acceptation de l'issue.\n\n"
         f"## Issue — critères d'acceptation\nTITRE : {issue['title']}\n\n"
         f"CORPS :\n{nbcd._cut(issue['body'], 30000, 'corps de l issue')}\n\n"
         + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
         + f"## SOURCE — carnet d'origine (branche main, RÉFÉRENCE)\n{src_view}\n\n"
-        f"## LIVRABLE — carnet produit (À VÉRIFIER)\n{built_view}\n\n"
-        + ("## Annexe sorties — empreintes par cellule code (source | livrable)\n"
-           "Chaque entrée : cell, n=nombre de blocs de sortie, types, bytes, sha=empreinte du "
-           "contenu. Une cellule code non éditée dont l'empreinte change entre SOURCE et "
-           "LIVRABLE = sorties altérées. Une cellule code de la SOURCE absente du LIVRABLE = "
-           "contenu perdu.\n"
-           f"SOURCE :\n{json.dumps(src_digest, ensure_ascii=False)}\n\n"
-           f"LIVRABLE :\n{json.dumps(built_digest, ensure_ascii=False)}\n\n"
-           if src_digest is not None and built_digest is not None else "")
+        + f"## LIVRABLE — carnet produit (À VÉRIFIER)\n{built_view}\n\n"
+        + annex
         + "## Faits mécaniques du harnais (des AFFIRMATIONS du producteur — à contre-vérifier "
         "sur les deux vues, jamais à croire sur parole)\n"
         f"{json.dumps(facts, ensure_ascii=False, indent=1)[:6000]}\n\n"
@@ -92,8 +200,9 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         "3. **Critères satisfaits ?** Les gestes du LIVRABLE satisfont-ils les critères "
         "d'acceptation de l'issue ?\n"
         "4. **Conventions** : en-tête sans référence de coordination, note de provenance en pied "
-        "de carnet à la forme exacte, sorties réelles non éditées (vérifie les empreintes de "
-        "l'annexe : mêmes sha pour les cellules non éditées).\n\n"
+        "de carnet à la forme exacte, sorties réelles non éditées (pour les cellules NON "
+        "éditées, même sha dans l'annexe ; pour les cellules éditées, juge le texte de "
+        "l'annexe différences).\n\n"
         "Rends UNIQUEMENT un bloc ```json :\n"
         '{"verdict":"approve|reject","findings":[{"cell":<index du LIVRABLE>,"severity":"major|minor",'
         '"detail":"..."}],"checked":["..."]}\n'
@@ -161,9 +270,12 @@ def main() -> int:
                                    for e in (t.get("execution") or [])]}
         rec["facts_chars"] = len(json.dumps(facts, ensure_ascii=False))
         conventions = nbcd.read_conventions(args.conventions)
+        diffs = cell_diffs(src_p, built_p)
+        rec["diff_cells"] = [d["cell"] for d in diffs]
+        rec["diff_kinds"] = [d["kind"] for d in diffs]
         prompt = verify_prompt(issue, nbcd.build_view(src_p), nbcd.build_view(built_p),
                                facts, conventions,
-                               outputs_digest(src_p), outputs_digest(built_p))
+                               outputs_digest(src_p), outputs_digest(built_p), diffs)
         rec["prompt_chars"] = len(prompt)
         env, dt = asyncio.run(call_verifier(args, prompt))
         rec["elapsed_s"] = dt
@@ -188,6 +300,7 @@ def main() -> int:
     trace.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
     print(json.dumps({"verdict": rec.get("verdict"), "trace": str(trace),
                       "findings": (rec.get("answer") or {}).get("findings"),
+                      "diff_cells": rec.get("diff_cells"),
                       "elapsed_s": rec.get("elapsed_s"),
                       "model_used": rec.get("model_used")}, ensure_ascii=False, indent=1))
     return rc

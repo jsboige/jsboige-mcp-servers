@@ -1,5 +1,5 @@
 <!-- provenance (roo-extensions #4781 harness mutualisation)
-     Copied verbatim from jsboige/vllm @ e5f9c76627626ee19b32a203d8d5b92487843939
+     Copied verbatim from jsboige/vllm @ 15c4b28642a521783f5f673bc92f160631073c61
      Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
      re-copy, do not diverge silently. -->
 

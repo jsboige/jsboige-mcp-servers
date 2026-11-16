@@ -16,7 +16,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE / "harness"
-SHA = "e5f9c76627626ee19b32a203d8d5b92487843939"
+SHA = "15c4b28642a521783f5f673bc92f160631073c61"
 
 
 def _load(name: str, path: Path):
@@ -103,6 +103,78 @@ def test_repo_and_lane_have_no_seat_defaults():
     hits = [(rel, needle) for rel, needles in banned.items() for needle in needles
             if needle in (HARNESS / rel).read_text(encoding="utf-8")]
     assert hits == []
+
+
+# ------------------------------------------------------------------ verdict honesty
+def test_auth_codes_are_matched_on_word_boundaries():
+    """vllm#442/F5-1 (co-review po-2028): a raw substring test on '401'/'403' turns
+    'timeout after 1401 ms' and 'listening on port 8403' into auth failures — the mirror of
+    the bug the classification removes."""
+    m = _load("harness_nb_coder_auth", HARNESS / "nb_coder" / "nb_coder_driver.py")
+    assert m.call_failure({"error": "401 invalid proxy authentication"}).startswith("auth-failed")
+    assert m.call_failure({"error": "403 forbidden"}).startswith("auth-failed")
+    assert m.call_failure({"error": "timeout after 1401 ms"}).startswith("call-failed")
+    assert m.call_failure({"error": "listening on port 8403"}).startswith("call-failed")
+    assert m.call_failure({}) == ""
+
+
+def test_preflight_refuses_and_leaves_a_trace(tmp_path):
+    """vllm#442/F3-1: a scheduled loop must be able to tell 'ran and refused' from 'never
+    ran'. The refusal writes the out-dir and a ledger line before exiting."""
+    m = _load("harness_nb_coder_preflight", HARNESS / "nb_coder" / "nb_coder_driver.py")
+    m.PM_CWD = tmp_path / "does-not-exist"
+
+    class _AP:
+        def error(self, msg):
+            raise SystemExit(msg)
+
+    class _Args:
+        out_dir, issue, notebook, lane = str(tmp_path / "out"), 4242, "x.ipynb", "seat:nb-coder"
+
+    try:
+        m._preflight(_AP(), _Args())
+        raise AssertionError("preflight did not refuse a missing PM_CWD")
+    except SystemExit:
+        pass
+    rec = json.loads((tmp_path / "out" / "issue-4242.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-wiring-unresolved"
+    assert any("NBCODER_PM_CWD" in x for x in rec["wiring_missing"])
+    ledger = (tmp_path / "out" / "ledger.jsonl").read_text(encoding="utf-8")
+    assert "refused-wiring-unresolved" in ledger
+
+
+# ------------------------------------------------------------------ stage-3 gate
+def test_machine_path_gate_judges_outputs_only_and_on_the_delta(tmp_path):
+    """CoursIA acceptance contract, trigger 2: a machine path in an OUTPUT is a change
+    request. The same string in the source is prose; an untouched output keeps its path."""
+    m = _load("harness_nb_coder_machine_path", HARNESS / "nb_coder" / "nb_coder_driver.py")
+
+    def nb(cells):
+        return {"cells": cells, "metadata": {"language_info": {"version": "3.13.16"}},
+                "nbformat": 4, "nbformat_minor": 5}
+
+    def code(src, out=None):
+        return {"cell_type": "code", "source": src, "metadata": {}, "execution_count": 1,
+                "outputs": ([{"output_type": "stream", "name": "stdout", "text": out}]
+                            if out is not None else [])}
+
+    def run(src_cells, built_cells):
+        a, b = tmp_path / "a.ipynb", tmp_path / "b.ipynb"
+        a.write_text(json.dumps(nb(src_cells)), encoding="utf-8")
+        b.write_text(json.dumps(nb(built_cells)), encoding="utf-8")
+        return {g["gate"]: g for g in m.run_gates(a, b)}["machine-path"]
+
+    clean = run([code("x=1", "1\n")], [code("x=1", "1\n"), code("y=2", "2\n")])
+    assert clean["ok"], clean
+    leaked = run([code("x=1", "1\n")],
+                 [code("x=1", "1\n"), code("print(p)", "C:\\Users\\MYIA\\proj\n")])
+    assert not leaked["ok"] and leaked["detail"]["cells"] == [1], leaked
+    preexisting = run([code("print(p)", "/home/user/data\n")],
+                      [code("print(p)", "/home/user/data\n"), code("y=2", "2\n")])
+    assert preexisting["ok"] and preexisting["detail"]["source_hits"] == [0], preexisting
+    in_source_only = run([code("x=1", "1\n")],
+                         [code("x=1", "1\n"), code('p = r"C:\\Users\\MYIA\\data"', None)])
+    assert in_source_only["ok"], in_source_only
 
 
 # ------------------------------------------------------------------ copy provenance
