@@ -1,5 +1,6 @@
 <!-- provenance (roo-extensions #4781 harness mutualisation)
-     Copied verbatim from jsboige/vllm @ 15c4b28642a521783f5f673bc92f160631073c61
+     This file is authored here (harness index), not a copy.
+     The copied modules below are tracked against jsboige/vllm @ c32dc1721979b47896f9538040eb8c62f5114ee8
      Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
      re-copy, do not diverge silently. -->
 

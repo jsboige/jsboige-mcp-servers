@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 15c4b28642a521783f5f673bc92f160631073c61
+# Copied verbatim from jsboige/vllm @ c32dc1721979b47896f9538040eb8c62f5114ee8
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
