@@ -127,9 +127,11 @@ export function wsRefreshBackoffSeconds(consecutiveFailures: number, pollSeconds
 /**
  * Machine-level lease so "one loop per host" means per HOST, not per Node
  * process. Same contention shape as the Worker A leader lock (#3661): file
- * under the state dir, `{pid, timestamp}`, renewed on every tick (the tick IS
- * the heartbeat — the next poll is armed only after the previous check
- * settled, so the renewal gap is one poll plus one run), fail-closed on any
+ * under the state dir, `{pid, timestamp}`, renewed on every tick AND while a
+ * writer pass is in flight (the tick heartbeat alone goes silent for the whole
+ * duration of a pass — a pass can exceed the stale threshold: measured 19 min
+ * catch-up on web1 vs a 15 min steal window, which is exactly the "second host
+ * steals mid-pass" window the ms#1782 review flagged), fail-closed on any
  * unexpected error, dead-holder steal by PID probe (accelerator) and
  * stale-threshold steal (the net — a recycled PID never proves identity).
  *
@@ -409,6 +411,14 @@ export interface WsRefreshLoopConfig extends WsRefreshCheckDeps {
 	/** Test seams for the one-shot scheduler. */
 	schedule?: (fn: () => void, ms: number) => any;
 	cancel?: (handle: any) => void;
+	/**
+	 * Test seams for the MID-RUN lease renewal scheduler — deliberately SEPARATE
+	 * from `schedule`: the poll queue's "empty while a run is in flight" is a
+	 * pinned invariant (no overlapping runs), and a renewal must not appear in
+	 * it as a phantom next-poll.
+	 */
+	renewalSchedule?: (fn: () => void, ms: number) => any;
+	renewalCancel?: (handle: any) => void;
 }
 
 /**
@@ -418,10 +428,11 @@ export interface WsRefreshLoopConfig extends WsRefreshCheckDeps {
  *  - per-host: the file lease (review ms#1782, B2) — N RSM host processes on
  *    one machine each see only their own `activeLoop`, so the singleton alone
  *    would let all of them poll and run the writer with the SAME writer
- *    string, which the sentinel cannot refuse. The lease is acquired here and
- *    renewed at the TOP of every tick (the tick IS the heartbeat); a renewal
- *    failure (another live process owns it) self-disarms this loop instead of
- *    writing alongside it.
+ *    string, which the sentinel cannot refuse. The lease is acquired here,
+ *    renewed at the TOP of every tick, AND renewed DURING a writer pass every
+ *    stale-threshold/3 (a pass can outlive the threshold — the ms#1782 review
+ *    follow-up); a renewal failure (another live process owns it) self-disarms
+ *    this loop instead of writing alongside it — mid-run too, at pass settle.
  *
  * Self-scheduling on purpose, NOT setInterval: a refresh run can take minutes
  * (embedding batches), and a fixed interval would pile overlapping runs on the
@@ -441,13 +452,41 @@ export function startWsRefreshLoop(config: WsRefreshLoopConfig): { stop: () => v
 	}
 	const schedule = config.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
 	const cancel = config.cancel ?? ((handle: any) => clearTimeout(handle));
+	const renewSchedule = config.renewalSchedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
+	const renewCancel = config.renewalCancel ?? ((handle: any) => clearTimeout(handle));
 	const pollMs = Math.max(10_000, config.pollSeconds * 1000);
+	// Mid-run renewal cadence: a third of the steal threshold, so a pass of any
+	// length renews the lease at least twice before a contender could steal.
+	const renewalMs = Math.max(1_000, Math.floor((config.leaseStaleMs ?? WS_REFRESH_LEASE_STALE_MS) / 3));
 	let stopped = false;
 	let handle: any = null;
+	let renewalHandle: any = null;
+	let passInFlight = false;
+	let leaseLostMidRun = false;
+	/** Self-rearming one-shot that keeps the lease fresh while a pass runs. */
+	const armRenewal = () => {
+		renewalHandle = renewSchedule(() => {
+			renewalHandle = null;
+			// Outside a pass (or after a stop) the top-of-tick renewal on the
+			// next tick owns the heartbeat — a late-fired renewal must stay
+			// inert, or it would re-take a lease that stop() just released.
+			if (stopped || !passInFlight) return;
+			if (!tryAcquireWsRefreshLease(leaseOptions)) {
+				leaseLostMidRun = true;
+				config.log?.('[WsRefresh] host lease lost mid-run — this loop will disarm when the pass settles');
+				return; // no re-arm — the seat is no longer ours
+			}
+			armRenewal();
+		}, renewalMs);
+	};
 	const loop: { stop: () => void } = {
 		stop: () => {
 			stopped = true;
 			if (handle !== null) cancel(handle);
+			if (renewalHandle !== null) {
+				renewCancel(renewalHandle);
+				renewalHandle = null;
+			}
 			releaseWsRefreshLeaseIfOurs(leaseOptions);
 			// Stopping through the returned handle clears the singleton too —
 			// a later start must not be refused by a dead loop's ghost.
@@ -466,12 +505,32 @@ export function startWsRefreshLoop(config: WsRefreshLoopConfig): { stop: () => v
 			if (activeLoop === loop) activeLoop = null;
 			return;
 		}
+		leaseLostMidRun = false;
 		try {
+			passInFlight = true;
+			armRenewal();
 			await checkWsRefreshOnce(config);
 		} catch (error) {
 			// checkWsRefreshOnce already catches its own writer errors; this
 			// belt is for the seams themselves (state file unwritable…).
 			config.log?.(`[WsRefresh] tick crashed: ${error instanceof Error ? error.message : String(error)}`);
+		} finally {
+			passInFlight = false;
+			if (renewalHandle !== null) {
+				renewCancel(renewalHandle);
+				renewalHandle = null;
+			}
+		}
+		// The lease was stolen WHILE the pass ran: the pass result stands (the
+		// writer's own guards bounded it), but this loop disarms instead of
+		// double-polling with the new holder — same posture as a top-of-tick
+		// loss, deferred to pass settle because a run cannot be aborted.
+		if (!stopped && leaseLostMidRun) {
+			config.log?.('[WsRefresh] pass settled after a lost lease — loop disarmed');
+			stopped = true;
+			if (handle !== null) cancel(handle);
+			if (activeLoop === loop) activeLoop = null;
+			return;
 		}
 		if (!stopped) handle = schedule(tick, pollMs);
 	};

@@ -21,7 +21,9 @@
  *  - PARTIAL runs do not advance it either (missing batches stay un-served);
  *  - BACKOFF caps at 1 h and is monotone in failures;
  *  - the LOOP self-schedules: the next poll arms only after the previous
- *    check settles — no overlapping runs on the shared embedding endpoint.
+ *    check settles — no overlapping runs on the shared embedding endpoint;
+ *  - the LEASE stays fresh through a pass longer than the steal window
+ *    (mid-run renewal), and a mid-run steal disarms the loop at pass settle.
  */
 import { describe, test, expect, afterAll, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
@@ -605,6 +607,153 @@ describe('host lease — one loop per HOST, not per process (ms#1782 B2)', () =>
 		expect(logs.some((m) => m.includes('disarms itself'))).toBe(true);
 		// The foreign lease must survive us — it is not ours to release.
 		expect(JSON.parse(readFileSync(leasePath, 'utf8')).pid).toBe(foreignLivePid());
+	});
+});
+
+describe('host lease — mid-run renewal (ms#1782 review follow-up: a pass can outlive the steal window)', () => {
+	afterEach(() => stopWsRefreshLoop());
+
+	function tempLeasePath() {
+		const dir = mkdtempSync(join(tmpdir(), 'ws-refresh-lease-'));
+		tempDirs.push(dir);
+		return join(dir, 'loop.lock');
+	}
+
+	function writeLease(leasePath: string, content: unknown) {
+		writeFileSync(leasePath, typeof content === 'string' ? content : JSON.stringify(content));
+	}
+
+	function foreignLivePid(): number {
+		return process.ppid;
+	}
+
+	test('a pass longer than the steal window keeps the lease fresh — renewed every staleMs/3', async () => {
+		const leasePath = tempLeasePath();
+		const pollQ: Array<() => void> = [];
+		const renewQ: Array<() => void> = [];
+		const renewDelays: number[] = [];
+		let resolveWriter: (() => void) | null = null;
+		startWsRefreshLoop({
+			workspaceRoot: 'C:\\fake',
+			writer: 'web1:x',
+			hashPathPrefix: PREFIX,
+			pollSeconds: 120,
+			statePath: join(dirname(leasePath), 'state.json'),
+			leasePath,
+			leaseStaleMs: 60_000,
+			runWriter: () => new Promise<WsIndexWriterReport>((resolve) => {
+				resolveWriter = () => resolve(syntheticReport());
+			}),
+			readHead: async () => 'a'.repeat(40),
+			schedule: (fn) => { pollQ.push(fn); return pollQ.length; },
+			cancel: () => {},
+			renewalSchedule: (fn, ms) => { renewDelays.push(ms); renewQ.push(fn); return renewQ.length; },
+			renewalCancel: () => {},
+		});
+		const before = Date.now();
+		pollQ.shift()!(); // tick 1 — the writer hangs, the pass "lasts" the whole test
+		await new Promise((r) => setTimeout(r, 10));
+		// The renewal cadence is a THIRD of the steal threshold (mutation guard).
+		expect(renewDelays).toEqual([20_000]);
+		// "Time passes" far past the 60 s steal window: each fired renewal must
+		// refresh the timestamp a contender would read — without them, the lease
+		// would be stale-stealable after tick+60 s of silent pass.
+		for (let i = 0; i < 4; i++) {
+			renewQ.shift()!();
+			await new Promise((r) => setTimeout(r, 5));
+			const holder = JSON.parse(readFileSync(leasePath, 'utf8'));
+			expect(holder.pid).toBe(process.pid);
+			expect(holder.timestamp).toBeGreaterThanOrEqual(before);
+		}
+		// Still self-re-arming while the pass runs.
+		expect(renewQ.length).toBe(1);
+		resolveWriter!();
+		await new Promise((r) => setTimeout(r, 10));
+		// Pass settled: the pending renewal was cancelled at settle, and a
+		// late-fired one (cancel is a no-op seam here) stays inert — no re-arm.
+		renewQ.shift()!();
+		await new Promise((r) => setTimeout(r, 5));
+		expect(renewQ.length).toBe(0);
+	});
+
+	test('a lease stolen MID-RUN disarms the loop at pass settle — pass result stands, no next poll', async () => {
+		const leasePath = tempLeasePath();
+		const pollQ: Array<() => void> = [];
+		const renewQ: Array<() => void> = [];
+		const logs: string[] = [];
+		let writerCalls = 0;
+		let resolveWriter: (() => void) | null = null;
+		startWsRefreshLoop({
+			workspaceRoot: 'C:\\fake',
+			writer: 'web1:x',
+			hashPathPrefix: PREFIX,
+			pollSeconds: 120,
+			statePath: join(dirname(leasePath), 'state.json'),
+			leasePath,
+			leaseStaleMs: 60_000,
+			runWriter: () => new Promise<WsIndexWriterReport>((resolve) => {
+				writerCalls++;
+				resolveWriter = () => resolve(syntheticReport());
+			}),
+			readHead: async () => 'a'.repeat(40),
+			schedule: (fn) => { pollQ.push(fn); return pollQ.length; },
+			cancel: () => {},
+			renewalSchedule: (fn) => { renewQ.push(fn); return renewQ.length; },
+			renewalCancel: () => {},
+			log: (m) => logs.push(m),
+		});
+		pollQ.shift()!(); // tick 1 — the writer hangs
+		await new Promise((r) => setTimeout(r, 10));
+		expect(writerCalls).toBe(1);
+		// A second process takes the lease while the pass runs (live foreign pid, fresh).
+		writeLease(leasePath, { pid: foreignLivePid(), timestamp: Date.now() });
+		renewQ.shift()!(); // the mid-run renewal sees the foreign holder
+		await new Promise((r) => setTimeout(r, 5));
+		expect(logs.some((m) => m.includes('lost mid-run'))).toBe(true);
+		// The running pass is NOT aborted — a run cannot be cancelled mid-flight.
+		expect(isWsRefreshLoopRunning()).toBe(true);
+		resolveWriter!();
+		await new Promise((r) => setTimeout(r, 10));
+		expect(writerCalls).toBe(1);
+		// …but the loop disarms at settle and arms no next poll.
+		expect(isWsRefreshLoopRunning()).toBe(false);
+		expect(pollQ.length).toBe(0);
+		expect(logs.some((m) => m.includes('loop disarmed'))).toBe(true);
+		// The foreign lease must survive us — it is not ours to release.
+		expect(JSON.parse(readFileSync(leasePath, 'utf8')).pid).toBe(foreignLivePid());
+	});
+
+	test('stop() during a pass: a late-fired renewal never re-takes the released lease', async () => {
+		const leasePath = tempLeasePath();
+		const pollQ: Array<() => void> = [];
+		const renewQ: Array<() => void> = [];
+		let resolveWriter: (() => void) | null = null;
+		const loop = startWsRefreshLoop({
+			workspaceRoot: 'C:\\fake',
+			writer: 'web1:x',
+			hashPathPrefix: PREFIX,
+			pollSeconds: 120,
+			statePath: join(dirname(leasePath), 'state.json'),
+			leasePath,
+			leaseStaleMs: 60_000,
+			runWriter: () => new Promise<WsIndexWriterReport>((resolve) => {
+				resolveWriter = () => resolve(syntheticReport());
+			}),
+			readHead: async () => 'a'.repeat(40),
+			schedule: (fn) => { pollQ.push(fn); return pollQ.length; },
+			cancel: () => {},
+			renewalSchedule: (fn) => { renewQ.push(fn); return renewQ.length; },
+			renewalCancel: () => {}, // deliberately inert — the late-fire path is the point
+		});
+		pollQ.shift()!(); // pass in flight, renewal armed
+		await new Promise((r) => setTimeout(r, 10));
+		loop.stop();
+		expect(existsSync(leasePath)).toBe(false); // released by stop
+		renewQ.shift()!(); // fires AFTER stop — must stay a no-op
+		await new Promise((r) => setTimeout(r, 5));
+		expect(existsSync(leasePath)).toBe(false); // NOT re-taken by a dead loop's ghost
+		resolveWriter!();
+		await new Promise((r) => setTimeout(r, 5));
 	});
 });
 
