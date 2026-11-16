@@ -23,6 +23,7 @@ import { createHash } from 'crypto';
 import { classifyIndexingError, reconcileErrorClass, readLeaderLockInfo, readIndexerQueueStatus, noteIndexEnqueue } from '../../services/background-services.js';
 import { isStuckRetry } from '../../types/indexing.js';
 import { sanitizeInt } from '../../utils/int-validator.js';
+import { resolveWsWriterIdentity } from '../../services/code-index/ws-writer-identity.js';
 // #4691: what ListTools actually serves — the reference for "this call could
 // not resolve". Static schemas only (tool-definitions.ts imports no handlers),
 // so this does not reintroduce the #1145 barrel chain.
@@ -1111,11 +1112,11 @@ export async function handleRooSyncIndexing(
                     client,
                     getWorkspaceCollectionVariants(workspaceRoot),
                 );
-                const machineId = indexingState?.machineId
-                    || process.env.COMPUTERNAME
-                    || process.env.HOSTNAME
-                    || 'unknown-machine';
-                const writer = `${machineId}:${path.basename(workspaceRoot)}`;
+                // Review ms#1782, B1: the writer identity comes from ONE shared
+                // helper (state machineId first, everything lowercased) — the
+                // refresh loop derives it the exact same way, so the sentinel
+                // never sees two spellings of the same seat.
+                const writer = resolveWsWriterIdentity(workspaceRoot, indexingState?.machineId);
                 const report = await runSupplementIndex({
                     client,
                     workspaceRoot,
@@ -1290,11 +1291,9 @@ export async function handleRooSyncIndexing(
             try {
                 const { workspace: workspaceRoot, source } = await resolveWorkspace(args.workspace);
                 const client: any = getQdrantClient();
-                const machineId = indexingState?.machineId
-                    || process.env.COMPUTERNAME
-                    || process.env.HOSTNAME
-                    || 'unknown-machine';
-                const writer = `${machineId}:${path.basename(workspaceRoot)}`;
+                // Review ms#1782, B1: same shared derivation as the refresh
+                // loop (ws-writer-identity.ts) — one spelling per seat.
+                const writer = resolveWsWriterIdentity(workspaceRoot, indexingState?.machineId);
                 const report = await runWsIndexWriter({
                     client,
                     workspaceRoot,
@@ -1356,7 +1355,13 @@ export async function handleRooSyncIndexing(
                 enabled: process.env.WS_INDEX_REFRESH_ENABLED === 'true',
                 workspace: process.env.WS_INDEX_REFRESH_WORKSPACE ?? null,
                 hash_path_prefix: process.env.WS_INDEX_REFRESH_HASH_PREFIX ?? null,
-                poll_seconds: process.env.WS_INDEX_REFRESH_POLL_SECONDS ? Number(process.env.WS_INDEX_REFRESH_POLL_SECONDS) : 120,
+                // Same clamp as the loop itself (initializeWsRefreshLoop) —
+                // the status must report the cadence that actually runs, not
+                // the raw env value (review ms#1782, same-push item).
+                poll_seconds: Math.max(
+                    10,
+                    parseInt(process.env.WS_INDEX_REFRESH_POLL_SECONDS || '120', 10) || 120,
+                ),
             };
             const loopRunning = isWsRefreshLoopRunning();
             return {

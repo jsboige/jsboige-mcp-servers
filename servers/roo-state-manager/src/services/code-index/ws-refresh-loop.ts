@@ -36,11 +36,20 @@
  *  - STATE = a local JSON file (atomic tmp+rename), per seat: the loop only
  *    runs on the writer seat, and the observability read (`ws_refresh_status`)
  *    is served by that seat's host. It survives host restarts.
+ *  - ONE LOOP PER HOST (review ms#1782, blocker B2): the module singleton only
+ *    bounds one PROCESS, and a machine runs N RSM host processes (one per
+ *    Claude session) — each would start a loop with the SAME writer string,
+ *    which the sentinel cannot tell apart. A machine-level file lease
+ *    (PID + heartbeat, fail-closed, stale takeover — same shape as the Worker
+ *    A leader lock #3661/#4352) closes that: the first starter holds it, the
+ *    others refuse to start, a dead holder is stolen by PID probe, and a loop
+ *    that loses the lease mid-flight self-disarms instead of writing alongside.
  */
 import { execFile } from 'child_process';
-import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync } from 'fs';
+import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync, statSync, unlinkSync } from 'fs';
 import { homedir } from 'os';
 import { dirname, join } from 'path';
+import { isProcessAlive } from '../pid-liveness.js';
 import type { WsIndexWriterReport } from './ws-index-writer.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -111,6 +120,127 @@ export function wsRefreshBackoffSeconds(consecutiveFailures: number, pollSeconds
 	if (consecutiveFailures <= 0) return 0;
 	const exp = Math.min(consecutiveFailures, 4);
 	return Math.min(pollSeconds * 2 ** exp, 3600);
+}
+
+// ── Host lease (review ms#1782, blocker B2) ──────────────────────────────────
+
+/**
+ * Machine-level lease so "one loop per host" means per HOST, not per Node
+ * process. Same contention shape as the Worker A leader lock (#3661): file
+ * under the state dir, `{pid, timestamp}`, renewed on every tick (the tick IS
+ * the heartbeat — the next poll is armed only after the previous check
+ * settled, so the renewal gap is one poll plus one run), fail-closed on any
+ * unexpected error, dead-holder steal by PID probe (accelerator) and
+ * stale-threshold steal (the net — a recycled PID never proves identity).
+ *
+ * SYNC fs on purpose: the whole loop module writes its state synchronously,
+ * and `stop()` must release the lease before process.exit() in the shutdown
+ * path — a fire-and-forget async unlink would race it.
+ */
+export const WS_REFRESH_LEASE_STALE_MS = 15 * 60 * 1000;
+
+export function defaultWsRefreshLeasePath(): string {
+	return join(homedir(), '.roo-state-manager', 'ws-refresh-loop.lock');
+}
+
+interface WsRefreshLeaseFile {
+	pid: number;
+	timestamp: number;
+}
+
+/** Sync twin of lock-atomicity's readLockForAtomicity (#4352 W1 semantics). */
+function readLeaseForAtomicity(leasePath: string): { pid: number } | null {
+	try {
+		const parsed = JSON.parse(readFileSync(leasePath, 'utf8'));
+		return typeof parsed?.pid === 'number' ? parsed : null;
+	} catch {
+		return null;
+	}
+}
+
+export interface WsRefreshLeaseOptions {
+	/** Default `~/.roo-state-manager/ws-refresh-loop.lock`. */
+	leasePath?: string;
+	/** Tests tighten it; production uses WS_REFRESH_LEASE_STALE_MS. */
+	staleMs?: number;
+}
+
+/**
+ * Acquire-or-renew the host lease. Returns false WITHOUT taking over when the
+ * file names a live foreign holder; steals a dead or stale holder, then
+ * re-reads — whoever's pid the file carries after the overwrite wins (the
+ * steal is not atomic; two contenders can both overwrite, #4352 W1).
+ */
+export function tryAcquireWsRefreshLease(options: WsRefreshLeaseOptions = {}): boolean {
+	const leasePath = options.leasePath ?? defaultWsRefreshLeasePath();
+	const staleMs = options.staleMs ?? WS_REFRESH_LEASE_STALE_MS;
+	const payload: WsRefreshLeaseFile = { pid: process.pid, timestamp: Date.now() };
+	const write = JSON.stringify(payload);
+	try {
+		mkdirSync(dirname(leasePath), { recursive: true });
+		// 'wx' — the single atomic serialization point of the election.
+		writeFileSync(leasePath, write, { flag: 'wx' });
+		return true;
+	} catch (error: any) {
+		if (error?.code !== 'EEXIST') return false; // unreadable dir etc. — fail-closed
+	}
+	let existing: WsRefreshLeaseFile | null = null;
+	try {
+		const parsed = JSON.parse(readFileSync(leasePath, 'utf8'));
+		if (typeof parsed?.pid === 'number') existing = parsed;
+	} catch {
+		/* unparseable — handled below by the mtime net */
+	}
+	if (existing) {
+		if (existing.pid === process.pid) {
+			// Our own lease from the previous tick → renew (the heartbeat).
+			try {
+				writeFileSync(leasePath, write);
+				return true;
+			} catch {
+				return false;
+			}
+		}
+		const age = Date.now() - existing.timestamp;
+		const holderDead = !isProcessAlive(existing.pid);
+		if (!holderDead && age <= staleMs) return false; // a live, fresh foreign loop
+		// Dead holder (steal before the threshold — ai-01's #4352 fix) or stale
+		// one (the net for recycled PIDs). Steal + read-back arbitration.
+		try {
+			writeFileSync(leasePath, write);
+		} catch {
+			return false;
+		}
+		const stolen = readLeaseForAtomicity(leasePath);
+		return stolen === null || stolen.pid === process.pid;
+	}
+	// Unparseable content: either a holder between its O_EXCL and its write, or
+	// an abandoned file. Only an old-enough file is treated as abandoned — the
+	// same deliberate one-stale-window self-heal as worker-a-lock.
+	try {
+		const stat = existsSync(leasePath) ? statSync(leasePath) : null;
+		if (stat && Date.now() - stat.mtimeMs > staleMs) {
+			writeFileSync(leasePath, write);
+			const stolen = readLeaseForAtomicity(leasePath);
+			return stolen === null || stolen.pid === process.pid;
+		}
+	} catch {
+		/* fall through, fail-closed */
+	}
+	return false;
+}
+
+/** Release on clean stop, only if the lease carries OUR pid — never throws. */
+export function releaseWsRefreshLeaseIfOurs(options: WsRefreshLeaseOptions = {}): boolean {
+	const leasePath = options.leasePath ?? defaultWsRefreshLeasePath();
+	try {
+		const parsed = JSON.parse(readFileSync(leasePath, 'utf8'));
+		if (typeof parsed?.pid !== 'number' || parsed.pid !== process.pid) return false;
+		unlinkSync(leasePath);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 // ── HEAD reading ──────────────────────────────────────────────────────────────
@@ -272,15 +402,26 @@ export function isWsRefreshLoopRunning(): boolean {
 export interface WsRefreshLoopConfig extends WsRefreshCheckDeps {
 	/** First check delay (default 30 s) — do not race host startup. */
 	initialDelayMs?: number;
+	/** Test seam isolating the lease from any real loop on the machine. */
+	leasePath?: string;
+	/** Test seam for the stale threshold (production: WS_REFRESH_LEASE_STALE_MS). */
+	leaseStaleMs?: number;
 	/** Test seams for the one-shot scheduler. */
 	schedule?: (fn: () => void, ms: number) => any;
 	cancel?: (handle: any) => void;
 }
 
 /**
- * Starts the poll loop. One loop per host (singleton): a second start is
- * refused loudly rather than doubling the poll — the same single-writer rule
- * the sentinel enforces on the collection, applied one level up.
+ * Starts the poll loop. One loop per HOST, enforced at TWO levels:
+ *
+ *  - in-process: the module singleton refuses a second start;
+ *  - per-host: the file lease (review ms#1782, B2) — N RSM host processes on
+ *    one machine each see only their own `activeLoop`, so the singleton alone
+ *    would let all of them poll and run the writer with the SAME writer
+ *    string, which the sentinel cannot refuse. The lease is acquired here and
+ *    renewed at the TOP of every tick (the tick IS the heartbeat); a renewal
+ *    failure (another live process owns it) self-disarms this loop instead of
+ *    writing alongside it.
  *
  * Self-scheduling on purpose, NOT setInterval: a refresh run can take minutes
  * (embedding batches), and a fixed interval would pile overlapping runs on the
@@ -291,13 +432,40 @@ export function startWsRefreshLoop(config: WsRefreshLoopConfig): { stop: () => v
 	if (activeLoop !== null) {
 		throw new Error('a ws refresh loop is already active in this host — one loop per host (#4736 P4)');
 	}
+	const leaseOptions: WsRefreshLeaseOptions = { leasePath: config.leasePath, staleMs: config.leaseStaleMs };
+	if (!tryAcquireWsRefreshLease(leaseOptions)) {
+		throw new Error(
+			`the ws-refresh HOST lease is held by another process on this machine ` +
+			`(${config.leasePath ?? defaultWsRefreshLeasePath()}) — only one loop per HOST (#4736 P4, review B2)`
+		);
+	}
 	const schedule = config.schedule ?? ((fn: () => void, ms: number) => setTimeout(fn, ms));
 	const cancel = config.cancel ?? ((handle: any) => clearTimeout(handle));
 	const pollMs = Math.max(10_000, config.pollSeconds * 1000);
 	let stopped = false;
 	let handle: any = null;
+	const loop: { stop: () => void } = {
+		stop: () => {
+			stopped = true;
+			if (handle !== null) cancel(handle);
+			releaseWsRefreshLeaseIfOurs(leaseOptions);
+			// Stopping through the returned handle clears the singleton too —
+			// a later start must not be refused by a dead loop's ghost.
+			if (activeLoop === loop) activeLoop = null;
+		},
+	};
 	const tick = async () => {
 		if (stopped) return;
+		// Lease renewal = the heartbeat. A failure means another live process
+		// owns the loop seat: disarm THIS one rather than double-polling. The
+		// lease is NOT released here — it is no longer ours to release.
+		if (!tryAcquireWsRefreshLease(leaseOptions)) {
+			config.log?.('[WsRefresh] host lease lost to another process — this loop disarms itself');
+			stopped = true;
+			if (handle !== null) cancel(handle);
+			if (activeLoop === loop) activeLoop = null;
+			return;
+		}
 		try {
 			await checkWsRefreshOnce(config);
 		} catch (error) {
@@ -308,15 +476,6 @@ export function startWsRefreshLoop(config: WsRefreshLoopConfig): { stop: () => v
 		if (!stopped) handle = schedule(tick, pollMs);
 	};
 	handle = schedule(tick, config.initialDelayMs ?? 30_000);
-	const loop: { stop: () => void } = {
-		stop: () => {
-			stopped = true;
-			if (handle !== null) cancel(handle);
-			// Stopping through the returned handle clears the singleton too —
-			// a later start must not be refused by a dead loop's ghost.
-			if (activeLoop === loop) activeLoop = null;
-		},
-	};
 	activeLoop = loop;
 	return loop;
 }

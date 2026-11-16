@@ -25,9 +25,9 @@
  */
 import { describe, test, expect, afterAll, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
-import { mkdtempSync, writeFileSync, rmSync } from 'fs';
+import { mkdtempSync, writeFileSync, rmSync, existsSync, readFileSync, utimesSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import type { QdrantLike } from '../supplement-index.js';
 import type { WsIndexWriterReport } from '../ws-index-writer.js';
 import {
@@ -38,6 +38,8 @@ import {
 	stopWsRefreshLoop,
 	isWsRefreshLoopRunning,
 	wsRefreshBackoffSeconds,
+	tryAcquireWsRefreshLease,
+	releaseWsRefreshLeaseIfOurs,
 	type WsRefreshCheckDeps,
 } from '../ws-refresh-loop.js';
 
@@ -373,6 +375,13 @@ describe('startWsRefreshLoop — self-scheduling singleton', () => {
 		return join(dir, 'state.json');
 	}
 
+	/** Tests NEVER touch the real ~/.roo-state-manager lease (ms#1782 B2). */
+	function tempLeasePath() {
+		const dir = mkdtempSync(join(tmpdir(), 'ws-refresh-lease-'));
+		tempDirs.push(dir);
+		return join(dir, 'loop.lock');
+	}
+
 	test('the next poll arms only AFTER the previous check settles', async () => {
 		const queue: Array<() => void> = [];
 		let ticks = 0;
@@ -386,6 +395,7 @@ describe('startWsRefreshLoop — self-scheduling singleton', () => {
 			hashPathPrefix: PREFIX,
 			pollSeconds: 120,
 			statePath: tempStatePath(),
+			leasePath: tempLeasePath(),
 			runWriter: () => new Promise<WsIndexWriterReport>((resolve) => {
 				if (inFlight) overlaps.push(true);
 				inFlight = true;
@@ -416,6 +426,7 @@ describe('startWsRefreshLoop — self-scheduling singleton', () => {
 			hashPathPrefix: PREFIX,
 			pollSeconds: 120,
 			statePath: tempStatePath(),
+			leasePath: tempLeasePath(),
 			runWriter: async () => syntheticReport(),
 			readHead: async () => 'a'.repeat(40),
 			schedule: () => 0,
@@ -427,6 +438,7 @@ describe('startWsRefreshLoop — self-scheduling singleton', () => {
 			hashPathPrefix: PREFIX,
 			pollSeconds: 60,
 			statePath: tempStatePath(),
+			leasePath: tempLeasePath(),
 			runWriter: async () => syntheticReport(),
 			readHead: async () => 'a'.repeat(40),
 			schedule: () => 0,
@@ -442,6 +454,7 @@ describe('startWsRefreshLoop — self-scheduling singleton', () => {
 			hashPathPrefix: PREFIX,
 			pollSeconds: 120,
 			statePath: tempStatePath(),
+			leasePath: tempLeasePath(),
 			runWriter: async () => syntheticReport(),
 			readHead: async () => null,
 			schedule: (fn) => { queue.push(fn); return queue.length; },
@@ -453,6 +466,145 @@ describe('startWsRefreshLoop — self-scheduling singleton', () => {
 		queue.shift()?.(); // a late-armed tick must do nothing
 		await new Promise((r) => setTimeout(r, 5));
 		expect(queue.length).toBe(queued - 1); // no re-arm after stop
+	});
+});
+
+describe('host lease — one loop per HOST, not per process (ms#1782 B2)', () => {
+	afterEach(() => stopWsRefreshLoop());
+
+	function tempLeasePath() {
+		const dir = mkdtempSync(join(tmpdir(), 'ws-refresh-lease-'));
+		tempDirs.push(dir);
+		return join(dir, 'loop.lock');
+	}
+
+	function writeLease(leasePath: string, content: unknown) {
+		writeFileSync(leasePath, typeof content === 'string' ? content : JSON.stringify(content));
+	}
+
+	/**
+	 * A LIVE foreign pid: our own parent (the vitest worker spawner) is alive
+	 * by construction and is not us — exactly what a second RSM host process
+	 * on the machine looks like to the first.
+	 */
+	function foreignLivePid(): number {
+		return process.ppid;
+	}
+
+	test('acquire → second acquire renews (same pid heartbeat)', () => {
+		const leasePath = tempLeasePath();
+		expect(tryAcquireWsRefreshLease({ leasePath })).toBe(true);
+		expect(tryAcquireWsRefreshLease({ leasePath })).toBe(true); // renew
+		expect(releaseWsRefreshLeaseIfOurs({ leasePath })).toBe(true);
+		expect(existsSync(leasePath)).toBe(false);
+	});
+
+	test('a live foreign holder blocks the acquire — the second PROCESS does not start', () => {
+		const leasePath = tempLeasePath();
+		writeLease(leasePath, { pid: foreignLivePid(), timestamp: Date.now() });
+		expect(tryAcquireWsRefreshLease({ leasePath, staleMs: 60_000 })).toBe(false);
+	});
+
+	test('a DEAD holder is stolen before the stale threshold (PID probe accelerator)', () => {
+		const leasePath = tempLeasePath();
+		// 4194303 = pid_max-ish, nobody alive holds it; if the platform ever
+		// recycles it, the stale path below still covers the case.
+		writeLease(leasePath, { pid: 4194303, timestamp: Date.now() });
+		expect(tryAcquireWsRefreshLease({ leasePath, staleMs: 60_000 })).toBe(true);
+		expect(releaseWsRefreshLeaseIfOurs({ leasePath })).toBe(true);
+	});
+
+	test('a STALE holder (alive but silent past the threshold) is stolen, with read-back', () => {
+		const leasePath = tempLeasePath();
+		writeLease(leasePath, { pid: foreignLivePid(), timestamp: Date.now() - 120_000 });
+		expect(tryAcquireWsRefreshLease({ leasePath, staleMs: 60_000 })).toBe(true);
+		// The steal re-wrote the holder — it is ours now.
+		const holder = JSON.parse(readFileSync(leasePath, 'utf8'));
+		expect(holder.pid).toBe(process.pid);
+	});
+
+	test('an unparseable lease is abandoned only past the threshold (fail-closed under it)', () => {
+		const freshPath = tempLeasePath();
+		writeLease(freshPath, 'not json');
+		expect(tryAcquireWsRefreshLease({ leasePath: freshPath, staleMs: 60_000 })).toBe(false);
+		expect(readFileSync(freshPath, 'utf8')).toBe('not json'); // untouched — fail-closed
+		const oldPath = tempLeasePath();
+		writeLease(oldPath, '');
+		utimesSync(oldPath, new Date(Date.now() - 120_000), new Date(Date.now() - 120_000));
+		expect(tryAcquireWsRefreshLease({ leasePath: oldPath, staleMs: 60_000 })).toBe(true);
+	});
+
+	test('TWO LOOP INSTANCES sharing one lease: first runs, second PROCESS refused, release→third runs', () => {
+		const leasePath = tempLeasePath();
+		const base = {
+			workspaceRoot: 'C:\\fake',
+			writer: 'web1:x',
+			hashPathPrefix: PREFIX,
+			pollSeconds: 120,
+			statePath: join(dirname(leasePath), 'state.json'),
+			leasePath,
+			runWriter: async () => syntheticReport(),
+			readHead: async () => 'a'.repeat(40),
+			schedule: () => 0,
+			cancel: () => {},
+		};
+		// Instance 1 (this process) starts and holds the host lease.
+		const first = startWsRefreshLoop({ ...base });
+		expect(isWsRefreshLoopRunning()).toBe(true);
+		// A second PROCESS appears: it seizes the lease file (live foreign
+		// holder, fresh heartbeat)…
+		writeLease(leasePath, { pid: foreignLivePid(), timestamp: Date.now() });
+		// …and our loop stops cleanly. stop() must NOT release the lease —
+		// it no longer carries our pid (releaseWsRefreshLeaseIfOurs contract).
+		first.stop();
+		expect(isWsRefreshLoopRunning()).toBe(false);
+		expect(JSON.parse(readFileSync(leasePath, 'utf8')).pid).toBe(foreignLivePid());
+		// Now a genuine second instance (singleton cleared) tries to start on
+		// the SAME lease: refused by the HOST lease, not silently started —
+		// the per-process singleton alone cannot see the other process.
+		expect(() => startWsRefreshLoop({ ...base, workspaceRoot: 'C:\\fake2' }))
+			.toThrow(/HOST lease/);
+		// The foreign holder goes away → the same lease admits a third start.
+		rmSync(leasePath, { force: true });
+		const third = startWsRefreshLoop({ ...base });
+		expect(isWsRefreshLoopRunning()).toBe(true);
+		third.stop();
+		expect(existsSync(leasePath)).toBe(false); // released by OUR stop
+	});
+
+	test('a RUNNING loop that loses the lease self-disarms instead of double-writing', async () => {
+		const leasePath = tempLeasePath();
+		const queue: Array<() => void> = [];
+		const logs: string[] = [];
+		let writerCalls = 0;
+		startWsRefreshLoop({
+			workspaceRoot: 'C:\\fake',
+			writer: 'web1:x',
+			hashPathPrefix: PREFIX,
+			pollSeconds: 120,
+			statePath: join(dirname(leasePath), 'state.json'),
+			leasePath,
+			runWriter: async () => { writerCalls++; return syntheticReport(); },
+			readHead: async () => 'a'.repeat(40),
+			schedule: (fn) => { queue.push(fn); return queue.length; },
+			cancel: () => {},
+			log: (m) => logs.push(m),
+		});
+		// Tick 1: healthy — lease ours, writer runs.
+		queue.shift()!();
+		await new Promise((r) => setTimeout(r, 10));
+		expect(writerCalls).toBe(1);
+		// Another process steals the lease (live foreign holder, fresh).
+		writeLease(leasePath, { pid: foreignLivePid(), timestamp: Date.now() });
+		// Tick 2: renewal fails → self-disarm, no writer call, no re-arm.
+		queue.shift()!();
+		await new Promise((r) => setTimeout(r, 10));
+		expect(writerCalls).toBe(1);
+		expect(isWsRefreshLoopRunning()).toBe(false);
+		expect(queue.length).toBe(0);
+		expect(logs.some((m) => m.includes('disarms itself'))).toBe(true);
+		// The foreign lease must survive us — it is not ours to release.
+		expect(JSON.parse(readFileSync(leasePath, 'utf8')).pid).toBe(foreignLivePid());
 	});
 });
 

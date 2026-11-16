@@ -147,6 +147,18 @@ describe('ws_refresh_status — HANDLER boundary (#4736 P4)', () => {
 			poll_seconds: 120,
 		});
 	});
+
+	test('poll_seconds is reported CLAMPED like the loop runs it (ms#1782, same-push)', async () => {
+		// The loop clamps (Math.max(10, parseInt||120)) in initializeWsRefreshLoop —
+		// the status must report the cadence that actually runs, not the raw env.
+		// A sub-floor or unparseable env therefore reports 10/120, never 2 or NaN.
+		for (const [env, expected] of [['2', 10], ['garbage', 120], ['600', 600]] as const) {
+			process.env.WS_INDEX_REFRESH_POLL_SECONDS = env;
+			const result: any = await runHandler({ action: 'ws_refresh_status' });
+			const payload = JSON.parse(result.content[0].text);
+			expect(payload.host_config.poll_seconds, `env=${env}`).toBe(expected);
+		}
+	});
 });
 
 afterEach(() => {

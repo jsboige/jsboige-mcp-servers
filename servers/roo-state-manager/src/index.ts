@@ -621,16 +621,31 @@ class RooStateManagerServer {
                 { runWsIndexWriter },
                 { getQdrantClient },
                 { embedCodebaseTexts, getCodebaseEmbeddingModel, getCodebaseEmbeddingEndpoint },
-                pathModule,
+                { resolveWsMachineId, resolveWsWriterIdentity },
             ] = await Promise.all([
                 import('./services/code-index/ws-refresh-loop.js'),
                 import('./services/code-index/ws-index-writer.js'),
                 import('./services/qdrant.js'),
                 import('./services/code-index/embedding-client.js'),
-                import('path'),
+                import('./services/code-index/ws-writer-identity.js'),
             ]);
-            const machineId = process.env.COMPUTERNAME || process.env.HOSTNAME || 'unknown-machine';
-            const writer = `${machineId}:${pathModule.basename(workspaceRoot)}`;
+            // Review ms#1782, B1: ONE writer identity for both paths. The loop
+            // used to derive it from raw COMPUTERNAME (UPPERCASE on Windows)
+            // while index_code_ws derives it from the STATE machineId
+            // (lowercased) — the sentinel compares exactly, so every loop pass
+            // was refused on real seats. The shared helper derives it from the
+            // state first, exactly like the tool action does.
+            const stateMachineId = this.stateManager?.getState()?.machineId ?? null;
+            const machineId = resolveWsMachineId(stateMachineId);
+            if (machineId === 'unknown-machine') {
+                // An unidentified host must not hold the host lease while every
+                // writer pass is refused — fail loudly at start instead.
+                logger.warn(
+                    '⚠️ [WsRefresh] machineId non résolvable (ni state, ni ROOSYNC_MACHINE_ID, ni hostname) — boucle non démarrée'
+                );
+                return;
+            }
+            const writer = resolveWsWriterIdentity(workspaceRoot, stateMachineId);
             startWsRefreshLoop({
                 workspaceRoot,
                 writer,
@@ -1122,6 +1137,25 @@ async function gracefulShutdown(signal: string): Promise<void> {
                 await releaseWorkerALockIfOurs(_shutdownMachineId);
             } catch (error) {
                 logger.warn('[shutdown] leader-lock release skipped:', { error });
+            }
+        }
+
+        // #4736 P4 (review ms#1782, same-push item): stop the ws refresh loop
+        // so no tick fires mid-shutdown and the HOST lease is released for the
+        // next starter. Gated on the arming env for the same budget discipline
+        // as the lock releases above — a process that never armed the loop
+        // pays nothing (the module itself imports node builtins only).
+        if (process.env.WS_INDEX_REFRESH_ENABLED === 'true') {
+            try {
+                const { isWsRefreshLoopRunning, stopWsRefreshLoop } = await import(
+                    './services/code-index/ws-refresh-loop.js'
+                );
+                if (isWsRefreshLoopRunning()) {
+                    stopWsRefreshLoop();
+                    logger.info('[shutdown] ws refresh loop stopped, host lease released');
+                }
+            } catch {
+                // never fatal — the lease self-heals via its stale threshold
             }
         }
 
