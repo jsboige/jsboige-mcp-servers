@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 15c4b28642a521783f5f673bc92f160631073c61
+# Copied verbatim from jsboige/vllm @ c32dc1721979b47896f9538040eb8c62f5114ee8
 # original path: myia_vllm/scripts/adoption/nb_audit/nb_audit_hourly.ps1
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -19,8 +19,16 @@
 # producer exists to cut. Dry-run before the switch: 3 Video notebooks selected, nothing written.
 # The skip list the order named (PR #19868) was stale within hours (closed-superseded by #19854);
 # the runner now derives per pass which notebooks an open PR is about to change and skips those by itself.
+# Video/ -> Texte/ switch on 16/11 11:56Z, on CoursIA's arbitration (myia-ai-01:CoursIA, 12:47Z):
+# the producer was stopped for SIX Video/ dossiers from 12/11 that NanoClaw never consumed
+# (`--lookahead 6` reached, ok:true, 0 selected -- a legitimate idle, not a failure). CoursIA chose
+# the wave switch over waiting: keeping the prefix would freeze production behind dossiers nobody
+# reads. The six go to myia-po-2027:CoursIA (Video environment, already took 02-2 LTX in #26398).
+# Dry-run before the switch: 2 Texte/ notebooks selected (10d_TensorSharp, 22_Evaluating_Generated_Text),
+# nothing written. Video/ stays at 21 unchecked by US -- it is po-2027's now, and the runner's own
+# PR-skip plus the audited-comments count mean nothing already covered is re-produced.
 param([int[]]$Series = @(17107, 17239, 17357, 17692, 19451), [int]$PerSeries = 3,
-      [string[]]$Subpath = @('19451:Video/'), [string]$Python = '',
+      [string[]]$Subpath = @('19451:Texte/'), [string]$Python = '',
       [string]$Repo = 'd:/dev/CoursIA-skaudit')
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $logDir = Join-Path $env:LOCALAPPDATA 'nbaudit\logs'
