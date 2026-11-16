@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ e5f9c76627626ee19b32a203d8d5b92487843939
+# Copied verbatim from jsboige/vllm @ 15c4b28642a521783f5f673bc92f160631073c61
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -42,6 +42,7 @@ import shutil
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -667,6 +668,31 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
     return env
 
 
+# Codes are matched on word boundaries, never as substrings: a raw `in` test turns
+# 'timeout after 1401 ms' and 'listening on port 8403' into auth failures — the exact mirror
+# of the bug this classification removes (a timeout blamed on the wiring). Measured in
+# co-review of #442 (po-2028:claudish), F5-1.
+_AUTH_CODE_RE = re.compile(r"\b(?:401|403)\b")
+_AUTH_MARKERS = ("unauthorized", "authentication", "invalid proxy")
+
+
+def call_failure(env: dict) -> str:
+    """Verdict for a model call that never produced an answer, or "" when it answered.
+
+    A 401 or a dead MCP spawn is NOT an 'unreadable response': the model was never asked, so
+    reporting stage1-unparsed points the operator at the model instead of at the wiring.
+    Measured 16/11 (po-2028:claudish): api_key_env unset -> '401 invalid proxy authentication'
+    surfaced as stage1-unparsed with the real cause buried in .calls[0].error (F5, vllm#441).
+    """
+    err = (env.get("error") or "").strip()
+    if not err:
+        return ""
+    low = err.lower()
+    kind = ("auth-failed" if _AUTH_CODE_RE.search(low)
+            or any(m in low for m in _AUTH_MARKERS) else "call-failed")
+    return f"{kind}: {err[:160]}"
+
+
 async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
     try:
         res = await session.call_tool(tool, payload, read_timeout_seconds=timedelta(seconds=300))
@@ -713,6 +739,29 @@ COORD_REF_RE = re.compile(r"(?i)\b(?:epic|see|part\s+of)\s*#|\blane\b")
 PROVENANCE_RE = re.compile(r"Carnet issu de l'EPIC #\d+")
 SECRET_RE = re.compile(r"(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
                        r"sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[bap]-[A-Za-z0-9-]{10,})")
+# CoursIA acceptance contract, trigger 2 (2026-11-16): a machine path surfaced in an OUTPUT
+# is a change-request — it proves the notebook ran on someone's box rather than in the
+# canonical environment. Outputs only: the same string in the SOURCE is prose or config.
+# `Loading extensions from` is evcxr's own banner, the Rust form of the same leak.
+MACHINE_PATH_RE = re.compile(
+    r"(?:[A-Za-z]:[\\/](?:[^\\/\s\"']+[\\/])+"      # C:\Users\... , d:/vllm/... (>= 2 segments)
+    r"|\\\\wsl(?:\.localhost|\$)[\\/]"              # \\wsl.localhost\Ubuntu\...
+    r"|/home/[A-Za-z_][A-Za-z0-9._-]*/"
+    r"|/Users/[A-Za-z][A-Za-z0-9._-]*/"
+    r"|Loading extensions from\b)")
+
+
+def _outputs_text(cell: dict) -> str:
+    """What a cell DISPLAYS: streams, the text stubs of its rich data, and error tracebacks."""
+    parts: list[str] = []
+    for o in cell.get("outputs") or []:
+        parts.append(_text(o.get("text")))
+        data = o.get("data") or {}
+        for mime in ("text/plain", "text/html", "text/markdown"):
+            parts.append(_text(data.get(mime)))
+        parts.append(_text(o.get("traceback")))
+        parts.append(str(o.get("evalue") or ""))
+    return "\n".join(p for p in parts if p)
 
 
 def run_gates(src_nb: Path, built_nb: Path) -> list[dict]:
@@ -756,6 +805,16 @@ def run_gates(src_nb: Path, built_nb: Path) -> list[dict]:
         .get("language_info", {}).get("version")
     gates.append({"gate": "language-info", "ok": sv is not None and sv == bv,
                   "detail": {"src": sv, "built": bv}})
+    # Delta judged on the OUTPUTS themselves: a cell whose displayed text the build did not
+    # change keeps its pre-existing path without failing this build (same rule as secrets).
+    src_hits = [i for i, c in enumerate(src_cells) if MACHINE_PATH_RE.search(_outputs_text(c))]
+    built_hits = [i for i, c in enumerate(built_cells) if MACHINE_PATH_RE.search(_outputs_text(c))]
+    new_hits = [i for i in built_hits
+                if not (i < len(src_cells)
+                        and _outputs_text(built_cells[i]) == _outputs_text(src_cells[i]))]
+    gates.append({"gate": "machine-path", "ok": not new_hits,
+                  "detail": {"cells": new_hits[:10], "source_hits": src_hits[:10],
+                             "build_hits": built_hits[:10]}})
     return gates
 
 
@@ -949,13 +1008,12 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
 
 
 # ---------------------------------------------------------------- main flow
-async def run(args) -> dict:
+async def run(args, rec: dict) -> dict:
+    """Fill the caller-owned trace. `rec` is created in main() and passed in so a crash keeps
+    everything already paid for: calls made, stages timed, plan received (F4, vllm#441)."""
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     repo = Path(args.repo)
-    rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-           "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
-           "engine_tokens_before": engine_tokens()}
     # refuse a --repo whose origin is not jsboige/CoursIA: the claim guard infers its slug from
     # the remote of ITS cwd (check_lane_claim.py), and a wrong --repo silently serves another
     # repo's issue numbers (measured 14/11: a manual claim check run from d:/vllm queried
@@ -1024,10 +1082,11 @@ async def run(args) -> dict:
             rec["plan"] = plan
             rec["stage1_s"] = round(time.time() - t1, 1)
             if args.max_stage < 2:
-                rec["verdict"] = "stage1-only" if plan else "stage1-unparsed"
+                rec["verdict"] = ("stage1-only" if plan
+                                  else f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             if not plan:
-                rec["verdict"] = "stage1-unparsed"
+                rec["verdict"] = f"stage1-{call_failure(env) or 'unparsed'}"
                 return rec
             exec_idx = plan.get("execute_cells") or []
 
@@ -1059,10 +1118,12 @@ async def run(args) -> dict:
             rec["built_notebook"] = {"path": scratch_nb, "exists": exists,
                                      "bytes": scratch.stat().st_size if exists else 0,
                                      "changed": exists and _sha(scratch) != sha_before}
+            # A dead stage-2 call leaves the copy untouched: 'build-no-change' would then blame
+            # the model for an edit it was never asked to make (same lie as stage 1, F5).
             if not exists:
                 rec["verdict"] = "build-no-notebook"
             elif not rec["built_notebook"]["changed"]:
-                rec["verdict"] = "build-no-change"
+                rec["verdict"] = f"build-{call_failure(env2) or 'no-change'}"
             else:
                 rec["structure"] = verify_structure(src_nb, scratch, plan)
                 if not rec["structure"]["ok"]:
@@ -1131,6 +1192,48 @@ async def run(args) -> dict:
     return rec
 
 
+def _preflight(ap, args) -> None:
+    """Refuse before any spend when a wired path cannot exist (F3, vllm#441).
+
+    On a foreign checkout PM_CWD fell through to a non-existent legacy path, so the two MCP
+    spawns died with NotADirectoryError [WinError 267] AFTER the engine-token baseline: what
+    the operator saw was 'crashed:ExceptionGroup ... (1 sub-exception)' with calls: 0, which
+    reads like a model or protocol defect. A missing SK_PY / config dies the same opaque way
+    inside stdio_client, so the check covers the whole wiring, not just the reported field.
+
+    A refusal still leaves a TRACE (F3-1, co-review of #442): a scheduled loop cannot tell
+    "ran and refused" from "never ran" if the refusal leaves no out-dir and no ledger line.
+    The trace is written here, before ap.error, with the refusal itself as the verdict.
+    """
+    missing = [f"{name}={path}" for name, path, ok in (
+        ("sk_agent.py (NBCODER_SK_DIR)", SK_DIR / "sk_agent.py", (SK_DIR / "sk_agent.py").is_file()),
+        ("NBCODER_SK_PY", SK_PY, SK_PY.is_file()),
+        ("NBCODER_SK_CONFIG", SK_CONFIG, SK_CONFIG.is_file()),
+        ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
+        ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
+    ) if not ok]
+    if not missing:
+        return
+    detail = "seat wiring does not resolve here — point the env var at a real path: " \
+             + " | ".join(missing)
+    out_dir = Path(args.out_dir)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
+               "finished": utcnow(), "lane": args.lane, "dry": True, "calls": [],
+               "verdict": "refused-wiring-unresolved",
+               "wiring_missing": missing}
+        (out_dir / f"issue-{args.issue}.json").write_text(
+            json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+        with open(out_dir / "ledger.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({k: rec.get(k) for k in
+                                 ("issue", "notebook", "started", "finished", "verdict", "lane")}
+                                | {"calls": 0}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass          # the refusal must not be masked by a failed trace write
+    ap.error(detail)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--issue", type=int, required=True, help="CoursIA issue number")
@@ -1194,11 +1297,24 @@ def main() -> int:
     if args.claim and not args.lane:
         ap.error("--claim requires --lane or NBCODER_LANE, form '<machine>:nb-coder' — a default "
                  "identity would let two seats share one claim lane (F1, vllm#438)")
+    if args.max_stage >= 1:   # stage 0 is git-only: a claim must not require the MCP wiring
+        _preflight(ap, args)
+    rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
+           "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
+           "engine_tokens_before": engine_tokens()}
     try:
-        rec = asyncio.run(run(args))
+        rec = asyncio.run(run(args, rec))
     except Exception as exc:  # a trace is always written: a dead harness must not look like a quiet one
-        rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-               "lane": args.lane, "dry": True, "verdict": f"crashed:{type(exc).__name__}: {exc}"}
+        # Keep what was already paid for, and keep WHY (F4, vllm#441). Rebuilding rec here threw
+        # away the calls, the last stage and the plan: a stage-5 crash produced the same
+        # 'calls: 0' trace as a pre-stage-0 one, and str(ExceptionGroup) renders as
+        # '(1 sub-exception)' — an operator-visible crash with no operator-readable cause.
+        rec["crash"] = {"type": type(exc).__name__, "message": str(exc)[:500],
+                        "traceback_tail": traceback.format_exc()[-2000:]}
+        rec["verdict"] = f"crashed:{type(exc).__name__}: {str(exc)[:300]}"
+        # `dry` is NOT forced here: it says "the run stopped before stage 5", which a crash on
+        # --max-stage 5 does not mean (co-review of #442, F4-1). rec already carries the true
+        # value from main() — a crash is a crash, not a dry run.
     rec["engine_tokens_after"] = engine_tokens()
     b, a = rec.get("engine_tokens_before") or {}, rec.get("engine_tokens_after") or {}
     rec["engine_tokens_delta"] = {k: round(a[k] - b[k]) for k in a if k in b} or None
