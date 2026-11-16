@@ -216,7 +216,7 @@ export async function readWsWriterRecord(
 				with_payload: true,
 				with_vector: false,
 			});
-			return parseWriterPayload((res?.points ?? res?.result?.points ?? [])[0]?.payload);
+			return parseWriterPayload(responsePoints(res)[0]?.payload);
 		}
 		if (typeof client.scroll === 'function') {
 			const res: any = await client.scroll(collection, {
@@ -225,7 +225,7 @@ export async function readWsWriterRecord(
 				with_payload: true,
 				with_vector: false,
 			});
-			return parseWriterPayload((res?.points ?? res?.result?.points ?? [])[0]?.payload);
+			return parseWriterPayload(responsePoints(res)[0]?.payload);
 		}
 		return null;
 	} catch (error) {
@@ -357,6 +357,29 @@ export interface WsIndexWriterReport {
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * Points carried by a Qdrant response, whatever the endpoint's shape.
+ *
+ * The pinned SDK (`@qdrant/js-client-rest` 1.16.2, ms#1789 review) UNWRAPS the
+ * HTTP envelope before returning (`qdrant-client.js` returns
+ * `response.data.result`):
+ *   - `retrieve` answers a BARE ARRAY of points;
+ *   - `scroll`   answers `{ points, next_page_offset }` at the top level.
+ * The raw HTTP shapes (what a bare fetch/curl probe sees) differ:
+ *   - `retrieve` → `{ result: PointStruct[] }`;
+ *   - `scroll`   → `{ result: { points, next_page_offset } }`.
+ * Reading only `result.points` made `retrieve` return nothing on every call:
+ * the hash cache stayed empty (every pass re-indexed the whole corpus — three
+ * measured passes, zero skips) and the ws-writer sentinel read as absent
+ * (the mono-writer guard was blind). Accept all four shapes, SDK-unwrapped
+ * first — that is what the live client hands us.
+ */
+function responsePoints(res: any): any[] {
+	if (Array.isArray(res)) return res;
+	if (Array.isArray(res?.result)) return res.result;
+	return res?.result?.points ?? res?.points ?? [];
+}
 
 /** Existing content-point ids under one filePath (native separators), metadata excluded, paged. */
 async function contentPointIdsForFile(client: QdrantLike, collection: string, relNative: string): Promise<string[]> {
@@ -594,7 +617,7 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 				with_payload: true,
 				with_vector: false,
 			});
-			for (const pt of res?.points ?? res?.result?.points ?? []) {
+			for (const pt of responsePoints(res)) {
 				if (pt?.payload?.source === 'rsm-ws-writer-cache' && typeof pt.payload.filePath === 'string') {
 					cacheHits.set(String(pt.payload.filePath), String(pt.payload.fileHash ?? ''));
 				}
