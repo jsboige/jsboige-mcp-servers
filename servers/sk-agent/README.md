@@ -723,7 +723,7 @@ debugging plugin wiring, not for a per-agent inventory.
 - **Attachments accept office/media only** — `.py`/`.ps1` are refused as attachments; text corpora go through the `source_file` channel (verbatim prompt injection, capped) or inline in the prompt (the mini presets enforce this).
 - **Thinking doubles latency** on Swift models — prefer the `-no-thinking` variants (`coder`, `fast`, `fast-local`) unless reasoning is needed.
 - **Timeouts and budgets** follow the timeout chain (#3797) and per-model budget overrides; the mini-tier budget floor is 4096 tokens (#4107).
-- **Usage telemetry** (`usage.jsonl`) records tool, duration, agent and model — never content (ms#1387, ms#1612).
+- **Usage telemetry** (`usage.jsonl`) records tool, duration, agent, model and token usage (prompt/completion, summed over every completion of a call — `call_agent` only; `run_conversation`/group chat are not instrumented) — never content (ms#1387, ms#1612, ms#1790).
 
 ## Changelog
 
