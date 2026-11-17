@@ -447,6 +447,7 @@ class KernelService:
         cell_index: int,
         kernel_id: str,
         timeout: Optional[float] = None,
+        persist_error_outputs: bool = False,
     ) -> Dict[str, Any]:
         """
         Execute a specific cell from a notebook in a kernel.
@@ -457,6 +458,11 @@ class KernelService:
             kernel_id: ID of the kernel to use
             timeout: Execution timeout in seconds (#3346: forwarded from the tool
                 call instead of silently using the config default)
+            persist_error_outputs: #4817 follow-up — EXPLICIT opt-in to persist
+                a raising cell's error outputs into the .ipynb (pre-#4817
+                behaviour). Meant for scratch copies whose whole purpose is to
+                be read back (nb_coder's repair loop, vllm#471); the default
+                (False) keeps committed sources intangible after a failed run.
 
         Returns:
             Dictionary with cell execution result
@@ -526,6 +532,7 @@ class KernelService:
                 cell_index,
                 cell.source,
                 cell_result,
+                persist_error_outputs,
             )
 
             result = {
@@ -608,14 +615,17 @@ class KernelService:
         cell_index: int,
         expected_source: str,
         cell_result: ExecutionResult,
+        persist_error_outputs: bool = False,
     ) -> Dict[str, Any]:
         """
         #4481: write the executed cell's execution_count and outputs back into
-        the .ipynb on disk. Ok AND error results are persisted (an error output
-        is a legitimate notebook state, and the kernel's execution_count is
-        honest thanks to the execute_reply read in JupyterManager). A timed-out
-        cell is NOT persisted: its outputs are partial and the kernel was
-        interrupted.
+        the .ipynb on disk. Ok results are persisted; a cell that RAISES is
+        refused by default (#4817: persisting a failed run mutates the source
+        for no committed value) UNLESS the caller explicitly opts in via
+        persist_error_outputs — the scratch-copy contract (nb_coder's repair
+        loop reads compiler errors back from its scratch copy, vllm#471). A
+        timed-out cell is NEVER persisted: its outputs are partial and the
+        kernel was interrupted.
 
         Never raises -- persistence is reported, not thrown.
         """
@@ -690,7 +700,7 @@ class KernelService:
 
                 if any(
                     out.output_type == "error" for out in cell_result.outputs
-                ):
+                ) and not persist_error_outputs:
                     # #4817: a cell that RAISES still gets an honest
                     # execution_count, so the #4481 C1 guard above cannot
                     # distinguish it from a successful run -- and persisting
@@ -698,7 +708,10 @@ class KernelService:
                     # for a FAILED execution. The failure is already fully
                     # reported to the caller (status/success/error fields);
                     # the source stays intangible. Supersedes the #4481 D2
-                    # decision to persist error outputs.
+                    # decision to persist error outputs. The explicit
+                    # persist_error_outputs opt-in (4817 follow-up, vllm#471
+                    # constraint) restores the pre-#4817 behaviour for
+                    # scratch copies whose whole purpose is to be read back.
                     info["reason"] = (
                         "cell raised -- error output not persisted to source "
                         f"(#4817); cell {cell_index} left exactly as it was "
@@ -706,6 +719,13 @@ class KernelService:
                     )
                     logger.warning(f"#4817 {info['reason']}")
                     return info
+
+                if persist_error_outputs and any(
+                    out.output_type == "error" for out in cell_result.outputs
+                ):
+                    # Opted-in scratch flow: make the exception visible in the
+                    # report, not just in the log.
+                    info["error_outputs_persisted"] = True
 
                 cell.outputs = self._outputs_to_nbformat(cell_result.outputs)
                 cell.execution_count = ec
@@ -887,9 +907,15 @@ class KernelService:
         path: Optional[str] = None,
         cell_index: Optional[int] = None,
         timeout: int = 60,
+        persist_error_outputs: bool = False,
     ) -> Dict[str, Any]:
         """
         Consolidated method for executing code/notebooks on a kernel.
+
+        persist_error_outputs (#4817 follow-up): forwarded to mode
+        ``notebook_cell`` persistence — explicit opt-in for scratch-copy
+        flows that read error outputs back from the file (nb_coder,
+        vllm#471). Default False: a raising cell never mutates the source.
         """
         if mode == "code":
             if code is None:
@@ -925,7 +951,11 @@ class KernelService:
                     "path and cell_index are required for mode='notebook_cell'"
                 )
             return await self.execute_notebook_cell(
-                path, cell_index, kernel_id, timeout=float(timeout)
+                path,
+                cell_index,
+                kernel_id,
+                timeout=float(timeout),
+                persist_error_outputs=persist_error_outputs,
             )
 
         else:

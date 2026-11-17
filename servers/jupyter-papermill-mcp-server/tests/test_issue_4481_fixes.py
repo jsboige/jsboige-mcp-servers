@@ -277,6 +277,96 @@ async def test_notebook_cell_error_output_not_persisted_to_source(service, noteb
     assert notebook.read_bytes() == before
 
 
+async def test_notebook_cell_error_output_persisted_when_opted_in(
+    service, notebook
+):
+    """#4817 follow-up (vllm#471 constraint): the EXPLICIT opt-in restores the
+    pre-#4817 behaviour for scratch copies -- nb_coder's repair loop reads
+    compiler errors back from the file it executes. Default stays refuse
+    (test above); opted-in, the error output lands on disk and the report
+    carries the visible error_outputs_persisted marker."""
+    result = ExecutionResult(
+        status="error",
+        execution_count=11,
+        outputs=[
+            ExecutionOutput(
+                output_type="error",
+                content={
+                    "ename": "SyntaxError",
+                    "evalue": "invalid syntax",
+                    "traceback": ["  File x.py, line 1"],
+                },
+            )
+        ],
+        text_output="SyntaxError: invalid syntax",
+        error_name="SyntaxError",
+        error_value="invalid syntax",
+        traceback=["  File x.py, line 1"],
+    )
+    with patch.object(
+        service.jupyter_manager, "execute_code", new_callable=AsyncMock
+    ) as mock_exec:
+        mock_exec.return_value = result
+        out = await service.execute_notebook_cell(
+            str(notebook), 0, "k1", timeout=5, persist_error_outputs=True
+        )
+
+    assert out["status"] == "error"
+    assert out["persisted"]["written"] is True
+    assert out["persisted"]["error_outputs_persisted"] is True
+    assert out["persisted"]["execution_count"] == 11
+
+    on_disk = json.loads(notebook.read_bytes().decode("utf-8"))
+    cell = on_disk["cells"][0]
+    assert cell["execution_count"] == 11
+    assert cell["outputs"][0]["output_type"] == "error"
+    assert cell["outputs"][0]["ename"] == "SyntaxError"
+
+
+async def test_consolidated_notebook_cell_forwards_the_opt_in(service, notebook):
+    """The tool layer threads persist_error_outputs through
+    execute_on_kernel_consolidated down to persistence (the seam nb_coder
+    actually calls)."""
+    result = ExecutionResult(
+        status="error",
+        execution_count=12,
+        outputs=[
+            ExecutionOutput(
+                output_type="error",
+                content={"ename": "NameError", "evalue": "nope"},
+            )
+        ],
+        text_output="NameError: nope",
+        error_name="NameError",
+        error_value="nope",
+    )
+    with patch.object(
+        service.jupyter_manager, "execute_code", new_callable=AsyncMock
+    ) as mock_exec:
+        mock_exec.return_value = result
+        out = await service.execute_on_kernel_consolidated(
+            "k1",
+            mode="notebook_cell",
+            path=str(notebook),
+            cell_index=0,
+            timeout=5,
+            persist_error_outputs=True,
+        )
+
+    assert out["persisted"]["written"] is True
+    assert out["persisted"]["error_outputs_persisted"] is True
+    # Default (no flag) through the same seam still refuses:
+    with patch.object(
+        service.jupyter_manager, "execute_code", new_callable=AsyncMock
+    ) as mock_exec:
+        mock_exec.return_value = result
+        out2 = await service.execute_on_kernel_consolidated(
+            "k1", mode="notebook_cell", path=str(notebook), cell_index=0, timeout=5
+        )
+    assert out2["persisted"]["written"] is False
+    assert "error output not persisted" in out2["persisted"]["reason"]
+
+
 async def test_error_run_keeps_previously_persisted_good_outputs(service, notebook):
     """#4817 + #4481 C1 combined: a good run persists its outputs, then an
     errored run on the same cell must NOT wipe them -- the file keeps the
