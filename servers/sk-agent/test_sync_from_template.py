@@ -11,6 +11,7 @@ The bench copies the REAL script into a tmp dir with fixture template/local conf
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -936,4 +937,86 @@ def test_template_searxng_url_is_runtime_placeholder_not_literal_endpoint():
     assert not url.startswith(("http://", "https://")), (
         f"a literal endpoint in the shared template 401s (or leaks a private "
         f"instance) on every seat built from it (#4807): {url!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# #4814 — the versioned template must not publish fleet topology
+#
+# The repository is public. A private-range endpoint is not a secret, but a
+# literal LAN IP (or a non-myia internal hostname) in the canonical template
+# publishes the fleet's network layout and pins every rebuilt seat to one
+# seat-specific endpoint. Runtime placeholders (`${ZAI_BASE_URL}`,
+# `${OPEN_TERMINAL_URL}`) are the canonical form: each seat resolves them from
+# the sk-agent server environment. Failure messages deliberately name fields,
+# never values, so a red run cannot leak the topology it is rejecting.
+# ---------------------------------------------------------------------------
+
+_IPV4_LITERAL_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_PLACEHOLDER_RE = re.compile(
+    r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::-[^}]*)?\}"
+)
+_PLACEHOLDER_DEFAULT_RE = re.compile(
+    r"\$\{[A-Za-z_][A-Za-z0-9_]*(?::-(?P<default>[^}]*))?\}"
+)
+_URL_HOST_RE = re.compile(r"https?://([^/\s\"']+)")
+
+
+def _hosts_outside_myia(value: str) -> list[str]:
+    literal = _PLACEHOLDER_RE.sub("", value)
+    return [
+        host
+        for host in _URL_HOST_RE.findall(literal)
+        if "myia" not in host.lower()
+    ]
+
+
+def test_template_url_fields_publish_no_internal_topology():
+    """The real template ships no IPv4 literal and no non-myia URL host in
+    its ``base_url``/``url`` fields or ``${VAR:-default}`` defaults (#4814)."""
+    raw = (SK_AGENT_DIR / "sk_agent_config.template.json").read_text(
+        encoding="utf-8"
+    )
+    assert not _IPV4_LITERAL_RE.search(raw), (
+        "template publishes an IPv4 literal (#4814)"
+    )
+
+    template = json.loads(raw)
+    violations: list[str] = []
+
+    def walk(node: object, path: str) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                child = f"{path}.{key}" if path else key
+                if (
+                    key in ("base_url", "url")
+                    and isinstance(value, str)
+                    and _hosts_outside_myia(value)
+                ):
+                    violations.append(f"{child}: non-myia URL host")
+                if isinstance(value, str):
+                    for match in _PLACEHOLDER_DEFAULT_RE.finditer(value):
+                        default = match.group("default")
+                        if default and _hosts_outside_myia(default):
+                            violations.append(
+                                f"{child}: non-myia host in placeholder default"
+                            )
+                walk(value, child)
+        elif isinstance(node, list):
+            for index, value in enumerate(node):
+                walk(value, f"{path}[{index}]")
+
+    walk(template, "")
+    assert not violations, "; ".join(violations)
+
+    hub_ids = {"glm-5.3", "glm-5.3-flash", "frognano-4b"}
+    for model in template["models"]:
+        if model.get("id") in hub_ids:
+            assert model["base_url"] == "${ZAI_BASE_URL}", (
+                f"{model['id']}: hub base_url must be the runtime placeholder"
+            )
+
+    open_terminal = next(m for m in template["mcps"] if m["id"] == "open_terminal")
+    assert open_terminal["env"]["OPEN_TERMINAL_URL"] == "${OPEN_TERMINAL_URL}", (
+        "open_terminal URL must have no internal-host default (#4758/#4814)"
     )
