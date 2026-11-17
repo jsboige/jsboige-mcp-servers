@@ -688,6 +688,25 @@ class KernelService:
                     logger.warning(f"#4481 {info['reason']}")
                     return info
 
+                if any(
+                    out.output_type == "error" for out in cell_result.outputs
+                ):
+                    # #4817: a cell that RAISES still gets an honest
+                    # execution_count, so the #4481 C1 guard above cannot
+                    # distinguish it from a successful run -- and persisting
+                    # here mutates the committed source (git-visible diff)
+                    # for a FAILED execution. The failure is already fully
+                    # reported to the caller (status/success/error fields);
+                    # the source stays intangible. Supersedes the #4481 D2
+                    # decision to persist error outputs.
+                    info["reason"] = (
+                        "cell raised -- error output not persisted to source "
+                        f"(#4817); cell {cell_index} left exactly as it was "
+                        "on disk"
+                    )
+                    logger.warning(f"#4817 {info['reason']}")
+                    return info
+
                 cell.outputs = self._outputs_to_nbformat(cell_result.outputs)
                 cell.execution_count = ec
                 info["execution_count"] = cell.execution_count

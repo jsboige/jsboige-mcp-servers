@@ -238,8 +238,11 @@ async def test_notebook_cell_persists_outputs_and_ec(service, notebook):
     assert cell["outputs"][1]["execution_count"] == 7
 
 
-async def test_notebook_cell_persists_error_output_and_ec(service, notebook):
-    """An errored cell is a legitimate notebook state: persist it (#4481 D2)."""
+async def test_notebook_cell_error_output_not_persisted_to_source(service, notebook):
+    """#4817 supersedes #4481 D2 for the error case: a failed execution must
+    NOT mutate the committed source. The error is still fully reported to the
+    caller (status/success/error fields) -- only the file stays untouched."""
+    before = notebook.read_bytes()
     result = ExecutionResult(
         status="error",
         execution_count=9,
@@ -264,15 +267,61 @@ async def test_notebook_cell_persists_error_output_and_ec(service, notebook):
         mock_exec.return_value = result
         out = await service.execute_notebook_cell(str(notebook), 0, "k1", timeout=5)
 
+    # The failure is reported to the caller, not written into the source.
     assert out["status"] == "error"
     assert out["success"] is False
-    assert out["persisted"]["written"] is True
+    assert out["persisted"]["written"] is False
+    assert "error output not persisted" in out["persisted"]["reason"]
+
+    # The committed source is byte-identical: a failed run never mutates it.
+    assert notebook.read_bytes() == before
+
+
+async def test_error_run_keeps_previously_persisted_good_outputs(service, notebook):
+    """#4817 + #4481 C1 combined: a good run persists its outputs, then an
+    errored run on the same cell must NOT wipe them -- the file keeps the
+    last successful state, exactly as a foreign-idle `ok` must."""
+    good = ExecutionResult(
+        status="ok",
+        execution_count=4,
+        outputs=[
+            ExecutionOutput(
+                output_type="stream", content={"name": "stdout", "text": "kept\n"}
+            )
+        ],
+        text_output="kept\n",
+    )
+    bad = ExecutionResult(
+        status="error",
+        execution_count=5,
+        outputs=[
+            ExecutionOutput(
+                output_type="error",
+                content={"ename": "ValueError", "evalue": "boom", "traceback": ["tb"]},
+            )
+        ],
+        text_output="ValueError: boom",
+        error_name="ValueError",
+        error_value="boom",
+        traceback=["tb"],
+    )
+    with patch.object(
+        service.jupyter_manager, "execute_code", new_callable=AsyncMock
+    ) as mock_exec:
+        mock_exec.return_value = good
+        first = await service.execute_notebook_cell(str(notebook), 0, "k1", timeout=5)
+        mock_exec.return_value = bad
+        second = await service.execute_notebook_cell(str(notebook), 0, "k1", timeout=5)
+
+    assert first["persisted"]["written"] is True
+    assert second["persisted"]["written"] is False
+    assert "error output not persisted" in second["persisted"]["reason"]
 
     on_disk = json.loads(notebook.read_text(encoding="utf-8"))
     cell = on_disk["cells"][0]
-    assert cell["execution_count"] == 9
-    assert cell["outputs"][0]["output_type"] == "error"
-    assert cell["outputs"][0]["ename"] == "TypeError"
+    # The good run's state survives the errored run untouched.
+    assert cell["execution_count"] == 4
+    assert cell["outputs"][0]["output_type"] == "stream"
 
 
 async def test_false_ok_without_execution_count_keeps_persisted_outputs(
