@@ -44,6 +44,8 @@ export function getUnifiedStoreWriter(): IUnifiedStoreWriter {
       // mailbox load); env overrides still win.
       statementTimeoutMs: parseInt(process.env.UNIFIED_STORE_TIMEOUT_MS ?? '15000', 10),
       connectionTimeoutMillis: parseInt(process.env.UNIFIED_STORE_CONNECT_TIMEOUT_MS ?? '15000', 10),
+      // #4731 — same idle recycling as the reader factory (30 s default).
+      idleTimeoutMillis: parseInt(process.env.UNIFIED_STORE_IDLE_TIMEOUT_MS ?? '30000', 10),
     });
   } else {
     console.error('[UnifiedStore] Dual-write DISABLED — using NullUnifiedStoreWriter');

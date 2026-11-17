@@ -38,6 +38,9 @@ export function getUnifiedStoreReader(): IUnifiedStoreReader {
       // mailbox load); env overrides still win.
       statementTimeoutMs: parseInt(process.env.UNIFIED_STORE_TIMEOUT_MS ?? '15000', 10),
       connectionTimeoutMillis: parseInt(process.env.UNIFIED_STORE_CONNECT_TIMEOUT_MS ?? '15000', 10),
+      // #4731 — recycle idle clients (30 s) so an overnight-idle pool hands
+      // out fresh connections, not sockets dropped mid-path.
+      idleTimeoutMillis: parseInt(process.env.UNIFIED_STORE_IDLE_TIMEOUT_MS ?? '30000', 10),
     });
   } else {
     instance = new NullUnifiedStoreReader();

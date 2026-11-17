@@ -48,6 +48,12 @@ export interface UnifiedStoreWriterConfig {
    * degrade to the file path instead of hanging (#2191 deep-queue, 2026-09-29).
    */
   connectionTimeoutMillis?: number;
+  /**
+   * Idle client recycling in ms. Default 30000 (#4731) — same rationale as
+   * the reader: pg default 0 keeps stranded sockets in the pool overnight;
+   * proactive recycling turns a dead-socket stall into a bounded reconnect.
+   */
+  idleTimeoutMillis?: number;
   /** Max retry attempts on transient failure. Default 2. */
   maxRetries?: number;
   /** Base backoff delay (ms) between retries; actual delay = baseDelayMs × 2^attempt. Default 500. */
