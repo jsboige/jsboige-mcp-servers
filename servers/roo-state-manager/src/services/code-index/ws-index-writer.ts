@@ -31,13 +31,19 @@
  *  - DRY RUN IS THE DEFAULT, at the service boundary and the tool boundary
  *    alike: the only way to write is an explicit `dryRun: false`.
  *
- * Scope is markdown only (.md/.markdown, Zoo-eligible paths): the population P2
- * proved byte-exact. Files Zoo never indexed (hidden-dir markdown, .ts…) are
- * skipped, not adopted — writing them would add content Zoo never indexed to a
- * served collection, which is P4/P5 territory (AST parity), not this phase.
- * Incrementality rides on per-file RSM cache points (type 'metadata', excluded
- * from every search path): `fileHash` → skip. Zoo's own payload carries no
- * fileHash, so the first run re-embeds; the second and later ones do not.
+ * Scope is markdown (.md/.markdown, the population P2 proved byte-exact) PLUS,
+ * since #4819 (5b), Zoo's code population: every extension Zoo's scanner
+ * indexed — tree-sitter grammars for the languages with a case in its language
+ * switch, size-based fallback for .vb/.scala/.swift — parsed by
+ * zoo-code-parser.ts at AST parity (same queries, same thresholds, same
+ * segmentHash formulas). `WS_WRITER_CODE_INDEXING=0` returns the population to
+ * markdown-only; the switch is active by default (fleet rule).
+ * Files Zoo never indexed (hidden-dir markdown, .txt…) are still skipped, not
+ * adopted — writing them would add content Zoo never indexed to a served
+ * collection. Incrementality rides on per-file RSM cache points (type
+ * 'metadata', excluded from every search path): `fileHash` → skip. Zoo's own
+ * payload carries no fileHash, so the first run re-embeds; the second and
+ * later ones do not.
  */
 import { createHash } from 'crypto';
 import { existsSync, readFileSync, statSync } from 'fs';
@@ -53,9 +59,18 @@ import {
 import { classifyZooPath } from './zoo-eligibility.js';
 import { listGitVisiblePaths } from './git-visible.js';
 import { parseVectorsConfig, probeWorkspaceCollections } from './collection-naming.js';
+import {
+	isWsWriterCodeIndexingEnabled,
+	parseZooCodeContent,
+	routeZooFileExtension,
+} from './zoo-code-parser.js';
 import type { QdrantLike } from './supplement-index.js';
 
-/** The file types this writer manages — exactly the population P2 proved at parity. */
+/**
+ * The file types this writer manages — exactly the population P2 proved at
+ * parity. Kept exported for callers that only ever want the markdown subset;
+ * the population gate itself routes every Zoo-scanner extension (#4819).
+ */
 export const WS_WRITER_MARKDOWN_EXTENSIONS: ReadonlySet<string> = new Set(['.md', '.markdown']);
 
 /** Zoo's own scanner cap; the writer keeps it so the corpus stays comparable. */
@@ -344,7 +359,8 @@ export interface WsIndexWriterReport {
 	files_skipped_unchanged: number;
 	files_to_index: number;
 	files_indexed: number;
-	files_failed: { path: string; error: string }[];
+	/** Whether Zoo's code population was part of this run (#4819 switch, default on). */
+	code_indexing_enabled: boolean;	files_failed: { path: string; error: string }[];
 	files_removed: number;
 	points_deleted: number;
 	points_written: number;
@@ -579,7 +595,9 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 		}
 	}
 
-	// 4. Enumerate the markdown population (Zoo-eligible paths only).
+	// 4. Enumerate the population (Zoo-eligible paths only): markdown always,
+	// Zoo's code extensions when the #4819 switch is on (default).
+	const codeEnabled = isWsWriterCodeIndexingEnabled();
 	const listed = deps.listFiles
 		? await deps.listFiles()
 		: await listGitVisiblePaths(deps.workspaceRoot);
@@ -592,7 +610,9 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 	for (const relPath of listed) {
 		if (classifyZooPath(relPath) !== 'eligible') continue; // hidden-dir md, binaries, submodule gitlinks…
 		const ext = extname(relPath).toLowerCase();
-		if (!WS_WRITER_MARKDOWN_EXTENSIONS.has(ext)) continue; // non-markdown: P4/P5 (AST parity), not P3
+		const route = routeZooFileExtension(ext);
+		if (route === null) continue; // not in Zoo's scanner population
+		if (route !== 'markdown' && !codeEnabled) continue; // code off (=0): P3 behavior
 		const abs = join(deps.workspaceRoot, relPath);
 		try {
 			const st = statSync(abs);
@@ -605,7 +625,7 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 		candidates.push(relPath);
 	}
 	candidates.sort();
-	if (droppedOversize > 0) warnings.push(`${droppedOversize} markdown file(s) over ${MAX_WS_WRITER_FILE_BYTES} bytes skipped (Zoo's scanner cap)`);
+	if (droppedOversize > 0) warnings.push(`${droppedOversize} file(s) over ${MAX_WS_WRITER_FILE_BYTES} bytes skipped (Zoo's scanner cap)`);
 
 	// 5. Cache lookup — batched retrieve by deterministic cache ids.
 	const cacheHits = new Map<string, string>();
@@ -668,6 +688,7 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 		files_skipped_unchanged: skippedUnchanged,
 		files_to_index: toIndex.length,
 		files_indexed: 0,
+		code_indexing_enabled: codeEnabled,
 		files_failed: filesFailed,
 		files_removed: removed.length,
 		points_deleted: 0,
@@ -700,14 +721,29 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 	// purge (#4736 P3 review WARNING 2). Purging is only safe for a file the
 	// run fully rewrites: a file the cap excludes keeps its previous
 	// generation, and a file that does not fit must not be purged either.
+	// Markdown parses synchronously (zoo-parity port); code extensions go
+	// through zoo-code-parser (#4819), whose grammar loads are async.
 	const planned: { item: (typeof toIndex)[number]; blocks: ZooCodeBlock[] }[] = [];
 	let chunkBudget = maxChunks;
 	for (const item of toIndex) {
-		const blocks = parseZooMarkdownContent(
-			joinZooWriterPath(deps.hashPathPrefix, item.relNative),
-			item.content,
-			item.fileHash,
-		);
+		const route = routeZooFileExtension(extname(item.relPath).toLowerCase());
+		const absWriterPath = joinZooWriterPath(deps.hashPathPrefix, item.relNative);
+		// A parse that THROWS (grammar/wasm load failure) must skip the file
+		// without planning it: a planned file with 0 blocks is a legitimate
+		// rewrite and the stale purge would delete its stored points — the
+		// exact corpus-destruction path #4819's corpus validation caught.
+		let blocks: ZooCodeBlock[];
+		try {
+			blocks = route === 'markdown'
+				? parseZooMarkdownContent(absWriterPath, item.content, item.fileHash)
+				// fileHash deliberately NOT passed: the parser hashes the
+				// CRLF-normalized content, matching the stored corpus's fileHash
+				// on every seat (#4819 corpus validation, 17/11).
+				: await parseZooCodeContent(absWriterPath, extname(item.relPath).toLowerCase(), item.content);
+		} catch (error) {
+			warnings.push(`${item.relPath}: parse failed (${error instanceof Error ? error.message : String(error)}) — file skipped, stored points preserved`);
+			continue;
+		}
 		if (blocks.length > chunkBudget) {
 			report.truncated = true;
 			break;

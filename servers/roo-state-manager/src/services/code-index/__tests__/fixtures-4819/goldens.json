@@ -1,0 +1,283 @@
+[
+  {
+    "file": "fixture.ts",
+    "absPath": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+    "parser": "tree-sitter",
+    "blocks": [
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": "make",
+        "type": "method_definition",
+        "start_line": 10,
+        "end_line": 14,
+        "content": "make(id: string, name: string): Widget {\n\t\tconst w: Widget = { id, name }\n\t\tthis.cache.set(id, w)\n\t\treturn w\n\t}",
+        "segmentHash": "5adda534cdc02778869fa50d068b3be3c3388b5432693b1c6cd896a9c5cd97ae",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": "assemble",
+        "type": "function_declaration",
+        "start_line": 39,
+        "end_line": 41,
+        "content": "function assemble(parts: string[]): string {\n\treturn parts.join(\"-\")\n}",
+        "segmentHash": "25b57a250331cda4d34a4f266e73b7824f46d75658191abbd7fda3d6ed03e996",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "comment",
+        "start_line": 16,
+        "end_line": 16,
+        "content": "// Oversized body: pushes this method_definition past",
+        "segmentHash": "e47e339ab343316a81cc3a40777eec714a1dd7da82227c97d82489f01d0977c9",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "comment",
+        "start_line": 17,
+        "end_line": 17,
+        "content": "// MAX_BLOCK_CHARS * MAX_CHARS_TOLERANCE_FACTOR (1000 * 1.15), forcing the",
+        "segmentHash": "2a743df929daba3701441884931b9b70fe5ec3dbc2f3acb85e8a6654def75a59",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "comment",
+        "start_line": 18,
+        "end_line": 18,
+        "content": "// leaf-chunking-by-lines path with re-balancing across several chunks.",
+        "segmentHash": "0e1add028d91ed5b29f6a299625f0f0cbe1a52075a4c8ce8db06066857a55e9d",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 21,
+        "end_line": 21,
+        "content": "lines.push(\"====== WidgetFactory quarterly report — generated section header ======\")",
+        "segmentHash": "bbdb425e307040bf484c2665a6c7cc24bcdb9440767a1d48fa5ea845ca4be9b7",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 22,
+        "end_line": 22,
+        "content": "lines.push(\"cache size            : \" + String(this.cache.size).padStart(6, \"0\") + \" entries\")",
+        "segmentHash": "37d143aa6620dd8957a550b875128f838d760bb4ded8492d4cb4c7b31b547dec",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 23,
+        "end_line": 23,
+        "content": "lines.push(\"widgets manufactured  : \" + String(this.cache.size * 3).padStart(6, \"0\") + \" units\")",
+        "segmentHash": "5e5681e123e7a41e255edf8fc37e979c19d7bae211cdf2898ac8a265f079555f",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 24,
+        "end_line": 24,
+        "content": "lines.push(\"defect rate           : 0.0012 % (rolling thirty-day window, fleet-wide)\")",
+        "segmentHash": "5907d3e3ab5661d7e32fb567a6c1c48fd694e1ba8c8b476587ce95f7523c36f9",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 25,
+        "end_line": 25,
+        "content": "lines.push(\"mean assembly time    : 14.7 ms per widget, p99 at 41.2 ms this quarter\")",
+        "segmentHash": "4ee63c74fd07c3b043b7b118f0ab0ba9aba68436d75a75d99dd255cf7a972f1b",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 26,
+        "end_line": 26,
+        "content": "lines.push(\"top model by volume   : frognano-4b (mini tier, fan-out extraction)\")",
+        "segmentHash": "278b672bb153eb96cc998396b055dec36521dbd7e51ee5f2656ed30dbf45548b",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 27,
+        "end_line": 27,
+        "content": "lines.push(\"second model          : glm-5.3 (medium tier, coordination summaries)\")",
+        "segmentHash": "64817a0b08c46b761bf608efeaa3dd265571ebad51abcf178c873cc86312b75c",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 28,
+        "end_line": 28,
+        "content": "lines.push(\"energy per widget     : 0.83 Wh measured on the hub, down from 0.91 Wh\")",
+        "segmentHash": "b078c4685beb536f76582877680a4c7973d567159a69613a2028597dfe9152ef",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 29,
+        "end_line": 29,
+        "content": "lines.push(\"spare parts inventory : 1,204 screws, 88 brackets, 12 crates of padding\")",
+        "segmentHash": "6c4224ca8e577214c8b513b277507c6100aca9b92409727040cb620976476292",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 30,
+        "end_line": 30,
+        "content": "lines.push(\"notes                 : this line exists to add bulk to the chunk budget\")",
+        "segmentHash": "977d41953a2be2fabe9bdbf2b833cbfca07e4940ea237306a4e24523c42be410",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 31,
+        "end_line": 31,
+        "content": "lines.push(\"notes continued       : parity fixtures need realistic size distribution\")",
+        "segmentHash": "e239c39e41e236d142f4a94942c83abd1e30a1752c5d8b5afd9282fbe89a8cf1",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 32,
+        "end_line": 32,
+        "content": "lines.push(\"audit trail           : every line here is hashed into segment previews\")",
+        "segmentHash": "58a393e31d0173c897db6ab14d3160e1459b81653f9f9c8826f22150e5c9c303",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 33,
+        "end_line": 33,
+        "content": "lines.push(\"closing line          : end of the generated section, tally follows\")",
+        "segmentHash": "f22b285e7d667fe59da93cb45259a447ebdda403eef3850e9bd1e86569d3aadd",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.ts",
+        "identifier": null,
+        "type": "expression_statement",
+        "start_line": 34,
+        "end_line": 34,
+        "content": "lines.push(\"tally                 : 13 lines of report content before this one here\")",
+        "segmentHash": "7d9bedc5da69c3d38c35d783586ff040fcd22c6ea4c0d5653c92f14a845109b3",
+        "fileHash": "d01338e1f03d9da2da5c21a5ef3d7de20e0cbb559f1e4475ebaa068c822b9fc0"
+      }
+    ]
+  },
+  {
+    "file": "fixture.py",
+    "absPath": "d:\\dev\\roo-extensions\\fixtures\\fixture.py",
+    "parser": "tree-sitter",
+    "blocks": [
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.py",
+        "identifier": "Calculator",
+        "type": "class_definition",
+        "start_line": 4,
+        "end_line": 23,
+        "content": "class Calculator:\n    \"\"\"A tiny calculator used as a tree-sitter python fixture.\"\"\"\n\n    def add(self, a, b):\n        return a + b\n\n    def multiply(self, a, b):\n        \"\"\"Oversized method: docstring plus body push past the chunk threshold.\"\"\"\n        steps = []\n        for i in range(0, 12):\n            steps.append(\n                f\"step-{i:02d}: multiply {a} by {b} then fold the result back \"\n                \"into the accumulator before moving on to the next pass\"\n            )\n        steps.append(\"padding line to help the fixture cross the chunk threshold\")\n        steps.append(\"another padding line, because parity needs realistic bulk\")\n        steps.append(\"a third padding line, deterministic and boring on purpose\")\n        steps.append(\"a fourth padding line, still deterministic, still boring\")\n        steps.append(\"a fifth padding line, enough said about padding lines now\")\n        return a * b",
+        "segmentHash": "8976aa099b8e324535aa3362b11f3f42daa183ff578093701046869e668e7f3b",
+        "fileHash": "861a4476fa057dcebf46aabef8f8d93f256c31921a4242d18a62d33e4c96f982"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.py",
+        "identifier": "multiply",
+        "type": "function_definition",
+        "start_line": 10,
+        "end_line": 23,
+        "content": "def multiply(self, a, b):\n        \"\"\"Oversized method: docstring plus body push past the chunk threshold.\"\"\"\n        steps = []\n        for i in range(0, 12):\n            steps.append(\n                f\"step-{i:02d}: multiply {a} by {b} then fold the result back \"\n                \"into the accumulator before moving on to the next pass\"\n            )\n        steps.append(\"padding line to help the fixture cross the chunk threshold\")\n        steps.append(\"another padding line, because parity needs realistic bulk\")\n        steps.append(\"a third padding line, deterministic and boring on purpose\")\n        steps.append(\"a fourth padding line, still deterministic, still boring\")\n        steps.append(\"a fifth padding line, enough said about padding lines now\")\n        return a * b",
+        "segmentHash": "392b6e49918cc517898aae68225cf0915e6242c5a63a1616c7e2156365acf5e0",
+        "fileHash": "861a4476fa057dcebf46aabef8f8d93f256c31921a4242d18a62d33e4c96f982"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.py",
+        "identifier": "module_helper",
+        "type": "function_definition",
+        "start_line": 26,
+        "end_line": 27,
+        "content": "def module_helper(name: str) -> str:\n    return f\"helper-{name}\"",
+        "segmentHash": "d72057dbe7fb30ded8925d7a03664c79e7898f64e92cb2caef694b1c7cb9b0bd",
+        "fileHash": "861a4476fa057dcebf46aabef8f8d93f256c31921a4242d18a62d33e4c96f982"
+      }
+    ]
+  },
+  {
+    "file": "fixture.vb",
+    "absPath": "d:\\dev\\roo-extensions\\fixtures\\fixture.vb",
+    "parser": "fallback",
+    "blocks": [
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.vb",
+        "identifier": null,
+        "type": "fallback_chunk",
+        "start_line": 1,
+        "end_line": 14,
+        "content": "' #4819 parity fixture (fallback chunking) — deterministic, never edit: goldens freeze this.\n' .vb has no tree-sitter grammar in Zoo: it goes through fallback chunking by lines.\nModule Inventory\n    Sub Main()\n        Dim parts As New List(Of String)\n        parts.Add(\"crate-001 : screws, brass, m3x8, quantity 12040, bin A-01, reorder point 2000\")\n        parts.Add(\"crate-002 : screws, steel, m4x10, quantity 8820, bin A-02, reorder point 1500\")\n        parts.Add(\"crate-003 : brackets, l-shaped, steel, quantity 640, bin B-01, reorder 120\")\n        parts.Add(\"crate-004 : bearings, 608-2rs, quantity 2400, bin B-02, reorder point 400\")\n        parts.Add(\"crate-005 : belts, gt2-6mm, quantity 180, bin C-01, reorder point 40\")\n        parts.Add(\"crate-006 : pulleys, gt2-20t, quantity 360, bin C-02, reorder point 80\")\n        parts.Add(\"crate-007 : stepper motors, nema17, quantity 44, bin D-01, reorder 10\")\n        parts.Add(\"crate-008 : servo motors, sg90, quantity 210, bin D-02, reorder 50\")\n        parts.Add(\"crate-009 : controller boards, quantity 66, bin E-01, reorder point 12\")",
+        "segmentHash": "7fcff559bc001d7a5316b144be577f3bf68b3c1d318fbf6e9189bd60df202ae4",
+        "fileHash": "f61d49426ade62355d58ca4b5ef5fc175791dc43ac1b542d55956d5a11196141"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.vb",
+        "identifier": null,
+        "type": "fallback_chunk",
+        "start_line": 15,
+        "end_line": 21,
+        "content": "        parts.Add(\"crate-010 : sensor modules, quantity 130, bin E-02, reorder point 25\")\n        parts.Add(\"crate-011 : wire spools, 22awg, quantity 58, bin F-01, reorder 15\")\n        parts.Add(\"crate-012 : connectors, jst-xh, quantity 4200, bin F-02, reorder 800\")\n        Console.WriteLine(String.Join(Environment.NewLine, parts))\n    End Sub\nEnd Module\n' One oversized line (over 1150 chars) to exercise the fixed-size segment path:",
+        "segmentHash": "8e291e7c8b688976957c02ab21376fdcb4de681ef87389ada67977d54b868dd2",
+        "fileHash": "f61d49426ade62355d58ca4b5ef5fc175791dc43ac1b542d55956d5a11196141"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.vb",
+        "identifier": null,
+        "type": "fallback_chunk_segment",
+        "start_line": 22,
+        "end_line": 22,
+        "content": "Dim Banner As String = \"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFGGGGGGGGGGGGGGGGG",
+        "segmentHash": "a0b6e7eaf269be656ba721f6e28f3d95f1649df3a1905babdb7f79993134e1e9",
+        "fileHash": "f61d49426ade62355d58ca4b5ef5fc175791dc43ac1b542d55956d5a11196141"
+      },
+      {
+        "file_path": "d:\\dev\\roo-extensions\\fixtures\\fixture.vb",
+        "identifier": null,
+        "type": "fallback_chunk_segment",
+        "start_line": 22,
+        "end_line": 22,
+        "content": "GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH\"",
+        "segmentHash": "1d8695cd6531afb06c8d90320edf2df642b0037b4ba5f2d099336a05ae4f3840",
+        "fileHash": "f61d49426ade62355d58ca4b5ef5fc175791dc43ac1b542d55956d5a11196141"
+      }
+    ]
+  }
+]
