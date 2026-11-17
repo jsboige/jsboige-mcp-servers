@@ -60,6 +60,16 @@ export interface UnifiedStoreReaderConfig {
    * 2026-09-29: unreachable PG = hang, not degrade).
    */
   connectionTimeoutMillis?: number;
+  /**
+   * Idle client recycling in ms. Default 30000 (#4731). pg's default is 0
+   * (never close an idle client): overnight-idle pooled sockets get silently
+   * dropped between the seat and PG, and the pool keeps handing out dead
+   * clients — the first query stalls to the TCP retransmit timeout, ×10
+   * hosts at once = the nocturnal pg-unavailable waves (2026-11-17). A
+   * finite timeout closes idle clients proactively; the next use opens a
+   * fresh connection bounded by connectionTimeoutMillis.
+   */
+  idleTimeoutMillis?: number;
 }
 
 /**
