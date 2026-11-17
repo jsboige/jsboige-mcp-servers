@@ -4,7 +4,9 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 // Mocks
 const mockQdrantClient = {
-  search: vi.fn(),
+  // #4808: client 1.20.0 removed search() — the tool now calls query(); the
+  // response is { points: ScoredPoint[] }.
+  query: vi.fn(),
   getCollection: vi.fn(),
 };
 
@@ -67,20 +69,22 @@ describe('🔍 search_tasks_by_content', () => {
       data: [{ embedding: Array(1536).fill(0.1) }]
     });
 
-    mockQdrantClient.search.mockResolvedValue([
-      {
-        id: 'chunk-1',
-        score: 0.95,
-        payload: {
-          task_id: 'task-1',
-          content: 'This is a test content match',
-          chunk_type: 'message_exchange',
-          workspace: 'test-workspace',
-          task_title: 'Test Task',
-          host_os: 'test-host-os'
+    mockQdrantClient.query.mockResolvedValue({
+      points: [
+        {
+          id: 'chunk-1',
+          score: 0.95,
+          payload: {
+            task_id: 'task-1',
+            content: 'This is a test content match',
+            chunk_type: 'message_exchange',
+            workspace: 'test-workspace',
+            task_title: 'Test Task',
+            host_os: 'test-host-os'
+          }
         }
-      }
-    ]);
+      ]
+    });
   });
 
   it('should perform semantic search successfully', async () => {
@@ -101,10 +105,10 @@ describe('🔍 search_tasks_by_content', () => {
       input: 'test query'
     });
 
-    expect(mockQdrantClient.search).toHaveBeenCalledWith(
+    expect(mockQdrantClient.query).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
-        vector: expect.any(Array),
+        query: { nearest: expect.any(Array) },
         // #3043 (SDDD #2766): diversify-by-task over-fetches by DIVERSIFY_OVERFETCH=3
         // so grouping + per-task cap can surface >=3 unique_tasks. Pre-fix limit was 5.
         limit: 5 * 3,
@@ -135,7 +139,7 @@ describe('🔍 search_tasks_by_content', () => {
     );
 
     // #883: Verify filter structure — basename workspace uses should (OR) clause
-    const searchCall = mockQdrantClient.search.mock.calls[0][1];
+    const searchCall = mockQdrantClient.query.mock.calls[0][1];
     expect(searchCall.filter).toBeDefined();
     expect(searchCall.filter.must).toBeDefined();
     // conversation_id exact filter
@@ -181,7 +185,7 @@ describe('🔍 search_tasks_by_content', () => {
   });
 
   it('should handle empty results gracefully', async () => {
-    mockQdrantClient.search.mockResolvedValue([]);
+    mockQdrantClient.query.mockResolvedValue({ points: [] });
 
     const args = {
       search_query: 'no match'

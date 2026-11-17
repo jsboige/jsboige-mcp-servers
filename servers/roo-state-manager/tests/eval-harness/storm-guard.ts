@@ -87,7 +87,9 @@ export async function runStormGuard(): Promise<StormGuardResult> {
 
       const qdrant = getQdrantClient();
       const searchStart = Date.now();
-      await qdrant.search(collectionName, { vector, limit: 1 });
+      // #4808: client 1.20 removed search() — query({nearest}) is the equivalent;
+      // the probe only times the round-trip, the response shape is irrelevant here.
+      await qdrant.query(collectionName, { query: { nearest: vector }, limit: 1 });
       searchLatencyMs = Date.now() - searchStart;
     } catch (err: any) {
       probeError = err?.message ?? String(err);

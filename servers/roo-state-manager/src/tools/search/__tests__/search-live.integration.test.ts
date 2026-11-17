@@ -145,11 +145,14 @@ describe('Live Semantic Search (end-to-end)', () => {
 
 		// Search — l'index fleet central est peuplé (2,47 M points) : le
 		// contrat e2e rend des résultats, pas un vide à commenter.
-		const results = await client.search(collectionName, {
-			vector: queryVector,
+		// #4808: client 1.20 removed search(); query({nearest}) returns
+		// { points } — the e2e contract below reads the points array.
+		const searchResponse = await client.query(collectionName, {
+			query: { nearest: queryVector },
 			limit: 5,
 			with_payload: true,
 		});
+		const results = searchResponse.points ?? [];
 
 		// Contrat mesuré (2026-10-03 : 5/5, top 0.735) : résultats non vides,
 		// scores finis, payload portant un task_id string.

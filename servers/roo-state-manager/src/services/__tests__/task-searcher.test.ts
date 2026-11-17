@@ -40,7 +40,7 @@ vi.mock('../openai.js', () => ({
 
 vi.mock('../qdrant.js', () => ({
     getQdrantClient: () => ({
-        search: (...args: any[]) => mockQdrantSearch(...args),
+        query: (...args: any[]) => mockQdrantSearch(...args), // #4808: client 1.20 removed search(); query() is the equivalent
     }),
 }));
 
@@ -103,7 +103,7 @@ beforeEach(() => {
     vi.clearAllMocks();
     // Defaults
     mockEmbeddingsCreate.mockResolvedValue(makeEmbeddingResponse());
-    mockQdrantSearch.mockResolvedValue([]);
+    mockQdrantSearch.mockResolvedValue({ points: [] });
     mockFindConversationById.mockResolvedValue(null);
     mockAccess.mockRejectedValue(new Error('ENOENT'));
     mockReadFile.mockRejectedValue(new Error('ENOENT'));
@@ -128,7 +128,7 @@ describe('searchTasks', () => {
             });
         });
 
-        test('appelle qdrant.search avec le vecteur retourné', async () => {
+        test('appelle qdrant.query (nearest) avec le vecteur retourné', async () => {
             const vector = [0.5, 0.6, 0.7];
             mockEmbeddingsCreate.mockResolvedValue(makeEmbeddingResponse(vector));
 
@@ -136,7 +136,7 @@ describe('searchTasks', () => {
 
             expect(mockQdrantSearch).toHaveBeenCalledWith(
                 expect.any(String),
-                expect.objectContaining({ vector })
+                expect.objectContaining({ query: { nearest: vector } })
             );
         });
 
@@ -209,7 +209,7 @@ describe('searchTasks', () => {
 
     describe('résultats vides', () => {
         test('retourne tableau vide si Qdrant ne retourne rien', async () => {
-            mockQdrantSearch.mockResolvedValue([]);
+            mockQdrantSearch.mockResolvedValue({ points: [] });
 
             const result = await searchTasks('rien');
 
@@ -217,7 +217,7 @@ describe('searchTasks', () => {
         });
 
         test('retourne tableau vide si la tâche est introuvable localement', async () => {
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult('task-x', 0)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult('task-x', 0)] });
             mockFindConversationById.mockResolvedValue(null);
 
             const result = await searchTasks('test');
@@ -233,7 +233,7 @@ describe('searchTasks', () => {
     describe('reconstruction depuis fichier local', () => {
         test('retourne un ContextWindow pour un chunk trouvé', async () => {
             const taskId = 'task-local-1';
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 2)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 2)] });
             mockFindConversationById.mockResolvedValue({
                 path: '/mock/tasks/task-local-1',
                 taskId,
@@ -250,7 +250,7 @@ describe('searchTasks', () => {
 
         test('mainChunk est le chunk Qdrant', async () => {
             const taskId = 'task-main';
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 2)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 2)] });
             mockFindConversationById.mockResolvedValue({ path: '/mock/tasks/task-main', taskId });
             mockAccess.mockResolvedValue(undefined);
             mockReadFile.mockResolvedValue(makeApiHistory(5));
@@ -262,7 +262,7 @@ describe('searchTasks', () => {
 
         test('contextBefore contient les chunks avant le mainChunk', async () => {
             const taskId = 'task-ctx';
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 2)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 2)] });
             mockFindConversationById.mockResolvedValue({ path: '/mock/tasks/task-ctx', taskId });
             mockAccess.mockResolvedValue(undefined);
             mockReadFile.mockResolvedValue(makeApiHistory(5));
@@ -275,7 +275,7 @@ describe('searchTasks', () => {
 
         test('contextAfter contient les chunks après le mainChunk', async () => {
             const taskId = 'task-ctx-after';
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 1)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 1)] });
             mockFindConversationById.mockResolvedValue({ path: '/mock/tasks/task-ctx-after', taskId });
             mockAccess.mockResolvedValue(undefined);
             mockReadFile.mockResolvedValue(makeApiHistory(5));
@@ -292,7 +292,7 @@ describe('searchTasks', () => {
                 { role: 'user', content: 'User message 0' },
                 { role: 'assistant', content: 'Response 1' },
             ]);
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 0)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 0)] });
             mockFindConversationById.mockResolvedValue({ path: '/mock/tasks/task-system', taskId });
             mockAccess.mockResolvedValue(undefined);
             mockReadFile.mockResolvedValue(historyWithSystem);
@@ -320,7 +320,7 @@ describe('searchTasks', () => {
                     timestamp: '2025-01-01T00:00:00Z',
                 },
             ]);
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 0)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 0)] });
             mockFindConversationById.mockResolvedValue({ path: '/mock/tasks/task-tools', taskId });
             mockAccess.mockResolvedValue(undefined);
             mockReadFile.mockResolvedValue(historyWithTools);
@@ -341,7 +341,7 @@ describe('searchTasks', () => {
         test('saute le chunk si sequence_order ne correspond pas', async () => {
             const taskId = 'task-no-match';
             // Qdrant renvoie sequence_order=99 mais l'historique n'a que 3 messages
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 99)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 99)] });
             mockFindConversationById.mockResolvedValue({ path: '/mock/tasks/task-no-match', taskId });
             mockAccess.mockResolvedValue(undefined);
             mockReadFile.mockResolvedValue(makeApiHistory(3));
@@ -359,7 +359,7 @@ describe('searchTasks', () => {
     describe('fallback archive GDrive', () => {
         test('utilise l\'archive si aucun fichier local', async () => {
             const taskId = 'task-archived';
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 0)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 0)] });
             mockFindConversationById.mockResolvedValue(null); // pas de conversation locale
 
             // Mock du TaskArchiver via import dynamique
@@ -393,7 +393,7 @@ describe('searchTasks', () => {
     describe('contexte aux bords', () => {
         test('contextBefore vide si mainChunk est le premier', async () => {
             const taskId = 'task-first';
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 0)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 0)] });
             mockFindConversationById.mockResolvedValue({ path: '/mock/tasks/task-first', taskId });
             mockAccess.mockResolvedValue(undefined);
             mockReadFile.mockResolvedValue(makeApiHistory(5));
@@ -406,7 +406,7 @@ describe('searchTasks', () => {
         test('contextAfter vide si mainChunk est le dernier', async () => {
             const taskId = 'task-last';
             const history = makeApiHistory(3); // seq 0,1,2
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 2)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 2)] });
             mockFindConversationById.mockResolvedValue({ path: '/mock/tasks/task-last', taskId });
             mockAccess.mockResolvedValue(undefined);
             mockReadFile.mockResolvedValue(history);
@@ -423,10 +423,10 @@ describe('searchTasks', () => {
 
     describe('multiple résultats Qdrant', () => {
         test('retourne un ContextWindow par résultat trouvé', async () => {
-            mockQdrantSearch.mockResolvedValue([
+            mockQdrantSearch.mockResolvedValue({ points: [
                 makeQdrantResult('task-a', 0, 0.95),
                 makeQdrantResult('task-b', 1, 0.85),
-            ]);
+            ] });
             mockFindConversationById.mockImplementation((id: string) => ({
                 path: `/mock/tasks/${id}`,
                 taskId: id,
@@ -442,9 +442,9 @@ describe('searchTasks', () => {
         });
 
         test('préserve le relevanceScore de chaque résultat', async () => {
-            mockQdrantSearch.mockResolvedValue([
+            mockQdrantSearch.mockResolvedValue({ points: [
                 makeQdrantResult('task-score', 0, 0.77),
-            ]);
+            ] });
             mockFindConversationById.mockResolvedValue({ path: '/mock/tasks/task-score', taskId: 'task-score' });
             mockAccess.mockResolvedValue(undefined);
             mockReadFile.mockResolvedValue(makeApiHistory(2));
@@ -462,7 +462,7 @@ describe('searchTasks', () => {
     describe('gestion des erreurs', () => {
         test('retourne vide si readFile échoue pour une tâche', async () => {
             const taskId = 'task-read-fail';
-            mockQdrantSearch.mockResolvedValue([makeQdrantResult(taskId, 0)]);
+            mockQdrantSearch.mockResolvedValue({ points: [makeQdrantResult(taskId, 0)] });
             mockFindConversationById.mockResolvedValue({ path: '/mock/tasks/task-read-fail', taskId });
             mockAccess.mockResolvedValue(undefined);
             mockReadFile.mockRejectedValue(new Error('Permission denied'));

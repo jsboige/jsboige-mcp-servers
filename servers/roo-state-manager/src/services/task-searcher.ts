@@ -212,8 +212,10 @@ export async function searchTasks(
   // 2. Étape 1: Recherche des Chunks Initiaux dans Qdrant
   // #1275: Use native Qdrant timeout parameter (seconds) instead of Promise.race leak
   const searchTimeoutSec = Math.ceil(parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10) / 1000);
-  const searchResult = await qdrant.search(collectionName, {
-    vector,
+  // #4808: client 1.20.0 removed the deprecated search() — query({nearest}) is the
+  // API-equivalent form; the response is { points: ScoredPoint[] } instead of a bare array.
+  const searchResponse = await qdrant.query(collectionName, {
+    query: { nearest: vector },
     limit,
     filter: searchFilter,
     score_threshold: options.scoreThreshold,
@@ -221,7 +223,7 @@ export async function searchTasks(
     timeout: searchTimeoutSec,
   });
 
-  const foundChunks = searchResult.map((result: any) => ({
+  const foundChunks = (searchResponse.points ?? []).map((result: any) => ({
     chunk: result.payload as unknown as Chunk,
     score: result.score,
   }));

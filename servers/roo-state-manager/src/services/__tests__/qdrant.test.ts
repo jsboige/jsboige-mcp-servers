@@ -73,7 +73,7 @@ describe('qdrant', () => {
 			url: 'https://custom-qdrant.example.com',
 			apiKey: 'api-key-123',
 			port: 443,
-			checkCompatibility: false
+			checkCompatibility: true
 		}));
 	});
 

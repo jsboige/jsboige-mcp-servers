@@ -19,7 +19,8 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '20.18.0'
+        # Repo-wide node floor, set by @qdrant/js-client-rest@1.20.0 in roo-state-manager (#4808)
+        node-version: '22.x'
 
     - name: Install dependencies
       run: |
@@ -57,7 +58,8 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '20.18.0'
+        # #4808: @qdrant/js-client-rest@1.20.0 engines.node >= 22 (undici@7 >= 20.18.1)
+        node-version: '22.x'
 
     - name: Install dependencies
       run: |
@@ -85,8 +87,9 @@ jobs:
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '20.18.0'
-    
+        # Repo-wide node floor, set by @qdrant/js-client-rest@1.20.0 in roo-state-manager (#4808)
+        node-version: '22.x'
+
     - name: Install dependencies
       run: |
         cd servers/${{ matrix.server }}
