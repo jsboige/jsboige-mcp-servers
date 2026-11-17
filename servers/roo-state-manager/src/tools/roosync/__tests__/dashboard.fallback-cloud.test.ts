@@ -108,6 +108,13 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     // #4434: the status leg routes cloud-first by default; a lever leaked from a
     // seat's .env would flip it back to primary-first under the whole suite.
     delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
+    // #4434 (17/11): this suite's SUBJECT is the rescue chain (primary down →
+    // cloud salvages → `fallback-cloud`). The summary leg is cloud-first by
+    // default; under the default it would be ROUTED, not rescued, and no pass
+    // here could carry the label the suite pins. Pin it primary-first for the
+    // whole file (the routing itself has its own suite:
+    // dashboard.summary-cloud-first.test.ts).
+    process.env.CONDENSE_SUMMARY_CLOUD_FIRST = '0';
     // Default: primary unavailable, no fallback configured (inert).
     mockGetPrimaryClient.mockImplementation(() => { throw new Error('No chat API key configured'); });
     mockPrimaryCreate.mockReset();
@@ -125,6 +132,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     delete process.env.ROOSYNC_WORKSPACE_ID;
     delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
     delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
+    delete process.env.CONDENSE_SUMMARY_CLOUD_FIRST;
   });
 
   /**

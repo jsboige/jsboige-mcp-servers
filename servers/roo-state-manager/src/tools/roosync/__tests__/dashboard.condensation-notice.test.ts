@@ -71,6 +71,7 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
     delete process.env.FALLBACK_API_FORMAT;
     // #4434: a leaked lever would flip the status leg back to primary-first.
     delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
+    delete process.env.CONDENSE_SUMMARY_CLOUD_FIRST;
     mockGetPrimaryClient.mockImplementation(() => { throw new Error('No chat API key configured'); });
     mockPrimaryCreate.mockReset();
     mockGetFallbackClient.mockImplementation(() => null);
@@ -86,6 +87,7 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
     delete process.env.ROOSYNC_WORKSPACE_ID;
     delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
     delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
+    delete process.env.CONDENSE_SUMMARY_CLOUD_FIRST;
   });
 
   async function fillUntilCondensed(): Promise<any> {
@@ -157,9 +159,10 @@ describe('#2719 condensation notice honesty (silent summary failure)', { timeout
   });
 
   it('(t2) primary down → cloud salvages → notice says "via fallback cloud", summaryFailed absent', async () => {
-    // #4434: pins the primary-first chain this test describes (the status leg is
-    // cloud-first by default; under the default it would be routed, not rescued).
+    // #4434: pins the primary-first chain this test describes (BOTH legs are
+    // cloud-first by default; under the default they would be routed, not rescued).
     process.env.CONDENSE_STATUS_CLOUD_FIRST = '0';
+    process.env.CONDENSE_SUMMARY_CLOUD_FIRST = '0';
     mockGetPrimaryClient.mockReturnValue({
       chat: { completions: { create: mockPrimaryCreate } },
     });

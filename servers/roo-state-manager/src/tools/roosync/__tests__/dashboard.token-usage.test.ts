@@ -95,6 +95,12 @@ describe('#4434 G2 — per-leg token accounting (primary + fallback tiers)', { t
     // #4434: status leg routes cloud-first by default; with the fallback inert
     // (mockGetFallbackClient → null) the leg falls through to the primary.
     delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
+    // #4434 (17/11): this suite's fallback legs are RESCUES (primary 401 →
+    // cloud answers). The summary leg is cloud-first by default; under the
+    // default its tokens would be a route's, not a rescue's, and the pass
+    // could not carry `fallback-cloud`. Pin it primary-first (routing has its
+    // own suite: dashboard.summary-cloud-first.test.ts).
+    process.env.CONDENSE_SUMMARY_CLOUD_FIRST = '0';
     delete process.env.FALLBACK_API_FORMAT;
     // Default: no fallback configured (inert) — tests that need one set it up.
     mockPrimaryCreate.mockReset();
@@ -112,6 +118,7 @@ describe('#4434 G2 — per-leg token accounting (primary + fallback tiers)', { t
     delete process.env.CONDENSE_CLOUD_RESERVE_MS;
     delete process.env.CONDENSE_PASS_DEADLINE_MS;
     delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
+    delete process.env.CONDENSE_SUMMARY_CLOUD_FIRST;
     delete process.env.FALLBACK_API_FORMAT;
     await rm(tmpDir, { recursive: true, force: true });
     delete process.env.ROOSYNC_SHARED_PATH;
