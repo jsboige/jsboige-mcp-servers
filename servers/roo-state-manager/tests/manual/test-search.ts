@@ -52,12 +52,14 @@ async function runSearchTest() {
     });
     const vector = embeddingResponse.data[0].embedding;
 
-    // Search in Qdrant
-    const searchResult = await qdrant.search(QDRANT_COLLECTION, {
-      vector: vector,
+    // Search in Qdrant — #4808: client 1.20 removed search(); query({nearest})
+    // returns { points }, so read .points for the array the loop below expects.
+    const searchResponse = await qdrant.query(QDRANT_COLLECTION, {
+      query: { nearest: vector },
       limit: 5,
       with_payload: true,
     });
+    const searchResult = searchResponse.points ?? [];
 
     console.log(`✅ Found ${searchResult.length} results:`);
     searchResult.forEach((res, index) => {
