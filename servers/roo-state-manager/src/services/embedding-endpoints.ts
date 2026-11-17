@@ -492,6 +492,39 @@ function hasCallerAborted(signal: AbortSignal | null | undefined): boolean {
 	return Boolean(signal?.aborted);
 }
 
+/**
+ * #4823: drop an explicit `content-length` from the fetch init before dispatch.
+ *
+ * Measured on Node 24.14.1 (ai-01, 17/11): the built-in fetch APPENDS its own
+ * computed content-length to any caller-set one, so an explicit header reaches
+ * the dispatcher serialised as `"N, N"` (comma-joined). The dispatcher Node
+ * bundles tolerates that; the npm `undici` package's dispatcher does not — its
+ * `processHeader` runs `isValidContentLengthHeaderValue` and throws
+ * `InvalidArgumentError [UND_ERR_INVALID_ARG]: invalid content-length header`
+ * BEFORE any connection (surfaced by fetch as `TypeError: fetch failed`). And
+ * merely requiring the npm `undici` package (`@qdrant/js-client-rest`'s
+ * dependency) installs that npm Agent as the PROCESS-global dispatcher when the
+ * slot is still empty (`undici/lib/global.js`: the `Symbol.for('undici.globalDispatcher.1')`
+ * registry is shared with the bundled copy). The full server loads the Qdrant
+ * client before its first embedding call, so every OpenAI-SDK POST — the SDK
+ * sets `content-length` explicitly (`openai/core.js` `buildHeaders`) — died
+ * pre-connect while a fresh process importing only the embedding modules
+ * worked (there the internal dispatcher claims the slot first).
+ *
+ * The fetch implementation computes the header from the body itself, so the
+ * caller's copy is redundant — and, under the npm dispatcher, lethal. Only a
+ * string body (the SDK's shape, measured) or no body is stripped: a stream
+ * body keeps its framing decision with the caller.
+ */
+function withoutExplicitContentLength(init: RequestInit): RequestInit {
+	if (init.headers === undefined || init.headers === null) return init;
+	if (init.body !== undefined && init.body !== null && typeof init.body !== 'string') return init;
+	const headers = new Headers(init.headers);
+	if (!headers.has('content-length')) return init;
+	headers.delete('content-length');
+	return { ...init, headers };
+}
+
 interface AttemptResult {
 	response?: Response;
 	error?: unknown;
@@ -618,6 +651,9 @@ export function createEmbeddingFailoverFetch(options: EmbeddingFailoverOptions):
 	let servedLogged = false;
 
 	return async function embeddingFailoverFetch(input, init = {}): Promise<Response> {
+		// #4823: the caller's explicit content-length must not reach the dispatcher
+		// doubled (see withoutExplicitContentLength).
+		init = withoutExplicitContentLength(init);
 		const originalUrl = requestUrlOf(input);
 		const startedAt = now();
 		const endpointErrors: Array<{ endpoint: string; error: string }> = [];
