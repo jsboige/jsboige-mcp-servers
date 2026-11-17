@@ -122,6 +122,12 @@ describe('#4434 status leg cloud-first', { timeout: 30000 }, () => {
     delete process.env.EMBEDDING_API_BASE_URL;
     delete process.env.FALLBACK_API_FORMAT;
     delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
+    // #4434 (17/11): this suite describes the STATUS leg's routing in the
+    // equilibrium where the summary stayed on the primary ("summary to the
+    // primary" is part of what (a)/(c)/(e)/(h)/(k) assert). The summary leg is
+    // cloud-first by default now; pin it primary-first (the routing itself has
+    // its own suite: dashboard.summary-cloud-first.test.ts).
+    process.env.CONDENSE_SUMMARY_CLOUD_FIRST = '0';
     mockGetPrimaryClient.mockImplementation(() => { throw new Error('No chat API key configured'); });
     mockPrimaryCreate.mockReset();
     mockGetFallbackClient.mockImplementation(() => null);
@@ -137,6 +143,7 @@ describe('#4434 status leg cloud-first', { timeout: 30000 }, () => {
     delete process.env.ROOSYNC_WORKSPACE_ID;
     delete process.env.DASHBOARD_CONDENSE_STATUS_MODE;
     delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
+    delete process.env.CONDENSE_SUMMARY_CLOUD_FIRST;
     resetCondenseCircuitBreaker();
   });
 

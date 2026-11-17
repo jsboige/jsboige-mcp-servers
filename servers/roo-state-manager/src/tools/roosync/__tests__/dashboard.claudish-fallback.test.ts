@@ -100,6 +100,7 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
     delete process.env.CONDENSE_CLOUD_RESERVE_MS;
     delete process.env.CONDENSE_PASS_DEADLINE_MS;
     delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
+    delete process.env.CONDENSE_SUMMARY_CLOUD_FIRST;
     delete process.env.FALLBACK_API_FORMAT;
     delete process.env.FALLBACK_TIMEOUT_MIN_MS;
     delete process.env.FALLBACK_TIMEOUT_MS_PER_KB;
@@ -120,6 +121,7 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
     delete process.env.CONDENSE_CLOUD_RESERVE_MS;
     delete process.env.CONDENSE_PASS_DEADLINE_MS;
     delete process.env.CONDENSE_STATUS_CLOUD_FIRST;
+    delete process.env.CONDENSE_SUMMARY_CLOUD_FIRST;
     delete process.env.FALLBACK_API_FORMAT;
     await rm(tmpDir, { recursive: true, force: true });
     delete process.env.ROOSYNC_SHARED_PATH;
@@ -172,6 +174,9 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
   });
 
   it('(c3) Anthropic route: POST /messages on the fallback client salvages the pass from the text block', async () => {
+    // #4434: pins the primary-first chain this test describes (the summary leg is
+    // cloud-first by default; under the default it would be routed, not rescued).
+    process.env.CONDENSE_SUMMARY_CLOUD_FIRST = '0';
     process.env.FALLBACK_API_FORMAT = 'anthropic';
     primaryUnauthorized();
     mockGetFallbackClient.mockReturnValue({
@@ -206,6 +211,8 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
   });
 
   it('(c3b) OpenAI route unchanged when the format is unset', async () => {
+    // #4434: rescue-path subject — see the pin comment in (c3).
+    process.env.CONDENSE_SUMMARY_CLOUD_FIRST = '0';
     fallbackModelId = 'glm-5.3-flash';
     primaryUnauthorized();
     mockGetFallbackClient.mockReturnValue({
@@ -249,6 +256,8 @@ describe('#3962 piste 4 — cloud tier through claudish roles', { timeout: 12000
   });
 
   it('(c5) Anthropic route: stop_reason "max_tokens" hands the leg to the next model', async () => {
+    // #4434: rescue-path subject — see the pin comment in (c3).
+    process.env.CONDENSE_SUMMARY_CLOUD_FIRST = '0';
     process.env.FALLBACK_API_FORMAT = 'anthropic';
     fallbackModelId = 'claude-sonnet-5-5,claude-haiku-5-5';
     primaryUnauthorized();

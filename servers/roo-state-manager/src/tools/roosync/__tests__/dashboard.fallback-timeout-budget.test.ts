@@ -108,6 +108,11 @@ describe('#3016 cloud-fallback per-attempt timeout budget', { testTimeout: 30000
     delete process.env.EMBEDDING_API_BASE_URL;
     // #3962 hermeticity: seat .env carries FALLBACK_API_FORMAT since the 23/10 fleet gesture
     delete process.env.FALLBACK_API_FORMAT;
+    // #4434 (17/11): these passes are SALVAGES (primary fails → the fallback
+    // tier answers). The summary leg is cloud-first by default; pin it
+    // primary-first so the chain under test stays primary→cloud (routing has
+    // its own suite: dashboard.summary-cloud-first.test.ts).
+    process.env.CONDENSE_SUMMARY_CLOUD_FIRST = '0';
     // CRITICAL: FALLBACK_TIMEOUT_MS unset so the code DEFAULT applies. The default is
     // what the fix changes (30000+clamp → 120000 no-clamp); setting it here would make
     // the test indistinguishable between current and fixed code.
@@ -129,6 +134,7 @@ describe('#3016 cloud-fallback per-attempt timeout budget', { testTimeout: 30000
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
     delete process.env.FALLBACK_API_KEY;
+    delete process.env.CONDENSE_SUMMARY_CLOUD_FIRST;
   });
 
   /**

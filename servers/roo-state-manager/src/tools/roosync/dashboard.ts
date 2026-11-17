@@ -4858,6 +4858,33 @@ FORMAT :
     return fb ?? circuitOpenFailure(stats, callStart);
   }
 
+  // #4434 (17/11, verdict c.6940185160 §4): the summary leg goes to the cloud
+  // tier FIRST when one is configured — glm-4.7 on the hub measured 5/5
+  // format-ok (17-25 s) against the local primary's 5/5 (20-37 s) on the same
+  // events, and it answers in its own slice instead of holding a vLLM slot.
+  // DIFFERENCE from the status leg: a cloud-first failure here falls through
+  // to the primary — the local primary is the fallback (10/38 primary summary
+  // successes 02-04/11, 5/5 in the 17/11 replay), so a leg that can be served
+  // locally is. With no cloud tier configured, the primary is tried as before.
+  // Lever: CONDENSE_SUMMARY_CLOUD_FIRST=0.
+  if (summaryCloudFirstEnabled()) {
+    const first = await tryCloudCondenseFallback(systemPrompt, userPrompt, summaryFallbackOpts, stats, callStart);
+    if (first) {
+      first.stats.cloudFirst = true;
+      return first;
+    }
+    if (stats.fallbackAttempted) {
+      // The cloud tier exists and did not deliver: hand the leg to the local
+      // primary (the verdict's "swift local en repli") instead of taking the
+      // floor as the status leg does. stats keeps fallbackAttempted/fallbackError
+      // (and any answered-but-rejected tokens) for the diagnostic.
+      logger.warn('Cloud-first summary leg failed — falling through to the local primary (#4434)', {
+        fallbackError: stats.fallbackError ?? 'no detail',
+      });
+    }
+    // Fall through to the primary (no cloud tier configured, or failed attempt).
+  }
+
   let openai: OpenAI;
   try {
     openai = getChatOpenAIClient();
@@ -4995,6 +5022,18 @@ FORMAT :
  */
 export function statusCloudFirstEnabled(): boolean {
   const raw = process.env.CONDENSE_STATUS_CLOUD_FIRST;
+  return !(raw !== undefined && raw.trim() !== '' && Number(raw) === 0);
+}
+
+/**
+ * #4434 (17/11, verdict c.6940185160 §4): whether the SUMMARY leg goes to the
+ * cloud tier before the primary. Default on. `CONDENSE_SUMMARY_CLOUD_FIRST=0`
+ * (any numeric spelling of zero) restores primary-first. Unlike the status
+ * leg, a cloud-first failure here FALLS THROUGH to the primary — the local
+ * primary is the fallback (glm-4.7 hub first, swift local en repli).
+ */
+export function summaryCloudFirstEnabled(): boolean {
+  const raw = process.env.CONDENSE_SUMMARY_CLOUD_FIRST;
   return !(raw !== undefined && raw.trim() !== '' && Number(raw) === 0);
 }
 
@@ -7537,6 +7576,11 @@ async function condenseIntercom(
   // #4434: a cloud-first status leg never called the primary. On such a pass the
   // breaker is judged on the summary leg alone.
   const statusExercisedPrimary = statusCall.stats.cloudFirst !== true;
+  // #4434 (17/11): same for the summary leg's cloud-first route — a fallbackUsed
+  // there is the route, not a rescue; it must not feed the breaker as a primary
+  // failure (the primary was never called on that leg).
+  const summaryExercisedPrimary = summaryCall.stats.cloudFirst !== true;
+  const summaryRescued = summaryExercisedPrimary && summaryCall.stats.fallbackUsed === true;
 
   // #4434 follow-up (incident ai-01 05/11 01:16Z, workspace-CoursIA): when only the
   // STATUS leg died (every tier timed out) while the summary came back, the
@@ -7571,7 +7615,7 @@ async function condenseIntercom(
       statusLegError: truncateError(statusLegError),
     });
     if (!primaryCircuitOpen) {
-      if (statusExercisedPrimary || summaryCall.stats.fallbackUsed === true) condenseCBRecordFailure();
+      if (statusExercisedPrimary || summaryRescued) condenseCBRecordFailure();
       else condenseCBRecordSuccess();
     }
     newStatus = previousStatus;
@@ -7590,7 +7634,7 @@ async function condenseIntercom(
     });
     // The breaker tracks the primary: a pass that never called it records nothing.
     if (!primaryCircuitOpen) {
-      if (!llmSummary || statusExercisedPrimary || summaryCall.stats.fallbackUsed === true) condenseCBRecordFailure();
+      if (!llmSummary || statusExercisedPrimary || summaryRescued) condenseCBRecordFailure();
       else condenseCBRecordSuccess();
     }
     return executeTruncationFallback(
@@ -7621,7 +7665,7 @@ async function condenseIntercom(
     statusCall.stats.finalOutcome = 'guard-rejected';
     statusCall.stats.lastError = `status ${statusGuard.reason} (new ${newStatus!.length} chars vs previous ${previousStatus.length})`;
     if (!primaryCircuitOpen) {
-      if (statusExercisedPrimary || summaryCall.stats.fallbackUsed === true) condenseCBRecordFailure();
+      if (statusExercisedPrimary || summaryRescued) condenseCBRecordFailure();
       else condenseCBRecordSuccess();
     }
     return executeTruncationFallback(
@@ -7637,7 +7681,7 @@ async function condenseIntercom(
   // it and every append kept paying the primary's full slice before the rescue.
   // Three rescued passes now open the breaker and the next ones go straight to
   // the cloud tier on the whole pass budget.
-  const primaryRescued = (statusExercisedPrimary && statusCall.stats.fallbackUsed === true) || summaryCall.stats.fallbackUsed === true;
+  const primaryRescued = (statusExercisedPrimary && statusCall.stats.fallbackUsed === true) || summaryRescued;
   // A kept-status pass was already recorded above (once per pass).
   if (!primaryCircuitOpen && !statusKeptOnLegFailure) {
     if (primaryRescued) condenseCBRecordFailure();
@@ -7812,6 +7856,7 @@ async function condenseIntercom(
     // fallbackError did before this pass stopped truncating.
     ...(statusKeptOnLegFailure ? { statusLegError: truncateError(statusLegError) } : {}),
     ...(summaryCall.stats.fallbackModel ? { summaryFallbackModel: summaryCall.stats.fallbackModel } : {}),
+    ...(summaryCall.stats.cloudFirst === true ? { summaryCloudFirst: true } : {}),
     ...(summaryCall.stats.primaryTokens ? { summaryPrimaryTokens: summaryCall.stats.primaryTokens } : {}),
     ...(summaryCall.stats.fallbackTokens ? { summaryFallbackTokens: summaryCall.stats.fallbackTokens } : {})
   });
@@ -7905,9 +7950,11 @@ ${archiveMessages}
   const statusViaCloud = statusCall.stats.fallbackUsed === true;
   const summaryClause = !llmSummary
     ? `RÉSUMÉ ABSENT (échec LLM) — messages archivés SANS résumé : \`archive/${path.basename(archivePath)}\``
-    : summaryViaCloud
-      ? `résumé généré via fallback cloud (${(summarySizeBytes / 1024).toFixed(1)}KB, modèle primaire en échec)`
-      : `résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)`;
+    : summaryViaCloud && summaryCall.stats.cloudFirst === true
+      ? `résumé généré via cloud (cloud-first #4434, ${(summarySizeBytes / 1024).toFixed(1)}KB)`
+      : summaryViaCloud
+        ? `résumé généré via fallback cloud (${(summarySizeBytes / 1024).toFixed(1)}KB, modèle primaire en échec)`
+        : `résumé LLM généré (${(summarySizeBytes / 1024).toFixed(1)}KB)`;
   // #4205 honesty : même algebra que summaryClause — une passe skippée dit
   // « Statut conservé », pas « Statut mis à jour ».
   const statusClause = !statusDecision.regenerate
@@ -7933,11 +7980,11 @@ ${archiveMessages}
     // #2719: distinguish a condensation salvaged by the cloud fallback (primary
     // vLLM down, z.ai glm-4.7-flash succeeded) from a clean primary success, so
     // operators can see "cloud saved it" without drilling into llm.stats.fallbackUsed.
-    // #4434: a cloud-first status leg is the route, not a rescue. Counting it would
-    // label every pass `fallback-cloud` and make the append result claim "primary LLM
-    // down" while the primary served the summary.
+    // #4434: a cloud-first leg (status OR summary) is the route, not a rescue.
+    // Counting it would label every pass `fallback-cloud` and make the append
+    // result claim "primary LLM down" while the primary served the other leg.
     const usedFallback = (statusCall.stats.fallbackUsed === true && statusCall.stats.cloudFirst !== true)
-      || summaryCall.stats.fallbackUsed === true;
+      || (summaryCall.stats.fallbackUsed === true && summaryCall.stats.cloudFirst !== true);
     diagnostic.outcome = usedFallback ? 'fallback-cloud' : 'condensed';
     if (statusKeptOnLegFailure) diagnostic.statusKept = true;
     diagnostic.elapsedMs = totalElapsed;
