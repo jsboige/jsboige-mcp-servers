@@ -903,3 +903,37 @@ def test_env_placeholder_steady_state_syncs_silently():
         mcp = next(m for m in written["mcps"] if m["id"] == "open_terminal")
         assert mcp["env"]["OPEN_TERMINAL_URL"] == OPEN_TERMINAL_PLACEHOLDER
         assert "ENV PLACEHOLDERS RESTORED" not in proc.stderr
+
+
+# ---------------------------------------------------------------------------
+# #4807 — the versioned template must not ship a literal SEARXNG_URL
+#
+# mcp-searxng configured with only SEARXNG_URL sends no authentication, so a
+# literal endpoint baked into the shared template is a 401 on every seat that
+# instantiates it (measured 16/11 from po-2028 during the ms#1790 proof: the
+# template's endpoint answered 401, the seat's own session instance answered
+# 200). The canonical form — same as OPEN_TERMINAL_URL above — is the
+# `${SEARXNG_URL}` runtime placeholder (#1317 expansion, vllm#63), resolved
+# from each seat's server environment; sync_from_template keeps the
+# placeholder and drops any local literal (covered by the open_terminal
+# tests). There is deliberately NO default: no fleet-wide unauthenticated
+# SearXNG endpoint exists, so shipping one would recreate the bug.
+# ---------------------------------------------------------------------------
+
+
+def test_template_searxng_url_is_runtime_placeholder_not_literal_endpoint():
+    """The shipped template's searxng entry must carry the env placeholder,
+    never a literal http(s) endpoint (#4807)."""
+    template = json.loads(
+        (SK_AGENT_DIR / "sk_agent_config.template.json").read_text(encoding="utf-8")
+    )
+    mcp = next(m for m in template["mcps"] if m["id"] == "searxng")
+    url = mcp["env"]["SEARXNG_URL"]
+    assert isinstance(url, str) and "${" in url, (
+        f"template SEARXNG_URL must be a ${{VAR}} runtime placeholder "
+        f"(seat-resolved env), got: {url!r}"
+    )
+    assert not url.startswith(("http://", "https://")), (
+        f"a literal endpoint in the shared template 401s (or leaks a private "
+        f"instance) on every seat built from it (#4807): {url!r}"
+    )
