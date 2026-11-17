@@ -1836,8 +1836,10 @@ export const searchTasksByContentTool = {
             // 14M+ vector collection. Sent only when strictly positive so the
             // historical no-offset request shape (and its tests) stay unchanged.
             const effectiveOffset = Math.min(Math.max(offset || 0, 0), 10000);
-            const searchResults = await withRetry(() => qdrant.search(collectionName, {
-                vector: queryVector,
+            // #4808: client 1.20.0 removed the deprecated search() — query({nearest}) is the
+            // API-equivalent form; the normalization below already handles { points: [...] }.
+            const searchResults = await withRetry(() => qdrant.query(collectionName, {
+                query: { nearest: queryVector },
                 limit: diversifyLimit,
                 ...(effectiveOffset > 0 ? { offset: effectiveOffset } : {}),
                 filter: filter,
@@ -1899,8 +1901,8 @@ export const searchTasksByContentTool = {
                 const refillOffset = effectiveOffset + candidatesFetched;
                 if (!budgetShort || !windowExhausted || !filterConsumed) break;
                 if (refillOffset > ANN_MAX_OFFSET) break;
-                const refillRaw = await withRetry(() => qdrant.search(collectionName, {
-                    vector: queryVector,
+                const refillRaw = await withRetry(() => qdrant.query(collectionName, {
+                    query: { nearest: queryVector },
                     limit: diversifyLimit,
                     offset: refillOffset,
                     filter: filter,

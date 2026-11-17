@@ -37,7 +37,10 @@ export function getQdrantClient(): QdrantClient {
       url: process.env.QDRANT_URL,
       apiKey: process.env.QDRANT_API_KEY,
       port: 443, // Force HTTPS port
-      checkCompatibility: false,
+      // #4808: client/server version gap must be visible — was false since the
+      // 1.16 pin while the fleet server moved to 1.20.0, hiding 4 minor versions
+      // of drift. Re-enabled now that the client is aligned on the server line.
+      checkCompatibility: true,
       // #831: Add timeout to prevent hanging on large collections
       // #851: 15s default, configurable via env for 10M+ vector collection
       timeout: parseInt(process.env.QDRANT_TIMEOUT_MS || '15000'),

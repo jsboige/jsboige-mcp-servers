@@ -17,7 +17,8 @@ import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 const { mockQdrantClient, mockOpenAIClient, mockGetEmbeddingModel } = vi.hoisted(() => ({
 	mockQdrantClient: {
-		search: vi.fn(),
+		// #4808: client 1.20 removed search(); query() returns { points } — bare-array mocks still pass via the tool normalizer
+		query: vi.fn(),
 		getCollection: vi.fn(),
 		// #2609 V3: context expansion scrolls adjacent turns
 		scroll: vi.fn(),
@@ -234,7 +235,7 @@ describe('searchTasksByContentTool', () => {
 		});
 
 		test('creates embedding from search query', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'rate limiting' },
@@ -250,7 +251,7 @@ describe('searchTasksByContentTool', () => {
 		});
 
 		test('uses default collection name', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test' },
@@ -259,7 +260,7 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			expect(mockQdrantClient.search).toHaveBeenCalledWith(
+			expect(mockQdrantClient.query).toHaveBeenCalledWith(
 				'roo_tasks_semantic_index',
 				expect.any(Object)
 			);
@@ -267,7 +268,7 @@ describe('searchTasksByContentTool', () => {
 
 		test('uses custom collection name from env', async () => {
 			process.env.QDRANT_COLLECTION_NAME = 'custom_collection';
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test' },
@@ -276,14 +277,14 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			expect(mockQdrantClient.search).toHaveBeenCalledWith(
+			expect(mockQdrantClient.query).toHaveBeenCalledWith(
 				'custom_collection',
 				expect.any(Object)
 			);
 		});
 
 		test('applies conversation_id filter', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', conversation_id: 'conv-123' },
@@ -292,14 +293,14 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.filter).toEqual({
 				must: [{ key: 'task_id', match: { value: 'conv-123' } }]
 			});
 		});
 
 		test('applies workspace filter', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', workspace: 'd:\\roo-extensions' },
@@ -308,14 +309,14 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.filter).toEqual({
 				must: [{ key: 'workspace', match: { value: 'd:\\roo-extensions' } }]
 			});
 		});
 
 		test('combines conversation_id and workspace filters', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', conversation_id: 'conv-1', workspace: 'ws' },
@@ -324,12 +325,12 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.filter.must).toHaveLength(2);
 		});
 
 		test('no filter when no conversation_id or workspace', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test' },
@@ -338,12 +339,12 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.filter).toBeUndefined();
 		});
 
 		test('ignores conversation_id="undefined"', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', conversation_id: 'undefined' },
@@ -352,12 +353,12 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.filter).toBeUndefined();
 		});
 
 		test('applies has_errors filter', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', has_errors: true },
@@ -366,14 +367,14 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.filter).toEqual({
 				must: [{ key: 'has_error', match: { value: true } }]
 			});
 		});
 
 		test('applies model filter', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', model: 'opus' },
@@ -382,14 +383,14 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.filter).toEqual({
 				must: [{ key: 'model', match: { value: 'opus' } }]
 			});
 		});
 
 		test('combines has_errors and model filters', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', has_errors: true, model: 'sonnet' },
@@ -398,14 +399,14 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.filter.must).toHaveLength(2);
 			expect(searchCall.filter.must).toContainEqual({ key: 'has_error', match: { value: true } });
 			expect(searchCall.filter.must).toContainEqual({ key: 'model', match: { value: 'sonnet' } });
 		});
 
 		test('includes message_position when message_index and total_messages are in payload', async () => {
-			mockQdrantClient.search.mockResolvedValue([{
+			mockQdrantClient.query.mockResolvedValue([{
 				score: 0.8,
 				payload: {
 					task_id: 'task-1',
@@ -430,7 +431,7 @@ describe('searchTasksByContentTool', () => {
 		});
 
 		test('uses max_results or default 10', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', max_results: 5 },
@@ -441,11 +442,11 @@ describe('searchTasksByContentTool', () => {
 
 // #3043 (SDDD #2766): diversify-by-task — over-fetch by DIVERSIFY_OVERFETCH so
 			// grouping can find additional tasks even when one task dominates the Qdrant ranking.
-			expect(mockQdrantClient.search.mock.calls[0][1].limit).toBe(5 * 3);
+			expect(mockQdrantClient.query.mock.calls[0][1].limit).toBe(5 * 3);
 		});
 
 		test('defaults to 10 results', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test' },
@@ -456,11 +457,11 @@ describe('searchTasksByContentTool', () => {
 
 // #3043 (SDDD #2766): diversify-by-task — over-fetch by DIVERSIFY_OVERFETCH so
 			// grouping can find additional tasks even when one task dominates the Qdrant ranking.
-			expect(mockQdrantClient.search.mock.calls[0][1].limit).toBe(10 * 3);
+			expect(mockQdrantClient.query.mock.calls[0][1].limit).toBe(10 * 3);
 		});
 
 		test('returns grouped results with cross-machine analysis', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{
 					score: 0.85,
 					payload: {
@@ -507,7 +508,7 @@ describe('searchTasksByContentTool', () => {
 		});
 
 		test('deduplicates multiple chunks from same task', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{
 					// #2609 V3 : contenu >= PASSAGE_MIN_WORDS (fragment de-rank, describe dédié)
 					score: 0.9,
@@ -536,7 +537,7 @@ describe('searchTasksByContentTool', () => {
 		// #1244 Couche 1.3 — Push date filters into Qdrant directly
 		// ========================================================
 		test('[#1244 1.3] pushes start_date and end_date as Qdrant range filter on timestamp', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{
@@ -549,7 +550,7 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.filter).toBeDefined();
 			expect(searchCall.filter.must).toBeDefined();
 
@@ -566,7 +567,7 @@ describe('searchTasksByContentTool', () => {
 		});
 
 		test('[#1244 1.3] pushes start_date only as Qdrant range filter (no lte)', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{
@@ -578,7 +579,7 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			const timestampFilter = searchCall.filter.must.find(
 				(c: any) => c && c.key === 'timestamp' && c.range
 			);
@@ -591,7 +592,7 @@ describe('searchTasksByContentTool', () => {
 		// #936 — offset pagination cursor
 		// ========================================================
 		test('[#936] pushes offset to Qdrant search options', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{
@@ -603,12 +604,12 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.offset).toBe(25);
 		});
 
 		test('[#936] omits offset from Qdrant search options when not provided (historical shape)', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{
@@ -619,12 +620,12 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.offset).toBeUndefined();
 		});
 
 		test('[#936] clamps offset above 10000', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{
@@ -636,7 +637,7 @@ describe('searchTasksByContentTool', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.offset).toBe(10000);
 		});
 	});
@@ -713,7 +714,7 @@ describe('searchTasksByContentTool', () => {
 		});
 
 		test('handles array response', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.8, payload: { task_id: 't1', content: 'c1', host_os: 'h1' } }
 			]);
 
@@ -729,7 +730,7 @@ describe('searchTasksByContentTool', () => {
 		});
 
 		test('handles object with result field', async () => {
-			mockQdrantClient.search.mockResolvedValue({
+			mockQdrantClient.query.mockResolvedValue({
 				result: [
 					{ score: 0.8, payload: { task_id: 't1', content: 'c1', host_os: 'h1' } }
 				]
@@ -747,7 +748,7 @@ describe('searchTasksByContentTool', () => {
 		});
 
 		test('handles empty results', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			const result = await searchTasksByContentTool.handler(
 				{ search_query: 'no results expected' },
@@ -776,7 +777,7 @@ describe('helper functions (indirect via handler)', () => {
 	});
 
 	test('interpretScore: excellent for score >= 0.9', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.95, payload: { task_id: 't1', content: 'A substantive passage of content used to pin the relevance label mapping', host_os: 'h1' } }
 		]);
 
@@ -792,7 +793,7 @@ describe('helper functions (indirect via handler)', () => {
 	});
 
 	test('interpretScore: good for score >= 0.75', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.78, payload: { task_id: 't1', content: 'A substantive passage of content used to pin the relevance label mapping', host_os: 'h1' } }
 		]);
 
@@ -808,7 +809,7 @@ describe('helper functions (indirect via handler)', () => {
 	});
 
 	test('interpretScore: moderate for score >= 0.6', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.65, payload: { task_id: 't1', content: 'A substantive passage of content used to pin the relevance label mapping', host_os: 'h1' } }
 		]);
 
@@ -824,7 +825,7 @@ describe('helper functions (indirect via handler)', () => {
 	});
 
 	test('interpretScore: weak for score >= 0.4', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.45, payload: { task_id: 't1', content: 'A substantive passage of content used to pin the relevance label mapping', host_os: 'h1' } }
 		]);
 
@@ -841,7 +842,7 @@ describe('helper functions (indirect via handler)', () => {
 
 	test('extractSnippet: centers around query match', async () => {
 		const longContent = 'A'.repeat(400) + ' rate limiting implementation here ' + 'B'.repeat(400);
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 't1', content: longContent, host_os: 'h1' } }
 		]);
 
@@ -859,7 +860,7 @@ describe('helper functions (indirect via handler)', () => {
 	});
 
 	test('groupResultsByTask: groups and sorts by best score', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			// #2766: content DISTINCT per task — identical cross-task content is now
 			// collapsed by dedupGroupedChunksByContent (covered in its own describe block).
 			{ score: 0.6, payload: { task_id: 'task-b', content: 'grouping fixture chunk b1 substantive content used to pin the sort order', host_os: 'h1' } },
@@ -895,7 +896,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('one task with 5 chunks + 2 other tasks => unique_tasks >= 3', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.827, payload: { task_id: 'task-dominant', content: 'newTask broadcast 1', host_os: 'h1' } },
 				{ score: 0.826, payload: { task_id: 'task-dominant', content: 'newTask broadcast 2', host_os: 'h1' } },
 				{ score: 0.826, payload: { task_id: 'task-dominant', content: 'newTask broadcast 3', host_os: 'h1' } },
@@ -925,7 +926,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('per-task cap of 2 chunks holds across many chunks', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-mega', content: 'c1', host_os: 'h1' } },
 				{ score: 0.89, payload: { task_id: 'task-mega', content: 'c2', host_os: 'h1' } },
 				{ score: 0.88, payload: { task_id: 'task-mega', content: 'c3', host_os: 'h1' } },
@@ -957,7 +958,7 @@ describe('helper functions (indirect via handler)', () => {
 					payload: { task_id: `task-${i}`, content: `c${i}`, host_os: 'h1' },
 				});
 			}
-			mockQdrantClient.search.mockResolvedValue(hits);
+			mockQdrantClient.query.mockResolvedValue(hits);
 
 			const result = await searchTasksByContentTool.handler(
 				{ search_query: 'diverse' }, // no max_results → default 10
@@ -987,7 +988,7 @@ describe('helper functions (indirect via handler)', () => {
 		test('collapses identical cross-task chunks, keeps the best-scored, exposes duplicate_count', async () => {
 			// task-a and task-b carry IDENTICAL content → identical snippet under one
 			// query → deduped. task-c is distinct → survives.
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.90, payload: { task_id: 'task-a', content: 'rate limiter bug here', host_os: 'h1' } },
 				{ score: 0.75, payload: { task_id: 'task-b', content: 'rate limiter bug here', host_os: 'h1' } },
 				{ score: 0.60, payload: { task_id: 'task-c', content: 'completely different content', host_os: 'h1' } },
@@ -1013,7 +1014,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('keeps distinct content from different tasks (no false dedup)', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-a', content: 'alpha implementation', host_os: 'h1' } },
 				{ score: 0.8, payload: { task_id: 'task-b', content: 'beta implementation', host_os: 'h1' } },
 			]);
@@ -1033,7 +1034,7 @@ describe('helper functions (indirect via handler)', () => {
 		test('intra-task identical chunks collapse too (same task, dup content)', async () => {
 			// Two identical chunks in the SAME task both survive the per-task cap (2),
 			// then dedup collapses them within the group.
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-a', content: 'echo payload', host_os: 'h1' } },
 				{ score: 0.8, payload: { task_id: 'task-a', content: 'echo payload', host_os: 'h1' } },
 				{ score: 0.7, payload: { task_id: 'task-b', content: 'solo payload', host_os: 'h1' } },
@@ -1055,7 +1056,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('SEARCH_DEDUP_ENABLED=0 disables dedup (rollback / A-B)', async () => {
 			process.env.SEARCH_DEDUP_ENABLED = '0';
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-a', content: 'twin content', host_os: 'h1' } },
 				{ score: 0.8, payload: { task_id: 'task-b', content: 'twin content', host_os: 'h1' } },
 			]);
@@ -1076,7 +1077,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('SEARCH_DEDUP_NORMALIZE=1 catches case/whitespace variants', async () => {
 			process.env.SEARCH_DEDUP_NORMALIZE = '1';
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-a', content: 'Rate Limiter', host_os: 'h1' } },
 				{ score: 0.8, payload: { task_id: 'task-b', content: 'rate  limiter', host_os: 'h1' } },
 				{ score: 0.7, payload: { task_id: 'task-c', content: 'totally other thing', host_os: 'h1' } },
@@ -1544,7 +1545,7 @@ describe('helper functions (indirect via handler)', () => {
 			// Reader active (dual-write ON) but Postgres returns no rows.
 			mockUnifiedStoreReader.isNull.mockReturnValue(false);
 			mockUnifiedStoreReader.joinFromQdrant.mockResolvedValue([]);
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.82, payload: { task_id: 'task-1', content: 'yesterday debrief', host_os: 'win32' } },
 				{ score: 0.71, payload: { task_id: 'task-2', content: 'coordination notes', host_os: 'win32' } },
 			]);
@@ -1568,7 +1569,7 @@ describe('helper functions (indirect via handler)', () => {
 			// fragment malus; PG must confirm that adjusted order, not the raw ANN one.
 			mockUnifiedStoreReader.isNull.mockReturnValue(false);
 			mockUnifiedStoreReader.joinFromQdrant.mockImplementation(async (hits: Array<{ task_id: string; score: number }>) => hits);
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.82, payload: { task_id: 'task-1', content: 'a', host_os: 'win32' } },
 				{ score: 0.71, payload: { task_id: 'task-2', content: 'a complete prose passage with enough context to remain useful', host_os: 'win32' } },
 			]);
@@ -1594,7 +1595,7 @@ describe('helper functions (indirect via handler)', () => {
 		test('requests host_os in the Qdrant payload include (machines_found populated)', async () => {
 			// Real Qdrant honours the include whitelist; omitting host_os made
 			// machines_found always ['unknown']. Assert the field is requested.
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.8, payload: { task_id: 't1', content: 'x', host_os: 'win32' } },
 			]);
 
@@ -1605,7 +1606,7 @@ describe('helper functions (indirect via handler)', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1] as any;
+			const searchCall = mockQdrantClient.query.mock.calls[0][1] as any;
 			expect(searchCall.with_payload.include).toContain('host_os');
 		});
 	});
@@ -1619,7 +1620,7 @@ describe('helper functions (indirect via handler)', () => {
 			mockOpenAIClient.embeddings.create.mockResolvedValue({
 				data: [{ embedding: [0.1, 0.2, 0.3] }]
 			});
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-recent', content: 'recent work', host_os: 'h1', timestamp: '2026-03-10T12:00:00Z' } },
 				{ score: 0.8, payload: { task_id: 'task-mid', content: 'mid work', host_os: 'h1', timestamp: '2026-03-05T12:00:00Z' } },
 				{ score: 0.7, payload: { task_id: 'task-old', content: 'old work', host_os: 'h1', timestamp: '2026-02-20T12:00:00Z' } },
@@ -1713,7 +1714,7 @@ describe('helper functions (indirect via handler)', () => {
 			mockOpenAIClient.embeddings.create.mockResolvedValue({
 				data: [{ embedding: [0.1, 0.2, 0.3] }]
 			});
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-no-ts', content: 'no timestamp', host_os: 'h1' } },
 				{ score: 0.8, payload: { task_id: 'task-with-ts', content: 'has ts', host_os: 'h1', timestamp: '2026-03-10T12:00:00Z' } },
 			]);
@@ -1756,7 +1757,7 @@ describe('helper functions (indirect via handler)', () => {
 			mockOpenAIClient.embeddings.create.mockResolvedValue({
 				data: [{ embedding: [0.1, 0.2, 0.3] }]
 			});
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-cached', content: 'test content', host_os: 'h1' } },
 			]);
 
@@ -1792,7 +1793,7 @@ describe('helper functions (indirect via handler)', () => {
 			mockOpenAIClient.embeddings.create.mockResolvedValue({
 				data: [{ embedding: [0.1, 0.2, 0.3] }]
 			});
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-uncached', content: 'test', host_os: 'h1' } },
 			]);
 
@@ -1824,7 +1825,7 @@ describe('helper functions (indirect via handler)', () => {
 			// ms#1568 review, item 1: the flag means "drop tool outputs", not "keep only
 			// message exchanges". As an equality it also dropped every `code_citation` and
 			// `task_summary` chunk — content the caller never asked to exclude.
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', exclude_tool_results: true },
@@ -1833,7 +1834,7 @@ describe('helper functions (indirect via handler)', () => {
 				defaultFallback
 			);
 
-			const callArgs: any = (mockQdrantClient.search as any).mock.calls[0][1];
+			const callArgs: any = (mockQdrantClient.query as any).mock.calls[0][1];
 			expect(callArgs.filter.must_not).toEqual([
 				{ key: 'chunk_type', match: { value: 'tool_interaction' } }
 			]);
@@ -1847,7 +1848,7 @@ describe('helper functions (indirect via handler)', () => {
 			// The other side of the same boundary: an explicit value selects one chunk type
 			// (that is what `chunk_type` means), so `exclude_tool_results` must not also
 			// negate a type the caller explicitly asked for.
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', chunk_type: 'code_citation', exclude_tool_results: true },
@@ -1856,7 +1857,7 @@ describe('helper functions (indirect via handler)', () => {
 				defaultFallback
 			);
 
-			const callArgs: any = (mockQdrantClient.search as any).mock.calls[0][1];
+			const callArgs: any = (mockQdrantClient.query as any).mock.calls[0][1];
 			expect(callArgs.filter.must).toEqual(
 				expect.arrayContaining([{ key: 'chunk_type', match: { value: 'code_citation' } }])
 			);
@@ -1864,7 +1865,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('exclude_tool_results=false does not add chunk_type filter', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', exclude_tool_results: false },
@@ -1873,7 +1874,7 @@ describe('helper functions (indirect via handler)', () => {
 				defaultFallback
 			);
 
-			const callArgs = mockQdrantClient.search.mock.calls[0][1];
+			const callArgs = mockQdrantClient.query.mock.calls[0][1];
 			// No filter, or filter without chunk_type
 			if (callArgs.filter) {
 				const must = callArgs.filter.must || [];
@@ -1884,7 +1885,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('explicit chunk_type takes precedence over exclude_tool_results', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 
 			await searchTasksByContentTool.handler(
 				{ search_query: 'test', chunk_type: 'tool_interaction', exclude_tool_results: true },
@@ -1894,7 +1895,7 @@ describe('helper functions (indirect via handler)', () => {
 			);
 
 			// chunk_type is set explicitly → effectiveChunkType = 'tool_interaction' (not overridden)
-			expect(mockQdrantClient.search).toHaveBeenCalledWith(
+			expect(mockQdrantClient.query).toHaveBeenCalledWith(
 				expect.any(String),
 				expect.objectContaining({
 					filter: expect.objectContaining({
@@ -1907,7 +1908,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('exclude_tool_results=true returns only message_exchange chunks from results', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-1', content: 'user message', host_os: 'h1', chunk_type: 'message_exchange' } },
 				{ score: 0.8, payload: { task_id: 'task-2', content: 'tool response', host_os: 'h1', chunk_type: 'tool_interaction' } },
 			]);
@@ -1929,7 +1930,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('exclude_tool_results=true filters tool output even when its ranking malus is disabled', async () => {
 			process.env.SEMANTIC_MACHINE_OUTPUT_MALUS = '0';
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-tool', content: '[tool_result] Result: {"ok":true}', host_os: 'h1', chunk_type: 'message_exchange' } },
 				{ score: 0.8, payload: { task_id: 'task-prose', content: 'La décision et son contexte restent disponibles.', host_os: 'h1', chunk_type: 'message_exchange' } },
 			]);
@@ -1947,7 +1948,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('exclude_tool_results=true overfetches so filtered output does not consume the result budget', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 			await searchTasksByContentTool.handler(
 				{ search_query: 'décision', max_results: 4, exclude_tool_results: true },
 				makeCache(),
@@ -1957,11 +1958,11 @@ describe('helper functions (indirect via handler)', () => {
 			// #2609 q4: the decision-content over-fetch is 12× (was 5×) — measured
 			// attrition of the ANN window is ~82% once machine output and tool
 			// continuations are filtered, so 5× under-filled the requested page.
-			expect(mockQdrantClient.search.mock.calls[0][1].limit).toBe(48);
+			expect(mockQdrantClient.query.mock.calls[0][1].limit).toBe(48);
 		});
 
 		test('exclude_tool_results=true rejects tool output stored as message_exchange', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-tool', content: '[tool_result] Result: {"ok":true}', host_os: 'h1', chunk_type: 'message_exchange' } },
 				{ score: 0.8, payload: { task_id: 'task-prose', content: 'La décision et son contexte restent disponibles.', host_os: 'h1', chunk_type: 'message_exchange' } },
 			]);
@@ -1979,7 +1980,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('exclude_tool_results=true excludes a continuation whose parent is proven tool output', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-tool', chunk_id: 'tool-part-2', original_chunk_id: 'tool-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'La décision est détaillée dans ce passage de sortie outil apparemment rédigé.', host_os: 'h1' } },
 				{ score: 0.8, payload: { task_id: 'task-prose', content: 'La décision humaine et son contexte restent disponibles pour la synthèse.', host_os: 'h1', chunk_type: 'message_exchange' } },
 			]);
@@ -1996,7 +1997,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('a split human message is preserved and distinguished from tool output', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-human', original_chunk_id: 'human-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'La cadence reste à trois heures parce que cette décision réduit la charge de coordination.', host_os: 'h1' } },
 				{ score: 0.8, payload: { task_id: 'task-tool', original_chunk_id: 'tool-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'La cadence est détaillée dans ce résultat de commande.', host_os: 'h1' } },
 			]);
@@ -2019,7 +2020,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('unresolved continuation provenance stays visible instead of being called prose', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-unknown', original_chunk_id: 'missing-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'Un fragment de provenance inconnue reste consultable mais non certifié.', host_os: 'h1' } },
 			]);
 			mockQdrantClient.retrieve.mockResolvedValue([]);
@@ -2034,7 +2035,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('a self-classified tool fragment is de-ranked once, not twice, when provenance confirms it', async () => {
 			const toolContent = '[tool_result] Result: ' + 'ligne de sortie de commande volumineuse et repetitive '.repeat(5);
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-both', original_chunk_id: 'both-original', chunk_index: 2, chunk_type: 'message_exchange', content: toolContent, host_os: 'h1' } },
 			]);
 			mockQdrantClient.retrieve.mockResolvedValue([
@@ -2052,12 +2053,12 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('maximum filtered overfetch also widens the ANN candidate budget', async () => {
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 			await searchTasksByContentTool.handler(
 				{ search_query: 'décision', max_results: 100, exclude_tool_results: true },
 				makeCache(), mockEnsureCache, defaultFallback
 			);
-			const args = mockQdrantClient.search.mock.calls[0][1];
+			const args = mockQdrantClient.query.mock.calls[0][1];
 			expect(args.limit).toBe(1200);
 			expect(args.params.hnsw_ef).toBe(1200);
 		});
@@ -2075,7 +2076,7 @@ describe('helper functions (indirect via handler)', () => {
 		test('a continuation whose parent is a JSON blob is excluded, never certified human', async () => {
 			// The ranking malus is OFF: the exclusion must not depend on it.
 			process.env.SEMANTIC_MACHINE_OUTPUT_MALUS = '0';
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-json', chunk_id: 'json-part-2', original_chunk_id: 'json-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'The coordinator cadence stays at three hours because this decision lowers the coordination load.', host_os: 'h1' } },
 				{ score: 0.8, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', content: 'The human decision and its context stay available for the synthesis.', host_os: 'h1' } },
 			]);
@@ -2096,7 +2097,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('a continuation of a JSON parent carries the parent machine-output kind', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-json', chunk_id: 'json-part-2', original_chunk_id: 'json-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'The coordinator cadence stays at three hours because this decision lowers the coordination load.', host_os: 'h1' } },
 			]);
 			mockQdrantClient.retrieve.mockResolvedValue([
@@ -2116,7 +2117,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('a continuation whose parent is an environment_details block is excluded', async () => {
 			process.env.SEMANTIC_MACHINE_OUTPUT_MALUS = '0';
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-env', chunk_id: 'env-part-2', original_chunk_id: 'env-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'The coordinator cadence stays at three hours because this decision lowers the coordination load.', host_os: 'h1' } },
 				{ score: 0.8, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', content: 'The human decision and its context stay available for the synthesis.', host_os: 'h1' } },
 			]);
@@ -2135,7 +2136,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('a continuation of an environment_details parent carries the parent machine-output kind', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-env', chunk_id: 'env-part-2', original_chunk_id: 'env-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'The coordinator cadence stays at three hours because this decision lowers the coordination load.', host_os: 'h1' } },
 			]);
 			mockQdrantClient.retrieve.mockResolvedValue([
@@ -2152,7 +2153,7 @@ describe('helper functions (indirect via handler)', () => {
 		});
 
 		test('the first chunk of a group carries both machine_output_kind and tool_continuation_status', async () => {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-first', chunk_id: 'first-part-2', original_chunk_id: 'first-original', chunk_index: 2, chunk_type: 'message_exchange', content: 'The coordinator cadence stays at three hours because this decision lowers the coordination load.', host_os: 'h1' } },
 			]);
 			mockQdrantClient.retrieve.mockResolvedValue([
@@ -2183,7 +2184,7 @@ describe('helper functions (indirect via handler)', () => {
 				{ score: 0.5, payload: { task_id: 'task-prose-a', chunk_type: 'message_exchange', content: 'The human decision about the coordination cadence stays available for the synthesis, with its rationale and the interval that was rejected.', host_os: 'h1' } },
 				{ score: 0.49, payload: { task_id: 'task-prose-b', chunk_type: 'message_exchange', content: 'Another human decision about the coordination load is recorded in this passage, including the alternatives that were weighed and dropped.', host_os: 'h1' } },
 			];
-			mockQdrantClient.search
+			mockQdrantClient.query
 				.mockResolvedValueOnce(machineOutput)
 				.mockResolvedValueOnce(prose)
 				.mockResolvedValue([]);
@@ -2194,8 +2195,8 @@ describe('helper functions (indirect via handler)', () => {
 			const parsed = JSON.parse(getTextContent(result));
 			// The first window was exhausted by filtered candidates: ONE bounded refill
 			// window pulled the eligible prose in.
-			expect(mockQdrantClient.search).toHaveBeenCalledTimes(2);
-			expect(mockQdrantClient.search.mock.calls[1][1].offset).toBe(24);
+			expect(mockQdrantClient.query).toHaveBeenCalledTimes(2);
+			expect(mockQdrantClient.query.mock.calls[1][1].offset).toBe(24);
 			expect(parsed.results.map((r: any) => r.taskId).sort()).toEqual(['task-prose-a', 'task-prose-b']);
 			expect(parsed.current_machine.recall_budget.refill_windows).toBe(1);
 		});
@@ -2210,14 +2211,14 @@ describe('helper functions (indirect via handler)', () => {
 				score: 0.9 - i * 0.0001,
 				payload: { task_id: 'task-tool-' + i, chunk_type: 'message_exchange', content: toolOutputSample, host_os: 'h1' },
 			}));
-			mockQdrantClient.search
+			mockQdrantClient.query
 				.mockResolvedValueOnce(machineOutput)
 				.mockResolvedValueOnce([]);
 			await searchTasksByContentTool.handler(
 				{ search_query: 'décision', max_results: 100, exclude_tool_results: true },
 				makeCache(), mockEnsureCache, defaultFallback
 			);
-			const refillArgs = mockQdrantClient.search.mock.calls[1][1];
+			const refillArgs = mockQdrantClient.query.mock.calls[1][1];
 			expect(refillArgs.offset).toBe(1200);
 			expect(refillArgs.limit).toBe(1200);
 			expect(refillArgs.params.hnsw_ef).toBe(1200);
@@ -2236,7 +2237,7 @@ describe('helper functions (indirect via handler)', () => {
 				{ score: 0.5, payload: { task_id: 'task-prose-a', chunk_type: 'message_exchange', content: 'The human decision about the coordination cadence stays available for the synthesis, with its rationale and the interval that was rejected.', host_os: 'h1' } },
 				{ score: 0.49, payload: { task_id: 'task-prose-b', chunk_type: 'message_exchange', content: 'Another human decision about the coordination load is recorded in this passage, including the alternatives that were weighed and dropped.', host_os: 'h1' } },
 			];
-			mockQdrantClient.search
+			mockQdrantClient.query
 				.mockResolvedValueOnce(machineOutput)
 				.mockResolvedValueOnce(prose)
 				.mockResolvedValue([]);
@@ -2259,7 +2260,7 @@ describe('helper functions (indirect via handler)', () => {
 
 		test('no refill window is spent when the first window was not exhausted', async () => {
 			const toolOutputSample = '[tool_result] Result: ' + JSON.stringify({ ok: true });
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.9, payload: { task_id: 'task-tool-1', chunk_type: 'message_exchange', content: toolOutputSample, host_os: 'h1' } },
 				{ score: 0.8, payload: { task_id: 'task-tool-2', chunk_type: 'message_exchange', content: toolOutputSample, host_os: 'h1' } },
 				{ score: 0.7, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', content: 'The human decision about the coordination cadence stays available for the synthesis.', host_os: 'h1' } },
@@ -2271,7 +2272,7 @@ describe('helper functions (indirect via handler)', () => {
 			const parsed = JSON.parse(getTextContent(result));
 			// The window was NOT exhausted (3 < 10): the collection holds no more
 			// candidates, so no extra ANN window is spent.
-			expect(mockQdrantClient.search).toHaveBeenCalledTimes(1);
+			expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
 			expect(parsed.results.map((r: any) => r.taskId)).toEqual(['task-prose']);
 			expect(parsed.current_machine.recall_budget.refill_windows).toBe(0);
 		});
@@ -2286,7 +2287,7 @@ describe('helper functions (indirect via handler)', () => {
 			mockOpenAIClient.embeddings.create.mockResolvedValue({
 				data: [{ embedding: [0.1, 0.2, 0.3] }]
 			});
-			mockQdrantClient.search.mockResolvedValue([]);
+			mockQdrantClient.query.mockResolvedValue([]);
 		});
 
 		test('passes hnsw_ef=128 to Qdrant search', async () => {
@@ -2297,7 +2298,7 @@ describe('helper functions (indirect via handler)', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.params).toBeDefined();
 			expect(searchCall.params.hnsw_ef).toBe(128);
 		});
@@ -2310,7 +2311,7 @@ describe('helper functions (indirect via handler)', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.params.exact).toBe(false);
 		});
 
@@ -2322,7 +2323,7 @@ describe('helper functions (indirect via handler)', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			expect(searchCall.params.quantization).toBeDefined();
 			expect(searchCall.params.quantization.rescore).toBe(true);
 		});
@@ -2335,7 +2336,7 @@ describe('helper functions (indirect via handler)', () => {
 				defaultFallback
 			);
 
-			const searchCall = mockQdrantClient.search.mock.calls[0][1];
+			const searchCall = mockQdrantClient.query.mock.calls[0][1];
 			// Must NOT be `true` (fetches all fields including large content)
 			expect(searchCall.with_payload).not.toBe(true);
 			// Must be an object with `include` array
@@ -2373,7 +2374,7 @@ describe('helper functions (indirect via handler)', () => {
 			);
 
 			// If we get here without error, the timeout wrapper accepted the env var
-			expect(mockQdrantClient.search).toHaveBeenCalled();
+			expect(mockQdrantClient.query).toHaveBeenCalled();
 			delete process.env.QDRANT_SEARCH_TIMEOUT_MS;
 		});
 
@@ -2381,7 +2382,7 @@ describe('helper functions (indirect via handler)', () => {
 			// #883 P1: Verify no JSON.stringify debug logging on results
 			const consoleSpy = vi.spyOn(console, 'log');
 
-			mockQdrantClient.search.mockResolvedValue([{
+			mockQdrantClient.query.mockResolvedValue([{
 				id: 'p1',
 				score: 0.9,
 				payload: {
@@ -2492,7 +2493,7 @@ describe('helper functions (indirect via handler)', () => {
 			mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
 				data: [{ embedding: new Array(1536).fill(0.1) }]
 			});
-			mockQdrantClient.search.mockResolvedValueOnce([]);
+			mockQdrantClient.query.mockResolvedValueOnce([]);
 
 			await searchTasksByContentTool.handler({
 				search_query: 'test after 400',
@@ -2557,7 +2558,7 @@ describe('helper functions (indirect via handler)', () => {
 			mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
 				data: [{ embedding: new Array(1536).fill(0.1) }]
 			});
-			mockQdrantClient.search.mockResolvedValueOnce([]);
+			mockQdrantClient.query.mockResolvedValueOnce([]);
 
 			// Should attempt API call again
 			const result = await searchTasksByContentTool.handler({
@@ -2694,7 +2695,7 @@ describe('helper functions (indirect via handler)', () => {
 				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
 					data: [{ embedding: new Array(1536).fill(0.1) }]
 				});
-				mockQdrantClient.search.mockResolvedValueOnce([]);
+				mockQdrantClient.query.mockResolvedValueOnce([]);
 
 				const result = await searchTasksByContentTool.handler({
 					search_query: 'semantic success test',
@@ -2774,7 +2775,7 @@ describe('helper functions (indirect via handler)', () => {
 				});
 
 				// Make a normal search to populate the cache
-				mockQdrantClient.search.mockResolvedValueOnce([]);
+				mockQdrantClient.query.mockResolvedValueOnce([]);
 				await searchTasksByContentTool.handler(
 					{ search_query: 'cached query' },
 					makeCache(),
@@ -2783,7 +2784,7 @@ describe('helper functions (indirect via handler)', () => {
 				);
 
 				// Cache should be used on next call with same query
-				mockQdrantClient.search.mockResolvedValueOnce([]);
+				mockQdrantClient.query.mockResolvedValueOnce([]);
 				mockOpenAIClient.embeddings.create.mockClear();
 				await searchTasksByContentTool.handler(
 					{ search_query: 'cached query' },
@@ -2807,7 +2808,7 @@ describe('helper functions (indirect via handler)', () => {
 				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
 					data: [{ embedding: [0.1, 0.2] }]
 				});
-				mockQdrantClient.search.mockResolvedValueOnce([]);
+				mockQdrantClient.query.mockResolvedValueOnce([]);
 				await searchTasksByContentTool.handler(
 					{ search_query: 'cached query' },
 					makeCache(),
@@ -2839,7 +2840,7 @@ describe('helper functions (indirect via handler)', () => {
 
 				// Should NOT attempt to embed or search
 				expect(mockOpenAIClient.embeddings.create).not.toHaveBeenCalled();
-				expect(mockQdrantClient.search).not.toHaveBeenCalled();
+				expect(mockQdrantClient.query).not.toHaveBeenCalled();
 			});
 
 			test('reset_circuit_breaker=true also resets the Qdrant write breaker (dual recovery surface)', async () => {
@@ -2891,7 +2892,7 @@ describe('#2609 V3 result quality', () => {
 		const leading = 'Unrelated filler sentence that keeps going and going. '.repeat(12); // ends '. '
 		const trailing = 'Post match filler sentence continues here. '.repeat(8);
 		const content = leading + sentence + trailing;
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 't1', content, host_os: 'h1' } }
 		]);
 
@@ -2916,7 +2917,7 @@ describe('#2609 V3 result quality', () => {
 	});
 
 	test('drill_down: pre-windowed conversation_browser handle (rubric (b))', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.85, payload: { task_id: 'task-x', content: 'decision passage', host_os: 'h1', message_index: 5, total_messages: 10 } }
 		]);
 		mockQdrantClient.scroll.mockResolvedValue({ points: [] });
@@ -2943,7 +2944,7 @@ describe('#2609 V3 result quality', () => {
 	});
 
 	test('drill_down: clamped at conversation bounds', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.85, payload: { task_id: 'task-edge', content: 'early decision', host_os: 'h1', message_index: 2, total_messages: 3 } }
 		]);
 		mockQdrantClient.scroll.mockResolvedValue({ points: [] });
@@ -2970,7 +2971,7 @@ describe('#2609 V3 result quality', () => {
 	// #1234 : mi=1 — sur main le plancher Math.max(1, …) exclut le premier
 	// message : le hit mi=1 était invisible dans sa propre fenêtre de re-expansion.
 	test('drill_down: hit sur le premier message (mi=1) — fenêtre part de 0, hit visible', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.85, payload: { task_id: 'task-first', content: 'opening decision', host_os: 'h1', message_index: 1, total_messages: 10 } }
 		]);
 		mockQdrantClient.scroll.mockResolvedValue({ points: [] });
@@ -2994,7 +2995,7 @@ describe('#2609 V3 result quality', () => {
 	});
 
 	test('drill_down: absent message_index degrades to task-level handle', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 'task-old', content: 'legacy point', host_os: 'h1' } }
 		]);
 
@@ -3020,7 +3021,7 @@ describe('#2609 V3 result quality', () => {
 		// Regression guard: the fields existed in the payload but were absent from
 		// the with_payload whitelist, so message_position was ALWAYS undefined on
 		// live results (#2609 V3, found while implementing the handle).
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 't1', content: 'x', host_os: 'h1' } }
 		]);
 
@@ -3031,8 +3032,8 @@ describe('#2609 V3 result quality', () => {
 			defaultFallback
 		);
 
-		expect(mockQdrantClient.search).toHaveBeenCalled();
-		const call = mockQdrantClient.search.mock.calls[0];
+		expect(mockQdrantClient.query).toHaveBeenCalled();
+		const call = mockQdrantClient.query.mock.calls[0];
 		const include: string[] = call[1].with_payload.include;
 		expect(include).toContain('message_index');
 		expect(include).toContain('total_messages');
@@ -3043,7 +3044,7 @@ describe('#2609 V3 result quality', () => {
 	});
 
 	test('conversation_context: adjacent turns attached, same-message pages collapsed (rubric (c))', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.85, payload: { task_id: 'task-ctx', content: 'the cadence decision passage', host_os: 'h1', message_index: 5, total_messages: 9 } }
 		]);
 		mockQdrantClient.scroll.mockResolvedValue({ points: [
@@ -3080,7 +3081,7 @@ describe('#2609 V3 result quality', () => {
 		// 63 anchor chunks, first 12-point page 12/12 at the anchor, both
 		// neighbors invisible). The filter must therefore match the neighbors
 		// EXACTLY via should, and must not carry any message_index range.
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.85, payload: { task_id: 'task-sat', content: 'the cadence decision passage', host_os: 'h1', message_index: 2, total_messages: 9 } }
 		]);
 		mockQdrantClient.scroll.mockResolvedValue({ points: [
@@ -3117,7 +3118,7 @@ describe('#2609 V3 result quality', () => {
 		// exhausted) while an exact should-match returns only the neighbors.
 		// The scroll mock replays the measured live behavior for BOTH shapes
 		// and asserts the handler still attaches context under the fixed one.
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.85, payload: { task_id: 'task-live', content: 'the cadence decision passage', host_os: 'h1', message_index: 2, total_messages: 4210 } }
 		]);
 		mockQdrantClient.scroll.mockImplementation(async (_col: string, opts: any) => {
@@ -3153,7 +3154,7 @@ describe('#2609 V3 result quality', () => {
 	});
 
 	test('scroll failure is non-blocking: results survive without context', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 't1', content: 'passage', host_os: 'h1', message_index: 3 } }
 		]);
 		mockQdrantClient.scroll.mockRejectedValue(new Error('qdrant scroll down'));
@@ -3174,7 +3175,7 @@ describe('#2609 V3 result quality', () => {
 	test('SEARCH_CONTEXT_EXPANSION=0 disables the scroll (rollback flag)', async () => {
 		process.env.SEARCH_CONTEXT_EXPANSION = '0';
 		try {
-			mockQdrantClient.search.mockResolvedValue([
+			mockQdrantClient.query.mockResolvedValue([
 				{ score: 0.8, payload: { task_id: 't1', content: 'p', host_os: 'h1', message_index: 3 } }
 			]);
 
@@ -3195,7 +3196,7 @@ describe('#2609 V3 result quality', () => {
 	});
 
 	test('anchor without message_index skips context expansion entirely (legacy points)', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 'old', content: 'legacy point without message_index', host_os: 'h1' } }
 		]);
 
@@ -3265,7 +3266,7 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 		// Raw ANN order: the fragment OUTSCORES the passage on token overlap —
 		// exactly the live q4 measurement (" est close." at rank 4, 0.705, above
 		// substantive passages). The malus must flip the task order.
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.83, payload: { task_id: 'task-fragment', content: ' est close.', host_os: 'h1' } },
 			{ score: 0.78, payload: { task_id: 'task-passage', content: PASSAGE, host_os: 'h1' } }
 		]);
@@ -3300,7 +3301,7 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 		// Ten words is the floor; this chunk is exactly at it.
 		const tenWords = 'one two three four five six seven eight nine ten';
 		expect(passageQualityFactor(tenWords).applied).toBe(false);
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 'task-ok', content: tenWords, host_os: 'h1' } }
 		]);
 
@@ -3319,7 +3320,7 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 	test('word count is measured on trimmed content (padding cannot dodge the malus)', async () => {
 		// The text is a 2-word fragment padded with whitespace — trimming is what
 		// keeps the measurement about the passage, not about the padding.
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 'task-pad', content: ' est close.'.padEnd(50, ' '), host_os: 'h1' } }
 		]);
 
@@ -3337,7 +3338,7 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 
 	test('rollback SEMANTIC_FRAGMENT_MALUS=0 restores raw score and reports disabled', async () => {
 		process.env.SEMANTIC_FRAGMENT_MALUS = '0';
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.83, payload: { task_id: 'task-fragment', content: ' est close.', host_os: 'h1' } }
 		]);
 
@@ -3361,7 +3362,7 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 		process.env.SEMANTIC_FRAGMENT_MALUS = 'legacy';
 		const fortyChars = 'x'.repeat(40); // one "word", but 40 chars → untouched by legacy
 		const cjkLong = 'モデルが期待どおりに推論を完了したことが、この会話の決定事項として記録されています。'.repeat(2);
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.9, payload: { task_id: 'task-under', content: 'a one two three four five', host_os: 'h1' } },
 			{ score: 0.9, payload: { task_id: 'task-over', content: fortyChars, host_os: 'h1' } },
 			// r2: the CJK word counting must not shift the legacy arm — a
@@ -3396,7 +3397,7 @@ describe('#2609 V3 cross-conversation quality — graded passage de-rank', () =>
 	});
 
 	test('fragment is de-ranked, never hidden — sole hit still returned', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.9, payload: { task_id: 'task-only', content: ' oui.', host_os: 'h1' } }
 		]);
 
@@ -3541,7 +3542,7 @@ describe('#4352 machine-output de-rank', () => {
 	});
 
 	test('a mode prompt is de-ranked and reported under its own kind', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.84, payload: { task_id: 'task-mode', chunk_type: 'message_exchange', role: 'system', content: MODE_BLOCK, host_os: 'h1' } },
 			{ score: 0.78, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', role: 'assistant', content: PROSE, host_os: 'h1' } }
 		]);
@@ -3560,7 +3561,7 @@ describe('#4352 machine-output de-rank', () => {
 	});
 
 	test('a mode prompt leaves the page under exclude_tool_results', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.9, payload: { task_id: 'task-mode', chunk_type: 'message_exchange', content: MODE_BLOCK + ' padding to stay above the passage floor of one hundred characters.' }, host_os: 'h1' },
 			{ score: 0.8, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', content: PROSE, host_os: 'h1' } }
 		]);
@@ -3578,7 +3579,7 @@ describe('#4352 machine-output de-rank', () => {
 	});
 
 	test('tool result de-ranked below the prose passage that explains it', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.82, payload: { task_id: 'task-tool', chunk_type: 'message_exchange', role: 'user', content: CLAUDE_TOOL_RESULT, host_os: 'h1' } },
 			{ score: 0.78, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', role: 'assistant', content: PROSE, host_os: 'h1' } }
 		]);
@@ -3604,7 +3605,7 @@ describe('#4352 machine-output de-rank', () => {
 	});
 
 	test('prose-only results keep raw scores and observability stays quiet', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', content: PROSE, host_os: 'h1' } }
 		]);
 
@@ -3624,7 +3625,7 @@ describe('#4352 machine-output de-rank', () => {
 		// Review pt 1: `Bash: ls` is 2 "words" — r1 stacked the thinness ramp
 		// (0.88) UNDER the machine ×0.85, taxing the same defect twice against
 		// the PR's own doc block. The ramp now skips classified machine output.
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8, payload: { task_id: 'task-call', chunk_type: 'tool_interaction', content: 'Bash: ls', host_os: 'h1' } }
 		]);
 
@@ -3644,7 +3645,7 @@ describe('#4352 machine-output de-rank', () => {
 
 	test('rollback SEMANTIC_MACHINE_OUTPUT_MALUS=0 restores raw order and reports disabled', async () => {
 		process.env.SEMANTIC_MACHINE_OUTPUT_MALUS = '0';
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.82, payload: { task_id: 'task-tool', chunk_type: 'message_exchange', content: CLAUDE_TOOL_RESULT, host_os: 'h1' } },
 			{ score: 0.78, payload: { task_id: 'task-prose', chunk_type: 'message_exchange', content: PROSE, host_os: 'h1' } }
 		]);
@@ -3663,7 +3664,7 @@ describe('#4352 machine-output de-rank', () => {
 	});
 
 	test('machine output is de-ranked, never hidden — sole hit still returned', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.9, payload: { task_id: 'task-only', chunk_type: 'message_exchange', content: CLAUDE_TOOL_RESULT, host_os: 'h1' } }
 		]);
 
@@ -3787,7 +3788,7 @@ describe('#2609 q4 — request-form de-rank', () => {
 	});
 
 	test('a request no longer outranks a coherent passage through the handler', async () => {
-		mockQdrantClient.search.mockResolvedValue([
+		mockQdrantClient.query.mockResolvedValue([
 			{ score: 0.8914, payload: { task_id: 'task-ask', chunk_type: 'message_exchange', content: 'Représente moi stp tous les arbitrages en détail avec tes recommandations', host_os: 'h1' } },
 			{ score: 0.8303, payload: { task_id: 'task-passage', chunk_type: 'message_exchange', content: 'Carried forward: the user approved four arbitrages — OK pour ton tri, OK pour changer la règle. La cadence reste à 3h parce que la charge de coordination baisse.', host_os: 'h1' } },
 		]);

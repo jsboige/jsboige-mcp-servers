@@ -38,7 +38,7 @@ vi.mock('../openai.js', () => ({
 
 vi.mock('../qdrant.js', () => ({
   getQdrantClient: () => ({
-    search: (...args: any[]) => mockQdrantSearch(...args),
+    query: (...args: any[]) => mockQdrantSearch(...args), // #4808: client 1.20 removed search(); query() is the equivalent
   }),
 }));
 
@@ -65,7 +65,7 @@ function lastSearchArg(): any {
 beforeEach(() => {
   vi.clearAllMocks();
   mockEmbeddingsCreate.mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] });
-  mockQdrantSearch.mockResolvedValue([]); // pas de résultat → on n'exerce que le build du filtre
+  mockQdrantSearch.mockResolvedValue({ points: [] }); // pas de résultat → on n'exerce que le build du filtre
   mockFindConversationById.mockResolvedValue(null);
   mockAccess.mockRejectedValue(new Error('ENOENT'));
   mockReadFile.mockRejectedValue(new Error('ENOENT'));
@@ -148,9 +148,9 @@ describe('reconstructAllChunksForTask — fallback archive GDrive (coverage comp
 
   test('archive trouvée → pousse les messages, arms timestamp présent/absent (L118-133)', async () => {
     armArchiveMock();
-    mockQdrantSearch.mockResolvedValue([
+    mockQdrantSearch.mockResolvedValue({ points: [
       { id: 't-arch', version: 0, score: 0.9, payload: { task_id: 't-arch', chunk_type: 'message_exchange', content: 'x', sequence_order: 0 } },
-    ]);
+    ] });
     mockFindConversationById.mockResolvedValue(null); // pas de local → chunks vide → fallback
     mockReadArchivedTask.mockResolvedValue({
       machineId: 'myia-ai-01',
@@ -167,9 +167,9 @@ describe('reconstructAllChunksForTask — fallback archive GDrive (coverage comp
 
   test('archive en échec → catch swallow, retourne un tableau (L135-137)', async () => {
     armArchiveMock();
-    mockQdrantSearch.mockResolvedValue([
+    mockQdrantSearch.mockResolvedValue({ points: [
       { id: 't-arch2', version: 0, score: 0.9, payload: { task_id: 't-arch2', chunk_type: 'message_exchange', content: 'x', sequence_order: 0 } },
-    ]);
+    ] });
     mockFindConversationById.mockResolvedValue(null);
     mockReadArchivedTask.mockRejectedValue(new Error('archive boom'));
 
