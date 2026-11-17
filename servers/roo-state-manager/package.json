@@ -58,7 +58,9 @@
     "pg": "^8.13.0",
     "proper-lockfile": "^4.1.2",
     "sqlite3": "^5.1.7",
+    "tree-sitter-wasms": "^0.1.12",
     "uuid": "^13.0.0",
+    "web-tree-sitter": "^0.25.6",
     "winston": "^3.17.0",
     "xmlbuilder2": "^4.0.3",
     "zod-to-json-schema": "^3.24.6"
