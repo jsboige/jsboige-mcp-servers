@@ -4,7 +4,28 @@ import { StateManagerError } from '../types/errors.js';
 import { createLogger, Logger } from '../utils/logger.js';
 import { refreshChatKeyEnvIfChanged } from './chat-key-refresh.js';
 import { resolveChatApiKey } from './chat-key.js';
-import { getEmbeddingClientTimeoutMs, getEmbeddingEndpointPlan } from './embedding-endpoints.js';
+import { getEmbeddingClientTimeoutMs, getEmbeddingEndpointPlan, withoutExplicitContentLength } from './embedding-endpoints.js';
+
+/**
+ * #4824: the single-endpoint embedding plan's fetch — same content-length
+ * strip the failover wrapper applies (#4823/ms#1801). Measured 17/11 (po-204,
+ * Node 24.6.0 + 24.14.1): that plan rode the SDK's own transport (node-fetch
+ * under the `node` condition, node:http-based) and so never reached the
+ * process-global undici dispatcher where a caller-set content-length is
+ * doubled and rejected pre-connect — but that immunity is the SDK's transport
+ * choice, not a property of our code. This strip keeps the plan safe
+ * regardless of which fetch actually serves it.
+ *
+ * The chat clients (getChatOpenAIClient / getFallbackChatOpenAIClient) are
+ * deliberately NOT wired here: routing them through global fetch would swap
+ * the SDK's agentkeepalive transport (agent timeout bumped to the 30-min
+ * condensation ceiling) for undici Agent defaults (headersTimeout/bodyTimeout
+ * 300 s) — trading a measured-absent failure for a real one on >5-min
+ * thinking-mode condensations. Measured-immunity tripwires live in
+ * openai.clients.content-length.test.ts.
+ */
+const withoutExplicitContentLengthFetch: typeof fetch = (input, init) =>
+  fetch(input, withoutExplicitContentLength(init ?? {}));
 
 let openai: OpenAI | null = null;
 // #4352 (a5): interactive queries get their own singleton so their short
@@ -100,7 +121,9 @@ function buildEmbeddingOpenAIClient(mode: 'index' | 'query'): OpenAI {
     // Interactive clients must respect their total failover budget: an SDK-level
     // retry after the wrapper exhausted every endpoint would double the wait.
     maxRetries: mode === 'query' && failoverActive ? 0 : 1,
-    ...(plan.fetch ? { fetch: plan.fetch } : {}),
+    // #4824: the failover wrapper when active; the same content-length strip on
+    // the legacy single-endpoint contract — never the SDK's bare default fetch.
+    fetch: plan.fetch ?? withoutExplicitContentLengthFetch,
   });
 }
 
