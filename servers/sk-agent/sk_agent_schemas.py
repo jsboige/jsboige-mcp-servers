@@ -448,6 +448,11 @@ class ModelSpec(_StrictModel):
     def _validate_base_url(cls, value: str) -> str:
         if not value:
             raise ValueError("base_url must not be empty")
+        # #4814: a `${VAR}` placeholder is resolved at load time from the
+        # seat environment (expand_placeholders_in_string in
+        # sk_agent_config); the http(s) literal check stays for typos.
+        if value.startswith("${"):
+            return value
         if not value.startswith(("http://", "https://")):
             raise ValueError(
                 f"base_url must start with http:// or https:// (got {value!r})"

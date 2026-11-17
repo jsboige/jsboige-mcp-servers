@@ -164,6 +164,48 @@ def is_self_referential_mcp(mcp_id: str, args: list[str]) -> bool:
 _ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
+def expand_placeholders_in_string(
+    value: str,
+    source: Mapping[str, str],
+    *,
+    label: str,
+) -> str:
+    """Expand ``${VAR}`` / ``${VAR:-default}`` in one config string (#4814).
+
+    Same shell semantics as :func:`expand_env_placeholders` (which delegates
+    here per MCP env value); ``label`` prefixes the unset-without-default
+    warning so the log names what was being resolved. Shared by MCP ``env``
+    values (vllm#63) and model ``base_url`` (#4814): the shipped template
+    carries a seat-resolved placeholder there, resolved against the sk-agent
+    process environment at load.
+
+    Args:
+        value: The string to expand (not modified).
+        source: Source environment mapping.
+        label: Log prefix naming the config entry being resolved.
+
+    Returns:
+        The expanded string (the input unchanged when no placeholder matches).
+    """
+
+    def _resolve(match: re.Match[str]) -> str:
+        name, default = match.group(1), match.group(2)
+        current = source.get(name)
+        if default is not None:
+            return current if current else default
+        if current is not None:
+            return current
+        log.warning(
+            "%s: ${%s} is unset and has no default; "
+            "passing the placeholder through literally",
+            label,
+            name,
+        )
+        return match.group(0)
+
+    return _ENV_PLACEHOLDER_RE.sub(_resolve, value)
+
+
 def expand_env_placeholders(
     env: Mapping[str, Any],
     environ: Mapping[str, str] | None = None,
@@ -195,23 +237,9 @@ def expand_env_placeholders(
         if not isinstance(value, str) or "${" not in value:
             expanded[key] = value
             continue
-
-        def _resolve(match: re.Match[str], key: str = key) -> str:
-            name, default = match.group(1), match.group(2)
-            current = source.get(name)
-            if default is not None:
-                return current if current else default
-            if current is not None:
-                return current
-            log.warning(
-                "MCP env %s: ${%s} is unset and has no default; "
-                "passing the placeholder through literally",
-                key,
-                name,
-            )
-            return match.group(0)
-
-        expanded[key] = _ENV_PLACEHOLDER_RE.sub(_resolve, value)
+        expanded[key] = expand_placeholders_in_string(
+            value, source, label=f"MCP env {key}"
+        )
     return expanded
 
 
@@ -345,9 +373,17 @@ class ModelConfig:
                 exc,
             )
             gate, gate_error = raw_gate, str(exc)
+        model_id = data.get("id", "unknown")
         return cls(
-            id=data.get("id", "unknown"),
-            base_url=data.get("base_url", "https://api.medium.text-generation-webui.myia.io/v1"),
+            id=model_id,
+            # #4814: the shipped template carries ${HUB_BASE_URL} here (the
+            # literal LAN endpoint left the public repo); resolve it at load
+            # against this process's environment, same semantics as MCP env.
+            base_url=expand_placeholders_in_string(
+                data.get("base_url", "https://api.medium.text-generation-webui.myia.io/v1"),
+                os.environ,
+                label=f"model {model_id} base_url",
+            ),
             api_key=data.get("api_key", "no-key"),
             api_key_env=data.get("api_key_env", ""),
             model_id=data.get("model_id", data.get("id", "default")),

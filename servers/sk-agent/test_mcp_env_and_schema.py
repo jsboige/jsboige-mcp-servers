@@ -35,7 +35,12 @@ from sk_agent import (
     SchemaNormalizingMCPStdioPlugin,
     normalize_tool_schema,
 )
-from sk_agent_config import McpConfig, SKAgentConfig, expand_env_placeholders
+from sk_agent_config import (
+    McpConfig,
+    ModelConfig,
+    SKAgentConfig,
+    expand_env_placeholders,
+)
 
 
 # Shapes taken from roo-state-manager tool-definitions.ts:
@@ -302,3 +307,56 @@ def test_plugin_process_receives_expanded_env(tmp_path, monkeypatch):
     url, default = asyncio.run(scenario())
     assert url == "http://localhost:8000"
     assert default == "http://open-terminal-myia:8000"
+
+
+# ---------------------------------------------------------------------------
+# #4814 — ${VAR} placeholders in model base_url
+#
+# The template ships `base_url: ${HUB_BASE_URL}` (topology fix: the literal
+# LAN endpoint left the public repo). ModelConfig.from_dict resolves it at
+# load against the sk-agent process environment — same semantics as the MCP
+# env expansion above, shared helper.
+# ---------------------------------------------------------------------------
+
+
+def test_model_base_url_placeholder_expands_at_load(monkeypatch):
+    monkeypatch.setenv("HUB_BASE_URL", "http://hub.internal.example/v1")
+    cfg = ModelConfig.from_dict(
+        {"id": "glm-test", "base_url": "${HUB_BASE_URL}", "api_key": "k"}
+    )
+    assert cfg.base_url == "http://hub.internal.example/v1"
+
+
+def test_model_base_url_placeholder_default_applies(monkeypatch):
+    monkeypatch.delenv("HUB_BASE_URL", raising=False)
+    cfg = ModelConfig.from_dict(
+        {
+            "id": "glm-test",
+            "base_url": "${HUB_BASE_URL:-https://fallback.myia.io/v1}",
+            "api_key": "k",
+        }
+    )
+    assert cfg.base_url == "https://fallback.myia.io/v1"
+
+
+def test_model_base_url_placeholder_unset_is_kept_and_warned(
+    monkeypatch, caplog
+):
+    monkeypatch.delenv("HUB_BASE_URL", raising=False)
+    with caplog.at_level(logging.WARNING, logger="sk-agent.config"):
+        cfg = ModelConfig.from_dict(
+            {"id": "glm-test", "base_url": "${HUB_BASE_URL}", "api_key": "k"}
+        )
+    assert cfg.base_url == "${HUB_BASE_URL}"
+    assert "HUB_BASE_URL" in caplog.text and "glm-test" in caplog.text
+
+
+def test_model_base_url_literal_is_untouched():
+    cfg = ModelConfig.from_dict(
+        {
+            "id": "x",
+            "base_url": "https://api.medium.text-generation-webui.myia.io/v1",
+            "api_key": "k",
+        }
+    )
+    assert cfg.base_url == "https://api.medium.text-generation-webui.myia.io/v1"

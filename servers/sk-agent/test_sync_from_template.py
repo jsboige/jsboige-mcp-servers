@@ -11,6 +11,7 @@ The bench copies the REAL script into a tmp dir with fixture template/local conf
 """
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -936,4 +937,74 @@ def test_template_searxng_url_is_runtime_placeholder_not_literal_endpoint():
     assert not url.startswith(("http://", "https://")), (
         f"a literal endpoint in the shared template 401s (or leaks a private "
         f"instance) on every seat built from it (#4807): {url!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# #4814 — the shipped template must not publish fleet topology
+#
+# The template is versioned in a PUBLIC repo (jsboige/jsboige-mcp-servers):
+# a literal hub base_url publishes the fleet's private LAN address, and a
+# docker-network hostname inside a `${VAR:-default}` default publishes
+# internal topology to anyone who can clone. #4807 fixed the searxng URL;
+# this contract covers EVERY string in the file: no literal IPv4 anywhere,
+# and any host — literal or inside a `${VAR:-default}` default — must be a
+# pure `${VAR}` placeholder (no host at all) or live in the myia namespace
+# (public DNS, already published: myia.io, *.myia.io, myia-* tails that the
+# searxng/open-webui entries already carry). Model base_url placeholders are
+# resolved at load by expand_placeholders_in_string (#4814 extension of the
+# #1317 env expansion).
+# ---------------------------------------------------------------------------
+
+_IPV4_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b")
+_PLACEHOLDER_SPAN_RE = re.compile(r"\$\{[^}]*\}")
+_URL_HOST_RE = re.compile(r"://([A-Za-z0-9._-]+)")
+
+
+def _iter_template_strings(node, path="template"):
+    if isinstance(node, str):
+        yield path, node
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            yield from _iter_template_strings(value, f"{path}.{key}")
+    elif isinstance(node, list):
+        for index, value in enumerate(node):
+            yield from _iter_template_strings(value, f"{path}[{index}]")
+
+
+def _hosts_outside_myia_namespace(text):
+    """Non-myia hosts named by URLs in text, counting `${VAR:-default}` defaults.
+
+    Placeholder spans are replaced by their default (empty when none), so a
+    host hidden in a default is checked exactly like a literal one.
+    """
+    resolved = _PLACEHOLDER_SPAN_RE.sub(lambda m: m.group(0)[2:-1].split(":-", 1)[-1], text)
+    offenders = []
+    for match in _URL_HOST_RE.finditer(resolved):
+        host = match.group(1)
+        if host == "myia.io" or host.endswith(".myia.io") or host.startswith("myia-"):
+            continue
+        offenders.append(host)
+    return offenders
+
+
+def test_template_publishes_no_private_topology():
+    """No literal IPv4 and no host outside the myia namespace in ANY
+    template string, including `${VAR:-default}` defaults (#4814)."""
+    template = json.loads(
+        (SK_AGENT_DIR / "sk_agent_config.template.json").read_text(encoding="utf-8")
+    )
+    problems = []
+    for path, value in _iter_template_strings(template):
+        if _IPV4_RE.search(value):
+            problems.append(f"{path}: literal IPv4 in {value!r}")
+        for host in _hosts_outside_myia_namespace(value):
+            problems.append(
+                f"{path}: host {host!r} outside the myia namespace in {value!r}"
+            )
+    assert not problems, (
+        "the template lives in a public repo — internal topology (private LAN "
+        "IP, docker-network hostname) must be a seat-resolved ${VAR} "
+        "placeholder, never a literal or a default (#4814):\n  "
+        + "\n  ".join(problems)
     )
