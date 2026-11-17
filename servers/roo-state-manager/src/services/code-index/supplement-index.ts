@@ -31,6 +31,7 @@ import { closeSync, openSync, readFileSync, readSync, statSync } from 'fs';
 import { join } from 'path';
 import { classifyZooPath } from './zoo-eligibility.js';
 import { listGitVisiblePaths, readOriginUrl } from './git-visible.js';
+import { responsePoints } from './ws-index-writer.js';
 // #4736 P1: the vectors-config parser is shared with the ws-* probe so the sup-
 // template read and the ws-* probe can never drift on the shape they parse.
 import { parseVectorsConfig } from './collection-naming.js';
@@ -453,7 +454,10 @@ export interface QdrantLike {
 				with_payload: true,
 				with_vector: false,
 			});
-			const point = (res?.points ?? res?.result?.points ?? [])[0];
+			// #1792: the pinned SDK unwraps `response.data.result`, so `retrieve`
+			// answers a BARE ARRAY of points — reading only enveloped shapes made
+			// the mono-writer sentinel read as absent on every call (blind guard).
+			const point = responsePoints(res)[0];
 			const payload = point?.payload;
 			if (payload && typeof payload.writer === 'string') {
 				return {

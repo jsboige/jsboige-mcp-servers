@@ -375,7 +375,7 @@ const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
  * (the mono-writer guard was blind). Accept all four shapes, SDK-unwrapped
  * first — that is what the live client hands us.
  */
-function responsePoints(res: any): any[] {
+export function responsePoints(res: any): any[] {
 	if (Array.isArray(res)) return res;
 	if (Array.isArray(res?.result)) return res.result;
 	return res?.result?.points ?? res?.points ?? [];

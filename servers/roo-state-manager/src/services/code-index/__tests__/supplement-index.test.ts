@@ -110,11 +110,14 @@ class FakeQdrant implements QdrantLike {
 		});
 	}
 
+	// The pinned SDK (@qdrant/js-client-rest 1.16.2) unwraps `response.data.result`:
+	// `retrieve` answers a BARE ARRAY of points (measured, ms#1789 living proof).
+	// A fake that invents `{ points: [...] }` would verify the fix against fiction.
 	async retrieve(name: string, body: any) {
 		const c = this.collections.get(name);
 		if (!c) throw new Error('not found');
 		const ids: string[] = body?.ids ?? [];
-		return { points: ids.filter((id) => c.points.has(id)).map((id) => ({ id, payload: c.points.get(id)!.payload })) };
+		return ids.filter((id) => c.points.has(id)).map((id) => ({ id, payload: c.points.get(id)!.payload }));
 	}
 
 	async scroll(name: string, body: any) {
