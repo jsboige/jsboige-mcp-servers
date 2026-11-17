@@ -977,9 +977,8 @@ def test_template_url_fields_publish_no_internal_topology():
     raw = (SK_AGENT_DIR / "sk_agent_config.template.json").read_text(
         encoding="utf-8"
     )
-    assert not _IPV4_LITERAL_RE.search(raw), (
-        "template publishes an IPv4 literal (#4814)"
-    )
+    if _IPV4_LITERAL_RE.search(raw):
+        raise AssertionError("template publishes an IPv4 literal (#4814)")
 
     template = json.loads(raw)
     violations: list[str] = []

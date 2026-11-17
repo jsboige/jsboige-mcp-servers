@@ -62,6 +62,11 @@ SCHEMA_VERSION: int = 2
 #: mixed-case here catches typos early.
 ENV_VAR_NAME_PATTERN: str = r"^[A-Z][A-Z0-9_]*$"
 
+#: Runtime URL placeholder (``${VAR}``, no default): the shared template can
+#: name a seat-resolved endpoint without publishing it (#4814). The facade
+#: expands it against the server environment before building model clients.
+_RUNTIME_URL_PLACEHOLDER_PATTERN: str = r"\$\{[A-Z][A-Z0-9_]*\}"
+
 #: Placeholder pattern used by ``sk_agent_config.template.json`` to mark
 #: "fill this in with your real key at deploy time". When a model carries
 #: an ``api_key`` literal matching this pattern, the schema routes the
@@ -448,6 +453,8 @@ class ModelSpec(_StrictModel):
     def _validate_base_url(cls, value: str) -> str:
         if not value:
             raise ValueError("base_url must not be empty")
+        if re.fullmatch(_RUNTIME_URL_PLACEHOLDER_PATTERN, value):
+            return value
         if not value.startswith(("http://", "https://")):
             raise ValueError(
                 f"base_url must start with http:// or https:// (got {value!r})"

@@ -551,6 +551,29 @@ class TestLoadConfig:
         assert cfg.config_version == 2
         assert len(cfg.agents) == 3
 
+    def test_load_v2_expands_model_base_url_placeholder(
+        self, tmp_path, v2_config, monkeypatch
+    ):
+        """``${ZAI_BASE_URL}`` resolves from the server environment (#4814)."""
+        v2_config["models"][0]["base_url"] = "${ZAI_BASE_URL}"
+        path = tmp_path / "v2.json"
+        path.write_text(json.dumps(v2_config), encoding="utf-8")
+        monkeypatch.setenv("ZAI_BASE_URL", "http://hub.example.test/v1")
+        cfg = load_config(str(path))
+        assert cfg.models[0].base_url == "http://hub.example.test/v1"
+
+    def test_load_v2_keeps_unset_model_base_url_placeholder(
+        self, tmp_path, v2_config, monkeypatch
+    ):
+        """No default: an unset hub variable stays visible instead of
+        silently routing to a published endpoint (#4814)."""
+        v2_config["models"][0]["base_url"] = "${ZAI_BASE_URL}"
+        path = tmp_path / "v2.json"
+        path.write_text(json.dumps(v2_config), encoding="utf-8")
+        monkeypatch.delenv("ZAI_BASE_URL", raising=False)
+        cfg = load_config(str(path))
+        assert cfg.models[0].base_url == "${ZAI_BASE_URL}"
+
     def test_load_v1_default_agents(self, config_file):
         """After migration, default agents are set correctly."""
         cfg = load_config(config_file)

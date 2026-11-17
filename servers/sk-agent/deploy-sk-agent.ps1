@@ -110,7 +110,7 @@ if (-not $SkipConfig) {
             @{
                 id = "glm-5.3"
                 enabled = $true
-                base_url = "http://192.168.0.50:3000/v1"
+                base_url = '${ZAI_BASE_URL}'
                 api_key = ""  # À remplir
                 model_id = "glm-5.3"
                 vision = $false
@@ -120,7 +120,7 @@ if (-not $SkipConfig) {
             @{
                 id = "glm-5.3-flash"
                 enabled = $true
-                base_url = "http://192.168.0.50:3000/v1"
+                base_url = '${ZAI_BASE_URL}'
                 api_key = ""  # À remplir
                 model_id = "glm-5.3-flash"
                 vision = $false

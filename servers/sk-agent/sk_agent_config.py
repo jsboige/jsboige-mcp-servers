@@ -164,6 +164,39 @@ def is_self_referential_mcp(mcp_id: str, args: list[str]) -> bool:
 _ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
+def expand_placeholder_string(
+    value: Any,
+    environ: Mapping[str, str] | None = None,
+    context: str = "value",
+) -> Any:
+    """Expand ``${VAR}`` / ``${VAR:-default}`` in one config string.
+
+    Same shell semantics as :func:`expand_env_placeholders`; ``context`` only
+    names the field in the unset-without-default warning. Non-string values
+    and text without placeholders pass through unchanged.
+    """
+    if not isinstance(value, str) or "${" not in value:
+        return value
+    source = os.environ if environ is None else environ
+
+    def _resolve(match: re.Match[str]) -> str:
+        name, default = match.group(1), match.group(2)
+        current = source.get(name)
+        if default is not None:
+            return current if current else default
+        if current is not None:
+            return current
+        log.warning(
+            "%s: ${%s} is unset and has no default; "
+            "passing the placeholder through literally",
+            context,
+            name,
+        )
+        return match.group(0)
+
+    return _ENV_PLACEHOLDER_RE.sub(_resolve, value)
+
+
 def expand_env_placeholders(
     env: Mapping[str, Any],
     environ: Mapping[str, str] | None = None,
@@ -177,11 +210,6 @@ def expand_env_placeholders(
     environment while the config entry keeps winning over ``os.environ`` for
     its key (precedence unchanged).
 
-    Shell semantics: ``${VAR:-default}`` takes ``default`` when VAR is unset
-    or empty; ``${VAR}`` takes VAR's value. An unset VAR without default is
-    kept literally and logged (names only), never an error. Non-string values
-    and text without placeholders pass through unchanged.
-
     Args:
         env: The MCP entry's ``env`` mapping (not modified).
         environ: Source environment; defaults to ``os.environ``.
@@ -189,29 +217,11 @@ def expand_env_placeholders(
     Returns:
         A new dict with placeholders expanded.
     """
-    source = os.environ if environ is None else environ
     expanded: dict[str, Any] = {}
     for key, value in env.items():
-        if not isinstance(value, str) or "${" not in value:
-            expanded[key] = value
-            continue
-
-        def _resolve(match: re.Match[str], key: str = key) -> str:
-            name, default = match.group(1), match.group(2)
-            current = source.get(name)
-            if default is not None:
-                return current if current else default
-            if current is not None:
-                return current
-            log.warning(
-                "MCP env %s: ${%s} is unset and has no default; "
-                "passing the placeholder through literally",
-                key,
-                name,
-            )
-            return match.group(0)
-
-        expanded[key] = _ENV_PLACEHOLDER_RE.sub(_resolve, value)
+        expanded[key] = expand_placeholder_string(
+            value, environ, f"MCP env {key}"
+        )
     return expanded
 
 
@@ -1306,7 +1316,21 @@ def _parse_config(raw: dict) -> SKAgentConfig:
     ``config_error`` so ``call_agent`` can name it explicitly, while the
     other agents keep working.
     """
-    models = [ModelConfig.from_dict(m) for m in raw.get("models", [])]
+    models = []
+    for model_raw in raw.get("models", []):
+        if isinstance(model_raw, dict) and isinstance(
+            model_raw.get("base_url"), str
+        ):
+            context = (
+                f"models[{model_raw.get('id', 'unknown')}].base_url"
+            )
+            model_raw = {
+                **model_raw,
+                "base_url": expand_placeholder_string(
+                    model_raw["base_url"], context=context
+                ),
+            }
+        models.append(ModelConfig.from_dict(model_raw))
     mcps = [
         _parse_mcp_at(index, entry)
         for index, entry in enumerate(raw.get("mcps", []))
