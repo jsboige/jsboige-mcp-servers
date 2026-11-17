@@ -276,6 +276,38 @@ class McpConfigRejectedError(Exception):
         }
 
 
+class ModelBaseUrlUnresolvedError(Exception):
+    """An agent's model still carries an unresolved base_url (#4814).
+
+    The shared template ships hub endpoints as ``${HUB_BASE_URL}``
+    placeholders; a seat rebuilt from it before provisioning resolves them
+    to nothing. The load-time counterpart (``base_url_error`` on
+    ModelConfig, set in ``_parse_config``) keeps the value verbatim and
+    takes the model out of the pool; this refusal makes agent resolution
+    fail legibly, naming the variable — instead of an invalid-URL error
+    at call time, far from its cause, on every hub model of the seat.
+    Same typed-refusal contract as McpRuntimeUnavailableError (#4741).
+    """
+
+    def __init__(self, agent_id: str, model_id: str, reason: str):
+        self.agent_id = agent_id
+        self.model_id = model_id
+        self.reason = reason
+        super().__init__(
+            f"agent '{agent_id}' uses model '{model_id}' whose base_url "
+            f"did not resolve ({reason})"
+        )
+
+    def to_payload(self) -> dict[str, Any]:
+        """Typed refusal payload for the tool-call surface (#4814)."""
+        return {
+            "error": "model_base_url_unresolved",
+            "agent_id": self.agent_id,
+            "model_id": self.model_id,
+            "reason": self.reason,
+        }
+
+
 def _sanitize_agent_name(name: str) -> str:
     sanitized = _INVALID_NAME_CHARS.sub("-", name)
     return sanitized.strip("-")
@@ -941,6 +973,18 @@ class SKAgentManager:
         """
         for model_cfg in self.config.models:
             if not model_cfg.enabled:
+                continue
+
+            if model_cfg.base_url_error is not None:
+                # #4814: fail closed — an unresolved ${HUB_BASE_URL}
+                # placeholder (or an empty expansion) is a provisioning
+                # gap, not an endpoint; the model stays out of the pool
+                # and agent resolution refuses naming the variable.
+                log.error(
+                    "Model pool: SKIPPED model '%s': %s",
+                    model_cfg.id,
+                    model_cfg.base_url_error,
+                )
                 continue
 
             if model_cfg.default_headers_error is not None:
@@ -1630,6 +1674,20 @@ class SKAgentManager:
                 "Agent '%s': model '%s' not available", agent_id, agent_cfg.model
             )
             return None
+        # #4814: refuse, typed, when the model's base_url is an unresolved
+        # placeholder (seat rebuilt from the template before provisioning)
+        # — same legible-failure contract as #4741, instead of an
+        # invalid-URL error at call time far from its cause.
+        if model.base_url_error is not None:
+            log.error(
+                "Agent '%s': refusing creation (#4814): model '%s': %s",
+                agent_id,
+                model.id,
+                model.base_url_error,
+            )
+            raise ModelBaseUrlUnresolvedError(
+                agent_id, model.id, model.base_url_error
+            )
 
         # Create the agent
         await self._create_agent(agent_cfg, model)
@@ -2877,6 +2935,13 @@ class SKAgentManager:
                 # #4755 W1: same contract for an entry rejected at load —
                 # typed refusal, no LLM call, nothing to roll back.
                 log.warning("call_agent refused (#4755): %s", e)
+                return self._apply_turn_envelope(e.to_payload(), conv_id)
+            except ModelBaseUrlUnresolvedError as e:
+                # #4814: same typed-refusal contract — no LLM call was
+                # made (agent resolution raised before the turn began),
+                # nothing to roll back; the payload names the variable to
+                # set in the sk-agent server environment.
+                log.warning("call_agent refused (#4814): %s", e)
                 return self._apply_turn_envelope(e.to_payload(), conv_id)
             except Exception as e:
                 # #4107 guard 3 (volet C of #4085): a failing model call — the mini
@@ -4689,6 +4754,13 @@ async def run_conversation(
     except McpConfigRejectedError as e:
         # #4755 W1: same contract for an entry rejected at config load.
         log.warning("run_conversation refused (#4755): %s", e)
+        payload = e.to_payload()
+        payload["conversation_id"] = conversation_id or conversation or None
+        return json.dumps(payload, ensure_ascii=False)
+    except ModelBaseUrlUnresolvedError as e:
+        # #4814: same contract for a model whose base_url placeholder did
+        # not resolve — the payload names the variable to set.
+        log.warning("run_conversation refused (#4814): %s", e)
         payload = e.to_payload()
         payload["conversation_id"] = conversation_id or conversation or None
         return json.dumps(payload, ensure_ascii=False)

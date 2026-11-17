@@ -946,7 +946,7 @@ def test_template_searxng_url_is_runtime_placeholder_not_literal_endpoint():
 # The repository is public. A private-range endpoint is not a secret, but a
 # literal LAN IP (or a non-myia internal hostname) in the canonical template
 # publishes the fleet's network layout and pins every rebuilt seat to one
-# seat-specific endpoint. Runtime placeholders (`${ZAI_BASE_URL}`,
+# seat-specific endpoint. Runtime placeholders (`${HUB_BASE_URL}`,
 # `${OPEN_TERMINAL_URL}`) are the canonical form: each seat resolves them from
 # the sk-agent server environment. Failure messages deliberately name fields,
 # never values, so a red run cannot leak the topology it is rejecting.
@@ -1011,7 +1011,7 @@ def test_template_url_fields_publish_no_internal_topology():
     hub_ids = {"glm-5.3", "glm-5.3-flash", "frognano-4b"}
     for model in template["models"]:
         if model.get("id") in hub_ids:
-            assert model["base_url"] == "${ZAI_BASE_URL}", (
+            assert model["base_url"] == "${HUB_BASE_URL}", (
                 f"{model['id']}: hub base_url must be the runtime placeholder"
             )
 

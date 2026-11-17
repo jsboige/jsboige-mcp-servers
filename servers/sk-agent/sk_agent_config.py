@@ -197,6 +197,52 @@ def expand_placeholder_string(
     return _ENV_PLACEHOLDER_RE.sub(_resolve, value)
 
 
+def _unresolved_base_url_error(
+    expanded: object, original: object
+) -> str | None:
+    """Typed load error for a model ``base_url`` that did not resolve (#4814).
+
+    ``None`` when the URL is usable. A ``${VAR}`` still unresolved after
+    expansion (unset, no default — kept literally by
+    :func:`expand_placeholder_string`), or an expansion to an empty string,
+    is a provisioning gap that must fail legibly at load and be refused at
+    dispatch, naming the variable — never surface as an invalid-URL error
+    at call time, far from its cause.
+    """
+    if not isinstance(expanded, str):
+        return None
+    unresolved = sorted(
+        {m.group(1) for m in _ENV_PLACEHOLDER_RE.finditer(expanded)}
+    )
+    if unresolved:
+        names = ", ".join(f"${{{name}}}" for name in unresolved)
+        return (
+            f"base_url placeholder(s) {names} unresolved at load — set it "
+            "in the sk-agent server environment (#4814); there is "
+            "deliberately no default"
+        )
+    if not expanded.strip():
+        source = sorted(
+            {
+                m.group(1)
+                for m in _ENV_PLACEHOLDER_RE.finditer(
+                    original if isinstance(original, str) else ""
+                )
+            }
+        )
+        names = (
+            ", ".join(f"${{{name}}}" for name in source)
+            if source
+            else "its source variable"
+        )
+        return (
+            f"base_url expanded to an empty string ({names} set but "
+            "empty?) — set it to the hub endpoint in the sk-agent server "
+            "environment (#4814)"
+        )
+    return None
+
+
 def expand_env_placeholders(
     env: Mapping[str, Any],
     environ: Mapping[str, str] | None = None,
@@ -328,6 +374,14 @@ class ModelConfig:
     # traffic without its declared attribution), the other models stay up.
     default_headers: Any = None
     default_headers_error: str | None = None
+    # #4814: a base_url runtime placeholder (${HUB_BASE_URL}) still
+    # unresolved after expansion — or expanded to an empty string — is a
+    # provisioning gap, not a URL. Isolated like a rejected capacity_gate:
+    # the value is kept verbatim (so save_config never destroys the
+    # placeholder), and base_url_error (derived at parse, never serialized)
+    # makes the pool skip this model and agent resolution refuse naming the
+    # variable, while the other models stay callable.
+    base_url_error: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> ModelConfig:
@@ -1318,19 +1372,30 @@ def _parse_config(raw: dict) -> SKAgentConfig:
     """
     models = []
     for model_raw in raw.get("models", []):
-        if isinstance(model_raw, dict) and isinstance(
-            model_raw.get("base_url"), str
-        ):
+        raw_url = (
+            model_raw.get("base_url") if isinstance(model_raw, dict) else None
+        )
+        if isinstance(raw_url, str):
             context = (
                 f"models[{model_raw.get('id', 'unknown')}].base_url"
             )
             model_raw = {
                 **model_raw,
                 "base_url": expand_placeholder_string(
-                    model_raw["base_url"], context=context
+                    raw_url, context=context
                 ),
             }
-        models.append(ModelConfig.from_dict(model_raw))
+        model = ModelConfig.from_dict(model_raw)
+        url_error = _unresolved_base_url_error(model.base_url, raw_url)
+        if url_error is not None:
+            model.base_url_error = url_error
+            log.error(
+                "models '%s': %s — this model is left out of the pool; "
+                "the other models stay callable",
+                model.id,
+                url_error,
+            )
+        models.append(model)
     mcps = [
         _parse_mcp_at(index, entry)
         for index, entry in enumerate(raw.get("mcps", []))

@@ -6,10 +6,10 @@
 
   "models": [
     {
-      "_comment": "=== GLM cloud models via the fleet hub (claudish, #3574) === Do NOT route vision through the hub: it strips image_url parts before they reach z.ai (VERIFIED ai-01 22/09, roo-extensions#794) — vision routes local (swift-1.5-27b). Both ids probed HTTP 200 from po-2025 on 22/09; note glm-5.3-flash is not yet declared in hub /v1/models (claudish lane to declare). The endpoint ships as ${ZAI_BASE_URL} (including /v1) — set it in each seat's sk-agent server environment; there is deliberately no default (#4814).",
+      "_comment": "=== GLM cloud models via the fleet hub (claudish, #3574) === Do NOT route vision through the hub: it strips image_url parts before they reach z.ai (VERIFIED ai-01 22/09, roo-extensions#794) — vision routes local (swift-1.5-27b). Both ids probed HTTP 200 from po-2025 on 22/09; note glm-5.3-flash is not yet declared in hub /v1/models (claudish lane to declare). The endpoint ships as ${HUB_BASE_URL} (including /v1) — set it in each seat's sk-agent server environment; there is deliberately no default (#4814).",
       "id": "glm-5.3",
       "enabled": true,
-      "base_url": "${ZAI_BASE_URL}",
+      "base_url": "${HUB_BASE_URL}",
       "api_key_env": "ZAI_API_KEY",
       "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
       "model_id": "glm-5.3",
@@ -21,7 +21,7 @@
     {
       "id": "glm-5.3-flash",
       "enabled": true,
-      "base_url": "${ZAI_BASE_URL}",
+      "base_url": "${HUB_BASE_URL}",
       "api_key_env": "ZAI_API_KEY",
       "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
       "model_id": "glm-5.3-flash",
@@ -35,7 +35,7 @@
       "_comment": "=== Mini tier (#4107, volet C of #4085) — economy routing: delegate reading and mechanical recomputation with objective criteria to the mini, keep judgement and decisions on the medium (doctrine #63). FrogNano-4B is served from po-2025; the hub route is the fleet-stable one (same as the GLM entries) and its /v1/models lists the BARE id `frognano-4b` — measured 2026-10-07 against the hub's /v1/models endpoint (31 ids; the namespaced form frognano@frognano-4b is absent) — proven e2e #4085 c.6019492370. Do NOT point base_url at the direct vLLM endpoint on po-2025 (:5003): it would hand the hub transport key to every client and bypass the hub's capture and attribution. thinking MUST stay false: measured, at thinking:true this 4B burns the whole output budget on reasoning and returns empty (4096/4096 reasoning tokens, #4085 c.6022769664); re-enable per call via sampling_override with a budget >= 4096 only. On this hub route the flag has no measurable effect (measured 2026-10-07) — the budget is the lever that decides whether an answer exists; it stays declared because it is harmless and is what the thinking:false path sends. max_tokens 4096 is the OUTPUT-BUDGET FLOOR measured through the hub on 2026-10-07, NOT 1024 and NOT 2048: the model reasons regardless of the flag (~1200-2500 reasoning tokens per answer), so 1024 never yields content (0/3 runs) and 2048 is stochastic in both arms (4 of 7 runs empty overall). It lives HERE and not on the presets because the runtime resolves budgets per-call/agent_spec > model > global sampling (sk_agent.py:1918-1931) and does NOT read a preset's execution.max_tokens, so a per-preset floor would be dead config. The key is the CLUSTER HUB client key — api_key_env ZAI_API_KEY, the same env var as the glm-* entries — NEVER the MINI key, which is the hub->vLLM transport credential and must not leave the hub. No literal key in this repo.",
       "id": "frognano-4b",
       "enabled": true,
-      "base_url": "${ZAI_BASE_URL}",
+      "base_url": "${HUB_BASE_URL}",
       "api_key_env": "ZAI_API_KEY",
       "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
       "model_id": "frognano-4b",
