@@ -16,7 +16,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE / "harness"
-SHA = "231c9ad8e9281ee162fc641a11889fc5600f4827"
+SHA = "40ce1b93f15d44848d91cdae4f9e7dd04f126076"
 
 
 def _load(name: str, path: Path):
@@ -178,8 +178,19 @@ def test_machine_path_gate_judges_outputs_only_and_on_the_delta(tmp_path):
 
 
 # ------------------------------------------------------------------ copy provenance
-def test_every_copied_file_carries_the_provenance_header():
-    files = [p for ext in ("*.py", "*.ps1", "*.md") for p in HARNESS.rglob(ext)]
-    assert files, "harness copy is missing"
-    missing = [str(p.relative_to(HERE)) for p in files if SHA not in p.read_text(encoding="utf-8")]
-    assert missing == []
+def test_every_copied_file_carries_its_provenance():
+    """The old blanket SHA gate confused two different ownership states.
+
+    nb_audit is still a copy of vllm@231c9ad8. nb_coder is CANONICAL HERE: its import
+    SHA is evidence of the last port, never permission to keep fixing vllm and re-copy.
+    """
+    audit = [p for ext in ("*.py", "*.ps1", "*.md") for p in (HARNESS / "nb_audit").rglob(ext)]
+    missing_audit = [str(p.relative_to(HERE)) for p in audit
+                     if "231c9ad8e9281ee162fc641a11889fc5600f4827" not in p.read_text(encoding="utf-8")]
+    assert missing_audit == []
+    coder = [p for ext in ("*.py", "*.md") for p in (HARNESS / "nb_coder").rglob(ext)]
+    missing_coder = [str(p.relative_to(HERE)) for p in coder
+                     if "Canonical home is sk-agent" not in p.read_text(encoding="utf-8")]
+    assert missing_coder == []
+    assert (HARNESS / "nb_coder" / "nb_coder_driver.py").read_text(encoding="utf-8").count(SHA) == 1
+    assert "Source of truth stays jsboige/vllm" not in (HARNESS / "README.md").read_text(encoding="utf-8")

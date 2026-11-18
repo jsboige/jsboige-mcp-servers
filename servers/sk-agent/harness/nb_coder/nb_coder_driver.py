@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
+# Imported from jsboige/vllm @ 40ce1b93f15d44848d91cdae4f9e7dd04f126076
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py
-# Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
-# re-copy, do not diverge silently.
+# Canonical home is sk-agent: new harness fixes belong here, not in vllm.
 # -----------------------------------------------------------------------------
 """nb-coder driver — stages 0-5 of the issue -> notebook -> PR harness (jsboige/vllm#431).
 
@@ -182,15 +181,40 @@ def fetch_issue(slug: str, n: int, token: str | None) -> dict:
     return issue
 
 
-def check_claim(repo: Path, n: int, lane: str) -> dict:
+def check_claim(repo: Path, n: int, lane: str, notebook: str) -> dict:
+    """#466: the check is SCOPED to this run's notebook (--paths). Unscoped, the guard
+    answers NOT_SCOPED (rc=2) whenever any PR touches the issue but none names this
+    notebook -- and the pre-#466 driver let rc=2 pass where a scoped check says BLOCKED
+    (measured on CoursIA#27018 vs PR #27025)."""
     script = repo / "scripts/check_lane_claim.py"
     if not script.is_file():
         return {"ok": None, "error": "check_lane_claim.py absent"}
-    p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane],
+    p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane,
+                        "--paths", notebook],
                        cwd=repo, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=120)
     return {"ok": p.returncode == 0, "rc": p.returncode,
             "out": (p.stdout or p.stderr).strip()[:2000]}
+
+
+def claim_verdict(cc: dict) -> str | None:
+    """Fail-closed reading of a SCOPED claim check (#466).
+
+    rc=1  -> a live claim conflicts on THIS notebook's path: refuse.
+    rc=2  -> the scoped check still cannot decide (old script without --paths, path
+             absent from every open diff): refuse rather than run unprotected -- the
+             pre-#466 driver treated this as pass-through.
+    no rc -> the guard itself is absent/broken: refuse crash-free (it used to KeyError).
+    rc=0  -> clear, proceed.
+    """
+    rc = cc.get("rc")
+    if rc == 1:
+        return "refused-claim-held-by-another-lane"
+    if rc is None:
+        return "refused-claim-check-broken"
+    if rc != 0:
+        return "refused-claim-check-not-scoped"
+    return None
 
 
 def post_claim(repo: Path, n: int, lane: str, intention: str) -> dict:
@@ -752,6 +776,34 @@ def segment_keep_valid(got: list, seg: list) -> tuple[list, list]:
             [asked[i] for i in sorted(asked) if i not in kept])
 
 
+def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
+    """Validate the addresses stage 2 will use, before paying for any build call.
+
+    CoursIA#27106 rerun: MiniMax returned 12 valid-looking plan entries with no idx.
+    segment_keep_valid() correctly dropped every one, but an empty repair then returned
+    parsed JSON and apply_create reported success with cells_written=0. Never invent the
+    indices: an unaddressable plan is a stage-1 defect and must say so, with every reason.
+    """
+    errors = []
+    seen = set()
+    if not plan_cells:
+        return ["cells is empty"]
+    for pos, cell in enumerate(plan_cells):
+        try:
+            idx = int(cell.get("idx")) if isinstance(cell, dict) else None
+        except (TypeError, ValueError):
+            idx = None
+        if idx is None:
+            errors.append(f"position {pos}: missing/non-integer idx")
+        elif not 0 <= idx < n_src_cells:
+            errors.append(f"position {pos}: idx {idx} outside 0..{n_src_cells - 1}")
+        elif idx in seen:
+            errors.append(f"position {pos}: duplicate idx {idx}")
+        else:
+            seen.add(idx)
+    return errors
+
+
 async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
                           n_src_cells: int, conventions: str,
                           src_cells: list | None = None) -> dict:
@@ -768,28 +820,74 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     with the missing idx listed."""
     all_cells: list = []
     seg_reports: list = []
+    addressing_errors = creation_plan_addressing(plan_cells, n_src_cells)
+    if addressing_errors:
+        rec["verdict"] = "stage1-unaddressable-creation-plan"
+        rec["creation_plan_addressing_errors"] = addressing_errors
+        return {}
+
+    async def ask_tranche(tranche: list, stage: str):
+        """One build tour; returns (kept, missing, parsed, env). Raises nothing — an
+        unparsed/empty answer returns parsed=None and the caller decides."""
+        env = await sk_call_retry(session, args, rec, stage,
+                                  creation_json_prompt(tranche, n_src_cells, conventions,
+                                                       src_cells), conv,
+                                  max_tokens=BUILD_MAX_TOKENS)
+        part = parse_json_block(env.get("response") or "")
+        kept, missing = segment_keep_valid((part or {}).get("cells") or [], tranche)
+        return kept, missing, part, env
+
+    def truncated(env: dict) -> bool:
+        r = (env.get("response") or "").rstrip()
+        return bool(r) and not (r.endswith("```") or r.endswith("}"))
+
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
-        env = await sk_call_retry(session, args, rec, f"2-build+{si}",
-                                  creation_json_prompt(seg, n_src_cells, conventions,
-                                                       src_cells), conv)
+        kept, missing, part, env = await ask_tranche(seg, f"2-build+{si}")
         conv = env.get("conversation_id") or conv
         chars_first = len(env.get("response") or "")
-        part = parse_json_block(env.get("response") or "")
-        got = (part or {}).get("cells") or []
-        if not part or not got:
-            rec["verdict"] = (f"stage2-{call_failure(env) or 'unparsed'}:{si}"
-                              if not part else f"stage2-empty-segment:{si}")
+        if not part and truncated(env):
+            # 18/11 wave-1c: two grains died here — the JSON was CUT mid-cell (raw
+            # tails end inside a "source" string) because thinking counts toward
+            # max_tokens. Bisect ONCE: halves the output AND the thinking a tour
+            # needs; each half parses or the grain fails named, never silent.
+            halves = [seg[:max(1, len(seg) // 2)], seg[max(1, len(seg) // 2):]]
+            kept, missing, chars_first = [], [], 0
+            for hi, half in enumerate(h for h in halves if h):
+                hkept, hmiss, hpart, henv = await ask_tranche(half, f"2-build+{si}+h{hi}")
+                conv = henv.get("conversation_id") or conv
+                chars_first += len(henv.get("response") or "")
+                if not hpart or not (hpart.get("cells") or []):
+                    if gate_refusal(henv):
+                        rec["verdict"] = gate_refusal(henv)   # scheduler defer contract
+                    else:
+                        rec["verdict"] = (f"stage2-truncated:{si}+h{hi}"
+                                          if truncated(henv)
+                                          else f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}")
+                    rec["stage2_raw_tail"] = (henv.get("response") or "")[-3000:]
+                    return {}
+                kept += hkept
+                missing += hmiss
+            kept.sort(key=lambda c: int(c["idx"]))
+            missing.sort(key=lambda c: int(c["idx"]))
+            rec.setdefault("bisected", []).append(si)
+        elif not part or not (part.get("cells") or []):
+            if gate_refusal(env):
+                rec["verdict"] = gate_refusal(env)   # scheduler defer contract
+            elif not part:
+                rec["verdict"] = f"stage2-{call_failure(env) or 'unparsed'}:{si}"
+            else:
+                rec["verdict"] = f"stage2-empty-segment:{si}"
             rec["stage2_raw_tail"] = (env.get("response") or "")[-3000:]
             return {}
-        kept, missing = segment_keep_valid(got, seg)
         repair = None
         if missing:
             # one repair round for EXACTLY the omitted cells — same prompt shape,
             # smaller tranche, so the omissions cannot hide in a long answer again
             env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
                                       creation_json_prompt(missing, n_src_cells,
-                                                           conventions), conv)
+                                                           conventions), conv,
+                                      max_tokens=BUILD_MAX_TOKENS)
             conv = env.get("conversation_id") or conv
             part2 = parse_json_block(env.get("response") or "")
             extra, missing = segment_keep_valid((part2 or {}).get("cells") or [], missing)
@@ -944,8 +1042,18 @@ def verify_structure_create(src_path: Path, built_path: Path) -> dict:
 
 
 # ---------------------------------------------------------------- sk-agent / papermill calls
-async def sk_call(session: ClientSession, args, prompt: str, conv: str | None) -> tuple[dict, float]:
-    spec = {"extends": args.agent, "sampling": {"max_tokens": args.max_tokens, "temperature": 0.4}}
+# Build/repair tours emit JSON with FULL cell sources, and Swift's thinking counts
+# toward the sampling max_tokens — a thinking-heavy tour truncates its visible JSON
+# mid-cell. Measured 18/11 wave-1c (7/7 failed): segment answers cut at 9.8K and
+# 28.5K chars, both raw tails ending mid-`"source"` string. 32 768 leaves the JSON
+# whole even when the tour thinks at length (same figure the verifier needed, 16/11).
+BUILD_MAX_TOKENS = 32768
+
+
+async def sk_call(session: ClientSession, args, prompt: str, conv: str | None,
+                  max_tokens: int | None = None) -> tuple[dict, float]:
+    spec = {"extends": args.agent,
+            "sampling": {"max_tokens": max_tokens or args.max_tokens, "temperature": 0.4}}
     payload = {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
                "include_steps": True, "agent_spec": json.dumps(spec)}
     if conv:
@@ -971,10 +1079,11 @@ RETRY_NOTE = ("\n\nNB : une tentative précédente n'a rien rendu. "
 
 
 async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, prompt: str,
-                        conv: str | None) -> dict:
+                        conv: str | None, max_tokens: int | None = None) -> dict:
     for attempt in range(2):
         tob = engine_tokens()
-        env, dt = await sk_call(session, args, prompt + (RETRY_NOTE if attempt else ""), conv)
+        env, dt = await sk_call(session, args, prompt + (RETRY_NOTE if attempt else ""), conv,
+                                max_tokens)
         toa = engine_tokens()
         rec["calls"].append({"stage": stage if not attempt else f"{stage}-retry",
                              "elapsed_s": dt, "error": env.get("error"),
@@ -998,6 +1107,37 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
 _AUTH_CODE_RE = re.compile(r"\b(?:401|403)\b")
 _AUTH_MARKERS = ("unauthorized", "authentication", "invalid proxy")
 
+# A 403 is not a credential verdict: a proxy that cannot RESOLVE the model name answers 403
+# too — `permission_error` on the OpenAI wire. The status is ambiguous, the wording is not,
+# so the body is read before the code and a code only decides when the body is silent.
+# Measured 16/11 (po-2028:claudish): 'claudish: unknown model nb-luna — not found in any
+# provider catalog or routing map' surfaced as `stage1-auth-failed`, sending the operator
+# after a credential that had not moved (vllm#457).
+_MODEL_UNRESOLVED_MARKERS = ("unknown model", "not found in any provider catalog",
+                             "routing map", "use provider@model")
+
+
+def _excerpt(err: str, marker: str = "", budget: int = 160) -> str:
+    """The part of an error that explains it, bounded.
+
+    Head+tail by default: the head names the exception, the tail names the cause. When the
+    verdict rests on a MARKER, the window is centred on that marker instead — on the measured
+    luna run the model name sat at char ~185, past the head slice and before the tail slice,
+    so head+tail alone kept the right verdict and lost the word that justified it. That gap
+    was found by the pin, not by reading the code (vllm#457).
+    """
+    if len(err) <= budget:
+        return err
+    if marker:
+        i = err.lower().find(marker)
+        if i >= 0:
+            start = max(0, i - budget // 4)
+            # The slice can open mid-token (' 403 - {...'): the verdict is read by a human
+            # first, so it starts on the token, not inside it.
+            return err[start:start + budget].strip()
+    head = budget * 2 // 3
+    return f"{err[:head]} … {err[-(budget - head - 3):]}"
+
 
 def call_failure(env: dict) -> str:
     """Verdict for a model call that never produced an answer, or "" when it answered.
@@ -1006,14 +1146,39 @@ def call_failure(env: dict) -> str:
     reporting stage1-unparsed points the operator at the model instead of at the wiring.
     Measured 16/11 (po-2028:claudish): api_key_env unset -> '401 invalid proxy authentication'
     surfaced as stage1-unparsed with the real cause buried in .calls[0].error (F5, vllm#441).
+
+    The MODEL-unresolved test comes first, before any status code: same day, same seat, a
+    403 carrying 'unknown model nb-luna' was read as auth-failed, and the repair it named
+    (find the key) was not the repair needed (publish the alias) — vllm#457.
     """
     err = (env.get("error") or "").strip()
     if not err:
         return ""
     low = err.lower()
-    kind = ("auth-failed" if _AUTH_CODE_RE.search(low)
-            or any(m in low for m in _AUTH_MARKERS) else "call-failed")
-    return f"{kind}: {err[:160]}"
+    hit = next((m for m in _MODEL_UNRESOLVED_MARKERS if m in low), "")
+    if hit:
+        kind = "model-unresolved"
+    elif _AUTH_CODE_RE.search(low) or any(m in low for m in _AUTH_MARKERS):
+        kind = "auth-failed"
+    else:
+        kind = "call-failed"
+    return f"{kind}: {_excerpt(err, hit)}"
+
+
+_GATE_REFUSAL_RE = re.compile(r"capacity gate refused", re.I)
+
+
+def gate_refusal(env: dict) -> str:
+    """A mid-flight capacity-gate refusal (the sk-agent pre-dispatch gate) is a
+    DEFERRABLE condition, not a harness failure: the scheduler retries any verdict
+    starting with `deferred-by-capacity-gate` with backoff. Measured 18/11 wave-1c
+    (#27103): 'capacity gate refused dispatch ... (verdict yellow); retry after
+    3600s' arrived as stage1-call-failed and terminally burned the grain — the
+    refusal's own message says retry, the verdict must say it too."""
+    err = (env.get("error") or "").strip()
+    if _GATE_REFUSAL_RE.search(err):
+        return f"deferred-by-capacity-gate: {err[:160]}"
+    return ""
 
 
 async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
@@ -1030,11 +1195,20 @@ async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
 
 async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                         indexes: list[int]) -> list[dict]:
-    """The harness owns execution and the verdict: real outputs, never the model's word."""
+    """The harness owns execution and the verdict: real outputs, never the model's word.
+
+    persist_error_outputs is opted IN (#4817 / ms#1803): the MCP default refuses to write a
+    raised cell's error output into the .ipynb (committed sources stay intangible), but this
+    path only ever executes the SCRATCH copy — and the repair rounds plus the verify critic
+    read that artifact back from disk after the process is gone. Without the opt-in, a
+    compiler error lives only in the in-memory response and the evidence dies with it
+    (the exact hole ms#1799 closed for committed sources; the scratch contract is the
+    mirror image, which is why the flag exists at all)."""
     results = []
     for idx in indexes:
         r = await pm_call(pm, "execute_on_kernel", {"kernel_id": kernel_id, "mode": "notebook_cell",
                                                     "path": str(nb_path), "cell_index": idx,
+                                                    "persist_error_outputs": True,
                                                     "timeout": 300})
         status = r.get("status") or r.get("error") or "?"
         outs = r.get("outputs") or []
@@ -1042,6 +1216,7 @@ async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                            if isinstance(o, dict) and o.get("output_type") == "error")
         results.append({"cell": idx, "status": status, "ok": status == "ok" and not err_txt,
                         "elapsed_s": r.get("execution_time") or r.get("elapsed_s"),
+                        "error_outputs_persisted": r.get("error_outputs_persisted"),
                         "outputs_tail": str(outs)[-800:], "error": err_txt[:500] or None})
     return results
 
@@ -1104,6 +1279,38 @@ def foreign_script_hits(built_cells: list, src_cells: list) -> list[dict]:
             hits.append({"cell": i,
                          "excerpt": txt[max(0, m.start() - 30):m.end() + 30]})
     return hits
+
+
+# CoursIA #26921 (user ask 16/11, scoping jsboige/vllm#464): a figure cell emitting its SVG
+# as stdout / text-html instead of a display_data image/svg+xml renders inconsistently and
+# hides from every mime-keyed digest. The series idiom (record Svg + Formatter.Register)
+# produces display_data; <svg in a code cell's TEXT output with no svg display_data in the
+# SAME cell is the defect. Markdown cells are never scanned.
+SVG_RE = re.compile(r"(?i)<svg")
+
+
+def _has_svg_display(cell: dict) -> bool:
+    for o in cell.get("outputs") or []:
+        if isinstance(o, dict) and "image/svg+xml" in (o.get("data") or {}):
+            return True
+    return False
+
+
+def _svg_text_offenders(cells: list) -> list[int]:
+    """Code cells whose SVG travels as text (stream or text-html) with no svg display_data."""
+    out = []
+    for i, c in enumerate(cells):
+        if c.get("cell_type") != "code" or _has_svg_display(c):
+            continue
+        for o in c.get("outputs") or []:
+            if not isinstance(o, dict):
+                continue
+            hay = _text(o.get("text")) if o.get("output_type") == "stream" else ""
+            hay += "\n" + _text((o.get("data") or {}).get("text/html"))
+            if SVG_RE.search(hay):
+                out.append(i)
+                break
+    return out
 
 
 def _outputs_text(cell: dict) -> str:
@@ -1184,6 +1391,17 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     gates.append({"gate": "machine-path", "ok": not new_hits,
                   "detail": {"cells": new_hits[:10], "source_hits": src_hits[:10],
                              "build_hits": built_hits[:10]}})
+    # Delta judged like machine-path (#464): an untouched cell keeps its pre-existing
+    # SVG-as-text defect (the repo's business, reported in detail); only what THIS build
+    # introduces or rewrites fails the gate.
+    svg_src = _svg_text_offenders(src_cells)
+    svg_built = _svg_text_offenders(built_cells)
+    svg_new = [i for i in svg_built
+               if not (i < len(src_cells)
+                       and _outputs_text(built_cells[i]) == _outputs_text(src_cells[i]))]
+    gates.append({"gate": "svg-display", "ok": not svg_new,
+                  "detail": {"cells": svg_new[:10], "source_hits": svg_src[:10],
+                             "build_hits": svg_built[:10]}})
     return gates
 
 
@@ -1194,11 +1412,18 @@ def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
     (the canonical-kernel criterion). 17/11 #27104 blank pass: the verify rejected the
     banner as a MAJOR finding. The tool lives in the CoursIA tree (the worktree carries
     it); a missing tool or failure is RECORDED, not fatal — the verify stays the judge
-    of the delivered file."""
+    of the delivered file. 18/11 #482: --variant BOTH, not the probe default — a
+    creation-mode .NET notebook carries the DISCOVERY bootstrap (`dotnet-interactive-
+    this-cell` + require.js fetch), a disjoint signature set on purpose (#22728: the
+    repo-wide COMMITTED-corpus guard stays probe-only until the 177 inherited
+    notebooks are swept; that constraint binds the guard, never a fresh deliverable).
+    Measured: probe-only strip reported ok while the verify rejected the discovery
+    banner as MAJOR; `--variant both` removed exactly that output."""
     if not tool.is_file():
         return {"ok": False, "error": f"strip tool absent: {tool}"}
     try:
-        p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path)],
+        p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path),
+                            "--variant", "both"],
                            capture_output=True, text=True, timeout=120)
         return {"ok": p.returncode == 0, "rc": p.returncode,
                 "out": (p.stdout or p.stderr or "")[-500:]}
@@ -1272,6 +1497,101 @@ def _short_desc(args, plan: dict) -> str:
     return f"{stem} — {len(gestes)} gestes ({kinds})" if gestes else f"{stem} — {kinds}"
 
 
+# CoursIA's parser knows exactly these three tiers; anything else is refused downstream.
+GRAIN_TIERS = ("DEEP", "MED", "LIGHT")
+
+
+# CoursIA's canonical tag line (variation-protocol §1). The `prev:` field is REQUIRED there:
+# `variation-tag-prev-absent` is posed on any tag that declares no predecessor, because
+# G-VAR-3 adjacency ("never the same LIGHT genre twice in a row") is evaluated from it.
+# Measured 16/11 on CoursIA#26943: the harness tag carried no `prev:` and the guard labelled
+# the PR the moment it opened -- the same class as `Grain: auto` (#459), one field further.
+GRAIN_PREV_FIRST = "none (premier grain)"
+# `<TIER>/<GENRE>` + optional ` #<PR>`. Strict on purpose: a stray value here would be read
+# as a predecessor and make an adjacency verdict on a citation that is not one.
+_GRAIN_PREV_RE = re.compile(r"^(?:%s)/[A-Za-z0-9._-]+(?: #\d+)?$" % "|".join(GRAIN_TIERS))
+# What the lane's own PR bodies say a grain line looks like. `--`, `-` and the em dash are
+# all accepted: the guard normalises dashes, and a driver that only read its own dialect
+# would report "no predecessor" precisely when another writer used the documented `--`.
+_GRAIN_LINE_RE = re.compile(
+    r"Grain:\s*(%s)\s*/\s*([A-Za-z0-9._-]+)\s*(?:—|--|-)\s*lane\s+(\S+)"
+    % "|".join(GRAIN_TIERS))
+
+
+def lane_predecessor(repo_slug: str, lane: str, token: str | None) -> str | None:
+    """The lane's most recent grain in `repo_slug`, as `prev:` wants it (vllm#459).
+
+    `prev:` is lane HISTORY, not a value this run can know: only GitHub holds it. Three
+    outcomes, each named rather than guessed --
+      * `"none (premier grain)"` — the lane has no earlier grain in this repo (the
+        protocol's documented exemption: not a claim of priority, an absence of predecessor);
+      * `"<TIER>/<GENRE> #<PR>"` — the predecessor as its own body declares it;
+      * `None` — the history could not be read, so the tag declares no predecessor instead
+        of inventing one. The label that follows is then TRUE, and the trace says why.
+
+    Never a fourth outcome: citing an ISSUE number as a PR number (a `#N` sitting on the
+    same line) is exactly the wrong-pointer defect this function exists to avoid -- hence
+    the `prev:` field is the last field of the tag, with nothing scannable after it.
+    """
+    rc, out = gh(["pr", "list", "--repo", repo_slug, "--state", "all",
+                  "--search", f'in:body "lane {lane}"',
+                  "--json", "number,body", "--limit", "30"], token, timeout=90)
+    if rc != 0:
+        return None
+    try:
+        prs = json.loads(out or "[]")
+    except Exception:
+        return None
+    best: tuple[int, str] | None = None
+    for pr in prs:
+        body = pr.get("body") or ""
+        for m in _GRAIN_LINE_RE.finditer(body):
+            # The search is a substring match: `lane a` also returns `lane ab`. The tag's
+            # own lane field is what decides, so an older grain of a sibling lane is skipped
+            # rather than cited as this lane's predecessor.
+            if m.group(3).rstrip(".,;") != lane:
+                continue
+            try:
+                num = int(pr.get("number") or 0)
+            except (TypeError, ValueError):
+                continue
+            # By NUMBER, not by list order: GitHub's search ordering is not creation order
+            # (measured 16/11 on CoursIA -- #26790 came back before #26806), and the
+            # predecessor is whichever grain has the highest number below this run's PR.
+            if best is None or num > best[0]:
+                best = (num, f"{m.group(1)}/{m.group(2)} #{num}")
+    return best[1] if best else GRAIN_PREV_FIRST
+
+
+def grain_tag(tier: str, lane: str, genre: str = "notebook-python",
+              prev: str | None = GRAIN_PREV_FIRST) -> str:
+    """The PR's leading `Grain: <TIER>/<GENRE> — lane … — prev: …` line, CoursIA's grammar.
+
+    `auto` is NOT a tier. CoursIA's shared parser (`scripts/grain_tag.py`) reads
+    `auto/notebook-python` as `grain-tier-unknown:AUTO`, and `merge_ready` refuses such a PR
+    **even approved and green** — the harness was producing merges that could not merge
+    (measured by ai-01:CoursIA the 16/11, #26943 retagged by hand the same day).
+
+    The tier is a CLAIM the lane makes about the grain's weight, so it comes from a flag and
+    is never inferred here: a harness that guesses DEEP on a one-cell edit buys its own
+    review cost. Normalisation is argparse's job (`type=str.upper`); this function is strict
+    on purpose, so a caller that bypasses the flag gets a loud refusal, not a silent `auto`.
+
+    `prev=None` means the lane history was UNREADABLE: the field is then omitted and the
+    guard's `variation-tag-prev-absent` is the honest verdict. Writing `none (premier grain)`
+    instead would assert a first grain nobody checked.
+    """
+    if tier not in GRAIN_TIERS:
+        raise ValueError(f"grain tier must be one of {GRAIN_TIERS}, got {tier!r}")
+    head = f"Grain: {tier}/{genre} — lane {lane}"
+    if prev is None:
+        return head
+    if prev != GRAIN_PREV_FIRST and not _GRAIN_PREV_RE.match(prev):
+        raise ValueError(f"prev must be {GRAIN_PREV_FIRST!r} or '<TIER>/<GENRE> #<PR>', "
+                         f"got {prev!r}")
+    return f"{head} — prev: {prev}"
+
+
 def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
               token: str | None) -> None:
     """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
@@ -1326,8 +1646,22 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     n_exec = len(rec.get("execution") or [])
     gates_ok = [g["gate"] for g in rec.get("gates") or [] if g.get("ok")]
     findings = (rec.get("verify") or {}).get("findings") or []
+    # #433 review: resolve the PR target from the worktree's own origin (or an explicit
+    # --pr-repo); never a hard-coded repo. Refusing loudly beats silently targeting the
+    # wrong repo -- a wrong-repo PR number recorded in a [DELIVERED] marker poisons the
+    # claim registry. Resolved HERE, before the body is composed, because the `prev:` field
+    # is read from that same repo's lane history (vllm#459).
+    repo_slug = args.pr_repo or _repo_slug(wt_path)
+    if not repo_slug:
+        entry["error"] = ("cannot resolve PR target repo (no --pr-repo, origin URL "
+                          "unparseable) -- pass --pr-repo owner/repo explicitly")
+        rec["verdict"], rec["pr"] = "pr-repo-unresolved", entry
+        return
+    entry["repo"] = repo_slug
+    prev = lane_predecessor(repo_slug, args.lane, token)
+    entry["grain_prev"] = prev if prev else "unreadable (tag declares no predecessor)"
     pr_body = (
-        f"Grain: auto/notebook-python — lane {args.lane} — issue #{args.issue}\n\n"
+        f"{grain_tag(args.grain_tier, args.lane, prev=prev)}\n\n"
         f"**Grain** : lane `{args.lane}`. Issue #{args.issue}. "
         f"**Livraison AUTONOME** — harnais nb_coder stages 0-5 : producteur `{args.agent}` "
         f"(`{(rec.get('calls') or [{}])[-1].get('model_used') if rec.get('calls') else 'n/a'}`), "
@@ -1349,17 +1683,6 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         f"run record complet dans le out-dir du harnais.\n\n"
         f"Closes #{args.issue}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
-    # #433 review: resolve the PR target from the worktree's own origin (or an explicit
-    # --pr-repo); never a hard-coded repo. Refusing loudly beats silently targeting the
-    # wrong repo -- a wrong-repo PR number recorded in a [DELIVERED] marker poisons the
-    # claim registry.
-    repo_slug = args.pr_repo or _repo_slug(wt_path)
-    if not repo_slug:
-        entry["error"] = ("cannot resolve PR target repo (no --pr-repo, origin URL "
-                          "unparseable) -- pass --pr-repo owner/repo explicitly")
-        rec["verdict"], rec["pr"] = "pr-repo-unresolved", entry
-        return
-    entry["repo"] = repo_slug
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
     body_file.write_text(pr_body, encoding="utf-8")
     rc, out = gh(["api", f"repos/{repo_slug}/pulls",
@@ -1419,9 +1742,10 @@ async def run(args, rec: dict) -> dict:
 
     # ---- stage 0
     t0 = time.time()
-    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane)
-    if rec["stages"]["claim_check"]["rc"] == 1:
-        rec["verdict"] = "refused-claim-held-by-another-lane"
+    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane, args.notebook)
+    refused = claim_verdict(rec["stages"]["claim_check"])
+    if refused:
+        rec["verdict"] = refused
         return rec
     issue = fetch_issue("jsboige/CoursIA", args.issue, token)
     rec["stages"]["issue"] = {"title": issue["title"], "state": issue["state"],
@@ -1458,6 +1782,16 @@ async def run(args, rec: dict) -> dict:
         rec["verdict"] = f"notebook-not-found:{target_nb}"
         return rec
     kernel = series_kernel(wt_path, args.notebook)
+    if create_mode:
+        # The target is absent, so the path map can only describe its Python neighbours.
+        # The canonical C# twin owns the deliverable's kernelspec: execution must use the
+        # same kernel, before the builder even sees the plan. Measured on CoursIA#27106:
+        # metadata .net-csharp, but every C# cell sent to python3 (SyntaxError on //).
+        twin_meta = series_canonical_meta(wt_path, args.notebook)
+        twin_kernel = (twin_meta.get("kernelspec") or {}).get("name")
+        if twin_kernel:
+            kernel["kernel_name"] = twin_kernel
+            kernel["kernel_source"] = "canonical-twin-kernelspec"
     rec["kernel"] = kernel
     gate = gate_call(args.gate_mode)
     rec["gate"] = gate
@@ -1474,8 +1808,20 @@ async def run(args, rec: dict) -> dict:
                                       cwd=str(PM_CWD))
     async with stdio_client(sk_params) as (r1, w1), stdio_client(pm_params) as (r2, w2):
         async with ClientSession(r1, w1) as sk, ClientSession(r2, w2) as pm:
-            await sk.initialize()
-            await pm.initialize()
+            # The initialize roundtrip is the ONE MCP wait with no per-call
+            # read_timeout: per-call timeouts (sk_call: args.timeout+120,
+            # pm_call: 300s) only arm AFTER the handshake. Measured 18/11
+            # 00:27->03:35Z (wave-1b, py-spy stacks in the state-dir post-mortem):
+            # a child blocked in StreamHandler.emit never answered initialize and
+            # both drivers hung 2h30 with zero LLM traffic. Fail loud instead.
+            try:
+                await asyncio.wait_for(sk.initialize(), 180.0)
+                await asyncio.wait_for(pm.initialize(), 180.0)
+            except asyncio.TimeoutError:
+                raise RuntimeError(
+                    "MCP initialize handshake timed out after 180s (child never "
+                    "answered; suspect an undrained stderr pipe blocking the "
+                    "child's logging — see the wave-1b post-mortem 18/11)") from None
             # ---- stage 1 PLAN (correction) / CREATION PLAN (--source-nb)
             t1 = time.time()
             if create_mode:
@@ -1498,10 +1844,15 @@ async def run(args, rec: dict) -> dict:
             rec["stage1_s"] = round(time.time() - t1, 1)
             if args.max_stage < 2:
                 rec["verdict"] = ("stage1-only" if plan
-                                  else f"stage1-{call_failure(env) or 'unparsed'}")
+                                  else gate_refusal(env)
+                                  or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             if not plan:
-                rec["verdict"] = f"stage1-{call_failure(env) or 'unparsed'}"
+                # a mid-flight gate refusal defers (scheduler retries with backoff),
+                # everything else that killed the plan call stays terminal — 18/11
+                # wave-1c #27103 burned terminally on exactly this distinction.
+                rec["verdict"] = (gate_refusal(env)
+                                  or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             exec_idx = plan.get("execute_cells") or []
 
@@ -1511,8 +1862,8 @@ async def run(args, rec: dict) -> dict:
             if scratch.exists():
                 scratch.unlink()
             if create_mode:
-                meta = series_canonical_meta(wt_path, args.notebook)
-                rec["create_metadata"] = {"kernelspec": (meta.get("kernelspec") or {}).get("name"),
+                meta = twin_meta
+                rec["create_metadata"] = {"kernelspec": (twin_meta.get("kernelspec") or {}).get("name"),
                                           "language_version":
                                               (meta.get("language_info") or {}).get("version")}
                 skeleton = {"cells": [], "metadata": meta,
@@ -1531,10 +1882,11 @@ async def run(args, rec: dict) -> dict:
                                               src_cells=src_cells)
                 rec["build_model_answer"] = {"parsed": bool(built),
                                              "segments": rec.pop("segments", [])}
-                if built:
+                if not built or not built.get("cells"):
+                    if not rec.get("verdict"):
+                        rec["verdict"] = "build-no-cells"
+                elif built:
                     rec["apply"] = apply_create(scratch, built)
-                elif not rec.get("verdict"):
-                    rec["verdict"] = "build-no-cells"
                 if rec.get("verdict"):     # a failed segment returns NOW (tail persisted)
                     rec["stage2_s"] = round(time.time() - t2, 1)
                     return rec
@@ -1635,7 +1987,8 @@ async def run(args, rec: dict) -> dict:
                                     break
                                 env = await sk_call_retry(
                                     sk, args, rec, f"2.5-repair+{rnd}",
-                                    repair_prompt(detail, conventions), conv)
+                                    repair_prompt(detail, conventions), conv,
+                                    max_tokens=BUILD_MAX_TOKENS)
                                 conv = env.get("conversation_id") or conv
                                 part = parse_json_block(env.get("response") or "")
                                 if not part or not part.get("cells"):
@@ -1816,6 +2169,13 @@ def main() -> int:
     ap.add_argument("--lane", default=LANE,
                     help="claim lane id, form <machine>:nb-coder (default: NBCODER_LANE env; "
                          "no fallback — --claim refuses without it, F1/vllm#438)")
+    ap.add_argument("--grain-tier", type=str.upper, choices=list(GRAIN_TIERS), default="MED",
+                    help="the tier claimed on the PR's `Grain:` line (DEEP/MED/LIGHT). "
+                         "CoursIA's merge gate refuses an unknown tier even when the PR is "
+                         "approved and green — `auto` was never a tier, it read as "
+                         "grain-tier-unknown:AUTO (ai-01:CoursIA, 16/11). Default MED: the "
+                         "harness's own grains are full notebook builds, not one-cell edits. "
+                         "Lowercase is accepted and normalised.")
     ap.add_argument("--write-mode", choices=["json", "mcp"], default="json",
                     help="json = harness applies the model's cell sources in one write; "
                          "mcp = the model calls the papermill write tools (lost-update hazard "

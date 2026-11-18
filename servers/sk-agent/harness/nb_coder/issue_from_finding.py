@@ -2,8 +2,7 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
 # Copied verbatim from jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
 # original path: myia_vllm/scripts/adoption/nb_coder/issue_from_finding.py
-# Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
-# re-copy, do not diverge silently.
+# Canonical home is sk-agent: new harness fixes belong here, not in vllm.
 # -----------------------------------------------------------------------------
 """Deterministic issue-body generator for nb_coder grains (from nb_audit findings).
 

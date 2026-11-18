@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
+# Imported from jsboige/vllm @ 40ce1b93f15d44848d91cdae4f9e7dd04f126076
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_create.py
-# Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
-# re-copy, do not diverge silently.
+# Canonical home is sk-agent: new harness fixes belong here, not in vllm.
 # -----------------------------------------------------------------------------
 """Offline tests for the driver's creation mode (--source-nb) — the parity C# wave
 (#27099-#27116) creates notebooks absent from origin/main. No engine, no MCP, no GitHub."""
@@ -177,7 +176,7 @@ def test_create_segments_assembles_and_reports(monkeypatch):
               for i in range(0, 10, D.CREATE_SEGMENT)]
     calls = []
 
-    async def fake_retry(session, args, rec, stage, prompt, conv):
+    async def fake_retry(session, args, rec, stage, prompt, conv, max_tokens=None):
         calls.append(stage)
         return {"response": "```json\n" + json.dumps(canned.pop(0)) + "\n```",
                 "conversation_id": "cx"}
@@ -190,8 +189,10 @@ def test_create_segments_assembles_and_reports(monkeypatch):
     assert [s["got"] for s in rec["segments"]] == [8, 2]
     assert out["notes"] == "assembled from 2 segments"
 
-    async def fake_dead(session, args, rec, stage, prompt, conv):
-        return {"response": "voilà le code … { incomplet", "conversation_id": "cx"}
+    async def fake_dead(session, args, rec, stage, prompt, conv, max_tokens=None):
+        # ends with a closed fence and no JSON inside: an UNPARSABLE answer, not a
+        # truncated one — the bisect path must NOT fire for this
+        return {"response": "voilà le code\n```\n{ incomplet\n```", "conversation_id": "cx"}
 
     monkeypatch.setattr(D, "sk_call_retry", fake_dead)
     rec2: dict = {}
@@ -216,7 +217,7 @@ def test_create_segments_short_segment_repaired(monkeypatch):
     ]}
     calls = []
 
-    async def fake(session, args, rec, stage, prompt, conv):
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
         calls.append(stage)
         return {"response": "```json\n" + json.dumps(first if not calls[1:] else repair)
                 + "\n```", "conversation_id": "cx"}
@@ -242,7 +243,7 @@ def test_create_segments_short_segment_fails_fast(monkeypatch):
     half = {"cells": [{"idx": 6, "cell_type": "markdown", "source": "s6"}]}
     calls = []
 
-    async def fake(session, args, rec, stage, prompt, conv):
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
         calls.append(stage)
         return {"response": "```json\n" + json.dumps(first if not calls[1:] else half)
                 + "\n```", "conversation_id": "cx"}
@@ -252,6 +253,65 @@ def test_create_segments_short_segment_fails_fast(monkeypatch):
     out = asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 8, ""))
     assert out == {} and rec["verdict"] == "stage2-short-segment:0"
     assert rec["stage2_missing_idx"] == [7] and rec["stage2_raw_tail"]
+
+
+def test_create_segments_truncated_bisects_once(monkeypatch):
+    """18/11 wave-1c (7/7 failed, 2 on this path): the segment JSON was CUT mid-cell
+    — thinking counts toward max_tokens, so the visible output truncates (measured
+    9.8K and 28.5K chars, tails ending inside a "source" string). The loop must
+    re-ask the segment as two halves; halves that answer keep the grain alive."""
+    plan_cells = [{"idx": i, "cell_type": "markdown", "titre": f"c{i}"} for i in range(8)]
+    h0 = {"cells": [{"idx": c["idx"], "cell_type": "markdown", "source": f"s{c['idx']}"}
+                    for c in plan_cells[:4]]}
+    h1 = {"cells": [{"idx": c["idx"], "cell_type": "markdown", "source": f"s{c['idx']}"}
+                    for c in plan_cells[4:]]}
+    calls = []
+
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
+        calls.append((stage, max_tokens))
+        if stage == "2-build+0":
+            # truncated: no closing fence, ends mid-string — exactly the 18/11 shape
+            return {"response": '```json\n{"cells":[{"idx":0,"source": "// coupé mid-vo',
+                    "conversation_id": "cx"}
+        half = h0 if stage.endswith("h0") else h1
+        return {"response": "```json\n" + json.dumps(half) + "\n```", "conversation_id": "cx"}
+
+    monkeypatch.setattr(D, "sk_call_retry", fake)
+    rec: dict = {}
+    out = asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 8, ""))
+    assert [c["idx"] for c in out["cells"]] == list(range(8))     # plan order preserved
+    assert rec["bisected"] == [0]
+    assert [s[0] for s in calls] == ["2-build+0", "2-build+0+h0", "2-build+0+h1"]
+    # build tours carry the raised budget (the truncation mechanism is token-borne)
+    assert all(m == D.BUILD_MAX_TOKENS for _, m in calls)
+
+
+def test_create_segments_truncated_half_fails_named(monkeypatch):
+    """A half that STILL truncates fails the grain as stage2-truncated (named half),
+    never silently."""
+    plan_cells = [{"idx": i, "cell_type": "markdown", "titre": f"c{i}"} for i in range(8)]
+
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
+        return {"response": '```json\n{"cells":[{"idx":2,"source": "coupé',
+                "conversation_id": "cx"}
+
+    monkeypatch.setattr(D, "sk_call_retry", fake)
+    rec: dict = {}
+    out = asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 8, ""))
+    assert out == {} and rec["verdict"] == "stage2-truncated:0+h0"
+    assert rec["stage2_raw_tail"]
+
+
+def test_gate_refusal_defers_instead_of_failing():
+    """18/11 wave-1c #27103: 'capacity gate refused dispatch ... retry after 3600s'
+    arrived as stage1-call-failed and terminally burned the grain — the scheduler
+    only retries verdicts STARTING with deferred-by-capacity-gate."""
+    gr = D.gate_refusal({"error": "capacity gate refused dispatch to model "
+                                  "'qwen3.6-35b-a3b-nbcoder' (verdict yellow); retry after 3600s"})
+    assert gr.startswith("deferred-by-capacity-gate")
+    assert D.gate_refusal({"error": "401 invalid proxy authentication"}) == ""
+    assert D.gate_refusal({}) == ""
+    assert D.gate_refusal({"error": "TimeoutError: read timed out"}) == ""
 
 
 # ---------------------------------------------------------------- post-exec hygiene (17/11)
@@ -423,6 +483,45 @@ def test_mcp_write_mode_refused_in_creation():
         assert ei.value.code == 2
     finally:
         sys.argv = old
+
+
+def test_initialize_handshake_has_a_timeout():
+    """Wave-1b hang (18/11 00:27->03:35Z): a child blocked in StreamHandler.emit
+    never answered `initialize` and the driver waited forever — per-call
+    read_timeouts only arm AFTER the handshake. The fix wraps both initialize()
+    calls in asyncio.wait_for; this test pins the wait_for by calling the SAME
+    wrapped sequence against a session stub that never responds."""
+    import inspect
+    src = inspect.getsource(D)
+    assert "asyncio.wait_for(sk.initialize()" in src, \
+        "the sk-agent initialize handshake must carry a wait_for timeout"
+    assert "asyncio.wait_for(pm.initialize()" in src, \
+        "the papermill initialize handshake must carry a wait_for timeout"
+
+
+def test_execute_cells_opts_into_error_output_persistence(monkeypatch):
+    """#4817 / ms#1803: the MCP default REFUSES to persist a raised cell's error output
+    into the .ipynb (committed sources stay intangible). execute_cells only ever runs
+    the SCRATCH copy, and the repair rounds + verify critic read that artifact from
+    disk after the process is gone — so the payload must opt IN, and the record must
+    carry the instrument's own error_outputs_persisted proof."""
+    seen = []
+
+    async def fake_pm_call(session, tool, payload):
+        seen.append((tool, payload))
+        return {"status": "error", "outputs": [],
+                "error_outputs_persisted": True}
+
+    monkeypatch.setattr(D, "pm_call", fake_pm_call)
+    res = asyncio.run(D.execute_cells(object(), Path("scratch.ipynb"), "k1", [3, 7]))
+    payloads = [p for t, p in seen if t == "execute_on_kernel"]
+    assert len(payloads) == 2
+    for p in payloads:
+        assert p["persist_error_outputs"] is True
+        assert p["kernel_id"] == "k1" and p["mode"] == "notebook_cell"
+    assert all(r["error_outputs_persisted"] is True for r in res), \
+        "the instrument's persistence proof must survive into the record"
+    assert all(r["ok"] is False for r in res)  # status error -> not ok, unchanged semantics
 
 
 if __name__ == "__main__":

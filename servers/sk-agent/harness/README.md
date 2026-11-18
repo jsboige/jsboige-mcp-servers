@@ -1,8 +1,9 @@
 <!-- provenance (roo-extensions #4781 harness mutualisation)
      This file is authored here (harness index), not a copy.
-     The copied modules below are tracked against jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
-     Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
-     re-copy, do not diverge silently. -->
+     The nb_coder snapshot was imported from jsboige/vllm @ 40ce1b93f15d44848d91cdae4f9e7dd04f126076.
+     **sk-agent is now the canonical home for nb_coder** (user arbitration 2026-11-18):
+     new fixes and tests belong here. Seat bindings stay outside the harness.
+     nb_audit remains tracked against jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827. -->
 
 # Harness — nb_coder + nb_audit
 
@@ -11,8 +12,10 @@ Deterministic harnesses that extend sk-agent: they drive the local model through
 approach the model window, and they keep the engine work bounded and observable.
 
 Moved here from `jsboige/vllm` under roo-extensions **#4781** (user arbitration 2026-11-16:
-"le harnais qui étend les capacités de sk-agent y a toute sa place"). The copy is verbatim;
-the only added lines are the provenance headers.
+"le harnais qui étend les capacités de sk-agent y a toute sa place"). The final nb_coder
+cutover (2026-11-18) includes creation mode, scheduler, independent verification, C# twin
+kernel selection, and plan-addressing refusal. It is maintained here; vllm retains only
+seat bindings until its pointer consolidation.
 
 ## Layout
 
