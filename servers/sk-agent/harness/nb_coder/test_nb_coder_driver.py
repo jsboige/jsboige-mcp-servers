@@ -304,18 +304,22 @@ def test_the_prev_field_round_trips_through_the_coursia_parser():
     assert (cited["tier"], cited["genre"], cited["pr_number"]) == ("LIGHT", "docs", 26943)
 
 
-# ---- banner strip variant (vllm#482, measured on the #27104 verify) ----
+# ---- banner strip wiring (vllm#482 lineage, measured on the #27104 verify) ----
 
-def test_the_banner_strip_covers_the_discovery_bootstrap():
-    """#27104: the probe-only strip reported ok while the committed cell-3 output
-    still carried the DISCOVERY bootstrap (dotnet-interactive-this-cell) — the
-    verify rejected it MAJOR. The deliverable is stripped --variant both; the
-    probe-only calibration of #22728 binds the COMMITTED-corpus guard, never a
-    fresh deliverable. Source pin: the wiring is a CLI argument list."""
+def test_the_strip_call_invokes_the_coursia_tool_before_commit():
+    """#27104: the committed cell-3 output still carried the .NET Interactive
+    bootstrap — the verify rejected it MAJOR. Canonical shape after the 488/489
+    convergence: a plain --apply call to the CoursIA tool (strip_probe_banner.py).
+    The branch-side '--variant both' mitigation was never taken by vllm main, and
+    the CoursIA tool itself documents that covering the discovery variant needs a
+    dedicated tool-side sweep (open CoursIA issue) — the verify stays the judge of
+    the delivered file, which is how #27104 was caught in the first place.
+    Preservation: this pins the wiring (the call exists, --apply form); the
+    discovery coverage lives in the tool, not in the driver's argument list."""
     src = Path(d.__file__).read_text(encoding="utf-8")
     fn = src.split("def strip_dotnet_banner", 1)[1].split("\ndef ", 1)[0]
-    assert '"--variant", "both"' in fn, \
-        "the strip lost the discovery variant — a creation-mode notebook keeps its banner"
+    assert '"--apply"' in fn, \
+        "the strip lost the CoursIA tool invocation — a creation-mode notebook keeps its banner"
 # ---- creation kernel selection (vllm#484, measured on CoursIA#27106) ----
 
 def test_creation_execution_uses_the_canonical_twin_kernelspec():
@@ -458,6 +462,66 @@ def test_the_papermill_probe_does_not_execute_the_current_directory(monkeypatch,
     assert seen["argv"][3] == "import papermill_mcp.main"
 
 
+# ---- intake finding 2 (ms#1808 review): probe errors become durable refusals ----
+
+def _wired_seat(tmp_path, monkeypatch, raise_exc):
+    """All five wiring checks pass so _preflight reaches the import probe, which raises."""
+    sk_dir = tmp_path / "sk"; sk_dir.mkdir()
+    (sk_dir / "sk_agent.py").write_text("# ok", encoding="utf-8")
+    pm_cwd = tmp_path / "pm"; pm_cwd.mkdir()
+    for name in ("sk.py", "sk.json", "pm.py"):
+        (tmp_path / name).write_text("", encoding="utf-8")
+    monkeypatch.setattr(d, "SK_DIR", sk_dir)
+    monkeypatch.setattr(d, "SK_PY", tmp_path / "sk.py")
+    monkeypatch.setattr(d, "SK_CONFIG", tmp_path / "sk.json")
+    monkeypatch.setattr(d, "PM_PY", tmp_path / "pm.py")
+    monkeypatch.setattr(d, "PM_CWD", pm_cwd)
+    def boom(*a, **kw):
+        raise raise_exc
+    monkeypatch.setattr(d.subprocess, "run", boom)
+    return {"refusal": None}
+
+
+def _assert_durable_refusal(tmp_path, seen, needle):
+    import json as _json
+    assert seen["refusal"] and needle in seen["refusal"]
+    rec = _json.loads((tmp_path / "issue-42.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-wiring-unresolved"
+    assert rec["calls"] == [], "a refused run records zero model calls"
+    ledger = (tmp_path / "ledger.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    assert len(ledger) == 1 and '"calls": 0' in ledger[0]
+
+
+def test_a_probe_timeout_becomes_a_durable_refusal_with_trace(tmp_path, monkeypatch):
+    """TimeoutExpired escaped _preflight before the main try/rec: bare traceback, no
+    record, and the next run would crash identically. It must land in missing ->
+    _preflight_refusal (issue trace + ledger + zero model calls)."""
+    import subprocess
+    from types import SimpleNamespace
+    seen = _wired_seat(tmp_path, monkeypatch, subprocess.TimeoutExpired(cmd="pm", timeout=60))
+    class AP:
+        def error(self, msg):
+            seen["refusal"] = msg
+    d._preflight(AP(), SimpleNamespace(out_dir=str(tmp_path), issue=42, notebook="x.ipynb",
+                                      lane="s", source_nb=None, conventions=""))
+    _assert_durable_refusal(tmp_path, seen, "TIMEOUT")
+
+
+def test_a_probe_spawn_error_becomes_a_durable_refusal_with_trace(tmp_path, monkeypatch):
+    """Same class, other half: an OSError from spawn (permissions, cwd vanished between
+    check and run) must refuse durably too — never a traceback outside the record."""
+    import subprocess
+    from types import SimpleNamespace
+    seen = _wired_seat(tmp_path, monkeypatch,
+                       PermissionError(13, "Permission denied"))
+    class AP:
+        def error(self, msg):
+            seen["refusal"] = msg
+    d._preflight(AP(), SimpleNamespace(out_dir=str(tmp_path), issue=42, notebook="x.ipynb",
+                                      lane="s", source_nb=None, conventions=""))
+    _assert_durable_refusal(tmp_path, seen, "could not spawn")
+
+
 def test_creation_twin_paths_must_name_the_same_stem():
     """#27106 was called with ChoixSocial-08's issue and ChoixSocial-05's twin paths."""
     assert "twin mismatch" in d.creation_twin_mismatch(
@@ -496,3 +560,48 @@ def test_issue_body_target_contradiction_refuses_before_claim_or_model(monkeypat
     got = asyncio.run(d.run(args, rec))
     assert got["verdict"] == "refused-issue-target-mismatch"
     assert len(got["issue_target_conflicts"]) == 2
+
+
+# ---- intake finding 1 (ms#1808 review): declared PATH vs supplied basename ----
+
+def test_a_declared_path_does_not_match_a_same_basename_elsewhere():
+    """Path.name-only comparison accepted Expected/N-CSharp.ipynb + Wrong/N-CSharp.ipynb."""
+    assert d._declared_matches("Expected/N-CSharp.ipynb", "Expected/N-CSharp.ipynb")
+    assert d._declared_matches("Expected/N-CSharp.ipynb",
+                               "D:/wt/Expected/N-CSharp.ipynb")  # suffix of a longer path
+    assert d._declared_matches("Expected\\N-CSharp.ipynb", "Expected/N-CSharp.ipynb")  # both planes
+    assert not d._declared_matches("Expected/N-CSharp.ipynb", "Wrong/N-CSharp.ipynb")
+    assert d._declared_matches("N-CSharp.ipynb", "Anywhere/N-CSharp.ipynb")  # bare name stays name-matched
+
+
+def test_same_basename_different_folder_refuses_before_claim_or_worktree(monkeypatch, tmp_path):
+    """The finding's exact scenario end-to-end: the guard must fire while refusing
+    to post a claim or prepare a worktree — a wrong folder is an intake failure,
+    not permission to operate on a different notebook."""
+    from types import SimpleNamespace
+    rec = {"stages": {}, "calls": []}
+    args = SimpleNamespace(out_dir=str(tmp_path), repo="D:/repo", issue=27106,
+                           notebook="Wrong/N-CSharp.ipynb",
+                           source_nb="Wrong/N-Python.ipynb",
+                           allow_foreign_origin=False, lane="seat:nb-coder", claim=True,
+                           conventions="")
+    monkeypatch.setattr(d, "app_token", lambda repo: "")
+    monkeypatch.setattr(d, "read_conventions", lambda p: "")
+    monkeypatch.setattr(d, "check_claim", lambda *a: {"ok": True})
+    monkeypatch.setattr(d, "claim_verdict", lambda r: "")
+    monkeypatch.setattr(d, "fetch_issue", lambda *a: {
+        "title": "N", "state": "open", "labels": [],
+        "body": "- Source Python : `Expected/N-Python.ipynb`\n"
+                "- Cible C# : `Expected/N-CSharp.ipynb`"})
+    monkeypatch.setattr(d, "post_claim", lambda *a: (_ for _ in ()).throw(
+        AssertionError("a refused run must not post another claim")))
+    monkeypatch.setattr(d, "prepare_worktree", lambda *a: (_ for _ in ()).throw(
+        AssertionError("a refused run must not prepare or mutate a worktree")))
+    import asyncio
+    import subprocess
+    monkeypatch.setattr(d.subprocess, "run", lambda *a, **kw:
+                        SimpleNamespace(stdout="https://github.com/jsboige/CoursIA.git\n"))
+    got = asyncio.run(d.run(args, rec))
+    assert got["verdict"] == "refused-issue-target-mismatch"
+    assert len(got["issue_target_conflicts"]) == 2
+    assert "Expected/N-CSharp.ipynb" in got["issue_target_conflicts"][1]

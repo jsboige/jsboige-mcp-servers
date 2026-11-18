@@ -259,14 +259,19 @@ def engine_tokens() -> dict:
         return {}
 
 
-def gate_call(mode: str) -> dict:
+def gate_call(mode: str, gate_path: Path | None = None) -> dict:
     """Requirement: capacity gate before every notebook. warn = non-blocking (24 h window).
     off = no local gate: capacity is enforced elsewhere (MiniMax variant -> claudish lane
-    budgets + stop file, server-side #1060/#1063 — a local Swift gate would be dead code)."""
+    budgets + stop file, server-side #1060/#1063 — a local Swift gate would be dead code).
+
+    ``gate_path`` (pre-review round 2): an explicitly propagated probe path wins over the
+    module-level env default — the scheduler resolves its own ``--gate`` (incl. $NBCODER_GATE)
+    and forwards it, so a custom probe set on the parent reaches the child WITHOUT the
+    operator having to export the env var in the parent shell."""
     if mode == "off":
         return {"verdict": "off", "mode": "off", "exit": None, "blocking_refusal": False}
-    p = subprocess.run([sys.executable, str(GATE)], capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=60)
+    p = subprocess.run([sys.executable, str(gate_path or GATE)], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace", timeout=60)
     try:
         verdict = json.loads((p.stdout or "").strip().splitlines()[-1])
     except Exception:
@@ -960,14 +965,24 @@ def repair_prompt(failing: list[dict], conventions: str = "") -> str:
     )
 
 
-def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False) -> dict:
+def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False,
+                  only_idx: set[int] | None = None) -> dict:
     """Replace the sources of the given cells (by idx) in ONE write. A repaired CODE cell
     loses its outputs and execution_count: they must come back from EXECUTION, never
     from the repair itself (same rule as creation). MARKDOWN cells are accepted only
     with allow_markdown=True (the prose-repair round): source replaced, nothing to
-    reset — markdown has no outputs, execution stays valid."""
+    reset — markdown has no outputs, execution stays valid.
+
+    ``only_idx`` (pre-review cutover finding 1): when given, ONLY those indices may be
+    replaced — a response naming any other cell (code out of scope, an idx the round
+    never asked for) is refused into ``out_of_scope`` and left untouched. The prose
+    round passes the failing cells' idx so a hallucinated extra edit cannot silently
+    rewrite an uninvolved cell. In markdown mode a cell whose payload declares
+    ``cell_type: "code"`` is also refused: the prose round must not reset a code cell's
+    outputs by smuggling it in as a markdown edit.
+    """
     nb = json.loads(nb_path.read_text(encoding="utf-8"))
-    rep = {"replaced": [], "unknown_idx": [], "bad": []}
+    rep = {"replaced": [], "unknown_idx": [], "bad": [], "out_of_scope": []}
     for c in payload.get("cells") or []:
         try:
             i = int(c.get("idx"))
@@ -977,9 +992,25 @@ def apply_repairs(nb_path: Path, payload: dict, allow_markdown: bool = False) ->
         if not (0 <= i < len(nb["cells"])):
             rep["unknown_idx"].append(i)
             continue
+        if only_idx is not None and i not in only_idx:
+            rep["out_of_scope"].append(i)
+            continue
         ct = nb["cells"][i].get("cell_type")
         if ct != "code" and not (ct == "markdown" and allow_markdown):
             rep["unknown_idx"].append(i)
+            continue
+        # In the prose round, a cell whose REAL type is code is out of scope WHATEVER
+        # the payload declares (round 2: a payload declaring markdown, or omitting
+        # cell_type entirely, sailed past the declared-type check and then reset the
+        # real code cell's outputs at the `ct == "code"` branch below).
+        if allow_markdown and ct == "code":
+            rep["out_of_scope"].append(i)
+            continue
+        # And refuse a payload that re-labels ANY cell as CODE in the prose round:
+        # applying it on a markdown cell is a type-confusion the round never asked
+        # for (finding 1 — CODE smuggled under allow_markdown).
+        if allow_markdown and (c.get("cell_type") or "").lower() == "code":
+            rep["out_of_scope"].append(i)
             continue
         src = c.get("source") or ""
         if not src.strip():
@@ -1718,6 +1749,28 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     rec["stage5_s"] = round(time.time() - t0, 1)
 
 
+def _norm_rel(p: str) -> str:
+    """Repo-relative path, posix-normalized: issue declarations use forward slashes,
+    a Windows CLI arg may use backslashes — both must compare on the same plane."""
+    parts = [seg for seg in re.split(r"[\\/]+", (p or "").strip()) if seg not in ("", ".")]
+    return "/".join(parts)
+
+
+def _declared_matches(declared: str, supplied: str) -> bool:
+    """Intake finding 1 (ms#1808 review): Path.name-only comparison let an issue
+    declaring ``Expected/N-CSharp.ipynb`` accept a CLI ``Wrong/N-CSharp.ipynb`` —
+    same basename, different notebook. A declaration that carries a directory
+    component must match on the FULL normalized relative path (an absolute or
+    longer supplied path matches as a suffix); a declaration that is really just
+    a name stays basename-matched, preserving older bare-name issues."""
+    d, s = _norm_rel(declared), _norm_rel(supplied)
+    if not d or not s:
+        return False
+    if "/" in d:
+        return s == d or s.endswith("/" + d)
+    return s.rsplit("/", 1)[-1] == d
+
+
 # ---------------------------------------------------------------- main flow
 async def run(args, rec: dict) -> dict:
     """Fill the caller-owned trace. `rec` is created in main() and passed in so a crash keeps
@@ -1765,7 +1818,7 @@ async def run(args, rec: dict) -> dict:
                            if any(marker in line for marker in target_markers)]}
     conflicts = []
     for role, supplied in (("source", args.source_nb), ("target", args.notebook)):
-        cited = [p for p in declared[role] if Path(p).name == Path(supplied or "").name]
+        cited = [p for p in declared[role] if _declared_matches(p, supplied or "")]
         if declared[role] and not cited:
             conflicts.append(f"issue declares {role}={declared[role][0]} but CLI supplies {supplied}")
     rec["issue_notebook_paths"] = declared
@@ -1816,7 +1869,7 @@ async def run(args, rec: dict) -> dict:
             kernel["kernel_name"] = twin_kernel
             kernel["kernel_source"] = "canonical-twin-kernelspec"
     rec["kernel"] = kernel
-    gate = gate_call(args.gate_mode)
+    gate = gate_call(args.gate_mode, getattr(args, "gate", None))
     rec["gate"] = gate
     if gate["blocking_refusal"]:
         rec["verdict"] = "deferred-by-capacity-gate"
@@ -2063,8 +2116,14 @@ async def run(args, rec: dict) -> dict:
                                 conv = env.get("conversation_id") or conv
                                 part = parse_json_block(env.get("response") or "")
                                 if part and part.get("cells"):
+                                    # Scope the prose round to the cells it asked for
+                                    # (finding 1): a response editing any other cell is
+                                    # refused, not applied.
+                                    _md_idx = {d["idx"] for d in detail_md
+                                               if isinstance(d.get("idx"), int)}
                                     rep_md = apply_repairs(scratch, part,
-                                                           allow_markdown=True)
+                                                           allow_markdown=True,
+                                                           only_idx=_md_idx)
                                     rec.setdefault("md_repairs", []).append(
                                         {"asked": len(detail_md),
                                          "replaced": rep_md["replaced"],
@@ -2174,12 +2233,24 @@ def _preflight(ap, args) -> None:
         ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
     ) if not ok]
     if not missing:
-        probe = subprocess.run(
-            [str(PM_PY), "-I", "-c", "import papermill_mcp.main"],
-            cwd=str(PM_CWD), capture_output=True, text=True, timeout=60)
-        if probe.returncode:
-            missing.append("papermill MCP import (install its declared dependencies): "
-                           + (probe.stderr.strip().splitlines() or ["import failed"])[-1][:500])
+        # Intake finding 2 (ms#1808 review): a TimeoutExpired or OSError here escaped
+        # _preflight entirely (this runs before the main try/rec) — a bare traceback
+        # with NO durable refusal, and the next run would repeat the same crash. A
+        # probe that cannot even run is a wiring failure: record it, refuse durably.
+        try:
+            probe = subprocess.run(
+                [str(PM_PY), "-I", "-c", "import papermill_mcp.main"],
+                cwd=str(PM_CWD), capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            missing.append("papermill MCP import probe TIMEOUT after 60s — dead or hung "
+                           "interpreter; repair the seat wiring, this is not transient load")
+        except OSError as e:
+            missing.append(f"papermill MCP import probe could not spawn "
+                           f"({e.__class__.__name__}: {e}) — repair the seat wiring")
+        else:
+            if probe.returncode:
+                missing.append("papermill MCP import (install its declared dependencies): "
+                               + (probe.stderr.strip().splitlines() or ["import failed"])[-1][:500])
     if args.conventions and not Path(args.conventions).is_file():
         missing.append(f"--conventions={args.conventions} (missing; pass '' only to disable explicitly)")
     if args.source_nb:
@@ -2215,6 +2286,11 @@ def main() -> int:
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe a blanc)")
     ap.add_argument("--claim", action="store_true", help="post the [CLAIMED] comment (off in dry)")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn")
+    ap.add_argument("--gate", type=Path, default=None,
+                    help="capacity-gate probe script (default: $NBCODER_GATE env, else the "
+                         "bundled swift_capacity_gate.py). The scheduler forwards its own "
+                         "resolved --gate here, so parent-side custom paths propagate "
+                         "without env mutation (pre-review round 2)")
     ap.add_argument("--lane", default=LANE,
                     help="claim lane id, form <machine>:nb-coder (default: NBCODER_LANE env; "
                          "no fallback — --claim refuses without it, F1/vllm#438)")

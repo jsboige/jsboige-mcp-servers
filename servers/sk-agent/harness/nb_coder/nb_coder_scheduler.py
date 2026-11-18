@@ -265,7 +265,18 @@ class Scheduler:
 
     # ---------------------------------------------------------------- driver/gate
     def _probe_gate(self) -> dict:
-        p = subprocess.run([sys.executable, str(self.args.gate)],
+        # gate-mode off = no probe at all (finding 2: off was ignored, the probe ran
+        # anyway and a missing/custom probe file then read as a blocking verdict).
+        if getattr(self.args, "gate_mode", "block") == "off":
+            return {"verdict": "green", "running": 0, "waiting": 0,
+                    "preemptions": 0, "gate_mode": "off"}
+        gate_path = Path(self.args.gate)
+        if not gate_path.is_file():
+            # A missing probe is NOT a green light and NOT a saturation: fail loud
+            # as unknown so the hold reason names the real cause (finding 2).
+            return {"verdict": "unknown", "running": 0, "waiting": 0,
+                    "error": f"gate probe not found: {gate_path}"}
+        p = subprocess.run([sys.executable, str(gate_path)],
                            capture_output=True, text=True, encoding="utf-8",
                            errors="replace", timeout=30)
         line = (p.stdout or "").strip().splitlines()[-1] if p.stdout.strip() else ""
@@ -308,6 +319,10 @@ class Scheduler:
                "--worktree", str(worktree), "--gate-mode", a.gate_mode]
         opt = [
             ("--lane", a.lane), ("--agent", item.get("agent", a.agent)),
+            # round 2: forward the RESOLVED gate path so a custom --gate / $NBCODER_GATE
+            # set on the scheduler reaches the driver child without env mutation —
+            # the child's env default only fires when this scheduler runs standalone.
+            ("--gate", a.gate),
             ("--conventions", a.conventions), ("--intention", item.get("intention", a.intention)),
             ("--source-nb", item.get("source_nb", a.source_nb)),
             ("--max-stage", item.get("max_stage", a.max_stage)),
@@ -566,6 +581,21 @@ class Scheduler:
                                        for g in self.state["grains"].values()),
                             ramp=self.state["ramp"])
                 return 0
+            if self.args.watch:
+                # finding 3 (--watch never reloaded the queue): re-read the file each
+                # poll and merge on digest change, so grains APPENDED after the queue
+                # drained are picked up without a scheduler restart. merge_queue keeps
+                # history (running grains untouched, missing -> withdrawn, re-added ->
+                # requeued). A parse/read error keeps the last good queue (fail-safe:
+                # never wipe state on a half-written file).
+                try:
+                    items, digest = load_queue(Path(self.args.queue))
+                    if digest != self.state.get("queue_sha256"):
+                        self.merge_queue(items, digest)
+                        self._event("queue-reloaded", digest=digest[:12],
+                                    grains=len(items))
+                except Exception as exc:
+                    self._event("queue-reload-error", error=str(exc)[:200])
             self.sleep(self.args.poll_s)
 
 
@@ -594,7 +624,10 @@ def parse_args(argv=None):
     ap.add_argument("--driver", type=Path,
                     default=HERE / "nb_coder_driver.py")
     ap.add_argument("--gate", type=Path,
-                    default=HERE.parent / "swift_capacity_gate.py")
+                    default=Path(os.environ["NBCODER_GATE"]) if os.environ.get("NBCODER_GATE")
+                    else HERE.parent / "swift_capacity_gate.py",
+                    help="capacity-gate probe script (default: $NBCODER_GATE if set, "
+                         "else the sibling swift_capacity_gate.py)")
     ap.add_argument("--repo", required=True,
                     help="CoursIA checkout (passed through to the driver)")
     ap.add_argument("--lane", default=os.environ.get("NBCODER_LANE", ""),

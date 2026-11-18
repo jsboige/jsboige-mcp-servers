@@ -338,5 +338,79 @@ def test_spawn_driver_writes_log_file_and_reap_reads_it(tmp_path):
     del sp  # silence linters; subprocess is used inside _spawn_driver
 
 
+# ------------------------------------------------- cutover findings (18/11)
+def test_gate_mode_off_never_probes(tmp_path):
+    """Finding 2: --gate-mode off must not spawn the probe at all (a missing/custom
+    probe file used to read as a blocking verdict even with off)."""
+    sched = make_sched(tmp_path, [item(1)], gate_mode="off",
+                       gate=str(tmp_path / "does-not-exist.py"))
+    sched.gate = sched._probe_gate            # bypass the injected fake
+    out = sched._probe_gate()
+    assert out["verdict"] == "green" and out["gate_mode"] == "off"
+
+
+def test_missing_gate_probe_is_unknown_not_green(tmp_path):
+    """Finding 2: a missing probe file must NOT read as green (fail loud, named)."""
+    sched = make_sched(tmp_path, [item(1)])
+    sched.args.gate = str(tmp_path / "absent.py")
+    out = sched._probe_gate()
+    assert out["verdict"] == "unknown" and "not found" in out["error"]
+
+
+def test_gate_default_reads_env_nbcoder_gate(tmp_path, monkeypatch):
+    """Finding 2: a custom probe path via NBCODER_GATE env must be honoured."""
+    monkeypatch.setenv("NBCODER_GATE", str(tmp_path / "custom_gate.py"))
+    args = S.parse_args(["--queue", "q.jsonl", "--state-dir", "s",
+                         "--repo", "D:/CoursIA", "--max-active", "2"])
+    assert Path(args.gate) == tmp_path / "custom_gate.py"
+
+
+def test_driver_command_propagates_resolved_gate(tmp_path):
+    """Round 2 (finding 2): the scheduler's resolved --gate (explicit or $NBCODER_GATE)
+    must reach the DRIVER child via its own --gate flag — the child's env default only
+    fires when the operator exported the var, which a CLI-only custom path never did."""
+    custom = tmp_path / "seat_gate.py"
+    sched = make_sched(tmp_path / "g", [item(1)])
+    sched.args.gate = str(custom)       # post-construction: "gate" is the injected
+    #                                  probe callable in make_sched's signature, an
+    #                                  arg_overrides passthrough would never land here
+    cmd = sched.driver_command(sched.items_by_key["#1:Dir/N1.ipynb"])
+    joined = " ".join(cmd)
+    assert f"--gate {custom}" in joined
+
+
+def test_watch_run_picks_up_appended_grain(tmp_path):
+    """Finding 3, ROUND 2 — this test goes through run() itself. The previous version
+    called load_queue/merge_queue manually and stayed green with the reload deleted
+    from run(); here the ONLY path grain #2 can take into spawn.calls is the watch
+    branch's reload inside run(). Mutation witness: remove that reload -> the grain
+    appended by the fake sleep is never merged -> never launched -> this FAILS."""
+    clock = {"t": 1000.0}
+    state = {"appended": False}
+    spawn = SpawnRecorder(done_after=0)
+    sched = make_sched(tmp_path, [item(1)], spawn=spawn)
+    sched.args.watch = True
+    sched.args.timeout_s = 40          # deadline = 1040 -> bounded run()
+    sched.clock = lambda: clock["t"]
+
+    def fake_sleep(_s=0):
+        if not state["appended"]:
+            state["appended"] = True
+            # the operator appends grain #2 to the SAME queue file mid-run
+            write_queue(tmp_path, [item(1), item(2)])
+        clock["t"] += 10
+    sched.sleep = fake_sleep
+    sched.run()                        # returns at the timeout deadline
+
+    assert state["appended"]
+    launched = {c[c.index("--issue") + 1] for c in spawn.calls if "--issue" in c}
+    assert "2" in launched, "appended grain never launched: run() reload missing?"
+    assert sched.state["grains"]["#2:Dir/N2.ipynb"]["status"] in ("done", "failed")
+    events = [json.loads(l) for l in
+              (sched.state_dir / "scheduler.jsonl").read_text().splitlines()]
+    assert any(e["kind"] == "queue-reloaded" for e in events)
+
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
