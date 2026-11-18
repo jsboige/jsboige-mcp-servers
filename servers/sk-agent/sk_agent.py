@@ -169,6 +169,14 @@ try:
 except ImportError:
     HAS_GITHUB_PLUGIN = False
 
+# nb_coder workflow plugin (#4832): harness steps as agent-callable functions.
+try:
+    from nb_coder_plugin import NbCoderPlugin, run_nb_coder_workflow
+
+    HAS_NB_CODER_PLUGIN = True
+except ImportError:
+    HAS_NB_CODER_PLUGIN = False
+
 # Optional: vector memory support
 try:
     from semantic_kernel.memory import SemanticTextMemory, VolatileMemoryStore
@@ -1291,6 +1299,20 @@ class SKAgentManager:
                     "github_write" in caps,
                 )
 
+        # nb_coder workflow functions if enabled via parameters.nb_coder_tools
+        # (#4832): requires the ``shell`` capability — the steps execute the
+        # driver (kernels, git, gh) under the seat's own wiring.
+        if HAS_NB_CODER_PLUGIN and agent_cfg.parameters.get("nb_coder_tools", False):
+            if "shell" not in set(agent_cfg.capabilities):
+                log.error(
+                    "nb_coder plugin refused for agent '%s': capability "
+                    "'shell' not granted (issue #4832)",
+                    agent_id,
+                )
+            else:
+                agent_plugins.append(NbCoderPlugin())
+                log.info("nb_coder plugin enabled for agent '%s'", agent_id)
+
         # Create SK agent
         safe_name = _sanitize_agent_name(agent_id)
         system_prompt = agent_cfg.system_prompt or self.config.system_prompt
@@ -1530,6 +1552,17 @@ class SKAgentManager:
                         default_repo=gh_repo, allow_write="github_write" in caps
                     )
                 )
+
+        # Same nb_coder gating on ephemeral agents (#4832, mirrors github_tools).
+        if HAS_NB_CODER_PLUGIN and agent_cfg.parameters.get("nb_coder_tools", False):
+            if "shell" not in set(agent_cfg.capabilities):
+                log.error(
+                    "Ephemeral agent '%s': nb_coder plugin refused — "
+                    "capability 'shell' not granted (issue #4832)",
+                    agent_cfg.id,
+                )
+            else:
+                plugins.append(NbCoderPlugin())
 
         safe_name = _sanitize_agent_name(agent_cfg.id)
         system_prompt = agent_cfg.system_prompt or self.config.system_prompt
@@ -4450,6 +4483,75 @@ async def review_pr(
         payload["conversation_type"] = result.get("conversation_type", "")
         payload["agents_used"] = result.get("agents_used", [])
     return json.dumps(payload, indent=2, ensure_ascii=False)
+
+
+@mcp_server.tool()
+@track_usage
+async def nb_coder_workflow(
+    step: str,
+    issue: int = 0,
+    notebook: str = "",
+    params: str = "{}",
+    timeout: int = 0,
+) -> str:
+    """Run one nb_coder workflow step on this seat's harness (#4832).
+
+    The nb_coder harness (issue -> notebook -> PR for CoursIA) exposed as
+    on-demand workflows any MCP client can invoke — no knowledge of the
+    harness filesystem or environment wiring required: this tool resolves
+    its own harness home and returns the workflow envelope verbatim.
+
+    Steps:
+      spec  — draft a CoursIA issue body from a validated nb_audit finding
+              record (deterministic, zero model tokens).
+      code  — the full issue -> notebook -> PR pipeline (stages 0-5).
+              Dry below max_stage=5: no branch, no commit, no push, no PR.
+      audit — independent verification of a built notebook against its
+              pristine source (producer != verifier).
+
+    Args:
+        step: One of "spec", "code", "audit".
+        issue: Convenience passthrough — merged into params when > 0.
+        notebook: Convenience passthrough — merged into params when non-empty.
+        params: JSON object string with the step's closed parameter set
+            (see harness/nb_coder/INVOCATION.md). Credentials never go here:
+            keys ride the seat environment (NBCODER_*).
+        timeout: Wall-clock cap in seconds. 0 = the step default (code: 3600).
+
+    Returns:
+        JSON string — the workflow envelope:
+        {step, ok, verdict, exit, issue, notebook, pr, pr_url, trace,
+         out_dir, seconds, command, tail} on success, or a typed error:
+        nb_coder_bad_step / nb_coder_bad_params / nb_coder_harness_unresolved /
+        nb_coder_timeout / nb_coder_no_envelope.
+    """
+    if not HAS_NB_CODER_PLUGIN:
+        return json.dumps({
+            "error": "nb_coder_plugin_absent",
+            "detail": "the nb_coder plugin module is not importable on this server",
+        }, indent=2, ensure_ascii=False)
+
+    merged: dict = {}
+    if params and params.strip():
+        try:
+            merged = json.loads(params)
+        except json.JSONDecodeError as exc:
+            return json.dumps({
+                "error": "nb_coder_bad_params",
+                "detail": f"params JSON: {exc}",
+            }, indent=2, ensure_ascii=False)
+    if not isinstance(merged, dict):
+        return json.dumps({
+            "error": "nb_coder_bad_params",
+            "detail": "params must be a JSON object string",
+        }, indent=2, ensure_ascii=False)
+    if issue:
+        merged.setdefault("issue", issue)
+    if notebook:
+        merged.setdefault("notebook", notebook)
+
+    envelope = await run_nb_coder_workflow(step, merged, timeout)
+    return json.dumps(envelope, indent=2, ensure_ascii=False)
 
 
 @mcp_server.tool()

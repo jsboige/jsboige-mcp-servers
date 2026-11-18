@@ -3,6 +3,18 @@
 
   "models": [
     {
+      "_comment": "#4832 operator presets run on glm-5.3 (TEMPLATE model = every seat, fleet hub) — a mechanical single-tool turn. This stub exists ONLY so the fragment validates standalone (test_nb_coder_entries): on a real seat the template already declares glm-5.3 and the merge rule keeps the LIVE one (base_url, keys, vision flags).",
+      "id": "glm-5.3",
+      "enabled": true,
+      "base_url": "http://192.168.0.50:3000/v1",
+      "api_key_env": "ZAI_API_KEY",
+      "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
+      "model_id": "glm-5.3",
+      "vision": false,
+      "thinking": true,
+      "description": "GLM-5.3 reasoning via the fleet hub (template entry, referenced by the nb-coder operator presets — #4832)."
+    },
+    {
       "_comment": "Swift engine + DECLARED capacity gate (#4712 mechanism, #4725 demand). DEDICATED model id on purpose: the gate is keyed by model id (sk_agent_capacity_gate.check_model_capacity_gate), so this entry refuses ONLY nb-coder dispatches — the shared Swift / -audit entry that notebook-auditor and other lanes use stays ungated. Derivation: copy the live auditor model entry verbatim (base_url, api_key, model_id, vision/thinking, request_timeout_s and any sampling preset), then change id to this one and add capacity_gate. Probe jsboige/vllm myia_vllm/scripts/adoption/swift_capacity_gate.py: exit 0 green / 1 yellow / 2 red / 3 unknown; sk-agent maps 3 and any spawn failure to 'unknown' and refuses (fail-closed, consistent with the probe contract). allow_yellow=false because the spec says exit 0 only; retry_after_s=3600 because the harness retries on its next hourly slot (spec §3.3). The gate command path is the ai-01 checkout — adjust (or pin an absolute interpreter) if PATH lacks `python` on another seat. Id renamed from the pre-migration id 2026-11-15 (#3401) — a seat already carrying the old id renames its live entry in place (same engine, same endpoint).",
       "id": "swift-1.5-27b-nbcoder",
       "enabled": true,
@@ -170,6 +182,51 @@
       "parameters": {
         "github_tools": true,
         "github_default_repo": "jsboige/CoursIA"
+      }
+    },
+    {
+      "_comment": "#4832 OPERATOR presets — the on-demand door into the nb_coder workflows. One entry per harness step; each carries nb_coder_tools (the NbCoderPlugin: exactly one kernel function per preset, the model cannot pick the wrong step) and the 'shell' capability its gate requires (the steps execute kernels/git/gh). The operator never produces anything itself: it translates the caller's request into the step function's params and returns the envelope VERBATIM. Model glm-5.3 (template = every seat, hub): a mechanical single-tool turn. Scheduled seats (po-2028, ai-01:vllm) call the same underlying wrapper (harness/nb_coder/nb_coder_invoke.py) — one state, two doors.",
+      "id": "nb-coder-spec",
+      "description": "nb_coder SPEC operator (#4832) — drafts a CoursIA issue body from a validated nb_audit finding record. Call with: record (nb_audit record JSON path), notebook (repo-relative), ref (commit SHA the audit read). Deterministic workflow, zero model tokens inside. Returns the workflow envelope {ok, verdict, draft_chars, draft?}.",
+      "model": "glm-5.3",
+      "system_prompt": "Tu es l'opérateur d'invocation du workflow nb_coder SPEC (roo-extensions #4832). Tu ne produis RIEN toi-même : tu traduis la demande en un appel à ton unique outil nb_coder_spec, puis tu rends son enveloppe SANS MODIFICATION.\n\nPROTOCOLE. La demande porte : record (chemin du JSON d'audit nb_audit), notebook (chemin relatif au dépôt), ref (SHA lue par l'audit), out optionnel. Appelle nb_coder_spec avec {\"params_json\": \"<objet JSON de ces champs>\", \"timeout\": 120}. Rends ensuite l'enveloppe retournée par l'outil, telle quelle, dans un bloc json.\n\nINTERDITS. Ne paraphrase pas le verdict, n'invente jamais une issue ou un chemin, n'appelle aucun autre outil, ne relance pas un workflow qui a refusé (refused:* = la demande était mal formée : rends l'enveloppe, c'est tout). Aucun secret dans les params — les clés vivent dans l'environnement du siège.",
+      "mcps": [],
+      "capabilities": ["shell"],
+      "memory": {
+        "enabled": false
+      },
+      "parameters": {
+        "nb_coder_tools": true
+      }
+    },
+    {
+      "_comment": "#4832 operator, step code — same contract as nb-coder-spec, production step. The default is DRY (max_stage 2): the caller opts into delivery (max_stage 5 + claim + lane) explicitly. See harness/nb_coder/INVOCATION.md for the closed param set.",
+      "id": "nb-coder-code",
+      "description": "nb_coder CODE operator (#4832) — runs the full issue -> notebook -> CoursIA PR pipeline (stages 0-5) on this seat's harness. Call with: issue (int), notebook, repo (CoursIA checkout path), lane (with claim), max_stage (default 2 = dry). Returns the workflow envelope {ok, verdict, pr?, pr_url?}. Scheduled seats share the same underlying wrapper.",
+      "model": "glm-5.3",
+      "system_prompt": "Tu es l'opérateur d'invocation du workflow nb_coder CODE (roo-extensions #4832). Tu ne produis RIEN toi-même : tu traduis la demande en un appel à ton unique outil nb_coder_code, puis tu rends son enveloppe SANS MODIFICATION.\n\nPROTOCOLE. La demande porte au minimum : issue (entier), notebook (chemin relatif au dépôt), repo (chemin du checkout CoursIA). Optionnels documentés : lane (form <machine>:nb-coder, exigée pour claim), max_stage (0-5, défaut 2 = SANS PR), claim (bool), agent, verifier_agent, source_nb, write_mode, exec_mode, gate_mode, out_dir, timeout. Appelle nb_coder_code avec {\"params_json\": \"<objet JSON de ces champs>\", \"timeout\": 3600}. Rends ensuite l'enveloppe retournée par l'outil, telle quelle, dans un bloc json — le verdict et l'URL de PR viennent de l'enveloppe, jamais de toi.\n\nINTERDITS. Ne paraphrase pas le verdict, n'invente jamais un numéro de PR, n'appelle aucun autre outil, ne relance pas un workflow refusé (refused-claim-held-by-another-lane, deferred-by-capacity-gate et refused-wiring-unresolved se rendent tels quels — l'arbitrage appartient à l'appelant). Aucun secret dans les params — les clés vivent dans l'environnement du siège.",
+      "mcps": [],
+      "capabilities": ["shell"],
+      "memory": {
+        "enabled": false
+      },
+      "parameters": {
+        "nb_coder_tools": true
+      }
+    },
+    {
+      "_comment": "#4832 operator, step audit — independent verification. exit 2 = instrument error is NEVER a reject: the envelope carries instrument_error=true, the caller reads it.",
+      "id": "nb-coder-audit",
+      "description": "nb_coder AUDIT operator (#4832) — runs the independent verifier (producer != verifier) on a built notebook against its pristine source. Call with: issue (int), source_nb (pristine), built_nb (deliverable), facts optional (builder trace). Returns the workflow envelope {ok, verdict: approve|reject, trace, instrument_error}.",
+      "model": "glm-5.3",
+      "system_prompt": "Tu es l'opérateur d'invocation du workflow nb_coder AUDIT (roo-extensions #4832). Tu ne produis RIEN toi-même : tu traduis la demande en un appel à ton unique outil nb_coder_audit, puis tu rends son enveloppe SANS MODIFICATION.\n\nPROTOCOLE. La demande porte : issue (entier), source_nb (carnet d'origine pristine), built_nb (livrable produit), facts optionnel (trace du constructeur), agent optionnel (preset vérificateur, défaut critic). Appelle nb_coder_audit avec {\"params_json\": \"<objet JSON de ces champs>\", \"timeout\": 1200}. Rends ensuite l'enveloppe retournée par l'outil, telle quelle, dans un bloc json.\n\nINTERDITS. Ne paraphrase pas le verdict, n'invente jamais de findings, n'appelle aucun autre outil, ne relance pas un workflow refusé. instrument_error=true signifie que l'instrument a échoué — ce n'est PAS un rejet, rends-le tel quel. Aucun secret dans les params.",
+      "mcps": [],
+      "capabilities": ["shell"],
+      "memory": {
+        "enabled": false
+      },
+      "parameters": {
+        "nb_coder_tools": true
       }
     }
   ]

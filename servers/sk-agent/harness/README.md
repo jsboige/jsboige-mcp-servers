@@ -21,6 +21,8 @@ seat bindings until its pointer consolidation.
 
 | path | role |
 |---|---|
+| `nb_coder/INVOCATION.md` | **the single invocation doc** (#4832): steps, closed param sets, envelope, presets |
+| `nb_coder/nb_coder_invoke.py` | the ONE entry for every caller — spec/code/audit, JSON in, envelope JSON out (#4832) |
 | `nb_coder/nb_coder_driver.py` | stages 0-5 of issue → notebook → PR (claim, plan, build, gates, verify, harness PR) |
 | `nb_coder/nb_coder_scheduler.py` | capacity-aware batch scheduler above the driver (in-flight cap against the live engine gauge, ramp, STOP file) |
 | `nb_coder/nb_coder_verify.py` | stage 4 — independent verifier (producer ≠ verifier) |
