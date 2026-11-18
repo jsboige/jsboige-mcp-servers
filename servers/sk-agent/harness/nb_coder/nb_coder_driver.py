@@ -1750,6 +1750,29 @@ async def run(args, rec: dict) -> dict:
     issue = fetch_issue("jsboige/CoursIA", args.issue, token)
     rec["stages"]["issue"] = {"title": issue["title"], "state": issue["state"],
                               "labels": issue["labels"], "body_chars": len(issue["body"])}
+    # The issue, not a copied command line, is the work order. #27106 was invoked against
+    # ChoixSocial-05 while its body explicitly says ChoixSocial-08: catch the operator error
+    # BEFORE re-posting a claim or paying for a model plan. An absent declaration stays
+    # compatible with older correction issues; a contradicting one never falls through.
+    declared_paths = []
+    for line in issue["body"].splitlines():
+        declared_paths += [(line, p) for p in re.findall(r"`([^`\r\n]+\.ipynb)`", line)]
+    source_markers = ("Source Python", "Jumeau Python source", "source Python")
+    target_markers = ("Cible C#", "Cible", "target C#", "Cible Rust")
+    declared = {"source": [p for line, p in declared_paths
+                           if any(marker in line for marker in source_markers)],
+                "target": [p for line, p in declared_paths
+                           if any(marker in line for marker in target_markers)]}
+    conflicts = []
+    for role, supplied in (("source", args.source_nb), ("target", args.notebook)):
+        cited = [p for p in declared[role] if Path(p).name == Path(supplied or "").name]
+        if declared[role] and not cited:
+            conflicts.append(f"issue declares {role}={declared[role][0]} but CLI supplies {supplied}")
+    rec["issue_notebook_paths"] = declared
+    if conflicts:
+        rec["verdict"] = "refused-issue-target-mismatch"
+        rec["issue_target_conflicts"] = conflicts
+        return rec
     if args.claim:
         rec["stages"]["claim_posted"] = post_claim(repo, args.issue, args.lane, args.intention)
     wt = prepare_worktree(repo, Path(args.worktree), args.fresh_worktree)
@@ -2099,29 +2122,23 @@ async def run(args, rec: dict) -> dict:
     return rec
 
 
-def _preflight(ap, args) -> None:
-    """Refuse before any spend when a wired path cannot exist (F3, vllm#441).
+def creation_twin_mismatch(target: str, source: str) -> str:
+    """Creation paths must describe the same numbered notebook, not two unrelated grains."""
+    def stem(rel: str) -> str | None:
+        name = Path(rel).name
+        for suffix in ("-Python.ipynb", "-CSharp.ipynb"):
+            if name.endswith(suffix):
+                return name[:-len(suffix)]
+        return None
+    a, b = stem(target), stem(source)
+    if a is None or b is None:
+        return f"target/source must end -Python.ipynb and -CSharp.ipynb: {target} vs {source}"
+    return "" if a == b else f"target/source twin mismatch: {target} vs {source}"
 
-    On a foreign checkout PM_CWD fell through to a non-existent legacy path, so the two MCP
-    spawns died with NotADirectoryError [WinError 267] AFTER the engine-token baseline: what
-    the operator saw was 'crashed:ExceptionGroup ... (1 sub-exception)' with calls: 0, which
-    reads like a model or protocol defect. A missing SK_PY / config dies the same opaque way
-    inside stdio_client, so the check covers the whole wiring, not just the reported field.
 
-    A refusal still leaves a TRACE (F3-1, co-review of #442): a scheduled loop cannot tell
-    "ran and refused" from "never ran" if the refusal leaves no out-dir and no ledger line.
-    The trace is written here, before ap.error, with the refusal itself as the verdict.
-    """
-    missing = [f"{name}={path}" for name, path, ok in (
-        ("sk_agent.py (NBCODER_SK_DIR)", SK_DIR / "sk_agent.py", (SK_DIR / "sk_agent.py").is_file()),
-        ("NBCODER_SK_PY", SK_PY, SK_PY.is_file()),
-        ("NBCODER_SK_CONFIG", SK_CONFIG, SK_CONFIG.is_file()),
-        ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
-        ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
-    ) if not ok]
-    if not missing:
-        return
-    detail = "seat wiring does not resolve here — point the env var at a real path: " \
+def _preflight_refusal(ap, args, missing: list[str]) -> None:
+    """A refused run leaves the same durable trace as every other verdict, without spending."""
+    detail = "seat wiring does not resolve here — repair the named input: " \
              + " | ".join(missing)
     out_dir = Path(args.out_dir)
     try:
@@ -2139,6 +2156,38 @@ def _preflight(ap, args) -> None:
     except OSError:
         pass          # the refusal must not be masked by a failed trace write
     ap.error(detail)
+
+
+def _preflight(ap, args) -> None:
+    """Refuse before any spend when the seat wiring or target addressing cannot work.
+
+    Existing paths are not enough: on 18/11 #27106, PM_PY existed but its interpreter lacked
+    papermill's declared nbformat dependency. The child died during MCP initialize, leaving
+    only a ClosedResourceError inside an ExceptionGroup. An IMPORT of the actual entry point,
+    never a package version check, exposes the missing module before any model call.
+    """
+    missing = [f"{name}={path}" for name, path, ok in (
+        ("sk_agent.py (NBCODER_SK_DIR)", SK_DIR / "sk_agent.py", (SK_DIR / "sk_agent.py").is_file()),
+        ("NBCODER_SK_PY", SK_PY, SK_PY.is_file()),
+        ("NBCODER_SK_CONFIG", SK_CONFIG, SK_CONFIG.is_file()),
+        ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
+        ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
+    ) if not ok]
+    if not missing:
+        probe = subprocess.run(
+            [str(PM_PY), "-I", "-c", "import papermill_mcp.main"],
+            cwd=str(PM_CWD), capture_output=True, text=True, timeout=60)
+        if probe.returncode:
+            missing.append("papermill MCP import (install its declared dependencies): "
+                           + (probe.stderr.strip().splitlines() or ["import failed"])[-1][:500])
+    if args.conventions and not Path(args.conventions).is_file():
+        missing.append(f"--conventions={args.conventions} (missing; pass '' only to disable explicitly)")
+    if args.source_nb:
+        mismatch = creation_twin_mismatch(args.notebook, args.source_nb)
+        if mismatch:
+            missing.append(mismatch)
+    if missing:
+        _preflight_refusal(ap, args, missing)
 
 
 def main() -> int:

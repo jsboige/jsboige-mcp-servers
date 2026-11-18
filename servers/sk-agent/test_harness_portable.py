@@ -130,6 +130,7 @@ def test_preflight_refuses_and_leaves_a_trace(tmp_path):
 
     class _Args:
         out_dir, issue, notebook, lane = str(tmp_path / "out"), 4242, "x.ipynb", "seat:nb-coder"
+        source_nb, conventions = None, ""
 
     try:
         m._preflight(_AP(), _Args())

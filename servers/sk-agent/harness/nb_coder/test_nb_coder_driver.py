@@ -406,3 +406,93 @@ def test_an_empty_cell_assembly_never_reaches_apply_create():
     guard = run.index('if not built or not built.get("cells"):')
     applied = run.index("rec[\"apply\"] = apply_create", guard)
     assert guard < applied
+
+
+# ---- measured po-2028 wiring failures, 18/11 #27106 ----
+def test_papermill_import_failure_is_a_prepaid_refusal(monkeypatch, tmp_path):
+    """A python.exe that exists is NOT proof that its papermill MCP child can boot."""
+    from types import SimpleNamespace
+    class AP:
+        def error(self, msg):
+            raise SystemExit(msg)
+    args = SimpleNamespace(out_dir=str(tmp_path / "out"), issue=27106, notebook="x.ipynb",
+                           lane="seat:nb-coder", source_nb=None, conventions="")
+    monkeypatch.setattr(d, "PM_CWD", tmp_path)
+    monkeypatch.setattr(d, "PM_PY", Path(sys.executable))
+    monkeypatch.setattr(d, "SK_DIR", tmp_path)
+    monkeypatch.setattr(d, "SK_PY", Path(sys.executable))
+    monkeypatch.setattr(d, "SK_CONFIG", tmp_path / "cfg.json")
+    (tmp_path / "sk_agent.py").write_text("", encoding="utf-8")
+    (tmp_path / "cfg.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(d.subprocess, "run", lambda *a, **kw:
+                        SimpleNamespace(returncode=1, stderr="ModuleNotFoundError: No module named 'nbformat'"))
+    with pytest.raises(SystemExit):
+        d._preflight(AP(), args)
+    rec = json.loads((tmp_path / "out" / "issue-27106.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-wiring-unresolved"
+    assert "nbformat" in rec["wiring_missing"][0]
+
+
+def test_the_papermill_probe_does_not_execute_the_current_directory(monkeypatch, tmp_path):
+    """-I prevents a planted papermill_mcp.py in the target checkout from becoming the probe."""
+    seen = {}
+    def fake_run(argv, **kw):
+        seen["argv"] = argv
+        return SimpleNamespace(returncode=0, stderr="")
+    monkeypatch.setattr(d.subprocess, "run", fake_run)
+    monkeypatch.setattr(d, "PM_PY", tmp_path / "python.exe")
+    monkeypatch.setattr(d, "PM_CWD", tmp_path)
+    monkeypatch.setattr(d, "SK_DIR", tmp_path)
+    monkeypatch.setattr(d, "SK_PY", tmp_path / "sk.exe")
+    monkeypatch.setattr(d, "SK_CONFIG", tmp_path / "cfg.json")
+    for p in (tmp_path / "python.exe", tmp_path / "sk.exe", tmp_path / "cfg.json",
+              tmp_path / "sk_agent.py"):
+        p.write_text("", encoding="utf-8")
+    class AP:
+        def error(self, msg):
+            raise AssertionError(msg)
+    from types import SimpleNamespace
+    d._preflight(AP(), SimpleNamespace(out_dir=str(tmp_path), issue=1, notebook="x.ipynb",
+                                      lane="s", source_nb=None, conventions=""))
+    assert seen["argv"][1:3] == ["-I", "-c"]
+    assert seen["argv"][3] == "import papermill_mcp.main"
+
+
+def test_creation_twin_paths_must_name_the_same_stem():
+    """#27106 was called with ChoixSocial-08's issue and ChoixSocial-05's twin paths."""
+    assert "twin mismatch" in d.creation_twin_mismatch(
+        "ChoixSocial-05-Gibbard-Satterthwaite-CSharp.ipynb",
+        "ChoixSocial-08-Kemeny-RankedPairs-Dodgson-Python.ipynb")
+    assert d.creation_twin_mismatch(
+        "ChoixSocial-08-Kemeny-RankedPairs-Dodgson-CSharp.ipynb",
+        "ChoixSocial-08-Kemeny-RankedPairs-Dodgson-Python.ipynb") == ""
+
+
+def test_issue_body_target_contradiction_refuses_before_claim_or_model(monkeypatch, tmp_path):
+    """A wrong CLI path is an intake failure, not permission to correct a different notebook."""
+    from types import SimpleNamespace
+    rec = {"stages": {}, "calls": []}
+    args = SimpleNamespace(out_dir=str(tmp_path), repo="D:/repo", issue=27106,
+                           notebook="ChoixSocial-05-Gibbard-Satterthwaite-CSharp.ipynb",
+                           source_nb="ChoixSocial-05-Gibbard-Satterthwaite-Python.ipynb",
+                           allow_foreign_origin=False, lane="seat:nb-coder", claim=True,
+                           conventions="")
+    monkeypatch.setattr(d, "app_token", lambda repo: "")
+    monkeypatch.setattr(d, "read_conventions", lambda p: "")
+    monkeypatch.setattr(d, "check_claim", lambda *a: {"ok": True})
+    monkeypatch.setattr(d, "claim_verdict", lambda r: "")
+    monkeypatch.setattr(d, "fetch_issue", lambda *a: {
+        "title": "ChoixSocial-08", "state": "open", "labels": [],
+        "body": "- Source Python : `ChoixSocial-08-Kemeny-RankedPairs-Dodgson-Python.ipynb`\n"
+                "- Cible C# : `ChoixSocial-08-Kemeny-RankedPairs-Dodgson-CSharp.ipynb`"})
+    monkeypatch.setattr(d, "post_claim", lambda *a: (_ for _ in ()).throw(
+        AssertionError("a refused run must not post another claim")))
+    monkeypatch.setattr(d, "prepare_worktree", lambda *a: (_ for _ in ()).throw(
+        AssertionError("a refused run must not prepare or mutate a worktree")))
+    import asyncio
+    import subprocess
+    monkeypatch.setattr(d.subprocess, "run", lambda *a, **kw:
+                        SimpleNamespace(stdout="https://github.com/jsboige/CoursIA.git\n"))
+    got = asyncio.run(d.run(args, rec))
+    assert got["verdict"] == "refused-issue-target-mismatch"
+    assert len(got["issue_target_conflicts"]) == 2
