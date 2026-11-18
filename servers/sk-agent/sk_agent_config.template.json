@@ -15,8 +15,9 @@
       "model_id": "glm-5.3",
       "vision": false,
       "thinking": true,
-      "description": "GLM-5.3 reasoning via the fleet hub — quality roles. Supersedes glm-5.1/glm-5 (user mandate 22/09: glm-5.1 obsolete).",
-      "context_window": 200000
+      "description": "GLM-5.3 reasoning via the fleet hub — quality roles. Supersedes glm-5.1/glm-5 (user mandate 22/09: glm-5.1 obsolete). request_timeout_s 1200 (measured po-2028 18/11, nb_coder verify #27104): GLM-5.3 thinking on the ~97K-char verify prompt exceeds 10 min; the undeclared 300 s client budget killed the call at exactly 600 s (APITimeoutError after the openai retry). The coupled call_agent wait_for ceiling follows the declared budget (#3797).",
+      "context_window": 200000,
+      "request_timeout_s": 1200
     },
     {
       "id": "glm-5.3-flash",
