@@ -104,6 +104,7 @@ def register_kernel_tools(app: FastMCP) -> None:
         path: Optional[str] = None,
         cell_index: Optional[int] = None,
         timeout: Optional[int] = None,
+        persist_error_outputs: bool = False,
     ) -> Dict[str, Any]:
         """
         OUTIL CONSOLIDÉ - Exécution de code sur un kernel avec transport timeout (#2206).
@@ -123,6 +124,11 @@ def register_kernel_tools(app: FastMCP) -> None:
                 (défaut: MCP_JUPYTER_DEFAULT_TIMEOUT, max: MCP_JUPYTER_MAX_TIMEOUT=3600).
                 #3346: pour mode="notebook", le timeout transport couvre l'ensemble
                 des cellules (somme des budgets par cellule, clampée au max).
+            persist_error_outputs: #4817 suivi — opt-in EXPLICITE pour persister
+                les outputs d'erreur d'une cellule qui raise dans le .ipynb
+                (comportement pré-#4817). Pour les copies scratch dont c'est le
+                but (boucle de réparation nb_coder, vllm#471) ; défaut False :
+                une cellule qui raise ne mute jamais le notebook source.
 
         Returns:
             Execution result dict with status, outputs, and timing info.
@@ -161,6 +167,7 @@ def register_kernel_tools(app: FastMCP) -> None:
                     path=path,
                     cell_index=cell_index,
                     timeout=effective_timeout,
+                    persist_error_outputs=persist_error_outputs,
                 )
 
             result = await asyncio.wait_for(_execute(), timeout=hard_timeout)
