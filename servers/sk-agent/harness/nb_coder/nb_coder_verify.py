@@ -219,8 +219,8 @@ async def call_verifier(args, prompt: str) -> tuple[dict, float]:
     async with stdio_client(sk_params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
-            spec = {"extends": args.agent,
-                    "sampling": {"max_tokens": args.max_tokens, "temperature": 0.2}}
+            spec = nbcd.agent_spec_for(args.agent, getattr(args, "model", None),
+                                       args.max_tokens, 0.2)
             res = await session.call_tool(
                 "call_agent",
                 {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
@@ -244,6 +244,9 @@ def main() -> int:
     ap.add_argument("--agent", default="critic",
                     help="verifier agent — must be a DIFFERENT model from the builder "
                          "(builder = notebook-auditor/Swift; default critic = GLM-5.3)")
+    ap.add_argument("--model", default=os.environ.get("NBCODER_VERIFIER_MODEL"),
+                    help="model serving this audit turn (#4831, forwarded by the driver's "
+                         "--verifier-model) — overrides the agent preset's model")
     ap.add_argument("--out-dir", default=str(nbcd.VLLM_ROOT / ".tmp/nbcoder"))
     ap.add_argument("--timeout", type=int, default=900)
     # 32 768, not 4 096: the default verifier (critic = GLM-5.3, thinking on) burns the
@@ -257,6 +260,7 @@ def main() -> int:
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     rec = {"issue": args.issue, "agent": args.agent, "started": utcnow(),
+           "model": getattr(args, "model", None),
            "source_nb": args.source_nb, "built_nb": args.built_nb}
     try:
         src_p, built_p = Path(args.source_nb), Path(args.built_nb)

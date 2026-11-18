@@ -70,6 +70,12 @@ ITEM_FIELDS = {
     "exec_mode": str,
     "kernel_override": str,
     "verifier_agent": str,
+    "coder_model": str,         # per-step model selection (#4831): unset = the --agent
+                                # preset's own model (seat default)
+    "verifier_model": str,
+    "spec_model": str,
+    "spec_mode": str,           # "skip" (default) | "run" — the skip is a DECLARED choice
+                                # of the calling lane, traced on the driver's run record
     "timeout": int,
     "max_tokens": int,
     "repair_rounds": int,
@@ -314,6 +320,13 @@ class Scheduler:
             ("--exec-mode", item.get("exec_mode", a.exec_mode)),
             ("--kernel-override", item.get("kernel_override", a.kernel_override)),
             ("--verifier-agent", item.get("verifier_agent", a.verifier_agent)),
+            # per-step models (#4831): grain value > scheduler default > (driver) preset.
+            # spec_mode always forwards — the skip must be DECLARED on the driver command
+            # line and traced in its run record, never left to a distant default.
+            ("--coder-model", item.get("coder_model", a.coder_model)),
+            ("--verifier-model", item.get("verifier_model", a.verifier_model)),
+            ("--spec-model", item.get("spec_model", a.spec_model)),
+            ("--spec-mode", item.get("spec_mode", a.spec_mode)),
             ("--timeout", item.get("timeout", a.timeout)),
             ("--max-tokens", item.get("max_tokens", a.max_tokens)),
             ("--repair-rounds", item.get("repair_rounds", a.repair_rounds)),
@@ -612,6 +625,14 @@ def parse_args(argv=None):
     ap.add_argument("--source-nb", default=None,
                     help="default --source-nb (creation mode) for queue items without one")
     ap.add_argument("--verifier-agent", default="critic")
+    # per-step model selection (#4831): scheduler-level defaults, overridable PER GRAIN in
+    # the queue (item keys coder_model/verifier_model/spec_model/spec_mode). The
+    # difficulty->model mapping is documented in the harness README, never hardcoded.
+    ap.add_argument("--coder-model", default=os.environ.get("NBCODER_CODER_MODEL"))
+    ap.add_argument("--verifier-model", default=os.environ.get("NBCODER_VERIFIER_MODEL"))
+    ap.add_argument("--spec-model", default=os.environ.get("NBCODER_SPEC_MODEL"))
+    ap.add_argument("--spec-mode", choices=["skip", "run"],
+                    default=os.environ.get("NBCODER_SPEC_MODE", "skip"))
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
     ap.add_argument("--repair-rounds", type=int, default=2,

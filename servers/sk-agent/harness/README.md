@@ -79,6 +79,76 @@ own `-Repo` parameter — launcher configuration, not harness configuration.
 powershell.exe -NoProfile -File harness/nb_audit/register_hourly.ps1
 ```
 
+## Model per step — spec / coder / verifier (#4831)
+
+Choosing the model of each step is a first-level parameter — never a source edit:
+
+| Step | Driver flag | Env default | Serves |
+|---|---|---|---|
+| spec (optional pre-chew) | `--spec-model` + `--spec-mode run\|skip` | `NBCODER_SPEC_MODEL` / `NBCODER_SPEC_MODE` | the turn that rewrites a rough issue into a hyper-detailed one |
+| coder (plan, build, segments, repairs) | `--coder-model` | `NBCODER_CODER_MODEL` | every producing turn |
+| verifier (stage 4 audit) | `--verifier-model` | `NBCODER_VERIFIER_MODEL` | the independent audit |
+
+Unset = the `--agent` / `--verifier-agent` preset's own model (seat default, unchanged
+behavior before #4831). sk-agent validates the ref against its config (enabled models
+only) and every call trace carries `model_used` — the envelope's proof of what actually
+served the turn.
+
+### Spec short-circuit
+
+`--spec-mode skip` (the default) is a **declared choice of the calling lane** — the lane
+judged the issue detailed enough — never a harness heuristic, and it traces on the run
+record:
+
+```json
+"spec": {"mode": "skip", "skipped": true, "declared": "--spec-mode skip", "issue_body_chars": 4213}
+```
+
+`--spec-mode run` (requires `--spec-model`) adds stage ½: the model pre-chews the raw
+issue (+ thread, conventions, notebook view) into a hyper-detailed issue that becomes
+stage 1's issue body. The spec lands in `<out-dir>/spec-<issue>.md`, its trace on the
+record (`mode: run`, model, chars, conversation id), and the ledger line carries
+`"spec": "run" | "skip"`. A dead spec turn fails loud (`spec-<cause>`) instead of
+falling back to the rough issue — the coder would burn its pass on the exact failure
+mode the spec step exists to prevent.
+
+### Difficulty → model mapping (documented, never hardcoded)
+
+Guidance for the calling lane, which decides per pass or per grain; the harness never
+encodes it. Names below are fleet roles — the actual ids are the **seat's sk-agent
+config** (e.g. ai-01: `nb-minimax`, `glm-5.3`, `swift-1.5-27b`); only enabled models
+pass server-side validation.
+
+| Difficulty | coder | verifier | spec |
+|---|---|---|---|
+| simple (corrections simples, prose) | Luna ou swift | tier flash (GLM-5.3-flash) | skip |
+| standard | MiniMax | GLM | skip, ou GLM si l'issue est vague |
+| difficile (grains de parité C# SMT/Z3…) | GLM ou Terra, ou rôle Sonnet | GLM ou au-dessus | GLM ou Sonnet |
+| très difficile | rôle Opus — Opus ou Sol | au-dessus du coder | Sonnet/Opus |
+
+Measured terrain (18/11, source ai-01:vllm, issue roo-extensions#4831): C# SMT/Z3
+parity grains are **difficile+** — Swift 0/7 (5× `built-execution-failed`, the repair
+loop regenerating the identical error 3 rounds in a row), MiniMax 2/2 content-green on
+the same class. Never the simple tier on parity grains. Swift keeps its wins on simple
+corrections/prose.
+
+### Invocation
+
+```bash
+# standard grain: MiniMax producer + GLM audit; issue detailed enough -> spec skipped (declared, traced)
+<sk-agent venv python> harness/nb_coder/nb_coder_driver.py \
+    --issue 27106 --notebook Ser/Z3-10-CSharp.ipynb --repo D:/CoursIA \
+    --lane myia-po-2028:nb-coder \
+    --coder-model nb-minimax --verifier-model glm-5.3 --spec-mode skip
+
+# rough issue: pre-chew it with GLM first, then code with MiniMax
+    --spec-mode run --spec-model glm-5.3 --coder-model nb-minimax
+```
+
+Through the scheduler, the queue keys `coder_model` / `verifier_model` / `spec_model` /
+`spec_mode` override the scheduler-level defaults per grain; `--spec-mode` is always
+forwarded so the skip is declared on every driver command line.
+
 ## Tests
 
 `test_harness_portable.py` (at `servers/sk-agent/`, added to the closed list of the
