@@ -229,6 +229,7 @@ EXPECTED_TOOLS = {
     "run_conversation",
     "list_conversations",
     "diagnostics",
+    "nb_coder_workflow",
 }
 
 
