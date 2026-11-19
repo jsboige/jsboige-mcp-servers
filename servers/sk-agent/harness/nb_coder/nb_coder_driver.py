@@ -257,12 +257,14 @@ def reserve_claim(repo: Path, n: int, lane: str, intention: str,
     Three refusals, each before any worktree or model spend:
     - the pre-check is not CLEAR (claim held, guard broken, check not scoped);
     - the guard refuses to post (collision seen at write time, write unverified);
-    - the post-write re-read cannot confirm OUR scoped claim -- the race window the
-      guard's own check-then-post cannot close alone.
+    - the post-write re-read is not a CLEAR scoped check. It proves scope-level
+      clearance, not marker-level ownership: the guard verifies that ONE comment
+      landed, not which lane's marker the reader resolves to.
 
-    This is NOT an atomic reservation and does not claim to be: the re-read narrows
-    the window, and the offline two-client witness (test_nb_coder_claim.py) pins the
-    admission contract -- at most one start under contention, zero on a failed post.
+    This is NOT an atomic reservation and does not claim to be. The re-read narrows
+    the window; the offline two-client witness (test_nb_coder_claim.py) pins the
+    admission contract -- AT MOST one start under contention (the both-posts-succeed
+    interleave admits ZERO and leaks two claim comments), zero on a failed post.
     """
     before = check_claim(repo, n, lane, notebook)
     refused = claim_verdict(before)
@@ -1896,6 +1898,15 @@ async def run(args, rec: dict) -> dict:
         if rec["stages"]["claim_reservation"]["verdict"]:
             rec["verdict"] = rec["stages"]["claim_reservation"]["verdict"]
             return rec
+    elif args.max_stage >= 1:
+        # Review ms#1812 finding 1: a spending run is not admitted on a bare
+        # pre-check. Without --claim there is no reservation to re-read, so the
+        # only sanctioned no-claim run is the explicit stage-0-only inspection.
+        rec["verdict"] = "refused-no-reservation"
+        rec["stages"]["claim_reservation"] = {
+            "verdict": "refused-no-reservation",
+            "note": "pass --claim to reserve, or --max-stage 0 to inspect only"}
+        return rec
     wt = prepare_worktree(repo, Path(args.worktree), args.fresh_worktree)
     rec["stages"]["worktree"] = wt
     rec["stage0_s"] = round(time.time() - t0, 1)
