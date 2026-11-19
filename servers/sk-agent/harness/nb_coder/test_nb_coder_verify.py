@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
+# Copied verbatim from jsboige/vllm @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_verify.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -149,3 +149,46 @@ def test_verify_output_budget_default_is_32768():
     src = (Path(__file__).parent / "nb_coder_verify.py").read_text(encoding="utf-8")
     line = [l for l in src.splitlines() if '"--max-tokens"' in l]
     assert len(line) == 1 and "default=32768" in line[0]
+
+
+def test_empty_response_gets_one_retry():
+    """18/11 wave-1c: critic (GLM-5.3) returned 200-empty TWICE (308 s and 609 s) at
+    the 32 768 budget — cloud-side empties, not the token-budget case. The verifier
+    must retry ONCE with the shorter-reasoning note before settling on
+    error:unparsable; a retry that answers replaces the empty envelope."""
+    src = (Path(__file__).parent / "nb_coder_verify.py").read_text(encoding="utf-8")
+    assert "verify_retry" in src, "the retry marker must be recorded for the trace"
+    assert src.count("asyncio.run(call_verifier(") == 2, \
+        "exactly two call sites: first attempt + one empty-response retry"
+    assert "RETRY_NOTE" in src, "the retry re-asks with the shorter-reasoning note"
+
+
+# ------------------------------------------------- scope + binary payloads (pilot 16/11)
+
+
+def test_image_swap_changes_the_digest(tmp_path):
+    """Finding 26858 c.17: a display_data image is part of the output's content. Two
+    notebooks whose text output is identical but whose PNG differs must NOT share a
+    fingerprint — before the fix the image was invisible to every digest."""
+    def png(data):
+        return [{"output_type": "display_data",
+                 "data": {"image/png": data, "text/plain": "<Figure>"}}]
+    a = _nb(tmp_path, [_code(png("AAAA"))], "a.ipynb")
+    b = _nb(tmp_path, [_code(png("BBBB"))], "b.ipynb")
+    da, db = v.outputs_digest(a)[0], v.outputs_digest(b)[0]
+    assert da["sha"] != db["sha"], "a swapped image must move the fingerprint"
+    c = _nb(tmp_path, [_code(png("AAAA"))], "c.ipynb")
+    assert v.outputs_digest(c)[0]["sha"] == da["sha"]
+
+
+def test_prompt_scopes_the_verdict_to_the_deliverable():
+    """4/4 rejects measured on the pilot grains (16/11) were rejecting on facts the
+    verifier cannot observe: chain procedure (claims, MCP, coordinator approval) and
+    convention defects PRE-EXISTING in the source. The prompt must fence those out, or
+    no honest deliverable can ever pass and the verifier measures nothing."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "Périmètre" in p
+    assert "ne rejette jamais pour ce motif" in p
+    assert "déjà présent à l'identique dans la SOURCE" in p
+    assert "PAR LE LIVRABLE" in p

@@ -1,14 +1,11 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Claim-reservation tests born in this repo (ms#1812/#1813) on top of the harness
-# copied verbatim from jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
-# (original path: myia_vllm/scripts/adoption/nb_coder/). These tests have no vllm
-# counterpart yet -- upstream them at the next sync, do not diverge silently.
-# -----------------------------------------------------------------------------
-# --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Imported from jsboige/vllm @ 40ce1b93f15d44848d91cdae4f9e7dd04f126076
-# original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_claim.py
-# Canonical home is sk-agent: new harness fixes belong here, not in vllm.
+# Harness base is the vllm re-copy @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
+# (ms#1814); the base claim pins (scoped check, fail-closed verdict, kernel
+# working_dir) came from jsboige/vllm, original path myia_vllm/scripts/adoption/
+# nb_coder/test_nb_coder_claim.py. The reservation/admission half (reserve_claim,
+# no-claim spending gate, offline two-client witnesses) was born in THIS repo
+# (ms#1812/#1813) -- upstream it to vllm at the next sync, do not diverge silently.
 # -----------------------------------------------------------------------------
 """Regression pins for the #466 fixes: scoped claim check + kernel working_dir.
 
