@@ -79,8 +79,10 @@ def test_start_kernel_sends_working_dir(monkeypatch, tmp_path):
 # ---- reservation gate (#4781 follow-up): admission before any spend ------------
 # The two-client witness below models the AUTHORITATIVE guard's documented
 # check-then-post semantics over a Manager-shared state. It pins the DRIVER's
-# admission contract (one start under contention, zero on failed post); it is NOT
-# a proof of atomicity on GitHub and claims none -- see reserve_claim's docstring.
+# admission contract: AT MOST one start under contention -- exactly one when the
+# post leg serializes, ZERO (plus two leaked claim comments) when both posts
+# interleave and succeed, zero on a failed post. It is NOT a proof of atomicity
+# on GitHub and claims none -- see reserve_claim's docstring.
 
 def _post_claim_argv_seen(monkeypatch, tmp_path, rc, out):
     from types import SimpleNamespace
@@ -143,15 +145,36 @@ def test_reserve_admits_exactly_the_clear_post_verified_path(monkeypatch, tmp_pa
 
 
 def _witness_child(idx, lane, nb, ready, gate, owner, comments, lock, queue,
-                   fail_post):
+                   fail_post, interleave=False, posted=None, verify_gate=None):
     """One admission client. The pre-check signals `ready`, then WAITS on `gate`:
     the adversary's claim can land in the window AFTER this client's pre-check --
-    exactly the race the re-read must catch. Never two bare CLEAR pre-checks."""
+    exactly the race the re-read must catch. Never two bare CLEAR pre-checks.
+
+    ``interleave`` models the REAL guard's non-atomic post: both clients' posts
+    succeed (each lands its own comment), and BOTH re-reads only start once the
+    two posts are in -- the worst case the serialized leg cannot show.
+    """
+    checks = {"n": 0}
+
     def fake_check(repo, n, l, nb_arg):
+        checks["n"] += 1
+        first = checks["n"] == 1
         with lock:
             held = owner.get(nb_arg)
-        ready.set()
-        gate.wait(30)
+        if first:
+            ready.set()
+            gate.wait(30)
+            if held and held != l:
+                return {"rc": 1, "ok": False, "out": "held by another lane"}
+            return {"rc": 0, "ok": True, "out": "CLEAR"}
+        if interleave:
+            verify_gate.wait(30)
+            with lock:
+                foreign = any(l2 != l for _, l2, n2 in list(comments)
+                              if n2 == nb_arg)
+            if foreign:
+                return {"rc": 1, "ok": False, "out": "another lane's marker"}
+            return {"rc": 0, "ok": True, "out": "CLEAR"}
         if held and held != l:
             return {"rc": 1, "ok": False, "out": "held by another lane"}
         return {"rc": 0, "ok": True, "out": "CLEAR"}
@@ -160,12 +183,21 @@ def _witness_child(idx, lane, nb, ready, gate, owner, comments, lock, queue,
         with lock:
             if fail_post:
                 return {"rc": 2, "out": "post failed"}
-            held = owner.get(nb_arg)
-            if held and held != l:
-                return {"rc": 1, "out": "BLOCKED at write time"}
-            owner[nb_arg] = l
-            comments.append((idx, nb_arg))
-            return {"rc": 0, "out": "posted"}
+            if interleave:
+                # No check-and-write serialization: this post lands unconditionally,
+                # exactly two sequential successful posts on the real guard.
+                comments.append((idx, l, nb_arg))
+                owner[nb_arg] = l
+            else:
+                held = owner.get(nb_arg)
+                if held and held != l:
+                    return {"rc": 1, "out": "BLOCKED at write time"}
+                owner[nb_arg] = l
+                comments.append((idx, l, nb_arg))
+        if interleave:
+            posted.set()
+            verify_gate.wait(30)
+        return {"rc": 0, "out": "posted"}
 
     nbcd.check_claim = fake_check
     nbcd.post_claim = fake_post
@@ -174,25 +206,31 @@ def _witness_child(idx, lane, nb, ready, gate, owner, comments, lock, queue,
                "admitted": r["verdict"] is None, "verdict": r["verdict"]})
 
 
-def _run_witness(lanes, notebooks, fail_post=()):
+def _run_witness(lanes, notebooks, fail_post=(), interleave=False):
     import multiprocessing as mp
     ctx = mp.get_context("spawn")
     mgr = ctx.Manager()
     owner, comments, lock, queue = mgr.dict(), mgr.list(), mgr.Lock(), mgr.Queue()
-    gate = mgr.Event()
-    procs, readies = [], []
+    gate, verify_gate = mgr.Event(), mgr.Event()
+    procs, readies, posteds = [], [], []
     for i, (lane, nb) in enumerate(zip(lanes, notebooks)):
-        ready = mgr.Event()
+        ready, posted = mgr.Event(), mgr.Event()
         readies.append(ready)
+        posteds.append(posted)
         procs.append(ctx.Process(
             target=_witness_child,
             args=(i, lane, nb, ready, gate, owner, comments, lock, queue,
                   i in fail_post),
+            kwargs={"interleave": interleave, "posted": posted,
+                    "verify_gate": verify_gate},
             daemon=True))
         procs[-1].start()
     try:
         assert all(e.wait(60) for e in readies), "a child never reached its pre-check"
         gate.set()
+        if interleave:
+            assert all(e.wait(60) for e in posteds), "a child never posted"
+            verify_gate.set()
         results = [queue.get(timeout=60) for _ in procs]
         for p in procs:
             p.join(30)
@@ -203,16 +241,29 @@ def _run_witness(lanes, notebooks, fail_post=()):
                 p.terminate()
 
 
-def test_two_clients_same_notebook_admit_exactly_one_start():
-    """Contention witness: both pre-checks ran CLEAR, the adversary claim landed in
-    the window, and still exactly ONE client may start; the loser refuses at the
-    post leg, before any worktree or model spend."""
+def test_two_clients_same_notebook_serialized_post_admits_exactly_one():
+    """Serialized post leg: both pre-checks ran CLEAR, the adversary claim landed in
+    the window, and exactly ONE client starts; the loser refuses at the post leg,
+    before any worktree or model spend."""
     results, comments = _run_witness(
         ["lane:a", "lane:b"], ["Series/N.ipynb", "Series/N.ipynb"])
     assert sorted(r["admitted"] for r in results) == [False, True]
     loser = next(r for r in results if not r["admitted"])
     assert loser["verdict"] == "refused-claim-post-failed"
     assert len(comments) == 1, "the losing client must not leave a comment behind"
+
+
+def test_two_interleaved_posts_both_leak_claims_but_admit_zero():
+    """The REAL guard's worst case (review ms#1812 finding 2): check-and-post is not
+    serialized, so two clients can BOTH post a [CLAIMED] comment. Safety is then
+    'at most one start, possibly zero' -- both re-reads see the other lane's marker
+    and both refuse. The two leaked comments are the accepted cost, asserted here."""
+    results, comments = _run_witness(
+        ["lane:a", "lane:b"], ["Series/N.ipynb", "Series/N.ipynb"],
+        interleave=True)
+    assert not any(r["admitted"] for r in results)
+    assert all(r["verdict"] == "refused-claim-not-verified" for r in results)
+    assert len(comments) == 2, "both posts landed -- the leak the contract names"
 
 
 def test_two_clients_disjoint_notebooks_both_admit():
@@ -296,3 +347,61 @@ def test_run_passes_the_normalized_notebook_to_the_reservation(monkeypatch, tmp_
     assert seen["notebook"] == "Series/N.ipynb"
     assert seen["wt_calls"] == 1
     assert got["verdict"] == "stage0-only"
+
+
+def test_a_spending_run_without_claim_refuses_before_worktree(monkeypatch, tmp_path):
+    """Review ms#1812 finding 1: --max-stage >= 1 without --claim used to reach the
+    worktree and the model on a bare pre-check. A spending run now requires an
+    admitted reservation; no reservation -> durable refusal, zero spend."""
+    from types import SimpleNamespace
+    import asyncio
+    import subprocess
+    rec = {"stages": {}, "calls": []}
+    args = SimpleNamespace(out_dir=str(tmp_path), repo="D:/repo", issue=27106,
+                           notebook="Series/N.ipynb", source_nb=None,
+                           allow_foreign_origin=False, lane="lane:a", claim=False,
+                           intention="witness", conventions="", max_stage=5,
+                           worktree=str(tmp_path / "wt"), fresh_worktree=False)
+    monkeypatch.setattr(nbcd, "app_token", lambda repo: "")
+    monkeypatch.setattr(nbcd, "read_conventions", lambda p: "")
+    monkeypatch.setattr(nbcd, "check_claim", lambda *a: {"rc": 0, "ok": True})
+    monkeypatch.setattr(nbcd, "fetch_issue", lambda *a: {
+        "title": "N", "state": "open", "labels": [], "body": ""})
+    monkeypatch.setattr(nbcd, "reserve_claim", lambda *a: (_ for _ in ()).throw(
+        AssertionError("a no-claim run must not invent a reservation")))
+    monkeypatch.setattr(nbcd, "prepare_worktree", lambda *a: (_ for _ in ()).throw(
+        AssertionError("a refused run must not prepare or mutate a worktree")))
+    monkeypatch.setattr(nbcd.subprocess, "run", lambda *a, **kw:
+                        SimpleNamespace(stdout="https://github.com/jsboige/CoursIA.git\n"))
+    got = asyncio.run(nbcd.run(args, rec))
+    assert got["verdict"] == "refused-no-reservation"
+    assert got["calls"] == []
+
+
+def test_stage0_only_without_claim_stays_the_sanctioned_exception(monkeypatch, tmp_path):
+    """--max-stage 0 is inspection only: it may run without a reservation and still
+    must stop before any model stage."""
+    from types import SimpleNamespace
+    import asyncio
+    import subprocess
+    seen = {}
+    rec = {"stages": {}, "calls": []}
+    args = SimpleNamespace(out_dir=str(tmp_path), repo="D:/repo", issue=27106,
+                           notebook="Series/N.ipynb", source_nb=None,
+                           allow_foreign_origin=False, lane="lane:a", claim=False,
+                           intention="witness", conventions="", max_stage=0,
+                           worktree=str(tmp_path / "wt"), fresh_worktree=False)
+    monkeypatch.setattr(nbcd, "app_token", lambda repo: "")
+    monkeypatch.setattr(nbcd, "read_conventions", lambda p: "")
+    monkeypatch.setattr(nbcd, "check_claim", lambda *a: {"rc": 0, "ok": True})
+    monkeypatch.setattr(nbcd, "fetch_issue", lambda *a: {
+        "title": "N", "state": "open", "labels": [], "body": ""})
+    monkeypatch.setattr(nbcd, "prepare_worktree", lambda *a: (
+        seen.setdefault("wt", True) and {"path": str(tmp_path / "wt"),
+                                         "reused": False, "head": "deadbee"}))
+    monkeypatch.setattr(nbcd.subprocess, "run", lambda *a, **kw:
+                        SimpleNamespace(stdout="https://github.com/jsboige/CoursIA.git\n"))
+    got = asyncio.run(nbcd.run(args, rec))
+    assert seen.get("wt") is True
+    assert got["verdict"] == "stage0-only"
+    assert got["calls"] == []
