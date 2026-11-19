@@ -183,23 +183,100 @@ def fetch_issue(slug: str, n: int, token: str | None) -> dict:
     return issue
 
 
-def check_claim(repo: Path, n: int, lane: str) -> dict:
+def check_claim(repo: Path, n: int, lane: str, notebook: str,
+                from_json: str | None = None) -> dict:
+    """#466: the check is SCOPED to this run's notebook (--paths). Unscoped, the guard
+    answers NOT_SCOPED (rc=2) whenever any PR touches the issue but none names this
+    notebook -- and the pre-#466 driver let rc=2 pass where a scoped check says BLOCKED
+    (measured on CoursIA#27018 vs PR #27025).
+
+    ``from_json`` is reserved for offline admission witnesses. It must never be passed
+    by production runs: the claim guard explicitly skips open-PR legs in that mode."""
     script = repo / "scripts/check_lane_claim.py"
     if not script.is_file():
         return {"ok": None, "error": "check_lane_claim.py absent"}
-    p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane],
+    p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane,
+                        "--paths", notebook,
+                        *(["--from-json", from_json] if from_json else [])],
                        cwd=repo, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=120)
     return {"ok": p.returncode == 0, "rc": p.returncode,
             "out": (p.stdout or p.stderr).strip()[:2000]}
 
 
-def post_claim(repo: Path, n: int, lane: str, intention: str) -> dict:
+def claim_verdict(cc: dict) -> str | None:
+    """Fail-closed reading of a SCOPED claim check (#466).
+
+    rc=1  -> a live claim conflicts on THIS notebook's path: refuse.
+    rc=2  -> the scoped check still cannot decide (old script without --paths, path
+             absent from every open diff): refuse rather than run unprotected -- the
+             pre-#466 driver treated this as pass-through.
+    no rc -> the guard itself is absent/broken: refuse crash-free (it used to KeyError).
+    rc=0  -> clear, proceed.
+    """
+    rc = cc.get("rc")
+    if rc == 1:
+        return "refused-claim-held-by-another-lane"
+    if rc is None:
+        return "refused-claim-check-broken"
+    if rc != 0:
+        return "refused-claim-check-not-scoped"
+    return None
+
+
+def post_claim(repo: Path, n: int, lane: str, intention: str,
+               notebook: str, from_json: str | None = None) -> dict:
+    """Acquire this notebook's claim through the authoritative guard, not a bare comment.
+
+    The guard rechecks collisions and verifies its write before returning 0. The caller
+    must gate the worktree/model stages on this result, then re-read the claim below.
+    ``from_json`` is only for offline two-client admission tests, never production.
+    """
     script = repo / "scripts/check_lane_claim.py"
+    if not script.is_file():
+        return {"rc": None, "out": "check_lane_claim.py absent"}
     p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane,
-                        "--claim", intention], cwd=repo, capture_output=True, text=True,
+                        "--paths", notebook, "--claim", intention,
+                        *(["--from-json", from_json] if from_json else [])],
+                       cwd=repo, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=120)
-    return {"rc": p.returncode, "out": (p.stdout or p.stderr).strip()[:1000]}
+    return {"rc": p.returncode, "out": (p.stdout or p.stderr).strip()[:2000]}
+
+
+def claim_reservation_verdict(post: dict, verify: dict) -> str | None:
+    """A model run starts only after an admitted, freshly re-read scoped claim."""
+    if post.get("rc") != 0:
+        return "refused-claim-post-failed"
+    if claim_verdict(verify) is not None:
+        return "refused-claim-not-verified"
+    return None
+
+
+def reserve_claim(repo: Path, n: int, lane: str, intention: str,
+                  notebook: str) -> dict:
+    """Admission gate for a model run: scoped check -> authoritative post -> fresh re-read.
+
+    Three refusals, each before any worktree or model spend:
+    - the pre-check is not CLEAR (claim held, guard broken, check not scoped);
+    - the guard refuses to post (collision seen at write time, write unverified);
+    - the post-write re-read cannot confirm OUR scoped claim -- the race window the
+      guard's own check-then-post cannot close alone.
+
+    This is NOT an atomic reservation and does not claim to be: the re-read narrows
+    the window, and the offline two-client witness (test_nb_coder_claim.py) pins the
+    admission contract -- at most one start under contention, zero on a failed post.
+    """
+    before = check_claim(repo, n, lane, notebook)
+    refused = claim_verdict(before)
+    if refused:
+        return {"before": before, "posted": None, "verified": None,
+                "verdict": refused}
+    posted = post_claim(repo, n, lane, intention, notebook)
+    verified = (check_claim(repo, n, lane, notebook)
+                if posted.get("rc") == 0
+                else {"rc": None, "skipped": "claim acquisition failed"})
+    return {"before": before, "posted": posted, "verified": verified,
+            "verdict": claim_reservation_verdict(posted, verified)}
 
 
 def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
@@ -1451,15 +1528,21 @@ async def run(args, rec: dict) -> dict:
 
     # ---- stage 0
     t0 = time.time()
-    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane)
-    if rec["stages"]["claim_check"]["rc"] == 1:
-        rec["verdict"] = "refused-claim-held-by-another-lane"
+    claim_nb = _norm_rel(args.notebook)
+    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane, claim_nb)
+    refused = claim_verdict(rec["stages"]["claim_check"])
+    if refused:
+        rec["verdict"] = refused
         return rec
     issue = fetch_issue("jsboige/CoursIA", args.issue, token)
     rec["stages"]["issue"] = {"title": issue["title"], "state": issue["state"],
                               "labels": issue["labels"], "body_chars": len(issue["body"])}
     if args.claim:
-        rec["stages"]["claim_posted"] = post_claim(repo, args.issue, args.lane, args.intention)
+        rec["stages"]["claim_reservation"] = reserve_claim(
+            repo, args.issue, args.lane, args.intention, claim_nb)
+        if rec["stages"]["claim_reservation"]["verdict"]:
+            rec["verdict"] = rec["stages"]["claim_reservation"]["verdict"]
+            return rec
     wt = prepare_worktree(repo, Path(args.worktree), args.fresh_worktree)
     rec["stages"]["worktree"] = wt
     rec["stage0_s"] = round(time.time() - t0, 1)
