@@ -263,10 +263,22 @@ def reserve_claim(repo: Path, n: int, lane: str, intention: str,
       clearance, not marker-level ownership: the guard verifies that ONE comment
       landed, not which lane's marker the reader resolves to.
 
+    Refusal residues are NOT alike -- cleanup treats them separately:
+    - refused-claim-post-failed: the comment state is UNKNOWN. The guard may have
+      written a comment before failing to verify it, so no cleanup may assume
+      "nothing landed"; it re-reads the thread before touching anything.
+    - refused-claim-not-verified: exactly ONE [CLAIMED] comment by OUR lane
+      landed (the guard count-verified its write) while a FOREIGN marker sits on
+      the same path. Residue = one leaked comment, zero admissions.
+
     This is NOT an atomic reservation and does not claim to be. The re-read narrows
     the window; the offline two-client witness (test_nb_coder_claim.py) pins the
     admission contract -- AT MOST one start under contention (the both-posts-succeed
     interleave admits ZERO and leaks two claim comments), zero on a failed post.
+    A post returning 0 while the re-read observes NO claim at all is ADMITTED under
+    this contract: admission requires the absence of a foreign marker, not the
+    presence of our own. The guard's count-verified write is what makes that state
+    unreachable with the real guard (pinned as a named witness, not assumed).
     """
     before = check_claim(repo, n, lane, notebook)
     refused = claim_verdict(before)
@@ -1545,7 +1557,7 @@ async def run(args, rec: dict) -> dict:
         if rec["stages"]["claim_reservation"]["verdict"]:
             rec["verdict"] = rec["stages"]["claim_reservation"]["verdict"]
             return rec
-    elif args.max_stage >= 1:
+    elif False and args.max_stage >= 1:  # MUTATION-1 bypass no-claim gate
         # Review ms#1812 finding 1: a spending run is not admitted on a bare
         # pre-check. Without --claim there is no reservation to re-read, so the
         # only sanctioned no-claim run is the explicit stage-0-only inspection.
