@@ -1395,6 +1395,13 @@ def _short_desc(args, plan: dict) -> str:
     return f"{stem} — {len(gestes)} gestes ({kinds})" if gestes else f"{stem} — {kinds}"
 
 
+def _norm_rel(p: str) -> str:
+    """Repo-relative path, posix-normalized: issue declarations use forward slashes,
+    a Windows CLI arg may use backslashes — both must compare on the same plane."""
+    parts = [seg for seg in re.split(r"[\\/]+", (p or "").strip()) if seg not in ("", ".")]
+    return "/".join(parts)
+
+
 def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
               token: str | None) -> None:
     """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
