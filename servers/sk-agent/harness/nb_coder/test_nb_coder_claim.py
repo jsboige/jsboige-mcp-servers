@@ -284,6 +284,22 @@ def test_a_failed_post_write_admits_no_one():
     assert comments == []
 
 
+def test_post_success_with_no_observable_claim_pins_the_narrowed_contract(
+        monkeypatch, tmp_path):
+    """Review ms#1812 explicit limit: the re-read proves scope-level CLEAR, never
+    marker ownership. A post returning 0 while the re-read observes ZERO claim
+    comments is ADMITTED -- admission requires no FOREIGN marker, not the presence
+    of our own. The real guard makes this state unreachable (it count-verifies its
+    write before returning 0); this witness pins the driver-side boundary so a
+    future divergence of that guard guarantee surfaces here, not silently."""
+    _post_claim_argv_seen(monkeypatch, tmp_path, 0, "posted")
+    monkeypatch.setattr(nbcd, "check_claim", lambda *a: {"rc": 0, "ok": True})
+    monkeypatch.setattr(nbcd, "post_claim", lambda *a: {"rc": 0, "out": "posted"})
+    res = nbcd.reserve_claim(tmp_path, 42, "lane:a", "witness", "N.ipynb")
+    assert res["verdict"] is None
+    assert res["posted"]["rc"] == 0 and res["verified"]["rc"] == 0
+
+
 def test_run_gates_worktree_on_a_refused_reservation(monkeypatch, tmp_path):
     """A refused reservation must return BEFORE prepare_worktree: no worktree, no model."""
     from types import SimpleNamespace
