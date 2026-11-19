@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
+# Copied verbatim from jsboige/vllm @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_scheduler.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
 # -----------------------------------------------------------------------------
-# Ported 18/11 (po-204): vllm#488 (cae11f0d) + vllm#489 (19744028) cutover pre-review r1+r2 — dispatch ai-01 18/11.
 """nb_coder_scheduler.py — capacity-aware batch scheduler above nb_coder_driver (#468).
 
 The driver already refuses a notebook when swift_capacity_gate.py is not green
@@ -290,6 +289,24 @@ class Scheduler:
         return out
 
     def _spawn_driver(self, cmd: list[str]):
+        # Wave-1b hang (18/11 00:27->03:35Z, py-spy post-mortem in the state dir):
+        # PIPE + read-at-reap-only means NOBODY drains the driver's output while
+        # it runs. The driver relays its MCP children's stderr (stdio_client
+        # errlog defaults to the parent's stderr), so a chatty child fills the
+        # 64 KiB OS pipe, the child then blocks inside StreamHandler.emit, the
+        # MCP initialize handshake never completes and the driver waits forever.
+        # Writing straight to runs/issue-N/driver.log removes the cap AND gives
+        # the operator live logs (this post-mortem took hours without them).
+        if "--out-dir" in cmd:
+            out_dir = Path(cmd[cmd.index("--out-dir") + 1])
+            out_dir.mkdir(parents=True, exist_ok=True)
+            fh = open(out_dir / "driver.log", "ab")
+            try:
+                proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT)
+            finally:
+                fh.close()
+            proc._nb_driver_log = str(out_dir / "driver.log")   # reap-side marker
+            return proc
         return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace")
 
@@ -387,16 +404,31 @@ class Scheduler:
                     previous=report["max_active"])
 
     # ---------------------------------------------------------------- lifecycle
+    def _driver_output(self, entry: dict) -> str:
+        """Final driver output: the pipe for piped children (tests/fakes), the
+        driver.log tail for file-redirected ones (see _spawn_driver)."""
+        proc = entry["proc"]
+        log = getattr(proc, "_nb_driver_log", None)
+        if log:                                        # file-redirected real child
+            try:
+                return Path(log).read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                return ""
+        if hasattr(proc, "communicate"):               # piped Popen and test fakes
+            try:
+                out, _ = proc.communicate(timeout=5)
+                return out or ""
+            except Exception:
+                return ""
+        return getattr(proc, "stdout", "") or ""
+
     def _reap(self, now: float) -> None:
         for key, entry in list(self.active.items()):
             proc = entry["proc"]
             rc = proc.poll()
             if rc is None:
                 continue
-            try:
-                out, _ = proc.communicate(timeout=5)
-            except Exception:
-                out = ""
+            out = self._driver_output(entry)
             verdict = ""
             for line in reversed((out or "").strip().splitlines()):
                 line = line.strip()

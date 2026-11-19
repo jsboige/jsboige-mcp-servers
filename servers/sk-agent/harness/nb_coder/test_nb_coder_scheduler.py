@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
+# Copied verbatim from jsboige/vllm @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_scheduler.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
 # -----------------------------------------------------------------------------
-# Ported 18/11 (po-204): vllm#488 (cae11f0d) + vllm#489 (19744028) cutover pre-review r1+r2 — dispatch ai-01 18/11.
 """Offline tests for nb_coder_scheduler.py — fake gate, fake driver, no engine,
 no GitHub writes (#468). Run: python -m pytest test_nb_coder_scheduler.py -q
 from this directory."""
@@ -310,6 +309,36 @@ def test_parse_args_makes_driver_paths_absolute():
         assert Path(getattr(args, name)).is_absolute(), name
 
 
+def test_spawn_driver_writes_log_file_and_reap_reads_it(tmp_path):
+    """Wave-1b hang (18/11 00:27->03:35Z): PIPE + read-at-reap meant nobody
+    drained the driver's output while it ran; a chatty MCP child filled the
+    64 KiB pipe and deadlocked the handshake. The fix redirects driver output
+    to runs/issue-N/driver.log — this pins both the redirect and the reap-side
+    reader (verdict parsed from the FILE, not from a pipe)."""
+    import subprocess as sp
+    sched = make_sched(tmp_path, [item(1)], spawn=SpawnRecorder())
+    sched.args.out_root = str(tmp_path / "runs")
+    out_dir = tmp_path / "runs" / "issue-1"
+    cmd = [sys.executable, "-c",
+           "import json; print(json.dumps({'verdict': 'built-executed-ok'}))",
+           "--out-dir", str(out_dir)]     # extra argv: for _spawn_driver to find
+    proc = sched._spawn_driver(cmd)
+    rc = proc.wait(timeout=60)
+    assert rc == 0
+    assert getattr(proc, "stdout", None) is None          # file-redirected, not piped
+    assert (out_dir / "driver.log").is_file()
+    out = sched._driver_output({"proc": proc, "item": item(1)})
+    assert "built-executed-ok" in out
+    # and the verdict parser still finds the JSON line from the file output
+    verdict = ""
+    for line in reversed(out.strip().splitlines()):
+        if line.strip().startswith("{"):
+            verdict = json.loads(line).get("verdict") or ""
+            break
+    assert verdict == "built-executed-ok"
+    del sp  # silence linters; subprocess is used inside _spawn_driver
+
+
 # ------------------------------------------------- cutover findings (18/11)
 def test_gate_mode_off_never_probes(tmp_path):
     """Finding 2: --gate-mode off must not spawn the probe at all (a missing/custom
@@ -381,6 +410,7 @@ def test_watch_run_picks_up_appended_grain(tmp_path):
     events = [json.loads(l) for l in
               (sched.state_dir / "scheduler.jsonl").read_text().splitlines()]
     assert any(e["kind"] == "queue-reloaded" for e in events)
+
 
 
 if __name__ == "__main__":
