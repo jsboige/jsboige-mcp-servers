@@ -1,6 +1,6 @@
 <!-- provenance (roo-extensions #4781 harness mutualisation)
      This file is authored here (harness index), not a copy.
-     The copied modules below are tracked against jsboige/vllm @ c32dc1721979b47896f9538040eb8c62f5114ee8
+     The copied modules below are tracked against jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
      Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
      re-copy, do not diverge silently. -->
 
@@ -19,6 +19,7 @@ the only added lines are the provenance headers.
 | path | role |
 |---|---|
 | `nb_coder/nb_coder_driver.py` | stages 0-5 of issue → notebook → PR (claim, plan, build, gates, verify, harness PR) |
+| `nb_coder/nb_coder_scheduler.py` | capacity-aware batch scheduler above the driver (in-flight cap against the live engine gauge, ramp, STOP file) |
 | `nb_coder/nb_coder_verify.py` | stage 4 — independent verifier (producer ≠ verifier) |
 | `nb_coder/issue_from_finding.py` | deterministic issue body from an nb_audit finding |
 | `nb_audit/nb_audit_runner.py` | hourly pre-audit runner (series scoping, PR-skip, record writing) |

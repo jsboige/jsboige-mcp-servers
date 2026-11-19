@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ c32dc1721979b47896f9538040eb8c62f5114ee8
+# Copied verbatim from jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
 # original path: myia_vllm/scripts/adoption/nb_audit/nb_audit_runner.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.

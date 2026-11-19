@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ c32dc1721979b47896f9538040eb8c62f5114ee8
+# Copied verbatim from jsboige/vllm @ 231c9ad8e9281ee162fc641a11889fc5600f4827
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_verify.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -136,3 +136,16 @@ def test_diff_text_is_bounded(tmp_path):
     d = v.cell_diffs(a, b)
     assert all(len(x["src_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
     assert all(len(x["built_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
+
+
+def test_verify_output_budget_default_is_32768():
+    """The default verifier (critic = GLM-5.3, thinking on) burns a small output
+    budget entirely on reasoning and returns HTTP 200 with ZERO content — measured
+    16/11 (vllm#446): 4 096 and 16 000 both die as error:unparsable, 32 000 renders
+    the verdict. Re-confirmed 17/11 on the #27104 blank creation pass: the driver
+    passes NO --max-tokens, so the CLI default IS the verify budget. This pin keeps
+    it from sliding back to an unusable value in silence. (Pinned on the source line:
+    argparse 3.13 prints no int defaults in --help, so the CLI surface can't show it.)"""
+    src = (Path(__file__).parent / "nb_coder_verify.py").read_text(encoding="utf-8")
+    line = [l for l in src.splitlines() if '"--max-tokens"' in l]
+    assert len(line) == 1 and "default=32768" in line[0]
