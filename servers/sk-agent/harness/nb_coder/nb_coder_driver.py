@@ -1557,7 +1557,7 @@ async def run(args, rec: dict) -> dict:
         if rec["stages"]["claim_reservation"]["verdict"]:
             rec["verdict"] = rec["stages"]["claim_reservation"]["verdict"]
             return rec
-    elif False and args.max_stage >= 1:  # MUTATION-1 bypass no-claim gate
+    elif args.max_stage >= 1:
         # Review ms#1812 finding 1: a spending run is not admitted on a bare
         # pre-check. Without --claim there is no reservation to re-read, so the
         # only sanctioned no-claim run is the explicit stage-0-only inspection.
