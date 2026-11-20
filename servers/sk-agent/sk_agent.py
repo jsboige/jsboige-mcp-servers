@@ -63,6 +63,7 @@ import time
 import uuid
 from collections import deque
 from contextlib import AsyncExitStack
+from contextvars import ContextVar
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -205,6 +206,127 @@ log = logging.getLogger("sk-agent")
 
 # SK ChatCompletionAgent name pattern: ^[0-9A-Za-z_-]+$
 _INVALID_NAME_CHARS = re.compile(r"[^0-9A-Za-z_-]")
+
+# ---------------------------------------------------------------------------
+# Claudish response-header capture (#4844)
+#
+# The nb_coder harness must refuse a verdict when producer and verifier were
+# served by the same concrete model; only the router (claudish) knows the
+# concrete, and only via response headers. The driver sees no HTTP, so the
+# call_agent envelope is the sole channel. Headers tracked:
+#   - x-claudish-failover-notice (#229): base64(UTF-8) notice, exists today.
+#   - x-claudish-served-model (#1128, open at write time): "<provider>@<model>"
+#     naming the concrete that produced the response. The header name comes
+#     from the issue's proposal; if claudish#1128 lands under a different
+#     name, this constant is the single place to rename.
+# Capture is per-call: the AsyncOpenAI clients are pooled per model
+# (shared across concurrent calls), so the httpx response hook below reads a
+# ContextVar — each call_agent invocation folds only what its own context
+# captured, never a shared attribute.
+# ---------------------------------------------------------------------------
+CLAUDISH_FAILOVER_NOTICE_HEADER = "x-claudish-failover-notice"
+CLAUDISH_SERVED_MODEL_HEADER = "x-claudish-served-model"
+
+
+class ClaudishHeaderCapture:
+    """Raw claudish header values seen by ONE call_agent invocation.
+
+    Every HTTP response of the call (multi-round agent, SDK retry) is
+    recorded; ``fold_into_envelope`` exposes the LAST value of each field and,
+    only when the responses disagreed, the list of distinct values in
+    first-appearance order — a call that was served by two concretes never
+    reports one value in silence.
+    """
+
+    def __init__(self) -> None:
+        self._failover_raw: list[str] = []
+        self._served_raw: list[str] = []
+
+    def record(self, headers: Any) -> None:
+        # httpx.Headers.get is case-insensitive; a header absent from the
+        # response stays absent from the capture (never a default value).
+        failover = headers.get(CLAUDISH_FAILOVER_NOTICE_HEADER)
+        if failover is not None:
+            self._failover_raw.append(failover)
+        served = headers.get(CLAUDISH_SERVED_MODEL_HEADER)
+        if served is not None:
+            self._served_raw.append(served)
+
+    def _decoded_failovers(self) -> list[str]:
+        decoded: list[str] = []
+        for raw in self._failover_raw:
+            try:
+                # claudish#229: the notice travels as base64(UTF-8). Strict
+                # validation: anything undecodable (or not UTF-8) is dropped,
+                # never raised — an unreadable notice must not fail the call.
+                decoded.append(
+                    base64.b64decode(raw, validate=True).decode("utf-8")
+                )
+            except (ValueError, UnicodeDecodeError):
+                continue
+        return decoded
+
+    def fold_into_envelope(self, result: dict[str, Any]) -> None:
+        """Add the captured fields to a successful call result, in place.
+
+        A field with no readable value is OMITTED (not null, not inferred
+        from the requested id or from model_used): the consumer turns an
+        absent field into "unknown", a substituted one into a lie.
+        """
+        decoded = self._decoded_failovers()
+        if decoded:
+            result["failover_notice"] = decoded[-1]
+            distinct = list(dict.fromkeys(decoded))
+            if len(distinct) > 1:
+                result["failover_notice_variants"] = distinct
+        if self._served_raw:
+            result["served_model"] = self._served_raw[-1]
+            distinct_served = list(dict.fromkeys(self._served_raw))
+            if len(distinct_served) > 1:
+                result["served_model_variants"] = distinct_served
+
+
+_claudish_capture_ctx: ContextVar[ClaudishHeaderCapture | None] = ContextVar(
+    "claudish_capture", default=None
+)
+
+
+async def _claudish_response_hook(response: httpx.Response) -> None:
+    """httpx response event hook: route headers to the current call's capture."""
+    capture = _claudish_capture_ctx.get()
+    if capture is not None:
+        capture.record(response.headers)
+
+
+# Marker so _attach_claudish_capture stays idempotent per client.
+_claudish_response_hook._is_claudish_capture = True  # type: ignore[attr-defined]
+
+
+def _attach_claudish_capture(client: AsyncOpenAI) -> None:
+    """Append the capture hook to the pooled client's httpx event hooks.
+
+    Mutates the underlying httpx client's hook list in place — the client is
+    constructed exactly as before (timeouts untouched, #3797/#4085). Fails
+    soft: if the openai SDK ever stops exposing ``_client``/``event_hooks``,
+    capture is absent but the pool is unaffected (a telemetry field must
+    never take the model pool down with it).
+    """
+    inner = getattr(client, "_client", None)
+    hooks = getattr(inner, "event_hooks", None)
+    if not isinstance(hooks, dict) or not isinstance(
+        hooks.get("response"), list
+    ):
+        log.warning(
+            "claudish capture: pooled client exposes no response event "
+            "hooks — %s/%s will be absent from envelopes",
+            CLAUDISH_FAILOVER_NOTICE_HEADER,
+            CLAUDISH_SERVED_MODEL_HEADER,
+        )
+        return
+    for existing in hooks["response"]:
+        if getattr(existing, "_is_claudish_capture", False):
+            return
+    hooks["response"].append(_claudish_response_hook)
 
 
 class McpRuntimeUnavailableError(Exception):
@@ -1038,6 +1160,10 @@ class SKAgentManager:
                     # attribution); None keeps the legacy client.
                     default_headers=model_cfg.default_headers or None,
                 )
+                # #4844: per-call claudish response-header capture (envelope
+                # failover_notice / served_model) rides on this shared client
+                # via a ContextVar-scoped httpx hook.
+                _attach_claudish_capture(client)
                 self._openai_clients[model_cfg.id] = client
 
                 service = OpenAIChatCompletion(
@@ -2860,6 +2986,12 @@ class SKAgentManager:
 
         async with conv_lock:
             try:
+                # #4844: per-call capture scope — while _execute runs, the
+                # pooled client's httpx response hook appends every claudish
+                # header of THIS call to its own capture (ContextVar: the
+                # client is shared per model, concurrent calls stay isolated).
+                capture = ClaudishHeaderCapture()
+                capture_token = _claudish_capture_ctx.set(capture)
                 if effective_timeout is not None and effective_timeout > 0:
                     # #4085: wait_for cannot fire while the loop is frozen — arm
                     # the faulthandler watchdog alongside the normal ceiling. The
@@ -2882,6 +3014,13 @@ class SKAgentManager:
                     result["effective_config"] = spec_effective
                     if spec_model_used:
                         result["model_used"] = spec_model_used
+                # #4844: expose the claudish response headers this call
+                # actually saw — failover_notice (decoded) and served_model —
+                # at the top level of the envelope. A header the endpoint did
+                # not send stays an absent field: the consumer turns absence
+                # into "unknown"; a substituted value would be a lie.
+                if "error" not in result:
+                    capture.fold_into_envelope(result)
                 # Fallback visibility (#3411 web2/po-2024 cells): an explicitly
                 # requested agent that is not in the served catalogue silently
                 # resolved to the default agent — the call "succeeds" on the wrong
@@ -2965,6 +3104,10 @@ class SKAgentManager:
                 # from the lock release.
                 if not conversation_id and conv_id not in self._threads:
                     self._conv_locks.pop(conv_id, None)
+                # #4844: close the per-call capture scope on every exit of
+                # the try body — a token left set would leak a dead capture
+                # into the caller's context.
+                _claudish_capture_ctx.reset(capture_token)
 
     def _ensure_turn_state(self) -> None:
         """Lazily create the #4742 turn state on partially-built doubles."""
