@@ -2101,7 +2101,7 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
 # pairs it dies "Author identity unknown" and the whole grain fails at the
 # last step.
 _GIT_IDENTITY = ("-c", "user.name=nb-coder",
-                 "-c", "user.email=nb-coder@users.noreply.github.com")
+                 "-c", "user.email=nb-coder@nb-coder.invalid")
 
 
 def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:

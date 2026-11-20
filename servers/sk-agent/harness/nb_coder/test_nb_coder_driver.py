@@ -547,7 +547,9 @@ def test_stage5_commit_carries_its_own_identity(tmp_path, monkeypatch):
 
     assert rec["verdict"] == "pr-created", rec.get("pr")
     author = sh("git", "-C", str(wt), "log", "-1", "--format=%an <%ae>")
-    assert author.strip() == "nb-coder <nb-coder@users.noreply.github.com>"
+    assert author.strip() == "nb-coder <nb-coder@nb-coder.invalid>"
+    # <login>@users.noreply.github.com is attributed by GitHub to the REAL account
+    # NB-Coder (id 54853046) — .invalid (RFC 2606) can never collide (vllm-a9).
     # Both commit attempts (primary + the pre-commit auto-fix retry) carry it:
     # a source pin, because the retry path only runs when a hook rewrites.
     src = Path(d.__file__).read_text(encoding="utf-8")
