@@ -126,7 +126,7 @@ Attendu: 160+ tests passed, 3 skipped
 - `conversations`: 11 types (deep-search, deep-think, code-review, research-debate, config-harmonization, commit-review, task-allocation, intelligent-task-dispatch, pr-review-tier1/2/3)
 
 **Clés API nécessaires:**
-- `ZAI_API_KEY` = clé **client du hub flotte** (claudish, `http://192.168.0.50:3000/v1`) pour glm-5.3 / glm-5.3-flash (#3574)
+- `ZAI_API_KEY` = clé **client du hub flotte** (claudish, endpoint `${HUB_BASE_URL}` — variable à provisionner dans l'env du serveur, `/v1` inclus, #4814) pour glm-5.3 / glm-5.3-flash (#3574)
 - Qdrant API key pour mémoire vectorielle
 - Embeddings API key pour Qwen3-4B-AWQ
 
