@@ -95,10 +95,13 @@ def test_template_counts_match_expected_baseline():
     15/11 12:10Z: 200 on both, 404 on an unknown name)) — count unchanged.
     42->43 agents (#4816): the pass-resumer preset (finalize an inherited
     dead pass) — baseline bump for the CI red web2 flagged on ms#1804.
+    43->44 agents (#1530): the mini-log-triager preset (verbatim line triage
+    of logs, fan-out shard worker); the same change raises the frognano-4b
+    model output budget 4096->8192.
     """
     cfg = load_config(str(TEMPLATE_PATH))
     assert len(cfg.models) == 9, f"models: {len(cfg.models)}"
-    assert len(cfg.agents) == 43, f"agents: {len(cfg.agents)}"
+    assert len(cfg.agents) == 44, f"agents: {len(cfg.agents)}"
     assert len(cfg.mcps) == 6, f"mcps: {len(cfg.mcps)}"
     assert len(cfg.conversations) == 11, f"conversations: {len(cfg.conversations)}"
 
@@ -286,14 +289,14 @@ def test_deployment_doc_check_detects_drift():
         "# Deployment\n\n"
         "| Metric | Count | Notes |\n|---|---|---|\n"
         "| **Models** | 9 | notes |\n"
-        "| **Top-level agents** | 43 | notes |\n"
+        "| **Top-level agents** | 44 | notes |\n"
         "| **Inline agents** (conversation-scoped) | 15 | notes |\n"
         "| **Memory-enabled agents** | 5 | notes |\n"
         "| **MCP plugins** | 6 | notes |\n"
         "| **Conversations** | 11 | notes |\n"
     )
     bad = good.replace(
-        "| **Top-level agents** | 43 |", "| **Top-level agents** | 13 |"
+        "| **Top-level agents** | 44 |", "| **Top-level agents** | 13 |"
     )
     with tempfile.TemporaryDirectory() as td:
         inv = Path(td) / "AGENT_INVENTORY.md"
