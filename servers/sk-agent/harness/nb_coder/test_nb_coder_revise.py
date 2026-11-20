@@ -441,7 +441,6 @@ def test_resume_stops_before_the_pr_below_stage_5(monkeypatch, tmp_path):
     ({"stages": {"worktree": {"path": "x"}, "claim_reservation":
                  {"verdict": "refused-claim-post-failed"}}}, {},
      "refused-revise-no-reservation"),
-    ({"stages": {"worktree": {"path": "x"}}}, {}, "refused-revise-no-reservation"),
     ({"built_notebook": {"path": "Z:/absent.ipynb"}}, {}, "refused-revise-built-missing"),
     ({"kernel_cwd": "Z:/absent"}, {}, "refused-revise-kernel-cwd-missing"),
 ])
@@ -455,6 +454,28 @@ def test_resume_refuses_a_missing_trace(monkeypatch, tmp_path):
     seen = _stub_resume(monkeypatch)
     got = _resume(_rev_args(tmp_path, tmp_path / "nope.json"))
     assert got["verdict"].startswith("refused-revise-trace-missing") and seen["loop"] == 0
+
+
+def test_resume_old_trace_livereads_the_reservation(monkeypatch, tmp_path):
+    # w1*-era traces (18-19/11) carry no claim_reservation stage: the resume re-reads
+    # the LIVE scoped claim instead of refusing on a missing attestation (20/11: 3
+    # grains were refused as no-reservation while our lane still held the claim).
+    seen = _stub_resume(monkeypatch)
+    trace = _trace(tmp_path, stages={"worktree": {"path": str(tmp_path / "wt"),
+                                                  "ok": True}})
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"] == "pr-created" and seen["loop"] == 1
+    assert got["stages"]["claim_reservation"] == {"verdict": None, "live_recheck": True}
+
+
+def test_resume_old_trace_live_conflict_refuses(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch, claim_rc=1)
+    trace = _trace(tmp_path, stages={"worktree": {"path": str(tmp_path / "wt"),
+                                                  "ok": True}})
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"].startswith(
+        "refused-revise-no-reservation:refused-claim-held-by-another-lane")
+    assert seen["loop"] == 0
 
 
 def test_resume_rereads_the_claim_and_the_capacity_gate(monkeypatch, tmp_path):

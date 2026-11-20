@@ -2690,9 +2690,25 @@ async def run_revision(args, rec: dict) -> dict:
         else:
             rec["verdict"] = f"refused-revise-not-rejected:{prior.get('verdict')}"
             return rec
-    if ((prior.get("stages") or {}).get("claim_reservation") or {}).get("verdict", "x") is not None:
+    prior_cr = (prior.get("stages") or {}).get("claim_reservation")
+    live_cr = None
+    if prior_cr and prior_cr.get("verdict") is None:
+        pass  # attested in the trace: an admitted reservation, re-read at its time
+    elif prior_cr:
         rec["verdict"] = "refused-revise-no-reservation"
         return rec
+    else:
+        # No attestation in the trace (pre-#466-era drivers, w1* runs 18-19/11 carry
+        # no claim_reservation stage): fail-closed fallback — re-read the LIVE scoped
+        # claim. Admitted only if our lane still holds the claim on this path; no new
+        # [CLAIMED] comment is posted either way.
+        live = check_claim(Path(args.repo), args.issue, args.lane, _norm_rel(args.notebook))
+        live_v = claim_verdict(live)
+        live_cr = {"verdict": live_v, "live_recheck": True}
+        if live_v is not None:
+            rec["stages"]["claim_reservation"] = live_cr
+            rec["verdict"] = f"refused-revise-no-reservation:{live_v}"
+            return rec
     for k in _REVISE_CARRY:
         if k in prior:
             rec[k] = prior[k]
@@ -2704,7 +2720,7 @@ async def run_revision(args, rec: dict) -> dict:
         rec["verify"] = {"verdict": "gate-reject", "findings": gate_resume,
                          "source": "gates"}
     rec["stages"]["worktree"] = (prior.get("stages") or {}).get("worktree")
-    rec["stages"]["claim_reservation"] = (prior.get("stages") or {}).get("claim_reservation")
+    rec["stages"]["claim_reservation"] = live_cr or (prior.get("stages") or {}).get("claim_reservation")
     wt_path = Path(((prior.get("stages") or {}).get("worktree") or {}).get("path") or "")
     built = Path((prior.get("built_notebook") or {}).get("path") or "")
     src_nb = _prior_src_nb(prior, wt_path, args.notebook)
