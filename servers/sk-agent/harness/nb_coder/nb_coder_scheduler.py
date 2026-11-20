@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
+# Copied verbatim from jsboige/vllm @ 932e556f93b26e8eadb1dd91094351985f910f69
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_scheduler.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -60,6 +60,10 @@ ITEM_FIELDS = {
     "notebook": str,
     "source_nb": str,          # creation mode (--source-nb): the Python twin's repo-relative
                                # path — every wave-1 parity grain (#27099-#27116) is a CREATION
+    "from_spec": bool,         # creation with NO twin (--from-spec): the issue's cell plan is
+                               # the reference; exclusive with source_nb, requires meta_from
+    "meta_from": str,          # --meta-from: repo-relative notebook whose kernelspec the new one
+                               # inherits; required with from_spec, optional with source_nb
     "max_stage": int,
     "claim": bool,
     "fresh_worktree": bool,
@@ -72,7 +76,10 @@ ITEM_FIELDS = {
     "timeout": int,
     "max_tokens": int,
     "repair_rounds": int,
+    "revise_rounds": int,      # constructive-review rounds after a verify-reject
     "allow_foreign_origin": bool,
+    "retry": int,              # retry generation: raise it to re-offer a FAILED grain once
+                               # (scheduler-only, never passed to the driver)
 }
 # Verdicts the driver itself treats as success (its own exit-0 list, kept in
 # sync so a rc!=0 wrapper around a successful verdict is still classified done).
@@ -98,6 +105,13 @@ def grain_key(item: dict) -> str:
     return f"#{item['issue']}:{item['notebook']}"
 
 
+def _check_repo_rel_nb(lineno: int, field: str, nb) -> None:
+    if not isinstance(nb, str) or not nb.endswith(".ipynb"):
+        raise QueueError(f"queue line {lineno}: {field} must be a repo-relative .ipynb path")
+    if ":" in nb[:3] or nb.startswith(("/", "\\")) or ".." in Path(nb).parts:
+        raise QueueError(f"queue line {lineno}: {field} must be repo-relative, no ..: {nb}")
+
+
 def load_queue(path: Path) -> tuple[list[dict], str]:
     """Parse + validate the queue; returns (items, sha256 of the raw file)."""
     raw = path.read_bytes()
@@ -119,14 +133,24 @@ def load_queue(path: Path) -> tuple[list[dict], str]:
             raise QueueError(f"queue line {lineno}: missing field(s) {missing}")
         if not isinstance(item["issue"], int) or isinstance(item["issue"], bool) or item["issue"] <= 0:
             raise QueueError(f"queue line {lineno}: issue must be a positive integer")
-        nb = item["notebook"]
-        if not isinstance(nb, str) or not nb.endswith(".ipynb"):
-            raise QueueError(f"queue line {lineno}: notebook must be a repo-relative .ipynb path")
-        if ":" in nb[:3] or nb.startswith(("/", "\\")) or ".." in Path(nb).parts:
-            raise QueueError(f"queue line {lineno}: notebook must be repo-relative, no ..: {nb}")
+        _check_repo_rel_nb(lineno, "notebook", item["notebook"])
         for k, ty in ITEM_FIELDS.items():
             if k in item and not isinstance(item[k], ty):
                 raise QueueError(f"queue line {lineno}: field {k} must be {ty.__name__}")
+        # Same refusals as the driver's CLI guards, raised at load: a bad spec grain
+        # fails loud here instead of burning an attempt on a driver exit 2.
+        if item.get("from_spec"):
+            if "source_nb" in item:
+                raise QueueError(f"queue line {lineno}: from_spec and source_nb are exclusive")
+            if "meta_from" not in item:
+                raise QueueError(f"queue line {lineno}: from_spec requires meta_from")
+            if item.get("write_mode") == "mcp":
+                raise QueueError(f"queue line {lineno}: from_spec requires write_mode json")
+        elif "meta_from" in item and "source_nb" not in item:
+            raise QueueError(f"queue line {lineno}: meta_from is only read in creation mode "
+                             "(from_spec or source_nb)")
+        if "meta_from" in item:
+            _check_repo_rel_nb(lineno, "meta_from", item["meta_from"])
         key = grain_key(item)
         if key in seen:
             raise QueueError(f"queue line {lineno}: duplicate grain {key}")
@@ -239,16 +263,44 @@ class Scheduler:
             g = grains.get(key)
             if g is None:
                 grains[key] = {"issue": item["issue"], "notebook": item["notebook"],
-                               "status": "pending", "attempts": 0, "not_before": None}
+                               "status": "pending", "attempts": 0, "not_before": None,
+                               "retry": item.get("retry", 0)}
                 self._event("queued", key=key)
             elif g.get("status") == "withdrawn":
                 # an explicit re-add after a withdrawal is an operator decision
                 g.update({"status": "pending", "not_before": None,
-                          "requeued": utcnow()})
+                          "requeued": utcnow(), "retry": item.get("retry", 0)})
                 self._event("requeued", key=key)
+            elif item.get("retry", 0) > g.get("retry", 0):
+                self._apply_retry(key, g, item["retry"])
         self.state["queue_sha256"] = digest
         self.items_by_key = by_key
         return [by_key[k] for k in by_key]
+
+    def _apply_retry(self, key: str, g: dict, retry: int) -> None:
+        """A raised `retry` generation re-offers a FAILED grain, once per generation.
+
+        A failed grain is terminal, and withdrawing it is no way out: the queue it was alone
+        in cannot be emptied (an empty queue is a reload error, fail-safe against a
+        half-written file), and a withdraw/re-add dance costs two watched edits. Measured
+        20/11 on CoursIA#27314: the harness defect that failed the grain was fixed and merged
+        (#509) while the scheduler kept it terminal for want of a gesture.
+
+        Only `failed` is re-offered. `done` delivered a PR, so running it again is a new grain
+        and not a retry. `orphaned` may still have a live driver, and its recovery is the
+        reconciliation gesture. A generation raised on any other status is absorbed, so it
+        can never fire later on a failure it was not written for. Attempts restart at 0
+        because they count deferrals of one try, and the previous count is kept in the event.
+        """
+        status = g.get("status")
+        g["retry"] = retry
+        if status != "failed":
+            self._event("retry-ignored", key=key, retry=retry, status=status)
+            return
+        self._event("requeued", key=key, retry=retry, previous_attempts=g.get("attempts", 0),
+                    previous_verdict=g.get("last_verdict"))
+        g.update({"status": "pending", "not_before": None, "attempts": 0,
+                  "requeued": utcnow()})
 
     def _reconcile_previous_runs(self) -> None:
         """A scheduler that died left 'running' entries it can no longer wait on.
@@ -312,12 +364,14 @@ class Scheduler:
 
     def driver_command(self, item: dict) -> list[str]:
         a = self.args
+        from_spec = bool(item.get("from_spec", False))
         out_dir = Path(a.out_root) / f"issue-{item['issue']}"
         worktree = Path(a.worktree_root) / f"wt-{item['issue']}"
         cmd = [sys.executable, str(a.driver),
                "--issue", str(item["issue"]), "--notebook", item["notebook"],
                "--repo", a.repo, "--out-dir", str(out_dir),
                "--worktree", str(worktree), "--gate-mode", a.gate_mode]
+        source_nb = None if from_spec else item.get("source_nb", a.source_nb)
         opt = [
             ("--lane", a.lane), ("--agent", item.get("agent", a.agent)),
             # round 2: forward the RESOLVED gate path so a custom --gate / $NBCODER_GATE
@@ -325,7 +379,12 @@ class Scheduler:
             # the child's env default only fires when this scheduler runs standalone.
             ("--gate", a.gate),
             ("--conventions", a.conventions), ("--intention", item.get("intention", a.intention)),
-            ("--source-nb", item.get("source_nb", a.source_nb)),
+            # a spec grain never inherits the scheduler's default twin: the driver
+            # refuses --from-spec together with --source-nb
+            ("--source-nb", source_nb),
+            # creation grains only: mandatory for from_spec, optional for a port whose
+            # folder has no sibling with the target's language tag
+            ("--meta-from", item.get("meta_from") if (from_spec or source_nb) else None),
             ("--max-stage", item.get("max_stage", a.max_stage)),
             ("--write-mode", item.get("write_mode", a.write_mode)),
             ("--exec-mode", item.get("exec_mode", a.exec_mode)),
@@ -334,10 +393,13 @@ class Scheduler:
             ("--timeout", item.get("timeout", a.timeout)),
             ("--max-tokens", item.get("max_tokens", a.max_tokens)),
             ("--repair-rounds", item.get("repair_rounds", a.repair_rounds)),
+            ("--revise-rounds", item.get("revise_rounds", a.revise_rounds)),
         ]
         for flag, val in opt:
             if val not in (None, ""):
                 cmd += [flag, str(val)]
+        if from_spec:
+            cmd.append("--from-spec")
         if item.get("claim", a.claim):
             cmd.append("--claim")
         if item.get("fresh_worktree", a.fresh_worktree):
@@ -508,6 +570,7 @@ class Scheduler:
 
         pending = self._eligible(now)
         held = None
+        held_extra: dict = {}
         launched = 0
         stop = Path(self.args.stop_file)
         stop_now = stop.is_file()
@@ -536,12 +599,26 @@ class Scheduler:
                 # to /metrics through gate.running.
                 floor = max(len(self.active), int(gate.get("running") or 0))
                 budget = self.state["ramp"]["max_active"] - floor
+                gap = float(getattr(self.args, "launch_gap_s", 0) or 0)
                 for key in pending:
                     if budget <= 0:
                         held = held or "capacity-target"
                         break
+                    # #506 palier 1 — launch in canon, not in cohorts. Every launch
+                    # in one tick makes a homogeneous cohort whose conversations all
+                    # grow together (the funnel). With a gap, at most one grain starts
+                    # per gap, so the grains in flight sit at different stages. The
+                    # timestamp is persisted: a restarted scheduler keeps the spacing.
+                    if gap > 0:
+                        last = self.state.get("last_launch_ts")
+                        wait = (last + gap - self.clock()) if last is not None else 0.0
+                        if wait > 0:
+                            held = "launch-gap"
+                            held_extra["next_launch_in_s"] = round(wait, 1)
+                            break
                     item = self.items_by_key[key]
                     cmd = self.driver_command(item)
+                    self.state["last_launch_ts"] = self.clock()
                     if self.args.dry_run:
                         self._event("dry-launch", key=key, cmd=cmd)
                         budget -= 1
@@ -551,7 +628,7 @@ class Scheduler:
                     budget -= 1
         if held:
             self._event("held", reason=held, pending=len(pending),
-                        active=len(self.active), gate=gate.get("verdict"))
+                        active=len(self.active), gate=gate.get("verdict"), **held_extra)
         self._save_state()
         return {"gate": gate.get("verdict"), "launched": launched,
                 "active": len(self.active), "held": held,
@@ -648,6 +725,9 @@ def parse_args(argv=None):
     ap.add_argument("--max-tokens", type=int, default=16384)
     ap.add_argument("--repair-rounds", type=int, default=2,
                     help="model repair rounds on real kernel errors (driver flag, 0=off)")
+    ap.add_argument("--revise-rounds", type=int, default=2,
+                    help="constructive-review rounds after a verify-reject with findings "
+                         "(driver flag, 0=off)")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="block")
     ap.add_argument("--max-active", type=int, default=0,
                     help="fixed total-request target (or use --ramp)")
@@ -666,6 +746,10 @@ def parse_args(argv=None):
     ap.add_argument("--max-attempts", type=int, default=6)
     ap.add_argument("--max-launch", type=int, default=0,
                     help="cap launches in THIS scheduler run (0 = unlimited)")
+    ap.add_argument("--launch-gap-s", type=float, default=0.0,
+                    help="minimum seconds between two grain launches, so grains in flight "
+                         "sit at different stages instead of one cohort (#506 palier 1; "
+                         "0 = every free slot is filled in the same tick, the old behavior)")
     ap.add_argument("--max-future-s", type=float, default=86400.0,
                     help="a deferred grain further than this still counts as unfinished")
     ap.add_argument("--timeout-s", type=float, default=0,
@@ -694,6 +778,8 @@ def parse_args(argv=None):
             ap.error("--ramp steps must be distinct")
         if args.ramp != sorted(args.ramp):
             ap.error("--ramp steps must be increasing (a ramp that starts high measures nothing)")
+    if args.launch_gap_s < 0:
+        ap.error("--launch-gap-s must be >= 0")
     if args.claim and not args.lane:
         ap.error("--claim requires --lane or NBCODER_LANE (same refusal as the driver, F1)")
     if not args.out_root:
