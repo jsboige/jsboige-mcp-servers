@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
+# Copied verbatim from jsboige/vllm @ 932e556f93b26e8eadb1dd91094351985f910f69
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_driver.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -395,6 +395,18 @@ def test_explicit_kernel_override_still_wins_at_every_execution_site():
     assert src.count('args.kernel_override or kernel["kernel_name"]') == 3
 # ---- banner strip variant (vllm#482, measured on the #27104 verify) ----
 
+def test_the_banner_strip_covers_the_discovery_bootstrap():
+    """#27104: the probe-only strip reported ok while the committed cell-3 output
+    still carried the DISCOVERY bootstrap (dotnet-interactive-this-cell) — the
+    verify rejected it MAJOR. The deliverable is stripped --variant both; the
+    probe-only calibration of #22728 binds the COMMITTED-corpus guard, never a
+    fresh deliverable. Source pin: the wiring is a CLI argument list."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    fn = src.split("def strip_dotnet_banner", 1)[1].split("\ndef ", 1)[0]
+    assert '"--variant", "both"' in fn, \
+        "the strip lost the discovery variant — a creation-mode notebook keeps its banner"
+
+
 # ---- stage5 commit retry after a pre-commit auto-fixer (CoursIA #27113 + #27102) ----
 
 def test_stage5_retries_add_commit_once_when_a_prefix_hook_rewrites_the_file(tmp_path):
@@ -426,13 +438,6 @@ def test_stage5_retries_add_commit_once_when_a_prefix_hook_rewrites_the_file(tmp
     wt = tmp_path / "wt"
     wt.mkdir()
     sh("git", "init", cwd=wt)
-    # Local repo identity: the driver's stage5 commits run as subprocesses WITHOUT an
-    # inline -c identity, so a runner with no global user.name/user.email would fail
-    # them with "Author identity unknown" (ms#1813 CI, run 44686195241) — an
-    # environment dependency, not a driver defect. Local config makes the pin
-    # environment-independent.
-    sh("git", "config", "user.name", "t", cwd=wt)
-    sh("git", "config", "user.email", "t@t", cwd=wt)
     sh("git", "checkout", "-b", "main", cwd=wt)
     sh("git", "remote", "add", "origin", str(origin), cwd=wt)
     (wt / "README.md").write_text("x", encoding="utf-8")
@@ -489,13 +494,3 @@ def test_stage5_retries_add_commit_once_when_a_prefix_hook_rewrites_the_file(tmp
     blob = sh("git", "-C", str(wt), "show", f"HEAD:{nb_rel}")
     assert "autofix-marker" in blob
     assert nb_in_wt.read_text(encoding="utf-8").endswith("autofix-marker\n")
-def test_the_banner_strip_covers_the_discovery_bootstrap():
-    """#27104: the probe-only strip reported ok while the committed cell-3 output
-    still carried the DISCOVERY bootstrap (dotnet-interactive-this-cell) — the
-    verify rejected it MAJOR. The deliverable is stripped --variant both; the
-    probe-only calibration of #22728 binds the COMMITTED-corpus guard, never a
-    fresh deliverable. Source pin: the wiring is a CLI argument list."""
-    src = Path(d.__file__).read_text(encoding="utf-8")
-    fn = src.split("def strip_dotnet_banner", 1)[1].split("\ndef ", 1)[0]
-    assert '"--variant", "both"' in fn, \
-        "the strip lost the discovery variant — a creation-mode notebook keeps its banner"

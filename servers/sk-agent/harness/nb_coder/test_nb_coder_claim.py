@@ -1,6 +1,5 @@
-#!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Harness base is the vllm re-copy @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
+# Harness base is the vllm re-copy @ 932e556f93b26e8eadb1dd91094351985f910f69
 # (ms#1814); the base claim pins (scoped check, fail-closed verdict, kernel
 # working_dir) came from jsboige/vllm, original path myia_vllm/scripts/adoption/
 # nb_coder/test_nb_coder_claim.py. The reservation/admission half (reserve_claim,
