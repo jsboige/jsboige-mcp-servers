@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
+# Copied verbatim from jsboige/vllm @ 0a301594f2c57519e48251cefdabea483c9f918e
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_scheduler.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -60,6 +60,10 @@ ITEM_FIELDS = {
     "notebook": str,
     "source_nb": str,          # creation mode (--source-nb): the Python twin's repo-relative
                                # path — every wave-1 parity grain (#27099-#27116) is a CREATION
+    "from_spec": bool,         # creation with NO twin (--from-spec): the issue's cell plan is
+                               # the reference; exclusive with source_nb, requires meta_from
+    "meta_from": str,          # --meta-from: repo-relative notebook whose kernelspec the new one
+                               # inherits; required with from_spec, optional with source_nb
     "max_stage": int,
     "claim": bool,
     "fresh_worktree": bool,
@@ -72,6 +76,7 @@ ITEM_FIELDS = {
     "timeout": int,
     "max_tokens": int,
     "repair_rounds": int,
+    "revise_rounds": int,      # constructive-review rounds after a verify-reject
     "allow_foreign_origin": bool,
 }
 # Verdicts the driver itself treats as success (its own exit-0 list, kept in
@@ -98,6 +103,13 @@ def grain_key(item: dict) -> str:
     return f"#{item['issue']}:{item['notebook']}"
 
 
+def _check_repo_rel_nb(lineno: int, field: str, nb) -> None:
+    if not isinstance(nb, str) or not nb.endswith(".ipynb"):
+        raise QueueError(f"queue line {lineno}: {field} must be a repo-relative .ipynb path")
+    if ":" in nb[:3] or nb.startswith(("/", "\\")) or ".." in Path(nb).parts:
+        raise QueueError(f"queue line {lineno}: {field} must be repo-relative, no ..: {nb}")
+
+
 def load_queue(path: Path) -> tuple[list[dict], str]:
     """Parse + validate the queue; returns (items, sha256 of the raw file)."""
     raw = path.read_bytes()
@@ -119,14 +131,24 @@ def load_queue(path: Path) -> tuple[list[dict], str]:
             raise QueueError(f"queue line {lineno}: missing field(s) {missing}")
         if not isinstance(item["issue"], int) or isinstance(item["issue"], bool) or item["issue"] <= 0:
             raise QueueError(f"queue line {lineno}: issue must be a positive integer")
-        nb = item["notebook"]
-        if not isinstance(nb, str) or not nb.endswith(".ipynb"):
-            raise QueueError(f"queue line {lineno}: notebook must be a repo-relative .ipynb path")
-        if ":" in nb[:3] or nb.startswith(("/", "\\")) or ".." in Path(nb).parts:
-            raise QueueError(f"queue line {lineno}: notebook must be repo-relative, no ..: {nb}")
+        _check_repo_rel_nb(lineno, "notebook", item["notebook"])
         for k, ty in ITEM_FIELDS.items():
             if k in item and not isinstance(item[k], ty):
                 raise QueueError(f"queue line {lineno}: field {k} must be {ty.__name__}")
+        # Same refusals as the driver's CLI guards, raised at load: a bad spec grain
+        # fails loud here instead of burning an attempt on a driver exit 2.
+        if item.get("from_spec"):
+            if "source_nb" in item:
+                raise QueueError(f"queue line {lineno}: from_spec and source_nb are exclusive")
+            if "meta_from" not in item:
+                raise QueueError(f"queue line {lineno}: from_spec requires meta_from")
+            if item.get("write_mode") == "mcp":
+                raise QueueError(f"queue line {lineno}: from_spec requires write_mode json")
+        elif "meta_from" in item and "source_nb" not in item:
+            raise QueueError(f"queue line {lineno}: meta_from is only read in creation mode "
+                             "(from_spec or source_nb)")
+        if "meta_from" in item:
+            _check_repo_rel_nb(lineno, "meta_from", item["meta_from"])
         key = grain_key(item)
         if key in seen:
             raise QueueError(f"queue line {lineno}: duplicate grain {key}")
@@ -312,12 +334,14 @@ class Scheduler:
 
     def driver_command(self, item: dict) -> list[str]:
         a = self.args
+        from_spec = bool(item.get("from_spec", False))
         out_dir = Path(a.out_root) / f"issue-{item['issue']}"
         worktree = Path(a.worktree_root) / f"wt-{item['issue']}"
         cmd = [sys.executable, str(a.driver),
                "--issue", str(item["issue"]), "--notebook", item["notebook"],
                "--repo", a.repo, "--out-dir", str(out_dir),
                "--worktree", str(worktree), "--gate-mode", a.gate_mode]
+        source_nb = None if from_spec else item.get("source_nb", a.source_nb)
         opt = [
             ("--lane", a.lane), ("--agent", item.get("agent", a.agent)),
             # round 2: forward the RESOLVED gate path so a custom --gate / $NBCODER_GATE
@@ -325,7 +349,12 @@ class Scheduler:
             # the child's env default only fires when this scheduler runs standalone.
             ("--gate", a.gate),
             ("--conventions", a.conventions), ("--intention", item.get("intention", a.intention)),
-            ("--source-nb", item.get("source_nb", a.source_nb)),
+            # a spec grain never inherits the scheduler's default twin: the driver
+            # refuses --from-spec together with --source-nb
+            ("--source-nb", source_nb),
+            # creation grains only: mandatory for from_spec, optional for a port whose
+            # folder has no sibling with the target's language tag
+            ("--meta-from", item.get("meta_from") if (from_spec or source_nb) else None),
             ("--max-stage", item.get("max_stage", a.max_stage)),
             ("--write-mode", item.get("write_mode", a.write_mode)),
             ("--exec-mode", item.get("exec_mode", a.exec_mode)),
@@ -334,10 +363,13 @@ class Scheduler:
             ("--timeout", item.get("timeout", a.timeout)),
             ("--max-tokens", item.get("max_tokens", a.max_tokens)),
             ("--repair-rounds", item.get("repair_rounds", a.repair_rounds)),
+            ("--revise-rounds", item.get("revise_rounds", a.revise_rounds)),
         ]
         for flag, val in opt:
             if val not in (None, ""):
                 cmd += [flag, str(val)]
+        if from_spec:
+            cmd.append("--from-spec")
         if item.get("claim", a.claim):
             cmd.append("--claim")
         if item.get("fresh_worktree", a.fresh_worktree):
@@ -648,6 +680,9 @@ def parse_args(argv=None):
     ap.add_argument("--max-tokens", type=int, default=16384)
     ap.add_argument("--repair-rounds", type=int, default=2,
                     help="model repair rounds on real kernel errors (driver flag, 0=off)")
+    ap.add_argument("--revise-rounds", type=int, default=2,
+                    help="constructive-review rounds after a verify-reject with findings "
+                         "(driver flag, 0=off)")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="block")
     ap.add_argument("--max-active", type=int, default=0,
                     help="fixed total-request target (or use --ramp)")

@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
+# Copied verbatim from jsboige/vllm @ 0a301594f2c57519e48251cefdabea483c9f918e
 # original path: myia_vllm/scripts/adoption/nb_audit/register_hourly.ps1
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.

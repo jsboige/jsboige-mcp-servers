@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
+# Copied verbatim from jsboige/vllm @ 0a301594f2c57519e48251cefdabea483c9f918e
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_scheduler.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -296,6 +296,81 @@ def test_driver_command_passes_creation_fields(tmp_path):
         "issue": 43, "notebook": "A/C.ipynb", "max_stage": 2}])
     joined2 = " ".join(sched2.driver_command(sched2.items_by_key["#43:A/C.ipynb"]))
     assert "--source-nb" not in joined2
+
+
+SPEC_ITEM = {"issue": 27460, "notebook": "IC/IT/IT-08.ipynb", "from_spec": True,
+             "meta_from": "Cx/Cx-03c.ipynb", "max_stage": 5, "claim": True}
+
+
+def test_driver_command_passes_spec_fields(tmp_path):
+    """A no-twin creation grain (--from-spec) forwards --from-spec + --meta-from and
+    never the scheduler's default --source-nb (the driver refuses the pair)."""
+    sched = make_sched(tmp_path, [dict(SPEC_ITEM)], lane="myia-ai-01:nb-coder",
+                       source_nb="Default/Twin.ipynb")
+    cmd = sched.driver_command(sched.items_by_key["#27460:IC/IT/IT-08.ipynb"])
+    joined = " ".join(cmd)
+    assert "--from-spec" in cmd and "--meta-from Cx/Cx-03c.ipynb" in joined
+    assert "--source-nb" not in joined
+    assert "--claim" in cmd and "--max-stage 5" in joined
+    # a twin grain next to it keeps the scheduler default and gets no spec flag
+    sched2 = make_sched(tmp_path / "t", [{"issue": 44, "notebook": "A/D.ipynb"}],
+                        source_nb="Default/Twin.ipynb")
+    cmd2 = sched2.driver_command(sched2.items_by_key["#44:A/D.ipynb"])
+    assert "--from-spec" not in cmd2 and "--meta-from" not in cmd2
+    assert "--source-nb Default/Twin.ipynb" in " ".join(cmd2)
+
+
+@pytest.mark.parametrize("patch,match", [
+    ({"source_nb": "A/Twin.ipynb"}, "exclusive"),
+    ({"meta_from": None}, "requires meta_from"),
+    ({"write_mode": "mcp"}, "write_mode json"),
+    ({"from_spec": False}, "only read in creation mode"),
+    ({"meta_from": "../out.ipynb"}, "meta_from must be repo-relative"),
+    ({"meta_from": "C:/abs.ipynb"}, "meta_from must be repo-relative"),
+    ({"meta_from": "Cx/notes.md"}, "meta_from must be a repo-relative .ipynb"),
+    ({"from_spec": "yes"}, "must be bool"),
+])
+def test_queue_rejects_bad_spec_grain(tmp_path, patch, match):
+    it = dict(SPEC_ITEM)
+    for k, v in patch.items():
+        if v is None:
+            it.pop(k)
+        else:
+            it[k] = v
+    q = tmp_path / "q.jsonl"
+    q.write_text(json.dumps(it) + "\n")
+    with pytest.raises(S.QueueError, match=match):
+        S.load_queue(q)
+
+
+def test_port_grain_forwards_meta_from(tmp_path):
+    """A twin port may name its metadata source: the first Rust notebook of a series has
+    no *-Rust sibling to inherit from (claudish PROPOSAL 20/11)."""
+    port = {"issue": 45, "notebook": "Su/Su-02-X-Rust.ipynb",
+            "source_nb": "Su/Su-02-X.ipynb", "meta_from": "Su/Su-01-Rust.ipynb"}
+    q = tmp_path / "q.jsonl"
+    q.write_text(json.dumps(port) + "\n")
+    items, _ = S.load_queue(q)
+    assert items[0]["meta_from"] == "Su/Su-01-Rust.ipynb"
+    sched = make_sched(tmp_path / "s", [dict(port)])
+    joined = " ".join(sched.driver_command(sched.items_by_key["#45:Su/Su-02-X-Rust.ipynb"]))
+    assert "--source-nb Su/Su-02-X.ipynb" in joined
+    assert "--meta-from Su/Su-01-Rust.ipynb" in joined and "--from-spec" not in joined
+
+
+def test_queue_refuses_meta_from_on_a_correction(tmp_path):
+    q = tmp_path / "q.jsonl"
+    q.write_text(json.dumps({"issue": 46, "notebook": "A/E.ipynb",
+                             "meta_from": "A/M.ipynb"}) + "\n")
+    with pytest.raises(S.QueueError, match="only read in creation mode"):
+        S.load_queue(q)
+
+
+def test_queue_accepts_spec_grain(tmp_path):
+    q = tmp_path / "q.jsonl"
+    q.write_text(json.dumps(SPEC_ITEM) + "\n")
+    items, _ = S.load_queue(q)
+    assert items[0]["from_spec"] is True and items[0]["meta_from"] == "Cx/Cx-03c.ipynb"
 
 
 def test_parse_args_makes_driver_paths_absolute():
