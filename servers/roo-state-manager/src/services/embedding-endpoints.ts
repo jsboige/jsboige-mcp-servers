@@ -616,14 +616,64 @@ function dimensionFromEmbedding(embedding: unknown): number | null {
 	return null;
 }
 
-async function dimensionOf(response: Response): Promise<number | null> {
+/**
+ * #4823 (web1 canary, 18-19/11): consume the success body ONCE and hand the
+ * caller a RECONSTRUCTED Response — this check must never use
+ * `response.clone()`.
+ *
+ * Root cause (measured, Node 24 + npm undici 7.29.1): `Response.clone()` tees
+ * the body and re-registers the ORIGINAL response in undici's `streamRegistry`
+ * FinalizationRegistry — this time holding a WeakRef to the branch the original
+ * (the response we return to the SDK) keeps. In `await response.clone().json()`
+ * the clone object is an unreachable temporary: a GC landing inside the read
+ * window fires the registry callback, which cancels that live branch
+ * ("Response object has been garbage collected"). The SDK's `.json()` then
+ * dies as `TypeError: Body is unusable: Body has already been read`. On web1's
+ * off-LAN seat every embed takes the failover path (dead LAN primary), so every
+ * success passed through this check: ~2% of lots failed per pass and the
+ * largest files never converged. Bisected on a local replica of that topology:
+ * the same wrapper WITHOUT this clone ran 400 lots, zero occurrences; with it,
+ * the race reproduced, and a stream-level watch caught the finalizer cancelling
+ * the caller-bound branch mid-read.
+ *
+ * Reading once and reconstructing leaves no tee, no registry re-registration,
+ * and no branch whose fate is tied to a temporary's collection. The rebuilt
+ * Response is an ordinary constructed one (empty urlList): undici never
+ * registers it, so no GC can cancel its body. Status, statusText and headers
+ * are carried over. A malformed body stays unclassified (null) and surfaces
+ * through the caller's own parse, exactly as before.
+ */
+interface BodyReadOutcome {
+	response: Response;
+	dimension: number | null;
+}
+
+async function readBodyAndRebuildResponse(response: Response): Promise<BodyReadOutcome> {
+	// #4823 review (ai-01, 19/11): bodyless statuses (204, 205, 304) carry
+	// `body === null`. There is nothing to read, and reconstructing them throws
+	// (`new Response('', { status: 204 })` is a TypeError). Hand the fetch
+	// original back untouched: the caller's own parse sees exactly what the
+	// endpoint sent, as it did before the single-read fix.
+	if (response.body === null) {
+		return { response, dimension: null };
+	}
+	const text = await response.text();
+	let dimension: number | null = null;
 	try {
-		const payload = await response.clone().json() as { data?: Array<{ embedding?: unknown }> };
-		return dimensionFromEmbedding(payload?.data?.[0]?.embedding);
+		const payload = JSON.parse(text) as { data?: Array<{ embedding?: unknown }> };
+		dimension = dimensionFromEmbedding(payload?.data?.[0]?.embedding);
 	} catch {
 		// The SDK will report a malformed body; failover cannot classify it.
-		return null;
+		dimension = null;
 	}
+	return {
+		response: new Response(text, {
+			status: response.status,
+			statusText: response.statusText,
+			headers: response.headers,
+		}),
+		dimension,
+	};
 }
 
 /**
@@ -711,12 +761,35 @@ export function createEmbeddingFailoverFetch(options: EmbeddingFailoverOptions):
 					return response;
 				}
 
-				const dimension = await dimensionOf(response);
+				// #4823: the dimension check consumes the body once; the caller
+				// gets the REBUILT response, never the fetch original (see
+				// readBodyAndRebuildResponse for why clone() was removed).
+				//
+				// #4823 review (ai-01, 19/11): a success body whose READ fails is a
+				// transport failure on THIS endpoint — the header arrived, the payload
+				// did not. Route it through the same failover path (negative cache,
+				// endpoint error, next endpoint) instead of leaking a caller-visible
+				// error. Caller cancellation still wins, and the loop re-derives the
+				// remaining budget on the next iteration. Invalid JSON is NOT this
+				// case: the read succeeded, so the response is handed over for the
+				// caller's own parse exactly as before.
+				let bodyOutcome: BodyReadOutcome;
+				try {
+					bodyOutcome = await readBodyAndRebuildResponse(response);
+				} catch (error) {
+					if (hasCallerAborted(init.signal)) throw error;
+					const message = describeError(error);
+					state.lastError = message;
+					state.disabledUntil = now() + negativeCacheMs;
+					endpointErrors.push({ endpoint: state.label, error: message });
+					warn(`[embedding-failover] ${state.label} failed while reading the success body (${message}); trying the next endpoint`);
+					continue;
+				}
+				const { response: rebuilt, dimension } = bodyOutcome;
 				if (dimension !== null && dimension !== options.expectedDimensions) {
 					const mismatch = `dimension ${dimension} != ${options.expectedDimensions}`;
 					state.incompatible = mismatch;
 					state.lastError = mismatch;
-					discardResponse(response);
 					endpointErrors.push({ endpoint: state.label, error: mismatch });
 					warn(`[embedding-failover] ${state.label} serves ${mismatch}; refusing it (vector space guard)`);
 					continue;
@@ -732,7 +805,7 @@ export function createEmbeddingFailoverFetch(options: EmbeddingFailoverOptions):
 					servedLogged = true;
 					info(`[embedding-failover] first successful call served by ${state.label}`);
 				}
-				return response;
+				return rebuilt;
 			}
 
 			const message = result.timedOut
