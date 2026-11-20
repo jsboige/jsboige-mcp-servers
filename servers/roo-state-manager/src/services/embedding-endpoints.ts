@@ -643,9 +643,20 @@ function dimensionFromEmbedding(embedding: unknown): number | null {
  * are carried over. A malformed body stays unclassified (null) and surfaces
  * through the caller's own parse, exactly as before.
  */
-async function readBodyAndRebuildResponse(
-	response: Response,
-): Promise<{ response: Response; dimension: number | null }> {
+interface BodyReadOutcome {
+	response: Response;
+	dimension: number | null;
+}
+
+async function readBodyAndRebuildResponse(response: Response): Promise<BodyReadOutcome> {
+	// #4823 review (ai-01, 19/11): bodyless statuses (204, 205, 304) carry
+	// `body === null`. There is nothing to read, and reconstructing them throws
+	// (`new Response('', { status: 204 })` is a TypeError). Hand the fetch
+	// original back untouched: the caller's own parse sees exactly what the
+	// endpoint sent, as it did before the single-read fix.
+	if (response.body === null) {
+		return { response, dimension: null };
+	}
 	const text = await response.text();
 	let dimension: number | null = null;
 	try {
@@ -753,7 +764,28 @@ export function createEmbeddingFailoverFetch(options: EmbeddingFailoverOptions):
 				// #4823: the dimension check consumes the body once; the caller
 				// gets the REBUILT response, never the fetch original (see
 				// readBodyAndRebuildResponse for why clone() was removed).
-				const { response: rebuilt, dimension } = await readBodyAndRebuildResponse(response);
+				//
+				// #4823 review (ai-01, 19/11): a success body whose READ fails is a
+				// transport failure on THIS endpoint — the header arrived, the payload
+				// did not. Route it through the same failover path (negative cache,
+				// endpoint error, next endpoint) instead of leaking a caller-visible
+				// error. Caller cancellation still wins, and the loop re-derives the
+				// remaining budget on the next iteration. Invalid JSON is NOT this
+				// case: the read succeeded, so the response is handed over for the
+				// caller's own parse exactly as before.
+				let bodyOutcome: BodyReadOutcome;
+				try {
+					bodyOutcome = await readBodyAndRebuildResponse(response);
+				} catch (error) {
+					if (hasCallerAborted(init.signal)) throw error;
+					const message = describeError(error);
+					state.lastError = message;
+					state.disabledUntil = now() + negativeCacheMs;
+					endpointErrors.push({ endpoint: state.label, error: message });
+					warn(`[embedding-failover] ${state.label} failed while reading the success body (${message}); trying the next endpoint`);
+					continue;
+				}
+				const { response: rebuilt, dimension } = bodyOutcome;
 				if (dimension !== null && dimension !== options.expectedDimensions) {
 					const mismatch = `dimension ${dimension} != ${options.expectedDimensions}`;
 					state.incompatible = mismatch;

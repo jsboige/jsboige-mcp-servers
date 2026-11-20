@@ -129,4 +129,112 @@ describe('#4823 success path reads the body once (no Response.clone)', () => {
 		expect(response.status).toBe(200);
 		expect(response.headers.get('content-type')).toBe('application/json');
 	}, 15000);
+
+	it('fails over when the success body read rejects — transport failure, not caller error (CHANGES ai-01 19/11)', async () => {
+		const calls: string[] = [];
+		const warns: string[] = [];
+		const brokenBody = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.error(new Error('socket hang up while streaming the success body'));
+			},
+		});
+		const routingFetch: EmbeddingFetch = async (input, init) => {
+			if (urlOf(input).startsWith('http://broken.test')) {
+				calls.push('broken');
+				return new Response(brokenBody, { status: 200, headers: { 'content-type': 'application/json' } });
+			}
+			calls.push('serving');
+			return fetch(input, init);
+		};
+		const failover = createEmbeddingFailoverFetch({
+			endpoints: ['http://broken.test/v1', baseUrl],
+			canonicalBaseURL: baseUrl,
+			perAttemptTimeoutMs: 5000,
+			expectedDimensions: 3,
+			fetchImpl: routingFetch,
+			warn: (message) => warns.push(message),
+			info: () => undefined,
+		});
+
+		const response = await failover(`${baseUrl}/embeddings`, SDK_LIKE_INIT);
+		expect(response.status).toBe(200);
+		const payload = (await response.json()) as { data: Array<{ embedding: number[] }> };
+		expect(payload.data[0].embedding).toEqual([1, 2, 3]);
+		expect(calls).toEqual(['broken', 'serving']);
+		expect(warns.join(' | ')).toContain('reading the success body');
+		expect(cloneSpy).not.toHaveBeenCalled();
+	}, 15000);
+
+	it('preserves a bodyless status (204) instead of rebuilding it — rebuilding throws', async () => {
+		const failover = createEmbeddingFailoverFetch({
+			endpoints: ['http://a.test/v1', 'http://b.test/v1'],
+			canonicalBaseURL: 'http://a.test/v1',
+			perAttemptTimeoutMs: 5000,
+			expectedDimensions: 3,
+			fetchImpl: async () => new Response(null, { status: 204 }),
+			warn: () => undefined,
+			info: () => undefined,
+		});
+
+		const response = await failover('http://a.test/v1/embeddings', SDK_LIKE_INIT);
+		expect(response.status).toBe(204);
+		expect(await response.text()).toBe('');
+	}, 15000);
+
+	it('does not fail over on invalid JSON — the read succeeded, the caller parse reports it', async () => {
+		let secondHits = 0;
+		const failover = createEmbeddingFailoverFetch({
+			endpoints: ['http://a.test/v1', 'http://b.test/v1'],
+			canonicalBaseURL: 'http://a.test/v1',
+			perAttemptTimeoutMs: 5000,
+			expectedDimensions: 3,
+			fetchImpl: async (input) => {
+				if (urlOf(input).includes('b.test')) secondHits += 1;
+				return new Response('not json at all', { status: 200, headers: { 'content-type': 'application/json' } });
+			},
+			warn: () => undefined,
+			info: () => undefined,
+		});
+
+		const response = await failover('http://a.test/v1/embeddings', SDK_LIKE_INIT);
+		expect(await response.text()).toBe('not json at all');
+		expect(secondHits).toBe(0);
+	}, 15000);
+
+	it('caller cancellation during the body read is never turned into a failover', async () => {
+		const controller = new AbortController();
+		const calls: string[] = [];
+		const failover = createEmbeddingFailoverFetch({
+			endpoints: ['http://a.test/v1', 'http://b.test/v1'],
+			canonicalBaseURL: 'http://a.test/v1',
+			perAttemptTimeoutMs: 5000,
+			expectedDimensions: 3,
+			fetchImpl: async (input) => {
+				calls.push(urlOf(input).includes('b.test') ? 'second' : 'first');
+				const stream = new ReadableStream<Uint8Array>({
+					start(streamController) {
+						controller.signal.addEventListener(
+							'abort',
+							() => streamController.error(new DOMException('The operation was aborted.', 'AbortError')),
+							{ once: true },
+						);
+					},
+				});
+				return new Response(stream, { status: 200 });
+			},
+			warn: () => undefined,
+			info: () => undefined,
+		});
+
+		const pending = failover('http://a.test/v1/embeddings', { ...SDK_LIKE_INIT, signal: controller.signal });
+		setTimeout(() => controller.abort(), 10);
+		await expect(pending).rejects.toThrow();
+		expect(calls).toEqual(['first']);
+	}, 15000);
 });
+
+function urlOf(input: Parameters<EmbeddingFetch>[0]): string {
+	if (typeof input === 'string') return input;
+	if (input instanceof URL) return input.toString();
+	return input.url;
+}
