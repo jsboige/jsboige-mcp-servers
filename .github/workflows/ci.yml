@@ -191,6 +191,11 @@ jobs:
         # tests — without the plugin they fail with "async def functions are
         # not natively supported" (it was only ever present on dev machines).
         pip install pytest pytest-asyncio
+        # nb_coder stage-5 tests drive a real `git commit` in a temp repo;
+        # ephemeral runners carry no identity, dev seats inherit their global
+        # config — provide one so the runner matches the seats.
+        git config --global user.name "ci-sk-agent"
+        git config --global user.email "ci-sk-agent@users.noreply.github.com"
 
     - name: Run sk-agent schema, config-provenance, facade, context-condensation, recursion-guard, mini-delegation-guard, fallback-visibility, document-processing, spec-composition, capability-matrix, inventory-validation, review-pr-propagation, empty-response-guard, run-conversation-empty-guard, group-chat-synthesizer, gitignore-guard, model-budget, rate-limit, sync-from-template, benchmark-model-derivation, mcp-connect-bound, model-connect-bound, model-default-headers, claudish-response-headers, mcp-env/schema, mcp-container-runtime, source-file-channel, dockerfile-copy-guard, harness-portability, turn-control, nb-coder-verifier, nb-coder-create, nb-coder-scheduler, nb-coder-driver, nb-coder-gates, nb-coder-claim, nb-coder-invoke, nb-coder-plugin, nb-coder-json-repair, producer-label, repair-scope, revise, served-identity, spec, usage and writer-source-lines tests
       run: |
