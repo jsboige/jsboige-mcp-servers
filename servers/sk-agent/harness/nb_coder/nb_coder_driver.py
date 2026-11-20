@@ -371,11 +371,18 @@ def series_kernel(repo: Path, rel: str) -> dict:
 
 
 def series_canonical_meta(repo: Path, rel: str) -> dict:
-    """Creation mode: kernelspec/language_info of the nearest existing TWIN in the target
-    folder. The built notebook inherits the series' canonical metadata (its .NET version),
-    never the Python twin's — that is what the language-info gate compares against."""
-    d = Path(rel).parent
-    for sib in sorted((repo / d).glob("*-CSharp.ipynb")):
+    """Creation mode: kernelspec/language_info of the nearest existing sibling in the target
+    folder that carries the TARGET's language tag (the last '-' segment of its stem:
+    X-08-CSharp -> *-CSharp, X-08-Rust -> *-Rust). The built notebook inherits the series'
+    canonical metadata, never the Python twin's — that is what the language-info gate
+    compares against. A hard-coded *-CSharp glob handed a Rust port the .NET kernelspec.
+    No tag or no such sibling -> {} : the caller refuses unless --meta-from names one.
+    (Ported from jsboige/vllm 8d352c4a2d, vllm#499.)"""
+    d, stem = Path(rel).parent, Path(rel).stem
+    if "-" not in stem:
+        return {}
+    tag = stem.rsplit("-", 1)[1]
+    for sib in sorted((repo / d).glob(f"*-{tag}.ipynb")):
         if sib.name == Path(rel).name:
             continue
         try:
@@ -1948,17 +1955,47 @@ async def run(args, rec: dict) -> dict:
     else:
         rec["verdict"] = f"notebook-not-found:{target_nb}"
         return rec
+    # --meta-from (vllm#499, ported): repo-relative notebook whose kernelspec + language_info
+    # the created deliverable inherits. Optional with --source-nb; it OVERRIDES the sibling
+    # carrying the target's language tag. The remedy for a series whose folder holds no
+    # C#/Rust twin yet (the language-info gate is unwinnable with empty root metadata).
+    meta_override_d = None
+    meta_rel = getattr(args, "meta_from", None)
+    if create_mode and meta_rel:
+        meta_nb = wt_path / meta_rel
+        if not meta_nb.is_file():
+            rec["verdict"] = f"meta-from-not-found:{meta_rel}"
+            return rec
+        try:
+            meta_override_d = json.loads(meta_nb.read_text(encoding="utf-8")).get("metadata", {})
+        except Exception:
+            meta_override_d = {}
+        if not (meta_override_d.get("kernelspec") or {}).get("name"):
+            rec["verdict"] = f"meta-from-no-kernelspec:{meta_rel}"
+            return rec
+        rec["create_mode"]["meta_from"] = meta_rel
     kernel = series_kernel(wt_path, args.notebook)
     if create_mode:
         # The target is absent, so the path map can only describe its Python neighbours.
         # The canonical C# twin owns the deliverable's kernelspec: execution must use the
         # same kernel, before the builder even sees the plan. Measured on CoursIA#27106:
         # metadata .net-csharp, but every C# cell sent to python3 (SyntaxError on //).
-        twin_meta = series_canonical_meta(wt_path, args.notebook)
+        # --meta-from wins when given; otherwise the sibling carrying the target's tag.
+        twin_meta = meta_override_d or series_canonical_meta(wt_path, args.notebook)
         twin_kernel = (twin_meta.get("kernelspec") or {}).get("name")
         if twin_kernel:
             kernel["kernel_name"] = twin_kernel
             kernel["kernel_source"] = "canonical-twin-kernelspec"
+            if meta_override_d:
+                kernel["kernel_source"] = "meta-from-kernelspec"
+        else:
+            # No canonical metadata: the skeleton would carry {} and the language-info gate
+            # would fail only AFTER the whole build was paid (claudish PROPOSAL, 20/11).
+            # Refuse before the capacity gate and any token; --meta-from is the remedy.
+            rec["kernel"] = kernel
+            rec["verdict"] = ("create-no-canonical-meta:"
+                              f"{Path(args.notebook).parent.as_posix()}")
+            return rec
     rec["kernel"] = kernel
     gate = gate_call(args.gate_mode, getattr(args, "gate", None))
     rec["gate"] = gate
@@ -2360,6 +2397,12 @@ def main() -> int:
                     help="repo-relative TWIN notebook (creation mode: the target is ABSENT "
                          "from origin/main and gets created from this source, e.g. the "
                          "C# parity wave-1 grains #27099-#27116)")
+    ap.add_argument("--meta-from", default=None,
+                    help="repo-relative notebook whose kernelspec + language_info the "
+                         "created deliverable inherits (nothing else is read from it); "
+                         "optional with --source-nb, where it overrides the sibling "
+                         "carrying the target's language tag — the remedy for a series "
+                         "whose folder holds no same-language twin yet (vllm#499)")
     ap.add_argument("--repo", default=os.environ.get("NBCODER_REPO", ""),
                     help="CoursIA checkout (claim guard + worktree source); required — a "
                          "per-seat default path is not a harness binding (F2, vllm#438)")
@@ -2437,6 +2480,9 @@ def main() -> int:
         ap.error("creation mode (--source-nb) requires --write-mode json: the harness "
                  "assembles the whole notebook in one write, MCP cell tools would race "
                  "on an empty skeleton")
+    if args.meta_from and not args.source_nb:
+        ap.error("--meta-from is only read in creation mode (--source-nb): a correction "
+                 "keeps the existing notebook's metadata")
     if args.max_stage >= 1:   # stage 0 is git-only: a claim must not require the MCP wiring
         _preflight(ap, args)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
