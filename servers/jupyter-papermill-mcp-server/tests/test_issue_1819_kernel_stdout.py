@@ -13,13 +13,16 @@ that matter:
    goes to a log file, not to the process stdout -- i.e. not to the wire);
 2. the opt-out (PAPERMILL_MCP_KERNEL_REDIRECT=0) preserves the pre-#1819
    inherit behavior;
-3. the handles close when the kernel leaves the registry (stop_kernel, and
-   the failed-start cleanup), and stay OPEN across restart (jupyter_client
-   reuses _launch_args on restart).
+3. the handles close when the kernel leaves the registry (stop_kernel,
+   _force_stop_kernel, and the failed-start cleanup), and stay OPEN across
+   restart (jupyter_client reuses _launch_args on restart);
+4. the discriminant on a REAL kernel: a stderr write from inside the kernel
+   lands in kernel-<id>.err.log and never on the parent's stderr.
 """
 
 import asyncio
 import sys
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -78,13 +81,54 @@ async def test_start_kernel_redirects_console_to_files(monkeypatch, tmp_path):
     # Real append-mode binary files under the configured log dir...
     assert out_h.mode == "ab" and err_h.mode == "ab"
     assert Path(out_h.name).parent == tmp_path
-    # ...and the writes a kernel would make at stop time go THERE, not to
-    # the transport: the #1819 poison line, written through the handle the
-    # kernel received, must not touch sys.stdout.
-    poison = b"      Application is shutting down...\r\n"
-    out_h.write(poison)
-    out_h.flush()
-    assert poison in Path(out_h.name).read_bytes()
+    assert Path(err_h.name).parent == tmp_path
+    # (The end-to-end discriminant -- a console write from inside a REAL
+    # kernel landing in kernel-<id>.err.log and never on the parent's
+    # stderr -- is test_real_kernel_console_goes_to_log_dir below.)
+
+
+async def test_real_kernel_console_goes_to_log_dir(monkeypatch, tmp_path, capsys):
+    """#1819 discriminant on a REAL kernel (review c.7040926962): a stderr
+    write from inside the kernel process lands in kernel-<id>.err.log and
+    never on the parent's stderr. Without the redirect, the same write
+    inherits the parent's stderr -- the transport-poison class."""
+    monkeypatch.setenv("PAPERMILL_MCP_KERNEL_LOG_DIR", str(tmp_path))
+    monkeypatch.delenv("PAPERMILL_MCP_KERNEL_REDIRECT", raising=False)
+    mgr = JupyterManager(MCPConfig())  # real KernelManager, real subprocess
+    try:
+        kernel_id = await mgr.start_kernel("python3")
+    except Exception as exc:  # no python3 kernelspec on this host
+        pytest.skip(f"no python3 kernel available: {exc}")
+    try:
+        # os.write(2, ...) hits the raw file descriptor -- the faithful
+        # simulation of dotnet-interactive's native console write at stop
+        # time. (sys.stderr.write would NOT do: ipykernel replaces
+        # sys.stderr with its ZMQ OutStream, so that write never reaches
+        # fd 2 in a python kernel.)
+        await mgr.execute_code(
+            kernel_id,
+            "import os; os.write(2, b'POISON-1819-REAL\\n')",
+            timeout=30,
+        )
+        err_log = tmp_path / f"kernel-{kernel_id}.err.log"
+        deadline = time.monotonic() + 10.0
+        seen = False
+        while time.monotonic() < deadline:
+            if err_log.exists() and b"POISON-1819-REAL" in err_log.read_bytes():
+                seen = True
+                break
+            await asyncio.sleep(0.25)
+        assert seen, f"console write never reached {err_log}"
+        captured = capsys.readouterr()
+        assert "POISON-1819-REAL" not in captured.err, (
+            "the kernel console leaked onto the parent's stderr (the #1819 "
+            "transport poison)"
+        )
+    finally:
+        try:
+            await mgr.stop_kernel(kernel_id)
+        except Exception:
+            pass
 
 
 async def test_start_kernel_redirect_optout(monkeypatch, tmp_path):
@@ -164,3 +208,31 @@ async def test_failed_start_closes_redirect_handles(monkeypatch, tmp_path):
         await mgr.start_kernel("python3")
 
     assert captured["out"].closed
+
+
+async def test_force_stop_closes_redirect_handles(monkeypatch, tmp_path):
+    """M5 pin (review c.7040926962): a SUCCESSFUL force-stop (#3346 bounded
+    cleanup of a non-cooperative kernel) must close this kernel's redirect
+    handles before dropping the registry entry. Mutation M5 -- deleting the
+    _close_kernel_redirect_handles(km) call inside `if stopped:` -- must
+    redden here: the handles would leak with no registry entry left to
+    find them."""
+    monkeypatch.setenv("PAPERMILL_MCP_KERNEL_LOG_DIR", str(tmp_path))
+    monkeypatch.delenv("PAPERMILL_MCP_KERNEL_REDIRECT", raising=False)
+    mgr = _manager_with_fake_kernel(monkeypatch)
+
+    kernel_id = await mgr.start_kernel("python3")
+    km = mgr._active_kernels[kernel_id]
+    out_h, err_h = km.start_kwargs["stdout"], km.start_kwargs["stderr"]
+
+    async def fake_tree_kill(km_):
+        return {"killed": True}
+
+    monkeypatch.setattr(mgr, "_kill_process_tree", fake_tree_kill)
+
+    result = await mgr._force_stop_kernel(kernel_id)
+
+    assert result["stop"] == "stopped"  # the success path, not 'unresponsive'
+    assert out_h.closed and err_h.closed
+    assert getattr(km, "_mcp_redirect_handles", None) is None
+    assert kernel_id not in mgr._active_kernels

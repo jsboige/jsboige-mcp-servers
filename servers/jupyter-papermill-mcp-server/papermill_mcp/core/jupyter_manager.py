@@ -30,7 +30,14 @@ def _kernel_redirect_enabled() -> bool:
 
 
 def _kernel_log_dir() -> Path:
-    """Per-kernel console log directory (PAPERMILL_MCP_KERNEL_LOG_DIR overrides)."""
+    """Per-kernel console log directory (PAPERMILL_MCP_KERNEL_LOG_DIR overrides).
+
+    Ownership (review c.7040926962): the manager NEVER deletes these files at
+    runtime -- they outlive their kernel on purpose (post-mortem of a poisoned
+    session). Cleanup is manual and safe once the server is stopped (no open
+    handle remains): deleting the whole papermill-mcp-kernel-logs directory
+    loses nothing the registry still needs.
+    """
     return Path(
         os.environ.get("PAPERMILL_MCP_KERNEL_LOG_DIR")
         or (Path(tempfile.gettempdir()) / "papermill-mcp-kernel-logs")
