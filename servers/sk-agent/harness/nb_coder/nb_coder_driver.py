@@ -1779,6 +1779,53 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
 
 
 # ---------------------------------------------------------------- main flow
+def resolve_creation_meta(wt_path: Path, notebook_rel: str, meta_rel: str | None) -> dict:
+    """Creation-mode kernel resolution (vllm#499 ported; ms#1816 review seam).
+    PURE of model/gate: given the worktree, the target's relative path and the
+    optional --meta-from, returns {"kernel": {...}} to proceed, or {"verdict":
+    "<refusal>"} to refuse BEFORE the capacity gate and any model call:
+      - meta-from-not-found / meta-from-no-kernelspec: a bad --meta-from;
+      - create-no-language-tag:<stem>: the target stem's last '-' segment is
+        NOT a known language tag (CSharp|FSharp|Rust|Python|Lean) — creation
+        mode serves language PORTS only; a non-port creation must declare its
+        canonical metadata explicitly via --meta-from (the review's IIT-03-Phi
+        case: tag 'Phi' would glob '*-Phi.ipynb' and either refuse or inherit
+        an UNRELATED notebook's kernelspec);
+      - create-no-canonical-meta:<folder>: a known tag, no same-tag sibling,
+        no --meta-from (the w2e-w2g measured class: the language-info gate
+        would fail only AFTER the whole build was paid).
+    On success the kernel carries kernel_source = meta-from-kernelspec when
+    --meta-from wins over the sibling, canonical-twin-kernelspec otherwise."""
+    LANGUAGE_TAGS = {"CSharp", "FSharp", "Rust", "Python", "Lean"}
+    kernel = series_kernel(wt_path, notebook_rel)
+    meta_override_d = None
+    if meta_rel:
+        meta_nb = wt_path / meta_rel
+        if not meta_nb.is_file():
+            return {"verdict": f"meta-from-not-found:{meta_rel}"}
+        try:
+            meta_override_d = json.loads(meta_nb.read_text(encoding="utf-8")).get("metadata", {})
+        except Exception:
+            meta_override_d = {}
+        if not (meta_override_d.get("kernelspec") or {}).get("name"):
+            return {"verdict": f"meta-from-no-kernelspec:{meta_rel}"}
+    stem = Path(notebook_rel).stem
+    tag = stem.rsplit("-", 1)[1] if "-" in stem else ""
+    if not meta_rel and tag not in LANGUAGE_TAGS:
+        return {"verdict": f"create-no-language-tag:{stem}"}
+    # --meta-from wins when given; otherwise the sibling carrying the target's tag.
+    twin_meta = meta_override_d or series_canonical_meta(wt_path, notebook_rel)
+    twin_kernel = (twin_meta.get("kernelspec") or {}).get("name")
+    if twin_kernel:
+        kernel["kernel_name"] = twin_kernel
+        kernel["kernel_source"] = ("meta-from-kernelspec" if meta_override_d
+                                   else "canonical-twin-kernelspec")
+        return {"kernel": kernel, "twin_meta": twin_meta}
+    # No canonical metadata: the skeleton would carry {} and the language-info gate
+    # would fail only AFTER the whole build was paid (claudish PROPOSAL, 20/11).
+    return {"verdict": f"create-no-canonical-meta:{Path(notebook_rel).parent.as_posix()}"}
+
+
 async def run(args, rec: dict) -> dict:
     """Fill the caller-owned trace. `rec` is created in main() and passed in so a crash keeps
     everything already paid for: calls made, stages timed, plan received (F4, vllm#441)."""
@@ -1850,43 +1897,20 @@ async def run(args, rec: dict) -> dict:
     # the created deliverable inherits. Optional with --source-nb; it OVERRIDES the sibling
     # carrying the target's language tag. The remedy for a series whose folder holds no
     # C#/Rust twin yet (the language-info gate is unwinnable with empty root metadata).
-    meta_override_d = None
-    meta_rel = getattr(args, "meta_from", None)
-    if create_mode and meta_rel:
-        meta_nb = wt_path / meta_rel
-        if not meta_nb.is_file():
-            rec["verdict"] = f"meta-from-not-found:{meta_rel}"
-            return rec
-        try:
-            meta_override_d = json.loads(meta_nb.read_text(encoding="utf-8")).get("metadata", {})
-        except Exception:
-            meta_override_d = {}
-        if not (meta_override_d.get("kernelspec") or {}).get("name"):
-            rec["verdict"] = f"meta-from-no-kernelspec:{meta_rel}"
-            return rec
-        rec["create_mode"]["meta_from"] = meta_rel
+    # The resolution + all refusals live in resolve_creation_meta (pure of model/gate,
+    # pinned offline in test_nb_coder_create.py) and run BEFORE gate_call and any token.
     kernel = series_kernel(wt_path, args.notebook)
+    twin_meta = None
     if create_mode:
-        # The target is absent, so the path map can only describe its Python neighbours.
-        # The canonical C# twin owns the deliverable's kernelspec: execution must use the
-        # same kernel, before the builder even sees the plan. Measured on CoursIA#27106:
-        # metadata .net-csharp, but every C# cell sent to python3 (SyntaxError on //).
-        # --meta-from wins when given; otherwise the sibling carrying the target's tag.
-        twin_meta = meta_override_d or series_canonical_meta(wt_path, args.notebook)
-        twin_kernel = (twin_meta.get("kernelspec") or {}).get("name")
-        if twin_kernel:
-            kernel["kernel_name"] = twin_kernel
-            kernel["kernel_source"] = "canonical-twin-kernelspec"
-            if meta_override_d:
-                kernel["kernel_source"] = "meta-from-kernelspec"
-        else:
-            # No canonical metadata: the skeleton would carry {} and the language-info gate
-            # would fail only AFTER the whole build was paid (claudish PROPOSAL, 20/11).
-            # Refuse before the capacity gate and any token; --meta-from is the remedy.
+        if getattr(args, "meta_from", None):
+            rec["create_mode"]["meta_from"] = args.meta_from
+        resolved = resolve_creation_meta(wt_path, args.notebook, getattr(args, "meta_from", None))
+        if "verdict" in resolved:
             rec["kernel"] = kernel
-            rec["verdict"] = ("create-no-canonical-meta:"
-                              f"{Path(args.notebook).parent.as_posix()}")
+            rec["verdict"] = resolved["verdict"]
             return rec
+        kernel = resolved["kernel"]
+        twin_meta = resolved["twin_meta"]
     rec["kernel"] = kernel
     gate = gate_call(args.gate_mode, getattr(args, "gate", None))
     rec["gate"] = gate

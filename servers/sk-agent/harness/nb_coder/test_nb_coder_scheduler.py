@@ -298,6 +298,28 @@ def test_driver_command_passes_creation_fields(tmp_path):
     assert "--source-nb" not in joined2
 
 
+def test_driver_command_forwards_meta_from_creation_only(tmp_path):
+    """ms#1816 review pin 3: --meta-from rides creation grains ONLY. An item with
+    meta_from but NO source_nb (a correction) must NOT carry the flag; with
+    source_nb (a creation) it must. Mutation: drop the conditional in
+    driver_command's ("--meta-from", ...) entry -> the correction assertion reds."""
+    # creation grain: source_nb present -> --meta-from forwarded
+    sched = make_sched(tmp_path, [{
+        "issue": 27499, "notebook": "GameTheory/Metajeux/M-04-CSharp.ipynb",
+        "source_nb": "GameTheory/Metajeux/M-04-Python.ipynb",
+        "meta_from": "Complexity/Complexity-01-StepCounting-CSharp.ipynb"}],
+        lane="myia-po-2028:claudish")
+    joined = " ".join(sched.driver_command(
+        sched.items_by_key["#27499:GameTheory/Metajeux/M-04-CSharp.ipynb"]))
+    assert "--meta-from Complexity/Complexity-01-StepCounting-CSharp.ipynb" in joined
+    # correction grain: meta_from set but NO source_nb -> flag ABSENT
+    sched2 = make_sched(tmp_path, [{
+        "issue": 43, "notebook": "A/C-CSharp.ipynb",
+        "meta_from": "Complexity/Complexity-01-StepCounting-CSharp.ipynb"}])
+    joined2 = " ".join(sched2.driver_command(sched2.items_by_key["#43:A/C-CSharp.ipynb"]))
+    assert "--meta-from" not in joined2
+
+
 def test_parse_args_makes_driver_paths_absolute():
     # 17/11 21:30Z wave-1 incident: a relative --state-dir produced a relative
     # --worktree path, which `git -C <repo> worktree add` resolved against the

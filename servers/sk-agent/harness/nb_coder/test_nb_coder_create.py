@@ -628,5 +628,75 @@ def test_series_canonical_meta_matches_target_language_tag(tmp_path):
     assert (got4.get("language_info") or {}).get("version") == "13.0"
 
 
+# ------------------------------------------------- resolve_creation_meta (ms#1816 review)
+def _cs_meta(version="13.0"):
+    return {"kernelspec": {"name": ".net-csharp"}, "language_info": {"version": version}}
+
+
+def test_resolve_creation_meta_refuses_before_any_token(tmp_path):
+    """Review pin 1: a creation grain with no same-tag sibling and no --meta-from
+    returns create-no-canonical-meta:<folder> from the PURE resolver — and since
+    run() calls it BEFORE gate_call and any stdio_client/sk_call, a refusal means
+    no gate probe and no model call is ever paid (the w2e-w2g class: 11 runs paid
+    for a language-info gate that could never pass). run() is a straight-line
+    `if "verdict" in resolved: return rec` before the gate block; the seam makes
+    that order testable here without spawning MCP.
+    Mutation: delete the resolver's final refusal branch -> this test reds."""
+    d = tmp_path / "Lone"
+    d.mkdir()
+    write_nb(d / "X-Python.ipynb", [], {"kernelspec": {"name": "python3"}})
+    out = D.resolve_creation_meta(tmp_path, "Lone/X-CSharp.ipynb", None)
+    assert out["verdict"] == "create-no-canonical-meta:Lone"
+
+
+def test_resolve_creation_meta_from_overrides_sibling(tmp_path):
+    """Review pin 2: a same-tag sibling with kernelspec A and --meta-from with
+    kernelspec B in the same folder -> the built notebook inherits B and the
+    kernel_source says meta-from-kernelspec.
+    Mutation: `twin_meta = series_canonical_meta(...) or meta_override_d` ->
+    the sibling would win and this test reds."""
+    d = tmp_path / "Ser"
+    d.mkdir()
+    write_nb(d / "T-01-CSharp.ipynb", [], _cs_meta("9.0"))     # sibling A
+    write_nb(tmp_path / "canon.ipynb", [], {                    # --meta-from B
+        "kernelspec": {"name": ".net-fsharp"}, "language_info": {"version": "9.0"}})
+    out = D.resolve_creation_meta(tmp_path, "Ser/T-03-CSharp.ipynb", "canon.ipynb")
+    assert out["kernel"]["kernel_name"] == ".net-fsharp"
+    assert out["kernel"]["kernel_source"] == "meta-from-kernelspec"
+    # without --meta-from the sibling wins and the source says so
+    out2 = D.resolve_creation_meta(tmp_path, "Ser/T-03-CSharp.ipynb", None)
+    assert out2["kernel"]["kernel_name"] == ".net-csharp"
+    assert out2["kernel"]["kernel_source"] == "canonical-twin-kernelspec"
+
+
+def test_resolve_creation_meta_from_refusals(tmp_path):
+    """The two --meta-from refusal verdicts, parametrised: an absent file and a
+    notebook without a kernelspec are both refused BEFORE anything is paid."""
+    write_nb(tmp_path / "bare.ipynb", [], {"metadata_only": True})
+    out = D.resolve_creation_meta(tmp_path, "S/X-CSharp.ipynb", "absent.ipynb")
+    assert out["verdict"] == "meta-from-not-found:absent.ipynb"
+    out2 = D.resolve_creation_meta(tmp_path, "S/X-CSharp.ipynb", "bare.ipynb")
+    assert out2["verdict"] == "meta-from-no-kernelspec:bare.ipynb"
+
+
+def test_resolve_creation_meta_unknown_language_tag(tmp_path):
+    """Behaviour change stated (review option a): creation mode serves language
+    PORTS only. A target whose last '-' segment is not a known language tag
+    (CSharp|FSharp|Rust|Python|Lean) is refused with create-no-language-tag
+    instead of globbing '*-<word>.ipynb' — the IIT-03-Phi case would otherwise
+    either refuse late or inherit an UNRELATED notebook's kernelspec. An
+    explicit --meta-from is the escape hatch (a non-port creation declares its
+    canonical metadata itself)."""
+    d = tmp_path / "IIT"
+    d.mkdir()
+    write_nb(d / "IIT-01-Python.ipynb", [], {"kernelspec": {"name": "python3"}})
+    out = D.resolve_creation_meta(tmp_path, "IIT/IIT-03-Phi.ipynb", None)
+    assert out["verdict"] == "create-no-language-tag:IIT-03-Phi"
+    write_nb(tmp_path / "canon.ipynb", [], _cs_meta())
+    out2 = D.resolve_creation_meta(tmp_path, "IIT/IIT-03-Phi.ipynb", "canon.ipynb")
+    assert out2["kernel"]["kernel_name"] == ".net-csharp"
+    assert out2["kernel"]["kernel_source"] == "meta-from-kernelspec"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

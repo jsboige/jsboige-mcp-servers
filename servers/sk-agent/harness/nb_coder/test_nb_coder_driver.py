@@ -362,30 +362,44 @@ def test_creation_execution_uses_the_canonical_twin_kernelspec():
     Wiring pin, deliberately: unit-testing series_kernel() alone would miss the real bug,
     which was the driver choosing it BEFORE reading create_metadata. The call-site order
     and assignment are what keep execution, repair, stripping and the PR trace coherent.
+    ms#1816 review: the kernel selection now lives in the PURE resolve_creation_meta seam
+    (pinned behaviourally in test_nb_coder_create.py); run() must call it BEFORE the
+    capacity gate and adopt BOTH the kernel and the twin metadata it resolved.
     """
     src = Path(d.__file__).read_text(encoding="utf-8")
     run = src.split("async def run(", 1)[1].split("\nasync def ", 1)[0]
-    selection = run.split("kernel = series_kernel", 1)[1].split('rec["kernel"]', 1)[0]
+    selection = run.split("kernel = series_kernel", 1)[1].split("gate = gate_call(", 1)[0]
     assert "if create_mode:" in selection
-    assert "series_canonical_meta(wt_path, args.notebook)" in selection
-    assert '(twin_meta.get("kernelspec") or {}).get("name")' in selection
-    assert 'kernel["kernel_name"] = twin_kernel' in selection
-    assert 'kernel["kernel_source"] = "canonical-twin-kernelspec"' in selection
-    assignment = next(line for line in selection.splitlines()
-                      if 'kernel["kernel_name"] = twin_kernel' in line)
-    guard = next(line for line in selection.splitlines()
+    assert "resolve_creation_meta(wt_path, args.notebook" in selection
+    assert 'if "verdict" in resolved:' in selection, \
+        "the refusal must return BEFORE the capacity gate and any token"
+    assert 'kernel = resolved["kernel"]' in selection
+    assert 'twin_meta = resolved["twin_meta"]' in selection, \
+        "the skeleton must inherit the SAME metadata the resolver selected"
+    resolver = src.split("def resolve_creation_meta(", 1)[1].split("\nasync def ", 1)[0]
+    assert "series_canonical_meta(wt_path, notebook_rel)" in resolver
+    assert 'kernel["kernel_name"] = twin_kernel' in resolver
+    guard = next(line for line in resolver.splitlines()
                  if "if twin_kernel:" in line)
-    assert guard.endswith("if twin_kernel:"), "the twin selection is no longer reachable"
-    assert selection.index(guard) < selection.index(assignment)
+    assignment = next(line for line in resolver.splitlines()
+                      if 'kernel["kernel_name"] = twin_kernel' in line)
+    assert guard.strip().endswith("if twin_kernel:"), "the twin selection is no longer reachable"
+    assert resolver.index(guard) < resolver.index(assignment)
+    # refuse-before-gate: the resolver call sits before gate_call in run()'s flow
+    assert run.index("resolve_creation_meta(") < run.index("gate_call(")
 
 
 def test_creation_metadata_and_execution_read_the_same_twin():
-    """Do not grow two independent metadata reads that could select different kernels."""
+    """Do not grow two independent metadata reads that could select different kernels.
+    The single read lives inside the resolver; run() adopts its twin_meta and the
+    skeleton build consumes exactly that dict."""
     src = Path(d.__file__).read_text(encoding="utf-8")
     run = src.split("async def run(", 1)[1].split("\nasync def ", 1)[0]
-    assert run.count("series_canonical_meta(wt_path, args.notebook)") == 1, (
+    resolver = src.split("def resolve_creation_meta(", 1)[1].split("\nasync def ", 1)[0]
+    assert resolver.count("series_canonical_meta(wt_path, notebook_rel)") == 1, (
         "creation reads the twin twice; selection and delivered metadata can diverge")
-    assert '\n                meta = series_canonical_meta(wt_path, args.notebook)' not in run
+    assert "series_canonical_meta(" not in run, (
+        "run() must not re-read the twin outside the resolver")
     assert ('rec["create_metadata"] = {"kernelspec": '
             '(twin_meta.get("kernelspec") or {}).get("name")') in run
 
