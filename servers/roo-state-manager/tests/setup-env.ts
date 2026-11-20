@@ -34,6 +34,18 @@ if (!process.env.APPDATA?.includes('__test-data__')) {
   process.env.APPDATA = testAppData;
 }
 
+// Maintenance#358 — per-worker mkdtemp dirs must not outlive the worker.
+// Registration + teardown live in tests/setup-env-teardown.ts: in-process
+// handlers cover normal exits and POSIX signal kills; the vitest globalSetup
+// teardown sweeps Windows-hard-killed fork workers (child.kill() there is
+// TerminateProcess — no handler can run). 3 dirs per worker, leaked at every
+// run since #3782 (221 680 rsm-test-* dirs measured on ai-01).
+// Explicit .ts extension: this file is ALSO imported by a bare `node
+// --experimental-strip-types` child in tests/unit/setup-env-teardown.test.ts,
+// where native ESM resolution does not add extensions (vitest's bundler
+// resolution is not in play there).
+import { registerRsmTestTempDir } from './setup-env-teardown.ts';
+
 // #3782 locks-off-Drive — per-WORKER lock dir. The dashboard locks default to
 // os.tmpdir()/roosync-locks, which parallel vitest workers would SHARE: workers
 // running the same dashboard keys would see each other's fresh locks (condense
@@ -41,6 +53,7 @@ if (!process.env.APPDATA?.includes('__test-data__')) {
 // worker process; specific suites may still override with their own dir.
 if (!process.env.ROOSYNC_LOCK_DIR) {
   process.env.ROOSYNC_LOCK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-locks-'));
+  registerRsmTestTempDir(process.env.ROOSYNC_LOCK_DIR);
 }
 
 // #4131 B16 — per-WORKER G: scan lock dir, same reasoning as #3782 above. The
@@ -52,6 +65,7 @@ if (!process.env.ROOSYNC_LOCK_DIR) {
 // and any test needing real cross-acquirer contention override it explicitly.
 if (!process.env.ROOSYNC_SCAN_LOCK_DIR) {
   process.env.ROOSYNC_SCAN_LOCK_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-scan-locks-'));
+  registerRsmTestTempDir(process.env.ROOSYNC_SCAN_LOCK_DIR);
 }
 
 // Tool-usage cache isolation — same reasoning as #3782/#4131 above. The
@@ -66,4 +80,5 @@ if (!process.env.ROOSYNC_SCAN_LOCK_DIR) {
 // .test.ts) already override with their own dir.
 if (!process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR) {
   process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-tus-cache-'));
+  registerRsmTestTempDir(process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR);
 }
