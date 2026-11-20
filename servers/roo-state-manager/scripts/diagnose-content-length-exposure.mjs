@@ -31,10 +31,11 @@
  *   (default: the newest build-16-hex directory)
  */
 import { spawn } from 'node:child_process';
+import * as fs from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
-import { readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pkgRoot = path.resolve(here, '..');
@@ -66,18 +67,17 @@ if (process.env.DIAG_4824_MOCK_CHILD === '1') {
 } else {
 	// ---- driver branch (parent) ---------------------------------------------
 	const buildArg = process.argv[2];
-	function resolveBuildDir() {
-		if (buildArg) return path.resolve(buildArg);
-		const candidates = readdirSync(pkgRoot)
-			.filter((d) => /^build-[0-9a-f]{16}$/.test(d))
-			.sort();
-		if (candidates.length === 0) {
-			console.error('no build-<hash> directory found — run npm run build, or pass the build dir as argv[2]');
-			process.exit(2);
-		}
-		return path.join(pkgRoot, candidates[candidates.length - 1]);
+	// #4824 review (ai-01, 18/11): the marker decides, never lexicographic order
+	// over content hashes. This is the SAME canonical resolver every ops script
+	// uses (`scripts/lib/resolve-build-dir.mjs`, #3713): the vintage named by
+	// `build-current`, or the legacy `build/` on a machine not yet migrated.
+	// An explicit argument still wins, and a directory that holds no index.js is
+	// refused up front instead of failing deep inside a dynamic import.
+	const buildDir = buildArg ? path.resolve(buildArg) : resolveBuildDir(pkgRoot);
+	if (!fs.existsSync(path.join(buildDir, 'index.js'))) {
+		console.error(`[diag] no index.js in ${buildDir} — pass an explicit build directory, or run npm run build`);
+		process.exit(2);
 	}
-	const buildDir = resolveBuildDir();
 	console.log(`[diag] build: ${path.basename(buildDir)}`);
 
 	const mock = spawn(process.execPath, [fileURLToPath(import.meta.url)], {
