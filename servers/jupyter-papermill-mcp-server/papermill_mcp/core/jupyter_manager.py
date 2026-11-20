@@ -7,11 +7,13 @@ Provides low-level kernel lifecycle management and interactive code execution.
 import asyncio
 import json
 import logging
+import os
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Union
+from typing import Dict, List, Optional, Any, IO, Tuple, Union
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -20,6 +22,61 @@ from jupyter_client import KernelManager, find_connection_file
 from jupyter_client.kernelspec import KernelSpecManager
 
 from ..config import get_config, MCPConfig
+
+
+def _kernel_redirect_enabled() -> bool:
+    """#1819: kernel console redirection is ON by default; opt-out is explicit."""
+    return os.environ.get("PAPERMILL_MCP_KERNEL_REDIRECT", "1") != "0"
+
+
+def _kernel_log_dir() -> Path:
+    """Per-kernel console log directory (PAPERMILL_MCP_KERNEL_LOG_DIR overrides)."""
+    return Path(
+        os.environ.get("PAPERMILL_MCP_KERNEL_LOG_DIR")
+        or (Path(tempfile.gettempdir()) / "papermill-mcp-kernel-logs")
+    )
+
+
+def _kernel_redirect_handles(kernel_id: str) -> Dict[str, IO[bytes]]:
+    """stdout/stderr kwargs isolating a kernel's console from the stdio transport.
+
+    #1819: the server runs over the MCP stdio transport, which must carry
+    JSONRPC messages only. A kernel subprocess inheriting the server's stdout
+    lets ANY console write from the kernel (dotnet-interactive prints
+    "Application is shutting down..." at stop time) land in the transport
+    stream and kill the client session. Redirect to append-mode per-kernel
+    log files instead -- the output stays readable for diagnosis, and never
+    touches the wire.
+
+    Returns {} when redirection is disabled (PAPERMILL_MCP_KERNEL_REDIRECT=0),
+    preserving the pre-#1819 inherit behavior for local debugging.
+    """
+    if not _kernel_redirect_enabled():
+        return {}
+    log_dir = _kernel_log_dir()
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out = open(log_dir / f"kernel-{kernel_id}.out.log", "ab", buffering=0)
+    err = open(log_dir / f"kernel-{kernel_id}.err.log", "ab", buffering=0)
+    return {"stdout": out, "stderr": err}
+
+
+def _close_kernel_redirect_handles(km: "KernelManager") -> None:
+    """Close the redirect handles stored on a KernelManager (idempotent).
+
+    jupyter_client stores the launch kwargs in ``_launch_args`` and reuses them
+    for ``restart_kernel()`` (docstring: "Restarts a kernel with the arguments
+    that were used to launch it") -- so the handles must stay open for the
+    kernel's whole registered life and close only when the kernel leaves the
+    registry (stop, or cleanup of a failed start).
+    """
+    handles = getattr(km, "_mcp_redirect_handles", None)
+    if handles:
+        km._mcp_redirect_handles = None  # type: ignore[attr-defined]
+        for h in handles:
+            try:
+                h.close()
+            except Exception:
+                pass
 
 
 @dataclass
@@ -268,9 +325,22 @@ class JupyterManager:
             popen_kwargs: Dict[str, Any] = (
                 {"cwd": str(Path(working_dir))} if working_dir else {}
             )
+            # #1819: isolate the kernel console from the stdio transport.
+            # jupyter_client keeps these kwargs in _launch_args for
+            # restart_kernel(), so the handles stay open for the kernel's
+            # registered life and close in stop_kernel()/failure cleanup.
+            redirect = _kernel_redirect_handles(kernel_id)
+            popen_kwargs.update(redirect)
+            if redirect:
+                km._mcp_redirect_handles = (redirect["stdout"], redirect["stderr"])
             await asyncio.get_event_loop().run_in_executor(
                 None, lambda: km.start_kernel(**popen_kwargs)
             )
+            if redirect:
+                self.logger.info(
+                    f"Kernel {kernel_id} console -> "
+                    f"{_kernel_log_dir()}/kernel-{kernel_id}.(out|err).log"
+                )
 
             # Wait for kernel to be ready
             kc = km.client()
@@ -338,6 +408,9 @@ class JupyterManager:
                         f"(connection file: {getattr(km, 'connection_file', 'unknown')}): "
                         f"{cleanup_err}"
                     )
+                # #1819: close the redirect handles only after every shutdown
+                # attempt -- they are not in any registry.
+                _close_kernel_redirect_handles(km)
             error_msg = f"Failed to start kernel '{kernel_name}': {e}"
             self.logger.error(error_msg)
             raise RuntimeError(error_msg)
@@ -365,6 +438,11 @@ class JupyterManager:
             # #4481: close the shared client's channels (and its zmq context)
             # before dropping the registry entry.
             self._stop_client(kernel_id)
+
+            # #1819: the kernel is leaving the registry -- its console
+            # redirect handles (kept open for restart_kernel's reuse of
+            # _launch_args) can close now.
+            _close_kernel_redirect_handles(km)
 
             # Remove from tracking
             del self._active_kernels[kernel_id]
@@ -947,6 +1025,9 @@ class JupyterManager:
 
         if stopped:
             self._stop_client(kernel_id)
+            # #1819: registry exit -- close this kernel's console redirect
+            # handles (see _close_kernel_redirect_handles).
+            _close_kernel_redirect_handles(km)
             self._active_kernels.pop(kernel_id, None)
             self._kernel_info.pop(kernel_id, None)
             self._kernel_locks.pop(kernel_id, None)
