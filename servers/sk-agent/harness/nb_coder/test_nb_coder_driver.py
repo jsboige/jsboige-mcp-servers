@@ -346,6 +346,74 @@ def test_create_segments_refuses_before_any_model_call():
     assert rec["creation_plan_addressing_errors"]
 
 
+def test_an_overrunning_plan_gets_one_bounded_repair_then_the_verdict(monkeypatch):
+    """CoursIA#27580 (20/11): 24 plan entries for a 22-cell source (idx 22/23 outside).
+
+    The re-ask is bounded to ONE turn, and a repair that still overruns never reaches
+    the build path — the pin on the CALL COUNT is what keeps that true."""
+    import asyncio
+    from types import SimpleNamespace
+    rec = {"calls": []}
+    args = SimpleNamespace(max_tokens=100)
+    seen = []
+
+    async def fake_call(session, args_, rec_, stage, prompt, conv, max_tokens=None):
+        seen.append(stage)
+        return {"response": "{}", "conversation_id": "conv-1"}
+
+    async def fake_parse(session, args_, rec_, stage, env, conv, max_tokens=None):
+        return {"cells": [{"idx": 0}, {"idx": 22}]}, env
+
+    monkeypatch.setattr(d, "sk_call_retry", fake_call)
+    monkeypatch.setattr(d, "parse_or_repair", fake_parse)
+    plan_cells = [{"idx": 0}, {"idx": 22}]
+    built = asyncio.run(d.create_segments(object(), args, rec, "conv-1",
+                                          plan_cells, 22, ""))
+    assert built == {}
+    assert seen == ["1-plan-repair"], "exactly one repair turn, never a build call"
+    assert rec["verdict"] == "stage1-unaddressable-creation-plan"
+    assert rec["creation_plan_repair"]["kept"] is False
+    assert rec["creation_plan_repair"]["errors_after"], "the surviving defects are named"
+    assert plan_cells == [{"idx": 0}, {"idx": 22}], "a failed repair changes nothing"
+
+
+def test_a_repaired_plan_is_the_one_that_gets_built(monkeypatch):
+    """A successful repair replaces the plan IN PLACE: the caller's rec['plan'] trace
+    must describe what was actually built, not the plan the model first returned."""
+    import asyncio
+    from types import SimpleNamespace
+
+    class BuildReached(Exception):
+        pass
+
+    rec = {"calls": []}
+    args = SimpleNamespace(max_tokens=100)
+    stages = []
+
+    async def fake_call(session, args_, rec_, stage, prompt, conv, max_tokens=None):
+        stages.append(stage)
+        if stage == "2-build+0":
+            raise BuildReached()
+        return {"response": "{}", "conversation_id": "conv-1"}
+
+    async def fake_parse(session, args_, rec_, stage, env, conv, max_tokens=None):
+        return {"cells": [{"idx": 0}, {"idx": 21}]}, env
+
+    monkeypatch.setattr(d, "sk_call_retry", fake_call)
+    monkeypatch.setattr(d, "parse_or_repair", fake_parse)
+    plan_cells = [{"idx": 0}, {"idx": 22}]
+    with pytest.raises(BuildReached):
+        asyncio.run(d.create_segments(object(), args, rec, "conv-1", plan_cells, 22, ""))
+    assert plan_cells == [{"idx": 0}, {"idx": 21}]
+    assert stages == ["1-plan-repair", "2-build+0"]
+
+
+def test_the_repair_prompt_names_the_exact_source_range():
+    prompt = d.creation_plan_repair_prompt(["position 22: idx 22 outside 0..21"], 22)
+    assert "0..21" in prompt and "idx 22 outside" in prompt
+    assert "une entrée par cellule source" in prompt
+
+
 def test_an_empty_cell_assembly_never_reaches_apply_create():
     src = Path(d.__file__).read_text(encoding="utf-8")
     run = src.split("async def run(", 1)[1].split("\nasync def ", 1)[0]
