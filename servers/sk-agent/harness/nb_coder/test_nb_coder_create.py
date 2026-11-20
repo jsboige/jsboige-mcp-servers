@@ -602,5 +602,31 @@ def test_gate_call_uses_explicit_propagated_path(tmp_path):
                    "blocking_refusal": False}
 
 
+def test_series_canonical_meta_matches_target_language_tag(tmp_path):
+    """vllm#499 (ported 8d352c4a2d): the sibling is chosen by the TARGET's language suffix,
+    never a hard-coded *-CSharp glob — a Rust port must not inherit the .NET kernelspec,
+    and a folder with no same-language sibling returns {} (the caller then refuses before
+    any token unless --meta-from names a canonical notebook)."""
+    d = tmp_path / "S"
+    d.mkdir()
+    (d / "X-01-CSharp.ipynb").write_text(json.dumps({"metadata": {
+        "kernelspec": {"name": ".net-csharp"}, "language_info": {"version": "13.0"}}}),
+        encoding="utf-8")
+    # 1. Rust target with only a C# sibling present -> {} (NOT the .NET kernelspec).
+    assert D.series_canonical_meta(tmp_path, "S/X-02-Rust.ipynb") == {}
+    # 2. Add a Rust sibling -> it is picked.
+    (d / "X-00-Rust.ipynb").write_text(json.dumps({"metadata": {
+        "kernelspec": {"name": "rust"}, "language_info": {"version": "1.80"}}}),
+        encoding="utf-8")
+    got = D.series_canonical_meta(tmp_path, "S/X-02-Rust.ipynb")
+    assert (got.get("kernelspec") or {}).get("name") == "rust"
+    # 3. A stem with no '-' tag -> {}.
+    assert D.series_canonical_meta(tmp_path, "S/Plain.ipynb") == {}
+    # 4. Regression: a C# target still finds its C# sibling (old behaviour preserved).
+    got4 = D.series_canonical_meta(tmp_path, "S/X-03-CSharp.ipynb")
+    assert (got4.get("kernelspec") or {}).get("name") == ".net-csharp"
+    assert (got4.get("language_info") or {}).get("version") == "13.0"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))

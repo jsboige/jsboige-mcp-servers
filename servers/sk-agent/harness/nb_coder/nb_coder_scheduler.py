@@ -60,6 +60,9 @@ ITEM_FIELDS = {
     "notebook": str,
     "source_nb": str,          # creation mode (--source-nb): the Python twin's repo-relative
                                # path — every wave-1 parity grain (#27099-#27116) is a CREATION
+    "meta_from": str,          # --meta-from: repo-relative notebook whose kernelspec +
+                               # language_info the created deliverable inherits; optional with
+                               # source_nb (overrides the same-language sibling). vllm#499.
     "max_stage": int,
     "claim": bool,
     "fresh_worktree": bool,
@@ -326,6 +329,8 @@ class Scheduler:
             ("--gate", a.gate),
             ("--conventions", a.conventions), ("--intention", item.get("intention", a.intention)),
             ("--source-nb", item.get("source_nb", a.source_nb)),
+            # creation grains only: a port whose folder has no same-language sibling
+            ("--meta-from", item.get("meta_from") if item.get("source_nb", a.source_nb) else None),
             ("--max-stage", item.get("max_stage", a.max_stage)),
             ("--write-mode", item.get("write_mode", a.write_mode)),
             ("--exec-mode", item.get("exec_mode", a.exec_mode)),
