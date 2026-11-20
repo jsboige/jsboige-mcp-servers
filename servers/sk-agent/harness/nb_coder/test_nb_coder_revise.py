@@ -507,6 +507,28 @@ def test_verify_from_refuses_a_missing_trace(monkeypatch, tmp_path):
     assert got["verdict"].startswith("refused-revise-trace-missing") and seen["loop"] == 0
 
 
+def test_revise_from_repairs_a_gates_failed_trace(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    trace = _trace(tmp_path, verdict="gates-failed:machine-path",
+                   gates=[{"gate": "machine-path", "ok": False,
+                           "detail": {"cells": [15], "build_hits": [15]}}])
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"] == "pr-created" and seen["loop"] == 1 and seen["pr"] == 1
+    assert got["gate_repair"]["resumed"] is True
+    assert got["gate_repair"]["from"] == "gates-failed:machine-path"
+    assert got["verify"]["source"] == "gates" and got["verify"]["findings"][0]["cell"] == 15
+
+
+def test_revise_from_refuses_an_unrepairable_gates_failure(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    trace = _trace(tmp_path, verdict="gates-failed:language-info",
+                   gates=[{"gate": "language-info", "ok": False,
+                           "detail": {"canon": None, "built": None}}])
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"].startswith("refused-gate-repair-unrepairable:gates-failed")
+    assert seen["loop"] == 0
+
+
 # ---------------------------------------------------------------- gate repair
 def _gates_call(monkeypatch, tmp_path, gates, **args_kw):
     built = _nb(tmp_path)

@@ -2657,6 +2657,7 @@ async def run_revision(args, rec: dict) -> dict:
     #                   bucket exhausted mid-run on 20/11) — a build already paid for is
     #                   re-gated and re-verified instead of being thrown away.
     resume_from = getattr(args, "verify_from", None)
+    gate_resume = None              # set when the trace is a repairable gates failure
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     trace_p = Path(resume_from or args.revise_from)
@@ -2676,14 +2677,32 @@ async def run_revision(args, rec: dict) -> dict:
             rec["verdict"] = f"refused-verify-not-crashed:{prior.get('verdict')}"
             return rec
     elif prior.get("verdict") != "verify-reject":
-        rec["verdict"] = f"refused-revise-not-rejected:{prior.get('verdict')}"
-        return rec
+        # gates-failed:<gates> is resumable too (20/11: w2u lost 2 grains to it one
+        # base BEFORE gate-repair landed): the trace carries the failing gates and the
+        # build on disk — repair findings are synthesized from the gates exactly like
+        # the in-run path, and the paid build is re-used instead of rebuilt.
+        gate_resume = None
+        if str(prior.get("verdict") or "").startswith("gates-failed"):
+            gate_resume = gate_repair_findings({"gates": prior.get("gates") or []})
+            if not gate_resume:
+                rec["verdict"] = f"refused-gate-repair-unrepairable:{prior.get('verdict')}"
+                return rec
+        else:
+            rec["verdict"] = f"refused-revise-not-rejected:{prior.get('verdict')}"
+            return rec
     if ((prior.get("stages") or {}).get("claim_reservation") or {}).get("verdict", "x") is not None:
         rec["verdict"] = "refused-revise-no-reservation"
         return rec
     for k in _REVISE_CARRY:
         if k in prior:
             rec[k] = prior[k]
+    if gate_resume:
+        # AFTER the carry: a trace-carried "verify" (meaningless — stage 4 never ran
+        # on a gates-failed grain) must not clobber the synthesized repair findings.
+        rec["gate_repair"] = {"from": prior.get("verdict"), "findings": len(gate_resume),
+                              "resumed": True}
+        rec["verify"] = {"verdict": "gate-reject", "findings": gate_resume,
+                         "source": "gates"}
     rec["stages"]["worktree"] = (prior.get("stages") or {}).get("worktree")
     rec["stages"]["claim_reservation"] = (prior.get("stages") or {}).get("claim_reservation")
     wt_path = Path(((prior.get("stages") or {}).get("worktree") or {}).get("path") or "")
@@ -2727,7 +2746,11 @@ async def run_revision(args, rec: dict) -> dict:
         rec["verdict"] = "built-executed-ok"
         gates_then_verify(args, rec, src_nb, built, create_mode, kname, wt_path, out_dir)
     else:
-        rec["verdict"] = prior["verdict"]
+        # a seeded gate repair enters the loop as a reject; the exhaustion-restore
+        # inside revise_loop brings the honest gates-failed verdict back if the
+        # repair never succeeds
+        rec["verdict"] = "verify-reject" if (rec.get("gate_repair") or {}).get("resumed") \
+            else prior["verdict"]
     await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built, kname=kname,
                       exec_dir=exec_dir, conventions=conventions, create_mode=create_mode,
                       wt_path=wt_path, out_dir=out_dir)
