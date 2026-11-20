@@ -2588,25 +2588,37 @@ _REVISE_CARRY = ("plan", "kernel", "kernel_cwd", "create_mode", "create_metadata
 
 
 async def run_revision(args, rec: dict) -> dict:
-    """--revise-from <issue-N.json>: resume a grain the verifier REJECTED without re-paying
-    plan and build (IT08 #27460: 22.9 min and 4 calls already spent). Fail-closed before any
-    spend: same issue + notebook, a verify-reject verdict, a successful reservation in the
+    """--revise-from <issue-N.json> / --verify-from <issue-N.json>: resume a grain without
+    re-paying plan and build (IT08 #27460: 22.9 min and 4 calls already spent). Fail-closed
+    before any spend: same issue + notebook, the expected prior verdict (verify-reject for
+    a revise, verify-error for a crash recovery), a successful reservation in the
     trace re-read NOW by the scoped claim guard (no new [CLAIMED] comment), and the
     worktree, source/twin and built notebook still on disk."""
+    # Two resume modes on the same fail-closed skeleton:
+    #   --revise-from : the verifier DELIVERED a verdict — reject with findings to answer;
+    #   --verify-from : the verifier CRASHED (instrument failure, e.g. the GitHub REST
+    #                   bucket exhausted mid-run on 20/11) — a build already paid for is
+    #                   re-gated and re-verified instead of being thrown away.
+    resume_from = getattr(args, "verify_from", None)
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    trace_p = Path(args.revise_from)
+    trace_p = Path(resume_from or args.revise_from)
     if not trace_p.is_file():
         rec["verdict"] = f"refused-revise-trace-missing:{trace_p}"
         return rec
     prior = json.loads(trace_p.read_text(encoding="utf-8"))
     rec["revised_from"] = {"trace": str(trace_p), "verdict": prior.get("verdict"),
-                           "started": prior.get("started")}
+                           "started": prior.get("started"),
+                           "mode": "verify" if resume_from else "revise"}
     if (prior.get("issue") != args.issue
             or _norm_rel(prior.get("notebook") or "") != _norm_rel(args.notebook)):
         rec["verdict"] = "refused-revise-trace-mismatch"
         return rec
-    if prior.get("verdict") != "verify-reject":
+    if resume_from:
+        if prior.get("verdict") != "verify-error":
+            rec["verdict"] = f"refused-verify-not-crashed:{prior.get('verdict')}"
+            return rec
+    elif prior.get("verdict") != "verify-reject":
         rec["verdict"] = f"refused-revise-not-rejected:{prior.get('verdict')}"
         return rec
     if ((prior.get("stages") or {}).get("claim_reservation") or {}).get("verdict", "x") is not None:
@@ -2649,7 +2661,16 @@ async def run_revision(args, rec: dict) -> dict:
     create_mode = bool(prior.get("create_mode"))
     args.from_spec = bool((prior.get("create_mode") or {}).get("spec_twin"))
     kname = args.kernel_override or (prior.get("kernel") or {}).get("kernel_name") or ""
-    rec["verdict"] = prior["verdict"]
+    if resume_from:
+        # verify-error is NOT a verdict: the verifier process crashed on an instrument
+        # failure (20/11: the shared GitHub REST bucket ran out mid-run), so the build was
+        # executed and the gates passed before stage 4 died. Re-gate and re-verify the SAME
+        # on-disk build — zero model turn — then let the normal loop take over (a reject
+        # gets its constructive rounds; an approval opens the PR).
+        rec["verdict"] = "built-executed-ok"
+        gates_then_verify(args, rec, src_nb, built, create_mode, kname, wt_path, out_dir)
+    else:
+        rec["verdict"] = prior["verdict"]
     await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built, kname=kname,
                       exec_dir=exec_dir, conventions=conventions, create_mode=create_mode,
                       wt_path=wt_path, out_dir=out_dir)
@@ -3189,6 +3210,11 @@ def main() -> int:
                          "plan/build, no new [CLAIMED] comment (the reservation in the "
                          "trace is re-read by the scoped claim guard); runs the review "
                          "loop, then stage 5 if approved and --max-stage 5")
+    ap.add_argument("--verify-from", default=None,
+                    help="recover a grain whose VERIFIER CRASHED (trace verdict "
+                         "verify-error, e.g. the GitHub REST bucket ran out mid-run): the "
+                         "build already paid for is re-gated and re-verified with zero "
+                         "model turn, then the review loop and stage 5 as usual")
     args = ap.parse_args()
     # Fail loud, never quiet (F1/F2, vllm#438): a claim under an identity the operator did not
     # choose breaks the registry guard itself, and a per-seat --repo default is a fourth
@@ -3210,13 +3236,22 @@ def main() -> int:
         ap.error("--revise-from needs --revise-rounds >= 1")
     if args.revise_from and args.max_stage < 4:
         ap.error("--revise-from needs --max-stage >= 4 (the review loop re-verifies)")
+    if args.revise_from and args.verify_from:
+        ap.error("--revise-from and --verify-from are exclusive: a delivered reject is "
+                 "revised, a crashed verifier is re-verified")
+    if args.verify_from and (args.from_spec or args.source_nb or args.meta_from):
+        ap.error("--verify-from reads the creation mode from the trace: do not pass "
+                 "--from-spec / --source-nb / --meta-from with it")
+    if args.verify_from and args.max_stage < 4:
+        ap.error("--verify-from needs --max-stage >= 4 (that is the stage being resumed)")
     if args.from_spec and args.source_nb:
         ap.error("--from-spec and --source-nb are exclusive: a twin port is --source-nb, "
                  "a new notebook with no twin is --from-spec")
     if args.from_spec and not args.meta_from:
         ap.error("--from-spec requires --meta-from <repo-relative notebook>: the deliverable "
                  "inherits that notebook's kernelspec + language_info (no default kernel)")
-    if args.meta_from and not (args.from_spec or args.source_nb or args.revise_from):
+    if args.meta_from and not (args.from_spec or args.source_nb or args.revise_from
+                               or args.verify_from):
         ap.error("--meta-from is only read in creation mode (--from-spec or --source-nb): "
                  "a correction keeps the existing notebook's metadata")
     if args.from_spec and args.write_mode == "mcp":
@@ -3227,7 +3262,8 @@ def main() -> int:
            "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
            "engine_tokens_before": engine_tokens()}
     try:
-        rec = asyncio.run(run_revision(args, rec) if args.revise_from else run(args, rec))
+        rec = asyncio.run(run_revision(args, rec)
+                          if (args.revise_from or args.verify_from) else run(args, rec))
     except Exception as exc:  # a trace is always written: a dead harness must not look like a quiet one
         # Keep what was already paid for, and keep WHY (F4, vllm#441). Rebuilding rec here threw
         # away the calls, the last stage and the plan: a stage-5 crash produced the same
@@ -3243,9 +3279,10 @@ def main() -> int:
     b, a = rec.get("engine_tokens_before") or {}, rec.get("engine_tokens_after") or {}
     rec["engine_tokens_delta"] = {k: round(a[k] - b[k]) for k in a if k in b} or None
     out = Path(args.out_dir) / f"issue-{args.issue}.json"
-    if args.revise_from and out.is_file():
-        # the trace being revised is usually THIS file: keep it, renamed, never overwritten
-        keep = out.with_name(f"issue-{args.issue}.pre-revise-"
+    if (args.revise_from or args.verify_from) and out.is_file():
+        # the trace being resumed is usually THIS file: keep it, renamed, never overwritten
+        prefix = "pre-verify" if args.verify_from else "pre-revise"
+        keep = out.with_name(f"issue-{args.issue}.{prefix}-"
                              f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
         shutil.copy2(out, keep)
         rec["revised_from"] = (rec.get("revised_from") or {}) | {"kept_as": str(keep)}
@@ -3261,7 +3298,7 @@ def main() -> int:
                                "pr": (rec.get("pr") or {}).get("number"),
                                "calls": len(rec.get("calls") or []),
                                "revisions": len(rec.get("revisions") or []),
-                               "revised_from": bool(args.revise_from)},
+                               "revised_from": bool(args.revise_from or args.verify_from)},
                               ensure_ascii=False) + "\n")
     print(json.dumps({k: rec.get(k) for k in
                       ("issue", "verdict", "stage0_s", "stage1_s", "stage2_s", "stage4_s",

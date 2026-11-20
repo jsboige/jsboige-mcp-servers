@@ -437,6 +437,7 @@ def test_resume_stops_before_the_pr_below_stage_5(monkeypatch, tmp_path):
     ({}, {"issue": 9}, "refused-revise-trace-mismatch"),
     ({}, {"notebook": "Other/X.ipynb"}, "refused-revise-trace-mismatch"),
     ({"verdict": "gates-ok"}, {}, "refused-revise-not-rejected:gates-ok"),
+    ({"verdict": "verify-error"}, {}, "refused-revise-not-rejected:verify-error"),
     ({"stages": {"worktree": {"path": "x"}, "claim_reservation":
                  {"verdict": "refused-claim-post-failed"}}}, {},
      "refused-revise-no-reservation"),
@@ -465,11 +466,55 @@ def test_resume_rereads_the_claim_and_the_capacity_gate(monkeypatch, tmp_path):
     assert got["verdict"] == "deferred-by-capacity-gate" and seen["loop"] == 0
 
 
+# ---------------------------------------------------------------- --verify-from
+def _verify_args(tmp_path, trace, **kw):
+    return _rev_args(tmp_path, trace, verify_from=str(trace), revise_from=None, **kw)
+
+
+def test_verify_from_recovers_a_crashed_verifier_without_a_model_turn(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    calls = {}
+
+    def fake_gates(args, rec, src_nb, built, create_mode, kname, wt, out_dir, prior=None):
+        calls["verdict_in"] = rec.get("verdict")
+        calls["built"] = built
+        rec["verdict"] = "gates-ok"
+        rec["verify"] = {"verdict": "approve"}
+
+    monkeypatch.setattr(D, "gates_then_verify", fake_gates)
+    trace = _trace(tmp_path, verdict="verify-error")
+    got = _resume(_verify_args(tmp_path, trace))
+    assert got["verdict"] == "pr-created"
+    # gates+verify are re-run on the SAME on-disk build the crash left behind
+    assert calls["verdict_in"] == "built-executed-ok"
+    assert calls["built"] == tmp_path / "nb_8_built.ipynb"
+    assert got["calls"] == []                     # zero model turn: nothing was re-paid
+    assert seen["loop"] == 1 and seen["pr"] == 1
+    assert got["revised_from"]["mode"] == "verify"
+    assert got["revised_from"]["verdict"] == "verify-error"
+
+
+def test_verify_from_refuses_a_delivered_reject(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    trace = _trace(tmp_path)                      # verdict verify-reject: a revise job
+    got = _resume(_verify_args(tmp_path, trace))
+    assert got["verdict"] == "refused-verify-not-crashed:verify-reject" and seen["loop"] == 0
+
+
+def test_verify_from_refuses_a_missing_trace(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    got = _resume(_verify_args(tmp_path, tmp_path / "nope.json"))
+    assert got["verdict"].startswith("refused-revise-trace-missing") and seen["loop"] == 0
+
+
 # ---------------------------------------------------------------- CLI + scheduler
 @pytest.mark.parametrize("extra, needle", [
     (["--revise-from", "t.json", "--from-spec", "--meta-from", "S/M.ipynb"], "do not pass"),
     (["--revise-from", "t.json", "--revise-rounds", "0"], "--revise-rounds >= 1"),
     (["--revise-from", "t.json", "--max-stage", "3"], "--max-stage >= 4"),
+    (["--revise-from", "t.json", "--verify-from", "t.json"], "exclusive"),
+    (["--verify-from", "t.json", "--max-stage", "3"], "--max-stage >= 4 (that is the stage"),
+    (["--verify-from", "t.json", "--source-nb", "S/P.ipynb"], "do not pass"),
 ])
 def test_cli_guards(monkeypatch, capsys, extra, needle):
     monkeypatch.setattr(sys, "argv", ["nb_coder_driver.py", "--issue", "1", "--notebook",
@@ -501,6 +546,27 @@ def test_main_keeps_the_revised_trace(monkeypatch, tmp_path):
     new = json.loads(out.read_text(encoding="utf-8"))
     assert new["verdict"] == "verify-approved"
     assert new["revised_from"]["kept_as"] == str(kept[0])
+    led = json.loads((tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert led["revised_from"] is True
+
+
+def test_main_keeps_the_verify_trace(monkeypatch, tmp_path):
+    out = tmp_path / "issue-1.json"
+    out.write_text('{"verdict": "verify-error"}', encoding="utf-8")
+
+    async def fake_rev(args, rec):
+        rec["verdict"] = "verify-approved"
+        return rec
+
+    monkeypatch.setattr(D, "run_revision", fake_rev)
+    monkeypatch.setattr(D, "_preflight", lambda ap, args: None)
+    monkeypatch.setattr(D, "engine_tokens", lambda: {})
+    monkeypatch.setattr(sys, "argv", ["nb_coder_driver.py", "--issue", "1", "--notebook",
+                                      "S/N.ipynb", "--repo", "D:/repo", "--max-stage", "4",
+                                      "--out-dir", str(tmp_path), "--verify-from", str(out)])
+    D.main()
+    kept = list(tmp_path.glob("issue-1.pre-verify-*.json"))
+    assert len(kept) == 1 and json.loads(kept[0].read_text())["verdict"] == "verify-error"
     led = json.loads((tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()[-1])
     assert led["revised_from"] is True
 
