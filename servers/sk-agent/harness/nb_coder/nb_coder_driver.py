@@ -1756,6 +1756,17 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     msg_file = built_nb.parent / f"commit-msg-{args.issue}.txt"
     msg_file.write_text(commit_body, encoding="utf-8")
     rc, out = _git(wt_path, "commit", "--file", str(msg_file))
+    if rc != 0:
+        # Pre-commit auto-fixer pattern (measured 2/2 on fresh .ipynb grains,
+        # CoursIA #27113 + #27102): an auto-fix hook rewrites the staged file
+        # during the first commit, which fails and leaves status `AM`. Re-add
+        # the fixed file and retry ONCE -- blocking hooks never touch the file,
+        # so they keep failing on the replay, and the retry stays bounded.
+        st_rc, st_out = _git(wt_path, "status", "--porcelain", "--", nb_rel)
+        if st_rc == 0 and st_out.strip().startswith("AM"):
+            entry["commit_retry"] = "pre-commit-auto-fix-read"
+            _git(wt_path, "add", "--", nb_rel)
+            rc, out = _git(wt_path, "commit", "--file", str(msg_file))
     msg_file.unlink(missing_ok=True)
     if rc != 0:
         entry["error"] = f"commit: {out[:300]}"
