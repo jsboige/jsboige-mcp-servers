@@ -25,7 +25,7 @@ TEMPLATE = {
     "models": [
         {
             "id": "glm-5.3",
-            "base_url": "http://192.168.0.50:3000/v1",
+            "base_url": "${HUB_BASE_URL}",
             "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
             "api_key_env": "ZAI_API_KEY",
         },
@@ -44,7 +44,7 @@ LOCAL_HEALTHY = {
     "models": [
         {
             "id": "glm-5.3-local",
-            "base_url": "http://192.168.0.50:3000/v1",
+            "base_url": "${HUB_BASE_URL}",
             "api_key": "sk-hub-real-key",
         },
         {
@@ -62,7 +62,7 @@ LOCAL_NO_MEDIUM = {
     "models": [
         {
             "id": "glm-5.3-local",
-            "base_url": "http://192.168.0.50:3000/v1",
+            "base_url": "${HUB_BASE_URL}",
             "api_key": "sk-hub-real-key",
         },
     ],
@@ -149,7 +149,8 @@ def test_same_id_local_model_keeps_local_endpoint():
     """#3411 web2 cell: off-LAN seat, same model id, different base_url.
 
     web2 (VPS) serves glm-5.3 from https://models.myia.io/v1 with a real key;
-    the template points at the LAN hub (192.168.0.50). The old matcher only
+    the template points at the fleet hub via the `${HUB_BASE_URL}` runtime
+    placeholder (#4814). The old matcher only
     paired by base_url, so the key stayed a placeholder (exit 1) AND a
     successful sync would have regressed the URL to one unreachable from
     that seat. Same-id + real local key must take key, base_url AND enabled
@@ -197,7 +198,7 @@ def test_same_id_local_model_keeps_local_endpoint():
         # Review note (ai-01): banner carries ids and field names only —
         # no endpoint values on stderr.
         assert "models.myia.io" not in proc.stderr
-        assert "192.168.0.50" not in proc.stderr
+        assert "HUB_BASE_URL" not in proc.stderr
 
 
 # --- Declared successor (renamed id) key/endpoint inheritance (ms#1421) --
@@ -210,7 +211,7 @@ TEMPLATE_WITH_SUCCESSOR = {
     "models": [
         {
             "id": "glm-5.3",
-            "base_url": "http://192.168.0.50:3000/v1",
+            "base_url": "${HUB_BASE_URL}",
             "api_key": "YOUR_HUB_CLIENT_KEY_HERE",
             "api_key_env": "ZAI_API_KEY",
         },
@@ -237,7 +238,7 @@ LOCAL_DIVERGENT_ALIAS = {
     "models": [
         {
             "id": "glm-5.3-local",
-            "base_url": "http://192.168.0.50:3000/v1",
+            "base_url": "${HUB_BASE_URL}",
             "api_key": "sk-hub-real-key",
         },
         {
@@ -325,7 +326,7 @@ LOCAL_WITH_AUDITOR = {
     "models": [
         {
             "id": "glm-5.3-local",
-            "base_url": "http://192.168.0.50:3000/v1",
+            "base_url": "${HUB_BASE_URL}",
             "api_key": "sk-hub-real-key",
         },
         {
@@ -574,7 +575,7 @@ LOCAL_WITH_ENV_BINDINGS = {
             # Same id as a template model WITH api_key_env=ZAI_API_KEY: the
             # seat overrides the env var name — local wins.
             "id": "glm-5.3",
-            "base_url": "http://192.168.0.50:3000/v1",
+            "base_url": "${HUB_BASE_URL}",
             "api_key": "sk-glm-real-key",
             "api_key_env": "ZAI_API_KEY_SEAT",
         },
@@ -619,7 +620,7 @@ def test_template_api_key_env_survives_when_local_has_none():
         "models": [
             {
                 "id": "glm-5.3",  # same id, real key, NO api_key_env locally
-                "base_url": "http://192.168.0.50:3000/v1",
+                "base_url": "${HUB_BASE_URL}",
                 "api_key": "sk-glm-real-key",
             },
             {
@@ -660,7 +661,7 @@ def test_env_binding_survives_when_literal_key_is_placeholder():
             },
             {
                 "id": "glm-5.3-local",
-                "base_url": "http://192.168.0.50:3000/v1",
+                "base_url": "${HUB_BASE_URL}",
                 "api_key": "sk-hub-real-key",
             },
         ],
@@ -1018,4 +1019,33 @@ def test_template_url_fields_publish_no_internal_topology():
     open_terminal = next(m for m in template["mcps"] if m["id"] == "open_terminal")
     assert open_terminal["env"]["OPEN_TERMINAL_URL"] == "${OPEN_TERMINAL_URL}", (
         "open_terminal URL must have no internal-host default (#4758/#4814)"
+    )
+
+
+# The same hygiene rule extends to the shipped deployment docs: they are part
+# of the public repository, and a private-range literal there publishes the
+# same topology the template may no longer carry. Loopback, 0.0.0.0 and the
+# documentation range (192.0.2.0/24) stay legal — they are instructions, not
+# fleet topology.
+_RFC1918_LITERAL_RE = re.compile(
+    r"\b(?:192\.168\.\d{1,3}\.\d{1,3}"
+    r"|10\.\d{1,3}\.\d{1,3}\.\d{1,3}"
+    r"|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b"
+)
+_DOC_FILES = ("README.md", "DEPLOYMENT.md", "README-DEPLOYMENT.md")
+
+
+def test_docs_publish_no_rfc1918_literal():
+    """#4814 residues: the README and the two deployment guides carry no
+    private-range IPv4 literal — the hub endpoint ships as a placeholder."""
+    offenders: list[str] = []
+    for name in _DOC_FILES:
+        text = (SK_AGENT_DIR / name).read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if _RFC1918_LITERAL_RE.search(line):
+                # File + line only — a red run must not republish the value.
+                offenders.append(f"{name}:{lineno}")
+    assert not offenders, (
+        "deployment docs publish a private-range IPv4 literal (#4814): "
+        + ", ".join(offenders)
     )

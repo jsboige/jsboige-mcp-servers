@@ -153,7 +153,7 @@ Copy `sk_agent_config.template.json` to `sk_agent_config.json` and add your API 
   "models": [
     {
       "id": "glm-5.3",
-      "base_url": "http://192.168.0.50:3000/v1",
+      "base_url": "${HUB_BASE_URL}",
       "api_key_env": "ZAI_API_KEY",
       "model_id": "glm-5.3",
       "vision": false,
@@ -564,7 +564,7 @@ python -m pytest test_sk_agent.py test_config.py -v
 
 ## Available Models (9)
 
-### GLM via fleet hub (2) — claudish `http://192.168.0.50:3000/v1`, key = hub client key (#3574)
+### GLM via fleet hub (2) — claudish `${HUB_BASE_URL}` (incl. `/v1`, set per seat — #4814), key = hub client key (#3574)
 
 | ID | Model | Vision | Thinking | Context |
 |----|-------|--------|----------|---------|
