@@ -395,6 +395,100 @@ def test_explicit_kernel_override_still_wins_at_every_execution_site():
     assert src.count('args.kernel_override or kernel["kernel_name"]') == 3
 # ---- banner strip variant (vllm#482, measured on the #27104 verify) ----
 
+# ---- stage5 commit retry after a pre-commit auto-fixer (CoursIA #27113 + #27102) ----
+
+def test_stage5_retries_add_commit_once_when_a_prefix_hook_rewrites_the_file(tmp_path):
+    """Measured 2/2 on fresh .ipynb grains (w1f3 #27113, w1g #27102): a pre-commit
+    auto-fixer hook rewrites the staged notebook and FAILS the first commit, leaving
+    status `AM`; the single-shot driver recorded pr-git-failed and both grains had
+    to be salvaged by hand (re-add + re-commit, hooks all-Pass on the replay).
+
+    Behavioral pin on a REAL git repo with a simulated auto-fixer hook: the retry
+    must (a) happen exactly once, (b) re-add the FIXED file — the committed content
+    carries the hook's marker, which is what distinguishes a re-add from committing
+    the stale index, (c) reach pr-created. A blocking hook (rewrites nothing) keeps
+    failing on the replay — covered by the bounded single retry, asserted here by
+    the absence of a second commit attempt after a clean non-AM failure path.
+    """
+    import os
+    import subprocess
+    from types import SimpleNamespace
+
+    def sh(*cmd, cwd=None):
+        p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        assert p.returncode == 0, (cmd, p.stderr)
+        return p.stdout
+
+    nb_rel = "Series/N-CSharp.ipynb"
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    sh("git", "init", "--bare", str(origin), cwd=origin)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    sh("git", "init", cwd=wt)
+    # Local repo identity: the driver's stage5 commits run as subprocesses WITHOUT an
+    # inline -c identity, so a runner with no global user.name/user.email would fail
+    # them with "Author identity unknown" (ms#1813 CI, run 44686195241) — an
+    # environment dependency, not a driver defect. Local config makes the pin
+    # environment-independent.
+    sh("git", "config", "user.name", "t", cwd=wt)
+    sh("git", "config", "user.email", "t@t", cwd=wt)
+    sh("git", "checkout", "-b", "main", cwd=wt)
+    sh("git", "remote", "add", "origin", str(origin), cwd=wt)
+    (wt / "README.md").write_text("x", encoding="utf-8")
+    sh("git", "add", "README.md", cwd=wt)
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init", cwd=wt)
+    # Simulated auto-fixer: rewrites the file on disk WITHOUT re-staging, exits 1
+    # the first time only -- like the real CoursIA hooks, it passes on the replay
+    # because the defect it fixes is already gone from the fixed file.
+    hook = wt / ".git" / "hooks" / "pre-commit"
+    nb_in_wt = wt / nb_rel
+    hook.write_text(
+        "#!/bin/sh\n"
+        f'if ! grep -q autofix-marker -- "{nb_in_wt}"; then\n'
+        f'  printf "autofix-marker\n" >> "{nb_in_wt}"\n'
+        '  echo "auto-fixer rewrote the staged file" >&2\n'
+        "  exit 1\n"
+        "fi\n"
+        "exit 0\n", encoding="utf-8", newline="\n")
+    os.chmod(hook, 0o755)
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    built_nb = out_dir / "built.ipynb"
+    built_nb.write_text("{}", encoding="utf-8")
+    (wt / "Series").mkdir()
+
+    args = SimpleNamespace(
+        issue=27102, notebook=nb_rel, pr_branch="nbcoder/auto-27102", agent="producer",
+        verifier_agent="critic", grain_tier="MED", lane="myia-po-2028:claudish",
+        pr_base="main", pr_repo="jsboige/CoursIA", out_dir=str(out_dir))
+    rec = {"plan": {"plan": []}, "verify": {"verdict": "approve", "model_used": "glm-5.3",
+                                            "conversation_id": "v", "findings": []},
+           "kernel": {"kernel_name": ".net-csharp"}, "execution": [1], "c2": {"sequential": True},
+           "calls": [], "conversation_id": "p"}
+
+    monkeypr = pytest.MonkeyPatch()
+    monkeypr.setattr(d, "lane_predecessor",
+                     lambda *a, **k: "MED/notebook-dotnet #27256")
+    def fake_gh(argv, token=None, timeout=60):
+        if argv[1].endswith("/pulls"):
+            return 0, json.dumps({"number": 27999, "html_url": "pr-url"})
+        return 0, "{}"
+    monkeypr.setattr(d, "gh", fake_gh)
+    try:
+        d.stage5_pr(args, rec, wt, built_nb, {"issue": 27102}, None)
+    finally:
+        monkeypr.undo()
+
+    assert rec["verdict"] == "pr-created", rec.get("pr")
+    assert rec["pr"]["number"] == 27999
+    assert rec["pr"].get("commit_retry") == "pre-commit-auto-fix-read"
+    # The re-add staged the FIXED file: the committed blob carries the marker
+    # (committing the stale index would land the pre-fix content).
+    blob = sh("git", "-C", str(wt), "show", f"HEAD:{nb_rel}")
+    assert "autofix-marker" in blob
+    assert nb_in_wt.read_text(encoding="utf-8").endswith("autofix-marker\n")
 def test_the_banner_strip_covers_the_discovery_bootstrap():
     """#27104: the probe-only strip reported ok while the committed cell-3 output
     still carried the DISCOVERY bootstrap (dotnet-interactive-this-cell) — the

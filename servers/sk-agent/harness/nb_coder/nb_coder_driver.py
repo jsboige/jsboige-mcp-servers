@@ -182,16 +182,21 @@ def fetch_issue(slug: str, n: int, token: str | None) -> dict:
     return issue
 
 
-def check_claim(repo: Path, n: int, lane: str, notebook: str) -> dict:
+def check_claim(repo: Path, n: int, lane: str, notebook: str,
+                from_json: str | None = None) -> dict:
     """#466: the check is SCOPED to this run's notebook (--paths). Unscoped, the guard
     answers NOT_SCOPED (rc=2) whenever any PR touches the issue but none names this
     notebook -- and the pre-#466 driver let rc=2 pass where a scoped check says BLOCKED
-    (measured on CoursIA#27018 vs PR #27025)."""
+    (measured on CoursIA#27018 vs PR #27025).
+
+    ``from_json`` is reserved for offline admission witnesses. It must never be passed
+    by production runs: the claim guard explicitly skips open-PR legs in that mode."""
     script = repo / "scripts/check_lane_claim.py"
     if not script.is_file():
         return {"ok": None, "error": "check_lane_claim.py absent"}
     p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane,
-                        "--paths", notebook],
+                        "--paths", notebook,
+                        *(["--from-json", from_json] if from_json else [])],
                        cwd=repo, capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=120)
     return {"ok": p.returncode == 0, "rc": p.returncode,
@@ -218,12 +223,73 @@ def claim_verdict(cc: dict) -> str | None:
     return None
 
 
-def post_claim(repo: Path, n: int, lane: str, intention: str) -> dict:
+def post_claim(repo: Path, n: int, lane: str, intention: str,
+               notebook: str, from_json: str | None = None) -> dict:
+    """Acquire this notebook's claim through the authoritative guard, not a bare comment.
+
+    The guard rechecks collisions and verifies its write before returning 0. The caller
+    must gate the worktree/model stages on this result, then re-read the claim below.
+    ``from_json`` is only for offline two-client admission tests, never production.
+    """
     script = repo / "scripts/check_lane_claim.py"
+    if not script.is_file():
+        return {"rc": None, "out": "check_lane_claim.py absent"}
     p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane,
-                        "--claim", intention], cwd=repo, capture_output=True, text=True,
+                        "--paths", notebook, "--claim", intention,
+                        *(["--from-json", from_json] if from_json else [])],
+                       cwd=repo, capture_output=True, text=True,
                        encoding="utf-8", errors="replace", timeout=120)
-    return {"rc": p.returncode, "out": (p.stdout or p.stderr).strip()[:1000]}
+    return {"rc": p.returncode, "out": (p.stdout or p.stderr).strip()[:2000]}
+
+
+def claim_reservation_verdict(post: dict, verify: dict) -> str | None:
+    """A model run starts only after an admitted, freshly re-read scoped claim."""
+    if post.get("rc") != 0:
+        return "refused-claim-post-failed"
+    if claim_verdict(verify) is not None:
+        return "refused-claim-not-verified"
+    return None
+
+
+def reserve_claim(repo: Path, n: int, lane: str, intention: str,
+                  notebook: str) -> dict:
+    """Admission gate for a model run: scoped check -> authoritative post -> fresh re-read.
+
+    Three refusals, each before any worktree or model spend:
+    - the pre-check is not CLEAR (claim held, guard broken, check not scoped);
+    - the guard refuses to post (collision seen at write time, write unverified);
+    - the post-write re-read is not a CLEAR scoped check. It proves scope-level
+      clearance, not marker-level ownership: the guard verifies that ONE comment
+      landed, not which lane's marker the reader resolves to.
+
+    Refusal residues are NOT alike -- cleanup treats them separately:
+    - refused-claim-post-failed: the comment state is UNKNOWN. The guard may have
+      written a comment before failing to verify it, so no cleanup may assume
+      "nothing landed"; it re-reads the thread before touching anything.
+    - refused-claim-not-verified: exactly ONE [CLAIMED] comment by OUR lane
+      landed (the guard count-verified its write) while a FOREIGN marker sits on
+      the same path. Residue = one leaked comment, zero admissions.
+
+    This is NOT an atomic reservation and does not claim to be. The re-read narrows
+    the window; the offline two-client witness (test_nb_coder_claim.py) pins the
+    admission contract -- AT MOST one start under contention (the both-posts-succeed
+    interleave admits ZERO and leaks two claim comments), zero on a failed post.
+    A post returning 0 while the re-read observes NO claim at all is ADMITTED under
+    this contract: admission requires the absence of a foreign marker, not the
+    presence of our own. The guard's count-verified write is what makes that state
+    unreachable with the real guard (pinned as a named witness, not assumed).
+    """
+    before = check_claim(repo, n, lane, notebook)
+    refused = claim_verdict(before)
+    if refused:
+        return {"before": before, "posted": None, "verified": None,
+                "verdict": refused}
+    posted = post_claim(repo, n, lane, intention, notebook)
+    verified = (check_claim(repo, n, lane, notebook)
+                if posted.get("rc") == 0
+                else {"rc": None, "skipped": "claim acquisition failed"})
+    return {"before": before, "posted": posted, "verified": verified,
+            "verdict": claim_reservation_verdict(posted, verified)}
 
 
 def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
@@ -1550,6 +1616,13 @@ def _short_desc(args, plan: dict) -> str:
     return f"{stem} — {len(gestes)} gestes ({kinds})" if gestes else f"{stem} — {kinds}"
 
 
+def _norm_rel(p: str) -> str:
+    """Repo-relative path, posix-normalized: issue declarations use forward slashes,
+    a Windows CLI arg may use backslashes — both must compare on the same plane."""
+    parts = [seg for seg in re.split(r"[\\/]+", (p or "").strip()) if seg not in ("", ".")]
+    return "/".join(parts)
+
+
 # CoursIA's parser knows exactly these three tiers; anything else is refused downstream.
 GRAIN_TIERS = ("DEEP", "MED", "LIGHT")
 
@@ -1683,6 +1756,17 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     msg_file = built_nb.parent / f"commit-msg-{args.issue}.txt"
     msg_file.write_text(commit_body, encoding="utf-8")
     rc, out = _git(wt_path, "commit", "--file", str(msg_file))
+    if rc != 0:
+        # Pre-commit auto-fixer pattern (measured 2/2 on fresh .ipynb grains,
+        # CoursIA #27113 + #27102): an auto-fix hook rewrites the staged file
+        # during the first commit, which fails and leaves status `AM`. Re-add
+        # the fixed file and retry ONCE -- blocking hooks never touch the file,
+        # so they keep failing on the replay, and the retry stays bounded.
+        st_rc, st_out = _git(wt_path, "status", "--porcelain", "--", nb_rel)
+        if st_rc == 0 and st_out.strip().startswith("AM"):
+            entry["commit_retry"] = "pre-commit-auto-fix-read"
+            _git(wt_path, "add", "--", nb_rel)
+            rc, out = _git(wt_path, "commit", "--file", str(msg_file))
     msg_file.unlink(missing_ok=True)
     if rc != 0:
         entry["error"] = f"commit: {out[:300]}"
@@ -1795,7 +1879,8 @@ async def run(args, rec: dict) -> dict:
 
     # ---- stage 0
     t0 = time.time()
-    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane, args.notebook)
+    claim_nb = _norm_rel(args.notebook)
+    rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane, claim_nb)
     refused = claim_verdict(rec["stages"]["claim_check"])
     if refused:
         rec["verdict"] = refused
@@ -1804,7 +1889,20 @@ async def run(args, rec: dict) -> dict:
     rec["stages"]["issue"] = {"title": issue["title"], "state": issue["state"],
                               "labels": issue["labels"], "body_chars": len(issue["body"])}
     if args.claim:
-        rec["stages"]["claim_posted"] = post_claim(repo, args.issue, args.lane, args.intention)
+        rec["stages"]["claim_reservation"] = reserve_claim(
+            repo, args.issue, args.lane, args.intention, claim_nb)
+        if rec["stages"]["claim_reservation"]["verdict"]:
+            rec["verdict"] = rec["stages"]["claim_reservation"]["verdict"]
+            return rec
+    elif args.max_stage >= 1:
+        # Review ms#1812 finding 1: a spending run is not admitted on a bare
+        # pre-check. Without --claim there is no reservation to re-read, so the
+        # only sanctioned no-claim run is the explicit stage-0-only inspection.
+        rec["verdict"] = "refused-no-reservation"
+        rec["stages"]["claim_reservation"] = {
+            "verdict": "refused-no-reservation",
+            "note": "pass --claim to reserve, or --max-stage 0 to inspect only"}
+        return rec
     wt = prepare_worktree(repo, Path(args.worktree), args.fresh_worktree)
     rec["stages"]["worktree"] = wt
     if not wt.get("ok", True):
