@@ -512,11 +512,12 @@ Each agent has its own collection: `{prefix}-{collection}` (e.g., `sk-agent-anal
 | `SK_AGENT_CONFIG` | Path to config file | `sk_agent_config.json` |
 | `SK_AGENT_DEPTH` | Current recursion depth (internal) | `0` |
 | `SK_AGENT_CONVERSATION_DIR` | Opt-in durable conversation store (#4742): directory where conversations and turn journals survive restarts | disabled |
+| `HUB_BASE_URL` | OpenAI-compatible **fleet hub endpoint, including `/v1`** — resolves the `${HUB_BASE_URL}` model `base_url` placeholder (`glm-*`, `frognano-4b`) | none (#4814) |
 | `ZAI_API_KEY` | z.ai API key (if using `api_key_env`) — also the **cluster hub client key** the mini lane rides on (`frognano-4b`), like the `glm-*` entries | - |
 | `EMBEDDINGS_API_KEY` | Embeddings endpoint key | - |
-| `OPEN_TERMINAL_URL` | Open Terminal API URL handed to the `open_terminal` MCP (stdio seats only — the plugin is `runtimes: ["stdio"]` and its launcher is absent from the container image, #4758). Set it in the **seat environment** (e.g. `http://localhost:8000`, the open-terminal container's published port): the default is a Docker-network hostname that resolves only on the open-terminal container's network — never inside the `sk-agent` container and not on a Windows host | `http://open-terminal-myia:8000` |
+| `OPEN_TERMINAL_URL` | Open Terminal API URL handed to the `open_terminal` MCP (stdio seats only — the plugin is `runtimes: ["stdio"]` and its launcher is absent from the container image, #4758). Set it in the **seat environment** (e.g. `http://localhost:8000`, the open-terminal container's published port) | none (#4758/#4814) |
 
-`mcps[].env` values may reference the sk-agent process environment as `${VAR}` or `${VAR:-default}` (default used when `VAR` is unset or empty). The config entry still wins over the inherited environment for its key; only the placeholder is resolved. An unset `VAR` without default is passed through literally and logged as a warning. This is how one config file serves both the container and the host (vllm#63).
+`models[].base_url` and `mcps[].env` values may reference the sk-agent process environment as `${VAR}` (and, for MCP env only, `${VAR:-default}` — default used when `VAR` is unset or empty). The config entry still wins over the inherited environment for its key; only the placeholder is resolved. An unset `VAR` without default is passed through literally and logged as a warning. This is how one config file serves both the container and the host without publishing seat-specific endpoints (vllm#63, #4814).
 
 ## Requirements
 

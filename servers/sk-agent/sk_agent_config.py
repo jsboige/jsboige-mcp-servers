@@ -164,6 +164,85 @@ def is_self_referential_mcp(mcp_id: str, args: list[str]) -> bool:
 _ENV_PLACEHOLDER_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}")
 
 
+def expand_placeholder_string(
+    value: Any,
+    environ: Mapping[str, str] | None = None,
+    context: str = "value",
+) -> Any:
+    """Expand ``${VAR}`` / ``${VAR:-default}`` in one config string.
+
+    Same shell semantics as :func:`expand_env_placeholders`; ``context`` only
+    names the field in the unset-without-default warning. Non-string values
+    and text without placeholders pass through unchanged.
+    """
+    if not isinstance(value, str) or "${" not in value:
+        return value
+    source = os.environ if environ is None else environ
+
+    def _resolve(match: re.Match[str]) -> str:
+        name, default = match.group(1), match.group(2)
+        current = source.get(name)
+        if default is not None:
+            return current if current else default
+        if current is not None:
+            return current
+        log.warning(
+            "%s: ${%s} is unset and has no default; "
+            "passing the placeholder through literally",
+            context,
+            name,
+        )
+        return match.group(0)
+
+    return _ENV_PLACEHOLDER_RE.sub(_resolve, value)
+
+
+def _unresolved_base_url_error(
+    expanded: object, original: object
+) -> str | None:
+    """Typed load error for a model ``base_url`` that did not resolve (#4814).
+
+    ``None`` when the URL is usable. A ``${VAR}`` still unresolved after
+    expansion (unset, no default — kept literally by
+    :func:`expand_placeholder_string`), or an expansion to an empty string,
+    is a provisioning gap that must fail legibly at load and be refused at
+    dispatch, naming the variable — never surface as an invalid-URL error
+    at call time, far from its cause.
+    """
+    if not isinstance(expanded, str):
+        return None
+    unresolved = sorted(
+        {m.group(1) for m in _ENV_PLACEHOLDER_RE.finditer(expanded)}
+    )
+    if unresolved:
+        names = ", ".join(f"${{{name}}}" for name in unresolved)
+        return (
+            f"base_url placeholder(s) {names} unresolved at load — set it "
+            "in the sk-agent server environment (#4814); there is "
+            "deliberately no default"
+        )
+    if not expanded.strip():
+        source = sorted(
+            {
+                m.group(1)
+                for m in _ENV_PLACEHOLDER_RE.finditer(
+                    original if isinstance(original, str) else ""
+                )
+            }
+        )
+        names = (
+            ", ".join(f"${{{name}}}" for name in source)
+            if source
+            else "its source variable"
+        )
+        return (
+            f"base_url expanded to an empty string ({names} set but "
+            "empty?) — set it to the hub endpoint in the sk-agent server "
+            "environment (#4814)"
+        )
+    return None
+
+
 def expand_env_placeholders(
     env: Mapping[str, Any],
     environ: Mapping[str, str] | None = None,
@@ -177,11 +256,6 @@ def expand_env_placeholders(
     environment while the config entry keeps winning over ``os.environ`` for
     its key (precedence unchanged).
 
-    Shell semantics: ``${VAR:-default}`` takes ``default`` when VAR is unset
-    or empty; ``${VAR}`` takes VAR's value. An unset VAR without default is
-    kept literally and logged (names only), never an error. Non-string values
-    and text without placeholders pass through unchanged.
-
     Args:
         env: The MCP entry's ``env`` mapping (not modified).
         environ: Source environment; defaults to ``os.environ``.
@@ -189,29 +263,11 @@ def expand_env_placeholders(
     Returns:
         A new dict with placeholders expanded.
     """
-    source = os.environ if environ is None else environ
     expanded: dict[str, Any] = {}
     for key, value in env.items():
-        if not isinstance(value, str) or "${" not in value:
-            expanded[key] = value
-            continue
-
-        def _resolve(match: re.Match[str], key: str = key) -> str:
-            name, default = match.group(1), match.group(2)
-            current = source.get(name)
-            if default is not None:
-                return current if current else default
-            if current is not None:
-                return current
-            log.warning(
-                "MCP env %s: ${%s} is unset and has no default; "
-                "passing the placeholder through literally",
-                key,
-                name,
-            )
-            return match.group(0)
-
-        expanded[key] = _ENV_PLACEHOLDER_RE.sub(_resolve, value)
+        expanded[key] = expand_placeholder_string(
+            value, environ, f"MCP env {key}"
+        )
     return expanded
 
 
@@ -318,6 +374,14 @@ class ModelConfig:
     # traffic without its declared attribution), the other models stay up.
     default_headers: Any = None
     default_headers_error: str | None = None
+    # #4814: a base_url runtime placeholder (${HUB_BASE_URL}) still
+    # unresolved after expansion — or expanded to an empty string — is a
+    # provisioning gap, not a URL. Isolated like a rejected capacity_gate:
+    # the value is kept verbatim (so save_config never destroys the
+    # placeholder), and base_url_error (derived at parse, never serialized)
+    # makes the pool skip this model and agent resolution refuse naming the
+    # variable, while the other models stay callable.
+    base_url_error: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> ModelConfig:
@@ -1306,7 +1370,32 @@ def _parse_config(raw: dict) -> SKAgentConfig:
     ``config_error`` so ``call_agent`` can name it explicitly, while the
     other agents keep working.
     """
-    models = [ModelConfig.from_dict(m) for m in raw.get("models", [])]
+    models = []
+    for model_raw in raw.get("models", []):
+        raw_url = (
+            model_raw.get("base_url") if isinstance(model_raw, dict) else None
+        )
+        if isinstance(raw_url, str):
+            context = (
+                f"models[{model_raw.get('id', 'unknown')}].base_url"
+            )
+            model_raw = {
+                **model_raw,
+                "base_url": expand_placeholder_string(
+                    raw_url, context=context
+                ),
+            }
+        model = ModelConfig.from_dict(model_raw)
+        url_error = _unresolved_base_url_error(model.base_url, raw_url)
+        if url_error is not None:
+            model.base_url_error = url_error
+            log.error(
+                "models '%s': %s — this model is left out of the pool; "
+                "the other models stay callable",
+                model.id,
+                url_error,
+            )
+        models.append(model)
     mcps = [
         _parse_mcp_at(index, entry)
         for index, entry in enumerate(raw.get("mcps", []))

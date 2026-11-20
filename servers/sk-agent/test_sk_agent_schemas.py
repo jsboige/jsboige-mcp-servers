@@ -341,6 +341,7 @@ def test_model_base_url_must_be_http_or_https():
 
     ModelSpec(id="m1", base_url="https://example.com")
     ModelSpec(id="m1", base_url="http://localhost:8000")
+    ModelSpec(id="m1", base_url="${HUB_BASE_URL}")
 
 
 def test_tool_command_and_args_must_be_consistent():
