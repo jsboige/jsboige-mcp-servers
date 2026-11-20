@@ -1105,6 +1105,41 @@ def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
     return errors
 
 
+def creation_plan_repair_prompt(errors: list[str], n_src_cells: int) -> str:
+    """Name the EXACT addressing constraint the corrected plan must satisfy.
+
+    CoursIA#27580 (20/11): MiniMax planned 24 cells for a 22-cell source — idx 22 and 23
+    address nothing. The plan is validated before any build call (CoursIA#27106), but
+    that defect then terminated the grain; one bounded re-ask can convert it into a
+    plan the harness can actually build.
+    """
+    last = n_src_cells - 1
+    reasons = "\n".join(f"- {e}" for e in errors)
+    return (
+        "TON PLAN NE PEUT PAS ÊTRE ADRESSÉ : le carnet source a exactement "
+        f"{n_src_cells} cellules, idx 0..{last}.\n{reasons}\n\n"
+        "Rends UNIQUEMENT un bloc ```json corrigé, de la MÊME forme que le plan :\n"
+        '{"stage":"plan","cells":[{"idx":<entier 0..' + str(last) + '>,'
+        '"cell_type":"markdown|code","titre":"<titre>","role":"<rôle en une phrase>"}]}\n'
+        "avec EXACTEMENT une entrée par cellule source, idx entiers distincts couvrant "
+        f"0..{last}, dans l'ordre — ni plus, ni moins."
+    )
+
+
+async def repair_creation_plan(session, args, rec: dict, conv: str | None,
+                               errors: list[str], n_src_cells: int) -> list | None:
+    """ONE bounded corrected-plan re-ask on the same conversation.
+
+    Returns the plan's cells, or None when nothing usable came back. The caller
+    re-validates: a repair that still overruns keeps the terminal verdict, with both
+    error sets recorded in rec['creation_plan_repair']."""
+    env = await sk_call_retry(session, args, rec, "1-plan-repair",
+                              creation_plan_repair_prompt(errors, n_src_cells), conv)
+    plan, env = await parse_or_repair(session, args, rec, "1-plan-repair", env, conv)
+    cells = (plan or {}).get("cells") or []
+    return cells or None
+
+
 async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
                           n_src_cells: int, conventions: str,
                           src_cells: list | None = None) -> dict:
@@ -1118,10 +1153,22 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     missing idx (17/11, #27104 blank pass: segment 3 answered 6/8 and the loop
     appended silently — the notebook was 2 cells short and only the FINAL verify
     caught it, after every token was spent). Still short after the repair fails fast
-    with the missing idx listed."""
+    with the missing idx listed.
+    An UNADDRESSABLE plan gets ONE bounded re-ask (CoursIA#27580, 20/11: 24 plan entries
+    for a 22-cell source) before the terminal verdict — the build path is still never
+    entered on a plan that cannot be addressed."""
     all_cells: list = []
     seg_reports: list = []
     addressing_errors = creation_plan_addressing(plan_cells, n_src_cells)
+    if addressing_errors and session is not None:
+        repaired = await repair_creation_plan(session, args, rec, conv,
+                                              addressing_errors, n_src_cells)
+        after = creation_plan_addressing(repaired or [], n_src_cells)
+        rec["creation_plan_repair"] = {"errors_before": addressing_errors,
+                                       "errors_after": after, "kept": not after}
+        if not after:
+            plan_cells[:] = repaired   # the caller's rec['plan'] stays the BUILT plan
+        addressing_errors = after
     if addressing_errors:
         rec["verdict"] = "stage1-unaddressable-creation-plan"
         rec["creation_plan_addressing_errors"] = addressing_errors
