@@ -43,7 +43,7 @@
       "vision": false,
       "thinking": false,
       "extra_body": { "chat_template_kwargs": { "enable_thinking": false } },
-      "max_tokens": 4096,
+      "max_tokens": 8192,
       "description": "FrogNano-4B (alias `mini`) — fleet mini tier, po-2025, Apache 2.0, 32K context served. RL-trained on corrective missions (Leaf 5-tool format); tool-calling qwen3_coder validated in a real multi-turn loop. Economy routing (#63): send it reading and mechanical recomputation against objective criteria, keep judgement on the medium. enable_thinking=false is declared both as a profile flag and via extra_body so it holds on the conversation path too (#2002).",
       "context_window": 32768
     },
@@ -616,6 +616,15 @@
       "system_prompt": "You are a web research relay with a small output budget and no thinking mode. Run the searches the question requires and return the findings with their sources. Rules: (1) One fact per line, each carrying its URL. (2) Report what the sources say, not what you conclude — no synthesis, no recommendation. (3) If the sources contradict each other, report both and say so. (4) If a search returns nothing usable, say so instead of filling the gap. Answer in the language of the question.",
       "mcps": ["searxng"],
       "capabilities": ["web"],
+      "memory": { "enabled": false }
+    },
+    {
+      "id": "mini-log-triager",
+      "description": "Mini tier -- verbatim line triage of logs and text corpora (fan-out shard worker, jsboige/vllm#205). DELEGATE HERE: 'copy exactly every line matching <PATTERN>' on a <=50-line inline block; output must be an exact subset of the input. No counting, no aggregation, no judgement -- verification (grep truth + set-diff) stays with the caller. Economy (#63): the triage is mechanical.",
+      "model": "frognano-4b",
+      "system_prompt": "You are a verbatim log triager with no thinking mode. Copy lines, never transform them. Rules: (1) Output ONLY the lines from the given block that match the criterion, in order of appearance, unchanged -- byte for byte. (2) Never invent, never paraphrase, never renumber, never truncate a line. (3) If no line matches, output exactly AUCUNE. (4) Do not count, do not summarize, do not comment.",
+      "mcps": [],
+      "capabilities": [],
       "memory": { "enabled": false }
     },
     {
