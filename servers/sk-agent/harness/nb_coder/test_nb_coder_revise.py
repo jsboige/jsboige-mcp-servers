@@ -507,6 +507,71 @@ def test_verify_from_refuses_a_missing_trace(monkeypatch, tmp_path):
     assert got["verdict"].startswith("refused-revise-trace-missing") and seen["loop"] == 0
 
 
+# ---------------------------------------------------------------- gate repair
+def _gates_call(monkeypatch, tmp_path, gates, **args_kw):
+    built = _nb(tmp_path)
+    monkeypatch.setattr(D, "run_gates", lambda *a, **kw: gates)
+    rec = {"stages": {}, "calls": [], "verdict": "built-executed-ok"}
+    args = SimpleNamespace(max_stage=5, revise_rounds=2)
+    for k, v in args_kw.items():
+        setattr(args, k, v)
+    D.gates_then_verify(args, rec, tmp_path / "twin.ipynb", built, True, "python3",
+                        tmp_path, tmp_path)
+    return rec
+
+
+def test_a_gate_failure_seeds_the_constructive_loop(monkeypatch, tmp_path):
+    rec = _gates_call(monkeypatch, tmp_path, [
+        {"gate": "machine-path", "ok": False,
+         "detail": {"cells": [15], "source_hits": [], "build_hits": [15]}},
+        {"gate": "language-info", "ok": False, "detail": {"canon": None, "built": None}}])
+    assert rec["verdict"] == "verify-reject"              # routed into the review loop
+    assert rec["verify"]["source"] == "gates" and rec["verify"]["verdict"] == "gate-reject"
+    f = rec["verify"]["findings"]
+    assert len(f) == 1                                    # language-info is NOT builder-fixable
+    assert f[0]["cell"] == 15 and f[0]["severity"] == "major"
+    assert "machine-path" in f[0]["detail"]
+    assert rec["gate_repair"]["from"].startswith("gates-failed:")
+
+
+def test_a_metadata_only_gate_failure_stays_terminal(monkeypatch, tmp_path):
+    rec = _gates_call(monkeypatch, tmp_path, [
+        {"gate": "language-info", "ok": False, "detail": {"canon": None, "built": None}}])
+    assert rec["verdict"] == "gates-failed:language-info" and "verify" not in rec
+
+
+def test_gate_repair_respects_a_disabled_loop(monkeypatch, tmp_path):
+    rec = _gates_call(monkeypatch, tmp_path,
+                      [{"gate": "machine-path", "ok": False, "detail": {"cells": [3]}}],
+                      revise_rounds=0)
+    assert rec["verdict"] == "gates-failed:machine-path" and "verify" not in rec
+
+
+def _gate_seeded_rec():
+    return {"verdict": "verify-reject", "calls": [], "stages": {},
+            "gate_repair": {"from": "gates-failed:machine-path", "findings": 1},
+            "verify": {"verdict": "gate-reject", "source": "gates",
+                       "findings": [{"cell": 15, "severity": "major",
+                                     "detail": "porte machine-path en échec"}]}}
+
+
+def test_gate_repair_exhaustion_restores_the_honest_verdict(monkeypatch, tmp_path):
+    built = _nb(tmp_path)
+    _fake_engine(monkeypatch, ["pas du tout du json"], [("approve", [])])
+    rec = _gate_seeded_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert rec["verdict"] == "gates-failed:machine-path"   # never masked as verify-reject
+
+
+def test_gate_repair_success_keeps_the_real_verdict(monkeypatch, tmp_path):
+    built = _nb(tmp_path)
+    _fake_engine(monkeypatch, [REVISION], [("approve", [])])
+    rec = _gate_seeded_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-approved"
+    assert "source" not in rec["verify"]                   # the REAL verify overwrote it
+
+
 # ---------------------------------------------------------------- CLI + scheduler
 @pytest.mark.parametrize("extra, needle", [
     (["--revise-from", "t.json", "--from-spec", "--meta-from", "S/M.ipynb"], "do not pass"),

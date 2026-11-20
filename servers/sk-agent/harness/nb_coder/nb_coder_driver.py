@@ -2462,6 +2462,43 @@ async def mcp_sessions(out_dir: Path):
             yield sk, pm
 
 
+# Gates whose failure a builder turn CANNOT repair: metadata is harness-owned (stamped
+# from the canon/create_metadata, not from cell sources), so routing them into the
+# constructive loop would burn model rounds on an unfixable target (measured 20/11:
+# language-info failed with canon None AND built None — nothing a cell edit can do).
+_GATE_NON_REPAIRABLE = {"language-info"}
+
+# Actionable phrasing per measured failing gate (20/11 funnel: machine-path 3,
+# svg-display 2, coord-refs 1). Falls back to a generic instruction for new gates.
+_GATE_FIX_TEXT = {
+    "machine-path": "un chemin local de machine (absolu) figure dans la cellule : remplace-le "
+                    "par un chemin relatif au dépôt ou par un littéral de données",
+    "svg-display": "la cellule doit AFFICHER une figure vectorielle SVG (sortie réelle), pas "
+                   "une image encodée ni un chemin de fichier",
+    "coord-refs": "les renvois entre cellules (références croisées) sont incohérents : aligne "
+                  "les références citées avec les cellules réelles du carnet",
+}
+
+
+def gate_repair_findings(rec: dict) -> list[dict]:
+    """Synthesize verifier-shaped findings from the failing gates, so the EXISTING
+    constructive loop can repair a gates-failed build instead of dying terminal.
+    Measured 20/11: gates-failed killed ~8 grains with no retry path at all — the
+    revise loop only triggered on a verify-reject."""
+    out: list[dict] = []
+    for g in rec.get("gates") or []:
+        if g.get("ok") or g.get("gate") in _GATE_NON_REPAIRABLE:
+            continue
+        detail = g.get("detail") if isinstance(g.get("detail"), (str, int, float)) else json.dumps(
+            g.get("detail") or {}, ensure_ascii=False)
+        cells = (g.get("detail") or {}).get("cells") if isinstance(g.get("detail"), dict) else None
+        out.append({"cell": (cells or [None])[0], "severity": "major",
+                    "detail": f"porte {g.get('gate')} en échec — "
+                              f"{_GATE_FIX_TEXT.get(g.get('gate'), 'corrige la cellule pour satisfaire la porte')}"
+                              f" ; détail porte : {detail}"})
+    return out
+
+
 def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mode: bool,
                       kname: str, wt_path: Path, out_dir: Path,
                       prior: dict | None = None) -> None:
@@ -2480,6 +2517,18 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
         rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
     if args.max_stage >= 4 and rec.get("verdict") == "gates-ok":
         stage4_verify(args, rec, src_nb, built_path, out_dir, prior=prior)
+    # A gate failure is actionable by the builder (a cell to rewrite), and until now it
+    # was TERMINAL — the constructive loop only ever ran on a verify-reject. Route the
+    # failing gates through that same loop by seeding verifier-shaped findings; the
+    # honest verdict comes back from the re-run gates below inside the loop. Rounds and
+    # the stage guard stay those of the review loop (no second budget to reason about).
+    if (str(rec.get("verdict") or "").startswith("gates-failed")
+            and getattr(args, "revise_rounds", 0) > 0 and args.max_stage >= 4):
+        findings = gate_repair_findings(rec)
+        if findings:
+            rec["gate_repair"] = {"from": rec["verdict"], "findings": len(findings)}
+            rec["verify"] = {"verdict": "gate-reject", "findings": findings, "source": "gates"}
+            rec["verdict"] = "verify-reject"
 
 
 async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path: Path,
@@ -2567,6 +2616,14 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         if str(rec["verdict"]).startswith("verify-"):
             entry["findings_out"] = len((rec.get("verify") or {}).get("findings") or [])
         entry["elapsed_s"] = round(time.time() - t0, 1)
+    # Gate-repair exhaustion: the seeded verdict must not survive as a verify-reject — a
+    # gate failure that survived its repair rounds is reported as what it is (and a
+    # later --revise-from refuses it for the right reason). A REAL verify that ran after
+    # the gates were fixed overwrote verify.source, so this only touches the never-fixed
+    # case.
+    if ((rec.get("verify") or {}).get("source") == "gates"
+            and not str(rec.get("verdict") or "").startswith("verify-approved")):
+        rec["verdict"] = (rec.get("gate_repair") or {}).get("from") or rec["verdict"]
 
 
 def _prior_src_nb(prior: dict, wt_path: Path, notebook: str) -> Path:
