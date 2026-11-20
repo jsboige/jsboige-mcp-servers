@@ -426,6 +426,13 @@ def test_stage5_retries_add_commit_once_when_a_prefix_hook_rewrites_the_file(tmp
     wt = tmp_path / "wt"
     wt.mkdir()
     sh("git", "init", cwd=wt)
+    # Local repo identity: the driver's stage5 commits run as subprocesses WITHOUT an
+    # inline -c identity, so a runner with no global user.name/user.email would fail
+    # them with "Author identity unknown" (ms#1813 CI, run 44686195241) — an
+    # environment dependency, not a driver defect. Local config makes the pin
+    # environment-independent.
+    sh("git", "config", "user.name", "t", cwd=wt)
+    sh("git", "config", "user.email", "t@t", cwd=wt)
     sh("git", "checkout", "-b", "main", cwd=wt)
     sh("git", "remote", "add", "origin", str(origin), cwd=wt)
     (wt / "README.md").write_text("x", encoding="utf-8")
