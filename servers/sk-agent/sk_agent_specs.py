@@ -49,7 +49,7 @@ MAX_CONVERSATION_ROUNDS = 50
 #: Parameter keys that gate server-side plugins. A spec may only turn these
 #: OFF, never ON — enabling a plugin the extended preset did not grant would
 #: be a policy elevation (PR #1091 review, concern 3).
-SPEC_NARROW_ONLY_PARAMETERS: tuple[str, ...] = ("github_tools",)
+SPEC_NARROW_ONLY_PARAMETERS: tuple[str, ...] = ("github_tools", "nb_coder_tools")
 
 
 class SpecError(Exception):

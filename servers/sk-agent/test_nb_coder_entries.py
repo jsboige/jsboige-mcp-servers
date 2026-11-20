@@ -50,6 +50,14 @@ VARIANTS = (
     "notebook-coder-haiku",
 )
 
+#: #4832 on-demand operator presets — one per harness step, appended after
+#: the builder variants. Same fragment = same state for scheduled and on-demand.
+OPERATORS = (
+    "nb-coder-spec",
+    "nb-coder-code",
+    "nb-coder-audit",
+)
+
 SWIFT_MODEL_ID = "swift-1.5-27b-nbcoder"
 
 
@@ -97,7 +105,7 @@ class TestFragmentValidates:
         assert validate_config(_config_payload(fragment)) == []
 
     def test_four_variants_present_and_ordered(self, fragment):
-        assert tuple(a["id"] for a in fragment["agents"]) == VARIANTS
+        assert tuple(a["id"] for a in fragment["agents"]) == VARIANTS + OPERATORS
 
     def test_variants_differ_only_by_the_effective_model(self, fragment):
         """The issue's core constraint: the variants are the SAME entry,
@@ -110,8 +118,9 @@ class TestFragmentValidates:
                 if k not in ("id", "description", "model", "_comment")
             }
 
-        reference = comparable(fragment["agents"][0])
-        for agent in fragment["agents"][1:]:
+        builders = fragment["agents"][: len(VARIANTS)]
+        reference = comparable(builders[0])
+        for agent in builders[1:]:
             assert comparable(agent) == reference, agent["id"]
 
     def test_each_variant_points_at_a_declared_model(self, fragment):
@@ -250,6 +259,53 @@ class TestPromptCarriesTheKnownGotcha:
 
 
 NB_ALIASES = ("nb-luna", "nb-minimax", "nb-haiku")
+
+
+class TestOperatorPresets:
+    """#4832 — the on-demand door: one operator per harness step.
+
+    The contract that makes 'n'importe quel agent MCP' safe: the operator
+    carries nb_coder_tools + the harness capability (the plugin gate in
+    sk_agent.py), NO MCP of its own (the step function is a kernel function,
+    not a spawned server), a template model every seat already declares, and
+    a prompt that forbids paraphrasing the envelope.
+    """
+
+    def test_operators_present_after_builders(self, fragment):
+        ids = [a["id"] for a in fragment["agents"]]
+        assert tuple(ids[len(VARIANTS):]) == OPERATORS
+
+    def test_operators_declare_plugin_and_capability(self, fragment):
+        for agent_id in OPERATORS:
+            agent = _agent_by_id(fragment, agent_id)
+            assert agent["parameters"]["nb_coder_tools"] is True, agent_id
+            assert "shell" in agent["capabilities"], agent_id
+
+    def test_operators_have_no_mcp(self, fragment):
+        """Zero spawned MCPs: the step function is server-side. The operator
+        cannot touch anything except through the workflow's own guards."""
+        for agent_id in OPERATORS:
+            assert _agent_by_id(fragment, agent_id)["mcps"] == [], agent_id
+
+    def test_operators_run_on_a_template_model(self, fragment):
+        for agent_id in OPERATORS:
+            assert _agent_by_id(fragment, agent_id)["model"] == "glm-5.3", agent_id
+
+    def test_operator_prompts_forbid_paraphrasing(self, fragment):
+        for agent_id in OPERATORS:
+            prompt = _agent_by_id(fragment, agent_id)["system_prompt"]
+            assert "SANS MODIFICATION" in prompt, agent_id
+            assert "n'appelle aucun autre outil" in prompt, agent_id
+
+    def test_operators_memory_off(self, fragment):
+        for agent_id in OPERATORS:
+            assert _agent_by_id(fragment, agent_id)["memory"]["enabled"] is False
+
+    def test_code_operator_prompt_names_the_dry_default(self, fragment):
+        """max_stage default 2 = dry: the on-demand door must not deliver a PR
+        by accident — delivery is an explicit caller decision."""
+        prompt = _agent_by_id(fragment, "nb-coder-code")["system_prompt"]
+        assert "max_stage" in prompt
 
 
 class TestNbAliasesCarryLaneHeaders:

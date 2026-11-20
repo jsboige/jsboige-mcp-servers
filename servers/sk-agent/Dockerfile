@@ -41,7 +41,7 @@ RUN test -x /opt/venv-markitdown/bin/markitdown-mcp && \
 COPY sk_agent.py sk_agent_config.py sk_agent_schemas.py sk_agent_specs.py \
      sk_agent_capacity_gate.py sk_agent_runtimes.py sk_conversations.py \
      sk_context_condensation.py sk_agent_turns.py \
-     github_plugin.py document_processing.py media_processing.py ./
+     github_plugin.py nb_coder_plugin.py document_processing.py media_processing.py ./
 
 # Guard: fail the BUILD if this list drifts from the real import graph.
 # Without it a missing module only surfaces when the container starts,
