@@ -119,6 +119,8 @@ describe('openai', () => {
 				baseURL: undefined,
 				maxRetries: 1,
 				timeout: 60000,
+				// #4824: single-endpoint plan rides the content-length stripping fetch.
+				fetch: expect.any(Function),
 			});
 		});
 
@@ -135,6 +137,7 @@ describe('openai', () => {
 				baseURL: undefined,
 				maxRetries: 1,
 				timeout: 60000,
+				fetch: expect.any(Function),
 			});
 		});
 
@@ -151,6 +154,7 @@ describe('openai', () => {
 				baseURL: undefined,
 				maxRetries: 1,
 				timeout: 60000,
+				fetch: expect.any(Function),
 			});
 		});
 
@@ -167,6 +171,7 @@ describe('openai', () => {
 				baseURL: 'https://custom.api.com/v1',
 				maxRetries: 1,
 				timeout: 60000,
+				fetch: expect.any(Function),
 			});
 		});
 

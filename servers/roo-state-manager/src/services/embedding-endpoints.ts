@@ -515,8 +515,13 @@ function hasCallerAborted(signal: AbortSignal | null | undefined): boolean {
  * caller's copy is redundant — and, under the npm dispatcher, lethal. Only a
  * string body (the SDK's shape, measured) or no body is stripped: a stream
  * body keeps its framing decision with the caller.
+ *
+ * #4824: exported for openai.ts, which wires the single-endpoint embedding
+ * plan (the legacy `fetch: undefined` contract) through the same strip —
+ * measured 17/11: that plan rides the SDK's own node-fetch transport (not
+ * global fetch), but the strip makes it independent of that transport choice.
  */
-function withoutExplicitContentLength(init: RequestInit): RequestInit {
+export function withoutExplicitContentLength(init: RequestInit): RequestInit {
 	if (init.headers === undefined || init.headers === null) return init;
 	if (init.body !== undefined && init.body !== null && typeof init.body !== 'string') return init;
 	const headers = new Headers(init.headers);
