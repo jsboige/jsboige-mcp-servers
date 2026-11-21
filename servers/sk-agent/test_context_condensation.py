@@ -427,3 +427,72 @@ async def test_fallback_summariser_returns_input_when_short():
 async def test_fallback_summariser_handles_empty():
     s = _FallbackSummariser()
     assert await s.summarise("", max_tokens=10) == ""
+
+
+# ---------------------------------------------------------------------------
+# Follow-up ms#1832 (review ai-01 21/11): pairing invariant of pass 4
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.xfail(
+    reason="#3944 residual, reachable mid-turn since #4816: _pass_threshold "
+    "pops call and result messages independently. With balanced payloads the "
+    "budget crossing lands on a RESULT (the big message), so pairs drop whole "
+    "and the invariant holds; with a LARGE call followed by a SMALL result "
+    "(long arguments, one-word result) the crossing lands on the call and "
+    "orphan FunctionResultContent survives — breaks the thread on SK / "
+    "OpenAI-compatible endpoints. strict=True flips loud the day a fix "
+    "lands (pop the pair together, or skip to keep it whole).",
+    strict=True,
+)
+async def test_threshold_never_orphans_a_tool_result():
+    # Two pairs of (large call ~500 tok, small result ~10 tok): the soft
+    # target (window 1000 x 0.5 x 0.6 = 300 tok) is crossed by POPPING A
+    # CALL, leaving both results orphaned — the reachable boundary.
+    messages = [
+        _text_msg(AuthorRole.SYSTEM, "system prompt"),
+        _text_msg(AuthorRole.USER, "mission"),
+    ]
+    for i in range(2):
+        messages.append(
+            ChatMessageContent(
+                role=AuthorRole.ASSISTANT,
+                items=[
+                    FunctionCallContent(
+                        id=f"call-{i}",
+                        function_name=f"tool-{i}",
+                        arguments="x" * 2_000,  # ~500 tokens
+                    )
+                ],
+            )
+        )
+        messages.append(
+            ChatMessageContent(
+                role=AuthorRole.TOOL,
+                items=[
+                    FunctionResultContent(
+                        id=f"call-{i}", function_name=f"tool-{i}", result="ok"
+                    )
+                ],
+            )
+        )
+    messages.append(_text_msg(AuthorRole.USER, "latest question"))
+    cfg = CondensationConfig(
+        enabled=True, recent_message_window=2, trigger_fraction=0.5
+    )
+    condenser = ContextCondenser(config=cfg)
+    out, m = await condenser._pass_threshold(messages, 1000, cfg)
+    assert m.messages_out < len(messages)  # the pass actually trimmed
+    call_ids = {
+        item.id
+        for msg in out
+        for item in msg.items
+        if isinstance(item, FunctionCallContent)
+    }
+    for msg in out:
+        for item in msg.items:
+            if isinstance(item, FunctionResultContent):
+                assert item.id in call_ids, (
+                    f"orphan tool result {item.id!r} survived the threshold pass"
+                )

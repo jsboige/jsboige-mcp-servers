@@ -406,3 +406,49 @@ async def test_live_condense_below_threshold_is_noop():
 
     assert not metrics.triggered
     assert history.messages == before  # untouched — identity and order
+
+
+@pytest.mark.asyncio
+async def test_post_turn_merge_preserves_mid_turn_metrics():
+    """Follow-up ms#1832 (review 21/11): the "merge, never overwrite" path.
+
+    When BOTH legs fire in one turn — mid-turn condensations recorded by
+    ``_finish_turn`` (``condensation.mid_turn``) and a post-turn thread
+    condensation in ``_maybe_condense_thread`` — the post-turn metrics
+    must MERGE into the same dict, never replace it. Hermes mutant 3
+    (revert to ``result["condensation"] = metrics.to_dict()``) survived
+    the budget test because that path was never exercised with both
+    legs firing; this test is the mutant killer.
+    """
+    from sk_context_condensation import CondensationMetrics
+
+    model = ModelConfig(id="m-x", context_window=CONTEXT_WINDOW)
+    agent_cfg = AgentConfig(
+        id="a-x", model="m-x", condensation={"enabled": True}
+    )
+    manager = SKAgentManager.__new__(SKAgentManager)
+    manager.config = SKAgentConfig(models=[model], agents=[agent_cfg])
+    manager._condensers = {}
+
+    class StubCondenser:
+        async def maybe_condense(self, thread, model_context_window=None):
+            return CondensationMetrics(
+                triggered=True,
+                reason="threshold",
+                total_duration_s=0.01,
+                total_tokens_in=10_000,
+                total_tokens_out=4_000,
+            )
+
+    manager._get_or_create_condenser = lambda a, m: StubCondenser()
+
+    # What _finish_turn leaves behind when the turn filter fired.
+    mid_entries = [{"triggered": True, "round_index": 2}]
+    result = {"condensation": {"mid_turn": mid_entries}}
+
+    out = await manager._maybe_condense_thread("a-x", object(), result)
+
+    # Both legs live in the same envelope, at the first level.
+    assert out["condensation"]["mid_turn"] is mid_entries  # survived the merge
+    assert out["condensation"]["triggered"] is True  # post-turn merged in
+    assert out["condensation"]["total_tokens_out"] == 4_000
