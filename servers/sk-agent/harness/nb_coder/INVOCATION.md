@@ -1,5 +1,5 @@
 <!-- Canonical home is sk-agent: new harness fixes belong here, not in vllm. -->
-<!-- Harness base is the vllm re-copy @ e94d5f4f3f036aa5f4b42060584f592b3e42e983. -->
+<!-- Harness base is the vllm re-copy @ 7416ac16c91e150aae5a75dd251d0c1a4c2f5c2c. -->
 # nb_coder — invocation à la demande (#4832)
 
 **Un seul contrat d'invocation** pour les trois workflows du harnais nb_coder.

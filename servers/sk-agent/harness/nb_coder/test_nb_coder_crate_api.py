@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
+# Copied verbatim from jsboige/vllm @ 7416ac16c91e150aae5a75dd251d0c1a4c2f5c2c
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_crate_api.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
