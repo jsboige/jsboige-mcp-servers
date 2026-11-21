@@ -702,6 +702,16 @@ export function isBudgetTruncatedFinish(reason: string | null | undefined): bool
 const SUMMARY_REQUIRED_SECTIONS = ['themes principaux', 'actions et resultats', 'decisions et metriques', 'etats transverses'];
 
 /**
+ * Section names (compared case- and accent-insensitively) a text lacks among
+ * `sections`. Shared by the summary-leg guard and the re-condenser's section
+ * contract (#4434 G7a-3) so both judge presence with the same normalization.
+ */
+function missingSectionsOf(content: string, sections: readonly string[]): string[] {
+  const normalized = content.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  return sections.filter(section => !normalized.includes(section));
+}
+
+/**
  * Cloud-chain guard for the summary leg: names the imposed sections a summary lacks, or
  * returns null when all four are present. Measured on ai-01, 03/11 18:44:25Z: the cloud
  * model returned a 715-char summary of 9 messages in 2.5 s, which stopped mid-word inside
@@ -709,8 +719,7 @@ const SUMMARY_REQUIRED_SECTIONS = ['themes principaux', 'actions et resultats', 
  * only trace of the 9 archived messages on the global dashboard.
  */
 export function validateSummaryCompleteness(content: string): string | null {
-  const normalized = content.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
-  const missing = SUMMARY_REQUIRED_SECTIONS.filter(section => !normalized.includes(section));
+  const missing = missingSectionsOf(content, SUMMARY_REQUIRED_SECTIONS);
   return missing.length === 0 ? null : `incomplete-summary (missing: ${missing.join(', ')})`;
 }
 
@@ -4603,8 +4612,12 @@ export interface LLMCallStats {
    * `skipped-on-change` (#4205) : l'appel n'a PAS eu lieu — les messages archivés ne
    * portaient aucun signal d'état, le statut précédent est conservé tel quel.
    * `cloud-first-failed` (#4434) : jambe statut envoyée au cloud d'abord, le cloud n'a rien
-   * rendu ; le primaire n'a pas été appelé. */
-  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback' | 'guard-rejected' | 'skipped-on-change' | 'budget-exhausted' | 'cloud-first-failed';
+   * rendu ; le primaire n'a pas été appelé.
+   * `ok-guard-rejected` (#4434 G7a-3) : le primaire a RÉPONDU mais sa réponse manque des
+   * sections imposées ; retries et autre tier épuisés, le digest partiel est accepté
+   * STAMPÉ (lastError porte le motif) plutôt que jeté à la troncature — G6a a mesuré ces
+   * digests fidèles sur les chiffres/IDs, seules les sections manquaient. */
+  finalOutcome: 'ok' | 'null' | 'error' | 'timeout' | 'client-init-failed' | 'circuit-open' | 'ok-with-fallback' | 'guard-rejected' | 'skipped-on-change' | 'budget-exhausted' | 'cloud-first-failed' | 'ok-guard-rejected';
   /** #4434: the status leg went to the cloud tier FIRST and never called the primary.
    * The breaker tracks the primary: such a leg neither fails nor vouches for it. */
   cloudFirst?: boolean;
@@ -4985,6 +4998,39 @@ FORMAT :
         const fbNull = await tryCloudCondenseFallback(systemPrompt, userPrompt, summaryFallbackOpts, stats, callStart);
         if (fbNull) return fbNull;
         return { content: null, stats };
+      }
+
+      // #4434 G7a-3 (hole 1, fold c.7066988306): the primary is the LAST LLM tier before
+      // truncation, and before this guard it accepted ANY non-empty answer — exactly how
+      // a section-less summary becomes the archive's only trace when the cloud-first
+      // chain was fully rejected (or on a seat with no cloud tier). Same validator as
+      // the cloud chain; different teeth: there is no next model here, so a rejected
+      // answer retries the primary, then hands the leg to the cloud tier if it has not
+      // run yet, and only then — rather than discarding a working digest to truncation —
+      // is the partial answer accepted STAMPED ('ok-guard-rejected'): G6a measured these
+      // digests faithful on numbers/ids, missing only the standing states, and truncation
+      // loses more. The stamp keeps the incompleteness visible and auditable.
+      const guardReason = validateSummaryCompleteness(summary);
+      if (guardReason) {
+        logger.warn('#4434 primary summary rejected by the completeness guard', { attempt, guardReason });
+        if (attempt < LLM_MAX_RETRIES) {
+          const backoff = LLM_INITIAL_BACKOFF_MS * Math.pow(2, attempt - 1);
+          logger.info(`Retrying summary in ${backoff}ms...`, { attempt, backoff, reason: 'guard-rejected' });
+          await new Promise(resolve => setTimeout(resolve, backoff));
+          continue;
+        }
+        // Retries exhausted. Primary-first route: the cloud tier has not run yet
+        // (fallbackAttempted unset) — hand it the leg, its chain is guarded per-model.
+        // Cloud-first route: the chain already ran and was fully rejected — re-running
+        // it would re-burn the whole chain budget for a verdict we already have.
+        if (!stats.fallbackAttempted) {
+          const fbGuard = await tryCloudCondenseFallback(systemPrompt, userPrompt, summaryFallbackOpts, stats, callStart);
+          if (fbGuard) return fbGuard;
+        }
+        stats.finalOutcome = 'ok-guard-rejected';
+        stats.elapsedMs = Date.now() - callStart;
+        stats.lastError = truncateError(`${guardReason} — primary digest accepted as last resort before truncation (#4434 G7a-3)`);
+        return { content: summary, stats };
       }
 
       const sizeBytes = Buffer.byteLength(summary, 'utf8');
@@ -5374,15 +5420,32 @@ Mets à jour le statut en intégrant les informations des messages [SERA ARCHIV�
  * Auto-condense a text (status or summary) if it exceeds maxSizeBytes.
  * Uses a dedicated LLM call asking to compress the text while preserving all info.
  * Returns the condensed text, or the original if condensation fails.
+ *
+ * #4434 G7a-3 (hole 1, fold c.7066988306): `requiredSections` (summary leg) gives the
+ * shrink pass the section contract the generating legs already enforce. A condensation
+ * that returns under the cap but DROPS an imposed section silently undoes the very
+ * states-preservation G7a-1 won at generation — the section was in the input, the
+ * shrink amputated it, and the truncated-but-compliant-looking result became the
+ * dashboard's only trace. Enforcement applies only when the INPUT carries all the
+ * required sections (garbage in is not the re-condenser's to fix — the generating
+ * leg's guard already stamped that): a section-dropping candidate is rejected like
+ * an artifact, never becomes `bestCandidate`, and the deterministic floor keeps its
+ * omission marker.
  */
 export async function condenseTextIfTooLarge(
   text: string,
   maxSizeBytes: number,
   label: string,
-  passDeadlineMs?: number
+  passDeadlineMs?: number,
+  requiredSections?: readonly string[]
 ): Promise<string> {
   const sizeBytes = Buffer.byteLength(text, 'utf8');
   if (sizeBytes <= maxSizeBytes) return text;
+  // Contract active only when the input itself is section-complete (null otherwise).
+  const sectionsContract = requiredSections !== undefined
+    && missingSectionsOf(text, requiredSections).length === 0
+    ? requiredSections
+    : null;
 
   logger.info(`${label} exceeds size limit, auto-condensing`, { sizeBytes, limit: maxSizeBytes, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
 
@@ -5438,7 +5501,7 @@ RÈGLES :
 - Le résultat DOIT être plus court que l'original
 - LAST-KNOWN-STATE WINS : pour chaque sujet, ne garder QUE le dernier état connu (#1502)
 - INTERDICTION D'EXTRAPOLER : ne rien afficher qui ne soit pas dans le texte source (#1502)
-- SUPPRIMER les faits contredits par des informations plus récentes dans le texte (#1502)${aggressiveNote}`;
+- SUPPRIMER les faits contredits par des informations plus récentes dans le texte (#1502)${sectionsContract ? '\n- CONSERVER les titres de sections du texte source — la condensation RÉDUIT chaque section, elle ne SUPPRIME AUCUNE section (#4434)' : ''}${aggressiveNote}`;
 
     const startTime = Date.now();
     try {
@@ -5471,6 +5534,19 @@ RÈGLES :
           elapsed: `${elapsed}ms`, contentLength: condensed.length
         });
         continue;
+      }
+      // #4434 G7a-3: a candidate that drops an imposed section (all present in the
+      // input) is not a candidate either — under the cap or not. It must not be
+      // returned NOR become bestCandidate: the floor would then truncate it as if
+      // it were the best we had.
+      if (sectionsContract) {
+        const dropped = missingSectionsOf(condensed, sectionsContract);
+        if (dropped.length > 0) {
+          logger.warn(`Auto-condense ${label} attempt ${attempt}: candidate rejected — dropped required sections (${dropped.join(', ')}) (#4434 G7a-3)`, {
+            elapsed: `${elapsed}ms`, contentLength: condensed.length
+          });
+          continue;
+        }
       }
 
       const newSize = Buffer.byteLength(condensed, 'utf8');
@@ -5505,12 +5581,23 @@ RÈGLES :
   // #2998: cloudCondenseWithRetry retries on 429/5xx instead of a single attempt.
   // #4434: the artifact check runs INSIDE the chain (same regime as the status leg's
   // validator): a refusing model is a per-model failure and the next model is tried.
+  // #4434 G7a-3: with the section contract active, a section-dropping cloud answer
+  // is a per-model failure too — same regime as the primary candidates above.
+  const fbCloudValidator = (content: string): string | null => {
+    const artifact = detectModelOutputArtifact(content);
+    if (artifact) return artifact;
+    if (sectionsContract) {
+      const dropped = missingSectionsOf(content, sectionsContract);
+      if (dropped.length > 0) return `dropped-required-sections (missing: ${dropped.join(', ')})`;
+    }
+    return null;
+  };
   const fbCloud = await cloudCondenseWithRetry(
-    `Tu es un expert en synthèse. Condense le texte sous ${capKb} Ko en préservant TOUTE information critique (décisions, métriques chiffrées, dates, blocages). Fusionne les redondances, supprime le verbeux. Pas d'emojis, pas de prose. LAST-KNOWN-STATE WINS (#1502). N'extrapole rien qui ne soit pas dans le texte source.`,
+    `Tu es un expert en synthèse. Condense le texte sous ${capKb} Ko en préservant TOUTE information critique (décisions, métriques chiffrées, dates, blocages). Fusionne les redondances, supprime le verbeux. Pas d'emojis, pas de prose. LAST-KNOWN-STATE WINS (#1502). N'extrapole rien qui ne soit pas dans le texte source.${sectionsContract ? ' CONSERVE les titres de sections du texte source — la condensation réduit, elle ne supprime aucune section (#4434).' : ''}`,
     text,
     {
       maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs,
-      validate: (content: string) => detectModelOutputArtifact(content),
+      validate: fbCloudValidator,
     },
   );
   if (fbCloud && 'content' in fbCloud) {
@@ -7728,7 +7815,10 @@ async function condenseIntercom(
 
   // Both operations succeeded — now auto-condense if outputs exceed size limits
   newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status', passDeadlineMs);
-  llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary', passDeadlineMs);
+  // #4434 G7a-3: the summary leg's shrink pass carries the section contract — a
+  // 5 Ko re-condensation must not silently amputate the « États transverses »
+  // section the generating leg's guard just secured.
+  llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary', passDeadlineMs, SUMMARY_REQUIRED_SECTIONS);
 
   // #3771: Post-LLM guardrail — the LLM has no GitHub API access and has been measured
   // fabricating terminal states (MERGÉ/CLOSED/« Merge validé ») for PR/issue numbers
@@ -7878,7 +7968,12 @@ async function condenseIntercom(
     ...(summaryCall.stats.fallbackModel ? { summaryFallbackModel: summaryCall.stats.fallbackModel } : {}),
     ...(summaryCall.stats.cloudFirst === true ? { summaryCloudFirst: true } : {}),
     ...(summaryCall.stats.primaryTokens ? { summaryPrimaryTokens: summaryCall.stats.primaryTokens } : {}),
-    ...(summaryCall.stats.fallbackTokens ? { summaryFallbackTokens: summaryCall.stats.fallbackTokens } : {})
+    ...(summaryCall.stats.fallbackTokens ? { summaryFallbackTokens: summaryCall.stats.fallbackTokens } : {}),
+    // #4434 G7a-3: an accepted-but-guard-rejected summary says WHY it is partial —
+    // the audit (G7c) reads archives, not logs; without this the stamp is a label
+    // with no reason attached.
+    ...(summaryCall.stats.finalOutcome === 'ok-guard-rejected' && summaryCall.stats.lastError
+      ? { summaryLegError: truncateError(summaryCall.stats.lastError) } : {})
   });
 
   // #3151 Phase C residual (incident po-2025 07/10, message « adjoint ») : la

@@ -286,7 +286,10 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
       chat: { completions: { create: mockPrimaryCreate } },
     });
     mockPrimaryCreate.mockResolvedValue({
-      choices: [{ message: { content: '## Primary summary\n\nCondensed by local vLLM.' } }],
+      // #4434 G7a-3: the primary now carries the same 4-section summary contract
+      // as the cloud chain — a genuinely-successful primary (this test's intent)
+      // is one whose answer passes the completeness guard.
+      choices: [{ message: { content: cloudSummary('Condensed by local vLLM.') } }],
     });
     mockGetFallbackClient.mockReturnValue({
       chat: { completions: { create: mockFallbackCreate } },

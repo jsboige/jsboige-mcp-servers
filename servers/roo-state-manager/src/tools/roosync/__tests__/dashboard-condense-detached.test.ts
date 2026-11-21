@@ -158,16 +158,22 @@ let releaseLlmGate: (() => void) | null = null;
 let llmMode: 'ok' | 'throw' = 'ok';
 let llmCalls = 0;
 const LLM_STATUS = 'STATUT RESUME PAR LLM (#4527)';
+// #4434 G7a-3 : la jambe résumé porte le contrat 4 sections ; le même mock
+// sert les deux jambes, la réponse résumé doit être conforme pour réussir en
+// UN appel (llmCalls === 2 = statut + résumé).
+const LLM_SUMMARY = '## Résumé\n\n### Thèmes principaux\n- #4527\n\n### Actions et résultats\n- passe détachée\n\n### Décisions et métriques\n- aucune\n\n### États transverses\n- aucun';
 
 vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => ({
     chat: {
       completions: {
-        create: async () => {
+        create: async (params: { messages: Array<{ role: string; content: string }> }) => {
           llmCalls += 1;
           if (llmGate) await llmGate;
           if (llmMode === 'throw') throw new Error('injected primary failure (#4527)');
-          return { choices: [{ message: { content: LLM_STATUS } }] };
+          const isSummary = (params.messages ?? [])
+            .some(m => String(m.content).includes('messages retirés du dashboard à synthétiser'));
+          return { choices: [{ message: { content: isSummary ? LLM_SUMMARY : LLM_STATUS } }] };
         },
       },
     },
