@@ -171,6 +171,14 @@ class TurnController:
     pause: PauseInfo | None = None
     #: Rounds of THIS invoke that ran a tool for real (replay excluded).
     rounds_this_invoke: int = 0
+    #: Async hook receiving the LIVE request chat_history once per tool
+    #: round (#4816 differential condensation, mid-turn). Returns a
+    #: metrics dict or None; must never break the turn (the filter
+    #: isolates its failures).
+    mid_turn_condense: Callable[[Any], Awaitable[dict[str, Any] | None]] | None = None
+    #: Mid-turn condensation metrics collected during the turn — surfaced
+    #: on the response envelope by ``_finish_turn``.
+    mid_turn_condensations: list[dict[str, Any]] = field(default_factory=list)
     #: SK request index of the first round that ran a tool for real —
     #: requests before it only rebuilt journaled rounds (restart replay).
     first_real_request: int | None = None
@@ -341,6 +349,23 @@ def install_turn_filter(kernel) -> None:
 
         if not controller.admission_due(rounds_done):
             return
+        # #4816 volet 1: condense the LIVE request history once per round,
+        # BEFORE the admission decision — the next round's request (or the
+        # resume after a pause) is built from the compacted history. The
+        # same watermark as admission guarantees exactly one run per round
+        # however many tools the round fans out to.
+        if controller.mid_turn_condense is not None:
+            try:
+                mid_metrics = await controller.mid_turn_condense(context.chat_history)
+            except Exception:
+                log.exception(
+                    "mid-turn condensation failed (conversation=%s); "
+                    "continuing turn uncondensed",
+                    controller.conversation_id,
+                )
+                mid_metrics = None
+            if mid_metrics:
+                controller.mid_turn_condensations.append(mid_metrics)
         refusal = await controller.check_admission(rounds_done)
         if refusal is not None:
             context.terminate = True

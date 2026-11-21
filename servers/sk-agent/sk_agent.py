@@ -2256,6 +2256,30 @@ class SKAgentManager:
                     model_cfg, agent_id=agent_id
                 )
 
+        # #4816 volet 1: mid-turn differential condensation. The hook runs
+        # once per tool round from the turn filter, on the LIVE request
+        # history — a turn that saturates itself never reaches the
+        # post-turn condenser (CoursIA#27027: HTTP 400 at 262 145 >
+        # 262 144, mid-turn). Same eligibility as _maybe_condense_thread:
+        # absent block or enabled=False ⇒ the hook is not even attached.
+        mid_turn_condense = None
+        base_agent_id = agent_id.split("[")[0] if "[" in agent_id else agent_id
+        turn_agent_cfg = next(
+            (a for a in self.config.agents if a.id == base_agent_id), None
+        )
+        if turn_agent_cfg is not None and (
+            turn_agent_cfg.condensation or {}
+        ).get("enabled"):
+            condenser = self._get_or_create_condenser(turn_agent_cfg, model_cfg)
+            if condenser is not None:
+                model_window = model_cfg.context_window if model_cfg else None
+
+                async def mid_turn_condense(chat_history):  # noqa: F811 — one per turn
+                    metrics = await condenser.maybe_condense_live(
+                        chat_history, model_context_window=model_window
+                    )
+                    return metrics.to_dict() if metrics.triggered else None
+
         return TurnController(
             conversation_id=conv_id,
             agent_id=agent_id,
@@ -2265,6 +2289,7 @@ class SKAgentManager:
             journal=entries,
             journal_log=log,
             replay_enabled=replay,
+            mid_turn_condense=mid_turn_condense,
         )
 
     def _load_journal_epoch(self, conv_id: str) -> EpochState | None:
@@ -2302,6 +2327,14 @@ class SKAgentManager:
         await self._persist_conversation(conv_id, thread)
         result["conversation_id"] = conv_id
         result["turn_index"] = self._turn_counts.get(conv_id, 0)
+        if controller.mid_turn_condensations:
+            # #4816: the round-by-round condensations that kept the turn
+            # under the model window. Kept under their own key so the
+            # post-turn thread condensation (_maybe_condense_thread)
+            # merges instead of overwriting.
+            result.setdefault("condensation", {})["mid_turn"] = (
+                controller.mid_turn_condensations
+            )
         if controller.pause is not None:
             result["status"] = STATUS_PAUSED
             result["resumable"] = True
@@ -3271,7 +3304,9 @@ class SKAgentManager:
             log.exception("Condensation failed for agent '%s'", base_agent_id)
             return result
         if metrics.triggered or metrics.passes:
-            result["condensation"] = metrics.to_dict()
+            # Merge, never overwrite: mid-turn metrics (#4816) may
+            # already live under result["condensation"]["mid_turn"].
+            result.setdefault("condensation", {}).update(metrics.to_dict())
         return result
 
     def _get_invoke_kwargs(

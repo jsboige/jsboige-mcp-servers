@@ -133,6 +133,35 @@ class TestFragmentValidates:
         assert len(ids) == len(set(ids))
 
 
+class TestMidTurnCondensationDeclared:
+    """#4816 volet 1, config side: the builder variants opt into the
+    condensation block — without it, a pass that saturates the model
+    window mid-turn dies on HTTP 400 before any turn-boundary condenser
+    (CoursIA#27027: 262 145 > 262 144) can run."""
+
+    def test_builders_enable_condensation(self, fragment):
+        for variant in VARIANTS:
+            block = _agent_by_id(fragment, variant)["condensation"]
+            assert block["enabled"] is True, variant
+
+    def test_operators_carry_no_condensation(self, fragment):
+        """Operators are short-turn harness steps (#4832): the seam is
+        inert for them, byte-for-byte legacy behaviour."""
+        for operator in OPERATORS:
+            assert "condensation" not in _agent_by_id(fragment, operator)
+
+    def test_loader_reads_the_block(self, fragment):
+        """Pin the full path, not just validation: the loader (not only
+        the schema) must hand the block to ``AgentConfig``, where
+        ``_get_or_create_condenser`` picks it up."""
+        from sk_agent_config import _parse_config
+
+        config = _parse_config(_config_payload(fragment))
+        for variant in VARIANTS:
+            loaded = next(a for a in config.agents if a.id == variant)
+            assert loaded.condensation.get("enabled") is True, variant
+
+
 class TestSwiftCapacityGateDeclared:
     """Criterion 3, config side: the gate is DECLARED on the Swift model."""
 

@@ -304,6 +304,60 @@ class RateLimitSpec(_StrictModel):
     )
 
 
+class CondensationSpec(_StrictModel):
+    """Per-agent context condensation block (#4816).
+
+    Declared on ``AgentPreset`` (``extra="forbid"``) so the condensation
+    block the nb_coder seat template stamps on its builder variants
+    validates instead of tripping "Extra inputs are not permitted".
+    Keys and ranges mirror ``sk_context_condensation.CondensationConfig.
+    from_dict``: a typo like ``"enable"`` surfaces here as a validation
+    error rather than silently disabling the condenser at runtime.
+    ``preset`` is a Literal because the loader silently falls back to
+    ``balanced`` on an unknown name — surfacing the typo beats accepting
+    it and reporting the wrong preset.
+    """
+
+    enabled: bool = Field(
+        default=False, description="Master toggle. Absent = no condensation."
+    )
+    preset: Literal["conservative", "balanced", "aggressive"] = Field(
+        default="balanced", description="Named preset bundle (#3944)."
+    )
+    trigger_tokens: int | None = Field(
+        default=None, ge=1, strict=True,
+        description="Hard trigger threshold in estimated tokens. None = off.",
+    )
+    trigger_fraction: float | None = Field(
+        default=None, ge=0.0, le=1.0, strict=True,
+        description="Trigger as a fraction of the model context window.",
+    )
+    recent_message_window: int = Field(
+        default=6, ge=1, strict=True,
+        description="Recent messages preserved verbatim.",
+    )
+    tool_result_window: int = Field(
+        default=8, ge=1, strict=True,
+        description="Recent tool-result messages kept in full (hot window).",
+    )
+    summarise_max_tokens: int = Field(
+        default=1024, ge=1, strict=True,
+        description="Output budget for the summarisation pass.",
+    )
+    max_tool_chars: int = Field(
+        default=8000, ge=1, strict=True,
+        description="Cap on a tool result before truncation.",
+    )
+    summarise_model_id: str | None = Field(
+        default=None, max_length=256,
+        description="Model for the summarisation pass. None = agent's own.",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Compute metrics without mutating the thread.",
+    )
+
+
 class CapacityGateSpec(_StrictModel):
     """Per-model capacity gate probe (#4712).
 
@@ -670,6 +724,15 @@ class AgentPreset(_StrictModel):
         description=(
             "Optional admission bound (#1748): max_calls per window_s. "
             "Absent = unlimited (exact legacy behaviour)."
+        ),
+    )
+    condensation: CondensationSpec | None = Field(
+        default=None,
+        description=(
+            "Optional context condensation block (#3944/#4816): "
+            "differential condensation of the thread at turn boundaries "
+            "and of the live request history mid-turn. Absent = no "
+            "condensation (exact legacy behaviour)."
         ),
     )
 

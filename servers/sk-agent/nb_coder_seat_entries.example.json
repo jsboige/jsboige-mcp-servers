@@ -131,6 +131,11 @@
       "memory": {
         "enabled": false
       },
+      "condensation": {
+        "_comment": "#4816 volet 1: mid-turn differential condensation — the live request history is condensed once per tool round (surfaced as condensation.mid_turn in the response envelope) so a long pass never blows the model window (CoursIA#27027: 400 at 262 145 > 262 144).",
+        "enabled": true,
+        "preset": "balanced"
+      },
       "parameters": {
         "github_tools": true,
         "github_default_repo": "jsboige/CoursIA"
@@ -146,6 +151,11 @@
       "capabilities": ["shell", "repl", "repo_read", "web", "vision", "github_read"],
       "memory": {
         "enabled": false
+      },
+      "condensation": {
+        "_comment": "#4816 volet 1: mid-turn differential condensation — the live request history is condensed once per tool round (surfaced as condensation.mid_turn in the response envelope) so a long pass never blows the model window (CoursIA#27027: 400 at 262 145 > 262 144).",
+        "enabled": true,
+        "preset": "balanced"
       },
       "parameters": {
         "github_tools": true,
@@ -163,6 +173,11 @@
       "memory": {
         "enabled": false
       },
+      "condensation": {
+        "_comment": "#4816 volet 1: mid-turn differential condensation — the live request history is condensed once per tool round (surfaced as condensation.mid_turn in the response envelope) so a long pass never blows the model window (CoursIA#27027: 400 at 262 145 > 262 144).",
+        "enabled": true,
+        "preset": "balanced"
+      },
       "parameters": {
         "github_tools": true,
         "github_default_repo": "jsboige/CoursIA"
@@ -178,6 +193,11 @@
       "capabilities": ["shell", "repl", "repo_read", "web", "vision", "github_read"],
       "memory": {
         "enabled": false
+      },
+      "condensation": {
+        "_comment": "#4816 volet 1: mid-turn differential condensation — the live request history is condensed once per tool round (surfaced as condensation.mid_turn in the response envelope) so a long pass never blows the model window (CoursIA#27027: 400 at 262 145 > 262 144).",
+        "enabled": true,
+        "preset": "balanced"
       },
       "parameters": {
         "github_tools": true,
