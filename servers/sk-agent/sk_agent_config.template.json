@@ -639,7 +639,7 @@
       "memory": { "enabled": false }
     },
     {
-      "_comment": "#4816 volet 2: preset called BY a scheduler (nb_coder) to finalize a work pass inherited from an agent that died mid-task. Config-only by design — no new server mechanism; the bounded dead-pass summary is produced by the CALLER (differential condensation stays volet 1). The preset receives a fresh context: no conversation_id, no history — everything it may rely on is in the prompt or on disk.",
+      "_comment": "#4816 volet 2: preset called BY a scheduler (nb_coder) to finalize a work pass inherited from an agent that died mid-task. Config-only by design — no new server mechanism; the bounded dead-pass summary is produced by the CALLER (differential condensation is volet 1, delivered separately). The preset receives a fresh context: no conversation_id, no history — everything it may rely on is in the prompt or on disk.",
       "id": "pass-resumer",
       "description": "Medium tier — finalizes an inherited work pass. CALL IT WITH (the scheduler owns the pass and writes the prompt): (1) the inherited WORKTREE PATH — disk state is the truth of the pass; (2) the pass OBJECTIVE in 1-3 lines (the correction to finalize); (3) a BOUNDED summary of the dead pass, max 4000 chars — last actions, last known state, death point — NEVER the history or a transcript; (4) the EXPECTED DELIVERABLE (test to pass / file to produce / command that proves). The preset has no conversation history: anything not in the prompt must be re-derived from the worktree. Economy (#63): finalization is judgement on partial work — medium, not mini.",
       "model": "glm-5.3",

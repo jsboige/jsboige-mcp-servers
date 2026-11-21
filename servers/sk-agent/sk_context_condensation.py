@@ -618,6 +618,33 @@ class ContextCondenser:
             total_tokens,
         )
 
+        working, passes = await self._run_passes(messages, model_context_window)
+
+        if not self.config.resolved().dry_run:
+            self._replace_thread_history(thread, working)
+
+        return CondensationMetrics(
+            triggered=True,
+            reason=reason,
+            total_duration_s=time.monotonic() - start,
+            total_tokens_in=total_tokens,
+            total_tokens_out=sum(
+                _message_tokens(m) for m in working
+            ),
+            passes=passes,
+            dry_run=self.config.resolved().dry_run,
+        )
+
+    async def _run_passes(
+        self,
+        messages: list[ChatMessageContent],
+        model_context_window: int | None,
+    ) -> tuple[list[ChatMessageContent], list[PassMetrics]]:
+        """Run the four differential passes over ``messages`` — no write-back.
+
+        Shared by :meth:`maybe_condense` (thread, post-turn) and
+        :meth:`maybe_condense_live` (live request history, mid-turn).
+        """
         cfg = self.config.resolved()
         working = list(messages)
         passes: list[PassMetrics] = []
@@ -637,20 +664,77 @@ class ContextCondenser:
         # Pass 4 — message-level threshold compaction
         working, p4 = await self._pass_threshold(working, model_context_window, cfg)
         passes.append(p4)
+        return working, passes
 
-        if not cfg.dry_run:
-            self._replace_thread_history(thread, working)
+    async def maybe_condense_live(
+        self,
+        chat_history: Any,
+        *,
+        model_context_window: int | None = None,
+    ) -> CondensationMetrics:
+        """Mid-turn variant (#4816): condense the LIVE request history.
+
+        ``chat_history`` is the ``ChatHistory`` instance an auto-function-
+        invocation loop rebuilds its requests from — NOT the agent thread
+        (SK 1.42 copies the thread's messages into a request history per
+        call, so mutating the thread mid-turn protects nothing). The
+        history's ``messages`` list is rewritten IN PLACE: the loop holds
+        the same object, so the next round's request is built from the
+        condensed history.
+
+        Sibling tool calls of the condensing round append their results
+        only after their own filter chain returns — which can happen
+        while the passes await. The write-back therefore preserves, by
+        identity, every message appended after this method's snapshot.
+        """
+        start = time.monotonic()
+        msgs = getattr(chat_history, "messages", None)
+        if msgs is None:
+            return CondensationMetrics(
+                triggered=False,
+                reason="no-messages-attr",
+                total_duration_s=time.monotonic() - start,
+            )
+        messages = list(msgs)
+        total_tokens = sum(_message_tokens(m) for m in messages)
+        trigger, reason = self._should_trigger(
+            total_tokens=total_tokens,
+            context_window=model_context_window,
+            force=False,
+        )
+        if not trigger:
+            return CondensationMetrics(
+                triggered=False,
+                reason=reason,
+                total_duration_s=time.monotonic() - start,
+                total_tokens_in=total_tokens,
+                total_tokens_out=total_tokens,
+            )
+
+        log.info(
+            "ContextCondenser live: triggering (%s) — %d msgs, ~%d tokens",
+            reason,
+            len(messages),
+            total_tokens,
+        )
+        working, passes = await self._run_passes(messages, model_context_window)
+
+        dry_run = self.config.resolved().dry_run
+        if not dry_run:
+            snapshot_ids = {id(m) for m in messages}
+            tail = [m for m in msgs if id(m) not in snapshot_ids]
+            msgs.clear()
+            msgs.extend(working)
+            msgs.extend(tail)
 
         return CondensationMetrics(
             triggered=True,
             reason=reason,
             total_duration_s=time.monotonic() - start,
             total_tokens_in=total_tokens,
-            total_tokens_out=sum(
-                _message_tokens(m) for m in working
-            ),
+            total_tokens_out=sum(_message_tokens(m) for m in working),
             passes=passes,
-            dry_run=cfg.dry_run,
+            dry_run=dry_run,
         )
 
     # ----- trigger ------------------------------------------------------
