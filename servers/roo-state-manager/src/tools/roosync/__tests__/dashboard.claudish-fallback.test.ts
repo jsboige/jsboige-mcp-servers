@@ -55,7 +55,7 @@ const THINKING = 'SCRATCHPAD-should-never-reach-the-dashboard';
 // A cloud answer in the summary prompt's imposed format (validateSummaryCompleteness
 // rejects a summary missing a section); the same mock also answers the status leg.
 const formatted = (label: string): string =>
-  `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none`;
+  `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none\n\n### États transverses\n- aucun`;
 const anthropicAnswer = (text: string) => ({
   id: 'msg_test',
   type: 'message',

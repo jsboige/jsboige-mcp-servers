@@ -66,7 +66,7 @@ const isSummaryRequest = (req: any): boolean =>
   JSON.stringify(req?.messages ?? []).includes('messages retirés du dashboard à synthétiser');
 // A summary in the imposed format (the cloud chain's summary guard checks the sections).
 const summaryAnswer = (label: string): string =>
-  `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none`;
+  `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none\n\n### États transverses\n- aucun`;
 const statusAnswer = (label: string): string => `## Statut\n\n- nominal (${label})`;
 
 const statusCalls = (mock: ReturnType<typeof vi.fn>) => mock.mock.calls.filter((c: any[]) => !isSummaryRequest(c[0]));

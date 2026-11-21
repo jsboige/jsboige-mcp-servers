@@ -118,10 +118,14 @@ Ce résumé sera le SEUL enregistrement visible de ces messages dans le dashboar
 
 EXIGENCES :
 - ZÉRO perte d'information actionnable (décisions, résultats, blocages résolus)
+- ZÉRO perte d'ÉTATS TRANSVERSES (#4434 G7a-1) : tout état DEBOUT qui survit à la fenêtre
+  archivée doit figurer dans la section dédiée ci-dessous, même si l'événement qui l'a posé
+  est déjà résumé ailleurs — un état perdu (fenêtre UAC attendue, question user ouverte,
+  organe dégradé, risque disque vivant) change l'action d'un lecteur au prochain cycle.
 - Regrouper par THÈMES, pas par message individuel
 - Préserver les métriques chiffrées exactes (scores, taux, nombres)
 - Préserver les dates des événements importants
-- Maximum 20 lignes. Pas d'emojis. Pas de prose, que du factuel.
+- Maximum 25 lignes. Pas d'emojis. Pas de prose, que du factuel.
 - Le résumé DOIT faire moins de 5 Ko. Être CONCIS mais COMPLET.
 - Ne JAMAIS inventer d'informations absentes des messages
 
@@ -135,7 +139,15 @@ FORMAT :
 - [DONE/BLOCKED/EN COURS] description avec dates
 
 ### Décisions et métriques
-- Décisions prises, valeurs chiffrées, résultats mesurés`;
+- Décisions prises, valeurs chiffrées, résultats mesurés
+
+### États transverses
+- [état debout, avec propriétaire et date] — une ligne par état :
+  fenêtre UAC attendue / contrainte user planifiée · question user ouverte (registre) ·
+  organe dégradé ou incomplet (exit 1) · risque vivant (disque, budget, échéance) ·
+  pause datée ou claim actif · handoff en attente · capacité bloquée (DENY) ·
+  changement de config vivant (seuils, timeouts)
+- Si aucun état de ces classes n'est présent dans les messages : « - aucun »`;
   const user = `${messages.length} messages retirés du dashboard à synthétiser :\n\n${messagesContent}\n\nRésume ces messages archivés. Ce résumé sera la seule trace visible dans le dashboard.`;
   return { system, user };
 }
