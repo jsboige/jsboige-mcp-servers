@@ -21,7 +21,7 @@ import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdirSync, rmSync, writeFileSync, mkdtempSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
-import { reconcileDashboardsFromGDrive } from '../roosync-dashboard-reconcile.js';
+import { reconcileDashboardsFromGDrive, MIRROR_REPAIR_LOCK_KEY } from '../roosync-dashboard-reconcile.js';
 import type { RooSyncDashboardRow, RooSyncDashboardMessageRow } from '../types.js';
 import type { Dashboard } from '../../../tools/roosync/dashboard-schemas.js';
 
@@ -146,10 +146,11 @@ describe('dashboard reconcile — mirror repair (#4131 demande 2)', () => {
       archiveCalls.push({ key, ids: [...ids] });
       return ids.length;
     },
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
-    async tryAcquireRooSyncDashboardLock(_key: string, _holder: string, _ttl: number) {
+    async tryAcquireRooSyncDashboardLock(lockKey: string, _holder: string, _ttl: number) {
       if (lockThrows) throw new Error('lock backend unreachable');
-      return lockStatus;
+      // #4850 — only the mirror-repair row is contended in this suite; the
+      // per-machine main-pass lock is unavailable (pass runs unlocked).
+      return lockKey === MIRROR_REPAIR_LOCK_KEY ? lockStatus : 'unavailable';
     },
     async releaseRooSyncDashboardLock() {
       /* no-op */
