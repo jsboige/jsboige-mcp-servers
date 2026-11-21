@@ -124,4 +124,21 @@ describe('Maintenance#358 — setup-env per-worker temp dirs are torn down at pr
     expect(fs.existsSync(stockDir)).toBe(true);
     fs.rmSync(stockDir, { recursive: true, force: true });
   }, 90_000);
+
+  it('the sweep itself removes a freshly planted worker dir (Linux/CI vector)', async () => {
+    // Maintenance#358 follow-up (ai-01 queue 21/11): on Linux — the only CI
+    // platform — the hard-kill test above cannot exercise TerminateProcess,
+    // so an inoperant sweep would stay green in CI. This test pins the
+    // sweep's EFFECT directly, no child process involved: plant a fresh dir
+    // at a setup-env prefix, sweep from a timestamp taken BEFORE planting
+    // (this worker's own dirs predate it and must survive), expect removal.
+    // Mutant "sweep inopérant" (rmSync never reached) is red everywhere,
+    // CI included.
+    const { sweepRsmTestWorkerDirs } = await import('../setup-env-teardown');
+    const t0 = Date.now();
+    const planted = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-locks-'));
+    const removed = sweepRsmTestWorkerDirs(t0);
+    expect(removed).toBeGreaterThan(0);
+    expect(fs.existsSync(planted)).toBe(false);
+  }, 30_000);
 });
