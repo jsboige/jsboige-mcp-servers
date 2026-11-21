@@ -363,18 +363,20 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
     writeLive();
     writeArchive();
     const holder = { held: true };
-    const lockCalls: string[] = [];
+    const lockCalls: Array<[string, string]> = [];
     const result = await reconcileDashboardsFromGDrive({
       dashboardsDir,
       reader: readerDouble,
       writer: {
         ...writerDouble,
-        async tryAcquireRooSyncDashboardLock() {
-          lockCalls.push('acquire');
-          return 'held' as const;
+        async tryAcquireRooSyncDashboardLock(lockKey: string) {
+          lockCalls.push(['acquire', lockKey]);
+          // #4850 — the main-pass lock (per machine) is uncontended here:
+          // only the archive-scan row is held by another process.
+          return lockKey === ARCHIVE_SCAN_LOCK_KEY ? ('held' as const) : ('acquired' as const);
         },
-        async releaseRooSyncDashboardLock() {
-          lockCalls.push('release');
+        async releaseRooSyncDashboardLock(lockKey: string) {
+          lockCalls.push(['release', lockKey]);
         },
       },
       fetchArchivedIds: fetchArchivedIdsDouble,
@@ -383,7 +385,9 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
     expect(result.archiveScanSkipped).toBe('lock-held');
     expect(result.archiveFilesScanned).toBe(0);
     expect(archiveCalls).toEqual([]);
-    expect(lockCalls).toEqual(['acquire']); // jamais acquis → jamais relâché
+    expect(lockCalls.filter(([, key]) => key === ARCHIVE_SCAN_LOCK_KEY)).toEqual([
+      ['acquire', ARCHIVE_SCAN_LOCK_KEY],
+    ]); // jamais acquis → jamais relâché
     // Le reste de la passe est intact (contrôle positif).
     expect(result.parsedKeys).toBe(1);
   });
@@ -409,11 +413,12 @@ describe('roosync-dashboard-reconcile archive-scan (#3151 Phase C heal)', () => 
       fetchArchivedIds: fetchArchivedIdsDouble,
     });
     expect(result.archiveHealed).toBe(1);
-    expect(acquired).toHaveLength(1);
-    expect(acquired[0][0]).toBe(ARCHIVE_SCAN_LOCK_KEY);
+    const archiveAcquired = acquired.filter(([key]) => key === ARCHIVE_SCAN_LOCK_KEY);
+    expect(archiveAcquired).toHaveLength(1);
     // Le relâchement doit viser EXACTEMENT le holder posé (le store ne libère
-    // que si le détenteur correspond).
-    expect(released).toEqual([[ARCHIVE_SCAN_LOCK_KEY, acquired[0][1]]]);
+    // que si le détenteur correspond) — pour chaque verrou acquis, y compris
+    // le verrou de passe principale per-machine (#4850).
+    expect(released).toEqual(expect.arrayContaining(acquired));
   });
 
   // ms#1405 review, point 3 (one line): the truncation-fallback archive

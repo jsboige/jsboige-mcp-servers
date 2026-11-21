@@ -78,6 +78,15 @@
  * (`ROOSYNC_DASHBOARD_MIRROR_REPAIR=0`). Scoped to keys that still have a file:
  * a key present in PG with NO file at all is not materialised here.
  *
+ * MAIN-pass lock (#4850). The pass itself — one `dashboards` readdir then a
+ * read+parse per keyed file — ran unlocked in every dual-write RSM process on
+ * a host: 32 identical passes on ai-01, all started in the same reboot hour
+ * and re-fired on the same 6 h clock (measured 21/11). One process per MACHINE
+ * now holds the pass row (`dashboard-reconcile-main-pass:<machine>`, PG lock
+ * row with TTL, same contract as MIRROR_REPAIR_LOCK_KEY); the others return
+ * `mainPassSkipped: 'lock-held'` without reading a single file.
+ * `ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_LOCK=0` restores the old behaviour.
+ *
  * Env-gate: same flags as the dual-write (UNIFIED_STORE_DUAL_WRITE=1 +
  * UNIFIED_STORE_PG_URL) — reconciling into a Null writer is pure GDrive IO.
  */
@@ -205,6 +214,15 @@ export interface DashboardReconcileResult {
    * Absent = the scan ran (or had nothing to do).
    */
   archiveScanSkipped?: 'disabled' | 'lock-held';
+  /**
+   * Why the MAIN pass did not run this pass (#4850). `'lock-held'` = another
+   * RSM process of THIS machine holds the main-pass lock — one complete pass
+   * per machine and per window, not one per process (32 measured on ai-01);
+   * `'disabled'` = ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_LOCK=0. Absent = the
+   * pass ran, or the lock backend was unavailable and the pass ran unlocked
+   * (old behaviour — reported by its own WARN, never silent).
+   */
+  mainPassSkipped?: 'disabled' | 'lock-held';
   // ─── Mirror repair (PG → file, #4131 demande 2) ────────────────────────
   /**
    * Why the mirror repair did not run this pass. `'not-pg-primary'` = the file
@@ -410,6 +428,43 @@ export const ARCHIVE_SCAN_LOCK_KEY = 'dashboard-reconcile-archive-scan';
  * older than the TTL and steals it, so a dead process cannot wedge the heal.
  */
 export const ARCHIVE_SCAN_LOCK_TTL_MS = 30 * 60_000;
+
+// ─── Main-pass lock — one complete pass per MACHINE (#4850) ────────────────
+// Measured ai-01, 21/11: 32 RSM processes (all started in the same reboot
+// hour) each ran the FULL pass — one `dashboards` readdir, then a read+parse
+// per keyed file — 90 s after start and every 6 h, all on the same clock, with
+// NO lock. The two sub-passes already had fleet locks (archive scan, mirror
+// repair); the main pass, by far the largest G: reader, had none.
+//
+// Scope is PER MACHINE, unlike the two fleet-wide pass locks: each machine has
+// its OWN DriveFS mount (that local I/O is what the Maintenance tick measured),
+// and a single fleet-wide holder would leave every other seat unreconciled
+// whenever the holder's mount is the broken one. The row carries the machine
+// in its key, so 32 processes on one host contend while two hosts do not.
+
+/** Kill-switch — '0' restores the unlocked per-process pass (old behaviour). */
+export function isMainPassLockEnabled(): boolean {
+  return process.env.ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_LOCK !== '0';
+}
+
+/** Machine identity — same spelling as the holder payloads of the other locks. */
+function reconcileMachineId(): string {
+  return process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? 'unknown';
+}
+
+/**
+ * PG lock key for the main pass — one row per machine. An explicit parameter
+ * keeps the scoping assertable; production callers use the machine identity.
+ */
+export function mainPassLockKey(machine: string = reconcileMachineId()): string {
+  return `dashboard-reconcile-main-pass:${machine}`;
+}
+
+/**
+ * Same TTL bound as the other two pass locks: the 6 h cadence always outlives
+ * a crashed holder, so a dead process cannot wedge the next pass.
+ */
+export const MAIN_PASS_LOCK_TTL_MS = 30 * 60_000;
 
 /**
  * Condensation archive name shapes:
@@ -669,6 +724,50 @@ export async function reconcileDashboardsFromGDrive(
 
   const keyed = files.filter(isKeyedDashboardFile);
   result.filesScanned = keyed.length;
+
+  // ─── Main-pass lock — one complete pass per machine (#4850) ─────────────
+  // Acquired AFTER the readdir (a seat with no source must not pay a store
+  // connection for a pass that cannot work — ms#1550 reserve 3) and BEFORE
+  // the per-file reads, the expensive half: one read+parse per keyed file.
+  // A refused acquirer skips the whole pass — the winner is reading those
+  // same files. 'unavailable' (Null writer, test fake without the method)
+  // keeps the single-process behaviour: nothing to contend with.
+  let mainPassLockHolder: string | null = null;
+  if (!isMainPassLockEnabled()) {
+    result.mainPassSkipped = 'disabled';
+  } else {
+    const holderJson = JSON.stringify({
+      machine: reconcileMachineId(),
+      pid: process.pid,
+      at: new Date().toISOString(),
+    });
+    let lockStatus: RooSyncLockAcquireStatus = 'unavailable';
+    if (typeof writer.tryAcquireRooSyncDashboardLock === 'function') {
+      try {
+        lockStatus = await writer.tryAcquireRooSyncDashboardLock(
+          mainPassLockKey(),
+          holderJson,
+          MAIN_PASS_LOCK_TTL_MS
+        );
+      } catch (error) {
+        // This pass only READS: a broken lock backend degrades to the old
+        // unlocked behaviour (same contract as the archive scan) instead of
+        // losing the heal — and it says so, never silently.
+        logger.warn(
+          `[dashboard-reconcile] Main-pass lock acquire failed (${String(error)}) — pass runs unlocked`
+        );
+      }
+    }
+    if (lockStatus === 'held') {
+      result.mainPassSkipped = 'lock-held';
+      result.durationMs = Date.now() - startedAt;
+      logger.info(
+        '[dashboard-reconcile] pass skipped: another RSM process on this machine holds the main-pass lock (#4850)'
+      );
+      return result;
+    }
+    if (lockStatus === 'acquired') mainPassLockHolder = holderJson;
+  }
 
   // ─── Mirror-repair arming (PG → file, #4131 demande 2) ──────────────────
   // Only on a PG-primary seat: elsewhere the FILE is the truth and rewriting it
@@ -1308,6 +1407,17 @@ export async function reconcileDashboardsFromGDrive(
       // Same TTL backstop as the archive-scan lock.
       logger.warn(
         `[dashboard-reconcile] Mirror-repair lock release failed (${String(error)}) — the TTL will reap it`
+      );
+    }
+  }
+  if (mainPassLockHolder !== null) {
+    try {
+      await writer.releaseRooSyncDashboardLock?.(mainPassLockKey(), mainPassLockHolder);
+    } catch (error) {
+      // Same TTL backstop as the other pass locks: the next window steals an
+      // unreleased row, so a failed release only delays the next holder.
+      logger.warn(
+        `[dashboard-reconcile] Main-pass lock release failed (${String(error)}) — the TTL will reap it`
       );
     }
   }
