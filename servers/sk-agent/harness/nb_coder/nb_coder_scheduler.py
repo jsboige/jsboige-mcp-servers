@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 932e556f93b26e8eadb1dd91094351985f910f69
+# Copied verbatim from jsboige/vllm @ 443b38c0fae70f64aa46198d51bdb74357df1853
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_scheduler.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -101,8 +101,78 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _iso_to_epoch(stamp) -> float | None:
+    try:
+        return datetime.fromisoformat(str(stamp)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def process_identity(pid) -> tuple[float, str] | None:
+    """(create_time, command line) of a live process, None when gone or unreadable.
+
+    Needs psutil. Without it every probe answers None, so a restarted scheduler
+    marks its previous grains orphaned, which is the behaviour from before adoption.
+    """
+    try:
+        import psutil
+        p = psutil.Process(int(pid))
+        return p.create_time(), " ".join(p.cmdline())
+    except Exception:
+        return None
+
+
+# A driver started before the window opened, or after it closed, is another process
+# that reused the pid. psutil's create_time and our own `started` stamp are both
+# taken around the Popen call; the slack covers Windows process start-up time.
+ADOPT_START_SLACK_BEFORE_S = 5.0
+ADOPT_START_SLACK_AFTER_S = 120.0
+# The return code of a process we did not spawn is unknowable. The driver exits 0
+# exactly when its verdict ends with a DONE suffix (driver main()), so _reap
+# classifies an adopted driver on its verdict alone. This sentinel is never 0.
+ADOPTED_RC = -1
+
+
+class AdoptedDriver:
+    """A driver launched by a previous scheduler instance and still running.
+
+    It is not our child, so there is no Popen to poll. Its identity is the pid plus
+    the process create time read at adoption; poll() reports it finished as soon as
+    that pair no longer names a live process. Its output is the driver.log the
+    previous instance redirected it to, read from the offset recorded at launch.
+    """
+
+    def __init__(self, pid: int, create_time: float, log: str,
+                 log_offset: int | None, probe):
+        self.pid = pid
+        self._create_time = create_time
+        self._nb_driver_log = log
+        self._nb_log_offset = log_offset
+        self._probe = probe
+
+    def poll(self):
+        ident = self._probe(self.pid)
+        if ident is not None and abs(ident[0] - self._create_time) < 1.0:
+            return None
+        return ADOPTED_RC
+
+
 def grain_key(item: dict) -> str:
     return f"#{item['issue']}:{item['notebook']}"
+
+
+def grain_slug(item: dict) -> str:
+    """Per-GRAIN name for the run dir and the worktree: `<issue>-<8 hex of the notebook>`.
+
+    A lot issue carries several notebooks (CoursIA#27133: five Rust ports). Named
+    `issue-<N>` / `wt-<N>`, two grains of one lot shared one run dir (driver.log,
+    the built notebook and the verdict record overwritten) and one worktree: the
+    second driver's prepare_worktree reuses a tree that is still clean while the
+    first builds in it, then both write there. The hash keeps the Windows path short
+    (the CoursIA notebook paths are already long) and is stable across reloads."""
+    nb = "/".join(seg for seg in str(item["notebook"]).replace("\\", "/").split("/")
+                  if seg not in ("", "."))
+    return f"{item['issue']}-{hashlib.sha1(nb.encode('utf-8')).hexdigest()[:8]}"
 
 
 def _check_repo_rel_nb(lineno: int, field: str, nb) -> None:
@@ -180,7 +250,7 @@ def new_ramp(steps: list[int], now: float, fixed: bool = False) -> dict:
         "failed": 0,
         "deferred": 0,
         "first_green_ts": None,
-        "dirty": False,          # red or unknown seen since the step started
+        "dirty": False,          # red or unknown seen since the step started (evidence)
         "samples": 0,
         "green_samples": 0,
         "running_max": 0.0,
@@ -208,8 +278,9 @@ def _reset_step_counters(ramp: dict, now: float) -> None:
 class Scheduler:
     """Pure orchestration. spawn/gate/sleep/clock are injectable for offline tests."""
 
-    def __init__(self, args, spawn=None, gate=None, sleep=None, clock=None):
+    def __init__(self, args, spawn=None, gate=None, sleep=None, clock=None, probe=None):
         self.args = args
+        self.process_probe = probe or process_identity
         self.state_dir = Path(args.state_dir)
         self.state_path = self.state_dir / "state.json"
         self.journal_path = self.state_dir / "scheduler.jsonl"
@@ -302,19 +373,94 @@ class Scheduler:
         g.update({"status": "pending", "not_before": None, "attempts": 0,
                   "requeued": utcnow()})
 
+    def _legacy_driver_log(self, key: str, pid) -> str | None:
+        """driver.log of a grain launched before `driver_log` was recorded in the state.
+
+        Read from the journal's last `launched` event for this key and pid: its command
+        carries the --out-dir the driver was redirected to. Recomputing the command
+        instead would name the CURRENT layout, which a driver started by older code
+        does not write to.
+        """
+        found = None
+        try:
+            with open(self.journal_path, encoding="utf-8") as fh:
+                for line in fh:
+                    if '"launched"' not in line:
+                        continue
+                    try:
+                        ev = json.loads(line)
+                    except Exception:
+                        continue
+                    if ev.get("kind") == "launched" and ev.get("key") == key and ev.get("pid") == pid:
+                        found = ev.get("cmd")
+        except OSError:
+            return None
+        if found and "--out-dir" in found:
+            return str(Path(found[found.index("--out-dir") + 1]) / "driver.log")
+        return None
+
+    def _try_adopt(self, key: str, g: dict) -> str | None:
+        """Adopt a running grain's driver if it is still the process we launched.
+
+        Returns a reason string when adoption is refused, None once adopted.
+        """
+        pid = g.get("pid")
+        if not pid:
+            return "no pid recorded"
+        log = g.get("driver_log") or self._legacy_driver_log(key, pid)
+        if not log:
+            return "driver log unknown"
+        started = _iso_to_epoch(g.get("started"))
+        ident = self.process_probe(pid)
+        if ident is None:
+            # The driver is gone. Its verdict is in the log only if the offset of this
+            # attempt is known: from 0, a log appended across attempts could hand back
+            # an earlier attempt's last line.
+            if g.get("driver_log_offset") is None:
+                return "driver exited while no scheduler watched it; its attempt offset is unknown"
+            create_time = 0.0
+        else:
+            create_time, cmdline = ident
+            if "nb_coder_driver" not in cmdline:
+                return "pid reused by another program"
+            if started is None or not (started - ADOPT_START_SLACK_BEFORE_S
+                                       <= create_time
+                                       <= started + ADOPT_START_SLACK_AFTER_S):
+                return "pid reused by a process started outside the launch window"
+        proc = AdoptedDriver(pid, create_time, log, g.get("driver_log_offset"),
+                             self.process_probe)
+        item = self.items_by_key.get(key) or {"issue": g.get("issue"),
+                                              "notebook": g.get("notebook")}
+        self.active[key] = {"proc": proc, "item": item, "pid": pid,
+                            "started": started if started is not None else self.clock()}
+        g["adopted"] = True
+        self._event("adopted", key=key, pid=pid, alive=ident is not None, log=log,
+                    log_offset=g.get("driver_log_offset"))
+        return None
+
     def _reconcile_previous_runs(self) -> None:
         """A scheduler that died left 'running' entries it can no longer wait on.
 
-        They are marked orphaned, never silently relaunched: the child process may
-        still be alive and a duplicate driver on the same issue would collide on
-        worktree, claim and PR. Recovery is an explicit operator gesture.
+        A driver that is still the process we launched (same pid, a create time inside
+        the launch window, a driver command line) is ADOPTED: it is watched by pid and
+        its verdict read from its driver.log, so the scheduler can be restarted on new
+        code without waiting for the grains in flight. Measured 20/11: a driver
+        survives the death of the scheduler that launched it.
+
+        Anything else is marked orphaned, never silently relaunched: a duplicate
+        driver on the same grain would collide on worktree, claim and PR. Recovery
+        is then an explicit operator gesture.
         """
         for key, g in self.state["grains"].items():
-            if g.get("status") == "running":
-                g["status"] = "orphaned"
-                g["finished"] = utcnow()
-                self._event("orphaned", key=key, pid=g.get("pid"),
-                            note="previous scheduler instance died; inspect the driver trace before requeueing")
+            if g.get("status") != "running":
+                continue
+            refused = self._try_adopt(key, g)
+            if refused is None:
+                continue
+            g["status"] = "orphaned"
+            g["finished"] = utcnow()
+            self._event("orphaned", key=key, pid=g.get("pid"), reason=refused,
+                        note="previous scheduler instance died; inspect the driver trace before requeueing")
 
     # ---------------------------------------------------------------- driver/gate
     def _probe_gate(self) -> dict:
@@ -352,12 +498,18 @@ class Scheduler:
         if "--out-dir" in cmd:
             out_dir = Path(cmd[cmd.index("--out-dir") + 1])
             out_dir.mkdir(parents=True, exist_ok=True)
-            fh = open(out_dir / "driver.log", "ab")
+            log = out_dir / "driver.log"
+            # The log is appended across attempts. Reading it from the start made a
+            # relaunch that died without a verdict inherit the previous attempt's
+            # last JSON line (a deferral read as a deferral again, for instance).
+            offset = log.stat().st_size if log.is_file() else 0
+            fh = open(log, "ab")
             try:
                 proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT)
             finally:
                 fh.close()
-            proc._nb_driver_log = str(out_dir / "driver.log")   # reap-side marker
+            proc._nb_driver_log = str(log)          # reap-side marker
+            proc._nb_log_offset = offset
             return proc
         return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace")
@@ -365,8 +517,8 @@ class Scheduler:
     def driver_command(self, item: dict) -> list[str]:
         a = self.args
         from_spec = bool(item.get("from_spec", False))
-        out_dir = Path(a.out_root) / f"issue-{item['issue']}"
-        worktree = Path(a.worktree_root) / f"wt-{item['issue']}"
+        out_dir = Path(a.out_root) / f"issue-{grain_slug(item)}"
+        worktree = Path(a.worktree_root) / f"wt-{grain_slug(item)}"
         cmd = [sys.executable, str(a.driver),
                "--issue", str(item["issue"]), "--notebook", item["notebook"],
                "--repo", a.repo, "--out-dir", str(out_dir),
@@ -424,6 +576,13 @@ class Scheduler:
                 ramp[field] = v
         if verdict in ("red", "unknown"):
             ramp["dirty"] = True
+            # A red or unknown sample restarts the green window. It used to set a flag
+            # that blocked promotion for the rest of the step, and step 0 has no demotion
+            # to reset it: one unknown probe at 13:00 froze the ramp at its first step for
+            # the whole session (measured 20/11, "red/unknown seen at this step" while the
+            # gate had been green for hours). The step must now hold ramp_green_s of
+            # continuous green after its last red or unknown sample.
+            ramp["first_green_ts"] = None
             if verdict == "red" and not ramp.get("fixed") and self.args.ramp_demote \
                and ramp["step_index"] > 0:
                 old = ramp["max_active"]
@@ -437,6 +596,22 @@ class Scheduler:
                 self._event("ramp-demoted", reason="red-gate",
                             max_active=ramp["max_active"], previous=old)
 
+    def _step_failures(self, ramp: dict) -> int:
+        """Grains that failed during this step and are still failed.
+
+        A counter incremented at each failure kept a grain's failure as evidence after
+        the grain had been retried: CoursIA#27314 failed on a harness defect, the fix
+        was merged (#509) and the grain relaunched, and its failure still blocked the
+        promotion of step 0. The latest outcome of a grain is what counts; a retried
+        grain that fails again counts again. A failure recorded before this rule
+        carries no `ramp_failed_ts` and is not counted.
+        """
+        since = ramp.get("step_started") or 0
+        return sum(1 for g in self.state["grains"].values()
+                   if g.get("status") == "failed"
+                   and g.get("ramp_failed_ts") is not None
+                   and g["ramp_failed_ts"] >= since)
+
     def _maybe_promote(self, pending_count: int, now: float) -> None:
         ramp = self.state["ramp"]
         if ramp.get("fixed") or ramp["step_index"] >= len(ramp["steps"]) - 1:
@@ -446,10 +621,9 @@ class Scheduler:
         reasons = []
         if ramp["done"] < self.args.ramp_min_done:
             reasons.append(f"done {ramp['done']}/{self.args.ramp_min_done}")
+        ramp["failed"] = self._step_failures(ramp)
         if ramp["failed"] > self.args.ramp_max_failures:
             reasons.append(f"failures {ramp['failed']}>{self.args.ramp_max_failures}")
-        if ramp.get("dirty"):
-            reasons.append("red/unknown seen at this step")
         if green_s < self.args.ramp_green_s:
             reasons.append(f"green {max(green_s, 0):.0f}/{self.args.ramp_green_s}s")
         if pending_count <= 0:
@@ -473,9 +647,11 @@ class Scheduler:
         log = getattr(proc, "_nb_driver_log", None)
         if log:                                        # file-redirected real child
             try:
-                return Path(log).read_text(encoding="utf-8", errors="replace")
+                data = Path(log).read_bytes()
             except Exception:
                 return ""
+            offset = getattr(proc, "_nb_log_offset", None) or 0
+            return data[offset:].decode("utf-8", errors="replace")
         if hasattr(proc, "communicate"):               # piped Popen and test fakes
             try:
                 out, _ = proc.communicate(timeout=5)
@@ -521,6 +697,7 @@ class Scheduler:
                             elapsed_s=elapsed)
             else:
                 g["status"] = "failed"
+                g["ramp_failed_ts"] = now
                 ramp["failed"] += 1
                 self._event("failed", key=key, rc=rc, verdict=verdict,
                             elapsed_s=elapsed)
@@ -543,7 +720,11 @@ class Scheduler:
         g = self.state["grains"][key]
         g.update({"status": "running", "attempts": g.get("attempts", 0) + 1,
                   "started": utcnow(), "pid": getattr(proc, "pid", None),
-                  "not_before": None})
+                  "not_before": None,
+                  # what a restarted scheduler needs to adopt this driver
+                  "driver_log": getattr(proc, "_nb_driver_log", None),
+                  "driver_log_offset": getattr(proc, "_nb_log_offset", None)})
+        g.pop("adopted", None)
         self.active[key] = {"proc": proc, "item": item,
                             "pid": getattr(proc, "pid", None), "started": now}
         self.session_launches += 1

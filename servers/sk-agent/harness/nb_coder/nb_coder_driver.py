@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 932e556f93b26e8eadb1dd91094351985f910f69
+# Copied verbatim from jsboige/vllm @ 443b38c0fae70f64aa46198d51bdb74357df1853
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -170,7 +170,92 @@ def app_token(repo_dir: Path) -> str | None:
 
 
 # ---------------------------------------------------------------- stage 0
-def fetch_issue(slug: str, n: int, token: str | None) -> dict:
+# A lot issue (one issue, several notebooks) carries one `[SPEC-DRAFT]` comment per notebook,
+# each naming its own « Cible : `…ipynb` ». The prompts see the issue BODY (30 000 chars) and
+# only the TAIL of the thread (8 000 chars): on CoursIA#27133 that tail is the end of the
+# lot's LAST spec (Sudoku-05), so MGS-25 would have been built against another notebook's
+# plan. With a target, the target's own spec moves into the body and every other spec of
+# the lot leaves the thread, replaced by a line naming the notebook it specifies.
+SPEC_DRAFT_TAG = "[SPEC-DRAFT]"
+SPEC_DRAFT_TARGET_RE = re.compile(r"^[ \t>*-]*\**Cible\**[ \t]*:[ \t]*`([^`\n]+?\.ipynb)`", re.M)
+
+
+def spec_draft_target(body: str) -> str | None:
+    """The notebook a `[SPEC-DRAFT]` comment specifies (its first « Cible : `…` » line),
+    repo-relative and posix-normalized. None for any other comment, and for a spec
+    draft that names no target (it is then left in the thread as it was)."""
+    if not (body or "").lstrip().startswith(SPEC_DRAFT_TAG):
+        return None
+    m = SPEC_DRAFT_TARGET_RE.search(body)
+    return _norm_rel(m.group(1)) if m else None
+
+
+def _json_values(text: str) -> list:
+    """Concatenated JSON values (gh --paginate --jq prints one per line)."""
+    dec, i, out = json.JSONDecoder(), 0, []
+    text = text or ""
+    while True:
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text):
+            return out
+        v, i = dec.raw_decode(text, i)
+        out.append(v)
+
+
+def _thread_entry(c: dict, body: str | None = None) -> str:
+    return f"--- {c.get('login')} {c.get('created_at')}\n{c.get('body') if body is None else body}"
+
+
+def select_target_spec(issue: dict, comments: list[dict], target: str | None) -> dict:
+    """Rewrite ``issue`` body/thread for ``target`` and return what was decided.
+
+    status:
+      - ``no-target``         no target given: thread kept verbatim (pre-lot behavior)
+      - ``no-spec-comments``  the thread has no targeted spec draft: nothing changes
+      - ``selected``          the target's spec (the LATEST one if revised) joins the body
+      - ``none-for-target``   the lot has specs, none for this notebook: the caller refuses
+    """
+    specs = [(k, t) for k, c in enumerate(comments)
+             if (t := spec_draft_target(c.get("body") or ""))]
+    tgt = _norm_rel(target) if target else None
+    mine = [k for k, t in specs if t == tgt] if tgt else []
+    info: dict = {"status": "no-target" if not tgt else
+                  ("selected" if mine else ("none-for-target" if specs else "no-spec-comments")),
+                  "spec_comments": len(specs)}
+    if specs and tgt:
+        info["lot_targets"] = sorted({t for _, t in specs})
+    chosen = mine[-1] if mine else None
+    entries = []
+    for k, c in enumerate(comments):
+        t = next((t for kk, t in specs if kk == k), None)
+        if not tgt or t is None:
+            entries.append(_thread_entry(c))
+        elif k == chosen:
+            entries.append(_thread_entry(c, f"{SPEC_DRAFT_TAG} (spécification de ce carnet : "
+                                            "reportée en entier dans le corps ci-dessus)"))
+        elif t == tgt:
+            entries.append(_thread_entry(c, f"{SPEC_DRAFT_TAG} (version antérieure de la "
+                                            "spécification de ce carnet : remplacée par la "
+                                            "plus récente, reportée dans le corps)"))
+        else:
+            entries.append(_thread_entry(c, f"{SPEC_DRAFT_TAG} (spécification d'un AUTRE carnet "
+                                            f"du lot : `{t}` — omise, hors de ce grain)"))
+    issue["comments"] = "\n".join(entries)
+    if chosen is not None:
+        c = comments[chosen]
+        info.update({"comment_id": c.get("id"), "created_at": c.get("created_at"),
+                     "chars": len(c.get("body") or ""), "versions": len(mine)})
+        issue["body"] = (f"{issue.get('body') or ''}\n\n"
+                         f"## Spécification de ce carnet (commentaire {SPEC_DRAFT_TAG} "
+                         f"{c.get('id')} du {c.get('created_at')})\n\n{c.get('body') or ''}")
+    return info
+
+
+def fetch_issue(slug: str, n: int, token: str | None, target: str | None = None) -> dict:
+    """Issue body + thread. ``target`` (repo-relative notebook) scopes a lot issue's spec
+    drafts to that notebook — see select_target_spec. ``issue["spec_comment"]`` records
+    the decision; ``none-for-target`` must stop the run before any token is spent."""
     rc, out = gh(["api", f"repos/{slug}/issues/{n}",
                   "--jq", '{"title":.title,"state":.state,"body":(.body // ""),"labels":[.labels[].name]}'],
                  token)
@@ -178,8 +263,19 @@ def fetch_issue(slug: str, n: int, token: str | None) -> dict:
         raise RuntimeError(f"issue fetch failed rc={rc}: {out[:300]}")
     issue = json.loads(out)
     rc, out = gh(["api", f"repos/{slug}/issues/{n}/comments", "--paginate",
-                  "--jq", r'.[] | "--- \(.user.login) \(.created_at)\n\(.body)"'], token)
-    issue["comments"] = out if rc == 0 else f"(comments fetch failed rc={rc})"
+                  "--jq", '.[] | {id: .id, login: .user.login, created_at: .created_at, body: (.body // "")}'],
+                 token)
+    if rc != 0:
+        issue["comments"] = f"(comments fetch failed rc={rc})"
+        issue["spec_comment"] = {"status": "comments-unreadable"}
+        return issue
+    try:
+        comments = [c for c in _json_values(out) if isinstance(c, dict)]
+    except ValueError as e:
+        issue["comments"] = f"(comments unparsable: {e})"
+        issue["spec_comment"] = {"status": "comments-unreadable"}
+        return issue
+    issue["spec_comment"] = select_target_spec(issue, comments, target)
     return issue
 
 
@@ -849,7 +945,8 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
     code cells keep deriving from the plan, only prose is pinned to the twin)."""
     prose = ""
     if src_cells:
-        parts = []
+        parts, stripped = [], 0
+        footer = last_md_index(src_cells)
         for c in segment_cells:
             if not isinstance(c, dict) or c.get("cell_type") != "markdown":
                 continue
@@ -858,7 +955,12 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
             except (TypeError, ValueError):
                 continue
             if 0 <= i < len(src_cells):
-                t = _text(src_cells[i].get("source"))
+                # the pin must never carry what the coord-refs gate refuses (MGS-29);
+                # the footer cell keeps its links — the gate exempts it with its note
+                t, n = _text(src_cells[i].get("source")), 0
+                if i != footer:
+                    t, n = strip_coord_refs(t)
+                stripped += n
                 if t.strip():
                     parts.append(f"<cellule {i} — prose à recopier>\n{t[:2500]}")
         if parts:
@@ -868,6 +970,11 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                      "N'invente, ne traduis et ne reformule AUCUNE phrase — la prose "
                      "réinventée arrive corrompue (mesuré 17/11) :\n"
                      + "\n\n".join(parts)[:16000] + "\n")
+            if stripped:
+                prose += (f"({stripped} ligne(s) du jumeau portant une référence de "
+                          "coordination — Epic, lane, « voir #N » — ont été retirées de cette "
+                          "prose : ne les rétablis pas. La provenance ne vit qu'en note de pied "
+                          "de la dernière cellule, sous la forme `> Carnet issu de l'EPIC #N.`)\n")
     return (
         "TOUR 2 — CRÉATION, TRANCHE COURANTE : rends les sources COMPLÈTES des cellules "
         "listées ci-dessous, et rien d'autre. Le harnais assemble lui-même le fichier "
@@ -1105,6 +1212,41 @@ def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
     return errors
 
 
+def creation_plan_repair_prompt(errors: list[str], n_src_cells: int) -> str:
+    """Name the EXACT addressing constraint the corrected plan must satisfy.
+
+    CoursIA#27580 (20/11): MiniMax planned 24 cells for a 22-cell source — idx 22 and 23
+    address nothing. The plan is validated before any build call (CoursIA#27106), but
+    that defect then terminated the grain; one bounded re-ask can convert it into a
+    plan the harness can actually build.
+    """
+    last = n_src_cells - 1
+    reasons = "\n".join(f"- {e}" for e in errors)
+    return (
+        "TON PLAN NE PEUT PAS ÊTRE ADRESSÉ : le carnet source a exactement "
+        f"{n_src_cells} cellules, idx 0..{last}.\n{reasons}\n\n"
+        "Rends UNIQUEMENT un bloc ```json corrigé, de la MÊME forme que le plan :\n"
+        '{"stage":"plan","cells":[{"idx":<entier 0..' + str(last) + '>,'
+        '"cell_type":"markdown|code","titre":"<titre>","role":"<rôle en une phrase>"}]}\n'
+        "avec EXACTEMENT une entrée par cellule source, idx entiers distincts couvrant "
+        f"0..{last}, dans l'ordre — ni plus, ni moins."
+    )
+
+
+async def repair_creation_plan(session, args, rec: dict, conv: str | None,
+                               errors: list[str], n_src_cells: int) -> list | None:
+    """ONE bounded corrected-plan re-ask on the same conversation.
+
+    Returns the plan's cells, or None when nothing usable came back. The caller
+    re-validates: a repair that still overruns keeps the terminal verdict, with both
+    error sets recorded in rec['creation_plan_repair']."""
+    env = await sk_call_retry(session, args, rec, "1-plan-repair",
+                              creation_plan_repair_prompt(errors, n_src_cells), conv)
+    plan = parse_json_block(env.get("response") or "")
+    cells = (plan or {}).get("cells") or []
+    return cells or None
+
+
 async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
                           n_src_cells: int, conventions: str,
                           src_cells: list | None = None) -> dict:
@@ -1122,6 +1264,21 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     all_cells: list = []
     seg_reports: list = []
     addressing_errors = creation_plan_addressing(plan_cells, n_src_cells)
+    if addressing_errors and session is not None:
+        # ONE bounded repair re-ask before the terminal verdict (CoursIA#27580,
+        # 20/11: 3 of 7 recent attempts died on an overrunning plan while the
+        # defect is the cheapest one to state back). The repaired plan is
+        # re-validated; a still-unaddressable answer keeps the honest verdict
+        # with BOTH error sets recorded.
+        repaired = await repair_creation_plan(session, args, rec, conv,
+                                              addressing_errors, n_src_cells)
+        after = creation_plan_addressing(repaired or [], n_src_cells)
+        rec["creation_plan_repair"] = {"errors_before": addressing_errors,
+                                       "errors_after": after, "kept": not after}
+        if not after:
+            plan_cells[:] = repaired   # in place: rec['plan']['cells'] is this same list,
+                                       # so the trace carries the REPAIRED (built) plan
+        addressing_errors = after
     if addressing_errors:
         rec["verdict"] = "stage1-unaddressable-creation-plan"
         rec["creation_plan_addressing_errors"] = addressing_errors
@@ -1143,16 +1300,27 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         r = (env.get("response") or "").rstrip()
         return bool(r) and not (r.endswith("```") or r.endswith("}"))
 
+    def why_bisect(env: dict) -> str:
+        """'truncated', 'timeout' or '' — the two failures a smaller tranche can cure."""
+        if truncated(env):
+            return "truncated"
+        return "timeout" if call_timed_out(env) else ""
+
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
         kept, missing, part, env = await ask_tranche(seg, f"2-build+{si}")
         conv = env.get("conversation_id") or conv
         chars_first = len(env.get("response") or "")
-        if not part and truncated(env):
+        cause = "" if part else why_bisect(env)
+        if cause:
             # 18/11 wave-1c: two grains died here — the JSON was CUT mid-cell (raw
             # tails end inside a "source" string) because thinking counts toward
             # max_tokens. Bisect ONCE: halves the output AND the thinking a tour
             # needs; each half parses or the grain fails named, never silent.
+            # 20/11 conveyor (MGS-28, #27133): the same tour TIMED OUT instead — 8 Rust
+            # cells at ~25-35 tok/s per stream under 4-6 concurrent streams do not fit
+            # the model's 600 s request budget (x2 with the client's own retry: 1 201 s,
+            # 0 char). Half the tranche is half the output: the same cure.
             halves = [seg[:max(1, len(seg) // 2)], seg[max(1, len(seg) // 2):]]
             kept, missing, chars_first = [], [], 0
             for hi, half in enumerate(h for h in halves if h):
@@ -1162,10 +1330,12 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
                 if not hpart or not (hpart.get("cells") or []):
                     if gate_refusal(henv):
                         rec["verdict"] = gate_refusal(henv)   # scheduler defer contract
+                    elif truncated(henv):
+                        rec["verdict"] = f"stage2-truncated:{si}+h{hi}"
+                    elif call_timed_out(henv):
+                        rec["verdict"] = f"stage2-timeout:{si}+h{hi}"
                     else:
-                        rec["verdict"] = (f"stage2-truncated:{si}+h{hi}"
-                                          if truncated(henv)
-                                          else f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}")
+                        rec["verdict"] = f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}"
                     rec["stage2_raw_tail"] = (henv.get("response") or "")[-3000:]
                     return {}
                 kept += hkept
@@ -1173,6 +1343,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             kept.sort(key=lambda c: int(c["idx"]))
             missing.sort(key=lambda c: int(c["idx"]))
             rec.setdefault("bisected", []).append(si)
+            rec.setdefault("bisect_cause", {})[str(si)] = cause
         elif not part or not (part.get("cells") or []):
             if gate_refusal(env):
                 rec["verdict"] = gate_refusal(env)   # scheduler defer contract
@@ -1256,7 +1427,22 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 _FRAME_RES = (
     re.compile(r"\bat\s+Submission#\d+\.(?:<<)?([A-Za-z_]\w*)"),
     re.compile(r", line \d+, in ([A-Za-z_]\w*)"),
+    # evcxr backtrace: `3: ctx::run_woa`, `<ctx::Swarm>::step`, `ctx::f::{{closure}}` —
+    # user code lives in module `ctx`; the LAST plain path segment is the function.
+    re.compile(r"^\s*\d+:\s+<?ctx::(?:\w+>?::)*([A-Za-z_]\w*)", re.M),
 )
+# A Rust panic as evcxr prints it on stderr: `thread '<unnamed>' (64040) panicked at …`.
+_RUST_PANIC_RE = re.compile(r"thread '[^']*'(?: \(\d+\))? panicked at ")
+
+
+def rust_panic_text(outputs: list) -> str:
+    """The panic, from its first line on, if a stderr stream carries one; else ''.
+    Only stderr and only the panic signature: warnings on stderr never fail a cell."""
+    text = "".join(_text(o.get("text")) for o in outputs or []
+                   if isinstance(o, dict) and o.get("output_type") == "stream"
+                   and o.get("name") == "stderr")
+    m = _RUST_PANIC_RE.search(text)
+    return text[m.start():] if m else ""
 _FRAME_SKIP = frozenset({"Initialize", "MoveNext", "module", "lambda", "genexpr",
                          "listcomp", "dictcomp", "setcomp"})
 # Line citations that are relative to the FAILING cell: every .NET compiler diagnostic
@@ -1312,6 +1498,130 @@ def defining_cell(cells: list[dict], name: str, before: int) -> int | None:
     return None
 
 
+def source_cell(cells: list[dict], name: str, before: int) -> int | None:
+    """Index of the LAST code cell above `before` that declares OR binds `name`, or None.
+    For cascade detection only: a failed .NET or evcxr submission defines none of its
+    names, functions and `var` alike. `defining_cell` stays declarations-only, since the
+    stack frames it resolves name functions, never values."""
+    for j in range(min(before, len(cells)) - 1, -1, -1):
+        c = cells[j]
+        if c.get("cell_type") == "code":
+            src = _text(c.get("source"))
+            if declares(src, name) or binds(src, name):
+                return j
+    return None
+
+
+# A name the compiler or interpreter reports as nonexistent (#27302 attempt 2, 20/11).
+_UNDEFINED_NAME_RES = (
+    re.compile(r"error CS0103: (?:Le nom|The name) '(\w+)'"),
+    re.compile(r"error CS0246: (?:Le nom de type ou d'espace de noms|"
+               r"The type or namespace name) '(\w+)'"),
+    re.compile(r"NameError: name '(\w+)' is not defined"),
+    re.compile(r"error\[E04(?:12|25|33)\]: [^`\n]*`(\w+)`"),
+)
+
+
+def undefined_names(errors: str) -> list[str]:
+    """The names an error text says do not exist, in order of first mention."""
+    seen: list[str] = []
+    for rx in _UNDEFINED_NAME_RES:
+        for m in rx.finditer(errors or ""):
+            if m.group(1) not in seen:
+                seen.append(m.group(1))
+    return seen
+
+
+def cascade_roots(cells: list[dict], detail: list[dict]) -> dict[int, list[int]]:
+    """failing idx -> the EARLIER failing cells that declare a name it reports undefined.
+
+    #27302 attempt 2: cell 10 did not compile (a type the OR-Tools C# API lacks), so the
+    five functions it declares never existed and seven cells below failed with CS0103 on
+    them. Each round re-asked all of them (13, 12, 10 cells) and the root error survived
+    three rounds. A cell listed here fails because of its root: repairing it before the
+    root can only work around a definition that is about to change. Values count too
+    (#27314 attempt 1: cell 22 failed on `ARCHIVE` and `CERTIFICAT`, which cell 19 binds
+    with `var` and never ran)."""
+    failing = {d["idx"] for d in detail}
+    out: dict[int, list[int]] = {}
+    for d in detail:
+        roots = set()
+        for name in undefined_names(d.get("_raw_errors") or d.get("errors") or ""):
+            j = source_cell(cells, name, before=d["idx"])
+            if j is not None and j in failing:
+                roots.add(j)
+        if roots:
+            out[d["idx"]] = sorted(roots)
+    return out
+
+
+# What a failing cell USES (#27302, 20/11): every identifier outside strings and `//`
+# comments. Only names some upstream cell declares or binds ever matter (`using_cells`),
+# so the free names of the cell are filtered by the notebook itself; keywords are skipped
+# because `declares` would read `else if (` as a method named `if`.
+_IDENT_RE = re.compile(r"\b[A-Za-z_]\w+\b")
+_DQ_STRING_RE = re.compile(r'@?\$?"(?:[^"\\\n]|\\.)*"')
+# A compiler diagnostic names its own line: the cause is in the cell, not upstream.
+_COMPILE_ERROR_RE = re.compile(r"\(\d+,\d+\):\s*error\b|error\[E\d{4}\]|"
+                               r"\b(?:SyntaxError|IndentationError)\b")
+_USE_SKIP = frozenset(_CALL_LEADERS) | frozenset((
+    "nameof typeof sizeof default print len range str int float list dict set tuple super "
+    "self this base Self if elif else while for foreach do switch match when case return "
+    "break continue pass try catch except finally throw raise assert using import use mod "
+    "crate pub fn def class struct record enum interface trait impl type let mut var const "
+    "static readonly public private protected internal sealed abstract override virtual "
+    "async await yield lambda with global del is as not and or in out ref params new true "
+    "false null None True False void object string char bool byte long double decimal short "
+    "uint ulong usize isize i32 i64 u8 u32 u64 f32 f64 get value loop where").split())
+
+
+def used_names(source: str) -> list[str]:
+    """Identifiers a cell uses outside strings and comments, in order of first use."""
+    names: list[str] = []
+    for line in (source or "").split("\n"):
+        code = _DQ_STRING_RE.sub(" ", line)              # strings first: "https://…"
+        code = code.split("//", 1)[0]
+        for m in _IDENT_RE.finditer(code):
+            n = m.group(0)
+            if n not in _USE_SKIP and n not in names:
+                names.append(n)
+    return names
+
+
+def binds(source: str, name: str) -> bool:
+    """Does this cell BIND `name` as a value (`var TEMOINS = …`, `G = …`, `let mut g = …`)?
+    Complements `declares` for data: a witness graph built upstream is a value, not a
+    function. A false positive only widens a repair round's offer by one cell."""
+    n = re.escape(name)
+    return re.search(
+        rf"^\s*(?:(?:var|let|mut|const|static|readonly|public|private|internal)\s+"
+        rf"|[\w<>\[\],?.]+\s+)*{n}\s*(?::[^=\n]+)?=(?![=>])", source or "", re.M) is not None
+
+
+def using_cells(cells: list[dict], failing_idx: int, limit: int,
+                exclude: set[int] | frozenset[int] = frozenset()) -> list[tuple[int, list[str]]]:
+    """Upstream code cells that declare or bind what the failing cell uses, ranked by how
+    many of its names each defines (then nearest first). Names the failing cell declares
+    itself are its own business; `exclude` cells (already shown as failing) are skipped,
+    and the search for that name continues further up."""
+    src = _text(cells[failing_idx].get("source")) if failing_idx < len(cells) else ""
+    found: dict[int, list[str]] = {}
+    for name in used_names(src):
+        if declares(src, name) or binds(src, name):
+            continue
+        for j in range(min(failing_idx, len(cells)) - 1, -1, -1):
+            c = cells[j]
+            if c.get("cell_type") != "code":
+                continue
+            s = _text(c.get("source"))
+            if declares(s, name) or binds(s, name):
+                if j not in exclude:
+                    found.setdefault(j, []).append(name)
+                break
+    ranked = sorted(found.items(), key=lambda kv: (-len(kv[1]), -kv[0]))
+    return ranked[:limit]
+
+
 def cap_source(src: str, cap: int = REPAIR_SOURCE_CAP) -> str:
     """The cell's source for a repair round: whole up to `cap`, else head + tail around an
     explicit marker — never a silent cut (the model is asked for the COMPLETE source)."""
@@ -1341,8 +1651,459 @@ def cited_lines(source: str, errors: str, limit: int = 6) -> list[tuple[int, str
     return out
 
 
+# ---- Crate API grounding (Rust; MGS-25 #27133 + 2.3b #27134, 20/11) ----------------------
+# MGS-25 spent three repair rounds on `rng.next_f64()` under `:dep rand = "0.10"`. The
+# compiler's only hint was "there is a method `next_u64`"; the model's memory of rand stops
+# at 0.8, and rand 0.10 moved sampling to the extension trait `RngExt` (`random`,
+# `random_range`). 2.3b failed the same way on linfa (`GaussianNb::params()`, not
+# `default()`) and plotters (`BitMapBackend`, behind the `bitmap_backend` feature). The
+# kernel compiled exact crate sources that sit in the local cargo registry: a round that
+# quotes them teaches what the compiler hint cannot.
+CRATE_API_CAP = 3200
+CRATE_API_MAX_CRATES = 3
+_DEP_LINE_RE = re.compile(r"^\s*:dep\s+([A-Za-z0-9_-]+)\s*=\s*(.+?)\s*$", re.M)
+_CRATE_DIR_RE = re.compile(r"^([A-Za-z0-9_-]+?)-(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$")
+_RUST_API_ERR_RES = (
+    ("method", re.compile(r"no method named `(\w+)` found for [\w ]*?`([^`]+)`")),
+    ("assoc", re.compile(r"no (?:associated function or constant|associated function|"
+                         r"associated item|function or associated item|"
+                         r"variant or associated item|variant) named `(\w+)` found for "
+                         r"[\w ]*?`([^`]+)`")),
+    ("name", re.compile(r"cannot find (?:type|value|function|struct|macro|trait|"
+                        r"struct, variant or union type|derive macro|attribute macro) "
+                        r"`(\w+)` in (?:this scope|module `([^`]+)`|crate `([^`]+)`)")),
+    ("name", re.compile(r"use of undeclared type `(\w+)`")),
+    ("import", re.compile(r"unresolved import `([\w:]+)`")),
+    ("import", re.compile(r"could not find `(\w+)` in `([\w:]+)`")),
+)
+
+
+def _crate_norm(name: str) -> str:
+    return (name or "").replace("-", "_").lower()
+
+
+def cell_deps(cells: list[dict]) -> dict[str, dict]:
+    """`:dep` declarations of an evcxr notebook: name -> {req, features, default_features,
+    idx}. `:dep x = "0.10"` and `:dep x = { version = "0.3", default-features = false,
+    features = ["evcxr"] }`; path/git deps carry no registry version (req None)."""
+    out: dict[str, dict] = {}
+    for idx, c in enumerate(cells):
+        if c.get("cell_type") != "code":
+            continue
+        for m in _DEP_LINE_RE.finditer(_text(c.get("source"))):
+            name, spec = m.group(1), m.group(2)
+            req, feats, dflt = None, [], True
+            if spec.startswith('"'):
+                req = spec.strip('"').strip()
+            else:
+                v = re.search(r'\bversion\s*=\s*"([^"]+)"', spec)
+                req = v.group(1) if v else None
+                f = re.search(r"\bfeatures\s*=\s*\[([^\]]*)\]", spec)
+                feats = re.findall(r'"([^"]+)"', f.group(1)) if f else []
+                d = re.search(r"\bdefault[-_]features\s*=\s*(true|false)", spec)
+                dflt = not (d and d.group(1) == "false")
+            out.setdefault(name, {"req": req, "features": feats, "default_features": dflt,
+                                  "idx": idx})
+    return out
+
+
+def _req_matches(req: str | None, ver: tuple[int, int, int]) -> bool:
+    """Cargo's default (caret) requirement, plus `=`, `~`, `>=` and `*`."""
+    r = (req or "*").split(",")[0].strip()
+    if r in ("", "*"):
+        return True
+    op = ""
+    for o in (">=", "^", "=", "~"):
+        if r.startswith(o):
+            op, r = o, r[len(o):].strip()
+            break
+    m = re.match(r"(\d+)(?:\.(\d+|\*))?(?:\.(\d+|\*))?", r)
+    if not m:
+        return False
+    parts = [int(x) if x and x != "*" else None for x in m.groups()]
+    floor = tuple(p or 0 for p in parts)
+    if op == ">=":
+        return ver >= floor
+    if op == "=":
+        return all(p is None or p == v for p, v in zip(parts, ver))
+    if ver < floor:
+        return False
+    maj, mnr, pat = parts
+    if op == "~":
+        return ver[0] == maj and (mnr is None or ver[1] == mnr)
+    if maj > 0:
+        return ver[0] == maj
+    if mnr is None:
+        return ver[0] == 0
+    if mnr > 0:
+        return ver[:2] == (0, mnr)
+    return ver[:2] == (0, 0) if pat is None else ver == (0, 0, pat)
+
+
+def cargo_registry_roots() -> list[Path]:
+    home = Path(os.environ.get("CARGO_HOME") or (Path.home() / ".cargo"))
+    src = home / "registry" / "src"
+    return sorted(p for p in src.iterdir() if p.is_dir()) if src.is_dir() else []
+
+
+def registry_crate_dir(name: str, req: str | None,
+                       roots: list[Path] | None = None) -> tuple[Path, str] | None:
+    """The highest stable version of `name` in the local cargo registry that `req` accepts —
+    the copy evcxr resolved and compiled on this host — as (dir, "X.Y.Z")."""
+    best: tuple[tuple[int, int, int], Path] | None = None
+    for root in roots if roots is not None else cargo_registry_roots():
+        for d in root.iterdir():
+            m = _CRATE_DIR_RE.match(d.name)
+            if not m or m.group(5) or _crate_norm(m.group(1)) != _crate_norm(name):
+                continue
+            ver = (int(m.group(2)), int(m.group(3)), int(m.group(4)))
+            if _req_matches(req, ver) and (best is None or ver > best[0]):
+                best = (ver, d)
+    return (best[1], ".".join(map(str, best[0]))) if best else None
+
+
+def rust_api_errors(errors: str) -> list[dict]:
+    """API misses a rustc diagnostic names: {kind, item, owner, crate}. `owner` is the type a
+    method/associated item was looked up on, generics and path stripped; `crate` is the
+    path's first segment when the diagnostic spells one (`plotters::series::LineSeries`)."""
+    text = _ANSI_RE.sub("", errors or "")
+    out: list[dict] = []
+    for kind, rx in _RUST_API_ERR_RES:
+        for m in rx.finditer(text):
+            g = [x for x in m.groups()]
+            item, owner, path = g[0], None, None
+            if kind in ("method", "assoc"):
+                full = re.sub(r"<.*$", "", g[1]).lstrip("&").strip()
+                full = re.sub(r"^(?:mut|dyn|impl)\s+", "", full)
+                segs = full.split("::")
+                owner, path = segs[-1], (full if len(segs) > 1 else None)
+            elif kind == "name":
+                path = next((x for x in g[1:] if x), None)
+            elif kind == "import":
+                if len(g) > 1 and g[1]:
+                    path = g[1]
+                else:
+                    segs = item.split("::")
+                    item, path = segs[-1], ("::".join(segs[:-1]) or None)
+            e = {"kind": kind, "item": item, "owner": owner,
+                 "crate": path.split("::")[0] if path else None}
+            if e not in out:
+                out.append(e)
+    return out
+
+
+def _crate_files(crate_dir: Path) -> list[tuple[str, list[str]]]:
+    """(relpath, lines) of the crate's library sources, tests/benches/examples excluded."""
+    src = crate_dir / "src"
+    out = []
+    for p in sorted(src.rglob("*.rs")) if src.is_dir() else []:
+        rel = p.relative_to(crate_dir).as_posix()
+        if re.search(r"(^|/)(tests?|benches|examples)(/|\.rs$)", rel[4:]):
+            continue
+        try:
+            out.append((rel, p.read_text(encoding="utf-8", errors="replace").split("\n")))
+        except OSError:
+            continue
+    return out
+
+
+def _code_part(line: str) -> str:
+    """The line without `//` comments and string/char literals (for brace counting)."""
+    s = re.sub(r'"(?:[^"\\]|\\.)*"', '""', line)
+    s = re.sub(r"'(?:\\.|[^'\\])'", "''", s)
+    return s.split("//", 1)[0]
+
+
+def _signature(lines: list[str], i: int) -> str:
+    """One declaration, joined over up to 5 lines, cut before its body or `where` clause."""
+    buf = []
+    for line in lines[i:i + 5]:
+        buf.append(_code_part(line).strip())
+        if re.search(r"[{;]", buf[-1]) or re.search(r"^\s*where\b", buf[-1]):
+            break
+    sig = re.sub(r"\s+", " ", " ".join(buf))
+    sig = re.split(r"\s*\{|\s+where\b|;", sig)[0].replace("( ", "(").replace(" )", ")")
+    return sig[:220]
+
+
+def _block_end(lines: list[str], i: int) -> int:
+    """Index of the line closing the `{` block opened at (or just after) line i."""
+    depth, opened = 0, False
+    for j in range(i, len(lines)):
+        code = _code_part(lines[j])
+        depth += code.count("{") - code.count("}")
+        opened = opened or "{" in code
+        if opened and depth <= 0:
+            return j
+    return len(lines) - 1
+
+
+def _feature_gates(lines: list[str], i: int) -> list[str]:
+    """Features of the `#[cfg(feature = "...")]` attributes right above line i."""
+    gates: list[str] = []
+    j = i - 1
+    while j >= 0 and re.match(r"^\s*(#\[|///|//!|$)", lines[j]) and lines[j].strip():
+        if re.match(r"^\s*#\[cfg\(", lines[j]):
+            gates += re.findall(r'feature\s*=\s*"([^"]+)"', lines[j])
+        j -= 1
+    return gates
+
+
+def _module_path(crate: str, rel: str, lines: list[str], i: int) -> str:
+    """`crate::a::b` of the item at line i: file path + enclosing inline `mod x {`."""
+    mods = [m for m in rel[4:-3].split("/") if m not in ("lib", "mod", "main")]
+    inline: list[str] = []
+    depth = 0
+    for j in range(i - 1, -1, -1):
+        code = _code_part(lines[j])
+        depth += code.count("}") - code.count("{")
+        if depth < 0:
+            m = re.match(r"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)", code)
+            if m:
+                inline.insert(0, m.group(1))
+            depth = 0
+    return "::".join([_crate_norm(crate)] + mods + inline)
+
+
+def _crate_features(crate_dir: Path) -> dict[str, list[str]]:
+    try:
+        toml = (crate_dir / "Cargo.toml").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    m = re.search(r"^\[features\]\s*$(.*?)(?=^\[|\Z)", toml, re.M | re.S)
+    if not m:
+        return {}
+    return {k: re.findall(r'"([^"]+)"', v)
+            for k, v in re.findall(r"^([A-Za-z0-9_-]+)\s*=\s*\[(.*?)\]", m.group(1), re.M | re.S)}
+
+
+def _enabled_features(spec: dict, table: dict[str, list[str]]) -> set[str]:
+    todo = list(spec.get("features") or []) + (["default"] if spec.get("default_features", True)
+                                              else [])
+    seen: set[str] = set()
+    while todo:
+        f = todo.pop()
+        if f in seen:
+            continue
+        seen.add(f)
+        todo.extend(x for x in table.get(f, []) if x in table)
+    return seen
+
+
+_PUB_DEF_RE = r"^\s*pub(?:\([^)]*\))?\s+(?:struct|enum|type|trait|union)\s+{n}\b"
+# What DECLARES or re-exports a name; the broad form (any `pub` line naming it, e.g. a
+# return type) is only the fallback when nothing declares it.
+_PUB_NAME_RE = (r"^\s*pub(?:\([^)]*\))?\s+(?:use\s+[^;]*\b{n}\b|(?:struct|enum|type|trait|"
+                r"union|fn|mod|const|static)\s+{n}\b)")
+
+
+def _find_name(files, item: str, limit: int = 3):
+    n = re.escape(item)
+    return (_find(files, _PUB_NAME_RE.format(n=n), re.I, limit=limit)
+            or _find(files, rf"^\s*pub\b.*\b{n}\b", re.I, limit=limit))
+
+
+def _find(files, pattern: str, flags: int = 0, limit: int = 4):
+    rx = re.compile(pattern, flags)
+    hits = []
+    for rel, lines in files:
+        for i, line in enumerate(lines):
+            if not line.lstrip().startswith("//") and rx.search(line):
+                hits.append((rel, lines, i))
+                if len(hits) >= limit:
+                    return hits
+    return hits
+
+
+def _impl_header_type(header: str) -> tuple[str | None, str | None]:
+    """(trait, self type name) of an `impl<...> Trait for Type<...>` header line."""
+    h = _code_part(header).strip()
+    if not h.startswith("impl"):
+        return None, None
+    h = h[4:].lstrip()
+    if h.startswith("<"):                        # skip the balanced generic list
+        depth = 0
+        for k, ch in enumerate(h):
+            depth += (ch == "<") - (ch == ">")
+            if depth == 0:
+                h = h[k + 1:].lstrip()
+                break
+    m = re.match(r"(?:(.+?)\s+for\s+)?&?(?:mut\s+)?([\w:]+)", h)
+    if not m:
+        return None, None
+    trait = re.sub(r"<.*$", "", m.group(1)).split("::")[-1] if m.group(1) else None
+    return trait, m.group(2).split("::")[-1]
+
+
+def _qualified_fn(lines: list[str], i: int) -> str:
+    """`Type::name(…)` for a method, from the nearest enclosing less-indented `impl`."""
+    sig = re.sub(r"^pub(?:\([^)]*\))?\s+(?:const\s+)?(?:unsafe\s+)?fn\s+", "",
+                 _signature(lines, i))
+    indent = len(lines[i]) - len(lines[i].lstrip())
+    for j in range(i - 1, -1, -1):
+        line = lines[j]
+        if line.strip() and len(line) - len(line.lstrip()) < indent:
+            if re.match(r"^\s*impl\b", line):
+                trait, ty = _impl_header_type(_signature(lines, j))
+                if ty:
+                    return f"{ty}::{sig}"
+            if re.match(r"^\s*(?:pub\s+)?(?:mod|fn|trait)\b", line):
+                break
+    return f"fn {sig}"
+
+
+def _owner_api(files, owner: str) -> list[str]:
+    """Inherent `pub fn` signatures of `owner` and the traits it implements."""
+    out, traits = [], []
+    for rel, lines in files:
+        for i, line in enumerate(lines):
+            if not re.match(r"^\s*impl\b", line) or owner not in line:
+                continue
+            trait, ty = _impl_header_type(_signature(lines, i))
+            if ty != owner:
+                continue
+            if trait:
+                if trait not in traits:
+                    traits.append(trait)
+                continue
+            end = _block_end(lines, i)
+            for k in range(i + 1, end):
+                if re.match(r"^\s*pub(?:\([^)]*\))?\s+(?:const\s+)?(?:unsafe\s+)?fn\s+\w+",
+                            lines[k]):
+                    sig = re.sub(r"^pub(?:\([^)]*\))?\s+(?:const\s+)?(?:unsafe\s+)?fn\s+",
+                                 "", _signature(lines, k))
+                    out.append(f"  {owner}::{sig}   [{rel}:{k + 1}]")
+    if traits:
+        out.append(f"  {owner} implémente : {', '.join(traits[:12])}")
+    return out[:14]
+
+
+def _extension_traits(files, crate: str) -> list[str]:
+    """Methods of the traits the crate DEFINES and re-exports at its root (`pub use
+    rng::{Fill, RngExt}`): an extension trait must be imported for its methods to exist."""
+    lib = next((ls for rel, ls in files if rel == "src/lib.rs"), [])
+    names: list[str] = []
+    for line in lib:
+        if re.match(r"^pub use\b", line):
+            names += [n for n in re.findall(r"\b([A-Z]\w*)\b", line) if n not in names]
+    out = []
+    for n in names:
+        for rel, lines, i in _find(files, rf"^\s*pub\s+trait\s+{re.escape(n)}\b", limit=1):
+            end = _block_end(lines, i)
+            meths = [f"    {_signature(lines, k)}" for k in range(i + 1, end)
+                     if re.match(r"^\s{4}fn\s+\w+", lines[k])]
+            if meths:
+                out.append(f"  trait {_crate_norm(crate)}::{n} (à importer : "
+                           f"`use {_crate_norm(crate)}::{n};`) [{rel}:{i + 1}]")
+                out += meths[:9]
+    return out[:22]
+
+
+def crate_api_block(cells: list[dict], errors: list[str],
+                    roots: list[Path] | None = None) -> tuple[str, dict]:
+    """The REAL API of the crates a Rust repair round's errors touch, quoted from the
+    registry copy the kernel compiled. Returns (block, info) — info = {crates, dep_cell,
+    gated, unknown} for the round record; ("", {}) when nothing applies."""
+    deps = cell_deps(cells)
+    errs: list[dict] = []
+    for t in errors:
+        errs += [e for e in rust_api_errors(t) if e not in errs]
+    if not deps or not errs:
+        return "", {}
+    resolved: dict[str, tuple[Path, str]] = {}
+    for name, spec in deps.items():
+        hit = registry_crate_dir(name, spec["req"], roots)
+        if hit:
+            resolved[name] = hit
+    if not resolved:
+        return "", {}
+    files_of: dict[str, list] = {}
+
+    def files(name):
+        if name not in files_of:
+            files_of[name] = _crate_files(resolved[name][0])
+        return files_of[name]
+
+    by_norm = {_crate_norm(n): n for n in resolved}
+    per_crate: dict[str, list[dict]] = {}
+    unknown: list[str] = []
+    for e in errs:
+        target = by_norm.get(_crate_norm(e["crate"])) if e["crate"] else None
+        key = e["owner"] or e["item"]
+        if target is None:
+            for name in resolved:
+                if e["kind"] in ("method", "assoc"):
+                    if _find(files(name), _PUB_DEF_RE.format(n=re.escape(key)), limit=1):
+                        target = name
+                        break
+                elif _find_name(files(name), e["item"], limit=1):
+                    target = name
+                    break
+        if target is not None:
+            per_crate.setdefault(target, []).append(e)
+        elif (e["kind"] in ("name", "import") and e["item"][:1].isupper()
+              and not any(c.get("cell_type") == "code"
+                          and (declares(_text(c.get("source")), e["item"])
+                               or binds(_text(c.get("source")), e["item"]))
+                          for c in cells) and e["item"] not in unknown):
+            unknown.append(e["item"])
+    if not per_crate and not unknown:
+        return "", {}
+    parts: list[str] = []
+    gated: list[str] = []
+    for name in list(per_crate)[:CRATE_API_MAX_CRATES]:
+        crate_dir, version = resolved[name]
+        spec, fl = deps[name], files(name)
+        table = _crate_features(crate_dir)
+        enabled = _enabled_features(spec, table)
+        lines = [f"crate {name} {version} — `:dep` demande "
+                 f"\"{spec['req']}\" (cellule {spec['idx']})"]
+        for e in per_crate[name]:
+            if e["kind"] in ("method", "assoc"):
+                lines.append(f"- `{e['owner']}` n'a pas `{e['item']}` ; ce qui existe :")
+                for rel, ls, i in _find(fl, _PUB_DEF_RE.format(n=re.escape(e["owner"])),
+                                        limit=1):
+                    lines.append(f"  {_signature(ls, i)}   [{rel}:{i + 1}]")
+                lines += _owner_api(fl, e["owner"])
+                if e["kind"] == "method":
+                    lines += _extension_traits(fl, name)
+                near = _find(fl, rf"^\s*pub\s+fn\s+(?:\w+_)?{re.escape(e['item'])}(?:_\w+)?\b",
+                             re.I, limit=4)
+                lines += [f"  voisin : {_qualified_fn(ls, i)}   [{rel}:{i + 1}]"
+                          for rel, ls, i in near]
+            else:
+                hits = _find_name(fl, e["item"])
+                lines.append(f"- `{e['item']}` introuvable tel quel ; dans les sources :")
+                for rel, ls, i in hits:
+                    gates = _feature_gates(ls, i)
+                    off = [g for g in gates if g not in enabled]
+                    gated += [g for g in off if g not in gated]
+                    lines.append(f"  {_signature(ls, i)}   [{rel}:{i + 1}, chemin "
+                                 f"{_module_path(name, rel, ls, i)}"
+                                 + (f", feature {', '.join(gates)}"
+                                    + (" NON activée" if off else " activée") if gates else "")
+                                 + "]")
+        if table:
+            lines.append(f"  features de {name} : {', '.join(sorted(table)[:30])} ; "
+                         f"activées ici : {', '.join(sorted(f for f in enabled if f in table)) or 'aucune'}")
+        parts.append("\n".join(dict.fromkeys(lines)))
+    if unknown:
+        parts.append(f"Introuvables dans les sources de {', '.join(resolved)} : "
+                     + ", ".join(f"`{u}`" for u in unknown)
+                     + " — ces noms n'existent pas dans ces versions, ne les utilise pas.")
+    block = "\n\n".join(parts)
+    if len(block) > CRATE_API_CAP:
+        block = block[:CRATE_API_CAP].rsplit("\n", 1)[0] + "\n[… extrait tronqué …]"
+    used = list(per_crate)[:CRATE_API_MAX_CRATES]
+    dep_cells = sorted({deps[n]["idx"] for n in used})
+    return block, {"crates": [f"{n} {resolved[n][1]}" for n in used],
+                   "dep_cell": dep_cells[0] if dep_cells else None,
+                   "gated": gated, "unknown": unknown}
+
+
 def repair_prompt(failing: list[dict], conventions: str = "",
-                  upstream: list[dict] | None = None) -> str:
+                  upstream: list[dict] | None = None,
+                  deferred: list[dict] | None = None, crate_api: str = "") -> str:
     """One repair round: the REAL kernel errors of the failing cells (line + cause, as
     persisted by execution) and a demand for corrected FULL sources of those cells only.
     Measured on #27099 attempt 3: the model ports Python idioms that do not exist in the
@@ -1352,7 +2113,11 @@ def repair_prompt(failing: list[dict], conventions: str = "",
     ``upstream`` (#27314, 20/11): cells ABOVE the failing ones whose definitions the error's
     stack trace crosses. The exception raised in `Decouper` (cell 8) surfaced in cell 16;
     a round that may only rewrite cell 16 can work around the call, never fix its cause.
-    They are offered as optional edits, never demanded."""
+    They are offered as optional edits, never demanded.
+
+    ``deferred`` (#27302, 20/11): failing cells held back this round because they fail on
+    names an earlier failing cell declares. They are named, not shown: the model must keep
+    those names defined, and must not rewrite the cells around a definition it is fixing."""
     blocks = []
     for f in failing:
         cites = f.get("cited") or []
@@ -1361,21 +2126,60 @@ def repair_prompt(failing: list[dict], conventions: str = "",
         blocks.append(f"### Cellule {f['idx']} (code)\nSOURCE ACTUELLE :\n{f['source']}\n\n"
                       f"ERREURS RÉELLES (compilation/exécution sur le noyau de la série) :\n"
                       f"{f['errors']}{cite_txt}")
+    api_txt = ("\n\nAPI RÉELLE DES CRATES — extraite des sources exactes que le noyau a "
+               "compilées (registre cargo local). Ta mémoire de ces crates peut dater d'une "
+               "autre version : là où elle diverge de ces signatures, ce sont elles qui font "
+               "foi (imports, noms, features).\n" + crate_api) if crate_api else ""
     up = upstream or []
+    dep_up = [u for u in up if u.get("via") == "dep"]
+    up = [u for u in up if u.get("via") != "dep"]
     up_txt = ""
     if up:
+        def _why(u: dict) -> str:
+            if u.get("via") == "use":
+                return f"utilisé par la cellule {u['for']}"
+            return f"traversé par la trace de la cellule {u['for']}"
         up_blocks = [f"### Cellule {u['idx']} (code, AMONT — définit {', '.join(u['names'])}, "
-                     f"traversé par la trace de la cellule {u['for']})\n"
-                     f"SOURCE ACTUELLE :\n{u['source']}" for u in up]
-        up_txt = ("\n\nCELLULES AMONT — la trace d'erreur traverse ces définitions. Si la "
-                  "cause est là (exception levée ou comportement divergent du jumeau dans une "
-                  "fonction définie plus haut), corrige-la ICI plutôt que de contourner "
-                  "l'appel ; sinon ne les rends pas.\n\n" + "\n\n".join(up_blocks))
+                     f"{_why(u)})\nSOURCE ACTUELLE :\n{u['source']}" for u in up]
+        by_use = any(u.get("via") == "use" for u in up)
+        up_txt = ("\n\nCELLULES AMONT — la trace d'erreur traverse ces définitions"
+                  + (", ou la cellule en échec les utilise (une assertion qui échoue désigne "
+                     "souvent une donnée ou une fonction définie plus haut)" if by_use else "")
+                  + ". Si la cause est là (exception levée, donnée fausse ou comportement "
+                  "divergent du jumeau dans une définition plus haut), corrige-la ICI plutôt "
+                  "que de contourner l'appel ou d'affaiblir le test ; sinon ne les rends pas."
+                  "\n\n" + "\n\n".join(up_blocks))
+    if dep_up:
+        up_txt += ("\n\nCELLULE DES DÉPENDANCES — elle fixe versions et features des crates "
+                   "ci-dessus. Rends-la seulement si la correction l'exige (feature à activer, "
+                   "autre version), et adapte alors les cellules qui en dépendent.\n\n"
+                   + "\n\n".join(f"### Cellule {u['idx']} (code, `:dep` — "
+                                 f"{', '.join(u['names'])})\nSOURCE ACTUELLE :\n{u['source']}"
+                                 for u in dep_up))
+        up = up + dep_up
+    dfr_txt = ""
+    if deferred:
+        by_root: dict[int, list[dict]] = {}
+        for x in deferred:
+            for r in x["roots"]:
+                by_root.setdefault(r, []).append(x)
+        lines = []
+        for r in sorted(by_root):
+            names = sorted({n for x in by_root[r] for n in x["names"]})
+            cells = ", ".join(str(x["idx"]) for x in sorted(by_root[r], key=lambda x: x["idx"]))
+            lines.append(f"- cellule {r} : doit continuer à définir {', '.join(names)} "
+                         f"(utilisés par les cellules {cells})")
+        waiting = ", ".join(str(x["idx"]) for x in sorted(deferred, key=lambda x: x["idx"]))
+        dfr_txt = (f"\n\nCELLULES EN ATTENTE ({waiting}) — elles échouent seulement parce que "
+                   "des noms définis dans une cellule ci-dessus n'existent pas tant qu'elle ne "
+                   "compile pas. Elles seront ré-exécutées après ta correction : ne les rends "
+                   "pas, et garde ces noms et leurs signatures dans la cellule qui les définit."
+                   + ("\n" + "\n".join(lines) if lines else ""))
     return (
         "TOUR RÉPARATION — les cellules ci-dessous ont ÉCHOUÉ à l'exécution réelle. Corrige "
         "leur code : même rôle pédagogique, API de la série correcte — les messages du "
         "compilateur citent la ligne et la cause exactes. Ne réécris pas les cellules qui "
-        "passent.\n\n" + "\n\n".join(blocks) + up_txt
+        "passent.\n\n" + "\n\n".join(blocks) + api_txt + up_txt + dfr_txt
         + (f"\n\nConventions de livraison (imposées) :\n{conventions}\n" if conventions else "")
         + "\nRends UNIQUEMENT un bloc ```json :\n"
         '{"cells":[{"idx":<index inchangé>,"cell_type":"code",'
@@ -1452,17 +2256,33 @@ def md_repair_prompt(failing: list[dict], conventions: str = "") -> str:
     """One PROSE repair round for markdown cells carrying foreign-script corruption
     (17/11 #27104: Cyrillic/CJK hallucinated inside regenerated French prose — the
     gate catches the script class; the twin's own prose is the authority, so the
-    model COPIES it instead of re-deriving)."""
-    blocks = [f"### Cellule {f['idx']} (markdown)\n"
-              f"TEXTE ACTUEL (corrompu, extrait autour des caractères étrangers) :\n"
-              f"…{f['excerpt']}…\n\n"
-              f"PROSE DU JUMEAU PYTHON (autorité — recopie-la) :\n{f.get('twin_source') or '(absente du jumeau — réécris la cellule en français propre, sans caractère étranger)'}"
-              for f in failing]
+    model COPIES it instead of re-deriving).
+    An entry carrying `coord_excerpt` also (or only) has a coordination reference to drop
+    (20/11 MGS-29 #27133: « [EPIC #12373] » copied from the twin failed coord-refs after
+    44 min of work — the round now repairs it while the session is still open)."""
+    blocks = []
+    for f in failing:
+        b = [f"### Cellule {f['idx']} (markdown)"]
+        if f.get("excerpt"):
+            b.append(f"TEXTE ACTUEL (corrompu, extrait autour des caractères étrangers) :\n"
+                     f"…{f['excerpt']}…\n\n"
+                     f"PROSE DU JUMEAU PYTHON (autorité — recopie-la) :\n"
+                     f"{f.get('twin_source') or '(absente du jumeau — réécris la cellule en français propre, sans caractère étranger)'}")
+        elif f.get("coord_excerpt"):
+            b.append(f"TEXTE ACTUEL (complet) :\n{f.get('current_source') or ''}")
+        if f.get("coord_excerpt"):
+            b.append(f"RÉFÉRENCE DE COORDINATION à retirer : « …{f['coord_excerpt']}… ». "
+                     "Supprime-la sans la reformuler ni la déplacer ailleurs dans la cellule ; "
+                     "garde tout le reste à l'identique.")
+        blocks.append("\n".join(b))
     return (
-        "TOUR RÉPARATION PROSE — les cellules markdown ci-dessous contiennent des caractères "
-        "d'alphabets étrangers insérés dans la prose française. Réécris chaque cellule en "
-        "recopiant la prose du jumeau Python fournie, en n'adaptant QUE les termes propres "
-        "au code .NET. Ne change aucune autre cellule, ne reformule rien.\n\n"
+        "TOUR RÉPARATION PROSE — les cellules markdown ci-dessous portent un défaut relevé "
+        "par les portes du harnais : des caractères d'alphabets étrangers insérés dans la "
+        "prose française (réécris la cellule en recopiant la prose du jumeau Python fournie, "
+        "en n'adaptant QUE les termes propres au code), et/ou une référence de coordination "
+        "(Epic, lane, « voir #N ») qu'un carnet livré ne porte pas — seule exception, la note "
+        "de pied de la DERNIÈRE cellule sous la forme exacte `> Carnet issu de l'EPIC #N.`. "
+        "Ne change aucune autre cellule, ne reformule rien d'autre.\n\n"
         + "\n\n".join(blocks)
         + (f"\n\nConventions de livraison (imposées) :\n{conventions}\n" if conventions else "")
         + "\nRends UNIQUEMENT un bloc ```json :\n"
@@ -1470,6 +2290,82 @@ def md_repair_prompt(failing: list[dict], conventions: str = "") -> str:
         '"source":"<source CORRIGÉ et COMPLET>"}]}\n'
         "TOUTES les cellules listées, index inchangés, aucune autre cellule."
     )
+
+
+MD_REPAIR_MAX_CELLS = 8
+
+
+def md_defects(built_cells: list, src_cells: list, create_mode: bool,
+               from_spec: bool) -> list[dict]:
+    """The markdown cells the prose round can repair, one entry per cell (both defects
+    merged): foreign-script corruption (creation only — the twin is the authority) and
+    coordination references (both modes — the fix is a deletion, no authority needed).
+    Code cells are left to the gates: the prose round cannot touch them (apply_repairs)."""
+    def is_md(i):
+        return 0 <= i < len(built_cells) and built_cells[i].get("cell_type") == "markdown"
+    by_idx: dict[int, dict] = {}
+    footer = last_md_index(src_cells)
+    if create_mode:
+        for h in foreign_script_hits(built_cells, src_cells):
+            ci = h.get("cell")
+            if not isinstance(ci, int) or not is_md(ci):
+                continue
+            twin = ""
+            if not from_spec and 0 <= ci < len(src_cells):
+                # a [SPEC] placeholder is no prose authority: an empty twin_source asks
+                # for a clean French rewrite; the twin itself is shown WITHOUT its
+                # coordination lines, or the repair would re-inject them
+                twin = _text(src_cells[ci].get("source"))
+                if ci != footer:
+                    twin = strip_coord_refs(twin)[0]
+                twin = twin[:3000]
+            by_idx[ci] = {"idx": ci, "excerpt": h.get("excerpt") or "", "twin_source": twin}
+    for h in coord_ref_hits(built_cells, src_cells):
+        ci = h["cell"]
+        if not is_md(ci):
+            continue
+        e = by_idx.setdefault(ci, {"idx": ci})
+        e["coord_excerpt"] = h["excerpt"]
+        e["current_source"] = _text(built_cells[ci].get("source"))[:6000]
+    return [by_idx[i] for i in sorted(by_idx)][:MD_REPAIR_MAX_CELLS]
+
+
+async def repair_markdown_defects(sk, args, rec: dict, scratch: Path, src_cells: list,
+                                  conv, conventions: str, create_mode: bool,
+                                  from_spec: bool):
+    """One in-session prose round on md_defects (17/11 #27104 foreign script; 20/11
+    MGS-29 coordination references), while the sk session is still open — stage-3 gates
+    run after it closes. Markdown has no outputs: apply_repairs(allow_markdown=True)
+    replaces the source only, no kernel cycle. The stage-3 gates re-measure and stay the
+    judges of what remains. Returns the conversation id."""
+    if args.repair_rounds <= 0:
+        return conv
+    detail_md = md_defects(_cells(scratch), src_cells, create_mode, from_spec)
+    if not detail_md:
+        return conv
+    env = await sk_call_retry(sk, args, rec, "2.6-mdrepair",
+                              md_repair_prompt(detail_md, conventions), conv)
+    conv = env.get("conversation_id") or conv
+    part, env = await parse_or_repair(sk, args, rec, "2.6-mdrepair", env, conv)
+    entry = {"asked": len(detail_md),
+             "defects": {"foreign-script": sum(1 for d in detail_md if d.get("excerpt")),
+                         "coord-refs": sum(1 for d in detail_md if d.get("coord_excerpt"))}}
+    if part and part.get("cells"):
+        # Scope the round to the cells it asked for (finding 1): a response editing any
+        # other cell is refused, not applied.
+        rep = apply_repairs(scratch, part, allow_markdown=True,
+                            only_idx={d["idx"] for d in detail_md})
+        entry.update({"replaced": rep["replaced"], "unknown_idx": rep["unknown_idx"],
+                      "bad": rep["bad"], "out_of_scope": rep["out_of_scope"]})
+    else:
+        entry.update({"verdict": call_failure(env) or "unparsed",
+                      "raw_tail": (env.get("response") or "")[-1500:]})
+    rec.setdefault("md_repairs", []).append(entry)
+    after = _cells(scratch)
+    if create_mode:
+        rec["md_hits_after"] = len(foreign_script_hits(after, src_cells))
+    rec["coord_hits_after"] = len(coord_ref_hits(after, src_cells))
+    return conv
 
 
 # ---------------------------------------------------------------- constructive-review loop
@@ -1729,6 +2625,22 @@ def call_failure(env: dict) -> str:
     return f"{kind}: {_excerpt(err, hit)}"
 
 
+_TIMEOUT_RE = re.compile(r"APITimeoutError|ReadTimeout|TimeoutError|timed out", re.I)
+
+
+def call_timed_out(env: dict) -> bool:
+    """True when the call died on a time budget (model client or MCP read), not a refusal.
+
+    Only the error is read: a timed-out tour comes back with no response at all, which is
+    exactly why the truncation test never sees it (20/11, MGS-28: 1 201 s, 0 char).
+    """
+    err = env.get("error") or ""
+    if not err or gate_refusal(env):
+        return False
+    return (not call_failure(env).startswith(("auth-failed", "model-unresolved"))
+            and bool(_TIMEOUT_RE.search(err)))
+
+
 _GATE_REFUSAL_RE = re.compile(r"capacity gate refused", re.I)
 
 
@@ -1801,6 +2713,28 @@ async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
         return {"raw": raw}
 
 
+def wire_output(o):
+    """An execute_on_kernel output in the nbformat layout the checks read.
+
+    The MCP answers `{"output_type", "content": {name, text} | {ename, evalue, traceback}}`
+    (kernel_service.py:249-251) and only the copy it persists to disk is nbformat
+    (kernel_service.py:570-608). Read raw, every stream and error field sat one level
+    down: the per-cell `error` was null on every failure, and the stderr panic check
+    (#518) never saw a stream (#27302 attempt 2, outputs_tail, 2026-11-20)."""
+    if not isinstance(o, dict) or not isinstance(o.get("content"), dict):
+        return o
+    if o.get("output_type") not in ("stream", "error"):
+        return o
+    flat = {k: v for k, v in o.items() if k != "content"}
+    flat.update(o["content"])
+    return flat
+
+
+def _error_head(o: dict) -> str:
+    ename, evalue = str(o.get("ename") or ""), str(o.get("evalue") or "")
+    return f"{ename}: {evalue}" if ename and evalue else (ename or evalue)
+
+
 async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                         indexes: list[int]) -> list[dict]:
     """The harness owns execution and the verdict: real outputs, never the model's word.
@@ -1819,9 +2753,11 @@ async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                                                     "persist_error_outputs": True,
                                                     "timeout": 300})
         status = r.get("status") or r.get("error") or "?"
-        outs = r.get("outputs") or []
-        err_txt = " ".join(str(o.get("text") or o.get("ename") or "") for o in outs
+        outs = [wire_output(o) for o in r.get("outputs") or []]
+        err_txt = " ".join(str(o.get("text") or _error_head(o)) for o in outs
                            if isinstance(o, dict) and o.get("output_type") == "error")
+        # evcxr reports a Rust panic as stderr text only, with status "ok" (#27133 MGS-25).
+        err_txt = err_txt or rust_panic_text(outs)
         results.append({"cell": idx, "status": status, "ok": status == "ok" and not err_txt,
                         "elapsed_s": r.get("execution_time") or r.get("elapsed_s"),
                         "error_outputs_persisted": r.get("error_outputs_persisted"),
@@ -1834,10 +2770,32 @@ async def start_kernel(pm: ClientSession, kernel_name: str, working_dir: Path) -
     server's own cwd wins, and any notebook loading a sibling file of its series dies —
     measured twice: CoursIA#27021 (`import ict`, PR #467) and #27099 in CREATION mode
     (`#load "Z3NativeLoader.cs"` -> CS1504 while the file sits next to the Python twin,
-    then CS0246 cascade on every cell that used the Z3 namespace)."""
-    r = await pm_call(pm, "manage_kernel", {"action": "start", "kernel_name": kernel_name,
-                                            "working_dir": str(working_dir)})
-    return r.get("kernel_id")
+    then CS0246 cascade on every cell that used the Z3 namespace).
+
+    A start that returns no kernel id is retried (20/11): the MCP server gives a kernel
+    30 s to answer, and the evcxr `rust` kernel's first start of a session overshoots it
+    (`Kernel didn't respond in 30 seconds`) while the next one passes — measured on
+    CoursIA#27133, where the miss came at stage 3 after 1,273 s of paid model work. The
+    server cleans up the spawned process of a failed start, so a retry leaks nothing."""
+    payload = {"action": "start", "kernel_name": kernel_name, "working_dir": str(working_dir)}
+    for attempt in range(1, KERNEL_START_ATTEMPTS + 1):
+        r = await pm_call(pm, "manage_kernel", payload)
+        kid = r.get("kernel_id")
+        if kid:
+            if attempt > 1:
+                print(f"[kernel] {kernel_name} started on attempt {attempt}", file=sys.stderr)
+            return kid
+        why = str(r.get("error") or r.get("raw") or r)[:300]
+        print(f"[kernel] start of {kernel_name} failed (attempt {attempt}/"
+              f"{KERNEL_START_ATTEMPTS}): {why}", file=sys.stderr)
+        if attempt < KERNEL_START_ATTEMPTS:
+            await _kernel_retry_sleep(KERNEL_START_BACKOFF_S * attempt)
+    return None
+
+
+KERNEL_START_ATTEMPTS = 3
+KERNEL_START_BACKOFF_S = 5.0
+_kernel_retry_sleep = asyncio.sleep
 
 
 # ---------------------------------------------------------------- stages 3-5
@@ -1849,6 +2807,44 @@ async def start_kernel(pm: ClientSession, kernel_name: str, working_dir: Path) -
 # registry's own markers live on issue comments, never inside notebooks.
 COORD_REF_RE = re.compile(r"(?i)\b(?:epic|see|part\s+of)\s*#|\blane\b")
 PROVENANCE_RE = re.compile(r"Carnet issu de l'EPIC #\d+")
+
+
+def strip_coord_refs(text: str) -> tuple[str, int]:
+    """The text without its lines carrying a coordination reference (the footer note
+    excepted), and how many were dropped. MGS-29 (#27133, 20/11): the Python twin's
+    « Place dans l'Epic … [EPIC #12373] » was pinned as prose « à recopier TELLE QUELLE »;
+    the model obeyed and the coord-refs gate failed the grain after 44 min of work."""
+    kept, dropped = [], 0
+    for line in (text or "").split("\n"):
+        if COORD_REF_RE.search(line) and not PROVENANCE_RE.search(line):
+            dropped += 1
+        else:
+            kept.append(line)
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(kept)).strip("\n"), dropped
+
+
+def last_md_index(cells: list) -> int:
+    """Index of the last markdown cell (-1 if none) — the footer cell, where the
+    provenance note and the « pour aller plus loin » issue links are legit."""
+    return max((i for i, c in enumerate(cells) if c.get("cell_type") == "markdown"),
+               default=-1)
+
+
+def coord_ref_hits(built_cells: list, src_cells: list) -> list[dict]:
+    """Coordination references on BUILD-CHANGED cells — the coord-refs gate's own rule
+    (delta-judged; the footer note in the last markdown cell is legit). Shared by
+    run_gates and the in-session prose round, which can still repair them."""
+    last_md = last_md_index(built_cells)
+    hits: list[dict] = []
+    for i, c in enumerate(built_cells):
+        txt = _text(c.get("source"))
+        if i < len(src_cells) and txt == _text(src_cells[i].get("source")):
+            continue                      # untouched by the build
+        m = COORD_REF_RE.search(txt)
+        if m and not (i == last_md and PROVENANCE_RE.search(txt)):
+            hits.append({"cell": i, "cell_type": c.get("cell_type"),
+                         "excerpt": txt[max(0, m.start() - 60):m.end() + 60]})
+    return hits
 SECRET_RE = re.compile(r"(ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|"
                        r"sk-[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|xox[bap]-[A-Za-z0-9-]{10,})")
 # CoursIA acceptance contract, trigger 2 (2026-11-16): a machine path surfaced in an OUTPUT
@@ -1944,15 +2940,7 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     canonical .NET twin (canon_version), never the Python twin."""
     src_cells, built_cells = _cells(src_nb), _cells(built_nb)
     gates: list[dict] = []
-    last_md = max((i for i, c in enumerate(built_cells) if c.get("cell_type") == "markdown"),
-                  default=-1)
-    offenders = []
-    for i, c in enumerate(built_cells):
-        txt = _text(c.get("source"))
-        if i < len(src_cells) and txt == _text(src_cells[i].get("source")):
-            continue                      # untouched by the build
-        if COORD_REF_RE.search(txt) and not (i == last_md and PROVENANCE_RE.search(txt)):
-            offenders.append(i)
+    offenders = [h["cell"] for h in coord_ref_hits(built_cells, src_cells)]
     gates.append({"gate": "coord-refs", "ok": not offenders,
                   "detail": {"cells": offenders[:10]}})
     # Foreign-script corruption (#27104 blank pass, 17/11): delta-judged like coord-refs —
@@ -2210,6 +3198,9 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
            "--issue", str(args.issue), "--source-nb", str(src_nb), "--built-nb", str(built_nb),
            "--facts", str(facts), "--agent", args.verifier_agent,
            "--out-dir", str(out_dir), "--timeout", str(args.verify_timeout)]
+    if getattr(args, "notebook", None):
+        # same spec scoping as the producer: on a lot issue, THIS notebook's [SPEC-DRAFT]
+        cmd += ["--target", _norm_rel(args.notebook)]
     if getattr(args, "from_spec", False):
         # the SOURCE is a [SPEC] twin, not an origin notebook: the correction-mode task
         # ("content lost / invented vs SOURCE") would reject every new cell by design
@@ -2249,6 +3240,15 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
         rec["verdict"] = "verify-reject"
     else:
         rec["verdict"] = "verify-error"
+
+
+# Inline commit identity (ms#1813, upstreamed here after two re-copies dropped it
+# from the sk-agent harness): a CI runner configures no user.name/user.email and
+# the stage5 commit is the FIRST commit of a fresh worktree — without these two
+# `-c` pairs git dies "Author identity unknown" and the whole grain fails at the
+# last step, after every token was spent.
+_GIT_IDENTITY = ("-c", "user.name=nb-coder",
+                 "-c", "user.email=nb-coder@nb-coder.invalid")
 
 
 def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
@@ -2390,6 +3390,37 @@ def grain_tag(tier: str, lane: str, genre: str = "notebook-python",
     return f"{head} — prev: {prev}"
 
 
+def default_pr_branch(issue_n: int, notebook: str) -> str:
+    """`nbcoder/auto-<issue>-<notebook stem>-<6 hex>`: one branch per GRAIN.
+
+    `nbcoder/auto-<issue>` alone made the second grain of a lot issue fail at
+    `checkout -b` (the branch is held by the first grain's PR), after the whole
+    model run had been paid. The stem keeps the branch readable for the reviewer,
+    the hash of the repo-relative path keeps two same-stem notebooks apart."""
+    nb = _norm_rel(notebook)
+    stem = re.sub(r"[^a-z0-9]+", "-", Path(nb).stem.lower()).strip("-")[:40].rstrip("-")
+    h = hashlib.sha1(nb.encode("utf-8")).hexdigest()[:6]
+    return f"nbcoder/auto-{issue_n}-{stem or 'nb'}-{h}"
+
+
+def pr_title(issue_n: int, desc: str, create_mode) -> str:
+    """House form. A creation (port or spec twin) ADDS a notebook: `Add(notebooks,…)`.
+    Titling a port `Fix(notebooks,…) — portage` was a maintainer Concern on CoursIA#27598."""
+    kind = "Add" if isinstance(create_mode, dict) else "Fix"
+    return f"{kind}(notebooks,#{issue_n}): {desc}"
+
+
+def issue_link_line(issue_n: int, issue: dict | None, target: str) -> str:
+    """`Closes #N`, except on a LOT issue (several [SPEC-DRAFT] targets): the first PR of
+    the lot must not close the issue the other notebooks still hang on."""
+    sc = (issue or {}).get("spec_comment") or {}
+    lot = [t for t in sc.get("lot_targets") or [] if t]
+    if sc.get("status") == "selected" and len(lot) > 1:
+        return (f"Refs #{issue_n} — lot de {len(lot)} carnets : cette PR livre "
+                f"`{_norm_rel(target)}` seulement, l'issue reste ouverte pour les autres.")
+    return f"Closes #{issue_n}"
+
+
 def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
               token: str | None) -> None:
     """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
@@ -2397,7 +3428,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     delivery comment on the issue."""
     t0 = time.time()
     nb_rel = args.notebook.replace("\\", "/")
-    branch = args.pr_branch or f"nbcoder/auto-{args.issue}"
+    branch = args.pr_branch or default_pr_branch(args.issue, args.notebook)
     desc = _short_desc(args, rec.get("plan") or {}, rec.get("create_mode"))
     entry: dict = {"branch": branch}
 
@@ -2428,7 +3459,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         + "\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
     msg_file = built_nb.parent / f"commit-msg-{args.issue}.txt"
     msg_file.write_text(commit_body, encoding="utf-8")
-    rc, out = _git(wt_path, "commit", "--file", str(msg_file))
+    rc, out = _git(wt_path, *_GIT_IDENTITY, "commit", "--file", str(msg_file))
     if rc != 0:
         # Pre-commit auto-fixer pattern (measured 2/2 on fresh .ipynb grains,
         # CoursIA #27113 + #27102): an auto-fix hook rewrites the staged file
@@ -2439,7 +3470,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         if st_rc == 0 and st_out.strip().startswith("AM"):
             entry["commit_retry"] = "pre-commit-auto-fix-read"
             _git(wt_path, "add", "--", nb_rel)
-            rc, out = _git(wt_path, "commit", "--file", str(msg_file))
+            rc, out = _git(wt_path, *_GIT_IDENTITY, "commit", "--file", str(msg_file))
     msg_file.unlink(missing_ok=True)
     if rc != 0:
         entry["error"] = f"commit: {out[:300]}"
@@ -2497,12 +3528,12 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         + f"- **Trace** : conversation producteur `{rec.get('conversation_id')}`, "
         f"conversation vérificateur `{(rec.get('verify') or {}).get('conversation_id')}`, "
         f"run record complet dans le out-dir du harnais.\n\n"
-        f"Closes #{args.issue}\n\n"
+        f"{issue_link_line(args.issue, issue, args.notebook)}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
     body_file.write_text(pr_body, encoding="utf-8")
     rc, out = gh(["api", f"repos/{repo_slug}/pulls",
-                  "-f", f"title=Fix(notebooks,#{args.issue}): {desc}",
+                  "-f", f"title={pr_title(args.issue, desc, rec.get('create_mode'))}",
                   "-f", f"head={branch}", "-f", f"base={args.pr_base}",
                   "-F", f"body=@{body_file}"], token, timeout=120)
     body_file.unlink(missing_ok=True)
@@ -2558,16 +3589,40 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             errs = _outputs_text(cells_now[i])
             detail.append({"idx": i, "source": cap_source(src),
                            "errors": errs[-2000:], "cited": cited_lines(src, errs),
-                           "_frames": error_frame_names(errs)})
+                           "_frames": error_frame_names(errs), "_raw_errors": errs})
         if not detail:
             break
+        # Root cause first (#27302 attempt 2): a cell failing on a name an EARLIER failing
+        # cell declares waits for that cell's repair; it is re-executed after the round.
+        all_failing = {d["idx"] for d in detail}
+        roots = cascade_roots(cells_now, detail)
+        deferred: list[dict] = []
+        if roots and len(roots) < len(detail):
+            for d in detail:
+                if d["idx"] in roots:
+                    # Only roots asked this round are named; a cell waiting on another
+                    # waiting cell (29 on 20, #27302) follows it transitively.
+                    kept = [r for r in roots[d["idx"]] if r not in roots]
+                    names = [n for n in undefined_names(d["_raw_errors"])
+                             if source_cell(cells_now, n, before=d["idx"]) in kept]
+                    deferred.append({"idx": d["idx"], "roots": kept, "names": names})
+            detail = [d for d in detail if d["idx"] not in roots]
+        # Rust: the real API of the crates the errors touch (MGS-25, 2.3b), from the
+        # registry copy the kernel compiled.
+        crate_api, api_info = ("", {})
+        if kname == "rust":
+            try:
+                crate_api, api_info = crate_api_block(cells_now,
+                                                      [d["_raw_errors"] for d in detail])
+            except Exception as ex:  # grounding is an aid: never fail the round on it
+                api_info = {"error": f"{type(ex).__name__}: {ex}"[:300]}
         # Upstream definitions the stack crosses (#27314): offered, bounded, never demanded.
         failing_idx = {d["idx"] for d in detail}
         upstream: list[dict] = []
         for d in detail:
             for name in d.pop("_frames"):
                 j = defining_cell(cells_now, name, before=d["idx"])
-                if j is None or j in failing_idx:
+                if j is None or j in all_failing:
                     continue
                 known = next((u for u in upstream if u["idx"] == j), None)
                 if known is not None:
@@ -2577,9 +3632,41 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                 if len(upstream) >= REPAIR_UPSTREAM_MAX:
                     continue
                 upstream.append({"idx": j, "names": [name], "for": d["idx"],
+                                 "via": "trace",
                                  "source": cap_source(_text(cells_now[j].get("source")))})
+        # Fallback by USE (#27302, 20/11): an assertion raised in the cell itself crosses no
+        # upstream frame, yet its cause is often data or a function defined above (the
+        # Petersen witness graph of cell 5). Runtime errors only: a compiler diagnostic
+        # names its own line, and the cause is in the cell.
+        traced = {u["for"] for u in upstream}
+        for d in detail:
+            if d["idx"] in traced or _COMPILE_ERROR_RE.search(d.pop("_raw_errors", "")):
+                continue
+            for j, names in using_cells(cells_now, d["idx"], REPAIR_UPSTREAM_MAX,
+                                        exclude=all_failing):
+                known = next((u for u in upstream if u["idx"] == j), None)
+                if known is not None:
+                    known["names"].extend(n for n in names if n not in known["names"])
+                    continue
+                if len(upstream) >= REPAIR_UPSTREAM_MAX:
+                    break
+                upstream.append({"idx": j, "names": list(names), "for": d["idx"],
+                                 "via": "use",
+                                 "source": cap_source(_text(cells_now[j].get("source")))})
+        for d in detail:
+            d.pop("_raw_errors", None)
+        # The `:dep` cell decides versions and features: offered next to the grounding (a
+        # feature gate such as plotters' `bitmap_backend` is fixed there, never in the cell).
+        dep_idx = api_info.get("dep_cell")
+        if (crate_api and isinstance(dep_idx, int) and dep_idx not in all_failing
+                and dep_idx in exec_targets and dep_idx < len(cells_now)
+                and all(u["idx"] != dep_idx for u in upstream)):
+            upstream.append({"idx": dep_idx, "names": list(api_info.get("crates") or []),
+                             "for": detail[0]["idx"], "via": "dep",
+                             "source": cap_source(_text(cells_now[dep_idx].get("source")))})
         env = await sk_call_retry(sk, args, rec, f"{stage}+{rnd}",
-                                  repair_prompt(detail, conventions, upstream), conv,
+                                  repair_prompt(detail, conventions, upstream, deferred,
+                                                crate_api), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
         conv = env.get("conversation_id") or conv
         part, env = await parse_or_repair(sk, args, rec, f"{stage}+{rnd}", env, conv,
@@ -2595,6 +3682,8 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
         rec.setdefault("repairs", []).append(
             {"stage": stage, "round": rnd, "asked": len(detail), "replaced": rep["replaced"],
              "upstream": [u["idx"] for u in upstream],
+             "deferred": [x["idx"] for x in deferred],
+             "crate_api": api_info or None,
              "unknown_idx": rep["unknown_idx"], "bad": rep["bad"],
              "out_of_scope": rep["out_of_scope"]})
         if not rep["replaced"]:
@@ -2609,12 +3698,25 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
     return kid, conv
 
 
+def counts_contiguous(counts: list) -> bool:
+    """One top-to-bottom run: each count is the previous one + 1, from an int start ≥ 1.
+    The start is the kernel's: IPython and .NET begin at 1, evcxr at 2 — CoursIA's own
+    accepted Sudoku-02-DancingLinks-Rust.ipynb reads [2, 3, 4, …] and its validator only
+    demands a non-null count (MGS-25 #27133 was failed on that offset alone)."""
+    if not counts:
+        return True
+    first = counts[0]
+    if not isinstance(first, int) or isinstance(first, bool) or first < 1:
+        return False
+    return counts == list(range(first, first + len(counts)))
+
+
 def execution_verdict(rec: dict, scratch: Path) -> None:
-    """C.2 proof (execution_count sequential 1..N over non-empty code cells) + the
+    """C.2 proof (execution_count contiguous k..k+N-1 over non-empty code cells) + the
     execution verdict. A dead kernel keeps its failure verdict, never overwritten."""
     counts = [c.get("execution_count") for c in _cells(scratch)
               if c.get("cell_type") == "code" and _text(c.get("source")).strip()]
-    rec["c2"] = {"counts": counts, "sequential": counts == list(range(1, len(counts) + 1))}
+    rec["c2"] = {"counts": counts, "sequential": counts_contiguous(counts)}
     exec_ok = all(e.get("ok") for e in (rec.get("execution") or []))
     if rec.get("verdict") == "kernel-start-failed":
         pass
@@ -2823,7 +3925,10 @@ async def run_revision(args, rec: dict) -> dict:
         rec["verdict"] = refused
         return rec
     token = app_token(repo)
-    issue = fetch_issue("jsboige/CoursIA", args.issue, token)
+    issue = fetch_issue("jsboige/CoursIA", args.issue, token, _norm_rel(args.notebook))
+    if (issue.get("spec_comment") or {}).get("status") == "none-for-target":
+        rec["verdict"] = "refused-no-spec-for-target"
+        return rec
     conventions = read_conventions(args.conventions)
     gate = gate_call(args.gate_mode, getattr(args, "gate", None))
     rec["gate"] = gate
@@ -2873,9 +3978,15 @@ async def run(args, rec: dict) -> dict:
     if refused:
         rec["verdict"] = refused
         return rec
-    issue = fetch_issue("jsboige/CoursIA", args.issue, token)
+    issue = fetch_issue("jsboige/CoursIA", args.issue, token, claim_nb)
     rec["stages"]["issue"] = {"title": issue["title"], "state": issue["state"],
-                              "labels": issue["labels"], "body_chars": len(issue["body"])}
+                              "labels": issue["labels"], "body_chars": len(issue["body"]),
+                              "spec_comment": issue.get("spec_comment")}
+    if (issue.get("spec_comment") or {}).get("status") == "none-for-target":
+        # A lot issue whose spec drafts all name OTHER notebooks: building this one would
+        # follow nobody's plan. Refused before the reservation, the worktree and any token.
+        rec["verdict"] = "refused-no-spec-for-target"
+        return rec
     from_spec = bool(getattr(args, "from_spec", False))
     spec_cells: list[dict] = []
     if from_spec:
@@ -3139,7 +4250,7 @@ async def run(args, rec: dict) -> dict:
                         rec["verdict"] = "kernel-start-failed"
                     # exec policy: plan indexes are SOURCE-space and shift with deletes/inserts.
                     # auto = run ALL built code cells in order when the plan touches code
-                    # (state-safe: dependencies run first, execution_count sequential 1..N —
+                    # (state-safe: dependencies run first, execution_count contiguous —
                     # the C.2 proof), none for a markdown-only gesture.
                     exec_targets: list[int] = []
                     if kid:
@@ -3170,55 +4281,12 @@ async def run(args, rec: dict) -> dict:
                                 sk, pm, args, rec, scratch,
                                 args.kernel_override or kernel["kernel_name"], exec_dir,
                                 kid, exec_targets, conv, conventions)
-                        # ---- markdown prose repair: the foreign-script class caught by
-                        # the gate is REPAIRABLE in-session (17/11 #27104 blank pass 2:
-                        # Cyrillic/CJK hallucinated inside regenerated French prose —
-                        # verify rejected 5 majors). One round, while the sk session is
-                        # still open (stage-3 gates run after it closes). Markdown has
-                        # no outputs: apply_repairs(allow_markdown=True) replaces the
-                        # source only, no kernel cycle. The stage-3 gate re-measures
-                        # and stays the judge of what remains.
-                        if create_mode and args.repair_rounds > 0:
-                            fs_hits = foreign_script_hits(_cells(scratch), src_cells)
-                            if fs_hits:
-                                detail_md = []
-                                for h in fs_hits[:8]:
-                                    twin_src = ""
-                                    ci = h.get("cell")
-                                    if (not from_spec and isinstance(ci, int)
-                                            and 0 <= ci < len(src_cells)):
-                                        # a [SPEC] placeholder is no prose authority: an
-                                        # empty twin_source asks for a clean French rewrite
-                                        twin_src = _text(src_cells[ci].get("source"))[:3000]
-                                    detail_md.append({"idx": ci,
-                                                      "excerpt": h.get("excerpt") or "",
-                                                      "twin_source": twin_src})
-                                env = await sk_call_retry(
-                                    sk, args, rec, "2.6-mdrepair",
-                                    md_repair_prompt(detail_md, conventions), conv)
-                                conv = env.get("conversation_id") or conv
-                                part, env = await parse_or_repair(sk, args, rec,
-                                                                  "2.6-mdrepair", env, conv)
-                                if part and part.get("cells"):
-                                    # Scope the prose round to the cells it asked for
-                                    # (finding 1): a response editing any other cell is
-                                    # refused, not applied.
-                                    _md_idx = {d["idx"] for d in detail_md
-                                               if isinstance(d.get("idx"), int)}
-                                    rep_md = apply_repairs(scratch, part,
-                                                           allow_markdown=True,
-                                                           only_idx=_md_idx)
-                                    rec.setdefault("md_repairs", []).append(
-                                        {"asked": len(detail_md),
-                                         "replaced": rep_md["replaced"],
-                                         "unknown_idx": rep_md["unknown_idx"],
-                                         "bad": rep_md["bad"]})
-                                else:
-                                    rec.setdefault("md_repairs", []).append(
-                                        {"verdict": call_failure(env) or "unparsed",
-                                         "raw_tail": (env.get("response") or "")[-1500:]})
-                                rec["md_hits_after"] = len(
-                                    foreign_script_hits(_cells(scratch), src_cells))
+                        # ---- markdown prose repair (repair_markdown_defects): foreign-script
+                        # corruption (creation) and coordination references (both modes) are
+                        # REPAIRABLE in-session; the stage-3 gates stay the judges.
+                        conv = await repair_markdown_defects(sk, args, rec, scratch, src_cells,
+                                                             conv, conventions, create_mode,
+                                                             from_spec)
                     # kernel hygiene: an hourly cadence must not leak one kernel per run
                     if rec.get("kernel_id"):
                         rec["kernel_stop"] = await pm_call(
@@ -3357,7 +4425,8 @@ def main() -> int:
                          "origin remote; the run refuses with pr-repo-unresolved if "
                          "unparseable -- never a hard-coded fallback)")
     ap.add_argument("--pr-branch", default=None,
-                    help="branch name (default nbcoder/auto-<issue>; seat-neutral, "
+                    help="branch name (default nbcoder/auto-<issue>-<notebook stem>-<hash>: "
+                         "one branch per grain, a lot issue holds several; seat-neutral, "
                          "#433 review)")
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)

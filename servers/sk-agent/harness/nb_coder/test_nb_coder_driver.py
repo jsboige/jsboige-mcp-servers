@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 932e556f93b26e8eadb1dd91094351985f910f69
+# Copied verbatim from jsboige/vllm @ 443b38c0fae70f64aa46198d51bdb74357df1853
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_driver.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -346,6 +346,74 @@ def test_create_segments_refuses_before_any_model_call():
     assert rec["creation_plan_addressing_errors"]
 
 
+def test_an_overrunning_plan_gets_one_bounded_repair_then_the_verdict(monkeypatch):
+    """CoursIA#27580 (20/11): 24 plan entries for a 22-cell source (idx 22/23 outside).
+
+    The re-ask is bounded to ONE turn, and a repair that still overruns never reaches
+    the build path — the pin on the CALL COUNT is what keeps that true. The fake repair
+    answers a DIFFERENT invalid plan (idx 1/21/40): a mutant that returns None from
+    repair_creation_plan would leave errors_after == ["cells is empty"], so asserting
+    the repaired plan's OWN defects is what makes that mutant red."""
+    import asyncio
+    from types import SimpleNamespace
+    rec = {}
+    args = SimpleNamespace(max_tokens=100)
+    seen = []
+
+    async def fake_call(session, args_, rec_, stage, prompt, conv, max_tokens=None):
+        seen.append(stage)
+        return {"response": '```json\n{"cells": [{"idx": 1}, {"idx": 21}, {"idx": 40}]}\n```',
+                "conversation_id": "conv-1"}
+
+    monkeypatch.setattr(d, "sk_call_retry", fake_call)
+    plan_cells = [{"idx": 0}, {"idx": 22}]
+    built = asyncio.run(d.create_segments(object(), args, rec, "conv-1",
+                                          plan_cells, 22, ""))
+    assert built == {}
+    assert seen == ["1-plan-repair"], "exactly one repair turn, never a build call"
+    assert rec["verdict"] == "stage1-unaddressable-creation-plan"
+    assert rec["creation_plan_repair"]["kept"] is False
+    after = rec["creation_plan_repair"]["errors_after"]
+    assert any("idx 40" in e for e in after), f"the repaired plan's own defects: {after}"
+    assert not any("idx 22" in e for e in after), "pre-repair errors must not be recycled"
+    assert plan_cells == [{"idx": 0}, {"idx": 22}], "a failed repair changes nothing"
+
+
+def test_a_repaired_plan_is_the_one_that_gets_built(monkeypatch):
+    """A successful repair replaces the plan IN PLACE: the build loop must read the
+    repaired cells, and rec['plan'] keeps the model's first answer as the trace."""
+    import asyncio
+    from types import SimpleNamespace
+
+    class BuildReached(Exception):
+        pass
+
+    rec = {}
+    args = SimpleNamespace(max_tokens=100)
+    stages = []
+
+    async def fake_call(session, args_, rec_, stage, prompt, conv, max_tokens=None):
+        stages.append(stage)
+        if stage.startswith("2-build"):
+            raise BuildReached()
+        return {"response": '```json\n{"cells": [{"idx": 0}, {"idx": 21}]}\n```',
+                "conversation_id": "conv-1"}
+
+    monkeypatch.setattr(d, "sk_call_retry", fake_call)
+    plan_cells = [{"idx": 0}, {"idx": 22}]
+    with pytest.raises(BuildReached):
+        asyncio.run(d.create_segments(object(), args, rec, "conv-1", plan_cells, 22, ""))
+    assert plan_cells == [{"idx": 0}, {"idx": 21}]
+    assert stages[0] == "1-plan-repair"
+    assert stages[1].startswith("2-build"), "the build runs on the REPAIRED plan"
+
+
+def test_the_repair_prompt_names_the_exact_source_range():
+    prompt = d.creation_plan_repair_prompt(["position 22: idx 22 outside 0..21"], 22)
+    assert "0..21" in prompt and "idx 22 outside" in prompt
+    assert "une entrée par cellule source" in prompt
+
+
 def test_an_empty_cell_assembly_never_reaches_apply_create():
     src = Path(d.__file__).read_text(encoding="utf-8")
     run = src.split("async def run(", 1)[1].split("\nasync def ", 1)[0]
@@ -405,6 +473,84 @@ def test_the_banner_strip_covers_the_discovery_bootstrap():
     fn = src.split("def strip_dotnet_banner", 1)[1].split("\ndef ", 1)[0]
     assert '"--variant", "both"' in fn, \
         "the strip lost the discovery variant — a creation-mode notebook keeps its banner"
+
+
+def test_stage5_commit_carries_its_own_identity(tmp_path, monkeypatch):
+    """ms#1813 regression, upstreamed here after two re-copies dropped it from the
+    sk-agent harness: a CI runner has NO user.name/user.email configured and the
+    stage5 commit is the first commit of a fresh worktree — git dies "Author
+    identity unknown" and the whole grain fails at the last step, after every
+    token was spent.
+
+    Hermetic: GIT_CONFIG_GLOBAL points at an EMPTY file and the system config is
+    off, so the driver's own `-c` pairs are the only possible identity source. A
+    mutant that drops them fails the commit and never reaches pr-created."""
+    import os
+    import subprocess
+    from types import SimpleNamespace
+
+    def sh(*cmd, cwd=None):
+        p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+        assert p.returncode == 0, (cmd, p.stderr)
+        return p.stdout
+
+    nb_rel = "Series/N-CSharp.ipynb"
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    sh("git", "init", "--bare", str(origin), cwd=origin)
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    sh("git", "init", cwd=wt)
+    sh("git", "checkout", "-b", "main", cwd=wt)
+    sh("git", "remote", "add", "origin", str(origin), cwd=wt)
+    (wt / "README.md").write_text("x", encoding="utf-8")
+    sh("git", "add", "README.md", cwd=wt)
+    sh("git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-m", "init", cwd=wt)
+
+    empty_cfg = tmp_path / "empty-gitconfig"
+    empty_cfg.write_text("", encoding="utf-8")
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(empty_cfg))
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for var in ("GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL",
+                "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL"):
+        monkeypatch.delenv(var, raising=False)
+
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    built_nb = out_dir / "built.ipynb"
+    built_nb.write_text("{}", encoding="utf-8")
+    (wt / "Series").mkdir()
+
+    args = SimpleNamespace(
+        issue=27102, notebook=nb_rel, pr_branch="nbcoder/ident-27102", agent="producer",
+        verifier_agent="critic", grain_tier="MED", lane="myia-po-2028:claudish",
+        pr_base="main", pr_repo="jsboige/CoursIA", out_dir=str(out_dir))
+    rec = {"plan": {"plan": []}, "verify": {"verdict": "approve", "model_used": "glm-5.3",
+                                            "conversation_id": "v", "findings": []},
+           "kernel": {"kernel_name": ".net-csharp"}, "execution": [1], "c2": {"sequential": True},
+           "calls": [], "conversation_id": "p"}
+
+    monkeypatch.setattr(d, "lane_predecessor",
+                        lambda *a, **k: "MED/notebook-dotnet #27256")
+
+    def fake_gh(argv, token=None, timeout=60):
+        if argv[1].endswith("/pulls"):
+            return 0, json.dumps({"number": 27998, "html_url": "pr-url"})
+        return 0, "{}"
+    monkeypatch.setattr(d, "gh", fake_gh)
+
+    d.stage5_pr(args, rec, wt, built_nb, {"issue": 27102}, None)
+
+    assert rec["verdict"] == "pr-created", rec.get("pr")
+    author = sh("git", "-C", str(wt), "log", "-1", "--format=%an <%ae>")
+    assert author.strip() == "nb-coder <nb-coder@nb-coder.invalid>"
+    # <login>@users.noreply.github.com is attributed by GitHub to the REAL account
+    # NB-Coder (id 54853046) — .invalid (RFC 2606) can never collide (vllm-a9).
+    # Both commit attempts (primary + the pre-commit auto-fix retry) carry it:
+    # a source pin, because the retry path only runs when a hook rewrites.
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    fn = src.split("def stage5_pr", 1)[1].split("\ndef ", 1)[0]
+    assert fn.count("*_GIT_IDENTITY") == 2, "a commit site lost its identity"
 
 
 # ---- stage5 commit retry after a pre-commit auto-fixer (CoursIA #27113 + #27102) ----

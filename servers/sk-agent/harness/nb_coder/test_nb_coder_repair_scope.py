@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 932e556f93b26e8eadb1dd91094351985f910f69
+# Copied verbatim from jsboige/vllm @ 443b38c0fae70f64aa46198d51bdb74357df1853
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_repair_scope.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -173,3 +173,127 @@ def test_a_repair_round_offers_the_defining_cell_and_refuses_any_other(tmp_path,
     assert r["replaced"] == [0, 3] and r["out_of_scope"] == [2]   # cell 2 was never offered
     cells = json.loads(nb.read_text(encoding="utf-8"))["cells"]
     assert "".join(cells[2]["source"]) == "var x = 1;"
+
+
+# ---- fallback by USE (#27302, 20/11) ---------------------------------------------------
+# The Petersen test (cell 24) threw from inside its own cell: the trace crosses no upstream
+# frame, yet the faulty witness graph lives in cell 5. Round 1 rewrote cell 5 anyway and
+# was refused as out of scope, which ended the repair.
+PETERSEN_TRACE = """System.Exception: Test echoue : Petersen
+   at Submission#11.<<Initialize>>d__0.MoveNext()
+--- End of stack trace from previous location ---
+   at Microsoft.CodeAnalysis.Scripting.ScriptExecutionState.RunSubmissionsAsync[TResult](...)"""
+
+
+def test_used_names_and_binds():
+    src = ('var g = TEMOINS["Petersen"];\nint k = EdgeColoringCpsat<int>(g, 3);\n'
+           'var h = new Graphe();\n// Ignored(1) in a comment\n')
+    assert d.used_names(src) == ["TEMOINS", "EdgeColoringCpsat", "Graphe"]
+    # a plain argument is a use too; keywords and string contents are not
+    assert d.used_names('else if (Trier(racines) == "https://x") return;') == ["Trier", "racines"]
+    assert d.binds('var TEMOINS = new Dictionary<string, Graphe>();', "TEMOINS")
+    assert d.binds('public static readonly Dictionary<string, Graphe> TEMOINS = new();', "TEMOINS")
+    assert d.binds("TEMOINS: dict[str, Graphe] = {}", "TEMOINS")
+    assert d.binds("let mut temoins = Vec::new();", "temoins")
+    assert not d.binds('if (TEMOINS == null) return;', "TEMOINS")
+    assert not d.binds('var t = TEMOINS["P"];', "TEMOINS")
+    assert not d.binds('Func<int,int> f = x => x;', "x")
+
+
+def _petersen_cells():
+    return [
+        _code("public class Graphe { public void AddEdge(string a, string b) {} }\n"
+              "var TEMOINS = new Dictionary<string, Graphe>();"),
+        _code("int EdgeColoringCpsat(Graphe g, int k) => k;"),
+        _code("var x = 1;"),
+        _code("int Unused() => 0;"),
+        _code('var g = TEMOINS["Petersen"];\nif (EdgeColoringCpsat(g, 3) != 4)\n'
+              '    throw new Exception("Test echoue : Petersen");'),
+    ]
+
+
+def test_using_cells_ranks_by_names_and_honours_bound_and_exclusion():
+    cells = _petersen_cells()
+    # equal rank -> nearest first
+    assert d.using_cells(cells, 4, 3) == [(1, ["EdgeColoringCpsat"]), (0, ["TEMOINS"])]
+    assert d.using_cells(cells, 4, 1) == [(1, ["EdgeColoringCpsat"])]       # bounded
+    cells[0] = _code(d._text(cells[0]["source"]) + "\nint EdgeColoringCpsat(Graphe g, int k) => 0;")
+    cells[1] = _code("int Other() => 1;")
+    assert d.using_cells(cells, 4, 3) == [(0, ["TEMOINS", "EdgeColoringCpsat"])]  # more names first
+    cells = _petersen_cells()
+    assert d.using_cells(cells, 4, 3, exclude={0}) == [(1, ["EdgeColoringCpsat"])]
+    # a name the failing cell defines itself is its own business
+    cells[4] = _code("int EdgeColoringCpsat(Graphe g, int k) => 4;\n" + d._text(cells[4]["source"]))
+    assert d.using_cells(cells, 4, 3) == [(0, ["Graphe", "TEMOINS"])]   # Graphe: param type
+
+
+def _run_round(tmp_path, monkeypatch, cells, failing_idx, trace, answer):
+    nb = tmp_path / "nb.ipynb"
+    cells[failing_idx]["outputs"] = [{"output_type": "error", "ename": "Error",
+                                      "evalue": "x", "traceback": trace.split("\n")}]
+    nb.write_text(json.dumps({"cells": cells, "metadata": {}, "nbformat": 4,
+                              "nbformat_minor": 5}), encoding="utf-8")
+    prompts = []
+
+    async def fake_retry(sk, args, rec, stage, prompt, conv, max_tokens=None):
+        prompts.append(prompt)
+        return {"conversation_id": "c1"}
+
+    async def fake_parse(sk, args, rec, stage, env, conv, max_tokens=None):
+        return {"cells": answer}, env
+
+    async def fake_pm(pm, name, payload):
+        return {}
+
+    async def fake_start(pm, kname, exec_dir):
+        return "k2"
+
+    async def fake_exec(pm, path, kid, targets):
+        return [{"cell": i, "ok": True} for i in targets]
+
+    monkeypatch.setattr(d, "sk_call_retry", fake_retry)
+    monkeypatch.setattr(d, "parse_or_repair", fake_parse)
+    monkeypatch.setattr(d, "pm_call", fake_pm)
+    monkeypatch.setattr(d, "start_kernel", fake_start)
+    monkeypatch.setattr(d, "execute_cells", fake_exec)
+    rec = {"execution": [{"cell": i, "ok": i != failing_idx} for i in range(len(cells))]}
+    asyncio.run(d.repair_kernel_errors(None, None, SimpleNamespace(repair_rounds=1), rec, nb,
+                                       "csharp", tmp_path, "k1", list(range(len(cells))),
+                                       None, ""))
+    return prompts, rec["repairs"][0], json.loads(nb.read_text(encoding="utf-8"))["cells"]
+
+
+def test_an_in_cell_assertion_offers_the_cells_defining_what_it_uses(tmp_path, monkeypatch):
+    answer = [{"idx": 0, "cell_type": "code", "source": "var TEMOINS = Fixed();"},
+              {"idx": 4, "cell_type": "code", "source": "var g = TEMOINS[\"Petersen\"];"},
+              {"idx": 2, "cell_type": "code", "source": "var x = 2;"}]
+    prompts, r, cells = _run_round(tmp_path, monkeypatch, _petersen_cells(), 4,
+                                   PETERSEN_TRACE, answer)
+    assert "Cellule 0 (code, AMONT — définit TEMOINS, utilisé par la cellule 4)" in prompts[0]
+    assert "Cellule 1 (code, AMONT — définit EdgeColoringCpsat, utilisé par la cellule 4)" in prompts[0]
+    assert "une assertion qui échoue" in prompts[0]
+    assert "Cellule 3" not in prompts[0]                       # defines nothing the cell uses
+    assert r["upstream"] == [1, 0]
+    assert r["replaced"] == [0, 4] and r["out_of_scope"] == [2]
+    assert "".join(cells[0]["source"]) == "var TEMOINS = Fixed();"
+
+
+def test_a_compile_error_never_widens_the_scope_by_use(tmp_path, monkeypatch):
+    cs_err = "(1,9): error CS0103: Le nom 'TEMOINZ' n'existe pas dans le contexte actuel"
+    answer = [{"idx": 0, "cell_type": "code", "source": "var TEMOINS = Fixed();"},
+              {"idx": 4, "cell_type": "code", "source": "var g = TEMOINS[\"Petersen\"];"}]
+    prompts, r, cells = _run_round(tmp_path, monkeypatch, _petersen_cells(), 4, cs_err, answer)
+    assert "CELLULES AMONT" not in prompts[0]
+    assert r["upstream"] == [] and r["replaced"] == [4] and r["out_of_scope"] == [0]
+
+
+def test_a_traced_failure_keeps_the_trace_offer_only(tmp_path, monkeypatch):
+    cells = _petersen_cells()
+    cells[4] = _code("var r = Trier(racines);")
+    cells[1] = _code("List<Segment> Decouper(Segment seg, string s) => throw new X();")
+    cells[2] = _code("var racines = new List<Segment>();")     # used, but the trace is precise
+    prompts, r, _ = _run_round(tmp_path, monkeypatch, cells, 4, DOTNET_TRACE,
+                               [{"idx": 4, "cell_type": "code", "source": "var r = 1;"}])
+    assert r["upstream"] == [1]                                # Decouper via the trace
+    assert "traversé par la trace de la cellule 4" in prompts[0]
+    assert "utilisé par" not in prompts[0]
