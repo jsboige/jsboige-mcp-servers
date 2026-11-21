@@ -58,6 +58,19 @@ l'erreur typée `nb_coder_harness_unresolved` — jamais de run dégradé, jamai
 fallback silencieux. Invoquer depuis un siège porteur (ai-01, po-2028) ou
 provisionner le siège (voir §4).
 
+**Asymétrie de garde, voulue** (tranchage po-2028/po-2027, review ms#1820) :
+les fonctions kernel `nb_coder_*` n'apparaissent que sur les agents qui
+déclarent `parameters.nb_coder_tools` **et** la capacité `shell` ; l'outil
+serveur `nb_coder_workflow`, lui, n'a **aucune garde** — tout client MCP du
+siège porteur peut l'invoquer jusqu'à `max_stage 5`. C'est le mandat (#4832,
+user 18/11 : workflows « librement invocables à la demande par tous les agents
+munis du MCP sk-agent »). Le gate `shell` ne protège pas l'accès au harnais :
+il protège la **liste de fonctions du modèle** (un agent sans capacité
+d'exécution ne voit jamais les fonctions kernel) ; les credentials restent
+côté serveur (`NBCODER_*`), et les gardes qui comptent — claims, ensembles
+fermés, refus typés — vivent dans le harnais lui-même, identiques pour les
+deux voies.
+
 ## 2. Paramètres (ensembles fermés)
 
 Une clé hors ensemble = refus `refused:unknown ... param(s)`. Types : `int`,
