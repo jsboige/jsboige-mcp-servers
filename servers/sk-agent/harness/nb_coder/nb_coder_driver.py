@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
+# Copied verbatim from jsboige/vllm @ 7416ac16c91e150aae5a75dd251d0c1a4c2f5c2c
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -47,16 +47,21 @@ import asyncio
 import contextlib
 import fnmatch
 import hashlib
+import html
+import io
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
+import tokenize
 import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import unquote
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -1330,6 +1335,53 @@ def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel
     )
 
 
+TWIN_COMMENTS_CAP = 1500   # chars of twin comments injected per code cell
+
+
+def twin_code_comments(src: str, cap: int = TWIN_COMMENTS_CAP) -> list[str]:
+    """Reading comments of a TWIN code cell, in order: Python ``#`` comments through the
+    tokenizer (a ``#`` inside a string is not a comment), else ``//`` line comments (a C#
+    twin). 21/11 (CoursIA#27803 review): the creation prompt pinned the twin's PROSE but
+    never its code comments, so the Rust port came back with 0 comment on 106-179-line
+    cells while the Python twin carried 13 — the repo's `Uncommented code` guard (#26690)
+    and the reviewer both rejected it."""
+    py: list[str] = []
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type == tokenize.COMMENT and not tok.string.startswith("#!"):
+                t = tok.string.lstrip("#").strip()
+                if t:
+                    py.append(t)
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        py = []
+    found = py or [ln.strip()[2:].strip() for ln in src.splitlines()
+                   if ln.strip().startswith("//") and ln.strip()[2:].strip()]
+    kept: list[str] = []
+    used = 0
+    for t in found:
+        if used + len(t) > cap:
+            kept.append(f"[… {len(found) - len(kept)} commentaire(s) de plus, coupés ici]")
+            break
+        kept.append(t)
+        used += len(t)
+    return kept
+
+
+# Rules every creation segment carries (21/11, Hermes reviews of CoursIA#27803/#27804/#27805:
+# links translit'd to `-Rust` neighbours that do not exist, twin prose counts copied
+# verbatim and refused by prose-counts #17636). The stage-3 repo guards check the same.
+CREATION_LINK_COUNT_RULES = (
+    "Règles de livraison vérifiées par les gardes du dépôt :\n"
+    "- LIENS : aucun lien vers un fichier qui n'existe pas. Ne translittère JAMAIS le "
+    "suffixe d'un voisin (`…-Python.ipynb` → `…-Rust.ipynb`) : un voisin n'existe dans le "
+    "langage cible que si le dépôt le contient. En cas de doute, garde la cible du jumeau.\n"
+    "- COMPTAGES : si une phrase recopiée porte une mesure d'artefact ou de durée "
+    "(« ~80 lignes », « 9 lignes », « ~20 min »), retire la mesure et garde le prédicat "
+    "(règle #9377 du dépôt). C'est la SEULE retouche permise de la prose du jumeau.\n"
+    "- COMMENTAIRES : une cellule de code longue (8 lignes ou plus) porte des commentaires "
+    "de lecture ; reporte ceux du jumeau quand ils sont fournis.\n")
+
+
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
                          src_cells: list | None = None) -> str:
     """Stage 2 in creation mode, ONE SEGMENT at a time: the model returns the sources of
@@ -1340,10 +1392,23 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
     from memory came back corrupted — «случай», CJK — the model must COPY, not reinvent;
     code cells keep deriving from the plan, only prose is pinned to the twin)."""
     prose = ""
+    comments = ""
     if src_cells:
         parts, stripped = [], 0
+        cparts: list[str] = []
         footer = last_md_index(src_cells)
         for c in segment_cells:
+            if isinstance(c, dict) and c.get("cell_type") == "code":
+                try:
+                    ci = int(c.get("idx"))
+                except (TypeError, ValueError):
+                    ci = -1
+                if 0 <= ci < len(src_cells) and src_cells[ci].get("cell_type") == "code":
+                    cm = twin_code_comments(_text(src_cells[ci].get("source")))
+                    if cm:
+                        cparts.append(f"<cellule {ci} — commentaires du jumeau>\n"
+                                      + "\n".join(f"- {t}" for t in cm))
+                continue
             if not isinstance(c, dict) or c.get("cell_type") != "markdown":
                 continue
             try:
@@ -1362,7 +1427,8 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
         if parts:
             prose = ("\n\nPROSE DU JUMEAU PYTHON — AUTORITÉ pour les cellules MARKDOWN de "
                      "cette tranche : recopie cette prose TELLE QUELLE en n'adaptant QUE les "
-                     "termes propres au code .NET (noms d'API, en-têtes d'implémentation). "
+                     "termes propres au langage cible (noms d'API, en-têtes "
+                     "d'implémentation). "
                      "N'invente, ne traduis et ne reformule AUCUNE phrase — la prose "
                      "réinventée arrive corrompue (mesuré 17/11) :\n"
                      + "\n\n".join(parts)[:16000] + "\n")
@@ -1371,6 +1437,13 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                           "coordination — Epic, lane, « voir #N » — ont été retirées de cette "
                           "prose : ne les rétablis pas. La provenance ne vit qu'en note de pied "
                           "de la dernière cellule, sous la forme `> Carnet issu de l'EPIC #N.`)\n")
+        if cparts:
+            comments = ("\n\nCOMMENTAIRES DE LECTURE DU JUMEAU — pour les cellules de CODE de "
+                        "cette tranche : reporte chacun d'eux, dans le même ordre et au même "
+                        "endroit logique, dans la syntaxe de commentaire du langage cible "
+                        "(`//` en Rust et en C#). Un portage qui les perd est refusé par la "
+                        "garde `Uncommented code` du dépôt (mesuré 21/11) :\n"
+                        + "\n\n".join(cparts)[:8000] + "\n")
     return (
         "TOUR 2 — CRÉATION, TRANCHE COURANTE : rends les sources COMPLÈTES des cellules "
         "listées ci-dessous, et rien d'autre. Le harnais assemble lui-même le fichier "
@@ -1378,7 +1451,8 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
         "n'appelles aucun outil d'écriture.\n\n"
         f"Cellules de cette tranche (index du PLAN, ordre du carnet) :\n"
         + json.dumps(segment_cells, ensure_ascii=False)[:9000] + "\n"
-        + prose + "\n"
+        + prose + comments + "\n"
+        + CREATION_LINK_COUNT_RULES + "\n"
         + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
         + f"Le jumeau complet compte {n_src_cells} cellules — cette tranche n'en couvre "
         "qu'une partie, ne rends QUE celles listées.\n\n"
@@ -3944,8 +4018,151 @@ def _outputs_text(cell: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
+# Relative link targets in markdown: `](target)` / `](<target> "title")` and href="...".
+MD_LINK_RE = re.compile(r"\]\(\s*<?([^)\s>]+)>?(?:\s+[\"'][^\"']*[\"'])?\s*\)"
+                        r"|href=[\"']([^\"']+)[\"']")
+LINK_SCHEME_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*:")
+# One finding line of check_prose_quantitative_claims.py (legacy artifact format, the CI
+# contract): `  <path>  (<n>)  <snippet>, <snippet>, ...`
+PROSE_COUNT_ROW_RE = re.compile(r"^\s+(\S.*?)\s{2}\((\d+)\)\s{2}(.*)$")
+REPO_GUARD_TIMEOUT_S = 180
+REPO_GUARD_FINDINGS_MAX = 12
+
+
+def dead_link_hits(built_cells: list, repo: Path, rel: str) -> list[dict]:
+    """Markdown links of the built notebook whose RELATIVE target does not exist in the
+    worktree (resolved against the target notebook's folder). 21/11 (CoursIA#27805 review):
+    the port linked `Sudoku-06-AIMA-CSP-Rust.ipynb` and `Sudoku-08-HumanStrategies-Rust`,
+    neither in the repo — the twin's neighbour names translit'd to the target language.
+    URLs, anchors and the notebook's own name are not judged."""
+    base = (repo / rel).parent
+    own = (repo / rel).resolve()
+    hits: list[dict] = []
+    for i, c in enumerate(built_cells):
+        if c.get("cell_type") != "markdown":
+            continue
+        for m in MD_LINK_RE.finditer(_text(c.get("source"))):
+            target = (m.group(1) or m.group(2) or "").strip()
+            if not target or target.startswith(("#", "/")) or LINK_SCHEME_RE.match(target):
+                continue
+            path = unquote(target.split("#", 1)[0].split("?", 1)[0])
+            if not path:
+                continue
+            p = base / path
+            if p.resolve() == own or p.exists():
+                continue
+            hits.append({"cell": i, "target": target})
+    return hits
+
+
+def _repo_guard_tool(repo: Path, name: str) -> Path:
+    return repo / "scripts" / "notebook_tools" / name
+
+
+def _unmeasured(gate: str, **why) -> dict:
+    """A repo guard that could not run is DECLARED (measured: false), never a silent pass
+    and never a build failure: the PR's CI stays the judge of what the harness missed."""
+    return {"gate": gate, "ok": True, "detail": {"measured": False, **why}}
+
+
+def uncommented_code_gate(repo: Path, built_nb: Path) -> dict:
+    """The repo's own `Uncommented code` guard (#26690, check_uncommented_code.py --file):
+    a code cell of 8 lines or more with no comment."""
+    tool = _repo_guard_tool(repo, "check_uncommented_code.py")
+    if not tool.is_file():
+        return _unmeasured("uncommented-code", skipped=f"tool absent: {tool.name}")
+    try:
+        pr = subprocess.run([sys.executable, str(tool), "--file", str(built_nb), "--json"],
+                            cwd=str(repo), capture_output=True, text=True, encoding="utf-8",
+                            errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+        data = json.loads(pr.stdout or "{}") if pr.returncode in (0, 1) else None
+    except (subprocess.TimeoutExpired, ValueError, OSError) as e:
+        return _unmeasured("uncommented-code", error=f"{type(e).__name__}: {e}"[:300])
+    if not isinstance(data, dict):
+        return _unmeasured("uncommented-code", rc=pr.returncode,
+                           error=(pr.stderr or pr.stdout or "")[-300:])
+    cells = [f for row in data.get("rows") or [] for f in row.get("cells") or []
+             if isinstance(f, dict)]
+    findings = [{"cell": f.get("cell"),
+                 "text": f"cellule {f.get('cell')} : {f.get('code_lines')} lignes de code, "
+                         f"{f.get('comments', 0)} commentaire(s)"} for f in cells]
+    return {"gate": "uncommented-code", "ok": not findings,
+            "detail": {"measured": True, "cells": [f["cell"] for f in findings][:10],
+                       "flagged": len(findings),
+                       "findings": findings[:REPO_GUARD_FINDINGS_MAX]}}
+
+
+def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> dict:
+    """The repo's own prose-counts guard (#17636, check_prose_quantitative_claims.py, CI
+    class `artifact`, --strict). The checker judges a TREE, so the built notebook is copied
+    alone in a fresh temporary tree under ``scratch``, same relative path. Its report names the
+    snippet, not the cell: each snippet is located back in the built markdown cells."""
+    tool = _repo_guard_tool(repo, "check_prose_quantitative_claims.py")
+    if not tool.is_file():
+        return _unmeasured("prose-counts", skipped=f"tool absent: {tool.name}")
+    try:
+        scratch.mkdir(parents=True, exist_ok=True)
+        # a FRESH tree per call: a tree left by an earlier call would be judged too
+        with tempfile.TemporaryDirectory(prefix="repo-guards-", dir=str(scratch)) as root:
+            dest = Path(root) / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(built_nb.read_bytes())
+            pr = subprocess.run([sys.executable, str(tool), "--all", "--root", root,
+                                 "--strict"], cwd=str(repo), capture_output=True, text=True,
+                                encoding="utf-8", errors="replace",
+                                timeout=REPO_GUARD_TIMEOUT_S)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return _unmeasured("prose-counts", error=f"{type(e).__name__}: {e}"[:300])
+    if pr.returncode == 0:
+        return {"gate": "prose-counts", "ok": True, "detail": {"measured": True}}
+    if pr.returncode != 1:
+        return _unmeasured("prose-counts", rc=pr.returncode,
+                           error=(pr.stderr or pr.stdout or "")[-300:])
+    snippets: list[str] = []
+    for ln in (pr.stdout or "").splitlines():
+        if ln.startswith("[ALLOWLIST"):
+            break                      # the exemption audit reuses the row format
+        m = PROSE_COUNT_ROW_RE.match(ln)
+        if m:
+            snippets += [x.strip() for x in m.group(3).split(", ") if x.strip()]
+    md = [(i, _text(c.get("source"))) for i, c in enumerate(_cells(built_nb))
+          if c.get("cell_type") == "markdown"]
+    findings = []
+    for sn in snippets[:REPO_GUARD_FINDINGS_MAX]:
+        where = [i for i, t in md if sn in t]
+        findings.append({"cell": where[0] if where else None,
+                         "text": f"compteur « {sn} »"
+                                 + (f" (cellule {', '.join(map(str, where))})" if where else "")})
+    if not findings:
+        findings = [{"cell": None, "text": (pr.stdout or "")[-600:]}]
+    return {"gate": "prose-counts", "ok": False,
+            "detail": {"measured": True,
+                       "cells": [f["cell"] for f in findings if f["cell"] is not None][:10],
+                       "findings": findings}}
+
+
+def repo_guard_gates(repo: Path, rel: str, built_nb: Path, scratch: Path) -> list[dict]:
+    """Stage-3 gates the repo's CI raises on a NEW notebook (21/11: the first three Swift
+    Rust ports, CoursIA#27803/#27804/#27805, all came back CHANGES_REQUESTED on exactly
+    these). Creation mode only: a new file is 100 % delta, so a whole-file check equals
+    the CI's added-lines check; on an EDITED notebook it would charge the build with the
+    repo's pre-existing stock. The inbound link and the README row (nav-chain,
+    readme-notebook-coverage) live in OTHER files and stay out of this gate."""
+    hits = dead_link_hits(_cells(built_nb), repo, rel)
+    gates = [{"gate": "dead-links", "ok": not hits,
+              "detail": {"cells": sorted({h["cell"] for h in hits})[:10],
+                         "findings": [{"cell": h["cell"],
+                                       "text": f"cellule {h['cell']} : lien vers "
+                                               f"`{h['target']}`, absent du dépôt"}
+                                      for h in hits][:REPO_GUARD_FINDINGS_MAX]}}]
+    gates.append(uncommented_code_gate(repo, built_nb))
+    gates.append(prose_counts_gate(repo, rel, built_nb, scratch))
+    return gates
+
+
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
-              canon_version: str | None = None) -> list[dict]:
+              canon_version: str | None = None, repo: Path | None = None,
+              rel: str | None = None, scratch: Path | None = None) -> list[dict]:
     """Stage 3 — harness-only gates on the BUILT notebook, no model turn.
 
     Judged on the DELTA (cells the build touched): the source's own prose is the repo's
@@ -4012,7 +4229,63 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     gates.append({"gate": "svg-display", "ok": not svg_new,
                   "detail": {"cells": svg_new[:10], "source_hits": svg_src[:10],
                              "build_hits": svg_built[:10]}})
+    if create_mode and repo is not None and rel and scratch is not None \
+            and (repo / "scripts").is_dir():
+        gates += repo_guard_gates(repo, rel, built_nb, scratch)
     return gates
+
+
+# The kernel's own extension-loading notice, one line per loaded package:
+#   Loading extensions from `C:\Users\<user>\.nuget\packages\skiasharp\2.88.9\interactive-extensions\dotnet\…dll`
+# 21/11 (po-2028, batch w3e2): 5 of 6 C# failures were gates-failed:machine-path on THIS
+# line alone — source_hits empty, the same cell flagged in every built notebook, 5 repair
+# rounds unable to remove it (a cell edit cannot remove a kernel output). Every ScottPlot
+# grain was structurally blocked. The canonical environment prints it too (`/root/.nuget`,
+# measured in ChoixSocial-01-…-CSharp.ipynb on CoursIA main), so the line is never content.
+EXT_BANNER_LINE_RE = re.compile(r"^\s*Loading extensions from\s+`?[^`\n]+`?\s*\.?\s*$")
+_TEXT_MIMES = ("text/plain", "text/html", "text/markdown")
+
+
+def _is_ext_banner_text(t: str) -> bool:
+    lines = [ln for ln in html.unescape(re.sub(r"<[^>]+>", "", t)).splitlines() if ln.strip()]
+    return bool(lines) and all(EXT_BANNER_LINE_RE.match(ln) for ln in lines)
+
+
+def _is_ext_banner_output(o: dict) -> bool:
+    """A DISPLAY output (display_data / execute_result) whose only content is the
+    kernel's extension notice. Streams are never touched: a line the MODEL prints to
+    stdout stays judged by the machine-path gate."""
+    if not isinstance(o, dict) or o.get("output_type") not in ("display_data", "execute_result"):
+        return False
+    data = o.get("data") or {}
+    if not data or any(k not in _TEXT_MIMES for k in data):
+        return False
+    texts = [_text(data[k]) for k in data]
+    return any(t.strip() for t in texts) and all(_is_ext_banner_text(t) for t in texts if t.strip())
+
+
+def strip_kernel_extension_banner(nb_path: Path) -> dict:
+    """Drop the kernel's `Loading extensions from <path>` display outputs from the built
+    notebook BEFORE the gates read it and before delivery: the line names a user profile
+    (`C:/Users/<user>/…`), so a merged notebook carrying it is a real machine-path leak,
+    and the build cannot repair it. Model-written text keeps facing the gate."""
+    try:
+        nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    removed = []
+    for i, c in enumerate(nb.get("cells") or []):
+        outs = c.get("outputs")
+        if c.get("cell_type") != "code" or not outs:
+            continue
+        kept = [o for o in outs if not _is_ext_banner_output(o)]
+        if len(kept) != len(outs):
+            removed.append({"cell": i, "outputs": len(outs) - len(kept)})
+            c["outputs"] = kept
+    if removed:
+        nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
+                           encoding="utf-8")
+    return {"ok": True, "removed": removed}
 
 
 def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
@@ -4972,6 +5245,15 @@ _GATE_FIX_TEXT = {
                    "une image encodée ni un chemin de fichier",
     "coord-refs": "les renvois entre cellules (références croisées) sont incohérents : aligne "
                   "les références citées avec les cellules réelles du carnet",
+    "dead-links": "lien vers un fichier absent du dépôt : pointe un carnet voisin qui EXISTE "
+                  "(souvent le jumeau Python ou C# de ce voisin) ou retire le lien — ne "
+                  "translittère jamais un suffixe `-Python` en `-Rust`",
+    "uncommented-code": "cellule de code longue sans commentaire : reporte les commentaires "
+                        "de lecture du jumeau dans la syntaxe du langage cible (`//` en "
+                        "Rust/C#) et commente les étapes du calcul (garde du dépôt #26690)",
+    "prose-counts": "compteur quantitatif en prose (lignes, durée) : retire la mesure et garde "
+                    "le prédicat — « une solution compacte (~80 lignes) » devient « une "
+                    "solution compacte » (garde du dépôt #17636)",
 }
 
 
@@ -4983,6 +5265,16 @@ def gate_repair_findings(rec: dict) -> list[dict]:
     out: list[dict] = []
     for g in rec.get("gates") or []:
         if g.get("ok") or g.get("gate") in _GATE_NON_REPAIRABLE:
+            continue
+        entries = (g.get("detail") or {}).get("findings") \
+            if isinstance(g.get("detail"), dict) else None
+        if entries:
+            # repo guards (21/11) name one defect per cell: one finding each, so the round
+            # sees every cell to fix and not the first one only
+            fix = _GATE_FIX_TEXT.get(g.get("gate"), "corrige la cellule pour satisfaire la porte")
+            for e in entries:
+                out.append({"cell": e.get("cell"), "severity": "major",
+                            "detail": f"porte {g.get('gate')} en échec — {fix} ; {e.get('text')}"})
             continue
         detail = g.get("detail") if isinstance(g.get("detail"), (str, int, float)) else json.dumps(
             g.get("detail") or {}, ensure_ascii=False)
@@ -5061,10 +5353,13 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
         if kname.startswith(".net"):
             rec["banner_strip"] = strip_dotnet_banner(
                 wt_path / "scripts" / "notebook_tools" / "strip_probe_banner.py", built_path)
+        rec["ext_banner_strip"] = strip_kernel_extension_banner(built_path)
         tg = time.time()
         rec["gates"] = run_gates(src_nb, built_path, create_mode=create_mode,
                                  canon_version=(rec.get("create_metadata") or {})
-                                 .get("language_version"))
+                                 .get("language_version"),
+                                 repo=wt_path, rel=_norm_rel(getattr(args, "notebook", None) or ""),
+                                 scratch=out_dir)
         rec["gates_s"] = round(time.time() - tg, 1)
         bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
         rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
@@ -5855,7 +6150,12 @@ def build_parser() -> argparse.ArgumentParser:
                          "post the [CLAIMED] only once the verifier approved, right before "
                          "stage 5 (CoursIA auto-pick rule 21/11: a failed launch locks "
                          "nothing). Requires --max-stage 5")
-    ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn")
+    ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn",
+                    help="capacity gate only (gate_call -> swift_capacity_gate.py): warn = probe "
+                         "and record, never refuse; block = refuse the launch on a "
+                         "non-zero verdict (deferred-by-capacity-gate); off = no "
+                         "probe. Does NOT disarm the structural stage-3 gates "
+                         "(execution, conformance, verifier), which have no switch")
     ap.add_argument("--gate", type=Path, default=None,
                     help="capacity-gate probe script (default: $NBCODER_GATE env, else the "
                          "bundled swift_capacity_gate.py). The scheduler forwards its own "

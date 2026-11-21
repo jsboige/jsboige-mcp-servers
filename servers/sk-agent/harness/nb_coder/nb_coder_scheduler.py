@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
+# Copied verbatim from jsboige/vllm @ 7416ac16c91e150aae5a75dd251d0c1a4c2f5c2c
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_scheduler.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -1198,7 +1198,12 @@ def parse_args(argv=None):
     ap.add_argument("--revise-rounds", type=int, default=2,
                     help="constructive-review rounds after a verify-reject with findings "
                          "(driver flag, 0=off)")
-    ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="block")
+    ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="block",
+                    help="capacity gate only (gate_call -> swift_capacity_gate.py): warn = probe "
+                         "and record, never refuse; block = refuse the launch on a "
+                         "non-zero verdict (deferred-by-capacity-gate); off = no "
+                         "probe. Does NOT disarm the structural stage-3 gates "
+                         "(execution, conformance, verifier), which have no switch")
     ap.add_argument("--max-active", type=int, default=0,
                     help="fixed total-request target (or use --ramp)")
     ap.add_argument("--ramp", type=lambda s: [int(x) for x in s.split(",")],
