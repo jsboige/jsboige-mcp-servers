@@ -66,10 +66,11 @@ vi.mock('@/services/openai', () => ({
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-fallback-cloud-');
 
 // A cloud answer in the summary prompt's imposed format: the summary leg's chain
-// guard (validateSummaryCompleteness) rejects a content missing any of the three
-// sections. The same mock answers both legs; the status guard only checks retention.
+// guard (validateSummaryCompleteness) rejects a content missing any of the four
+// sections (#4434 G7a-1 added États transverses). The same mock answers both
+// legs; the status guard only checks retention.
 function cloudSummary(label: string): string {
-  return `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none`;
+  return `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none\n\n### États transverses\n- aucun`;
 }
 // The summary leg's user prompt, as built by generateLLMSummary.
 const isSummaryRequest = (req: any): boolean =>
@@ -945,22 +946,27 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     expect(fallbackArchives.length).toBeGreaterThanOrEqual(1);
     const archiveContent = await readFile(path.join(tmpDir, 'dashboards', 'archive', fallbackArchives[0]), 'utf8');
     const unfolded = archiveContent.replace(/\n\s+/g, ' ');
-    expect(unfolded).toContain('deepseek-v4-flash: guard-rejected (incomplete-summary (missing: actions et resultats, decisions et metriques))');
-    expect(unfolded).toContain('claude-sonnet-5-5: guard-rejected (incomplete-summary (missing: actions et resultats, decisions et metriques))');
+    expect(unfolded).toContain('deepseek-v4-flash: guard-rejected (incomplete-summary (missing: actions et resultats, decisions et metriques, etats transverses))');
+    // The 4th section grew each per-model error past the 240-char truncateError
+    // budget of the archived fallbackError (was ~231, now ~263): the SECOND
+    // model's segment is cut by the budget, so only its surviving prefix is
+    // asserted — the full first segment above proves the list names the section.
+    expect(unfolded).toContain('claude-sonnet-5-5: guard-rejected (incomplete-summary (missing: actions et');
+    expect(unfolded).toContain('...');
   });
 });
 
 describe('summary completeness and budget-truncation predicates', () => {
-  it('accepts the three imposed sections, whatever the case and accents', () => {
+  it('accepts the imposed sections, whatever the case and accents', () => {
     expect(validateSummaryCompleteness(cloudSummary('x'))).toBeNull();
-    expect(validateSummaryCompleteness('### THEMES PRINCIPAUX\n### Actions et resultats\n### décisions et MÉTRIQUES')).toBeNull();
+    expect(validateSummaryCompleteness('### THEMES PRINCIPAUX\n### Actions et resultats\n### décisions et MÉTRIQUES\n### états TRANSVERSES')).toBeNull();
   });
 
   it('names every missing section', () => {
     expect(validateSummaryCompleteness('## Résumé des 9 messages archivés\n\n### Thèmes principaux\n- Limite'))
-      .toBe('incomplete-summary (missing: actions et resultats, decisions et metriques)');
+      .toBe('incomplete-summary (missing: actions et resultats, decisions et metriques, etats transverses)');
     expect(validateSummaryCompleteness('free text'))
-      .toBe('incomplete-summary (missing: themes principaux, actions et resultats, decisions et metriques)');
+      .toBe('incomplete-summary (missing: themes principaux, actions et resultats, decisions et metriques, etats transverses)');
   });
 
   it('reads both wire formats of a budget stop, and nothing else', () => {

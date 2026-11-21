@@ -170,7 +170,7 @@ describe('#3962 — leg budget independence + truncation counter', { timeout: 12
     });
     mockFallbackCreate.mockImplementation(async (_body: unknown, options?: { timeout?: number }) => {
       cloudTimeouts.push(options?.timeout);
-      return { choices: [{ message: { content: '## Résumé\n\n### Thèmes principaux\n- Résumé cloud de secours — synthèse complète des messages archivés.\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none' } }] };
+      return { choices: [{ message: { content: '## Résumé\n\n### Thèmes principaux\n- Résumé cloud de secours — synthèse complète des messages archivés.\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none\n\n### États transverses\n- aucun' } }] };
     });
 
     await roosyncDashboard({ action: 'write', type: 'workspace', content: '# Init' });
