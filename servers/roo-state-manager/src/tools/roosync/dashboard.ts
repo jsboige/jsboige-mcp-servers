@@ -688,14 +688,22 @@ export function isBudgetTruncatedFinish(reason: string | null | undefined): bool
 }
 
 /**
- * The three section headings the intercom-summary prompt imposes (FORMAT block of
+ * The four section headings the intercom-summary prompt imposes (FORMAT block of
  * generateLLMSummary), compared case- and accent-insensitively.
+ *
+ * #4434 G7a-1: the 4th section is the cross-cutting-states contract. G6a's independent
+ * re-read (c.7059518187) measured 12 critical omissions on 3 post-cutover summaries,
+ * ALL of the same class — standing, user-facing states (expected UAC windows, the open
+ * user-question registry, an instrument's exit 1, a live disk risk, dated pauses,
+ * pending handoffs, a DENY-blocked capacity) that the thematic buckets never asked for
+ * and so reliably dropped. A summary missing the section is now a per-model failure,
+ * exactly like the three format sections below.
  */
-const SUMMARY_REQUIRED_SECTIONS = ['themes principaux', 'actions et resultats', 'decisions et metriques'];
+const SUMMARY_REQUIRED_SECTIONS = ['themes principaux', 'actions et resultats', 'decisions et metriques', 'etats transverses'];
 
 /**
  * Cloud-chain guard for the summary leg: names the imposed sections a summary lacks, or
- * returns null when all three are present. Measured on ai-01, 03/11 18:44:25Z: the cloud
+ * returns null when all four are present. Measured on ai-01, 03/11 18:44:25Z: the cloud
  * model returned a 715-char summary of 9 messages in 2.5 s, which stopped mid-word inside
  * its first section. The chain accepted it because it was not empty, and it became the
  * only trace of the 9 archived messages on the global dashboard.
@@ -4803,10 +4811,14 @@ Ce résumé sera le SEUL enregistrement visible de ces messages dans le dashboar
 
 EXIGENCES :
 - ZÉRO perte d'information actionnable (décisions, résultats, blocages résolus)
+- ZÉRO perte d'ÉTATS TRANSVERSES (#4434 G7a-1) : tout état DEBOUT qui survit à la fenêtre
+  archivée doit figurer dans la section dédiée ci-dessous, même si l'événement qui l'a posé
+  est déjà résumé ailleurs — un état perdu (fenêtre UAC attendue, question user ouverte,
+  organe dégradé, risque disque vivant) change l'action d'un lecteur au prochain cycle.
 - Regrouper par THÈMES, pas par message individuel
 - Préserver les métriques chiffrées exactes (scores, taux, nombres)
 - Préserver les dates des événements importants
-- Maximum 20 lignes. Pas d'emojis. Pas de prose, que du factuel.
+- Maximum 25 lignes. Pas d'emojis. Pas de prose, que du factuel.
 - Le résumé DOIT faire moins de 5 Ko. Être CONCIS mais COMPLET.
 - Ne JAMAIS inventer d'informations absentes des messages
 
@@ -4831,7 +4843,15 @@ FORMAT :
 - [DONE/BLOCKED/EN COURS] description avec dates
 
 ### Décisions et métriques
-- Décisions prises, valeurs chiffrées, résultats mesurés`;
+- Décisions prises, valeurs chiffrées, résultats mesurés
+
+### États transverses
+- [état debout, avec propriétaire et date] — une ligne par état :
+  fenêtre UAC attendue / contrainte user planifiée · question user ouverte (registre) ·
+  organe dégradé ou incomplet (exit 1) · risque vivant (disque, budget, échéance) ·
+  pause datée ou claim actif · handoff en attente · capacité bloquée (DENY) ·
+  changement de config vivant (seuils, timeouts)
+- Si aucun état de ces classes n'est présent dans les messages : « - aucun »`;
 
   const userPrompt = `${messages.length} messages retirés du dashboard à synthétiser :\n\n${messagesContent}\n\nRésume ces messages archivés. Ce résumé sera la seule trace visible dans le dashboard.`;
 
