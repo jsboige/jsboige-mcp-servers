@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 443b38c0fae70f64aa46198d51bdb74357df1853
+# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_json_repair.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -83,7 +83,7 @@ def test_no_json_at_all_says_so():
 def _fake(monkeypatch, responses):
     calls = []
 
-    async def fake_sk(session, args, rec, stage, prompt, conv, max_tokens=None):
+    async def fake_sk(session, args, rec, stage, prompt, conv, max_tokens=None, model=None):
         calls.append({"stage": stage, "prompt": prompt, "conv": conv, "max_tokens": max_tokens})
         return responses[len(calls) - 1]
 

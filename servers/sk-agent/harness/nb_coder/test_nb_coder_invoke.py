@@ -1,5 +1,5 @@
 # Canonical home is sk-agent: new harness fixes belong here, not in vllm.
-# Harness base is the vllm re-copy @ 443b38c0fae70f64aa46198d51bdb74357df1853.
+# Harness base is the vllm re-copy @ 9683ab2f5165f374bbb387132288c2cbf7cc6084.
 """#4832 — the canonical invocation wrapper: contract tests, fully offline.
 
 ``nb_coder_invoke.py`` is the ONE documented entry (INVOCATION.md): closed

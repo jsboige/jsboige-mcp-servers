@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 443b38c0fae70f64aa46198d51bdb74357df1853
+# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_revise.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -200,7 +200,7 @@ def _fake_engine(monkeypatch, responses: list[str], verdicts: list[tuple]):
     async def fake_sessions(out_dir):
         yield "SK", "PM"
 
-    async def fake_sk(sk, args, rec, stage, prompt, conv, max_tokens=None):
+    async def fake_sk(sk, args, rec, stage, prompt, conv, max_tokens=None, model=None):
         calls["sk"].append({"stage": stage, "conv": conv, "prompt": prompt})
         rec["calls"].append({"stage": stage})
         return {"response": responses[len(calls["sk"]) - 1], "conversation_id": "c-rev"}

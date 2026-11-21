@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 443b38c0fae70f64aa46198d51bdb74357df1853
+# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -8,6 +8,11 @@
 """nb-coder driver — stages 0-5 of the issue -> notebook -> PR harness (jsboige/vllm#431).
 
 Stage 0 CLAIM : check_lane_claim.py on the CoursIA checkout (read), optional [CLAIMED] comment.
+Stage ½ SPEC  : OPTIONAL (--spec-mode run, roo-extensions #4831): --spec-model pre-chews a rough
+                issue into a hyper-detailed one that becomes stage 1's issue body. The default
+                skip is DECLARED by the caller and traced on the run record (never a heuristic).
+                Not to be confused with --from-spec (a NEW notebook built from the issue's
+                « Plan des cellules » table): both may combine, the spec turn runs first.
 Stage 1 PLAN  : sk-agent model turn -> cell plan JSON (kernel, edits, expected outputs).
 Stage 2 BUILD : the HARNESS copies the source notebook (outputs preserved) and the model
                 edits ONLY the planned cells on that copy (update_cell/add_cell/remove_cell);
@@ -19,6 +24,11 @@ Stage 4 VERIFY: independent verifier (nb_coder_verify.py, SEPARATE process and a
                 producer != verifier; its exit 2 is an instrument error, never a reject).
 Stage 5 PR    : harness-only GitHub gestures — fresh branch, single-notebook commit, REST PR
                 create, delivery comment. The MODEL never writes to git or GitHub.
+
+Model per step (#4831): --coder-model serves every in-process turn (plan, build, segments,
+repairs, revisions), --verifier-model the stage-4 audit, --spec-model the spec pre-chew. Unset
+= the --agent / --verifier-agent preset's own model (seat default). The difficulty->model
+mapping is documented in the README — never hardcoded; the calling lane picks per pass/grain.
 
 Dry below --max-stage 5: no branch, no commit, no push, no PR.
 
@@ -663,6 +673,51 @@ def plan_prompt(issue_n: int, issue: dict, rel: str, kernel: dict, ctx: str, vie
         "`execute_cells`) est un index du carnet d'ORIGINE ; le harnais remappe après "
         "suppressions/insertions."
     )
+
+
+def spec_prompt(issue_n: int, issue: dict, rel: str, kernel: dict, ctx: str, view: str,
+                conventions: str = "") -> str:
+    """Pre-chew turn (#4831): a rough issue becomes a hyper-detailed one, READY FOR THE
+    CODER. The output is the working issue body of stage 1 — prose, not JSON: the coder
+    turn parses it as an issue, exactly like a human-detailed issue would be parsed."""
+    return (
+        f"MODE SPÉCIFICATION — l'issue jsboige/CoursIA#{issue_n} est trop grossière pour être "
+        f"donnée telle quelle au codeur. Tu la pré mâches : tu réécris l'issue en une issue "
+        f"HYPER-DÉTAILLÉE, prête pour le codeur.\n\n"
+        f"## Issue brute\nTITRE : {issue['title']}\n\n"
+        f"CORPS :\n{_cut(issue['body'], 30000, 'corps de l issue')}\n\n"
+        f"## Fil (extrait récent)\n{_cut(issue['comments'], 8000, 'fil de l issue', tail=True)}\n\n"
+        + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
+        + f"## Carnet cible : {rel} (branche origin/main)\n"
+        f"Noyau canonique de la série : {kernel['kernel_name']} "
+        f"(version des voisins : {kernel['canonical_version']} — {kernel['neighbour_versions']})\n\n"
+        f"## Contexte de série\n{ctx}\n\n"
+        f"## Carnet actuel\n{view}\n\n"
+        "Rends UNIQUEMENT le corps de l'issue rédigée (markdown, pas de bloc json, pas de "
+        "préambule). Elle doit contenir, dans cet ordre :\n"
+        "1. **Objectif** — ce que le carnet doit démontrer, en une phrase.\n"
+        "2. **Critères d'acceptation** — une liste cochable, chaque critère testable sur le "
+        "contenu du carnet (pas sur l'intention).\n"
+        "3. **Plan cellule par cellule** — pour CHAQUE cellule à créer ou modifier : index "
+        "(carnet d'origine), type, contenu attendu décrit assez précisément pour écrire le "
+        "code sans rouvrir l'issue brute, dépendances entre cellules.\n"
+        "4. **Sorties attendues** — ce que l'exécution doit afficher/produire, cellule par "
+        "cellule concernée.\n"
+        "5. **Pièges** — erreurs classiques du domaine (API, noyau, sérialisation), ce qu'il "
+        "faut éviter.\n"
+        "Reprends TOUT le contenu utile de l'issue brute et du fil : la spec REMPLACE "
+        "l'issue pour le codeur, elle ne la résume pas — une information perdue ici est "
+        "perdue pour la livraison."
+    )
+
+SPEC_BODY_CAP = 30_000   # the spec becomes stage 1's issue body: same cap as plan_prompt's
+
+
+def spec_skip_trace(issue_body_chars: int) -> dict:
+    """Trace of the declared short-circuit (#4831): the spec step is skipped because the
+    CALLER declared the issue detailed enough — never a harness heuristic."""
+    return {"mode": "skip", "skipped": True, "declared": "--spec-mode skip",
+            "issue_body_chars": issue_body_chars}
 
 
 def build_prompt(scratch_nb: str, plan: dict, execute_ids: list, src_cells: list,
@@ -2507,10 +2562,25 @@ def verify_structure_create(src_path: Path, built_path: Path) -> dict:
 BUILD_MAX_TOKENS = 32768
 
 
+def agent_spec_for(agent: str, model: str | None, max_tokens: int, temperature: float) -> dict:
+    """call_agent composition spec (#4831: model per step). The `model` key is present
+    ONLY when a per-step model is declared — absent, the extends preset's own model
+    serves the call (the seat default). The server validates the ref against its
+    config (enabled models only); what actually served the turn is read from the
+    envelope (served_fields), never from this declaration."""
+    spec: dict = {"extends": agent,
+                  "sampling": {"max_tokens": max_tokens, "temperature": temperature}}
+    if model:
+        spec["model"] = model
+    return spec
+
+
 async def sk_call(session: ClientSession, args, prompt: str, conv: str | None,
-                  max_tokens: int | None = None) -> tuple[dict, float]:
-    spec = {"extends": args.agent,
-            "sampling": {"max_tokens": max_tokens or args.max_tokens, "temperature": 0.4}}
+                  max_tokens: int | None = None, model: str | None = None) -> tuple[dict, float]:
+    # model: explicit per-turn override (the spec turn passes --spec-model); every other
+    # call site is a coder turn and falls back to --coder-model (#4831).
+    spec = agent_spec_for(args.agent, model or getattr(args, "coder_model", None),
+                          max_tokens or args.max_tokens, 0.4)
     payload = {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
                "include_steps": True, "agent_spec": json.dumps(spec)}
     if conv:
@@ -2536,11 +2606,12 @@ RETRY_NOTE = ("\n\nNB : une tentative précédente n'a rien rendu. "
 
 
 async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, prompt: str,
-                        conv: str | None, max_tokens: int | None = None) -> dict:
+                        conv: str | None, max_tokens: int | None = None,
+                        model: str | None = None) -> dict:
     for attempt in range(2):
         tob = engine_tokens()
         env, dt = await sk_call(session, args, prompt + (RETRY_NOTE if attempt else ""), conv,
-                                max_tokens)
+                                max_tokens, model=model)
         toa = engine_tokens()
         rec["calls"].append({"stage": stage if not attempt else f"{stage}-retry",
                              "elapsed_s": dt, "error": env.get("error"),
@@ -2558,6 +2629,42 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
         if not (env.get("error") or "").startswith("empty model response"):
             break
     return env
+
+
+async def spec_stage(sk, args, rec: dict, issue: dict, kernel: dict, ctx: str, view: str,
+                     conventions: str, out_dir: Path) -> dict | None:
+    """Stage ½ SPEC (#4831): pre-chew a rough issue before the coder sees it.
+
+    Not to be confused with --from-spec (the issue's « Plan des cellules » builds a new
+    notebook): this turn rewrites the ISSUE, whatever the build mode. Skipped = DECLARED by
+    the caller (--spec-mode skip: the lane judged the issue detailed enough); both modes
+    trace on the run record, never silently.
+
+    Returns the issue stage 1 must read — the raw one on skip, the pre-chewed one on run —
+    or None when the spec turn died (rec["verdict"] is then set): a dead pre-chew must not
+    fall back to the rough issue it exists to fix, the coder would burn its pass on the
+    exact failure mode the spec step prevents (same fail-loud as stage 1, F5/vllm#441)."""
+    if getattr(args, "spec_mode", "skip") == "skip":
+        rec["spec"] = spec_skip_trace(len(issue.get("body") or ""))
+        return issue
+    tspec = time.time()
+    env_s = await sk_call_retry(sk, args, rec, "spec",
+                                spec_prompt(args.issue, issue, args.notebook, kernel, ctx,
+                                            view, conventions),
+                                None, model=args.spec_model)
+    spec_text = (env_s.get("response") or "").strip()
+    rec["spec"] = {"mode": "run", "skipped": False, "model": args.spec_model,
+                   "conversation_id": env_s.get("conversation_id"),
+                   "chars": len(spec_text), "elapsed_s": round(time.time() - tspec, 1)}
+    if not spec_text:
+        rec["spec"]["failed"] = True
+        rec["verdict"] = f"spec-{call_failure(env_s) or 'no-answer'}"
+        return None
+    spec_body = _cut(spec_text, SPEC_BODY_CAP, "spec")
+    spec_path = Path(out_dir) / f"spec-{args.issue}.md"
+    spec_path.write_text(spec_body, encoding="utf-8")
+    rec["spec"]["path"] = str(spec_path)
+    return {**issue, "body": spec_body}
 
 
 # Codes are matched on word boundaries, never as substrings: a raw `in` test turns
@@ -3198,6 +3305,8 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
            "--issue", str(args.issue), "--source-nb", str(src_nb), "--built-nb", str(built_nb),
            "--facts", str(facts), "--agent", args.verifier_agent,
            "--out-dir", str(out_dir), "--timeout", str(args.verify_timeout)]
+    if getattr(args, "verifier_model", None):    # #4831: the audit step's model, per pass
+        cmd += ["--model", args.verifier_model]
     if getattr(args, "notebook", None):
         # same spec scoping as the producer: on a lot issue, THIS notebook's [SPEC-DRAFT]
         cmd += ["--target", _norm_rel(args.notebook)]
@@ -4132,20 +4241,24 @@ async def run(args, rec: dict) -> dict:
                     "MCP initialize handshake timed out after 180s (child never "
                     "answered; suspect an undrained stderr pipe blocking the "
                     "child's logging — see the wave-1b post-mortem 18/11)") from None
+            view = build_view(src_nb)
+            ctx = series_context(wt_path, args.notebook)
+            # ---- stage ½ SPEC (#4831), see spec_stage
+            issue_eff = await spec_stage(sk, args, rec, issue, kernel, ctx, view,
+                                         conventions, out_dir)
+            if issue_eff is None:
+                return rec
             # ---- stage 1 PLAN (correction) / CREATION PLAN (--source-nb)
             t1 = time.time()
             if from_spec:
-                prompt = spec_creation_prompt(args.issue, issue, args.notebook, kernel,
-                                              series_context(wt_path, args.notebook),
-                                              build_view(src_nb), conventions)
+                prompt = spec_creation_prompt(args.issue, issue_eff, args.notebook, kernel,
+                                              ctx, view, conventions)
             elif create_mode:
-                prompt = creation_prompt(args.issue, issue, args.notebook, args.source_nb,
-                                         kernel, series_context(wt_path, args.notebook),
-                                         build_view(src_nb), conventions)
+                prompt = creation_prompt(args.issue, issue_eff, args.notebook, args.source_nb,
+                                         kernel, ctx, view, conventions)
             else:
-                prompt = plan_prompt(args.issue, issue, args.notebook, kernel,
-                                     series_context(wt_path, args.notebook),
-                                     build_view(src_nb), conventions)
+                prompt = plan_prompt(args.issue, issue_eff, args.notebook, kernel,
+                                     ctx, view, conventions)
             env = await sk_call_retry(sk, args, rec, "1-plan", prompt, None)
             conv = env.get("conversation_id")
             rec["conversation_id"] = conv      # the agentic trace the PR body must carry
@@ -4352,7 +4465,7 @@ def _preflight(ap, args) -> None:
     ap.error(detail)
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--issue", type=int, required=True, help="CoursIA issue number")
     ap.add_argument("--notebook", required=True, help="repo-relative target notebook")
@@ -4418,6 +4531,27 @@ def main() -> int:
                     default=os.environ.get("NBCODER_VERIFIER", "critic"),
                     help="stage-4 verifier agent — must be a DIFFERENT model from the "
                          "builder (default critic = GLM-5.3 vs builder MiniMax)")
+    # ---- per-step model selection (#4831): the difficulty->model mapping lives in the
+    # harness README (documented, NOT hardcoded) -- the calling lane picks per pass/grain.
+    # Unset = the --agent preset's own model serves the turn (seat default, unchanged
+    # behavior). sk-agent validates the ref (enabled models only) and every call trace
+    # carries model_used, the envelope's record of the entry that routed the turn.
+    ap.add_argument("--coder-model", default=os.environ.get("NBCODER_CODER_MODEL"),
+                    help="model serving EVERY coder turn (plan, build, segments, repairs, "
+                         "revisions) -- overrides the --agent preset's model for those turns only")
+    ap.add_argument("--verifier-model", default=os.environ.get("NBCODER_VERIFIER_MODEL"),
+                    help="model serving the stage-4 audit (overrides the verifier agent "
+                         "preset's model)")
+    ap.add_argument("--spec-mode", choices=["skip", "run"],
+                    default=os.environ.get("NBCODER_SPEC_MODE", "skip"),
+                    help="skip (default): the issue is detailed enough, the spec step is "
+                         "short-circuited -- DECLARED and traced on the run record; run: "
+                         "--spec-model pre-chews the rough issue into a hyper-detailed one "
+                         "that becomes stage 1's issue body (not --from-spec, which builds a "
+                         "new notebook from the issue's cell plan)")
+    ap.add_argument("--spec-model", default=os.environ.get("NBCODER_SPEC_MODEL"),
+                    help="model serving the spec pre-chew turn (required with "
+                         "--spec-mode run)")
     ap.add_argument("--verify-timeout", type=int, default=900)
     ap.add_argument("--pr-base", default="main")
     ap.add_argument("--pr-repo", default=None,
@@ -4442,6 +4576,11 @@ def main() -> int:
                          "plan/build, no new [CLAIMED] comment (the reservation in the "
                          "trace is re-read by the scoped claim guard); runs the review "
                          "loop, then stage 5 if approved and --max-stage 5")
+    return ap
+
+
+def main() -> int:
+    ap = build_parser()
     args = ap.parse_args()
     # Fail loud, never quiet (F1/F2, vllm#438): a claim under an identity the operator did not
     # choose breaks the registry guard itself, and a per-seat --repo default is a fourth
@@ -4474,10 +4613,25 @@ def main() -> int:
                  "a correction keeps the existing notebook's metadata")
     if args.from_spec and args.write_mode == "mcp":
         ap.error("--from-spec requires --write-mode json (one harness write, like --source-nb)")
+    if args.spec_mode == "run" and not args.spec_model:
+        ap.error("--spec-mode run requires --spec-model (or NBCODER_SPEC_MODEL): the spec turn "
+                 "is the one step that pre-chews a rough issue -- running it on the seat "
+                 "default would silently defeat the per-step difficulty mapping (#4831)")
+    if args.spec_mode == "run" and args.from_spec:
+        ap.error("--spec-mode run and --from-spec are exclusive: --from-spec builds from the "
+                 "issue's cell plan, parsed from the RAW body -- a pre-chewed body would make "
+                 "the prompt and the gated plan diverge")
+    if args.spec_mode == "run" and args.revise_from:
+        ap.error("--spec-mode run has no effect with --revise-from: a revision re-plans "
+                 "nothing, the spec turn would never run (declare --spec-mode skip)")
     if args.max_stage >= 1:   # stage 0 is git-only: a claim must not require the MCP wiring
         _preflight(ap, args)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
            "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
+           # declared per-step models (#4831): what the lane asked for -- what each turn
+           # actually got stays in calls[].model_used / served fields and verify.model_used
+           "models": {"spec": args.spec_model, "coder": args.coder_model,
+                      "verifier": args.verifier_model},
            "engine_tokens_before": engine_tokens()}
     try:
         rec = asyncio.run(run_revision(args, rec) if args.revise_from else run(args, rec))
@@ -4509,6 +4663,7 @@ def main() -> int:
                             | {"stage0_s": rec.get("stage0_s"), "stage1_s": rec.get("stage1_s"),
                                "stage2_s": rec.get("stage2_s"), "stage4_s": rec.get("stage4_s"),
                                "stage5_s": rec.get("stage5_s"),
+                               "spec": (rec.get("spec") or {}).get("mode"),
                                "gate": (rec.get("gate") or {}).get("verdict"),
                                "verify": (rec.get("verify") or {}).get("verdict"),
                                "pr": (rec.get("pr") or {}).get("number"),
