@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_usage.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -44,7 +44,7 @@ def test_a_call_record_carries_its_own_usage_and_never_a_zero(monkeypatch):
     envs = [{"response": "ok", "usage": {"prompt_tokens": 18000, "completion_tokens": 900}},
             {"response": "ok"}]
 
-    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None):
+    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None, **kw):
         return envs.pop(0), 1.0
 
     monkeypatch.setattr(d, "sk_call", fake_sk)
@@ -62,7 +62,7 @@ def test_an_empty_answer_retry_records_both_calls_usage(monkeypatch):
              "usage": {"prompt_tokens": 9000, "completion_tokens": 32768}},
             {"response": "ok", "usage": {"prompt_tokens": 9100, "completion_tokens": 700}}]
 
-    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None):
+    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None, **kw):
         return envs.pop(0), 1.0
 
     monkeypatch.setattr(d, "sk_call", fake_sk)

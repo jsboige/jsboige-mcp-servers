@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_step_models.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -108,7 +108,7 @@ def test_sk_call_without_models_keeps_preset():
 def test_sk_call_retry_forwards_model_on_both_attempts(monkeypatch):
     seen = []
 
-    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None):
+    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None, **kw):
         seen.append(model)
         return {"error": "empty model response"}, 0.1
 

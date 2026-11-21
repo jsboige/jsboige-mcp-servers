@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import fnmatch
 import hashlib
 import json
 import os
@@ -161,6 +162,29 @@ def gh(args: list[str], token: str | None = None, timeout: int = 60) -> tuple[in
     p = subprocess.run(["gh", *args], capture_output=True, text=True, encoding="utf-8",
                        errors="replace", timeout=timeout, env=env)
     return p.returncode, (p.stdout or p.stderr).strip()
+
+
+# GitHub's two refusals for a drained bucket: "API rate limit exceeded for user ID …" (core)
+# and "You have exceeded a secondary rate limit" (abuse). Neither says anything about the
+# grain, so a run that dies on one is deferred, not failed (21/11, CoursIA#27134 2.3c).
+_GH_RATE_LIMIT_RE = re.compile(r"API rate limit exceeded|secondary rate limit", re.I)
+
+
+def github_rate_limited(text: str) -> bool:
+    return bool(_GH_RATE_LIMIT_RE.search(text or ""))
+
+
+def github_core_reset(token: str | None = None) -> int | None:
+    """Epoch at which the core bucket refills. /rate_limit does not count against it."""
+    try:
+        rc, out = gh(["api", "rate_limit", "--jq", ".resources.core.reset"], token, timeout=20)
+        return int(out) if rc == 0 else None
+    except (ValueError, OSError, subprocess.SubprocessError):
+        return None
+
+
+def rate_limit_verdict(reset: int | None) -> str:
+    return "deferred-by-github-rate-limit" + (f":reset={reset}" if reset else "")
 
 
 def app_token(repo_dir: Path) -> str | None:
@@ -301,13 +325,104 @@ def check_claim(repo: Path, n: int, lane: str, notebook: str,
     script = repo / "scripts/check_lane_claim.py"
     if not script.is_file():
         return {"ok": None, "error": "check_lane_claim.py absent"}
-    p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane,
-                        "--paths", notebook,
-                        *(["--from-json", from_json] if from_json else [])],
-                       cwd=repo, capture_output=True, text=True, encoding="utf-8",
-                       errors="replace", timeout=120)
-    return {"ok": p.returncode == 0, "rc": p.returncode,
-            "out": (p.stdout or p.stderr).strip()[:2000]}
+    p = _run_claim_guard([sys.executable, str(script), str(n), "--lane", lane,
+                          "--paths", notebook,
+                          *(["--from-json", from_json] if from_json else [])], repo)
+    if p is None:
+        return {"ok": None, "rc": None, "timed_out": True,
+                "error": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
+    return {"ok": p.returncode == 0, **_guard_result(p, notebook)}
+
+
+# The guard reads GitHub (issue thread, open PRs, their diffs): 44 s for one scoped check
+# on a calm bucket (measured 21/11 02:5xZ), and a reservation makes three calls. Under
+# load one call passed 120 s and the TimeoutExpired escaped as `crashed:` (21/11 02:35Z,
+# MGS-28, #27133) -- a terminal failure for a grain that had done nothing wrong.
+CLAIM_GUARD_TIMEOUT_S = 300
+CLAIM_TIMEOUT_VERDICT = "deferred-by-claim-timeout"
+
+
+def _run_claim_guard(argv: list[str], repo: Path):
+    """CompletedProcess of one guard call, or None when it outlived its budget."""
+    try:
+        return subprocess.run(argv, cwd=repo, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              timeout=CLAIM_GUARD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return None
+
+
+# rc=3 is the guard's IMPLICIT verdict (#14300): no [CLAIMED] marker blocks, but an OPEN
+# PR of another lane references the issue. On a LOT issue the guard does not intersect
+# that PR's files with --paths: CoursIA#27133 carries five Rust ports, and po-2024's open
+# PR #27691 (Sudoku-05 only) made the guard answer 3 for MGS-28, MGS-29 and Search-11,
+# whose files it never touches (21/11 03:14Z). The driver read every rc outside {0,1} as
+# "not scoped" and burned the three grains. Now: an occupying PR that touches THIS
+# notebook (or whose file list cannot be trusted) still refuses; a disjoint one defers,
+# because the occupation ends when that PR merges -- the scheduler retries with backoff.
+CLAIM_IMPLICIT_VERDICT = "deferred-by-claim-implicit-occupation"
+# GitHub's PR payload previews at most 100 files: a list that long may hide ours.
+_PR_FILES_PREVIEW_CAP = 100
+
+
+def _guard_report(stdout: str) -> dict | None:
+    """The guard prints ONE JSON summary first, then its verdict lines."""
+    text = (stdout or "").lstrip()
+    if not text.startswith("{"):
+        return None
+    try:
+        doc, _ = json.JSONDecoder().raw_decode(text)
+    except ValueError:
+        return None
+    return doc if isinstance(doc, dict) else None
+
+
+def _guard_result(p, notebook: str) -> dict:
+    """rc + a bounded copy of the guard's output that keeps its VERDICT.
+
+    The verdict lines follow the JSON summary: the old `[:2000]` kept the head of the
+    JSON and cut the verdict off, so a refusal recorded no reason (#27133, rc=3)."""
+    text = (p.stdout or p.stderr or "").strip()
+    out = text if len(text) <= 2000 else text[:1200] + "\n[...]\n" + text[-800:]
+    res: dict = {"rc": p.returncode, "out": out}
+    if p.stdout and p.stderr:
+        res["warnings"] = p.stderr.strip()[-600:]
+    doc = _guard_report(p.stdout) or {}
+    mine = (doc.get("active_claims") or {}).get(doc.get("my_lane") or "")
+    if isinstance(mine, dict):
+        res["my_claim"] = {
+            "marker": mine.get("marker"), "claimed_at": mine.get("claimed_at"),
+            "url": mine.get("url"), "pr_ref": mine.get("pr_ref"),
+            "locked": mine.get("locked"),
+            "paths": [_norm_rel(g) for g in (mine.get("paths") or [])
+                      if isinstance(g, str)][:_PR_FILES_PREVIEW_CAP],
+        }
+    if p.returncode == 3:
+        target = _norm_rel(notebook)
+        implicit = []
+        for pr in doc.get("implicit_occupation") or []:
+            if not isinstance(pr, dict):
+                continue
+            files = [_norm_rel(f) for f in (pr.get("files") or []) if isinstance(f, str)]
+            implicit.append({
+                "number": pr.get("number"), "lane": pr.get("lane"),
+                "files": files[:5], "file_count": len(files),
+                "touches_notebook": (target in files
+                                     or not files
+                                     or len(files) >= _PR_FILES_PREVIEW_CAP),
+            })
+        res["implicit"] = implicit
+    return res
+
+
+def implicit_verdict(cc: dict) -> str:
+    """rc=3: refuse when the occupying PR may touch this notebook, defer when disjoint."""
+    implicit = cc.get("implicit") or []
+    if not implicit or any(i.get("touches_notebook") for i in implicit):
+        # unreadable report, or a real collision on our file: fail closed
+        return "refused-claim-implicit-occupation"
+    return CLAIM_IMPLICIT_VERDICT + ":" + ",".join(
+        f"#{i.get('number')}" for i in implicit)
 
 
 def claim_verdict(cc: dict) -> str | None:
@@ -317,50 +432,209 @@ def claim_verdict(cc: dict) -> str | None:
     rc=2  -> the scoped check still cannot decide (old script without --paths, path
              absent from every open diff): refuse rather than run unprotected -- the
              pre-#466 driver treated this as pass-through.
+    rc=3  -> IMPLICIT: an open PR of another lane references the issue. Refused if it
+             may touch this notebook, deferred if its files are disjoint (#27133).
     no rc -> the guard itself is absent/broken: refuse crash-free (it used to KeyError).
     rc=0  -> clear, proceed.
     """
+    if cc.get("timed_out"):
+        # Not a verdict on the claim: the guard never answered. Deferred, so the
+        # scheduler retries with backoff instead of burning the grain.
+        return f"{CLAIM_TIMEOUT_VERDICT}:check"
     rc = cc.get("rc")
     if rc == 1:
         return "refused-claim-held-by-another-lane"
     if rc is None:
         return "refused-claim-check-broken"
+    if rc == 3:
+        return implicit_verdict(cc)
     if rc != 0:
         return "refused-claim-check-not-scoped"
     return None
 
 
 def post_claim(repo: Path, n: int, lane: str, intention: str,
-               notebook: str, from_json: str | None = None) -> dict:
+               notebook: str, from_json: str | None = None,
+               scope: list[str] | None = None) -> dict:
     """Acquire this notebook's claim through the authoritative guard, not a bare comment.
 
     The guard rechecks collisions and verifies its write before returning 0. The caller
     must gate the worktree/model stages on this result, then re-read the claim below.
     ``from_json`` is only for offline two-client admission tests, never production.
+    ``scope`` replaces the written paths (it must contain ``notebook``): the guard keeps
+    ONE active claim per lane and issue, so a write scoped to this notebook alone would
+    drop the lane's other paths on the issue (see lane_claim_scope).
     """
     script = repo / "scripts/check_lane_claim.py"
     if not script.is_file():
         return {"rc": None, "out": "check_lane_claim.py absent"}
-    p = subprocess.run([sys.executable, str(script), str(n), "--lane", lane,
-                        "--paths", notebook, "--claim", intention,
-                        *(["--from-json", from_json] if from_json else [])],
-                       cwd=repo, capture_output=True, text=True,
-                       encoding="utf-8", errors="replace", timeout=120)
-    return {"rc": p.returncode, "out": (p.stdout or p.stderr).strip()[:2000]}
+    p = _run_claim_guard([sys.executable, str(script), str(n), "--lane", lane,
+                          "--paths", *(scope or [notebook]), "--claim", intention,
+                          *(["--from-json", from_json] if from_json else [])], repo)
+    if p is None:
+        return {"rc": None, "timed_out": True,
+                "out": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
+    return _guard_result(p, notebook)
 
 
 def claim_reservation_verdict(post: dict, verify: dict) -> str | None:
-    """A model run starts only after an admitted, freshly re-read scoped claim."""
+    """A model run starts only after an admitted, freshly re-read scoped claim.
+
+    A guard that timed out is deferred, never admitted: after a post timeout the
+    comment state is UNKNOWN (same residue as refused-claim-post-failed), and the
+    retry's first act is the scoped pre-check -- the re-read of the thread that
+    residue requires. The guard resumes our own claim instead of colliding with it."""
+    if post.get("timed_out"):
+        return f"{CLAIM_TIMEOUT_VERDICT}:post"
+    if post.get("rc") == 3:
+        # The guard runs the IMPLICIT leg BEFORE writing and refuses the post on rc=3
+        # (#26751): nothing landed, so this is not the UNKNOWN residue of a failed post.
+        return implicit_verdict(post)
     if post.get("rc") != 0:
         return "refused-claim-post-failed"
+    if verify.get("timed_out"):
+        return f"{CLAIM_TIMEOUT_VERDICT}:verify"
+    if verify.get("rc") == 3:
+        # Our post is now the lane's latest claim, so every older open PR of another
+        # lane on the issue reads as IMPLICIT. Residue: one claim comment, no admission.
+        v = implicit_verdict(verify)
+        return v if v.startswith(CLAIM_IMPLICIT_VERDICT) else "refused-claim-not-verified"
     if claim_verdict(verify) is not None:
         return "refused-claim-not-verified"
     return None
 
 
+# The guard keeps ONE active [CLAIMED] per lane and issue. Two grains of a lot issue
+# that reserve at the same time overwrite each other's claim between post and re-read:
+# CoursIA#27133, 21/11 02:08Z, MGS-25 posted, MGS-28 posted, and MGS-25's re-read saw
+# MGS-28's paths -> refused-claim-not-verified. Only that window races, so only that
+# window is serialized: a local lock per issue around reserve_claim. Grains of the same
+# lot still run side by side once admitted (the conveyor's lots carry 5-9 notebooks).
+CLAIM_LOCK_DIRNAME = ".claim-locks"
+# A reservation is three guard calls of at most CLAIM_GUARD_TIMEOUT_S each.
+CLAIM_LOCK_WAIT_S = 3 * CLAIM_GUARD_TIMEOUT_S + 120
+CLAIM_LOCK_POLL_S = 5.0
+
+
+@contextlib.contextmanager
+def issue_claim_lock(lock_dir: Path, n: int, wait_s: float = CLAIM_LOCK_WAIT_S,
+                     poll_s: float = CLAIM_LOCK_POLL_S, clock=time.time,
+                     sleep=time.sleep):
+    """Exclusive local lock on issue `n`'s reservation window; yields {"held": bool}.
+
+    A lock file older than `wait_s` is stale (its holder died mid-reservation: a live
+    one finishes within three guard timeouts) and is taken over. Not held after
+    `wait_s` -> the caller defers; it never reserves unlocked."""
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    path = lock_dir / f"issue-{n}.lock"
+    start = clock()
+    info = {"held": False, "path": str(path), "waited_s": 0.0}
+    while True:
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                age = clock() - path.stat().st_mtime
+            except OSError:
+                continue                      # released between the two calls
+            if age > wait_s:
+                with contextlib.suppress(OSError):
+                    path.unlink()
+                info["took_over_stale_s"] = round(age, 1)
+                continue
+            if clock() - start >= wait_s:
+                info["waited_s"] = round(clock() - start, 1)
+                break
+            sleep(poll_s)
+            continue
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(json.dumps({"pid": os.getpid(), "ts": utcnow()}))
+        info.update(held=True, waited_s=round(clock() - start, 1))
+        break
+    try:
+        yield info
+    finally:
+        if info["held"]:
+            with contextlib.suppress(OSError):
+                path.unlink()
+
+
+# The guard keeps ONE active [CLAIMED] per lane and issue (the latest wins) and writes
+# exactly the --paths it is given. Measured on CoursIA#27133, 21/11: the coordinator had
+# claimed the whole lot for this lane at 20/11 18:22Z; every grain's reservation then
+# re-posted a claim scoped to its own notebook, so (1) the lane's claim shrank to one
+# notebook and the siblings in flight lost their cover, and (2) the claim was re-dated.
+# The IMPLICIT leg counts another lane's open PR only when it is OLDER than the caller's
+# claim (check_lane_claim.py, #26751): po-2024's PR #27691 (21/11 02:26Z) was newer than
+# the coordinator's claim and older than ours (03:14Z), so every sibling was refused.
+# Now a notebook the lane's live claim already names is admitted on the pre-check alone
+# (nothing re-posted, nothing re-dated), and a write never carries fewer paths than the
+# lane's claim had.
+# Past this age the claim is re-posted anyway: other lanes read a claim older than 48 h
+# (the guard's default threshold) as stale.
+LANE_CLAIM_REFRESH_S = 24 * 3600
+
+
+def _parse_utc(ts) -> datetime | None:
+    try:
+        at = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
+# An amend is a claim too (check_lane_claim.py `_OPEN`, #13022): the coordinator asked on
+# 21/11 that a lot reservation be re-posted as `[CLAIMED-AMEND] ... -- paths: <full list>`,
+# and the guard reports that comment with marker "CLAIMED-AMEND". Read as "no live
+# claim", every grain after the amend would re-post its notebook alone and narrow the
+# lot again, the very defect lane_claim_scope exists to prevent.
+LIVE_CLAIM_MARKERS = frozenset({"CLAIMED", "CLAIMED-AMEND"})
+
+
+def _live_lane_claim(my_claim) -> bool:
+    """A [CLAIMED] or [CLAIMED-AMEND] of our lane that still reserves: not delivered, not
+    locked to a PR."""
+    return (isinstance(my_claim, dict)
+            and str(my_claim.get("marker") or "").upper() in LIVE_CLAIM_MARKERS
+            and not my_claim.get("locked") and not my_claim.get("pr_ref"))
+
+
+def lane_claim_covers(my_claim, notebook: str, now: datetime | None = None) -> bool:
+    """True when our lane's live, fresh claim already names this notebook (fnmatch, as
+    the guard reads `paths:`). An issue-wide claim (no paths) does not count: the guard
+    filters those by scope, so it is no proof of cover."""
+    if not _live_lane_claim(my_claim):
+        return False
+    at = _parse_utc(my_claim.get("claimed_at"))
+    if at is None:
+        return False
+    now = now or datetime.now(timezone.utc)
+    if (now - at).total_seconds() > LANE_CLAIM_REFRESH_S:
+        return False
+    target = _norm_rel(notebook)
+    return any(fnmatch.fnmatchcase(target, g) for g in my_claim.get("paths") or [])
+
+
+def lane_claim_scope(my_claim, notebook: str) -> list[str] | None:
+    """Paths for a write that keeps the lane's live claim: its paths plus this notebook.
+    None when the lane holds no scoped live claim (the write is the notebook alone)."""
+    if not _live_lane_claim(my_claim) or not my_claim.get("paths"):
+        return None
+    paths = list(my_claim["paths"])
+    target = _norm_rel(notebook)
+    if target not in paths:
+        paths.append(target)
+    return paths
+
+
 def reserve_claim(repo: Path, n: int, lane: str, intention: str,
                   notebook: str) -> dict:
     """Admission gate for a model run: scoped check -> authoritative post -> fresh re-read.
+
+    Short path: when the CLEAR pre-check shows a live, fresh claim of our lane that
+    already names this notebook (a coordinator's lot claim), the run is admitted
+    without writing -- see lane_claim_covers. Otherwise the write carries the lane's
+    existing paths plus this notebook (lane_claim_scope), never this notebook alone.
 
     Three refusals, each before any worktree or model spend:
     - the pre-check is not CLEAR (claim held, guard broken, check not scoped);
@@ -391,12 +665,79 @@ def reserve_claim(repo: Path, n: int, lane: str, intention: str,
     if refused:
         return {"before": before, "posted": None, "verified": None,
                 "verdict": refused}
-    posted = post_claim(repo, n, lane, intention, notebook)
+    mine = before.get("my_claim")
+    if lane_claim_covers(mine, notebook):
+        # The pre-check IS the fresh read: CLEAR on this notebook, under a live claim
+        # of our lane that already names it. A later post by another lane would see
+        # that claim and be refused, so there is no window for a re-read to close.
+        return {"before": before, "posted": None, "verified": None,
+                "covered_by": {k: mine.get(k) for k in ("url", "claimed_at", "paths")},
+                "verdict": None}
+    scope = lane_claim_scope(mine, notebook)
+    if scope:
+        posted = post_claim(repo, n, lane, intention, notebook, scope=scope)
+        if posted.get("rc") == 1:
+            # The guard refused the union BEFORE writing (one of the lane's other
+            # paths is now held elsewhere): nothing landed. Fall back to this
+            # notebook alone -- the narrow write, which the pre-check just cleared.
+            union = posted
+            posted = post_claim(repo, n, lane, intention, notebook)
+            posted["union_refused"] = {"rc": union.get("rc"),
+                                       "out": (union.get("out") or "")[-400:]}
+    else:
+        posted = post_claim(repo, n, lane, intention, notebook)
     verified = (check_claim(repo, n, lane, notebook)
                 if posted.get("rc") == 0
                 else {"rc": None, "skipped": "claim acquisition failed"})
     return {"before": before, "posted": posted, "verified": verified,
+            **({"scope": scope} if scope else {}),
             "verdict": claim_reservation_verdict(posted, verified)}
+
+
+# --claim-late (CoursIA coordinator, 21/11, auto-pick rule Q-A): "pas de [CLAIMED] avant
+# que le run ait une PR ouvrable (stage 4 vert) : un lancement qui echoue ne verrouille
+# rien". Stage 0 records this deferral instead of reserving; late_reservation() takes the
+# reservation, through the same lock + reserve_claim admission, right before stage 5.
+LATE_CLAIM_DEFERRED = {"verdict": None, "deferred": "late",
+                       "note": "no [CLAIMED] before an openable PR (CoursIA rule 21/11); "
+                               "reserved by late_reservation() before stage 5"}
+LATE_CLAIM_TAKEN = "late-taken"
+LATE_CLAIM_REFUSED = "late-claim-refused"
+# A guard timeout at this point would throw away a verified build: retry it once.
+LATE_CLAIM_ATTEMPTS = 2
+
+
+def late_reservation(args, rec: dict) -> bool:
+    """True when stage 5 may run. A no-op (True) unless stage 0 deferred the claim.
+
+    Deferred: reserve now, under the per-issue lock, with the same fail-closed admission
+    as stage 0 (scoped pre-check -> authoritative post -> re-read). A refusal means another
+    lane took the notebook while we built it: the verdict becomes late-claim-refused:<v>
+    and nothing is posted -- the built notebook and its worktree stay on disk. A guard
+    timeout is retried once before it counts as a refusal."""
+    cr = rec["stages"].get("claim_reservation") or {}
+    if cr.get("deferred") != "late":
+        return True
+    attempts = []
+    for _ in range(LATE_CLAIM_ATTEMPTS):
+        with issue_claim_lock(Path(args.out_dir).parent / CLAIM_LOCK_DIRNAME,
+                              args.issue) as lock:
+            late = (reserve_claim(Path(args.repo), args.issue, args.lane, args.intention,
+                                  _norm_rel(args.notebook))
+                    if lock["held"] else
+                    {"verdict": f"{CLAIM_TIMEOUT_VERDICT}:lock",
+                     "note": "a sibling grain of this issue held its reservation too long"})
+        late["lock"] = lock
+        attempts.append(late)
+        if not str(late.get("verdict") or "").startswith(CLAIM_TIMEOUT_VERDICT):
+            break
+    rec["stages"]["claim_reservation_late"] = {"at": utcnow(), "attempts": attempts}
+    verdict = attempts[-1].get("verdict")
+    if verdict:
+        rec["verdict"] = f"{LATE_CLAIM_REFUSED}:{verdict}"
+        return False
+    rec["stages"]["claim_reservation"] = {**cr, "deferred": LATE_CLAIM_TAKEN}
+    return True
 
 
 def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
@@ -1476,6 +1817,39 @@ REPAIR_SOURCE_CAP = 12000
 # exception was raised in `Decouper`, defined 8 cells above the cell that displayed it).
 REPAIR_UPSTREAM_MAX = 3
 
+# Rounds a repair loop may add past --repair-rounds while it is still converging (21/11
+# conveyor): the 7 built-execution-failed traces of 20-21/11 all ran out of rounds, and 3
+# of them were still shrinking on the last one (2.3d 8 -> 7, Frontieres-01 8 -> 3,
+# Compression-07 4 -> 3). A round that fixes nothing ends the loop as before.
+REPAIR_EXTEND_DEFAULT = 2
+
+
+def repair_round_extends(rounds_done: int, budget: int, cap: int, before: int,
+                         after: int) -> bool:
+    """One more repair round when the budget is spent, the cap is not reached, and the
+    round just run strictly reduced the failing cells without clearing them."""
+    return rounds_done >= budget and budget < cap and 0 < after < before
+
+
+# Rounds the constructive-review loop may add past --revise-rounds while it is still
+# converging (21/11 conveyor, CoursIA#27747 Sudoku-07): majors 6 -> 4 -> 1 over the two
+# budgeted rounds, then the loop stopped on its budget with ONE major left, a one-line
+# hint fix the verifier had spelled out. A round that does not strictly reduce the
+# majors ends the loop as before ([2, 1, 1] and [4, 4, 4] on the same day stay as they are).
+REVISE_EXTEND_DEFAULT = 2
+
+
+def revise_round_extends(rounds_done: int, budget: int, cap: int, source_in, source_out,
+                         majors_in, majors_out) -> bool:
+    """One more revision round when the budget is spent, the cap is not reached, and the
+    round just run strictly reduced the major findings — measured on findings of the SAME
+    source (verifier vs verifier, execution vs execution, gates vs gates): a synthesized
+    execution finding and a verifier major are not on one scale."""
+    if not (isinstance(majors_in, int) and isinstance(majors_out, int)):
+        return False
+    return (rounds_done >= budget and budget < cap and source_in == source_out
+            and majors_out < majors_in)
+
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # Frame names a kernel error carries: .NET Interactive `at Submission#5.Decouper(`,
 # IPython `Cell In[5], line 3, in decouper(` / classic `File "x.py", line 3, in decouper`.
@@ -1596,18 +1970,92 @@ def cascade_roots(cells: list[dict], detail: list[dict]) -> dict[int, list[int]]
     three rounds. A cell listed here fails because of its root: repairing it before the
     root can only work around a definition that is about to change. Values count too
     (#27314 attempt 1: cell 22 failed on `ARCHIVE` and `CERTIFICAT`, which cell 19 binds
-    with `var` and never ran)."""
+    with `var` and never ran).
+
+    Crates count too (2.3c, #27134, 21/11): cell 2 carried every `:dep` and failed on two
+    missing trait imports, so evcxr linked none of its crates and the twelve cells below
+    failed on `unlinked crate ndarray/rand/…` alone. The round asked all thirteen at once:
+    a 151K-token prompt, a 60K-character answer that did not parse, the grain lost."""
     failing = {d["idx"] for d in detail}
+    dep_cell = {_crate_norm(n): s["idx"] for n, s in cell_deps(cells).items()}
     out: dict[int, list[int]] = {}
     for d in detail:
         roots = set()
-        for name in undefined_names(d.get("_raw_errors") or d.get("errors") or ""):
+        errs = d.get("_raw_errors") or d.get("errors") or ""
+        for name in undefined_names(errs):
             j = source_cell(cells, name, before=d["idx"])
             if j is not None and j in failing:
+                roots.add(j)
+        for crate in unlinked_crates(errs):
+            j = dep_cell.get(_crate_norm(crate))
+            if j is not None and j < d["idx"] and j in failing:
                 roots.add(j)
         if roots:
             out[d["idx"]] = sorted(roots)
     return out
+
+
+# rustc names the same linking failure two ways: E0433 "use of unresolved module or
+# unlinked crate `X`" and E0433 "cannot find module or crate `X` in this scope". 2.3c
+# (#27134, 21/11 08:3xZ): cell 2's `:dep rand`/`plotters` failed and five of the 12
+# cells below said the second form only -- not read as cascades, they were asked in
+# the same round as their root.
+_UNLINKED_CRATE_RE = re.compile(r"(?:unlinked crate|cannot find module or crate) `(\w+)`")
+
+
+def unlinked_crates(errors: str) -> list[str]:
+    """Crates an evcxr error says are not linked, in order of first mention."""
+    seen: list[str] = []
+    for m in _UNLINKED_CRATE_RE.finditer(_ANSI_RE.sub("", errors or "")):
+        if m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+# 2.3b, #27134 (21/11): the model declared `:dep linfa-core = "0.8"`, a crate that does not
+# exist (linfa's traits live in `linfa`). Cargo answered "no matching package named
+# `linfa-core` found"; round 1 dropped the line and the `:dep` cell passed, then round 2's
+# link advice read cell 4's "unlinked crate `linfa_core`" as an undeclared crate and told
+# the model to ADD `:dep linfa_core` -- the grain looped until its rounds ran out. A name
+# cargo refused is remembered for the whole run: never advised, named in every later
+# round, and a `:dep` line that brings it back is struck (that line can only fail).
+_NO_PACKAGE_RE = re.compile(r"no matching package named `([A-Za-z0-9_-]+)` found")
+
+
+def absent_packages(errors: str) -> list[str]:
+    """Package names cargo could not find in the registry index, in order, once each."""
+    seen: list[str] = []
+    for m in _NO_PACKAGE_RE.finditer(_ANSI_RE.sub("", errors or "")):
+        if m.group(1) not in seen:
+            seen.append(m.group(1))
+    return seen
+
+
+def strike_absent_deps(nb_path: Path, absent: list[str], only_idx) -> list[dict]:
+    """Remove `:dep <name>` lines naming a crate cargo already refused, in the given code
+    cells only (the ones a repair just rewrote). Returns [{idx, line}] of what was struck."""
+    gone = {_crate_norm(a) for a in absent}
+    if not gone:
+        return []
+    nb = json.loads(nb_path.read_text(encoding="utf-8"))
+    struck: list[dict] = []
+    for i in sorted(only_idx or []):
+        if not (0 <= i < len(nb["cells"])) or nb["cells"][i].get("cell_type") != "code":
+            continue
+        lines = _text(nb["cells"][i].get("source")).split("\n")
+        kept = []
+        for ln in lines:
+            m = re.match(r"^\s*:dep\s+([A-Za-z0-9_-]+)\s*=", ln)
+            if m and _crate_norm(m.group(1)) in gone:
+                struck.append({"idx": i, "line": ln.strip()})
+            else:
+                kept.append(ln)
+        if len(kept) != len(lines):
+            nb["cells"][i]["source"] = _lines("\n".join(kept))
+    if struck:
+        nb_path.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n",
+                           encoding="utf-8")
+    return struck
 
 
 # What a failing cell USES (#27302, 20/11): every identifier outside strings and `//`
@@ -1688,6 +2136,104 @@ def cap_source(src: str, cap: int = REPAIR_SOURCE_CAP) -> str:
             + src[-half:])
 
 
+# evcxr reports every rustc diagnostic as its own `error` output, lints included. Measured
+# 21/11 on CoursIA#27134 (2.3c Rust twin, three repair rounds lost): cell 24 carried 31 of
+# them, 11,538 characters with 156 ANSI codes, for about ten distinct causes. The round
+# showed `errs[-2000:]`, which started mid-diagnostic and held three of them (two
+# `mismatched types`, one `outer`), the same three every round. Above the cut stayed
+# `v_t` being an `Option`, the missing `SliceRandom` / `Distribution` imports, and two
+# methods that do not exist.
+REPAIR_ERRORS_CAP = 2000
+REPAIR_DIAG_BODY_CAP = 600
+_DIAG_WARNING_RE = re.compile(r"\bwarning:")
+
+
+def _diag_lines(o: dict) -> list[str]:
+    """One diagnostic's lines, ANSI stripped, consecutive repeats dropped (evcxr prints
+    the offending code line twice)."""
+    out: list[str] = []
+    for part in o.get("traceback") or []:
+        for line in _ANSI_RE.sub("", part if isinstance(part, str) else _text(part)).split("\n"):
+            if line.strip() and (not out or out[-1] != line):
+                out.append(line.rstrip())
+    return out
+
+
+def error_digest(cell: dict, raw: str, cap: int = REPAIR_ERRORS_CAP) -> str:
+    """The cell's errors for a repair round, each distinct cause once.
+
+    With several `error` outputs (evcxr, one per rustc diagnostic), the outputs are grouped
+    by message and errors come before warnings. Each group shows its first diagnostic in
+    full, the code lines of its other sites, and a count. Groups that do not fit are named
+    on a closing line, never cut silently. A single error output (an IPython or .NET
+    traceback) keeps the tail of `raw`, because there the decisive line comes last."""
+    outs = [o for o in cell.get("outputs") or []
+            if isinstance(o, dict) and o.get("output_type") == "error"]
+    if len(outs) < 2:
+        return (raw or "")[-cap:]
+    groups: dict[str, dict] = {}
+    for k, o in enumerate(outs):
+        msg = _ANSI_RE.sub("", str(o.get("evalue") or o.get("ename") or "")).strip()
+        lines = _diag_lines(o)
+        g = groups.setdefault(msg, {"msg": msg, "first": k, "n": 0, "lines": lines,
+                                    "sites": [], "warning": False, "sited": False})
+        g["n"] += 1
+        g["warning"] |= any(_DIAG_WARNING_RE.search(x) for x in lines)
+        site = _first_site(lines, msg)
+        g["sited"] |= site is not None
+        if (site and g["n"] > 1 and site not in g["sites"]
+                and site != _first_site(g["lines"], msg)):
+            g["sites"].append(site)
+    order = sorted(groups.values(), key=lambda g: (g["warning"], not g["sited"], g["first"]))
+    head = f"{len(outs)} diagnostics, {len(order)} causes distinctes (chacune une fois) :"
+    blocks: list[str] = []
+    omitted: list[dict] = []
+    room = cap - len(head) - 300  # the closing line naming what did not fit
+    for g in order:
+        tag = " [avertissement]" if g["warning"] else ""
+        count = f" ×{g['n']}" if g["n"] > 1 else ""
+        # The caret line repeats the message after `error:`; the carets alone point the column.
+        body = "\n".join("  " + x.replace(f"error: {g['msg']}", "")
+                         .replace(f"warning: {g['msg']}", "").rstrip()
+                         for x in g["lines"] if x.strip() != g["msg"])
+        if len(body) > REPAIR_DIAG_BODY_CAP:
+            body = body[:REPAIR_DIAG_BODY_CAP] + " …"
+        others = ("\n  autres sites : " + " ; ".join(f"`{s}`" for s in g["sites"][:4])
+                  if g["sites"] else "")
+        full = f"- {g['msg']}{count}{tag}" + (f"\n{body}" if body else "") + others
+        if len(full) + 1 <= room:
+            blocks.append(full)
+            room -= len(full) + 1
+            continue
+        first = _first_site(g["lines"], g["msg"])
+        short = f"- {g['msg']}{count}{tag}" + (f"\n  `{first}`" if first else "")
+        if len(short) + 1 <= room:
+            blocks.append(short)
+            room -= len(short) + 1
+        else:
+            omitted.append(g)
+    tail = ""
+    if omitted:
+        names, used = [], 0
+        for g in omitted:
+            n = g["msg"][:90]
+            if used + len(n) > 240:
+                break
+            names.append(n)
+            used += len(n) + 3
+        rest = len(omitted) - len(names)
+        tail = (f"\n[… {len(omitted)} autre(s) cause(s) non détaillée(s) faute de place : "
+                + " ; ".join(names) + (f" ; et {rest} de plus" if rest else "") + "]")
+    return head + "\n" + "\n".join(blocks) + tail
+
+
+def _first_site(lines: list[str], msg: str) -> str | None:
+    """The offending code line of a diagnostic: neither its message, nor a caret line,
+    nor a `help:` hint."""
+    return next((x.strip() for x in lines if x.strip() != msg and "^" not in x
+                 and not x.lstrip().startswith("help:")), None)
+
+
 def cited_lines(source: str, errors: str, limit: int = 6) -> list[tuple[int, str]]:
     """The source lines the compiler/interpreter cites, quoted from the CURRENT source so
     the model does not have to count lines."""
@@ -1730,6 +2276,19 @@ _RUST_API_ERR_RES = (
     ("name", re.compile(r"use of undeclared type `(\w+)`")),
     ("import", re.compile(r"unresolved import `([\w:]+)`")),
     ("import", re.compile(r"could not find `(\w+)` in `([\w:]+)`")),
+    # Linking, not API (2.3b, #27134): a crate the kernel did not link (its `:dep` cell
+    # failed, or no `:dep` declares it) and a crate linked at two versions. Neither is a
+    # name to look up INSIDE a crate; `_crate_link_lines` advises them.
+    ("crate", _UNLINKED_CRATE_RE),
+    ("version", re.compile(r"(?:two|multiple) different versions of crate `(\w+)`")),
+    # E0603 (2.3b, 21/11): `use rand::{Rng, SeedableRng, Distribution}` under rand 0.10 —
+    # `rand::Distribution` is a PRIVATE import of the crate root, and the compiler's
+    # "import `Distribution` directly" names `rand::distr::distribution::Distribution`,
+    # which crosses the private module `distribution`. The public paths are
+    # `rand::distr::Distribution` and `rand::prelude::Distribution`: only the sources say so.
+    # Methods and associated functions (E0624) are a different privacy and stay out.
+    ("private", re.compile(r"(?<!associated )\b(trait|struct|enum|union|function|module|"
+                           r"constant|static|type alias|macro) `(\w+)` is private")),
 )
 
 
@@ -1827,6 +2386,19 @@ def rust_api_errors(errors: str) -> list[dict]:
         for m in rx.finditer(text):
             g = [x for x in m.groups()]
             item, owner, path = g[0], None, None
+            if kind == "private":
+                # The defining path the compiler advises — a crate name, and the path the
+                # block must warn against when it crosses a private module.
+                item = g[1]
+                hint = re.search(rf"import `{re.escape(item)}` directly\s*\n(?:\s*\n)*\s*"
+                                 r"([A-Za-z_][\w:]*)", text[m.end():m.end() + 400])
+                path = hint.group(1) if hint else None
+                e = {"kind": kind, "item": item, "owner": None,
+                     "crate": path.split("::")[0] if path else None,
+                     "noun": g[0], "hint": path}
+                if e not in out:
+                    out.append(e)
+                continue
             if kind in ("method", "assoc"):
                 full = re.sub(r"<.*$", "", g[1]).lstrip("&").strip()
                 full = re.sub(r"^(?:mut|dyn|impl)\s+", "", full)
@@ -2054,8 +2626,216 @@ def _extension_traits(files, crate: str) -> list[str]:
     return out[:22]
 
 
+def _crate_dep_req(crate_dir: Path, dep: str) -> str | None:
+    """The version requirement `crate_dir`'s Cargo.toml puts on `dep`, if it depends on it
+    (registry-normalized `[dependencies.x]` tables, or inline `x = "..."` / `x = {...}`)."""
+    try:
+        toml = (crate_dir / "Cargo.toml").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for m in re.finditer(r"^\[dependencies\.([A-Za-z0-9_-]+)\]\s*$(.*?)(?=^\[|\Z)", toml,
+                         re.M | re.S):
+        if _crate_norm(m.group(1)) == _crate_norm(dep):
+            v = re.search(r'^\s*version\s*=\s*"([^"]+)"', m.group(2), re.M)
+            return v.group(1) if v else None
+    m = re.search(r"^\[dependencies\]\s*$(.*?)(?=^\[|\Z)", toml, re.M | re.S)
+    for k, v in re.findall(r"^([A-Za-z0-9_-]+)\s*=\s*(.+)$", m.group(1) if m else "", re.M):
+        if _crate_norm(k) == _crate_norm(dep):
+            if v.strip().startswith('"'):
+                return v.strip().strip('"')
+            vv = re.search(r'\bversion\s*=\s*"([^"]+)"', v)
+            return vv.group(1) if vv else None
+    return None
+
+
+def _cell_fails(cell: dict) -> bool:
+    return any(isinstance(o, dict) and o.get("output_type") == "error"
+               for o in cell.get("outputs") or [])
+
+
+def _ver_tuple(v: str) -> tuple[int, int, int]:
+    return tuple((list(map(int, re.findall(r"\d+", v)[:3])) + [0, 0, 0])[:3])
+
+
+def _mod_is_public(files, crate: str, path: str) -> bool:
+    """Every module on `crate::a::b` is declared plain `pub mod` in its parent. A re-export
+    reached through a private (or `pub(crate)`) module is not importable from a notebook."""
+    segs = path.split("::")[1:]
+    for k, seg in enumerate(segs):
+        parent = "::".join([_crate_norm(crate)] + segs[:k])
+        decl = next((ls[i] for rel, ls, i in
+                     _find(files, rf"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+{re.escape(seg)}\b",
+                           limit=20)
+                     if _module_path(crate, rel, ls, i) == parent), None)
+        if decl is None or not re.match(r"^\s*pub\s+mod\b", _code_part(decl)):
+            return False
+    return True
+
+
+def _use_statement(lines: list[str], i: int) -> str:
+    """The `use` statement starting at line i, joined up to its `;` (12 lines at most)."""
+    buf = []
+    for line in lines[i:i + 12]:
+        buf.append(_code_part(line).strip())
+        if ";" in buf[-1]:
+            break
+    return re.sub(r"\s+", " ", " ".join(buf)).split(";", 1)[0]
+
+
+def _private_item_lines(files, crate: str, e: dict) -> list[str]:
+    """E0603: the importable paths of a name the notebook reached through a private path —
+    its plain `pub use` re-exports and its `pub` definition, each kept only when every
+    module on the way is `pub mod` — plus the private paths not to follow."""
+    item, n = e["item"], re.escape(e["item"])
+    noun = e.get("noun") or ""
+    public: list[tuple[str, str]] = []
+    private: list[str] = []
+    if noun == "module":
+        # A private module: what its items are re-exported as, and where.
+        lines = [f"- le module `{item}` est privé ; ses éléments sont réexportés par :"]
+        for rel, ls, i in _find(files, r"^\s*pub\s+use\b", limit=400):
+            stmt = _use_statement(ls, i)
+            if re.search(rf"\b{n}::", stmt):
+                mp = _module_path(crate, rel, ls, i)
+                if _mod_is_public(files, crate, mp):
+                    lines.append(f"  {stmt}   [{rel}:{i + 1}, dans {mp}]")
+        return lines if len(lines) > 1 else [lines[0] + " (aucune réexportation publique)"]
+    for rel, ls, i in _find(files, r"^\s*pub\s+use\b", limit=400):
+        stmt = _use_statement(ls, i)
+        # The name itself is re-exported (last segment, not renamed, not a path prefix).
+        if not re.search(rf"\b{n}\b(?!\s*::)(?!\s+as\b)", stmt):
+            continue
+        mp = _module_path(crate, rel, ls, i)
+        (public.append((f"{mp}::{item}", f"{rel}:{i + 1}"))
+         if _mod_is_public(files, crate, mp) else private.append(f"{mp}::{item}"))
+    defined = ""
+    for rel, ls, i in _find(files, rf"^\s*pub\s+(?:struct|enum|type|trait|union|fn|const|"
+                                   rf"static|mod)\s+{n}\b", limit=1):
+        mp = _module_path(crate, rel, ls, i)
+        open_ = _mod_is_public(files, crate, mp)
+        (public.append((f"{mp}::{item}", f"{rel}:{i + 1}"))
+         if open_ else private.append(f"{mp}::{item}"))
+        defined = (f"  défini ici : {_signature(ls, i)}   [{rel}:{i + 1}, module {mp}"
+                   + ("]" if open_ else ", privé]"))
+    # A private `use` at the crate root is the path the notebook most likely wrote
+    # (`rand::Distribution` is `use crate::distr::{Distribution, …}` in src/lib.rs). Deeper
+    # private imports are the crate's own plumbing (rand's `distr::uniform`), not advice.
+    roots = [f"{_crate_norm(crate)}::{item}"
+             for rel, ls, i in _find(files, rf"^\s*use\s+[^;]*\b{n}\b", limit=200)
+             if _module_path(crate, rel, ls, i) == _crate_norm(crate)][:1]
+    public = sorted(dict(public).items(), key=lambda kv: (kv[0].count("::"), kv[0]))[:4]
+    lines = [f"- `{item}` n'est pas importable par le chemin écrit"
+             + (" ; chemins publics :" if public else " ; aucun chemin public trouvé :")]
+    lines += [f"  use {p};   [{where}]" for p, where in public]
+    bad = [p for p in dict.fromkeys(([e["hint"]] if e.get("hint") else []) + private + roots)
+           if p not in dict(public)]
+    if bad:
+        lines.append("  NE PAS utiliser (import privé ou module privé, y compris le chemin "
+                     "que conseille le compilateur) : "
+                     + ", ".join(f"`{p}`" for p in bad[:4]))
+    if defined:
+        lines.append(defined)
+    return lines
+
+
+def _absent_line(name: str, deps: dict[str, dict]) -> str:
+    """The fact cargo established, and the declared crate whose name it extends, if any."""
+    norm = _crate_norm(name)
+    near = sorted((n for n in deps if _crate_norm(n) != norm
+                   and norm.startswith(_crate_norm(n) + "_")), key=len, reverse=True)
+    hint = (f" ; la crate déclarée la plus proche est `{near[0]}` (cellule "
+            f"{deps[near[0]]['idx']}) : cherche ces items dans ses sources") if near else ""
+    return (f"- `{name}` N'EXISTE PAS sur crates.io (cargo : « no matching package named "
+            f"`{name}` found ») : n'écris jamais `:dep {name}`, ni `use {norm}::…` ; les "
+            f"cellules qui l'importent doivent prendre ces items dans une crate qui "
+            f"existe{hint}.")
+
+
+def _crate_link_lines(errs: list[dict], deps: dict[str, dict],
+                      resolved: dict[str, tuple[Path, str]], cells: list[dict],
+                      roots: list[Path] | None,
+                      absent: list[str] | tuple = ()) -> tuple[list[str], list[str]]:
+    """Advice on LINKING, before any API lookup (2.3b, #27134). Three causes, each with its
+    own remedy:
+      - a crate declared in a `:dep` cell that itself fails: evcxr links none of that cell's
+        crates, so every later `unlinked crate` is a cascade — repair that cell first;
+      - a crate used but never declared: add its `:dep`, at the requirement the notebook's
+        other crates write in their Cargo.toml when they depend on it;
+      - a declared version their dependents do not accept (`:dep ndarray = "0.17"` next to
+        linfa 0.8.1, which requires "0.16"): two copies get linked and their types never
+        match — align it.
+    A crate in ``absent`` (cargo: "no matching package named … found", earlier in the run)
+    is never advised as missing: its line says it does not exist, every round.
+    Returns (lines, names of the crates whose errors are cascades/advice, not API misses)."""
+    dep_norm = {_crate_norm(n): n for n in deps}
+    gone = {_crate_norm(a) for a in absent}
+    first_dep = min((s["idx"] for s in deps.values()), default=None)
+    unlinked: list[str] = []
+    for e in errs:
+        if e["kind"] in ("crate", "version") and e["item"] not in unlinked:
+            unlinked.append(e["item"])
+
+    def users_of(x: str) -> list[tuple[str, str, str]]:
+        return [(n, resolved[n][1], r) for n in resolved if _crate_norm(n) != _crate_norm(x)
+                and (r := _crate_dep_req(resolved[n][0], x))]
+
+    lines: list[str] = []
+    linked: list[str] = []
+    blocked: dict[int, list[str]] = {}
+    for x in unlinked:
+        if _crate_norm(x) in gone:
+            linked.append(x)                  # advised by its absent line, never "add it"
+            continue
+        declared = dep_norm.get(_crate_norm(x))
+        if declared and 0 <= deps[declared]["idx"] < len(cells) \
+                and _cell_fails(cells[deps[declared]["idx"]]):
+            blocked.setdefault(deps[declared]["idx"], []).append(x)
+            linked.append(x)
+        elif not declared:
+            users = users_of(x)
+            req = users[0][2] if users else None
+            local = registry_crate_dir(x, req, roots)
+            by = ("; " + ", ".join(f"{n} {v} en dépend en \"{r}\"" for n, v, r in users)) \
+                if users else ""
+            loc = f" (copie locale : {x} {local[1]})" if local else ""
+            where = f" dans la cellule {first_dep}" if first_dep is not None else ""
+            lines.append(f"- `{x}` n'est déclarée dans aucun `:dep` : ajoute "
+                         f"`:dep {x} = \"{req or (local[1] if local else '…')}\"`{where}"
+                         f"{loc}{by}.")
+            linked.append(x)
+    for idx, xs in sorted(blocked.items()):
+        lines.insert(0, f"- La cellule {idx} déclare les `:dep` mais elle ÉCHOUE : tant qu'elle "
+                        f"échoue, evcxr ne lie aucune de ses crates, d'où les « unlinked crate » "
+                        f"plus bas ({', '.join(f'`{x}`' for x in xs)}). Répare d'abord ses "
+                        f"propres erreurs ; ces erreurs-là disparaîtront avec elles.")
+    for a in reversed(list(absent)):
+        lines.insert(0, _absent_line(a, deps))
+    # Version coherence among the declared crates, checked on every Rust round: rustc only
+    # names the clash ("two different versions of crate") once a value crosses the boundary.
+    for x, spec in deps.items():
+        if x not in resolved:
+            continue
+        have = _ver_tuple(resolved[x][1])
+        bad = [(n, v, r) for n, v, r in users_of(x) if n in deps and not _req_matches(r, have)]
+        if not bad:
+            continue
+        req = bad[0][2]
+        local = registry_crate_dir(x, req, roots)
+        loc = f" (copie locale : {x} {local[1]})" if local else ""
+        lines.append(f"- `:dep {x} = \"{spec['req']}\"` (cellule {spec['idx']}) donne {x} "
+                     f"{resolved[x][1]}, mais " + ", ".join(f"{n} {v}" for n, v, _ in bad)
+                     + f" en dépend{'ent' if len(bad) > 1 else ''} en \"{req}\" : deux copies de "
+                     f"`{x}` seront liées, et une valeur de l'une n'est pas acceptée là où l'autre "
+                     f"est attendue — si le notebook passe des valeurs `{x}` à ces crates, écris "
+                     f"`:dep {x} = \"{req}\"`{loc}.")
+        if x not in linked:
+            linked.append(x)
+    return lines, linked
+
+
 def crate_api_block(cells: list[dict], errors: list[str],
-                    roots: list[Path] | None = None) -> tuple[str, dict]:
+                    roots: list[Path] | None = None,
+                    absent: list[str] | tuple = ()) -> tuple[str, dict]:
     """The REAL API of the crates a Rust repair round's errors touch, quoted from the
     registry copy the kernel compiled. Returns (block, info) — info = {crates, dep_cell,
     gated, unknown} for the round record; ("", {}) when nothing applies."""
@@ -2063,14 +2843,20 @@ def crate_api_block(cells: list[dict], errors: list[str],
     errs: list[dict] = []
     for t in errors:
         errs += [e for e in rust_api_errors(t) if e not in errs]
-    if not deps or not errs:
+    if (not deps or not errs) and not absent:
         return "", {}
     resolved: dict[str, tuple[Path, str]] = {}
     for name, spec in deps.items():
         hit = registry_crate_dir(name, spec["req"], roots)
         if hit:
             resolved[name] = hit
-    if not resolved:
+    link_lines, linked = _crate_link_lines(errs, deps, resolved, cells, roots, absent)
+    # A missing or doubled crate is advised once, never searched as a name inside another
+    # crate (`ndarray` would match any linfa line that spells `ndarray::Dimension`).
+    errs = [e for e in errs if e["kind"] not in ("crate", "version")
+            and not (e["kind"] == "import" and e["crate"] is None and e["item"] in linked)
+            and not (e["crate"] in linked and e["crate"] not in resolved)]
+    if not resolved and not link_lines:
         return "", {}
     files_of: dict[str, list] = {}
 
@@ -2102,9 +2888,9 @@ def crate_api_block(cells: list[dict], errors: list[str],
                                or binds(_text(c.get("source")), e["item"]))
                           for c in cells) and e["item"] not in unknown):
             unknown.append(e["item"])
-    if not per_crate and not unknown:
+    if not per_crate and not unknown and not link_lines:
         return "", {}
-    parts: list[str] = []
+    parts: list[str] = (["Crates à lier :\n" + "\n".join(link_lines)] if link_lines else [])
     gated: list[str] = []
     for name in list(per_crate)[:CRATE_API_MAX_CRATES]:
         crate_dir, version = resolved[name]
@@ -2126,6 +2912,8 @@ def crate_api_block(cells: list[dict], errors: list[str],
                              re.I, limit=4)
                 lines += [f"  voisin : {_qualified_fn(ls, i)}   [{rel}:{i + 1}]"
                           for rel, ls, i in near]
+            elif e["kind"] == "private":
+                lines += _private_item_lines(fl, name, e)
             else:
                 hits = _find_name(fl, e["item"])
                 lines.append(f"- `{e['item']}` introuvable tel quel ; dans les sources :")
@@ -2151,9 +2939,16 @@ def crate_api_block(cells: list[dict], errors: list[str],
         block = block[:CRATE_API_CAP].rsplit("\n", 1)[0] + "\n[… extrait tronqué …]"
     used = list(per_crate)[:CRATE_API_MAX_CRATES]
     dep_cells = sorted({deps[n]["idx"] for n in used})
-    return block, {"crates": [f"{n} {resolved[n][1]}" for n in used],
-                   "dep_cell": dep_cells[0] if dep_cells else None,
-                   "gated": gated, "unknown": unknown}
+    if not dep_cells and link_lines and deps:
+        dep_cells = [min(s["idx"] for s in deps.values())]
+    info = {"crates": [f"{n} {resolved[n][1]}" for n in used],
+            "dep_cell": dep_cells[0] if dep_cells else None,
+            "gated": gated, "unknown": unknown}
+    if linked:
+        info["link"] = linked
+    if absent:
+        info["absent"] = list(absent)
+    return block, info
 
 
 def repair_prompt(failing: list[dict], conventions: str = "",
@@ -2221,14 +3016,21 @@ def repair_prompt(failing: list[dict], conventions: str = "",
         lines = []
         for r in sorted(by_root):
             names = sorted({n for x in by_root[r] for n in x["names"]})
+            crates = sorted({c for x in by_root[r] for c in x.get("crates") or []})
             cells = ", ".join(str(x["idx"]) for x in sorted(by_root[r], key=lambda x: x["idx"]))
-            lines.append(f"- cellule {r} : doit continuer à définir {', '.join(names)} "
-                         f"(utilisés par les cellules {cells})")
+            if names:
+                lines.append(f"- cellule {r} : doit continuer à définir {', '.join(names)} "
+                             f"(utilisés par les cellules {cells})")
+            if crates:
+                lines.append(f"- cellule {r} : porte les `:dep` de {', '.join(crates)} ; tant "
+                             f"qu'elle échoue, evcxr ne lie aucune de ces crates (cellules "
+                             f"{cells}) — garde ces `:dep` et rends-la compilable")
         waiting = ", ".join(str(x["idx"]) for x in sorted(deferred, key=lambda x: x["idx"]))
         dfr_txt = (f"\n\nCELLULES EN ATTENTE ({waiting}) — elles échouent seulement parce que "
-                   "des noms définis dans une cellule ci-dessus n'existent pas tant qu'elle ne "
-                   "compile pas. Elles seront ré-exécutées après ta correction : ne les rends "
-                   "pas, et garde ces noms et leurs signatures dans la cellule qui les définit."
+                   "des noms ou des crates déclarés dans une cellule ci-dessus n'existent pas "
+                   "tant qu'elle ne compile pas. Elles seront ré-exécutées après ta correction : "
+                   "ne les rends pas, et garde ces noms, leurs signatures et ces `:dep` dans la "
+                   "cellule qui les déclare."
                    + ("\n" + "\n".join(lines) if lines else ""))
     return (
         "TOUR RÉPARATION — les cellules ci-dessous ont ÉCHOUÉ à l'exécution réelle. Corrige "
@@ -2562,25 +3364,56 @@ def verify_structure_create(src_path: Path, built_path: Path) -> dict:
 BUILD_MAX_TOKENS = 32768
 
 
-def agent_spec_for(agent: str, model: str | None, max_tokens: int, temperature: float) -> dict:
+def agent_spec_for(agent: str, model: str | None, max_tokens: int, temperature: float,
+                   tools: bool = True) -> dict:
     """call_agent composition spec (#4831: model per step). The `model` key is present
     ONLY when a per-step model is declared — absent, the extends preset's own model
     serves the call (the seat default). The server validates the ref against its
     config (enabled models only); what actually served the turn is read from the
-    envelope (served_fields), never from this declaration."""
+    envelope (served_fields), never from this declaration.
+
+    tools=False strips every MCP and the GitHub read tools from THIS turn only (the
+    preset, its model and its capacity gate are kept). See TOOLLESS_STAGE_RE."""
     spec: dict = {"extends": agent,
                   "sampling": {"max_tokens": max_tokens, "temperature": temperature}}
     if model:
         spec["model"] = model
+    if not tools:
+        spec["mcps"] = {"replace": []}
+        spec["parameters"] = {"github_tools": False}
     return spec
 
 
+# Repair, revision and format tours carry everything they need in their prompt (the cells,
+# the real kernel errors, the critic's findings) and answer with a JSON the harness applies.
+# Tools there are pure cost. Measured 21/11 on MGS-29 (#27133): the revision tour walked
+# read_cells / glob_search / list_files / list_kernels / manage_kernel on the agent's own
+# cwd (d:\dev\CoursIA — not the grain's worktree), first attempt empty after 10 293
+# completion tokens, retry killed by the 1 530 s call budget. And the schemas alone weigh:
+# the same 1-line prompt costs 32 167 prompt tokens with the coder's tools, 707 without
+# (live probes on qwen3.6-35b-a3b-nbcoder; 1 505 with the MCPs stripped but GitHub kept).
+# Plan, build and spec tours keep their tools.
+TOOLLESS_STAGE_RE = re.compile(r"repair|-format$|^6-revise")
+
+
+def stage_uses_tools(stage: str) -> bool:
+    return not TOOLLESS_STAGE_RE.search(stage)
+
+
+# The preset's system prompt still tells the coder to write cells with add_cell /
+# update_cell: on a tool-less tour it must hear, in the turn itself, that the answer is the
+# JSON and nothing else (otherwise it may narrate a tool call it cannot make).
+TOOLLESS_NOTE = ("\n\nCe tour n'a AUCUN outil : tout ce qu'il te faut est dans ce message. "
+                 "Rends directement le bloc ```json demandé, sans appeler ni annoncer d'outil.")
+
+
 async def sk_call(session: ClientSession, args, prompt: str, conv: str | None,
-                  max_tokens: int | None = None, model: str | None = None) -> tuple[dict, float]:
+                  max_tokens: int | None = None, model: str | None = None,
+                  tools: bool = True) -> tuple[dict, float]:
     # model: explicit per-turn override (the spec turn passes --spec-model); every other
     # call site is a coder turn and falls back to --coder-model (#4831).
     spec = agent_spec_for(args.agent, model or getattr(args, "coder_model", None),
-                          max_tokens or args.max_tokens, 0.4)
+                          max_tokens or args.max_tokens, 0.4, tools=tools)
     payload = {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
                "include_steps": True, "agent_spec": json.dumps(spec)}
     if conv:
@@ -2605,15 +3438,36 @@ RETRY_NOTE = ("\n\nNB : une tentative précédente n'a rien rendu. "
               "Réfléchis plus court (quelques centaines de mots), puis rends directement ta sortie.")
 
 
+# A capacity-gate refusal in the MIDDLE of a grain used to defer the whole grain: the
+# scheduler re-ran it from stage 0, re-paying the claim (~250 s), the plan and every build
+# tour. Measured 20-21/11 on MGS-28 (#27133): three deferrals after 1 112, 2 977 and 413 s
+# of build, never past stage 2. sk-agent commits nothing on a refused turn (its own seam,
+# sk_agent.py: "A refused fresh turn committed nothing … it is RETRY-ONLY — repeat the
+# same call"), its verdict is cached 10 s, and the gate's non-green spells are short (39
+# spells over 9 h of scheduler ticks, median one tick, longest past the start 20 min). So
+# the grain waits IN PLACE and repeats the same call; only a refusal that outlasts the
+# whole budget still defers it.
+GATE_WAIT_POLL_S = 60
+GATE_WAIT_MAX_S = 1800
+_gate_sleep = asyncio.sleep     # seam for tests
+
+
 async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, prompt: str,
                         conv: str | None, max_tokens: int | None = None,
                         model: str | None = None) -> dict:
-    for attempt in range(2):
+    tools = stage_uses_tools(stage)
+    attempt = 0
+    waited = 0
+    while True:
         tob = engine_tokens()
-        env, dt = await sk_call(session, args, prompt + (RETRY_NOTE if attempt else ""), conv,
-                                max_tokens, model=model)
+        env, dt = await sk_call(session, args,
+                                prompt + ("" if tools else TOOLLESS_NOTE)
+                                + (RETRY_NOTE if attempt else ""), conv,
+                                max_tokens, model=model, tools=tools)
         toa = engine_tokens()
         rec["calls"].append({"stage": stage if not attempt else f"{stage}-retry",
+                             "tools": tools,
+                             **({"gate_waited_s": waited} if waited else {}),
                              "elapsed_s": dt, "error": env.get("error"),
                              # model_used/agent_used: the sk-agent ENTRY that routed the call,
                              # not proof of the model that answered (20/11: a hub reroute left
@@ -2621,14 +3475,21 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
                              # served_fields, when the envelope carries it.
                              "model_used": env.get("model_used"),
                              "agent_used": env.get("agent_used"),
+                             # which conversation the call grew: what sizes the next turn on it
+                             "conversation_id": env.get("conversation_id") or conv,
                              **served_fields(env),
                              **usage_fields(env),
                              "response_chars": len(env.get("response") or ""),
                              "engine_delta": ({k: round(toa[k] - tob[k]) for k in toa if k in tob}
                                               or None)})
-        if not (env.get("error") or "").startswith("empty model response"):
-            break
-    return env
+        if gate_refusal(env) and waited < GATE_WAIT_MAX_S:
+            await _gate_sleep(GATE_WAIT_POLL_S)
+            waited += GATE_WAIT_POLL_S
+            continue        # same prompt, same attempt: the refused turn committed nothing
+        if attempt == 0 and (env.get("error") or "").startswith("empty model response"):
+            attempt = 1
+            continue
+        return env
 
 
 async def spec_stage(sk, args, rec: dict, issue: dict, kernel: dict, ctx: str, view: str,
@@ -2808,9 +3669,24 @@ async def parse_or_repair(session: ClientSession, args, rec: dict, stage: str, e
     return (obj2, env2) if obj2 is not None or gate_refusal(env2) else (None, env)
 
 
+PM_READ_TIMEOUT_S = 300
+
+
+def pm_read_timeout_s(payload: dict) -> int:
+    """The client waits past the server's own budget: for one cell, the MCP's transport
+    limit is the kernel timeout + 30 s (kernel_tools.py `_transport_hard_timeout`). A client
+    cap at the old flat 300 s would cut a 1,800 s dependency cell at 300 s."""
+    try:
+        asked = int(payload.get("timeout") or 0)
+    except (TypeError, ValueError):
+        asked = 0
+    return max(PM_READ_TIMEOUT_S, asked + 60)
+
+
 async def pm_call(session: ClientSession, tool: str, payload: dict) -> dict:
     try:
-        res = await session.call_tool(tool, payload, read_timeout_seconds=timedelta(seconds=300))
+        res = await session.call_tool(tool, payload,
+                                      read_timeout_seconds=timedelta(seconds=pm_read_timeout_s(payload)))
         raw = "\n".join(getattr(c, "text", "") for c in res.content)
     except Exception as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
@@ -2842,6 +3718,32 @@ def _error_head(o: dict) -> str:
     return f"{ename}: {evalue}" if ename and evalue else (ename or evalue)
 
 
+# A cell that declares dependencies compiles or restores them, once per kernel. Measured
+# 21/11 on CoursIA#27134 (4.1 Rust twin): its `:dep` cell (ndarray, rand, rand_distr,
+# plotters, burn, image) hit the flat 300 s limit at 04:51Z while cargo was still compiling
+# the crates cold. The 10 cells after it then failed on names that cell never got to
+# define, and two repair rounds (~240K prompt tokens of engine time) could not fix a cell
+# that was never wrong. Such cells get the long budget; every other cell keeps the short one
+# so a cell that really hangs still fails fast. Both stay under the MCP's 3,600 s cap
+# (config.py `transport_max_timeout`).
+CELL_TIMEOUT_S = 300
+DEP_CELL_TIMEOUT_S = 1800
+_DEP_DECL_RE = re.compile(r'^\s*(?::dep\s+[A-Za-z0-9_-]+\s*=|#r\s+"nuget:)', re.M)
+
+
+def dependency_cells(nb_path: Path) -> set[int]:
+    """Indexes of the code cells that declare an evcxr `:dep` or a .NET `#r "nuget:`.
+    Read from the notebook being executed; an unreadable file declares none."""
+    try:
+        nb = json.loads(Path(nb_path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    cells = nb.get("cells") if isinstance(nb, dict) else None
+    return {i for i, c in enumerate(cells or [])
+            if isinstance(c, dict) and c.get("cell_type") == "code"
+            and _DEP_DECL_RE.search(_text(c.get("source")))}
+
+
 async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
                         indexes: list[int]) -> list[dict]:
     """The harness owns execution and the verdict: real outputs, never the model's word.
@@ -2852,13 +3754,18 @@ async def execute_cells(pm: ClientSession, nb_path: Path, kernel_id: str,
     read that artifact back from disk after the process is gone. Without the opt-in, a
     compiler error lives only in the in-memory response and the evidence dies with it
     (the exact hole ms#1799 closed for committed sources; the scratch contract is the
-    mirror image, which is why the flag exists at all)."""
+    mirror image, which is why the flag exists at all).
+
+    A cell that declares dependencies gets DEP_CELL_TIMEOUT_S instead of CELL_TIMEOUT_S
+    (see dependency_cells)."""
+    dep_cells = dependency_cells(nb_path)
     results = []
     for idx in indexes:
+        timeout = DEP_CELL_TIMEOUT_S if idx in dep_cells else CELL_TIMEOUT_S
         r = await pm_call(pm, "execute_on_kernel", {"kernel_id": kernel_id, "mode": "notebook_cell",
                                                     "path": str(nb_path), "cell_index": idx,
                                                     "persist_error_outputs": True,
-                                                    "timeout": 300})
+                                                    "timeout": timeout})
         status = r.get("status") or r.get("error") or "?"
         outs = [wire_output(o) for o in r.get("outputs") or []]
         err_txt = " ".join(str(o.get("text") or _error_head(o)) for o in outs
@@ -3675,6 +4582,151 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
 
 
 # ---------------------------------------------------------------- shared build/revise steps
+# Swift's window (--max-model-len). Every repair round and bisect half used to continue the
+# build conversation. 21/11 conveyor (#27134 2.3d): prompt tokens 77 112 at 2.5-repair+0,
+# 208 828 at +2, 238 335 at +2+h0, then the second half was refused in 1.1 s (400 "This
+# model's maximum context length is 262144 tokens. However, your prompt contains at least
+# 262145 input tokens") and the grain ended with the first half's four cells repaired. A
+# repair prompt carries what its turn needs (failing sources, real errors, upstream cells,
+# conventions), so the turn can start a fresh conversation instead.
+CTX_WINDOW = 262144
+# chars -> tokens, rounded DOWN on purpose: the estimate must overstate, never understate
+CTX_CHARS_PER_TOKEN = 3
+_CTX_OVERFLOW_RE = re.compile(r"maximum context length is \d+ tokens")
+
+FRESH_REPAIR_HEAD = (
+    "NOUVELLE CONVERSATION — l'historique de ce carnet a rempli la fenêtre du modèle, ce "
+    "tour repart à vide. Carnet cible : `{nb}` (noyau {kernel}){twin}. Tout ce qu'il te faut "
+    "pour ce tour est dans ce message : les cellules en échec, leurs erreurs réelles et les "
+    "cellules amont utiles.\n\n")
+
+
+def context_overflow(env: dict) -> bool:
+    """The engine refused the prompt as longer than its window (a 400 on input tokens)."""
+    return bool(_CTX_OVERFLOW_RE.search(str(env.get("error") or "")))
+
+
+def conv_tokens(rec: dict, conv: str | None) -> int | None:
+    """Tokens `conv` holds after its last answered call: that call's prompt + completion.
+
+    An upper bound (the completion counts reasoning the history may drop). None when it
+    cannot be told: no answered call on `conv`, or the last one used tools — sk-agent then
+    sums usage over every tool round, which overstates the context by the round count."""
+    if not conv:
+        return None
+    for c in reversed(rec.get("calls") or []):
+        if c.get("conversation_id") != conv:
+            continue
+        u = c.get("usage") or {}
+        if "prompt_tokens" not in u:
+            continue        # refused or failed call: it committed nothing to size
+        if c.get("tools"):
+            return None
+        return int(u["prompt_tokens"]) + int(u.get("completion_tokens") or 0)
+    return None
+
+
+def ctx_overrun(rec: dict, conv: str | None, prompt: str, max_tokens: int,
+                budget: int) -> dict | None:
+    """The estimate, when continuing `conv` with `prompt` could not fit `budget`."""
+    resident = conv_tokens(rec, conv)
+    if resident is None:
+        return None
+    need = resident + len(prompt) // CTX_CHARS_PER_TOKEN + int(max_tokens or 0)
+    return {"resident": resident, "need": need, "budget": budget} if need > budget else None
+
+
+def fresh_repair_head(args, kname: str) -> str:
+    nb = getattr(args, "notebook", None) or "?"
+    twin = getattr(args, "source_nb", None)
+    return FRESH_REPAIR_HEAD.format(nb=nb, kernel=kname,
+                                    twin=f", portage de `{twin}`" if twin else "")
+
+
+async def repair_call(sk, args, rec: dict, stage: str, prompt: str, conv: str | None,
+                      head: str = "") -> dict:
+    """One repair turn, on `conv` while it has room, else in a fresh conversation.
+
+    Before the call: the estimate says whether `conv` can take the prompt and the answer.
+    After it: a 400 on the window (the estimate is blind after a tool turn) sends the same
+    prompt again, fresh. Either way the switch is recorded in rec["fresh_conversations"]."""
+    budget = int(getattr(args, "ctx_window", None) or CTX_WINDOW)
+    why = ctx_overrun(rec, conv, prompt, BUILD_MAX_TOKENS, budget)
+    if why is None:
+        env = await sk_call_retry(sk, args, rec, stage, prompt, conv,
+                                  max_tokens=BUILD_MAX_TOKENS)
+        if not (conv and context_overflow(env)):
+            return env
+        why = {"refused": True, "budget": budget}
+    env = await sk_call_retry(sk, args, rec, f"{stage}-fresh", head + prompt, None,
+                              max_tokens=BUILD_MAX_TOKENS)
+    rec.setdefault("fresh_conversations", []).append(
+        {"stage": stage, "from": conv, "to": env.get("conversation_id"), **why})
+    return env
+
+
+def repair_bisect_cause(env: dict) -> str:
+    """'truncated', 'timeout' or '' — the two repair failures a smaller request can cure.
+    A refusal, an auth error or a well-formed but wrong answer is not one of them."""
+    if gate_refusal(env):
+        return ""
+    if looks_truncated(env):
+        return "truncated"
+    return "timeout" if call_timed_out(env) else ""
+
+
+# Levels of halving a repair round may go down (halves, quarters, eighths). 21/11 conveyor
+# (#27134 2.3c): six root cells asked at once, then both halves of three, were each cut
+# mid-source at 15.7K / 25.7K / 23.6K chars with 9.0K / 11.8K / 10.2K completion tokens of
+# a 32 768 budget — the answer stops near the same length whatever is asked, so halving
+# once left 3-cell requests still above it and the grain was lost on a missing `use`.
+# Three levels take six cells down to one; a half that parses is never split further.
+REPAIR_SPLIT_DEPTH = 3
+
+
+async def _repair_halves(sk, args, rec: dict, stage: str, detail: list[dict],
+                         conventions: str, upstream: list[dict], deferred: list[dict],
+                         crate_api: str, conv: str | None, head: str = "",
+                         depth: int = 1) -> tuple[dict | None, str | None, dict]:
+    """Ask the failing cells in two halves, as the build does. Every half that parses
+    contributes its cells; a half that fails is named, the other still counts. A half
+    cut again on the same two failures (truncated, timeout) is itself halved, down to
+    REPAIR_SPLIT_DEPTH levels or one cell. Returns (merged part or None, conversation,
+    bisect record)."""
+    mid = max(1, len(detail) // 2)
+    merged: list[dict] = []
+    halves: list[dict] = []
+    for hi, half in enumerate(h for h in (detail[:mid], detail[mid:]) if h):
+        hidx = {x["idx"] for x in half}
+        hup = [u for u in upstream if u["for"] in hidx]
+        hdef = [x for x in deferred if set(x["roots"]) & hidx]
+        hstage = f"{stage}+h{hi}"
+        henv = await repair_call(sk, args, rec, hstage,
+                                 repair_prompt(half, conventions, hup, hdef, crate_api),
+                                 conv, head=head)
+        conv = henv.get("conversation_id") or conv
+        hpart, henv = await parse_or_repair(sk, args, rec, hstage, henv, conv,
+                                            max_tokens=BUILD_MAX_TOKENS)
+        hcells = (hpart or {}).get("cells") or []
+        verdict, split = "", None
+        if not hcells:
+            verdict = (gate_refusal(henv) or call_failure(henv)
+                       or repair_bisect_cause(henv) or "unparsed")
+            if (verdict in ("truncated", "timeout") and len(half) > 1
+                    and depth < REPAIR_SPLIT_DEPTH):
+                spart, conv, split = await _repair_halves(
+                    sk, args, rec, hstage, half, conventions, hup, hdef, crate_api, conv,
+                    head=head, depth=depth + 1)
+                hcells = (spart or {}).get("cells") or []
+        halves.append({"asked": sorted(hidx), "got": len(hcells),
+                       "upstream": [u["idx"] for u in hup],
+                       "deferred": [x["idx"] for x in hdef],
+                       **({"verdict": verdict} if verdict else {}),
+                       **({"split": split} if split else {})})
+        merged += hcells
+    return ({"cells": merged} if merged else None), conv, {"halves": halves}
+
+
 async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: str,
                                exec_dir: Path, kid: str | None, exec_targets: list[int],
                                conv: str | None, conventions: str,
@@ -3683,8 +4735,16 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
     conversation). A repaired definition can change downstream semantics -> FRESH kernel per
     round, then re-run the same targets (repair replaces sources only, indices stay valid).
     Measured on #27099 attempt 3: content-level API errors (MkNe inexistent, Expr vs
-    ArithExpr) are exactly what the compiler messages teach back. Returns (kid, conv)."""
-    for rnd in range(args.repair_rounds):
+    ArithExpr) are exactly what the compiler messages teach back. Returns (kid, conv).
+
+    The budget is --repair-rounds, extended one round at a time (up to --repair-extend
+    more) while the last round strictly reduced the failing cells: see
+    repair_round_extends."""
+    budget = args.repair_rounds
+    extend = max(0, int(getattr(args, "repair_extend", REPAIR_EXTEND_DEFAULT) or 0))
+    cap = budget + extend if budget > 0 else 0
+    rnd = 0
+    while rnd < budget:
         failing = [e for e in (rec.get("execution") or []) if not e.get("ok")]
         if not failing:
             break
@@ -3697,16 +4757,24 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             src = _text(cells_now[i].get("source"))
             errs = _outputs_text(cells_now[i])
             detail.append({"idx": i, "source": cap_source(src),
-                           "errors": errs[-2000:], "cited": cited_lines(src, errs),
+                           "errors": error_digest(cells_now[i], errs),
+                           "cited": cited_lines(src, errs),
                            "_frames": error_frame_names(errs), "_raw_errors": errs})
         if not detail:
             break
+        # Crates cargo refused ("no matching package named … found", #27134 2.3b): kept for
+        # the whole run. Once the `:dep` line is gone, cargo no longer names the crate; only
+        # `unlinked crate` remains below, and the link advice would ask to add it back.
+        absent: list[str] = rec.setdefault("absent_crates", []) if kname == "rust" else []
+        for d in detail if kname == "rust" else ():
+            absent += [a for a in absent_packages(d["_raw_errors"]) if a not in absent]
         # Root cause first (#27302 attempt 2): a cell failing on a name an EARLIER failing
         # cell declares waits for that cell's repair; it is re-executed after the round.
         all_failing = {d["idx"] for d in detail}
         roots = cascade_roots(cells_now, detail)
         deferred: list[dict] = []
         if roots and len(roots) < len(detail):
+            deps_now = {_crate_norm(n): s["idx"] for n, s in cell_deps(cells_now).items()}
             for d in detail:
                 if d["idx"] in roots:
                     # Only roots asked this round are named; a cell waiting on another
@@ -3714,7 +4782,10 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                     kept = [r for r in roots[d["idx"]] if r not in roots]
                     names = [n for n in undefined_names(d["_raw_errors"])
                              if source_cell(cells_now, n, before=d["idx"]) in kept]
-                    deferred.append({"idx": d["idx"], "roots": kept, "names": names})
+                    crates = [c for c in unlinked_crates(d["_raw_errors"])
+                              if deps_now.get(_crate_norm(c)) in kept]
+                    deferred.append({"idx": d["idx"], "roots": kept, "names": names,
+                                     "crates": crates})
             detail = [d for d in detail if d["idx"] not in roots]
         # Rust: the real API of the crates the errors touch (MGS-25, 2.3b), from the
         # registry copy the kernel compiled.
@@ -3722,7 +4793,8 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
         if kname == "rust":
             try:
                 crate_api, api_info = crate_api_block(cells_now,
-                                                      [d["_raw_errors"] for d in detail])
+                                                      [d["_raw_errors"] for d in detail],
+                                                      absent=absent)
             except Exception as ex:  # grounding is an aid: never fail the round on it
                 api_info = {"error": f"{type(ex).__name__}: {ex}"[:300]}
         # Upstream definitions the stack crosses (#27314): offered, bounded, never demanded.
@@ -3773,28 +4845,49 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             upstream.append({"idx": dep_idx, "names": list(api_info.get("crates") or []),
                              "for": detail[0]["idx"], "via": "dep",
                              "source": cap_source(_text(cells_now[dep_idx].get("source")))})
-        env = await sk_call_retry(sk, args, rec, f"{stage}+{rnd}",
-                                  repair_prompt(detail, conventions, upstream, deferred,
-                                                crate_api), conv,
-                                  max_tokens=BUILD_MAX_TOKENS)
+        head = fresh_repair_head(args, kname)
+        env = await repair_call(sk, args, rec, f"{stage}+{rnd}",
+                                repair_prompt(detail, conventions, upstream, deferred,
+                                              crate_api), conv, head=head)
         conv = env.get("conversation_id") or conv
         part, env = await parse_or_repair(sk, args, rec, f"{stage}+{rnd}", env, conv,
                                           max_tokens=BUILD_MAX_TOKENS)
+        bisect = None
+        cause = "" if (part and part.get("cells")) else repair_bisect_cause(env)
+        if cause and len(detail) > 1:
+            # 21/11 conveyor (#27134 2.3d): six cells asked at once, the answer stopped
+            # mid-source after 644.7 s with no error raised, and the grain was lost. The
+            # build already halves a tranche on exactly these two failures (#517); a
+            # repair round is the same request shape: half the cells, half the output.
+            # Each half carries the upstream cells and held cells that concern it.
+            part, conv, bisect = await _repair_halves(
+                sk, args, rec, f"{stage}+{rnd}", detail, conventions, upstream, deferred,
+                crate_api, conv, head=head)
+            bisect["cause"] = cause
         if not part or not part.get("cells"):
             rec.setdefault("repairs", []).append(
-                {"stage": stage, "round": rnd, "verdict": call_failure(env) or "unparsed",
-                 "raw_tail": (env.get("response") or "")[-1500:]})
+                {"stage": stage, "round": rnd,
+                 "verdict": (call_failure(env) or (f"bisect-{cause}" if bisect else "")
+                             or "unparsed"),
+                 "raw_tail": (env.get("response") or "")[-1500:],
+                 **({"bisect": bisect} if bisect else {})})
             break
         # Scope = what the round showed: the failing cells + the upstream ones offered.
         rep = apply_repairs(scratch, part,
                             only_idx=failing_idx | {u["idx"] for u in upstream})
+        # A `:dep` to a crate that does not exist fails its cell every time, whatever else
+        # the repair fixed: struck mechanically from the cells this round rewrote.
+        struck = (strike_absent_deps(scratch, absent, rep["replaced"])
+                  if kname == "rust" and absent and rep["replaced"] else [])
         rec.setdefault("repairs", []).append(
             {"stage": stage, "round": rnd, "asked": len(detail), "replaced": rep["replaced"],
              "upstream": [u["idx"] for u in upstream],
              "deferred": [x["idx"] for x in deferred],
              "crate_api": api_info or None,
              "unknown_idx": rep["unknown_idx"], "bad": rep["bad"],
-             "out_of_scope": rep["out_of_scope"]})
+             "out_of_scope": rep["out_of_scope"],
+             **({"struck_deps": struck} if struck else {}),
+             **({"bisect": bisect} if bisect else {})})
         if not rep["replaced"]:
             break
         await pm_call(pm, "manage_kernel", {"action": "stop", "kernel_id": kid})
@@ -3804,6 +4897,13 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             rec["verdict"] = "kernel-start-failed"
             break
         rec["execution"] = await execute_cells(pm, scratch, kid, exec_targets)
+        rnd += 1
+        after = sum(1 for e in rec["execution"] if not e.get("ok"))
+        if repair_round_extends(rnd, budget, cap, len(failing), after):
+            budget += 1
+            rec.setdefault("repair_extensions", []).append(
+                {"stage": stage, "after_round": rnd - 1, "failing_before": len(failing),
+                 "failing_after": after, "budget": budget})
     return kid, conv
 
 
@@ -3857,6 +4957,101 @@ async def mcp_sessions(out_dir: Path):
             yield sk, pm
 
 
+# Gates whose failure a builder turn CANNOT repair: metadata is harness-owned (stamped
+# from the canon/create_metadata, not from cell sources), so routing them into the
+# constructive loop would burn model rounds on an unfixable target (measured 20/11:
+# language-info failed with canon None AND built None — nothing a cell edit can do).
+_GATE_NON_REPAIRABLE = {"language-info"}
+
+# Actionable phrasing per measured failing gate (20/11 funnel: machine-path 3,
+# svg-display 2, coord-refs 1). Falls back to a generic instruction for new gates.
+_GATE_FIX_TEXT = {
+    "machine-path": "un chemin local de machine (absolu) figure dans la cellule : remplace-le "
+                    "par un chemin relatif au dépôt ou par un littéral de données",
+    "svg-display": "la cellule doit AFFICHER une figure vectorielle SVG (sortie réelle), pas "
+                   "une image encodée ni un chemin de fichier",
+    "coord-refs": "les renvois entre cellules (références croisées) sont incohérents : aligne "
+                  "les références citées avec les cellules réelles du carnet",
+}
+
+
+def gate_repair_findings(rec: dict) -> list[dict]:
+    """Synthesize verifier-shaped findings from the failing gates, so the EXISTING
+    constructive loop can repair a gates-failed build instead of dying terminal.
+    Measured 20/11: gates-failed killed ~8 grains with no retry path at all — the
+    revise loop only triggered on a verify-reject."""
+    out: list[dict] = []
+    for g in rec.get("gates") or []:
+        if g.get("ok") or g.get("gate") in _GATE_NON_REPAIRABLE:
+            continue
+        detail = g.get("detail") if isinstance(g.get("detail"), (str, int, float)) else json.dumps(
+            g.get("detail") or {}, ensure_ascii=False)
+        cells = (g.get("detail") or {}).get("cells") if isinstance(g.get("detail"), dict) else None
+        out.append({"cell": (cells or [None])[0], "severity": "major",
+                    "detail": f"porte {g.get('gate')} en échec — "
+                              f"{_GATE_FIX_TEXT.get(g.get('gate'), 'corrige la cellule pour satisfaire la porte')}"
+                              f" ; détail porte : {detail}"})
+    return out
+
+
+# Execution-repair findings (21/11, po-2028 report): a cut per finding and a cap on how
+# many root failures are detailed; the reviser also sees every real output in the view.
+EXEC_FINDING_CAP = 1200
+EXEC_CASCADE_EXCERPT = 300
+EXEC_FINDINGS_MAX = 12
+
+
+def exec_repair_findings(rec: dict, built_path: Path) -> list[dict]:
+    """Verifier-shaped findings from the cells that STILL fail after the kernel-repair
+    rounds, so a built-execution-failed grain gets the constructive loop instead of dying.
+
+    Measured 21/11 (Swift conveyor, 46 launches): built-execution-failed was the dominant
+    class (18) and terminal (`revisions: []`) — the repair rounds work inside the build
+    conversation, the constructive loop (fresh conversation, whole notebook with real
+    outputs) never ran on it. A cell that fails only because an earlier failing cell
+    defines what it uses is named as a cascade of that root, with a short excerpt, so the
+    round fixes the root first. Roots beyond EXEC_FINDINGS_MAX are listed, never dropped
+    silently."""
+    failing = [e for e in rec.get("execution") or [] if isinstance(e, dict) and not e.get("ok")]
+    if not failing:
+        return []
+    try:
+        cells = _cells(built_path)
+    except (OSError, ValueError):
+        cells = []
+    detail = []
+    for e in failing:
+        i = e.get("cell")
+        cell = cells[i] if isinstance(i, int) and 0 <= i < len(cells) else {}
+        raw = _outputs_text(cell) if cell else ""
+        digest = error_digest(cell, raw, cap=EXEC_FINDING_CAP) if raw.strip() else ""
+        detail.append({"idx": i, "status": e.get("status"), "_raw_errors": raw,
+                       "errors": digest or str(e.get("error") or "")})
+    roots = cascade_roots(cells, [d for d in detail if isinstance(d["idx"], int)]) if cells else {}
+    out: list[dict] = []
+    skipped: list = []
+    for d in detail:
+        r = roots.get(d["idx"])
+        if r:
+            text = (f"échoue par CASCADE de la cellule {', '.join(map(str, r))} (un nom ou une "
+                    f"crate qu'elle devait définir) : corrige d'abord la racine ; extrait : "
+                    f"{d['errors'][:EXEC_CASCADE_EXCERPT]}")
+        elif sum(1 for f in out if "CASCADE" not in f["detail"]) >= EXEC_FINDINGS_MAX:
+            skipped.append(d["idx"])
+            continue
+        else:
+            status = (f"(statut {d['status']}) "
+                      if d["status"] not in (None, "ok", "error") else "")
+            text = (f"échec d'EXÉCUTION réel du noyau {status}après les tours de réparation — "
+                    f"{d['errors'] or 'aucune sortie d erreur persistée'}")
+        out.append({"cell": d["idx"], "severity": "major", "detail": text})
+    if skipped:
+        out.append({"cell": None, "severity": "major",
+                    "detail": f"{len(skipped)} autres cellules en échec non détaillées ici "
+                              f"(voir leurs sorties réelles dans le carnet) : {skipped}"})
+    return out
+
+
 def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mode: bool,
                       kname: str, wt_path: Path, out_dir: Path,
                       prior: dict | None = None) -> None:
@@ -3875,6 +5070,33 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
         rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
     if args.max_stage >= 4 and rec.get("verdict") == "gates-ok":
         stage4_verify(args, rec, src_nb, built_path, out_dir, prior=prior)
+    # A gate failure is actionable by the builder (a cell to rewrite), and until now it
+    # was TERMINAL — the constructive loop only ever ran on a verify-reject. Route the
+    # failing gates through that same loop by seeding verifier-shaped findings; the
+    # honest verdict comes back from the re-run gates below inside the loop. Rounds and
+    # the stage guard stay those of the review loop (no second budget to reason about).
+    if (str(rec.get("verdict") or "").startswith("gates-failed")
+            and getattr(args, "revise_rounds", 0) > 0 and args.max_stage >= 4):
+        findings = gate_repair_findings(rec)
+        if findings:
+            rec["gate_repair"] = {"from": rec["verdict"], "findings": len(findings)}
+            rec["verify"] = {"verdict": "gate-reject", "findings": findings, "source": "gates"}
+            rec["verdict"] = "verify-reject"
+    # Same route for an execution that still fails after the kernel-repair rounds (21/11,
+    # po-2028 report: built-execution-failed was terminal, `revisions: []`). Inside the
+    # loop a revised draft that fails again is re-seeded from ITS errors, so each round
+    # answers the current failures, not the first ones.
+    if (rec.get("verdict") == "built-execution-failed"
+            and getattr(args, "revise_rounds", 0) > 0 and args.max_stage >= 4
+            and built_path.is_file()):
+        findings = exec_repair_findings(rec, built_path)
+        if findings:
+            er = rec.setdefault("exec_repair", {"from": "built-execution-failed", "seeded": 0})
+            er["seeded"] = er.get("seeded", 0) + 1
+            er["findings"] = len(findings)
+            rec["verify"] = {"verdict": "exec-reject", "findings": findings,
+                             "source": "execution"}
+            rec["verdict"] = "verify-reject"
 
 
 async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path: Path,
@@ -3891,11 +5113,17 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         return
     revisions = rec.setdefault("revisions", [])
     first = len(revisions)
-    for rnd in range(first, first + args.revise_rounds):
+    budget = args.revise_rounds
+    extend = max(0, int(getattr(args, "revise_extend", REVISE_EXTEND_DEFAULT) or 0))
+    cap = budget + extend
+    done = 0
+    while done < budget:
+        rnd = first + done
         if rec.get("verdict") != "verify-reject":
             break
         findings = [f for f in (rec.get("verify") or {}).get("findings") or []
                     if isinstance(f, dict)]
+        source_in = (rec.get("verify") or {}).get("source")
         entry: dict = {"round": rnd, "started": utcnow(), "findings_in": len(findings),
                        "majors_in": sum(1 for f in findings if f.get("severity") == "major")}
         revisions.append(entry)
@@ -3960,8 +5188,30 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                           prior=prior)
         entry["result"] = rec["verdict"]
         if str(rec["verdict"]).startswith("verify-"):
-            entry["findings_out"] = len((rec.get("verify") or {}).get("findings") or [])
+            out = [f for f in (rec.get("verify") or {}).get("findings") or []
+                   if isinstance(f, dict)]
+            entry["findings_out"] = len(out)
+            entry["majors_out"] = sum(1 for f in out if f.get("severity") == "major")
         entry["elapsed_s"] = round(time.time() - t0, 1)
+        done += 1
+        if (rec.get("verdict") == "verify-reject"
+                and revise_round_extends(done, budget, cap, source_in,
+                                         (rec.get("verify") or {}).get("source"),
+                                         entry["majors_in"], entry.get("majors_out"))):
+            budget += 1
+            entry["extended"] = {"budget": budget, "cap": cap}
+    # Gate-repair exhaustion: the seeded verdict must not survive as a verify-reject — a
+    # gate failure that survived its repair rounds is reported as what it is (and a
+    # later --revise-from refuses it for the right reason). A REAL verify that ran after
+    # the gates were fixed overwrote verify.source, so this only touches the never-fixed
+    # case. Execution repair follows the same rule (verify.source "execution"); a kernel
+    # that died during a round keeps its own verdict instead of being masked.
+    src = (rec.get("verify") or {}).get("source")
+    if (src in ("gates", "execution")
+            and not str(rec.get("verdict") or "").startswith("verify-approved")
+            and rec.get("verdict") != "kernel-start-failed"):
+        origin = rec.get("gate_repair" if src == "gates" else "exec_repair") or {}
+        rec["verdict"] = origin.get("from") or rec["verdict"]
 
 
 def _prior_src_nb(prior: dict, wt_path: Path, notebook: str) -> Path:
@@ -3983,35 +5233,110 @@ _REVISE_CARRY = ("plan", "kernel", "kernel_cwd", "create_mode", "create_metadata
 
 
 async def run_revision(args, rec: dict) -> dict:
-    """--revise-from <issue-N.json>: resume a grain the verifier REJECTED without re-paying
-    plan and build (IT08 #27460: 22.9 min and 4 calls already spent). Fail-closed before any
-    spend: same issue + notebook, a verify-reject verdict, a successful reservation in the
+    """--revise-from <issue-N.json> / --verify-from <issue-N.json>: resume a grain without
+    re-paying plan and build (IT08 #27460: 22.9 min and 4 calls already spent). Fail-closed
+    before any spend: same issue + notebook, the expected prior verdict (verify-reject for
+    a revise, verify-error for a crash recovery), a successful reservation in the
     trace re-read NOW by the scoped claim guard (no new [CLAIMED] comment), and the
     worktree, source/twin and built notebook still on disk."""
+    # Two resume modes on the same fail-closed skeleton:
+    #   --revise-from : the verifier DELIVERED a verdict — reject with findings to answer;
+    #   --verify-from : the verifier CRASHED (instrument failure, e.g. the GitHub REST
+    #                   bucket exhausted mid-run on 20/11) — a build already paid for is
+    #                   re-gated and re-verified instead of being thrown away.
+    resume_from = getattr(args, "verify_from", None)
+    gate_resume = None              # set when the trace is a repairable gates failure
+    exec_resume = None              # set when the trace is a repairable execution failure
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    trace_p = Path(args.revise_from)
+    trace_p = Path(resume_from or args.revise_from)
     if not trace_p.is_file():
         rec["verdict"] = f"refused-revise-trace-missing:{trace_p}"
         return rec
     prior = json.loads(trace_p.read_text(encoding="utf-8"))
     rec["revised_from"] = {"trace": str(trace_p), "verdict": prior.get("verdict"),
-                           "started": prior.get("started")}
+                           "started": prior.get("started"),
+                           "mode": "verify" if resume_from else "revise"}
     if (prior.get("issue") != args.issue
             or _norm_rel(prior.get("notebook") or "") != _norm_rel(args.notebook)):
         rec["verdict"] = "refused-revise-trace-mismatch"
         return rec
-    if prior.get("verdict") != "verify-reject":
-        rec["verdict"] = f"refused-revise-not-rejected:{prior.get('verdict')}"
-        return rec
-    if ((prior.get("stages") or {}).get("claim_reservation") or {}).get("verdict", "x") is not None:
+    if resume_from:
+        if prior.get("verdict") != "verify-error":
+            rec["verdict"] = f"refused-verify-not-crashed:{prior.get('verdict')}"
+            return rec
+    elif prior.get("verdict") != "verify-reject":
+        # gates-failed:<gates> is resumable too (20/11: w2u lost 2 grains to it one
+        # base BEFORE gate-repair landed): the trace carries the failing gates and the
+        # build on disk — repair findings are synthesized from the gates exactly like
+        # the in-run path, and the paid build is re-used instead of rebuilt.
+        gate_resume = None
+        if str(prior.get("verdict") or "").startswith("gates-failed"):
+            gate_resume = gate_repair_findings({"gates": prior.get("gates") or []})
+            if not gate_resume:
+                rec["verdict"] = f"refused-gate-repair-unrepairable:{prior.get('verdict')}"
+                return rec
+        elif prior.get("verdict") == "built-execution-failed":
+            # the build on disk carries its persisted error outputs: findings come from
+            # them, the paid build is repaired instead of rebuilt (a missing build is
+            # refused below by the on-disk checks, before any spend)
+            built_p = Path((prior.get("built_notebook") or {}).get("path") or "")
+            if built_p.is_file():
+                exec_resume = exec_repair_findings({"execution": prior.get("execution") or []},
+                                                   built_p)
+                if not exec_resume:
+                    rec["verdict"] = "refused-exec-repair-unrepairable:built-execution-failed"
+                    return rec
+        else:
+            rec["verdict"] = f"refused-revise-not-rejected:{prior.get('verdict')}"
+            return rec
+    prior_cr = (prior.get("stages") or {}).get("claim_reservation")
+    live_cr = None
+    if prior_cr and prior_cr.get("verdict") is None and prior_cr.get("deferred") == "late":
+        # --claim-late trace: that run reserved NOTHING, so the trace attests no claim.
+        # Re-read the LIVE scoped claim before any spend (another lane may have taken
+        # the notebook since); the reservation itself stays deferred -- the carried
+        # stage below makes late_reservation() take it right before stage 5.
+        live = check_claim(Path(args.repo), args.issue, args.lane, _norm_rel(args.notebook))
+        live_v = claim_verdict(live)
+        if live_v is not None:
+            rec["stages"]["claim_reservation"] = {**prior_cr, "live_recheck": live_v}
+            rec["verdict"] = f"refused-revise-no-reservation:{live_v}"
+            return rec
+    elif prior_cr and prior_cr.get("verdict") is None:
+        pass  # attested in the trace: an admitted reservation, re-read at its time
+    elif prior_cr:
         rec["verdict"] = "refused-revise-no-reservation"
         return rec
+    else:
+        # No attestation in the trace (pre-#466-era drivers, w1* runs 18-19/11 carry
+        # no claim_reservation stage): fail-closed fallback — re-read the LIVE scoped
+        # claim. Admitted only if our lane still holds the claim on this path; no new
+        # [CLAIMED] comment is posted either way.
+        live = check_claim(Path(args.repo), args.issue, args.lane, _norm_rel(args.notebook))
+        live_v = claim_verdict(live)
+        live_cr = {"verdict": live_v, "live_recheck": True}
+        if live_v is not None:
+            rec["stages"]["claim_reservation"] = live_cr
+            rec["verdict"] = f"refused-revise-no-reservation:{live_v}"
+            return rec
     for k in _REVISE_CARRY:
         if k in prior:
             rec[k] = prior[k]
+    if gate_resume:
+        # AFTER the carry: a trace-carried "verify" (meaningless — stage 4 never ran
+        # on a gates-failed grain) must not clobber the synthesized repair findings.
+        rec["gate_repair"] = {"from": prior.get("verdict"), "findings": len(gate_resume),
+                              "resumed": True}
+        rec["verify"] = {"verdict": "gate-reject", "findings": gate_resume,
+                         "source": "gates"}
+    if exec_resume:
+        rec["exec_repair"] = {"from": "built-execution-failed", "findings": len(exec_resume),
+                              "seeded": 1, "resumed": True}
+        rec["verify"] = {"verdict": "exec-reject", "findings": exec_resume,
+                         "source": "execution"}
     rec["stages"]["worktree"] = (prior.get("stages") or {}).get("worktree")
-    rec["stages"]["claim_reservation"] = (prior.get("stages") or {}).get("claim_reservation")
+    rec["stages"]["claim_reservation"] = live_cr or (prior.get("stages") or {}).get("claim_reservation")
     wt_path = Path(((prior.get("stages") or {}).get("worktree") or {}).get("path") or "")
     built = Path((prior.get("built_notebook") or {}).get("path") or "")
     src_nb = _prior_src_nb(prior, wt_path, args.notebook)
@@ -4047,11 +5372,26 @@ async def run_revision(args, rec: dict) -> dict:
     create_mode = bool(prior.get("create_mode"))
     args.from_spec = bool((prior.get("create_mode") or {}).get("spec_twin"))
     kname = args.kernel_override or (prior.get("kernel") or {}).get("kernel_name") or ""
-    rec["verdict"] = prior["verdict"]
+    if resume_from:
+        # verify-error is NOT a verdict: the verifier process crashed on an instrument
+        # failure (20/11: the shared GitHub REST bucket ran out mid-run), so the build was
+        # executed and the gates passed before stage 4 died. Re-gate and re-verify the SAME
+        # on-disk build — zero model turn — then let the normal loop take over (a reject
+        # gets its constructive rounds; an approval opens the PR).
+        rec["verdict"] = "built-executed-ok"
+        gates_then_verify(args, rec, src_nb, built, create_mode, kname, wt_path, out_dir)
+    else:
+        # a seeded gate repair enters the loop as a reject; the exhaustion-restore
+        # inside revise_loop brings the honest gates-failed verdict back if the
+        # repair never succeeds
+        resumed = ((rec.get("gate_repair") or {}).get("resumed")
+                   or (rec.get("exec_repair") or {}).get("resumed"))
+        rec["verdict"] = "verify-reject" if resumed else prior["verdict"]
     await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built, kname=kname,
                       exec_dir=exec_dir, conventions=conventions, create_mode=create_mode,
                       wt_path=wt_path, out_dir=out_dir)
-    if args.max_stage >= 5 and rec.get("verdict") == "verify-approved":
+    if (args.max_stage >= 5 and rec.get("verdict") == "verify-approved"
+            and late_reservation(args, rec)):
         stage5_pr(args, rec, wt_path, built, issue, token)
     rec["finished"] = utcnow()
     return rec
@@ -4107,9 +5447,21 @@ async def run(args, rec: dict) -> dict:
         if spec_errors:
             rec["verdict"] = "refused-spec-plan-unusable"
             return rec
-    if args.claim:
-        rec["stages"]["claim_reservation"] = reserve_claim(
-            repo, args.issue, args.lane, args.intention, claim_nb)
+    if args.claim and getattr(args, "claim_late", False):
+        # CoursIA rule (coordinator 21/11, auto-pick Q-A): no [CLAIMED] before the run
+        # holds an openable PR. The CLEAR pre-check above already refused a notebook
+        # someone else holds; the reservation itself is taken by late_reservation()
+        # right before stage 5, so a failed launch locks nothing.
+        rec["stages"]["claim_reservation"] = dict(LATE_CLAIM_DEFERRED)
+    elif args.claim:
+        with issue_claim_lock(Path(args.out_dir).parent / CLAIM_LOCK_DIRNAME,
+                              args.issue) as lock:
+            rec["stages"]["claim_lock"] = lock
+            rec["stages"]["claim_reservation"] = (
+                reserve_claim(repo, args.issue, args.lane, args.intention, claim_nb)
+                if lock["held"] else
+                {"verdict": f"{CLAIM_TIMEOUT_VERDICT}:lock",
+                 "note": "a sibling grain of this issue held its reservation too long"})
         if rec["stages"]["claim_reservation"]["verdict"]:
             rec["verdict"] = rec["stages"]["claim_reservation"]["verdict"]
             return rec
@@ -4417,7 +5769,8 @@ async def run(args, rec: dict) -> dict:
         await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built_path,
                           kname=kname_used, exec_dir=exec_dir, conventions=conventions,
                           create_mode=create_mode, wt_path=Path(wt["path"]), out_dir=out_dir)
-    if args.max_stage >= 5 and rec.get("verdict") == "verify-approved":
+    if (args.max_stage >= 5 and rec.get("verdict") == "verify-approved"
+            and late_reservation(args, rec)):
         stage5_pr(args, rec, Path(wt["path"]), built_path, issue, token)
     rec["finished"] = utcnow()
     return rec
@@ -4497,6 +5850,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="house rules injected into the prompts ('' disables)")
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe a blanc)")
     ap.add_argument("--claim", action="store_true", help="post the [CLAIMED] comment (off in dry)")
+    ap.add_argument("--claim-late", action="store_true",
+                    help="with --claim: run stages 1-4 on the CLEAR pre-check alone and "
+                         "post the [CLAIMED] only once the verifier approved, right before "
+                         "stage 5 (CoursIA auto-pick rule 21/11: a failed launch locks "
+                         "nothing). Requires --max-stage 5")
     ap.add_argument("--gate-mode", choices=["warn", "block", "off"], default="warn")
     ap.add_argument("--gate", type=Path, default=None,
                     help="capacity-gate probe script (default: $NBCODER_GATE env, else the "
@@ -4566,16 +5924,32 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--max-tokens", type=int, default=16384)
     ap.add_argument("--repair-rounds", type=int, default=2,
                     help="model repair rounds on real kernel errors (0 disables)")
+    ap.add_argument("--repair-extend", type=int, default=REPAIR_EXTEND_DEFAULT,
+                    help="extra repair rounds granted one at a time while the last round "
+                         "strictly reduced the failing cells (0 = fixed budget)")
+    ap.add_argument("--ctx-window", type=int, default=CTX_WINDOW,
+                    help="tokens a repair turn may need on its conversation (history + "
+                         "prompt + answer) before it starts a fresh one (default: the "
+                         "served --max-model-len)")
     ap.add_argument("--revise-rounds", type=int, default=2,
                     help="constructive-review rounds after a verify-reject WITH findings: "
                          "the builder rewrites cells from the findings, the harness "
                          "re-executes, re-gates and re-verifies (0 disables; needs "
                          "--max-stage >= 4)")
+    ap.add_argument("--revise-extend", type=int, default=REVISE_EXTEND_DEFAULT,
+                    help="extra review rounds granted one at a time while the last round "
+                         "strictly reduced the major findings of the same source "
+                         "(0 = fixed budget)")
     ap.add_argument("--revise-from", default=None,
                     help="resume a REJECTED grain from its issue-<N>.json trace: no new "
                          "plan/build, no new [CLAIMED] comment (the reservation in the "
                          "trace is re-read by the scoped claim guard); runs the review "
                          "loop, then stage 5 if approved and --max-stage 5")
+    ap.add_argument("--verify-from", default=None,
+                    help="recover a grain whose VERIFIER CRASHED (trace verdict "
+                         "verify-error, e.g. the GitHub REST bucket ran out mid-run): the "
+                         "build already paid for is re-gated and re-verified with zero "
+                         "model turn, then the review loop and stage 5 as usual")
     return ap
 
 
@@ -4591,6 +5965,11 @@ def main() -> int:
     if args.claim and not args.lane:
         ap.error("--claim requires --lane or NBCODER_LANE, form '<machine>:nb-coder' — a "
                  "default identity would let two seats share one claim lane (F1, vllm#438)")
+    if args.claim_late and not args.claim:
+        ap.error("--claim-late defers the reservation of --claim: pass both")
+    if args.claim_late and args.max_stage < 5:
+        ap.error("--claim-late reserves right before stage 5: a run stopping earlier would "
+                 "spend model turns under no reservation and never take one")
     if args.source_nb and args.write_mode == "mcp":
         ap.error("creation mode (--source-nb) requires --write-mode json: the harness "
                  "assembles the whole notebook in one write, MCP cell tools would race "
@@ -4602,13 +5981,22 @@ def main() -> int:
         ap.error("--revise-from needs --revise-rounds >= 1")
     if args.revise_from and args.max_stage < 4:
         ap.error("--revise-from needs --max-stage >= 4 (the review loop re-verifies)")
+    if args.revise_from and args.verify_from:
+        ap.error("--revise-from and --verify-from are exclusive: a delivered reject is "
+                 "revised, a crashed verifier is re-verified")
+    if args.verify_from and (args.from_spec or args.source_nb or args.meta_from):
+        ap.error("--verify-from reads the creation mode from the trace: do not pass "
+                 "--from-spec / --source-nb / --meta-from with it")
+    if args.verify_from and args.max_stage < 4:
+        ap.error("--verify-from needs --max-stage >= 4 (that is the stage being resumed)")
     if args.from_spec and args.source_nb:
         ap.error("--from-spec and --source-nb are exclusive: a twin port is --source-nb, "
                  "a new notebook with no twin is --from-spec")
     if args.from_spec and not args.meta_from:
         ap.error("--from-spec requires --meta-from <repo-relative notebook>: the deliverable "
                  "inherits that notebook's kernelspec + language_info (no default kernel)")
-    if args.meta_from and not (args.from_spec or args.source_nb or args.revise_from):
+    if args.meta_from and not (args.from_spec or args.source_nb or args.revise_from
+                               or args.verify_from):
         ap.error("--meta-from is only read in creation mode (--from-spec or --source-nb): "
                  "a correction keeps the existing notebook's metadata")
     if args.from_spec and args.write_mode == "mcp":
@@ -4634,7 +6022,8 @@ def main() -> int:
                       "verifier": args.verifier_model},
            "engine_tokens_before": engine_tokens()}
     try:
-        rec = asyncio.run(run_revision(args, rec) if args.revise_from else run(args, rec))
+        rec = asyncio.run(run_revision(args, rec)
+                          if (args.revise_from or args.verify_from) else run(args, rec))
     except Exception as exc:  # a trace is always written: a dead harness must not look like a quiet one
         # Keep what was already paid for, and keep WHY (F4, vllm#441). Rebuilding rec here threw
         # away the calls, the last stage and the plan: a stage-5 crash produced the same
@@ -4643,6 +6032,8 @@ def main() -> int:
         rec["crash"] = {"type": type(exc).__name__, "message": str(exc)[:500],
                         "traceback_tail": traceback.format_exc()[-2000:]}
         rec["verdict"] = f"crashed:{type(exc).__name__}: {str(exc)[:300]}"
+        if github_rate_limited(str(exc)):
+            rec["verdict"] = rate_limit_verdict(github_core_reset())
         # `dry` is NOT forced here: it says "the run stopped before stage 5", which a crash on
         # --max-stage 5 does not mean (co-review of #442, F4-1). rec already carries the true
         # value from main() — a crash is a crash, not a dry run.
@@ -4650,9 +6041,10 @@ def main() -> int:
     b, a = rec.get("engine_tokens_before") or {}, rec.get("engine_tokens_after") or {}
     rec["engine_tokens_delta"] = {k: round(a[k] - b[k]) for k in a if k in b} or None
     out = Path(args.out_dir) / f"issue-{args.issue}.json"
-    if args.revise_from and out.is_file():
-        # the trace being revised is usually THIS file: keep it, renamed, never overwritten
-        keep = out.with_name(f"issue-{args.issue}.pre-revise-"
+    if (args.revise_from or args.verify_from) and out.is_file():
+        # the trace being resumed is usually THIS file: keep it, renamed, never overwritten
+        prefix = "pre-verify" if args.verify_from else "pre-revise"
+        keep = out.with_name(f"issue-{args.issue}.{prefix}-"
                              f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
         shutil.copy2(out, keep)
         rec["revised_from"] = (rec.get("revised_from") or {}) | {"kept_as": str(keep)}
@@ -4669,7 +6061,7 @@ def main() -> int:
                                "pr": (rec.get("pr") or {}).get("number"),
                                "calls": len(rec.get("calls") or []),
                                "revisions": len(rec.get("revisions") or []),
-                               "revised_from": bool(args.revise_from)},
+                               "revised_from": bool(args.revise_from or args.verify_from)},
                               ensure_ascii=False) + "\n")
     print(json.dumps({k: rec.get(k) for k in
                       ("issue", "verdict", "stage0_s", "stage1_s", "stage2_s", "stage4_s",

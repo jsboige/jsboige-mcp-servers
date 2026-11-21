@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_scheduler.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -393,6 +393,7 @@ def test_spawn_driver_writes_log_file_and_reap_reads_it(tmp_path):
     import subprocess as sp
     sched = make_sched(tmp_path, [item(1)], spawn=SpawnRecorder())
     sched.args.out_root = str(tmp_path / "runs")
+    sched.args.detach_drivers = False          # pins the attached path (Popen.wait below)
     out_dir = tmp_path / "runs" / "issue-1"
     cmd = [sys.executable, "-c",
            "import json; print(json.dumps({'verdict': 'built-executed-ok'}))",
@@ -630,3 +631,121 @@ def test_retry_must_be_an_integer(tmp_path):
     q.write_text(json.dumps(item(1) | {"retry": "1"}) + "\n")
     with pytest.raises(S.QueueError, match="retry must be int"):
         S.load_queue(q)
+
+
+# ---------------------------------------------------------------- worktree release
+class FakeGit:
+    """Answers the three git questions of _release_worktree; records every call."""
+
+    def __init__(self, status="", refs="refs/remotes/origin/main\n", remove_rc=0):
+        self.calls = []
+        self.status, self.refs, self.remove_rc = status, refs, remove_rc
+
+    def __call__(self, argv, timeout=300):
+        self.calls.append(argv)
+        if "status" in argv:
+            return 0, self.status
+        if "for-each-ref" in argv:
+            return 0, self.refs
+        if "remove" in argv:
+            return self.remove_rc, "" if self.remove_rc == 0 else "fatal: locked"
+        return 1, "unexpected"
+
+
+def _sched_with_tree(tmp_path, git, verdict="built-executed-ok", rc=0, **over):
+    spawn = SpawnRecorder(verdict=verdict, rc=rc, done_after=0)
+    sched = make_sched(tmp_path, [item(1)], spawn=spawn, **over)
+    sched.git = git
+    wt = Path(sched.args.worktree_root) / f"wt-{S.grain_slug(item(1))}"
+    wt.mkdir(parents=True)
+    return sched, wt
+
+
+def _removes(git):
+    return [c for c in git.calls if "remove" in c]
+
+
+@pytest.mark.parametrize("verdict,rc", [("built-executed-ok", 0),
+                                        ("built-execution-failed", 1)])
+def test_a_clean_pushed_tree_is_released_when_the_grain_ends(tmp_path, verdict, rc):
+    git = FakeGit()
+    sched, wt = _sched_with_tree(tmp_path, git, verdict=verdict, rc=rc)
+    sched.run()
+    assert len(_removes(git)) == 1
+    cmd = _removes(git)[0]
+    assert cmd[:4] == ["git", "-C", "D:/CoursIA", "worktree"] and cmd[-1] == str(wt)
+    assert "--force" not in cmd and "-f" not in cmd
+    assert _events(sched, "worktree-released")[-1]["worktree"] == str(wt)
+
+
+@pytest.mark.parametrize("git,reason", [
+    (FakeGit(status=" M MyIA.AI.Notebooks/X.ipynb\n"), "dirty"),
+    (FakeGit(status="?? new.ipynb\n"), "dirty"),
+    (FakeGit(refs=""), "head-on-no-remote-ref"),
+    (FakeGit(remove_rc=128), "remove-failed"),
+])
+def test_a_tree_holding_something_unique_is_kept(tmp_path, git, reason):
+    sched, wt = _sched_with_tree(tmp_path, git)
+    sched.run()
+    kept = _events(sched, "worktree-kept")
+    assert kept and kept[-1]["reason"] == reason and kept[-1]["worktree"] == str(wt)
+    assert not _events(sched, "worktree-released")
+    if reason != "remove-failed":
+        assert not _removes(git)
+
+
+def test_keep_worktrees_flag_never_touches_the_tree(tmp_path):
+    git = FakeGit()
+    sched, _ = _sched_with_tree(tmp_path, git, keep_worktrees=True)
+    sched.run()
+    assert git.calls == []
+
+
+def test_a_deferred_or_running_grain_keeps_its_tree(tmp_path):
+    git = FakeGit()
+    sched, _ = _sched_with_tree(tmp_path, git, verdict="deferred-by-capacity-gate: red",
+                                rc=3)
+    sched.tick()                                    # launch
+    sched.tick()                                    # reap: the driver deferred
+    assert sched.state["grains"]["#1:Dir/N1.ipynb"]["status"] == "deferred"
+    assert git.calls == []
+    spawn = SpawnRecorder(done_after=99)            # stays in flight
+    sched2 = make_sched(tmp_path / "b", [item(1)], spawn=spawn)
+    sched2.git = git
+    (Path(sched2.args.worktree_root) / f"wt-{S.grain_slug(item(1))}").mkdir(parents=True)
+    sched2.tick()
+    assert git.calls == []
+
+
+def test_parse_args_keeps_worktrees_off_by_default(tmp_path):
+    base = ["--queue", "q.jsonl", "--repo", "D:/CoursIA", "--state-dir", str(tmp_path),
+            "--max-active", "1"]
+    assert S.parse_args(base).keep_worktrees is False
+    assert S.parse_args(base + ["--keep-worktrees"]).keep_worktrees is True
+
+
+# ---------------------------------------------------------------- same-issue claims (21/11)
+def _lot(n, name):
+    return {"issue": n, "notebook": f"Lot/{name}.ipynb"}
+
+
+def test_same_issue_grains_are_not_serialized_by_the_scheduler(tmp_path):
+    """The claim race is the reservation window only; the driver locks that window.
+    A lot issue must keep several grains in flight (#27134: 2.3b + 2.3d together)."""
+    spawn = SpawnRecorder(done_after=99)
+    sched = make_sched(tmp_path, [_lot(7, "A"), _lot(7, "B")], spawn=spawn,
+                       max_active=2, claim=True)
+    assert sched.tick()["launched"] == 2
+
+
+def test_implicit_occupation_deferral_is_retried_not_failed(tmp_path):
+    clock = {"t": 1000.0}
+    spawn = SpawnRecorder(verdict="deferred-by-claim-implicit-occupation:#27691",
+                          rc=1, done_after=0)
+    sched = make_sched(tmp_path, [item(1)], spawn=spawn)
+    sched.clock = lambda: clock["t"]
+    sched.tick()
+    clock["t"] += 10
+    sched.tick()
+    g = sched.state["grains"]["#1:Dir/N1.ipynb"]
+    assert g["status"] == "deferred" and g["not_before"] > clock["t"]
