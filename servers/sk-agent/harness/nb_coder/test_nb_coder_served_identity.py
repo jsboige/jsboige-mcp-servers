@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_served_identity.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -104,7 +104,7 @@ def test_calls_record_the_variant_fields(monkeypatch):
              "served_model_variants": ["glm-5.3", "swift-1.5-27b"],
              "failover_notice": "b", "failover_notice_variants": ["a", "b"]}]
 
-    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None):
+    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None, **kw):
         return envs.pop(0), 1.0
 
     monkeypatch.setattr(d, "sk_call", fake_sk)
@@ -150,7 +150,7 @@ def test_calls_record_the_served_fields_only_when_the_envelope_has_them(monkeypa
              "failover_notice": "role=nb"},
             {"response": "ok", "model_used": "nb-minimax"}]
 
-    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None):
+    async def fake_sk(session, args, prompt, conv, max_tokens=None, model=None, **kw):
         return envs.pop(0), 1.0
 
     monkeypatch.setattr(d, "sk_call", fake_sk)

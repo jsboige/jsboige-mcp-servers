@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_claim.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -421,3 +421,234 @@ def test_stage0_only_without_claim_stays_the_sanctioned_exception(monkeypatch, t
     assert seen.get("wt") is True
     assert got["verdict"] == "stage0-only"
     assert got["calls"] == []
+
+
+# ---- rc=3 IMPLICIT on a lot issue (CoursIA#27133, 21/11 03:14Z) ------------------
+MGS28 = "MyIA.AI.Notebooks/Search/Part4-Metaheuristics/MGS-vs-mealpy/MGS-28-BareBonesPSO-vs-Mealpy-Rust.ipynb"
+SUDOKU05 = "MyIA.AI.Notebooks/Sudoku/Sudoku-05-PSO-Rust.ipynb"
+
+
+def _guard_proc(rc, implicit, filler=0):
+    import json as _json
+    doc = {"issue": 27133, "my_lane": "myia-ai-01:vllm", "blocking_lanes": [],
+           "delivered_claims": [{"paths": ["x" * 40] * filler}],
+           "implicit_occupation": implicit}
+    tail = "\nIMPLICIT: lane myia-po-2024:CoursIA a une PR ouverte (#27691) sans [CLAIMED] pose."
+
+    class P:
+        returncode = rc
+        stdout = _json.dumps(doc, indent=2) + tail
+        stderr = "WARN: enumeration incomplete"
+    return P()
+
+
+def _po2024(files):
+    return [{"number": 27691, "lane": "myia-po-2024:CoursIA", "files": files,
+             "created_at": "2026-11-21T02:26:34Z"}]
+
+
+def test_disjoint_implicit_occupation_defers_instead_of_burning_the_grain():
+    cc = nbcd._guard_result(_guard_proc(3, _po2024([SUDOKU05, "README.md"])), MGS28)
+    assert cc["implicit"][0]["touches_notebook"] is False
+    assert nbcd.claim_verdict(cc) == "deferred-by-claim-implicit-occupation:#27691"
+
+
+def test_implicit_occupation_on_our_own_file_still_refuses():
+    cc = nbcd._guard_result(_guard_proc(3, _po2024([MGS28])), MGS28)
+    assert nbcd.claim_verdict(cc) == "refused-claim-implicit-occupation"
+
+
+def test_unreadable_or_truncated_implicit_report_fails_closed():
+    assert nbcd.claim_verdict({"rc": 3}) == "refused-claim-implicit-occupation"
+    many = [f"f{i}.py" for i in range(100)]
+    cc = nbcd._guard_result(_guard_proc(3, _po2024(many)), MGS28)
+    assert cc["implicit"][0]["touches_notebook"] is True
+    assert nbcd.claim_verdict(cc) == "refused-claim-implicit-occupation"
+
+
+def test_recorded_output_keeps_the_verdict_line_past_2000_chars():
+    """The old `[:2000]` cut the guard's verdict off: the refusal recorded no reason."""
+    cc = nbcd._guard_result(_guard_proc(3, _po2024([SUDOKU05]), filler=80), MGS28)
+    assert len(cc["out"]) <= 2100
+    assert "IMPLICIT: lane myia-po-2024:CoursIA" in cc["out"]
+    assert cc["warnings"].startswith("WARN")
+
+
+def test_post_refused_by_implicit_leg_defers_without_unknown_residue():
+    post = nbcd._guard_result(_guard_proc(3, _po2024([SUDOKU05])), MGS28)
+    assert nbcd.claim_reservation_verdict(post, {"rc": None}) == (
+        "deferred-by-claim-implicit-occupation:#27691")
+    # a real collision at write time still refuses
+    post = nbcd._guard_result(_guard_proc(3, _po2024([MGS28])), MGS28)
+    assert nbcd.claim_reservation_verdict(post, {"rc": None}) == (
+        "refused-claim-implicit-occupation")
+
+
+def test_verify_seeing_an_older_disjoint_pr_defers():
+    verify = nbcd._guard_result(_guard_proc(3, _po2024([SUDOKU05])), MGS28)
+    assert nbcd.claim_reservation_verdict({"rc": 0}, verify) == (
+        "deferred-by-claim-implicit-occupation:#27691")
+    verify = nbcd._guard_result(_guard_proc(3, _po2024([MGS28])), MGS28)
+    assert nbcd.claim_reservation_verdict({"rc": 0}, verify) == "refused-claim-not-verified"
+
+
+# ---- per-issue reservation lock (CoursIA#27133, MGS-25 vs MGS-28, 21/11 02:08Z) ------
+def test_reservation_lock_is_exclusive_and_released(tmp_path):
+    with nbcd.issue_claim_lock(tmp_path, 27133) as a:
+        assert a["held"] is True
+        t = {"now": 0.0}
+        with nbcd.issue_claim_lock(tmp_path, 27133, wait_s=30, poll_s=10,
+                                   clock=lambda: t["now"],
+                                   sleep=lambda s: t.__setitem__("now", t["now"] + s)) as b:
+            # the sibling waits, then gives up without reserving
+            assert b["held"] is False and b["waited_s"] >= 30
+        with nbcd.issue_claim_lock(tmp_path, 27134) as other:
+            assert other["held"] is True          # another issue is not blocked
+    assert not (tmp_path / "issue-27133.lock").exists()
+    with nbcd.issue_claim_lock(tmp_path, 27133) as again:
+        assert again["held"] is True
+
+
+def test_a_stale_lock_from_a_dead_holder_is_taken_over(tmp_path):
+    import os as _os
+    lock = tmp_path / "issue-27133.lock"
+    lock.write_text("{}", encoding="utf-8")
+    old = lock.stat().st_mtime - 10_000
+    _os.utime(lock, (old, old))
+    with nbcd.issue_claim_lock(tmp_path, 27133, wait_s=60) as got:
+        assert got["held"] is True and got["took_over_stale_s"] > 60
+
+
+def test_a_lock_timeout_defers_the_grain():
+    assert nbcd.claim_verdict({"timed_out": True}).startswith("deferred-by-claim-timeout")
+    assert f"{nbcd.CLAIM_TIMEOUT_VERDICT}:lock".startswith("deferred-by-claim-timeout")
+
+
+# ---- the lane's lot claim is kept, not narrowed (CoursIA#27133, 21/11 03:14Z) ----------
+# The guard keeps ONE active [CLAIMED] per lane and issue and writes exactly --paths:
+# a grain re-posting its own notebook shrank the coordinator's lot claim to one path and
+# re-dated it past po-2024's PR #27691, which the IMPLICIT leg then counted.
+MGS25 = "MyIA.AI.Notebooks/Search/Part4-Metaheuristics/MGS-vs-mealpy/MGS-25-DE-vs-Mealpy-Rust.ipynb"
+LOT_GLOB = "MyIA.AI.Notebooks/Search/Part4-Metaheuristics/MGS-vs-mealpy/*-Rust.ipynb"
+
+
+def _ago(hours):
+    from datetime import datetime, timedelta, timezone
+    return (datetime.now(timezone.utc) - timedelta(hours=hours)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _claim(paths, hours=1.0, **kw):
+    return {"marker": "CLAIMED", "claimed_at": _ago(hours), "url": "u#1",
+            "pr_ref": None, "locked": False, "paths": paths, **kw}
+
+
+def test_guard_result_extracts_our_lane_claim():
+    import json as _json
+    doc = {"issue": 27133, "my_lane": "myia-ai-01:vllm",
+           "active_claims": {"myia-ai-01:vllm": {
+               "marker": "CLAIMED", "claimed_at": "2026-11-21T03:14:07Z",
+               "url": "u#7056461759", "pr_ref": None, "locked": False,
+               "paths": ["./" + MGS25]},
+               "myia-po-2024:CoursIA": {"marker": "CLAIMED", "paths": [SUDOKU05]}}}
+
+    class P:
+        returncode = 0
+        stdout = _json.dumps(doc) + "\nCLEAR"
+        stderr = ""
+    mine = nbcd._guard_result(P(), MGS28)["my_claim"]
+    assert mine["claimed_at"] == "2026-11-21T03:14:07Z"
+    assert mine["paths"] == [MGS25]           # normalised, and only OUR lane's
+
+
+def test_a_fresh_lot_claim_covers_its_notebooks_by_glob():
+    assert nbcd.lane_claim_covers(_claim([LOT_GLOB]), MGS28)
+    assert nbcd.lane_claim_covers(_claim([MGS28]), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([MGS25]), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([]), MGS28)        # issue-wide: no proof
+
+
+def test_a_stale_delivered_or_locked_claim_does_not_cover():
+    assert not nbcd.lane_claim_covers(_claim([LOT_GLOB], hours=30), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([LOT_GLOB], marker="DELIVERED"), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([LOT_GLOB], pr_ref="#27700"), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([LOT_GLOB], locked=True), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([LOT_GLOB], claimed_at="?"), MGS28)
+    assert nbcd.lane_claim_scope(_claim([MGS25], marker="DELIVERED"), MGS28) is None
+
+
+def test_an_amended_lot_claim_covers_and_scopes_like_a_claim():
+    """CoursIA asked (21/11 04:19Z) for the lot to be re-posted as [CLAIMED-AMEND]; the
+    guard reports that marker verbatim. It must cover and keep its paths, or the next
+    grain re-posts its notebook alone and narrows the lot again."""
+    amend = _claim([MGS25, MGS28], marker="CLAIMED-AMEND")
+    assert nbcd.lane_claim_covers(amend, MGS28)
+    assert nbcd.lane_claim_scope(amend, SUDOKU05) == [MGS25, MGS28, SUDOKU05]
+    assert nbcd.lane_claim_covers(_claim([MGS28], marker="claimed-amend"), MGS28)
+    assert not nbcd.lane_claim_covers(_claim([MGS28], marker="RELEASED"), MGS28)
+
+
+def test_union_scope_keeps_the_lane_paths_and_adds_ours_once():
+    assert nbcd.lane_claim_scope(_claim([MGS25]), MGS28) == [MGS25, MGS28]
+    assert nbcd.lane_claim_scope(_claim([MGS25, MGS28]), MGS28) == [MGS25, MGS28]
+    assert nbcd.lane_claim_scope(_claim([]), MGS28) is None
+    assert nbcd.lane_claim_scope(None, MGS28) is None
+
+
+def test_covered_notebook_is_admitted_without_any_write(monkeypatch, tmp_path):
+    reads = {"n": 0}
+
+    def check(*a):
+        reads["n"] += 1
+        return {"rc": 0, "ok": True, "my_claim": _claim([LOT_GLOB])}
+    monkeypatch.setattr(nbcd, "check_claim", check)
+    monkeypatch.setattr(nbcd, "post_claim", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("a covered notebook must not re-post (it re-dates the claim)")))
+    res = nbcd.reserve_claim(tmp_path, 27133, "myia-ai-01:vllm", "w", MGS28)
+    assert res["verdict"] is None and res["posted"] is None
+    assert res["covered_by"]["paths"] == [LOT_GLOB]
+    assert reads["n"] == 1
+
+
+def test_covered_but_implicit_disjoint_still_defers(monkeypatch, tmp_path):
+    """Cover does not bypass the pre-check verdict: rc=3 is read first."""
+    pre = nbcd._guard_result(_guard_proc(3, _po2024([SUDOKU05])), MGS28)
+    pre["my_claim"] = _claim([LOT_GLOB])
+    monkeypatch.setattr(nbcd, "check_claim", lambda *a: pre)
+    res = nbcd.reserve_claim(tmp_path, 27133, "myia-ai-01:vllm", "w", MGS28)
+    assert res["verdict"] == "deferred-by-claim-implicit-occupation:#27691"
+
+
+def test_uncovered_notebook_writes_the_union_of_the_lane_paths(monkeypatch, tmp_path):
+    seen = _post_claim_argv_seen(monkeypatch, tmp_path, 0, "posted")
+    monkeypatch.setattr(nbcd, "check_claim",
+                        lambda *a: {"rc": 0, "ok": True, "my_claim": _claim([MGS25])})
+    res = nbcd.reserve_claim(tmp_path, 27133, "myia-ai-01:vllm", "w", MGS28)
+    argv = seen["argv"]
+    i, j = argv.index("--paths"), argv.index("--claim")
+    assert argv[i + 1:j] == [MGS25, MGS28]
+    assert res["scope"] == [MGS25, MGS28] and res["verdict"] is None
+
+
+def test_refused_union_falls_back_to_the_notebook_alone(monkeypatch, tmp_path):
+    writes = []
+
+    def post(repo, n, lane, intention, notebook, from_json=None, scope=None):
+        writes.append(scope)
+        return {"rc": 1, "out": "BLOCKED: MGS-25 held"} if scope else {"rc": 0}
+    monkeypatch.setattr(nbcd, "post_claim", post)
+    monkeypatch.setattr(nbcd, "check_claim",
+                        lambda *a: {"rc": 0, "ok": True, "my_claim": _claim([MGS25])})
+    res = nbcd.reserve_claim(tmp_path, 27133, "myia-ai-01:vllm", "w", MGS28)
+    assert writes == [[MGS25, MGS28], None]
+    assert res["posted"]["union_refused"]["rc"] == 1
+    assert res["verdict"] is None
+
+
+def test_no_live_lane_claim_keeps_the_narrow_write(monkeypatch, tmp_path):
+    seen = _post_claim_argv_seen(monkeypatch, tmp_path, 0, "posted")
+    monkeypatch.setattr(nbcd, "check_claim", lambda *a: {
+        "rc": 0, "ok": True, "my_claim": _claim([MGS25], pr_ref="#27700")})
+    res = nbcd.reserve_claim(tmp_path, 27133, "myia-ai-01:vllm", "w", MGS28)
+    argv = seen["argv"]
+    assert argv[argv.index("--paths") + 1:argv.index("--claim")] == [MGS28]
+    assert "scope" not in res and res["verdict"] is None

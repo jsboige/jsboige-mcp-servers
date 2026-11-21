@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_verify.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -192,3 +192,54 @@ def test_prompt_scopes_the_verdict_to_the_deliverable():
     assert "ne rejette jamais pour ce motif" in p
     assert "déjà présent à l'identique dans la SOURCE" in p
     assert "PAR LE LIVRABLE" in p
+
+
+# ------------------------------------------------- call errors reach the trace (21/11)
+
+
+def _run_main(monkeypatch, tmp_path, envs):
+    """Run v.main() with the GitHub fetch and the sk-agent call faked; `envs` are the
+    successive envelopes call_verifier returns. Returns (rc, trace dict)."""
+    src = _nb(tmp_path, [_code([_stream("a\n")])], "src.ipynb")
+    built = _nb(tmp_path, [_code([_stream("b\n")])], "built.ipynb")
+    monkeypatch.setattr(v.nbcd, "app_token", lambda _p: None)
+    monkeypatch.setattr(v.nbcd, "fetch_issue",
+                        lambda *a, **k: {"title": "t", "body": "b", "comments": ""})
+    calls = iter(envs)
+
+    async def fake_call(args, prompt):
+        return next(calls), 1.0
+
+    monkeypatch.setattr(v, "call_verifier", fake_call)
+    out = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["nb_coder_verify.py", "--issue", "7", "--source-nb",
+                                      str(src), "--built-nb", str(built), "--out-dir",
+                                      str(out)])
+    rc = v.main()
+    return rc, json.loads((out / "verify-7.json").read_text(encoding="utf-8"))
+
+
+def test_call_error_names_the_verdict_and_is_kept(monkeypatch, tmp_path):
+    """21/11 MGS-25: the critic call died at 610 s with no response and the trace said
+    only `error:unparsable` -- sk-agent's error text was dropped. A failed call must
+    name itself in the verdict and keep its error, never pass for an unreadable answer."""
+    err = "call_agent: APITimeoutError('Request timed out.')"
+    rc, t = _run_main(monkeypatch, tmp_path, [{"error": err}])
+    assert rc == 2
+    assert t["verdict"].startswith("error:call-failed: ") and "APITimeoutError" in t["verdict"]
+    assert t["call_error"] == err
+    assert "verify_retry" not in t, "an error envelope is not the cloud-empty case"
+
+
+def test_cloud_empty_keeps_unparsable_after_its_retry(monkeypatch, tmp_path):
+    """A 200 with zero content and no error is still the 18/11 cloud-empty case: one
+    retry, then error:unparsable, with no invented call_error."""
+    rc, t = _run_main(monkeypatch, tmp_path, [{"response": ""}, {"response": ""}])
+    assert rc == 2 and t["verdict"] == "error:unparsable"
+    assert t["verify_retry"] == "empty-response" and "call_error" not in t
+
+
+def test_answer_without_verdict_stays_unparsable(monkeypatch, tmp_path):
+    """Text came back but carries no verdict: that is unparsable, not a call failure."""
+    rc, t = _run_main(monkeypatch, tmp_path, [{"response": "no json here"}])
+    assert rc == 2 and t["verdict"] == "error:unparsable" and "call_error" not in t

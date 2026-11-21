@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_adopt.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -215,6 +215,7 @@ def test_spawn_driver_records_the_offset_before_appending(tmp_path, monkeypatch)
 
     monkeypatch.setattr(S.subprocess, "Popen", Popen)
     sched = _sched(tmp_path, {"issue": 27133, "notebook": NB, "status": "pending"}, Probe({}))
+    sched.args.detach_drivers = False          # the attached path; detached: test_nb_coder_detach
     proc = S.Scheduler._spawn_driver(sched, ["python", "--out-dir", str(out)])
     assert proc._nb_log_offset == len(b"previous attempt\n")
 

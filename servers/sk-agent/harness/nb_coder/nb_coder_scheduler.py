@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_scheduler.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -66,6 +66,8 @@ ITEM_FIELDS = {
                                # inherits; required with from_spec, optional with source_nb
     "max_stage": int,
     "claim": bool,
+    "claim_late": bool,        # --claim-late: no [CLAIMED] before an openable PR (CoursIA
+                               # auto-pick rule 21/11); needs claim and max_stage 5
     "fresh_worktree": bool,
     "agent": str,
     "intention": str,
@@ -89,6 +91,41 @@ ITEM_FIELDS = {
 }
 # Verdicts the driver itself treats as success (its own exit-0 list, kept in
 # sync so a rc!=0 wrapper around a successful verdict is still classified done).
+# Verdicts a driver emits when the grain itself did nothing wrong and the same launch
+# should simply happen later: the capacity gate refused, or the claim guard never
+# answered (deferred-by-claim-timeout, 21/11: it used to surface as `crashed:`).
+# deferred-by-claim-implicit-occupation (21/11): another lane's open PR on the same LOT
+# issue, disjoint from this notebook, made the guard answer IMPLICIT; it clears when
+# that PR merges.
+# deferred-by-github-rate-limit (21/11): the shared per-user REST bucket ran dry
+# (0/5000) and CoursIA#27134's 2.3c died at its issue fetch, 30 s after launch, as a
+# `crashed:` run failure that consumed its retry and blocked the ramp. Nothing in the
+# grain was wrong; it waits until the bucket refills (`:reset=<epoch>`, read by the driver
+# from the free rate_limit endpoint) and launches again.
+DEFERRED_VERDICT_PREFIXES = (
+    "deferred-by-capacity-gate",
+    "deferred-by-claim-timeout",
+    "deferred-by-claim-implicit-occupation",
+    "deferred-by-github-rate-limit",
+)
+# A reset further than this is not believed: the core bucket refills every hour.
+GITHUB_RESET_MAX_S = 3700.0
+GITHUB_RESET_MARGIN_S = 30.0
+
+
+def github_reset_wait(verdict: str, now: float) -> float | None:
+    """Seconds until the GitHub bucket named by a rate-limit deferral refills, or None."""
+    if not verdict.startswith("deferred-by-github-rate-limit"):
+        return None
+    for part in verdict.split(":")[1:]:
+        if part.startswith("reset="):
+            try:
+                reset = float(part[len("reset="):])
+            except ValueError:
+                return None
+            return min(max(reset - now, 0.0) + GITHUB_RESET_MARGIN_S, GITHUB_RESET_MAX_S)
+    return None
+
 DONE_VERDICT_SUFFIXES = (
     "built-executed-ok",
     "gates-ok",
@@ -114,13 +151,37 @@ CONTENT_FAILURE_PREFIXES = (
     "stage1-unaddressable-creation-plan",
     "refused-spec-plan-unusable",
     "stage2-short-segment",
+    # --claim-late: the verifier APPROVED, then the late reservation was refused (another
+    # lane took the notebook while we built it). The engine served the whole run, so it
+    # proves a served run and never blocks the ramp; the grain itself is not done.
+    "late-claim-refused",
+)
+
+
+# Refusals at admission: the driver's claim step declined the grain before any model
+# call (the notebook is held by another lane, our claim is not scoped or not verified,
+# an IMPLICIT occupation, the guard or the post failed). They cost the engine nothing
+# and say nothing about its capacity, so they neither prove a served run nor block the
+# promotion. Measured 21/11 04:50Z: step 0 of the live conveyor stood at "failures 5>0",
+# and all five were refused-claim-* (MGS-25 not-verified, MGS-28/MGS-29/Search-11
+# check-not-scoped, Sudoku-05 held by po-2024). Sudoku-05 would block for as long as
+# po-2024 holds it.
+ADMISSION_FAILURE_PREFIXES = (
+    "refused-claim",
 )
 
 
 def failure_class(verdict: str | None) -> str:
-    """'content' for a judged notebook that did not pass, 'run' for everything else."""
+    """'content' for a judged notebook that did not pass, 'admission' for a grain
+    refused before any model call, 'run' for everything else."""
     v = (verdict or "").strip()
+    if any(v.startswith(p) for p in ADMISSION_FAILURE_PREFIXES):
+        return "admission"
     return "content" if any(v.startswith(p) for p in CONTENT_FAILURE_PREFIXES) else "run"
+
+
+FAILURE_COUNTERS = {"content": "content_failed", "admission": "admission_failed",
+                    "run": "failed"}
 
 
 
@@ -165,9 +226,10 @@ ADOPTED_RC = -1
 
 
 class AdoptedDriver:
-    """A driver launched by a previous scheduler instance and still running.
+    """A driver that is not our child: launched DETACHED by this instance (see
+    _spawn_detached), or by a previous scheduler instance and still running.
 
-    It is not our child, so there is no Popen to poll. Its identity is the pid plus
+    There is no Popen to poll. Its identity is the pid plus
     the process create time read at adoption; poll() reports it finished as soon as
     that pair no longer names a live process. Its output is the driver.log the
     previous instance redirected it to, read from the offset recorded at launch.
@@ -186,6 +248,33 @@ class AdoptedDriver:
         if ident is not None and abs(ident[0] - self._create_time) < 1.0:
             return None
         return ADOPTED_RC
+
+
+class LostLaunch:
+    """A detached launch whose launcher never reported a pid (it timed out).
+
+    The driver may or may not have started, so it is NOT relaunched: a duplicate on
+    the same grain would collide on worktree, claim and PR. It reaps at once as a run
+    failure, read from the log offset of this attempt, so the ramp stops and the
+    operator sees it.
+    """
+
+    pid = None
+
+    def __init__(self, log: str, log_offset: int):
+        self._nb_driver_log = log
+        self._nb_log_offset = log_offset
+
+    def poll(self):
+        return ADOPTED_RC
+
+
+DETACH_LAUNCHER = Path(__file__).resolve().with_name("nb_coder_detach.py")
+
+
+def psutil_available() -> bool:
+    import importlib.util
+    return importlib.util.find_spec("psutil") is not None
 
 
 def grain_key(item: dict) -> str:
@@ -252,6 +341,15 @@ def load_queue(path: Path) -> tuple[list[dict], str]:
                              "(from_spec or source_nb)")
         if "meta_from" in item:
             _check_repo_rel_nb(lineno, "meta_from", item["meta_from"])
+        if item.get("claim_late"):
+            # The driver's own refusals, when the line itself contradicts them (a
+            # contradiction through the scheduler defaults is refused by the driver).
+            if item.get("claim") is False:
+                raise QueueError(f"queue line {lineno}: claim_late defers claim: "
+                                 "claim false contradicts it")
+            if "max_stage" in item and item["max_stage"] < 5:
+                raise QueueError(f"queue line {lineno}: claim_late reserves before stage 5: "
+                                 "max_stage must be 5")
         key = grain_key(item)
         if key in seen:
             raise QueueError(f"queue line {lineno}: duplicate grain {key}")
@@ -280,6 +378,7 @@ def new_ramp(steps: list[int], now: float, fixed: bool = False) -> dict:
         "done": 0,
         "failed": 0,
         "content_failed": 0,
+        "admission_failed": 0,
         "deferred": 0,
         "first_green_ts": None,
         "dirty": False,          # red or unknown seen since the step started (evidence)
@@ -294,7 +393,7 @@ def new_ramp(steps: list[int], now: float, fixed: bool = False) -> dict:
 def _step_report(ramp: dict, now: float) -> dict:
     return {k: ramp.get(k) for k in (
         "steps", "step_index", "max_active", "step_started", "done", "failed",
-        "content_failed",
+        "content_failed", "admission_failed",
         "deferred", "dirty", "samples", "green_samples", "running_max",
         "waiting_max", "preempt_max")} | {"step_ended": now,
                                           "duration_s": round(now - ramp["step_started"], 1)}
@@ -303,17 +402,29 @@ def _step_report(ramp: dict, now: float) -> dict:
 def _reset_step_counters(ramp: dict, now: float) -> None:
     """Keep the ramp position, reset the promotion evidence."""
     ramp.update({"step_started": now, "done": 0, "failed": 0, "content_failed": 0,
-                 "deferred": 0,
+                 "admission_failed": 0, "deferred": 0,
                  "first_green_ts": None, "dirty": False, "samples": 0,
                  "green_samples": 0, "running_max": 0.0, "waiting_max": 0.0,
                  "preempt_max": 0.0})
 
 
-class Scheduler:
-    """Pure orchestration. spawn/gate/sleep/clock are injectable for offline tests."""
+def git_run(argv: list[str], timeout: float = 300) -> tuple[int, str]:
+    """(returncode, stdout+stderr) of a git command; -1 when it could not run."""
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout)
+    except Exception as exc:
+        return -1, str(exc)
+    return p.returncode, (p.stdout or "") + (p.stderr or "")
 
-    def __init__(self, args, spawn=None, gate=None, sleep=None, clock=None, probe=None):
+
+class Scheduler:
+    """Pure orchestration. spawn/gate/sleep/clock/git are injectable for offline tests."""
+
+    def __init__(self, args, spawn=None, gate=None, sleep=None, clock=None, probe=None,
+                 git=None):
         self.args = args
+        self.git = git or git_run
         self.process_probe = probe or process_identity
         self.state_dir = Path(args.state_dir)
         self.state_path = self.state_dir / "state.json"
@@ -457,9 +568,13 @@ class Scheduler:
             create_time, cmdline = ident
             if "nb_coder_driver" not in cmdline:
                 return "pid reused by another program"
-            if started is None or not (started - ADOPT_START_SLACK_BEFORE_S
-                                       <= create_time
-                                       <= started + ADOPT_START_SLACK_AFTER_S):
+            recorded = g.get("driver_create_time")
+            if recorded:
+                if abs(create_time - recorded) >= 1.0:
+                    return "pid reused: create time differs from the one recorded at launch"
+            elif started is None or not (started - ADOPT_START_SLACK_BEFORE_S
+                                         <= create_time
+                                         <= started + ADOPT_START_SLACK_AFTER_S):
                 return "pid reused by a process started outside the launch window"
         proc = AdoptedDriver(pid, create_time, log, g.get("driver_log_offset"),
                              self.process_probe)
@@ -475,11 +590,20 @@ class Scheduler:
     def _reconcile_previous_runs(self) -> None:
         """A scheduler that died left 'running' entries it can no longer wait on.
 
-        A driver that is still the process we launched (same pid, a create time inside
-        the launch window, a driver command line) is ADOPTED: it is watched by pid and
+        A driver that is still the process we launched (same pid, the create time
+        recorded at launch or else one inside the launch window, a driver command
+        line) is ADOPTED: it is watched by pid and
         its verdict read from its driver.log, so the scheduler can be restarted on new
-        code without waiting for the grains in flight. Measured 20/11: a driver
-        survives the death of the scheduler that launched it.
+        code without waiting for the grains in flight.
+
+        Surviving the scheduler is not automatic. On 20/11 a driver outlived the
+        scheduler that launched it, but on 21/11 00:45Z stopping the scheduler's
+        background task killed both drivers in flight (MGS-25, MGS-28): the stop walks
+        the process tree. Probe the same night: a direct child died with plain flags,
+        CREATE_NEW_PROCESS_GROUP and CREATE_BREAKAWAY_FROM_JOB alike; only a child of
+        an intermediate process that had already exited survived. Hence
+        --detach-drivers (default on): every driver is started through that
+        intermediate, nb_coder_detach.py.
 
         Anything else is marked orphaned, never silently relaunched: a duplicate
         driver on the same grain would collide on worktree, claim and PR. Recovery
@@ -537,6 +661,10 @@ class Scheduler:
             # relaunch that died without a verdict inherit the previous attempt's
             # last JSON line (a deferral read as a deferral again, for instance).
             offset = log.stat().st_size if log.is_file() else 0
+            if getattr(self.args, "detach_drivers", False) and psutil_available():
+                detached = self._spawn_detached(cmd, log, offset)
+                if detached is not None:
+                    return detached
             fh = open(log, "ab")
             try:
                 proc = subprocess.Popen(cmd, stdout=fh, stderr=subprocess.STDOUT)
@@ -547,6 +675,42 @@ class Scheduler:
             return proc
         return subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                 text=True, encoding="utf-8", errors="replace")
+
+    def _spawn_detached(self, cmd: list[str], log: Path, offset: int):
+        """Start the driver outside our process tree; None = not started, fall back.
+
+        The launcher starts the driver and exits, so the driver's parent is gone and
+        a stop of the scheduler's task no longer reaches it. It is then tracked like
+        an adopted driver: by pid and create time, its verdict read from driver.log.
+        Without psutil it could not be tracked at all, so the caller only comes here
+        when psutil imports.
+        """
+        try:
+            p = subprocess.run([sys.executable, str(DETACH_LAUNCHER), str(log), "--", *cmd],
+                               capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=60)
+        except subprocess.TimeoutExpired:
+            self._event("detach-timeout", log=str(log),
+                        note="launcher gave no pid in 60 s; the driver may be running "
+                             "untracked, so the grain is NOT relaunched")
+            return LostLaunch(str(log), offset)
+        lines = (p.stdout or "").strip().splitlines()
+        try:
+            reply = json.loads(lines[-1]) if lines else {}
+        except Exception:
+            reply = {}
+        pid = reply.get("pid") if isinstance(reply, dict) else None
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            # Every launcher error path is a Popen that raised: nothing was started,
+            # so the attached launch the caller falls back to is not a duplicate.
+            self._event("detach-failed", rc=p.returncode,
+                        error=(reply.get("error") if isinstance(reply, dict) else None)
+                        or (p.stdout or p.stderr or "")[:300])
+            return None
+        ident = self.process_probe(pid)
+        # None: the driver already exited (an early crash); it reaps on the next tick.
+        create_time = ident[0] if ident is not None else 0.0
+        return AdoptedDriver(pid, create_time, str(log), offset, self.process_probe)
 
     def driver_command(self, item: dict) -> list[str]:
         a = self.args
@@ -595,6 +759,8 @@ class Scheduler:
             cmd.append("--from-spec")
         if item.get("claim", a.claim):
             cmd.append("--claim")
+            if item.get("claim_late", getattr(a, "claim_late", False)):
+                cmd.append("--claim-late")
         if item.get("fresh_worktree", a.fresh_worktree):
             cmd.append("--fresh-worktree")
         if item.get("allow_foreign_origin", False):
@@ -648,8 +814,9 @@ class Scheduler:
         carries no `ramp_failed_ts` and is not counted.
 
         cls splits them by failure_class: "run" failures block the promotion, "content"
-        ones count as served runs. The class is read from the grain's latest verdict, so
-        a failure recorded before the split classifies the same way.
+        ones count as served runs, "admission" ones (refused before any model call) do
+        neither. The class is read from the grain's latest verdict, so a failure
+        recorded before the split classifies the same way.
         """
         since = ramp.get("step_started") or 0
         return sum(1 for g in self.state["grains"].values()
@@ -670,6 +837,7 @@ class Scheduler:
         if served < self.args.ramp_min_done:
             reasons.append(f"served {served}/{self.args.ramp_min_done} "
                            f"(done {ramp['done']} + content-failed {ramp['content_failed']})")
+        ramp["admission_failed"] = self._step_failures(ramp, "admission")
         ramp["failed"] = self._step_failures(ramp, "run")
         if ramp["failed"] > self.args.ramp_max_failures:
             reasons.append(f"failures {ramp['failed']}>{self.args.ramp_max_failures}")
@@ -730,11 +898,14 @@ class Scheduler:
             g.update({"finished": utcnow(), "returncode": rc,
                       "last_verdict": verdict, "elapsed_s": elapsed})
             ramp = self.state["ramp"]
-            if verdict.startswith("deferred-by-capacity-gate"):
+            if verdict.startswith(DEFERRED_VERDICT_PREFIXES):
                 g["status"] = "deferred"
                 # attempts counts LAUNCHES; the backoff grows with each refusal.
                 wait = min(self.args.backoff_s * max(1, g["attempts"]),
                            self.args.backoff_max_s)
+                reset_wait = github_reset_wait(verdict, self.clock())
+                if reset_wait is not None:
+                    wait = max(wait, reset_wait)
                 g["not_before"] = self.clock() + wait
                 ramp["deferred"] += 1
                 self._event("deferred", key=key, rc=rc, verdict=verdict,
@@ -748,11 +919,58 @@ class Scheduler:
                 g["status"] = "failed"
                 g["ramp_failed_ts"] = now
                 cls = failure_class(verdict)
-                counter = "content_failed" if cls == "content" else "failed"
+                counter = FAILURE_COUNTERS[cls]
                 ramp[counter] = ramp.get(counter, 0) + 1
                 self._event("failed", key=key, rc=rc, verdict=verdict,
                             elapsed_s=elapsed, failure_class=cls)
+            if g["status"] in ("done", "failed"):
+                self._release_worktree(key, entry.get("item"))
             del self.active[key]
+
+    def _release_worktree(self, key: str, item: dict | None) -> None:
+        """Remove a terminal grain's worktree once nothing in it is unique.
+
+        Each grain checks out the whole target repo (CoursIA: 1.6 GB, 17,700 files),
+        and nothing removed it: on 20-21/11 the conveyor's worktrees grew D: by
+        ~5 GB/h, and the disk had already filled once. Keeping the tree buys nothing.
+        The run's artifacts live in its out-dir. A relaunch reuses a tree only when
+        its HEAD is exactly origin/main, which no longer holds once main has moved,
+        so prepare_worktree rebuilds it anyway.
+
+        Removed only when the tree is clean AND its HEAD is on a remote-tracking ref
+        (a pushed PR branch, or the origin/main it was cut from). Dirty files and
+        unpushed commits stay, and a `worktree-kept` event names the reason.
+        `git worktree remove` is never forced: git also refuses locked trees and
+        untracked files on its own."""
+        if getattr(self.args, "keep_worktrees", False) or not item:
+            return
+        try:
+            wt = Path(self.args.worktree_root) / f"wt-{grain_slug(item)}"
+        except Exception:
+            return
+        if not wt.exists():
+            return
+
+        def kept(reason: str, detail: str = "") -> None:
+            self._event("worktree-kept", key=key, worktree=str(wt), reason=reason,
+                        detail=detail.strip()[:300])
+
+        rc, out = self.git(["git", "-C", str(wt), "status", "--porcelain"])
+        if rc != 0:
+            return kept("status-failed", out)
+        if out.strip():
+            return kept("dirty", out)
+        rc, out = self.git(["git", "-C", str(wt), "for-each-ref", "--contains", "HEAD",
+                            "--format=%(refname)", "refs/remotes"])
+        if rc != 0:
+            return kept("ref-check-failed", out)
+        if not out.strip():
+            return kept("head-on-no-remote-ref",
+                        "HEAD is on no remote-tracking ref: an unpushed commit?")
+        rc, out = self.git(["git", "-C", str(self.args.repo), "worktree", "remove", str(wt)])
+        if rc != 0:
+            return kept("remove-failed", out)
+        self._event("worktree-released", key=key, worktree=str(wt))
 
     def _eligible(self, now: float) -> list[str]:
         out = []
@@ -774,7 +992,11 @@ class Scheduler:
                   "not_before": None,
                   # what a restarted scheduler needs to adopt this driver
                   "driver_log": getattr(proc, "_nb_driver_log", None),
-                  "driver_log_offset": getattr(proc, "_nb_log_offset", None)})
+                  "driver_log_offset": getattr(proc, "_nb_log_offset", None),
+                  # detached drivers only: their exact create time, a stronger
+                  # identity than the launch window when a restarted scheduler adopts
+                  "driver_create_time": getattr(proc, "_create_time", None) or None,
+                  "detached": isinstance(proc, (AdoptedDriver, LostLaunch))})
         g.pop("adopted", None)
         self.active[key] = {"proc": proc, "item": item,
                             "pid": getattr(proc, "pid", None), "started": now}
@@ -832,10 +1054,15 @@ class Scheduler:
                 floor = max(len(self.active), int(gate.get("running") or 0))
                 budget = self.state["ramp"]["max_active"] - floor
                 gap = float(getattr(self.args, "launch_gap_s", 0) or 0)
+                # Same-issue grains are NOT serialized here: only their claim
+                # reservation races, and the driver serializes that window itself
+                # (issue_claim_lock). Holding a whole lot to one grain in flight would
+                # starve the conveyor -- its remaining lots carry 3-9 notebooks each.
                 for key in pending:
                     if budget <= 0:
                         held = held or "capacity-target"
                         break
+                    item = self.items_by_key[key]
                     # #506 palier 1 — launch in canon, not in cohorts. Every launch
                     # in one tick makes a homogeneous cohort whose conversations all
                     # grow together (the funnel). With a gap, at most one grain starts
@@ -848,7 +1075,6 @@ class Scheduler:
                             held = "launch-gap"
                             held_extra["next_launch_in_s"] = round(wait, 1)
                             break
-                    item = self.items_by_key[key]
                     cmd = self.driver_command(item)
                     self.state["last_launch_ts"] = self.clock()
                     if self.args.dry_run:
@@ -943,6 +1169,10 @@ def parse_args(argv=None):
     ap.add_argument("--lane", default=os.environ.get("NBCODER_LANE", ""),
                     help="claim lane id, e.g. myia-ai-01:nb-coder")
     ap.add_argument("--claim", action="store_true")
+    ap.add_argument("--claim-late", action="store_true",
+                    help="default claim_late for every grain: the driver posts [CLAIMED] "
+                         "only once the verifier approved, right before stage 5 (CoursIA "
+                         "auto-pick rule 21/11). Needs --claim and --max-stage 5")
     ap.add_argument("--agent", default="notebook-coder")
     ap.add_argument("--conventions", default="")
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe planifiee)")
@@ -1000,6 +1230,16 @@ def parse_args(argv=None):
     ap.add_argument("--worktree-root", default=None,
                     help="driver worktrees (default <state-dir>/worktrees)")
     ap.add_argument("--fresh-worktree", action="store_true")
+    ap.add_argument("--keep-worktrees", action="store_true",
+                    help="keep a grain's worktree after it ends. By default a clean tree "
+                         "whose HEAD is on a remote ref is removed (a checkout of the "
+                         "target repo per grain, 1.6 GB for CoursIA)")
+    ap.add_argument("--detach-drivers", action=argparse.BooleanOptionalAction, default=True,
+                    help="start each driver through nb_coder_detach.py so that stopping "
+                         "the scheduler (TaskStop walks the process tree) does not kill "
+                         "the grains in flight; a restarted scheduler adopts them. Needs "
+                         "psutil, else the attached launch is used. To stop a detached "
+                         "driver, kill the pid recorded in state.json")
     ap.add_argument("--stop-file", default=None,
                     help="freeze new launches when this file exists (default <state-dir>/STOP)")
     ap.add_argument("--watch", action="store_true",
@@ -1023,6 +1263,8 @@ def parse_args(argv=None):
         ap.error("--launch-gap-s must be >= 0")
     if args.claim and not args.lane:
         ap.error("--claim requires --lane or NBCODER_LANE (same refusal as the driver, F1)")
+    if args.claim_late and (not args.claim or args.max_stage < 5):
+        ap.error("--claim-late needs --claim and --max-stage 5 (same refusal as the driver)")
     if not args.out_root:
         args.out_root = str(Path(args.state_dir) / "runs")
     if not args.worktree_root:
