@@ -447,6 +447,17 @@ class ModelSpec(_StrictModel):
             "(#4740), e.g. {\"x-claudish-lane\": \"nb-coder\"}. Absent = none."
         ),
     )
+    # #4849: per-model OpenAI client retry count. Absent = legacy 1.
+    max_retries: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "OpenAI client retry count for this model (#4849). Absent = 1 "
+            "(legacy). 0 disables the automatic replay — vLLM abandons the "
+            "decode at client disconnect, so replaying an expired request "
+            "restarts from zero and only doubles the wall time."
+        ),
+    )
 
     @field_validator("base_url")
     @classmethod
