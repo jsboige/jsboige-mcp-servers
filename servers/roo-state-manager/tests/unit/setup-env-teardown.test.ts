@@ -17,6 +17,15 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SETUP_ENV = path.join(__dirname, '..', 'setup-env.ts');
 
+// The two child-process proofs run setup-env.ts through native type stripping:
+// --experimental-strip-types exists from Node 22.6 only. On an older runtime
+// (the parent repo CI still runs this suite on Node 20) the child dies on the
+// unknown flag (exit 9) before importing anything — that is not a teardown
+// failure, the proof just cannot run there. Skip them; the sweep test below
+// spawns no child and runs on every runtime.
+const [NODE_MAJOR, NODE_MINOR] = process.versions.node.split('.').map(Number);
+const STRIP_TYPES_SUPPORTED = NODE_MAJOR > 22 || (NODE_MAJOR === 22 && NODE_MINOR >= 6);
+
 const CHILD_SCRIPT = `
 const { pathToFileURL } = await import('node:url');
 const fs = await import('node:fs');
@@ -28,7 +37,7 @@ console.log(JSON.stringify({ dirs, existed }));
 `.trim();
 
 describe('Maintenance#358 — setup-env per-worker temp dirs are torn down at process exit', () => {
-  it('a child importing setup-env.ts leaves no rsm-test-* dir behind', () => {
+  it.skipIf(!STRIP_TYPES_SUPPORTED)('a child importing setup-env.ts leaves no rsm-test-* dir behind', () => {
     // The parent (this vitest worker) already has the three env vars set by
     // its own setup-env run — clear them for the child so it creates its own.
     const env = { ...process.env } as NodeJS.ProcessEnv;
@@ -62,7 +71,7 @@ describe('Maintenance#358 — setup-env per-worker temp dirs are torn down at pr
     dirs.forEach((d) => expect(fs.existsSync(d as string)).toBe(false));
   }, 90_000);
 
-  it('a hard-killed worker\'s dirs are swept by the main-process reaper (Windows vector)', async () => {
+  it.skipIf(!STRIP_TYPES_SUPPORTED)('a hard-killed worker\'s dirs are swept by the main-process reaper (Windows vector)', async () => {
     // The forks pool with isolate:true terminates workers by kill: on POSIX a
     // signal the in-process handlers catch; on Windows TerminateProcess — no
     // handler can EVER run there. The globalSetup teardown sweep is the
