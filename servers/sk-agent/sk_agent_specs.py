@@ -162,6 +162,11 @@ class SamplingSpec(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     top_p: float | None = Field(default=None, ge=0.0, le=1.0)
     max_tokens: int | None = Field(default=None, ge=1, le=32_768)
+    # #4853: per-call penalties — presence_penalty is an OpenAI param
+    # (bounds mirror the server-wide sampling schema), repetition_penalty is
+    # a vLLM extra (strictly positive, vLLM's own constraint).
+    presence_penalty: float | None = Field(default=None, ge=-2.0, le=2.0)
+    repetition_penalty: float | None = Field(default=None, gt=0.0)
 
     def overrides(self) -> dict[str, Any]:
         return self.model_dump(exclude_none=True)

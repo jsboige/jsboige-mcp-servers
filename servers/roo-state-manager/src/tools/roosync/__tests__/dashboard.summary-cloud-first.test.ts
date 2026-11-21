@@ -54,7 +54,7 @@ const testTmpBase = path.join(os.tmpdir(), 'dashboard-summary-cloud-first-');
 // A summary in the prompt's imposed format (validateSummaryCompleteness rejects
 // a missing section); the status leg accepts it too (no model-failure shape).
 const formatted = (label: string): string =>
-  `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none`;
+  `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none\n\n### États transverses\n- aucun`;
 
 const primaryAnswers = (): void => {
   mockGetPrimaryClient.mockReturnValue({ chat: { completions: { create: mockPrimaryCreate } } });

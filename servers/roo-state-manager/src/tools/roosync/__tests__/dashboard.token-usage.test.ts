@@ -60,7 +60,7 @@ const testTmpBase = path.join(os.tmpdir(), 'dashboard-token-usage-');
 // the summary completeness guard and the status retention guard (same trick as
 // dashboard.fallback-cloud.test.ts — one mock answers both legs).
 const formatted = (label: string): string =>
-  `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none`;
+  `## Résumé\n\n### Thèmes principaux\n- ${label}\n\n### Actions et résultats\n- [DONE] test\n\n### Décisions et métriques\n- none\n\n### États transverses\n- aucun`;
 
 // The summary leg's user prompt, as built by generateLLMSummary — the discriminator
 // that lets one mockImplementation answer each leg with its OWN usage numbers.
