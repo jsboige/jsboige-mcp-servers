@@ -1163,7 +1163,15 @@ class SKAgentManager:
                         write=request_budget_s,
                         pool=request_budget_s,
                     ),
-                    max_retries=1,
+                    # vllm#506/#517: openai replays a timed-out request on
+                    # its own — on a long decode that doubles the lost work.
+                    # Per-model max_retries lets an entry disable the replay
+                    # (None keeps the exact legacy client).
+                    max_retries=(
+                        model_cfg.max_retries
+                        if model_cfg.max_retries is not None
+                        else 1
+                    ),
                     # #4740: declared per-model headers (claudish lane/seat
                     # attribution); None keeps the legacy client.
                     default_headers=model_cfg.default_headers or None,

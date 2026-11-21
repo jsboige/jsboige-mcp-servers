@@ -356,6 +356,13 @@ class ModelConfig:
     # #4085: None → DEFAULT_MODEL_CONNECT_TIMEOUT_S. Bounds only the TCP/TLS
     # connect phase; read/write/pool keep the request budget above.
     connect_timeout_s: float | None = None
+    # Per-model client retry budget: None → legacy max_retries=1. openai
+    # replays a timed-out request on its own (APITimeoutError is an
+    # APIConnectionError subclass); on a long nb_coder decode this doubles
+    # the lost work (vllm#506 / vllm#517). 0 disables the replay. Wall time
+    # stays bounded by the call_agent ceiling — a pathological retry may
+    # still be cut mid-flight (#3797/#1587).
+    max_retries: int | None = None
     max_tokens: int | None = None  # None → global sampling.max_tokens
     extra_body: dict[str, Any] = field(default_factory=dict)  # vLLM passthrough
     # #4712: per-model capacity gate (optional; absent = no gate, exact
@@ -423,6 +430,7 @@ class ModelConfig:
             system_prompt=data.get("system_prompt", ""),
             request_timeout_s=data.get("request_timeout_s"),
             connect_timeout_s=data.get("connect_timeout_s"),
+            max_retries=data.get("max_retries"),
             max_tokens=data.get("max_tokens"),
             extra_body=dict(data.get("extra_body") or {}),
             capacity_gate=gate,
@@ -451,6 +459,8 @@ class ModelConfig:
             d["request_timeout_s"] = self.request_timeout_s
         if self.connect_timeout_s is not None:
             d["connect_timeout_s"] = self.connect_timeout_s
+        if self.max_retries is not None:
+            d["max_retries"] = self.max_retries
         if self.max_tokens is not None:
             d["max_tokens"] = self.max_tokens
         if self.extra_body:
