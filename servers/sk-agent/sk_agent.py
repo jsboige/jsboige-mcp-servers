@@ -3397,11 +3397,30 @@ class SKAgentManager:
                     "temperature", settings.temperature
                 ),
                 top_p=sampling_override.get("top_p", settings.top_p),
-                presence_penalty=settings.presence_penalty,
+                presence_penalty=sampling_override.get(
+                    "presence_penalty", settings.presence_penalty
+                ),
                 max_tokens=sampling_override.get(
                     "max_tokens", effective_max_tokens
                 ),
             )
+            # #4853: per-call repetition_penalty is a vLLM extra — it rides in
+            # extra_body, merged over (never replacing) the model's keys. A
+            # per-call presence_penalty must also own a model-declared
+            # extra_body key: extra_body overrides the typed param at the
+            # HTTP body level, so leaving the model's key would let the model
+            # beat the call. Precedence everywhere: call > model > global.
+            call_rp = sampling_override.get("repetition_penalty")
+            if call_rp is not None:
+                extra_body = dict(extra_body) if extra_body else {}
+                extra_body["repetition_penalty"] = call_rp
+            call_pp = sampling_override.get("presence_penalty")
+            if (
+                call_pp is not None
+                and extra_body
+                and "presence_penalty" in extra_body
+            ):
+                extra_body["presence_penalty"] = call_pp
             if extra_body:
                 settings.extra_body = extra_body
         return {"arguments": KernelArguments(settings=settings)}
@@ -4415,7 +4434,9 @@ async def call_agent(
             "mcps":{"replace":[]},"sampling":{"temperature":0.3}} — precedence:
             call override > spec > preset > default; only server-configured
             models/MCPs may be referenced; the response carries
-            effective_config (no secrets).
+            effective_config (no secrets). sampling also accepts per-call
+            presence_penalty (-2..2) and repetition_penalty (> 0, vLLM extra)
+            — precedence call > model > global (#4853).
 
     Returns:
         JSON string with: response, conversation_id, agent_used, model_used, and type-specific fields.

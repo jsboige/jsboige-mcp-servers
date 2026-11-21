@@ -50,6 +50,7 @@ Unified agent invocation. Routes to the right agent based on content type.
 - `conversation_id`: Continue previous conversation
 - `include_steps`: Show intermediate tool/reasoning steps
 - `agent_spec`: JSON string composing an agent à la carte (#3407) — model + prompt + capabilities + tools + execution, optionally specializing a preset via `extends`. Precedence per dimension: call-level override > spec > preset > server default. Only server-configured models/MCPs may be referenced; anything else is refused, as are vision-requirement violations and attempts to widen tool-enabling parameters (`github_tools`). The response carries `effective_config` (no secrets).
+  - `sampling` accepts `temperature`, `top_p`, `max_tokens`, plus per-call `presence_penalty` (−2..2, OpenAI param) and `repetition_penalty` (> 0, vLLM extra riding `extra_body` without dropping the model's keys) — precedence call > model > global (#4853).
 
 ```json
 {
