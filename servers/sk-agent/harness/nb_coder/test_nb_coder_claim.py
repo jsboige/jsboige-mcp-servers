@@ -1,11 +1,8 @@
-#!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Harness base is the vllm re-copy @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
-# (ms#1814); the base claim pins (scoped check, fail-closed verdict, kernel
-# working_dir) came from jsboige/vllm, original path myia_vllm/scripts/adoption/
-# nb_coder/test_nb_coder_claim.py. The reservation/admission half (reserve_claim,
-# no-claim spending gate, offline two-client witnesses) was born in THIS repo
-# (ms#1812/#1813) -- upstream it to vllm at the next sync, do not diverge silently.
+# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_claim.py
+# Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
+# re-copy, do not diverge silently.
 # -----------------------------------------------------------------------------
 """Regression pins for the #466 fixes: scoped claim check + kernel working_dir.
 

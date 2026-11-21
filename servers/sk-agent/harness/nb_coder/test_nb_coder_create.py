@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 8c0e0230e37e1543dcdaf3f0a00f5de8857273e7
+# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_create.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -301,6 +301,104 @@ def test_create_segments_truncated_half_fails_named(monkeypatch):
     out = asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 8, ""))
     assert out == {} and rec["verdict"] == "stage2-truncated:0+h0"
     assert rec["stage2_raw_tail"]
+
+
+# The verdict MGS-28 (#27133) died on, 20/11 conveyor: 1 201 s = 600 s model budget x2
+# (client retry), no response at all — so the truncation test above never saw it.
+MGS28_TIMEOUT = ("(\"<class 'semantic_kernel.connectors.ai.open_ai.services.open_ai_chat_"
+                 "completion.OpenAIChatCompletion'> service failed to complete the prompt\", "
+                 "APITimeoutError('Request timed out.'))")
+
+
+def test_call_timed_out_reads_the_error_only():
+    assert D.call_timed_out({"error": MGS28_TIMEOUT})
+    assert D.call_timed_out({"error": "Timed out while waiting for response to "
+                                      "ClientRequest. Waited 1620.0 seconds."})
+    assert not D.call_timed_out({"response": "", "error": None})
+    assert not D.call_timed_out({"error": "401 invalid proxy authentication"})
+    # a gate refusal says 'retry after', never 'timed out' — and stays a deferral
+    assert not D.call_timed_out({"error": "capacity gate refused dispatch to model 'x' "
+                                          "(verdict yellow); retry after 3600s"})
+    # an auth failure whose text happens to mention a timeout is still the wiring's
+    assert not D.call_timed_out({"error": "403 unauthorized (upstream timed out)"})
+
+
+def test_create_segments_timeout_bisects_once(monkeypatch):
+    """20/11 conveyor, MGS-28: 8 Rust cells at ~25-35 tok/s per stream under load do not
+    fit the 600 s request budget. A timed-out segment is re-asked as two halves, exactly
+    like a truncated one; the cause is recorded so the two can be told apart."""
+    plan_cells = [{"idx": i, "cell_type": "code", "titre": f"c{i}"} for i in range(8)]
+    halves = {h: {"cells": [{"idx": c["idx"], "cell_type": "code", "source": f"s{c['idx']}"}
+                            for c in cells]}
+              for h, cells in (("h0", plan_cells[:4]), ("h1", plan_cells[4:]))}
+    calls = []
+
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
+        calls.append(stage)
+        if stage == "2-build+0":
+            return {"response": "", "error": MGS28_TIMEOUT, "conversation_id": "cx"}
+        return {"response": "```json\n" + json.dumps(halves[stage[-2:]]) + "\n```",
+                "conversation_id": "cx"}
+
+    monkeypatch.setattr(D, "sk_call_retry", fake)
+    rec: dict = {}
+    out = asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 8, ""))
+    assert [c["idx"] for c in out["cells"]] == list(range(8))
+    assert calls == ["2-build+0", "2-build+0+h0", "2-build+0+h1"]
+    assert rec["bisected"] == [0] and rec["bisect_cause"] == {"0": "timeout"}
+    assert "verdict" not in rec
+
+
+def test_create_segments_truncation_cause_recorded(monkeypatch):
+    plan_cells = [{"idx": i, "cell_type": "markdown", "titre": f"c{i}"} for i in range(4)]
+
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
+        if stage == "2-build+0":
+            return {"response": '```json\n{"cells":[{"idx":0,"source": "coupé',
+                    "conversation_id": "cx"}
+        cells = plan_cells[:2] if stage.endswith("h0") else plan_cells[2:]
+        return {"response": "```json\n" + json.dumps({"cells": [
+            {"idx": c["idx"], "cell_type": "markdown", "source": "s"} for c in cells]})
+            + "\n```", "conversation_id": "cx"}
+
+    monkeypatch.setattr(D, "sk_call_retry", fake)
+    rec: dict = {}
+    asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 4, ""))
+    assert rec["bisect_cause"] == {"0": "truncated"}
+
+
+def test_create_segments_timed_out_half_fails_named(monkeypatch):
+    """A half that times out AGAIN names the timeout — not a generic call-failed — so the
+    operator reads 'too slow for the budget', not 'the wiring broke'."""
+    plan_cells = [{"idx": i, "cell_type": "code", "titre": f"c{i}"} for i in range(8)]
+
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
+        return {"response": "", "error": MGS28_TIMEOUT, "conversation_id": "cx"}
+
+    monkeypatch.setattr(D, "sk_call_retry", fake)
+    rec: dict = {}
+    out = asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 8, ""))
+    assert out == {} and rec["verdict"] == "stage2-timeout:0+h0"
+
+
+def test_create_segments_other_call_failure_never_bisects(monkeypatch):
+    """Only the two failures a smaller tranche can cure bisect: an auth failure or a
+    gate refusal fails (or defers) on the full segment, with ONE call spent."""
+    plan_cells = [{"idx": i, "cell_type": "code", "titre": f"c{i}"} for i in range(8)]
+    for err, verdict in (("401 invalid proxy authentication", "stage2-auth-failed"),
+                         ("capacity gate refused dispatch to model 'x' (verdict yellow); "
+                          "retry after 3600s", "deferred-by-capacity-gate")):
+        calls = []
+
+        async def fake(session, args, rec, stage, prompt, conv, max_tokens=None, _e=err):
+            calls.append(stage)
+            return {"response": "", "error": _e, "conversation_id": "cx"}
+
+        monkeypatch.setattr(D, "sk_call_retry", fake)
+        rec: dict = {}
+        assert asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 8, "")) == {}
+        assert calls == ["2-build+0"] and rec["verdict"].startswith(verdict)
+        assert "bisected" not in rec
 
 
 def test_gate_refusal_defers_instead_of_failing():
