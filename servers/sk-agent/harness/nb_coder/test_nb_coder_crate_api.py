@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_crate_api.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -392,6 +392,124 @@ def test_the_block_is_capped(tmp_path, monkeypatch):
     assert block.endswith("[… extrait tronqué …]")
 
 
+# ---- linking: a failing `:dep` cell, an undeclared crate, a version clash (2.3b, #27134) ----
+
+# Verbatim: run issue-27134 (final state), cells 1 and 3.
+EV_FIT = "unresolved import `linfa::Fit`"
+TB_FIT = ["no `Fit` in the root", "error: unresolved import `linfa::Fit`", EV_FIT]
+EV_NDARRAY = "unresolved import `ndarray`"
+TB_NDARRAY = ["use of unresolved module or unlinked crate `ndarray`", EV_NDARRAY,
+              "\x1b[1mhelp\x1b[0m: if you wanted to use a crate named `ndarray`, use "
+              "`cargo add ndarray` to add it to your `Cargo.toml`"]
+LINFA_TOML = """[package]
+name = "linfa"
+version = "0.8.1"
+
+[dependencies.ndarray]
+version = "0.16"
+features = ["approx"]
+
+[dependencies.rand]
+version = "0.8"
+features = ["small_rng"]
+
+[dev-dependencies.ndarray-rand]
+version = "0.15"
+"""
+LINFA_TRAITS = """pub trait Fit<R: Records, T, E: std::error::Error + From<crate::error::Error>> {
+    type Object;
+}
+
+pub trait Predict<R: Records, T> {
+    fn predict(&self, x: R) -> T;
+}
+"""
+
+
+def _linfa_registry(tmp_path, monkeypatch) -> Path:
+    idx = _registry(tmp_path, monkeypatch)
+    for rel, text in {"linfa-0.8.1/Cargo.toml": LINFA_TOML,
+                      "linfa-0.8.1/src/lib.rs": "pub mod traits;\npub mod prelude;\n",
+                      "linfa-0.8.1/src/traits.rs": LINFA_TRAITS,
+                      "ndarray-0.16.1/src/lib.rs": "pub struct ArrayBase;\n",
+                      "ndarray-0.17.2/src/lib.rs": "pub struct ArrayBase;\n"}.items():
+        p = idx / rel
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text, encoding="utf-8")
+    return idx
+
+
+def test_rust_api_errors_parses_linking_diagnostics():
+    errs = d.rust_api_errors("\n".join(TB_NDARRAY) + "\nerror[E0308]: mismatched types\n"
+                             "note: there are multiple different versions of crate `ndarray` "
+                             "in the dependency graph")
+    assert {"kind": "crate", "item": "ndarray", "owner": None, "crate": None} in errs
+    assert {"kind": "version", "item": "ndarray", "owner": None, "crate": None} in errs
+    assert {"kind": "import", "item": "ndarray", "owner": None, "crate": None} in errs
+
+
+def test_crate_dep_req_reads_tables_and_inline_forms(tmp_path):
+    (tmp_path / "Cargo.toml").write_text(
+        LINFA_TOML + '\n[dependencies]\nserde = "1.0"\nnum = { version = "0.4", optional = true }\n',
+        encoding="utf-8")
+    assert d._crate_dep_req(tmp_path, "ndarray") == "0.16"
+    assert d._crate_dep_req(tmp_path, "rand") == "0.8"
+    assert d._crate_dep_req(tmp_path, "serde") == "1.0"
+    assert d._crate_dep_req(tmp_path, "num") == "0.4"
+    assert d._crate_dep_req(tmp_path, "ndarray_rand") is None       # dev-dependency only
+    assert d._crate_dep_req(tmp_path / "nowhere", "ndarray") is None
+
+
+def test_a_failing_dep_cell_is_named_as_the_cause_of_the_cascade(tmp_path, monkeypatch):
+    _linfa_registry(tmp_path, monkeypatch)
+    cells = [{"cell_type": "markdown", "metadata": {}, "source": "# 2.3b"},
+             _code(':dep ndarray = "0.16"\n:dep linfa = "0.8"\nuse linfa::{Fit, Predict};',
+                   [EV_FIT], TB_FIT),
+             _code("use ndarray::Array2;", [EV_NDARRAY], TB_NDARRAY)]
+    block, info = d.crate_api_block(cells, _errs(cells))
+    assert block.startswith("Crates à lier :\n- La cellule 1 déclare les `:dep` mais elle "
+                            "ÉCHOUE")
+    assert "d'où les « unlinked crate » plus bas (`ndarray`)" in block
+    assert "pub trait Fit<R: Records" in block and "chemin linfa::traits]" in block
+    assert "`ndarray` introuvable" not in block                     # a cascade, not an API miss
+    assert info["link"] == ["ndarray"] and info["crates"] == ["linfa 0.8.1"]
+    assert info["dep_cell"] == 1
+
+
+def test_an_undeclared_crate_gets_the_requirement_of_its_dependents(tmp_path, monkeypatch):
+    _linfa_registry(tmp_path, monkeypatch)
+    cells = [_code(':dep linfa = "0.8"'),
+             _code("use ndarray::Array2;", [EV_NDARRAY], TB_NDARRAY)]
+    block, info = d.crate_api_block(cells, _errs(cells))
+    assert ('- `ndarray` n\'est déclarée dans aucun `:dep` : ajoute `:dep ndarray = "0.16"` '
+            'dans la cellule 0 (copie locale : ndarray 0.16.1); linfa 0.8.1 en dépend en '
+            '"0.16".') in block
+    assert info == {"crates": [], "dep_cell": 0, "gated": [], "unknown": [],
+                    "link": ["ndarray"]}
+
+
+def test_a_version_clash_with_a_dependent_is_aligned(tmp_path, monkeypatch):
+    _linfa_registry(tmp_path, monkeypatch)
+    cells = [_code(':dep ndarray = "0.17"\n:dep linfa = "0.8"'),
+             _code("let ds = Dataset::new(x, y);", ["mismatched types"],
+                   ["mismatched types", "note: there are multiple different versions of crate "
+                                        "`ndarray` in the dependency graph"])]
+    block, info = d.crate_api_block(cells, _errs(cells))
+    assert ('- `:dep ndarray = "0.17"` (cellule 0) donne ndarray 0.17.2, mais linfa 0.8.1 en '
+            'dépend en "0.16" : deux copies de `ndarray` seront liées') in block
+    assert 'écris `:dep ndarray = "0.16"` (copie locale : ndarray 0.16.1).' in block
+    assert "ÉCHOUE" not in block and info["link"] == ["ndarray"]
+
+
+def test_coherent_versions_add_no_linking_advice(tmp_path, monkeypatch):
+    _linfa_registry(tmp_path, monkeypatch)
+    cells = [_code(':dep ndarray = "0.16"\n:dep linfa = "0.8"'),
+             _code("x", [EV_FIT], TB_FIT)]
+    block, info = d.crate_api_block(cells, _errs(cells))
+    assert "Crates à lier" not in block and "link" not in info
+    assert "chemin linfa::traits]" in block
+
+
 def test_repair_prompt_places_the_block_and_the_dep_cell():
     failing = [{"idx": 3, "source": "x", "errors": "e", "cited": []}]
     dep = {"idx": 1, "names": ["rand 0.10.4"], "for": 3, "via": "dep", "source": ':dep r = "1"'}
@@ -486,7 +604,7 @@ def test_other_kernels_are_never_grounded(tmp_path, monkeypatch):
 def test_grounding_failure_never_fails_the_round(tmp_path, monkeypatch):
     _registry(tmp_path, monkeypatch)
 
-    def boom(cells, errors, roots=None):
+    def boom(cells, errors, roots=None, absent=()):
         raise OSError("registry unreadable")
 
     monkeypatch.setattr(d, "crate_api_block", boom)

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 9683ab2f5165f374bbb387132288c2cbf7cc6084
+# Copied verbatim from jsboige/vllm @ e94d5f4f3f036aa5f4b42060584f592b3e42e983
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_verify.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -435,10 +435,19 @@ def main() -> int:
         rec |= nbcd.usage_fields(env)      # the verifier call's own tokens (#506 palier 0)
         rec["conversation_id"] = env.get("conversation_id")
         rec["response_chars"] = len(env.get("response") or "")
+        # 21/11 MGS-25: the critic call died at 610 s with response_chars 0 and the trace
+        # said only "unparsable" -- sk-agent's error text was dropped, so a client timeout
+        # (undeclared model budget, 300 s x 2 attempts) could not be told from a cloud
+        # empty. The error is kept verbatim (bounded) and names the verdict.
+        call_error = str(env.get("error") or "").strip()
+        if call_error:
+            rec["call_error"] = call_error[:600]
         ans = nbcd.parse_json_block(env.get("response") or "")
         rec["answer"] = ans
         if not ans or ans.get("verdict") not in ("approve", "reject"):
-            rec["verdict"] = "error:unparsable"
+            rec["verdict"] = (f"error:call-failed: {call_error[:200]}"
+                              if call_error and not rec["response_chars"]
+                              else "error:unparsable")
             rc = 2
         else:
             rec["verdict"] = ans["verdict"]
