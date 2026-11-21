@@ -130,15 +130,24 @@ describe('Maintenance#358 — setup-env per-worker temp dirs are torn down at pr
     // platform — the hard-kill test above cannot exercise TerminateProcess,
     // so an inoperant sweep would stay green in CI. This test pins the
     // sweep's EFFECT directly, no child process involved: plant a fresh dir
-    // at a setup-env prefix, sweep from a timestamp taken BEFORE planting
-    // (this worker's own dirs predate it and must survive), expect removal.
+    // at a setup-env prefix inside an ISOLATED base dir, sweep that base,
+    // expect exactly that removal.
+    //
+    // sinceMs is back-dated by 1s on purpose: the first version sampled
+    // Date.now() with zero slack and was red on Linux CI (ms#1831) — kernel
+    // inode timestamps use the coarse clock (jiffy granularity) and can
+    // trail the userspace clock by up to a few ms, so a freshly created dir
+    // can carry an mtime BELOW a zero-slack pre-creation sample. The
+    // isolated base also keeps this mid-run sweep away from other workers'
+    // live dirs in the shared tmpdir (the documented concurrency caveat).
     // Mutant "sweep inopérant" (rmSync never reached) is red everywhere,
     // CI included.
-    const { sweepRsmTestWorkerDirs } = await import('../setup-env-teardown');
-    const t0 = Date.now();
-    const planted = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-locks-'));
-    const removed = sweepRsmTestWorkerDirs(t0);
-    expect(removed).toBeGreaterThan(0);
+    const { sweepRsmTestWorkerDirs, registerRsmTestTempDir } = await import('../setup-env-teardown');
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-sweep-base-'));
+    registerRsmTestTempDir(base); // cleaned at this process's exit — matches no sweep prefix
+    const planted = fs.mkdtempSync(path.join(base, 'rsm-test-locks-'));
+    const removed = sweepRsmTestWorkerDirs(Date.now() - 1_000, base);
+    expect(removed).toBe(1);
     expect(fs.existsSync(planted)).toBe(false);
   }, 30_000);
 });
