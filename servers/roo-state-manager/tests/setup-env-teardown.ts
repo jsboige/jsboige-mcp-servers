@@ -60,19 +60,26 @@ export function registerRsmTestTempDir(dir: string): void {
 }
 
 /** Remove setup-env worker dirs (three prefixes) created since `sinceMs`.
- * Returns the number of dirs removed. Never throws. */
-export function sweepRsmTestWorkerDirs(sinceMs: number): number {
+ * Returns the number of dirs removed. Never throws.
+ *
+ * Back-date `sinceMs` by >= 1s: kernel inode timestamps use the coarse
+ * clock (jiffy granularity) and can trail the userspace clock Date.now()
+ * reads by a few ms — measured on Linux CI, a dir created AFTER a
+ * zero-slack sinceMs sample carried an mtime below it and was skipped
+ * (ms#1831 first CI run). `baseDir` defaults to os.tmpdir(); tests pass an
+ * isolated dir so a mid-run sweep cannot touch other workers' live dirs. */
+export function sweepRsmTestWorkerDirs(sinceMs: number, baseDir: string = os.tmpdir()): number {
   let removed = 0;
   let entries: fs.Dirent[];
   try {
-    entries = fs.readdirSync(os.tmpdir(), { withFileTypes: true });
+    entries = fs.readdirSync(baseDir, { withFileTypes: true });
   } catch {
     return 0;
   }
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!RSM_TEST_DIR_PREFIXES.some((p) => entry.name.startsWith(p))) continue;
-    const full = path.join(os.tmpdir(), entry.name);
+    const full = path.join(baseDir, entry.name);
     try {
       if (fs.statSync(full).mtimeMs < sinceMs) continue; // pre-run stock: not ours
       fs.rmSync(full, { recursive: true, force: true });
