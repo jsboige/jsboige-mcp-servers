@@ -305,6 +305,26 @@ def parse_default_headers(raw: Any) -> dict[str, str] | None:
     return headers or None
 
 
+def parse_max_retries(raw: Any) -> int | None:
+    """Validate a model's ``max_retries`` (#4849).
+
+    None means "legacy default" (the OpenAI client is built with
+    ``max_retries=1``, exactly as before). Otherwise it must be an int >= 0
+    (0 disables the automatic replay). ``bool`` is refused even though it is
+    an int subclass — ``max_retries: true`` is never a sane retry count.
+    Raises ValueError otherwise.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(
+            f"max_retries must be an integer >= 0 (got {type(raw).__name__})"
+        )
+    if raw < 0:
+        raise ValueError(f"max_retries must be >= 0 (got {raw})")
+    return raw
+
+
 # ---------------------------------------------------------------------------
 # Runtime identity (#4741)
 # ---------------------------------------------------------------------------
@@ -382,7 +402,16 @@ class ModelConfig:
     # makes the pool skip this model and agent resolution refuse naming the
     # variable, while the other models stay callable.
     base_url_error: str | None = None
-
+    # #4849: per-model OpenAI client retry count (optional; absent = legacy
+    # max_retries=1). vLLM abandons the decode as soon as the client
+    # disconnects, so replaying a request that already timed out restarts
+    # from zero under the same budget and load — it only doubles the wall
+    # time (#4849: a lost decode is never recovered by an identical retry).
+    # A malformed value is isolated like a rejected default_headers: kept
+    # verbatim, the model is left out of the pool (fail closed), the other
+    # models stay up.
+    max_retries: int | None = None
+    max_retries_error: str | None = None
     @classmethod
     def from_dict(cls, data: dict) -> ModelConfig:
         raw_headers = data.get("default_headers")
@@ -397,6 +426,18 @@ class ModelConfig:
                 exc,
             )
             headers, headers_error = raw_headers, str(exc)
+        raw_retries = data.get("max_retries")
+        retries_error: str | None = None
+        try:
+            retries = parse_max_retries(raw_retries)
+        except ValueError as exc:
+            log.error(
+                "models '%s': max_retries rejected: %s — this model is "
+                "left out of the pool; the other models stay callable",
+                data.get("id", "unknown"),
+                exc,
+            )
+            retries, retries_error = raw_retries, str(exc)
         raw_gate = data.get("capacity_gate")
         gate_error: str | None = None
         try:
@@ -429,6 +470,8 @@ class ModelConfig:
             capacity_gate_error=gate_error,
             default_headers=headers,
             default_headers_error=headers_error,
+            max_retries=retries,
+            max_retries_error=retries_error,
         )
 
     def to_dict(self) -> dict:
@@ -463,6 +506,10 @@ class ModelConfig:
             d["default_headers"] = self.default_headers  # rejected: verbatim
         elif self.default_headers:
             d["default_headers"] = dict(self.default_headers)
+        if self.max_retries_error is not None:
+            d["max_retries"] = self.max_retries  # rejected: kept verbatim
+        elif self.max_retries is not None:
+            d["max_retries"] = self.max_retries
         return d
 
     def resolve_api_key(self) -> str:
@@ -598,6 +645,11 @@ class EmbeddingsConfig:
     api_key_env: str = ""
     model_id: str = ""
     dimensions: int = 2560
+    # #4849: OpenAI client retry count for the shared embeddings endpoint
+    # (absent = legacy max_retries=1). Validated at load: there is one
+    # embeddings endpoint, no pool to isolate a faulty entry into — a
+    # malformed value fails the load, loudly and typed.
+    max_retries: int | None = None
 
     @classmethod
     def from_dict(cls, data: dict | None) -> EmbeddingsConfig:
@@ -609,6 +661,7 @@ class EmbeddingsConfig:
             api_key_env=data.get("api_key_env", ""),
             model_id=data.get("model_id", ""),
             dimensions=data.get("dimensions", 2560),
+            max_retries=parse_max_retries(data.get("max_retries")),
         )
 
     def to_dict(self) -> dict:
@@ -622,6 +675,8 @@ class EmbeddingsConfig:
         if self.model_id:
             d["model_id"] = self.model_id
         d["dimensions"] = self.dimensions
+        if self.max_retries is not None:
+            d["max_retries"] = self.max_retries
         return d
 
     @property

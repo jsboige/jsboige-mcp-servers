@@ -1128,6 +1128,17 @@ class SKAgentManager:
                 )
                 continue
 
+            if model_cfg.max_retries_error is not None:
+                # #4849: fail closed, same isolation as default_headers —
+                # a malformed retry count must not silently fall back to 1.
+                log.error(
+                    "Model pool: SKIPPED model '%s': max_retries rejected "
+                    "(%s)",
+                    model_cfg.id,
+                    model_cfg.max_retries_error,
+                )
+                continue
+
             try:
                 api_key = model_cfg.resolve_api_key()
                 # #1587: explicit client budget — openai-python defaults to 600s
@@ -1163,7 +1174,15 @@ class SKAgentManager:
                         write=request_budget_s,
                         pool=request_budget_s,
                     ),
-                    max_retries=1,
+                    # #4849: per-model retry count (None → legacy 1). vLLM
+                    # abandons the decode at client disconnect: replaying an
+                    # expired request restarts from zero under the same
+                    # budget — 0 opts out of that doubled wall time.
+                    max_retries=(
+                        model_cfg.max_retries
+                        if model_cfg.max_retries is not None
+                        else 1
+                    ),
                     # #4740: declared per-model headers (claudish lane/seat
                     # attribution); None keeps the legacy client.
                     default_headers=model_cfg.default_headers or None,
@@ -1894,7 +1913,13 @@ class SKAgentManager:
                 api_key=emb.resolve_api_key(),
                 base_url=emb.base_url,
                 timeout=60.0,
-                max_retries=1,
+                # #4849: same optional override as the chat clients —
+                # absent keeps the legacy retry count of 1.
+                max_retries=(
+                    emb.max_retries
+                    if emb.max_retries is not None
+                    else 1
+                ),
             )
             embeddings_gen = OpenAITextEmbedding(
                 ai_model_id=emb.model_id,
