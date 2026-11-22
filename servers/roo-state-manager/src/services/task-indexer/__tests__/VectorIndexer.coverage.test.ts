@@ -46,6 +46,15 @@ import * as crypto from 'crypto';
  */
 process.env.EMBEDDING_OPS_PER_MINUTE = '0';
 
+// #4861: B2 subtracts a per-seat on-disk ledger of written hashes before
+// scrolling. Without isolation, the first indexTask() of this file would
+// poison the scroll-count assertions of every later test (same task_id family
+// re-used). Fresh temp dir per test, cleaned in afterEach.
+import * as os from 'os';
+import * as path from 'path';
+import * as fsp from 'fs/promises';
+let ledgerTmpDir: string;
+
 const { mockGetCollections, mockCreateCollection, mockCreatePayloadIndex, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll, mockDelete } = vi.hoisted(() => ({
 	mockGetCollections: vi.fn(),
 	mockCreateCollection: vi.fn(),
@@ -154,12 +163,20 @@ function applyDefaults() {
 }
 
 describe('VectorIndexer — coverage complement (#833 C3)', () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.clearAllMocks();
 		vi.useRealTimers();
+		ledgerTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'rsm-ledger-cov-'));
+		process.env.INDEX_HASH_LEDGER_DIR = ledgerTmpDir;
 		applyDefaults();
 	});
-	afterEach(() => { vi.useRealTimers(); });
+	afterEach(async () => {
+		vi.useRealTimers();
+		delete process.env.INDEX_HASH_LEDGER_DIR;
+		if (ledgerTmpDir) {
+			await fsp.rm(ledgerTmpDir, { recursive: true, force: true }).catch(() => {});
+		}
+	});
 
 	// ────────────────────────────────────────────────────────────────
 	// dedupByContentHash — post-index scroll dedup (L551-625)
@@ -253,21 +270,21 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
 		});
 
-		test('keeps sub-chunks when the preflight scroll throws (non-blocking catch L793-794)', async () => {
+		test('#4861: a preflight scroll failure FAILS CLOSED — the pass defers, no re-embed (was: non-blocking keep)', async () => {
 			vi.resetModules();
 			const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
 			resetCircuitBreakerForTest();
 			const content = 'preflight-scroll-throws';
 			mockExtractTask.mockResolvedValue([chunk('c-pft', content)]);
-			// preflight scroll throws (kept), then post-index dedup scroll → empty (kept).
-			mockScroll
-				.mockRejectedValueOnce(new Error('preflight scroll boom'))
-				.mockResolvedValue({ points: [], next_page_offset: null });
+			// The B2 scroll fails: the pass must NOT fall through to embedding —
+			// under saturation that re-embedded whole already-indexed sessions.
+			mockScroll.mockRejectedValue(new Error('preflight scroll boom'));
 
-			const result = await indexTask('t-preflight-throw', '/p');
-
-			expect(result.length).toBe(1);
-			expect(mockEmbeddingsCreate).toHaveBeenCalled(); // fell through to embedding
+			await expect(indexTask('t-preflight-throw', '/p')).rejects.toMatchObject({
+				details: expect.objectContaining({ scrollFailed: true }),
+			});
+			expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
+			expect(mockUpsert).not.toHaveBeenCalled();
 		});
 	});
 

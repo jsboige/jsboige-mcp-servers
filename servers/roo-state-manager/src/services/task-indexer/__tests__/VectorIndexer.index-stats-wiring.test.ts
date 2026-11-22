@@ -11,8 +11,16 @@
  * The harness mirrors VectorIndexer.dedup-scope.test.ts (same pacer pin, same
  * in-memory store, filter-aware scroll) — no real Qdrant, no real embeddings.
  */
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as crypto from 'crypto';
+import * as os from 'os';
+import * as path from 'path';
+import * as fsp from 'fs/promises';
+
+// #4861: B2 subtracts the per-seat index-hash ledger; each test here describes
+// a FIRST indexing. Isolate it per test, else a later test on the same task_id
+// would see the earlier test's hashes as "already written" and skip them.
+let ledgerTmpDir: string;
 
 process.env.EMBEDDING_OPS_PER_MINUTE = '0';
 
@@ -94,8 +102,11 @@ function freshStats() {
 describe('indexTask — the reported counters describe the run (#4352 crit.4)', () => {
 	let store: Map<string, { id: string; vector: number[]; payload: any }>;
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.clearAllMocks();
+		// #4861: fresh empty ledger dir per test (see the import-site note).
+		ledgerTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'rsm-ledger-stats-'));
+		process.env.INDEX_HASH_LEDGER_DIR = ledgerTmpDir;
 		store = new Map();
 
 		mockGetCollections.mockResolvedValue({ collections: [{ name: COLLECTION }] });
@@ -136,6 +147,13 @@ describe('indexTask — the reported counters describe the run (#4352 crit.4)', 
 		mockUpsert.mockImplementation(async (_c: string, { points }: any) => {
 			for (const p of points) store.set(p.id, { id: p.id, vector: p.vector, payload: p.payload });
 		});
+	});
+
+	afterEach(async () => {
+		delete process.env.INDEX_HASH_LEDGER_DIR;
+		if (ledgerTmpDir) {
+			await fsp.rm(ledgerTmpDir, { recursive: true, force: true }).catch(() => {});
+		}
 	});
 
 	test('a real pass reports extracted / built / indexed, and zero dedup', async () => {
