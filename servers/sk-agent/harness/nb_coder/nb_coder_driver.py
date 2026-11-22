@@ -3266,6 +3266,415 @@ def crate_api_block(cells: list[dict], errors: list[str],
     return block, info
 
 
+# ------------------------------------------------------------ .NET API grounding (22/11)
+# Measured 22/11 on the ICT-15 C# salvage (CoursIA#27735/27736/27740/27741): every grain
+# died on ScottPlot 5 members the model remembered from another version — `LineStyle.Dash`
+# (real: `LinePattern.Dashed`), `Heatmap.ColorScale` (real: `Colormap`), `DefaultGrid
+# .AddSubplot`, `ScottPlot.TickGenerators.FixedLabels` — and four repair rounds per grain
+# rewrote the same figure cell with a new invented name each time. The compiler message
+# names the member that is missing, never the ones that exist. The Rust rounds get that
+# truth from the registry sources (crate_api_block); the .NET rounds get it from the
+# kernel that just compiled the cell: reflection over the package assemblies, exact
+# version. A package assembly is loaded lazily, so a cell that failed to compile never
+# loaded it — the probe loads it from the NuGet cache first (measured: ScottPlot absent
+# from the AppDomain after `#r "nuget: ScottPlot, 5.0.55"` alone).
+DOTNET_API_HEAD = "API RÉELLE DES PAQUETS .NET"
+DOTNET_API_CAP = 4800
+DOTNET_API_SECTION_MIN = 500
+DOTNET_API_MAX_QUERIES = 6
+DOTNET_PROBE_TIMEOUT_S = 120
+_CS_DIAG_RE = re.compile(r"error (CS\d{4}):\s*([^\r\n]*)")
+_CS_MEMBER_RE = re.compile(r"'([^']+)' (?:does not contain a definition for|"
+                           r"ne contient pas de définition pour) '([^']+)'")
+_CS_NS_RE = re.compile(r"(?:The type or namespace name|Le nom de type ou d'espace de noms) "
+                       r"'([^']+)' (?:does not exist in the namespace|"
+                       r"n'existe pas dans l'espace de noms) '([^']+)'")
+_CS_TYPE_RE = re.compile(r"(?:The type or namespace name|Le nom de type ou d'espace de noms) "
+                         r"'([^']+)' (?:could not be found|est introuvable)")
+_CS_PARAM_RE = re.compile(r"(?:parameter|paramètre)\b[^']*'[^']+' (?:of|de) '([^'(]+)\(")
+_CS_OVERLOAD_RE = re.compile(r"(?:No overload for method|Aucune surcharge pour la méthode) "
+                             r"'([^']+)'")
+_CS_CTOR_RE = re.compile(r"'([^']+)' (?:does not contain a constructor that takes|"
+                         r"ne contient pas de constructeur qui accepte)")
+_CS_READONLY_RE = re.compile(r"(?:Property or indexer|propriété ou l'indexeur) '([^']+)\.([^'.]+)'")
+_CS_BUILTIN = {"bool", "byte", "char", "decimal", "double", "float", "int", "long", "object",
+               "sbyte", "short", "string", "uint", "ulong", "ushort", "void", "var", "dynamic"}
+_NUGET_REF_RE = re.compile(r'^\s*#r\s+"nuget:\s*([A-Za-z0-9_.\-]+)\s*(?:,\s*([^"]*?))?\s*"',
+                           re.M)
+_DLL_REF_RE = re.compile(r'^\s*#r\s+"(?!nuget:)([^"]+\.dll)"', re.M | re.I)
+
+
+def _cs_simple(name: str) -> str:
+    """`ScottPlot.Plottables.Heatmap` / `List<double>` / `double[]` -> the bare type name."""
+    base = re.sub(r"<.*$", "", re.sub(r"\[[,\s]*\]$", "", (name or "").strip()))
+    return base.rsplit(".", 1)[-1].strip()
+
+
+def dotnet_api_queries(errors: list[str], cells: list[dict]) -> list[tuple[str, str, str]]:
+    """(kind, owner, item) probes from the compiler diagnostics of a .NET repair round:
+    `member` (CS0117/CS1061/CS1929 — owner lacks item; CS0200 — item is read-only), `ns`
+    (CS0234 — namespace lacks item), `call` (CS7036/CS1501/CS1729 — overloads of
+    owner.item, constructors when item == owner), `type` (CS0246 — no type item).
+    A name the notebook itself declares is the cell's business, never a package's: skipped,
+    as are the C# keyword types. Deduplicated, capped at DOTNET_API_MAX_QUERIES."""
+    srcs = [_text(c.get("source")) for c in cells or [] if c.get("cell_type") == "code"]
+
+    def own(name: str) -> bool:
+        return any(declares(s, name) for s in srcs)
+
+    out: list[tuple[str, str, str]] = []
+
+    def add(q):
+        if q not in out and len(out) < DOTNET_API_MAX_QUERIES:
+            out.append(q)
+
+    for text in errors or []:
+        for code, msg in _CS_DIAG_RE.findall(_ANSI_RE.sub("", text or "")):
+            if code in ("CS0117", "CS1061", "CS1929"):
+                m = _CS_MEMBER_RE.search(msg)
+                if m:
+                    owner = _cs_simple(m.group(1))
+                    if owner and owner not in _CS_BUILTIN and not own(owner):
+                        add(("member", owner, m.group(2)))
+            elif code == "CS0234":
+                m = _CS_NS_RE.search(msg)
+                if m:
+                    add(("ns", m.group(2).strip(), m.group(1).strip()))
+            elif code == "CS7036":
+                m = _CS_PARAM_RE.search(msg)
+                if m and "." in m.group(1):
+                    owner, meth = m.group(1).rsplit(".", 1)
+                    owner = _cs_simple(owner)
+                    if owner not in _CS_BUILTIN and not own(owner):
+                        add(("call", owner, meth.strip()))
+            elif code == "CS1501":
+                m = _CS_OVERLOAD_RE.search(msg)
+                if m and not own(m.group(1)):
+                    add(("call", "", m.group(1).strip()))
+            elif code == "CS1729":
+                m = _CS_CTOR_RE.search(msg)
+                if m:
+                    owner = _cs_simple(m.group(1))
+                    if owner and owner not in _CS_BUILTIN and not own(owner):
+                        add(("call", owner, owner))
+            elif code == "CS0200":
+                m = _CS_READONLY_RE.search(msg)
+                if m:
+                    owner = _cs_simple(m.group(1))
+                    if owner and owner not in _CS_BUILTIN and not own(owner):
+                        add(("member", owner, m.group(2)))
+            elif code == "CS0246":
+                m = _CS_TYPE_RE.search(msg)
+                if m:
+                    name = _cs_simple(m.group(1))
+                    if name and name not in _CS_BUILTIN and not own(name):
+                        add(("type", "", name))
+    return out
+
+
+def _version_key(v: str) -> tuple:
+    return tuple(int(p) if p.isdigit() else -1 for p in re.split(r"[.\-+]", v))
+
+
+def nuget_load_paths(cells: list[dict], root: Path | None = None) -> list[str]:
+    """What the probe must load before reflecting: for each `#r "nuget: Id[, Ver]"`, the
+    package's version directory in the NuGet cache (exact version; a `5.*` prefix or no
+    version takes the highest stable one present), and each `#r "<file>.dll"` as written
+    (the kernel resolves it from its own cwd). The TFM is chosen kernel-side, against the
+    runtime that will load it."""
+    root = Path(root) if root else Path.home() / ".nuget" / "packages"
+    out: list[str] = []
+    for c in cells or []:
+        if c.get("cell_type") != "code":
+            continue
+        src = _text(c.get("source"))
+        for pid, ver in _NUGET_REF_RE.findall(src):
+            pdir = root / pid.lower()
+            try:
+                have = [d.name for d in pdir.iterdir() if d.is_dir()]
+            except OSError:
+                continue
+            ver = (ver or "").strip()
+            if ver and "*" not in ver:
+                pick = ver if ver in have else next((h for h in have if h.lower() == ver.lower()), None)
+            else:
+                pre = ver.split("*", 1)[0]
+                stable = [h for h in have if h.startswith(pre) and "-" not in h]
+                pick = max(stable, key=_version_key) if stable else None
+            if pick and str(pdir / pick) not in out:
+                out.append(str(pdir / pick))
+        out += [p for p in _DLL_REF_RE.findall(src) if p not in out]
+    return out
+
+
+def _cs_str(s: str) -> str:
+    return '@"' + str(s).replace('"', '""') + '"'
+
+
+# Kernel-side half of the probe. One block scope: it defines nothing in the submission, and
+# the repair round stops this kernel right after anyway. Every reflective call is guarded;
+# a type that cannot load is skipped, never an exception out of the cell.
+_DOTNET_PROBE_CS = r"""{
+var __q = new (string k, string o, string i)[] { /*QUERIES*/ };
+var __loads = new string[] { /*LOADS*/ };
+var __bf = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
+         | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.DeclaredOnly;
+var __have = new System.Collections.Generic.HashSet<string>(System.AppDomain.CurrentDomain.GetAssemblies()
+  .Select(a => a.GetName().Name));
+var __mine = new System.Collections.Generic.List<string>();
+System.Action<string> __load = p => {
+  try {
+    var n = System.Reflection.AssemblyName.GetAssemblyName(p).Name;
+    if (!__have.Contains(n)) { System.Reflection.Assembly.LoadFrom(p); __have.Add(n); }
+    __mine.Add(n);
+  } catch { }
+};
+foreach (var __p in __loads) {
+  try {
+    var full = System.IO.Path.GetFullPath(__p);
+    if (full.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase)) { __load(full); continue; }
+    var lib = System.IO.Path.Combine(full, "lib");
+    if (!System.IO.Directory.Exists(lib)) continue;
+    var major = System.Environment.Version.Major;
+    string best = null; int bestRank = -1;
+    foreach (var d in System.IO.Directory.GetDirectories(lib)) {
+      var t = System.IO.Path.GetFileName(d).ToLowerInvariant(); int rank = -1;
+      var m = System.Text.RegularExpressions.Regex.Match(t, @"^net(\d+)\.(\d+)");
+      var c = System.Text.RegularExpressions.Regex.Match(t, @"^netcoreapp(\d+)\.(\d+)");
+      var s = System.Text.RegularExpressions.Regex.Match(t, @"^netstandard(\d+)\.(\d+)");
+      if (m.Success && int.Parse(m.Groups[1].Value) >= 5 && int.Parse(m.Groups[1].Value) <= major)
+        rank = 3000 + int.Parse(m.Groups[1].Value) * 10 + int.Parse(m.Groups[2].Value);
+      else if (c.Success) rank = 2000 + int.Parse(c.Groups[1].Value) * 10 + int.Parse(c.Groups[2].Value);
+      else if (s.Success) rank = 1000 + int.Parse(s.Groups[1].Value) * 10 + int.Parse(s.Groups[2].Value);
+      if (rank > bestRank) { bestRank = rank; best = d; }
+    }
+    if (best != null) foreach (var f in System.IO.Directory.GetFiles(best, "*.dll")) __load(f);
+  } catch { }
+}
+var __all = System.AppDomain.CurrentDomain.GetAssemblies()
+  .Where(a => !a.IsDynamic && (__mine.Contains(a.GetName().Name)
+    || (a.Location ?? "").Replace('\\', '/').ToLowerInvariant().Contains("/.nuget/packages/")))
+  .SelectMany(a => { try { return a.GetExportedTypes(); }
+    catch (System.Reflection.ReflectionTypeLoadException e) { return e.Types.Where(t => t != null && t.IsPublic).ToArray(); }
+    catch { return new System.Type[0]; } }).Where(t => !t.IsNested || t.IsNestedPublic).ToArray();
+System.Func<System.Type, string> __tn = null;
+__tn = t => {
+  if (t == null) return "?";
+  if (t.IsByRef) return __tn(t.GetElementType());
+  if (t.IsArray) return __tn(t.GetElementType()) + "[" + new string(',', t.GetArrayRank() - 1) + "]";
+  if (t.IsGenericType) {
+    var n = t.Name.Split('`')[0];
+    if (n == "Nullable") return __tn(t.GetGenericArguments()[0]) + "?";
+    return n + "<" + string.Join(", ", t.GetGenericArguments().Select(__tn)) + ">";
+  }
+  switch (t.FullName) {
+    case "System.Int32": return "int"; case "System.Double": return "double";
+    case "System.String": return "string"; case "System.Boolean": return "bool";
+    case "System.Single": return "float"; case "System.Void": return "void";
+    case "System.Object": return "object"; case "System.Int64": return "long";
+    case "System.Byte": return "byte";
+  }
+  return t.Name;
+};
+System.Func<System.Reflection.ParameterInfo[], string> __ps = ps => string.Join(", ",
+  ps.Select(p => __tn(p.ParameterType) + " " + p.Name + (p.IsOptional ? " = …" : "")));
+System.Func<System.Reflection.MemberInfo, string> __m = m => {
+  try {
+    switch (m) {
+      case System.Reflection.ConstructorInfo c: return "new " + __tn(c.DeclaringType) + "(" + __ps(c.GetParameters()) + ")";
+      case System.Reflection.MethodInfo mi when !mi.IsSpecialName:
+        return (mi.IsStatic ? "static " : "") + __tn(mi.ReturnType) + " " + mi.Name + "(" + __ps(mi.GetParameters()) + ")";
+      case System.Reflection.PropertyInfo pi:
+        return ((pi.GetMethod ?? pi.SetMethod)?.IsStatic == true ? "static " : "") + __tn(pi.PropertyType) + " " + pi.Name
+          + " { " + (pi.GetMethod?.IsPublic == true ? "get; " : "") + (pi.SetMethod?.IsPublic == true ? "set; " : "") + "}";
+      case System.Reflection.FieldInfo fi:
+        return fi.DeclaringType.IsEnum ? (fi.IsStatic ? "enum " + fi.Name : null)
+          : (fi.IsStatic ? "static " : "") + __tn(fi.FieldType) + " " + fi.Name;
+    }
+  } catch { }
+  return null;
+};
+System.Func<System.Reflection.MemberInfo, bool> __special = m => m is System.Reflection.MethodBase mb && mb.IsSpecialName && !(m is System.Reflection.ConstructorInfo);
+// 0 same name · 1 one prefixes the other · 2 one contains the other, or a shared stem of
+// 4+ letters (Colormap ~ ColorScale) · 3 unrelated. A name under 3 letters only matches
+// itself (measured: `A`, `D` listed as neighbours of `Dash`).
+System.Func<string, string, int> __near = (n, i) => {
+  var a = n.ToLowerInvariant(); var b = i.ToLowerInvariant();
+  if (a == b) return 0;
+  if (a.Length < 3 || b.Length < 3) return 3;
+  if (a.StartsWith(b) || b.StartsWith(a)) return 1;
+  if (a.Contains(b) || b.Contains(a)) return 2;
+  var k = 0; while (k < a.Length && k < b.Length && a[k] == b[k]) k++;
+  return k >= 4 ? 2 : 3;
+};
+System.Func<System.Type, string, System.Collections.Generic.List<(int r, string s)>> __members = (t, i) => {
+  var ms = new System.Collections.Generic.List<System.Reflection.MemberInfo>();
+  for (var b = t; b != null && b.FullName != "System.Object" && b.FullName != "System.ValueType" && b.FullName != "System.Enum"; b = b.BaseType)
+    try { ms.AddRange(b.GetMembers(__bf).Where(m => m.MemberType != System.Reflection.MemberTypes.NestedType)); } catch { }
+  return ms.Select(m => (r: __near(m.Name, i), s: __m(m))).Where(p => p.s != null)
+    .GroupBy(p => p.s).Select(g => g.First()).OrderBy(p => p.r).ToList();
+};
+foreach (var q in __q) {
+  var outl = new System.Collections.Generic.List<string>();
+  // the type's members unrelated to the cited name go AFTER the neighbours: a long member
+  // list must not push the real answer (LinePattern.Dashed for `Dash`) past the cut
+  var rest = new System.Collections.Generic.List<string>();
+  if (q.k == "member" || q.k == "call") {
+    var owners = q.o == "" ? __all.Where(x => { try { return x.GetMember(q.i, __bf).Length > 0; } catch { return false; } }).Take(3)
+                           : __all.Where(x => x.Name.Split('`')[0] == q.o).Take(2);
+    foreach (var t in owners) {
+      var ms = __members(t, q.i);
+      if (q.k == "call") ms = ms.Where(p => q.i == t.Name ? p.s.StartsWith("new " + t.Name + "(") : (p.s.Contains(" " + q.i + "(") || p.s.Contains("." + q.i + "("))).ToList();
+      outl.Add("type " + t.FullName + (t.IsEnum ? " (enum)" : "") + (q.k == "member" ? " — membres publics (l'erreur cite `" + q.i + "`) :" : q.i == t.Name ? " — constructeurs :" : " — surcharges de " + q.i + " :"));
+      var shown = ms.Take(45).ToList();
+      outl.AddRange(shown.Where(p => q.k == "call" || p.r < 3).Select(p => "  " + p.s));
+      if (q.k == "member" && shown.Any(p => p.r >= 3))
+        rest.Add("autres membres de " + t.Name + " :");
+      rest.AddRange(shown.Where(p => q.k == "member" && p.r >= 3).Select(p => "  " + p.s));
+      if (ms.Count > 45) rest.Add("  … " + (ms.Count - 45) + " autres membres non listés");
+      if (q.k == "member")
+        try {
+          foreach (var e in __all.Where(x => x.IsAbstract && x.IsSealed)
+                     .SelectMany(x => x.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+                     .Where(mi => mi.IsDefined(typeof(System.Runtime.CompilerServices.ExtensionAttribute), false)
+                       && mi.GetParameters().Length > 0 && !mi.ContainsGenericParameters
+                       && mi.GetParameters()[0].ParameterType.IsAssignableFrom(t)).OrderBy(mi => __near(mi.Name, q.i)).Take(10))
+            (__near(e.Name, q.i) < 3 ? outl : rest).Add("  extension " + e.DeclaringType.Name + "." + __m(e));
+        } catch { }
+    }
+  }
+  if (q.k == "ns") {
+    var inNs = __all.Where(x => x.Namespace == q.o).Select(x => x.Name.Split('`')[0]).Distinct().OrderBy(s => s).ToList();
+    if (inNs.Count > 0) outl.Add("espace " + q.o + " (n'a pas `" + q.i + "`) : " + string.Join(", ", inNs.Take(60)) + (inNs.Count > 60 ? ", …" : ""));
+  }
+  if (q.k == "type" || q.k == "ns")
+    foreach (var t in __all.Where(x => x.Name.Split('`')[0] == q.i).Take(4)) outl.Add("type " + q.i + " = " + t.FullName);
+  if (q.i.Length >= 3) {
+    // the faulty type's own package first (measured: SkiaSharp names crowded out ScottPlot's)
+    var __root = ((q.k == "ns" ? q.o : __all.FirstOrDefault(x => x.Name.Split('`')[0] == q.o)?.Namespace) ?? "").Split('.')[0];
+    System.Func<System.Type, int> __pref = x => __root != "" && (x.Namespace ?? "").Split('.')[0] == __root ? 0 : 1;
+    var near = __all.Where(x => __near(x.Name.Split('`')[0], q.i) < 3 && x.Name.Split('`')[0] != q.i)
+        .Select(x => (r: __near(x.Name.Split('`')[0], q.i), f: __pref(x), s: "type " + x.FullName))
+      .Concat(__all.Where(x => x.IsPublic).SelectMany(x => { try { return x.GetMembers(__bf).Select(m => (x, m)); } catch { return new (System.Type, System.Reflection.MemberInfo)[0]; } })
+        .Where(p => !__special(p.Item2) && p.Item2.MemberType != System.Reflection.MemberTypes.NestedType && p.Item2.MemberType != System.Reflection.MemberTypes.Constructor
+          && __near(p.Item2.Name, q.i) < 3 && !(p.Item1.Name.Split('`')[0] == q.o))
+        .Select(p => (r: __near(p.Item2.Name, q.i), f: __pref(p.Item1), s: p.Item1.Name + "." + p.Item2.Name + " — " + (__m(p.Item2) ?? ""))))
+      .OrderBy(p => p.f).ThenBy(p => p.r).Select(p => p.s).Distinct().Take(8).ToList();
+    outl.AddRange(near.Select(s => "  voisin : " + s));
+  }
+  outl.AddRange(rest);
+  if (outl.Count > 0) {
+    System.Console.WriteLine("@@ " + (q.k == "member" ? q.o + "." + q.i : q.k == "ns" ? q.o + "." + q.i : q.k == "call" ? (q.o == "" ? q.i : q.o + "." + q.i) + "(…)" : q.i));
+    foreach (var l in outl) System.Console.WriteLine(l);
+  }
+}
+}"""
+
+
+def dotnet_probe_code(queries: list[tuple[str, str, str]], loads: list[str],
+                      refs: list[str] | None = None) -> str:
+    """The kernel-side probe with its queries and load paths spliced in as verbatim C#
+    string literals (a `"` doubled), so no value can close a literal early. ``refs`` (the
+    notebook's own `#r "nuget: …"` lines) go first on a FRESH kernel: they register the
+    package's dependency resolution, which a bare LoadFrom does not."""
+    q = ", ".join(f"({_cs_str(k)}, {_cs_str(o)}, {_cs_str(i)})" for k, o, i in queries)
+    body = (_DOTNET_PROBE_CS.replace("/*QUERIES*/", q)
+            .replace("/*LOADS*/", ", ".join(_cs_str(p) for p in loads)))
+    return ("\n".join(refs) + "\n" + body) if refs else body
+
+
+def nuget_ref_lines(cells: list[dict]) -> list[str]:
+    """The notebook's `#r "nuget: …"` directives, verbatim and deduplicated."""
+    out: list[str] = []
+    for c in cells or []:
+        if c.get("cell_type") == "code":
+            for m in _NUGET_REF_RE.finditer(_text(c.get("source"))):
+                line = m.group(0).strip()
+                if line not in out:
+                    out.append(line)
+    return out
+
+
+def cap_probe_sections(text: str, cap: int = DOTNET_API_CAP) -> str:
+    """Each `@@` section (one diagnostic) gets an equal share of the cap, cut at a line
+    boundary: a large type's member list must not crowd the other diagnostics out of the
+    block (measured 22/11: Heatmap + LineStyle filled 3 600 chars, GetImage / Bar / Ticks
+    never shown). The headers always survive."""
+    secs = [s for s in re.split(r"(?m)^(?=@@ )", text) if s.strip()]
+    if len(text) <= cap or not secs:
+        return text
+    per = max(DOTNET_API_SECTION_MIN, cap // len(secs))
+    out = []
+    for s in secs:
+        s = s.rstrip("\n")
+        if len(s) > per:
+            s = s[:per].rsplit("\n", 1)[0] + "\n  [… section tronquée …]"
+        out.append(s)
+    return "\n".join(out)
+
+
+def _probe_stdout(r: dict) -> str:
+    outs = [wire_output(o) for o in (r or {}).get("outputs") or []]
+    return "".join(str(o.get("text") or "") for o in outs
+                   if isinstance(o, dict) and o.get("output_type") == "stream"
+                   and o.get("name", "stdout") == "stdout")
+
+
+async def dotnet_api_block(pm, kid: str | None, cells: list[dict], errors: list[str],
+                           root: Path | None = None, fresh: bool = False) -> tuple[str, dict]:
+    """The REAL API of the .NET package types a repair round's diagnostics name, read by
+    reflection on the kernel that compiled the cells (``fresh``: a kernel started for the
+    probe alone, which first replays the notebook's `#r "nuget:"` lines). Returns (block,
+    info) — ("", {}) when no diagnostic names a package member; ("", info) when the
+    notebook declares no package or the probe printed nothing. Never raises past its own
+    guard: grounding is an aid."""
+    queries = dotnet_api_queries(errors, cells)
+    if not queries or not kid:
+        return "", {}
+    loads = nuget_load_paths(cells, root)
+    if not loads:
+        return "", {"kind": "dotnet", "queries": len(queries), "skipped": "no-package"}
+    code = dotnet_probe_code(queries, loads, nuget_ref_lines(cells) if fresh else None)
+    r = await pm_call(pm, "execute_on_kernel", {"kernel_id": kid, "mode": "code",
+                                                "code": code,
+                                                "timeout": DOTNET_PROBE_TIMEOUT_S})
+    text = _probe_stdout(r).replace("\r\n", "\n").strip()
+    info = {"kind": "dotnet", "queries": len(queries),
+            "packages": [Path(p).parent.name + " " + Path(p).name if not p.lower().endswith(".dll")
+                         else Path(p).name for p in loads]}
+    if not text:
+        info["empty"] = str(r.get("status") or r.get("error") or "")[:200]
+        return "", info
+    text = cap_probe_sections(text)
+    info["chars"] = len(text)
+    block = (f"{DOTNET_API_HEAD} — réflexion sur le noyau qui a compilé ces cellules "
+             f"(assemblies chargées, version exacte : {', '.join(info['packages'])}). Ta mémoire "
+             "de ces bibliothèques peut dater d'une autre version : là où elle diverge, ces "
+             "signatures font foi. Un membre que l'erreur dit absent n'existe pas dans cette "
+             "version — prends-en un listé ici (membres du type, extensions, voisins), "
+             "n'en invente pas un autre.\n" + text)
+    return block, info
+
+
+async def dotnet_ground_execution(pm, kid: str | None, nb_path: Path, execution: list[dict],
+                                  fresh: bool = False) -> dict | None:
+    """dotnet_api_block over the cells an execution left failing, read back from the
+    notebook's persisted error outputs: {"cells", "block", "info"}, or None when nothing
+    fails or a failure is not a plain error (a timed-out cell may still hold the kernel:
+    the probe would queue behind it). Never raises."""
+    failing = [e for e in execution or [] if isinstance(e, dict) and not e.get("ok")]
+    if not failing or not kid or any(e.get("status") != "error" for e in failing):
+        return None
+    idx = [e.get("cell") for e in failing]
+    try:
+        cells = _cells(nb_path)
+        errs = [_outputs_text(cells[i]) for i in idx if isinstance(i, int) and 0 <= i < len(cells)]
+        block, info = await dotnet_api_block(pm, kid, cells, errs, fresh=fresh)
+    except Exception as ex:  # grounding is an aid: never fail the caller on it
+        block, info = "", {"kind": "dotnet", "error": f"{type(ex).__name__}: {ex}"[:300]}
+    return {"cells": idx, "block": block, "info": info}
+
+
 def repair_prompt(failing: list[dict], conventions: str = "",
                   upstream: list[dict] | None = None,
                   deferred: list[dict] | None = None, crate_api: str = "") -> str:
@@ -3291,10 +3700,13 @@ def repair_prompt(failing: list[dict], conventions: str = "",
         blocks.append(f"### Cellule {f['idx']} (code)\nSOURCE ACTUELLE :\n{f['source']}\n\n"
                       f"ERREURS RÉELLES (compilation/exécution sur le noyau de la série) :\n"
                       f"{f['errors']}{cite_txt}")
-    api_txt = ("\n\nAPI RÉELLE DES CRATES — extraite des sources exactes que le noyau a "
-               "compilées (registre cargo local). Ta mémoire de ces crates peut dater d'une "
-               "autre version : là où elle diverge de ces signatures, ce sont elles qui font "
-               "foi (imports, noms, features).\n" + crate_api) if crate_api else ""
+    if crate_api.startswith(DOTNET_API_HEAD):      # .NET: the block carries its own heading
+        api_txt = "\n\n" + crate_api
+    else:
+        api_txt = ("\n\nAPI RÉELLE DES CRATES — extraite des sources exactes que le noyau a "
+                   "compilées (registre cargo local). Ta mémoire de ces crates peut dater d'une "
+                   "autre version : là où elle diverge de ces signatures, ce sont elles qui font "
+                   "foi (imports, noms, features).\n" + crate_api) if crate_api else ""
     up = upstream or []
     dep_up = [u for u in up if u.get("via") == "dep"]
     up = [u for u in up if u.get("via") != "dep"]
@@ -3624,12 +4036,13 @@ TWIN_VALUES_RULE = (
 
 
 def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",
-                    spec: bool = False, twin_view: str = "") -> str:
+                    spec: bool = False, twin_view: str = "", api_block: str = "") -> str:
     """Self-contained on purpose: the build conversation may be gone (sk-agent keeps no
     durable store here, and --revise-from runs in a new process). The reviser gets the
     spec, the whole notebook with its REAL outputs, the twin's code cells with THEIR real
     outputs (the values to reproduce, 22/11), and the findings — and may contest a finding
-    instead of bending the notebook to a wrong one."""
+    instead of bending the notebook to a wrong one. ``api_block`` (.NET exec-reject,
+    22/11): the real API of the package members the failing cells' diagnostics name."""
     fl = [{"cell": f.get("cell"), "severity": f.get("severity"), "detail": f.get("detail")}
           for f in findings if isinstance(f, dict)]
     return (
@@ -3643,6 +4056,7 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         + f"## Carnet actuel — sources ET sorties réelles\n{view}\n\n"
         + (f"## Jumeau source — code ET sorties de RÉFÉRENCE (les valeurs à reproduire)\n"
            f"{twin_view}\n\n" if twin_view else "")
+        + (f"## {api_block}\n\n" if api_block else "")
         + f"## Constats du vérificateur\n{json.dumps(fl, ensure_ascii=False, indent=1)}\n\n"
         "## Règles\n"
         + (TWIN_VALUES_RULE if twin_view else "")
@@ -5773,6 +6187,10 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
     extend = max(0, int(getattr(args, "repair_extend", REPAIR_EXTEND_DEFAULT) or 0))
     cap = budget + extend if budget > 0 else 0
     rnd = 0
+    dotnet = kname.startswith(".net")
+    probed = None              # the execution list the last .NET probe read
+    if dotnet:
+        rec.pop("dotnet_api_last", None)
     while rnd < budget:
         failing = [e for e in (rec.get("execution") or []) if not e.get("ok")]
         if not failing:
@@ -5826,6 +6244,16 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                                                       absent=absent)
             except Exception as ex:  # grounding is an aid: never fail the round on it
                 api_info = {"error": f"{type(ex).__name__}: {ex}"[:300]}
+        # .NET: the same truth by reflection on the kernel that just compiled the cells
+        # (ICT-15, 22/11: four rounds per grain re-invented ScottPlot members).
+        elif dotnet and kid:
+            g = await dotnet_ground_execution(pm, kid, scratch, rec.get("execution"))
+            probed = rec.get("execution")
+            if g:
+                crate_api, api_info = g["block"], g["info"]
+                rec["dotnet_api_last"] = g
+            else:
+                rec.pop("dotnet_api_last", None)
         # Upstream definitions the stack crosses (#27314): offered, bounded, never demanded.
         failing_idx = {d["idx"] for d in detail}
         upstream: list[dict] = []
@@ -5933,6 +6361,15 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             rec.setdefault("repair_extensions", []).append(
                 {"stage": stage, "after_round": rnd - 1, "failing_before": len(failing),
                  "failing_after": after, "budget": budget})
+    # Rounds spent, cells still failing: the probe reads the FINAL execution while its
+    # kernel is alive, so the constructive loop's first round gets the API too
+    # (exec-reject findings, revise_loop). The caller stops the kernel.
+    if dotnet and kid and rec.get("execution") is not probed:
+        g = await dotnet_ground_execution(pm, kid, scratch, rec.get("execution"))
+        if g:
+            rec["dotnet_api_last"] = g
+        else:
+            rec.pop("dotnet_api_last", None)
     return kid, conv
 
 
@@ -6178,6 +6615,36 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
             rec["verdict"] = "verify-reject"
 
 
+async def revision_dotnet_api(pm, rec: dict, kname: str, exec_dir: Path, built_path: Path,
+                              entry: dict) -> str:
+    """The .NET API block for an exec-reject revision round: the one the last repair
+    rounds probed when it covers the cells failing NOW, else a probe on a kernel started
+    for it alone (a --revise-from resume: the build's kernel died with its process).
+    Recorded on the revision entry; "" when nothing applies. Never raises."""
+    now = [e.get("cell") for e in rec.get("execution") or []
+           if isinstance(e, dict) and not e.get("ok")]
+    g = rec.get("dotnet_api_last")
+    if not g or g.get("cells") != now:
+        g, pkid = None, None
+        try:
+            pkid = await start_kernel(pm, kname, exec_dir)
+            if pkid:
+                g = await dotnet_ground_execution(pm, pkid, built_path, rec.get("execution"),
+                                                  fresh=True)
+        except Exception as ex:  # grounding is an aid: never fail the round on it
+            g = {"cells": now, "block": "",
+                 "info": {"kind": "dotnet", "error": f"{type(ex).__name__}: {ex}"[:300]}}
+        finally:
+            if pkid:
+                await pm_call(pm, "manage_kernel", {"action": "stop", "kernel_id": pkid})
+        if g:
+            g["info"] = {**(g.get("info") or {}), "fresh": True}
+            rec["dotnet_api_last"] = g
+    if g:
+        entry["dotnet_api"] = g.get("info")
+    return (g or {}).get("block") or ""
+
+
 async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path: Path,
                       kname: str, exec_dir: Path, conventions: str, create_mode: bool,
                       wt_path: Path, out_dir: Path) -> None:
@@ -6217,13 +6684,18 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         t0 = time.time()
         applied = False
         async with mcp_sessions(out_dir) as (sk, pm):
+            api_block = ""
+            if source_in == "execution" and kname.startswith(".net"):
+                api_block = await revision_dotnet_api(pm, rec, kname, exec_dir, built_path,
+                                                      entry)
             env = await sk_call_retry(
                 sk, args, rec, f"6-revise+{rnd}",
                 revision_prompt(issue, revision_view(built_path), findings, conventions,
                                 spec=bool(getattr(args, "from_spec", False)),
                                 twin_view=(twin_reference_view(src_nb)
                                            if src_nb and Path(src_nb) != Path(built_path)
-                                           else "")),
+                                           else ""),
+                                api_block=api_block),
                 None, max_tokens=BUILD_MAX_TOKENS)
             entry["conversation_id"] = env.get("conversation_id")
             part, env = await parse_or_repair(sk, args, rec, f"6-revise+{rnd}", env, None,
