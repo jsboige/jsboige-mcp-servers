@@ -1600,6 +1600,25 @@ CREATION_LINK_COUNT_RULES = (
     "- COMMENTAIRES : une cellule de code longue (8 lignes ou plus) porte des commentaires "
     "de lecture ; reporte ceux du jumeau quand ils sont fournis.\n")
 
+# 22/11 salvage: two reject classes the verifier kept finding round after round.
+# (1) CoursIA#28102 — every exercise stub was paired with an « expected results » block
+#     that computed the answer, hidden behind a `false` switch: 4 major findings.
+# (2) ICT-15 c/d/j/k — the twin draws its data from numpy (PCG64 + SeedSequence +
+#     ziggurat normals); hand-rolled generators drew other data, so every value diverged,
+#     and pasting the twin's OUTPUTS under computed columns was rejected as well.
+PORT_CONTENT_RULES = (
+    "Règles de contenu vérifiées par le relecteur indépendant :\n"
+    "- EXERCICES : une cellule d'exercice ne contient JAMAIS sa solution, ni active, ni "
+    "désactivée par un commutateur, ni rangée dans un bloc de « résultats attendus » qui la "
+    "calcule. Le stub rend une valeur neutre ; un contrôle éventuel compare à des valeurs "
+    "de référence FIGÉES (littéraux), jamais à un calcul qui implémente la réponse.\n"
+    "- ALÉA NUMPY : si le jumeau tire ses DONNÉES d'un générateur numpy (`default_rng`, "
+    "PCG64, SeedSequence, `normal`), ne réimplémente pas ce générateur : il ne tirera pas "
+    "les mêmes nombres. Reprends les données d'ENTRÉE tirées par le jumeau sous forme de "
+    "tableau littéral, dis-le en prose (« données tirées par le jumeau, reprises telles "
+    "quelles »), puis CALCULE tous les résultats à partir d'elles. Ne recopie jamais une "
+    "SORTIE du jumeau à la place d'un calcul.\n")
+
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
                          src_cells: list | None = None) -> str:
@@ -1682,6 +1701,7 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
         + json.dumps(segment_cells, ensure_ascii=False)[:9000] + "\n"
         + prose + comments + refs + "\n"
         + CREATION_LINK_COUNT_RULES + "\n"
+        + PORT_CONTENT_RULES + "\n"
         + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
         + f"Le jumeau complet compte {n_src_cells} cellules — cette tranche n'en couvre "
         "qu'une partie, ne rends QUE celles listées.\n\n"
@@ -4060,6 +4080,7 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         + f"## Constats du vérificateur\n{json.dumps(fl, ensure_ascii=False, indent=1)}\n\n"
         "## Règles\n"
         + (TWIN_VALUES_RULE if twin_view else "")
+        + PORT_CONTENT_RULES.split("\n", 1)[1]
         + "- Ne crée ni ne supprime aucune cellule : index et types inchangés (le plan est "
         "imposé). Tu peux modifier toute cellule existante, code ou markdown, y compris une "
         "voisine de la cellule citée quand le constat l'exige.\n"
