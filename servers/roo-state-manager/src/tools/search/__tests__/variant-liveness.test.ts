@@ -17,6 +17,7 @@ import {
 	selectVariantCollection,
 	resolveVariantLivenessTimeout,
 	type VariantCandidate,
+	type WsWriterSignal,
 } from '../search-codebase.tool.js';
 
 /** The two collections measured on po-2023 (2026-10-31). */
@@ -102,6 +103,135 @@ describe('selectVariantCollection', () => {
 		expect(sel?.candidate.name).toBe(canonical.name);
 		expect(sel?.basis).toBe('liveness');
 		expect(sel?.flipped).toBe(true);
+	});
+});
+
+describe('selectVariantCollection — #4863 writer preference', () => {
+	/** The web1 loop claims the canonical collection; the po-2024 legacy twin holds no sentinel. */
+	const WRITER: WsWriterSignal = { writer: 'myia-web1:roo-extensions', since: '2026-11-21T00:00:00.000Z' };
+	/** Equal liveness on purpose: the measured divergence is a TIE on liveness, so #4352's
+	 * points ranking served the bigger writer-less twin. Only the sentinel breaks it. */
+	const TIED_LIVENESS = new Map([
+		[DECAYING_TWIN.name, { ratio: 0.9, checked: 200 }],
+		[CANONICAL.name, { ratio: 0.9, checked: 200 }],
+	]);
+
+	it('serves the writer-bearing variant over the larger writer-less twin on a liveness tie (the measured #4863 case)', () => {
+		const sel = selectVariantCollection(
+			[DECAYING_TWIN, CANONICAL],
+			TIED_LIVENESS,
+			new Map<string, WsWriterSignal | null | undefined>([
+				[DECAYING_TWIN.name, null],
+				[CANONICAL.name, WRITER],
+			]));
+		expect(sel?.candidate.name).toBe(CANONICAL.name);
+		expect(sel?.basis).toBe('writer');
+		expect(sel?.flipped).toBe(true);
+	});
+
+	it('lets the writer preference beat liveness — a refreshed corpus outranks a livelier frozen one', () => {
+		// The legacy twin's files exist (0.98), the canonical's fewer (0.80): liveness
+		// alone would pick the frozen corpus. The sentinel says which one a loop refreshes.
+		const sel = selectVariantCollection(
+			[DECAYING_TWIN, CANONICAL],
+			new Map([
+				[DECAYING_TWIN.name, { ratio: 0.98, checked: 200 }],
+				[CANONICAL.name, { ratio: 0.8, checked: 200 }],
+			]),
+			new Map<string, WsWriterSignal | null | undefined>([
+				[DECAYING_TWIN.name, null],
+				[CANONICAL.name, WRITER],
+			]));
+		expect(sel?.candidate.name).toBe(CANONICAL.name);
+		expect(sel?.basis).toBe('writer');
+		expect(sel?.flipped).toBe(true);
+	});
+
+	it('keeps the liveness→points behaviour when NO variant carries a writer', () => {
+		const sel = selectVariantCollection(
+			[DECAYING_TWIN, CANONICAL],
+			TIED_LIVENESS,
+			new Map<string, WsWriterSignal | null | undefined>([
+				[DECAYING_TWIN.name, null],
+				[CANONICAL.name, null],
+			]));
+		expect(sel?.candidate.name).toBe(DECAYING_TWIN.name);
+		expect(sel?.basis).toBe('liveness');
+		expect(sel?.flipped).toBe(false);
+	});
+
+	it('keeps the liveness→points behaviour when EVERY variant carries a writer', () => {
+		const sel = selectVariantCollection(
+			[DECAYING_TWIN, CANONICAL],
+			TIED_LIVENESS,
+			new Map([
+				[DECAYING_TWIN.name, WRITER],
+				[CANONICAL.name, WRITER],
+			]));
+		expect(sel?.candidate.name).toBe(DECAYING_TWIN.name);
+		expect(sel?.basis).toBe('liveness');
+		expect(sel?.flipped).toBe(false);
+	});
+
+	it('an UNDECIDABLE probe counts as not-writer-bearing but never disqualifies the others', () => {
+		// The twin's sentinel read timed out, the canonical's named its writer: a proven
+		// writer is always the safer pick than an unknown — the unknown stays eligible.
+		const sel = selectVariantCollection(
+			[DECAYING_TWIN, CANONICAL],
+			TIED_LIVENESS,
+			new Map<string, WsWriterSignal | null | undefined>([
+				[DECAYING_TWIN.name, undefined],
+				[CANONICAL.name, WRITER],
+			]));
+		expect(sel?.candidate.name).toBe(CANONICAL.name);
+		expect(sel?.basis).toBe('writer');
+	});
+
+	it('every probe undecidable falls back to the legacy ranking, not to a fabricated preference', () => {
+		const sel = selectVariantCollection(
+			[DECAYING_TWIN, CANONICAL],
+			TIED_LIVENESS,
+			new Map<string, WsWriterSignal | null | undefined>([
+				[DECAYING_TWIN.name, undefined],
+				[CANONICAL.name, undefined],
+			]));
+		expect(sel?.candidate.name).toBe(DECAYING_TWIN.name);
+		expect(sel?.basis).toBe('liveness');
+	});
+
+	it('a single variant never switches basis to writer (no comparison to make)', () => {
+		const sel = selectVariantCollection(
+			[CANONICAL],
+			null,
+			new Map([[CANONICAL.name, WRITER]]));
+		expect(sel?.candidate.name).toBe(CANONICAL.name);
+		expect(sel?.basis).toBe('points');
+	});
+
+	it('no writer map (flag off / probe skipped) is exactly the pre-#4863 behaviour', () => {
+		for (const map of [undefined, null]) {
+			const sel = selectVariantCollection([DECAYING_TWIN, CANONICAL], TIED_LIVENESS, map);
+			expect(sel?.candidate.name).toBe(DECAYING_TWIN.name);
+			expect(sel?.basis).toBe('liveness');
+		}
+	});
+
+	it('among several writer-bearing variants the livelier one wins (in-group liveness)', () => {
+		const other: VariantCandidate = { name: 'ws-other-written', points: 1000 };
+		const sel = selectVariantCollection(
+			[DECAYING_TWIN, CANONICAL, other],
+			new Map([
+				[DECAYING_TWIN.name, { ratio: 0.99, checked: 200 }],
+				[CANONICAL.name, { ratio: 0.9, checked: 200 }],
+				[other.name, { ratio: 0.4, checked: 200 }],
+			]),
+			new Map<string, WsWriterSignal | null | undefined>([
+				[DECAYING_TWIN.name, null],
+				[CANONICAL.name, WRITER],
+				[other.name, { writer: 'another-seat:ws', since: '' }],
+			]));
+		expect(sel?.candidate.name).toBe(CANONICAL.name);
+		expect(sel?.basis).toBe('writer');
 	});
 });
 
