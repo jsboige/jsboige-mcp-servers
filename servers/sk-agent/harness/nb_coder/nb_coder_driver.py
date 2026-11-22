@@ -4607,7 +4607,9 @@ _kernel_retry_sleep = asyncio.sleep
 # (PROVENANCE_RE). This is prose-vocabulary policing, not claim-marker matching: the
 # registry's own markers live on issue comments, never inside notebooks.
 COORD_REF_RE = re.compile(r"(?i)\b(?:epic|see|part\s+of)\s*#|\blane\b")
-PROVENANCE_RE = re.compile(r"Carnet issu de l'EPIC #\d+")
+# The typographic apostrophe is the same note (22/11, CoursIA#28104: « Carnet issu de
+# l’EPIC #26534. » refused for its U+2019 alone).
+PROVENANCE_RE = re.compile(r"Carnet issu de l['’]EPIC #\d+")
 
 
 def strip_coord_refs(text: str) -> tuple[str, int]:
@@ -5061,9 +5063,14 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     canonical .NET twin (canon_version), never the Python twin."""
     src_cells, built_cells = _cells(src_nb), _cells(built_nb)
     gates: list[dict] = []
-    offenders = [h["cell"] for h in coord_ref_hits(built_cells, src_cells)]
+    cr_hits = coord_ref_hits(built_cells, src_cells)
+    offenders = [h["cell"] for h in cr_hits]
+    # The excerpts ride along (22/11, CoursIA#28104): from the cell index alone, five
+    # revision rounds could not find what to remove.
     gates.append({"gate": "coord-refs", "ok": not offenders,
-                  "detail": {"cells": offenders[:10]}})
+                  "detail": {"cells": offenders[:10],
+                             "hits": [{"cell": h["cell"], "excerpt": h["excerpt"]}
+                                      for h in cr_hits[:10]]}})
     # Foreign-script corruption (#27104 blank pass, 17/11): delta-judged like coord-refs —
     # pre-existing script in the SOURCE is the repo's business, not this build's.
     fs_hits = foreign_script_hits(built_cells, src_cells)
@@ -6436,8 +6443,23 @@ _GATE_FIX_TEXT = {
                     "par un chemin relatif au dépôt ou par un littéral de données",
     "svg-display": "la cellule doit AFFICHER une figure vectorielle SVG (sortie réelle), pas "
                    "une image encodée ni un chemin de fichier",
-    "coord-refs": "les renvois entre cellules (références croisées) sont incohérents : aligne "
-                  "les références citées avec les cellules réelles du carnet",
+    # 22/11, CoursIA#28104: the former text ("cross-cell references are inconsistent")
+    # described another defect; five revision rounds aligned cell numbers and the
+    # `lane` word stayed. The gate is COORD_REF_RE: an issue-tracker reference.
+    "coord-refs": "la cellule porte une référence de coordination — `EPIC #…`, `see #…`, "
+                  "`part of #…` ou le mot `lane` (toute casse) : supprime cette mention ou "
+                  "reformule sans elle (« voie », « filière », ou rien) ; aucun numéro "
+                  "d'issue dans les cellules. Seule exception : la note de provenance "
+                  "`> Carnet issu de l'EPIC #N.`, admise UNIQUEMENT dans la DERNIÈRE cellule "
+                  "markdown du carnet — si l'extrait est cette note placée ailleurs, "
+                  "retire-la de cette cellule (au besoin, remets-la en fin de la dernière "
+                  "cellule markdown)",
+    # 22/11, CoursIA#27742: « Les valeurs下列 sont… » survived three rounds told only
+    # "fix the cell", with no cell named (the hits carried it, the finding did not).
+    "foreign-script": "la cellule contient des caractères d'un autre système d'écriture "
+                      "(cyrillique, kana, hangul, idéogrammes CJK) glissés par la génération : "
+                      "réécris la phrase de l'extrait en français correct, sans aucun de ces "
+                      "caractères ; ne touche pas au reste de la cellule",
     "dead-links": "lien vers un fichier absent du dépôt : pointe un carnet voisin qui EXISTE "
                   "(souvent le jumeau Python ou C# de ce voisin) ou retire le lien — ne "
                   "translittère jamais un suffixe `-Python` en `-Rust`",
@@ -6470,6 +6492,11 @@ _GATE_FIX_TEXT = {
 }
 
 
+# Gates whose detail carries {"cell", "excerpt"} hits that are safe to quote back to the
+# model (never `secrets`: its detail holds indices only, and must stay that way).
+_GATE_EXCERPT_GATES = {"coord-refs", "foreign-script"}
+
+
 def gate_repair_findings(rec: dict) -> list[dict]:
     """Synthesize verifier-shaped findings from the failing gates, so the EXISTING
     constructive loop can repair a gates-failed build instead of dying terminal.
@@ -6488,6 +6515,17 @@ def gate_repair_findings(rec: dict) -> list[dict]:
             for e in entries:
                 out.append({"cell": e.get("cell"), "severity": "major",
                             "detail": f"porte {g.get('gate')} en échec — {fix} ; {e.get('text')}"})
+            continue
+        hits = (g.get("detail") or {}).get("hits") \
+            if isinstance(g.get("detail"), dict) and g.get("gate") in _GATE_EXCERPT_GATES else None
+        if hits:
+            # one finding per offending cell, WITH the offending excerpt (#28104/#27742)
+            fix = _GATE_FIX_TEXT[g["gate"]]
+            for h in hits:
+                if isinstance(h, dict):
+                    out.append({"cell": h.get("cell"), "severity": "major",
+                                "detail": f"porte {g['gate']} en échec — {fix} ; extrait "
+                                          f"fautif : « {str(h.get('excerpt') or '').strip()} »"})
             continue
         detail = g.get("detail") if isinstance(g.get("detail"), (str, int, float)) else json.dumps(
             g.get("detail") or {}, ensure_ascii=False)
