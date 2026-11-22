@@ -479,7 +479,10 @@ describe('tool-definitions.ts — Schema Validation', () => {
         it('should import only dashboard-schemas (no handler modules)', async () => {
             const source = await import('fs').then(fs =>
                 fs.readFileSync(
-                    new URL('../tool-definitions.ts', import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1'),
+                    // Accept a lowercase drive letter: vitest may resolve
+                    // import.meta.url with `d:` on Windows, and `[A-Z]` then
+                    // skips the strip -> ENOENT `d:\d:\…` (false red).
+                    new URL('../tool-definitions.ts', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'),
                     'utf-8'
                 )
             );
