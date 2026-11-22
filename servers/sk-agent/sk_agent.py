@@ -4002,20 +4002,42 @@ class SKAgentManager:
         return False
 
     async def stop(self):
-        """Clean up all resources."""
-        await self._exit_stack.aclose()
-        self._mcp_plugins.clear()
-        self._mcp_plugin_list.clear()
-        self._threads.clear()
-        self._conv_locks.clear()
-        self._turn_counts.clear()
-        self._epochs.clear()
-        self._kernels.clear()
-        self._sk_agents.clear()
-        self._openai_clients.clear()
-        self._services.clear()
-        self._memory_stores.clear()
-        log.info("SK Agent Manager stopped")
+        """Clean up all resources.
+
+        The exit-stack close is guarded exactly like the forced plugin close
+        (#4854): anyio raises RuntimeError when a cancel scope is exited from
+        a different task than the one that entered it — at server shutdown
+        that noise is logged at debug, never as a failure. State flushing
+        and the final log run in ``finally`` so they happen in all cases.
+        """
+        try:
+            await asyncio.wait_for(
+                self._exit_stack.aclose(), timeout=_MCP_CLOSE_TIMEOUT_S
+            )
+        except (asyncio.TimeoutError, TimeoutError):
+            log.warning(
+                "Exit-stack close did not complete in %.1fs at stop()",
+                _MCP_CLOSE_TIMEOUT_S,
+            )
+        except RuntimeError:
+            # anyio: cancel scope exited from another task — same case as
+            # the forced plugin close above; debug, not a failure.
+            log.debug("cross-task cancel-scope exit at stop() exit-stack close")
+        except Exception:
+            log.exception("Error while closing the exit stack at stop()")
+        finally:
+            self._mcp_plugins.clear()
+            self._mcp_plugin_list.clear()
+            self._threads.clear()
+            self._conv_locks.clear()
+            self._turn_counts.clear()
+            self._epochs.clear()
+            self._kernels.clear()
+            self._sk_agents.clear()
+            self._openai_clients.clear()
+            self._services.clear()
+            self._memory_stores.clear()
+            log.info("SK Agent Manager stopped")
 
 
 # ---------------------------------------------------------------------------
