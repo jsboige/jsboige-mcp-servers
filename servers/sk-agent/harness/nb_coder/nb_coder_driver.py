@@ -1020,6 +1020,22 @@ def series_canonical_meta(repo: Path, rel: str) -> dict:
     return {}
 
 
+CS_VIEW_MAX = 40_000   # a REFERENCE view (C# twin), smaller than the authoritative Python one
+
+
+def csharp_sibling(src_nb: Path) -> Path | None:
+    """The C# twin of a Python source when the series ported one (user 22/11: read Python
+    AND C# when porting — the C# port's structure, translation comments and library choices
+    inform the target port; the Python stays authoritative for prose and values). The model
+    cannot read it itself: its terminal cwd is not the grain's worktree (measured 21/11,
+    10 293 tokens walking the wrong tree), so the harness inlines the view instead."""
+    name = src_nb.name
+    if not name.endswith("-Python.ipynb"):
+        return None
+    cand = src_nb.with_name(name[: -len("-Python.ipynb")] + "-CSharp.ipynb")
+    return cand if cand.is_file() else None
+
+
 def build_view(nb_path: Path, max_chars: int = 120_000) -> str:
     """Whole-notebook view. Overflow is DECLARED, never silent: a cut view makes the model
     plan against a notebook whose footer it cannot see (measured 14/11: 37-cell notebook,
@@ -1455,7 +1471,7 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
 
 # ---------------------------------------------------------------- creation mode (--source-nb)
 def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel: dict,
-                    ctx: str, view: str, conventions: str = "") -> str:
+                    ctx: str, view: str, conventions: str = "", cs_view: str = "") -> str:
     """Stage 1 in creation mode: the target notebook does NOT exist on origin/main — the
     model plans the COMPLETE twin from the Python source + the issue's cell table.
     Measured 17/11 (#27099 dry pass): asking for FULL cell sources here returned a
@@ -1473,7 +1489,14 @@ def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel
         f"Noyau canonique d'exécution : {kernel['kernel_name']}\n\n"
         f"## Contexte de série\n{ctx}\n\n"
         f"## Jumeau Python (structure à porter)\n{view}\n\n"
-        "Le jumeau C# rejoue le MÊME fil pédagogique : une cellule du jumeau Python = une "
+        + (f"## Jumeau C# du même carnet (portage antérieur — RÉFÉRENCE de traduction)\n"
+           f"{cs_view}\n\n"
+           "Ce port C# du même carnet éclaire ton portage : structure retenue, découpage des "
+           "cellules, commentaires de traduction, choix de bibliothèques (prends les "
+           "équivalents dans le langage cible de ses libs quand la spec les permet). Le "
+           "jumeau PYTHON ci-dessus reste l'AUTORITÉ : prose reprise telle quelle, valeurs "
+           "et ordre des sorties identiques au Python.\n\n" if cs_view else "")
+        + "Le jumeau C# rejoue le MÊME fil pédagogique : une cellule du jumeau Python = une "
         "cellule du jumeau C# (markdown adapté au contexte .NET, code traduit selon la table "
         "de l'issue). Respecte les interdits de l'issue (pas de NotImplementedException, "
         "stubs `// TODO étudiant` + valeur neutre, pas d'appel réseau). La dernière cellule "
@@ -1539,7 +1562,8 @@ CREATION_LINK_COUNT_RULES = (
 
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
-                         src_cells: list | None = None) -> str:
+                         src_cells: list | None = None,
+                         cs_cells: list | None = None) -> str:
     """Stage 2 in creation mode, ONE SEGMENT at a time: the model returns the sources of
     the plan's cells i..j only. Measured 17/11: the whole-notebook single-shot answer
     does not survive the output budget. The harness assembles every segment.
@@ -1549,6 +1573,7 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
     code cells keep deriving from the plan, only prose is pinned to the twin)."""
     prose = ""
     comments = ""
+    csparts: list[str] = []
     if src_cells:
         parts, stripped = [], 0
         cparts: list[str] = []
@@ -1564,6 +1589,14 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                     if cm:
                         cparts.append(f"<cellule {ci} — commentaires du jumeau>\n"
                                       + "\n".join(f"- {t}" for t in cm))
+                # the C# twin's // comments for the SAME cell, when the series ported one
+                # (user 22/11): the previous porter's translation notes — a reference, the
+                # Python above stays the authority for prose and values
+                if cs_cells and 0 <= ci < len(cs_cells) and cs_cells[ci].get("cell_type") == "code":
+                    ccm = twin_code_comments(_text(cs_cells[ci].get("source")))
+                    if ccm:
+                        csparts.append(f"<cellule {ci} — commentaires du porteur C#>\n"
+                                       + "\n".join(f"- {t}" for t in ccm[:8]))
                 continue
             if not isinstance(c, dict) or c.get("cell_type") != "markdown":
                 continue
@@ -1600,6 +1633,13 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                         "(`//` en Rust et en C#). Un portage qui les perd est refusé par la "
                         "garde `Uncommented code` du dépôt (mesuré 21/11) :\n"
                         + "\n\n".join(cparts)[:8000] + "\n")
+        if csparts:
+            comments += ("\n\nCOMMENTAIRES DU JUMEAU C# (portage antérieur du même carnet) — "
+                         "choix de traduction notés par le porteur précédent, pour les "
+                         "cellules CODE de cette tranche. Ils éclairent ton port (structures, "
+                         "API, bibliothèques) ; le jumeau PYTHON reste l'autorité pour la "
+                         "prose et les valeurs :\n"
+                         + "\n\n".join(csparts)[:6000] + "\n")
     return (
         "TOUR 2 — CRÉATION, TRANCHE COURANTE : rends les sources COMPLÈTES des cellules "
         "listées ci-dessous, et rien d'autre. Le harnais assemble lui-même le fichier "
@@ -1875,7 +1915,8 @@ async def repair_creation_plan(session, args, rec: dict, conv: str | None,
 
 async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
                           n_src_cells: int, conventions: str,
-                          src_cells: list | None = None) -> dict:
+                          src_cells: list | None = None,
+                          cs_cells: list | None = None) -> dict:
     """Stage 2 of creation mode, SEGMENT by SEGMENT. Each tour renders the sources of
     the plan's cells i..i+CREATE_SEGMENT only; the harness concatenates in plan order
     and hands ONE payload to apply_create (the single-write discipline holds). Returns
@@ -1915,7 +1956,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         unparsed/empty answer returns parsed=None and the caller decides."""
         env = await sk_call_retry(session, args, rec, stage,
                                   creation_json_prompt(tranche, n_src_cells, conventions,
-                                                       src_cells), conv,
+                                                       src_cells, cs_cells), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
         part, env = await parse_or_repair(session, args, rec, stage, env, conv,
                                           max_tokens=BUILD_MAX_TOKENS)
@@ -6610,6 +6651,11 @@ async def run(args, rec: dict) -> dict:
                     "answered; suspect an undrained stderr pipe blocking the "
                     "child's logging — see the wave-1b post-mortem 18/11)") from None
             view = build_view(src_nb)
+            # user 22/11: a port reads the Python AND the C# twin when one exists
+            cs_nb = csharp_sibling(src_nb) if (create_mode and not from_spec) else None
+            cs_view = build_view(cs_nb, CS_VIEW_MAX) if cs_nb else ""
+            if cs_nb:
+                rec["csharp_twin"] = cs_nb.name
             ctx = series_context(wt_path, args.notebook)
             # ---- stage ½ SPEC (#4831), see spec_stage
             issue_eff = await spec_stage(sk, args, rec, issue, kernel, ctx, view,
@@ -6623,7 +6669,7 @@ async def run(args, rec: dict) -> dict:
                                               ctx, view, conventions)
             elif create_mode:
                 prompt = creation_prompt(args.issue, issue_eff, args.notebook, args.source_nb,
-                                         kernel, ctx, view, conventions)
+                                         kernel, ctx, view, conventions, cs_view)
             else:
                 prompt = plan_prompt(args.issue, issue_eff, args.notebook, kernel,
                                      ctx, view, conventions)
@@ -6671,6 +6717,7 @@ async def run(args, rec: dict) -> dict:
                 shutil.copy2(src_nb, scratch)     # outputs preserved: nothing to re-create
             sha_before = _sha(scratch)
             src_cells = _cells(src_nb)
+            cs_cells = _cells(cs_nb) if cs_nb else None
             rec["write_mode"] = args.write_mode
             env2: dict = {}                # correction branch fills it; creation never reads it
             if create_mode:
@@ -6678,7 +6725,8 @@ async def run(args, rec: dict) -> dict:
                 # authoritative text (a twin's prose pin would copy the placeholders).
                 built = await create_segments(sk, args, rec, conv, plan.get("cells") or [],
                                               len(src_cells), conventions,
-                                              src_cells=None if from_spec else src_cells)
+                                              src_cells=None if from_spec else src_cells,
+                                              cs_cells=None if from_spec else cs_cells)
                 rec["build_model_answer"] = {"parsed": bool(built),
                                              "segments": rec.pop("segments", [])}
                 if not built or not built.get("cells"):
