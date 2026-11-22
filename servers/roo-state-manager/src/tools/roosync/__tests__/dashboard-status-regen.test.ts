@@ -188,7 +188,10 @@ describe('roosync_dashboard — condensation status regen on-change (#4205)', ()
             if (sys.includes(STATUS_PROMPT_MARKER)) {
                 return { choices: [{ message: { content: '## Status condensé (test)' } }] };
             }
-            return { choices: [{ message: { content: '## Résumé des messages archivés (test)' } }] };
+            // #4434 G7a-3: the primary summary leg now enforces the 4-section
+            // contract — a one-call success (what these count-based tests pin)
+            // requires a section-complete answer.
+            return { choices: [{ message: { content: '## Résumé des messages archivés (test)\n\n### Thèmes principaux\n- t\n\n### Actions et résultats\n- a\n\n### Décisions et métriques\n- d\n\n### États transverses\n- aucun' } }] };
         });
     });
 
