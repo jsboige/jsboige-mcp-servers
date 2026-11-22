@@ -26,6 +26,8 @@
 import { createHash } from 'crypto';
 import { existsSync, readdirSync } from 'fs';
 import { resolve, sep } from 'path';
+import { v5 as uuidv5 } from 'uuid';
+import { ZOO_CODE_BLOCK_NAMESPACE } from './zoo-parity.js';
 
 // ─── Naming (the Zoo formula) ─────────────────────────────────────────────────
 
@@ -280,6 +282,103 @@ export function estimateCollectionLiveness(
 	}
 }
 
+// ─── #4863: the RSM ws-writer signal, reader-side ──────────────────────────────
+// A reader seat whose checkout spelling differs from the writer's resolves its
+// own path hash and can be served a writer-less legacy twin that liveness cannot
+// disqualify (its files still exist — measured on po-2024: ws-59e7574de63c6e62,
+// 571 554 pts, 0.900 live, no writer, served over the canonical ws-d2ffdbaa832aed16
+// the web1 loop refreshes). The missing discriminator travels WITH the corpus:
+// the writer claims a sentinel point inside the collection on every non-dry pass
+// (ws-index-writer claimWsWriter), so any seat can read who refreshes it — no
+// shared state, no path spelling. Liveness says "files exist"; the sentinel says
+// "a loop refreshes this". Liveness alone is not freshness.
+
+/**
+ * The ws-writer sentinel's fixed point id — Zoo's own code-block namespace (an
+ * id space, nothing more), under a name Zoo never mints. Distinct from Zoo's
+ * `__indexing_metadata__` marker, which this writer never touches.
+ * Homed in this module (#4863): the sentinel is a READER+WRITER contract (the
+ * reader probes it as the freshness signal above); ws-index-writer re-exports
+ * it so existing imports keep resolving — one definition, not two.
+ */
+export const WS_WRITER_SENTINEL_ID = uuidv5('__rsm_ws_writer__', ZOO_CODE_BLOCK_NAMESPACE);
+
+/** What the reader needs from the sentinel: who writes this collection, since when. */
+export interface WsWriterSignal {
+	writer: string;
+	since: string;
+}
+
+/** Rollback for the whole #4863 feature: preference, probes and response block. */
+export function isWriterSignalEnabled(): boolean {
+	return process.env.WRITER_SIGNAL !== '0';
+}
+
+/**
+ * Bounds each sentinel probe. Same class as resolveVariantLivenessTimeout: a
+ * NaN/≤0 bound would fire setTimeout at ~0 ms and read every probe as
+ * undecidable, silently disarming the preference — an env typo must never
+ * become an accidental off switch. Invalid values fall back to 1500 ms.
+ */
+export function resolveWriterProbeTimeout(raw: string | undefined): number {
+	const t = parseFloat(raw ?? '1500');
+	return Number.isFinite(t) && t > 0 ? t : 1500;
+}
+
+/**
+ * Reader-side, fail-open probe of the ws-writer sentinel (#4863).
+ *
+ *   signal    = the collection is written (refreshed) by that lane since `since`
+ *   null      = the collection was READ and holds no sentinel — writer-less,
+ *               the frozen-corpus case the response must flag
+ *   undefined = undecidable (client has no method, transport error, timeout)
+ *
+ * The writer path keeps its own THROWING read (ws-index-writer readWsWriterRecord:
+ * a failed read must refuse a write). The reader inverts that posture — a failed
+ * read must not break a search; it only forfeits the preference and the warning.
+ */
+export async function probeWsWriterSentinel(
+	client: CollectionReader,
+	collection: string,
+	options: { timeoutMs?: number } = {},
+): Promise<WsWriterSignal | null | undefined> {
+	const parse = (payload: any): WsWriterSignal | null =>
+		payload && typeof payload.writer === 'string'
+			? { writer: payload.writer, since: String(payload.since ?? '') }
+			: null;
+	// A late rejection of a race already lost to the timeout must stay handled
+	// (same class as the searchPromise note in search-codebase.tool.ts).
+	const read: Promise<WsWriterSignal | null | undefined> = (async () => {
+		if (typeof client.retrieve === 'function') {
+			const res: any = await client.retrieve(collection, {
+				ids: [WS_WRITER_SENTINEL_ID],
+				with_payload: true,
+				with_vector: false,
+			});
+			// The pinned SDK unwraps retrieve to a bare array; raw HTTP answers {result: [...]}.
+			const points = Array.isArray(res) ? res : Array.isArray(res?.result) ? res.result : [];
+			return parse(points[0]?.payload);
+		}
+		if (typeof client.scroll === 'function') {
+			const res: any = await client.scroll(collection, {
+				filter: { must: [{ has_id: [WS_WRITER_SENTINEL_ID] }] },
+				limit: 1,
+				with_payload: true,
+				with_vector: false,
+			});
+			return parse((res?.points ?? res?.result?.points ?? [])[0]?.payload);
+		}
+		return undefined;
+	})().catch(() => undefined);
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<undefined>(r => { timer = setTimeout(() => r(undefined), options.timeoutMs ?? 1500); });
+	try {
+		return await Promise.race([read, timeout]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 // ─── #2609 q3: liveness preference at HASH-VARIANT resolution ─────────────────
 // #4352 taught the variant ladder to probe every spelling at once and serve the
 // LARGEST collection. Measured po-2023, 2026-10-31: that rule served the decaying
@@ -308,32 +407,29 @@ export function resolveVariantLivenessTimeout(raw: string | undefined): number {
 
 export interface VariantSelection {
 	candidate: VariantCandidate;
-	/** what decided: 'liveness' when the preference ran, 'points' = legacy #4352 rule */
-	basis: 'points' | 'liveness';
-	/** true when liveness overrode the largest-by-points pick */
+	/** what decided: 'writer' (#4863, an RSM ws-writer claims the served collection), 'liveness', 'points' = legacy #4352 rule */
+	basis: 'points' | 'liveness' | 'writer';
+	/** true when the deciding rule overrode the largest-by-points pick */
 	flipped: boolean;
 }
 
 /**
- * Choose the collection to serve among the hash variants that exist.
- *
- * Liveness applies only when ≥2 candidates are decidable (same rule as the
- * content-match preference): a single measured ratio is not a comparison. When it
- * cannot decide — flag off, one measurable candidate, equal ratios — the legacy
- * largest-by-points ranking stands untouched.
+ * The #4352/#2609 ranking over a pool: liveness first (when ≥2 candidates are
+ * decidable — a single measured ratio is not a comparison), largest-by-points
+ * otherwise. Extracted so the #4863 writer preference can restrict the pool and
+ * reuse the exact same in-pool rules.
  */
-export function selectVariantCollection(
+function rankVariants(
 	candidates: VariantCandidate[],
 	liveness: Map<string, { ratio: number; checked: number } | null> | null | undefined
-): VariantSelection | null {
-	if (candidates.length === 0) return null;
+): { candidate: VariantCandidate; basis: 'points' | 'liveness' } {
 	const byPoints = candidates.reduce<VariantCandidate>(
 		(best, v) => ((v.points ?? -1) > (best.points ?? -1) ? v : best),
 		candidates[0]);
-	if (!liveness || candidates.length < 2) return { candidate: byPoints, basis: 'points', flipped: false };
+	if (!liveness || candidates.length < 2) return { candidate: byPoints, basis: 'points' };
 
 	const decidable = candidates.filter(c => liveness.get(c.name));
-	if (decidable.length < 2) return { candidate: byPoints, basis: 'points', flipped: false };
+	if (decidable.length < 2) return { candidate: byPoints, basis: 'points' };
 
 	const byLiveness = decidable.reduce<VariantCandidate>((best, v) => {
 		const ratio = liveness.get(v.name)!.ratio;
@@ -344,7 +440,40 @@ export function selectVariantCollection(
 		return best;
 	}, decidable[0]);
 
-	return { candidate: byLiveness, basis: 'liveness', flipped: byLiveness.name !== byPoints.name };
+	return { candidate: byLiveness, basis: 'liveness' };
+}
+
+/**
+ * Choose the collection to serve among the hash variants that exist.
+ *
+ * #4863: when the writer map says some variants are claimed by an RSM ws-writer
+ * and others are not, the WRITER-BEARING ones win outright — a refreshed corpus
+ * beats a livelier frozen one (liveness is not freshness), and points only rank
+ * within the winning group. An undecidable probe (undefined — timeout, transport)
+ * counts as not-writer-bearing without disqualifying the others: a proven writer
+ * is always the safer pick than an unknown. All-writer or no-writer pools keep
+ * the historical liveness→points behaviour untouched.
+ */
+export function selectVariantCollection(
+	candidates: VariantCandidate[],
+	liveness: Map<string, { ratio: number; checked: number } | null> | null | undefined,
+	writer?: Map<string, WsWriterSignal | null | undefined> | null
+): VariantSelection | null {
+	if (candidates.length === 0) return null;
+	const byPoints = candidates.reduce<VariantCandidate>(
+		(best, v) => ((v.points ?? -1) > (best.points ?? -1) ? v : best),
+		candidates[0]);
+
+	if (writer && candidates.length >= 2) {
+		const written = candidates.filter(c => writer.get(c.name));
+		if (written.length > 0 && written.length < candidates.length) {
+			const among = rankVariants(written, liveness);
+			return { candidate: among.candidate, basis: 'writer', flipped: among.candidate.name !== byPoints.name };
+		}
+	}
+
+	const ranked = rankVariants(candidates, liveness);
+	return { candidate: ranked.candidate, basis: ranked.basis, flipped: ranked.candidate.name !== byPoints.name };
 }
 
 /**
@@ -379,8 +508,10 @@ export async function findCollectionByContent(
 	overlap: number;
 	sharedDiscriminants: number;
 	liveness?: { ratio: number; checked: number };
-	selection_basis: 'score' | 'liveness';
+	selection_basis: 'score' | 'liveness' | 'writer';
 	liveness_flipped_selection?: boolean;
+	writer: WsWriterSignal | null | undefined;
+	writer_flipped_selection?: boolean;
 } | null> {
 	if (!workspaceSignature || workspaceSignature.size === 0 || candidates.length === 0) {
 		return null;
@@ -398,6 +529,7 @@ export async function findCollectionByContent(
 		score: number;
 		paths: string[];
 		liveness: { ratio: number; checked: number } | null;
+		writer: WsWriterSignal | null | undefined;
 	};
 	const accepted: Accepted[] = [];
 
@@ -437,6 +569,7 @@ export async function findCollectionByContent(
 				score: Math.max(jaccard, overlap),
 				paths: sig.paths,
 				liveness: null,
+				writer: undefined,
 			});
 		}
 	}
@@ -450,10 +583,21 @@ export async function findCollectionByContent(
 		}
 	}
 
+	// #4863: writer signal for every accepted candidate — one bounded point
+	// retrieve each, in parallel. A divergent-path reader reaches the writer's
+	// collection THROUGH this fallback (the ladder cannot hash to it), so the
+	// preference here is what makes the fresh corpus win.
+	if (isWriterSignalEnabled()) {
+		const boundMs = resolveWriterProbeTimeout(process.env.WRITER_SENTINEL_PROBE_TIMEOUT_MS);
+		await Promise.all(accepted.map(async c => {
+			c.writer = await probeWsWriterSentinel(qdrant, c.name, { timeoutMs: boundMs });
+		}));
+	}
+
 	// Legacy selection: best structural score, first on tie (candidates arrive points-desc).
 	const byScore = [...accepted].sort((a, b) => b.score - a.score);
 	let winner = byScore[0];
-	let selectionBasis: 'score' | 'liveness' = 'score';
+	let selectionBasis: 'score' | 'liveness' | 'writer' = 'score';
 	let flipped = false;
 
 	const decidable = accepted.filter(c => c.liveness !== null);
@@ -465,6 +609,18 @@ export async function findCollectionByContent(
 		selectionBasis = 'liveness';
 	}
 
+	// #4863: writer-bearing accepted candidates rank FIRST (same doctrine as
+	// selectVariantCollection): among collections of this same repository, the
+	// one a refresh loop claims beats a livelier frozen twin.
+	const written = accepted.filter(c => c.writer);
+	if (written.length > 0 && written.length < accepted.length) {
+		const bestWritten = [...written].sort((a, b) =>
+			((b.liveness?.ratio ?? -1) - (a.liveness?.ratio ?? -1)) || (b.score - a.score))[0];
+		if (bestWritten !== winner) flipped = true;
+		winner = bestWritten;
+		selectionBasis = 'writer';
+	}
+
 	return {
 		name: winner.name,
 		jaccard: winner.jaccard,
@@ -473,6 +629,8 @@ export async function findCollectionByContent(
 		...(winner.liveness ? { liveness: winner.liveness } : {}),
 		selection_basis: selectionBasis,
 		...(flipped ? { liveness_flipped_selection: true } : {}),
+		...(selectionBasis === 'writer' && flipped ? { writer_flipped_selection: true } : {}),
+		writer: winner.writer,
 	};
 }
 
@@ -483,6 +641,10 @@ export interface CollectionReader {
 	getCollection?: (collection: string) => Promise<any>;
 	getCollections?: () => Promise<any>;
 	scroll?: (collection: string, body: Record<string, unknown>) => Promise<any>;
+	// `any` body: the pinned QdrantClient's typed options (ids required) cannot be
+	// assigned to Record<string, unknown> (parameter variance) — the probe only
+	// ever sends ids/with_payload/with_vector, so the loose shape is the contract.
+	retrieve?: (collection: string, body: any) => Promise<any>;
 }
 
 /** One spelling variant of the workspace, probed for existence and vector config. */
@@ -505,7 +667,11 @@ export interface WorkspaceCollectionProbe {
 	/** The variants that exist in Qdrant. */
 	existing: WorkspaceCollectionProbeVariant[];
 	/** What the reader's variant ladder serves (selection among existing variants). */
-	hash_resolution: { collection: string | null; basis: 'points' | 'liveness' };
+	hash_resolution: { collection: string | null; basis: 'points' | 'liveness' | 'writer' };
+	/** #4863: per-variant RSM ws-writer signals — null = writer-less, undefined = undecidable. */
+	writer_signals?: Record<string, WsWriterSignal | null | undefined>;
+	/** #4863: the served collection's writer signal — the response's freshness field. */
+	resolved_writer?: WsWriterSignal | null | undefined;
 	/** Content-match fallback outcome — run only when the ladder resolves nothing non-empty. */
 	content_match: {
 		candidates_total: number;
@@ -516,8 +682,10 @@ export interface WorkspaceCollectionProbe {
 			overlap: number;
 			shared_discriminant_dirs: number;
 			accepted_via: 'jaccard' | 'overlap';
-			selection_basis: 'score' | 'liveness';
+			selection_basis: 'score' | 'liveness' | 'writer';
 			liveness_ratio?: number;
+			/** #4863: the content-matched collection's writer, when its sentinel names one. */
+			writer: WsWriterSignal | null | undefined;
 		} | null;
 	} | null;
 	/** The collection `codebase_search` on this workspace resolves today — null when none. */
@@ -602,7 +770,19 @@ export async function probeWorkspaceCollections(
 			variantLiveness!.set(v.name, sig ? estimateCollectionLiveness(sig.paths, workspacePath) : null);
 		});
 	}
-	const selection = selectVariantCollection(candidates, variantLiveness);
+	// #4863: writer signal for EVERY existing variant — the preference that makes
+	// a divergent-path reader serve the collection the writer seat refreshes
+	// instead of its own spelling's writer-less legacy twin. The served
+	// collection's signal also becomes the response's freshness field.
+	let writerSignals: Map<string, WsWriterSignal | null | undefined> | null = null;
+	if (isWriterSignalEnabled() && existing.length > 0) {
+		const boundMs = resolveWriterProbeTimeout(process.env.WRITER_SENTINEL_PROBE_TIMEOUT_MS);
+		writerSignals = new Map();
+		await Promise.all(existing.map(async v => {
+			writerSignals!.set(v.name, await probeWsWriterSentinel(client, v.name, { timeoutMs: boundMs }));
+		}));
+	}
+	const selection = selectVariantCollection(candidates, variantLiveness, writerSignals);
 	const hashCollection = selection?.candidate.name ?? null;
 	const hashEmpty = hashCollection !== null && selection!.candidate.points === 0;
 
@@ -650,6 +830,7 @@ export async function probeWorkspaceCollections(
 						accepted_via: match.jaccard >= CONTENT_MATCH_MIN_JACCARD ? 'jaccard' : 'overlap',
 						selection_basis: match.selection_basis,
 						...(match.liveness ? { liveness_ratio: Math.round(match.liveness.ratio * 1000) / 1000 } : {}),
+						writer: match.writer,
 					} : null,
 				};
 				if (match) {
@@ -664,6 +845,9 @@ export async function probeWorkspaceCollections(
 	}
 
 	const resolvedEntry = resolvedBy === 'hash' && resolved ? existing.find(v => v.name === resolved) ?? null : null;
+	const resolvedWriter = resolvedBy === 'content-match'
+		? contentMatch?.match?.writer
+		: resolved ? writerSignals?.get(resolved) : undefined;
 
 	return {
 		workspace: workspacePath,
@@ -674,6 +858,8 @@ export async function probeWorkspaceCollections(
 		content_match: contentMatch,
 		resolved,
 		resolved_by: resolvedBy,
+		...(writerSignals ? { writer_signals: Object.fromEntries(writerSignals) } : {}),
+		...(resolved !== null ? { resolved_writer: resolvedWriter } : {}),
 		resolved_vectors: resolvedBy === 'hash' ? resolvedEntry?.vectors ?? null : resolvedVectors,
 		writes: 'none',
 	};

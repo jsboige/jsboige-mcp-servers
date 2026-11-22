@@ -58,7 +58,7 @@ import {
 } from './zoo-parity.js';
 import { classifyZooPath } from './zoo-eligibility.js';
 import { listGitVisiblePaths } from './git-visible.js';
-import { parseVectorsConfig, probeWorkspaceCollections } from './collection-naming.js';
+import { parseVectorsConfig, probeWorkspaceCollections, WS_WRITER_SENTINEL_ID } from './collection-naming.js';
 import {
 	isWsWriterCodeIndexingEnabled,
 	parseZooCodeContent,
@@ -77,11 +77,12 @@ export const WS_WRITER_MARKDOWN_EXTENSIONS: ReadonlySet<string> = new Set(['.md'
 export const MAX_WS_WRITER_FILE_BYTES = 1024 * 1024;
 
 /**
- * The writer sentinel's fixed point id — Zoo's own code-block namespace (an id
- * space, nothing more), under a name Zoo never mints. Distinct from Zoo's
- * `__indexing_metadata__` marker, which this writer never touches.
+ * The ws-writer sentinel's fixed point id. Since #4863 the definition lives in
+ * collection-naming.ts (the shared reader+writer contract — the reader probes
+ * the sentinel as its freshness signal); this re-export keeps existing imports
+ * resolving so there is exactly ONE definition, not two.
  */
-export const WS_WRITER_SENTINEL_ID = uuidv5('__rsm_ws_writer__', ZOO_CODE_BLOCK_NAMESPACE);
+export { WS_WRITER_SENTINEL_ID } from './collection-naming.js';
 
 /** Deterministic id of a file's hash-cache point (RSM bookkeeping, type metadata). */
 export function wsWriterCachePointId(relativePath: string): string {

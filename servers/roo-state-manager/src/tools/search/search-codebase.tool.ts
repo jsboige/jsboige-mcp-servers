@@ -38,10 +38,14 @@ import {
 	resolveVariantLivenessTimeout,
 	selectVariantCollection,
 	findCollectionByContent,
+	isWriterSignalEnabled,
+	resolveWriterProbeTimeout,
+	probeWsWriterSentinel,
 	CONTENT_MATCH_MIN_JACCARD,
 	CONTENT_MATCH_MIN_OVERLAP,
 	CONTENT_MATCH_MAX_CANDIDATES,
 	type VariantCandidate,
+	type WsWriterSignal,
 } from '../../services/code-index/collection-naming.js';
 
 export {
@@ -54,8 +58,11 @@ export {
 	resolveVariantLivenessTimeout,
 	selectVariantCollection,
 	findCollectionByContent,
+	isWriterSignalEnabled,
+	resolveWriterProbeTimeout,
+	probeWsWriterSentinel,
 };
-export type { VariantCandidate, VariantSelection } from '../../services/code-index/collection-naming.js';
+export type { VariantCandidate, VariantSelection, WsWriterSignal } from '../../services/code-index/collection-naming.js';
 
 /**
  * #2609/#2554 (rename-GC gap): the Roo/Zoo Code indexer (reference-only submodule
@@ -142,6 +149,8 @@ export async function listWorkspaceCollections(): Promise<string[]> {
 /** Liveness ratio of the RESOLVED collection below which the response warns (stale twin). */
 const CONTENT_MATCH_LIVENESS_WARN_RATIO = parseFloat(process.env.CONTENT_MATCH_LIVENESS_WARN_RATIO || '0.5');
 const VARIANT_LIVENESS_PROBE_TIMEOUT_MS = resolveVariantLivenessTimeout(process.env.VARIANT_LIVENESS_PROBE_TIMEOUT_MS);
+/** #4863: bounds each ws-writer sentinel probe (shared with the probe module's env contract). */
+const WRITER_SENTINEL_PROBE_TIMEOUT_MS = resolveWriterProbeTimeout(process.env.WRITER_SENTINEL_PROBE_TIMEOUT_MS);
 
 // ─── #2609 V2(c)(b): partial-collection detection at resolution time ──────────
 // V2(b) verdict (c.5869551111): the served collection ws-d2ffdbaa832aed16 was
@@ -1247,9 +1256,11 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			jaccard: number; jaccard_threshold: number;
 			overlap?: number; overlap_threshold?: number;
 			shared_discriminant_dirs?: number; accepted_via?: 'jaccard' | 'overlap';
-			selection_basis?: 'score' | 'liveness';
+			selection_basis?: 'score' | 'liveness' | 'writer';
 			liveness_ratio?: number; liveness_checked_paths?: number;
 			liveness_flipped_selection?: boolean;
+			writer: WsWriterSignal | null | undefined;
+			writer_flipped_selection?: boolean;
 		} | undefined;
 		// points_count of the hash-matched collection (if any). Used to detect the
 		// "collection exists but is empty" blind-spot: the hash resolves to a real
@@ -1313,7 +1324,20 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 				variantLiveness!.set(v.name, sig ? estimateCollectionLiveness(sig.paths, workspace) : null);
 			});
 		}
-		const variantSelection = selectVariantCollection(existingVariants, variantLiveness);
+		// #4863: the writer signal is the freshness discriminator — a variant
+		// claimed by an RSM ws-writer sentinel is the corpus a refresh loop
+		// serves; a variant whose sentinel reads EMPTY is a frozen legacy
+		// corpus. Probed fail-open; the served collection's signal becomes
+		// the response's freshness field. selectVariantCollection stays pure:
+		// same call the probe module makes, one rule in one place.
+		let writerSignals: Map<string, WsWriterSignal | null | undefined> | null = null;
+		if (isWriterSignalEnabled() && existingVariants.length > 0) {
+			writerSignals = new Map();
+			await Promise.all(existingVariants.map(async v => {
+				writerSignals!.set(v.name, await probeWsWriterSentinel(qdrant, v.name, { timeoutMs: WRITER_SENTINEL_PROBE_TIMEOUT_MS }));
+			}));
+		}
+		const variantSelection = selectVariantCollection(existingVariants, variantLiveness, writerSignals);
 		if (variantSelection) {
 			collectionName = variantSelection.candidate.name;
 			hashMatchedPointsCount = variantSelection.candidate.points;
@@ -1390,6 +1414,8 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 						liveness_checked_paths: contentMatch.liveness.checked,
 					} : {}),
 					...(contentMatch.liveness_flipped_selection ? { liveness_flipped_selection: true } : {}),
+					writer: contentMatch.writer,
+					...(contentMatch.writer_flipped_selection ? { writer_flipped_selection: true } : {}),
 				};
 			} else {
 				// No strict content-match → honest diagnostic. Enrich with the collection
@@ -1990,7 +2016,19 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			&& deadPathsFiltered > 0
 			&& results.length < effectiveLimit;
 
+		// #4863: the response's freshness field. The served collection's RSM
+		// ws-writer signal: claimed = a refresh loop refreshes this corpus;
+		// writer-less = the collection was READ and holds no sentinel — liveness
+		// is not freshness, and the response says so; undecidable = the probe
+		// failed or is disabled, which must never masquerade as either verdict.
+		const servedWriter = collectionResolvedBy === 'content-match'
+			? contentMatchDetails?.writer
+			: writerSignals?.get(collectionName);
+
 		// 7. Construire la réponse
+		const writerProbed = collectionResolvedBy === 'content-match'
+			? isWriterSignalEnabled() && contentMatchDetails !== undefined
+			: writerSignals !== null;
 		const response = {
 			status: 'success',
 			query: query,
@@ -2001,6 +2039,30 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// hash missed and we identified the right ws-* collection by its indexed
 			// top-level dirs vs the workspace's actual directory structure.
 			collection_resolved_by: collectionResolvedBy,
+			// #4863: who refreshes the served corpus — read from its own ws-writer
+			// sentinel, never inferred from this seat's path spelling. The whole
+			// divergence case: a legacy twin can out-live the canonical collection
+			// on disk while no loop refreshes it; only the sentinel knows.
+			...(writerProbed ? {
+				collection_writer: servedWriter ? {
+					status: 'claimed',
+					writer: servedWriter.writer,
+					since: servedWriter.since,
+				} : servedWriter === null ? {
+					status: 'writer-less',
+				} : {
+					status: 'undecidable',
+				},
+			} : {}),
+			...(servedWriter === null ? {
+				writer_warning: `collection ${collectionName} is WRITER-LESS: it was read and holds no RSM ws-writer sentinel — no refresh loop claims it, so this corpus is frozen (typically a legacy Zoo-era index). Its files may still exist on disk: liveness is NOT freshness. Results can lag the repository. When the writer seat indexes this same repository under another checkout path, form that path in the query workspace to reach the refreshed collection, or re-index from this machine.`,
+			} : writerProbed && !servedWriter && existingVariants.length > 1 ? {
+				// #4863 closure criterion: 'undecidable' (sentinel probe failed on the served
+				// collection) with several variants must ALSO carry a human-readable warning —
+				// the larger twin won on points but its freshness was never verified. Worded
+				// as UNVERIFIED, never writer-less: the writer may well exist, we cannot tell.
+				writer_warning: `writer of ${collectionName} could not be read (sentinel probe failed); several variants exist and the larger was served — it may be a stale twin; freshness NOT verified`,
+			} : {}),
 			// #4352: several spellings of this workspace own a collection; the largest was served.
 			...(existingVariants.length > 1 ? { collection_variants: existingVariants } : {}),
 			// #2609 q3: WHICH rule picked among those variants, and the measured liveness
@@ -2014,6 +2076,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 					// `liveness` basis must never rest on a silently partial probe set.
 					probed_variants: variantLiveness ? variantLiveness.size : 0,
 					...(variantSelection.flipped ? { flipped_from_largest: true } : {}),
+					...(servedWriter ? { writer: servedWriter } : {}),
 					liveness: Object.fromEntries(
 						[...(variantLiveness ?? new Map())].map(([name, l]) => [
 							name,

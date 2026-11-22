@@ -58,6 +58,20 @@ vi.mock('openai', () => ({
 	}))
 }));
 
+/**
+ * #4863: the COVERAGE scroll, named precisely.
+ *
+ * Three scroll consumers share the Qdrant client: the coverage count (asks for
+ * ['filePath']), the liveness probe (['pathSegments','filePath']) and the new
+ * ws-writer sentinel probe (the whole payload, no include list). A counter that
+ * merely excludes the liveness probe counts the sentinel scroll as coverage —
+ * so the subject is named by what it ASKS for, not by what it is not.
+ */
+const isCoverageScroll = (opts: any): boolean => {
+	const include = opts?.with_payload?.include;
+	return Array.isArray(include) && include.includes('filePath') && !include.includes('pathSegments');
+};
+
 import {
 	getWorkspaceCollectionName,
 	getWorkspaceCollectionVariants,
@@ -1712,8 +1726,12 @@ describe('search-codebase.tool', () => {
 				// per candidate). The property under test is the COVERAGE cache, so count
 				// coverage scrolls only — they ask for ['filePath'], the probe for
 				// ['pathSegments','filePath'].
+				// #4863: a THIRD scroll consumer exists — the ws-writer sentinel probe,
+				// which asks for the whole payload (no include list). Naming the subject
+				// precisely ('filePath' without 'pathSegments') keeps the counter honest
+				// instead of counting every scroll that is not the liveness probe.
 				const coverageScrolls = mockQdrant.scroll.mock.calls.filter(
-					([, opts]: any[]) => !opts?.with_payload?.include?.includes('pathSegments')
+					([, opts]: any[]) => isCoverageScroll(opts)
 				).length;
 				expect(coverageScrolls).toBe(1);
 			});
@@ -1726,9 +1744,9 @@ describe('search-codebase.tool', () => {
 				// #2609 q3: the variant liveness probe also scrolls. Resolve it instantly and
 				// hang the COVERAGE scroll specifically, which is what this test measures.
 				mockQdrant.scroll.mockImplementation((_coll: string, opts: any) =>
-					opts?.with_payload?.include?.includes('pathSegments')
-						? Promise.resolve({ points: [] })
-						: new Promise(r => { releaseScroll = r; }));
+					isCoverageScroll(opts)
+						? new Promise(r => { releaseScroll = r; })
+						: Promise.resolve({ points: [] }));
 				mockReaddirSync.mockImplementation(() => [
 					{ name: 'a.ts', isDirectory: () => false, isFile: () => true },
 					{ name: 'b.ts', isDirectory: () => false, isFile: () => true }
@@ -1747,7 +1765,7 @@ describe('search-codebase.tool', () => {
 				expect(second.coverage.indexed_files).toBe(1);
 				expect(second.coverage.eligible_files).toBe(2);
 				const coverageScrolls = mockQdrant.scroll.mock.calls.filter(
-					([, opts]: any[]) => !opts?.with_payload?.include?.includes('pathSegments')
+					([, opts]: any[]) => isCoverageScroll(opts)
 				).length;
 				expect(coverageScrolls).toBe(1);
 			});
@@ -1757,9 +1775,9 @@ describe('search-codebase.tool', () => {
 				let releaseScroll!: (v: any) => void;
 				// #2609 q3: hang the coverage scroll only; the liveness probe resolves at once.
 				mockQdrant.scroll.mockImplementation((_coll: string, opts: any) =>
-					opts?.with_payload?.include?.includes('pathSegments')
-						? Promise.resolve({ points: [] })
-						: new Promise(r => { releaseScroll = r; }));
+					isCoverageScroll(opts)
+						? new Promise(r => { releaseScroll = r; })
+						: Promise.resolve({ points: [] }));
 				mockReaddirSync.mockImplementation(() => [
 					{ name: 'a.ts', isDirectory: () => false, isFile: () => true }
 				]);
@@ -1771,7 +1789,7 @@ describe('search-codebase.tool', () => {
 				expect(JSON.parse(a.content[0].text).coverage_pending).toBe(true);
 				expect(JSON.parse(b.content[0].text).coverage_pending).toBe(true);
 				const coverageScrolls = mockQdrant.scroll.mock.calls.filter(
-					([, opts]: any[]) => !opts?.with_payload?.include?.includes('pathSegments')
+					([, opts]: any[]) => isCoverageScroll(opts)
 				).length;
 				expect(coverageScrolls).toBe(1);
 				releaseScroll({ points: [] });
