@@ -2,7 +2,7 @@
 # --- provenance ---------------------------------------------------------------
 # Canonical home is sk-agent: new harness fixes belong here, not in vllm.
 # Authored here (#4832 on-demand invocation layer) — no vllm counterpart.
-# Harness base is the vllm re-copy @ 7416ac16c91e150aae5a75dd251d0c1a4c2f5c2c.
+# Harness base is the vllm re-copy @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77.
 # -----------------------------------------------------------------------------
 """nb_coder_invoke — the ONE documented entry into the nb_coder workflows (roo-extensions #4832).
 

@@ -1,0 +1,1701 @@
+#!/usr/bin/env python3
+# --- provenance (roo-extensions #4781 harness mutualisation) -----------------
+# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
+# original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_integrate.py
+# Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
+# re-copy, do not diverge silently.
+# -----------------------------------------------------------------------------
+"""nb-coder repo integration — the CI guards a NEW port notebook trips, fixed
+deterministically before the PR is pushed (jsboige/vllm, 21/11).
+
+Measured (CoursIA#27829 head 05541d13, #27835 head 7ddca46e, lot-1 fixes
+#27803/#27804/#27805, and po-2028:claudish's 14 C# port PRs of the 18/11):
+every nb_coder port PR failed blocking guards and waited one Hermes review
+cycle (~1 h) for remedies a deterministic pass applies itself:
+
+  1. ``readme-notebook-coverage`` — the new notebook has no row in its folder's
+     README (folder convention in force). Fix: a twin link appended on the
+     source twin's own README line, mirroring that line's label convention
+     (measured shapes: bare `[C#] · [Python]` -> `[Rust]`; `· [jumeau C#]` ->
+     `· [jumeau Rust]`; inside a `(+ ...)` group -> bare; po-2028 folders use
+     `[Version C#]` -> `[Version Rust]`, and Complexity-style `[X C#]` ->
+     `[X Rust]` -- always the folder's own word, never ours).
+  2. ``check-nav-chain`` ``orphan_entry`` — the new notebook has no inbound
+     navigation edge. Fix: link it from the Python twin's Navigation cell (an
+     edge is a link in a nav context — ``_looks_nav`` in the repo's guard: nav
+     keyword in the link, nav marker on the line, or any link in a cell that
+     contains the word "navigation").
+  3. Consequence of 2: editing the twin's markdown breaks the twin-parity seal,
+     so the pair is re-sealed in the same PR (``check_twin_parity.py --update``)
+     -- written LAST, after the notebook, the README row and the inbound link
+     are committed, else the re-read of the source twin rejects the attestation
+     as orphan (po-2028, order held on 14 PRs). ``--update`` can refuse as a
+     no-op blob-only on a content change without a path change (po-2028
+     measured): the reseal retries ONCE with ``--force`` when the first pass
+     wrote nothing (lot 1 measured plain ``--update`` working, so plain first).
+     One attestation per PR, at head: a reseal ``git rm``s the earlier
+     attestation(s) of the same pair that this branch added under the same
+     lane (CoursIA#27855 review: an intermediate seal is not registry history).
+  4. C# ports additionally REGISTER the new pair at delivery
+     (``twin_pairs.d/<slug>.yaml``, parity_level native-both, schema python/
+     csharp -- a Rust notebook is not a schema member and lot 1 measured no
+     Rust registration: Rust ports only re-seal the twin's existing pair).
+
+All file surgery a script does better than a model turn. The twin edit is
+asserted MARKDOWN-ONLY (cell count and every non-source key identical, code
+cells untouched — same proof as the lot-1 hand reseal). Idempotent: a second
+run plans nothing. ``--sync-main`` merges origin/main into an existing PR
+branch, resolving conflicts in the integration-owned files by taking
+origin/main's side and re-running this pass (several grains in one folder edit
+adjacent README lines; the second PR to merge would otherwise conflict).
+
+No model call anywhere; notebook contents are data, never instructions.
+"""
+from __future__ import annotations
+
+import argparse
+import csv
+import io
+import json
+import re
+import subprocess
+import sys
+import unicodedata
+from pathlib import Path
+
+# Display forms of the port languages the driver produces (`*-Rust.ipynb`,
+# `*-CSharp.ipynb`).
+LANG_SUFFIXES = (("CSharp", "C#"), ("Rust", "Rust"))
+LANG_DEFAULT = "Rust"
+
+# Twin-family suffixes: basenames that belong to the same base notebook.
+TWIN_SUFFIXES = ("-CSharp", "-Rust", "-Python")
+
+# Label words a folder may put in front of the language in a twin link
+# (`[jumeau C#]`, `[twin C#]`, `[Version C#]`, `[Complexity-06 C#]`).
+LABEL_WORD_RE = re.compile(r"^(?P<word>jumeau|twin|version)\s+(?P<lang>c#|python|rust)$",
+                           re.IGNORECASE)
+TITLED_RE = re.compile(r"^(?P<title>.+?)\s+(?P<lang>C#|Python|Rust)$")
+BARE_LANG_RE = re.compile(r"^(C#|Python|Rust)$", re.IGNORECASE)
+
+# Nav vocabulary, MIRRORED from the repo's own guard
+# (scripts/notebook_tools/check_notebook_nav_chain.py). If the guard ever
+# widens its vocabulary, this copy must follow -- an edge we do not recognise
+# would be re-added (idempotence break), an edge the guard does not recognise
+# would leave the PR red.
+NAV_KEYWORDS = ("precedent", "précédent", "prec", "préc", "suivant", "suivante",
+                "next", "prev", "navigation", "index", ">>", "<<",
+                "←", "→", "↑", "↓")
+NAV_LINE_MARKERS = ("precedent", "précédent", "suivant", "suivante", "next",
+                    "prev", "navigation", ">>", "<<", "←", "→", "↑", "↓")
+
+LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
+
+GUARD_TIMEOUT_S = 900
+
+# The guards the CI raises on a new notebook, replayed with the exact
+# commands the lot-1 review comments published (CoursIA#27803 c.1).
+GUARDS = (
+    ("check-nav-chain",
+     ["scripts/notebook_tools/check_notebook_nav_chain.py", "--check",
+      "--diff-base", "origin/main"]),
+    ("readme-notebook-coverage",
+     ["scripts/ci/check_readme_notebook_coverage.py", "--diff-base",
+      "origin/main"]),
+    ("twin-parity-changed",
+     ["scripts/translation/check_twin_parity_changed.py", "--diff",
+      "origin/main...HEAD"]),
+    # PR-scoped view of the hot-subset ratchet (CoursIA#15322): names only the
+    # translated cells THIS branch drifted, never the debt inherited from main.
+    ("translation-drift",
+     ["scripts/translation/check_pr_translation_drift.py", "origin/main"]),
+)
+
+TWIN_PAIRS_DIR = Path("scripts/notebook_tools/twin_pairs.d")
+
+# Differential conformance registry of the Rust ports (CoursIA Epic Origami
+# #26510, Pli 3): one YAML per triplet, read by the repo's own organ.
+RUST_CONFORMANCE_DIR = Path("scripts/notebook_tools/rust_conformance.d")
+CONFORMANCE_CHECKER = "scripts/notebook_tools/check_rust_conformance.py"
+
+# Translation tables (hot-subset ratchet, CoursIA#13551): a cell whose
+# translations CSV row carries a deposited `text_<lang>` must never be edited
+# by this pass -- any source change turns it into SRC_DRIFT on a translated
+# row and the repo-wide ratchet goes red (CoursIA#27855 measured: the nav edge
+# appended to cell 0 `intro-hierarchy`, deposited in 7 languages). The resync
+# is per-cell plus a dual-key translation override, never ours to take.
+TRANSLATIONS_DIR = Path("translations")
+PERIMETER_FILE = Path("scripts/translation/check_perimeter.py")
+# Mirror of check_perimeter.TARGET_LANGS (the repo's single source of truth),
+# used only when that file cannot be read.
+TARGET_LANGS_FALLBACK = ("en", "es", "ar", "fa", "zh", "ru", "pt")
+
+GIT_IDENTITY = ("-c", "user.name=nb-coder",
+                "-c", "user.email=nb-coder@nb-coder.invalid")
+
+
+def _git(wt: Path, *args: str, timeout: int = 300) -> tuple[int, str]:
+    p = subprocess.run(["git", "-C", str(wt), *args], capture_output=True,
+                       text=True, encoding="utf-8", errors="replace",
+                       timeout=timeout)
+    return p.returncode, (p.stdout or p.stderr or "").strip()
+
+
+# ---------------------------------------------------------------- notebook io
+
+def detect_nb_format(raw: str) -> dict:
+    """Byte-faithful dump format of a repo notebook, measured from the file.
+
+    The repo's notebooks are ``ensure_ascii=False, indent=1`` with no trailing
+    newline (verified byte-exact on ``Search-03d-WeightedAstar.ipynb`` at
+    origin/main); the detection keeps the module honest if another series
+    formats differently, and ``apply_nb`` refuses to write when a round-trip
+    of the UNCHANGED notebook does not reproduce the original bytes.
+
+    ``ensure_ascii`` is read from the characters, never from a backslash-u
+    substring (CoursIA#27900, 22/11): a LaTeX up-arrow command in a markdown
+    cell is stored as an ESCAPED backslash followed by ``uparrow``, so the
+    substring test answered True on an ``ensure_ascii=False`` file, the
+    round-trip failed and the port PR shipped without README row nor nav
+    edge. A file holding one raw non-ASCII character cannot have been dumped
+    with ``ensure_ascii=True``; a pure-ASCII file is reproduced by True (every
+    escape it carries is re-emitted as such).
+
+    ``newline`` is read from the file too (22/11, CoursIA#28003/#28004/#28018):
+    the driver writes the built port with ``Path.write_text``, which turns
+    every newline into CRLF on Windows. Without it the round-trip of a CRLF
+    port failed at byte 1 and the back link (#582) was never applied. JSON
+    strings never hold a raw newline, so only the structural ones change.
+    """
+    m = re.search(r"^\{[\r\n]+( +)\"cells\"", raw, re.MULTILINE)
+    indent = len(m.group(1)) if m else 1
+    return {"indent": indent,
+            "ensure_ascii": raw.isascii(),
+            "trailing_nl": raw.endswith("\n"),
+            "newline": "\r\n" if "\r\n" in raw else "\n"}
+
+
+def load_nb(path: Path) -> tuple[dict, dict, str]:
+    raw = path.read_bytes().decode("utf-8")
+    return json.loads(raw), detect_nb_format(raw), raw
+
+
+def dump_nb(nb: dict, fmt: dict) -> str:
+    out = json.dumps(nb, ensure_ascii=fmt["ensure_ascii"],
+                     indent=fmt["indent"]) + ("\n" if fmt["trailing_nl"] else "")
+    return out.replace("\n", "\r\n") if fmt.get("newline") == "\r\n" else out
+
+
+def apply_nb(path: Path, nb: dict, fmt: dict, original_raw: str) -> None:
+    """Write a notebook only if the format round-trips: the unchanged parse must
+    reproduce the original bytes, else the edit would silently reformat the
+    whole file (a whole-file diff a reviewer cannot inspect)."""
+    if dump_nb(json.loads(original_raw), fmt) != original_raw:
+        raise ValueError(f"{path.name}: byte-faithful round-trip failed -- "
+                         "unknown notebook formatting, refusing to write")
+    path.write_bytes(dump_nb(nb, fmt).encode("utf-8"))
+
+
+def cell_text(cell: dict) -> str:
+    src = cell.get("source", "")
+    return src if isinstance(src, str) else "".join(src)
+
+
+def set_cell_text(cell: dict, text: str) -> None:
+    """Replace a cell's source preserving its representation (list of lines vs
+    string) — the repo's notebooks carry lists with per-line newlines."""
+    if isinstance(cell.get("source"), list):
+        cell["source"] = text.splitlines(keepends=True)
+    else:
+        cell["source"] = text
+
+
+def assert_markdown_only(before: list[dict], after: list[dict], name: str) -> None:
+    """Same proof as the lot-1 hand reseal: cell count identical, only markdown
+    cells change, and only their 'source' key. Code cells and outputs are never
+    touched — a port PR's twin edit is navigation prose, nothing else."""
+    if len(before) != len(after):
+        raise AssertionError(f"{name}: cell count changed {len(before)} -> {len(after)}")
+    for i, (cb, ca) in enumerate(zip(before, after)):
+        if cb == ca:
+            continue
+        if cb.get("cell_type") != "markdown" or ca.get("cell_type") != "markdown":
+            raise AssertionError(f"{name}: cell {i} is not markdown on both sides")
+        if {k: v for k, v in cb.items() if k != "source"} != \
+           {k: v for k, v in ca.items() if k != "source"}:
+            raise AssertionError(f"{name}: non-source change in cell {i}")
+
+
+# ------------------------------------------------------------------ language
+
+def split_port_name(nb_rel: str) -> tuple[str, str]:
+    """`Serie-07-Norvig-Rust.ipynb` -> (`Serie-07-Norvig`, `Rust`).
+
+    Returns (base_stem, display_language) for a `*-Rust.ipynb` / `*-CSharp.ipynb`
+    port name. The base stem is what the twin family shares; the language is
+    what the README label and nav segment name.
+    """
+    stem = Path(nb_rel).stem
+    for suffix, display in LANG_SUFFIXES:
+        if stem.endswith("-" + suffix):
+            return stem[: -(len(suffix) + 1)], display
+    return stem, LANG_DEFAULT
+
+
+def twin_family_names(base_stem: str) -> set[str]:
+    """Basenames of the base notebook and its language twins (base itself,
+    -Python, -CSharp, -Rust -- whatever exists on the edited line)."""
+    names = {f"{base_stem}.ipynb"}
+    for suffix in TWIN_SUFFIXES:
+        names.add(f"{base_stem}{suffix}.ipynb")
+    return names
+
+
+def mirror_label(sibling_text: str, lang: str, in_plus_group: bool) -> str:
+    """README/nav label for the new twin, MIRRORING the sibling link it sits
+    next to — the folder's own convention, never a house word.
+
+    Measured shapes (lot 1 + po-2028 folders): `[Python]` -> `Rust`;
+    `[jumeau C#]` -> `jumeau Rust`; `[Version C#]` -> `Version Rust`;
+    `[Complexity-06 C#]` -> `Complexity-06 Rust`; a sibling inside a `(+ ...)`
+    group takes the bare language (Part1-Foundations' `(+ [jumeau C#](...) ·
+    [Rust](...))`). Default `jumeau <Lang>` (the repo's dominant twin word).
+    """
+    if in_plus_group:
+        return lang
+    text = sibling_text.strip()
+    if BARE_LANG_RE.match(text):
+        return lang
+    m = LABEL_WORD_RE.match(text)
+    if m:
+        return f"{m.group('word')} {lang}"
+    m = TITLED_RE.match(text)
+    if m:
+        return f"{m.group('title')} {lang}"
+    return f"jumeau {lang}"
+
+
+# ------------------------------------------------------------------ README row
+
+def plan_readme_row(repo: Path, nb_rel: str, source_rel: str) -> dict:
+    """Plan the README twin-link the coverage guard requires.
+
+    The link is appended right after the LAST twin-family link of the source
+    twin's own README line, as ` · [label](new.ipynb)` (all lot-1 fixes).
+    """
+    nb_rel = nb_rel.replace("\\", "/")
+    new_name = nb_rel.rsplit("/", 1)[-1]
+    base_stem, lang = split_port_name(nb_rel)
+    folder = repo / Path(nb_rel).parent
+    readmes = sorted(p for p in folder.glob("README*.md") if p.is_file())
+    if not readmes:
+        return {"todo": False, "why": "no-dir-readme (advisory, guard does not block)"}
+    for readme in readmes:
+        raw = readme.read_bytes().decode("utf-8")
+        if new_name in raw:
+            return {"todo": False, "why": f"{new_name} already in {readme.name}",
+                    "file": _rel(repo, readme)}
+        lines = raw.splitlines(keepends=True)
+        family = twin_family_names(base_stem)
+        for idx, line in enumerate(lines):
+            links = [(m.start(), m.end(), m.group(1), m.group(2))
+                     for m in LINK_RE.finditer(line)
+                     if m.group(2).rsplit("/", 1)[-1] in family]
+            if not links:
+                continue
+            start, end, text, _ = links[-1]
+            in_plus_group = bool(re.search(r"\(\+\s*$", line[:start]))
+            label = mirror_label(text, lang, in_plus_group)
+            return {"todo": True, "file": _rel(repo, readme), "line": idx,
+                    "insert": f" · [{label}]({new_name})", "insert_at": end,
+                    "label": label, "path": str(readme)}
+    return {"todo": False,
+            "why": "no README line links the source twin -- row placement needs "
+                   "the folder's own convention (guard will stay red, reported)"}
+
+
+def apply_readme_row(action: dict) -> bool:
+    if not action.get("todo"):
+        return False
+    path = Path(action["path"])
+    raw = path.read_bytes().decode("utf-8")
+    lines = raw.splitlines(keepends=True)
+    line = lines[action["line"]]
+    at = action["insert_at"]
+    lines[action["line"]] = line[:at] + action["insert"] + line[at:]
+    path.write_bytes("".join(lines).encode("utf-8"))
+    return True
+
+
+# ------------------------------------------------------------------ hot cells
+
+def target_langs(repo: Path) -> tuple[str, ...]:
+    """TARGET_LANGS read from the repo's own check_perimeter.py (flat literal
+    list), so a language added there is honoured here without a code change."""
+    try:
+        text = (repo / PERIMETER_FILE).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return TARGET_LANGS_FALLBACK
+    m = re.search(r"^TARGET_LANGS\s*=\s*\[([^\]]*)\]", text, re.MULTILINE)
+    langs = tuple(re.findall(r"[\"']([A-Za-z_-]{2,8})[\"']", m.group(1))) if m else ()
+    return langs or TARGET_LANGS_FALLBACK
+
+
+def hot_cell_ids(repo: Path, nb_rel: str) -> set[str]:
+    """cell ids of `nb_rel` that carry a deposited translation -- the
+    ratchet's `deposited` predicate (test_hot_subset_ratchet.hot_anomalies):
+    a translations CSV row for this notebook with a non-empty `text_<lang>`
+    for a target language. Same-CSV rows are pooled by cell id as the ratchet
+    does, so the set is never narrower than what the ratchet would flag."""
+    nb_rel = nb_rel.replace("\\", "/")
+    tdir = repo / TRANSLATIONS_DIR
+    if not tdir.is_dir():
+        return set()
+    langs = target_langs(repo)
+    hot: set[str] = set()
+    for csv_path in sorted(tdir.rglob("*.csv")):
+        try:
+            raw = csv_path.read_bytes().decode("utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if nb_rel not in raw:
+            continue
+        mine: set[str] = set()
+        deposited: set[str] = set()
+        try:
+            for row in csv.DictReader(io.StringIO(raw, newline="")):
+                cid = row.get("cell_id") or ""
+                if not cid:
+                    continue
+                if (row.get("notebook") or "").replace("\\", "/") == nb_rel:
+                    mine.add(cid)
+                if any((row.get(f"text_{l}") or "").strip() for l in langs):
+                    deposited.add(cid)
+        except csv.Error:
+            continue
+        hot |= mine & deposited
+    return hot
+
+
+# ------------------------------------------------------------------ nav link
+
+def _nav_edge_exists(cells: list[dict], new_name: str) -> bool:
+    """True when the twin already links the new notebook in a NAV context —
+    same three scopes as the guard's ``_looks_nav`` (link text, line, cell)."""
+    for cell in cells:
+        if cell.get("cell_type") != "markdown":
+            continue
+        text = cell_text(cell)
+        cell_is_nav = "navigation" in text.lower()
+        for line in text.splitlines():
+            for m in LINK_RE.finditer(line):
+                if m.group(2).rsplit("/", 1)[-1] != new_name:
+                    continue
+                low = f"{m.group(1)} {m.group(2)}".lower()
+                if any(k in low for k in NAV_KEYWORDS):
+                    return True
+                if any(k in line.lower() for k in NAV_LINE_MARKERS):
+                    return True
+                if cell_is_nav:
+                    return True
+    return False
+
+
+def visible_text(text: str) -> str:
+    """Markdown with every link reduced to its text: a filename such as
+    `Complexity-03c-ComplexityZoo-Navigation-Python.ipynb` is not a nav
+    marker (CoursIA#27855 measured: a prose list line was taken for a bar
+    because its link URL contains "Navigation")."""
+    return LINK_RE.sub(lambda m: m.group(1), text)
+
+
+# Words a bar may carry OUTSIDE its links (`**Navigation** :`, `Précédent :
+# [..] | Suivant : [..]`, `⬅️ Précédent | 🏠 Index | Suivant ➡️`).
+PROSE_WORDS_MAX = 8
+
+# A long line is still a bar when it OPENS on a bold nav label (« **Navigation**
+# : [..] — desc · [..] », GameTheory-09c; « **Carnet suivant** : [..] — .. »).
+# Words, not arrows: « **Agrégation d'audiences → choix social** » is a title.
+NAV_HEAD_RE = re.compile(r"^\s*(?:>\s*)*\*\*([^*]+)\*\*")
+NAV_HEAD_WORDS = ("navigation", "suivant", "précédent", "precedent", "suite",
+                  "next", "prev")
+
+
+def _words_outside_links(line: str) -> int:
+    return len(re.findall(r"\w+", LINK_RE.sub(" ", line)))
+
+
+def _has_nav_head(line: str) -> bool:
+    m = NAV_HEAD_RE.match(line)
+    return bool(m) and any(w in m.group(1).lower() for w in NAV_HEAD_WORDS)
+
+
+def _is_prose_line(line: str) -> bool:
+    """A paragraph that happens to hold an arrow and a notebook link is not a
+    bar (CoursIA#27905, 22/11: « **Agrégation d'audiences → choix social** :
+    … [Tweety-9](…) … » got ` | [jumeau Rust](…)` glued onto its last
+    sentence). Measured on the words left once the links are removed, unless
+    the line opens on a nav label; table rows and list items keep their own
+    shapes (`_table_block`, list item). Repo measure (22/11, 1,589 notebooks
+    with a bar): the word bound alone dropped the bars of 49, among them
+    GameTheory-09c's headed `**Navigation**` bar -- hence the head clause."""
+    if _is_pipe_row(line) or LIST_ITEM_RE.match(line):
+        return False
+    return _words_outside_links(line) > PROSE_WORDS_MAX and not _has_nav_head(line)
+
+
+def _nav_bar_cells(cells: list[dict]) -> dict[int, int]:
+    """{cell index: line index} of the LAST nav-bar line of every markdown cell
+    that carries one — a bar is a line with a .ipynb link and a nav marker
+    (`**Navigation** :`, `<<`, `>>`, arrows...) in its VISIBLE text, link
+    targets excluded. Series that duplicate the bar at the end of the notebook
+    (ChoixSocial cells 0 and 27) get every copy extended, matching the lot-1
+    hand fix."""
+    out: dict[int, int] = {}
+    for i, cell in enumerate(cells):
+        if cell.get("cell_type") != "markdown":
+            continue
+        last = None
+        for j, line in enumerate(cell_text(cell).splitlines()):
+            if not any(m in visible_text(line).lower() for m in NAV_LINE_MARKERS):
+                continue
+            if not any(m.group(2).lower().endswith(".ipynb")
+                       for m in LINK_RE.finditer(line)):
+                continue
+            if _is_prose_line(line):
+                continue
+            last = j
+        if last is not None:
+            out[i] = last
+    return out
+
+
+TABLE_SEP_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$")
+UNESCAPED_PIPE_RE = re.compile(r"(?<!\\)\|")
+
+
+def _is_pipe_row(line: str) -> bool:
+    return line.lstrip().startswith("|")
+
+
+def _split_row(line: str) -> list[str]:
+    body = line.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|") and not body.endswith("\\|"):
+        body = body[:-1]
+    return [c.strip() for c in UNESCAPED_PIPE_RE.split(body)]
+
+
+def _table_block(lines: list[str], j: int) -> tuple[int, int] | None:
+    """(last row index, column count) of the Markdown TABLE holding line j, or
+    None when line j is not a row of a real table. A real table is a block of
+    contiguous pipe rows that contains a separator row (`|---|---|`); a lone
+    pipe-delimited nav bar (`| [<< prev](…) | [next >>](…) |`) has none, is not
+    rendered as a table, and keeps the extend-the-bar shape."""
+    if not _is_pipe_row(lines[j]):
+        return None
+    start = j
+    while start > 0 and _is_pipe_row(lines[start - 1]):
+        start -= 1
+    end = j
+    while end + 1 < len(lines) and _is_pipe_row(lines[end + 1]):
+        end += 1
+    seps = [k for k in range(start, end + 1)
+            if TABLE_SEP_RE.match(lines[k].rstrip("\r\n"))]
+    if not seps:
+        return None
+    return end, len(_split_row(lines[seps[0]]))
+
+
+def _table_nav_row(bar_row: str, n_cols: int, label: str, stem: str,
+                   new_name: str, lang: str, origin: bool = False) -> str:
+    """New table row mirroring the bar row's layout: the link goes in the
+    column where the bar row has its .ipynb link, the nav marker `→` (one the
+    repo guard reads on the line) in the column where the bar row has its own
+    marker outside any link, a short relation in the last free column."""
+    cells = _split_row(bar_row)
+    link_col = next((k for k, c in enumerate(cells)
+                     if any(m.group(2).lower().endswith(".ipynb")
+                            for m in LINK_RE.finditer(c))), 0)
+    marker_col = next((k for k, c in enumerate(cells)
+                       if k != link_col and any(
+                           mk in LINK_RE.sub("", c).lower()
+                           for mk in NAV_LINE_MARKERS)), None)
+    out = [""] * max(n_cols, link_col + 1)
+    cap = label[:1].upper() + label[1:]
+    if marker_col is not None and marker_col < len(out):
+        out[link_col] = f"[{stem}]({new_name})"
+        out[marker_col] = f"→ {cap}"
+    else:
+        out[link_col] = f"[→ {stem}]({new_name})"
+    free = [k for k in range(len(out)) if not out[k]]
+    if free:
+        out[free[-1]] = (f"carnet d'origine, en {lang}" if origin
+                         else f"même carnet, porté en {lang}")
+    return "| " + " | ".join(out) + " |\n"
+
+
+def _nav_label(bar_line: str, cell_text_: str, lang: str) -> str:
+    """Twin segment of the nav bar, mirroring the bar's own twin link
+    (`| [twin C#](...)` -> `twin Rust`, `[jumeau C#]` -> `jumeau Rust`);
+    default `jumeau <Lang>` (lot-1 cell-0 bars)."""
+    for m in LINK_RE.finditer(bar_line):
+        text = m.group(1).strip()
+        if BARE_LANG_RE.match(text):
+            return lang
+        mm = LABEL_WORD_RE.match(text) or TITLED_RE.match(text)
+        if mm:
+            return mirror_label(text, lang, False)
+    low = cell_text_.lower()
+    if re.search(r"\btwin\b", low):
+        return f"twin {lang}"
+    return f"jumeau {lang}"
+
+
+def _family_label(cells: list[dict], base_stem: str, lang: str) -> str | None:
+    """Label mirrored from the first twin-family link anywhere in the twin's
+    markdown (cell 0's `[Version C#](…-CSharp.ipynb)` -> `Version Rust`), for a
+    host line that carries no twin link of its own."""
+    family = twin_family_names(base_stem)
+    for cell in cells:
+        if cell.get("cell_type") != "markdown":
+            continue
+        for m in LINK_RE.finditer(cell_text(cell)):
+            if m.group(2).rsplit("/", 1)[-1] in family:
+                return mirror_label(m.group(1), lang, False)
+    return None
+
+
+LIST_ITEM_RE = re.compile(r"^(?P<indent>\s*)(?P<bullet>[-*+])\s+")
+
+
+def _list_item_end(lines: list[str], j: int) -> int:
+    """Index of the last line of the list item starting at line j (its
+    indented continuation lines included)."""
+    end = j
+    while end + 1 < len(lines):
+        nxt = lines[end + 1]
+        if not nxt.strip() or LIST_ITEM_RE.match(nxt) or not nxt[:1].isspace():
+            break
+        end += 1
+    return end
+
+
+def _insert_list_item(lines: list[str], j: int, label: str, stem: str,
+                      new_name: str, lang: str, origin: bool = False) -> None:
+    """Sibling list item after the list item at line j, same bullet and
+    indent, with the `→` marker the repo guard reads on the line."""
+    m = LIST_ITEM_RE.match(lines[j])
+    end = _list_item_end(lines, j)
+    cap = label[:1].upper() + label[1:]
+    relation = (f"le carnet d'origine, en {lang}" if origin
+                else f"le même carnet, porté en {lang}")
+    item = (f"{m.group('indent')}{m.group('bullet')} **{cap}** → "
+            f"[{stem}]({new_name}) — {relation}.\n")
+    if not lines[end].endswith("\n"):
+        lines[end] += "\n"
+        item = item.rstrip("\n")
+    lines.insert(end + 1, item)
+
+
+def _insert_sibling_line(lines: list[str], j: int, label: str, stem: str,
+                         new_name: str, lang: str, origin: bool = False) -> None:
+    """Sibling paragraph after the headed nav line at line j (« **Carnet
+    suivant** : [..](..) — la suite .. »): a ` | [..]` tail would glue the twin
+    onto the line's last sentence. Same blockquote prefix, the `→` marker the
+    repo guard reads on the line."""
+    prefix = re.match(r"^\s*(?:>\s*)*", lines[j]).group(0)
+    cap = label[:1].upper() + label[1:]
+    relation = (f"le carnet d'origine, en {lang}" if origin
+                else f"le même carnet, porté en {lang}")
+    para = f"{prefix}**{cap}** → [{stem}]({new_name}) — {relation}.\n"
+    if not lines[j].endswith("\n"):
+        lines[j] += "\n"
+        para = para.rstrip("\n")
+    lines[j + 1:j + 1] = [prefix.rstrip() + "\n", para]
+
+
+def plan_nav_link(twin_path: Path, nb_rel: str,
+                  hot: set[str] | None = None, *, lang: str | None = None,
+                  base_stem: str | None = None, origin: bool = False) -> dict:
+    """Plan the inbound nav edge in the Python twin.
+
+    Shapes, all measured on the lot-1 fixes: extend every existing nav bar with
+    ` | [label](new.ipynb)` (Search-03d cell 0, ChoixSocial cells 0+27) -- or,
+    when the bar is a row of a real Markdown table (Search-03c's « Ponts »
+    table, #27829), add a whole `| → Jumeau <Lang> | [stem](new) | … |` row at
+    the table's end instead of widening that row; when
+    no bar exists but a cell is a Navigation cell, append a
+    `**Jumeau <Lang>** : [stem](new.ipynb)` line to it (Sudoku-07 cell 0 under
+    its `## Navigation` table); when the twin has no navigation at all, prepend
+    a minimal `**Navigation** : [jumeau <Lang>](new.ipynb)` bar to its first
+    markdown cell and REPORT it — the smallest change the guard accepts, less
+    than the series' full prev|index|next bar a reviewer may want.
+
+    ``lang``/``base_stem``/``origin`` serve the OUTBOUND edge (`plan_back_link`):
+    the host is then the new port and the target its source twin, whose name
+    carries no port suffix ``split_port_name`` knows (`-Python`, or none).
+
+    HOT cells (`hot`: ids carrying a deposited translation, `hot_cell_ids`)
+    are never hosts (CoursIA#27855): their bars are skipped and reported, and
+    the edge falls back, in order, to a non-hot Navigation cell, a sibling
+    list item `- **<Label>** → [stem](new)` after the last .ipynb list link of
+    a non-hot cell (the « Pour aller plus loin » list), a minimal bar on the
+    first non-hot markdown cell -- or is DECLARED not placed when every
+    markdown cell is hot. A bar line that is a prose list item
+    (`- **Carnet suivant** : [..](..) — ...`) gets a sibling list item, never a
+    ` | [..]` tail.
+    """
+    nb_rel = nb_rel.replace("\\", "/")
+    new_name = nb_rel.rsplit("/", 1)[-1]
+    port_stem, port_lang = split_port_name(nb_rel)
+    base_stem = base_stem or port_stem
+    lang = lang or port_lang
+    stem = Path(nb_rel).stem
+    hot = hot or set()
+    nb, fmt, raw = load_nb(twin_path)
+    cells = nb["cells"]
+    if _nav_edge_exists(cells, new_name):
+        return {"todo": False, "why": "nav edge already present"}
+
+    def is_hot(i: int) -> bool:
+        return bool(cells[i].get("id")) and cells[i]["id"] in hot
+
+    all_bars = _nav_bar_cells(cells)
+    hot_skipped = sorted(i for i in all_bars if is_hot(i))
+    extra = {"hot_skipped": hot_skipped} if hot_skipped else {}
+    bars = {i: j for i, j in all_bars.items() if not is_hot(i)}
+    if bars:
+        changed, labels, hows = [], [], set()
+        for i, j in bars.items():
+            text = cell_text(cells[i])
+            lines = text.splitlines(keepends=True)
+            bar = lines[j]
+            label = _nav_label(bar, text, lang)
+            if label == f"jumeau {lang}":
+                label = _family_label(cells, base_stem, lang) or label
+            labels.append(label)
+            block = _table_block(lines, j)
+            if LIST_ITEM_RE.match(bar) and block is None:
+                # A prose list item (`- **Carnet suivant** : [..](..) — ..`):
+                # a ` | [..]` tail would glue the twin onto another sentence.
+                _insert_list_item(lines, j, label, stem, new_name, lang, origin)
+                hows.add("added-nav-list-item")
+            elif block is not None:
+                # A body row of a real Markdown table (Search-03c's « Ponts »
+                # table, CoursIA#27829): appending ` | [label](…)` would add a
+                # cell the header does not have. Add a whole row instead, after
+                # the table's last row, with the header's column count.
+                end, n_cols = block
+                row = _table_nav_row(bar, n_cols, label, Path(nb_rel).stem,
+                                     new_name, lang, origin)
+                if not lines[end].endswith("\n"):
+                    lines[end] += "\n"
+                    row = row.rstrip("\n")
+                lines.insert(end + 1, row)
+                hows.add("added-nav-table-row")
+            elif _words_outside_links(bar) > PROSE_WORDS_MAX:
+                # A headed nav line carrying descriptions (`_has_nav_head`).
+                _insert_sibling_line(lines, j, label, stem, new_name, lang, origin)
+                hows.add("added-nav-sibling-line")
+            else:
+                body, tail = bar.rstrip("\r\n"), bar[len(bar.rstrip("\r\n")):]
+                lines[j] = f"{body} | [{label}]({new_name}){tail}"
+                hows.add("extended-nav-bar")
+            set_cell_text(cells[i], "".join(lines))
+            changed.append(i)
+        how = hows.pop() if len(hows) == 1 else "+".join(sorted(hows))
+        return _finish_plan(twin_path, nb, fmt, raw,
+                            {"todo": True, "how": how,
+                             "cells": changed, "label": labels[0], **extra})
+    md = [i for i, c in enumerate(cells)
+          if c.get("cell_type") == "markdown" and not is_hot(i)]
+    for i in md:
+        text = cell_text(cells[i])
+        if "navigation" not in visible_text(text).lower():
+            continue
+        addition = f"**Jumeau {lang}** : [{stem}]({new_name})"
+        set_cell_text(cells[i], text.rstrip("\n") + "\n\n" + addition + "\n")
+        return _finish_plan(twin_path, nb, fmt, raw,
+                            {"todo": True, "how": "appended-under-navigation-cell",
+                             "cells": [i], "label": f"Jumeau {lang}", **extra})
+    label = _family_label(cells, base_stem, lang) or f"jumeau {lang}"
+    for i in reversed(md):
+        lines = cell_text(cells[i]).splitlines(keepends=True)
+        items = [j for j, line in enumerate(lines)
+                 if LIST_ITEM_RE.match(line) and any(
+                     m.group(2).lower().endswith(".ipynb")
+                     for m in LINK_RE.finditer(line))]
+        if not items:
+            continue
+        _insert_list_item(lines, items[-1], label, stem, new_name, lang, origin)
+        set_cell_text(cells[i], "".join(lines))
+        return _finish_plan(twin_path, nb, fmt, raw,
+                            {"todo": True, "how": "added-nav-list-item",
+                             "cells": [i], "label": label, **extra})
+    if not md:
+        if any(c.get("cell_type") == "markdown" for c in cells):
+            return {"todo": False, "hot_skipped": hot_skipped,
+                    "why": "every markdown cell carries a deposited translation "
+                           "(hot-subset ratchet, CoursIA#13551): no host the "
+                           "pass may edit -- inbound edge NOT placed, reported"}
+        return {"todo": False, "why": "twin has no markdown cell to host a nav bar"}
+    first_md = md[0]
+    bar = f"**Navigation** : [jumeau {lang}]({new_name})\n\n"
+    set_cell_text(cells[first_md], bar + cell_text(cells[first_md]))
+    return _finish_plan(twin_path, nb, fmt, raw,
+                        {"todo": True, "how": "added-minimal-nav-bar",
+                         "cells": [first_md], "label": f"jumeau {lang}",
+                         "note": "twin had no Navigation cell -- minimal bar "
+                                 "added, series may want prev|index|next",
+                         **extra})
+
+
+def _finish_plan(path: Path, nb: dict, fmt: dict, raw: str, plan: dict) -> dict:
+    assert_markdown_only(json.loads(raw)["cells"], nb["cells"], path.name)
+    plan["file"] = str(path)
+    plan["_nb"], plan["_fmt"], plan["_raw"] = nb, fmt, raw
+    return plan
+
+
+def apply_nav_link(action: dict) -> bool:
+    if not action.get("todo"):
+        return False
+    apply_nb(Path(action["file"]), action["_nb"], action["_fmt"], action["_raw"])
+    return True
+
+
+def twin_display_lang(nb_rel: str) -> str:
+    """Display language of a twin from its name: `-CSharp` -> C#, `-Rust` ->
+    Rust, `-Python` or no suffix -> Python (ANALYSE's originals carry none:
+    `ANALYSE-08-Ramsey-VdW.ipynb`)."""
+    stem = Path(nb_rel).stem
+    for suffix, display in LANG_SUFFIXES:
+        if stem.endswith("-" + suffix):
+            return display
+    return "Python"
+
+
+def plan_back_link(worktree: Path, notebook: str, source_nb: str) -> dict:
+    """Outbound edge: the NEW port links back to its source twin (22/11,
+    CoursIA#27905 + #27864 reviews). The port copies the twin's nav bar, and
+    that bar cannot name the twin itself: the Rust notebook linked the C# twin
+    and the series, never its Python original, and each review asked for the
+    edge by hand. Same shapes and markdown-only proof as the inbound edge, on
+    the new notebook; idempotent (a link to the twin in a nav context is an
+    edge already)."""
+    notebook = notebook.replace("\\", "/")
+    source_nb = source_nb.replace("\\", "/")
+    new_path = Path(worktree) / notebook
+    if not new_path.is_file():
+        return {"todo": False, "why": "new notebook not in the worktree"}
+    if not (Path(worktree) / source_nb).is_file():
+        return {"todo": False, "why": "source twin not in the worktree -- a link "
+                                      "to it would be dead, not placed"}
+    if Path(notebook).parent != Path(source_nb).parent:
+        return {"todo": False, "why": "source twin in another folder -- a bare "
+                                      "link would not resolve, not placed"}
+    lang = twin_display_lang(source_nb)
+    target = source_nb.rsplit("/", 1)[-1]
+    # A link that names the twin by its language (`[ANALYSE-08 (Python)](…)` in
+    # ANALYSE's `| Index | … |` row, which carries no nav marker the guard
+    # reads) is the edge a reviewer asks for: a second, minimal bar would only
+    # duplicate it.
+    for cell in load_nb(new_path)[0].get("cells", []):
+        if cell.get("cell_type") != "markdown":
+            continue
+        for m in LINK_RE.finditer(cell_text(cell)):
+            if (m.group(2).rsplit("/", 1)[-1] == target
+                    and lang.lower() in m.group(1).lower()):
+                return {"todo": False, "why": "twin already linked by its language"}
+    base_stem, _ = split_port_name(notebook)
+    return plan_nav_link(new_path, source_nb, set(), lang=lang,
+                         base_stem=base_stem, origin=True)
+
+
+# ------------------------------------------------------------------ registry
+
+def _slug(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", str(name).lower()).strip("-")
+
+
+def pair_member(worktree: Path, rel_path: str, key: str) -> str | None:
+    """Value of `key:` of the registry pair whose PYTHON member is `rel_path`.
+    Flat scan, no yaml import (pair files are flat mappings; the name line is
+    the list dash form `- name:`)."""
+    rel_path = rel_path.replace("\\", "/")
+    d = worktree / TWIN_PAIRS_DIR
+    if not d.is_dir():
+        return None
+    for f in sorted(d.glob("*.yaml")):
+        if f.name.startswith("_"):
+            continue
+        text = f.read_text(encoding="utf-8", errors="replace")
+        m_py = re.search(r"^\s+python:\s*['\"]?([^'\"\n]+?)['\"]?\s*$",
+                         text, re.MULTILINE)
+        if not m_py or m_py.group(1).replace("\\", "/") != rel_path:
+            continue
+        for pat in (rf"^-\s+{key}:\s*['\"]?([^'\"\n]+?)['\"]?\s*$",
+                    rf"^\s+{key}:\s*['\"]?([^'\"\n]+?)['\"]?\s*$"):
+            m = re.search(pat, text, re.MULTILINE)
+            if m:
+                return m.group(1).strip()
+    return None
+
+
+def find_twin_pair(worktree: Path, source_rel: str) -> str | None:
+    """Name of the registry pair whose python member is the source twin, or
+    None (twin not registered -- the parity guard has no seal to break, but a
+    C# delivery must then REGISTER the pair, cf register_pair)."""
+    return pair_member(worktree, source_rel, "name")
+
+
+def _csharp_member_exists(worktree: Path, nb_rel: str) -> bool:
+    """True when `nb_rel` is already the csharp member of some registered pair."""
+    nb_rel = nb_rel.replace("\\", "/")
+    d = worktree / TWIN_PAIRS_DIR
+    if not d.is_dir():
+        return False
+    for f in sorted(d.glob("*.yaml")):
+        if f.name.startswith("_"):
+            continue
+        text = f.read_text(encoding="utf-8", errors="replace")
+        m = re.search(r"^\s+csharp:\s*['\"]?([^'\"\n]+?)['\"]?\s*$",
+                      text, re.MULTILINE)
+        if m and m.group(1).replace("\\", "/") == nb_rel:
+            return True
+    return False
+
+
+def register_pair(worktree: Path, source_rel: str, nb_rel: str, lane: str,
+                  facts: dict | None = None) -> dict:
+    """Register the NEW pair (source twin + new C# notebook) at delivery —
+    parity_level native-both, schema python/csharp, attestation written LAST
+    by reseal_pair (po-2028 order, held on 14 PRs). Rust notebooks are NOT
+    registered: the registry schema has no rust member and lot 1 measured no
+    Rust registration on review-accepted branches.
+
+    The entry states DELIVERY facts only (harness, verifier verdict, execution
+    count) -- no `bridge_verdict` (optional in the schema; a SOTA verdict is a
+    firsthand judgment the harness does not make) and no 'verified firsthand'
+    claim. """
+    source_rel = source_rel.replace("\\", "/")
+    nb_rel = nb_rel.replace("\\", "/")
+    base_stem, lang = split_port_name(nb_rel)
+    if lang != "C#":
+        return {"registered": False,
+                "why": f"language {lang!r} is not a registry member (python/csharp)"}
+    if pair_member(worktree, source_rel, "name"):
+        return {"registered": False, "why": "source twin already in a pair"}
+    if _csharp_member_exists(worktree, nb_rel):
+        return {"registered": False, "why": "notebook already in a pair"}
+    family = Path(nb_rel).parent.relative_to("MyIA.AI.Notebooks").as_posix() \
+        if nb_rel.startswith("MyIA.AI.Notebooks/") else Path(nb_rel).parent.as_posix()
+    name = f"{base_stem} C#"
+    facts = facts or {}
+    entry = (
+        f"- name: \"{name}\"\n"
+        f"  family: {family}\n"
+        f"  python: {source_rel}\n"
+        f"  csharp: {nb_rel}\n"
+        f"  parity_level: native-both\n"
+        f"  known_differences:\n"
+        f"    - \"Enregistrement de livraison ({lane}, harnais nb_coder stages 0-5) : "
+        f"portage C# de {Path(source_rel).name}. Execution reelle sur kernel "
+        f"{facts.get('kernel', 'n/a')} : {facts.get('executed_cells', 'n/a')} cellules, "
+        f"0 erreur. Verification independente : {facts.get('verdict', 'n/a')}. "
+        f"Premiere attestation ecrite par l'integration de livraison (check_twin_parity "
+        f"--update), en DERNIERE operation (cf #8957).\"\n")
+    dest = worktree / TWIN_PAIRS_DIR / f"{_slug(name)}.yaml"
+    if dest.exists():
+        return {"registered": False, "why": f"{dest.name} already exists"}
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(entry, encoding="utf-8", newline="")
+    return {"registered": True, "file": (TWIN_PAIRS_DIR / dest.name).as_posix(),
+            "pair": name}
+
+
+def reseal_pair(worktree: Path, pair_name: str, lane: str) -> dict:
+    """Re-seal a pair with the repo's own tool (``check_twin_parity.py
+    --update``), like the lot-1 hand reseal. Records the git blob SHAs AT
+    HEAD, so the notebook, README row and inbound link must already be
+    COMMITTED (po-2028: attestation LAST). ``--update`` can refuse as a no-op
+    blob-only on a content change (measured po-2028): before retrying with
+    ``--force``, the pair's OWN check decides whether a seal is actually
+    missing -- a forced duplicate attestation on an already-sealed pair would
+    be exactly the false audit the registry's design gate forbids (#9399)."""
+    out = {"pair": pair_name, "forced": False}
+
+    def _run(*extra: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "scripts/notebook_tools/check_twin_parity.py",
+             *extra, "--pair", pair_name]
+            + (["--by", lane] if "--update" in extra else []),
+            cwd=str(worktree), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=GUARD_TIMEOUT_S)
+
+    proc = _run("--update")
+    audit = _status(worktree, TWIN_PAIRS_DIR.as_posix())
+    if proc.returncode == 0 and audit:
+        dropped = drop_superseded_attestations(worktree, pair_name, lane, audit)
+        return out | {"ok": True, "rc": proc.returncode, "audit_files": audit,
+                      "superseded": dropped,
+                      "tail": (proc.stdout or proc.stderr or "")[-400:]}
+    chk = _run("--check")
+    if chk.returncode == 0:  # pair already sealed at HEAD: nothing to attest
+        return out | {"ok": True, "rc": proc.returncode, "audit_files": [],
+                      "skipped": "already sealed at HEAD",
+                      "tail": (chk.stdout or chk.stderr or "")[-400:]}
+    proc = _run("--update", "--force")  # drift present, --update refused
+    audit = _status(worktree, TWIN_PAIRS_DIR.as_posix())
+    out |= {"forced": True, "rc": proc.returncode, "audit_files": audit,
+            "tail": (proc.stdout or proc.stderr or "")[-400:]}
+    out["ok"] = proc.returncode == 0 and bool(audit)
+    if out["ok"]:
+        out["superseded"] = drop_superseded_attestations(
+            worktree, pair_name, lane, audit)
+    return out
+
+
+def _attestation_by(text: str) -> str | None:
+    """The ``by:`` field of an attestation yaml (plain or quoted scalar)."""
+    for line in text.splitlines():
+        m = re.match(r"""\s*by:\s*['"]?([^'"#]+?)['"]?\s*(?:#.*)?$""", line)
+        if m:
+            return m.group(1).strip()
+    return None
+
+
+def drop_superseded_attestations(worktree: Path, pair_name: str, lane: str,
+                                 new_files: list[str]) -> list[str]:
+    """One attestation per PR, at head (review ai-01:CoursIA on CoursIA#27855,
+    22/11): a branch that is integrated twice (driver stage 5, then a later
+    ``nb_coder_integrate.py`` pass or ``--sync-main`` after a twin moved on
+    main) re-seals twice, and each reseal APPENDS an attestation. The earlier
+    one attests an intermediate blob that is neither main nor head, and it
+    also takes an ordinal that can collide with an open PR (0006 of #27311).
+
+    The registry is append-only ON MAIN; an attestation this branch added and
+    never merged is not history yet. So after a successful reseal, ``git rm``
+    every attestation of the SAME pair that the branch itself added (diff
+    merge-base(HEAD, origin/main)..HEAD, status A) and that THIS lane wrote,
+    keeping the one just written. Attestations on main, and those another lane
+    added on the branch, are never touched. An index gap is valid (the repo's
+    own test does not check contiguity), so nothing is renumbered. The removal
+    is staged; the callers' ``git add -- twin_pairs.d`` + commit carry it."""
+    rc, base = _git(worktree, "merge-base", "HEAD", "origin/main")
+    if rc != 0 or not base.strip():
+        return []
+    pair_dir = (TWIN_PAIRS_DIR / _slug(pair_name)).as_posix() + "/"
+    rc, out = _git(worktree, "diff", "--name-only", "--diff-filter=A",
+                   base.strip(), "HEAD", "--", pair_dir)
+    if rc != 0:
+        return []
+    keep = {f.strip().rstrip("/") for f in new_files}
+    dropped: list[str] = []
+    for rel in (l.strip() for l in out.splitlines()):
+        if not rel or rel in keep or not rel.endswith(".yaml"):
+            continue
+        path = worktree / rel
+        if not path.is_file():
+            continue
+        if _attestation_by(path.read_text(encoding="utf-8", errors="replace")) != lane:
+            continue
+        if _git(worktree, "rm", "-q", "--", rel)[0] == 0:
+            dropped.append(rel)
+    return dropped
+
+
+def _status(worktree: Path, path: str) -> list[str]:
+    rc, out = _git(worktree, "status", "--porcelain", "--", path)
+    return [l[3:].strip() for l in out.splitlines() if l.strip()]
+
+
+def _rel(repo: Path, path: Path) -> str:
+    try:
+        return path.resolve().relative_to(repo.resolve()).as_posix()
+    except ValueError:
+        return path.as_posix()
+
+
+# ------------------------------------------------------------------ rust conformance
+
+# A wall-clock duration inside an output line (`Resolu en 1.72 ms`, `Temps
+# total: 22.33 ms`): its VALUE is never compared (the specs say "présence
+# seule"), the line around it is an anchor that must exist on both sides.
+DURATION_RE = re.compile(
+    r"(?<![\w.,])\d+(?:[.,]\d+)?\s*(?:ms|µs|us|ns|s|sec|secondes?)(?![A-Za-zÀ-ÿ])")
+DURATION_NUM = r"\d+(?:[.,]\d+)?"
+# `label : value` / `label ? value` / `label = value` -- the label is the anchor
+# of a three-sided line measure, the value what is compared.
+LABEL_LINE_RE = re.compile(r"^(?P<label>\S[^\n]*?(?:\s:|:|\s\?|\s=))\s+(?P<value>\S[^\n]*?)\s*$")
+# A three-sided line measure compares a VALUE (a number, a boolean, a
+# collection) -- a prose tail (« Coûts contrastés : terrain non-dégénéré »)
+# is wording, not a result, and the C# twin rewords freely.
+VALUE_LITERAL_RE = re.compile(
+    r"^(?:True|False|None|true|false|OUI|NON|Oui|Non|\{.*\}|\[.*\]|\(.*\))$")
+RICH_MIMES = ("image/png", "image/jpeg", "image/svg+xml", "text/html",
+              "application/vnd.plotly.v1+json")
+NONDETERMINISTIC_RE = re.compile(r"\bat 0x[0-9a-fA-F]{6,}")
+# An environment banner (« Python 3.13.16, stdlib only », « Z3 version : 4.16.0 »)
+# reports the runtime, not a result of the notebook: the Rust port reports its
+# own toolchain (« Rust, std only ») and must never be asked to print Python's.
+# Short outputs only -- a long cell that mentions a version still carries results.
+ENV_BANNER_RE = re.compile(
+    r"(?im)\bPython\s+3\.\d+|\bversion\b\s*[:=]?\s*v?\d+\.\d+"
+    r"|^\s*[\w.-]+\s*[:=]\s*v?\d+\.\d+\.\d+\s*$")
+ENV_BANNER_MAX_LINES = 6
+
+
+def is_rust_port(nb_rel: str) -> bool:
+    return Path(nb_rel.replace("\\", "/")).name.endswith("-Rust.ipynb")
+
+
+def conformance_slug(nb_rel: str) -> str:
+    """`Sudoku-07-Norvig-Rust.ipynb` -> `sudoku-07-norvig` (registry file stem)."""
+    return _slug(split_port_name(nb_rel)[0])
+
+
+def conformance_file(nb_rel: str) -> Path:
+    return RUST_CONFORMANCE_DIR / f"{conformance_slug(nb_rel)}.yaml"
+
+
+def notebook_outputs(path: Path) -> dict[int, str]:
+    """{code-cell index: output text} -- MIRROR of the repo checker's
+    `read_notebook_outputs` (stream `text` + `text/plain` of execute_result /
+    display_data, concatenated). A different reading would generate patterns
+    the checker does not see."""
+    nb = json.loads(path.read_text(encoding="utf-8"))
+    out: dict[int, str] = {}
+    for i, cell in enumerate(nb.get("cells", [])):
+        if cell.get("cell_type") != "code":
+            continue
+        chunks: list[str] = []
+        for o in cell.get("outputs") or []:
+            if "text" in o:
+                t = o["text"]
+                chunks.append("".join(t) if isinstance(t, list) else str(t))
+            data = o.get("data") or {}
+            if "text/plain" in data:
+                t = data["text/plain"]
+                chunks.append("".join(t) if isinstance(t, list) else str(t))
+        out[i] = "".join(chunks)
+    return out
+
+
+def _duration_template(line: str) -> str:
+    """Regex for one output line whose duration values float: the text is
+    escaped verbatim, each duration number becomes `\\d+(?:[.,]\\d+)?`."""
+    parts, pos = [], 0
+    for m in DURATION_RE.finditer(line):
+        parts.append(re.escape(line[pos:m.start()]))
+        unit = re.sub(r"^" + DURATION_NUM, "", m.group(0))
+        parts.append(DURATION_NUM + re.escape(unit))
+        pos = m.end()
+    parts.append(re.escape(line[pos:]))
+    return "".join(parts)
+
+
+def _segments(text: str) -> list[dict]:
+    """Split a reference output on its duration lines. Each segment is the
+    text BETWEEN two anchors; its pattern captures it, the anchors (duration
+    lines with floating values) must match on the compared side too."""
+    lines = text.split("\n")
+    dur = [i for i, l in enumerate(lines) if DURATION_RE.search(l)]
+    if not dur:
+        return [{"pattern": r"\A\s*(.*?)\s*\Z", "text": text.strip(), "durations": 0}]
+    # `\r?$`: the C# kernel writes CRLF; a bare `$` would never anchor there.
+    anchor = {i: r"(?m:^" + _duration_template(lines[i].rstrip("\r")) + r"\r?$)" for i in dur}
+    bounds = [None, *dur, None]
+    segs = []
+    for k in range(len(bounds) - 1):
+        a, b = bounds[k], bounds[k + 1]
+        lo = 0 if a is None else a + 1
+        hi = len(lines) if b is None else b
+        body = "\n".join(lines[lo:hi]).strip()
+        if not body:
+            continue
+        # The left anchor walks EVERY earlier duration line in order: two
+        # `Temps moyen : … ms` lines share one template, and a lone anchor
+        # would match the first occurrence for the second segment.
+        left = r"\A" + "".join(r"(?:.*?)" + anchor[j] for j in dur if a is not None and j <= a)
+        right = r"\Z" if b is None else anchor[b]
+        segs.append({"pattern": left + r"\s*(.*?)\s*" + right, "text": body,
+                     "durations": len(dur)})
+    return segs
+
+
+def _extract(text: str, pattern: str) -> str | None:
+    """Same extraction as the checker (re.DOTALL, first group, strip)."""
+    m = re.search(pattern, text, re.DOTALL)
+    if not m:
+        return None
+    return (m.group(1) if m.groups() else m.group(0)).strip()
+
+
+def _first_diff(ref: str, other: str) -> str:
+    # CRLF is reported by `_csharp_gap` on its own; here it would hide the
+    # real first difference behind two lines that look identical.
+    a, b = ref.split("\n"), other.replace("\r\n", "\n").split("\n")
+    for i in range(max(len(a), len(b))):
+        la = a[i] if i < len(a) else "<fin>"
+        lb = b[i] if i < len(b) else "<fin>"
+        if la != lb:
+            if la.strip() == lb.strip():
+                la, lb = repr(la), repr(lb)
+            # Excerpt around the first differing column: a fixed `[:60]` showed
+            # two identical-looking prefixes when the lines part after column 60
+            # (ChoixSocial-02 c2, « (Gale-Shapley) » vs « (Gale-Shapley, twin C# »).
+            col = next((j for j, (x, y) in enumerate(zip(la, lb)) if x != y),
+                       min(len(la), len(lb)))
+            start = max(0, col - DIFF_CONTEXT_BEFORE)
+            return (f"ligne {i + 1} : « {_window(lb, start)} » contre "
+                    f"« {_window(la, start)} » côté Python")
+    return "texte identique"
+
+
+DIFF_CONTEXT_BEFORE = 20
+DIFF_WINDOW = 60
+
+
+def _window(line: str, start: int) -> str:
+    cut = line[start:start + DIFF_WINDOW]
+    return ("…" if start else "") + cut + ("…" if start + DIFF_WINDOW < len(line) else "")
+
+
+def _label_lines(text: str) -> dict[str, str]:
+    """{label: value} for the lines of `text` shaped `label : value` whose label
+    occurs ONCE and whose line carries no duration -- a duplicated label (the
+    doubled `Step 5:` of a trace) would anchor on the wrong line."""
+    seen: dict[str, list[str]] = {}
+    for line in text.split("\n"):
+        if DURATION_RE.search(line):
+            continue
+        m = LABEL_LINE_RE.match(line.rstrip())
+        if m:
+            seen.setdefault(m.group("label"), []).append(m.group("value"))
+    return {k: v[0] for k, v in seen.items()
+            if len(v) == 1 and (re.search(r"\d", v[0]) or VALUE_LITERAL_RE.match(v[0]))}
+
+
+def _ascii_slug(text: str) -> str:
+    """Measure-id slug: ASCII only (`Stable ?` -> `stable`, `Coût` -> `cout`)."""
+    flat = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "_", flat.lower()).strip("_")
+
+
+def _csharp_gap(i: int, cs_txt: str | None, cs_got: str | None, ref: str,
+                cs_code: set[int]) -> str:
+    """Why the aligned C# cell is not comparable -- MEASURED at generation,
+    written into the `absent:` motif so a reviewer reads the gap, not a guess."""
+    if i not in cs_code:
+        return (f"Le carnet C# n'a pas de cellule de code à l'index {i} "
+                "(structure de cellules différente du jumeau Python)")
+    if not (cs_txt or "").strip():
+        return f"La cellule C# {i} ne porte pas de sortie"
+    if cs_got is None:
+        return (f"La cellule C# {i} n'imprime pas les lignes-ancres de durée "
+                "du segment Python")
+    if cs_got.replace("\r\n", "\n").replace("\r", "") == ref:
+        return (f"La cellule C# {i} ne diffère du Python que par ses fins de "
+                "ligne CRLF (noyau .NET)")
+    return f"La cellule C# {i} diffère du texte Python ({_first_diff(ref, cs_got)})"
+
+
+def rich_output_cells(path: Path) -> set[int]:
+    """Code cells with a rich display (figure, HTML table). Their `text/plain`
+    is a language-specific repr (`<Figure size 640x480 with 1 Axes>`, a pandas
+    frame) that a Rust port can never print verbatim: never measured here."""
+    nb = json.loads(Path(path).read_text(encoding="utf-8"))
+    return {i for i, c in enumerate(nb.get("cells", []))
+            if c.get("cell_type") == "code"
+            and any(set((o.get("data") or {})) & set(RICH_MIMES) for o in c.get("outputs") or [])}
+
+
+def is_env_banner(text: str) -> bool:
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    return 0 < len(lines) <= ENV_BANNER_MAX_LINES and bool(ENV_BANNER_RE.search(text))
+
+
+def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None) -> dict:
+    """Measures + Rust divergences + generator skips, from three notebook paths
+    (the stage-3 gate calls it on the BUILT notebook, before any commit)."""
+    py_out = notebook_outputs(py_path)
+    rs_out = notebook_outputs(rs_path)
+    cs_out = notebook_outputs(cs_path) if cs_path is not None and Path(cs_path).is_file() else None
+    rich = rich_output_cells(py_path)
+    measures: list[dict] = []
+    divergences: list[dict] = []
+    skipped: list[str] = []
+    for i in sorted(py_out):
+        if not py_out[i].strip():
+            continue
+        if i in rich:
+            skipped.append(f"c{i}: sortie riche côté Python (figure/HTML), non mesurée")
+            continue
+        if NONDETERMINISTIC_RE.search(py_out[i]):
+            skipped.append(f"c{i}: adresse mémoire dans la sortie Python, non mesurée")
+            continue
+        if is_env_banner(py_out[i]):
+            skipped.append(f"c{i}: bannière d'environnement (versions) côté Python, non mesurée")
+            continue
+        segs = _segments(py_out[i])
+        rs_txt = rs_out.get(i)
+        for k, seg in enumerate(segs):
+            mid = f"c{i}_text" if len(segs) == 1 else f"c{i}_seg{k + 1}"
+            desc = (f"Sortie de la cellule {i}, texte identique au jumeau Python"
+                    + (f" (segment {k + 1}/{len(segs)} ; durées murales en présence "
+                       "seule, valeurs jamais comparées)" if seg["durations"] else ""))
+            if _extract(py_out[i], seg["pattern"]) != seg["text"]:
+                # The reference side cannot read its own pattern: a generator
+                # limit (an output shape it does not model), never a measure.
+                skipped.append(f"{mid}: motif non relu côté Python, mesure non écrite")
+                continue
+            sides: dict = {"python": {"cell": i, "pattern": seg["pattern"], "transform": "text"},
+                           "rust": {"cell": i, "pattern": seg["pattern"], "transform": "text"}}
+            got = _extract(rs_txt, seg["pattern"]) if rs_txt else None
+            if got != seg["text"]:
+                divergences.append({
+                    "id": mid, "cell": i,
+                    "text": ("la cellule Rust n'imprime rien" if not rs_txt
+                             else "les lignes-ancres de durée du segment Python manquent"
+                             if got is None else _first_diff(seg["text"], got))})
+            if cs_out is not None:
+                cs_txt = cs_out.get(i)
+                cs_got = _extract(cs_txt, seg["pattern"]) if cs_txt else None
+                if cs_got == seg["text"]:
+                    sides["csharp"] = {"cell": i, "pattern": seg["pattern"], "transform": "text"}
+                else:
+                    gap = _csharp_gap(i, cs_txt, cs_got, seg["text"], set(cs_out))
+                    sides["csharp"] = {"absent": (
+                        f"{gap} : côté déclaré absent, mesuré à la génération ; "
+                        "la comparaison stricte porte sur Python et Rust.")}
+            measures.append({"id": mid, "description": desc, "tolerance": 0,
+                             "reference": "python", "sides": sides})
+        if cs_out is not None and rs_txt and cs_out.get(i):
+            py_l, rs_l, cs_l = (_label_lines(py_out[i]), _label_lines(rs_txt),
+                                _label_lines(cs_out[i]))
+            for label, value in py_l.items():
+                if rs_l.get(label) != value or cs_l.get(label) != value:
+                    continue
+                # The whole pattern sits in the multiline group: a bare `$`
+                # outside it means end-of-cell under the checker's DOTALL
+                # search, so only a cell's LAST line would ever match.
+                pat = r"(?m:^" + re.escape(label) + r"[ \t]+([^\n]*?)[ \t]*\r?$)"
+                # Self-check with the checker's own extraction on all three
+                # sides: a measure the organ cannot read is never written.
+                if any(_extract(t, pat) != value for t in (py_out[i], rs_txt, cs_out[i])):
+                    continue
+                lid = f"c{i}_{_ascii_slug(label)[:40] or 'ligne'}"
+                if any(m["id"] == lid for m in measures):
+                    continue
+                measures.append({
+                    "id": lid,
+                    "description": f"« {label} » de la cellule {i}, même valeur sur les trois côtés",
+                    "tolerance": 0, "reference": "python",
+                    "sides": {s: {"cell": i, "pattern": pat, "transform": "text"}
+                              for s in ("python", "csharp", "rust")}})
+    return {"measures": measures, "divergences": divergences, "skipped": skipped,
+            "has_csharp": cs_out is not None}
+
+
+def conformance_divergences(py_path: Path, rs_path: Path) -> list[dict]:
+    """Rust cells whose output differs from the Python twin's same-index cell,
+    as the registry entry written at delivery would measure them. Stage-3 gate
+    input: a divergence found here is repaired BEFORE the PR, not by review."""
+    return _conformance_core(py_path, rs_path, None)["divergences"]
+
+
+def build_conformance_entry(worktree: Path, nb_rel: str, source_rel: str) -> dict:
+    """The `rust_conformance.d` entry of an nb_coder Rust port, from the
+    COMMITTED outputs of the port and its twins (CoursIA c0018, 21/11: the
+    lot-1 specs require it at delivery and every PR without it came back).
+
+    Correspondence by cell INDEX: an nb_coder port keeps its Python twin's
+    cell structure (the twin-parity seal checks it), and the lot specs compare
+    "sortie Python cellule N" to Rust cell N. One measure per code cell the
+    Python twin prints something in, strict text equality (tolerance 0);
+    duration lines split the cell into segments and are matched by presence
+    only. The entry is written whether or not the sides agree: a divergence is
+    the checker's finding, never smoothed here (fail-closed). The C# side is
+    compared where its aligned cell prints the same text, else DECLARED absent
+    with the measured gap; lines `label : value` identical on all three sides
+    add three-sided measures anchored on the label."""
+    worktree = Path(worktree)
+    nb_rel = nb_rel.replace("\\", "/")
+    source_rel = source_rel.replace("\\", "/")
+    base, _ = split_port_name(nb_rel)
+    cs_rel = (Path(nb_rel).parent / f"{base}-CSharp.ipynb").as_posix()
+    core = _conformance_core(worktree / source_rel, worktree / nb_rel,
+                             worktree / cs_rel if (worktree / cs_rel).is_file() else None)
+    measures = core["measures"]
+    entry = {"name": base,
+             "family": Path(nb_rel).parent.as_posix().replace("MyIA.AI.Notebooks/", "", 1),
+             "python": source_rel}
+    if core["has_csharp"]:
+        entry["csharp"] = cs_rel
+    entry["rust"] = nb_rel
+    entry["measures"] = measures
+    three = sum(1 for m in measures if "cell" in (m["sides"].get("csharp") or {}))
+    return {"file": conformance_file(nb_rel).as_posix(), "entry": entry,
+            "measures": len(measures), "three_sided": three,
+            "csharp": cs_rel if core["has_csharp"] else None,
+            "divergences": core["divergences"], "skipped": core["skipped"]}
+
+
+def _yq(s) -> str:
+    """YAML scalar: a JSON string is a valid YAML double-quoted scalar."""
+    return json.dumps(s, ensure_ascii=False) if isinstance(s, str) else json.dumps(s)
+
+
+def render_conformance_yaml(built: dict) -> str:
+    """Stdlib YAML of one registry entry (the module stays import-free; the
+    tests load it back with PyYAML)."""
+    e = built["entry"]
+    head = [
+        f"# Conformité différentielle de {e['name']} (portage Rust nb_coder).",
+        "#",
+        "# Écrite à la livraison par nb_coder_integrate depuis les sorties COMMITÉES",
+        "# des carnets : correspondance par index de cellule (le portage garde la",
+        "# structure de cellules du jumeau Python, scellée par twin-parity), une",
+        "# mesure par cellule qui imprime côté Python, égalité stricte du texte ;",
+        "# les lignes de durée murale sont des ancres en présence seule. Le côté",
+        "# C# est comparé où sa cellule alignée imprime le même texte, sinon",
+        "# déclaré absent avec l'écart mesuré. À corriger À LA MAIN si une",
+        "# divergence est un écart d'API documenté : le fichier n'est jamais",
+        "# réécrit par l'outil une fois présent.",
+    ]
+    # The cells the generator chose NOT to measure, with the measured reason
+    # (CoursIA#27818 review, 22/11: a PR comment said « motif écrit dans
+    # l'entrée » and the entry carried none -- the generator knew it and
+    # dropped it). Comments, not keys: the registry schema has no field for a
+    # cell that is not a measure, and the repo's hand-written entries already
+    # carry such motives as header comments (gametheory-04h-routing-poa).
+    skipped = [" ".join(str(s).split()) for s in built.get("skipped") or []]
+    if skipped:
+        head += ["#", "# Cellules non mesurées (motif relevé à la génération) :"]
+        head += [f"#   - {s}" for s in skipped]
+    lines = head + [f"- name: {_yq(e['name'])}", f"  family: {_yq(e['family'])}",
+                    f"  python: {e['python']}"]
+    if e.get("csharp"):
+        lines.append(f"  csharp: {e['csharp']}")
+    lines += [f"  rust: {e['rust']}", "  measures:"]
+    for m in e["measures"]:
+        lines += [f"    - id: {m['id']}", f"      description: {_yq(m['description'])}",
+                  f"      tolerance: {m['tolerance']}", f"      reference: {m['reference']}",
+                  "      sides:"]
+        for side in ("python", "rust", "csharp"):
+            spec = m["sides"].get(side)
+            if spec is None:
+                continue
+            lines.append(f"        {side}:")
+            if "absent" in spec:
+                lines.append(f"          absent: {_yq(spec['absent'])}")
+            else:
+                lines += [f"          cell: {spec['cell']}",
+                          f"          pattern: {_yq(spec['pattern'])}",
+                          f"          transform: {spec['transform']}"]
+    return "\n".join(lines) + "\n"
+
+
+def plan_conformance(worktree: Path, nb_rel: str, source_rel: str) -> dict:
+    """Plan the registry entry of a Rust port: todo when the file is missing.
+    An existing file is NEVER rewritten -- a human correction (an API gap
+    declared by hand) must survive a re-run (idempotence + authorship)."""
+    if not is_rust_port(nb_rel):
+        return {"todo": False, "why": "not a Rust port"}
+    worktree = Path(worktree)
+    rel = conformance_file(nb_rel)
+    if (worktree / rel).is_file():
+        return {"todo": False, "file": rel.as_posix(), "why": "entry already present"}
+    if not (worktree / RUST_CONFORMANCE_DIR).is_dir():
+        return {"todo": False, "why": f"no {RUST_CONFORMANCE_DIR.as_posix()} in the repo"}
+    built = build_conformance_entry(worktree, nb_rel, source_rel)
+    return {"todo": True, "path": str(worktree / rel), "text": render_conformance_yaml(built),
+            **{k: v for k, v in built.items() if k != "entry"}}
+
+
+def apply_conformance(plan: dict) -> bool:
+    if not plan.get("todo"):
+        return False
+    Path(plan["path"]).write_text(plan["text"], encoding="utf-8", newline="\n")
+    return True
+
+
+# ------------------------------------------------------------------ guards
+
+def replay_guards(worktree: Path, notebook: str | None = None) -> list[dict]:
+    """Replay the guards with the exact commands the lot-1 review
+    comments published. Read-only against git; run AFTER the integration
+    commits so `--diff-base origin/main` sees them. A Rust port with a
+    registry entry also replays the differential conformance organ on it
+    (`--entry <slug>.yaml`: fail-closed when the entry does not exist)."""
+    guards = list(GUARDS)
+    if notebook and is_rust_port(notebook) and (Path(worktree) / conformance_file(notebook)).is_file():
+        guards.append(("rust-conformance",
+                       [CONFORMANCE_CHECKER, "--entry", conformance_file(notebook).name]))
+    out = []
+    for name, cmd in guards:
+        try:
+            proc = subprocess.run([sys.executable, *cmd], cwd=str(worktree),
+                                  capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace",
+                                  timeout=GUARD_TIMEOUT_S)
+            out.append({"guard": name, "cmd": " ".join(["python", *cmd]),
+                        "rc": proc.returncode,
+                        "tail": (proc.stdout or proc.stderr or "")[-400:]})
+        except (subprocess.TimeoutExpired, OSError) as e:
+            out.append({"guard": name, "cmd": " ".join(["python", *cmd]),
+                        "rc": None, "tail": f"{type(e).__name__}: {e}"[:400]})
+    return out
+
+
+# ------------------------------------------------------------------ integrate
+
+def integrate(worktree: Path, notebook: str, source_nb: str) -> dict:
+    """Apply the two file edits (README row + inbound nav link). Returns the
+    plan for each plus the touched repo-relative files. Idempotent: on an
+    already-integrated branch both plans report todo=False and nothing moves."""
+    worktree = Path(worktree)
+    notebook = notebook.replace("\\", "/")
+    source_nb = source_nb.replace("\\", "/")
+    twin = worktree / source_nb
+    if not twin.is_file():
+        return {"error": f"source notebook not found: {source_nb}"}
+    nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb))
+    apply_nav_link(nav)
+    back = plan_back_link(worktree, notebook, source_nb)
+    apply_nav_link(back)
+    readme = plan_readme_row(worktree, notebook, source_nb)
+    apply_readme_row(readme)
+    conf = plan_conformance(worktree, notebook, source_nb)
+    apply_conformance(conf)
+    touched = ([source_nb] if nav.get("todo") else []) + \
+              ([notebook] if back.get("todo") else []) + \
+              ([readme["file"]] if readme.get("todo") else []) + \
+              ([conf["file"]] if conf.get("todo") else [])
+    return {"notebook": notebook, "source_nb": source_nb,
+            "nav": {k: v for k, v in nav.items() if not k.startswith("_")},
+            "back": {k: v for k, v in back.items() if not k.startswith("_")},
+            "readme": {k: v for k, v in readme.items() if k != "path"},
+            "conformance": _conformance_summary(conf),
+            "pair": find_twin_pair(worktree, source_nb),
+            "touched": touched}
+
+
+def integration_commit_message(result: dict, lane: str) -> str:
+    """Name only what `integrate` actually wrote. A retrofit that adds just the
+    conformance entry to an already-integrated PR must not claim a README row
+    and a nav edge: a reviewer reads the commit list to know what moved."""
+    stem = Path(result["notebook"]).stem
+    touched = set(result.get("touched") or [])
+    parts, why = [], []
+    if result.get("readme", {}).get("todo") and result["readme"].get("file") in touched:
+        parts.append("ligne README")
+        why.append("ligne README exigée par readme-notebook-coverage")
+    if result.get("source_nb") in touched:
+        parts.append("arête nav")
+        why.append("arête entrante exigée par check-nav-chain (le jumeau Python ne "
+                   "change qu'en markdown : barre/section Navigation)")
+    if result.get("notebook") in touched:
+        parts.append("lien retour")
+        why.append("lien du nouveau carnet vers son jumeau d'origine (la barre "
+                   "recopiée du jumeau ne peut pas le nommer ; markdown seul)")
+    conf = result.get("conformance") or {}
+    if conf.get("file") in touched:
+        parts.append("entrée rust_conformance")
+        why.append(f"entrée `{Path(conf['file']).name}` ({conf.get('measures', '?')} "
+                   "mesure(s)) lue par check_rust_conformance.py")
+    title = " + ".join(parts) or "intégration"
+    return (f"Chore(integration): {title} pour {stem}\n\n"
+            + "".join(f"- {w}\n" for w in why) + "\n"
+            f"Lane: {lane}\n"
+            "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\n")
+
+
+def _conformance_summary(plan: dict) -> dict:
+    return {k: v for k, v in plan.items() if k not in ("path", "text", "entry")}
+
+
+def plan_only(worktree: Path, notebook: str, source_nb: str) -> dict:
+    """--check-only: the same plans, zero writes."""
+    worktree = Path(worktree)
+    notebook = notebook.replace("\\", "/")
+    source_nb = source_nb.replace("\\", "/")
+    twin = worktree / source_nb
+    if not twin.is_file():
+        return {"error": f"source notebook not found: {source_nb}"}
+    nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb))
+    back = plan_back_link(worktree, notebook, source_nb)
+    readme = plan_readme_row(worktree, notebook, source_nb)
+    conf = plan_conformance(worktree, notebook, source_nb)
+    return {"notebook": notebook, "source_nb": source_nb,
+            "nav": {k: v for k, v in nav.items()
+                    if not k.startswith("_") and k != "file"},
+            "back": {k: v for k, v in back.items()
+                     if not k.startswith("_") and k != "file"},
+            "readme": {k: v for k, v in readme.items() if k != "path"},
+            "conformance": _conformance_summary(conf),
+            "pair": find_twin_pair(worktree, source_nb),
+            "todo": bool(nav.get("todo") or back.get("todo") or readme.get("todo")
+                         or conf.get("todo"))}
+
+
+# ------------------------------------------------------------------ sync-main
+
+def owned_files(worktree: Path, notebook: str, source_nb: str) -> list[str]:
+    """Paths whose conflicts --sync-main may resolve itself: the notebook
+    folder's README(s), the source twin, the twin-pairs registry. Invariant:
+    on an nb_coder branch those files carry ONLY this integration's edits,
+    so taking origin/main's side then re-running it loses nothing."""
+    notebook = notebook.replace("\\", "/")
+    source_nb = source_nb.replace("\\", "/")
+    folder = worktree / Path(notebook).parent
+    owned = sorted(_rel(worktree, p) for p in folder.glob("README*.md"))
+    owned.append(source_nb)
+    owned.append(TWIN_PAIRS_DIR.as_posix())
+    if is_rust_port(notebook):  # created by this integration only
+        owned.append(conformance_file(notebook).as_posix())
+    return owned
+
+
+def merge_owned_conflicts(worktree: Path, owned: list[str]) -> dict:
+    """`git merge origin/main` (no rebase, no force-push). Conflicts confined
+    to `owned` paths are resolved by taking origin/main's version (the caller
+    re-runs the integration on top, idempotently); ANY other conflict aborts
+    the merge and reports. Testable without the guards."""
+    rc, out = _git(worktree, "merge", "origin/main", "--no-edit")
+    if rc == 0:
+        return {"merged": True, "already_up_to_date": "Already up to date" in out,
+                "output": out[-300:]}
+    rc_u, conflicted = _git(worktree, "diff", "--name-only", "--diff-filter=U")
+    paths = [p for p in conflicted.splitlines() if p.strip()]
+    owned_ok = all(any(p == o or p.startswith(o.rstrip("/") + "/") for o in owned)
+                   for p in paths)
+    if not paths or not owned_ok:
+        _git(worktree, "merge", "--abort")
+        return {"merged": False, "aborted": True, "conflicts": paths,
+                "output": out[-300:]}
+    for p in paths:  # take origin/main's side, then the caller re-integrates
+        _git(worktree, "restore", "--source=origin/main", "--staged",
+             "--worktree", "--", p)
+    return {"merged": True, "resolved_theirs": paths, "output": out[-300:]}
+
+
+def sync_main(worktree: Path, notebook: str, source_nb: str, lane: str,
+              facts: dict | None = None) -> dict:
+    """--sync-main: fold origin/main into an existing PR branch, re-apply the
+    integration (idempotent), re-seal LAST, replay the guards. Several grains
+    in one folder edit adjacent README lines: the second PR to merge would
+    otherwise conflict -- measured risk on the 4 Complexity grains queued by
+    po-2028."""
+    worktree = Path(worktree)
+    merge = merge_owned_conflicts(worktree, owned_files(worktree, notebook, source_nb))
+    if not merge.get("merged"):
+        return {"merge": merge, "guards": replay_guards(worktree, notebook)}
+    result = integrate(worktree, notebook, source_nb)
+    for f in result.get("touched", []):
+        _git(worktree, "add", "--", f)
+    # A CLEAN `git merge` has already committed (rc 0): a bare `commit
+    # --no-edit` then has no message to reuse and fails, leaving the
+    # integration staged while the reseal reads a HEAD without it -- guards
+    # replayed on the working tree said green on a branch whose push would
+    # carry nothing (CoursIA#27900, 22/11). `--no-edit` only concludes a merge
+    # still in progress (conflicts resolved from origin/main); otherwise the
+    # integration gets its own commit, named after what it wrote.
+    in_merge = _git(worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD")[0] == 0
+    if in_merge:
+        rc_c, out_c = _git(worktree, *GIT_IDENTITY, "commit", "--no-edit")
+    elif result.get("touched"):
+        rc_c, out_c = _git(worktree, *GIT_IDENTITY, "commit", "-m",
+                           integration_commit_message(result, lane))
+    else:
+        rc_c, out_c = 0, ""
+    if rc_c != 0 or result.get("error"):
+        return {"merge": merge, "integration": result,
+                "commit_error": out_c[-300:] if rc_c != 0 else None,
+                "guards": replay_guards(worktree, notebook)}
+    return {"merge": merge, "integration": result,
+            "reseal": _reseal_after(worktree, notebook, source_nb, lane, facts),
+            "guards": replay_guards(worktree, notebook)}
+
+
+def _reseal_after(worktree: Path, notebook: str, source_nb: str, lane: str,
+                  facts: dict | None) -> dict | None:
+    """Register (C# first delivery) then re-seal, and commit the registry
+    writes so the guards read them at HEAD."""
+    reg = register_pair(worktree, source_nb, notebook, lane, facts)
+    pair = find_twin_pair(worktree, source_nb)
+    if not pair:
+        return {"registered": reg, "why": "no pair to seal"}
+    reseal = reseal_pair(worktree, pair, lane)
+    if reg.get("registered") or reseal.get("audit_files"):
+        _git(worktree, "add", "--", TWIN_PAIRS_DIR.as_posix())
+        msg = (f"Chore(twin-parity): rescelle « {pair} » après intégration "
+               f"({Path(notebook).stem})\n\nAttestation écrite en DERNIÈRE "
+               "opération, après carnet, ligne README et lien de navigation.\n\n"
+               f"Lane: {lane}\n"
+               "Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>\n")
+        _git(worktree, *GIT_IDENTITY, "commit", "-m", msg)
+    return {"registered": reg, "reseal": reseal}
+
+
+# ------------------------------------------------------------------ cli
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(
+        description="Integrate an nb_coder port notebook into the repo's "
+                    "guards (README row, inbound nav link, twin-parity reseal).")
+    ap.add_argument("--worktree", required=True, help="CoursIA worktree root")
+    ap.add_argument("--notebook", required=True,
+                    help="repo-relative path of the NEW notebook")
+    ap.add_argument("--source-nb", required=True, dest="source_nb",
+                    help="repo-relative path of its Python source twin")
+    ap.add_argument("--check-only", action="store_true",
+                    help="plan only: report what would change, write nothing")
+    ap.add_argument("--sync-main", action="store_true", dest="sync_main",
+                    help="existing PR branch: merge origin/main (no rebase), "
+                         "resolve integration-owned conflicts from origin/main, "
+                         "re-apply, re-seal, replay guards")
+    ap.add_argument("--by", default="myia-ai-01:vllm",
+                    help="lane identity for the twin-parity reseal")
+    ap.add_argument("--facts", default=None,
+                    help="JSON delivery facts for the C# pair registration "
+                         "(kernel, executed_cells, verdict)")
+    args = ap.parse_args(argv)
+    wt = Path(args.worktree)
+    facts = json.loads(args.facts) if args.facts else None
+
+    if args.check_only:
+        result = plan_only(wt, args.notebook, args.source_nb)
+        result["guards"] = replay_guards(wt, args.notebook)
+        print(json.dumps(result, ensure_ascii=False, indent=1))
+        return 0 if not result.get("todo") else 1
+
+    if args.sync_main:
+        result = sync_main(wt, args.notebook, args.source_nb, args.by, facts)
+        result["guards"] = result.get("guards") or replay_guards(wt, args.notebook)
+        print(json.dumps(result, ensure_ascii=False, indent=1, default=str))
+        return 0 if (result.get("merge", {}).get("merged")
+                     and not result.get("commit_error")
+                     and not (result.get("integration") or {}).get("error")
+                     and all(g["rc"] == 0 for g in result["guards"])) else 1
+
+    result = integrate(wt, args.notebook, args.source_nb)
+    if result.get("error"):
+        print(json.dumps(result, ensure_ascii=False, indent=1))
+        return 2
+    for f in result["touched"]:
+        _git(wt, "add", "--", f)
+    if result["touched"]:
+        _git(wt, *GIT_IDENTITY, "commit", "-m", integration_commit_message(result, args.by))
+    result["reseal"] = _reseal_after(wt, args.notebook, args.source_nb,
+                                     args.by, facts)
+    result["guards"] = replay_guards(wt, args.notebook)
+    print(json.dumps(result, ensure_ascii=False, indent=1, default=str))
+    return 0 if all(g["rc"] == 0 for g in result["guards"]) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

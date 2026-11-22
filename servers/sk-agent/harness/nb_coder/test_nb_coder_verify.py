@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 7416ac16c91e150aae5a75dd251d0c1a4c2f5c2c
+# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_verify.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -243,3 +243,100 @@ def test_answer_without_verdict_stays_unparsable(monkeypatch, tmp_path):
     """Text came back but carries no verdict: that is unparsable, not a call failure."""
     rc, t = _run_main(monkeypatch, tmp_path, [{"response": "no json here"}])
     assert rc == 2 and t["verdict"] == "error:unparsable" and "call_error" not in t
+
+
+# ------------------------------------------------- budget-cut answer gets one retry (21/11)
+
+def _run_main_prompts(monkeypatch, tmp_path, envs):
+    """Like _run_main, but also returns the prompts each call received."""
+    prompts = []
+    calls = iter(envs)
+
+    async def fake_call(args, prompt):
+        prompts.append(prompt)
+        return next(calls), 1.0
+
+    src = _nb(tmp_path, [_code([_stream("a\n")])], "src.ipynb")
+    built = _nb(tmp_path, [_code([_stream("b\n")])], "built.ipynb")
+    monkeypatch.setattr(v.nbcd, "app_token", lambda _p: None)
+    monkeypatch.setattr(v.nbcd, "fetch_issue",
+                        lambda *a, **k: {"title": "t", "body": "b", "comments": ""})
+    monkeypatch.setattr(v, "call_verifier", fake_call)
+    out = tmp_path / "out"
+    monkeypatch.setattr(sys, "argv", ["nb_coder_verify.py", "--issue", "7", "--source-nb",
+                                      str(src), "--built-nb", str(built), "--out-dir",
+                                      str(out)])
+    rc = v.main()
+    return rc, json.loads((out / "verify-7.json").read_text(encoding="utf-8")), prompts
+
+
+_CUT = {"response": '```json\n{"verdict": "reject", "findings": [{"cell": 9, "detail": "Sor',
+        "usage": {"prompt_tokens": 28795, "completion_tokens": 32768}}
+
+
+def test_budget_cut_answer_is_retried_with_the_short_note(monkeypatch, tmp_path):
+    """21/11 CoursIA#27848: completion_tokens == 32 768 and the JSON stops mid-findings.
+    One retry with the truncation note; a retry that answers is the verdict."""
+    ok = {"response": '```json\n{"verdict": "approve", "findings": []}\n```',
+          "usage": {"prompt_tokens": 28795, "completion_tokens": 9000}}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [_CUT, ok])
+    assert rc == 0 and t["verdict"] == "approve"
+    assert t["verify_retry"] == "truncated"
+    assert len(prompts) == 2 and prompts[1].endswith(v.TRUNCATED_NOTE)
+    assert v.TRUNCATED_NOTE not in prompts[0]
+
+
+def test_budget_cut_twice_names_the_verdict(monkeypatch, tmp_path):
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [_CUT, _CUT])
+    assert rc == 2 and t["verdict"] == "error:truncated" and len(prompts) == 2
+
+
+def test_full_budget_with_a_readable_verdict_is_not_retried(monkeypatch, tmp_path):
+    """Reaching the budget is not a defect when the verdict came through whole."""
+    full = {"response": '```json\n{"verdict": "reject", "findings": []}\n```',
+            "usage": {"prompt_tokens": 1, "completion_tokens": 32768}}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [full])
+    assert rc == 1 and t["verdict"] == "reject" and "verify_retry" not in t
+    assert len(prompts) == 1
+
+
+def test_unparsable_under_budget_is_not_a_truncation(monkeypatch, tmp_path):
+    """No usage, or usage below the budget: unreadable text stays error:unparsable."""
+    short = {"response": "no json here", "usage": {"completion_tokens": 120}}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [short])
+    assert rc == 2 and t["verdict"] == "error:unparsable" and len(prompts) == 1
+
+
+# ------------------------------------- sk-agent's "empty model response" error (22/11)
+
+_EMPTY_ERR = "empty model response — agent.invoke produced no output"
+
+
+def test_empty_model_response_error_at_budget_is_retried_short(monkeypatch, tmp_path):
+    """22/11 CoursIA#27893: sk-agent returns the empty answer as an ERROR envelope with
+    completion_tokens at the budget (the critic thought until the cap). One retry with
+    the truncation note; an answer on the retry is the verdict."""
+    cut = {"error": _EMPTY_ERR, "usage": {"prompt_tokens": 48097, "completion_tokens": 32768}}
+    ok = {"response": '```json\n{"verdict": "approve", "findings": []}\n```',
+          "usage": {"prompt_tokens": 48097, "completion_tokens": 7000}}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [cut, ok])
+    assert rc == 0 and t["verdict"] == "approve"
+    assert t["verify_retry"] == "truncated"
+    assert len(prompts) == 2 and prompts[1].endswith(v.TRUNCATED_NOTE)
+
+
+def test_empty_model_response_error_without_usage_gets_the_empty_note(monkeypatch, tmp_path):
+    """#27780/#27781: same error, zero usage -- the cloud-empty case, RETRY_NOTE."""
+    empty = {"error": _EMPTY_ERR, "usage": {"prompt_tokens": 0, "completion_tokens": 0}}
+    ok = {"response": '```json\n{"verdict": "reject", "findings": []}\n```'}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [empty, ok])
+    assert rc == 1 and t["verdict"] == "reject"
+    assert t["verify_retry"] == "empty-response"
+    assert prompts[1].endswith(v.nbcd.RETRY_NOTE)
+
+
+def test_empty_model_response_twice_still_names_the_call_failure(monkeypatch, tmp_path):
+    empty = {"error": _EMPTY_ERR}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [empty, empty])
+    assert rc == 2 and len(prompts) == 2
+    assert t["verdict"].startswith("error:call-failed: empty model response")

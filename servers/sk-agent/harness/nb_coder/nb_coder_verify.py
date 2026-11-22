@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 7416ac16c91e150aae5a75dd251d0c1a4c2f5c2c
+# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_verify.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -342,6 +342,48 @@ async def call_verifier(args, prompt: str) -> tuple[dict, float]:
         return {"response": raw}, round(time.time() - t0, 1)
 
 
+# 21/11 CoursIA#27848 (Complexity-07c): the critic spent the WHOLE 32 768-token output
+# budget (usage.completion_tokens == 32 768) and its visible JSON stopped mid-findings
+# (4 326 chars) -> error:unparsable -> verify-error, i.e. a whole grain relaunch for an
+# answer that only needed to be shorter. Same one-retry contract as the cloud empty.
+TRUNCATED_NOTE = (
+    "\n\nNB : une tentative précédente a épuisé tout son budget de sortie et sa réponse a "
+    "été coupée avant la fin du JSON. Réfléchis nettement plus court, ne recopie aucune "
+    "sortie, une ou deux phrases par constat, puis rends directement le bloc ```json.")
+
+
+def _has_verdict(ans) -> bool:
+    return isinstance(ans, dict) and ans.get("verdict") in ("approve", "reject")
+
+
+def budget_exhausted(env: dict, max_tokens: int) -> bool:
+    """The answer's own tokens reached the output budget, as sk-agent reports them."""
+    ct = (env.get("usage") or {}).get("completion_tokens")
+    return (isinstance(ct, (int, float)) and not isinstance(ct, bool)
+            and int(ct) >= int(max_tokens))
+
+
+def verify_retry_reason(env: dict, max_tokens: int) -> str:
+    """Why ONE retry is owed, or "" — an error envelope never gets one (call failure),
+    except sk-agent's own "empty model response" error, which is the empty case itself.
+
+    22/11: sk-agent now reports a content-less answer as an ERROR envelope, not as a 200
+    with empty text, so the empty retry above never fired: 4 of 49 conveyor verdicts
+    (#27780, #27781, #27885, #27893) died on it, two of them with completion_tokens at
+    the 32 768 budget -- the critic thought until the cap and wrote nothing visible. The
+    driver already retries that error once (``empty model response`` at attempt 0)."""
+    if env.get("error"):
+        if not str(env["error"]).startswith("empty model response"):
+            return ""
+        return "truncated" if budget_exhausted(env, max_tokens) else "empty-response"
+    text = (env.get("response") or "").strip()
+    if not text:
+        return "empty-response"
+    if budget_exhausted(env, max_tokens) and not _has_verdict(nbcd.parse_json_block(text)):
+        return "truncated"
+    return ""
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="nb-coder independent verifier (stage 4)")
     ap.add_argument("--issue", type=int, required=True)
@@ -419,14 +461,18 @@ def main() -> int:
                                prior=prior)
         rec["prompt_chars"] = len(prompt)
         env, dt = asyncio.run(call_verifier(args, prompt))
-        if not (env.get("response") or "").strip() and not env.get("error"):
+        retry = verify_retry_reason(env, args.max_tokens)
+        if retry:
             # 18/11 wave-1c: critic (GLM-5.3) returned 200-empty TWICE (308 s and
             # 609 s elapsed) — not the 16/11 token-budget case (32 768 already the
             # default here): cloud-side empties. One retry asking for shorter
             # reasoning, mirroring the driver's empty-response retry; still empty
             # keeps the error:unparsable verdict exactly as before.
-            rec["verify_retry"] = "empty-response"
-            env2, dt2 = asyncio.run(call_verifier(args, prompt + nbcd.RETRY_NOTE))
+            # 21/11 #27848: same single retry when the answer was CUT by the budget
+            # (see TRUNCATED_NOTE); a retry cut again ends as error:truncated.
+            rec["verify_retry"] = retry
+            note = nbcd.RETRY_NOTE if retry == "empty-response" else TRUNCATED_NOTE
+            env2, dt2 = asyncio.run(call_verifier(args, prompt + note))
             if (env2.get("response") or "").strip() or env2.get("error"):
                 env, dt = env2, round(dt + dt2, 1)
         rec["elapsed_s"] = dt
@@ -447,6 +493,8 @@ def main() -> int:
         if not ans or ans.get("verdict") not in ("approve", "reject"):
             rec["verdict"] = (f"error:call-failed: {call_error[:200]}"
                               if call_error and not rec["response_chars"]
+                              else "error:truncated"
+                              if rec["response_chars"] and budget_exhausted(env, args.max_tokens)
                               else "error:unparsable")
             rc = 2
         else:

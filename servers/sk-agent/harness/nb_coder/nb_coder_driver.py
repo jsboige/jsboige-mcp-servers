@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 7416ac16c91e150aae5a75dd251d0c1a4c2f5c2c
+# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -22,8 +22,10 @@ Stage 3 GATES : harness-only checks on the built notebook — coordination refs 
                 the exact provenance-footer form, secrets, language_info drift vs source.
 Stage 4 VERIFY: independent verifier (nb_coder_verify.py, SEPARATE process and agent —
                 producer != verifier; its exit 2 is an instrument error, never a reject).
-Stage 5 PR    : harness-only GitHub gestures — fresh branch, single-notebook commit, REST PR
-                create, delivery comment. The MODEL never writes to git or GitHub.
+Stage 5 PR    : harness-only GitHub gestures — fresh branch, integration commit (notebook +
+                README row + inbound nav link + C# pair registration, nb_coder_integrate),
+                twin-parity reseal LAST, REST PR create, delivery comment. The MODEL never
+                writes to git or GitHub.
 
 Model per step (#4831): --coder-model serves every in-process turn (plan, build, segments,
 repairs, revisions), --verifier-model the stage-4 audit, --spec-model the spec pre-chew. Unset
@@ -193,19 +195,88 @@ def rate_limit_verdict(reset: int | None) -> str:
 
 
 def app_token(repo_dir: Path) -> str | None:
-    """Requirement #5: 1-hour installation token, never persisted, never in the model context."""
+    """Requirement #5: 1-hour installation token, never persisted, never in the model context.
+    Without a GitHub App, the token of a logged-in gh account that can push (pinned_gh_token)."""
     app_id = os.environ.get("NBCODER_GH_APP_ID")
     key = os.environ.get("NBCODER_GH_KEY")
     if not app_id or not key:
-        return None
+        return pinned_gh_token()
     script = repo_dir / "scripts/secrets/github_app_token.py"
     if not script.is_file():
-        return None
+        return pinned_gh_token()
     p = subprocess.run([sys.executable, str(script), "--app-id", app_id, "--key", key,
                         "--repo", "jsboige/CoursIA", "--quiet"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60)
     tok = (p.stdout or "").strip().splitlines()[-1] if p.returncode == 0 else ""
+    if tok:
+        GH_IDENTITY.update(source="github-app", login=None)
     return tok or None
+
+
+# Without a token, every gh call runs as the ACTIVE gh account, and other sessions on the
+# machine switch it (`gh auth switch`). On 21/11 CoursIA#27781 was approved, its branch pushed
+# (git has its own credentials), and the PR create died in 422 "must be a collaborator": the
+# active account had drifted to one with no push right while the driver ran. The driver now
+# pins, once per process, the token of ONE account: NBCODER_GH_USER when set (explicit, never
+# second-guessed), otherwise the first logged-in account -- active one first -- whose token
+# can push to the target repo. The pinned token is that account's own: a later switch cannot
+# move it. GH_IDENTITY records who was pinned and why, for the PR record.
+GH_IDENTITY: dict = {}
+_GH_PIN_REPO = "jsboige/CoursIA"
+
+
+def _gh_out(argv: list[str], timeout: int = 20, token: str | None = None) -> str | None:
+    env = {**os.environ}
+    if token:
+        env["GH_TOKEN"] = token
+    else:
+        env.pop("GH_TOKEN", None)
+    try:
+        p = subprocess.run(["gh", *argv], capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=timeout, env=env)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return (p.stdout or "").strip() if p.returncode == 0 else None
+
+
+def gh_logins() -> list[str]:
+    """Logged-in github.com accounts, the active one first."""
+    out = _gh_out(["auth", "status", "--json", "hosts"])
+    try:
+        accts = (json.loads(out or "{}").get("hosts") or {}).get("github.com") or []
+    except ValueError:
+        return []
+    ok = [a for a in accts if isinstance(a, dict) and a.get("state") == "success" and a.get("login")]
+    return [a["login"] for a in sorted(ok, key=lambda a: not a.get("active"))]
+
+
+def gh_can_push(token: str, repo: str = _GH_PIN_REPO) -> bool:
+    return _gh_out(["api", f"repos/{repo}", "--jq", ".permissions.push"], token=token) == "true"
+
+
+def pinned_gh_token(repo: str = _GH_PIN_REPO) -> str | None:
+    if GH_IDENTITY.get("pinned"):
+        return GH_IDENTITY.get("_token")
+    if os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN"):
+        # an operator-provided token already fixes the identity; never override it
+        GH_IDENTITY.update(pinned=True, _token=None, login=None, source="env-token")
+        return None
+    want = os.environ.get("NBCODER_GH_USER", "").strip()
+    tried: list[str] = []
+    for login in ([want] if want else gh_logins()):
+        tok = _gh_out(["auth", "token", "-u", login])
+        tried.append(login)
+        if tok and (want or gh_can_push(tok, repo)):
+            GH_IDENTITY.update(pinned=True, _token=tok, login=login, tried=tried,
+                               source="NBCODER_GH_USER" if want else "push-probe")
+            return tok
+    GH_IDENTITY.update(pinned=True, _token=None, login=None, tried=tried,
+                       source="NBCODER_GH_USER-unavailable" if want else "no-account-can-push")
+    return None
+
+
+def gh_identity_record() -> dict:
+    return {k: v for k, v in GH_IDENTITY.items() if not k.startswith("_") and k != "pinned"}
 
 
 # ---------------------------------------------------------------- stage 0
@@ -745,6 +816,66 @@ def late_reservation(args, rec: dict) -> bool:
     return True
 
 
+# 22/11 (conveyor, 03:50->04:45Z): under --claim-late six grains were taken by faster
+# lanes while Swift was building them (CoursIA#27927, #27928, #27930, #27931, #27935,
+# #27936). The refusal only surfaced at the late reservation, ~1.5 h of engine time
+# after the other lane's marker. A cheap probe (one REST call) at the stage boundaries
+# stops the run as soon as another lane's marker is the issue's last word -- confirmed
+# by the same scoped guard as the reservation before anything is thrown away.
+_CLAIM_MARK_RE = re.compile(r"^\s*\[(CLAIMED|RELEASED|DELIVERED)\] lane (\S+)")
+MIDRUN_REFUSED = f"{LATE_CLAIM_REFUSED}:midrun"
+MIDRUN_COLLISIONS = ("refused-claim-held-by-another-lane", "refused-claim-implicit-occupation")
+
+
+def last_foreign_marker(issue_n: int, lane: str, slug: str = _GH_PIN_REPO) -> str | None:
+    """The other lane whose [CLAIMED]/[DELIVERED] is the issue's LAST claim marker.
+
+    None when the last marker is ours or a [RELEASED], when there is none, or when GitHub
+    does not answer: fail-open, the late reservation stays the authority."""
+    try:
+        p = subprocess.run(["gh", "api", f"repos/{slug}/issues/{issue_n}/comments?per_page=100",
+                            "--jq", "[.[].body]"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=60)
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if p.returncode != 0:
+        return None
+    try:
+        bodies = json.loads(p.stdout or "[]")
+    except ValueError:
+        return None
+    last = None
+    for body in bodies if isinstance(bodies, list) else []:
+        m = _CLAIM_MARK_RE.match(body or "")
+        if m:
+            last = m.groups()
+    if last and last[0] != "RELEASED" and last[1] != lane:
+        return last[1]
+    return None
+
+
+def midrun_claim_abort(args, rec: dict, stage: str) -> bool:
+    """True when the run must stop now: the claim was deferred (--claim-late), another
+    lane's marker is the issue's last word, and the scoped guard sees a COLLISION on this
+    notebook (held by another lane, or an occupying PR that may touch it). A guard that
+    times out, is broken, or answers a disjoint occupation never stops the run."""
+    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
+    if cr.get("deferred") != "late":
+        return False
+    holder = last_foreign_marker(args.issue, args.lane)
+    probe: dict = {"stage": stage, "at": utcnow(), "holder": holder}
+    rec.setdefault("midrun_claim_probes", []).append(probe)
+    if not holder:
+        return False
+    cc = check_claim(Path(args.repo), args.issue, args.lane, _norm_rel(args.notebook))
+    verdict = claim_verdict(cc)
+    probe["guard"] = {"rc": cc.get("rc"), "verdict": verdict}
+    if verdict in MIDRUN_COLLISIONS:
+        rec["verdict"] = f"{MIDRUN_REFUSED}:{stage}:{holder}"
+        return True
+    return False
+
+
 def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
     """Detached worktree of origin/main: the dirty checkout is never read or touched.
 
@@ -783,6 +914,27 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
                           capture_output=True, text=True).stdout.strip()
     return {"path": str(dest), "reused": False, "head": head,
             "ok": p.returncode == 0, "err": (p.stderr or "").strip()[:500]}
+
+
+def restore_worktree(repo: Path, dest: Path, head: str | None) -> dict:
+    """Re-create a resumed grain's detached worktree at the head its trace recorded.
+
+    The scheduler releases the worktree of a failed grain (`worktree-released`), so
+    a resume of that grain found it missing and refused (21/11: #27851, approved and
+    built, refused by the late-claim guard, then [RELEASED] by the holder 13 min
+    later). Same head as the run: the source twin and kernel cwd are byte-identical
+    to what was built and verified; stage 5 branches off it exactly as a first run.
+    A missing head refuses (never a silent re-base on today's origin/main)."""
+    if not head:
+        return {"ok": False, "err": "no worktree head in the trace"}
+    subprocess.run(["git", "-C", str(repo), "worktree", "prune"],
+                   capture_output=True, text=True, timeout=120)
+    p = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(dest), head],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       timeout=600)
+    rc = getattr(p, "returncode", 1)
+    return {"ok": rc == 0 and dest.exists(), "head": head, "path": str(dest),
+            "err": (getattr(p, "stderr", "") or "").strip()[-300:]}
 
 
 def engine_tokens() -> dict:
@@ -1375,9 +1527,13 @@ CREATION_LINK_COUNT_RULES = (
     "- LIENS : aucun lien vers un fichier qui n'existe pas. Ne translittère JAMAIS le "
     "suffixe d'un voisin (`…-Python.ipynb` → `…-Rust.ipynb`) : un voisin n'existe dans le "
     "langage cible que si le dépôt le contient. En cas de doute, garde la cible du jumeau.\n"
-    "- COMPTAGES : si une phrase recopiée porte une mesure d'artefact ou de durée "
-    "(« ~80 lignes », « 9 lignes », « ~20 min »), retire la mesure et garde le prédicat "
-    "(règle #9377 du dépôt). C'est la SEULE retouche permise de la prose du jumeau.\n"
+    "- COMPTAGES : la garde du dépôt refuse en markdown tout chiffre suivi de « lignes », "
+    "« cellules », « modules », « fichiers » ou « notebooks » (règle #9377). Si la phrase "
+    "recopiée mesure un artefact ou une durée (« ~80 lignes », « ~20 min »), retire la "
+    "mesure et garde le prédicat. Si le chiffre compte des DONNÉES du calcul (les cellules "
+    "d'une matrice ou d'une grille), garde le chiffre et change le nom : « 10 cellules sur "
+    "24 » devient « 10 cases sur 24 ». Ce sont les SEULES retouches permises de la prose "
+    "du jumeau.\n"
     "- COMMENTAIRES : une cellule de code longue (8 lignes ou plus) porte des commentaires "
     "de lecture ; reporte ceux du jumeau quand ils sont fournis.\n")
 
@@ -1911,18 +2067,30 @@ def repair_round_extends(rounds_done: int, budget: int, cap: int, before: int,
 # hint fix the verifier had spelled out. A round that does not strictly reduce the
 # majors ends the loop as before ([2, 1, 1] and [4, 4, 4] on the same day stay as they are).
 REVISE_EXTEND_DEFAULT = 2
+# Harness-synthesized finding sources: deterministic, narrow (one gate, one failing cell).
+DETERMINISTIC_SOURCES = ("gates", "execution")
 
 
 def revise_round_extends(rounds_done: int, budget: int, cap: int, source_in, source_out,
                          majors_in, majors_out) -> bool:
-    """One more revision round when the budget is spent, the cap is not reached, and the
-    round just run strictly reduced the major findings — measured on findings of the SAME
-    source (verifier vs verifier, execution vs execution, gates vs gates): a synthesized
-    execution finding and a verifier major are not on one scale."""
+    """One more revision round when the budget is spent, the cap is not reached, and either
+
+    - the round just run strictly reduced the major findings — measured on findings of the
+      SAME source (verifier vs verifier, execution vs execution, gates vs gates): a
+      synthesized execution finding and a verifier major are not on one scale; or
+    - the round answered one source and its rewrite broke a DETERMINISTIC one (a gate, or
+      execution) that the builder has never been shown. 22/11, CoursIA#27930: the last
+      budgeted round fixed a real verifier major (Pauli Y anti-diagonal) but rewrote cell
+      11 without its `//` comments; `uncommented-code` then ended the grain terminal with
+      no round ever spent on it. A new deterministic finding gets one round; ping-pong
+      stays bounded by the cap, and a verifier that comes back is not extended here."""
     if not (isinstance(majors_in, int) and isinstance(majors_out, int)):
         return False
-    return (rounds_done >= budget and budget < cap and source_in == source_out
-            and majors_out < majors_in)
+    if rounds_done < budget or budget >= cap:
+        return False
+    if source_in == source_out:
+        return majors_out < majors_in
+    return source_out in DETERMINISTIC_SOURCES and majors_out > 0
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 # Frame names a kernel error carries: .NET Interactive `at Submission#5.Decouper(`,
@@ -4055,6 +4223,85 @@ def dead_link_hits(built_cells: list, repo: Path, rel: str) -> list[dict]:
     return hits
 
 
+# `[label](target "title")`: the label and target of one markdown link, for the rewrite below.
+MD_LABELED_LINK_RE = re.compile(r"\[([^\]\n]*)\]\(\s*(<?)([^)\s>]+)(>?)((?:\s+[\"'][^\"']*[\"'])?)\s*\)")
+
+
+def _series_id(target: str) -> str | None:
+    """`dir/Lean-19d-Borne-Bennett-Python.ipynb` -> `dir/Lean-19d`: the file name up to its
+    first token that carries a digit (the series position), directory kept. None when no
+    token carries one (nothing safe to match on)."""
+    path = unquote(target.split("#", 1)[0].split("?", 1)[0])
+    head, _, name = path.rpartition("/")
+    toks = name.split("-")
+    for k, t in enumerate(toks[:-1]):
+        if any(ch.isdigit() for ch in t):
+            return f"{head}/{'-'.join(toks[:k + 1])}" if head else "-".join(toks[:k + 1])
+    return None
+
+
+def resolve_dead_links(built_nb: Path, src_nb: Path, repo: Path, rel: str) -> dict:
+    """Rewrite, before the gates read it, a dead relative link of the built notebook onto
+    the EXISTING target its source twin links for the same neighbour (22/11, CoursIA#27932:
+    asked by the verifier to restore the twin's sibling links, Swift rebuilt their file
+    names from the labels — `Lean-19-Borne-Hoeffding-Python.ipynb`, `Lean-19d-Borne-Bennett-
+    Python.ipynb`, neither in the repo — and the dead-links gate failed the grain after its
+    last round, 29 min of engine time). The twin's cell 0 had the right names all along.
+    Match, in order: a twin link with the SAME label; else the ONE twin target sharing the
+    dead target's series id (`Lean-19d`, directory included). Candidates are only twin links
+    whose target exists. No unique match = no rewrite: the gate stays the judge."""
+    try:
+        nb = json.loads(built_nb.read_text(encoding="utf-8"))
+        src_cells = _cells(src_nb)
+    except (OSError, ValueError) as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:300]}
+    base = (repo / rel).parent
+
+    def alive(target: str) -> bool:
+        path = unquote(target.split("#", 1)[0].split("?", 1)[0])
+        return bool(path) and (base / path).exists()
+
+    by_label: dict[str, set] = {}
+    by_series: dict[str, set] = {}
+    for c in src_cells:
+        if c.get("cell_type") != "markdown":
+            continue
+        for m in MD_LABELED_LINK_RE.finditer(_text(c.get("source"))):
+            t = m.group(3).strip()
+            if t.startswith(("#", "/")) or LINK_SCHEME_RE.match(t) or not alive(t):
+                continue
+            by_label.setdefault(m.group(1).strip(), set()).add(t)
+            sid = _series_id(t)
+            if sid:
+                by_series.setdefault(sid, set()).add(t)
+    dead = {(h["cell"], h["target"]) for h in dead_link_hits(nb.get("cells") or [], repo, rel)}
+    fixed: list[dict] = []
+    for i, c in enumerate(nb.get("cells") or []):
+        if c.get("cell_type") != "markdown":
+            continue
+
+        def swap(m, i=i):
+            t = m.group(3).strip()
+            if (i, t) not in dead:
+                return m.group(0)
+            cand = by_label.get(m.group(1).strip()) or set()
+            if len(cand) != 1:
+                cand = by_series.get(_series_id(t) or "") or set()
+            if len(cand) != 1:
+                return m.group(0)
+            new = next(iter(cand))
+            fixed.append({"cell": i, "from": t, "to": new})
+            return f"[{m.group(1)}]({m.group(2)}{new}{m.group(4)}{m.group(5)})"
+
+        text = _text(c.get("source"))
+        out = MD_LABELED_LINK_RE.sub(swap, text)
+        if out != text:
+            c["source"] = _lines(out)
+    if fixed:
+        built_nb.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return {"ok": True, "fixed": fixed}
+
+
 def _repo_guard_tool(repo: Path, name: str) -> Path:
     return repo / "scripts" / "notebook_tools" / name
 
@@ -4063,6 +4310,18 @@ def _unmeasured(gate: str, **why) -> dict:
     """A repo guard that could not run is DECLARED (measured: false), never a silent pass
     and never a build failure: the PR's CI stays the judge of what the harness missed."""
     return {"gate": gate, "ok": True, "detail": {"measured": False, **why}}
+
+
+def split_gates(gates: list) -> tuple[list[str], list[str]]:
+    """(passed-and-measured, passed-but-unmeasured) gate names. An _unmeasured() guard keeps
+    ok: True so an instrument failure never blocks delivery, but the PR body must not list it
+    as "OK" -- that would claim a check nobody ran (21/11, claudish-bc review)."""
+    def measured(g: dict) -> bool:
+        d = g.get("detail")
+        return d.get("measured", True) is not False if isinstance(d, dict) else True
+    passed = [g for g in gates if isinstance(g, dict) and g.get("ok")]
+    return ([g["gate"] for g in passed if measured(g)],
+            [g["gate"] for g in passed if not measured(g)])
 
 
 def uncommented_code_gate(repo: Path, built_nb: Path) -> dict:
@@ -4141,13 +4400,73 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
                        "findings": findings}}
 
 
+PROSE_ANCHOR_TOOL = Path("scripts") / "check_markdown_claims_output.py"
+
+
+def _anchor_findings(tool: Path, repo: Path, nb: Path) -> list[dict] | None:
+    """The `findings` list of the repo's claims organ on one notebook (numeric values
+    in a markdown cell absent from the preceding code cells' outputs); None when the
+    organ did not answer with its JSON (rc 2, timeout, unparsable)."""
+    pr = subprocess.run([sys.executable, str(tool), "--json", str(nb)], cwd=str(repo),
+                        capture_output=True, text=True, encoding="utf-8",
+                        errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+    if pr.returncode not in (0, 1):
+        return None
+    try:
+        data = json.loads(pr.stdout)
+    except ValueError:
+        return None
+    rows = data if isinstance(data, list) else [data]
+    return [f for r in rows if isinstance(r, dict) for f in (r.get("findings") or [])
+            if isinstance(f, dict)]
+
+
+def prose_anchor_gate(repo: Path, src_nb: Path, built_nb: Path) -> dict:
+    """Prose re-anchored on the BUILT notebook's own outputs (CoursIA#27864, 21/11): the
+    Rust port re-ran the 3SUM timing (1,5 → 77,1 ms, slope 1,927) while its « À retenir »
+    and quiz still quoted the Python run (42,7 → 2 836,7 ms, slope 2,016) — Hermes
+    CHANGES_REQUESTED. The repo's claims organ (markdown-claims-output-advisory) flags a
+    markdown number absent from the preceding outputs; judged on the DELTA: a finding
+    the source twin already has (same value in the same markdown cell, or the same
+    sentence) is the repo's stock, not this build's."""
+    tool = repo / PROSE_ANCHOR_TOOL
+    if not tool.is_file():
+        return _unmeasured("prose-anchor", skipped=f"tool absent: {PROSE_ANCHOR_TOOL.as_posix()}")
+    try:
+        built, src = _anchor_findings(tool, repo, built_nb), _anchor_findings(tool, repo, src_nb)
+    except (subprocess.TimeoutExpired, OSError) as e:
+        return _unmeasured("prose-anchor", error=f"{type(e).__name__}: {e}"[:300])
+    if built is None or src is None:
+        return _unmeasured("prose-anchor", error="claims organ gave no JSON report")
+    known_cell = {(f.get("markdown_cell"), f.get("normalized")) for f in src}
+    known_text = {(f.get("normalized"), (f.get("context") or "").strip()) for f in src}
+    new = [f for f in built
+           if (f.get("markdown_cell"), f.get("normalized")) not in known_cell
+           and (f.get("normalized"), (f.get("context") or "").strip()) not in known_text]
+    findings = [{"cell": f.get("markdown_cell"),
+                 "text": f"cellule {f.get('markdown_cell')} : « {str(f.get('raw')).strip()} » "
+                         f"n'apparaît dans aucune des sorties qui la précèdent "
+                         f"(« …{(f.get('context') or '').strip()}… ») : réaligner la prose "
+                         "sur les sorties de CE carnet, ou la formuler sans le chiffre"}
+                for f in new]
+    return {"gate": "prose-anchor", "ok": not findings,
+            "detail": {"measured": True,
+                       "cells": sorted({f["cell"] for f in findings
+                                        if f["cell"] is not None})[:10],
+                       "flagged": len(findings), "source_flagged": len(src),
+                       "findings": findings[:REPO_GUARD_FINDINGS_MAX]}}
+
+
 def repo_guard_gates(repo: Path, rel: str, built_nb: Path, scratch: Path) -> list[dict]:
-    """Stage-3 gates the repo's CI raises on a NEW notebook (21/11: the first three Swift
-    Rust ports, CoursIA#27803/#27804/#27805, all came back CHANGES_REQUESTED on exactly
-    these). Creation mode only: a new file is 100 % delta, so a whole-file check equals
-    the CI's added-lines check; on an EDITED notebook it would charge the build with the
-    repo's pre-existing stock. The inbound link and the README row (nav-chain,
-    readme-notebook-coverage) live in OTHER files and stay out of this gate."""
+    """Stage-3 gates the repo's CI raises on the BUILT notebook itself (21/11: the first
+    three Swift Rust ports, CoursIA#27803/#27804/#27805, all came back CHANGES_REQUESTED
+    on exactly these). Creation mode only: a new file is 100 % delta, so a whole-file
+    check equals the CI's added-lines check; on an EDITED notebook it would charge the
+    build with the repo's pre-existing stock. The guards that live in OTHER files —
+    readme-notebook-coverage (README row), check-nav-chain (inbound nav edge) and the
+    twin-parity seal that nav edge breaks — are applied deterministically at stage 5
+    (nb_coder_integrate.integrate, before the commit) and replayed there on the
+    committed branch."""
     hits = dead_link_hits(_cells(built_nb), repo, rel)
     gates = [{"gate": "dead-links", "ok": not hits,
               "detail": {"cells": sorted({h["cell"] for h in hits})[:10],
@@ -4158,6 +4477,31 @@ def repo_guard_gates(repo: Path, rel: str, built_nb: Path, scratch: Path) -> lis
     gates.append(uncommented_code_gate(repo, built_nb))
     gates.append(prose_counts_gate(repo, rel, built_nb, scratch))
     return gates
+
+
+def _shows_unit_result(cell: dict) -> bool:
+    """True when the cell's only displayed value is the unit `()` — an execute_result whose
+    data is text/plain `()` and nothing else. evcxr emits it whenever a cell ENDS with a
+    block (`for`/`while`/`if`/`{…}`) without a trailing `;` (measured 21/11)."""
+    if cell.get("cell_type") != "code":
+        return False
+    for o in cell.get("outputs") or []:
+        if not isinstance(o, dict) or o.get("output_type") != "execute_result":
+            continue
+        data = o.get("data") or {}
+        if set(data) <= {"text/plain"} and _text(data.get("text/plain")).strip() == "()":
+            return True
+    return False
+
+
+def unit_result_hits(built_cells: list, src_cells: list) -> list[int]:
+    """Built code cells displaying a bare `()` that the twin cell at the same index does
+    not display. 21/11: 11 of 34 verifier traces rejected a port for exactly this stray
+    `()` — a cosmetic defect the verifier pays a whole turn to find, and a deterministic
+    check finds for free before it."""
+    return [i for i, c in enumerate(built_cells)
+            if _shows_unit_result(c)
+            and not (i < len(src_cells) and _shows_unit_result(src_cells[i]))]
 
 
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
@@ -4229,10 +4573,55 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     gates.append({"gate": "svg-display", "ok": not svg_new,
                   "detail": {"cells": svg_new[:10], "source_hits": svg_src[:10],
                              "build_hits": svg_built[:10]}})
+    unit_hits = unit_result_hits(built_cells, src_cells)
+    gates.append({"gate": "unit-result", "ok": not unit_hits,
+                  "detail": {"cells": unit_hits[:10],
+                             "findings": [{"cell": i,
+                                           "text": f"cellule {i} : affiche « () », que le "
+                                                   f"jumeau n'affiche pas"}
+                                          for i in unit_hits][:REPO_GUARD_FINDINGS_MAX]}})
     if create_mode and repo is not None and rel and scratch is not None \
             and (repo / "scripts").is_dir():
         gates += repo_guard_gates(repo, rel, built_nb, scratch)
+    if create_mode and repo is not None:
+        # Prose re-anchored on the built notebook's own outputs (CoursIA#27864): a port
+        # re-runs every measure, so prose copied from the twin can quote numbers this
+        # notebook never printed. Delta-judged against the twin's own unanchored stock.
+        gates.append(prose_anchor_gate(repo, src_nb, built_nb))
+    if create_mode and rel and _norm_rel(rel).endswith("-Rust.ipynb"):
+        conf = rust_conformance_gate(src_nb, built_nb)
+        if conf is not None:
+            gates.append(conf)
     return gates
+
+
+def _kernel_language(nb_path: Path) -> str | None:
+    meta = (json.loads(nb_path.read_text(encoding="utf-8")).get("metadata") or {})
+    return ((meta.get("kernelspec") or {}).get("language")
+            or (meta.get("language_info") or {}).get("name"))
+
+
+def rust_conformance_gate(src_nb: Path, built_nb: Path) -> dict | None:
+    """Stage-3 gate for a Rust port of a Python twin (CoursIA c0018, 21/11): the
+    `rust_conformance.d` entry written at delivery compares each Rust cell's output to
+    the twin's same-index cell, strict text equality, durations by presence only. The
+    three lot-1 PRs came back from review on exactly that (a stray `()`, a count the
+    outputs did not show). Measured here BEFORE the PR, so the constructive loop
+    repairs it instead of a review round. None when there is no Python twin to compare
+    to (a spec twin carries no outputs; a C# source is not the registry's reference)."""
+    if (_kernel_language(src_nb) or "").lower() != "python":
+        return None
+    try:
+        divs = _load_integrate_module().conformance_divergences(src_nb, built_nb)
+    except Exception as e:  # the gate measures, it never crashes a build
+        return {"gate": "rust-conformance", "ok": True,
+                "detail": {"measured": False, "error": f"{type(e).__name__}: {e}"[:300]}}
+    return {"gate": "rust-conformance", "ok": not divs,
+            "detail": {"measured": True,
+                       "cells": sorted({d["cell"] for d in divs})[:10],
+                       "findings": [{"cell": d["cell"],
+                                     "text": f"cellule {d['cell']} ({d['id']}) : {d['text']}"}
+                                    for d in divs][:REPO_GUARD_FINDINGS_MAX]}}
 
 
 # The kernel's own extension-loading notice, one line per loaded package:
@@ -4546,6 +4935,31 @@ def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
     return p.returncode, (p.stdout or p.stderr).strip()
 
 
+PUSH_TIMEOUT_S = 900
+
+
+def _push_branch(wt: Path, branch: str, timeout: int = PUSH_TIMEOUT_S) -> tuple[int, str]:
+    """`git push -u origin <branch>` that never crashes the grain (22/11, CoursIA#28018).
+
+    CoursIA's pre-push hook is `git lfs pre-push`: a manual push of #28018 took 85 s, the
+    driver's took more than its 300 s timer, and the uncaught TimeoutExpired crashed a
+    grain whose notebook was built AND approved. A timed-out push is judged by the remote,
+    not the timer: if origin's branch already points at HEAD the push landed and stage 5
+    goes on; otherwise it is a plain push failure, recorded, never a crash."""
+    try:
+        return _git(wt, "push", "-u", "origin", branch, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        _, head = _git(wt, "rev-parse", "HEAD", timeout=60)
+        lrc, lout = _git(wt, "ls-remote", "origin", f"refs/heads/{branch}", timeout=120)
+    except subprocess.TimeoutExpired:
+        return 1, f"push timed out after {timeout} s; remote not readable either"
+    if lrc == 0 and lout.split()[:1] == [head]:
+        return 0, f"push timed out after {timeout} s, but origin/{branch} is at HEAD"
+    return 1, f"push timed out after {timeout} s (origin/{branch} not at HEAD)"
+
+
 def _repo_slug(wt: Path) -> str | None:
     """owner/repo parsed from the worktree's origin URL (#433 review: no hard-coded
     repo -- the PR targets wherever the branch is pushed, neutral by construction).
@@ -4710,16 +5124,130 @@ def issue_link_line(issue_n: int, issue: dict | None, target: str) -> str:
     return f"Closes #{issue_n}"
 
 
+def _load_integrate_module():
+    """nb_coder_integrate.py loaded BY PATH: stdlib-only sibling, so tests that
+    exec the driver via importlib (no driver dir on sys.path) can still reach
+    it, and the driver's own import graph stays mcp-free at this edge."""
+    import importlib.util
+    path = Path(__file__).with_name("nb_coder_integrate.py")
+    spec = importlib.util.spec_from_file_location("nb_coder_integrate", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_drift_module():
+    """nb_coder_drift.py, loaded by path like the integration module."""
+    import importlib.util
+    path = Path(__file__).with_name("nb_coder_drift.py")
+    spec = importlib.util.spec_from_file_location("nb_coder_drift", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def stage5_source_drift(wt_path: Path, src_twin: str) -> dict:
+    """Did the port's source twin move on origin/main since the worktree's base?
+
+    22/11, CoursIA main red for every open PR: #27805 ported Sudoku-07-Norvig while
+    #27348 added three cells to its Python twin; merged on stale checks, the port
+    lacked a block of its source, the index-aligned conformance spec diverged and
+    the attestation named a blob the squash never wrote. Read BEFORE the branch:
+    `markdown-only` re-bases the detached worktree on origin/main so the
+    integration edits (nav link, README row, reseal) land on the fresh twin;
+    `structure`/`code`/`deleted` refuse the push (the port is stale, a retry
+    re-ports from the new source). A fetch that fails leaves the comparison to
+    the last known origin/main and says so -- fail-open, as before this guard."""
+    rc_f, out_f = _git(wt_path, "fetch", "-q", "origin", "main")
+    try:
+        drift = _load_drift_module().source_drift(wt_path, "HEAD", src_twin)
+    except Exception as e:  # never a blocker on an instrument failure
+        return {"drift": "unmeasured", "error": f"{type(e).__name__}: {e}"[:300]}
+    if rc_f != 0:
+        drift["fetch_error"] = out_f[:200]
+    if drift.get("drift") == "markdown-only":
+        rc, out = _git(wt_path, "checkout", "-q", "--detach", "origin/main")
+        drift["rebased"] = rc == 0
+        if rc != 0:
+            drift["rebase_error"] = out[:300]
+    return drift
+
+
+def integration_pr_lines(integ: dict | None) -> str:
+    """PR-body section for the stage-5 repo integration (21/11): one line per
+    replayed guard with its exit code. A guard still red AFTER integration is
+    reported as such -- never hidden, never a reason to abort the PR."""
+    if not isinstance(integ, dict):
+        return ""
+    if integ.get("error"):
+        return (f"\n\n## Intégration dépôt\n\n- Échec de l'intégration : "
+                f"`{integ['error']}` -- les gardes README/nav/parité peuvent "
+                f"rester rouges.")
+    if integ.get("skipped"):
+        return f"\n\n## Intégration dépôt\n\n- {integ['skipped']}."
+    lines = ["## Intégration dépôt\n"]
+    if integ.get("readme"):
+        note = f" -- {integ['nav_note']}" if integ.get("nav_note") else ""
+        lines.append(f"- Ligne README (`{integ['readme']}`) et arête nav "
+                     f"(`{integ.get('nav')}`) ajoutées sur le jumeau Python{note}.")
+    if integ.get("back"):
+        lines.append(f"- Lien retour vers le jumeau d'origine ajouté au nouveau carnet "
+                     f"(`{integ['back']}`, markdown seul).")
+    conf = integ.get("conformance") or {}
+    if conf.get("todo") and conf.get("file"):
+        cs = (f", côté C# `{conf['csharp']}` comparé où il imprime le même texte, "
+              "sinon déclaré absent avec l'écart mesuré") if conf.get("csharp") \
+            else ", pas de jumeau C#"
+        lines.append(f"- Entrée de conformité Rust `{conf['file']}` écrite : "
+                     f"{conf.get('measures', 0)} mesures, dont "
+                     f"{conf.get('three_sided', 0)} à trois côtés{cs}.")
+        for d in (conf.get("divergences") or [])[:5]:
+            lines.append(f"  - Divergence mesurée {d.get('id')} : {d.get('text')}.")
+    elif conf.get("file") and conf.get("why"):
+        lines.append(f"- Entrée de conformité Rust `{conf['file']}` : {conf['why']}.")
+    reg = integ.get("registered") or {}
+    if reg.get("registered"):
+        lines.append(f"- Paire « {reg['pair']} » enregistrée à la livraison "
+                     f"(`{reg['file']}`).")
+    reseal = integ.get("reseal") or {}
+    if reseal.get("pair"):
+        tail = "" if reseal.get("ok") else f" -- ÉCHEC rc={reseal.get('rc')}"
+        lines.append(f"- Paire « {reseal['pair']} » rescellée, attestation en "
+                     f"dernière opération{tail}.")
+    for g in integ.get("guards") or []:
+        mark = "OK" if g.get("rc") == 0 else f"ÉCHEC"
+        lines.append(f"- Garde `{g['guard']}` : exit {g.get('rc')} ({mark}).")
+    if integ.get("guards_error"):
+        lines.append(f"- Gardes non rejouées : `{integ['guards_error']}`.")
+    return "\n\n" + "\n".join(lines)
+
+
 def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
               token: str | None) -> None:
     """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
-    Fresh branch off the detached worktree, single-notebook commit, REST PR create,
-    delivery comment on the issue."""
+    Fresh branch off the detached worktree, integration commit (notebook + README
+    row + inbound nav link + C# pair registration), twin-parity reseal LAST, REST
+    PR create, delivery comment on the issue."""
     t0 = time.time()
     nb_rel = args.notebook.replace("\\", "/")
     branch = args.pr_branch or default_pr_branch(args.issue, args.notebook)
     desc = _short_desc(args, rec.get("plan") or {}, rec.get("create_mode"))
     entry: dict = {"branch": branch}
+
+    cm0 = rec.get("create_mode") or {}
+    src0 = cm0.get("source") if isinstance(cm0, dict) else None
+    if src0:
+        drift = stage5_source_drift(wt_path, str(src0))
+        entry["source_drift"] = drift
+        if drift.get("drift") in ("structure", "code", "deleted"):
+            entry["error"] = (f"source twin {src0} changed on origin/main since the build "
+                              f"({drift['drift']}): the port is stale, no PR")
+            rec["verdict"], rec["pr"] = f"source-drifted:{drift['drift']}", entry
+            return
+        if drift.get("drift") == "markdown-only" and not drift.get("rebased"):
+            entry["error"] = f"markdown-only drift, re-base failed: {drift.get('rebase_error')}"
+            rec["verdict"], rec["pr"] = "source-drifted:rebase-failed", entry
+            return
 
     rc, out = _git(wt_path, "checkout", "-b", branch)
     if rc != 0:
@@ -4732,6 +5260,46 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         entry["error"] = f"add: {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-git-failed", entry
         return
+
+    # Repo integration (21/11, coordinator + po-2028 measurements): a NEW port
+    # notebook trips readme-notebook-coverage (no README row) and check-nav-chain
+    # (orphan_entry: no inbound nav edge); fixing the latter edits the Python
+    # twin's markdown, which breaks the twin-parity seal -> reseal LAST. All
+    # deterministic (nb_coder_integrate, no model turn), applied BEFORE the
+    # commit so the PR carries it on first push; a failure never aborts the PR,
+    # it is recorded and said in the body.
+    cm = rec.get("create_mode") or {}
+    src_twin = cm.get("source") if isinstance(cm, dict) else None
+    if src_twin:
+        try:
+            nbci = _load_integrate_module()
+            integ = nbci.integrate(wt_path, nb_rel, str(src_twin))
+            if integ.get("error"):
+                entry["integration"] = integ
+            else:
+                for f in integ.get("touched", []):
+                    _git(wt_path, "add", "--", f)
+                facts = {"kernel": (rec.get("kernel") or {}).get("kernel_name"),
+                         "executed_cells": len(rec.get("execution") or []),
+                         "verdict": (rec.get("verify") or {}).get("verdict")}
+                reg = nbci.register_pair(wt_path, str(src_twin), nb_rel,
+                                         args.lane, facts=facts)
+                if reg.get("registered"):
+                    _git(wt_path, "add", "--", reg["file"])
+                entry["integration"] = {"files": integ["touched"],
+                                        "nav": (integ["nav"] or {}).get("how"),
+                                        "nav_note": (integ["nav"] or {}).get("note"),
+                                        "back": (integ.get("back") or {}).get("how")
+                                        if (integ.get("back") or {}).get("todo") else None,
+                                        "readme": (integ["readme"] or {}).get("label"),
+                                        "conformance": integ.get("conformance"),
+                                        "registered": reg,
+                                        "pair": integ.get("pair")}
+        except Exception as e:  # integration is an optimisation, never a blocker
+            entry["integration"] = {"error": f"{type(e).__name__}: {e}"[:300]}
+    else:
+        entry["integration"] = {"skipped": "no source twin in the repo "
+                                           "(edit mode or spec twin)"}
 
     commit_body = (
         f"{desc}\n\n"
@@ -4767,14 +5335,45 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         return
     entry["commit"], _ = _git(wt_path, "rev-parse", "--short", "HEAD")
 
-    rc, out = _git(wt_path, "push", "-u", "origin", branch)
+    # Twin-parity reseal, AFTER the integration commit (the tool records the
+    # git blob SHAs at HEAD: notebook, README row and inbound link must be in
+    # already -- po-2028 measured the attestation written LAST on 14 PRs, else
+    # the re-read of the source twin rejects it), then the three repo guards
+    # replayed on the committed branch before the push.
+    integ = entry.get("integration") or {}
+    if src_twin and isinstance(integ, dict) and not integ.get("error"):
+        try:
+            nbci = _load_integrate_module()
+            pair = nbci.find_twin_pair(wt_path, str(src_twin))
+            if pair:
+                reseal = nbci.reseal_pair(wt_path, pair, args.lane)
+                if reseal.get("audit_files"):
+                    _git(wt_path, "add", "--",
+                         "scripts/notebook_tools/twin_pairs.d")
+                    _git(wt_path, *_GIT_IDENTITY, "commit", "-m",
+                         f"Chore(twin-parity,#{args.issue}): rescelle « {pair} » "
+                         "après l'ajout du lien jumeau\n\n"
+                         "Le jumeau Python ne change qu'en markdown (navigation). "
+                         "Attestation écrite en DERNIÈRE opération, après carnet, "
+                         "ligne README et arête nav.\n\n"
+                         f"Lane: {args.lane}\n"
+                         "Co-Authored-By: Claude Sonnet 5.5 "
+                         "<noreply@anthropic.com>\n")
+                integ["reseal"] = reseal
+            else:
+                integ["reseal"] = {"why": "source twin not in a registered pair"}
+            integ["guards"] = nbci.replay_guards(wt_path, nb_rel)
+        except Exception as e:
+            integ["guards_error"] = f"{type(e).__name__}: {e}"[:300]
+
+    rc, out = _push_branch(wt_path, branch)
     if rc != 0:
         entry["error"] = f"push: {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-push-failed", entry
         return
 
     n_exec = len(rec.get("execution") or [])
-    gates_ok = [g["gate"] for g in rec.get("gates") or [] if g.get("ok")]
+    gates_ok, gates_unmeasured = split_gates(rec.get("gates") or [])
     findings = (rec.get("verify") or {}).get("findings") or []
     # #433 review: resolve the PR target from the worktree's own origin (or an explicit
     # --pr-repo); never a hard-coded repo. Refusing loudly beats silently targeting the
@@ -4805,7 +5404,10 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         f"- **Exécution réelle** (execute_on_kernel, kernel `{rec.get('kernel', {}).get('kernel_name')}`) : "
         f"{n_exec} cellules, 0 erreur. C.2 : execution_count séquentiel — "
         f"{'oui' if (rec.get('c2') or {}).get('sequential') else 'NON'}.\n"
-        f"- **Gates** : {', '.join(gates_ok) or 'aucun'} OK.\n"
+        f"- **Gates** : {', '.join(gates_ok) or 'aucun'} OK"
+        + (f" ; **non mesurés** (outil indisponible, la CI de la PR tranche) : "
+           f"{', '.join(gates_unmeasured)}" if gates_unmeasured else "")
+        + ".\n"
         f"- **Vérification indépendante** : `{(rec.get('verify') or {}).get('verdict')}` par "
         f"`{args.verifier_agent}`, {len(findings)} constat(s). Modèle "
         f"`{(rec.get('verify') or {}).get('model_used')}`.\n"
@@ -4816,18 +5418,26 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
            f"réexécuté en noyau neuf et re-vérifié.\n" if rec.get("revisions") else "")
         + f"- **Trace** : conversation producteur `{rec.get('conversation_id')}`, "
         f"conversation vérificateur `{(rec.get('verify') or {}).get('conversation_id')}`, "
-        f"run record complet dans le out-dir du harnais.\n\n"
-        f"{issue_link_line(args.issue, issue, args.notebook)}\n\n"
+        f"run record complet dans le out-dir du harnais.\n"
+        + integration_pr_lines(entry.get("integration"))
+        + ("\n- Jumeau source modifié **en markdown seul** sur `main` depuis la construction "
+           f"(blob {(entry.get('source_drift') or {}).get('base_blob')} → "
+           f"{(entry.get('source_drift') or {}).get('main_blob')}, cellules de code "
+           "identiques) : intégration rejouée sur la version fraîche."
+           if (entry.get("source_drift") or {}).get("rebased") else "")
+        + f"\n{issue_link_line(args.issue, issue, args.notebook)}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
     body_file.write_text(pr_body, encoding="utf-8")
+    entry["gh_identity"] = gh_identity_record()
     rc, out = gh(["api", f"repos/{repo_slug}/pulls",
                   "-f", f"title={pr_title(args.issue, desc, rec.get('create_mode'))}",
                   "-f", f"head={branch}", "-f", f"base={args.pr_base}",
                   "-F", f"body=@{body_file}"], token, timeout=120)
     body_file.unlink(missing_ok=True)
     if rc != 0:
-        entry["error"] = f"pr create: {out[:300]}"
+        who = entry["gh_identity"].get("login") or "active gh account"
+        entry["error"] = f"pr create (as {who}): {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-create-failed", entry
         return
     pr = json.loads(out)
@@ -5251,9 +5861,29 @@ _GATE_FIX_TEXT = {
     "uncommented-code": "cellule de code longue sans commentaire : reporte les commentaires "
                         "de lecture du jumeau dans la syntaxe du langage cible (`//` en "
                         "Rust/C#) et commente les étapes du calcul (garde du dépôt #26690)",
-    "prose-counts": "compteur quantitatif en prose (lignes, durée) : retire la mesure et garde "
-                    "le prédicat — « une solution compacte (~80 lignes) » devient « une "
-                    "solution compacte » (garde du dépôt #17636)",
+    # 22/11, CoursIA#27929: "10 cellules sur 24" counted the cases of a matrix; told only to
+    # drop the measure, three revisions in a row kept the number and the grain failed.
+    "prose-counts": "compteur quantitatif en prose (chiffre suivi de lignes, cellules, modules, "
+                    "fichiers, ou une durée ; garde du dépôt #17636). S'il mesure un artefact "
+                    "ou une durée, retire la mesure et garde le prédicat — « une solution "
+                    "compacte (~80 lignes) » devient « une solution compacte ». S'il compte des "
+                    "données du calcul (cases d'une matrice, d'une grille), garde le chiffre et "
+                    "change le nom — « 10 cellules sur 24 » devient « 10 cases sur 24 »",
+    "unit-result": "la cellule affiche la valeur unité `()` parce qu'elle se termine par un "
+                   "bloc (`for`, `while`, `if` ou `{ … }`) sans point-virgule : termine ce "
+                   "dernier bloc par `};` — sous evcxr cela supprime la sortie `()` sans "
+                   "avertissement ; ne touche pas au reste de la cellule",
+    "prose-anchor": "la prose (markdown) cite un chiffre que les sorties de CE carnet "
+                    "n'affichent pas — souvent recopié du jumeau, dont les mesures "
+                    "diffèrent : remplace-le par la valeur imprimée par la cellule de code "
+                    "qui précède, ou reformule sans chiffre (« la pente reste proche de "
+                    "2 ») ; ne modifie pas le code pour retrouver l'ancien chiffre",
+    "rust-conformance": "la sortie de cette cellule Rust doit être le texte EXACT de la "
+                        "sortie de la même cellule du jumeau Python (registre "
+                        "rust_conformance.d, égalité stricte ; seules les valeurs de durée "
+                        "peuvent varier) : aligne les `println!` (libellés, ordre, "
+                        "formatage des nombres et des booléens) sur le jumeau, sans rien "
+                        "imprimer de plus",
 }
 
 
@@ -5354,6 +5984,9 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
             rec["banner_strip"] = strip_dotnet_banner(
                 wt_path / "scripts" / "notebook_tools" / "strip_probe_banner.py", built_path)
         rec["ext_banner_strip"] = strip_kernel_extension_banner(built_path)
+        rel = _norm_rel(getattr(args, "notebook", None) or "")
+        if create_mode and rel:
+            rec["link_fix"] = resolve_dead_links(built_path, src_nb, wt_path, rel)
         tg = time.time()
         rec["gates"] = run_gates(src_nb, built_path, create_mode=create_mode,
                                  canon_version=(rec.get("create_metadata") or {})
@@ -5415,6 +6048,8 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
     while done < budget:
         rnd = first + done
         if rec.get("verdict") != "verify-reject":
+            break
+        if midrun_claim_abort(args, rec, f"revise+{rnd}"):
             break
         findings = [f for f in (rec.get("verify") or {}).get("findings") or []
                     if isinstance(f, dict)]
@@ -5503,7 +6138,8 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
     # that died during a round keeps its own verdict instead of being masked.
     src = (rec.get("verify") or {}).get("source")
     if (src in ("gates", "execution")
-            and not str(rec.get("verdict") or "").startswith("verify-approved")
+            and not str(rec.get("verdict") or "").startswith(("verify-approved",
+                                                               MIDRUN_REFUSED))
             and rec.get("verdict") != "kernel-start-failed"):
         origin = rec.get("gate_repair" if src == "gates" else "exec_repair") or {}
         rec["verdict"] = origin.get("from") or rec["verdict"]
@@ -5556,8 +6192,14 @@ async def run_revision(args, rec: dict) -> dict:
             or _norm_rel(prior.get("notebook") or "") != _norm_rel(args.notebook)):
         rec["verdict"] = "refused-revise-trace-mismatch"
         return rec
+    late_refused = False
     if resume_from:
-        if prior.get("verdict") != "verify-error":
+        # a late-claim refusal is resumable once the holder RELEASED the notebook: the
+        # build was approved and only the reservation failed (21/11, #27851). The live
+        # scoped claim re-read below refuses again while another lane still holds it.
+        late_refused = (str(prior.get("verdict") or "").startswith(LATE_CLAIM_REFUSED)
+                        and (prior.get("verify") or {}).get("verdict") == "approve")
+        if prior.get("verdict") != "verify-error" and not late_refused:
             rec["verdict"] = f"refused-verify-not-crashed:{prior.get('verdict')}"
             return rec
     elif prior.get("verdict") != "verify-reject":
@@ -5634,6 +6276,10 @@ async def run_revision(args, rec: dict) -> dict:
     rec["stages"]["claim_reservation"] = live_cr or (prior.get("stages") or {}).get("claim_reservation")
     wt_path = Path(((prior.get("stages") or {}).get("worktree") or {}).get("path") or "")
     built = Path((prior.get("built_notebook") or {}).get("path") or "")
+    if str(wt_path) and wt_path != Path("") and not wt_path.exists() and built.is_file():
+        rec["stages"]["worktree_restored"] = restore_worktree(
+            Path(args.repo), wt_path,
+            ((prior.get("stages") or {}).get("worktree") or {}).get("head"))
     src_nb = _prior_src_nb(prior, wt_path, args.notebook)
     exec_dir = Path(prior.get("kernel_cwd") or "")
     for label, p in (("worktree", wt_path), ("built", built), ("source", src_nb),
@@ -5929,6 +6575,8 @@ async def run(args, rec: dict) -> dict:
                                   or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             exec_idx = plan.get("execute_cells") or []
+            if midrun_claim_abort(args, rec, "plan"):
+                return rec
 
             # ---- stage 2 BUILD (correction: copy of the target) / CREATION (skeleton + all cells)
             t2 = time.time()
@@ -5980,6 +6628,8 @@ async def run(args, rec: dict) -> dict:
             if scratch.is_file():
                 rec["sources_normalized"] = normalize_sources(scratch)   # CR 1a, couvre le mode mcp
             rec["stage2_s"] = round(time.time() - t2, 1)
+            if midrun_claim_abort(args, rec, "build"):
+                return rec
 
             # ---- harness: structural diff first, then execution; the harness judges alone
             t3 = time.time()
@@ -6247,9 +6897,11 @@ def build_parser() -> argparse.ArgumentParser:
                          "loop, then stage 5 if approved and --max-stage 5")
     ap.add_argument("--verify-from", default=None,
                     help="recover a grain whose VERIFIER CRASHED (trace verdict "
-                         "verify-error, e.g. the GitHub REST bucket ran out mid-run): the "
-                         "build already paid for is re-gated and re-verified with zero "
-                         "model turn, then the review loop and stage 5 as usual")
+                         "verify-error, e.g. the GitHub REST bucket ran out mid-run), or an "
+                         "APPROVED grain refused by the late-claim guard once the holder "
+                         "released the notebook: the build already paid for is re-gated and "
+                         "re-verified with zero coder turn, then the review loop and stage 5 "
+                         "as usual (a released worktree is re-created at the trace's head)")
     return ap
 
 
