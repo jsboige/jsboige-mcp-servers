@@ -5623,47 +5623,71 @@ RÈGLES :
  * Détecte les contradictions dans un statut généré (#1502).
  * Vérifie que chaque entité connue n'apparaît qu'avec un seul état (le plus récent).
  * Retourne la liste des contradictions trouvées pour logging et marquage.
+ *
+ * #4862 : une contradiction n'est rapportée QUE quand le MÊME sujet (même ligne
+ * ou même puce) porte deux états opposés, matchés en MOTS ENTIERS. L'ancien
+ * pooling par machine mélangeait des sujets différents d'une ligne à l'autre
+ * (une machine a plusieurs systèmes) et matchait les états en sous-chaîne :
+ * « up » matchait « update », « ok » matchait « token », « open » matchait
+ * « open-webui » — d'où les rejets fantômes du 21-22/11. Les lignes fautives
+ * sont portées par l'enregistrement (`lines`) pour log et marquage tronqués.
  */
-export function detectStatusContradictions(status: string): Array<{ entity: string; conflictingStates: string[] }> {
-  const contradictions: Array<{ entity: string; conflictingStates: string[] }> = [];
+export function detectStatusContradictions(status: string): Array<{ entity: string; conflictingStates: string[]; lines?: string[] }> {
+  const contradictions: Array<{ entity: string; conflictingStates: string[]; lines?: string[] }> = [];
 
-  // Paires d'états contradictoires (positif vs négatif)
+  // Paires d'états contradictoires (positif vs négatif) — formes masculines ET
+  // féminines (précédent « actif/active », « inactif/inactive » : le corpus de
+  // statut est français, « opérationnelle » / « résolue » y sont courants).
   const statePairs: Array<{ positive: string[]; negative: string[] }> = [
-    { positive: ['UP', 'running', 'actif', 'active', 'online', 'ok', 'opérationnel'], negative: ['DOWN', 'stopped', 'inactif', 'inactive', 'offline', 'ko', 'hs', 'error', 'panne'] },
-    { positive: ['terminé', 'done', 'complété', 'résolu', 'closed', 'merged'], negative: ['en cours', 'in progress', 'open', 'bloqué', 'blocked', 'todo'] },
+    { positive: ['UP', 'running', 'actif', 'active', 'online', 'ok', 'opérationnel', 'opérationnelle'], negative: ['DOWN', 'stopped', 'inactif', 'inactive', 'offline', 'ko', 'hs', 'error', 'panne'] },
+    { positive: ['terminé', 'terminée', 'done', 'complété', 'complétée', 'résolu', 'résolue', 'closed', 'merged'], negative: ['en cours', 'in progress', 'open', 'bloqué', 'bloquée', 'blocked', 'todo'] },
   ];
 
-  // Entités connues à surveiller (machines + services)
+  // Entités connues à surveiller (machines + services) — formes longues avant
+  // les courtes, et flotte complète (#4862 : po-2027, po-2028, web2 ajoutés).
   const knownEntities = [
     'vllm', 'ollama', 'qdrant',
-    'myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-web1',
-    'ai-01', 'po-2023', 'po-2024', 'po-2025', 'po-2026', 'web1'
+    'myia-ai-01', 'myia-po-2023', 'myia-po-2024', 'myia-po-2025', 'myia-po-2026', 'myia-po-2027', 'myia-po-2028', 'myia-web1', 'myia-web2',
+    'ai-01', 'po-2023', 'po-2024', 'po-2025', 'po-2026', 'po-2027', 'po-2028', 'web1', 'web2'
   ];
+
+  // #4862 : correspondance en mots entiers. Le `\b` natif ne suffit pas — le
+  // tiret est une frontière de mot pour lui, donc « open-webui » matcherait
+  // « open ». Ici lettres, chiffres, underscore ET tiret sont des caractères
+  // de mot : « up » ne matche plus « update » ni « ramp-up », « ok » ne matche
+  // plus « token » ni « ok-guard », « open » ne matche plus « open-webui ».
+  // Les états multi-mots (« en cours », « in progress ») passent tels quels.
+  const wholeWord = (word: string): RegExp => {
+    const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?<![\\p{L}\\p{N}_-])${escaped}(?![\\p{L}\\p{N}_-])`, 'iu');
+  };
+  const pairRes = statePairs.map(({ positive, negative }) => ({
+    positiveRes: positive.map(wholeWord),
+    negativeRes: negative.map(wholeWord),
+    positive,
+    negative,
+  }));
 
   const lines = status.split('\n');
 
   for (const entity of knownEntities) {
-    const entityLower = entity.toLowerCase();
-    const matchingLines = lines.filter(l => l.toLowerCase().includes(entityLower));
+    const entityRe = wholeWord(entity);
+    const entityLines = lines.filter(l => entityRe.test(l));
+    if (entityLines.length === 0) continue;
 
-    if (matchingLines.length < 2) continue; // Besoin d'au moins 2 lignes pour une contradiction
-
-    for (const { positive, negative } of statePairs) {
-      const foundPositive = matchingLines.some(line =>
-        positive.some(p => line.toLowerCase().includes(p.toLowerCase()))
+    for (const pair of pairRes) {
+      // Même ligne (même sujet) : au moins un état positif ET un état négatif.
+      const offending = entityLines.filter(line =>
+        pair.positiveRes.some(re => re.test(line)) && pair.negativeRes.some(re => re.test(line))
       );
-      const foundNegative = matchingLines.some(line =>
-        negative.some(n => line.toLowerCase().includes(n.toLowerCase()))
-      );
-
-      if (foundPositive && foundNegative) {
-        const posStates = positive.filter(p => matchingLines.some(l => l.toLowerCase().includes(p.toLowerCase())));
-        const negStates = negative.filter(n => matchingLines.some(l => l.toLowerCase().includes(n.toLowerCase())));
-        contradictions.push({
-          entity,
-          conflictingStates: [...posStates, ...negStates]
-        });
-      }
+      if (offending.length === 0) continue;
+      const posStates = pair.positive.filter((p, i) => offending.some(l => pair.positiveRes[i]!.test(l)));
+      const negStates = pair.negative.filter((n, i) => offending.some(l => pair.negativeRes[i]!.test(l)));
+      contradictions.push({
+        entity,
+        conflictingStates: [...posStates, ...negStates],
+        lines: offending.map(l => l.trim()),
+      });
     }
   }
 
@@ -7857,6 +7881,11 @@ async function condenseIntercom(
   newStatus = newStatus!.replace(/^[ \t]*<!-- #3803 RECONCILED:.*-->[ \t]*\n?/gm, '').trimEnd();
   let detectedContradictions = detectStatusContradictions(newStatus!);
   let reconciledMarkers: string[] = [];
+  // #4862 : les marqueurs restent des commentaires HTML MONO-LIGNE (le strip
+  // les matche ligne à ligne) — le snippet aplatit les espaces, borne à 100
+  // caractères et neutralise « -- » et « > » pour ne jamais fermer le marqueur.
+  const snippet = (s: string) =>
+    s.replace(/\s+/g, ' ').slice(0, 100).replace(/--+/g, '—').replace(/>/g, '');
   if (detectedContradictions.length > 0) {
     const reconciliation = reconcileStatusContradictions(newStatus!, detectedContradictions);
     if (reconciliation.reconciled.length > 0) {
@@ -7868,21 +7897,25 @@ async function condenseIntercom(
       });
       newStatus = reconciliation.status;
       detectedContradictions = detectStatusContradictions(newStatus);
-      const snippet = (s: string) =>
-        s.replace(/\s+/g, ' ').slice(0, 100).replace(/--+/g, '—').replace(/>/g, '');
       reconciledMarkers = reconciliation.reconciled.map(r =>
         `<!-- #3803 RECONCILED: ${r.entity} kept «${snippet(r.keptLine)}» (${r.keptTimestamp}) — dropped ${r.droppedLines.length} older contradictory line(s): ${r.droppedLines.slice(0, 2).map(d => `«${snippet(d.line)}» (${d.timestamp})`).join(' ; ')} -->`
       );
     }
   }
   if (detectedContradictions.length > 0) {
+    // #4862 : la ligne de log NOMME les lignes fautives (tronquées) — sans
+    // elles, un rejet n'est pas investigable depuis le journal.
     logger.error('Status contradictions detected after LLM generation (#1502/#3329)', {
       contradictionCount: detectedContradictions.length,
-      contradictions: detectedContradictions.map(c => `${c.entity}: ${c.conflictingStates.join(' vs ')}`)
+      contradictions: detectedContradictions.map(c => ({
+        entity: c.entity,
+        states: c.conflictingStates.join(' vs '),
+        lines: (c.lines ?? []).slice(0, 3).map(l => snippet(l)),
+      }))
     });
     // Append HTML comment markers for visibility to next readers
     const warningLines = detectedContradictions.map(c =>
-      `<!-- #1502 CONTRADICTION: ${c.entity} has conflicting states: ${c.conflictingStates.join(' vs ')} -->`
+      `<!-- #1502 CONTRADICTION: ${c.entity} has conflicting states: ${c.conflictingStates.join(' vs ')}${(c.lines ?? []).length > 0 ? ` — lines: ${(c.lines ?? []).slice(0, 3).map(l => `«${snippet(l)}»`).join(' ; ')}` : ''} -->`
     ).join('\n');
     newStatus = newStatus + '\n\n' + warningLines;
   }
