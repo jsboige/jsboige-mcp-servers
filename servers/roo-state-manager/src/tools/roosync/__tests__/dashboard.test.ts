@@ -1869,8 +1869,36 @@ describe('roosync_dashboard', () => {
         '- **po-2024** : token renouvelé, service DOWN (09:00Z)', // « ok » ⊂ token ≠ état ok
         '- **po-2025** : migration open-webui terminée (10:00Z)', // « open » ⊂ open-webui ≠ état open
         '- **ai-01** : backup ok-guard-rejected en replay',       // « ok » ⊂ ok-guard ≠ état ok
+        '- **po-2027** : updates du service DOWN (08:30Z)',       // « ups »/« up » ⊂ updates ≠ état UP (pluriel)
       ].join('\n');
       expect(detectStatusContradictions(status)).toHaveLength(0);
+    });
+
+    // #4862 suivi (c.7078794205, ai-01) : les pluriels — couverts par accident
+    // par l'ancienne sous-chaîne, perdus par le mot entier strict (fail-open :
+    // la garde détectait moins). Critère de fin ai-01 : « 3 incidents résolus »
+    // puis « … en cours » sur la même ligne doit détecter.
+    it('#4862 follow-up: French plurals count as states — résolus vs en cours on the same line', () => {
+      const status = `## Status
+- **myia-po-2026** : 3 incidents résolus puis reprise en cours (10:00Z)`;
+      const contradictions = detectStatusContradictions(status);
+      const po2026 = contradictions.find(c => c.entity === 'myia-po-2026' || c.entity === 'po-2026');
+      expect(po2026).toBeDefined();
+      expect(po2026!.lines!.join('\n')).toContain('résolus');
+    });
+
+    // #4862 suivi : couverture pluriel des DEUX polarités, plusieurs paires —
+    // opérationnels/pannes (paire 1), terminées/bloquées (paire 2), ok/errors (paire 1).
+    it('#4862 follow-up: plural forms across pairs — opérationnels/pannes, terminées/bloquées, ok/errors', () => {
+      const status = [
+        '- **myia-po-2024** : hôtes opérationnels mais pannes disque signalées (09:00Z)',
+        '- **myia-web2** : migrations terminées, vérifications bloquées (10:00Z)',
+        '- **myia-po-2025** : proxy ok, errors persistantes (11:00Z)',
+      ].join('\n');
+      const entities = new Set(detectStatusContradictions(status).map(c => c.entity));
+      expect(entities.has('myia-po-2024')).toBe(true);   // opérationnels + pannes
+      expect(entities.has('myia-web2')).toBe(true);      // terminées + bloquées
+      expect(entities.has('myia-po-2025')).toBe(true);   // ok + errors
     });
 
     it('#4862: po-2027, po-2028 and web2 are known entities', () => {

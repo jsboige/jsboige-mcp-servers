@@ -5657,9 +5657,14 @@ export function detectStatusContradictions(status: string): Array<{ entity: stri
   // de mot : « up » ne matche plus « update » ni « ramp-up », « ok » ne matche
   // plus « token » ni « ok-guard », « open » ne matche plus « open-webui ».
   // Les états multi-mots (« en cours », « in progress ») passent tels quels.
+  // #4862 suivi (c.7078794205) : « s » optionnel en fin d'état — pluriel
+  // simple (+s sur les formes listées : résolus, terminées, opérationnels,
+  // pannes, errors…). La sous-chaîne couvrait ces pluriels par accident, le
+  // mot entier strict les perdait (fail-open). Le « s » n'est toléré qu'en
+  // FIN d'état, toujours borné : « updates » ≠ « up », « open-webui » ≠ « open ».
   const wholeWord = (word: string): RegExp => {
     const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    return new RegExp(`(?<![\\p{L}\\p{N}_-])${escaped}(?![\\p{L}\\p{N}_-])`, 'iu');
+    return new RegExp(`(?<![\\p{L}\\p{N}_-])${escaped}s?(?![\\p{L}\\p{N}_-])`, 'iu');
   };
   const pairRes = statePairs.map(({ positive, negative }) => ({
     positiveRes: positive.map(wholeWord),
