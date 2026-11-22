@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
+# Copied verbatim from jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_toolless_gatewait.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -167,6 +167,109 @@ def test_a_second_empty_answer_is_returned_not_retried_forever(monkeypatch):
     rec = {"calls": []}
     env = asyncio.run(d.sk_call_retry(None, None, rec, "1-plan", "P", None))
     assert env["error"] == "empty model response" and len(seen) == 2
+
+
+# ------------------------------------------------- 2b. mid-turn pause resumed by continue
+# 22/11, App-12 (#28069): sk-agent paused the build turn at round 3 (`capacity_gate`) and
+# its banner was parsed as the answer -> stage1-unparsed after 545 s.
+def _paused(reason="capacity_gate", conv="conv-p", rnd=3):
+    return {"status": "paused", "paused": True, "resumable": True, "round_index": rnd,
+            "conversation_id": conv, "pause": {"reason": reason, "round_index": rnd},
+            "response": f"[paused: {reason}] resume with options.continue on "
+                        f"conversation_id '{conv}'"}
+
+
+REFUSED_CONTINUE = {**REFUSAL, "resumable": True, "conversation_id": "conv-p"}
+
+
+def _sleeps(monkeypatch):
+    sleeps = []
+
+    async def fake_sleep(s):
+        sleeps.append(s)
+    monkeypatch.setattr(d, "_gate_sleep", fake_sleep)
+    return sleeps
+
+
+def test_a_mid_turn_pause_is_continued_not_parsed(monkeypatch):
+    seen = []
+    monkeypatch.setattr(d, "engine_tokens", lambda: {})
+    monkeypatch.setattr(d, "sk_call", _scripted_sk([_paused(), {"response": "done"}], seen))
+    sleeps = _sleeps(monkeypatch)
+    rec = {"calls": []}
+    env = asyncio.run(d.sk_call_retry(None, None, rec, "1-plan", "P", None))
+    assert env == {"response": "done"}
+    # first call is the fresh turn, the second resumes the SAME conversation
+    assert [s.get("resume", False) for s in seen] == [False, True]
+    assert seen[1]["conv"] == "conv-p"
+    assert sleeps == [d.GATE_WAIT_POLL_S]
+    assert [c["stage"] for c in rec["calls"]] == ["1-plan", "1-plan-continue"]
+    assert rec["calls"][0]["paused"] == "capacity_gate"
+    assert rec["calls"][0]["round_index"] == 3
+
+
+def test_a_refused_continue_is_repeated_as_a_continue(monkeypatch):
+    seen = []
+    monkeypatch.setattr(d, "engine_tokens", lambda: {})
+    monkeypatch.setattr(d, "sk_call", _scripted_sk(
+        [_paused(), REFUSED_CONTINUE, REFUSED_CONTINUE, {"response": "done"}], seen))
+    sleeps = _sleeps(monkeypatch)
+    rec = {"calls": []}
+    env = asyncio.run(d.sk_call_retry(None, None, rec, "2-build", "P", "conv-p"))
+    assert env == {"response": "done"}
+    assert [s.get("resume", False) for s in seen] == [False, True, True, True]
+    assert {s["conv"] for s in seen} == {"conv-p"}
+    assert sum(sleeps) == 3 * d.GATE_WAIT_POLL_S
+
+
+def test_a_round_budget_pause_continues_without_waiting(monkeypatch):
+    seen = []
+    monkeypatch.setattr(d, "engine_tokens", lambda: {})
+    monkeypatch.setattr(d, "sk_call", _scripted_sk(
+        [_paused("round_budget"), {"response": "done"}], seen))
+    sleeps = _sleeps(monkeypatch)
+    env = asyncio.run(d.sk_call_retry(None, None, {"calls": []}, "2-build", "P", None))
+    assert env == {"response": "done"} and sleeps == []
+    assert seen[1].get("resume") is True
+
+
+def test_a_pause_that_outlasts_the_budget_defers_never_parses(monkeypatch):
+    n = d.GATE_WAIT_MAX_S // d.GATE_WAIT_POLL_S + 2
+    seen = []
+    monkeypatch.setattr(d, "engine_tokens", lambda: {})
+    monkeypatch.setattr(d, "sk_call", _scripted_sk([_paused()] * (n + 20), seen))
+    _sleeps(monkeypatch)
+    env = asyncio.run(d.sk_call_retry(None, None, {"calls": []}, "1-plan", "P", None))
+    assert env["response"] == ""
+    assert d.gate_refusal(env).startswith("deferred-by-capacity-gate")
+    assert len(seen) == d.MAX_CONTINUES + 1
+
+
+def test_round_budget_continues_are_bounded(monkeypatch):
+    seen = []
+    monkeypatch.setattr(d, "engine_tokens", lambda: {})
+    monkeypatch.setattr(d, "sk_call", _scripted_sk([_paused("round_budget")] * 30, seen))
+    _sleeps(monkeypatch)
+    env = asyncio.run(d.sk_call_retry(None, None, {"calls": []}, "1-plan", "P", None))
+    assert len(seen) == d.MAX_CONTINUES + 1
+    assert env["response"] == "" and "round_budget" in env["error"]
+    assert not d.gate_refusal(env)
+
+
+def test_the_continue_payload_is_options_continue_with_no_prompt():
+    sess = FakeSession()
+    env, _ = asyncio.run(d.sk_call(sess, _args(), "P", "conv-p", resume=True))
+    p = sess.payloads[0]
+    assert json.loads(p["options"]) == {"continue": True}
+    assert p["prompt"] == "" and p["conversation_id"] == "conv-p"
+    env, _ = asyncio.run(d.sk_call(sess, _args(), "P", "conv-p"))
+    assert "options" not in sess.payloads[1] and sess.payloads[1]["prompt"] == "P"
+
+
+def test_an_error_envelope_is_never_a_resumable_pause():
+    assert d.resumable_pause(REFUSED_CONTINUE) == ""
+    assert d.resumable_pause({"response": "x"}) == ""
+    assert d.resumable_pause(_paused("round_budget")) == "round_budget"
 
 
 # ---------------------------------------------------------------- 3. claim guard timeout

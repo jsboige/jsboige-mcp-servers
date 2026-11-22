@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
+# Copied verbatim from jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_pr_body_integration.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -80,7 +80,7 @@ def _run_stage5(tmp_path, monkeypatch, fake_integrate):
 
 
 def test_pr_body_carries_the_integration_lines(tmp_path, monkeypatch):
-    body = _run_stage5(tmp_path, monkeypatch, lambda wt, nb, src: {
+    body = _run_stage5(tmp_path, monkeypatch, lambda wt, nb, src, **kw: {
         "touched": [], "nav": {"how": "list"}, "readme": {"label": "Rust"},
         "conformance": None, "pair": None})
     section = body.split("## Intégration dépôt", 1)[1]
@@ -89,7 +89,7 @@ def test_pr_body_carries_the_integration_lines(tmp_path, monkeypatch):
 
 
 def test_pr_body_says_a_failed_integration(tmp_path, monkeypatch):
-    def boom(wt, nb, src):
+    def boom(wt, nb, src, **kw):
         raise ValueError("N-Python.ipynb: byte-faithful round-trip failed")
     body = _run_stage5(tmp_path, monkeypatch, boom)
     assert "Échec de l'intégration" in body
