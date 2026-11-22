@@ -7,6 +7,15 @@
 
 import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as crypto from 'crypto';
+import * as os from 'os';
+import * as path from 'path';
+import * as fsp from 'fs/promises';
+
+// #4861: B2 subtracts the per-seat index-hash ledger before scrolling. Tests
+// below describe FIRST indexings; isolate the ledger per test so a later test
+// on a reused task_id does not see the earlier one's hashes as "already
+// written" and skip its embedding.
+let ledgerTmpDir: string;
 
 // Hoisted mock declarations (accessible in vi.mock factories)
 const { mockGetCollections, mockCreateCollection, mockCreatePayloadIndex, mockUpsert, mockDeleteCollection, mockCount, mockRetrieve, mockScroll, mockDelete } = vi.hoisted(() => ({
@@ -79,13 +88,24 @@ vi.mock('../QdrantHealthMonitor.js', () => ({
 }));
 
 describe('VectorIndexer', () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.clearAllMocks();
 		vi.useFakeTimers();
+		// #4861: fresh empty ledger dir per test (see the import-site note).
+		ledgerTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'rsm-ledger-vi-'));
+		process.env.INDEX_HASH_LEDGER_DIR = ledgerTmpDir;
+		// clearAllMocks() strips implementations; a test that reaches indexTask
+		// needs an answering scroll mock or B2 now (correctly) fails closed.
+		// Permissive default: nothing exists in Qdrant.
+		mockScroll.mockResolvedValue({ points: [], next_page_offset: null });
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		vi.useRealTimers();
+		delete process.env.INDEX_HASH_LEDGER_DIR;
+		if (ledgerTmpDir) {
+			await fsp.rm(ledgerTmpDir, { recursive: true, force: true }).catch(() => {});
+		}
 	});
 
 	// ============================================================

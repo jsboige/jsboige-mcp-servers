@@ -20,8 +20,16 @@
  * END STATE predicate, mirroring the detector: a task's head is intact
  * ⟺ min(chunk_index) == 1 over its points.
  */
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as crypto from 'crypto';
+import * as os from 'os';
+import * as path from 'path';
+import * as fsp from 'fs/promises';
+
+// #4861: B2 subtracts the per-seat index-hash ledger; each test here describes
+// a FIRST indexing of 't1' (empty ledger). Isolate it per test, else a later
+// test would see the earlier test's hashes as "already written" and skip.
+let ledgerTmpDir: string;
 
 // Same pacer pin as VectorIndexer.coverage.test.ts (see its header comment).
 process.env.EMBEDDING_OPS_PER_MINUTE = '0';
@@ -106,8 +114,11 @@ describe('VectorIndexer — content-hash dedup is scoped to the task (#4352 g7)'
 	let store: Map<string, { id: string; vector: number[]; payload: any }>;
 	let scrollFilters: any[];
 
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.clearAllMocks();
+		// #4861: fresh empty ledger dir per test (see the import-site note).
+		ledgerTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'rsm-ledger-scope-'));
+		process.env.INDEX_HASH_LEDGER_DIR = ledgerTmpDir;
 		store = new Map();
 		scrollFilters = [];
 
@@ -154,6 +165,13 @@ describe('VectorIndexer — content-hash dedup is scoped to the task (#4352 g7)'
 		mockUpsert.mockImplementation(async (_c: string, { points }: any) => {
 			for (const p of points) store.set(p.id, { id: p.id, vector: p.vector, payload: p.payload });
 		});
+	});
+
+	afterEach(async () => {
+		delete process.env.INDEX_HASH_LEDGER_DIR;
+		if (ledgerTmpDir) {
+			await fsp.rm(ledgerTmpDir, { recursive: true, force: true }).catch(() => {});
+		}
 	});
 
 	/** min(chunk_index) over one task's stored points — the detector's predicate. */

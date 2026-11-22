@@ -13,12 +13,22 @@
  *   2. a watchdog abort during B2 fences at the next scroll batch — the run
  *      rejects with the marked watchdog error and never reaches embedding.
  */
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Same pacer pin as VectorIndexer.coverage.test.ts: MAX_OPERATIONS_PER_WINDOW
 // is read ONCE at module load; a production seat's `.env` would otherwise
 // throttle this suite's embedding calls.
 process.env.EMBEDDING_OPS_PER_MINUTE = '0';
+
+// #4861: B2 subtracts the per-seat index-hash ledger from the scroll set. The
+// ledger PERSISTS across tests of this file (a first test indexes t-b2, the
+// next one would see a fully-known ledger and skip every scroll) — isolate it
+// per test so the scroll-count assertions below keep measuring what they were
+// written for.
+import * as os from 'os';
+import * as path from 'path';
+import * as fsp from 'fs/promises';
+let ledgerTmpDir: string;
 
 const {
 	mockGetCollections, mockCreateCollection, mockCreatePayloadIndex,
@@ -94,8 +104,11 @@ function chunkOf(i: number): any {
 }
 
 describe('VectorIndexer — B2 contentHash preflight acks + fence (#4352)', () => {
-	beforeEach(() => {
+	beforeEach(async () => {
 		vi.clearAllMocks();
+		// #4861: fresh, empty ledger directory per test (read lazily by B2).
+		ledgerTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'rsm-ledger-b2ack-'));
+		process.env.INDEX_HASH_LEDGER_DIR = ledgerTmpDir;
 		mockGetCollections.mockResolvedValue({ collections: [{ name: COLLECTION }] });
 		mockCreateCollection.mockResolvedValue(undefined);
 		mockCreatePayloadIndex.mockResolvedValue({ result: { status: 'acknowledged' } });
@@ -107,6 +120,13 @@ describe('VectorIndexer — B2 contentHash preflight acks + fence (#4352)', () =
 		mockSanitizePayload.mockReset().mockImplementation((p: any) => p || {});
 		mockSplitChunk.mockReset().mockImplementation((c: any) => [c]);
 		mockExtractTask.mockReset().mockResolvedValue([]);
+	});
+
+	afterEach(async () => {
+		delete process.env.INDEX_HASH_LEDGER_DIR;
+		if (ledgerTmpDir) {
+			await fsp.rm(ledgerTmpDir, { recursive: true, force: true }).catch(() => {});
+		}
 	});
 
 	test('every pre-embedding phase acks: onProgress count at the first embeddings.create call', async () => {

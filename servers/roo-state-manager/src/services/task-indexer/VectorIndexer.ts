@@ -9,6 +9,7 @@ import { extractChunksFromTask, extractChunksFromClaudeSession, splitChunk, Chun
 import { networkMetrics } from './QdrantHealthMonitor.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 import { getDefaultLogger } from '../../utils/logger.js';
+import { loadIndexedHashes, appendIndexedHashes, clearIndexedHashLedgers } from './IndexedHashLedger.js';
 
 type PointStruct = Schemas['PointStruct'];
 
@@ -1058,8 +1059,14 @@ async function preflightDedupByContentHash(
      */
     options?: IndexTaskProgressOptions,
     taskId?: string
-): Promise<Array<{ chunk: Chunk; contentHash: string }>> {
-    if (subChunks.length === 0) return subChunks;
+): Promise<{
+    subChunks: Array<{ chunk: Chunk; contentHash: string }>;
+    scrollFailed: boolean;
+    ledgerHits: number;
+    scrollBatches: number;
+}> {
+    const b2Stats = { scrollFailed: false, ledgerHits: 0, scrollBatches: 0 };
+    if (subChunks.length === 0) return { subChunks, ...b2Stats };
 
     try {
         const qdrant = getQdrantClient();
@@ -1080,23 +1087,42 @@ async function preflightDedupByContentHash(
         const kept: Array<{ chunk: Chunk; contentHash: string }> = [];
         let skipped = 0;
         for (const [taskId, entries] of byTask) {
-            const uniqueHashes = [...new Set(entries.map(sc => sc.contentHash))];
+            // #4861: subtract the hashes this seat has already written to Qdrant
+            // for this task (local ledger) BEFORE scrolling. A session already
+            // indexed except its tail then costs reads proportional to the NEW
+            // chunks only — measured on ai-01 at 42,078 scrolls/pass for a
+            // fully-indexed session, against a handful after this subtraction.
+            // The subtraction is fail-SAFE: a ledger entry wrongly skipped is
+            // re-checked by the post-embed dedup (#1985), never a lost chunk.
+            const ledger = await loadIndexedHashes(taskId);
+            const newHashes = [...new Set(entries.map(sc => sc.contentHash))]
+                .filter(h => !ledger.has(h));
+            b2Stats.ledgerHits += entries.length - newHashes.length;
             const existingHashes = new Set<string>();
-            for (let i = 0; i < uniqueHashes.length; i += BATCH_SIZE) {
-                const batch = uniqueHashes.slice(i, i + BATCH_SIZE);
+            for (let i = 0; i < newHashes.length; i += BATCH_SIZE) {
+                const batch = newHashes.slice(i, i + BATCH_SIZE);
                 // #4352 g5: a fenced run stops BEFORE the next scroll batch —
                 // same checkpoint contract as the embedding windows.
                 throwIfIndexingAborted(options, taskId ?? '');
                 try {
                     await collectExistingContentHashes(qdrant, batch, existingHashes, taskId);
+                    b2Stats.scrollBatches++;
                     options?.onProgress?.(); // #4352 g5: an answered contentHash scroll IS progress
                 } catch (scrollError: any) {
-                    console.warn(`[#2369] Preflight contentHash scroll failed for batch ${i} of task ${taskId}: ${scrollError?.message || scrollError}`);
-                    // Non-blocking: on failure, keep chunks (will be caught by post-index dedup)
+                    // #4861: FAIL CLOSED. The previous behaviour kept the chunks on a
+                    // scroll failure ("post-index dedup will catch them") — under Qdrant
+                    // saturation that re-embedded entire already-indexed sessions and
+                    // hammered the upsert path, the exact amplification loop that made
+                    // the 89-minute passes. Abort the pass; the next tick retries. The
+                    // outer catch (scrollFailed arm) throws a deferral error and THIS
+                    // line is what reaches roosync-*.log on a Claude-session host.
+                    loopLog(`[#4861] B2 contentHash scroll FAILED for task ${taskId} batch at ${i}/${newHashes.length}: ${scrollError?.message || scrollError} — failing closed, indexing deferred to next tick`);
+                    b2Stats.scrollFailed = true;
+                    throw scrollError;
                 }
             }
             for (const sc of entries) {
-                if (existingHashes.has(sc.contentHash)) skipped++;
+                if (ledger.has(sc.contentHash) || existingHashes.has(sc.contentHash)) skipped++;
                 else kept.push(sc);
             }
         }
@@ -1105,7 +1131,7 @@ async function preflightDedupByContentHash(
             console.log(`[#2369] Preflight contentHash dedup: ${skipped}/${subChunks.length} sub-chunks already in Qdrant for their own task — skipped before embedding`);
         }
         _metrics.embeddings_preflight_skipped_total += skipped;
-        return kept;
+        return { subChunks: kept, ...b2Stats };
     } catch (error: any) {
         // #4352 (ai-01 review of ms#1695): a watchdog abort thrown by the fence
         // above is NOT a scroll/dedup failure — swallowing it here returned the
@@ -1114,8 +1140,19 @@ async function preflightDedupByContentHash(
         // in the logs. Rethrow: the abort must reject the run HERE, immediately,
         // keeping the marked error's message and watchdogAbort detail intact.
         if (error?.details?.watchdogAbort === true) throw error;
+        if (b2Stats.scrollFailed) {
+            // #4861: scroll failure detected above — surface the fail-closed
+            // signal to the caller (indexTask throws the deferral, mirroring
+            // #2165). Never hand back the un-deduplicated set.
+            throw new GenericError(
+                `B2 contentHash scroll failed for task ${taskId ?? '(root)'} — indexing deferred (fail-closed, no re-embed)`,
+                GenericErrorCode.CIRCUIT_BREAKER_OPEN,
+                { taskId: taskId ?? '(root)', scrollFailed: true, service: 'VectorIndexer.preflightDedupByContentHash' },
+                error instanceof Error ? error : undefined
+            );
+        }
         console.warn(`[#2369] Preflight contentHash dedup failed (non-blocking): ${error?.message || error}`);
-        return subChunks;
+        return { subChunks, ...b2Stats };
     }
 }
 
@@ -1536,12 +1573,34 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
 
         // Phase B2: #2369 — Pre-flight dedup by contentHash (catches split sub-chunks
         // with new UUIDs that bypassed chunk_id preflight but whose content already exists)
+        let b2LedgerHits = 0;
+        let b2ScrollBatches = 0;
         if (subChunksToEmbed.length > 0) {
             const beforeContentHashDedup = subChunksToEmbed.length;
             loopLog(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) starting +${Date.now() - startedAt}ms (${subChunksToEmbed.length} sub-chunks)`);
-            subChunksToEmbed = await preflightDedupByContentHash(subChunksToEmbed, options, taskId);
+            // #4861: fail-closed on a B2 scroll failure — a deferral, mirroring #2165.
+            // Caught here rather than thrown through indexTask's outer catch so the
+            // error survives intact (the outer catch would wrap it as NETWORK_ERROR)
+            // and the breaker is debited exactly once, here.
+            let b2Result;
+            try {
+                b2Result = await preflightDedupByContentHash(subChunksToEmbed, options, taskId);
+            } catch (b2Error: any) {
+                if (b2Error?.details?.scrollFailed === true) {
+                    loopLog(`⏱️ [#4861] ${taskId}: B2 scroll failure — deferring pass (no re-embed, next tick retries)`);
+                    recordFailure();
+                    throw b2Error;
+                }
+                throw b2Error; // watchdog aborts etc. keep their own path
+            }
+            subChunksToEmbed = b2Result.subChunks;
+            b2LedgerHits = b2Result.ledgerHits;
+            b2ScrollBatches = b2Result.scrollBatches;
             stats.dedupSkipped += beforeContentHashDedup - subChunksToEmbed.length;
-            loopLog(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length} left)`);
+            // #4861: ledgerHits + scrollBatches make the proportionality visible
+            // in the file log — the issue's closure criterion is a re-pass whose
+            // Qdrant reads scale with the NEW tail, not the session size.
+            loopLog(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length} left, ledgerHits=${b2LedgerHits}, scrollBatches=${b2ScrollBatches})`);
         }
         // #4352 grain code (GO ai-01 20261111-1205): the embedding loop's input,
         // recorded after BOTH pre-flight dedups so `pending == 0` means "nothing
@@ -1714,6 +1773,27 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
                     );
                 }
                 indexedPoints.push(...pointsToIndex);
+                // #4861: record what was confirmed WRITTEN, per owning task_id
+                // (overflow child units keep their synthetic `taskId#unit-N` ids,
+                // matching B2's grouping). Ledger writes never throw — a skipped
+                // append only means the next pass re-scrolls those hashes. This
+                // per-window append is what preserves the ledger across a
+                // mid-session abort: the windows already written are never
+                // re-scrolled on the retry.
+                {
+                    const byTaskWritten = new Map<string, string[]>();
+                    for (const p of pointsToIndex) {
+                        const owner = String((p.payload as any)?.task_id ?? taskId);
+                        const h = (p.payload as any)?.contentHash;
+                        if (!h) continue;
+                        const list = byTaskWritten.get(owner);
+                        if (list) list.push(h);
+                        else byTaskWritten.set(owner, [h]);
+                    }
+                    for (const [owner, hashes] of byTaskWritten) {
+                        await appendIndexedHashes(owner, hashes);
+                    }
+                }
                 // #4531 follow-up 1: keep the LIVE counter current, not only the
                 // end-of-run snapshot below. An abort (inactivity watchdog) ends the
                 // run between two windows, and a counter written once at the end
@@ -1929,6 +2009,11 @@ export async function resetCollection(options?: { force?: boolean }): Promise<vo
         // every filtered-field index so a reset never reintroduces the github-2699 doom-loop
         // (gap #2700 — resetCollection previously created none). Build is instant on 0 points.
         await ensureFilteredPayloadIndexes();
+
+        // #4861: the collection was wiped — the local hash ledgers record points
+        // that no longer exist. Clear them so B2 re-scrolls everything instead of
+        // trusting a stale "already written" set.
+        await clearIndexedHashLedgers();
     } catch (error) {
         console.error('Erreur lors de la réinitialisation de la collection Qdrant:', error);
         throw error;
@@ -2153,5 +2238,12 @@ export async function cleanupOldVectors(
     }
 
     console.log(`✅ Cleanup terminé: ${totalDeleted} vecteurs supprimés (antérieurs à ${cutoffIso}${workspaceFilter ? `, workspace=${workspaceFilter}` : ''})`);
+    // #4861: points were removed — the local hash ledgers no longer describe
+    // the collection. Clear them (cheap) so B2 never skips a hash whose point
+    // was just deleted. Chosen granularity: whole directory — the age filter
+    // can match any task.
+    if (totalDeleted > 0) {
+        await clearIndexedHashLedgers();
+    }
     return { deletedCount: totalDeleted, cutoffDate: cutoffIso, workspaceFilter };
 }
