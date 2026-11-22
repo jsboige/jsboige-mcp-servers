@@ -65,16 +65,11 @@ function resolveImport(importer: string, specifier: string): string | null {
   return target;
 }
 
-function importsOf(file: string): Array<{ specifier: string; target: string | null; line: number }> {
-  const absolute = path.join(ROOT, file);
-  const source = ts.createSourceFile(
-    file,
-    readFileSync(absolute, 'utf8'),
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-  const imports: Array<{ specifier: string; target: string | null; line: number }> = [];
+type ImportEdge = { specifier: string; target: string | null; line: number };
+
+function collectImports(file: string, text: string): ImportEdge[] {
+  const source = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const imports: ImportEdge[] = [];
 
   function visit(node: ts.Node): void {
     let specifier: string | undefined;
@@ -143,24 +138,17 @@ function domainOf(file: string): Domain | 'core' | null {
   return null;
 }
 
-function expectImport(file: string, line: number, specifier: string, target: string): void {
-  expect(
-    importsOf(file),
-    `${file} must expose its boundary-crossing import`,
-  ).toContainEqual({ specifier, target, line });
+function importsOf(file: string): ImportEdge[] {
+  return collectImports(file, readFileSync(path.join(ROOT, file), 'utf8'));
+}
+
+function crossingsOf(file: string, domain: Domain, edges: ImportEdge[]): string[] {
+  return edges
+    .filter(edge => edge.target && domainOf(edge.target) === (domain === 'V' ? 'C' : 'V'))
+    .map(edge => `${file}:${edge.line} (${domain}) -> ${edge.target} (${domainOf(edge.target)})`);
 }
 
 describe('#2190 step 1 — VibeSync / Vibe-Conversations module boundary', () => {
-  it.each([
-    ['G1', 'V', 'src/tools/roosync/dashboard.ts', 45, '../../services/task-indexer/EmbeddingValidator.js', 'src/services/task-indexer/EmbeddingValidator.ts'],
-    ['G2', 'C', 'src/tools/roosync/storage-management.ts', 15, '../../services/roosync/HeartbeatService.js', 'src/services/roosync/HeartbeatService.ts'],
-    ['G3 embeddings', 'C', 'src/tools/roosync/diagnose.ts', 15, '../../services/task-indexer/VectorIndexer.js', 'src/services/task-indexer/VectorIndexer.ts'],
-    ['G3 V store', 'C', 'src/tools/roosync/diagnose.ts', 26, '../../services/lazy-roosync.js', 'src/services/lazy-roosync.ts'],
-    ['G4', 'V', 'src/index.ts', 577, './tools/roosync/dashboard.js', 'src/tools/roosync/dashboard.ts'],
-  ])('%s names the boundary crossing on the uncut base', (_grain, sourceDomain, file, line, specifier, target) => {
-    expectImport(file, line, specifier, target);
-    expect(domainOf(target), `${file} must cross V/C, not target core`).toBe(sourceDomain === 'V' ? 'C' : 'V');
-  });
 
   it('classifies static, re-exported and dynamic imports without executing application code', () => {
     const fixture = path.join(ROOT, 'tests/unit/architecture/vibesync-boundary.fixture.ts');
@@ -175,16 +163,29 @@ describe('#2190 step 1 — VibeSync / Vibe-Conversations module boundary', () =>
     expect(domainOf('src/services/openai.ts')).toBe('core');
   });
 
+  it('detects V-to-C, C-to-V and dynamic crossings on synthetic mutants', () => {
+    expect(crossingsOf(
+      'src/tools/roosync/dashboard.ts',
+      'V',
+      collectImports('src/tools/roosync/dashboard.ts', "import '../../services/task-indexer/VectorIndexer.js';"),
+    )).toEqual(['src/tools/roosync/dashboard.ts:1 (V) -> src/services/task-indexer/VectorIndexer.ts (C)']);
+    expect(crossingsOf(
+      'src/tools/roosync/diagnose.ts',
+      'C',
+      collectImports('src/tools/roosync/diagnose.ts', "export * from '../../services/roosync/HeartbeatService.js';"),
+    )).toEqual(['src/tools/roosync/diagnose.ts:1 (C) -> src/services/roosync/HeartbeatService.ts (V)']);
+    expect(crossingsOf(
+      'src/tools/roosync/diagnose.ts',
+      'C',
+      collectImports('src/tools/roosync/diagnose.ts', "void import('../../services/lazy-roosync.js');"),
+    )).toEqual(['src/tools/roosync/diagnose.ts:1 (C) -> src/services/lazy-roosync.ts (V)']);
+  });
+
   it('keeps every tool on its own side of the boundary, with no exception outside core', () => {
     const violations: string[] = [];
     for (const files of Object.values(TOOL_MODULES)) {
       for (const file of files) {
-        const domain = domainOf(file) as Domain;
-        for (const edge of importsOf(file)) {
-          if (edge.target && domainOf(edge.target) === (domain === 'V' ? 'C' : 'V')) {
-            violations.push(`${file}:${edge.line} (${domain}) -> ${edge.target} (${domainOf(edge.target)})`);
-          }
-        }
+        violations.push(...crossingsOf(file, domainOf(file) as Domain, importsOf(file)));
       }
     }
     expect(violations, 'Cross-domain imports must be removed, not allowlisted').toEqual([]);
