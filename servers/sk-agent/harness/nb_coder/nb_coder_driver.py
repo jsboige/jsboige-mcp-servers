@@ -1020,6 +1020,69 @@ def series_canonical_meta(repo: Path, rel: str) -> dict:
     return {}
 
 
+# A target's language tag names the only kernelspec its notebook may declare. Measured
+# 22/11 on CoursIA#27996 (Complexity-07c-…-Rust): the queue's --meta-from pointed at the
+# C# twin (the porting reference), so the Rust port shipped `.net-csharp` metadata while
+# --kernel-override rust executed it — every gate green, the maintainer's review red.
+TAG_KERNELS = {"Rust": "rust", "CSharp": ".net-csharp"}
+
+
+def tag_kernel(rel: str) -> str | None:
+    """Kernelspec name the target's language tag requires (None: tag not constrained)."""
+    stem = Path(rel or "").stem
+    return TAG_KERNELS.get(stem.rsplit("-", 1)[1]) if "-" in stem else None
+
+
+def meta_for_kernel(repo: Path, rel: str, kernel_name: str) -> dict:
+    """kernelspec + language_info of an existing notebook whose kernelspec IS kernel_name:
+    the target's folder first (tag siblings, then any), then the notebook tree's siblings
+    carrying the same tag. {} when none — the caller refuses before any spend."""
+    d, stem = Path(rel).parent, Path(rel).stem
+    tag = stem.rsplit("-", 1)[1] if "-" in stem else ""
+    pools = [sorted((repo / d).glob(f"*-{tag}.ipynb")) if tag else [],
+             sorted((repo / d).glob("*.ipynb"))]
+    if tag:
+        pools.append(sorted(repo.glob(f"MyIA.AI.Notebooks/**/*-{tag}.ipynb")))
+    seen: set = set()
+    for pool in pools:
+        for nb in pool:
+            if nb.name == Path(rel).name or nb in seen:
+                continue
+            seen.add(nb)
+            try:
+                meta = json.loads(nb.read_text(encoding="utf-8")).get("metadata", {})
+            except Exception:
+                continue
+            if (meta.get("kernelspec") or {}).get("name") == kernel_name:
+                out = {k: meta[k] for k in ("kernelspec", "language_info") if k in meta}
+                out["_from"] = nb.relative_to(repo).as_posix()
+                return out
+    return {}
+
+
+def align_kernelspec(built_nb: Path, repo: Path, rel: str, kname: str) -> dict | None:
+    """Deterministic metadata repair before the gates: a draft whose declared kernelspec is
+    not the kernel that executed it (and that the target's tag requires) gets the metadata
+    of a notebook that declares that kernel. Outputs are untouched — they came from kname.
+    None when nothing to do or no donor (the kernelspec gate then reports it)."""
+    want = tag_kernel(rel) or kname
+    if not want or (kname and want != kname):
+        return None                      # executed on another kernel: the gate must refuse
+    nb = json.loads(built_nb.read_text(encoding="utf-8"))
+    meta = nb.get("metadata") or {}
+    have = (meta.get("kernelspec") or {}).get("name")
+    if have == want:
+        return None
+    donor = meta_for_kernel(repo, rel, want)
+    if not donor:
+        return None
+    meta.update({k: v for k, v in donor.items() if k != "_from"})
+    nb["metadata"] = meta
+    built_nb.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return {"from": have, "to": want, "donor": donor["_from"],
+            "language_version": (donor.get("language_info") or {}).get("version")}
+
+
 def build_view(nb_path: Path, max_chars: int = 120_000) -> str:
     """Whole-notebook view. Overflow is DECLARED, never silent: a cut view makes the model
     plan against a notebook whose footer it cannot see (measured 14/11: 37-cell notebook,
@@ -1545,13 +1608,16 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
     does not survive the output budget. The harness assembles every segment.
     src_cells: the TWIN's cells — when present, the authoritative French prose of every
     MARKDOWN cell of this segment is injected verbatim (17/11 #27104: prose REGENERATED
-    from memory came back corrupted — «случай», CJK — the model must COPY, not reinvent;
-    code cells keep deriving from the plan, only prose is pinned to the twin)."""
+    from memory came back corrupted — «случай», CJK — the model must COPY, not reinvent).
+    Code cells derive from the plan, with the twin's code AND real outputs shown as the
+    reference to reproduce (22/11: values reinvented without it, 25/105 reject findings)."""
     prose = ""
     comments = ""
+    refs = ""
     if src_cells:
         parts, stripped = [], 0
         cparts: list[str] = []
+        rparts: list[str] = []
         footer = last_md_index(src_cells)
         for c in segment_cells:
             if isinstance(c, dict) and c.get("cell_type") == "code":
@@ -1564,6 +1630,7 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                     if cm:
                         cparts.append(f"<cellule {ci} — commentaires du jumeau>\n"
                                       + "\n".join(f"- {t}" for t in cm))
+                    rparts.extend(twin_reference_blocks(src_cells, idxs={ci}))
                 continue
             if not isinstance(c, dict) or c.get("cell_type") != "markdown":
                 continue
@@ -1600,6 +1667,12 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                         "(`//` en Rust et en C#). Un portage qui les perd est refusé par la "
                         "garde `Uncommented code` du dépôt (mesuré 21/11) :\n"
                         + "\n\n".join(cparts)[:8000] + "\n")
+        if rparts:
+            refs = ("\n\nCODE ET SORTIES DE RÉFÉRENCE DU JUMEAU — pour les cellules de CODE de "
+                    "cette tranche : porte ce code, et fais en sorte que ton exécution affiche "
+                    "les MÊMES valeurs que la sortie réelle ci-dessous (1er motif de rejet "
+                    "mesuré 22/11 : valeurs réinventées faute d'avoir vu la référence) :\n"
+                    + "\n\n".join(rparts)[:24000] + "\n" + TWIN_VALUES_RULE)
     return (
         "TOUR 2 — CRÉATION, TRANCHE COURANTE : rends les sources COMPLÈTES des cellules "
         "listées ci-dessous, et rien d'autre. Le harnais assemble lui-même le fichier "
@@ -1607,7 +1680,7 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
         "n'appelles aucun outil d'écriture.\n\n"
         f"Cellules de cette tranche (index du PLAN, ordre du carnet) :\n"
         + json.dumps(segment_cells, ensure_ascii=False)[:9000] + "\n"
-        + prose + comments + "\n"
+        + prose + comments + refs + "\n"
         + CREATION_LINK_COUNT_RULES + "\n"
         + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
         + f"Le jumeau complet compte {n_src_cells} cellules — cette tranche n'en couvre "
@@ -3496,12 +3569,67 @@ def revision_view(nb_path: Path, out_cap: int = REVISION_OUT_CAP,
     return _cut("\n\n".join(parts), max_chars, "vue du carnet")
 
 
+# 22/11 (w3w+w3x, 105 verify-reject findings read): the FIRST reject cause (25/105) was a
+# displayed value diverging from the twin's (C# « 0.000 » where the Python twin shows
+# « 3.97 »). Neither the creation segments nor the reviser had ever SEEN the twin's real
+# outputs — only its prose and its comments — so the values were reinvented. The twin's
+# code cells, with what they really display, are now the reference both stages copy.
+TWIN_REF_SRC_CAP = 2_500
+TWIN_REF_OUT_CAP = 1_500
+TWIN_REF_VIEW_CAP = 60_000
+
+
+def twin_reference_blocks(src_cells: list, idxs=None, src_cap: int = TWIN_REF_SRC_CAP,
+                          out_cap: int = TWIN_REF_OUT_CAP) -> list[str]:
+    """One block per CODE cell of the twin (restricted to `idxs` when given): its source and
+    the text it really displays. A twin cell without outputs (a SPEC twin, an unexecuted
+    cell) says so — the absence is declared, never filled in."""
+    out: list[str] = []
+    for i, c in enumerate(src_cells or []):
+        if idxs is not None and i not in idxs:
+            continue
+        if not isinstance(c, dict) or c.get("cell_type") != "code":
+            continue
+        src = _text(c.get("source"))
+        shown_src = src[:src_cap] + (f"\n…[source coupée : {len(src) - src_cap} caractères]"
+                                     if len(src) > src_cap else "")
+        txt = _outputs_text(c)
+        shown = txt[:out_cap] + (f"\n…[sortie coupée : {len(txt) - out_cap} caractères]"
+                                 if len(txt) > out_cap else "")
+        out.append(f"<cellule {i} — code du jumeau>\n{shown_src}\n"
+                   f"<cellule {i} — SORTIE RÉELLE du jumeau (référence)>\n"
+                   f"{shown or '(aucune sortie enregistrée)'}")
+    return out
+
+
+def twin_reference_view(nb_path, max_chars: int = TWIN_REF_VIEW_CAP) -> str:
+    """The twin's code cells + real outputs, for the reviser. Empty when the twin is absent
+    or carries no code cell — the prompt then simply has no reference section."""
+    try:
+        cells = _cells(Path(nb_path))
+    except Exception:
+        return ""
+    blocks = twin_reference_blocks(cells)
+    if not blocks:
+        return ""
+    return _cut("\n\n".join(blocks), max_chars, "vue de référence du jumeau")
+
+
+TWIN_VALUES_RULE = (
+    "- VALEURS : chaque valeur affichée par le jumeau (nombre, tableau, verdict, booléen) "
+    "doit sortir À L'IDENTIQUE de ton exécution — mêmes instances, mêmes paramètres, même "
+    "précision d'affichage. Un écart de valeur avec la sortie de référence est un rejet "
+    "garanti ; si la bibliothèque cible ne peut pas reproduire une valeur, dis-le en prose "
+    "et affiche l'écart mesuré, n'affiche jamais une autre valeur comme si c'était la même.\n")
+
+
 def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",
-                    spec: bool = False) -> str:
+                    spec: bool = False, twin_view: str = "") -> str:
     """Self-contained on purpose: the build conversation may be gone (sk-agent keeps no
     durable store here, and --revise-from runs in a new process). The reviser gets the
-    spec, the whole notebook with its REAL outputs, and the findings — and may contest a
-    finding instead of bending the notebook to a wrong one."""
+    spec, the whole notebook with its REAL outputs, the twin's code cells with THEIR real
+    outputs (the values to reproduce, 22/11), and the findings — and may contest a finding
+    instead of bending the notebook to a wrong one."""
     fl = [{"cell": f.get("cell"), "severity": f.get("severity"), "detail": f.get("detail")}
           for f in findings if isinstance(f, dict)]
     return (
@@ -3513,9 +3641,12 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         + f"TITRE : {issue['title']}\n\nCORPS :\n{_cut(issue['body'], 30000, 'corps de l issue')}\n\n"
         + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
         + f"## Carnet actuel — sources ET sorties réelles\n{view}\n\n"
-        f"## Constats du vérificateur\n{json.dumps(fl, ensure_ascii=False, indent=1)}\n\n"
+        + (f"## Jumeau source — code ET sorties de RÉFÉRENCE (les valeurs à reproduire)\n"
+           f"{twin_view}\n\n" if twin_view else "")
+        + f"## Constats du vérificateur\n{json.dumps(fl, ensure_ascii=False, indent=1)}\n\n"
         "## Règles\n"
-        "- Ne crée ni ne supprime aucune cellule : index et types inchangés (le plan est "
+        + (TWIN_VALUES_RULE if twin_view else "")
+        + "- Ne crée ni ne supprime aucune cellule : index et types inchangés (le plan est "
         "imposé). Tu peux modifier toute cellule existante, code ou markdown, y compris une "
         "voisine de la cellule citée quand le constat l'exige.\n"
         "- Les sorties viennent de l'EXÉCUTION : le harnais réexécute TOUT le carnet dans un "
@@ -4506,7 +4637,8 @@ def unit_result_hits(built_cells: list, src_cells: list) -> list[int]:
 
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
               canon_version: str | None = None, repo: Path | None = None,
-              rel: str | None = None, scratch: Path | None = None) -> list[dict]:
+              rel: str | None = None, scratch: Path | None = None,
+              kernel_name: str | None = None) -> list[dict]:
     """Stage 3 — harness-only gates on the BUILT notebook, no model turn.
 
     Judged on the DELTA (cells the build touched): the source's own prose is the repo's
@@ -4552,6 +4684,20 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     else:
         gates.append({"gate": "language-info", "ok": sv is not None and sv == bv,
                       "detail": {"src": sv, "built": bv}})
+    # The declared kernelspec must be the kernel that executed the outputs AND the one the
+    # target's language tag requires (#27996: a Rust port declared `.net-csharp`, every
+    # gate green). Creation only: a corrected notebook keeps its own metadata (the series
+    # path map names kernels by folder, not by declared spec — judging it would fail
+    # pre-existing notebooks for what this build never touched). Judged only when the
+    # caller knows the kernel / the target path.
+    bks = ((json.loads(built_nb.read_text(encoding="utf-8")).get("metadata") or {})
+           .get("kernelspec") or {}).get("name")
+    want_tag = tag_kernel(rel) if rel else None
+    if create_mode and (kernel_name or want_tag):
+        gates.append({"gate": "kernelspec",
+                      "ok": (not kernel_name or bks == kernel_name)
+                      and (not want_tag or bks == want_tag),
+                      "detail": {"built": bks, "executed": kernel_name, "tag": want_tag}})
     # Delta judged on the OUTPUTS themselves: a cell whose displayed text the build did not
     # change keeps its pre-existing path without failing this build (same rule as secrets).
     src_hits = [i for i, c in enumerate(src_cells) if MACHINE_PATH_RE.search(_outputs_text(c))]
@@ -5844,7 +5990,7 @@ async def mcp_sessions(out_dir: Path):
 # from the canon/create_metadata, not from cell sources), so routing them into the
 # constructive loop would burn model rounds on an unfixable target (measured 20/11:
 # language-info failed with canon None AND built None — nothing a cell edit can do).
-_GATE_NON_REPAIRABLE = {"language-info"}
+_GATE_NON_REPAIRABLE = {"language-info", "kernelspec"}
 
 # Actionable phrasing per measured failing gate (20/11 funnel: machine-path 3,
 # svg-display 2, coord-refs 1). Falls back to a generic instruction for new gates.
@@ -5987,12 +6133,17 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
         rel = _norm_rel(getattr(args, "notebook", None) or "")
         if create_mode and rel:
             rec["link_fix"] = resolve_dead_links(built_path, src_nb, wt_path, rel)
+            align = align_kernelspec(built_path, wt_path, rel, kname)
+            if align:
+                rec["kernelspec_align"] = align
+                rec.setdefault("create_metadata", {}).update(
+                    {"kernelspec": align["to"], "language_version": align["language_version"]})
         tg = time.time()
         rec["gates"] = run_gates(src_nb, built_path, create_mode=create_mode,
                                  canon_version=(rec.get("create_metadata") or {})
                                  .get("language_version"),
                                  repo=wt_path, rel=_norm_rel(getattr(args, "notebook", None) or ""),
-                                 scratch=out_dir)
+                                 scratch=out_dir, kernel_name=kname)
         rec["gates_s"] = round(time.time() - tg, 1)
         bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
         rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
@@ -6069,7 +6220,10 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
             env = await sk_call_retry(
                 sk, args, rec, f"6-revise+{rnd}",
                 revision_prompt(issue, revision_view(built_path), findings, conventions,
-                                spec=bool(getattr(args, "from_spec", False))),
+                                spec=bool(getattr(args, "from_spec", False)),
+                                twin_view=(twin_reference_view(src_nb)
+                                           if src_nb and Path(src_nb) != Path(built_path)
+                                           else "")),
                 None, max_tokens=BUILD_MAX_TOKENS)
             entry["conversation_id"] = env.get("conversation_id")
             part, env = await parse_or_repair(sk, args, rec, f"6-revise+{rnd}", env, None,
@@ -6312,7 +6466,13 @@ async def run_revision(args, rec: dict) -> dict:
         return rec
     create_mode = bool(prior.get("create_mode"))
     args.from_spec = bool((prior.get("create_mode") or {}).get("spec_twin"))
-    kname = args.kernel_override or (prior.get("kernel") or {}).get("kernel_name") or ""
+    # A creation's trace may record the --meta-from kernel while --kernel-override executed
+    # it (#27996: trace `.net-csharp`, outputs from `rust`) — the target's language tag
+    # outranks the recorded name, or the resume would re-execute Rust cells on .NET.
+    tgt = (getattr(args, "notebook", None)
+           or (prior.get("create_mode") or {}).get("target") or "")
+    kname = (args.kernel_override or (tag_kernel(tgt) if create_mode else None)
+             or (prior.get("kernel") or {}).get("kernel_name") or "")
     if resume_from:
         # verify-error is NOT a verdict: the verifier process crashed on an instrument
         # failure (20/11: the shared GitHub REST bucket ran out mid-run), so the build was
@@ -6485,18 +6645,37 @@ async def run(args, rec: dict) -> dict:
         # that carries the target's language tag.
         twin_meta = spec_meta_d or series_canonical_meta(wt_path, args.notebook)
         twin_kernel = (twin_meta.get("kernelspec") or {}).get("name")
-        if twin_kernel:
+        # The deliverable declares the kernel that EXECUTES it: --kernel-override, else the
+        # one the target's language tag requires. A --meta-from naming another language
+        # (the C# twin used as porting reference for a Rust port) only lends its metadata
+        # when it matches; otherwise a sibling that does is used, or the grain is refused
+        # here, before any token (#27996: `.net-csharp` shipped on a Rust notebook).
+        need = getattr(args, "kernel_override", None) or tag_kernel(args.notebook)
+        mismatch = None
+        if need and twin_kernel != need:
+            alt = meta_for_kernel(wt_path, args.notebook, need)
+            rec["meta_kernel_fix"] = {"meta_kernel": twin_kernel, "required": need,
+                                      "replaced_from": alt.get("_from")}
+            if alt:
+                twin_meta = {k: v for k, v in alt.items() if k != "_from"}
+                twin_kernel = need
+                spec_meta_d = {}
+            elif twin_kernel:
+                mismatch = f"create-meta-kernel-mismatch:{twin_kernel}!={need}"
+            # no metadata at all and no donor: the create-no-canonical-meta refusal below
+        if twin_kernel and not mismatch:
             kernel["kernel_name"] = twin_kernel
             kernel["kernel_source"] = "canonical-twin-kernelspec"
             if spec_meta_d:
                 kernel["kernel_source"] = "meta-from-kernelspec"
         else:
-            # No canonical metadata: the skeleton would carry {} and the language-info gate
-            # would fail only AFTER the whole build was paid (claudish PROPOSAL, 20/11).
-            # Refuse before the capacity gate and any token; --meta-from is the remedy.
+            # No canonical metadata (or only one naming another kernel): the skeleton would
+            # carry {} / the wrong kernelspec and a gate would fail only AFTER the whole
+            # build was paid (claudish PROPOSAL, 20/11; #27996). Refuse before the capacity
+            # gate and any token; --meta-from naming the required kernel is the remedy.
             rec["kernel"] = kernel
-            rec["verdict"] = ("create-no-canonical-meta:"
-                              f"{Path(args.notebook).parent.as_posix()}")
+            rec["verdict"] = mismatch or ("create-no-canonical-meta:"
+                                          f"{Path(args.notebook).parent.as_posix()}")
             return rec
     rec["kernel"] = kernel
     rec["src_nb"] = str(src_nb)

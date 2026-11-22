@@ -527,7 +527,10 @@ def test_creation_json_prompt_injects_twin_prose():
     assert "PROSE DU JUMEAU PYTHON" in p and "AUTORITÉ" in p
     assert "<cellule 1 — prose à recopier>" in p
     assert "Gibbard–Satterthwaite" in p          # the twin prose, verbatim
-    assert "<cellule 2" not in p                 # CODE cells derive from the plan
+    # CODE cells get no PROSE pin — since 22/11 they carry the twin's code + real outputs
+    # as the reference to reproduce (values reinvented without it: 25/105 reject findings)
+    assert "<cellule 2 — prose à recopier>" not in p
+    assert "<cellule 2 — SORTIE RÉELLE du jumeau (référence)>" in p
     # no twin (correction mode / absent) -> no prose block, prompt shape unchanged
     p_plain = D.creation_json_prompt(seg, 3, "conv")
     assert "PROSE DU JUMEAU PYTHON" not in p_plain and "TRANCHE" in p_plain and "conv" in p_plain

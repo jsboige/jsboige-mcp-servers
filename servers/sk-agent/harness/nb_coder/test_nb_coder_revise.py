@@ -1066,3 +1066,57 @@ def test_scheduler_forwards_revise_rounds(tmp_path):
     sched2 = TS.make_sched(tmp_path, [{"issue": 45, "notebook": "A/E.ipynb", "max_stage": 4}])
     joined2 = " ".join(sched2.driver_command(sched2.items_by_key["#45:A/E.ipynb"]))
     assert "--revise-rounds 2" in joined2                 # the scheduler default applies
+
+
+# ---------------------------------------------------------------- twin reference (22/11)
+# 25 of 105 verify-reject findings (w3a-w3x) were values the builder reinvented: the
+# reviser saw the findings and the draft, never what the twin actually printed.
+def _twin(tmp_path):
+    nb = {"cells": [
+        {"cell_type": "markdown", "source": "# T", "metadata": {}},
+        {"cell_type": "code", "source": "print(3.97)", "metadata": {}, "execution_count": 1,
+         "outputs": [{"output_type": "stream", "name": "stdout", "text": "3.97\n"}]},
+        {"cell_type": "code", "source": "x = 1", "metadata": {}, "execution_count": 2,
+         "outputs": []}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    p = tmp_path / "twin.ipynb"
+    p.write_text(json.dumps(nb), encoding="utf-8")
+    return p
+
+
+def test_twin_reference_view_shows_code_and_real_outputs(tmp_path):
+    v = D.twin_reference_view(_twin(tmp_path))
+    assert "print(3.97)" in v and "3.97" in v.split("SORTIE RÉELLE")[1]
+    assert "(aucune sortie enregistrée)" in v          # declared, never filled in
+    assert "# T" not in v                               # markdown is not a reference
+    assert D.twin_reference_view(tmp_path / "absent.ipynb") == ""
+
+
+def test_revision_prompt_carries_twin_reference_and_values_rule():
+    p = D.revision_prompt({"title": "T", "body": "B"}, "V", [], twin_view="REF-3.97")
+    assert "Jumeau source — code ET sorties de RÉFÉRENCE" in p and "REF-3.97" in p
+    assert "VALEURS :" in p
+    bare = D.revision_prompt({"title": "T", "body": "B"}, "V", [])
+    assert "RÉFÉRENCE" not in bare and "VALEURS :" not in bare
+
+
+def test_creation_segment_carries_twin_reference_outputs(tmp_path):
+    cells = D._cells(_twin(tmp_path))
+    p = D.creation_json_prompt([{"idx": 1, "cell_type": "code"}], 3, "", src_cells=cells)
+    assert "CODE ET SORTIES DE RÉFÉRENCE DU JUMEAU" in p and "3.97" in p
+    md_only = D.creation_json_prompt([{"idx": 0, "cell_type": "markdown"}], 3, "",
+                                     src_cells=cells)
+    assert "SORTIES DE RÉFÉRENCE" not in md_only
+
+
+def test_revise_loop_hands_the_twin_reference_to_the_reviser(monkeypatch, tmp_path):
+    """Wiring pin: the reviser of a CREATION sees the twin's real outputs (the values to
+    reproduce), not only the findings — unit-testing revision_prompt alone would miss a
+    call site that stops passing them."""
+    _twin(tmp_path)                                    # src_nb of _loop = tmp_path/twin.ipynb
+    built = _nb(tmp_path)
+    calls = _fake_engine(monkeypatch, [REVISION], [("approve", [])])
+    _loop(_loop_args(), _rejected_rec(), built, tmp_path)
+    p = calls["sk"][0]["prompt"]
+    assert "Jumeau source — code ET sorties de RÉFÉRENCE" in p and "print(3.97)" in p
+    assert "VALEURS :" in p

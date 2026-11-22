@@ -322,6 +322,126 @@ def test_series_canonical_meta_follows_the_target_tag(tmp_path):
     assert D.series_canonical_meta(tmp_path, "S/A-09-Lean.ipynb") == {}  # no such sibling
 
 
+# ------------------------------------------- declared kernel = executed kernel (22/11 #27996)
+# CoursIA#27996: a Rust port whose --meta-from was the C# twin (the porting reference)
+# shipped `.net-csharp` metadata while --kernel-override rust executed every cell — all
+# gates green, the maintainer's review red. Fixed at three points: the creation lends its
+# metadata from a notebook declaring the REQUIRED kernel, an old draft is aligned before
+# the gates, and a kernelspec gate (not repairable by a model turn) refuses the rest.
+def test_tag_kernel_maps_only_constrained_tags():
+    assert D.tag_kernel("S/A-09-Rust.ipynb") == "rust"
+    assert D.tag_kernel("S/A-09-CSharp.ipynb") == ".net-csharp"
+    assert D.tag_kernel("S/A-09-Python.ipynb") is None
+    assert D.tag_kernel("S/Lean.ipynb") is None and D.tag_kernel("") is None
+
+
+def test_meta_for_kernel_prefers_the_folder_then_the_tree(tmp_path):
+    for rel, nb in {"MyIA.AI.Notebooks/S/A-01-CSharp.ipynb": _CS,
+                    "MyIA.AI.Notebooks/Other/B-02-Rust.ipynb": _RS}.items():
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        _write(tmp_path / rel, nb)
+    got = D.meta_for_kernel(tmp_path, "MyIA.AI.Notebooks/S/A-09-Rust.ipynb", "rust")
+    assert got["kernelspec"]["name"] == "rust"
+    assert got["_from"] == "MyIA.AI.Notebooks/Other/B-02-Rust.ipynb"
+    _write(tmp_path / "MyIA.AI.Notebooks/S/A-03-Rust.ipynb", _RS)       # folder wins
+    assert D.meta_for_kernel(tmp_path, "MyIA.AI.Notebooks/S/A-09-Rust.ipynb",
+                             "rust")["_from"] == "MyIA.AI.Notebooks/S/A-03-Rust.ipynb"
+    assert D.meta_for_kernel(tmp_path, "MyIA.AI.Notebooks/S/A-09-Lean.ipynb", "lean4") == {}
+
+
+def test_port_meta_from_of_another_language_lends_no_kernelspec(monkeypatch, tmp_path):
+    """The #27996 grain: --meta-from = the C# twin, target -Rust. The skeleton must declare
+    `rust` (a Rust sibling's metadata), never `.net-csharp`."""
+    _stub_common(monkeypatch, GOOD)
+    _admitted(monkeypatch, tmp_path, {"Series/Old-01.ipynb": _PY,
+                                      "Series/Old-02-CSharp.ipynb": _CS,
+                                      "Series/Old-03-Rust.ipynb": _RS})
+    got = asyncio.run(D.run(_port_args(tmp_path, meta_from="Series/Old-02-CSharp.ipynb"),
+                            {"stages": {}, "calls": []}))
+    assert got["verdict"] == "deferred-by-capacity-gate"
+    assert got["kernel"]["kernel_name"] == "rust"
+    assert got["kernel"]["kernel_source"] == "canonical-twin-kernelspec"
+    assert got["meta_kernel_fix"] == {"meta_kernel": ".net-csharp", "required": "rust",
+                                      "replaced_from": "Series/Old-03-Rust.ipynb"}
+
+
+def test_port_meta_kernel_mismatch_without_donor_is_refused_before_any_token(
+        monkeypatch, tmp_path):
+    _stub_common(monkeypatch, GOOD)
+    _admitted(monkeypatch, tmp_path, {"Series/Old-01.ipynb": _PY,
+                                      "Series/Old-02-CSharp.ipynb": _CS})
+    monkeypatch.setattr(D, "gate_call", lambda *a: (_ for _ in ()).throw(
+        AssertionError("a kernel mismatch must not reach the capacity gate")))
+    got = asyncio.run(D.run(_port_args(tmp_path, meta_from="Series/Old-02-CSharp.ipynb"),
+                            {"stages": {}, "calls": []}))
+    assert got["verdict"] == "create-meta-kernel-mismatch:.net-csharp!=rust"
+    assert got["calls"] == []
+
+
+def test_kernel_override_is_the_required_kernel(monkeypatch, tmp_path):
+    """--kernel-override executes; the metadata must name it even on an untagged target."""
+    _stub_common(monkeypatch, GOOD)
+    _admitted(monkeypatch, tmp_path, {"Series/Old-01.ipynb": _PY,
+                                      "Series/Old-03-Rust.ipynb": _RS})
+    got = asyncio.run(D.run(_port_args(tmp_path, notebook="Series/New-08.ipynb",
+                                       kernel_override="rust"),
+                            {"stages": {}, "calls": []}))
+    assert got["kernel"]["kernel_name"] == "rust"
+    # an untagged target has no canonical sibling meta: the donor is the only source
+    assert got["meta_kernel_fix"] == {"meta_kernel": None, "required": "rust",
+                                      "replaced_from": "Series/Old-03-Rust.ipynb"}
+
+
+def _built(tmp_path, meta, name="built.ipynb"):
+    return _write(tmp_path / name, {"cells": [], "metadata": meta, "nbformat": 4,
+                                    "nbformat_minor": 5})
+
+
+def test_align_kernelspec_rewrites_a_draft_declaring_another_kernel(tmp_path):
+    (tmp_path / "S").mkdir()
+    _write(tmp_path / "S/A-03-Rust.ipynb", _RS)
+    built = _built(tmp_path, _CS["metadata"])
+    got = D.align_kernelspec(built, tmp_path, "S/A-09-Rust.ipynb", "rust")
+    assert got == {"from": ".net-csharp", "to": "rust", "donor": "S/A-03-Rust.ipynb",
+                   "language_version": "1.100.0"}
+    meta = json.loads(built.read_text(encoding="utf-8"))["metadata"]
+    assert meta["kernelspec"]["name"] == "rust" and meta["language_info"]["name"] == "Rust"
+    assert D.align_kernelspec(built, tmp_path, "S/A-09-Rust.ipynb", "rust") is None  # idempotent
+
+
+def test_align_kernelspec_never_relabels_outputs_of_another_kernel(tmp_path):
+    """Outputs executed on .net-csharp are not Rust outputs: relabeling them would forge the
+    deliverable — the gate must refuse instead."""
+    (tmp_path / "S").mkdir()
+    _write(tmp_path / "S/A-03-Rust.ipynb", _RS)
+    built = _built(tmp_path, _CS["metadata"])
+    assert D.align_kernelspec(built, tmp_path, "S/A-09-Rust.ipynb", ".net-csharp") is None
+    assert json.loads(built.read_text(encoding="utf-8"))["metadata"] == _CS["metadata"]
+    assert D.align_kernelspec(built, tmp_path, "S/A-09-Lean.ipynb", "") is None  # no donor
+
+
+def _ks_gate(gates):
+    return [g for g in gates if g["gate"] == "kernelspec"]
+
+
+def test_kernelspec_gate_refuses_a_declared_kernel_that_did_not_execute(tmp_path):
+    src = _built(tmp_path, _PY["metadata"], "src.ipynb")
+    bad = _built(tmp_path, _CS["metadata"])
+    g = _ks_gate(D.run_gates(src, bad, create_mode=True, canon_version="9.0.117",
+                             rel="S/A-09-Rust.ipynb", kernel_name="rust"))
+    assert g and not g[0]["ok"]
+    assert g[0]["detail"] == {"built": ".net-csharp", "executed": "rust", "tag": "rust"}
+    good = _built(tmp_path, _RS["metadata"], "good.ipynb")
+    assert _ks_gate(D.run_gates(src, good, create_mode=True, canon_version="1.100.0",
+                                rel="S/A-09-Rust.ipynb", kernel_name="rust"))[0]["ok"]
+    # correction mode keeps the notebook's own metadata: not this build's business
+    assert _ks_gate(D.run_gates(bad, bad, rel="S/A-09-Rust.ipynb", kernel_name="rust")) == []
+
+
+def test_kernelspec_gate_is_not_routed_to_a_model_repair():
+    assert "kernelspec" in D._GATE_NON_REPAIRABLE
+
+
 # ---------------------------------------------------------------- CLI guards
 @pytest.mark.parametrize("extra, needle", [
     (["--from-spec", "--source-nb", "S/T.ipynb", "--meta-from", "S/M.ipynb"], "exclusive"),
@@ -430,3 +550,23 @@ def test_short_desc_edit_mode_unchanged():
     two = {"plan": [{"geste": "edit", "cell": 1}, {"geste": "insert", "cell": 2}]}
     assert D._short_desc(args, two) == "B — 2 gestes (edit,insert)"
     assert D._short_desc(args, {}) == "B — edit"
+
+
+def test_kernelspec_gate_checks_the_executed_kernel_on_an_untagged_target(tmp_path):
+    """No language tag to compare with: the executed kernel alone must match the metadata."""
+    src = _built(tmp_path, _PY["metadata"], "src.ipynb")
+    built = _built(tmp_path, _PY["metadata"])
+    g = _ks_gate(D.run_gates(src, built, create_mode=True, rel="S/A-09.ipynb",
+                             kernel_name="rust"))
+    assert g and not g[0]["ok"] and g[0]["detail"]["tag"] is None
+    assert _ks_gate(D.run_gates(src, built, create_mode=True, rel="S/A-09.ipynb",
+                                kernel_name="python3"))[0]["ok"]
+
+
+def test_kernelspec_gate_refuses_a_coherent_pair_that_is_not_the_tag(tmp_path):
+    """Declared == executed, but a -Rust target executed on .net-csharp is not a Rust port."""
+    src = _built(tmp_path, _PY["metadata"], "src.ipynb")
+    built = _built(tmp_path, _CS["metadata"])
+    g = _ks_gate(D.run_gates(src, built, create_mode=True, rel="S/A-09-Rust.ipynb",
+                             kernel_name=".net-csharp"))
+    assert g and not g[0]["ok"] and g[0]["detail"]["tag"] == "rust"

@@ -87,6 +87,11 @@ ITEM_FIELDS = {
     "repair_rounds": int,
     "revise_rounds": int,      # constructive-review rounds after a verify-reject
     "allow_foreign_origin": bool,
+    "revise_from": str,        # --revise-from <issue-N.json> (22/11): RESUME a content failure
+                               # (verify-reject / gates-failed / built-execution-failed) on its
+                               # already-built notebook — no new plan, no new build. 41 such
+                               # grains were rebuilt from scratch or released instead (w3a-w3x)
+    "verify_from": str,        # --verify-from <issue-N.json>: re-verify a crashed verifier
     "retry": int,              # retry generation: raise it to re-offer a FAILED grain once
                                # (scheduler-only, never passed to the driver)
 }
@@ -342,6 +347,15 @@ def load_queue(path: Path) -> tuple[list[dict], str]:
                 raise QueueError(f"queue line {lineno}: field {k} must be {ty.__name__}")
         # Same refusals as the driver's CLI guards, raised at load: a bad spec grain
         # fails loud here instead of burning an attempt on a driver exit 2.
+        if item.get("revise_from") and item.get("verify_from"):
+            raise QueueError(f"queue line {lineno}: revise_from and verify_from are exclusive")
+        if item.get("revise_from") or item.get("verify_from"):
+            clash = sorted(k for k in ("from_spec", "source_nb", "meta_from") if k in item)
+            if clash:
+                raise QueueError(f"queue line {lineno}: a resumed grain reads its creation mode "
+                                 f"from the trace — drop {clash}")
+            if item.get("max_stage", 5) < 4:
+                raise QueueError(f"queue line {lineno}: a resumed grain needs max_stage >= 4")
         if item.get("from_spec"):
             if "source_nb" in item:
                 raise QueueError(f"queue line {lineno}: from_spec and source_nb are exclusive")
@@ -820,16 +834,23 @@ class Scheduler:
 
     def driver_command(self, item: dict, resume_from: str | None = None) -> list[str]:
         a = self.args
-        # --verify-from reads the creation mode from the trace and the driver refuses
-        # --from-spec / --source-nb / --meta-from next to it.
-        from_spec = bool(item.get("from_spec", False)) and not resume_from
-        out_dir = Path(a.out_root) / f"issue-{grain_slug(item)}"
+        # A queue item may name the trace to resume itself (22/11 salvage: a content
+        # failure of ANOTHER state dir, resumed on its already-built draft instead of
+        # being rebuilt or released). It then writes next to that trace — the driver
+        # renames the old record there — and reads worktree + twin from it.
+        explicit = item.get("revise_from") or item.get("verify_from")
+        resumed = explicit or resume_from
+        # --verify-from / --revise-from read the creation mode from the trace and the
+        # driver refuses --from-spec / --source-nb / --meta-from next to them.
+        from_spec = bool(item.get("from_spec", False)) and not resumed
+        out_dir = (Path(explicit).parent if explicit
+                   else Path(a.out_root) / f"issue-{grain_slug(item)}")
         worktree = Path(a.worktree_root) / f"wt-{grain_slug(item)}"
         cmd = [sys.executable, str(a.driver),
                "--issue", str(item["issue"]), "--notebook", item["notebook"],
                "--repo", a.repo, "--out-dir", str(out_dir),
                "--worktree", str(worktree), "--gate-mode", a.gate_mode]
-        source_nb = (None if (from_spec or resume_from)
+        source_nb = (None if (from_spec or resumed)
                      else item.get("source_nb", a.source_nb))
         opt = [
             ("--lane", a.lane), ("--agent", item.get("agent", a.agent)),
@@ -874,8 +895,10 @@ class Scheduler:
             cmd.append("--fresh-worktree")
         if item.get("allow_foreign_origin", False):
             cmd.append("--allow-foreign-origin")
-        if resume_from:
-            cmd += ["--verify-from", str(resume_from)]
+        if item.get("revise_from"):
+            cmd += ["--revise-from", str(item["revise_from"])]
+        elif item.get("verify_from") or resume_from:
+            cmd += ["--verify-from", str(item.get("verify_from") or resume_from)]
         return cmd
 
     # ---------------------------------------------------------------- ramp
