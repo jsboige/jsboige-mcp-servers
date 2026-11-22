@@ -1785,30 +1785,55 @@ describe('roosync_dashboard', () => {
       expect(contradictions).toHaveLength(0);
     });
 
-    it('detects UP vs DOWN contradiction for same entity', () => {
+    // #4862 : les 5 formes réelles des rejets fantômes du 21-22/11 — une
+    // machine, PLUSIEURS sujets, un état par ligne. Le pooling par machine
+    // mélangeait les sujets : ces statuts étaient rejetés à tort.
+    it('#4862: one subject per line about the same machine is NOT a contradiction (5 real shapes)', () => {
+      const status = [
+        '- **ai-01** : cache ok',                    // forme 1 : ok vs panne
+        '- **ai-01** : disque en panne',
+        '- **po-2026** : vLLM UP',                   // forme 2 : UP vs DOWN
+        '- **po-2026** : hub embeddings DOWN',
+        '- **po-2025** : vLLM UP',                   // forme 3 : UP vs active vs ok vs ko
+        '- **po-2025** : lane active',
+        '- **po-2025** : proxy ok',
+        '- **po-2025** : GPU ko',
+        '- **po-2025** : census terminé',            // forme 4 : terminé vs en cours
+        '- **po-2025** : runbook en cours',
+        '- **ai-01** : incident résolu',             // forme 5 : résolu vs en cours vs open
+        '- **ai-01** : audit en cours',
+        '- **ai-01** : 3 PRs open',
+      ].join('\n');
+      expect(detectStatusContradictions(status)).toHaveLength(0);
+    });
+
+    it('detects a same-line UP vs DOWN contradiction and names the offending line', () => {
       const status = `## Status
-- **vllm** : DOWN (ancien statut)
-- vllm is now UP and running fine`;
+- **vllm** : DOWN après le crash, redevenu UP (restart 08:15Z)
+- **qdrant** : UP et opérationnel`;
       const contradictions = detectStatusContradictions(status);
       expect(contradictions.length).toBeGreaterThanOrEqual(1);
       const vllmContradiction = contradictions.find(c => c.entity === 'vllm');
       expect(vllmContradiction).toBeDefined();
       expect(vllmContradiction!.conflictingStates.length).toBeGreaterThanOrEqual(2);
+      // #4862 : la ligne fautive est portée par l'enregistrement (log/marqueur)
+      expect(vllmContradiction!.lines).toBeDefined();
+      expect(vllmContradiction!.lines!.join('\n')).toContain('DOWN après le crash');
+      // qdrant : une ligne, des états de même polarité — pas de contradiction
+      expect(contradictions.find(c => c.entity === 'qdrant')).toBeUndefined();
     });
 
-    it('detects actif vs inactif contradiction for a machine', () => {
+    it('detects a same-line actif vs inactif contradiction for a machine', () => {
       const status = `## Status
-- myia-po-2024 est actif et fonctionne
-- myia-po-2024 inactif ce matin`;
+- myia-po-2024 : hôte actif mais scheduler inactif depuis 07:00`;
       const contradictions = detectStatusContradictions(status);
       const po2024 = contradictions.find(c => c.entity === 'myia-po-2024' || c.entity === 'po-2024');
       expect(po2024).toBeDefined();
     });
 
-    it('detects terminé vs en cours contradiction for same entity', () => {
+    it('detects a same-line merged vs en cours contradiction for same entity', () => {
       const status = `## Status
-- myia-ai-01 : tâche X terminée (PR merged)
-- myia-ai-01 : tâche X en cours de déploiement`;
+- myia-ai-01 : PR X merged mais déploiement en cours`;
       const contradictions = detectStatusContradictions(status);
       const ai01 = contradictions.find(c => c.entity === 'myia-ai-01' || c.entity === 'ai-01');
       expect(ai01).toBeDefined();
@@ -1828,12 +1853,36 @@ describe('roosync_dashboard', () => {
 
     it('detects multiple contradictory entities simultaneously', () => {
       const status = `## Status
-- vllm : DOWN (ancien statut)
-- vllm : UP et opérationnel (mis à jour)
-- myia-web1 : offline ce matin
-- myia-web1 : active et running maintenant`;
+- vllm : DOWN (ancien statut) redevenu UP
+- myia-web1 : offline ce matin, redevenue active et running`;
       const contradictions = detectStatusContradictions(status);
       expect(contradictions.length).toBeGreaterThanOrEqual(2);
+    });
+
+    // #4862 : les états sont matchés en MOTS ENTIERS. Chaque ligne ci-dessous
+    // porte un état réel d'une polarité ET un mot-trapèze de l'autre polarité
+    // en SOUS-CHAÎNE — seule la frontière de mot custom (tiret = caractère de
+    // mot) empêche le faux positif.
+    it('#4862: substring state words never match — update/token/open-webui/ok-guard are not states', () => {
+      const status = [
+        '- **po-2026** : update du service DOWN (08:00Z)',        // « up » ⊂ update ≠ état UP
+        '- **po-2024** : token renouvelé, service DOWN (09:00Z)', // « ok » ⊂ token ≠ état ok
+        '- **po-2025** : migration open-webui terminée (10:00Z)', // « open » ⊂ open-webui ≠ état open
+        '- **ai-01** : backup ok-guard-rejected en replay',       // « ok » ⊂ ok-guard ≠ état ok
+      ].join('\n');
+      expect(detectStatusContradictions(status)).toHaveLength(0);
+    });
+
+    it('#4862: po-2027, po-2028 and web2 are known entities', () => {
+      const status = [
+        '- **po-2027** : proxy UP puis DOWN (restart 08:00Z)',
+        '- **po-2028** : service actif mais capteur inactif',
+        '- **web2** : relance terminée, état final en cours de validation',
+      ].join('\n');
+      const entities = new Set(detectStatusContradictions(status).map(c => c.entity));
+      expect(entities.has('po-2027')).toBe(true);
+      expect(entities.has('po-2028')).toBe(true);
+      expect(entities.has('web2')).toBe(true);
     });
 
     // #3329 (RECIDIVE #1502): dedup regression — the guard that emits
@@ -1842,8 +1891,7 @@ describe('roosync_dashboard', () => {
     it('regression #3329: dedup strips stale #1502 markers from status', () => {
       const staleStatus = [
         '## Status',
-        '- vllm : DOWN (ancien)',
-        '- vllm : UP (mis à jour)',
+        '- vllm : DOWN (ancien) redevenu UP',
         '',
         '<!-- #1502 CONTRADICTION: vllm has conflicting states: DOWN vs UP -->',
         '<!-- #1502 CONTRADICTION: myia-web1 has conflicting states: offline vs active -->',
@@ -1874,8 +1922,9 @@ describe('roosync_dashboard', () => {
         '- **po-2026** : embeddings DOWN 08:00Z (wedge embedding-proxy-logger)',
         '- **po-2026** : embeddings opérationnel depuis 10:00Z (restart ciblé)',
       ].join('\n');
-      const contradictions = detectStatusContradictions(status);
-      expect(contradictions.length).toBeGreaterThanOrEqual(1);
+      // #4862 : la détection est même-ligne — l'entrée est construite
+      // directement (contrat d'origine de la réconciliation inchangé).
+      const contradictions = [{ entity: 'po-2026', conflictingStates: ['DOWN', 'opérationnel'] }];
       const rec = reconcileStatusContradictions(status, contradictions);
       expect(rec.reconciled).toHaveLength(1);
       const entry = rec.reconciled[0]!;
@@ -1904,12 +1953,14 @@ describe('roosync_dashboard', () => {
         '- **po-2026** : résidu g33 bloqué (05:30Z)',
         '- **po-2026** : embeddings opérationnel 10:00Z (restart ciblé)',
       ].join('\n');
-      const contradictions = detectStatusContradictions(status);
-      const entities = new Set(contradictions.map(c => c.entity));
-      // Les 4 entités contradictoires du body sont détectées
-      for (const e of ['ai-01', 'po-2024', 'po-2025', 'po-2026']) {
-        expect(entities.has(e)).toBe(true);
-      }
+      // #4862 : entrées construites directement (une par entité, union des
+      // deux paires pour po-2026 comme l'ancienne détection groupée).
+      const contradictions = [
+        { entity: 'ai-01', conflictingStates: ['bloqué', 'résolu'] },
+        { entity: 'po-2024', conflictingStates: ['bloqué', 'résolu'] },
+        { entity: 'po-2025', conflictingStates: ['en cours', 'résolu'] },
+        { entity: 'po-2026', conflictingStates: ['DOWN', 'opérationnel', 'résolu', 'bloqué'] },
+      ];
       const rec = reconcileStatusContradictions(status, contradictions);
       const recEntities = new Set(rec.reconciled.map(r => r.entity));
       for (const e of ['ai-01', 'po-2024', 'po-2025', 'po-2026']) {
@@ -1937,8 +1988,7 @@ describe('roosync_dashboard', () => {
         '- **web1** : battement mcp-chain absent (offline)',
         '- **web1** : hôte ok, sessions vivantes',
       ].join('\n');
-      const contradictions = detectStatusContradictions(status);
-      expect(contradictions.length).toBeGreaterThanOrEqual(1);
+      const contradictions = [{ entity: 'web1', conflictingStates: ['offline', 'ok'] }];
       const rec = reconcileStatusContradictions(status, contradictions);
       expect(rec.reconciled).toHaveLength(0);
       expect(rec.status).toBe(status);
@@ -1951,8 +2001,7 @@ describe('roosync_dashboard', () => {
         '- **web1** : battement absent depuis 24/09 (offline)',
         '- **web1** : hôte ok à 11:11Z',
       ].join('\n');
-      const contradictions = detectStatusContradictions(status);
-      expect(contradictions.length).toBeGreaterThanOrEqual(1);
+      const contradictions = [{ entity: 'web1', conflictingStates: ['offline', 'ok'] }];
       const rec = reconcileStatusContradictions(status, contradictions);
       expect(rec.reconciled).toHaveLength(0);
       expect(rec.status).toContain('battement absent depuis 24/09');
@@ -1966,7 +2015,7 @@ describe('roosync_dashboard', () => {
         '- **qdrant** : UP (10:00Z)',
         '- **qdrant** : DOWN (10:00Z)',
       ].join('\n');
-      const contradictions = detectStatusContradictions(status);
+      const contradictions = [{ entity: 'qdrant', conflictingStates: ['UP', 'DOWN'] }];
       const rec = reconcileStatusContradictions(status, contradictions);
       expect(rec.reconciled).toHaveLength(0);
       expect(rec.status).toContain('UP (10:00Z)');
@@ -1980,8 +2029,7 @@ describe('roosync_dashboard', () => {
         '- **po-2023** : IIS qdrant.myia.io DOWN (07:00Z)',
         '- **po-2023** : infra globale opérationnelle',
       ].join('\n');
-      const contradictions = detectStatusContradictions(status);
-      expect(contradictions.length).toBeGreaterThanOrEqual(1);
+      const contradictions = [{ entity: 'po-2023', conflictingStates: ['DOWN', 'opérationnel'] }];
       const rec = reconcileStatusContradictions(status, contradictions);
       expect(rec.reconciled).toHaveLength(0);
       expect(rec.status).toContain('IIS qdrant.myia.io DOWN');
@@ -1994,7 +2042,7 @@ describe('roosync_dashboard', () => {
         '- **vllm** : UP et opérationnel (2026-09-23T10:00:00Z)',
         '- **vllm** : DOWN depuis 2026-09-24T06:00:00Z',
       ].join('\n');
-      const contradictions = detectStatusContradictions(status);
+      const contradictions = [{ entity: 'vllm', conflictingStates: ['UP', 'opérationnel', 'DOWN'] }];
       const rec = reconcileStatusContradictions(status, contradictions);
       expect(rec.reconciled).toHaveLength(1);
       expect(rec.reconciled[0]!.keptLine).toContain('DOWN');
@@ -2008,7 +2056,7 @@ describe('roosync_dashboard', () => {
         '- **ai-01** : battement absent 07:29Z ; vLLM opérationnel depuis 12:11Z',
         '- **ai-01** : vLLM DOWN (08:00Z)',
       ].join('\n');
-      const contradictions = detectStatusContradictions(status);
+      const contradictions = [{ entity: 'ai-01', conflictingStates: ['opérationnel', 'DOWN'] }];
       const rec = reconcileStatusContradictions(status, contradictions);
       expect(rec.reconciled).toHaveLength(1);
       expect(rec.reconciled[0]!.keptLine).toContain('opérationnel');
@@ -2031,7 +2079,7 @@ describe('roosync_dashboard', () => {
         '- **po-2024** : analyse BSOD bloqué (07:15Z)',
         '- **po-2025** : HEALTHY, rien à signaler',
       ].join('\n');
-      const contradictions = detectStatusContradictions(status);
+      const contradictions = [{ entity: 'po-2024', conflictingStates: ['résolu', 'bloqué'] }];
       const rec = reconcileStatusContradictions(status, contradictions);
       expect(rec.status).toContain('### Résumé');
       expect(rec.status).toContain('Flotte stable.');
