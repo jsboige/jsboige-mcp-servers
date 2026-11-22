@@ -37,10 +37,11 @@ import { config } from 'dotenv';
 import { v5 as uuidv5 } from 'uuid';
 
 // Load .env from roo-state-manager root
-config({ path: new URL('../.env', import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1') });
+// [A-Za-z]: tolerate a lowercase drive letter in import.meta.url (Windows).
+config({ path: new URL('../.env', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1') });
 
 const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
-const STATE_FILE = new URL('./migration-chunk-ids-state.json', import.meta.url).pathname.replace(/^\/([A-Z]:)/, '$1');
+const STATE_FILE = new URL('./migration-chunk-ids-state.json', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1');
 
 const QDRANT_URL = process.env.QDRANT_URL;
 const QDRANT_API_KEY = process.env.QDRANT_API_KEY;
