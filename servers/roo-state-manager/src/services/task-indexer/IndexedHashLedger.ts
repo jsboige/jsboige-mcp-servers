@@ -12,8 +12,11 @@ import { getDefaultLogger } from '../../utils/logger.js';
  * every pass — measured 443,851 sub-chunks / pass on CoursIA-2 (`2279c906`),
  * 89-minute passes, ~42k scrolls. A session already indexed except its tail
  * must cost Qdrant reads proportional to the NEW chunks only. This ledger
- * records, on disk, the contentHashes this seat has successfully written to
- * Qdrant per task_id; B2 subtracts them before scrolling.
+ * records, on disk, the contentHashes confirmed present in Qdrant for a
+ * task_id — written by this seat after a successful upsert, or found already
+ * present by the B2 scroll (v1.1: without the second source, every session
+ * indexed before the ledger existed re-scrolled in full at each pass). B2
+ * subtracts them before scrolling.
  *
  * Storage: ndjson, one contentHash per line, one file per task_id under
  * `INDEX_HASH_LEDGER_DIR` (default `~/.roo-state-manager/index-hash-ledgers`).
