@@ -41,8 +41,7 @@ import * as os from 'os';
 import { spawnSync } from 'child_process';
 import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir, isSharedPathAccessible } from '../../utils/shared-state-path.js';
-import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER } from '../../utils/secret-redaction.js';
-import { redactSecrets } from '../../services/task-indexer/EmbeddingValidator.js';
+import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER, redactSecrets } from '../../utils/secret-redaction.js';
 import { getLocalMachineId, getLocalWorkspaceId, assertStampsMachine } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient, getLLMModelId, getFallbackChatOpenAIClient, getFallbackLLMModelId } from '../../services/openai.js';
@@ -95,15 +94,12 @@ import {
 import type { LandingSightingVerdict } from './condense-health.js';
 // #3782: journal-level retirement mark (mark, never DELETE — gel des purges)
 import type { DashboardRetirementMark } from '../../services/unified-store/types.js';
-// #3482-follow: the fork predicate + root recovery live in the reconcile
-// module, which owns the "fork by construction" policy. Sharing them keeps the
-// enumeration-side detector and the pass that refuses to touch forks in sync
-// (import is acyclic: that module imports dashboard-markdown + the store, never
-// this file).
+// #3482-follow: fork detection and mirror repair live in a VibeSync service.
+// The reconcile daemon consumes that service without importing this tool.
 import {
   isGdriveConflictCopyFile,
   canonicalKeyOfFork,
-} from '../../services/unified-store/roosync-dashboard-reconcile.js';
+} from '../../services/roosync/DashboardMirrorService.js';
 // #3151 Phase C: markdown parsing + message-id generation extracted to a
 // dependency-light module (backfill script imports it without pulling the LLM
 // client wiring of this tool module).
@@ -3478,56 +3474,9 @@ async function runGdriveFullWriteHalf(
 }
 
 /**
- * #4131 demande 2 — répare le MIROIR fichier depuis le store PG.
- *
- * Sous la porte PG-primaire, PG est la surface primaire et le fichier n'est
- * qu'un export borné : quand la moitié GDrive d'une écriture expire (mesuré
- * 28/10 sur ai-01 : deux `GDRIVE-BOUNDED`), le message vit dans PG et le
- * fichier reste derrière POUR TOUJOURS — rien ne le rattrape, `G:` cesse donc
- * d'être une sauvegarde fiable. Cette fonction réécrit le fichier depuis la vue
- * PG sous le verrou append (même sérialisation qu'un append local) et ne
- * re-passe PAS par la porte PG (`pgPrimaryPreWritten`) : la vue vient d'y être
- * lue, un second upsert n'ajouterait qu'un risque de throw mensonger.
- *
- * Ce n'est pas un chemin d'écriture de plus : c'est la seule façon dont une
- * moitié GDrive ratée redevient réparable.
- */
-export async function repairDashboardMirrorFromPg(
-  key: string,
-  dashboard: Dashboard
-): Promise<void> {
-  const holder: CondenseLockInfo = {
-    machineId: process.env.ROOSYNC_MACHINE_ID || 'unknown',
-    workspace: 'mirror-repair',
-    pid: process.pid,
-    acquiredAt: new Date().toISOString()
-  };
-  // #4131 G-MES — tampon d'export : la seule signature fichier qui distingue
-  // CETTE écriture (PG→fichier, tick du daemon de reconcile) de tout écrivain
-  // résiduel. Les ticks sont par hôte (90 s après démarrage puis 6 h) : sans
-  // marqueur, l'instrument Phase D ne peut pas les reconnaître et la famille
-  // `dashboards` ne peut jamais passer MET. Le stamp EST l'heure de l'export,
-  // pas celle de la vue (lastModified reste celle de PG).
-  const mirrorExportAt = new Date().toISOString();
-  await withAppendLock(key, holder, async () => {
-    const wv = await writeDashboardFile(key, dashboard, undefined, {
-      pgPrimaryPreWritten: true,
-      mirrorExportAt
-    });
-    // `writeDashboardFile` does not throw when the GDrive half degrades (by
-    // design: PG is primary and the caller's write stands). Here the file IS the
-    // deliverable, so a degraded half is a failed repair — reporting it as
-    // repaired would be exactly the phony count this epic keeps paying for.
-    if (wv.gdriveDegraded) {
-      throw new Error(`moitié GDrive dégradée à la réparation du miroir : ${wv.gdriveDegraded}`);
-    }
-  });
-}
-
-/**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
-async function writeDashboardFile(
+export async function writeDashboardFile(
   key: string,
   dashboard: Dashboard,
   opts?: { condensed?: boolean },

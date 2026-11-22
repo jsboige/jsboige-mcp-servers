@@ -2,10 +2,9 @@
  * Masquage des secrets au passage d'une frontière de PUBLICATION (#3584).
  *
  * Compose les deux couches :
- * - FORME (`redactSecrets`, importé de `services/task-indexer/EmbeddingValidator.ts`) :
- *   motifs auto-descriptifs — préfixes `sk-`/`ghp_`, `NAME=VALUE`, `Bearer …`, et depuis
- *   #3584 §5.1 les URI à credentials (`scheme://user:pass@host`), que la classe de
- *   valeur du motif `NAME=VALUE` ne pouvait pas attraper (`:`/`@` exclus).
+ * - FORME (`redactSecrets`, ci-dessous) : motifs auto-descriptifs — préfixes
+ *   `sk-`/`ghp_`, `NAME=VALUE`, `Bearer …`, et depuis #3584 §5.1 les URI à
+ *   credentials (`scheme://user:pass@host`), que la classe de valeur du motif
  * - VALEUR CONNUE (`known-value-masker.ts`, extrait de ce fichier pour permettre à
  *   `sanitizePayload` de le consommer sans cycle d'import) : la fuite fondatrice
  *   #3584 était une clé d'API NUE, 64 caractères hexadécimaux, publiée sans nom de
@@ -20,11 +19,38 @@
  * appelle `maskSecretTextForPublication`, jamais sa propre copie.
  */
 
-import { redactSecrets } from '../services/task-indexer/EmbeddingValidator.js';
 import { createKnownValueMasker, redactKnownSecretValues } from './known-value-masker.js';
 
 // Ré-export : les appelants historiques importaient ces deux fonctions depuis ici.
 export { createKnownValueMasker, redactKnownSecretValues };
+
+/**
+ * Form-based secret redaction, shared by publication and embedding (#2783).
+ * Patterns preserve the key name and replace its value; URI credentials run
+ * before NAME=VALUE so that the scheme is not mistaken for a key.
+ */
+export const SECRET_PATTERNS: Array<[RegExp, string]> = [
+    [/(?<![A-Za-z])sk-[A-Za-z0-9_-]{20,}/g, '<redacted-sk>'],
+    [/gh[opsur]_[A-Za-z0-9]{36,}/g, '<redacted-gh>'],
+    [/xox[baprs]-[A-Za-z0-9-]{10,}/g, '<redacted-slack>'],
+    [/Bearer\s+[A-Za-z0-9_\-.=]+/gi, 'Bearer <redacted>'],
+    [
+        /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]*:[^\s/@]+@/gi,
+        '$1<redacted>@',
+    ],
+    [
+        /((?:[A-Za-z0-9_]*(?:API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|URL|URI|DSN|CONN(?:ECTION)?[_-]?STR(?:ING)?)[A-Za-z0-9_]*)\s*[=:]\s*)['"]?[A-Za-z0-9_\-./+]{8,}['"]?/gi,
+        '$1<redacted>',
+    ],
+];
+
+export function redactSecrets(value: string): string {
+    let out = value;
+    for (const [pattern, replacement] of SECRET_PATTERNS) {
+        out = out.replace(pattern, replacement);
+    }
+    return out;
+}
 
 /**
  * Pré-filtre de la couche forme : des regexes sur un texte entier par passe de

@@ -15,7 +15,7 @@ import {
 import {
   isGdriveConflictCopyFile,
   canonicalKeyOfFork,
-} from '../../../../src/services/unified-store/roosync-dashboard-reconcile.js';
+} from '../../../../src/services/roosync/DashboardMirrorService.js';
 
 describe('isGdriveConflictCopyFile', () => {
   it('accepts a bare key and a filename alike', () => {

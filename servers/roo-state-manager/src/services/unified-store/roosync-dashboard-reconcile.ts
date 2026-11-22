@@ -112,6 +112,7 @@ import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { isPgFlagOn } from './pg-flags.js';
 import { createLogger } from '../../utils/logger.js';
+import { isGdriveConflictCopyFile } from '../roosync/DashboardMirrorService.js';
 
 const logger = createLogger('roosync-dashboard-reconcile');
 
@@ -301,9 +302,8 @@ export interface DashboardReconcileOptions {
    */
   fetchArchivedIds?: (key: string) => Promise<Set<string> | null>;
   /**
-   * Mirror-repair seam (#4131 demande 2). Injected by the daemon starter from
-   * `tools/roosync/dashboard.ts` — this module cannot import that file, it
-   * already imports FORK_FILE_RE from here (a cycle). Absent = repair skipped
+   * Mirror-repair seam (#4131 demande 2), backed by DashboardMirrorService.
+   * Absent = repair skipped
    * with `mirrorRepairSkipped: 'no-writer'`.
    */
   writeMirror?: (key: string, dashboard: Dashboard) => Promise<void>;
@@ -349,35 +349,6 @@ export function mirrorRepairMaxPerPass(): number {
 /** PG lock row key + TTL — one repairing process per cluster, same as the scan. */
 export const MIRROR_REPAIR_LOCK_KEY = 'dashboard-mirror-repair';
 export const MIRROR_REPAIR_LOCK_TTL_MS = 30 * 60_000;
-
-/**
- * GDrive conflict copies — "name (N).md" forks, merge remedy, never archived.
- *
- * Exported since #3482-follow: this constant is the ONE definition of "fork by
- * construction" and is also read by the enumeration-side detector
- * (`detectDashboardForks`, tools/roosync/dashboard.ts). Two mirrored copies
- * would be free to drift apart, and a detector that disagrees with the pass
- * that refuses to touch forks is worse than no detector.
- */
-export const FORK_FILE_RE = /\s\(\d+\)\.md$/;
-
-/**
- * True when a dashboard FILE NAME (with extension) is a DriveFS conflict copy.
- * Accepts either a bare name or a key (same thing minus the extension), hence
- * the optional extension in the tested form.
- */
-export function isGdriveConflictCopyFile(nameOrKey: string): boolean {
-  return FORK_FILE_RE.test(nameOrKey.endsWith('.md') ? nameOrKey : `${nameOrKey}.md`);
-}
-
-/**
- * Strip every trailing ` (N)` conflict-copy marker to recover the canonical
- * key a fork belongs to. Nested collisions (` (1) (1)`, seen live on po-2024
- * 2026-09-21) resolve to the same root as the single-marker ones.
- */
-export function canonicalKeyOfFork(key: string): string {
-  return key.replace(/(\s\(\d+\))+$/, '');
-}
 
 // ─── Archive-scan heal (#3151 Phase C residual, incident po-2025 07/10) ───
 // A message whose append's PG dual-write failed (PG outage, breaker gave up,
@@ -1443,9 +1414,8 @@ export function startDashboardReconcileDaemon(opts: {
   dashboardsDir: string;
   intervalHours?: number;
   /**
-   * #4131 demande 2 — mirror-repair seam, injected by the caller because this
-   * module cannot import `tools/roosync/dashboard.ts` (that file imports
-   * FORK_FILE_RE from here). Absent = repair reported as `no-writer`.
+   * #4131 demande 2 — mirror-repair seam, supplied by DashboardMirrorService.
+   * Absent = repair reported as `no-writer`.
    */
   writeMirror?: (key: string, dashboard: Dashboard) => Promise<void>;
 }): void {

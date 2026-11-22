@@ -571,10 +571,9 @@ class RooStateManagerServer {
             10
         );
         const dashboardsDir = join(getSharedStatePath(), 'dashboards');
-        // #4131 demande 2 — mirror repair (PG → file). Injected here because the
-        // reconcile service cannot import the tool module (import cycle: the
-        // tool imports FORK_FILE_RE from the service).
-        const { repairDashboardMirrorFromPg } = await import('./tools/roosync/dashboard.js');
+        // #4131 demande 2 — mirror repair (PG → file). The VibeSync service
+        // owns the append-locked file write; the daemon retains injection.
+        const { repairDashboardMirrorFromPg } = await import('./services/roosync/DashboardMirrorService.js');
         startDashboardReconcileDaemon({
             dashboardsDir,
             intervalHours,

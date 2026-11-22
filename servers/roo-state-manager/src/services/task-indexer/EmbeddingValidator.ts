@@ -5,7 +5,10 @@
 
 import { StateManagerError } from '../../types/errors.js';
 import { getEmbeddingDimensions } from '../openai.js';
+import { redactSecrets } from '../../utils/secret-redaction.js';
 import { createKnownValueMasker } from '../../utils/known-value-masker.js';
+
+export { SECRET_PATTERNS, redactSecrets } from '../../utils/secret-redaction.js';
 
 /**
  * Valide qu'un vecteur a la bonne dimension et ne contient pas de NaN/Infinity
@@ -43,62 +46,6 @@ export function validateVectorGlobal(vector: number[], expectedDim?: number): vo
             { hasNaN: vector.some(v => Number.isNaN(v)), hasInfinity: vector.some(v => !Number.isFinite(v) && !Number.isNaN(v)) }
         );
     }
-}
-
-/**
- * Patterns de secrets à masquer avant indexation Qdrant (sécurité #2783).
- *
- * Un secret loggé en clair dans une conversation (sortie `cat .env` / `printenv`,
- * header `api-key:`, extrait `~/.claude.json`, tool result echoant l'env) est sinon
- * embeddé VERBATIM dans le champ `content` du payload puis stocké dans
- * `roo_tasks_semantic_index` → devient retrouvable via `roosync_search(semantic)`.
- * Failure mode avéré : task `80e71054` (fuite `QDRANT_API_KEY` + `OPENAI_API_KEY`).
- *
- * Couche PRÉVENTION uniquement : ne purge pas les points déjà indexés (purge séparée,
- * côté coordinateur) et ne remplace pas la rotation de clé. La sur-redaction est
- * volontairement acceptée — un secret n'est pas un terme de recherche utile, mieux
- * vaut masquer trop que laisser fuiter. Chaque entrée = [regex, remplacement] ;
- * la VALEUR est masquée, le NOM de clé préservé pour garder le texte lisible.
- */
-export const SECRET_PATTERNS: Array<[RegExp, string]> = [
-    // Tokens auto-préfixés : masqués où qu'ils apparaissent, même sans nom de variable.
-    // Not after a letter: `task-…`, `disk-…`, `risk-…` end a word, they are not a key
-    // prefix (measured 01/11: a messageId `ai01-task-…` published as `ai01-ta<redacted-sk>`).
-    // A digit, `_`, `-`, a quote or `=` before `sk-` still masks.
-    [/(?<![A-Za-z])sk-[A-Za-z0-9_-]{20,}/g, '<redacted-sk>'], // OpenAI / Anthropic (incl. sk-proj-…)
-    [/gh[opsur]_[A-Za-z0-9]{36,}/g, '<redacted-gh>'],        // GitHub PAT / OAuth / server tokens
-    [/xox[baprs]-[A-Za-z0-9-]{10,}/g, '<redacted-slack>'],   // Slack tokens
-    [/Bearer\s+[A-Za-z0-9_\-.=]+/gi, 'Bearer <redacted>'],   // Authorization: Bearer …
-    // URI à credentials : le userinfo `user:pass` de `scheme://user:pass@host`. La classe
-    // de valeur du motif NAME=VALUE ci-dessous exclut ':' et '@', donc ces URI passaient
-    // intégralement en clair (#3584 §5.1). DOIT courir AVANT NAME=VALUE : sinon le scheme
-    // (souvent ≥ 8 car. alphanumériques) est masqué seul et l'userinfo reste nu derrière.
-    // User optionnel (`*`) : redis accepte `redis://:password@host`.
-    [
-        /\b([a-z][a-z0-9+.-]*:\/\/)[^\s/@:]*:[^\s/@]+@/gi,
-        '$1<redacted>@',
-    ],
-    // Forme NAME=VALUE / NAME: VALUE (env-dump, header HTTP). Groupe 1 = nom+connecteur (préservé).
-    // Couvre QDRANT__SERVICE__API_KEY=…, OPENAI_API_KEY=…, api-key: …, ACCESS_KEY=…, SECRET: …,
-    // et les noms de connexion *_URL/*_URI/*_DSN/CONN[_-]STRING (#3584 §5.2).
-    // La valeur exige ≥ 8 caractères → un `TOKEN: abc` court n'est pas masqué (bruit).
-    [
-        /((?:[A-Za-z0-9_]*(?:API[_-]?KEY|APIKEY|SECRET|TOKEN|PASSWORD|PASSWD|ACCESS[_-]?KEY|PRIVATE[_-]?KEY|URL|URI|DSN|CONN(?:ECTION)?[_-]?STR(?:ING)?)[A-Za-z0-9_]*)\s*[=:]\s*)['"]?[A-Za-z0-9_\-./+]{8,}['"]?/gi,
-        '$1<redacted>',
-    ],
-];
-
-/**
- * Masque les patterns de secrets dans une chaîne avant indexation (sécurité #2783).
- * @param value La chaîne potentiellement porteuse d'un secret
- * @returns La chaîne avec les valeurs secrètes remplacées par `<redacted…>`
- */
-export function redactSecrets(value: string): string {
-    let out = value;
-    for (const [pattern, replacement] of SECRET_PATTERNS) {
-        out = out.replace(pattern, replacement);
-    }
-    return out;
 }
 
 /**

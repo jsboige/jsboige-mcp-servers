@@ -12,6 +12,9 @@
  */
 
 import { createLogger } from '../../utils/logger.js';
+import { HeartbeatServiceError } from '../../types/errors.js';
+
+export { HeartbeatServiceError } from '../../types/errors.js';
 
 const logger = createLogger('HeartbeatService');
 
@@ -112,13 +115,6 @@ export interface HeartbeatCheckResult {
   newlyOnlineMachines: string[];
   newlyIdleMachines: string[];
   checkedAt: string;
-}
-
-export class HeartbeatServiceError extends Error {
-  constructor(message: string, public readonly code?: string) {
-    super(`[HeartbeatService] ${message}`);
-    this.name = 'HeartbeatServiceError';
-  }
 }
 
 /**

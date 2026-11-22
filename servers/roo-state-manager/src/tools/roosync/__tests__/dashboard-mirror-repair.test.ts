@@ -69,7 +69,8 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
   readDashboardFromPgUngated: mockReadDashboardFromPgUngated,
 }));
 
-import { repairDashboardMirrorFromPg, buildDashboardMarkdown } from '../dashboard.js';
+import { repairDashboardMirrorFromPg } from '../../../services/roosync/DashboardMirrorService.js';
+import { buildDashboardMarkdown } from '../dashboard.js';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-mirror-repair-');
 

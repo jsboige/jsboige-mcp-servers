@@ -110,6 +110,13 @@ export class RooSyncServiceError extends Error {
   }
 }
 
+export class HeartbeatServiceError extends Error {
+  constructor(message: string, public readonly code?: string) {
+    super(`[HeartbeatService] ${message}`);
+    this.name = 'HeartbeatServiceError';
+  }
+}
+
 /**
  * Codes d'erreur pour IdentityManager
  */

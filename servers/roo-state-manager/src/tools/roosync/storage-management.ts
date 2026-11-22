@@ -12,7 +12,7 @@ import { handleStorageInfo } from '../storage/storage-info.js';
 import { handleMaintenance } from '../maintenance/maintenance.js';
 import type { StoredConversation } from '../../services/unified-store/types.js';
 import { ServerState } from '../../services/state-manager.service.js';
-import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
+import { HeartbeatServiceError } from '../../types/errors.js';
 
 // ====================================================================
 // SCHEMAS DE VALIDATION
