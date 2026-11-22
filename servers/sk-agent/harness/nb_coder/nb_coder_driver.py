@@ -437,6 +437,13 @@ def _run_claim_guard(argv: list[str], repo: Path):
 # notebook (or whose file list cannot be trusted) still refuses; a disjoint one defers,
 # because the occupation ends when that PR merges -- the scheduler retries with backoff.
 CLAIM_IMPLICIT_VERDICT = "deferred-by-claim-implicit-occupation"
+# 22/11 (salvage, CoursIA#28064..#28081): the guard's consumer-side QUALIFICATION also
+# exits 1, before any claim is read -- e.g. RELACHEE, the issue's last marker is a
+# [RELEASED] younger than the window, OUR OWN lane's included. The driver read every
+# rc=1 as "held by another lane": seven grains were reported as cross-lane collisions
+# that did not exist. The code is read from the guard's `[QUALIFICATION] <CODE> :` line.
+CLAIM_NOT_QUALIFIED_VERDICT = "refused-claim-not-qualified"
+_QUALIFICATION_RE = re.compile(r"\[QUALIFICATION\]\s+([A-Z][A-Z_]*)\s*:")
 # GitHub's PR payload previews at most 100 files: a list that long may hide ours.
 _PR_FILES_PREVIEW_CAP = 100
 
@@ -501,10 +508,23 @@ def implicit_verdict(cc: dict) -> str:
         f"#{i.get('number')}" for i in implicit)
 
 
+def qualification_code(cc: dict) -> str | None:
+    """The guard's `[QUALIFICATION] <CODE>` (RELACHEE, GEL, LABEL, HORSFLOTTE...), or None.
+
+    Printed on stderr; `_guard_result` keeps it in `out` (no stdout) or `warnings`."""
+    for key in ("out", "warnings"):
+        m = _QUALIFICATION_RE.search(cc.get(key) or "")
+        if m:
+            return m.group(1)
+    return None
+
+
 def claim_verdict(cc: dict) -> str | None:
     """Fail-closed reading of a SCOPED claim check (#466).
 
-    rc=1  -> a live claim conflicts on THIS notebook's path: refuse.
+    rc=1  -> the grain is not qualified (`[QUALIFICATION] <CODE>`, e.g. a recent
+             [RELEASED]): refuse under that code, never as a cross-lane collision.
+             Otherwise a live claim conflicts on THIS notebook's path: refuse.
     rc=2  -> the scoped check still cannot decide (old script without --paths, path
              absent from every open diff): refuse rather than run unprotected -- the
              pre-#466 driver treated this as pass-through.
@@ -519,6 +539,9 @@ def claim_verdict(cc: dict) -> str | None:
         return f"{CLAIM_TIMEOUT_VERDICT}:check"
     rc = cc.get("rc")
     if rc == 1:
+        code = qualification_code(cc)
+        if code:
+            return f"{CLAIM_NOT_QUALIFIED_VERDICT}:{code}"
         return "refused-claim-held-by-another-lane"
     if rc is None:
         return "refused-claim-check-broken"
