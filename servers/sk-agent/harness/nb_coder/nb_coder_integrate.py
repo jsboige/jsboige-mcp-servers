@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
+# Copied verbatim from jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_integrate.py
-# Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
-# re-copy, do not diverge silently.
+# Source of truth is THIS tree since the 22/11 cutover (#4781): fix bugs here. The
+# jsboige/vllm copy is frozen at the SHA above: never re-copy it over this tree.
 # -----------------------------------------------------------------------------
 """nb-coder repo integration — the CI guards a NEW port notebook trips, fixed
 deterministically before the PR is pushed (jsboige/vllm, 21/11).
@@ -1218,16 +1218,146 @@ def is_env_banner(text: str) -> bool:
     return 0 < len(lines) <= ENV_BANNER_MAX_LINES and bool(ENV_BANNER_RE.search(text))
 
 
-def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None) -> dict:
+# --------------------------------------------------------- spec `## Tolerances`
+# A stochastic lot spec (CoursIA#28072, Sudoku-04: the Rust port uses its own
+# std RNG, so seed-dependent outputs can never match the Python twin) carries a
+# per-cell contract table. Rows say HOW each cell is judged -- the strict-text
+# rule below is only the default. Accents and casing vary between specs
+# (`Tolérances`/`Tolerances`, `Comparé à`/`Compare a`): heading and header
+# detection are accent-folded, the cell VALUES keep the spec's own wording (the
+# declared-absent motifs quote it verbatim).
+_SPEC_TOLERANCES_HEAD_RE = re.compile(r"^#{2,6}\s*tolerances?\b")
+_SPEC_HEADING_RE = re.compile(r"^#{1,6}\s+\S")
+# « sortie Python cellule N » / « sorties Python » / « jumeau Python »
+_SPEC_PY_OUTPUT_RE = re.compile(r"sorties?\s+python|python\s+cellule|jumeau\s+python")
+# The wall-clock words a duration row uses (accent-folded): lots 1-12 write
+# « durees : presence seule », App-12 #28069 writes « temps : presence seule »
+# and « ms/coup : presence seule » for the same contract.
+_SPEC_DUREE_RE = re.compile(r"\b(?:durees?|temps|murales?)\b|ms/coup")
+# Only DECIMAL numbers are masked by a duration row: wall-clock values print
+# with a fractional part (`1.8`, `302.0`, `2306.2`), while the integers next to
+# them are game results the spec keeps strict (App-12 #28069: `4W-0D-2L`,
+# `Score 66`). An integer duration column stays strict -- fail-closed.
+_NUM_TOKEN_RE = re.compile(r"\d+\.\d+(?:[eE][-+]?\d+)?")
+
+
+def _flat(s: str) -> str:
+    """Accent-folded lowercase (`Tolérances` -> `tolerances`)."""
+    return unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode().lower()
+
+
+def parse_spec_tolerances(spec_body: str | None) -> dict[int, dict]:
+    """`{cell_index: {"quantity", "tolerance", "compare"}}` from a lot spec's
+    `## Tolerances` table (`| Cellule (source) | Grandeur comparee | Tolerance |
+    Compare a |`, one row per cell -- the first column may list several cells
+    (`9, 16, 32, 39, 41, 43`) and carry bold markup). The table is read from
+    its heading to the next heading; prose in between is skipped. No table ->
+    `{}`: today's strict behaviour, unchanged."""
+    if not spec_body:
+        return {}
+    rows: dict[int, dict] = {}
+    in_section = False
+    header_seen = False
+    for line in spec_body.splitlines():
+        stripped = line.strip()
+        if _SPEC_HEADING_RE.match(stripped):
+            if in_section:
+                break                      # next section: the table is done
+            if _SPEC_TOLERANCES_HEAD_RE.match(_flat(stripped)):
+                in_section = True
+            continue
+        if not in_section or not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        if not header_seen:
+            if "cellule" in _flat(cells[0]):
+                header_seen = True
+            continue
+        if set(_flat("".join(cells))) <= set("-: "):
+            continue                        # the `|---|---|` separator row
+        idxs = [int(x) for x in re.findall(r"\d+", cells[0].replace("**", ""))]
+        if not idxs:
+            continue
+        for i in idxs:
+            rows[i] = {"quantity": cells[1], "tolerance": cells[2], "compare": cells[3]}
+    return rows
+
+
+def spec_row_kind(row: dict | None) -> str:
+    """Classify one `## Tolerances` row.
+
+    - `invariants`: the `Compare a` column judges by invariants and never the
+      Python output (« invariants, pas le committe ») -- the strict measure is
+      not the contract;
+    - `mixed`: both the Python output and invariants (« sortie Python cellule
+      N + invariants »);
+    - `duration`: the row grants wall-clock durations in presence only
+      (« durees : presence seule »);
+    - `strict` (or no row at all): today's exact-text rule."""
+    if not row:
+        return "strict"
+    blob = _flat(" ".join((row.get("compare") or "", row.get("tolerance") or "",
+                           row.get("quantity") or "")))
+    has_invariants = "invariant" in blob
+    has_python = bool(_SPEC_PY_OUTPUT_RE.search(blob))
+    if has_invariants and not has_python:
+        return "invariants"
+    if has_invariants and has_python:
+        return "mixed"
+    if _SPEC_DUREE_RE.search(blob) and "presence seule" in blob:
+        return "duration"
+    return "strict"
+
+
+def _durations_only_diff(ref: str, other: str) -> bool:
+    """True when two outputs differ ONLY by their decimal numbers (CoursIA#28072
+    cell 48: `0.0 0.3` vs `1.8 302.0` inside a table with no time unit, so the
+    duration-LINE detector never anchored them). Decimals are masked and runs
+    of whitespace collapsed -- a table's column padding follows the number
+    widths. Integers are NOT masked: a wrong win count or score next to a
+    duration column is a divergence, never tolerated by the duration row."""
+    def mask(text: str) -> list[list[str]]:
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        return [_NUM_TOKEN_RE.sub("#", ln).split() for ln in text.split("\n")]
+    return mask(ref) == mask(other)
+
+
+def _spec_absent_reason(kind: str, cell: int, row: dict, spec_ref: str | None) -> str:
+    """The `absent:` motif of a spec-declared Rust side: it QUOTES the spec row
+    so a reviewer reads the contract, not a bare skip."""
+    at = f"{spec_ref}, " if spec_ref else ""
+    if kind == "duration":
+        return (f"durees en presence seule (spec {at}Tolerances, cellule {cell}) : "
+                f"{row.get('tolerance') or ''}".rstrip(" :"))
+    return (f"contrat a invariants declare par la spec ({at}Tolerances, cellule {cell}) : "
+            f"{row.get('compare') or ''}".rstrip(" :"))
+
+
+def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None,
+                      spec_body: str | None = None,
+                      spec_ref: str | None = None) -> dict:
     """Measures + Rust divergences + generator skips, from three notebook paths
-    (the stage-3 gate calls it on the BUILT notebook, before any commit)."""
+    (the stage-3 gate calls it on the BUILT notebook, before any commit).
+
+    `spec_body` (optional): the lot spec's issue body. Its `## Tolerances`
+    table, when present, DOWNGRADES the strict-text rule per cell -- an
+    invariants row is never strictly measured, a mixed row keeps the strict
+    measure only where it already matches, a durations row tolerates
+    numeric-only gaps. A spec-declared side is written `absent:` with the spec
+    row quoted (reported by the checker, never a failure) and named in
+    `spec_absent`/`skipped` so the PR body says it. `spec_ref` (e.g. `#28072`)
+    anchors the motif back to the issue."""
     py_out = notebook_outputs(py_path)
     rs_out = notebook_outputs(rs_path)
     cs_out = notebook_outputs(cs_path) if cs_path is not None and Path(cs_path).is_file() else None
     rich = rich_output_cells(py_path)
+    tolerances = parse_spec_tolerances(spec_body)
     measures: list[dict] = []
     divergences: list[dict] = []
     skipped: list[str] = []
+    spec_absent: list[dict] = []
     for i in sorted(py_out):
         if not py_out[i].strip():
             continue
@@ -1240,6 +1370,8 @@ def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None) -> dic
         if is_env_banner(py_out[i]):
             skipped.append(f"c{i}: bannière d'environnement (versions) côté Python, non mesurée")
             continue
+        row = tolerances.get(i)
+        kind = spec_row_kind(row)
         segs = _segments(py_out[i])
         rs_txt = rs_out.get(i)
         for k, seg in enumerate(segs):
@@ -1255,7 +1387,24 @@ def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None) -> dic
             sides: dict = {"python": {"cell": i, "pattern": seg["pattern"], "transform": "text"},
                            "rust": {"cell": i, "pattern": seg["pattern"], "transform": "text"}}
             got = _extract(rs_txt, seg["pattern"]) if rs_txt else None
-            if got != seg["text"]:
+            strict_ok = got == seg["text"]
+            absent_reason: str | None = None
+            if kind == "invariants":
+                absent_reason = _spec_absent_reason(kind, i, row, spec_ref)
+            elif kind == "mixed" and not strict_ok:
+                absent_reason = _spec_absent_reason(kind, i, row, spec_ref)
+            elif (kind == "duration" and not strict_ok and got is not None
+                  and _durations_only_diff(seg["text"], got)):
+                absent_reason = _spec_absent_reason(kind, i, row, spec_ref)
+            if absent_reason is not None:
+                # Fail-closed stays readable: the spec's own contract replaces
+                # the strict measure, the motif quotes the row, the checker
+                # reports the absent side without failing on it.
+                sides["rust"] = {"absent": absent_reason}
+                desc += " ; côté Rust déclaré absent (contrat de la spec)"
+                skipped.append(f"{mid}: côté Rust déclaré absent -- {absent_reason}")
+                spec_absent.append({"id": mid, "cell": i, "reason": absent_reason})
+            elif not strict_ok:
                 divergences.append({
                     "id": mid, "cell": i,
                     "text": ("la cellule Rust n'imprime rien" if not rs_txt
@@ -1297,17 +1446,25 @@ def _conformance_core(py_path: Path, rs_path: Path, cs_path: Path | None) -> dic
                     "sides": {s: {"cell": i, "pattern": pat, "transform": "text"}
                               for s in ("python", "csharp", "rust")}})
     return {"measures": measures, "divergences": divergences, "skipped": skipped,
-            "has_csharp": cs_out is not None}
+            "spec_absent": spec_absent, "has_csharp": cs_out is not None}
 
 
-def conformance_divergences(py_path: Path, rs_path: Path) -> list[dict]:
+def conformance_divergences(py_path: Path, rs_path: Path,
+                            spec_body: str | None = None,
+                            spec_ref: str | None = None) -> list[dict]:
     """Rust cells whose output differs from the Python twin's same-index cell,
     as the registry entry written at delivery would measure them. Stage-3 gate
-    input: a divergence found here is repaired BEFORE the PR, not by review."""
-    return _conformance_core(py_path, rs_path, None)["divergences"]
+    input: a divergence found here is repaired BEFORE the PR, not by review.
+    `spec_body` (a lot spec's `## Tolerances` table) keeps its declared
+    contracts out of the divergences -- a stochastic port is judged by its
+    spec, not by text it can never reproduce."""
+    return _conformance_core(py_path, rs_path, None, spec_body=spec_body,
+                             spec_ref=spec_ref)["divergences"]
 
 
-def build_conformance_entry(worktree: Path, nb_rel: str, source_rel: str) -> dict:
+def build_conformance_entry(worktree: Path, nb_rel: str, source_rel: str,
+                            spec_body: str | None = None,
+                            spec_ref: str | None = None) -> dict:
     """The `rust_conformance.d` entry of an nb_coder Rust port, from the
     COMMITTED outputs of the port and its twins (CoursIA c0018, 21/11: the
     lot-1 specs require it at delivery and every PR without it came back).
@@ -1321,14 +1478,22 @@ def build_conformance_entry(worktree: Path, nb_rel: str, source_rel: str) -> dic
     the checker's finding, never smoothed here (fail-closed). The C# side is
     compared where its aligned cell prints the same text, else DECLARED absent
     with the measured gap; lines `label : value` identical on all three sides
-    add three-sided measures anchored on the label."""
+    add three-sided measures anchored on the label.
+
+    `spec_body`: the lot spec's issue body. Its `## Tolerances` table (a
+    stochastic contract, CoursIA#28072) declares some cells judged by
+    invariants or with durations in presence only -- those Rust sides are
+    written `absent:` quoting the spec row instead of the strict measure, and
+    named in `spec_absent` (the checker reports an absent side, it never fails
+    on one)."""
     worktree = Path(worktree)
     nb_rel = nb_rel.replace("\\", "/")
     source_rel = source_rel.replace("\\", "/")
     base, _ = split_port_name(nb_rel)
     cs_rel = (Path(nb_rel).parent / f"{base}-CSharp.ipynb").as_posix()
     core = _conformance_core(worktree / source_rel, worktree / nb_rel,
-                             worktree / cs_rel if (worktree / cs_rel).is_file() else None)
+                             worktree / cs_rel if (worktree / cs_rel).is_file() else None,
+                             spec_body=spec_body, spec_ref=spec_ref)
     measures = core["measures"]
     entry = {"name": base,
              "family": Path(nb_rel).parent.as_posix().replace("MyIA.AI.Notebooks/", "", 1),
@@ -1341,7 +1506,8 @@ def build_conformance_entry(worktree: Path, nb_rel: str, source_rel: str) -> dic
     return {"file": conformance_file(nb_rel).as_posix(), "entry": entry,
             "measures": len(measures), "three_sided": three,
             "csharp": cs_rel if core["has_csharp"] else None,
-            "divergences": core["divergences"], "skipped": core["skipped"]}
+            "divergences": core["divergences"], "skipped": core["skipped"],
+            "spec_absent": core["spec_absent"]}
 
 
 def _yq(s) -> str:
@@ -1399,10 +1565,14 @@ def render_conformance_yaml(built: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def plan_conformance(worktree: Path, nb_rel: str, source_rel: str) -> dict:
+def plan_conformance(worktree: Path, nb_rel: str, source_rel: str,
+                     spec_body: str | None = None,
+                     spec_ref: str | None = None) -> dict:
     """Plan the registry entry of a Rust port: todo when the file is missing.
     An existing file is NEVER rewritten -- a human correction (an API gap
-    declared by hand) must survive a re-run (idempotence + authorship)."""
+    declared by hand) must survive a re-run (idempotence + authorship).
+    `spec_body`/`spec_ref` thread the lot spec's `## Tolerances` contract into
+    the generated entry (see `build_conformance_entry`)."""
     if not is_rust_port(nb_rel):
         return {"todo": False, "why": "not a Rust port"}
     worktree = Path(worktree)
@@ -1411,7 +1581,8 @@ def plan_conformance(worktree: Path, nb_rel: str, source_rel: str) -> dict:
         return {"todo": False, "file": rel.as_posix(), "why": "entry already present"}
     if not (worktree / RUST_CONFORMANCE_DIR).is_dir():
         return {"todo": False, "why": f"no {RUST_CONFORMANCE_DIR.as_posix()} in the repo"}
-    built = build_conformance_entry(worktree, nb_rel, source_rel)
+    built = build_conformance_entry(worktree, nb_rel, source_rel,
+                                    spec_body=spec_body, spec_ref=spec_ref)
     return {"todo": True, "path": str(worktree / rel), "text": render_conformance_yaml(built),
             **{k: v for k, v in built.items() if k != "entry"}}
 
@@ -1453,10 +1624,14 @@ def replay_guards(worktree: Path, notebook: str | None = None) -> list[dict]:
 
 # ------------------------------------------------------------------ integrate
 
-def integrate(worktree: Path, notebook: str, source_nb: str) -> dict:
+def integrate(worktree: Path, notebook: str, source_nb: str,
+              spec_body: str | None = None, spec_ref: str | None = None) -> dict:
     """Apply the two file edits (README row + inbound nav link). Returns the
     plan for each plus the touched repo-relative files. Idempotent: on an
-    already-integrated branch both plans report todo=False and nothing moves."""
+    already-integrated branch both plans report todo=False and nothing moves.
+    `spec_body`/`spec_ref` thread the lot spec's `## Tolerances` contract into
+    the conformance entry (declared-absent Rust sides instead of strict
+    measures the spec itself does not ask for)."""
     worktree = Path(worktree)
     notebook = notebook.replace("\\", "/")
     source_nb = source_nb.replace("\\", "/")
@@ -1469,7 +1644,8 @@ def integrate(worktree: Path, notebook: str, source_nb: str) -> dict:
     apply_nav_link(back)
     readme = plan_readme_row(worktree, notebook, source_nb)
     apply_readme_row(readme)
-    conf = plan_conformance(worktree, notebook, source_nb)
+    conf = plan_conformance(worktree, notebook, source_nb,
+                            spec_body=spec_body, spec_ref=spec_ref)
     apply_conformance(conf)
     touched = ([source_nb] if nav.get("todo") else []) + \
               ([notebook] if back.get("todo") else []) + \
@@ -1518,7 +1694,8 @@ def _conformance_summary(plan: dict) -> dict:
     return {k: v for k, v in plan.items() if k not in ("path", "text", "entry")}
 
 
-def plan_only(worktree: Path, notebook: str, source_nb: str) -> dict:
+def plan_only(worktree: Path, notebook: str, source_nb: str,
+              spec_body: str | None = None, spec_ref: str | None = None) -> dict:
     """--check-only: the same plans, zero writes."""
     worktree = Path(worktree)
     notebook = notebook.replace("\\", "/")
@@ -1529,7 +1706,8 @@ def plan_only(worktree: Path, notebook: str, source_nb: str) -> dict:
     nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb))
     back = plan_back_link(worktree, notebook, source_nb)
     readme = plan_readme_row(worktree, notebook, source_nb)
-    conf = plan_conformance(worktree, notebook, source_nb)
+    conf = plan_conformance(worktree, notebook, source_nb,
+                            spec_body=spec_body, spec_ref=spec_ref)
     return {"notebook": notebook, "source_nb": source_nb,
             "nav": {k: v for k, v in nav.items()
                     if not k.startswith("_") and k != "file"},

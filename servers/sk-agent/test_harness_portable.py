@@ -16,7 +16,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 HARNESS = HERE / "harness"
-SHA = "7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77"
+SHA = "7a09e1caec22441d9402ab25a222206c8905bfe1"
 
 
 def _load(name: str, path: Path):
