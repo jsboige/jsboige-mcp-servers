@@ -22,7 +22,11 @@
  *      longer exist after a wipe;
  *   4. the B2 "done" loop line carries ledgerHits + scrollBatches so the
  *      issue's closure criterion (reads ∝ new chunks) is measurable in the
- *      roosync-*.log of the ai-01 leader.
+ *      roosync-*.log of the ai-01 leader;
+ *   5. v1.1 — hashes the scroll confirms PRESENT are learned by the ledger:
+ *      a session indexed before the ledger existed converges to zero scrolls
+ *      on its second pass (mutant C: removing the scroll-found append makes
+ *      pass 2 re-scroll the full session).
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as crypto from 'crypto';
@@ -228,6 +232,63 @@ describe('VectorIndexer — #4861 B2 incremental pass + fail-closed scroll', () 
 			expect(mockScroll).not.toHaveBeenCalled();
 			expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
 		} finally {
+			restore();
+		}
+	});
+
+	// ── 1b. v1.1: the ledger LEARNS scroll-confirmed hashes ────────────────
+
+	test('a pre-ledger session (all hashes found by scroll) converges to zero scrolls on pass 2', async () => {
+		const { indexTask } = await freshModule();
+		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const restore = silenceConsole();
+		const loopLines: string[] = [];
+		const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((line: string) => {
+			loopLines.push(String(line));
+		});
+		try {
+			// Qdrant answers every requested hash as already present FOR THIS TASK.
+			mockScroll.mockImplementation((_collection: string, params: any) => {
+				const requested = (params?.filter?.should ?? [])
+					.map((m: any) => m?.match?.value)
+					.filter(Boolean);
+				return Promise.resolve({
+					points: requested.map((h: string) => ({ id: `p-${h}`, payload: { contentHash: h } })),
+					next_page_offset: null,
+				});
+			});
+			const session = [chunkOf(0), chunkOf(1), chunkOf(2)];
+
+			// Pass 1: EMPTY ledger → B2 scrolls the 3 hashes (1 batch), finds them
+			// all present, skips every chunk, and must now RECORD them.
+			mockExtractTask.mockResolvedValue(session);
+			const written1 = await indexTask('t-4861', '/nowhere', 'roo', undefined, {});
+			expect(written1.length).toBe(0);
+			expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
+			expect(mockScroll).toHaveBeenCalledTimes(1); // 3 hashes = one 100-hash batch
+			const files = await fsp.readdir(ledgerTmpDir);
+			expect(files.length).toBe(1);
+			const ledgerHashes = new Set(
+				(await fsp.readFile(path.join(ledgerTmpDir, files[0]), 'utf8')).split('\n').filter(Boolean),
+			);
+			expect(ledgerHashes.size).toBe(3);
+
+			// Pass 2: same session, ledger populated by the SCROLL (not by an
+			// upsert — nothing was ever written here). Mutant C: removing the
+			// scroll-found append leaves the ledger empty, B2 re-scrolls, and
+			// both assertions below go red.
+			mockScroll.mockClear();
+			mockEmbeddingsCreate.mockClear();
+			const written2 = await indexTask('t-4861', '/nowhere', 'roo', undefined, {});
+			expect(written2.length).toBe(0);
+			expect(mockScroll).not.toHaveBeenCalled();
+
+			const doneLines = loopLines.filter(l => l.includes('phase B2 (contentHash preflight) done'));
+			expect(doneLines.length).toBe(2);
+			expect(doneLines[1]).toMatch(/ledgerHits=3/);
+			expect(doneLines[1]).toMatch(/scrollBatches=0/);
+		} finally {
+			infoSpy.mockRestore();
 			restore();
 		}
 	});

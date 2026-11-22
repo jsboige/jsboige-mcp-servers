@@ -1121,6 +1121,13 @@ async function preflightDedupByContentHash(
                     throw scrollError;
                 }
             }
+            // #4861 v1.1: LEARN the hashes the scroll just confirmed present. Without
+            // this append, a session indexed BEFORE the ledger existed is found and
+            // skipped by the scroll at every pass but never re-upserted, so its full
+            // scroll repeats indefinitely (ai-01 review, 22/11). Same fail-safe
+            // contract as the L1794 append: these hashes were confirmed in Qdrant
+            // FOR THIS task_id, and a failed append only means a re-scroll next pass.
+            await appendIndexedHashes(taskId, [...existingHashes]);
             for (const sc of entries) {
                 if (ledger.has(sc.contentHash) || existingHashes.has(sc.contentHash)) skipped++;
                 else kept.push(sc);
