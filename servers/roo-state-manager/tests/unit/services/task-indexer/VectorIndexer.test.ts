@@ -1,4 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { indexTask, safeQdrantUpsert, QdrantRateLimiter, qdrantRateLimiter, cleanupOldVectors, resetCircuitBreakerForTest } from '../../../../src/services/task-indexer/VectorIndexer.js';
 import { getQdrantClient } from '../../../../src/services/qdrant.js';
 import getOpenAIClient from '../../../../src/services/openai.js';
@@ -31,8 +34,12 @@ vi.mock('../../../../src/services/task-indexer/EmbeddingValidator.js', () => ({
 describe('VectorIndexer', () => {
   let mockQdrantClient: any;
   let mockOpenAIClient: any;
+  let ledgerDir: string;
+  const originalLedgerDir = process.env.INDEX_HASH_LEDGER_DIR;
 
   beforeEach(() => {
+    ledgerDir = mkdtempSync(join(tmpdir(), 'rsm-legacy-ledger-4861-'));
+    process.env.INDEX_HASH_LEDGER_DIR = ledgerDir;
     // #2165: The circuit breaker is module-level state shared across this file's
     // tests. `safeQdrantUpsert` failure tests trip it OPEN; without an explicit
     // reset it leaks into the indexTask tests (which then short-circuit before
@@ -44,7 +51,7 @@ describe('VectorIndexer', () => {
       createCollection: vi.fn(),
       upsert: vi.fn(),
       count: vi.fn(),
-      scroll: vi.fn(),
+      scroll: vi.fn().mockResolvedValue({ points: [], next_page_offset: null }),
       delete: vi.fn(),
       // #2165: preflightDedupByChunkId() calls qdrant.retrieve(). Without it the
       // mock throws "retrieve is not a function", which the new code correctly
@@ -63,6 +70,12 @@ describe('VectorIndexer', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    if (originalLedgerDir === undefined) {
+      delete process.env.INDEX_HASH_LEDGER_DIR;
+    } else {
+      process.env.INDEX_HASH_LEDGER_DIR = originalLedgerDir;
+    }
+    rmSync(ledgerDir, { recursive: true, force: true });
   });
 
   describe('QdrantRateLimiter', () => {
