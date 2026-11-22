@@ -289,7 +289,7 @@ describe('handleCodebaseSearch — #4863 response contract', () => {
 		expect(parsed.writer_warning).toContain('liveness is NOT freshness');
 	});
 
-	it('an undecidable sentinel read reports undecidable — never writer-less, never a warning', async () => {
+	it('an undecidable sentinel read with >1 variants reports undecidable — not writer-less, but freshness-NOT-verified warning', async () => {
 		const { workspace, canonical } = setupTwoVariantSearch();
 		mockQdrant.retrieve.mockRejectedValue(new Error('fetch failed'));
 		const result = await handleCodebaseSearch({ query: 'foo function', workspace });
@@ -297,7 +297,12 @@ describe('handleCodebaseSearch — #4863 response contract', () => {
 		expect(parsed.status).toBe('success');
 		// Every probe failed → no preference → the larger legacy twin wins on points.
 		expect(parsed.collection_writer).toEqual({ status: 'undecidable' });
-		expect(parsed.writer_warning).toBeUndefined();
+		// #4863 closure criterion: undecidable + several variants must flag freshness as
+		// NOT verified — worded as unverified, NEVER writer-less (the writer may exist).
+		expect(parsed.writer_warning).toBeDefined();
+		expect(parsed.writer_warning).toContain('could not be read');
+		expect(parsed.writer_warning).toContain('freshness NOT verified');
+		expect(parsed.writer_warning).not.toContain('WRITER-LESS');
 		expect(parsed.collection).not.toBe(canonical);
 	});
 

@@ -2056,6 +2056,12 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			} : {}),
 			...(servedWriter === null ? {
 				writer_warning: `collection ${collectionName} is WRITER-LESS: it was read and holds no RSM ws-writer sentinel — no refresh loop claims it, so this corpus is frozen (typically a legacy Zoo-era index). Its files may still exist on disk: liveness is NOT freshness. Results can lag the repository. When the writer seat indexes this same repository under another checkout path, form that path in the query workspace to reach the refreshed collection, or re-index from this machine.`,
+			} : writerProbed && !servedWriter && existingVariants.length > 1 ? {
+				// #4863 closure criterion: 'undecidable' (sentinel probe failed on the served
+				// collection) with several variants must ALSO carry a human-readable warning —
+				// the larger twin won on points but its freshness was never verified. Worded
+				// as UNVERIFIED, never writer-less: the writer may well exist, we cannot tell.
+				writer_warning: `writer of ${collectionName} could not be read (sentinel probe failed); several variants exist and the larger was served — it may be a stale twin; freshness NOT verified`,
 			} : {}),
 			// #4352: several spellings of this workspace own a collection; the largest was served.
 			...(existingVariants.length > 1 ? { collection_variants: existingVariants } : {}),
