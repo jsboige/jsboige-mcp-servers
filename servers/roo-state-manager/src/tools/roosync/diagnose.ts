@@ -17,16 +17,9 @@ import { tryGetSharedStatePath } from '../../utils/shared-state-path.js';
 import { getServerCapabilities } from '../../utils/server-capabilities.js';
 import { getLocalIdentityDiagnostic } from '../../utils/message-helpers.js';
 
-// Lazy imports — only loaded when needed by debug/reset actions.
-// Static import was causing hangs on action="test" when RooSyncService init blocked (#1910).
-type LazyRooSyncModule = typeof import('../../services/lazy-roosync.js');
-let _lazyModule: LazyRooSyncModule | null = null;
-async function getLazyModule(): Promise<LazyRooSyncModule> {
-  if (!_lazyModule) {
-    _lazyModule = await import('../../services/lazy-roosync.js');
-  }
-  return _lazyModule;
-}
+import { getDiagnoseVibeSyncPort } from '../../services/diagnose-registry.js';
+
+// V-side adapters remain lazy (#1910), behind the core diagnostic contract.
 
 // ====================================================================
 // SCHEMAS DE VALIDATION
@@ -136,7 +129,7 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
 
       // #1320: Lifecycle state machine (re-câblé depuis standalone tool, #512 arbitrage A)
       case 'lifecycle': {
-        const m = await import('./lifecycle.js');
+        const m = await getDiagnoseVibeSyncPort();
         const lcResult = await m.reportLifecycle({
           state: args.state!,
           machineId: args.machineId,
@@ -155,7 +148,7 @@ export async function roosyncDiagnose(args: DiagnoseArgs): Promise<DiagnoseResul
 
       // #1320: Recovery-Before-Escalation decision endpoint (mirrors lifecycle wiring)
       case 'recovery': {
-        const m = await import('./recovery.js');
+        const m = await getDiagnoseVibeSyncPort();
         const rResult = await m.reportRecovery({
           errorMessage: args.errorMessage,
           outcomeAction: args.outcomeAction,
@@ -569,7 +562,7 @@ async function getInstanceWithRetry(
   maxRetries = 5,
   baseDelayMs = 100
 ) {
-  const { RooSyncService } = await getLazyModule();
+  const { RooSyncService } = await (await getDiagnoseVibeSyncPort()).loadRooSyncModule();
   let lastError: unknown;
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     try {
@@ -597,7 +590,7 @@ async function handleDebugAction(
   args: DiagnoseArgs,
   timestamp: string
 ): Promise<DiagnoseResult> {
-  const { RooSyncService } = await getLazyModule();
+  const { RooSyncService } = await (await getDiagnoseVibeSyncPort()).loadRooSyncModule();
   await RooSyncService.resetInstance();
 
   const service = await getInstanceWithRetry({ enabled: false });
@@ -639,7 +632,7 @@ async function handleResetAction(
     };
   }
 
-  const { RooSyncService, getRooSyncService } = await getLazyModule();
+  const { RooSyncService, getRooSyncService } = await (await getDiagnoseVibeSyncPort()).loadRooSyncModule();
   await RooSyncService.resetInstance();
 
   if (args.clearCache) {

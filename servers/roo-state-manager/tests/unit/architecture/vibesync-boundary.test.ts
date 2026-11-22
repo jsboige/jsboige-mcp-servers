@@ -22,6 +22,8 @@ const CORE_MODULE_GROUPS: Record<string, string> = {
   'int-validator': 'src/utils/int-validator.ts',
   // Domain-neutral error contracts.
   errors: 'src/types/errors.ts',
+  'diagnose-contracts': 'src/types/diagnose-contracts.ts',
+  'diagnose-registry': 'src/services/diagnose-registry.ts',
   // PostgreSQL primitives shared by both future servers.
   'store-types': 'src/services/unified-store/types.ts',
   'pg-flags': 'src/services/unified-store/pg-flags.ts',
