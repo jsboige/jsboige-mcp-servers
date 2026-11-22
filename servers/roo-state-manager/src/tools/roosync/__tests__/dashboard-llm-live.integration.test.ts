@@ -125,7 +125,7 @@ EXIGENCES :
 - Regrouper par THÈMES, pas par message individuel
 - Préserver les métriques chiffrées exactes (scores, taux, nombres)
 - Préserver les dates des événements importants
-- Maximum 25 lignes. Pas d'emojis. Pas de prose, que du factuel.
+- Pas d'emojis. Pas de prose, que du factuel.
 - Le résumé DOIT faire moins de 5 Ko. Être CONCIS mais COMPLET.
 - Ne JAMAIS inventer d'informations absentes des messages
 

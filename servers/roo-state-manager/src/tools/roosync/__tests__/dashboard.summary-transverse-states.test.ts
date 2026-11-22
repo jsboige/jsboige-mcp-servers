@@ -214,13 +214,20 @@ describe('#4434 G7a-1 — summary leg keeps cross-cutting standing states', { ti
     expect(req.messages.length).toBeGreaterThanOrEqual(2);
 
     // (a) The system prompt imposes the contract — every G6a class is named,
-    // the dedicated section exists, the empty form is defined, and the line
-    // budget grew to fit it.
+    // the dedicated section exists, the empty form is defined. G7a-4 (c.7071211204)
+    // removed the line ceiling: the model never applied it (G7a-2 measured 12/12
+    // violations) and the 5 KB re-condenser + the G7a-3 section contract bound the
+    // size in code — a never-applied instruction leaves the prompt (No Pendulum).
+    // Mutant: re-adding « Maximum NN lignes » must turn this suite red.
     const system = req.messages[0].content as string;
     expect(system).toContain("ZÉRO perte d'ÉTATS TRANSVERSES");
     expect(system).toContain('### États transverses');
     expect(system).toContain('« - aucun »');
-    expect(system).toContain('Maximum 25 lignes');
+    expect(system).not.toMatch(/Maximum \d+ lignes/);
+    expect(system).toContain('moins de 5 Ko');
+    for (const section of ['### Thèmes principaux', '### Actions et résultats', '### Décisions et métriques', '### États transverses']) {
+      expect(system).toContain(section);
+    }
     for (const cls of ['fenêtre UAC', 'registre', 'exit 1', 'risque vivant', 'pause datée', 'handoff', 'DENY', 'timeouts']) {
       expect(system).toContain(cls);
     }
