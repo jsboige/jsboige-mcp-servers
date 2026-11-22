@@ -2,8 +2,8 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
 # Copied verbatim from jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_integrate.py
-# Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
-# re-copy, do not diverge silently.
+# Source of truth is THIS tree since the 22/11 cutover (#4781): fix bugs here. The
+# jsboige/vllm copy is frozen at the SHA above: never re-copy it over this tree.
 # -----------------------------------------------------------------------------
 """nb-coder repo integration — the CI guards a NEW port notebook trips, fixed
 deterministically before the PR is pushed (jsboige/vllm, 21/11).

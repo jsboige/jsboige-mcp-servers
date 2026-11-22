@@ -1,8 +1,8 @@
 <!-- provenance (roo-extensions #4781 harness mutualisation)
      This file is authored here (harness index), not a copy.
      The copied modules below are tracked against jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
-     Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
-     re-copy, do not diverge silently. -->
+     Source of truth is THIS tree since the 22/11 cutover (#4781): fix bugs here. The
+     jsboige/vllm copy is frozen at the SHA above: never re-copy it over this tree. -->
 
 # Harness — nb_coder + nb_audit
 
@@ -13,6 +13,14 @@ approach the model window, and they keep the engine work bounded and observable.
 Moved here from `jsboige/vllm` under roo-extensions **#4781** (user arbitration 2026-11-16:
 "le harnais qui étend les capacités de sk-agent y a toute sa place"). The copy is verbatim;
 the only added lines are the provenance headers.
+
+**Cutover (2026-11-22): this tree is the single codebase.** The last re-copy pinned
+jsboige/vllm @ `7a09e1ca` (byte-proof 66/66 modulo header). From then on harness fixes land
+here, by PR on this repo, and every seat runs from here. The vllm copy
+(`myia_vllm/scripts/adoption/nb_coder` and `nb_audit`) is frozen and gets no new commits.
+It is retired to a pointer once its last runner has switched. No change is mirrored back
+to vllm, and no re-copy from vllm overwrites this tree. User, 22/11: three private copies
+of one harness was the mistake this cutover ends.
 
 ## Layout
 
