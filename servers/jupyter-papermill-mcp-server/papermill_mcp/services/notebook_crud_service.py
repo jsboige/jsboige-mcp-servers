@@ -11,6 +11,8 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union
 
+import nbformat
+
 from ..utils.file_utils import FileUtils
 
 logger = logging.getLogger(__name__)
@@ -220,13 +222,21 @@ class NotebookCRUDService:
                         if "execution_count" in cell_data:
                             cell.execution_count = cell_data["execution_count"]
                         if "outputs" in cell_data:
-                            cell.outputs = cell_data["outputs"]
+                            # JSON-RPC delivers plain dicts; the v4 writer reads
+                            # output.output_type as an attribute (rwbase.split_lines).
+                            cell.outputs = [
+                                nbformat.from_dict(o) for o in cell_data["outputs"]
+                            ]
                     elif cell_type == "markdown":
                         cell = new_markdown_cell(source=source, metadata=metadata)
                     elif cell_type == "raw":
                         cell = new_raw_cell(source=source, metadata=metadata)
                     else:
                         raise ValueError(f"Unknown cell type: {cell_type}")
+                    if cell_type in ("markdown", "raw") and "attachments" in cell_data:
+                        cell["attachments"] = nbformat.from_dict(
+                            cell_data["attachments"]
+                        )
 
                     if "id" in cell_data:
                         cell["id"] = cell_data["id"]
