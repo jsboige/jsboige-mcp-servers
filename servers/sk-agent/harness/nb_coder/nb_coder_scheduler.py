@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 7416ac16c91e150aae5a75dd251d0c1a4c2f5c2c
+# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_scheduler.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -44,6 +44,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -155,6 +156,10 @@ CONTENT_FAILURE_PREFIXES = (
     # lane took the notebook while we built it). The engine served the whole run, so it
     # proves a served run and never blocks the ramp; the grain itself is not done.
     "late-claim-refused",
+    # 22/11 (CoursIA#27805 -> main red): the source twin changed STRUCTURE or CODE on
+    # origin/main while the port was built. The engine served the whole run; the port is
+    # stale, so stage 5 refuses the push and a retry re-ports from the new source.
+    "source-drifted",
 )
 
 
@@ -182,6 +187,14 @@ def failure_class(verdict: str | None) -> str:
 
 FAILURE_COUNTERS = {"content": "content_failed", "admission": "admission_failed",
                     "run": "failed"}
+
+# A verifier that CRASHED (empty model response, REST bucket out mid-run) judged nothing:
+# the build it was handed is still on disk with its trace. Measured 22/11 00:22Z on
+# CoursIA#27885: 46 min of engine time (plan, build, repair, gates all passed) were thrown
+# away because the critic's call returned an empty response, and nothing re-offered the
+# grain. The driver's --verify-from re-gates and re-verifies that build with zero coder
+# turn; the scheduler now asks for it once, from the grain's own trace.
+VERIFY_RECOVERY_PREFIX = "verify-error"
 
 
 
@@ -360,12 +373,29 @@ def load_queue(path: Path) -> tuple[list[dict], str]:
     return items, digest
 
 
+REPLACE_ATTEMPTS = 40  # ~18 s of patience in total, far above any reader's json.load
+
+
 def atomic_write_json(path: Path, payload: dict) -> None:
+    """Write `payload` to `path` through a temp file and an atomic rename.
+
+    On Windows a reader that holds the target open (the feeder's poll, an
+    operator's `json.load`) makes `os.replace` fail with WinError 5 for the
+    duration of its read: Python opens files without FILE_SHARE_DELETE. The
+    scheduler died on exactly that on 22/11 04:4xZ, mid-run, with five drivers
+    in flight. The rename is retried with a short backoff before giving up."""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1) + "\n",
                    encoding="utf-8")
-    os.replace(tmp, path)
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(min(0.05 * (attempt + 1), 0.5))
 
 
 def new_ramp(steps: list[int], now: float, fixed: bool = False) -> dict:
@@ -418,13 +448,73 @@ def git_run(argv: list[str], timeout: float = 300) -> tuple[int, str]:
     return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
+# A grain that fails after posting its [CLAIMED] leaves the issue locked: nothing released
+# it, so other lanes' auto-picks were refused for the guard's 48 h stale threshold. That
+# is the hazard --claim-late was adopted for (CoursIA rule 21/11), and it still holds
+# under --claim-late when the late claim lands and the PR then fails to open. The
+# scheduler sees every end, a killed driver included, so the release lives here. It goes
+# through the authoritative guard, which posts [DELIVERED] instead of [RELEASED] when an
+# open PR of the lane references the issue.
+CLAIM_REPO_SLUG = "jsboige/CoursIA"
+# Line-anchored, like the guard's reducer: a marker quoted mid-sentence is not a marker.
+CLAIM_MARK_RE = re.compile(r"(?m)^[ \t>*_]*\[(CLAIMED|RELEASED|DELIVERED)\] lane (\S+)")
+CLAIM_READ_TIMEOUT_S = 120
+CLAIM_RELEASE_TIMEOUT_S = 240
+
+
+def last_claim_marker(bodies: list[str]) -> tuple[str, str] | None:
+    """(kind, lane) of the last claim marker across the issue's comments, in order."""
+    last = None
+    for body in bodies:
+        for m in CLAIM_MARK_RE.finditer(body or ""):
+            last = (m.group(1), m.group(2))
+    return last
+
+
+class GuardClaims:
+    """The two GitHub legs of a claim release. Injectable as `claims` in offline tests."""
+
+    def __init__(self, repo: str):
+        self.repo = Path(repo)
+
+    def last_marker(self, issue: int) -> tuple[str, str] | None:
+        """Raises when GitHub does not answer: a release is never decided blind."""
+        p = subprocess.run(["gh", "api", "--paginate",
+                            f"repos/{CLAIM_REPO_SLUG}/issues/{issue}/comments?per_page=100",
+                            "--jq", ".[].body | @json"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=CLAIM_READ_TIMEOUT_S)
+        if p.returncode != 0:
+            raise RuntimeError(f"gh rc={p.returncode}: {(p.stderr or '').strip()[:160]}")
+        return last_claim_marker([json.loads(line) for line in p.stdout.splitlines()
+                                  if line.strip()])
+
+    def release(self, issue: int, lane: str, notebook: str, note: str) -> tuple[int, str]:
+        script = self.repo / "scripts" / "check_lane_claim.py"
+        if not script.is_file():
+            return -1, f"{script} absent"
+        # cwd = the target repo, as the driver runs the guard (_run_claim_guard).
+        try:
+            p = subprocess.run([sys.executable, str(script), str(issue), "--lane", lane,
+                                "--paths", notebook, "--release", note],
+                               cwd=self.repo, capture_output=True, text=True,
+                               encoding="utf-8", errors="replace",
+                               timeout=CLAIM_RELEASE_TIMEOUT_S)
+        except Exception as exc:
+            return -1, str(exc)
+        return p.returncode, (p.stdout or "") + (p.stderr or "")
+
+
 class Scheduler:
-    """Pure orchestration. spawn/gate/sleep/clock/git are injectable for offline tests."""
+    """Pure orchestration. spawn/gate/sleep/clock/git/claims are injectable for offline tests."""
 
     def __init__(self, args, spawn=None, gate=None, sleep=None, clock=None, probe=None,
-                 git=None):
+                 git=None, claims=None):
         self.args = args
         self.git = git or git_run
+        # main() wires GuardClaims; left None, nothing is released (offline tests never
+        # reach GitHub through a failed claimed grain).
+        self.claims = claims
         self.process_probe = probe or process_identity
         self.state_dir = Path(args.state_dir)
         self.state_path = self.state_dir / "state.json"
@@ -486,6 +576,8 @@ class Scheduler:
                 # an explicit re-add after a withdrawal is an operator decision
                 g.update({"status": "pending", "not_before": None,
                           "requeued": utcnow(), "retry": item.get("retry", 0)})
+                g.pop("resume_from", None)
+                g.pop("verify_recoveries", None)
                 self._event("requeued", key=key)
             elif item.get("retry", 0) > g.get("retry", 0):
                 self._apply_retry(key, g, item["retry"])
@@ -517,6 +609,10 @@ class Scheduler:
                     previous_verdict=g.get("last_verdict"))
         g.update({"status": "pending", "not_before": None, "attempts": 0,
                   "requeued": utcnow()})
+        # A retry is a decision on a FAILED grain, usually after its spec or the harness
+        # changed: it builds afresh, never from the trace of the run it replaces.
+        g.pop("resume_from", None)
+        g.pop("verify_recoveries", None)
 
     def _legacy_driver_log(self, key: str, pid) -> str | None:
         """driver.log of a grain launched before `driver_log` was recorded in the state.
@@ -712,16 +808,29 @@ class Scheduler:
         create_time = ident[0] if ident is not None else 0.0
         return AdoptedDriver(pid, create_time, str(log), offset, self.process_probe)
 
-    def driver_command(self, item: dict) -> list[str]:
+    def run_trace(self, item: dict) -> Path | None:
+        """The driver's verdict record for this grain (`issue-<N>.json` in its run dir),
+        when the run left one: what --verify-from resumes from."""
+        try:
+            p = (Path(self.args.out_root) / f"issue-{grain_slug(item)}"
+                 / f"issue-{item['issue']}.json")
+        except Exception:
+            return None
+        return p if p.is_file() else None
+
+    def driver_command(self, item: dict, resume_from: str | None = None) -> list[str]:
         a = self.args
-        from_spec = bool(item.get("from_spec", False))
+        # --verify-from reads the creation mode from the trace and the driver refuses
+        # --from-spec / --source-nb / --meta-from next to it.
+        from_spec = bool(item.get("from_spec", False)) and not resume_from
         out_dir = Path(a.out_root) / f"issue-{grain_slug(item)}"
         worktree = Path(a.worktree_root) / f"wt-{grain_slug(item)}"
         cmd = [sys.executable, str(a.driver),
                "--issue", str(item["issue"]), "--notebook", item["notebook"],
                "--repo", a.repo, "--out-dir", str(out_dir),
                "--worktree", str(worktree), "--gate-mode", a.gate_mode]
-        source_nb = None if from_spec else item.get("source_nb", a.source_nb)
+        source_nb = (None if (from_spec or resume_from)
+                     else item.get("source_nb", a.source_nb))
         opt = [
             ("--lane", a.lane), ("--agent", item.get("agent", a.agent)),
             # round 2: forward the RESOLVED gate path so a custom --gate / $NBCODER_GATE
@@ -765,6 +874,8 @@ class Scheduler:
             cmd.append("--fresh-worktree")
         if item.get("allow_foreign_origin", False):
             cmd.append("--allow-foreign-origin")
+        if resume_from:
+            cmd += ["--verify-from", str(resume_from)]
         return cmd
 
     # ---------------------------------------------------------------- ramp
@@ -915,6 +1026,22 @@ class Scheduler:
                 ramp["done"] += 1
                 self._event("completed", key=key, rc=rc, verdict=verdict,
                             elapsed_s=elapsed)
+            elif (verdict.startswith(VERIFY_RECOVERY_PREFIX)
+                  and g.get("verify_recoveries", 0) < getattr(self.args,
+                                                              "verify_recoveries", 0)
+                  and (trace := self.run_trace(entry.get("item") or {})) is not None):
+                # Deferred, not failed: the tree stays (the driver reuses it or re-creates
+                # it at the trace's head) and the ramp is not blocked by a crash that
+                # judged nothing. A second verify-error on the same grain fails as before.
+                g["status"] = "deferred"
+                g["verify_recoveries"] = g.get("verify_recoveries", 0) + 1
+                g["resume_from"] = str(trace)
+                wait = self.args.backoff_s
+                g["not_before"] = self.clock() + wait
+                ramp["deferred"] += 1
+                self._event("verify-recovery", key=key, rc=rc, verdict=verdict,
+                            trace=str(trace), recovery=g["verify_recoveries"],
+                            retry_in_s=wait)
             else:
                 g["status"] = "failed"
                 g["ramp_failed_ts"] = now
@@ -923,9 +1050,37 @@ class Scheduler:
                 ramp[counter] = ramp.get(counter, 0) + 1
                 self._event("failed", key=key, rc=rc, verdict=verdict,
                             elapsed_s=elapsed, failure_class=cls)
+                self._release_claim(key, entry.get("item"), verdict)
             if g["status"] in ("done", "failed"):
                 self._release_worktree(key, entry.get("item"))
             del self.active[key]
+
+    def _release_claim(self, key: str, item: dict | None, verdict: str) -> None:
+        """Release our [CLAIMED] on a failed grain's issue, when it is the last marker there.
+
+        Never released: a foreign holder (late-claim refusals), our own [DELIVERED] or
+        [RELEASED], an issue without markers, an issue another active grain of ours still
+        builds (lot issues carry several notebooks), or an unreadable thread."""
+        a = self.args
+        if self.claims is None or not item or not a.lane \
+                or not item.get("claim", getattr(a, "claim", False)):
+            return
+        issue = int(item["issue"])
+        if any(k != key and int((e.get("item") or {}).get("issue", -1)) == issue
+               for k, e in self.active.items()):
+            return self._event("claim-release-skipped", key=key, issue=issue,
+                               reason="sibling-grain-active")
+        try:
+            last = self.claims.last_marker(issue)
+        except Exception as exc:
+            return self._event("claim-release-skipped", key=key, issue=issue,
+                               reason="marker-unread", detail=str(exc)[:200])
+        if last != ("CLAIMED", a.lane):
+            return
+        note = f"nb_coder: grain ended without a PR ({(verdict or 'no verdict')[:80]})"
+        rc, out = self.claims.release(issue, a.lane, item["notebook"], note)
+        self._event("claim-released" if rc == 0 else "claim-release-failed", key=key,
+                    issue=issue, rc=rc, detail=(out or "").strip()[-300:])
 
     def _release_worktree(self, key: str, item: dict | None) -> None:
         """Remove a terminal grain's worktree once nothing in it is unique.
@@ -1075,7 +1230,8 @@ class Scheduler:
                             held = "launch-gap"
                             held_extra["next_launch_in_s"] = round(wait, 1)
                             break
-                    cmd = self.driver_command(item)
+                    cmd = self.driver_command(
+                        item, resume_from=self.state["grains"][key].get("resume_from"))
                     self.state["last_launch_ts"] = self.clock()
                     if self.args.dry_run:
                         self._event("dry-launch", key=key, cmd=cmd)
@@ -1220,6 +1376,10 @@ def parse_args(argv=None):
     ap.add_argument("--backoff-s", type=float, default=60.0)
     ap.add_argument("--backoff-max-s", type=float, default=900.0)
     ap.add_argument("--max-attempts", type=int, default=6)
+    ap.add_argument("--verify-recoveries", type=int, default=1,
+                    help="times a grain whose verifier crashed (verdict verify-error) is "
+                         "relaunched with --verify-from on its own trace, reusing the "
+                         "build already paid for (0 = fail it, the old behavior)")
     ap.add_argument("--max-launch", type=int, default=0,
                     help="cap launches in THIS scheduler run (0 = unlimited)")
     ap.add_argument("--launch-gap-s", type=float, default=0.0,
@@ -1294,7 +1454,7 @@ def main(argv=None) -> int:
     except QueueError as exc:
         print(json.dumps({"verdict": "queue-invalid", "error": str(exc)}))
         return 2
-    sched = Scheduler(args)
+    sched = Scheduler(args, claims=None if args.dry_run else GuardClaims(args.repo))
     sched.merge_queue(items, digest)
     try:
         return sched.run()

@@ -1,5 +1,5 @@
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 7416ac16c91e150aae5a75dd251d0c1a4c2f5c2c
+# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
 # original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_repo_guards.py
 # Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
 # re-copy, do not diverge silently.
@@ -113,6 +113,76 @@ def test_dead_links_flags_only_absent_relative_targets(tmp_path):
     hits = nbcd.dead_link_hits(cells, repo, rel)
     assert [(h["cell"], h["target"]) for h in hits] == [
         (0, "Sudoku-06-AIMA-CSP-Rust.ipynb"), (2, "Sudoku-08-HumanStrategies-Rust.ipynb")]
+
+
+def _lean19(tmp_path):
+    """The CoursIA#27932 layout: four Lean-19 Python twins, the Rust port being built."""
+    repo = tmp_path / "repo"
+    folder = repo / "MyIA.AI.Notebooks" / "SymbolicAI" / "Lean"
+    folder.mkdir(parents=True)
+    for n in ("Lean-19-Detection-MIMO-Index-Python", "Lean-19b-Borne-Chernoff-Python",
+              "Lean-19c-Borne-Bernstein-Python", "Lean-19d-Inference-Bayesian-Beta-Binomial-Python"):
+        (folder / f"{n}.ipynb").write_text("{}", encoding="utf-8")
+    (folder / "README.md").write_text("x", encoding="utf-8")
+    src = _nb(tmp_path / "src.ipynb", [_md(
+        "**Navigation** : [<< Lean-19 Hoeffding](Lean-19-Detection-MIMO-Index-Python.ipynb) · "
+        "[Lean-19b Chernoff](Lean-19b-Borne-Chernoff-Python.ipynb) · "
+        "[Lean-19d Bayésien](Lean-19d-Inference-Bayesian-Beta-Binomial-Python.ipynb) · "
+        "[Sommaire série](README.md)")])
+    return repo, "MyIA.AI.Notebooks/SymbolicAI/Lean/Lean-19c-Borne-Bernstein-Rust.ipynb", src
+
+
+def test_resolve_dead_links_rewrites_onto_the_twins_existing_target(tmp_path):
+    """22/11 CoursIA#27932: labels changed, file names rebuilt from them — both dead links
+    land on the one twin target sharing their series id; live links stay byte-identical."""
+    repo, rel, src = _lean19(tmp_path)
+    built = _nb(tmp_path / "built.ipynb", [
+        _md("**Navigation** : [Index](README.md) · [Lean-19](Lean-19-Borne-Hoeffding-Python.ipynb) · "
+            "[Lean-19b](Lean-19b-Borne-Chernoff-Python.ipynb) · "
+            "[Python](Lean-19c-Borne-Bernstein-Python.ipynb) · "
+            "[Lean-19d](Lean-19d-Borne-Bennett-Python.ipynb)\nsuite"),
+        _code("// [faux](absent.ipynb) dans du code : non touché")])
+    out = nbcd.resolve_dead_links(built, src, repo, rel)
+    assert out["ok"] and [(f["from"], f["to"]) for f in out["fixed"]] == [
+        ("Lean-19-Borne-Hoeffding-Python.ipynb", "Lean-19-Detection-MIMO-Index-Python.ipynb"),
+        ("Lean-19d-Borne-Bennett-Python.ipynb", "Lean-19d-Inference-Bayesian-Beta-Binomial-Python.ipynb")]
+    cells = json.loads(built.read_text(encoding="utf-8"))["cells"]
+    assert isinstance(cells[0]["source"], list)  # list-of-lines kept (CoursIA convention)
+    assert "".join(cells[0]["source"]) == (
+        "**Navigation** : [Index](README.md) · [Lean-19](Lean-19-Detection-MIMO-Index-Python.ipynb) · "
+        "[Lean-19b](Lean-19b-Borne-Chernoff-Python.ipynb) · "
+        "[Python](Lean-19c-Borne-Bernstein-Python.ipynb) · "
+        "[Lean-19d](Lean-19d-Inference-Bayesian-Beta-Binomial-Python.ipynb)\nsuite")
+    assert cells[1]["source"] == "// [faux](absent.ipynb) dans du code : non touché"
+    assert nbcd.dead_link_hits(cells, repo, rel) == []
+
+
+def test_resolve_dead_links_label_match_wins_and_ambiguity_is_left_to_the_gate(tmp_path):
+    repo, rel, _ = _lean19(tmp_path)
+    folder = repo / "MyIA.AI.Notebooks" / "SymbolicAI" / "Lean"
+    (folder / "Lean-19-Autre-Python.ipynb").write_text("{}", encoding="utf-8")
+    src = _nb(tmp_path / "src2.ipynb", [_md(
+        "[Hoeffding](Lean-19-Detection-MIMO-Index-Python.ipynb) [autre](Lean-19-Autre-Python.ipynb) "
+        "[Bennett](Lean-19d-Inference-Bayesian-Beta-Binomial-Python.ipynb)")])
+    built = _nb(tmp_path / "built2.ipynb", [_md(
+        "[Hoeffding](Lean-19-X-Python.ipynb) [suite](Lean-19-Y-Python.ipynb) "
+        "[Sans série](Introuvable.ipynb) [Rust](Lean-19d-Borne-Bennett-Rust.ipynb)")])
+    out = nbcd.resolve_dead_links(built, src, repo, rel)
+    # same label → its target; two twin targets share `Lean-19` → no guess; no series id → no
+    # guess; `Lean-19d` has ONE twin target (the Python twin), the advice the gate itself gives
+    assert [(f["from"], f["to"]) for f in out["fixed"]] == [
+        ("Lean-19-X-Python.ipynb", "Lean-19-Detection-MIMO-Index-Python.ipynb"),
+        ("Lean-19d-Borne-Bennett-Rust.ipynb", "Lean-19d-Inference-Bayesian-Beta-Binomial-Python.ipynb")]
+    left = nbcd.dead_link_hits(json.loads(built.read_text(encoding="utf-8"))["cells"], repo, rel)
+    assert [h["target"] for h in left] == ["Lean-19-Y-Python.ipynb", "Introuvable.ipynb"]
+
+
+def test_resolve_dead_links_without_dead_links_leaves_the_file_untouched(tmp_path):
+    repo, rel, src = _lean19(tmp_path)
+    built = _nb(tmp_path / "built3.ipynb", [_md("[Python](Lean-19c-Borne-Bernstein-Python.ipynb)")])
+    before = built.read_bytes()
+    assert nbcd.resolve_dead_links(built, src, repo, rel) == {"ok": True, "fixed": []}
+    assert built.read_bytes() == before
 
 
 # ------------------------------------------------------------------ uncommented code
@@ -241,3 +311,102 @@ def test_gate_repair_findings_one_per_entry():
     out = nbcd.gate_repair_findings(rec)
     assert [f["cell"] for f in out] == [0, 2, 4]
     assert "translittère" in out[0]["detail"] and "a-Rust.ipynb" in out[0]["detail"]
+
+
+def test_prose_counts_repair_keeps_a_data_count_and_renames_its_noun():
+    # CoursIA#27929 (22/11): « 10 cellules sur 24 » counted the cases of a matrix; with only
+    # "drop the measure" to go on, three revisions kept the number and the grain failed.
+    rec = {"gates": [{"gate": "prose-counts", "ok": False, "detail": {"measured": True,
+            "cells": [3], "findings": [{"cell": 3, "text": "compteur « 10 cellules » (cellule 3)"}]}}]}
+    fix, = nbcd.gate_repair_findings(rec)
+    assert fix["cell"] == 3 and "10 cellules" in fix["detail"]
+    assert "retire la mesure" in fix["detail"]                 # artifact/duration case kept
+    assert "« 10 cases sur 24 »" in fix["detail"]               # data case: rename the noun
+    p = nbcd.creation_json_prompt([{"idx": 0, "cell_type": "markdown", "role": "t"}], 1,
+                                  src_cells=[_md("# T")])
+    assert "« 10 cases sur 24 »" in p and "DONNÉES du calcul" in p
+
+
+# ------------------------------------------------------------------ prose anchored on outputs
+
+# Fake claims organ: one finding per « NUM ms » in a markdown cell, carrying the cell's
+# text as context (the real organ excerpts the sentence) — enough to pin the delta rule.
+_ANCHOR_FAKE = r'''import json, re, sys
+nb = json.load(open(sys.argv[-1], encoding="utf-8"))
+out = []
+for i, c in enumerate(nb["cells"]):
+    if c["cell_type"] != "markdown":
+        continue
+    for m in re.finditer(r"(\d+,\d+) ms", c["source"]):
+        out.append({"markdown_cell": i, "code_cell": i - 1, "raw": m.group(0),
+                    "normalized": m.group(1).replace(",", "."), "context": c["source"]})
+print(json.dumps([{"notebook": sys.argv[-1], "findings": out}]))
+sys.exit(1 if out else 0)
+'''
+
+
+def _anchor_repo(tmp_path: Path, body: str = _ANCHOR_FAKE) -> Path:
+    repo = tmp_path / "repo"
+    (repo / "scripts").mkdir(parents=True, exist_ok=True)
+    (repo / "scripts" / "check_markdown_claims_output.py").write_text(body, encoding="utf-8")
+    return repo
+
+
+def test_prose_anchor_flags_a_number_new_to_the_port(tmp_path):
+    # CoursIA#27864: the Rust port kept the Python run's timing in its prose
+    repo = _anchor_repo(tmp_path)
+    src = _nb(tmp_path / "src.ipynb", [_code("t()"), _md("De 1,5 ms à 77,1 ms.")])
+    built = _nb(tmp_path / "built.ipynb", [_code("t();"), _md("De 42,7 ms à 77,1 ms.")])
+    g = nbcd.prose_anchor_gate(repo, src, built)
+    assert g["gate"] == "prose-anchor" and g["ok"] is False
+    assert g["detail"]["measured"] is True and g["detail"]["cells"] == [1]
+    texts = [f["text"] for f in g["detail"]["findings"]]
+    # 77,1 ms sits unanchored in the twin's same cell: stock, only the changed number fails
+    assert len(texts) == 1 and "42,7 ms" in texts[0]
+
+
+def test_prose_anchor_excuses_the_twins_own_stock(tmp_path):
+    # same unanchored number in the same markdown cell of the twin: the repo's stock
+    repo = _anchor_repo(tmp_path)
+    cells = [_code("t()"), _md("Environ 3,0 ms par appel.")]
+    src = _nb(tmp_path / "src.ipynb", cells)
+    built = _nb(tmp_path / "built.ipynb", [_code("t();"), _md("Environ 3,0 ms par appel.")])
+    g = nbcd.prose_anchor_gate(repo, src, built)
+    assert g["ok"] is True and g["detail"]["flagged"] == 0
+    assert g["detail"]["source_flagged"] == 1
+
+
+def test_prose_anchor_excuses_the_same_sentence_moved(tmp_path):
+    # the port inserted a cell: same sentence, other index — still inherited stock
+    repo = _anchor_repo(tmp_path)
+    src = _nb(tmp_path / "src.ipynb", [_code("t()"), _md("Environ 3,0 ms par appel.")])
+    built = _nb(tmp_path / "built.ipynb", [_md("# Note"), _code("t();"),
+                                           _md("Environ 3,0 ms par appel.")])
+    assert nbcd.prose_anchor_gate(repo, src, built)["ok"] is True
+
+
+def test_prose_anchor_absent_tool_is_declared_not_failed(tmp_path):
+    src = _nb(tmp_path / "src.ipynb", [_md("1,0 ms")])
+    g = nbcd.prose_anchor_gate(tmp_path / "norepo", src, src)
+    assert g["ok"] is True and g["detail"]["measured"] is False
+
+
+def test_prose_anchor_tool_crash_is_declared(tmp_path):
+    repo = _anchor_repo(tmp_path, "import sys\nsys.exit(2)\n")
+    src = _nb(tmp_path / "src.ipynb", [_md("1,0 ms")])
+    g = nbcd.prose_anchor_gate(repo, src, src)
+    assert g["ok"] is True and g["detail"]["measured"] is False
+
+
+def test_run_gates_adds_prose_anchor_in_create_mode_only(tmp_path):
+    repo = _anchor_repo(tmp_path)
+    src = _nb(tmp_path / "src.ipynb", [_code("t()"), _md("1,5 ms")])
+    built = _nb(tmp_path / "built.ipynb", [_code("t();"), _md("42,7 ms")])
+    on = {g["gate"]: g for g in nbcd.run_gates(src, built, create_mode=True, repo=repo,
+                                               rel="d/n-Rust.ipynb")}
+    assert on["prose-anchor"]["ok"] is False
+    off = {g["gate"] for g in nbcd.run_gates(src, built, create_mode=False, repo=repo,
+                                             rel="d/n-Rust.ipynb")}
+    assert "prose-anchor" not in off
+    rep = nbcd.gate_repair_findings({"gates": [on["prose-anchor"]]})
+    assert rep and "recopié du jumeau" in rep[0]["detail"] and "42,7 ms" in rep[0]["detail"]
