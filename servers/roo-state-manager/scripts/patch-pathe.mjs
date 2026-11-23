@@ -15,18 +15,28 @@
  * Safe to re-run (idempotent). Applied as postinstall hook.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
+// npm workspaces hoist dependencies to the workspace root (#4886): the server
+// no longer owns a node_modules/ of its own. Look next to the package first
+// (standalone install), then at the hoisted root (workspace install).
+const nodeModulesRoots = [
+  join(root, 'node_modules'),
+  join(root, '..', '..', 'node_modules'),
+];
 
 const targets = [
-  join(root, 'node_modules', 'pathe', 'dist', 'shared', 'pathe.M-eThtNZ.mjs'),
-  join(root, 'node_modules', 'pathe', 'dist', 'shared', 'pathe.BSlhyZSM.cjs'),
-  join(root, 'node_modules', '@vitest', 'coverage-v8', 'dist', 'provider.js'),
-];
+  'pathe/dist/shared/pathe.M-eThtNZ.mjs',
+  'pathe/dist/shared/pathe.BSlhyZSM.cjs',
+  '@vitest/coverage-v8/dist/provider.js',
+].map((relative) => {
+  const candidates = nodeModulesRoots.map((base) => join(base, relative));
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+});
 
 const oldPattern = 'function normalizeWindowsPath(input = "") {\n  if (!input) {';
 const newPattern = 'function normalizeWindowsPath(input = "") {\n  if (typeof input !== "string") { input = String(input == null ? "" : input); }\n  if (!input) {';
