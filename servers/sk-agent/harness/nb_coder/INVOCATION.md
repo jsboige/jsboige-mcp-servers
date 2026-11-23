@@ -185,3 +185,22 @@ résolution sibling par défaut, surchargeables — détail dans `harness/README
   `test_nb_coder_entries.py`) pinne le contrat.
 
 Produit par #4832 (mandat user 18/11). Product-owner du filon : CoursIA.
+
+## 6. Témoin fenêtre 262 144 (#4816 critère 3)
+
+`nb_coder_window_replay.py` n'est PAS une voie d'invocation : c'est
+l'instrument de preuve du critère 3 de roo-extensions#4816. Il rejoue la
+morphologie CoursIA#27027 (un tour, des rounds `update_cell` multi-Ko) sur
+la VRAIE machinerie de tour (connecteur SK OpenAI sur HTTP réel, filtre de
+tour réel, condenseur réel) contre un moteur local qui applique le contrat
+de l'incident (262 144 jetons, 400 `context_length_exceeded`).
+
+- `--mode both` : rouge (condensation absente → le tour meurt sur le 400
+  réel, à l'échelle de l'incident ~1,0 M car.) puis vert (contrat
+  condensation des entrées de siège → tour complet, sous fenêtre) ;
+- `--live-probe --base-url … --api-key-env … --model …` : UNE requête
+  volontairement hors-fenêtre contre un moteur réel, pour pincer le
+  contrat modelé contre le vrai (jamais en test).
+
+Le verdict JSON (`replay_report`) est la pièce jointe de l'issue ; les
+assertions vivent dans `test_nb_coder_window_replay.py` (CI).
