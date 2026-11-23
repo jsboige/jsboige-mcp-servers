@@ -13,7 +13,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync } from 'fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, realpathSync, promises as fsPromises } from 'fs';
+import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { ConfigSharingService } from '../ConfigSharingService';
@@ -305,6 +306,94 @@ describe('workspace-template — rollback', () => {
     });
     expect(rb.success).toBe(false);
     expect(rb.errors.some(e => e.includes('workspace-template'))).toBe(true);
+  });
+});
+
+describe('workspace-template — échec d’écriture en milieu de boucle (revue po-2028, 23/11)', () => {
+  it('journalise ce qui est déjà écrit, ne laisse ni fichier tronqué ni .tmp, et reste réparable', async () => {
+    publishWorkspaceTemplatePackage({
+      'workspace-template/a.md': 'A\n',
+      'workspace-template/sub/b.md': 'B\n',
+      'workspace-template/sub/deep/c.md': 'C\n',
+    });
+
+    // Injecte un ENOSPC sur le 2ᵉ fichier (le 1ᵉʳ doit être créé et journalisé).
+    const realWriteFile = fsPromises.writeFile.bind(fsPromises);
+    let tmpWrites = 0;
+    const spy = vi.spyOn(fsPromises, 'writeFile').mockImplementation(((file: any, data: any, opts?: any) => {
+      if (String(file).includes('.roosync-wt-tmp-')) {
+        tmpWrites++;
+        if (tmpWrites === 2) return Promise.reject(new Error('ENOSPC injected'));
+      }
+      return realWriteFile(file, data, opts);
+    }) as any);
+
+    let result: any;
+    try {
+      result = await service.applyConfig({
+        version: 'latest', machineId: 'test-machine',
+        targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: false,
+      });
+    } finally {
+      spy.mockRestore();
+    }
+
+    // Le caller REÇOIT l'état partiel (avant le correctif, workspaceTemplate restait indéfini).
+    expect(result.workspaceTemplate).toBeDefined();
+    expect(result.workspaceTemplate.created).toEqual([join(wsReal, 'a.md')]);
+    expect(result.errors.some((e: string) => e.includes('ENOSPC injected'))).toBe(true);
+
+    // Ce qui est sur disque est COMPLET ; le journal porte l'INTENTION (a + b),
+    // b n'existant pas encore — le rollback ignore les entrées non réalisées.
+    expect(readFileSync(join(workspaceDir, 'a.md'), 'utf-8')).toBe('A\n');
+    expect(existsSync(join(workspaceDir, 'sub', 'b.md'))).toBe(false);
+    const journalPath = result.workspaceTemplate.journalPath;
+    expect(journalPath).toBeTruthy();
+    expect(existsSync(journalPath)).toBe(true);
+    const journal = JSON.parse(readFileSync(journalPath, 'utf-8'));
+    expect(journal.files.sort()).toEqual([join(wsReal, 'a.md'), join(wsReal, 'sub', 'b.md')].sort());
+    expect(journal.fileHashes[join(wsReal, 'a.md')])
+      .toBe(createHash('sha256').update('A\n').digest('hex'));
+    expect(journal.fileHashes[join(wsReal, 'sub', 'b.md')]).toBeTruthy();
+
+    // Aucun fichier temporaire orphelin, à TOUS les niveaux du workspace.
+    const temps: string[] = [];
+    const walk = (d: string) => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const p = join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (e.name.includes('.roosync-wt-tmp-')) temps.push(p);
+      }
+    };
+    walk(workspaceDir);
+    expect(temps).toEqual([]);
+
+    // Un rollback sur cet état partiel ne supprime QUE ce qui existe réellement
+    // (l'entrée b non réalisée est ignorée, jamais une erreur) : dry-run = 1.
+    const rbDry = await service.rollbackWorkspaceTemplateConfig({
+      targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: true,
+    });
+    expect(rbDry.success).toBe(true);
+    expect(rbDry.filesRemoved).toBe(1);
+
+    // Réparable : un nouvel apply complète SANS réécrire a.md, et le journal s'enrichit.
+    const retry = await service.applyConfig({
+      version: 'latest', machineId: 'test-machine',
+      targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: false,
+    });
+    expect(retry.errors).toEqual([]);
+    expect(retry.workspaceTemplate!.created.sort())
+      .toEqual([join(wsReal, 'sub', 'b.md'), join(wsReal, 'sub', 'deep', 'c.md')].sort());
+    expect(retry.workspaceTemplate!.skippedExisting).toEqual(['a.md']);
+
+    // Le rollback retrouve les TROIS fichiers — y compris celui du run échoué.
+    const rb = await service.rollbackWorkspaceTemplateConfig({
+      targets: ['workspace-template'],
+      workspacePath: workspaceDir,
+    });
+    expect(rb.success).toBe(true);
+    expect(rb.filesRemoved).toBe(3);
+    expect(readdirSync(workspaceDir)).toEqual([]);
   });
 });
 

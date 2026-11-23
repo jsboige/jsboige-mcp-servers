@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import { join, dirname, basename, relative, isAbsolute, resolve as resolvePath, sep, parse as parsePath } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { existsSync, mkdirSync, constants as fsConstants } from 'fs';
 import { createHash } from 'crypto';
 import { execFileSync, execSync } from 'child_process';
 import { homedir } from 'os';
@@ -2515,7 +2515,15 @@ export class ConfigSharingService implements IConfigSharingService {
     }
   }
 
-  /** Crée `dir` en pistant les répertoires RÉELLEMENT créés (shallow-first, deepest last). */
+  /**
+   * Crée `dir` en pistant les répertoires RÉELLEMENT créés (shallow-first).
+   *
+   * #3111 (revue po-2028, 23/11) — création NIVEAU PAR NIVEAU, chaque répertoire
+   * étant enregistré DÈS qu'il existe. L'ancienne forme `mkdir({recursive:true})`
+   * puis remplissage du Set ne laissait aucune trace d'un `mkdir` partiellement
+   * réussi : un ENOSPC au milieu de l'arborescence créait des ancêtres orphelins
+   * hors journal, que le create-only rendait ensuite non réparables.
+   */
   private async ensureDirsTracked(dir: string, createdDirsSet: Set<string>): Promise<void> {
     const missing: string[] = [];
     let current = dir;
@@ -2526,9 +2534,16 @@ export class ConfigSharingService implements IConfigSharingService {
       current = parent;
     }
     if (missing.length === 0) return;
-    await fs.mkdir(dir, { recursive: true });
-    // `missing` est deepest-first : on l'inverse pour un ordre shallow-first.
+    // `missing` est deepest-first : on l'inverse pour créer parent avant enfant.
     for (const d of missing.reverse()) {
+      try {
+        await fs.mkdir(d);
+      } catch (mkdirErr) {
+        // Course bénigne : un autre acteur a créé le répertoire entre-temps.
+        // Il n'est alors PAS de notre fait : ne pas l'enregistrer comme créé.
+        if ((mkdirErr as NodeJS.ErrnoException).code === 'EEXIST') continue;
+        throw mkdirErr;
+      }
       createdDirsSet.add(d);
     }
   }
@@ -2548,7 +2563,16 @@ export class ConfigSharingService implements IConfigSharingService {
       fileHashes,
       createdDirs,
     };
-    await fs.writeFile(journalPath, JSON.stringify(payload, null, 2), 'utf-8');
+    // #3111 — écriture atomique du journal aussi : une coupure pendant sa
+    // réécriture ne tronque pas un journal existant (le précédent reste lisible).
+    const tmp = `${journalPath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      await fs.writeFile(tmp, JSON.stringify(payload, null, 2), 'utf-8');
+      await fs.rename(tmp, journalPath);
+    } catch (err) {
+      try { await fs.unlink(tmp); } catch { /* tmp jamais créé / déjà retiré */ }
+      throw err;
+    }
   }
 
   /**
@@ -2598,6 +2622,51 @@ export class ConfigSharingService implements IConfigSharingService {
       f => typeof f.path === 'string' && f.path.startsWith('workspace-template/')
     );
 
+    // #3111 (revue po-2028, 23/11 ; 2ᵉ passe) — journal DURABLE, écrit AVANT
+    // publication : l'INTENTION (chemin + empreinte) est journalisée, PUIS le
+    // fichier est publié atomiquement SANS écrasement. Un kill/ENOSPC à
+    // n'importe quel instant laisse donc un journal ⊇ ce qui est sur disque ;
+    // le rollback ignore les entrées absentes (jamais créées) et ne supprime
+    // jamais rien sans preuve (create-only ne rend plus l'orphelin invisible).
+    const journalPathForWs = simulate ? null : this.workspaceTemplateJournalPath(workspacePath);
+    const journalFiles = new Set<string>();
+    // Lu UNE fois par apply (avant le premier flush), pas à chaque fichier.
+    let journalPrev: { files: string[]; dirs: string[]; hashes: Record<string, string> } | null = null;
+    const flushJournal = async (): Promise<void> => {
+      if (!journalPathForWs) return;
+      // Les ancêtres créés AU-DESSUS du workspace ne sont pas journalisés : la
+      // cohérence fail-closed du rollback exige tout DANS le workspace, et les
+      // laisser vides est inoffensif — c'est ce qui rend un apply sur workspace
+      // neuf (chemin encore inexistant) réellement réparable.
+      const dirsInWorkspace = Array.from(createdDirsSet).filter(d => this.isPathWithin(d, workspacePath));
+      if (journalFiles.size === 0 && dirsInWorkspace.length === 0) return;
+      if (journalPrev === null) {
+        journalPrev = { files: [], dirs: [], hashes: {} };
+        if (existsSync(journalPathForWs)) {
+          try {
+            const prev = await readJSONFileWithoutBOM<{ files?: string[]; createdDirs?: string[]; fileHashes?: Record<string, string> }>(journalPathForWs);
+            journalPrev = { files: prev.files || [], dirs: prev.createdDirs || [], hashes: prev.fileHashes || {} };
+          } catch (mergeErr) {
+            errors.push(`workspace-template: journal existant illisible, réécrit: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`);
+          }
+        }
+      }
+      const unionFiles = Array.from(new Set<string>([...journalPrev.files, ...journalFiles]));
+      const unionDirs = Array.from(new Set<string>([...journalPrev.dirs, ...dirsInWorkspace]));
+      const unionHashes = { ...journalPrev.hashes, ...fileHashes };
+      await this.writeWorkspaceTemplateJournal(journalPathForWs, workspacePath, unionFiles, unionDirs, unionHashes);
+    };
+    /** Solde le journal ; rend false si la durabilité n'est plus garantie. */
+    const safeFlush = async (): Promise<boolean> => {
+      try {
+        await flushJournal();
+        return true;
+      } catch (jErr) {
+        errors.push(`workspace-template: journal non réécrit: ${jErr instanceof Error ? jErr.message : String(jErr)}`);
+        return false;
+      }
+    };
+
     for (const entry of entries) {
       const relRaw = entry.path.slice('workspace-template/'.length);
       const segs = relRaw.split(/[\\/]+/);
@@ -2625,42 +2694,67 @@ export class ConfigSharingService implements IConfigSharingService {
         created.push(dest);
         continue;
       }
-      await this.ensureDirsTracked(dirname(dest), createdDirsSet);
-      const buffer = await fs.readFile(sourcePath);
-      await fs.writeFile(dest, buffer);
-      fileHashes[dest] = createHash('sha256').update(buffer).digest('hex');
-      created.push(dest);
-    }
-
-    // 3. Journal (apply réel uniquement ; jamais en dry-run)
-    let journalPath: string | null = null;
-    if (!simulate) {
-      const jp = this.workspaceTemplateJournalPath(workspacePath);
-      const hadJournal = existsSync(jp);
-      if (created.length > 0) {
-        let prevFiles: string[] = [];
-        let prevDirs: string[] = [];
-        let prevHashes: Record<string, string> = {};
-        if (hadJournal) {
+      try {
+        await this.ensureDirsTracked(dirname(dest), createdDirsSet);
+        const buffer = await fs.readFile(sourcePath);
+        const hash = createHash('sha256').update(buffer).digest('hex');
+        // 1) INTENTION journalisée AVANT toute écriture. Si ce flush échoue, on
+        //    n'écrit RIEN : jamais de fichier sur disque absent du journal.
+        fileHashes[dest] = hash;
+        journalFiles.add(dest);
+        if (!(await safeFlush())) break;
+        // 2) Tmp complet puis publication ATOMIQUE SANS ÉCRASEMENT.
+        const tmp = `${dest}.roosync-wt-tmp-${process.pid}-${Date.now()}`;
+        try {
+          await fs.writeFile(tmp, buffer);
+          // `link` publie SANS remplacer : EEXIST si la destination est apparue.
+          // `rename` REMPLACERAIT silencieusement (MOVEFILE_REPLACE_EXISTING sur
+          // Windows, mesuré par la vérification indépendante du 23/11) — il
+          // violerait le create-only dans la fenêtre de course.
+          let published = false;
           try {
-            const prev = await readJSONFileWithoutBOM<{ files?: string[]; createdDirs?: string[]; fileHashes?: Record<string, string> }>(jp);
-            prevFiles = prev.files || [];
-            prevDirs = prev.createdDirs || [];
-            prevHashes = prev.fileHashes || {};
-          } catch (mergeErr) {
-            errors.push(`workspace-template: journal existant illisible, réécrit: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`);
+            await fs.link(tmp, dest);
+            published = true;
+          } catch (linkErr) {
+            if ((linkErr as NodeJS.ErrnoException).code !== 'EEXIST') {
+              // FS sans liens durs (FAT/exFAT) : repli copyFile EXCL, qui refuse
+              // aussi une destination existante.
+              try {
+                await fs.copyFile(tmp, dest, fsConstants.COPYFILE_EXCL);
+                published = true;
+              } catch (cfErr) {
+                if ((cfErr as NodeJS.ErrnoException).code !== 'EEXIST') throw cfErr;
+              }
+            }
           }
+          if (!published) {
+            // Course create-only : le fichier n'est PAS de notre fait — on le
+            // retire du journal (l'intention n'a jamais été réalisée) et on
+            // l'annonce comme existant.
+            journalFiles.delete(dest);
+            delete fileHashes[dest];
+            await safeFlush();
+            skippedExisting.push(segs.join('/'));
+            continue;
+          }
+        } finally {
+          try { await fs.unlink(tmp); } catch { /* jamais créé / déjà retiré */ }
         }
-        const unionFiles = Array.from(new Set<string>([...prevFiles, ...created]));
-        const unionDirs = Array.from(new Set<string>([...prevDirs, ...Array.from(createdDirsSet)]));
-        const unionHashes = { ...prevHashes, ...fileHashes };
-        await this.writeWorkspaceTemplateJournal(jp, workspacePath, unionFiles, unionDirs, unionHashes);
-        journalPath = jp;
-      } else if (hadJournal) {
-        // No-op (tout existait déjà) : le journal antérieur reste INTACT.
-        journalPath = jp;
+        created.push(dest);
+      } catch (fileErr) {
+        errors.push(`workspace-template: écriture échouée pour ${segs.join('/')}: ${fileErr instanceof Error ? fileErr.message : String(fileErr)}`);
+        // Solde l'intention AVANT de rendre la main (les entrées non réalisées
+        // sont inoffensives : le rollback ignore les fichiers absents). Puis on
+        // s'arrête — un disque plein ne se répare pas en réessayant le suivant.
+        await safeFlush();
+        break;
       }
     }
+
+    // 3. Journal : s'il existe (créations, no-op sur journal antérieur, ou solde
+    // après échec), on le rend au caller ; sinon null.
+    const journalPath: string | null =
+      !simulate && journalPathForWs && existsSync(journalPathForWs) ? journalPathForWs : null;
 
     return { created, skippedExisting, journalPath };
   }
@@ -2718,7 +2812,16 @@ export class ConfigSharingService implements IConfigSharingService {
       return { success: false, filesRemoved: 0, filesSkippedModified: 0, dirsRemoved: 0, journalPath: null, dryRun: simulate };
     }
 
-    const journalPath = this.workspaceTemplateJournalPath(workspacePath);
+    // #3111 (revue po-2028, 23/11) — deux clés possibles : `realpath` (le workspace
+    // existe aujourd'hui) et `resolve` (apply fait quand il n'existait pas encore).
+    // Le repli couvre les différences d'ÉCRITURE (casse, nom court 8.3) ; un alias
+    // STRUCTUREL (jonction/symlink) reste refusé par la cohérence fail-closed
+    // ci-dessous — jamais de suppression sur un workspace déclaré différent.
+    const primaryJournal = this.workspaceTemplateJournalPath(workspacePath);
+    const altJournal = this.workspaceTemplateJournalPath(resolvePath(workspacePathRaw));
+    const journalPath = existsSync(primaryJournal)
+      ? primaryJournal
+      : (altJournal !== primaryJournal && existsSync(altJournal) ? altJournal : primaryJournal);
     if (!existsSync(journalPath)) {
       errors.push(`workspace-template: no journal for ${workspacePathRaw} (nothing to roll back)`);
       return { success: false, filesRemoved: 0, filesSkippedModified: 0, dirsRemoved: 0, journalPath: null, dryRun: simulate };
