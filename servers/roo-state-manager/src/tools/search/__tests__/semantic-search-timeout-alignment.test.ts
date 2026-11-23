@@ -57,9 +57,9 @@ vi.mock('../../../services/unified-store/reader-factory.js', () => ({
 
 import {
 	searchTasksByContentTool,
-	resolveSemanticSearchClientTimeoutMs,
 	_resetEmbeddingCircuitBreaker,
 } from '../search-semantic.tool.js';
+import { resolveSearchClientTimeoutMs } from '../search-client-timeout.js';
 
 const fallback = vi.fn(async () => ({
 	content: [{ type: 'text' as const, text: JSON.stringify({ mode: 'fallback_text_search', results: [] }) }],
@@ -75,24 +75,24 @@ const run = (query: string) => searchTasksByContentTool.handler(
 
 const aborted = () => new Error('This operation was aborted');
 
-describe('#4880 resolveSemanticSearchClientTimeoutMs', () => {
+describe('#4880 resolveSearchClientTimeoutMs', () => {
 	test('default: the 30 s server budget plus a 5 s margin', () => {
-		expect(resolveSemanticSearchClientTimeoutMs({})).toBe(35000);
+		expect(resolveSearchClientTimeoutMs({})).toBe(35000);
 	});
 
 	test('follows QDRANT_SEARCH_TIMEOUT_MS, rounded up to the second the server receives', () => {
-		expect(resolveSemanticSearchClientTimeoutMs({ QDRANT_SEARCH_TIMEOUT_MS: '45000' })).toBe(50000);
-		expect(resolveSemanticSearchClientTimeoutMs({ QDRANT_SEARCH_TIMEOUT_MS: '45500' })).toBe(51000);
+		expect(resolveSearchClientTimeoutMs({ QDRANT_SEARCH_TIMEOUT_MS: '45000' })).toBe(50000);
+		expect(resolveSearchClientTimeoutMs({ QDRANT_SEARCH_TIMEOUT_MS: '45500' })).toBe(51000);
 	});
 
 	test('an unparsable or non-positive budget falls back to the default', () => {
-		expect(resolveSemanticSearchClientTimeoutMs({ QDRANT_SEARCH_TIMEOUT_MS: 'abc' })).toBe(35000);
-		expect(resolveSemanticSearchClientTimeoutMs({ QDRANT_SEARCH_TIMEOUT_MS: '0' })).toBe(35000);
+		expect(resolveSearchClientTimeoutMs({ QDRANT_SEARCH_TIMEOUT_MS: 'abc' })).toBe(35000);
+		expect(resolveSearchClientTimeoutMs({ QDRANT_SEARCH_TIMEOUT_MS: '0' })).toBe(35000);
 	});
 
-	test('kill switch SEMANTIC_SEARCH_TIMEOUT_ALIGN=0 → null (shared client)', () => {
-		expect(resolveSemanticSearchClientTimeoutMs({ SEMANTIC_SEARCH_TIMEOUT_ALIGN: '0' })).toBeNull();
-		expect(resolveSemanticSearchClientTimeoutMs({ SEMANTIC_SEARCH_TIMEOUT_ALIGN: '1' })).toBe(35000);
+	test('kill switch QDRANT_SEARCH_TIMEOUT_ALIGN=0 → null (shared client)', () => {
+		expect(resolveSearchClientTimeoutMs({ QDRANT_SEARCH_TIMEOUT_ALIGN: '0' })).toBeNull();
+		expect(resolveSearchClientTimeoutMs({ QDRANT_SEARCH_TIMEOUT_ALIGN: '1' })).toBe(35000);
 	});
 });
 
@@ -106,13 +106,13 @@ describe('#4880 semantic search: aligned client, no retry on a timed-out attempt
 		mockOpenAIClient.embeddings.create.mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] });
 		mockQdrantClient.retrieve.mockResolvedValue([]);
 		mockQdrantClient.scroll.mockResolvedValue({ points: [] });
-		delete process.env.SEMANTIC_SEARCH_TIMEOUT_ALIGN;
+		delete process.env.QDRANT_SEARCH_TIMEOUT_ALIGN;
 		delete process.env.QDRANT_SEARCH_TIMEOUT_MS;
 	});
 
 	afterEach(() => {
 		vi.unstubAllGlobals();
-		delete process.env.SEMANTIC_SEARCH_TIMEOUT_ALIGN;
+		delete process.env.QDRANT_SEARCH_TIMEOUT_ALIGN;
 	});
 
 	test('the vector query runs on a client whose abort sits above the server budget', async () => {
@@ -141,8 +141,20 @@ describe('#4880 semantic search: aligned client, no retry on a timed-out attempt
 		expect(fallback).not.toHaveBeenCalled();
 	});
 
+	test('a CONNECT-phase timeout spent no search budget: still retried', async () => {
+		const connectTimeout = Object.assign(new TypeError('fetch failed'), {
+			cause: Object.assign(new Error('Connect Timeout Error'), { code: 'UND_ERR_CONNECT_TIMEOUT' }),
+		});
+		mockQdrantClient.query
+			.mockRejectedValueOnce(connectTimeout)
+			.mockResolvedValue({ points: [] });
+		await run('connect timeout');
+		expect(mockQdrantClient.query).toHaveBeenCalledTimes(2);
+		expect(fallback).not.toHaveBeenCalled();
+	});
+
 	test('kill switch =0 restores the legacy path: shared client, timeouts retried twice', async () => {
-		process.env.SEMANTIC_SEARCH_TIMEOUT_ALIGN = '0';
+		process.env.QDRANT_SEARCH_TIMEOUT_ALIGN = '0';
 		mockQdrantClient.query.mockRejectedValue(aborted());
 		await run('legacy path');
 		expect(mockQdrantClient.query).toHaveBeenCalledTimes(3);

@@ -12,6 +12,7 @@ import { getHostIdentifier, splitChunkId } from '../../services/task-indexer/Chu
 import { resetEmbeddingCircuitBreaker as resetWriteCircuitBreaker } from '../../services/task-indexer/VectorIndexer.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
 import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
+import { resolveSearchClientTimeoutMs } from './search-client-timeout.js';
 import { getUnifiedStoreReader } from '../../services/unified-store/reader-factory.js';
 import type { StoredConversation, UnifiedStoreSearchFilters } from '../../services/unified-store/types.js';
 
@@ -94,29 +95,6 @@ export function isClassifiedInfrastructureError(result: CallToolResult): boolean
 const SEMANTIC_RETRY_COUNT = parseInt(process.env.SEMANTIC_RETRY_COUNT || '2');
 const SEMANTIC_RETRY_BACKOFF_MS = parseInt(process.env.SEMANTIC_RETRY_BACKOFF_MS || '2000');
 
-/** #4880: headroom between the server-side search budget and the client abort. */
-const SEMANTIC_SEARCH_CLIENT_MARGIN_MS = 5000;
-
-/**
- * #4880: the vector query hands Qdrant a server-side budget
- * (QDRANT_SEARCH_TIMEOUT_MS, 30 s by default), but the shared client aborted
- * every request at QDRANT_TIMEOUT_MS (15 s) first — so that budget never
- * applied, and each cut attempt was retried twice: 3 x 15 s + 2 s + 4 s of
- * backoff, the 52-57 s measured on ai-01 (23/11) before the text fallback,
- * while the same query shape answered in 8-14.5 s on a warm server.
- *
- * Returns the client abort budget for the vector queries: the server-side
- * budget plus a margin, so Qdrant's own timeout (a 500 that names it) fires
- * before the client gives up. `null` = keep the shared client — the kill
- * switch SEMANTIC_SEARCH_TIMEOUT_ALIGN=0 restores the legacy behaviour
- * (shared client, timeouts retried).
- */
-export function resolveSemanticSearchClientTimeoutMs(env: NodeJS.ProcessEnv = process.env): number | null {
-    if ((env.SEMANTIC_SEARCH_TIMEOUT_ALIGN ?? '').trim() === '0') return null;
-    const raw = parseInt(env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10);
-    const serverBudgetMs = Number.isFinite(raw) && raw > 0 ? raw : 30000;
-    return Math.ceil(serverBudgetMs / 1000) * 1000 + SEMANTIC_SEARCH_CLIENT_MARGIN_MS;
-}
 
 /**
  * #1394 : enrichissement `conversation_stats` d'un groupe de résultats depuis
@@ -474,14 +452,16 @@ function setCachedQueryEmbedding(query: string, embedding: number[]): void {
  * #4880: `retryTimeouts: false` stops retrying an abort/timeout — for a call
  * whose attempt already spent the whole search budget, a retry only multiplies
  * the wait before the fallback (and re-queues the same heavy read on a server
- * that is slow precisely on it).
+ * that is slow precisely on it). A CONNECT-phase timeout spent no search
+ * budget, so it stays retryable.
  */
 async function withRetry<T>(fn: () => Promise<T>, retries: number = SEMANTIC_RETRY_COUNT, backoffMs: number = SEMANTIC_RETRY_BACKOFF_MS, retryTimeouts: boolean = true): Promise<T> {
     try {
         return await fn();
     } catch (error) {
         if (retries <= 0) throw error;
-        const isRetryable = isHttpServerError(error) || (retryTimeouts && isAbortOrTimeout(error)) || isResourceExhausted(error);
+        const timeoutRetryable = retryTimeouts ? isAbortOrTimeout(error) : isConnectPhaseTimeout(error);
+        const isRetryable = isHttpServerError(error) || timeoutRetryable || isResourceExhausted(error);
         if (!isRetryable) throw error;
         console.warn(`[WARN] #249/#2300: Retrying after transient error (${retries} left): ${error instanceof Error ? error.message : String(error)}`);
         await new Promise(resolve => setTimeout(resolve, backoffMs));
@@ -520,6 +500,17 @@ function isAbortOrTimeout(error: unknown): boolean {
     const code = (error as any)?.code || '';
     return msg.includes('abort') || msg.includes('timeout') || msg.includes('ETIMEDOUT') ||
         msg.includes('This operation was aborted') || code === 'UND_ERR_CONNECT_TIMEOUT';
+}
+
+/**
+ * #4880: a timeout raised while CONNECTING (undici code on the error or on its
+ * `cause`, the shape of `fetch failed`) — no request reached the server, so no
+ * search budget was spent and a retry is still worth it.
+ */
+function isConnectPhaseTimeout(error: unknown): boolean {
+    const code = (error as any)?.code;
+    const causeCode = (error as any)?.cause?.code;
+    return code === 'UND_ERR_CONNECT_TIMEOUT' || causeCode === 'UND_ERR_CONNECT_TIMEOUT';
 }
 
 /**
@@ -1867,8 +1858,8 @@ export const searchTasksByContentTool = {
             // #4880: the vector queries (first window + refills) run on a client whose
             // abort sits above `searchTimeoutSec`, so the server-side budget applies,
             // and an attempt that timed out is not retried (it already spent the
-            // budget). Kill switch SEMANTIC_SEARCH_TIMEOUT_ALIGN=0 → shared client.
-            const searchClientTimeoutMs = resolveSemanticSearchClientTimeoutMs();
+            // budget). Kill switch QDRANT_SEARCH_TIMEOUT_ALIGN=0 → shared client.
+            const searchClientTimeoutMs = resolveSearchClientTimeoutMs();
             const searchQdrant = searchClientTimeoutMs === null
                 ? qdrant
                 : getQdrantClient({ timeoutMs: searchClientTimeoutMs });

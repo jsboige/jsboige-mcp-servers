@@ -19,6 +19,9 @@ const { mockQdrant, mockEmbeddingCreate, mockExecFile, state } = vi.hoisted(() =
 		originUrl: 'https://github.com/jsboige/roo-extensions.git' as string | null,
 		// NUL-separated `git ls-files` output; null = not a git workspace (coverage walk off)
 		gitFiles: null as string | null,
+		// #4880: client abort budgets requested, and collections queried on an aligned client
+		requestedTimeouts: [] as Array<number | null>,
+		alignedQueries: [] as string[],
 	};
 	const mockExecFile = vi.fn((_cmd: string, args: string[], _opts: unknown, cb: (err: any, stdout?: string) => void) => {
 		if (args.includes('config') && state.originUrl !== null) {
@@ -59,7 +62,19 @@ vi.mock('fs', async (importOriginal) => {
 });
 
 vi.mock('../../../services/qdrant.js', () => ({
-	getQdrantClient: () => mockQdrant,
+	// #4880: a client asked for an extended abort budget is a distinct object, so
+	// a test can tell which queries ran on it; it shares every other mock.
+	getQdrantClient: (opts?: { timeoutMs?: number }) => {
+		state.requestedTimeouts.push(opts?.timeoutMs ?? null);
+		if (!opts?.timeoutMs) return mockQdrant;
+		return {
+			...mockQdrant,
+			query: (collection: string, params: unknown) => {
+				state.alignedQueries.push(collection);
+				return mockQdrant.query(collection, params);
+			},
+		};
+	},
 }));
 
 vi.mock('../../../services/code-index/embedding-client.js', () => ({
@@ -95,6 +110,9 @@ describe('codebase_search merges the supplement corpus (#4352 a3)', () => {
 		clearSupplementCollectionCache();
 		state.originUrl = 'https://github.com/jsboige/roo-extensions.git';
 		state.gitFiles = null;
+		state.requestedTimeouts = [];
+		state.alignedQueries = [];
+		delete process.env.QDRANT_SEARCH_TIMEOUT_ALIGN;
 		mockEmbeddingCreate.mockResolvedValue({ data: [{ embedding: [0.1, 0.2, 0.3] }] });
 		mockQdrant.getCollection.mockImplementation(async (name: string) => {
 			if (name === MAIN) return { status: 'green', points_count: 500 };
@@ -140,6 +158,34 @@ describe('codebase_search merges the supplement corpus (#4352 a3)', () => {
 		// same exclusions as the main search
 		const keys = supplementCall[1].filter.must_not.map((m: any) => m.key);
 		expect(keys).toContain('type');
+	});
+
+	test('#4880: both vector queries run on a client whose abort sits above the 30 s server budget', async () => {
+		mockQdrant.query.mockImplementation(async (collection: string) => ({
+			points: collection === MAIN ? [point('src/a.ts', 0.9)] : [],
+		}));
+		await handleCodebaseSearch({ query: 'x', workspace: WORKSPACE } as any, [] as any, undefined);
+
+		expect(state.requestedTimeouts).toContain(35000);
+		expect(state.alignedQueries).toEqual([MAIN, SUPPLEMENT]);
+		// the server budget the aligned client now waits for (seconds)
+		expect(mockQdrant.query.mock.calls[0][1].timeout).toBe(30);
+	});
+
+	test('#4880: kill switch QDRANT_SEARCH_TIMEOUT_ALIGN=0 keeps both queries on the shared client', async () => {
+		process.env.QDRANT_SEARCH_TIMEOUT_ALIGN = '0';
+		try {
+			mockQdrant.query.mockImplementation(async (collection: string) => ({
+				points: collection === MAIN ? [point('src/a.ts', 0.9)] : [],
+			}));
+			await handleCodebaseSearch({ query: 'x', workspace: WORKSPACE } as any, [] as any, undefined);
+
+			expect(mockQdrant.query).toHaveBeenCalledTimes(2);
+			expect(state.alignedQueries).toEqual([]);
+			expect(state.requestedTimeouts.every(t => t === null)).toBe(true);
+		} finally {
+			delete process.env.QDRANT_SEARCH_TIMEOUT_ALIGN;
+		}
 	});
 
 	test('an unreachable supplement leaves the search intact and says why (fail-open)', async () => {

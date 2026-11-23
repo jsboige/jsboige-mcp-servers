@@ -121,7 +121,7 @@ describe('qdrant', () => {
 	// ---- #4880: extended abort budget for callers that hand Qdrant a longer one ----
 
 	test('#4880: a timeoutMs above QDRANT_TIMEOUT_MS builds a client with THAT abort budget', () => {
-		getQdrantClient({ timeoutMs: 35000 } as any);
+		(getQdrantClient as any)({ timeoutMs: 35000 });
 		expect(MockedQdrantClient).toHaveBeenCalledTimes(1);
 		expect(MockedQdrantClient).toHaveBeenCalledWith(expect.objectContaining({
 			url: 'https://qdrant.example.com',

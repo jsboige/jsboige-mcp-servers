@@ -10,6 +10,7 @@ import { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { classifySearchError, formatClassifiedError, isNetworkErrorLike, isTimeoutLikeError } from './search-error-classifier.js';
 import { getQdrantClient } from '../../services/qdrant.js';
+import { resolveSearchClientTimeoutMs } from './search-client-timeout.js';
 import { resolveWorkspace } from '../../utils/workspace-resolver.js';
 import { listGitVisiblePaths } from '../../services/code-index/git-visible.js';
 import { existsSync, readdirSync, readFileSync, statSync } from 'fs';
@@ -1874,12 +1875,20 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 		// #2267: Use native Qdrant timeout (seconds) to prevent indefinite hangs.
 		// Follows #1275 convention used in task-searcher.ts and search-semantic.tool.ts.
 		const searchTimeoutSec = Math.ceil(parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10) / 1000);
+		// #4880: the shared client aborts at QDRANT_TIMEOUT_MS (15 s) — under the
+		// 30 s server budget handed below, which then never applied. Both vector
+		// queries (main + supplement) run on a client whose abort sits above it.
+		// Kill switch QDRANT_SEARCH_TIMEOUT_ALIGN=0 → shared client.
+		const searchClientTimeoutMs = resolveSearchClientTimeoutMs();
+		const searchQdrant = searchClientTimeoutMs === null
+			? qdrant
+			: getQdrantClient({ timeoutMs: searchClientTimeoutMs });
 		phase.current = 'qdrant_query';
 		// #4352 (a3): the main query is STARTED here and awaited after the supplement
 		// query, so the two corpora cost one round trip together, not two. The
 		// supplement call is fail-open and bounded by its own timeout, so awaiting it
 		// first cannot extend the search's worst case beyond its own budget.
-		const searchPromise = withTransportRetry(() => qdrant.query(collectionName, {
+		const searchPromise = withTransportRetry(() => searchQdrant.query(collectionName, {
 			query: queryVector,
 			filter: filter,
 			score_threshold: effectiveMinScore,
@@ -1903,7 +1912,7 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 		// #4352 (a3): the supplement corpus, queried with the same vector and the same
 		// bounds. Fail-open: a missing/absent/unreachable `sup-` collection yields zero
 		// points plus a reason, never an error for the caller.
-		const supplement = await collectSupplementHits(qdrant, supplementProbe, workspace, queryVector, {
+		const supplement = await collectSupplementHits(searchQdrant, supplementProbe, workspace, queryVector, {
 			limit: fetchLimit,
 			minScore: effectiveMinScore,
 			directoryPrefix: directory_prefix,
