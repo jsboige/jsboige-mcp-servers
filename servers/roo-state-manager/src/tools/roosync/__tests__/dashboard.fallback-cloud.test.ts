@@ -164,7 +164,7 @@ describe('#2719 cloud-fallback condensation telemetry', { timeout: 30000 }, () =
     mockGetPrimaryClient.mockReturnValue({
       chat: { completions: { create: mockPrimaryCreate } },
     });
-    mockPrimaryCreate.mockRejectedValue(new Error('vLLM 192.168.0.47:5002 connection refused'));
+    mockPrimaryCreate.mockRejectedValue(new Error('vLLM 10.0.0.5:5002 connection refused'));
     // Cloud fallback client present + its create resolves with a real summary.
     mockGetFallbackClient.mockReturnValue({
       chat: { completions: { create: mockFallbackCreate } },

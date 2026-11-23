@@ -203,14 +203,14 @@ describe('classifySearchError', () => {
 
 	// ── #4881: a proxy verdict needs proof — RFC1918 + light-POST discriminant ──
 
-	// The fleet topology: executors hit Qdrant directly on its native port
-	// (192.168.0.47:6333 measured on po-204; po-203's failing verdict used the
-	// same path). The client-side abort "This operation was aborted" fires at
-	// QDRANT_SEARCH_TIMEOUT_MS before the server can word its own timeout, so
-	// the #4352 message exemption never triggers and the verdict blamed a
-	// proxy that is not in the path.
+	// The fleet topology: executors hit Qdrant directly on its native port over
+	// a private LAN (synthetic example: 10.0.0.5:6333; the real seat address is
+	// deliberately not in this public repo). The client-side abort "This
+	// operation was aborted" fires at QDRANT_SEARCH_TIMEOUT_MS before the server
+	// can word its own timeout, so the #4352 message exemption never triggers
+	// and the verdict blamed a proxy that is not in the path.
 	it.each([
-		['http://192.168.0.47:6333'],
+		['http://10.0.0.5:6333'],
 		['http://10.1.2.3:6333'],
 		['http://172.16.0.9:6333'],
 		['http://172.31.255.255:6333'],
@@ -284,6 +284,64 @@ describe('classifySearchError', () => {
 		const result = await classifySearchError(makeError('This operation was aborted'), 'search');
 		expect(result.mode).toBe('qdrant_proxy_drop');
 		expect(result.message).toContain('unverified');
+	});
+
+	// ── #4881 follow-ups c.7090296934: kill-switch + deadline budget ──
+
+	it('(a) QDRANT_LIGHT_POST_PROBE=0 disables the light POST — no listing/scroll fetch, legacy unverified verdict', async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		process.env.QDRANT_LIGHT_POST_PROBE = '0';
+		try {
+			routeFetch({ scroll: 'ok' });
+			const result = await classifySearchError(makeError('This operation was aborted'), 'search');
+			expect(result.mode).toBe('qdrant_proxy_drop');
+			expect(result.message).toContain('unverified');
+			const calledUrls = mockFetch.mock.calls.map((c) => String(c[0]));
+			expect(calledUrls.some((u) => u.includes('/collections'))).toBe(false);
+			expect(calledUrls.some((u) => u.includes('/points/scroll'))).toBe(false);
+		} finally {
+			delete process.env.QDRANT_LIGHT_POST_PROBE;
+		}
+	});
+
+	it('(b) a deadline budget below 50 ms skips the probe entirely (no time for a useful probe)', async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		routeFetch({ scroll: 'ok' });
+		const result = await classifySearchError(makeError('This operation was aborted'), 'codebase_search', 30);
+		expect(result.mode).toBe('qdrant_proxy_drop');
+		expect(result.message).toContain('unverified');
+		expect(mockFetch.mock.calls.some((c) => String(c[0]).includes('/collections'))).toBe(false);
+	});
+
+	it('(b) the light-POST probe aborts at min(budget - listing, 10 s) — the deadline response never loses the class', async () => {
+		vi.useFakeTimers();
+		try {
+			process.env.QDRANT_URL = 'https://qdrant.example.org';
+			mockFetch.mockImplementation(async (_url: unknown, init?: { signal?: AbortSignal }) => {
+				const u = String(_url);
+				if (u.endsWith('/healthz')) return { ok: true, status: 200 };
+				if (u.endsWith('/collections')) return { ok: true, status: 200, json: async () => ({ result: { collections: [{ name: 'ws-a' }] } }) };
+				if (u.includes('/points/scroll')) {
+					// Stall the scroll forever; only the probe's own abort timer settles it.
+					return await new Promise((_resolve, reject) => {
+						init?.signal?.addEventListener('abort', () => { reject(new Error('This operation was aborted')); });
+					});
+				}
+				throw new Error(`unexpected fetch: ${u}`);
+			});
+			const promise = classifySearchError(makeError('This operation was aborted'), 'codebase_search', 5000);
+			// Advance past the scroll budget (5000 - 5000 listing = 0 → min(10000, 0)… but listing
+			// consumed ~0 ms, so the scroll budget is min(10000, 5000) = 5000). Advancing 6000 ms
+			// fires the probe's abort, which rejects the stalled scroll.
+			await vi.advanceTimersByTimeAsync(6000);
+			const result = await promise;
+			// The scroll dropped (abort) → proxy_drop WITH proof, not the legacy
+			// unverified verdict, and it resolved within the 5000 ms budget.
+			expect(result.mode).toBe('qdrant_proxy_drop');
+			expect(result.message).toContain('light POST scroll also failed');
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	// #4352 review: roosync_search reports an embedding timeout under 'search'. The

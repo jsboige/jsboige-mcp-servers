@@ -138,10 +138,10 @@ async function probeQdrantHealth(): Promise<{ ok: boolean; latencyMs: number; st
 const QDRANT_OWN_SEARCH_TIMEOUT = /Operation '?Search'? timed out/i;
 
 // #4881: RFC1918 private ranges join the loopback exemption. Fleet executors
-// hit Qdrant directly on its native port (192.168.0.47:6333 measured on
-// po-204; same topology on the po-203 lane that reported the verdict) — no
-// reverse proxy sits in that path, so a timed-out search there is Qdrant
-// itself being slow, exactly like the #4352 localhost case.
+// hit Qdrant directly on its native port (synthetic example: 10.0.0.5:6333,
+// measured on po-204) — no reverse proxy sits in that path, so a timed-out
+// search there is Qdrant itself being slow, exactly like the #4352 localhost
+// case.
 function isPrivateLanHost(host: string): boolean {
 	if (/^10\./.test(host)) return true;
 	const m = /^172\.(\d+)\./.exec(host);
@@ -172,17 +172,34 @@ function qdrantHasNoProxyInPath(errorMsg: string): boolean {
  * Returns { ok: false } when the POST itself fails/aborts (the proxy-drop
  * signature), and null when the probe cannot run (listing failure, no
  * collections, malformed body): no proof either way.
+ *
+ * Follow-ups c.7090296934: (a) kill-switch QDRANT_LIGHT_POST_PROBE=0 (fleet
+ * convention: the fix is the default, the env var exists only to turn it
+ * off); (b) the caller bounds the probe by the time left before the
+ * codebase_search global deadline — otherwise the worst case (5 s listing +
+ * 10 s scroll) stacks after the search abort and the deadline response wins,
+ * losing the proxy/backend distinction.
  */
-async function probeLightPost(): Promise<{ ok: boolean; latencyMs: number } | null> {
+async function probeLightPost(budgetMs?: number): Promise<{ ok: boolean; latencyMs: number } | null> {
+	if ((process.env.QDRANT_LIGHT_POST_PROBE ?? '').trim() === '0') return null;
 	const qdrantUrl = process.env.QDRANT_URL || 'http://localhost:6333';
 	const apiKey = process.env.QDRANT_API_KEY;
 	const headers: Record<string, string> = { 'content-type': 'application/json' };
 	if (apiKey) headers['api-key'] = apiKey;
 
+	// (b) budget: listing min(5000, budget), scroll min(10000, what the listing
+	// did NOT consume). The remainder is measured from the ELAPSED time, never
+	// from the listing CAP — subtracting the cap (5000) from a 5000 ms budget
+	// left 0 for the scroll and silently skipped the probe. A budget below 50 ms
+	// means no useful probe — return null (no proof either way).
+	const probeStart = Date.now();
+	const listingBudget = typeof budgetMs === 'number' ? Math.min(5000, budgetMs) : 5000;
+	if (listingBudget < 50) return null;
+
 	let collectionName: string | undefined;
 	try {
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), 5000);
+		const timer = setTimeout(() => controller.abort(), listingBudget);
 		try {
 			const resp = await fetch(`${qdrantUrl}/collections`, { headers, signal: controller.signal });
 			let body: unknown = null;
@@ -200,8 +217,13 @@ async function probeLightPost(): Promise<{ ok: boolean; latencyMs: number } | nu
 	}
 	if (typeof collectionName !== 'string' || !collectionName) return null;
 
+	// The scroll gets what the listing left of the deadline budget, capped at 10 s.
+	const remainingBudget = typeof budgetMs === 'number' ? budgetMs - (Date.now() - probeStart) : 10000;
+	const scrollBudget = Math.min(10000, remainingBudget);
+	if (scrollBudget < 50) return null;
+
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), 10000);
+	const timer = setTimeout(() => controller.abort(), scrollBudget);
 	const start = Date.now();
 	try {
 		await fetch(`${qdrantUrl}/collections/${encodeURIComponent(collectionName)}/points/scroll`, {
@@ -267,7 +289,11 @@ function isHttpServerError(error: unknown): boolean {
  */
 export async function classifySearchError(
 	error: unknown,
-	operation: 'embedding' | 'search' | 'codebase_search'
+	operation: 'embedding' | 'search' | 'codebase_search',
+	/** #4881 follow-up (b): ms remaining before the caller's global deadline;
+	 * the light-POST probe is bounded inside it so the deadline response never
+	 * eats the classification. Undefined = no bound (roosync_search). */
+	probeBudgetMs?: number
 ): Promise<ClassifiedError> {
 	const errorMsg = error instanceof Error ? error.message : String(error);
 	// #3344: undici sets no `.code` on "fetch failed" — the errno lives on `.cause`.
@@ -392,7 +418,7 @@ export async function classifySearchError(
 					// dropped. The light-scroll probe decides; when it cannot
 					// run, the legacy proxy_drop verdict stands but stays
 					// unverified (the message says so).
-					const lightPost = await probeLightPost();
+					const lightPost = await probeLightPost(probeBudgetMs);
 					if (lightPost?.ok) {
 						return {
 							mode: 'qdrant_backend_slow',

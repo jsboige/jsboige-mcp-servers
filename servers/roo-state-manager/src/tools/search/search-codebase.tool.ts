@@ -1208,6 +1208,10 @@ export type CodebaseSearchPhaseName =
 
 export interface CodebaseSearchPhase {
 	current: CodebaseSearchPhaseName;
+	/** #4881 follow-up (b): epoch ms at which the global deadline fires;
+	 * undefined when the deadline kill-switch (0) is on. The error path uses
+	 * it to bound the classifier's light-POST probe INSIDE the deadline. */
+	deadlineAt?: number;
 }
 
 /**
@@ -1262,8 +1266,9 @@ export function buildDeadlineResponse(phase: CodebaseSearchPhaseName, deadlineMs
  */
 export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<CallToolResult> {
 	const phase: CodebaseSearchPhase = { current: 'workspace_resolution' };
-	const work = handleCodebaseSearchUnbounded(args, phase);
 	const deadlineMs = codebaseSearchDeadlineMs();
+	phase.deadlineAt = deadlineMs > 0 ? Date.now() + deadlineMs : undefined;
+	const work = handleCodebaseSearchUnbounded(args, phase);
 	if (deadlineMs === 0) return work;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const deadline = new Promise<CallToolResult>(resolve => {
@@ -2281,7 +2286,11 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 		// instead of misclassifying it as qdrant_unreachable under operation='codebase_search'.
 		const operation: 'embedding' | 'codebase_search' =
 			(error as any)?.__codebase_search_source === 'embedding' ? 'embedding' : 'codebase_search';
-		const classified = await classifySearchError(error, operation);
+		// #4881 follow-up (b): bound the classifier's light-POST probe by the
+		// time left before the global deadline — never past it. Undefined
+		// deadline (kill-switch) = unbounded probe (roosync_search behaviour).
+		const probeBudgetMs = phase.deadlineAt !== undefined ? phase.deadlineAt - Date.now() : undefined;
+		const classified = await classifySearchError(error, operation, probeBudgetMs);
 
 		return {
 			isError: true,
