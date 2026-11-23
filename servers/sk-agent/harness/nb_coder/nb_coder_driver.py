@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
+# Copied verbatim from jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
 # original path: myia_vllm/scripts/adoption/nb_coder/nb_coder_driver.py
-# Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
-# re-copy, do not diverge silently.
+# Source of truth is THIS tree since the 22/11 cutover (#4781): fix bugs here. The
+# jsboige/vllm copy is frozen at the SHA above: never re-copy it over this tree.
 # -----------------------------------------------------------------------------
 """nb-coder driver — stages 0-5 of the issue -> notebook -> PR harness (jsboige/vllm#431).
 
@@ -1106,6 +1106,22 @@ def align_kernelspec(built_nb: Path, repo: Path, rel: str, kname: str) -> dict |
             "language_version": (donor.get("language_info") or {}).get("version")}
 
 
+CS_VIEW_MAX = 40_000   # a REFERENCE view (C# twin), smaller than the authoritative Python one
+
+
+def csharp_sibling(src_nb: Path) -> Path | None:
+    """The C# twin of a Python source when the series ported one (user 22/11: read Python
+    AND C# when porting — the C# port's structure, translation comments and library choices
+    inform the target port; the Python stays authoritative for prose and values). The model
+    cannot read it itself: its terminal cwd is not the grain's worktree (measured 21/11,
+    10 293 tokens walking the wrong tree), so the harness inlines the view instead."""
+    name = src_nb.name
+    if not name.endswith("-Python.ipynb"):
+        return None
+    cand = src_nb.with_name(name[: -len("-Python.ipynb")] + "-CSharp.ipynb")
+    return cand if cand.is_file() else None
+
+
 def build_view(nb_path: Path, max_chars: int = 120_000) -> str:
     """Whole-notebook view. Overflow is DECLARED, never silent: a cut view makes the model
     plan against a notebook whose footer it cannot see (measured 14/11: 37-cell notebook,
@@ -1541,7 +1557,7 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
 
 # ---------------------------------------------------------------- creation mode (--source-nb)
 def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel: dict,
-                    ctx: str, view: str, conventions: str = "") -> str:
+                    ctx: str, view: str, conventions: str = "", cs_view: str = "") -> str:
     """Stage 1 in creation mode: the target notebook does NOT exist on origin/main — the
     model plans the COMPLETE twin from the Python source + the issue's cell table.
     Measured 17/11 (#27099 dry pass): asking for FULL cell sources here returned a
@@ -1559,7 +1575,14 @@ def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel
         f"Noyau canonique d'exécution : {kernel['kernel_name']}\n\n"
         f"## Contexte de série\n{ctx}\n\n"
         f"## Jumeau Python (structure à porter)\n{view}\n\n"
-        "Le jumeau C# rejoue le MÊME fil pédagogique : une cellule du jumeau Python = une "
+        + (f"## Jumeau C# du même carnet (portage antérieur — RÉFÉRENCE de traduction)\n"
+           f"{cs_view}\n\n"
+           "Ce port C# du même carnet éclaire ton portage : structure retenue, découpage des "
+           "cellules, commentaires de traduction, choix de bibliothèques (prends les "
+           "équivalents dans le langage cible de ses libs quand la spec les permet). Le "
+           "jumeau PYTHON ci-dessus reste l'AUTORITÉ : prose reprise telle quelle, valeurs "
+           "et ordre des sorties identiques au Python.\n\n" if cs_view else "")
+        + "Le jumeau C# rejoue le MÊME fil pédagogique : une cellule du jumeau Python = une "
         "cellule du jumeau C# (markdown adapté au contexte .NET, code traduit selon la table "
         "de l'issue). Respecte les interdits de l'issue (pas de NotImplementedException, "
         "stubs `// TODO étudiant` + valeur neutre, pas d'appel réseau). La dernière cellule "
@@ -1644,7 +1667,8 @@ PORT_CONTENT_RULES = (
 
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
-                         src_cells: list | None = None) -> str:
+                         src_cells: list | None = None,
+                         cs_cells: list | None = None) -> str:
     """Stage 2 in creation mode, ONE SEGMENT at a time: the model returns the sources of
     the plan's cells i..j only. Measured 17/11: the whole-notebook single-shot answer
     does not survive the output budget. The harness assembles every segment.
@@ -1656,6 +1680,7 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
     prose = ""
     comments = ""
     refs = ""
+    csparts: list[str] = []
     if src_cells:
         parts, stripped = [], 0
         cparts: list[str] = []
@@ -1673,6 +1698,14 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                         cparts.append(f"<cellule {ci} — commentaires du jumeau>\n"
                                       + "\n".join(f"- {t}" for t in cm))
                     rparts.extend(twin_reference_blocks(src_cells, idxs={ci}))
+                # the C# twin's // comments for the SAME cell, when the series ported one
+                # (user 22/11): the previous porter's translation notes — a reference, the
+                # Python above stays the authority for prose and values
+                if cs_cells and 0 <= ci < len(cs_cells) and cs_cells[ci].get("cell_type") == "code":
+                    ccm = twin_code_comments(_text(cs_cells[ci].get("source")))
+                    if ccm:
+                        csparts.append(f"<cellule {ci} — commentaires du porteur C#>\n"
+                                       + "\n".join(f"- {t}" for t in ccm[:8]))
                 continue
             if not isinstance(c, dict) or c.get("cell_type") != "markdown":
                 continue
@@ -1715,6 +1748,13 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                     "les MÊMES valeurs que la sortie réelle ci-dessous (1er motif de rejet "
                     "mesuré 22/11 : valeurs réinventées faute d'avoir vu la référence) :\n"
                     + "\n\n".join(rparts)[:24000] + "\n" + TWIN_VALUES_RULE)
+        if csparts:
+            comments += ("\n\nCOMMENTAIRES DU JUMEAU C# (portage antérieur du même carnet) — "
+                         "choix de traduction notés par le porteur précédent, pour les "
+                         "cellules CODE de cette tranche. Ils éclairent ton port (structures, "
+                         "API, bibliothèques) ; le jumeau PYTHON reste l'autorité pour la "
+                         "prose et les valeurs :\n"
+                         + "\n\n".join(csparts)[:6000] + "\n")
     return (
         "TOUR 2 — CRÉATION, TRANCHE COURANTE : rends les sources COMPLÈTES des cellules "
         "listées ci-dessous, et rien d'autre. Le harnais assemble lui-même le fichier "
@@ -1991,7 +2031,8 @@ async def repair_creation_plan(session, args, rec: dict, conv: str | None,
 
 async def create_segments(session, args, rec: dict, conv: str | None, plan_cells: list,
                           n_src_cells: int, conventions: str,
-                          src_cells: list | None = None) -> dict:
+                          src_cells: list | None = None,
+                          cs_cells: list | None = None) -> dict:
     """Stage 2 of creation mode, SEGMENT by SEGMENT. Each tour renders the sources of
     the plan's cells i..i+CREATE_SEGMENT only; the harness concatenates in plan order
     and hands ONE payload to apply_create (the single-write discipline holds). Returns
@@ -2031,7 +2072,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         unparsed/empty answer returns parsed=None and the caller decides."""
         env = await sk_call_retry(session, args, rec, stage,
                                   creation_json_prompt(tranche, n_src_cells, conventions,
-                                                       src_cells), conv,
+                                                       src_cells, cs_cells), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
         part, env = await parse_or_repair(session, args, rec, stage, env, conv,
                                           max_tokens=BUILD_MAX_TOKENS)
@@ -4240,13 +4281,18 @@ TOOLLESS_NOTE = ("\n\nCe tour n'a AUCUN outil : tout ce qu'il te faut est dans c
 
 async def sk_call(session: ClientSession, args, prompt: str, conv: str | None,
                   max_tokens: int | None = None, model: str | None = None,
-                  tools: bool = True) -> tuple[dict, float]:
+                  tools: bool = True, resume: bool = False) -> tuple[dict, float]:
     # model: explicit per-turn override (the spec turn passes --spec-model); every other
     # call site is a coder turn and falls back to --coder-model (#4831).
+    # resume: re-enter the PAUSED loop of `conv` (sk-agent #4742 options.continue). No new
+    # user message is added, and the tool rounds already run are never re-run.
     spec = agent_spec_for(args.agent, model or getattr(args, "coder_model", None),
                           max_tokens or args.max_tokens, 0.4, tools=tools)
-    payload = {"prompt": prompt, "agent": args.agent, "timeout": args.timeout,
-               "include_steps": True, "agent_spec": json.dumps(spec)}
+    payload = {"prompt": "" if resume else prompt, "agent": args.agent,
+               "timeout": args.timeout, "include_steps": True,
+               "agent_spec": json.dumps(spec)}
+    if resume:
+        payload["options"] = json.dumps({"continue": True})
     if conv:
         payload["conversation_id"] = conv
     t0 = time.time()
@@ -4282,6 +4328,24 @@ GATE_WAIT_POLL_S = 60
 GATE_WAIT_MAX_S = 1800
 _gate_sleep = asyncio.sleep     # seam for tests
 
+# A MID-TURN pause is a different envelope from the refusal above: the turn had started,
+# its tool rounds are committed, and sk-agent (#4742) stopped the loop between two rounds,
+# because the gate turned non-green (`capacity_gate`) or because a round budget was reached
+# (`round_budget`). Its `response` is the banner "[paused: <reason>] resume with
+# options.continue on conversation_id '…'", not an answer. Read as one, it became
+# `stage1-unparsed`. Measured 22/11 on App-12 (#28069): paused at round 3 after 545 s, with
+# 3 reads of the source and its C# twin already paid, and the grain burned. The way out is
+# `options.continue` on the same conversation. The rounds already paid are kept, and a
+# refused continue keeps its paused epoch, so it is repeated as a continue.
+MAX_CONTINUES = 8               # round_budget continues are free of the gate: bound them
+
+
+def resumable_pause(env: dict) -> str:
+    """The pause reason when `env` is a resumable mid-turn pause, else ""."""
+    if env.get("error") or not (env.get("paused") and env.get("resumable")):
+        return ""
+    return str((env.get("pause") or {}).get("reason") or "paused")
+
 
 async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, prompt: str,
                         conv: str | None, max_tokens: int | None = None,
@@ -4289,16 +4353,22 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
     tools = stage_uses_tools(stage)
     attempt = 0
     waited = 0
+    continues = 0
+    resume = False
     while True:
         tob = engine_tokens()
         env, dt = await sk_call(session, args,
                                 prompt + ("" if tools else TOOLLESS_NOTE)
                                 + (RETRY_NOTE if attempt else ""), conv,
-                                max_tokens, model=model, tools=tools)
+                                max_tokens, model=model, tools=tools, resume=resume)
         toa = engine_tokens()
-        rec["calls"].append({"stage": stage if not attempt else f"{stage}-retry",
+        pause = resumable_pause(env)
+        label = stage if not attempt else f"{stage}-retry"
+        rec["calls"].append({"stage": f"{label}-continue" if resume else label,
                              "tools": tools,
                              **({"gate_waited_s": waited} if waited else {}),
+                             **({"paused": pause, "round_index": env.get("round_index")}
+                                if pause else {}),
                              "elapsed_s": dt, "error": env.get("error"),
                              # model_used/agent_used: the sk-agent ENTRY that routed the call,
                              # not proof of the model that answered (20/11: a hub reroute left
@@ -4313,12 +4383,31 @@ async def sk_call_retry(session: ClientSession, args, rec: dict, stage: str, pro
                              "response_chars": len(env.get("response") or ""),
                              "engine_delta": ({k: round(toa[k] - tob[k]) for k in toa if k in tob}
                                               or None)})
+        if pause:
+            conv = env.get("conversation_id") or conv
+            if continues < MAX_CONTINUES and (pause != "capacity_gate"
+                                              or waited < GATE_WAIT_MAX_S):
+                continues += 1
+                resume = True
+                if pause == "capacity_gate":
+                    await _gate_sleep(GATE_WAIT_POLL_S)
+                    waited += GATE_WAIT_POLL_S
+                continue
+            # Out of budget: a deferral like an outlasting refusal, never a banner to parse.
+            return {**env, "response": "",
+                    "error": (f"capacity gate refused: mid-turn pause ({pause}) still "
+                              f"unresolved after {continues} continue(s), {waited}s waited"
+                              if pause == "capacity_gate" else
+                              f"mid-turn pause ({pause}) still unresolved after "
+                              f"{continues} continue(s)")}
         if gate_refusal(env) and waited < GATE_WAIT_MAX_S:
             await _gate_sleep(GATE_WAIT_POLL_S)
             waited += GATE_WAIT_POLL_S
-            continue        # same prompt, same attempt: the refused turn committed nothing
+            continue        # same call: a refused fresh turn committed nothing, a refused
+            #                 continue keeps its paused epoch (resume stays set)
         if attempt == 0 and (env.get("error") or "").startswith("empty model response"):
             attempt = 1
+            resume = False  # the retry is a fresh prompt: an emptied epoch cannot continue
             continue
         return env
 
@@ -5098,6 +5187,7 @@ def unit_result_hits(built_cells: list, src_cells: list) -> list[int]:
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
               canon_version: str | None = None, repo: Path | None = None,
               rel: str | None = None, scratch: Path | None = None,
+              spec_body: str | None = None, spec_ref: str | None = None,
               kernel_name: str | None = None) -> list[dict]:
     """Stage 3 — harness-only gates on the BUILT notebook, no model turn.
 
@@ -5200,7 +5290,8 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
         # notebook never printed. Delta-judged against the twin's own unanchored stock.
         gates.append(prose_anchor_gate(repo, src_nb, built_nb))
     if create_mode and rel and _norm_rel(rel).endswith("-Rust.ipynb"):
-        conf = rust_conformance_gate(src_nb, built_nb)
+        conf = rust_conformance_gate(src_nb, built_nb, spec_body=spec_body,
+                                     spec_ref=spec_ref)
         if conf is not None:
             gates.append(conf)
     return gates
@@ -5212,18 +5303,33 @@ def _kernel_language(nb_path: Path) -> str | None:
             or (meta.get("language_info") or {}).get("name"))
 
 
-def rust_conformance_gate(src_nb: Path, built_nb: Path) -> dict | None:
+def _spec_ref(args, issue: dict | None = None) -> str | None:
+    """`#28072` for a spec-declared-absent motif: the CLI's `--issue` when the
+    args namespace carries it (tests build minimal namespaces without one),
+    else the fetched issue's own number, else no anchor at all -- the motif
+    still names the `Tolerances` table and the cell."""
+    num = getattr(args, "issue", None) or (issue or {}).get("number")
+    return f"#{num}" if num else None
+
+
+def rust_conformance_gate(src_nb: Path, built_nb: Path, spec_body: str | None = None,
+                          spec_ref: str | None = None) -> dict | None:
     """Stage-3 gate for a Rust port of a Python twin (CoursIA c0018, 21/11): the
     `rust_conformance.d` entry written at delivery compares each Rust cell's output to
     the twin's same-index cell, strict text equality, durations by presence only. The
     three lot-1 PRs came back from review on exactly that (a stray `()`, a count the
     outputs did not show). Measured here BEFORE the PR, so the constructive loop
     repairs it instead of a review round. None when there is no Python twin to compare
-    to (a spec twin carries no outputs; a C# source is not the registry's reference)."""
+    to (a spec twin carries no outputs; a C# source is not the registry's reference).
+    `spec_body` (the lot spec's issue body, `spec_ref` e.g. `#28072`): its
+    `## Tolerances` table downgrades the strict rule per cell -- a stochastic
+    port judged against text its own RNG can never reproduce failed #28072
+    twice while the model correctly contested it."""
     if (_kernel_language(src_nb) or "").lower() != "python":
         return None
     try:
-        divs = _load_integrate_module().conformance_divergences(src_nb, built_nb)
+        divs = _load_integrate_module().conformance_divergences(
+            src_nb, built_nb, spec_body=spec_body, spec_ref=spec_ref)
     except Exception as e:  # the gate measures, it never crashes a build
         return {"gate": "rust-conformance", "ok": True,
                 "detail": {"measured": False, "error": f"{type(e).__name__}: {e}"[:300]}}
@@ -5812,6 +5918,8 @@ def integration_pr_lines(integ: dict | None) -> str:
         lines.append(f"- Entrée de conformité Rust `{conf['file']}` écrite : "
                      f"{conf.get('measures', 0)} mesures, dont "
                      f"{conf.get('three_sided', 0)} à trois côtés{cs}.")
+        for d in (conf.get("spec_absent") or [])[:8]:
+            lines.append(f"  - Côté Rust déclaré absent {d.get('id')} : {d.get('reason')}.")
         for d in (conf.get("divergences") or [])[:5]:
             lines.append(f"  - Divergence mesurée {d.get('id')} : {d.get('text')}.")
     elif conf.get("file") and conf.get("why"):
@@ -5884,7 +5992,10 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     if src_twin:
         try:
             nbci = _load_integrate_module()
-            integ = nbci.integrate(wt_path, nb_rel, str(src_twin))
+            integ = nbci.integrate(wt_path, nb_rel, str(src_twin),
+                                   spec_body=(issue.get("body")
+                                              if isinstance(issue, dict) else None),
+                                   spec_ref=_spec_ref(args, issue))
             if integ.get("error"):
                 entry["integration"] = integ
             else:
@@ -6641,9 +6752,12 @@ def exec_repair_findings(rec: dict, built_path: Path) -> list[dict]:
 
 def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mode: bool,
                       kname: str, wt_path: Path, out_dir: Path,
-                      prior: dict | None = None) -> None:
+                      prior: dict | None = None, spec_body: str | None = None,
+                      spec_ref: str | None = None) -> None:
     """Stages 3-4, harness-only (no model turn inside). .NET post-execution hygiene runs
-    BEFORE anything reads the file: gates and verify judge the DELIVERED state."""
+    BEFORE anything reads the file: gates and verify judge the DELIVERED state.
+    `spec_body`/`spec_ref` carry the lot spec's issue body to the rust-conformance
+    gate (its `## Tolerances` table downgrades the strict rule per cell)."""
     if args.max_stage >= 3 and rec.get("verdict") == "built-executed-ok" and built_path.is_file():
         if kname.startswith(".net"):
             rec["banner_strip"] = strip_dotnet_banner(
@@ -6662,7 +6776,8 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
                                  canon_version=(rec.get("create_metadata") or {})
                                  .get("language_version"),
                                  repo=wt_path, rel=_norm_rel(getattr(args, "notebook", None) or ""),
-                                 scratch=out_dir, kernel_name=kname)
+                                 scratch=out_dir, spec_body=spec_body, spec_ref=spec_ref,
+                                 kernel_name=kname)
         rec["gates_s"] = round(time.time() - tg, 1)
         bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
         rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
@@ -6823,7 +6938,8 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         prior = {"round": rnd, "findings": findings, "addressed": entry.get("addressed"),
                  "contested": entry.get("contested")}
         gates_then_verify(args, rec, src_nb, built_path, create_mode, kname, wt_path, out_dir,
-                          prior=prior)
+                          prior=prior, spec_body=issue.get("body"),
+                          spec_ref=_spec_ref(args, issue))
         entry["result"] = rec["verdict"]
         if str(rec["verdict"]).startswith("verify-"):
             out = [f for f in (rec.get("verify") or {}).get("findings") or []
@@ -7034,7 +7150,8 @@ async def run_revision(args, rec: dict) -> dict:
         # on-disk build — zero model turn — then let the normal loop take over (a reject
         # gets its constructive rounds; an approval opens the PR).
         rec["verdict"] = "built-executed-ok"
-        gates_then_verify(args, rec, src_nb, built, create_mode, kname, wt_path, out_dir)
+        gates_then_verify(args, rec, src_nb, built, create_mode, kname, wt_path, out_dir,
+                          spec_body=issue.get("body"), spec_ref=_spec_ref(args, issue))
     else:
         # a seeded gate repair enters the loop as a reject; the exhaustion-restore
         # inside revise_loop brings the honest gates-failed verdict back if the
@@ -7268,6 +7385,11 @@ async def run(args, rec: dict) -> dict:
                     "answered; suspect an undrained stderr pipe blocking the "
                     "child's logging — see the wave-1b post-mortem 18/11)") from None
             view = build_view(src_nb)
+            # user 22/11: a port reads the Python AND the C# twin when one exists
+            cs_nb = csharp_sibling(src_nb) if (create_mode and not from_spec) else None
+            cs_view = build_view(cs_nb, CS_VIEW_MAX) if cs_nb else ""
+            if cs_nb:
+                rec["csharp_twin"] = cs_nb.name
             ctx = series_context(wt_path, args.notebook)
             # ---- stage ½ SPEC (#4831), see spec_stage
             issue_eff = await spec_stage(sk, args, rec, issue, kernel, ctx, view,
@@ -7281,7 +7403,7 @@ async def run(args, rec: dict) -> dict:
                                               ctx, view, conventions)
             elif create_mode:
                 prompt = creation_prompt(args.issue, issue_eff, args.notebook, args.source_nb,
-                                         kernel, ctx, view, conventions)
+                                         kernel, ctx, view, conventions, cs_view)
             else:
                 prompt = plan_prompt(args.issue, issue_eff, args.notebook, kernel,
                                      ctx, view, conventions)
@@ -7329,6 +7451,7 @@ async def run(args, rec: dict) -> dict:
                 shutil.copy2(src_nb, scratch)     # outputs preserved: nothing to re-create
             sha_before = _sha(scratch)
             src_cells = _cells(src_nb)
+            cs_cells = _cells(cs_nb) if cs_nb else None
             rec["write_mode"] = args.write_mode
             env2: dict = {}                # correction branch fills it; creation never reads it
             if create_mode:
@@ -7336,7 +7459,8 @@ async def run(args, rec: dict) -> dict:
                 # authoritative text (a twin's prose pin would copy the placeholders).
                 built = await create_segments(sk, args, rec, conv, plan.get("cells") or [],
                                               len(src_cells), conventions,
-                                              src_cells=None if from_spec else src_cells)
+                                              src_cells=None if from_spec else src_cells,
+                                              cs_cells=None if from_spec else cs_cells)
                 rec["build_model_answer"] = {"parsed": bool(built),
                                              "segments": rec.pop("segments", [])}
                 if not built or not built.get("cells"):
@@ -7442,7 +7566,8 @@ async def run(args, rec: dict) -> dict:
     built_path = Path((rec.get("built_notebook") or {}).get("path") or "")
     kname_used = args.kernel_override or kernel["kernel_name"]
     gates_then_verify(args, rec, src_nb, built_path, create_mode, kname_used,
-                      Path(wt["path"]), out_dir)
+                      Path(wt["path"]), out_dir,
+                      spec_body=issue.get("body"), spec_ref=_spec_ref(args, issue))
     if rec.get("verdict") == "verify-reject":
         await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built_path,
                           kname=kname_used, exec_dir=exec_dir, conventions=conventions,

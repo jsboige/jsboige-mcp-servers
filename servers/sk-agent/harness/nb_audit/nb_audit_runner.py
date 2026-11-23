@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 # --- provenance (roo-extensions #4781 harness mutualisation) -----------------
-# Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
+# Copied verbatim from jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
 # original path: myia_vllm/scripts/adoption/nb_audit/nb_audit_runner.py
-# Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
-# re-copy, do not diverge silently.
+# Source of truth is THIS tree since the 22/11 cutover (#4781): fix bugs here. The
+# jsboige/vllm copy is frozen at the SHA above: never re-copy it over this tree.
 # -----------------------------------------------------------------------------
 """Scheduled pre-audit runner for the CoursIA #17073 campaign (mode (b), agreed 2026-09-23).
 

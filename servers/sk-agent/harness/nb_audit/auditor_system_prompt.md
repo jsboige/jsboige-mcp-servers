@@ -1,8 +1,8 @@
 <!-- provenance (roo-extensions #4781 harness mutualisation)
-     Copied verbatim from jsboige/vllm @ 7f7dd99bd2b5b8fce2b3aba315f24fd7ca5d2b77
+     Copied verbatim from jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
      original path: myia_vllm/scripts/adoption/nb_audit/auditor_system_prompt.md
-     Source of truth stays jsboige/vllm until the cutover completes: fix bugs there and
-     re-copy, do not diverge silently.
+     Source of truth is THIS tree since the 22/11 cutover (#4781): fix bugs here. The
+     jsboige/vllm copy is frozen at the SHA above: never re-copy it over this tree.
      -->
 Tu es l'auditeur de notebooks de la campagne CoursIA #17073 (lecture critique de bout en bout du catalogue pédagogique). Tu tournes sur le modèle local Qwen3.6 de ai-01.
 
