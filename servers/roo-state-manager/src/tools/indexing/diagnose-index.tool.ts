@@ -297,9 +297,19 @@ export async function handleDiagnoseSemanticIndex(
                         "seul l'appel de métadonnées (comptage exhaustif) a échoué, la collection reste accessible."
                     );
                 } catch (probeError: any) {
-                    diagnostics.status = 'collection_error';
-                    diagnostics.details.collection_probe = 'unreadable';
-                    diagnostics.errors.push(`Lecture de test échouée: ${probeError.message}`);
+                    const probeErrorType = _classifyDeepDiagnosticError(probeError);
+                    diagnostics.details.collection_probe_error_type = probeErrorType;
+                    if (probeErrorType === 'timeout') {
+                        diagnostics.status = 'degraded';
+                        diagnostics.details.collection_probe = 'timeout';
+                        diagnostics.errors.push(
+                            `Lecture bornée expirée après QDRANT_TIMEOUT_MS=${process.env.QDRANT_TIMEOUT_MS || '15000'}: ${probeError.message}`
+                        );
+                    } else {
+                        diagnostics.status = 'collection_error';
+                        diagnostics.details.collection_probe = 'unreadable';
+                        diagnostics.errors.push(`Lecture de test échouée: ${probeError.message}`);
+                    }
                 }
             }
         } else if (getCollectionsSucceeded) {
@@ -599,6 +609,14 @@ export async function handleDiagnoseSemanticIndex(
             'La collection est réellement inaccessible (lecture de test échouée). ' +
             "Vérifiez l'état du service Qdrant (logs, redémarrage) ; si la collection est corrompue, " +
             'roosync_indexing action=reset puis rebuild_task_index.'
+        );
+    }
+    if (diagnostics.details.collection_probe === 'timeout') {
+        recommendations.push(
+            'Les métadonnées et la lecture bornée (scroll limit 1) ont expiré. '
+            + 'Indisponibilité temporaire ou charge Qdrant possible ; la lisibilité durable et la corruption ne sont pas établies. '
+            + `Le budget actuel est QDRANT_TIMEOUT_MS=${process.env.QDRANT_TIMEOUT_MS || '15000'} ; `
+            + 'mesurer la latence Qdrant avant de l\'augmenter. Ne pas réinitialiser la collection sur ce seul verdict.'
         );
     }
     if (diagnostics.details.collection_probe === 'readable') {

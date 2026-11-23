@@ -399,6 +399,20 @@ describe('diagnose-index.tool (unit tests)', () => {
 			expect(parsed.errors.some((e: string) => e.includes('Lecture de test échouée'))).toBe(true);
 		});
 
+		it('reports a timed-out bounded read without claiming corruption', async () => {
+			const timeoutError: any = new Error('This operation was aborted');
+			timeoutError.name = 'QdrantClientTimeoutError';
+			mockQdrantClient.scroll.mockRejectedValue(timeoutError);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.details.collection_probe).toBe('timeout');
+			expect(parsed.details.collection_probe_error_type).toBe('timeout');
+			expect(parsed.recommendations.some((r: string) => r.includes('QDRANT_TIMEOUT_MS'))).toBe(true);
+			expect(parsed.recommendations.some((r: string) => r.includes('action=reset'))).toBe(false);
+		});
+
 		it('recommends no collection action when readable despite metadata failure', async () => {
 			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
 
