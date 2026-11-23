@@ -24,7 +24,7 @@ export interface ConfigManifest {
   files: ConfigManifestFile[];
 }
 
-export type ConfigTarget = 'modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | 'claude-config' | 'claude-settings' | 'modes-yaml' | 'schtasks' | 'schedules' | `mcp:${string}` | `services:${string}` | `env:${string}`;
+export type ConfigTarget = 'modes' | 'mcp' | 'profiles' | 'roomodes' | 'model-configs' | 'rules' | 'settings' | 'claude-config' | 'claude-settings' | 'modes-yaml' | 'schtasks' | 'schedules' | 'workspace-template' | `mcp:${string}` | `services:${string}` | `env:${string}`;
 
 export interface CollectConfigOptions {
   targets: ConfigTarget[];
@@ -65,6 +65,11 @@ export interface ApplyConfigOptions {
   scope?: ClaudeCodeScope; // Issue #601 - Scope Claude Code (user/project/settings)
   /** #2413 — Vérifier que la configuration est effectivement appliquée et opérationnelle après écriture */
   validate?: boolean;
+  /**
+   * #3111 — Cible `workspace-template` : workspace destination ABSOLU.
+   * Requis pour action=apply/rollback avec targets contenant `workspace-template`.
+   */
+  workspacePath?: string;
 }
 
 export interface ApplyConfigResult {
@@ -78,6 +83,17 @@ export interface ApplyConfigResult {
     success: boolean;
     /** Détails par target appliqué */
     targetValidations?: Array<{ target: string; success: boolean; details?: any }>;
+  };
+  /**
+   * #3111 — Résumé de la cible `workspace-template` quand elle est demandée.
+   * `created` porte les chemins ABSOLUS créés en apply réel, ou les chemins
+   * PRÉVUS en dry-run (défaut true pour cette cible).
+   */
+  workspaceTemplate?: {
+    simulate: boolean;
+    created: string[];
+    skippedExisting: string[];
+    journalPath: string | null;
   };
 }
 
