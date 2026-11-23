@@ -891,3 +891,43 @@ def test_state_rename_survives_a_real_open_reader(tmp_path):
     threading.Timer(0.3, reader.close).start()
     S.atomic_write_json(target, {"v": 1})
     assert json.loads(target.read_text(encoding="utf-8")) == {"v": 1}
+
+
+# ---------------------------------------------------------------- resumed grains (22/11)
+def test_driver_command_forwards_revise_from_and_drops_creation_fields(tmp_path):
+    """A content failure is RESUMED on its built notebook (--revise-from), never rebuilt:
+    41 grains of w3a-w3x were rebuilt from scratch or released because the queue could not
+    say it. The resume writes next to its trace and never inherits the scheduler's
+    default twin (the driver refuses --source-nb / --meta-from with --revise-from)."""
+    trace = str(tmp_path / "runs" / "issue-7-ab" / "issue-7.json")
+    sched = make_sched(tmp_path, [{"issue": 7, "notebook": "A/X-CSharp.ipynb",
+                                   "revise_from": trace, "max_stage": 5}],
+                       source_nb="Default/Twin.ipynb")
+    cmd = sched.driver_command(sched.items_by_key["#7:A/X-CSharp.ipynb"])
+    joined = " ".join(cmd)
+    assert cmd[cmd.index("--revise-from") + 1] == trace
+    assert cmd[cmd.index("--out-dir") + 1] == str(Path(trace).parent)
+    assert "--source-nb" not in joined and "--meta-from" not in joined
+    assert "--from-spec" not in cmd and "--verify-from" not in cmd
+    v = make_sched(tmp_path / "v", [{"issue": 8, "notebook": "A/Y-CSharp.ipynb",
+                                     "verify_from": trace}])
+    cv = v.driver_command(v.items_by_key["#8:A/Y-CSharp.ipynb"])
+    assert "--verify-from" in cv and "--revise-from" not in cv
+    # an automatic resume (resume_from) keeps its own out-dir: only an EXPLICIT trace moves it
+    a = make_sched(tmp_path / "a", [{"issue": 9, "notebook": "A/Z.ipynb"}])
+    ca = a.driver_command(a.items_by_key["#9:A/Z.ipynb"], resume_from=trace)
+    assert "--verify-from" in ca and ca[ca.index("--out-dir") + 1] != str(Path(trace).parent)
+
+
+@pytest.mark.parametrize("item,match", [
+    ({"revise_from": "t.json", "verify_from": "t.json"}, "exclusive"),
+    ({"revise_from": "t.json", "source_nb": "A/T-Python.ipynb"}, "creation mode"),
+    ({"verify_from": "t.json", "from_spec": True, "meta_from": "A/M.ipynb"}, "creation mode"),
+    ({"revise_from": "t.json", "max_stage": 3}, "max_stage >= 4"),
+])
+def test_queue_refuses_contradictory_resume(tmp_path, item, match):
+    q = tmp_path / "q.jsonl"
+    q.write_text(json.dumps({"issue": 9, "notebook": "A/Z.ipynb", **item}) + "\n",
+                 encoding="utf-8")
+    with pytest.raises(S.QueueError, match=match):
+        S.load_queue(q)

@@ -33,7 +33,40 @@ const INDEXING_BATCH_SIZE = Math.max(1, parseInt(process.env.INDEXING_BATCH_SIZE
 // --- Circuit Breaker Configuration ---
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 2000; // 2 seconds
-const CIRCUIT_BREAKER_TIMEOUT_MS = 30000; // 30 seconds
+const CIRCUIT_BREAKER_TIMEOUT_MS = 30000; // 30 seconds — FIRST open window
+
+/**
+ * #4879: ceiling of the OPEN window, in ms. The window doubles with every
+ * consecutive fail-out past the trip threshold (30 s, 60 s, 120 s, …) up to
+ * this ceiling; one success resets it. Read at call time so tests can set it
+ * per-test via env.
+ *
+ * Why: with a fixed 30 s window, every indexer process of the fleet sent a full
+ * HALF_OPEN upsert (3 attempts of up to 15 s) into a stalled Qdrant every ~35 s,
+ * for as long as the stall lasted — the indexer kept feeding the saturation it
+ * was suffering from (measured 23/11: data plane dead, 100 % of the wave on
+ * `roo_tasks_semantic_index`).
+ *
+ * Default 900000 (15 min). `0`, any value below the first window, or any
+ * unparsable value is the kill-switch restoring the fixed 30 s window.
+ */
+export function breakerMaxOpenMs(): number {
+    const parsed = Number.parseInt(process.env.QDRANT_BREAKER_MAX_OPEN_MS ?? '900000', 10);
+    if (!Number.isFinite(parsed) || parsed < CIRCUIT_BREAKER_TIMEOUT_MS) return CIRCUIT_BREAKER_TIMEOUT_MS;
+    return parsed;
+}
+
+/**
+ * #4879: OPEN window for a given consecutive-failure count. The breaker trips
+ * at MAX_RETRY_ATTEMPTS failures with the first window; each further failure
+ * (a failed HALF_OPEN probe) doubles it, capped by {@link breakerMaxOpenMs}.
+ */
+export function breakerOpenWindowMs(failures: number): number {
+    const extra = Math.max(0, failures - MAX_RETRY_ATTEMPTS);
+    // Exponent bounded so the product stays finite; the cap does the real work.
+    const grown = CIRCUIT_BREAKER_TIMEOUT_MS * Math.pow(2, Math.min(extra, 20));
+    return Math.min(grown, breakerMaxOpenMs());
+}
 
 // --- #4352 (c.325): bounded in-task upsert recovery at the WINDOW boundary ---
 // One breaker window (+ margin) between recovery re-entries: after
@@ -41,6 +74,11 @@ const CIRCUIT_BREAKER_TIMEOUT_MS = 30000; // 30 seconds
 // CIRCUIT_BREAKER_TIMEOUT_MS, so a re-entry landing just past that window
 // probes HALF_OPEN with exactly one batch — the breaker's own semantics.
 const UPSERT_RECOVERY_PAUSE_MS = CIRCUIT_BREAKER_TIMEOUT_MS + 5000;
+// #4879 review W1: a grown breaker window (up to 15 min) is waited out in
+// slices of at most this length, each followed by the g5 fence check and an
+// onProgress beat — the inactivity watchdog (default 180 s) must keep seeing a
+// live loop. No Qdrant call happens between slices.
+const UPSERT_RECOVERY_SLICE_MS = 60000;
 
 /**
  * #4352 (c.325): total wall-clock budget a single indexTask ATTEMPT may spend
@@ -85,7 +123,7 @@ export interface CircuitBreakerSnapshot {
 export function getCircuitBreakerState(): CircuitBreakerSnapshot {
     let msUntilHalfOpen = 0;
     if (circuitBreakerState === 'OPEN') {
-        msUntilHalfOpen = Math.max(0, CIRCUIT_BREAKER_TIMEOUT_MS - (Date.now() - lastFailureTime));
+        msUntilHalfOpen = Math.max(0, breakerOpenWindowMs(failureCount) - (Date.now() - lastFailureTime));
     }
     return {
         state: circuitBreakerState,
@@ -105,7 +143,7 @@ export function isCircuitBreakerBlocking(): boolean {
         return false;
     }
     // OPEN — blocking unless the cooldown has elapsed (next call would probe via HALF_OPEN)
-    return (Date.now() - lastFailureTime) <= CIRCUIT_BREAKER_TIMEOUT_MS;
+    return (Date.now() - lastFailureTime) <= breakerOpenWindowMs(failureCount);
 }
 
 /** #2165: Test-only — reset breaker between unit tests without reimporting the module. */
@@ -386,7 +424,7 @@ function canMakeRequest(): boolean {
 
     if (circuitBreakerState === 'OPEN') {
         const timeSinceLastFailure = Date.now() - lastFailureTime;
-        if (timeSinceLastFailure > CIRCUIT_BREAKER_TIMEOUT_MS) {
+        if (timeSinceLastFailure > breakerOpenWindowMs(failureCount)) {
             circuitBreakerState = 'HALF_OPEN';
             console.log('🟡 Circuit breaker: HALF_OPEN - tentative de reconnexion');
             return true;
@@ -410,7 +448,7 @@ function recordFailure(): void {
 
     if (failureCount >= MAX_RETRY_ATTEMPTS) {
         circuitBreakerState = 'OPEN';
-        console.error(`🔴 Circuit breaker: OPEN - trop d'échecs (${failureCount}), arrêt pendant ${CIRCUIT_BREAKER_TIMEOUT_MS}ms`);
+        console.error(`🔴 Circuit breaker: OPEN - trop d'échecs (${failureCount}), arrêt pendant ${breakerOpenWindowMs(failureCount)}ms`);
     }
 }
 
@@ -721,7 +759,8 @@ export async function safeQdrantUpsert(points: PointStruct[], failureContext?: U
  * dedup resumes after what was written).
  *
  * This wrapper adds patience WITHOUT re-embedding: on a failed window upsert
- * it waits out one breaker window (30 s + margin) and re-attempts the SAME
+ * it waits until the breaker allows a probe (at least 30 s + margin; longer
+ * once the window has grown, #4879) and re-attempts the SAME
  * window — its vectors are still hot in the caller's `cachedResults`.
  *
  * Guards, in order:
@@ -734,8 +773,9 @@ export async function safeQdrantUpsert(points: PointStruct[], failureContext?: U
  * - The g5 inactivity fence is checked between every wait
  *   (`throwIfIndexingAborted`): a fenced run exits at its next checkpoint,
  *   exactly as before.
- * - `onProgress` fires on every re-entry, deliberately: the loop is alive and
- *   fence-checked, not hung. The watchdog keeps its authority over a probe
+ * - `onProgress` fires after every sleep slice (at most 60 s, #4879) and so
+ *   before every re-entry, deliberately: the loop is alive and fence-checked,
+ *   not hung. The watchdog keeps its authority over a probe
  *   that genuinely hangs (one upsert call stuck past the inactivity budget
  *   fires the fence → abort, unchanged).
  *
@@ -765,12 +805,20 @@ export async function safeQdrantUpsertWithWindowRecovery(
     console.warn(`⏳ [#4352-recovery] ${taskId}: window upsert failed — bounded in-task recovery (${budget.remainingMs}ms budget), embeddings kept hot`);
     while (budget.remainingMs > 0) {
         const iterStart = Date.now();
-        const pause = Math.min(UPSERT_RECOVERY_PAUSE_MS, budget.remainingMs);
-        await new Promise(resolve => setTimeout(resolve, pause));
-        // g5 fence between waits — a fenced run must not sleep through its abort.
-        throwIfIndexingAborted(options, taskId);
-        // Alive + fence-checked: this is deliberate bounded waiting, not a hang.
-        options?.onProgress?.();
+        // #4879: the breaker window grows with consecutive failures, so a fixed
+        // 35 s pause would re-enter while it is still OPEN. Wait for the breaker
+        // to allow its HALF_OPEN probe (+ margin), never less than one first window.
+        const untilProbe = getCircuitBreakerState().msUntilHalfOpen + 5000;
+        const pause = Math.min(Math.max(UPSERT_RECOVERY_PAUSE_MS, untilProbe), budget.remainingMs);
+        for (let slept = 0; slept < pause;) {
+            const slice = Math.min(UPSERT_RECOVERY_SLICE_MS, pause - slept);
+            await new Promise(resolve => setTimeout(resolve, slice));
+            slept += slice;
+            // g5 fence between waits — a fenced run must not sleep through its abort.
+            throwIfIndexingAborted(options, taskId);
+            // Alive + fence-checked: this is deliberate bounded waiting, not a hang.
+            options?.onProgress?.();
+        }
         success = await upsert(points, failureContext);
         budget.remainingMs -= Date.now() - iterStart;
         if (success) {

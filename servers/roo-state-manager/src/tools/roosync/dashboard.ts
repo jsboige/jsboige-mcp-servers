@@ -5386,7 +5386,8 @@ export async function condenseTextIfTooLarge(
   maxSizeBytes: number,
   label: string,
   passDeadlineMs?: number,
-  requiredSections?: readonly string[]
+  requiredSections?: readonly string[],
+  cloudFirst?: boolean
 ): Promise<string> {
   const sizeBytes = Buffer.byteLength(text, 'utf8');
   if (sizeBytes <= maxSizeBytes) return text;
@@ -5404,6 +5405,59 @@ export async function condenseTextIfTooLarge(
   // deterministic truncateToMaxSize floor is the last resort when it can't converge
   // (no client / empty output / exception / still-over-cap after a bounded retry).
   // (Status GROWTH is Mechanism 1's business — see generateStatusUpdate; not touched here.)
+  const capKb = Math.round(maxSizeBytes / 1024);
+  // Up to 2 LLM attempts. The 2nd targets a tighter budget (~80% of the cap) with a
+  // stronger instruction, used only if the 1st came back still over the limit.
+  const MAX_ATTEMPTS = 2;
+  let bestCandidate = text;
+  let bestSize = sizeBytes;
+
+  // #4872: the cloud chain's prompt + content guard, shared by the cloud-first order
+  // below and the trailing primary-then-cloud order. Artifact check runs INSIDE the
+  // chain (#4434 — a refusing model is a per-model failure, the next model is tried);
+  // with the section contract active, a section-dropping answer is one too (G7a-3).
+  const cloudGuardValidator = (content: string): string | null => {
+    const artifact = detectModelOutputArtifact(content);
+    if (artifact) return artifact;
+    if (sectionsContract) {
+      const dropped = missingSectionsOf(content, sectionsContract);
+      if (dropped.length > 0) return `dropped-required-sections (missing: ${dropped.join(', ')})`;
+    }
+    return null;
+  };
+  const cloudSystemPrompt = `Tu es un expert en synthèse. Condense le texte sous ${capKb} Ko en préservant TOUTE information critique (décisions, métriques chiffrées, dates, blocages). Fusionne les redondances, supprime le verbeux. Pas d'emojis, pas de prose. LAST-KNOWN-STATE WINS (#1502). N'extrapole rien qui ne soit pas dans le texte source.${sectionsContract ? ' CONSERVE les titres de sections du texte source — la condensation réduit, elle ne supprime aucune section (#4434).' : ''}`;
+  const runCloudChain = () => cloudCondenseWithRetry(
+    cloudSystemPrompt,
+    text,
+    {
+      maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs,
+      validate: cloudGuardValidator,
+    },
+  );
+
+  // #4872 (option (a), coordinateur 22/11): when the calling LEG is cloud-first
+  // (#4434), its size guard goes to the cloud tier FIRST too — the local primary
+  // becomes the fallback. Measured on ai-01 (324 logs, 22/11): primary-first
+  // produced 10/12 deterministic truncations — Swift debits ~22 tok/s, condensing
+  // ~1500 tokens needs ~70 s while the clamped attempt allows ~50 s, and the #3962
+  // reserve then refuses the retry ("pass deadline reached the cloud reserve").
+  // The guard inherits ITS LEG's switch (Status → CONDENSE_STATUS_CLOUD_FIRST,
+  // Summary → CONDENSE_SUMMARY_CLOUD_FIRST): one lever per leg covers the
+  // generating call AND the guard — the issue's "same switch, no second one".
+  if (cloudFirst) {
+    const cfCloud = await runCloudChain();
+    if (cfCloud && 'content' in cfCloud) {
+      const cfSize = Buffer.byteLength(cfCloud.content, 'utf8');
+      if (cfSize <= maxSizeBytes) {
+        logger.info(`#4872 cloud-first condensed ${label} under cap`, { afterKB: `${(cfSize / 1024).toFixed(1)}KB`, capKB: `${capKb}KB`, model: cfCloud.model });
+        return cfCloud.content;
+      }
+      if (cfSize < bestSize) { bestCandidate = cfCloud.content; bestSize = cfSize; }
+    }
+    // Cloud absent / failed / still over cap → fall through to the primary attempts
+    // (the repli). The trailing cloud block below is skipped: the chain already ran.
+  }
+
   let openai: OpenAI;
   try {
     openai = getChatOpenAIClient();
@@ -5414,13 +5468,6 @@ export async function condenseTextIfTooLarge(
     return truncateWithOmissionMarker(text, maxSizeBytes, label);
   }
   const modelId = getLLMModelId();
-  const capKb = Math.round(maxSizeBytes / 1024);
-
-  // Up to 2 LLM attempts. The 2nd targets a tighter budget (~80% of the cap) with a
-  // stronger instruction, used only if the 1st came back still over the limit.
-  const MAX_ATTEMPTS = 2;
-  let bestCandidate = text;
-  let bestSize = sizeBytes;
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     // #3962 piste 2: same deadline clamp as the pass condensers — the primary
@@ -5532,30 +5579,18 @@ RÈGLES :
   // validator): a refusing model is a per-model failure and the next model is tried.
   // #4434 G7a-3: with the section contract active, a section-dropping cloud answer
   // is a per-model failure too — same regime as the primary candidates above.
-  const fbCloudValidator = (content: string): string | null => {
-    const artifact = detectModelOutputArtifact(content);
-    if (artifact) return artifact;
-    if (sectionsContract) {
-      const dropped = missingSectionsOf(content, sectionsContract);
-      if (dropped.length > 0) return `dropped-required-sections (missing: ${dropped.join(', ')})`;
+  // #4872: skipped when the cloud-first order above already ran the chain — the
+  // primary attempts were the repli, the deterministic floor follows directly.
+  if (!cloudFirst) {
+    const fbCloud = await runCloudChain();
+    if (fbCloud && 'content' in fbCloud) {
+      const fbSize = Buffer.byteLength(fbCloud.content, 'utf8');
+      if (fbSize <= maxSizeBytes) {
+        logger.info(`#2719 cloud fallback condensed ${label} under cap`, { afterKB: `${(fbSize / 1024).toFixed(1)}KB`, capKB: `${capKb}KB` });
+        return fbCloud.content;
+      }
+      if (fbSize < bestSize) { bestCandidate = fbCloud.content; bestSize = fbSize; }
     }
-    return null;
-  };
-  const fbCloud = await cloudCondenseWithRetry(
-    `Tu es un expert en synthèse. Condense le texte sous ${capKb} Ko en préservant TOUTE information critique (décisions, métriques chiffrées, dates, blocages). Fusionne les redondances, supprime le verbeux. Pas d'emojis, pas de prose. LAST-KNOWN-STATE WINS (#1502). N'extrapole rien qui ne soit pas dans le texte source.${sectionsContract ? ' CONSERVE les titres de sections du texte source — la condensation réduit, elle ne supprime aucune section (#4434).' : ''}`,
-    text,
-    {
-      maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs,
-      validate: fbCloudValidator,
-    },
-  );
-  if (fbCloud && 'content' in fbCloud) {
-    const fbSize = Buffer.byteLength(fbCloud.content, 'utf8');
-    if (fbSize <= maxSizeBytes) {
-      logger.info(`#2719 cloud fallback condensed ${label} under cap`, { afterKB: `${(fbSize / 1024).toFixed(1)}KB`, capKB: `${capKb}KB` });
-      return fbCloud.content;
-    }
-    if (fbSize < bestSize) { bestCandidate = fbCloud.content; bestSize = fbSize; }
   }
 
   // LLM never converged under the cap (down, empty, or still oversized) → deterministic
@@ -7792,11 +7827,13 @@ async function condenseIntercom(
   newStatus = statusBudgetPass.status;
 
   // Both operations succeeded — now auto-condense if outputs exceed size limits
-  newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status', passDeadlineMs);
+  // #4872: each guard inherits ITS leg's cloud-first switch (#4434) — same lever
+  // as the generating call above, so a flipped leg condenses cloud-first end to end.
+  newStatus = await condenseTextIfTooLarge(newStatus, MAX_STATUS_SIZE_BYTES, 'Status', passDeadlineMs, undefined, statusCloudFirstEnabled());
   // #4434 G7a-3: the summary leg's shrink pass carries the section contract — a
   // 5 Ko re-condensation must not silently amputate the « États transverses »
   // section the generating leg's guard just secured.
-  llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary', passDeadlineMs, SUMMARY_REQUIRED_SECTIONS);
+  llmSummary = await condenseTextIfTooLarge(llmSummary, MAX_SUMMARY_SIZE_BYTES, 'Summary', passDeadlineMs, SUMMARY_REQUIRED_SECTIONS, summaryCloudFirstEnabled());
 
   // #3771: Post-LLM guardrail — the LLM has no GitHub API access and has been measured
   // fabricating terminal states (MERGÉ/CLOSED/« Merge validé ») for PR/issue numbers

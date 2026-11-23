@@ -1192,7 +1192,91 @@ export function expandHitBlock(
 /**
  * Handler principal de l'outil codebase_search
  */
+/**
+ * #4879: the phase a codebase_search call is in, so a call cut by the global
+ * deadline can say WHICH stage stalled instead of dying silently at the tool
+ * timeout. Mutated in place by {@link handleCodebaseSearchUnbounded}.
+ */
+export type CodebaseSearchPhaseName =
+	| 'workspace_resolution'
+	| 'collection_resolution'
+	| 'content_match_fallback'
+	| 'embedding'
+	| 'text_fallback'
+	| 'qdrant_query'
+	| 'post_processing';
+
+export interface CodebaseSearchPhase {
+	current: CodebaseSearchPhaseName;
+}
+
+/**
+ * #4879: global wall-clock deadline of one codebase_search call, in ms.
+ *
+ * Measured 23/11 (ai-01): with the Qdrant data plane stalled (metadata GETs in
+ * ~10 ms, every query/scroll/count timing out), the call stacked the variant
+ * probes, the content-match fallback and the query past the 180 s tool timeout
+ * and returned NOTHING — no class, no stage. The deadline turns that into a
+ * classified error naming the stalled phase, well inside the tool timeout.
+ *
+ * Default 50000. `0`, a negative or an unparsable value is the kill-switch
+ * (no deadline, the pre-#4879 behaviour). Read at call time.
+ */
+export function codebaseSearchDeadlineMs(): number {
+	const parsed = Number.parseInt(process.env.CODEBASE_SEARCH_DEADLINE_MS ?? '50000', 10);
+	if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+	return parsed;
+}
+
+/** #4879: the classified response returned when the global deadline fires. */
+export function buildDeadlineResponse(phase: CodebaseSearchPhaseName, deadlineMs: number): CallToolResult {
+	const mode = phase === 'embedding'
+		? 'embedding_timeout'
+		: phase === 'workspace_resolution' || phase === 'post_processing'
+			? 'unknown'
+			: 'qdrant_backend_slow';
+	const hint = mode === 'qdrant_backend_slow'
+		? 'Qdrant did not answer this stage in time. If GET /healthz and collection info stay fast while this persists, the Qdrant DATA plane (query/scroll/count) is stalled, not the service: check roosync_diagnose, then the Qdrant owner lane. Text fallback: roosync_search(action: "text").'
+		: mode === 'embedding_timeout'
+			? 'The embedding endpoint did not answer in time. Check the embeddings service; text fallback: roosync_search(action: "text").'
+			: 'The call stalled outside Qdrant and the embedder. Retry once; if it persists, report the phase.';
+	return {
+		isError: true,
+		content: [{
+			type: 'text',
+			text: JSON.stringify({
+				status: mode,
+				message: `codebase_search did not finish within its ${deadlineMs} ms deadline — stalled in phase "${phase}" (#4879)`,
+				hint,
+				phase,
+				deadline_ms: deadlineMs,
+			}, null, 2)
+		}]
+	};
+}
+
+/**
+ * #4879: codebase_search bounded by {@link codebaseSearchDeadlineMs}. The
+ * unbounded search keeps running after the deadline (no cancellation) — its
+ * own Qdrant/embedding timeouts end it; its late result is dropped.
+ */
 export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<CallToolResult> {
+	const phase: CodebaseSearchPhase = { current: 'workspace_resolution' };
+	const work = handleCodebaseSearchUnbounded(args, phase);
+	const deadlineMs = codebaseSearchDeadlineMs();
+	if (deadlineMs === 0) return work;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<CallToolResult>(resolve => {
+		timer = setTimeout(() => resolve(buildDeadlineResponse(phase.current, deadlineMs)), deadlineMs);
+	});
+	try {
+		return await Promise.race([work, deadline]);
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
+async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: CodebaseSearchPhase): Promise<CallToolResult> {
 	const {
 		query,
 		workspace: explicitWorkspace,
@@ -1243,6 +1327,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 	const fetchLimit = Math.min(effectiveLimit * 3, MAX_LIMIT);
 
 	try {
+		phase.current = 'collection_resolution';
 		// 1. Calculer les variantes possibles du nom de collection
 		const primaryCollectionName = getWorkspaceCollectionName(workspace);
 		const collectionVariants = getWorkspaceCollectionVariants(workspace);
@@ -1365,6 +1450,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			collectionName = '';
 		}
 		if (!collectionName) {
+			phase.current = 'content_match_fallback';
 			const allWsCollections = await listWorkspaceCollections();
 
 			// Pre-sort candidates by points_count desc (heuristic: the indexed workspace is
@@ -1509,6 +1595,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			return buildBreakerOpenResponse(query, workspace);
 		}
 
+		phase.current = 'embedding';
 		const embeddingClient = getCodebaseEmbeddingQueryClient();
 		const embeddingModel = getCodebaseEmbeddingModel();
 
@@ -1547,6 +1634,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			// #3279: Network/timeout/unexpected — record failure (opens breaker for TTL),
 			// then attempt text fallback so the agent gets SOMETHING instead of a dead error.
 			recordCodebaseEmbeddingFailure(errorMsg);
+			phase.current = 'text_fallback';
 			const fallbackResult = await tryTextFallback(qdrant, collectionName, query, effectiveLimit, directory_prefix, workspace);
 			if (fallbackResult) {
 				return fallbackResult;
@@ -1595,6 +1683,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 		// #2267: Use native Qdrant timeout (seconds) to prevent indefinite hangs.
 		// Follows #1275 convention used in task-searcher.ts and search-semantic.tool.ts.
 		const searchTimeoutSec = Math.ceil(parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10) / 1000);
+		phase.current = 'qdrant_query';
 		// #4352 (a3): the main query is STARTED here and awaited after the supplement
 		// query, so the two corpora cost one round trip together, not two. The
 		// supplement call is fail-open and bounded by its own timeout, so awaiting it
@@ -1630,6 +1719,7 @@ export async function handleCodebaseSearch(args: CodebaseSearchArgs): Promise<Ca
 			timeoutSec: searchTimeoutSec,
 		});
 		const searchResults = await searchPromise;
+		phase.current = 'post_processing';
 
 		// #4352: the coverage count started before the embedding, read within
 		// CODEBASE_COVERAGE_WAIT_MS; still running → reported as pending.

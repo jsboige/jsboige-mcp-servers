@@ -202,6 +202,48 @@ def test_create_segments_assembles_and_reports(monkeypatch):
     assert rec2["stage2_raw_tail"]                           # diagnosable without a re-run
 
 
+def test_count_exact_idx_less_plan_is_sequentially_addressable(monkeypatch):
+    """CoursIA#28079 (23/11, Terra): the coder agent's system prompt documents a plan
+    schema {"type","intent","expects"} with NO idx, and the model answers its system
+    prompt over the harness schema — plan AND repair re-ask both came back idx-less,
+    12 entries for a 12-cell source, in order. That plan satisfies the documented
+    contract ("idx distincts couvrant 0..last, dans l'ordre — ni plus, ni moins") as-is:
+    sequential fill, recorded in the trace, no repair call spent."""
+    plan_cells = [{"type": "markdown" if i % 2 else "code",
+                   "intent": f"cellule {i}", "expects": "sortie"} for i in range(12)]
+    canned = [{"cells": [{"idx": i, "cell_type": "markdown" if i % 2 else "code",
+                          "source": f"src {i}"} for i in range(D.CREATE_SEGMENT)]}
+              for _ in range(0, 1)]
+    # answer every asked idx back from the tranche actually sent (the schema literal
+    # at the end of the prompt carries "<index du plan>", not digits — safe to grep all)
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
+        import re as _re
+        asked = sorted(int(m) for m in _re.findall(r'"idx":\s*(\d+)', prompt))
+        return {"response": "```json\n" + json.dumps(
+            {"cells": [{"idx": i, "cell_type": "code", "source": f"src {i}"} for i in asked]})
+            + "\n```", "conversation_id": "cx"}
+
+    monkeypatch.setattr(D, "sk_call_retry", fake)
+    rec: dict = {}
+    out = asyncio.run(D.create_segments(None, None, rec, None, plan_cells, 12, ""))
+    assert rec.get("creation_plan_seq_fill") == {"cells": 12, "source": "plan"}
+    assert "creation_plan_repair" not in rec                    # no repair call spent
+    assert [c["idx"] for c in out["cells"]] == list(range(12))  # assembled in plan order
+    assert "verdict" not in rec
+
+
+def test_count_mismatch_or_partial_idx_stays_unaddressable():
+    """The fill is bounded: a plan whose count does not match the source (#27106's
+    honest verdict), or one carrying PARTIAL idx, is never silently re-addressed."""
+    wrong_count = [{"type": "code", "intent": "x", "expects": "y"} for _ in range(12)]
+    assert D.creation_plan_seq_fill(wrong_count, 10) is False
+    partial = [{"type": "code", "intent": "x"} for _ in range(3)]
+    partial[1]["idx"] = 1
+    assert D.creation_plan_seq_fill(partial, 3) is False
+    assert D.creation_plan_addressing(wrong_count, 10) == [
+        f"position {p}: missing/non-integer idx" for p in range(12)]
+
+
 def test_create_segments_short_segment_repaired(monkeypatch):
     """17/11 #27104 blank pass: segment 3 answered 6 of 8 cells, the loop appended
     silently, the built notebook was 2 cells short and ONLY the final verify caught
@@ -527,7 +569,10 @@ def test_creation_json_prompt_injects_twin_prose():
     assert "PROSE DU JUMEAU PYTHON" in p and "AUTORITÉ" in p
     assert "<cellule 1 — prose à recopier>" in p
     assert "Gibbard–Satterthwaite" in p          # the twin prose, verbatim
-    assert "<cellule 2" not in p                 # CODE cells derive from the plan
+    # CODE cells get no PROSE pin — since 22/11 they carry the twin's code + real outputs
+    # as the reference to reproduce (values reinvented without it: 25/105 reject findings)
+    assert "<cellule 2 — prose à recopier>" not in p
+    assert "<cellule 2 — SORTIE RÉELLE du jumeau (référence)>" in p
     # no twin (correction mode / absent) -> no prose block, prompt shape unchanged
     p_plain = D.creation_json_prompt(seg, 3, "conv")
     assert "PROSE DU JUMEAU PYTHON" not in p_plain and "TRANCHE" in p_plain and "conv" in p_plain

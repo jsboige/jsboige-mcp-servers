@@ -18,6 +18,11 @@ import { condenseTextIfTooLarge, truncateToMaxSize } from '../dashboard.js';
 // Mirror the LLM-client mock used by dashboard.test.ts.
 const mockChatCreate = vi.fn();
 const mockGetChatClient = vi.fn();
+// #4872: the cloud chain's client is mockable too — inert (null) by default so the
+// deterministic HARD-cap behavior these tests guard remains unchanged; the
+// cloud-first describe below flips it to a simulated cloud client.
+const mockFallbackCreate = vi.fn();
+const mockGetFallbackClient = vi.fn();
 
 vi.mock('@/services/openai', () => ({
   getChatOpenAIClient: () => mockGetChatClient(),
@@ -25,7 +30,7 @@ vi.mock('@/services/openai', () => ({
   getLLMModelId: () => 'test-model',
   // #2719: cloud fallback is inert in this suite (returns null) so the
   // deterministic HARD-cap behavior these tests guard remains unchanged.
-  getFallbackChatOpenAIClient: () => null,
+  getFallbackChatOpenAIClient: () => mockGetFallbackClient(),
   getFallbackLLMModelId: () => 'test-fallback-model',
 }));
 
@@ -41,6 +46,10 @@ beforeEach(() => {
   // Default: LLM available, wired to mockChatCreate.
   mockGetChatClient.mockReset();
   mockGetChatClient.mockReturnValue({ chat: { completions: { create: mockChatCreate } } });
+  // Default: cloud chain unconfigured (#2719 inert), same as before #4872.
+  mockGetFallbackClient.mockReset();
+  mockGetFallbackClient.mockReturnValue(null);
+  mockFallbackCreate.mockReset();
   delete process.env.OPENAI_BASE_URL;
 });
 
@@ -116,5 +125,55 @@ describe('condenseTextIfTooLarge — cap is a hard guarantee', () => {
     const out = await condenseTextIfTooLarge(oversizedText, CAP, 'Status');
     expect(bytes(out)).toBeLessThanOrEqual(CAP);
     expect(mockChatCreate).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('#4872 — cloud-first order for the size guard', () => {
+  const cloudReply = (content: string) => ({ choices: [{ message: { content }, finish_reason: 'stop' }] });
+
+  it('cloudFirst sends the FIRST attempt to the cloud — the primary is never called', async () => {
+    // The issue's failing-on-base assertion: a simulated cloud client is available
+    // and the guard is asked cloud-first → attempt 1 goes to the cloud chain. On the
+    // base (no cloudFirst order) this FAILS: the primary gets the first call.
+    mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+    mockFallbackCreate.mockResolvedValue(cloudReply('cloud condensed under cap'));
+    const out = await condenseTextIfTooLarge(oversizedText, CAP, 'Status', undefined, undefined, true);
+    expect(out).toBe('cloud condensed under cap');
+    expect(bytes(out)).toBeLessThanOrEqual(CAP);
+    expect(mockFallbackCreate).toHaveBeenCalledTimes(1); // first and only attempt: cloud
+    expect(mockChatCreate).not.toHaveBeenCalled(); // primary NEVER called
+  });
+
+  it('cloudFirst with no cloud client falls back to the primary attempts', async () => {
+    // Cloud unconfigured (null client, the #2719 inert default) → the primary LLM
+    // remains the repli, then the deterministic floor. Order is cloud-first but the
+    // cloud leg is absent: behavior must match the legacy path.
+    mockChatCreate.mockResolvedValue({ choices: [{ message: { content: 'primary condensed under cap' } }] });
+    const out = await condenseTextIfTooLarge(oversizedText, CAP, 'Status', undefined, undefined, true);
+    expect(out).toBe('primary condensed under cap');
+    expect(mockChatCreate).toHaveBeenCalledTimes(1);
+    expect(mockFallbackCreate).not.toHaveBeenCalled();
+  });
+
+  it('cloudFirst with still-oversized cloud content falls back to the primary', async () => {
+    // Cloud answers but stays over the cap → best-candidate tracked, primary
+    // attempts run, its under-cap answer wins. The trailing legacy cloud block must
+    // NOT run a second cloud chain (the cloud already had its turn).
+    mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+    mockFallbackCreate.mockResolvedValue(cloudReply(oversizedLLMReply));
+    mockChatCreate.mockResolvedValue({ choices: [{ message: { content: 'primary condensed under cap' } }] });
+    const out = await condenseTextIfTooLarge(oversizedText, CAP, 'Status', undefined, undefined, true);
+    expect(out).toBe('primary condensed under cap');
+    expect(mockFallbackCreate).toHaveBeenCalledTimes(1); // exactly one cloud round
+    expect(mockChatCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it('default (no cloudFirst flag) keeps the legacy order: primary first, cloud untouched', async () => {
+    mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+    mockChatCreate.mockResolvedValue({ choices: [{ message: { content: 'primary condensed under cap' } }] });
+    const out = await condenseTextIfTooLarge(oversizedText, CAP, 'Status');
+    expect(out).toBe('primary condensed under cap');
+    expect(mockChatCreate).toHaveBeenCalledTimes(1);
+    expect(mockFallbackCreate).not.toHaveBeenCalled();
   });
 });
