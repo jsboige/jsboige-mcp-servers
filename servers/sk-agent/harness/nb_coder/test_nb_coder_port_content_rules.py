@@ -55,6 +55,29 @@ def test_the_rules_forbid_stub_results_and_recipe_substitution():
     assert body in D.revision_prompt(ISSUE, "view", FINDINGS, twin_view="<twin>")
 
 
+def test_the_rules_pin_exercises_to_the_source_and_forbid_partial_segments():
+    """2026-11-23 batch o14, two classes measured on the same material:
+    - CoursIA#27741 (verify-reject, 2 major): the builder converted source
+      *definitions* (`centre_m`, `predire_recolle`, `session_bookmaker`) into
+      exercise stubs and doubled each with a `<name>_calcule` ordinary cell — the
+      stub was not solution-free AND the computation was a duplicate. The source's
+      own exercises are elsewhere (cells 29-34); those, and only those, are the
+      additions.
+    - CoursIA#27742 (stage2-short-segment:8): the model withheld cells 12 and 14
+      because a dependency « n'existe pas dans les cellules précédentes ». A partial
+      segment kills the whole generation, so creation must say so outright.
+    """
+    r = D.PORT_CONTENT_RULES
+    assert "EXERCICES DE LA SOURCE, RIEN DE PLUS" in r
+    assert "jamais convertie en stub" in r
+    assert "<nom>_calcule" in r
+    assert "AUCUNE CELLULE OMISE" in r
+    assert "segment partiel" in r
+    body = _body(r)
+    assert body in D.creation_json_prompt(
+        [{"idx": 1, "cell_type": "code", "titre": "x"}], 3, "")
+
+
 def test_every_creation_slice_carries_the_rules():
     seg = [{"idx": 3, "cell_type": "code", "titre": "x"}]
     assert D.PORT_CONTENT_RULES in D.creation_json_prompt(seg, 5, "")

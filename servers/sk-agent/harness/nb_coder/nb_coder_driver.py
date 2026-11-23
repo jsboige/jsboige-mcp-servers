@@ -1599,13 +1599,17 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
 # ---------------------------------------------------------------- creation mode (--source-nb)
 LOCAL_MODULE_DEF_CAP = 24   # signatures listed per local module
 LOCAL_MODULE_FILE_CAP = 12  # files listed per imported package
-LOCAL_MODULE_TOTAL_CAP = 20  # entries across every import, prompt stays bounded
+LOCAL_MODULE_TOTAL_CAP = 24  # entries across every import, prompt stays bounded
+                             # (o14: 7 named leaves + up to 4 promoted siblings must
+                             # fit before the alphabetical signature fill)
 LOCAL_MODULE_RENDER_DEF_CAP = 6   # signatures RENDERED per module in the prompt block
                                    # (o8 ICT: 24x13 rendered signatures = ~61k-token stage-2
                                    #  prompts, unparseable stub answers)
 LOCAL_MODULE_BLOCK_CHAR_CAP = 6000  # signature-listing part of the block
 LOCAL_MODULE_SOURCE_FILE_CAP = 30000   # chars of ONE imported leaf's full source
 LOCAL_MODULE_SOURCE_TOTAL_CAP = 140000  # chars across every inlined source
+LOCAL_MODULE_SIBLING_SOURCE_CAP = 4    # extra leaves promoted to SOURCE (pass 1b):
+                                       # the named leaves' own relative imports (o14)
 # (o9 ICT, 23/11: with signatures only, the build call — a tool-less single shot —
 #  answered « le contenu de basin_family.py … n'est pas disponibles dans le message,
 #  et la lecture demandée précédemment a échoué » and died stage2-short-segment:0 on
@@ -1695,6 +1699,29 @@ def _module_entry(folder: Path, p: Path, name: str, source: bool) -> dict:
     return e
 
 
+def _sibling_imports(txt: str) -> set[str]:
+    """Module names a leaf imports from its OWN package.
+
+    Relative (`from .time_arrow import transition_matrix`, `from . import x`) and
+    absolute intra-package (`from ict.time_arrow import y`) styles both reduce to
+    the last segment; names that do not resolve beside the leaf drop out at the
+    `.is_file()` check. Measured 23/11 (o14, CoursIA#27740):
+    `ict/spectral.py:50` is `from .time_arrow import transition_matrix` — and
+    time_arrow.py reached no prompt at all (pass-2 lists the package's first 12
+    files alphabetically; `t` sorts past them), so the model refused to invent
+    the normalisation. A founded refusal, and a material gap.
+    """
+    out: set[str] = set()
+    for m in re.finditer(r"^\s*from\s+\.(\w+)\s+import\b", txt, re.M):
+        out.add(m.group(1))
+    for m in re.finditer(r"^\s*from\s+\.\s+import\s+([\w, ()]+)", txt, re.M):
+        out.update(n.strip().split(" as ")[0].strip()
+                   for n in m.group(1).strip("()").split(","))
+    for m in re.finditer(r"^\s*(?:from|import)\s+([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)+)", txt, re.M):
+        out.add(m.group(1).split(".")[-1])
+    return {n for n in out if n and re.fullmatch(r"\w+", n)}
+
+
 def local_modules(src_nb) -> list[dict]:
     """Python modules a source notebook imports that live in its worktree.
 
@@ -1745,6 +1772,8 @@ def local_modules(src_nb) -> list[dict]:
         out.append(_module_entry(folder, p, name, source))
         return True
 
+    src_paths: list[Path] = []
+
     # pass 1 — the leaves the notebook NAMES: from-import names that are files,
     # and every import resolving to a SINGLE file (dotted leaf, beside module)
     for dotted, names in stmts:
@@ -1753,12 +1782,34 @@ def local_modules(src_nb) -> list[dict]:
             for root in (folder, *list(folder.parents)[:2]):
                 cand = root.joinpath(*parts).with_suffix(".py")
                 if cand.is_file():
-                    _emit(cand, f"{dotted}.{leaf}", True)
+                    if _emit(cand, f"{dotted}.{leaf}", True):
+                        src_paths.append(cand)
                     break
     for dotted, _ in stmts:
         files = _resolve_import(folder, dotted)
         if len(files) == 1:
-            _emit(files[0], dotted, True)
+            if _emit(files[0], dotted, True):
+                src_paths.append(files[0])
+
+    # pass 1b — the named leaves' OWN imports, one relative level (bounded): the
+    # material a leaf needs is not only the leaf. o14 (23/11, CoursIA#27740):
+    # spectral.py carries `from .time_arrow import transition_matrix`, time_arrow
+    # never reached the prompt, and the model's refusal named exactly that gap
+    # (« sa seule signature ne permet pas d'établir les conventions exactes »).
+    promoted = 0
+    for leaf in src_paths:
+        if promoted >= LOCAL_MODULE_SIBLING_SOURCE_CAP:
+            break
+        try:
+            txt = leaf.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        for name in sorted(_sibling_imports(txt)):
+            if promoted >= LOCAL_MODULE_SIBLING_SOURCE_CAP:
+                break
+            cand = leaf.parent / f"{name}.py"
+            if cand.is_file() and _emit(cand, f"{leaf.parent.name}.{name}", True):
+                promoted += 1
 
     # pass 2 — bare packages: signature listing only (capped), never crowding
     # out the leaves above
@@ -1965,6 +2016,23 @@ PORT_CONTENT_RULES = (
     "l'exercice pour obtenir le résultat est rejeté (mesuré 23/11, fournée o13 : 2 carnets "
     "rejetés sur 4 tours à ce seul motif). De même, TOUS les régimes et étapes que la "
     "source calcule doivent être calculés — jamais « R0/R1 restent à compléter ».\n"
+    "- EXERCICES DE LA SOURCE, RIEN DE PLUS : les cellules d'exercice de ton carnet "
+    "reproduisent les exercices que le jumeau Python pose LUI-MÊME, et seulement ceux-là. "
+    "Une cellule de DÉFINITION de la source — une fonction qu'elle donne toute faite, "
+    "`centre_m`, `predire_recolle`, `session_bookmaker` — se reproduit à l'identique comme "
+    "cellule ORDINAIRE, jamais convertie en stub. Ne dédouble jamais une fonction de la "
+    "source en un stub `<nom>` plus une cellule `<nom>_calcule` qui en donne la réponse : "
+    "le stub n'est alors pas sans solution et le calcul est un doublon (mesuré 23/11, "
+    "fournée o14, CoursIA#27741 : 2 findings majeurs « solution révélée », les stubs "
+    "`centre_m`/`predire_recolle` doublés par `centre_calcule`/`predire_calcule`). Si la "
+    "source ne pose pas d'exercice sur un point, tu n'en inventes pas.\n"
+    "- AUCUNE CELLULE OMISE : rendre un segment partiel (des cellules absentes de ta "
+    "réponse) tue la génération ENTIÈRE — le harnais s'arrête sur le premier segment "
+    "incomplet (mesuré 23/11, fournée o14 : « cellules 12 et 14 non fournies » = "
+    "stage2-short-segment:8, zéro tour de vérification). Une dépendance absente des "
+    "cellules précédentes ne justifie ni une cellule vide, ni une cellule retirée : le "
+    "jumeau Python porte le code de référence, écris-le toi-même dans la cellule. "
+    "Chaque cellule du segment demandé est livrée, entière.\n"
     "- RECETTE À L'IDENTIQUE : si la source obtient une mesure par un appel de "
     "bibliothèque (`SP.spectral_summary`, `SE.sensitivity_distribution`, "
     "`SM.make_strategies`…), appelle l'équivalent C# de CETTE bibliothèque. Ne lui "

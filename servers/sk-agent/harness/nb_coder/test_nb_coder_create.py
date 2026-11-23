@@ -871,6 +871,78 @@ def test_a_package_above_the_notebook_folder_is_part_of_the_material(tmp_path, m
         "no machine path leaks into the prompt"
 
 
+def test_a_named_leaf_pulls_its_own_relative_imports_into_the_source(tmp_path, monkeypatch):
+    """o14 (23/11, CoursIA#27740): the model refused to invent the normalisation —
+    « l'implémentation de ict.time_arrow.transition_matrix … n'a pas été fournie ».
+    `spectral.py` carries `from .time_arrow import transition_matrix`; the leaf was
+    inlined, its sibling never was, and pass 2 lists the package alphabetically (12
+    files) so `time_arrow.py` sorted past the cap. A named leaf's own relative
+    imports are promoted to SOURCE too, bounded by LOCAL_MODULE_SIBLING_SOURCE_CAP.
+    """
+    pkg = tmp_path / "Series" / "ict"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "time_arrow.py").write_text(
+        "def transition_matrix(n, rho):\n"
+        "    return [[rho if i != j else 1.0 for j in range(n)] for i in range(n)]\n",
+        encoding="utf-8")
+    (pkg / "spectral.py").write_text(
+        "from .time_arrow import transition_matrix\n"
+        "def spectral_summary(g, rho=0.3):\n    return transition_matrix(2, rho)\n",
+        encoding="utf-8")
+    # sorts FIRST in pass 2: the sibling must not depend on that listing order
+    (pkg / "aaa.py").write_text("def filler():\n    return 0\n", encoding="utf-8")
+    nbdir = tmp_path / "Series" / "ICT-15j"
+    nbdir.mkdir()
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source":
+                     "from ict import spectral as SP\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    (nbdir / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    mods = D.local_modules("Series/ICT-15j/T-Python.ipynb")
+    by_file = {m["file"]: m for m in mods}
+    assert "Series/ict/spectral.py" in by_file
+    assert "Series/ict/time_arrow.py" in by_file, \
+        "a named leaf's own relative import is material too"
+    dep = by_file["Series/ict/time_arrow.py"]
+    assert "source" in dep, "the sibling is promoted to SOURCE, not a signature list"
+    assert "def transition_matrix" in dep["source"]
+    assert "def transition_matrix" in D.local_module_block(mods), \
+        "the promoted sibling's code reaches the prompt"
+
+
+def test_sibling_promotion_is_bounded(tmp_path, monkeypatch):
+    """A leaf importing seven siblings must not blow the prompt: at most
+    LOCAL_MODULE_SIBLING_SOURCE_CAP inlined sources, however many are imported."""
+    pkg = tmp_path / "ict"
+    pkg.mkdir()
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    lines = "".join(f"from .dep{i} import f{i}\n" for i in range(7))
+    (pkg / "core.py").write_text(lines + "def f():\n    return 0\n", encoding="utf-8")
+    for i in range(7):
+        (pkg / f"dep{i}.py").write_text(f"def f{i}():\n    return {i}\n", encoding="utf-8")
+    nbdir = tmp_path / "nb"
+    nbdir.mkdir()
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source": "from ict import core\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    (nbdir / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    mods = D.local_modules("nb/T-Python.ipynb")
+    promoted = [m for m in mods if "source" in m and m["file"].startswith("ict/dep")]
+    assert len(promoted) == D.LOCAL_MODULE_SIBLING_SOURCE_CAP
+
+
+def test_the_sibling_import_forms_are_all_read():
+    """`from .x import y`, `from . import a, b` and an absolute intra-package
+    `from ict.x import y` all name a sibling; a third-party import never does."""
+    f = D._sibling_imports
+    assert "time_arrow" in f("from .time_arrow import transition_matrix\n")
+    assert {"a", "b"} <= f("from . import a, b\n")
+    assert "time_arrow" in f("from ict.time_arrow import y\n")
+    assert f("import numpy as np\n") == set()
+
+
 def test_a_module_block_is_bounded_and_names_the_rest():
     """o8 (23/11): rendering every signature of every ancestor-resolved file
     pushed stage-2 prompts to ~61k tokens, and the model's answers degraded to
