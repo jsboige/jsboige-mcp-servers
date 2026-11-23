@@ -128,6 +128,12 @@ GITHUB_RESET_MARGIN_S = 30.0
 # The next launch starts with the same read-only qualification check, which remains
 # the sole authority. Permanent GEL/LABEL/HORSFLOTTE refusals are deliberately absent.
 CLAIM_RELEASED_VERDICT = "refused-claim-not-qualified:RELACHEE"
+# A --revise-from / --verify-from launch whose reservation step is refused WRAPS its
+# inner verdict (ms#1859's driver): "refused-revise-no-reservation:<inner>". Measured
+# live 23/11 on CoursIA#28069: the wrapped RELACHEE sailed past the exact-match
+# deferral and terminated the grain. Classification, failure_class and last_verdict
+# all see the unwrapped inner form; the raw line stays in the driver log.
+REVISE_REFUSAL_PREFIX = "refused-revise-no-reservation:"
 CLAIM_RELEASED_WAIT_S = 3 * 86400.0 + 60.0
 
 
@@ -1039,6 +1045,8 @@ class Scheduler:
                     except Exception:
                         continue
                     break
+            if verdict.startswith(REVISE_REFUSAL_PREFIX):
+                verdict = verdict[len(REVISE_REFUSAL_PREFIX):]
             g = self.state["grains"][key]
             elapsed = round(now - entry["started"], 1)
             g.update({"finished": utcnow(), "returncode": rc,
