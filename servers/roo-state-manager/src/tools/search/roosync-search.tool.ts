@@ -309,7 +309,13 @@ export async function handleRooSyncSearch(
                 && INFRASTRUCTURE_ERROR_MODES.has(semanticErrorMode);
             const failedComponent = failureComponent(semanticErrorMode);
             const degradedWarning = isInfrastructureMode
-                ? (failedComponent === 'qdrant'
+                // #4880: a SLOW Qdrant is not an unreachable one — the banner said
+                // "unreachable" while diagnose measured qdrant_connection: success
+                // and /healthz answered in 20 ms (ai-01 23/11).
+                ? (semanticErrorMode === 'qdrant_backend_slow'
+                    ? '⚠️ SEMANTIC DEGRADED — qdrant (vector store) reachable but too slow on this search (timed out): results are TEXT search only. ' +
+                      'Run roosync_search(action: "diagnose") to inspect the collection latency; retrying once the server is warm may succeed.'
+                    : failedComponent === 'qdrant'
                     ? '⚠️ SEMANTIC DEGRADED — qdrant (vector store) unreachable: results are TEXT search only. ' +
                       'Run roosync_search(action: "diagnose") to inspect the qdrant endpoint (QDRANT_URL / the public ingress).'
                     : failedComponent === 'embeddings'

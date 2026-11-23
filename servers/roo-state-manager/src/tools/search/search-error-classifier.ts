@@ -275,6 +275,15 @@ export function unwrapTransportCause(error: unknown): { code: string; message: s
 }
 
 /**
+ * #4880: the reason Qdrant gave for a failed request, as the JS client carries
+ * it (`error.data.status.error`); null when the error has none.
+ */
+export function qdrantServerReason(error: unknown): string | null {
+	const reason = (error as any)?.data?.status?.error;
+	return typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+}
+
+/**
  * Check if an error is an HTTP 5xx server error (eligible for circuit breaker).
  */
 function isHttpServerError(error: unknown): boolean {
@@ -295,7 +304,15 @@ export async function classifySearchError(
 	 * eats the classification. Undefined = no bound (roosync_search). */
 	probeBudgetMs?: number
 ): Promise<ClassifiedError> {
-	const errorMsg = error instanceof Error ? error.message : String(error);
+	const baseErrorMsg = error instanceof Error ? error.message : String(error);
+	// #4880: the Qdrant JS client (1.20) throws with the HTTP status text as its
+	// message ("Internal Server Error") and the server's reason in
+	// `data.status.error` — e.g. "Timeout error: Operation 'Search' timed out
+	// after 999ms" (measured ai-01 23/11). Without the reason, Qdrant's own
+	// search timeout matched none of the message tests below and fell to
+	// `unknown`; the #4352 QDRANT_OWN_SEARCH_TIMEOUT test never saw its text.
+	const qdrantReason = qdrantServerReason(error);
+	const errorMsg = qdrantReason ? `${baseErrorMsg}: ${qdrantReason}` : baseErrorMsg;
 	// #3344: undici sets no `.code` on "fetch failed" — the errno lives on `.cause`.
 	const unwrapped = unwrapTransportCause(error);
 	const errorCode = (error as any)?.code || unwrapped?.code || '';
@@ -400,6 +417,9 @@ export async function classifySearchError(
 		// (Qdrant's own "Operation 'Search' timed out", #4352) still enters.
 		const isEmbeddingSdkTimeout = /^request timed out\.?$/i.test(errorMsg);
 		if ((!isEmbeddingSdkTimeout && isTimeoutLikeError(error)) ||
+			// #4880: Qdrant's own search timeout arrives as a 500 whose message is
+			// only "Internal Server Error" — its reason (joined above) decides.
+			QDRANT_OWN_SEARCH_TIMEOUT.test(errorMsg) ||
 			errorStatus === 408 ||
 			isHttpServerError(error)) {
 			// Probe health endpoint to classify

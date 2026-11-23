@@ -94,6 +94,30 @@ export function isClassifiedInfrastructureError(result: CallToolResult): boolean
 const SEMANTIC_RETRY_COUNT = parseInt(process.env.SEMANTIC_RETRY_COUNT || '2');
 const SEMANTIC_RETRY_BACKOFF_MS = parseInt(process.env.SEMANTIC_RETRY_BACKOFF_MS || '2000');
 
+/** #4880: headroom between the server-side search budget and the client abort. */
+const SEMANTIC_SEARCH_CLIENT_MARGIN_MS = 5000;
+
+/**
+ * #4880: the vector query hands Qdrant a server-side budget
+ * (QDRANT_SEARCH_TIMEOUT_MS, 30 s by default), but the shared client aborted
+ * every request at QDRANT_TIMEOUT_MS (15 s) first — so that budget never
+ * applied, and each cut attempt was retried twice: 3 x 15 s + 2 s + 4 s of
+ * backoff, the 52-57 s measured on ai-01 (23/11) before the text fallback,
+ * while the same query shape answered in 8-14.5 s on a warm server.
+ *
+ * Returns the client abort budget for the vector queries: the server-side
+ * budget plus a margin, so Qdrant's own timeout (a 500 that names it) fires
+ * before the client gives up. `null` = keep the shared client — the kill
+ * switch SEMANTIC_SEARCH_TIMEOUT_ALIGN=0 restores the legacy behaviour
+ * (shared client, timeouts retried).
+ */
+export function resolveSemanticSearchClientTimeoutMs(env: NodeJS.ProcessEnv = process.env): number | null {
+    if ((env.SEMANTIC_SEARCH_TIMEOUT_ALIGN ?? '').trim() === '0') return null;
+    const raw = parseInt(env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10);
+    const serverBudgetMs = Number.isFinite(raw) && raw > 0 ? raw : 30000;
+    return Math.ceil(serverBudgetMs / 1000) * 1000 + SEMANTIC_SEARCH_CLIENT_MARGIN_MS;
+}
+
 /**
  * #1394 : enrichissement `conversation_stats` d'un groupe de résultats depuis
  * la projection UnifiedTask du squelette en cache. Sémantique legacy
@@ -447,17 +471,21 @@ function setCachedQueryEmbedding(query: string, embedding: number[]): void {
  * #249/#2167: Retry wrapper with exponential backoff for transient network/timeout errors.
  * Retries on 5xx, abort, timeout, and resource exhaustion (EMFILE).
  * Does NOT retry on 4xx or validation errors.
+ * #4880: `retryTimeouts: false` stops retrying an abort/timeout — for a call
+ * whose attempt already spent the whole search budget, a retry only multiplies
+ * the wait before the fallback (and re-queues the same heavy read on a server
+ * that is slow precisely on it).
  */
-async function withRetry<T>(fn: () => Promise<T>, retries: number = SEMANTIC_RETRY_COUNT, backoffMs: number = SEMANTIC_RETRY_BACKOFF_MS): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries: number = SEMANTIC_RETRY_COUNT, backoffMs: number = SEMANTIC_RETRY_BACKOFF_MS, retryTimeouts: boolean = true): Promise<T> {
     try {
         return await fn();
     } catch (error) {
         if (retries <= 0) throw error;
-        const isRetryable = isHttpServerError(error) || isAbortOrTimeout(error) || isResourceExhausted(error);
+        const isRetryable = isHttpServerError(error) || (retryTimeouts && isAbortOrTimeout(error)) || isResourceExhausted(error);
         if (!isRetryable) throw error;
         console.warn(`[WARN] #249/#2300: Retrying after transient error (${retries} left): ${error instanceof Error ? error.message : String(error)}`);
         await new Promise(resolve => setTimeout(resolve, backoffMs));
-        return withRetry(fn, retries - 1, backoffMs * 2);
+        return withRetry(fn, retries - 1, backoffMs * 2, retryTimeouts);
     }
 }
 
@@ -1836,9 +1864,18 @@ export const searchTasksByContentTool = {
             // 14M+ vector collection. Sent only when strictly positive so the
             // historical no-offset request shape (and its tests) stay unchanged.
             const effectiveOffset = Math.min(Math.max(offset || 0, 0), 10000);
+            // #4880: the vector queries (first window + refills) run on a client whose
+            // abort sits above `searchTimeoutSec`, so the server-side budget applies,
+            // and an attempt that timed out is not retried (it already spent the
+            // budget). Kill switch SEMANTIC_SEARCH_TIMEOUT_ALIGN=0 → shared client.
+            const searchClientTimeoutMs = resolveSemanticSearchClientTimeoutMs();
+            const searchQdrant = searchClientTimeoutMs === null
+                ? qdrant
+                : getQdrantClient({ timeoutMs: searchClientTimeoutMs });
+            const retrySearchTimeouts = searchClientTimeoutMs === null;
             // #4808: client 1.20.0 removed the deprecated search() — query({nearest}) is the
             // API-equivalent form; the normalization below already handles { points: [...] }.
-            const searchResults = await withRetry(() => qdrant.query(collectionName, {
+            const searchResults = await withRetry(() => searchQdrant.query(collectionName, {
                 query: { nearest: queryVector },
                 limit: diversifyLimit,
                 ...(effectiveOffset > 0 ? { offset: effectiveOffset } : {}),
@@ -1855,7 +1892,7 @@ export const searchTasksByContentTool = {
                     include: ANN_PAYLOAD_INCLUDE
                 },
                 timeout: searchTimeoutSec,
-            }));
+            }), SEMANTIC_RETRY_COUNT, SEMANTIC_RETRY_BACKOFF_MS, retrySearchTimeouts);
 
 
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête
@@ -1901,7 +1938,7 @@ export const searchTasksByContentTool = {
                 const refillOffset = effectiveOffset + candidatesFetched;
                 if (!budgetShort || !windowExhausted || !filterConsumed) break;
                 if (refillOffset > ANN_MAX_OFFSET) break;
-                const refillRaw = await withRetry(() => qdrant.query(collectionName, {
+                const refillRaw = await withRetry(() => searchQdrant.query(collectionName, {
                     query: { nearest: queryVector },
                     limit: diversifyLimit,
                     offset: refillOffset,
@@ -1916,7 +1953,7 @@ export const searchTasksByContentTool = {
                     },
                     with_payload: { include: ANN_PAYLOAD_INCLUDE },
                     timeout: searchTimeoutSec,
-                }));
+                }), SEMANTIC_RETRY_COUNT, SEMANTIC_RETRY_BACKOFF_MS, retrySearchTimeouts);
                 const refillPoints = Array.isArray(refillRaw)
                     ? refillRaw
                     : (refillRaw as any).result || (refillRaw as any).points || [];
