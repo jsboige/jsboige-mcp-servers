@@ -931,3 +931,76 @@ def test_queue_refuses_contradictory_resume(tmp_path, item, match):
                  encoding="utf-8")
     with pytest.raises(S.QueueError, match=match):
         S.load_queue(q)
+
+
+# ------------------------------------------- RELACHEE override probe (23/11)
+def _deferred_relache(tmp_path):
+    """One grain deferred on refused-claim-not-qualified:RELACHEE, not_before 3 days out."""
+    s = make_sched(tmp_path, [item(1)])
+    key = next(iter(s.state["grains"]))
+    g = s.state["grains"][key]
+    g.update({"status": "deferred", "last_verdict": S.CLAIM_RELEASED_VERDICT,
+              "not_before": 1000.0 + S.CLAIM_RELEASED_WAIT_S})
+    return s, key, g
+
+
+def test_a_fresh_override_lifts_the_three_day_relache_wait(tmp_path, monkeypatch):
+    """Measured 23/11 on CoursIA#28077/#28080/#28050/#28079: the coordinator's four
+    [OVERRIDE]s (03:41Z) lifted releases caused by a harness defect, yet the grains
+    slept the FULL three-day window from the refusal — and each retry pushed its own
+    not_before three days further. A newer [OVERRIDE] marker is the event the guard
+    itself reads: the probe must drop not_before so the guard re-qualifies now."""
+    s, key, g = _deferred_relache(tmp_path)
+    calls = []
+
+    class P:
+        returncode = 0
+        stdout = "myia-ai-01 [OVERRIDE] lane myia-po-2028:claudish -- paths: ...\n"
+        stderr = ""
+
+    def fake_run(argv, **kw):
+        calls.append(argv)
+        return P()
+
+    monkeypatch.setattr(S.subprocess, "run", fake_run)
+    s._relache_override_probe(now=1000.0)
+    assert calls, "the probe reads the issue's last comment"
+    assert g["not_before"] == 1000.0, "the OVERRIDE lifts the three-day wait"
+    events = [l for l in (tmp_path / "state" / "scheduler.jsonl").read_text().splitlines()]
+    assert any("relache-override-lifted" in l for l in events)
+
+
+def test_the_probe_is_best_effort_on_a_gh_failure(tmp_path, monkeypatch):
+    """A dead gh leaves the three-day guard exactly as before — never an early retry."""
+    s, key, g = _deferred_relache(tmp_path)
+    before = g["not_before"]
+
+    class P:
+        returncode = 1
+        stdout = ""
+        stderr = "HTTP 503"
+
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: P())
+    s._relache_override_probe(now=1000.0)
+    assert g["not_before"] == before
+
+
+def test_the_probe_is_rate_limited_per_interval(tmp_path, monkeypatch):
+    s, key, g = _deferred_relache(tmp_path)
+    n = []
+
+    class P:
+        returncode = 0
+        stdout = "myia-ai-01 [OVERRIDE] lane x\n"
+        stderr = ""
+
+    monkeypatch.setattr(S.subprocess, "run",
+                        lambda *a, **k: (n.append(1), P())[1])
+    s._relache_override_probe(now=1000.0)
+    s._relache_override_probe(now=1000.0 + 60)   # inside the interval: no call
+    assert len(n) == 1
+    # The first probe LIFTED the wait (OVERRIDE seen), so the grain is no longer a
+    # deferred candidate. Re-arm the defer to test the interval gate on its own.
+    g["not_before"] = 1000.0 + S.CLAIM_RELEASED_WAIT_S
+    s._relache_override_probe(now=1000.0 + S.RELACHEE_PROBE_INTERVAL_S + 1)
+    assert len(n) == 2
