@@ -194,6 +194,47 @@ def rate_limit_verdict(reset: int | None) -> str:
     return "deferred-by-github-rate-limit" + (f":reset={reset}" if reset else "")
 
 
+def refresh_gh_token(repo_dir: Path) -> str | None:
+    """Mint a fresh installation token and rebind GH_TOKEN for this process.
+
+    Measured 2026-11-23: the scheduler exported a 1-hour App token at launch; one hour
+    later every gh leg 401'd ("Bad credentials"). The verify stage recorded verify-error,
+    the claim guard inherited the dead GH_TOKEN and answered rc=2
+    (refused-claim-check-not-scoped), and reprises refused at reservation. Rebinding here
+    covers every child of the run -- claim guard, verifier, PR stage -- with a live token.
+    Returns the token (None when no App is configured: the logged-in account's own).
+    """
+    tok = app_token(repo_dir)
+    if tok:
+        os.environ["GH_TOKEN"] = tok
+    return tok
+
+
+_CONTENT_VERDICTS = ("verify-reject", "verify-approved", "verify-same-served-model",
+                     "gates-ok", "built-executed-ok", "built-executed-counts-broken")
+
+
+def content_verdict_class(verdict: str | None) -> bool:
+    """True for verdicts that JUDGE the artifact, never for infra refusals/errors.
+
+    The trace's top-level verdict is the run's honest terminal state, but a later refusal
+    OVERWRITES it -- a 401 on verify (verify-error) or a starved claim guard
+    (refused-claim-check-not-scoped) then re-refused every reprise
+    (refused-revise-not-rejected:..., measured twice on 23/11). last_content_verdict
+    carries the last real judgment past those overwrites; run_revision reads it.
+    """
+    v = str(verdict or "")
+    return v in _CONTENT_VERDICTS or v.startswith(("gates-failed", "built-execution-failed"))
+
+
+def note_content_verdict(rec: dict, verdict: str) -> str:
+    """Set the run's verdict, remembering it when it judges the artifact."""
+    rec["verdict"] = verdict
+    if content_verdict_class(verdict):
+        rec["last_content_verdict"] = verdict
+    return verdict
+
+
 def app_token(repo_dir: Path) -> str | None:
     """Requirement #5: 1-hour installation token, never persisted, never in the model context.
     Without a GitHub App, the token of a logged-in gh account that can push (pinned_gh_token)."""
@@ -5664,11 +5705,11 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
     if rc == 0 and entry.get("verdict") == "approve" and entry["identity"]["status"] == "same":
         # producer != verifier is a rule on MODELS, not on agent names: an approval signed by
         # the model that wrote the draft is no verification, so it never reaches a PR.
-        rec["verdict"] = "verify-same-served-model"
+        note_content_verdict(rec, "verify-same-served-model")
     elif rc == 0 and entry.get("verdict") == "approve":
-        rec["verdict"] = "verify-approved"
+        note_content_verdict(rec, "verify-approved")
     elif rc == 1 and entry.get("verdict") == "reject":
-        rec["verdict"] = "verify-reject"
+        note_content_verdict(rec, "verify-reject")
     else:
         rec["verdict"] = "verify-error"
 
@@ -6816,7 +6857,7 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
                                  kernel_name=kname)
         rec["gates_s"] = round(time.time() - tg, 1)
         bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
-        rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
+        note_content_verdict(rec, "gates-ok" if not bad else f"gates-failed:{','.join(bad)}")
     if args.max_stage >= 4 and rec.get("verdict") == "gates-ok":
         stage4_verify(args, rec, src_nb, built_path, out_dir, prior=prior)
     # A gate failure is actionable by the builder (a cell to rewrite), and until now it
@@ -7042,7 +7083,7 @@ def _prior_src_nb(prior: dict, wt_path: Path, notebook: str) -> Path:
 # and so that stage 5 composes the same PR body as an uninterrupted run.
 _REVISE_CARRY = ("plan", "kernel", "kernel_cwd", "create_mode", "create_metadata", "src_nb",
                  "built_notebook", "conversation_id", "execution", "c2", "gates", "structure",
-                 "verify", "revisions", "exec_mode", "repo_origin")
+                 "verify", "revisions", "exec_mode", "repo_origin", "last_content_verdict")
 
 
 async def run_revision(args, rec: dict) -> dict:
@@ -7075,6 +7116,11 @@ async def run_revision(args, rec: dict) -> dict:
         rec["verdict"] = "refused-revise-trace-mismatch"
         return rec
     late_refused = False
+    # A refusal/error may have OVERWRITTEN the top-level verdict after the real judgment
+    # (23/11: verify-error from a dead token, refused-claim-check-not-scoped from the same).
+    # The content field, when present, is what this gate decides on; old traces fall back
+    # to the top-level verdict unchanged.
+    content_prior = prior.get("last_content_verdict") or prior.get("verdict")
     if resume_from:
         # a late-claim refusal is resumable once the holder RELEASED the notebook: the
         # build was approved and only the reservation failed (21/11, #27851). The live
@@ -7084,18 +7130,18 @@ async def run_revision(args, rec: dict) -> dict:
         if prior.get("verdict") != "verify-error" and not late_refused:
             rec["verdict"] = f"refused-verify-not-crashed:{prior.get('verdict')}"
             return rec
-    elif prior.get("verdict") != "verify-reject":
+    elif content_prior != "verify-reject":
         # gates-failed:<gates> is resumable too (20/11: w2u lost 2 grains to it one
         # base BEFORE gate-repair landed): the trace carries the failing gates and the
         # build on disk — repair findings are synthesized from the gates exactly like
         # the in-run path, and the paid build is re-used instead of rebuilt.
         gate_resume = None
-        if str(prior.get("verdict") or "").startswith("gates-failed"):
+        if str(content_prior or "").startswith("gates-failed"):
             gate_resume = gate_repair_findings({"gates": prior.get("gates") or []})
             if not gate_resume:
-                rec["verdict"] = f"refused-gate-repair-unrepairable:{prior.get('verdict')}"
+                rec["verdict"] = f"refused-gate-repair-unrepairable:{content_prior}"
                 return rec
-        elif prior.get("verdict") == "built-execution-failed":
+        elif content_prior == "built-execution-failed":
             # the build on disk carries its persisted error outputs: findings come from
             # them, the paid build is repaired instead of rebuilt (a missing build is
             # refused below by the on-disk checks, before any spend)
@@ -7107,7 +7153,7 @@ async def run_revision(args, rec: dict) -> dict:
                     rec["verdict"] = "refused-exec-repair-unrepairable:built-execution-failed"
                     return rec
         else:
-            rec["verdict"] = f"refused-revise-not-rejected:{prior.get('verdict')}"
+            rec["verdict"] = f"refused-revise-not-rejected:{content_prior}"
             return rec
     prior_cr = (prior.get("stages") or {}).get("claim_reservation")
     live_cr = None
@@ -7175,13 +7221,17 @@ async def run_revision(args, rec: dict) -> dict:
     if "jsboige/CoursIA" not in origin and not args.allow_foreign_origin:
         rec["verdict"] = f"refused-foreign-origin:{origin or 'no-origin'}"
         return rec
+    token = refresh_gh_token(repo)
+    if not token and (os.environ.get("NBCODER_GH_APP_ID") or os.environ.get("NBCODER_GH_KEY")):
+        # spending under dead credentials cost two waves of poisoned traces on 23/11
+        rec["verdict"] = "refused-gh-token-refresh"
+        return rec
     rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane,
                                                _norm_rel(args.notebook))
     refused = claim_verdict(rec["stages"]["claim_check"])
     if refused:
         rec["verdict"] = refused
         return rec
-    token = app_token(repo)
     issue = fetch_issue("jsboige/CoursIA", args.issue, token, _norm_rel(args.notebook))
     if (issue.get("spec_comment") or {}).get("status") == "none-for-target":
         rec["verdict"] = "refused-no-spec-for-target"
@@ -7245,7 +7295,10 @@ async def run(args, rec: dict) -> dict:
     if "jsboige/CoursIA" not in origin and not args.allow_foreign_origin:
         rec["verdict"] = f"refused-foreign-origin:{origin or 'no-origin'}"
         return rec
-    token = app_token(repo)
+    token = refresh_gh_token(repo)
+    if not token and (os.environ.get("NBCODER_GH_APP_ID") or os.environ.get("NBCODER_GH_KEY")):
+        rec["verdict"] = "refused-gh-token-refresh"
+        return rec
     conventions = read_conventions(args.conventions)
     rec["conventions"] = {"path": args.conventions, "chars": len(conventions)}
 
@@ -7916,6 +7969,8 @@ def main() -> int:
                              f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
         shutil.copy2(out, keep)
         rec["revised_from"] = (rec.get("revised_from") or {}) | {"kept_as": str(keep)}
+    if content_verdict_class(rec.get("verdict")):
+        rec["last_content_verdict"] = rec["verdict"]
     out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
     with open(Path(args.out_dir) / "ledger.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps({k: rec.get(k) for k in

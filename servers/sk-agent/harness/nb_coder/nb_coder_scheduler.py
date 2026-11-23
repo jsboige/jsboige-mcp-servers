@@ -537,6 +537,29 @@ class GuardClaims:
         return p.returncode, (p.stdout or "") + (p.stderr or "")
 
 
+
+def refresh_gh_env(repo: str | Path) -> None:
+    """Keep GH_TOKEN live across a long --watch run (measured 23/11: the 1-hour App token
+    exported at launch expired mid-bench and every scheduler-side gh leg 401'd). Re-mint
+    once per poll; a failed mint leaves the previous value -- the driver's own refresh is
+    the hard gate before any spend.
+    """
+    app_id, key = os.environ.get("NBCODER_GH_APP_ID"), os.environ.get("NBCODER_GH_KEY")
+    if not app_id or not key:
+        return
+    script = Path(repo) / "scripts/secrets/github_app_token.py"
+    try:
+        p = subprocess.run([sys.executable, str(script), "--app-id", app_id, "--key", key,
+                            "--repo", "jsboige/CoursIA", "--quiet"],
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=60)
+        tok = (p.stdout or "").strip().splitlines()[-1] if p.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        tok = ""
+    if tok:
+        os.environ["GH_TOKEN"] = tok
+
+
 class Scheduler:
     """Pure orchestration. spawn/gate/sleep/clock/git/claims are injectable for offline tests."""
 
@@ -1312,6 +1335,7 @@ class Scheduler:
         self._reconcile_previous_runs()
         deadline = self.clock() + self.args.timeout_s if self.args.timeout_s else None
         while True:
+            refresh_gh_env(getattr(self.args, "repo", ""))
             summary = self.tick()
             if self.args.once:
                 return 0

@@ -21,6 +21,7 @@ session, no GitHub.
 import asyncio
 import contextlib
 import json
+import os
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -587,6 +588,48 @@ def test_resume_refusals_spend_nothing(monkeypatch, tmp_path, over, args_kw, ver
     seen = _stub_resume(monkeypatch)
     got = _resume(_rev_args(tmp_path, _trace(tmp_path, **over), **args_kw))
     assert got["verdict"].startswith(verdict) and seen["loop"] == 0
+
+
+def test_a_refusal_poisoned_trace_still_revises(monkeypatch, tmp_path):
+    """23/11 (two waves, one morning): a dead App token made the verify stage write
+    verify-error and the claim guard answer rc=2 -- both overwrote the trace's top-level
+    verdict AFTER a real verify-reject, and this gate then re-refused every reprise
+    (refused-revise-not-rejected:refused-claim-check-not-scoped). last_content_verdict
+    carries the last real judgment past those writes."""
+    seen = _stub_resume(monkeypatch)
+    got = _resume(_rev_args(tmp_path, _trace(
+        tmp_path, verdict="refused-claim-check-not-scoped",
+        last_content_verdict="verify-reject")))
+    assert got["verdict"] == "pr-created" and seen["loop"] == 1 and seen["pr"] == 1
+
+
+def test_a_poisoned_trace_without_a_content_verdict_still_refuses(monkeypatch, tmp_path):
+    # old traces carry no last_content_verdict: the top-level verdict decides, unchanged
+    seen = _stub_resume(monkeypatch)
+    got = _resume(_rev_args(tmp_path, _trace(
+        tmp_path, verdict="refused-claim-check-not-scoped")))
+    assert got["verdict"].startswith("refused-revise-not-rejected:refused-claim")
+    assert seen["loop"] == 0
+
+
+def test_content_verdict_class_separates_judgments_from_infra():
+    for v in ("verify-reject", "verify-approved", "verify-same-served-model",
+              "gates-ok", "gates-failed:parity", "built-execution-failed",
+              "built-executed-ok", "built-executed-counts-broken"):
+        assert D.content_verdict_class(v), v
+    for v in ("verify-error", "refused-claim-check-not-scoped",
+              "refused-revise-not-rejected:verify-error", "crashed:RuntimeError",
+              "pr-created", "deferred-by-github-rate-limit:reset=1", None, ""):
+        assert not D.content_verdict_class(v), v
+
+
+def test_refresh_gh_token_rebinds_the_environment(monkeypatch):
+    monkeypatch.setattr(D, "app_token", lambda repo: "ghs_fresh")
+    assert D.refresh_gh_token(Path("x")) == "ghs_fresh"
+    assert os.environ["GH_TOKEN"] == "ghs_fresh"
+    monkeypatch.setattr(D, "app_token", lambda repo: None)
+    assert D.refresh_gh_token(Path("x")) is None
+    assert os.environ["GH_TOKEN"] == "ghs_fresh"   # a failed mint never clobbers
 
 
 def test_resume_refuses_a_missing_trace(monkeypatch, tmp_path):
