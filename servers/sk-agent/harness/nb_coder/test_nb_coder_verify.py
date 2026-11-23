@@ -194,6 +194,26 @@ def test_prompt_scopes_the_verdict_to_the_deliverable():
     assert "PAR LE LIVRABLE" in p
 
 
+def test_prompt_teaches_the_stochastic_parity_convention():
+    """Fournée o12 (23/11): the builder doctrine worked (cells computed for real) but
+    the critic rejected the Monte-Carlo divergence itself — partials flipping sign at
+    the same seed, simulation profits 1859 vs 1993 — demanding value parity that the
+    repo's own merged twins (ICT-15h, #27734) declare impossible. The verifier prompt
+    must judge PROTOCOL parity for drawn quantities, value parity only for
+    deterministic ones, and keep rejecting placeholders. Also: the coord-refs gate
+    strips Epic/see/part-of/lane from cells — that removal is harness-imposed, never
+    'lost content'."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "divergence de valeurs STOCHASTIQUES" in p
+    assert "parité du PROTOCOLE" in p
+    assert "xorshift64*" in p
+    assert "n'est PAS un motif de rejet" in p
+    assert "indisponible" in p                 # placeholder stays a firm reject
+    assert "références de coordination retirées" in p
+    assert "jamais comme contenu perdu" in p
+
+
 def test_prompt_fences_out_pr_stage_repo_artifacts():
     """CoursIA#27440 (23/11): eight verify-rejects round after round on criteria the
     ISSUE body lists but the HARNESS only satisfies at PR stage -- twin_pairs.d

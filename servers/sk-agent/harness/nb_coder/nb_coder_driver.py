@@ -1972,7 +1972,10 @@ PORT_CONTENT_RULES = (
     "ce carnet +0.427 »). Un jumeau C# exécute POUR DE VRAI : jamais de cellule "
     "« indisponible », « non calculé » ni message d'excuse à la place d'un calcul "
     "(rejet vérificateur garanti — mesuré 23/11, fournée o11 : 4 carnets rejetés à ce "
-    "seul motif après 3-4 tours de révision).\n")
+    "seul motif après 3-4 tours de révision). Ce port est LIVRABLE et approuvé dans ce "
+    "dépôt : le jumeau mergé ICT-15h en est la preuve de bout en bout (RNG xorshift64* "
+    "seedé, protocole identique, écarts nommés en prose). L'équivalence exigée est "
+    "celle du PROTOCOLE, pas celle des tirages.\n")
 
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
