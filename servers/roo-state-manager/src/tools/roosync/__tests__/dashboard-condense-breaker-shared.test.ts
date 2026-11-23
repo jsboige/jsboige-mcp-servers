@@ -134,7 +134,7 @@ describe('#3962 piste 5 — host-shared condensation breaker', { timeout: 30000 
       const dflt = a.__condenseBreakerHooks.stateFile();
       process.env.OPENAI_BASE_URL = 'http://localhost:5002/v1';
       const one = a.__condenseBreakerHooks.stateFile();
-      process.env.OPENAI_BASE_URL = 'http://192.168.0.47:5002/v1';
+      process.env.OPENAI_BASE_URL = 'http://10.0.0.5:5002/v1';
       const other = a.__condenseBreakerHooks.stateFile();
 
       expect(dflt).not.toBe(one);
