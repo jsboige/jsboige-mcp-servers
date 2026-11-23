@@ -656,6 +656,52 @@ def test_back_link_on_a_crlf_port_keeps_its_line_endings():
         assert (repo / src).read_bytes().count(b"\r\n") == 0  # LF twin stays LF
 
 
+def test_a_whitespace_only_reformat_is_normalised_and_declared():
+    """CoursIA#28242 (23/11): the built port carried ONE model-emitted
+    ``"outputs": [`` + ``]`` where the dumper writes ``[]``; the round-trip
+    refused, the README row and the nav edges were never applied, and the
+    PR's guards went red. A difference that is ONLY insignificant whitespace
+    keeps the data byte-exact, so it is normalised and reported instead."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        new, src = _pair(repo, ARG_BAR)
+        raw = (repo / new).read_bytes().decode("utf-8")
+        expanded = raw.replace('   "outputs": [],',
+                               '   "outputs": [\n   ],', 1)
+        assert expanded != raw                       # the fixture really carries it
+        (repo / new).write_bytes(expanded.encode("utf-8"))
+        first = nbci.integrate(repo, new, src)
+        assert first["back"]["todo"] and new in first["touched"]
+        assert first["back"].get("normalized") is True
+        after = (repo / new).read_bytes().decode("utf-8")
+        assert '"outputs": [\n   ]' not in after     # canonical shape restored
+        assert "Serie-03b-Python.ipynb" in after     # the link did land
+        second = nbci.integrate(repo, new, src)
+        assert not second["back"].get("normalized")  # byte-exact now, nothing to say
+
+
+def test_a_non_whitespace_serialisation_difference_still_refuses():
+    """The tolerance above is whitespace ONLY. The dumper cannot reproduce an
+    escaped solidus (`\\/` parses to `/`, which json re-emits bare), and that
+    is a real serialisation choice -- not ours to silently rewrite. The loud
+    refusal stays for everything the whitespace test does not explain."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        new, src = _pair(repo, ARG_BAR)
+        raw = (repo / new).read_bytes().decode("utf-8")
+        escaped = raw.replace("let x = 1;", "let x = 1; \\/\\/ c", 1)
+        assert escaped != raw
+        (repo / new).write_bytes(escaped.encode("utf-8"))
+        try:
+            nbci.integrate(repo, new, src)
+        except ValueError as exc:
+            assert "byte-faithful round-trip failed" in str(exc)
+        else:                                        # pragma: no cover
+            raise AssertionError("a non-whitespace difference must keep the refusal")
+
+
 def test_back_link_mirrors_the_bar_twin_label():
     """po-2028 folders: the copied bar carries `[Version C#](…)` -> the link
     back reads `Version Python`, the folder's word."""

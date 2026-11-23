@@ -186,14 +186,34 @@ def dump_nb(nb: dict, fmt: dict) -> str:
     return out.replace("\n", "\r\n") if fmt.get("newline") == "\r\n" else out
 
 
-def apply_nb(path: Path, nb: dict, fmt: dict, original_raw: str) -> None:
+_INSIGNIFICANT_WS = re.compile(r"\s+")
+
+
+def apply_nb(path: Path, nb: dict, fmt: dict, original_raw: str) -> bool:
     """Write a notebook only if the format round-trips: the unchanged parse must
     reproduce the original bytes, else the edit would silently reformat the
-    whole file (a whole-file diff a reviewer cannot inspect)."""
-    if dump_nb(json.loads(original_raw), fmt) != original_raw:
-        raise ValueError(f"{path.name}: byte-faithful round-trip failed -- "
-                         "unknown notebook formatting, refusing to write")
+    whole file (a whole-file diff a reviewer cannot inspect).
+
+    A file that differs from its own canonical dump ONLY by insignificant
+    whitespace still carries its data byte-exactly, and refusing it costs the
+    README row and the nav edge -- which is what turns the port's guards red.
+    Measured 23/11 (CoursIA#28242): one model-emitted
+    ``"outputs": [<newline>]`` where the dumper writes ``[]``. Both texts
+    encode the SAME parsed object, so string literals are identical in them;
+    a difference that survives stripping whitespace is a real one and keeps
+    the refusal. Returns True when the file had to be normalised (the caller
+    declares it), False on a byte-exact round-trip.
+    """
+    canonical = dump_nb(json.loads(original_raw), fmt)
+    normalized = False
+    if canonical != original_raw:
+        if (_INSIGNIFICANT_WS.sub("", canonical)
+                != _INSIGNIFICANT_WS.sub("", original_raw)):
+            raise ValueError(f"{path.name}: byte-faithful round-trip failed -- "
+                             "unknown notebook formatting, refusing to write")
+        normalized = True
     path.write_bytes(dump_nb(nb, fmt).encode("utf-8"))
+    return normalized
 
 
 def cell_text(cell: dict) -> str:
@@ -762,7 +782,9 @@ def _finish_plan(path: Path, nb: dict, fmt: dict, raw: str, plan: dict) -> dict:
 def apply_nav_link(action: dict) -> bool:
     if not action.get("todo"):
         return False
-    apply_nb(Path(action["file"]), action["_nb"], action["_fmt"], action["_raw"])
+    if apply_nb(Path(action["file"]), action["_nb"], action["_fmt"],
+                action["_raw"]):
+        action["normalized"] = True   # whitespace-only reformat, declared here
     return True
 
 
