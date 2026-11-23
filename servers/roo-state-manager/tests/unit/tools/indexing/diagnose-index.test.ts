@@ -54,6 +54,7 @@ function parseDiagnostics(result: any): any {
 function createMockQdrant(overrides: Partial<{
     getCollections: ReturnType<typeof vi.fn>;
     getCollection: ReturnType<typeof vi.fn>;
+    query: ReturnType<typeof vi.fn>;
 }> = {}) {
     return {
         getCollections: overrides.getCollections ?? vi.fn().mockResolvedValue({
@@ -71,7 +72,10 @@ function createMockQdrant(overrides: Partial<{
                     }
                 }
             }
-        })
+        }),
+        // #4880 — diagnose now times a bounded search probe on the real search path:
+        // the mock must answer it, otherwise the healthy path degrades.
+        query: overrides.query ?? vi.fn().mockResolvedValue({ points: [] })
     };
 }
 
