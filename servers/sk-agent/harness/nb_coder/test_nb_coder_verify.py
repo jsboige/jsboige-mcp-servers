@@ -208,6 +208,16 @@ def test_prompt_fences_out_pr_stage_repo_artifacts():
     assert "twin_pairs.d/" in p
     assert "CATALOG-STATUS" in p
     assert "APRÈS ton verdict" in p
+    # 23/11: the fence named the pair registration but not the two edits
+    # nb_coder_integrate also writes at stage PR — the inbound nav edge on the
+    # source twin and the folder's README row. Three port grains (28206, 28211,
+    # 28213) rejected round after round on "Le lien entrant [Version C#] est
+    # absent du carnet Python de référence", i.e. on a criterion the harness
+    # satisfies after the verdict; #28225 proves the integration writes it.
+    assert "arête de navigation entrante" in p
+    assert "Version C#" in p
+    assert "README" in p
+    assert "satisfait par le harnais" in p
 
 
 # ------------------------------------------------- call errors reach the trace (21/11)
