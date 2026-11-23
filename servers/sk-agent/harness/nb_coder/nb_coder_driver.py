@@ -194,6 +194,47 @@ def rate_limit_verdict(reset: int | None) -> str:
     return "deferred-by-github-rate-limit" + (f":reset={reset}" if reset else "")
 
 
+def refresh_gh_token(repo_dir: Path) -> str | None:
+    """Mint a fresh installation token and rebind GH_TOKEN for this process.
+
+    Measured 2026-11-23: the scheduler exported a 1-hour App token at launch; one hour
+    later every gh leg 401'd ("Bad credentials"). The verify stage recorded verify-error,
+    the claim guard inherited the dead GH_TOKEN and answered rc=2
+    (refused-claim-check-not-scoped), and reprises refused at reservation. Rebinding here
+    covers every child of the run -- claim guard, verifier, PR stage -- with a live token.
+    Returns the token (None when no App is configured: the logged-in account's own).
+    """
+    tok = app_token(repo_dir)
+    if tok:
+        os.environ["GH_TOKEN"] = tok
+    return tok
+
+
+_CONTENT_VERDICTS = ("verify-reject", "verify-approved", "verify-same-served-model",
+                     "gates-ok", "built-executed-ok", "built-executed-counts-broken")
+
+
+def content_verdict_class(verdict: str | None) -> bool:
+    """True for verdicts that JUDGE the artifact, never for infra refusals/errors.
+
+    The trace's top-level verdict is the run's honest terminal state, but a later refusal
+    OVERWRITES it -- a 401 on verify (verify-error) or a starved claim guard
+    (refused-claim-check-not-scoped) then re-refused every reprise
+    (refused-revise-not-rejected:..., measured twice on 23/11). last_content_verdict
+    carries the last real judgment past those overwrites; run_revision reads it.
+    """
+    v = str(verdict or "")
+    return v in _CONTENT_VERDICTS or v.startswith(("gates-failed", "built-execution-failed"))
+
+
+def note_content_verdict(rec: dict, verdict: str) -> str:
+    """Set the run's verdict, remembering it when it judges the artifact."""
+    rec["verdict"] = verdict
+    if content_verdict_class(verdict):
+        rec["last_content_verdict"] = verdict
+    return verdict
+
+
 def app_token(repo_dir: Path) -> str | None:
     """Requirement #5: 1-hour installation token, never persisted, never in the model context.
     Without a GitHub App, the token of a logged-in gh account that can push (pinned_gh_token)."""
@@ -1556,8 +1597,128 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
 
 
 # ---------------------------------------------------------------- creation mode (--source-nb)
+LOCAL_MODULE_DEF_CAP = 24   # signatures listed per local module
+LOCAL_MODULE_FILE_CAP = 12  # files listed per imported package
+LOCAL_MODULE_TOTAL_CAP = 20  # entries across every import, prompt stays bounded
+
+
+def _top_level_defs(p: Path) -> list[str]:
+    try:
+        txt = p.read_text(encoding="utf-8", errors="replace")
+    except Exception:
+        return []
+    # the signature may span lines (detect_regime does) — `[^)]*` crosses newlines
+    return [f"{fn}({' '.join(a.split())})"[:160]
+            for fn, a in re.findall(r"^def\s+(\w+)\s*\(([^)]*)\)", txt, re.M)
+            ][:LOCAL_MODULE_DEF_CAP]
+
+
+def _resolve_import(folder: Path, dotted: str) -> list[Path]:
+    """Files one import names: `<module>.py`, or every `<pkg>/*.py` for a package.
+
+    Searched in the notebook's folder, then its first two ancestors. Series
+    folders keep their package one level ABOVE the notebook folder (measured
+    23/11, CoursIA#27740/#27737: `ICT-Series/ict/` imported from
+    `ICT-Series/ICT-15-IntegratedComplexity/ICT-15j-…`); the beside-the-notebook
+    rule alone found nothing, the coder refused to invent the module — correctly —
+    and stage 2 died `short-segment` on both grains. The notebook's own
+    `sys.path.insert(0, Path('.').resolve())` is what makes those ancestors
+    importable at execution time; this walk mirrors it, bounded to two levels.
+    """
+    parts = [p for p in dotted.split(".") if p]
+    if not parts:
+        return []
+    for root in (folder, *list(folder.parents)[:2]):
+        base = root.joinpath(*parts)
+        if base.with_suffix(".py").is_file():
+            return [base.with_suffix(".py")]
+        if (base / "__init__.py").is_file():
+            return [base / "__init__.py"] + sorted(base.glob("*.py"))[:LOCAL_MODULE_FILE_CAP]
+    return []
+
+
+def local_modules(src_nb) -> list[dict]:
+    """Python modules a source notebook imports that live in its worktree.
+
+    23/11 (CoursIA#28208): six creation turns died on the same pair of findings —
+    « RegimeRps est une heuristique nouvelle, pas un port de detect_regime ». The module
+    (GameTheory/limit_sets.py) sits in the worktree beside the source notebook, but no
+    prompt ever showed it: the coder received the twin's CELLS only (plus prose, comments
+    and outputs), then invented a replacement that the verifier rejected every round. A
+    port's material is the notebook PLUS the local modules it imports; their names and
+    signatures go into the plan and segment prompts, and the coder reads the files
+    themselves from the worktree.
+
+    23/11, same day (#27740/#27737): the module is not always BESIDE the notebook —
+    `ICT-Series/ict/` is a package one level above the notebook folder, so the
+    beside-only rule found nothing and the model again refused to invent
+    (`NerveB1Result`, `nerve_b1_substrats`, …) — both grains died
+    `stage2-short-segment:0`. Imports now resolve against the notebook folder AND
+    its first two ancestors, packages expand to their files, and a package named
+    twice (`import ict`, `from ict.x import y`) is listed once.
+
+    Bounded on purpose: module names and top-level signatures, never bodies — the file is
+    in the worktree and `Read` is the right instrument for it. Only paths that resolve
+    to a real `.py` are returned (numpy and friends drop out here).
+    """
+    if not src_nb:
+        return []
+    try:
+        nb = json.loads(Path(src_nb).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    names: list[str] = []
+    for cell in nb.get("cells") or []:
+        if cell.get("cell_type") != "code":
+            continue
+        for line in _text(cell.get("source")).splitlines():
+            m = (re.match(r"\s*from\s+([A-Za-z_][\w.]*)\s+import\b", line)
+                 or re.match(r"\s*import\s+([A-Za-z_][\w.]*)", line))
+            if not m:
+                continue
+            n = m.group(1).rstrip(".")
+            if n and n not in names:
+                names.append(n)
+    folder = Path(src_nb).parent
+    out: list[dict] = []
+    seen: set = set()
+    # explicit submodules first: a bare package expands to its (capped) file list,
+    # which must never crowd out the `ict.nerve_discriminant` the notebook names
+    for n in sorted(names, key=lambda s: -s.count(".")):
+        for p in _resolve_import(folder, n):
+            key = p.as_posix()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({"name": n,
+                        "file": p.name if p.parent == folder else key,
+                        "defs": _top_level_defs(p)})
+            if len(out) >= LOCAL_MODULE_TOTAL_CAP:
+                return out
+    return out
+
+
+def local_module_block(modules: list | None) -> str:
+    """Prompt block naming the source notebook's local modules. '' when none."""
+    if not modules:
+        return ""
+    lines = []
+    for m in modules:
+        defs = ", ".join(m["defs"]) if m["defs"] else "(aucune fonction de premier niveau)"
+        lines.append(f"- `{m['file']}` — {defs}")
+    return ("\n\nMODULES PYTHON LOCAUX DU DOSSIER SOURCE — ils sont DANS TON WORKTREE "
+            "(chemin relatif à la racine du worktree), et ce carnet les importe :\n"
+            + "\n".join(lines) +
+            "\nLIS le fichier (Read) et PORTE les fonctions qu'il utilise — mêmes seuils, "
+            "mêmes constantes, mêmes libellés de verdict. N'invente JAMAIS une heuristique à "
+            "la place d'une fonction du module : le vérificateur compare au module source et "
+            "rejette toute réimplémentation non équivalente (mesuré CoursIA#28208 : six tours "
+            "perdus à ce motif).\n")
+
+
 def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel: dict,
-                    ctx: str, view: str, conventions: str = "", cs_view: str = "") -> str:
+                    ctx: str, view: str, conventions: str = "", cs_view: str = "",
+                    modules: list | None = None) -> str:
     """Stage 1 in creation mode: the target notebook does NOT exist on origin/main — the
     model plans the COMPLETE twin from the Python source + the issue's cell table.
     Measured 17/11 (#27099 dry pass): asking for FULL cell sources here returned a
@@ -1575,6 +1736,7 @@ def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel
         f"Noyau canonique d'exécution : {kernel['kernel_name']}\n\n"
         f"## Contexte de série\n{ctx}\n\n"
         f"## Jumeau Python (structure à porter)\n{view}\n\n"
+        + local_module_block(modules)
         + (f"## Jumeau C# du même carnet (portage antérieur — RÉFÉRENCE de traduction)\n"
            f"{cs_view}\n\n"
            "Ce port C# du même carnet éclaire ton portage : structure retenue, découpage des "
@@ -1668,7 +1830,8 @@ PORT_CONTENT_RULES = (
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
                          src_cells: list | None = None,
-                         cs_cells: list | None = None) -> str:
+                         cs_cells: list | None = None,
+                         modules: list | None = None) -> str:
     """Stage 2 in creation mode, ONE SEGMENT at a time: the model returns the sources of
     the plan's cells i..j only. Measured 17/11: the whole-notebook single-shot answer
     does not survive the output budget. The harness assembles every segment.
@@ -1762,7 +1925,7 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
         "n'appelles aucun outil d'écriture.\n\n"
         f"Cellules de cette tranche (index du PLAN, ordre du carnet) :\n"
         + json.dumps(segment_cells, ensure_ascii=False)[:9000] + "\n"
-        + prose + comments + refs + "\n"
+        + prose + comments + refs + local_module_block(modules) + "\n"
         + CREATION_LINK_COUNT_RULES + "\n"
         + PORT_CONTENT_RULES + "\n"
         + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
@@ -1973,6 +2136,13 @@ def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
     segment_keep_valid() correctly dropped every one, but an empty repair then returned
     parsed JSON and apply_create reported success with cells_written=0. Never invent the
     indices: an unaddressable plan is a stage-1 defect and must say so, with every reason.
+
+    CoursIA#27305 (23/11, Terra): a well-formed, in-bounds, duplicate-free plan of 10
+    entries for a 36-cell SOURCE passed validation here and the grain died
+    stage2-empty-segment — the model itself contested the truncated plan ("il ne
+    couvrait que les indices 0 a 9"). Addressing alone was necessary, not sufficient:
+    a plan that does not COVER every source cell would have shipped a truncated port.
+    Missing coverage is an error like any other; the repair re-ask names it.
     """
     errors = []
     seen = set()
@@ -1991,6 +2161,12 @@ def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
             errors.append(f"position {pos}: duplicate idx {idx}")
         else:
             seen.add(idx)
+    missing = sorted(set(range(n_src_cells)) - seen)
+    if missing:
+        head = ", ".join(str(i) for i in missing[:12])
+        errors.append(f"coverage: {len(missing)} source cell(s) unaddressed "
+                      f"({head}{'...' if len(missing) > 12 else ''}) — the plan must "
+                      f"address every one of the {n_src_cells} source cells exactly once")
     return errors
 
 
@@ -2075,6 +2251,9 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     with the missing idx listed."""
     all_cells: list = []
     seg_reports: list = []
+    # 23/11: the source notebook's local .py modules are part of the material a port must
+    # reproduce — computed once, injected into every segment prompt (CoursIA#28208)
+    mods = local_modules(getattr(args, "source_nb", None)) if src_cells else []
     if creation_plan_seq_fill(plan_cells, n_src_cells):
         # A count-exact, order-only plan (the agent system prompt's own schema,
         # CoursIA#28079) is addressable as-is — recorded, then validated below
@@ -2108,7 +2287,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         unparsed/empty answer returns parsed=None and the caller decides."""
         env = await sk_call_retry(session, args, rec, stage,
                                   creation_json_prompt(tranche, n_src_cells, conventions,
-                                                       src_cells, cs_cells), conv,
+                                                       src_cells, cs_cells, modules=mods), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
         part, env = await parse_or_repair(session, args, rec, stage, env, conv,
                                           max_tokens=BUILD_MAX_TOKENS)
@@ -2178,7 +2357,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             # smaller tranche, so the omissions cannot hide in a long answer again
             env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
                                       creation_json_prompt(missing, n_src_cells,
-                                                           conventions), conv,
+                                                           conventions, modules=mods), conv,
                                       max_tokens=BUILD_MAX_TOKENS)
             conv = env.get("conversation_id") or conv
             part2, env = await parse_or_repair(session, args, rec, f"2-build+{si}+repair",
@@ -5664,11 +5843,11 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
     if rc == 0 and entry.get("verdict") == "approve" and entry["identity"]["status"] == "same":
         # producer != verifier is a rule on MODELS, not on agent names: an approval signed by
         # the model that wrote the draft is no verification, so it never reaches a PR.
-        rec["verdict"] = "verify-same-served-model"
+        note_content_verdict(rec, "verify-same-served-model")
     elif rc == 0 and entry.get("verdict") == "approve":
-        rec["verdict"] = "verify-approved"
+        note_content_verdict(rec, "verify-approved")
     elif rc == 1 and entry.get("verdict") == "reject":
-        rec["verdict"] = "verify-reject"
+        note_content_verdict(rec, "verify-reject")
     else:
         rec["verdict"] = "verify-error"
 
@@ -6816,7 +6995,7 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
                                  kernel_name=kname)
         rec["gates_s"] = round(time.time() - tg, 1)
         bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
-        rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
+        note_content_verdict(rec, "gates-ok" if not bad else f"gates-failed:{','.join(bad)}")
     if args.max_stage >= 4 and rec.get("verdict") == "gates-ok":
         stage4_verify(args, rec, src_nb, built_path, out_dir, prior=prior)
     # A gate failure is actionable by the builder (a cell to rewrite), and until now it
@@ -7042,7 +7221,7 @@ def _prior_src_nb(prior: dict, wt_path: Path, notebook: str) -> Path:
 # and so that stage 5 composes the same PR body as an uninterrupted run.
 _REVISE_CARRY = ("plan", "kernel", "kernel_cwd", "create_mode", "create_metadata", "src_nb",
                  "built_notebook", "conversation_id", "execution", "c2", "gates", "structure",
-                 "verify", "revisions", "exec_mode", "repo_origin")
+                 "verify", "revisions", "exec_mode", "repo_origin", "last_content_verdict")
 
 
 async def run_revision(args, rec: dict) -> dict:
@@ -7075,6 +7254,11 @@ async def run_revision(args, rec: dict) -> dict:
         rec["verdict"] = "refused-revise-trace-mismatch"
         return rec
     late_refused = False
+    # A refusal/error may have OVERWRITTEN the top-level verdict after the real judgment
+    # (23/11: verify-error from a dead token, refused-claim-check-not-scoped from the same).
+    # The content field, when present, is what this gate decides on; old traces fall back
+    # to the top-level verdict unchanged.
+    content_prior = prior.get("last_content_verdict") or prior.get("verdict")
     if resume_from:
         # a late-claim refusal is resumable once the holder RELEASED the notebook: the
         # build was approved and only the reservation failed (21/11, #27851). The live
@@ -7084,18 +7268,18 @@ async def run_revision(args, rec: dict) -> dict:
         if prior.get("verdict") != "verify-error" and not late_refused:
             rec["verdict"] = f"refused-verify-not-crashed:{prior.get('verdict')}"
             return rec
-    elif prior.get("verdict") != "verify-reject":
+    elif content_prior != "verify-reject":
         # gates-failed:<gates> is resumable too (20/11: w2u lost 2 grains to it one
         # base BEFORE gate-repair landed): the trace carries the failing gates and the
         # build on disk — repair findings are synthesized from the gates exactly like
         # the in-run path, and the paid build is re-used instead of rebuilt.
         gate_resume = None
-        if str(prior.get("verdict") or "").startswith("gates-failed"):
+        if str(content_prior or "").startswith("gates-failed"):
             gate_resume = gate_repair_findings({"gates": prior.get("gates") or []})
             if not gate_resume:
-                rec["verdict"] = f"refused-gate-repair-unrepairable:{prior.get('verdict')}"
+                rec["verdict"] = f"refused-gate-repair-unrepairable:{content_prior}"
                 return rec
-        elif prior.get("verdict") == "built-execution-failed":
+        elif content_prior == "built-execution-failed":
             # the build on disk carries its persisted error outputs: findings come from
             # them, the paid build is repaired instead of rebuilt (a missing build is
             # refused below by the on-disk checks, before any spend)
@@ -7107,7 +7291,7 @@ async def run_revision(args, rec: dict) -> dict:
                     rec["verdict"] = "refused-exec-repair-unrepairable:built-execution-failed"
                     return rec
         else:
-            rec["verdict"] = f"refused-revise-not-rejected:{prior.get('verdict')}"
+            rec["verdict"] = f"refused-revise-not-rejected:{content_prior}"
             return rec
     prior_cr = (prior.get("stages") or {}).get("claim_reservation")
     live_cr = None
@@ -7175,13 +7359,17 @@ async def run_revision(args, rec: dict) -> dict:
     if "jsboige/CoursIA" not in origin and not args.allow_foreign_origin:
         rec["verdict"] = f"refused-foreign-origin:{origin or 'no-origin'}"
         return rec
+    token = refresh_gh_token(repo)
+    if not token and (os.environ.get("NBCODER_GH_APP_ID") or os.environ.get("NBCODER_GH_KEY")):
+        # spending under dead credentials cost two waves of poisoned traces on 23/11
+        rec["verdict"] = "refused-gh-token-refresh"
+        return rec
     rec["stages"]["claim_check"] = check_claim(repo, args.issue, args.lane,
                                                _norm_rel(args.notebook))
     refused = claim_verdict(rec["stages"]["claim_check"])
     if refused:
         rec["verdict"] = refused
         return rec
-    token = app_token(repo)
     issue = fetch_issue("jsboige/CoursIA", args.issue, token, _norm_rel(args.notebook))
     if (issue.get("spec_comment") or {}).get("status") == "none-for-target":
         rec["verdict"] = "refused-no-spec-for-target"
@@ -7245,7 +7433,10 @@ async def run(args, rec: dict) -> dict:
     if "jsboige/CoursIA" not in origin and not args.allow_foreign_origin:
         rec["verdict"] = f"refused-foreign-origin:{origin or 'no-origin'}"
         return rec
-    token = app_token(repo)
+    token = refresh_gh_token(repo)
+    if not token and (os.environ.get("NBCODER_GH_APP_ID") or os.environ.get("NBCODER_GH_KEY")):
+        rec["verdict"] = "refused-gh-token-refresh"
+        return rec
     conventions = read_conventions(args.conventions)
     rec["conventions"] = {"path": args.conventions, "chars": len(conventions)}
 
@@ -7461,7 +7652,8 @@ async def run(args, rec: dict) -> dict:
                                               ctx, view, conventions)
             elif create_mode:
                 prompt = creation_prompt(args.issue, issue_eff, args.notebook, args.source_nb,
-                                         kernel, ctx, view, conventions, cs_view)
+                                         kernel, ctx, view, conventions, cs_view,
+                                         modules=local_modules(src_nb))
             else:
                 prompt = plan_prompt(args.issue, issue_eff, args.notebook, kernel,
                                      ctx, view, conventions)
@@ -7916,6 +8108,8 @@ def main() -> int:
                              f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
         shutil.copy2(out, keep)
         rec["revised_from"] = (rec.get("revised_from") or {}) | {"kept_as": str(keep)}
+    if content_verdict_class(rec.get("verdict")):
+        rec["last_content_verdict"] = rec["verdict"]
     out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
     with open(Path(args.out_dir) / "ledger.jsonl", "a", encoding="utf-8") as fh:
         fh.write(json.dumps({k: rec.get(k) for k in
