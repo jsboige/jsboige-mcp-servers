@@ -4603,13 +4603,19 @@ TWIN_VALUES_RULE = (
 
 
 def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",
-                    spec: bool = False, twin_view: str = "", api_block: str = "") -> str:
+                    spec: bool = False, twin_view: str = "", api_block: str = "",
+                    modules: list | None = None) -> str:
     """Self-contained on purpose: the build conversation may be gone (sk-agent keeps no
     durable store here, and --revise-from runs in a new process). The reviser gets the
     spec, the whole notebook with its REAL outputs, the twin's code cells with THEIR real
     outputs (the values to reproduce, 22/11), and the findings — and may contest a finding
     instead of bending the notebook to a wrong one. ``api_block`` (.NET exec-reject,
-    22/11): the real API of the package members the failing cells' diagnostics name."""
+    22/11): the real API of the package members the failing cells' diagnostics name.
+    ``modules`` (23/11): the source notebook's local .py modules, rendered by the SAME
+    block the creation prompt uses. A revision used to carry the twin's CALLS
+    (`SP.spectral_summary(...)`) but never the module defining them, so the only move
+    left was a substitute — CoursIA#27742 lost six rounds to « le message ne fournit
+    pas les algorithmes de spectral_… » while the 14 KB source sat one pass away."""
     fl = [{"cell": f.get("cell"), "severity": f.get("severity"), "detail": f.get("detail")}
           for f in findings if isinstance(f, dict)]
     return (
@@ -4623,6 +4629,7 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         + f"## Carnet actuel — sources ET sorties réelles\n{view}\n\n"
         + (f"## Jumeau source — code ET sorties de RÉFÉRENCE (les valeurs à reproduire)\n"
            f"{twin_view}\n\n" if twin_view else "")
+        + local_module_block(modules)
         + (f"## {api_block}\n\n" if api_block else "")
         + f"## Constats du vérificateur\n{json.dumps(fl, ensure_ascii=False, indent=1)}\n\n"
         "## Règles\n"
@@ -7376,7 +7383,10 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                                 twin_view=(twin_reference_view(src_nb)
                                            if src_nb and Path(src_nb) != Path(built_path)
                                            else ""),
-                                api_block=api_block),
+                                api_block=api_block,
+                                modules=(local_modules(src_nb)
+                                         if src_nb and Path(src_nb) != Path(built_path)
+                                         else None)),
                 None, max_tokens=BUILD_MAX_TOKENS)
             entry["conversation_id"] = env.get("conversation_id")
             part, env = await parse_or_repair(sk, args, rec, f"6-revise+{rnd}", env, None,

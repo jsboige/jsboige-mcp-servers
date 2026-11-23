@@ -912,6 +912,40 @@ def test_a_named_leaf_pulls_its_own_relative_imports_into_the_source(tmp_path, m
         "the promoted sibling's code reaches the prompt"
 
 
+def test_the_revision_prompt_carries_the_local_module_sources(tmp_path, monkeypatch):
+    """o17 (23/11, CoursIA#27742): six revise rounds contested with « le message ne
+    fournit pas les algorithmes de spectral_… ». Creation promoted `ict/spectral.py`
+    (pass 1/pass 1b) but `revision_prompt` had no modules parameter at all: the
+    reviser saw the twin's CALLS and could only substitute. The same block the
+    creation prompt uses must reach every revision round."""
+    pkg = tmp_path / "Series" / "ict"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "spectral.py").write_text(
+        "def spectral_summary(states, n_symbols):\n"
+        "    return {'gap': 0.42, 'states': len(states)}\n", encoding="utf-8")
+    nbdir = tmp_path / "Series" / "ICT-15l"
+    nbdir.mkdir()
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source":
+                     "from ict import spectral as SP\nx = SP.spectral_summary([], 3)\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    src = nbdir / "T-Python.ipynb"
+    src.write_text(json.dumps(nb), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)
+    mods = D.local_modules(str(src))
+    assert mods and any("def spectral_summary" in (m.get("source") or "") for m in mods)
+
+    no_mod = D.revision_prompt({"title": "t", "body": "b"}, "VIEW", [])
+    assert "def spectral_summary" not in no_mod          # nothing invented
+    with_mod = D.revision_prompt({"title": "t", "body": "b"}, "VIEW", [], modules=mods)
+    assert "def spectral_summary" in with_mod, \
+        "the definitions reach the reviser — without them it can only substitute"
+    assert "N'invente JAMAIS une heuristique à la place d'une" in with_mod
+    # before the findings, so the material frames the constats it answers
+    assert with_mod.index("def spectral_summary") < with_mod.index("## Constats du vérificateur")
+
+
 def test_sibling_promotion_is_bounded(tmp_path, monkeypatch):
     """A leaf importing seven siblings must not blow the prompt: at most
     LOCAL_MODULE_SIBLING_SOURCE_CAP inlined sources, however many are imported."""
