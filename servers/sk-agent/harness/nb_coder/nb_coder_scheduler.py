@@ -113,6 +113,18 @@ DEFERRED_VERDICT_PREFIXES = (
 GITHUB_RESET_MAX_S = 3700.0
 GITHUB_RESET_MARGIN_S = 30.0
 
+# A recent [RELEASED] is a TEMPORARY qualification refusal, not a cross-lane
+# collision and not a failed notebook. CoursIA's authoritative guard applies a
+# three-day window (coordination/tapis_rapide.py: RELACHE_J = 3). Its current
+# machine-facing output exposes only an age rounded to 0.1 day, not released_at,
+# so waiting from the rounded age could resume before the real expiry. Until the
+# guard exports the exact timestamp, defer for the WHOLE window from this refusal,
+# plus a minute. This may retry later than necessary; it can never retry early.
+# The next launch starts with the same read-only qualification check, which remains
+# the sole authority. Permanent GEL/LABEL/HORSFLOTTE refusals are deliberately absent.
+CLAIM_RELEASED_VERDICT = "refused-claim-not-qualified:RELACHEE"
+CLAIM_RELEASED_WAIT_S = 3 * 86400.0 + 60.0
+
 
 def github_reset_wait(verdict: str, now: float) -> float | None:
     """Seconds until the GitHub bucket named by a rate-limit deferral refills, or None."""
@@ -1009,7 +1021,16 @@ class Scheduler:
             g.update({"finished": utcnow(), "returncode": rc,
                       "last_verdict": verdict, "elapsed_s": elapsed})
             ramp = self.state["ramp"]
-            if verdict.startswith(DEFERRED_VERDICT_PREFIXES):
+            if verdict == CLAIM_RELEASED_VERDICT:
+                g["status"] = "deferred"
+                wait = CLAIM_RELEASED_WAIT_S
+                g["not_before"] = self.clock() + wait
+                ramp["deferred"] += 1
+                self._event("qualification-deferred", key=key, rc=rc,
+                            verdict=verdict, qualification="RELACHEE",
+                            retry_in_s=wait, retry_at=datetime.fromtimestamp(
+                                g["not_before"], timezone.utc).isoformat(timespec="seconds"))
+            elif verdict.startswith(DEFERRED_VERDICT_PREFIXES):
                 g["status"] = "deferred"
                 # attempts counts LAUNCHES; the backoff grows with each refusal.
                 wait = min(self.args.backoff_s * max(1, g["attempts"]),
