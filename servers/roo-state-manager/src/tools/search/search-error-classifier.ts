@@ -4,6 +4,8 @@
  * get directional signals for remediation instead of generic messages.
  */
 
+import { effectiveQdrantUrl } from '../../services/qdrant-url.js';
+
 /** Classified failure modes for search operations */
 export type FailureMode =
 	| 'embedding_unreachable'    // POST embedding fail → service down or DNS
@@ -106,7 +108,9 @@ export function isTimeoutLikeError(error: unknown): boolean {
  * Timeout: 5 seconds (short, for diagnostic only).
  */
 async function probeQdrantHealth(): Promise<{ ok: boolean; latencyMs: number; status?: number }> {
-	const qdrantUrl = process.env.QDRANT_URL || 'http://localhost:6333';
+	// #4880: same dialled URL as the client — a probe that resolves `localhost`
+	// on a saturated threadpool would fail with it and misread a healthy Qdrant.
+	const qdrantUrl = effectiveQdrantUrl(process.env.QDRANT_URL || 'http://localhost:6333');
 	const apiKey = process.env.QDRANT_API_KEY;
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), 5000);
@@ -182,7 +186,9 @@ function qdrantHasNoProxyInPath(errorMsg: string): boolean {
  */
 async function probeLightPost(budgetMs?: number): Promise<{ ok: boolean; latencyMs: number } | null> {
 	if ((process.env.QDRANT_LIGHT_POST_PROBE ?? '').trim() === '0') return null;
-	const qdrantUrl = process.env.QDRANT_URL || 'http://localhost:6333';
+	// #4880: same dialled URL as the client — a probe that resolves `localhost`
+	// on a saturated threadpool would fail with it and misread a healthy Qdrant.
+	const qdrantUrl = effectiveQdrantUrl(process.env.QDRANT_URL || 'http://localhost:6333');
 	const apiKey = process.env.QDRANT_API_KEY;
 	const headers: Record<string, string> = { 'content-type': 'application/json' };
 	if (apiKey) headers['api-key'] = apiKey;
