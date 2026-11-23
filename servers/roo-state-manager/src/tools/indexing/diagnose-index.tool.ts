@@ -236,14 +236,34 @@ export async function handleDiagnoseSemanticIndex(
         // Vérifier si la collection existe en listant toutes les collections
         let collections;
         let getCollectionsSucceeded = false;
+        const listStartedAt = Date.now();
         try {
             collections = await qdrant.getCollections();
             getCollectionsSucceeded = true;
         } catch (listError: any) {
-            // getCollections a échoué → problème de connexion
-            diagnostics.status = 'connection_failed';
-            diagnostics.details.qdrant_connection = 'failed';
-            diagnostics.errors.push(`Impossible de se connecter à Qdrant: ${listError.message}`);
+            const listElapsedMs = Date.now() - listStartedAt;
+            const listErrorType = _classifyDeepDiagnosticError(listError);
+            if (listErrorType === 'timeout' || listErrorType === 'caller_cancelled') {
+                // #4880 — the collection listing hit the CLIENT timeout on a slow but
+                // WORKING Qdrant (measured 23/11 13:10Z: abort at ~15 s). Reporting
+                // `connection_failed` sent agents to re-check a healthy config.
+                // Inside diagnose nobody cancels the call: both classifications
+                // mean the client gave up waiting. That alone does not separate a
+                // slow server from a host that never answers (no prior liveness
+                // probe here), so the message names both and points at /healthz.
+                diagnostics.status = 'degraded';
+                diagnostics.details.qdrant_connection = 'timeout';
+                diagnostics.details.qdrant_list_ms = listElapsedMs;
+                diagnostics.errors.push(
+                    `Listage des collections expiré après ${listElapsedMs} ms : le client a abandonné l'attente ` +
+                    `(serveur Qdrant lent, ou hôte qui ne répond pas) : ${listError.message}`
+                );
+            } else {
+                // getCollections a échoué → problème de connexion
+                diagnostics.status = 'connection_failed';
+                diagnostics.details.qdrant_connection = 'failed';
+                diagnostics.errors.push(`Impossible de se connecter à Qdrant: ${listError.message}`);
+            }
             // Continue to collect OpenAI and environment info despite Qdrant failure
             collections = null; // Mark as failed but don't return early
         }
@@ -666,8 +686,8 @@ export async function handleDiagnoseSemanticIndex(
     // never hides WHICH layer failed: a deep-diagnostics abort with qdrant=healthy
     // and embeddings=healthy means the backends are fine — only the requested deep
     // pass did not run to completion.
-    const infraConn = (v: unknown): 'healthy' | 'failed' | 'unknown' =>
-        v === 'success' ? 'healthy' : v === 'failed' ? 'failed' : 'unknown';
+    const infraConn = (v: unknown): 'healthy' | 'degraded' | 'failed' | 'unknown' =>
+        v === 'success' ? 'healthy' : v === 'timeout' ? 'degraded' : v === 'failed' ? 'failed' : 'unknown';
     diagnostics.infrastructure_status = {
         qdrant: infraConn(diagnostics.details.qdrant_connection),
         embeddings: infraConn(diagnostics.details.openai_connection),
@@ -740,6 +760,17 @@ export async function handleDiagnoseSemanticIndex(
     }
     if (diagnostics.details.qdrant_connection === 'failed') {
         recommendations.push('Vérifiez la configuration Qdrant (URL, clé API, connectivité réseau)');
+    }
+    // #4880 — the collection listing expired. Measured case: a slow but WORKING
+    // Qdrant, where the config/key lead was a false one. A host that never answers
+    // gives the same sign, hence /healthz first to tell the two apart.
+    if (diagnostics.details.qdrant_connection === 'timeout') {
+        recommendations.push(
+            `Le listage des collections Qdrant a expiré après ${diagnostics.details.qdrant_list_ms} ms. ` +
+            'Un serveur Qdrant lent (cas mesuré #4880) et un hôte qui ne répond pas donnent ce même signe : ' +
+            'interrogez GET /healthz du serveur pour trancher avant de soupçonner la configuration. ' +
+            "NE PAS réinitialiser la collection sur ce seul verdict (une expiration n'est pas une corruption)."
+        );
     }
     if (diagnostics.details.dimension_check?.collection_matches_live === false) {
         recommendations.push(

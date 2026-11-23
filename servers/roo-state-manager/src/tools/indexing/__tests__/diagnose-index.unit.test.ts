@@ -322,6 +322,68 @@ describe('diagnose-index.tool (unit tests)', () => {
 		});
 	});
 
+	// ============================================================
+	// #4880 — getCollections timeout is SERVER LATENCY, not connection_failed.
+	// Measured 23/11 13:10Z: `getCollections` hit the client timeout (~15 s,
+	// "This operation was aborted") on a slow but WORKING Qdrant. diagnose
+	// reported `connection_failed` + "Vérifiez la configuration Qdrant (URL,
+	// clé API, connectivité réseau)" → agents were sent to re-check a
+	// healthy config.
+	// ============================================================
+
+	describe('#4880 — getCollections timeout is server latency, not connection_failed', () => {
+		beforeEach(() => {
+			// The incident shape: a raw AbortError reaching the handler. Inside
+			// diagnose nobody cancels the call — the CLIENT timed out.
+			mockQdrantClient.getCollections.mockRejectedValue(
+				Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })
+			);
+		});
+
+		it('reports degraded (NOT connection_failed) when the collection listing aborts', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.details.qdrant_connection).toBe('timeout');
+			expect(typeof parsed.details.qdrant_list_ms).toBe('number');
+			expect(parsed.infrastructure_status.qdrant).toBe('degraded');
+		});
+
+		it('reports the elapsed listing time in errors', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.errors.some((e: string) => e.includes('Listage des collections expiré'))).toBe(true);
+			expect(parsed.errors.some((e: string) => e.includes(`${parsed.details.qdrant_list_ms} ms`))).toBe(true);
+		});
+
+		it('routes the recommendation to server latency and forbids a collection reset', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			// The false lead: a config/key/network check on a healthy Qdrant.
+			expect(parsed.recommendations.some((r: string) => r.includes('URL, clé API'))).toBe(false);
+			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS réinitialiser'))).toBe(true);
+		});
+
+		it('still collects the OpenAI information after the listing timeout', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.openai_connection).toBe('success');
+			expect(mockOpenAIClient.embeddings.create).toHaveBeenCalled();
+		});
+
+		it('keeps connection_failed for a non-abort failure (ECONNREFUSED)', async () => {
+			mockQdrantClient.getCollections.mockRejectedValue(new Error('ECONNREFUSED'));
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.status).toBe('connection_failed');
+			expect(parsed.details.qdrant_connection).toBe('failed');
+			expect(parsed.recommendations).toContain(
+				'Vérifiez la configuration Qdrant (URL, clé API, connectivité réseau)'
+			);
+		});
+	});
+
 	describe('collection access error scenario', () => {
 		beforeEach(() => {
 			// Set up this scenario's mocks (override defaults)
