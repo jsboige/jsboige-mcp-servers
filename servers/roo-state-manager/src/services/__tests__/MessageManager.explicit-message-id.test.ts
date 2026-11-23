@@ -18,7 +18,7 @@
 
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
 import { MessageManager } from '../MessageManager.js';
-import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';
 import { existsSync, rmSync, mkdirSync } from 'fs';
 import { promises as fs } from 'fs';
 import { join } from 'path';

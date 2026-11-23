@@ -17,7 +17,7 @@ import { join } from 'path';
 import { BaselineLoader } from '../BaselineLoader.js';
 import { ConfigValidator } from '../ConfigValidator.js';
 import { BaselineFileConfig } from '../../../types/baseline.js';
-import { BaselineLoaderError, BaselineLoaderErrorCode } from '../../../types/errors.js';
+import { BaselineLoaderError, BaselineLoaderErrorCode } from '@vibesync/core/types/errors';
 
 describe('BaselineLoader — coverage complement (#833 C3)', () => {
   const testDir = join(process.cwd(), 'test-temp-baseline-cov');

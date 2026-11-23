@@ -33,7 +33,7 @@ import { readLockForAtomicity } from './lock-atomicity.js';
 
 // REMOVED: import * as toolExports — was unused, added 6s to startup by importing ALL tools
 import type { StoredConversation } from './unified-store/types.js';
-import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '../types/errors.js';
+import { RooStorageDetectorError, RooStorageDetectorErrorCode, GenericErrorCode } from '@vibesync/core/types/errors';
 // #1140: Lazy import — RooSyncService loads 17 heavy modules (~6s).
 // Only needed when HEARTBEAT_AUTO_START=true (disabled by default).
 // import { RooSyncService } from './RooSyncService.js';

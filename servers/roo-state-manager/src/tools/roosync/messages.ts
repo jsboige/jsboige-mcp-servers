@@ -19,7 +19,7 @@ import { roosyncRead } from './read.js';
 import { roosyncManage } from './manage.js';
 import { roosyncAttachments } from './roosync-attachments.tool.js';
 import { createLogger } from '../../utils/logger.js';
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import {
   canonicalMachineId,
   parseMachineWorkspace,

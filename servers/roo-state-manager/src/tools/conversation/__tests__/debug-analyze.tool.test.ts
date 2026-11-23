@@ -8,7 +8,7 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { debugAnalyzeTool } from '../debug-analyze.tool.js';
 import type { StoredConversation } from '../../../services/unified-store/types.js';
-import { GenericError } from '../../../types/errors.js';
+import { GenericError } from '@vibesync/core/types/errors';
 
 describe('debugAnalyzeTool', () => {
 	beforeEach(() => {

@@ -135,7 +135,7 @@ describe('roosync_diagnose', () => {
       // #2766 S2+ (P3) regression guard: a DEGRADED capability (e.g. embeddings down)
       // is a diagnostic finding surfaced in data.capabilities, not a call failure.
       vi.mocked(fs.access).mockResolvedValue(undefined);
-      const capsModule = await import('../../../utils/server-capabilities.js');
+      const capsModule = await import('@vibesync/core/utils/server-capabilities');
       const capsSpy = vi.spyOn(capsModule, 'getServerCapabilities').mockReturnValue({
         isDegraded: () => true,
         getAllDegraded: () => [{ capability: 'embeddings', reason: 'provider 503', since: 'now' }],

@@ -65,7 +65,7 @@ vi.mock('../../utils/dashboard-helpers.js', async () => {
 
 // roosync_send requires the 'sharedPath' capability; without this mock the
 // capability guard would block the tool before the marker step in tests.
-vi.mock('../../utils/server-capabilities.js', () => ({
+vi.mock('@vibesync/core/utils/server-capabilities', () => ({
   getServerCapabilities: () => ({
     isAvailable: () => true,
     getDegradedReason: () => '',

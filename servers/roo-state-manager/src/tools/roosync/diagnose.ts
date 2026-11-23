@@ -14,7 +14,7 @@ import * as os from 'os';
 import { fileURLToPath } from 'url';
 import { getEmbeddingMetrics } from '../../services/task-indexer/VectorIndexer.js';
 import { tryGetSharedStatePath } from '../../utils/shared-state-path.js';
-import { getServerCapabilities } from '../../utils/server-capabilities.js';
+import { getServerCapabilities } from '@vibesync/core/utils/server-capabilities';
 import { getLocalIdentityDiagnostic } from '../../utils/message-helpers.js';
 
 import { getDiagnoseVibeSyncPort } from '../../services/diagnose-registry.js';

@@ -78,7 +78,7 @@ import {
     handleGetConversationSynthesis,
     GetConversationSynthesisArgs,
 } from '../get-conversation-synthesis.tool.js';
-import { StateManagerError } from '../../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import { ConversationAnalysis } from '../../../models/synthesis/SynthesisModels.js';
 import type { StoredConversation } from '../../../services/unified-store/types.js';
 

@@ -10,7 +10,7 @@
  */
 
 import { z } from 'zod';
-import { getServerCapabilities } from '../../utils/server-capabilities.js';
+import { getServerCapabilities } from '@vibesync/core/utils/server-capabilities';
 import { createLogger } from '../../utils/logger.js';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';

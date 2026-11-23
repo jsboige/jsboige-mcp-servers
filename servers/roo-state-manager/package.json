@@ -5,7 +5,8 @@
   "main": "build-out/index.js",
   "type": "module",
   "scripts": {
-    "prebuild": "npm install",
+    "prebuild": "npm install && npm run build -w @vibesync/core",
+    "pretest": "npm run build -w @vibesync/core",
     "clean:build": "node scripts/clean-build.mjs",
     "build": "npm run clean:build && tsc && node scripts/publish-build.mjs",
     "build:noclean": "tsc && node scripts/publish-build.mjs",
@@ -47,6 +48,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.16.0",
     "@qdrant/js-client-rest": "1.20.0",
+    "@vibesync/core": "*",
     "@xmldom/xmldom": "^0.8.11",
     "dotenv": "^17.4.2",
     "exact-trie": "^1.0.13",

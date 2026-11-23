@@ -26,7 +26,7 @@ import { tmpdir } from 'os';
 
 // Capabilities: controls qdrant/embeddings/sharedPath "configured" booleans.
 const mockIsAvailable = vi.fn();
-vi.mock('../../../utils/server-capabilities.js', () => ({
+vi.mock('@vibesync/core/utils/server-capabilities', () => ({
   getServerCapabilities: () => ({ isAvailable: mockIsAvailable }),
 }));
 

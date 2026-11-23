@@ -40,7 +40,7 @@ import {
   isServiceError,
   detectPowerShellErrorType,
   suggestErrorCategory
-} from '../errors.js';
+} from '../src/types/errors.js';
 
 describe('ErrorCategory enum', () => {
   it('should have SCRIPT category', () => {

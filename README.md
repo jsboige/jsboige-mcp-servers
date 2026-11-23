@@ -85,18 +85,28 @@ Serveurs retirés du config actif (les 1er et 3e : code supprimé de `servers/` 
 git clone --recurse-submodules https://github.com/jsboige/roo-extensions.git
 cd roo-extensions/mcps/internal
 
-# Installer roo-state-manager
-cd servers/roo-state-manager && npm install && npm run build
+# Installer le workspace (servers/* installables + packages/*), puis construire
+# @vibesync/core avant son consommateur roo-state-manager (#4886).
+npm install
+npm run build --workspace @vibesync/core
+npm run build --workspace roo-state-manager
 ```
+
+> **Workspaces npm.** `package.json` déclare `packages/*` et les serveurs installables
+> (`roo-state-manager`, `jinavigator-server`, `jupyter-mcp-server`).
+> `servers/jupyter-papermill-mcp-server` reste **hors** workspace : son `package.json`
+> déclare des dépendances qui n'existent pas au registre (`papermill`, `jupyter@^1.0.0`) —
+> c'est un serveur Python, son manifeste npm est vestigial, et l'inclure casserait
+> `npm install` pour tout l'arbre (mesuré #4886).
 
 ### Installation individuelle
 
 #### roo-state-manager
 
 ```bash
-cd servers/roo-state-manager
-npm install && npm run build
-npx vitest run  # NEVER npm test (watch mode blocks)
+npm install                 # depuis la racine du dépôt (workspace)
+npm run build --workspace roo-state-manager
+npx vitest run --prefix servers/roo-state-manager  # jamais npm test (watch mode)
 ```
 
 #### sk-agent

@@ -47,7 +47,7 @@ vi.mock('fs/promises', () => ({
 // ─────────────────── import SUT ───────────────────
 
 import { ExportConfigManager } from '../ExportConfigManager.js';
-import { ExportConfigManagerError, ExportConfigManagerErrorCode } from '../../types/errors.js';
+import { ExportConfigManagerError, ExportConfigManagerErrorCode } from '@vibesync/core/types/errors';
 
 // ─────────────────── helpers ───────────────────
 

@@ -20,7 +20,7 @@ import { ContentClassifier, ClassifiedContent } from './trace-summary/ContentCla
 import { sanitizeSectionHtml } from './trace-summary/ExportRenderer.js';
 import { JsonCsvExporter } from './trace-summary/JsonCsvExporter.js';
 import { ClusterSummaryService } from './trace-summary/ClusterSummaryService.js';
-import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '../types/errors.js';
+import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '@vibesync/core/types/errors';
 
 export { sanitizeSectionHtml };
 

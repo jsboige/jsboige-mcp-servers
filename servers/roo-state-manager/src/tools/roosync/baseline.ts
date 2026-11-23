@@ -35,7 +35,7 @@ const GIT_QUICK_TIMEOUT_MS = 10_000; // For rev-parse, tag -l
  */
 const WORKSPACE_ROOT = process.env.WORKSPACE_PATH || process.cwd();
 import type { BaselineConfig } from '../../types/baseline.js';
-import { BaselineServiceError, BaselineServiceErrorCode, StateManagerError } from '../../types/errors.js';
+import { BaselineServiceError, BaselineServiceErrorCode, StateManagerError } from '@vibesync/core/types/errors';
 import { readJSONFileSyncWithoutBOM } from '../../utils/encoding-helpers.js';
 
 let loggerInstance: Logger | null = null;

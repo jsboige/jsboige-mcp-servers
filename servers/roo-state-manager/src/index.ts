@@ -69,7 +69,7 @@ recordEmbeddingFileConfig(envResult.parsed);
 
 // #1635: Resilient env validation — degrade instead of crash.
 // Missing env vars are tracked as degraded capabilities; tools return errors instead.
-import { getServerCapabilities } from './utils/server-capabilities.js';
+import { getServerCapabilities } from '@vibesync/core/utils/server-capabilities';
 import { resolveChatApiKey } from './services/chat-key.js';
 
 const ENV_VAR_CAPABILITIES: Record<string, 'sharedPath' | 'qdrant' | 'embeddings'> = {
@@ -174,7 +174,7 @@ import { recordToolCall } from './utils/tool-call-metrics.js';
 // for the #1894 startup budget: that module has ZERO imports of its own, so it
 // pulls in no dependency chain (unlike registry.ts and its zod chain, which
 // stays dynamic below).
-import { getMcpToolTimeoutMs } from './config/tool-timeouts.js';
+import { getMcpToolTimeoutMs } from '@vibesync/core/config/tool-timeouts';
 
 const logger = createLogger('RooStateManagerServer');
 const require = createRequire(import.meta.url);

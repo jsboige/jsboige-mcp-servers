@@ -5,7 +5,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import { ConfigArgsSchema, roosyncConfig } from '../config.js';
-import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../../types/errors.js';
+import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '@vibesync/core/types/errors';
 
 // Mock RooSyncService
 const mockCollectConfig = vi.fn();

@@ -22,7 +22,7 @@ import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
 import {
   BaselineLoaderError,
   BaselineLoaderErrorCode
-} from '../../types/errors.js';
+} from '@vibesync/core/types/errors';
 
 export class BaselineLoader {
   constructor(private validator: ConfigValidator) {}

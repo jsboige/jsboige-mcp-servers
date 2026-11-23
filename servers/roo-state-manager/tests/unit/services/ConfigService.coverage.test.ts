@@ -17,7 +17,7 @@ import { tmpdir } from 'os';
 vi.unmock('../../../src/services/ConfigService.js');
 
 import { ConfigService } from '../../../src/services/ConfigService.js';
-import { ConfigServiceError, ConfigServiceErrorCode } from '../../../src/types/errors.js';
+import { ConfigServiceError, ConfigServiceErrorCode } from '@vibesync/core/types/errors';
 
 describe('ConfigService - coverage tests', () => {
   const testDir = join(tmpdir(), `configservice-test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`);

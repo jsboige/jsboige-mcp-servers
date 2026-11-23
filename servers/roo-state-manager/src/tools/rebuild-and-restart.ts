@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 import { getMcpSettingsPath, withEBUSYRetry } from './roosync/mcp-management.js';
 
 const __filename = fileURLToPath(import.meta.url);

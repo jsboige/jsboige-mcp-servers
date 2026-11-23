@@ -4,7 +4,7 @@
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { StoredConversation } from '../../services/unified-store/types.js';
-import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 /**
  * Définition de l'outil debug_analyze_conversation

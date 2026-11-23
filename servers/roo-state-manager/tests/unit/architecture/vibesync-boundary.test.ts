@@ -12,16 +12,17 @@ const CORE_MODULE_GROUPS: Record<string, string> = {
   logger: 'src/utils/logger.ts',
   // Server configuration and per-tool timeout policy.
   'server-config': 'src/config/server-config.ts',
-  'tool-timeouts': 'src/config/tool-timeouts.ts',
+  // Extracted to @vibesync/core (#4886 S2 grain 1).
+  'tool-timeouts': 'packages/vibesync-core/src/config/tool-timeouts.ts',
   // Shared-state paths and lane identity.
   'shared-state-path': 'src/utils/shared-state-path.ts',
   'message-helpers': 'src/utils/message-helpers.ts',
-  // Host capability and secret-publication helpers.
-  'server-capabilities': 'src/utils/server-capabilities.ts',
-  'secret-redaction': 'src/utils/secret-redaction.ts',
-  'int-validator': 'src/utils/int-validator.ts',
-  // Domain-neutral error contracts.
-  errors: 'src/types/errors.ts',
+  // Host capability and secret-publication helpers (extracted in #4886 S2 grain 1).
+  'server-capabilities': 'packages/vibesync-core/src/utils/server-capabilities.ts',
+  'secret-redaction': 'packages/vibesync-core/src/utils/secret-redaction.ts',
+  'int-validator': 'packages/vibesync-core/src/utils/int-validator.ts',
+  // Domain-neutral error contracts (extracted in #4886 S2 grain 1).
+  errors: 'packages/vibesync-core/src/types/errors.ts',
   'diagnose-contracts': 'src/types/diagnose-contracts.ts',
   'diagnose-registry': 'src/services/diagnose-registry.ts',
   // PostgreSQL primitives shared by both future servers.

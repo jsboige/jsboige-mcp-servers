@@ -53,7 +53,7 @@ vi.mock('../../../services/lazy-roosync.js', () => ({
   })),
 }));
 
-vi.mock('../../../types/errors.js', () => ({
+vi.mock('@vibesync/core/types/errors', () => ({
   ConfigSharingServiceError: class extends Error {
     code: string;
     constructor(message: string, code: string) {

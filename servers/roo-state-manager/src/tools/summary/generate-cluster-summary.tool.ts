@@ -6,7 +6,7 @@
  */
 
 import { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import { TraceSummaryService } from '../../services/TraceSummaryService.js';
 import { ExportConfigManager } from '../../services/ExportConfigManager.js';
 import { ClusterSummaryOptions } from '../../types/conversation.js';

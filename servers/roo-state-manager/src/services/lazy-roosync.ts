@@ -15,7 +15,7 @@
  */
 
 // Re-export RooSyncServiceError synchronously (it's from types/errors.ts, lightweight)
-export { RooSyncServiceError } from '../types/errors.js';
+export { RooSyncServiceError } from '@vibesync/core/types/errors';
 
 // Lazy-loaded module cache
 let _loadedModule: typeof import('./RooSyncService.js') | null = null;

@@ -5,7 +5,7 @@
 
 import { PatternExtractor, createInstruction, extractTimestamp } from '../message-pattern-extractors.js';
 import { NewTaskInstruction } from '../../types/conversation.js';
-import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 /**
  * Extracteur pour les messages API avec champ content

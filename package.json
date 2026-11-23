@@ -4,9 +4,17 @@
   "description": "Collection de serveurs MCP (Model Context Protocol) pour étendre les capacités des LLM",
   "main": "index.js",
   "type": "module",
+  "workspaces": [
+    "packages/*",
+    "servers/roo-state-manager",
+    "servers/jinavigator-server",
+    "servers/jupyter-mcp-server"
+  ],
   "scripts": {
-    "install-all": "node scripts/install-all.js",
+    "install-all": "node scripts/install-all.cjs",
     "setup-config": "node scripts/setup-config.js",
+    "build:core": "npm run build --workspace @vibesync/core",
+    "test:core": "npm run test --workspace @vibesync/core",
     "test": "npm run test:all",
     "test:all": "npm run test:jupyter && npm run test:jinavigator && npm run test:roo",
     "test:jupyter": "cd servers/jupyter-papermill-mcp-server && python -m pytest",

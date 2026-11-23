@@ -10,7 +10,7 @@
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 /** Maximum number of backup files to keep (.bak-1) */
 const MAX_BACKUPS = 1;

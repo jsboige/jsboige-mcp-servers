@@ -15,7 +15,7 @@
 
 import { describe, test, expect, beforeAll } from 'vitest';
 import { globalCacheManager } from '../../../utils/cache-manager.js';
-import { StateManagerError } from '../../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 describe('get_current_task (integration)', () => {
   beforeAll(async () => {

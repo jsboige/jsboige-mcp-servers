@@ -8,7 +8,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { HeartbeatService, HeartbeatConfig } from '../../../../src/services/roosync/HeartbeatService.js';
-import { getServerCapabilities } from '../../../../src/utils/server-capabilities.js';
+import { getServerCapabilities } from '@vibesync/core/utils/server-capabilities';
 
 describe('HeartbeatService - Graceful Degradation (#1918)', () => {
   let heartbeatService: HeartbeatService;

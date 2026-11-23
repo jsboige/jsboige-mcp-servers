@@ -4,7 +4,7 @@ import * as os from 'os';
 import * as crypto from 'crypto';
 import * as readline from 'readline';
 import { v5 as uuidv5 } from 'uuid';
-import { StateManagerError } from '../../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 // Namespace pour UUID v5 (généré aléatoirement une fois, constant pour le projet)
 const UUID_NAMESPACE = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';

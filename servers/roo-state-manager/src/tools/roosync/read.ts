@@ -10,7 +10,7 @@
 import { MessageManager, getMessageManager, type MessageListItem } from '../../services/MessageManager.js';
 import { getSharedStatePath, assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
 import { createLogger, Logger } from '../../utils/logger.js';
-import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import {
   formatDate,

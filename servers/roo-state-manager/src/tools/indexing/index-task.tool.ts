@@ -7,7 +7,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { StoredConversation } from '../../services/unified-store/types.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { ClaudeStorageDetector } from '../../utils/claude-storage-detector.js';
-import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 import { formatErrorForResponse } from '../../utils/error-format.js';
 import type { IndexTaskStats } from '../../services/task-indexer/VectorIndexer.js';
 

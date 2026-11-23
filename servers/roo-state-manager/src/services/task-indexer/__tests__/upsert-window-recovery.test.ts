@@ -34,7 +34,7 @@ import {
     type UpsertFailureContext,
 } from '../VectorIndexer.js';
 import type { IndexTaskProgressOptions } from '../VectorIndexer.js';
-import { GenericError } from '../../../types/errors.js';
+import { GenericError } from '@vibesync/core/types/errors';
 
 // Real-path mocks (file 09d item 3) — same set as circuit-breaker.test.ts,
 // the proven harness for importing VectorIndexer.js with a stub Qdrant client.

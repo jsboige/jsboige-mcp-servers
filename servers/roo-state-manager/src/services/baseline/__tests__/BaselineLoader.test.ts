@@ -18,7 +18,7 @@ import {
   BaselineConfig,
   BaselineServiceError
 } from '../../../types/baseline.js';
-import { BaselineLoaderError, BaselineLoaderErrorCode } from '../../../types/errors.js';
+import { BaselineLoaderError, BaselineLoaderErrorCode } from '@vibesync/core/types/errors';
 
 describe('BaselineLoader', () => {
   const testDir = join(process.cwd(), 'test-temp-baseline');

@@ -4,7 +4,7 @@ import {
   ComparisonSummary
 } from './DiffDetector.js';
 import { BaselineDifference } from '../types/baseline.js';
-import { StateManagerError } from '../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 /**
  * Types pour le diff granulaire

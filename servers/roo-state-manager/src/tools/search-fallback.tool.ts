@@ -4,7 +4,7 @@
  */
 
 import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 export interface SearchFallbackArgs {
     conversation_id?: string;
