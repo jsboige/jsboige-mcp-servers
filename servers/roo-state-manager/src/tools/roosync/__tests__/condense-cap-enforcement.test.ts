@@ -12,7 +12,7 @@
  * output <= maxSizeBytes, whatever the (mocked) LLM does.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { condenseTextIfTooLarge, truncateToMaxSize } from '../dashboard.js';
 
 // Mirror the LLM-client mock used by dashboard.test.ts.
@@ -40,6 +40,7 @@ const CAP = 2 * 1024; // small cap keeps fixtures tiny; the function takes the c
 const oversizedText = (`${'X'.repeat(100)}\n`).repeat(80); // 80 lines × 101 B ≈ 8 KB
 const oversizedLLMReply = (`${'Y'.repeat(120)}\n`).repeat(80); // still ≈ 9.7 KB > CAP
 const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+const savedFallbackApiFormat = process.env.FALLBACK_API_FORMAT;
 
 beforeEach(() => {
   mockChatCreate.mockReset();
@@ -51,6 +52,15 @@ beforeEach(() => {
   mockGetFallbackClient.mockReturnValue(null);
   mockFallbackCreate.mockReset();
   delete process.env.OPENAI_BASE_URL;
+  // #4872 hermeticity (ai-01 review, file-scope pin convention ms#1551): the seat .env
+  // carries FALLBACK_API_FORMAT=anthropic — without a pin, cloudCondenseOnce takes the
+  // /messages route and the chat-completions mock is never called (2/14 red on Windows).
+  process.env.FALLBACK_API_FORMAT = 'openai';
+});
+
+afterEach(() => {
+  if (savedFallbackApiFormat === undefined) delete process.env.FALLBACK_API_FORMAT;
+  else process.env.FALLBACK_API_FORMAT = savedFallbackApiFormat;
 });
 
 describe('truncateToMaxSize (deterministic floor #2463)', () => {
