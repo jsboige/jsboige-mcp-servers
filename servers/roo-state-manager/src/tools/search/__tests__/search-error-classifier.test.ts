@@ -185,6 +185,30 @@ describe('classifySearchError', () => {
 		expect(result.mode).toBe('qdrant_backend_slow');
 	});
 
+	// #4880: the health probe dials the SAME URL as the client — resolving
+	// `localhost` on a saturated libuv threadpool would fail the probe too and
+	// misread a healthy Qdrant as unreachable.
+	it('health probe dials a localhost QDRANT_URL as 127.0.0.1', async () => {
+		process.env.QDRANT_URL = 'http://localhost:6333';
+		delete process.env.QDRANT_LOOPBACK_LITERAL;
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const result = await classifySearchError(makeError('fetch failed'), 'search');
+		expect(result.mode).toBe('qdrant_client_failure');
+		expect(String(mockFetch.mock.calls[0][0])).toBe('http://127.0.0.1:6333/healthz');
+	});
+
+	it('health probe keeps the configured name under QDRANT_LOOPBACK_LITERAL=0', async () => {
+		process.env.QDRANT_URL = 'http://localhost:6333';
+		process.env.QDRANT_LOOPBACK_LITERAL = '0';
+		try {
+			mockFetch.mockResolvedValue({ ok: true, status: 200 });
+			await classifySearchError(makeError('fetch failed'), 'search');
+			expect(String(mockFetch.mock.calls[0][0])).toBe('http://localhost:6333/healthz');
+		} finally {
+			delete process.env.QDRANT_LOOPBACK_LITERAL;
+		}
+	});
+
 	it("Qdrant's own search timeout → qdrant_backend_slow even behind a public URL", async () => {
 		process.env.QDRANT_URL = 'https://qdrant.example.org';
 		mockFetch.mockResolvedValue({ ok: true, status: 200 });

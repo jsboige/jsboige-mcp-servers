@@ -1,4 +1,5 @@
 import { QdrantClient } from '@qdrant/js-client-rest';
+import { effectiveQdrantUrl } from './qdrant-url.js';
 
 let client: QdrantClient | null = null;
 
@@ -52,7 +53,7 @@ export function getQdrantClient(options: { timeoutMs?: number } = {}): QdrantCli
     const qdrantConfig = { ...baseQdrantConfig(), timeout: baseTimeoutMs };
 
     client = new QdrantClient(qdrantConfig);
-    console.log(`Qdrant client initialized with URL: ${process.env.QDRANT_URL}, timeout: ${qdrantConfig.timeout}ms`);
+    console.log(`Qdrant client initialized with URL: ${qdrantConfig.url}, timeout: ${qdrantConfig.timeout}ms`);
   }
   return client;
 }
@@ -62,7 +63,9 @@ const extendedClients = new Map<number, QdrantClient>();
 
 function baseQdrantConfig() {
   return {
-    url: process.env.QDRANT_URL,
+    // #4880: `localhost` is dialled as 127.0.0.1 — no getaddrinfo on the libuv
+    // threadpool, so disk I/O can no longer turn into a connect timeout.
+    url: effectiveQdrantUrl(process.env.QDRANT_URL),
     apiKey: process.env.QDRANT_API_KEY,
     port: 443, // Force HTTPS port
     // #4808: client/server version gap must be visible — was false since the
