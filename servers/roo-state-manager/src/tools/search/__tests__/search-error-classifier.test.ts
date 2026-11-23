@@ -201,6 +201,91 @@ describe('classifySearchError', () => {
 		expect(result.mode).toBe('qdrant_backend_slow');
 	});
 
+	// ── #4881: a proxy verdict needs proof — RFC1918 + light-POST discriminant ──
+
+	// The fleet topology: executors hit Qdrant directly on its native port
+	// (192.168.0.47:6333 measured on po-204; po-203's failing verdict used the
+	// same path). The client-side abort "This operation was aborted" fires at
+	// QDRANT_SEARCH_TIMEOUT_MS before the server can word its own timeout, so
+	// the #4352 message exemption never triggers and the verdict blamed a
+	// proxy that is not in the path.
+	it.each([
+		['http://192.168.0.47:6333'],
+		['http://10.1.2.3:6333'],
+		['http://172.16.0.9:6333'],
+		['http://172.31.255.255:6333'],
+	])('RFC1918 LAN URL %s → qdrant_backend_slow, never a proxy drop', async (url) => {
+		process.env.QDRANT_URL = url;
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const result = await classifySearchError(makeError('This operation was aborted'), 'codebase_search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+		expect(result.message).toContain('no proxy in the path');
+	});
+
+	it('public-range 172.32.x is NOT exempted from the proxy path', async () => {
+		process.env.QDRANT_URL = 'http://172.32.0.1:6333';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 }); // no json() → probe null → legacy verdict
+		const result = await classifySearchError(makeError('This operation was aborted'), 'search');
+		expect(result.mode).toBe('qdrant_proxy_drop');
+	});
+
+	// Routes the classifier's probes: /healthz, /collections (listing), and the
+	// light POST scroll. `scroll`: 'ok' → answered (POSTs traverse), 'drop' →
+	// the POST itself aborts; `listing`: false → collections body unparsable.
+	function routeFetch(opts: { scroll: 'ok' | 'drop'; listing?: boolean }) {
+		mockFetch.mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/healthz')) return { ok: true, status: 200 };
+			if (u.endsWith('/collections')) {
+				if (opts.listing === false) return { ok: true, status: 200 }; // no json() method
+				return { ok: true, status: 200, json: async () => ({ result: { collections: [{ name: 'ws-a' }] } }) };
+			}
+			if (u.includes('/points/scroll')) {
+				if (opts.scroll === 'drop') throw new Error('This operation was aborted');
+				return { ok: true, status: 200, json: async () => ({ result: { points: [] } }) };
+			}
+			throw new Error(`unexpected fetch: ${u}`);
+		});
+	}
+
+	it('public URL, healthz OK, light POST answered → qdrant_backend_slow (POSTs are NOT dropped)', async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		routeFetch({ scroll: 'ok' });
+		const result = await classifySearchError(makeError('This operation was aborted'), 'search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+		expect(result.message).toContain('light scroll answered');
+		expect(result.hint).toContain('not being dropped');
+	});
+
+	it('light POST answered with an HTTP error status still proves traversal (backend_slow)', async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		mockFetch.mockImplementation(async (url: unknown) => {
+			const u = String(url);
+			if (u.endsWith('/healthz')) return { ok: true, status: 200 };
+			if (u.endsWith('/collections')) return { ok: true, status: 200, json: async () => ({ result: { collections: [{ name: 'ws-a' }] } }) };
+			if (u.includes('/points/scroll')) return { ok: false, status: 400, json: async () => ({}) };
+			throw new Error(`unexpected fetch: ${u}`);
+		});
+		const result = await classifySearchError(makeError('This operation was aborted'), 'codebase_search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+	});
+
+	it('public URL, healthz OK, light POST also dropped → qdrant_proxy_drop WITH the proof in the message', async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		routeFetch({ scroll: 'drop' });
+		const result = await classifySearchError(makeError('This operation was aborted'), 'search');
+		expect(result.mode).toBe('qdrant_proxy_drop');
+		expect(result.message).toContain('light POST scroll also failed');
+	});
+
+	it('probe cannot run (unparsable listing) → legacy qdrant_proxy_drop, marked unverified', async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		routeFetch({ scroll: 'ok', listing: false });
+		const result = await classifySearchError(makeError('This operation was aborted'), 'search');
+		expect(result.mode).toBe('qdrant_proxy_drop');
+		expect(result.message).toContain('unverified');
+	});
+
 	// #4352 review: roosync_search reports an embedding timeout under 'search'. The
 	// OpenAI SDK's "Request timed out." must not be read as Qdrant being slow.
 	it('an embedding SDK "Request timed out." on a loopback Qdrant is not blamed on Qdrant', async () => {

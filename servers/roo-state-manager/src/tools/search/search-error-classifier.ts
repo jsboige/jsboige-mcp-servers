@@ -137,13 +137,85 @@ async function probeQdrantHealth(): Promise<{ ok: boolean; latencyMs: number; st
 // embedding timeout, which roosync_search reports under operation 'search'.
 const QDRANT_OWN_SEARCH_TIMEOUT = /Operation '?Search'? timed out/i;
 
+// #4881: RFC1918 private ranges join the loopback exemption. Fleet executors
+// hit Qdrant directly on its native port (192.168.0.47:6333 measured on
+// po-204; same topology on the po-203 lane that reported the verdict) — no
+// reverse proxy sits in that path, so a timed-out search there is Qdrant
+// itself being slow, exactly like the #4352 localhost case.
+function isPrivateLanHost(host: string): boolean {
+	if (/^10\./.test(host)) return true;
+	const m = /^172\.(\d+)\./.exec(host);
+	if (m) {
+		const n = parseInt(m[1], 10);
+		return n >= 16 && n <= 31;
+	}
+	return /^192\.168\./.test(host);
+}
+
 function qdrantHasNoProxyInPath(errorMsg: string): boolean {
 	if (QDRANT_OWN_SEARCH_TIMEOUT.test(errorMsg)) return true;
 	try {
 		const host = new URL(process.env.QDRANT_URL || 'http://localhost:6333').hostname;
-		return host === 'localhost' || host === '[::1]' || /^127\./.test(host);
+		return host === 'localhost' || host === '[::1]' || /^127\./.test(host) || isPrivateLanHost(host);
 	} catch {
 		return false;
+	}
+}
+
+/**
+ * #4881: a verdict that blames the reverse proxy needs proof that POSTs are
+ * actually dropped — GET /healthz passing proves nothing, it is trivial and
+ * never touches the search path. This probe runs the lightest POST Qdrant has
+ * (scroll, limit 1, no payload) on the first listed collection. Any HTTP
+ * response — whatever the status — proves the POST method traverses the path,
+ * so the failing heavy search is the backend being slow on THAT search.
+ * Returns { ok: false } when the POST itself fails/aborts (the proxy-drop
+ * signature), and null when the probe cannot run (listing failure, no
+ * collections, malformed body): no proof either way.
+ */
+async function probeLightPost(): Promise<{ ok: boolean; latencyMs: number } | null> {
+	const qdrantUrl = process.env.QDRANT_URL || 'http://localhost:6333';
+	const apiKey = process.env.QDRANT_API_KEY;
+	const headers: Record<string, string> = { 'content-type': 'application/json' };
+	if (apiKey) headers['api-key'] = apiKey;
+
+	let collectionName: string | undefined;
+	try {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), 5000);
+		try {
+			const resp = await fetch(`${qdrantUrl}/collections`, { headers, signal: controller.signal });
+			let body: unknown = null;
+			try {
+				body = await resp.json();
+			} catch {
+				body = null;
+			}
+			collectionName = (body as any)?.result?.collections?.[0]?.name;
+		} finally {
+			clearTimeout(timer);
+		}
+	} catch {
+		return null;
+	}
+	if (typeof collectionName !== 'string' || !collectionName) return null;
+
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), 10000);
+	const start = Date.now();
+	try {
+		await fetch(`${qdrantUrl}/collections/${encodeURIComponent(collectionName)}/points/scroll`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ limit: 1, with_payload: false }),
+			signal: controller.signal,
+		});
+		// Any HTTP answer (even 4xx/5xx) proves the POST traversed the path.
+		return { ok: true, latencyMs: Date.now() - start };
+	} catch {
+		return { ok: false, latencyMs: Date.now() - start };
+	} finally {
+		clearTimeout(timer);
 	}
 }
 
@@ -316,10 +388,31 @@ export async function classifySearchError(
 					};
 				}
 				if (health.ok) {
+					// #4881: never blame a proxy without proof that POSTs are
+					// dropped. The light-scroll probe decides; when it cannot
+					// run, the legacy proxy_drop verdict stands but stays
+					// unverified (the message says so).
+					const lightPost = await probeLightPost();
+					if (lightPost?.ok) {
+						return {
+							mode: 'qdrant_backend_slow',
+							originalError: errorMsg,
+							message: `Qdrant is UP (GET /healthz ${health.status} in ${health.latencyMs}ms) and POSTs traverse the path (light scroll answered in ${lightPost.latencyMs}ms) — the ${operation} itself timed out, the backend is slow on this search, NOT a proxy drop`,
+							hint: 'A light POST on the same path answered, so the POST method is not being dropped. Usual causes: cold cache, on-disk/unquantized vectors on a large collection, or Qdrant CPU saturated by indexing. Retry once; if it persists, check the collection config (on_disk, quantization) and container CPU.',
+						};
+					}
+					if (lightPost && !lightPost.ok) {
+						return {
+							mode: 'qdrant_proxy_drop',
+							originalError: errorMsg,
+							message: `Reverse proxy drops POST requests (GET /healthz: ${health.status} in ${health.latencyMs}ms; light POST scroll also failed after ${lightPost.latencyMs}ms)`,
+							hint: 'Likely: IIS/nginx proxy timeout too short, or ARR pool corrupted. Check reverse proxy config (proxy timeout, maxRequestBodySize, requestFiltering).',
+						};
+					}
 					return {
 						mode: 'qdrant_proxy_drop',
 						originalError: errorMsg,
-						message: `Reverse proxy drops POST requests (GET /healthz: ${health.status} in ${health.latencyMs}ms, but POST search timed out)`,
+						message: `Reverse proxy drops POST requests (GET /healthz: ${health.status} in ${health.latencyMs}ms, but POST search timed out; light-POST probe could not run — verdict unverified)`,
 						hint: 'Likely: IIS/nginx proxy timeout too short, or ARR pool corrupted. Check reverse proxy config (proxy timeout, maxRequestBodySize, requestFiltering).',
 					};
 				} else {
