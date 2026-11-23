@@ -1994,6 +1994,35 @@ def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
     return errors
 
 
+def creation_plan_seq_fill(cells: list, n_src_cells: int) -> bool:
+    """Fill sequential idx 0..N-1 into a plan that carries NONE of them.
+
+    CoursIA#28079 (23/11, Terra): the coder agent's system prompt (sk_agent_config)
+    documents a plan schema of {"type","intent","expects"} with no idx, and the model
+    answers its system prompt over the harness schema — twice, repair re-ask included.
+    The repair prompt itself says the contract is "idx entiers distincts couvrant 0..last,
+    dans l'ordre — ni plus, ni moins": a plan with NO idx, EXACTLY n_src_cells entries,
+    in notebook order, satisfies that contract as-is. Only that case is filled — a count
+    that does not match, or any partial idx, keeps the honest #27106 verdict.
+    Mutates in place (the caller's rec['plan']['cells'] is the same list); returns True
+    when the fill applied.
+    """
+    if not cells or len(cells) != n_src_cells:
+        return False
+    for c in cells:
+        idx = None
+        if isinstance(c, dict):
+            try:
+                idx = int(c.get("idx"))
+            except (TypeError, ValueError):
+                idx = None
+        if idx is not None:
+            return False           # partial addressing is a real defect, never filled
+    for i, c in enumerate(cells):
+        c["idx"] = i
+    return True
+
+
 def creation_plan_repair_prompt(errors: list[str], n_src_cells: int) -> str:
     """Name the EXACT addressing constraint the corrected plan must satisfy.
 
@@ -2046,6 +2075,11 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     with the missing idx listed."""
     all_cells: list = []
     seg_reports: list = []
+    if creation_plan_seq_fill(plan_cells, n_src_cells):
+        # A count-exact, order-only plan (the agent system prompt's own schema,
+        # CoursIA#28079) is addressable as-is — recorded, then validated below
+        # like any other plan.
+        rec["creation_plan_seq_fill"] = {"cells": len(plan_cells), "source": "plan"}
     addressing_errors = creation_plan_addressing(plan_cells, n_src_cells)
     if addressing_errors and session is not None:
         # ONE bounded repair re-ask before the terminal verdict (CoursIA#27580,
@@ -2055,6 +2089,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         # with BOTH error sets recorded.
         repaired = await repair_creation_plan(session, args, rec, conv,
                                               addressing_errors, n_src_cells)
+        if creation_plan_seq_fill(repaired or [], n_src_cells):
+            rec["creation_plan_seq_fill"] = {"cells": len(repaired), "source": "repair"}
         after = creation_plan_addressing(repaired or [], n_src_cells)
         rec["creation_plan_repair"] = {"errors_before": addressing_errors,
                                        "errors_after": after, "kept": not after}
