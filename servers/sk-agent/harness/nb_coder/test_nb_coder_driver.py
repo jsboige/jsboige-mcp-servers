@@ -310,11 +310,24 @@ def test_an_unaddressed_creation_plan_names_every_problem_before_building():
     cells = [{"type": "markdown"}, {"idx": "bad"}, {"idx": 99},
              {"idx": 1}, {"idx": 1}]
     errors = d.creation_plan_addressing(cells, 3)
-    assert len(errors) == 4, errors
+    assert len(errors) == 5, errors
     assert errors[0] == "position 0: missing/non-integer idx"
     assert errors[1] == "position 1: missing/non-integer idx"
     assert "outside 0..2" in errors[2]
     assert errors[3] == "position 4: duplicate idx 1"
+    assert errors[4].startswith("coverage: 2 source cell(s) unaddressed")
+
+
+def test_a_well_formed_but_incomplete_plan_is_refused():
+    """CoursIA#27305 (23/11, Terra): 10 in-bounds, duplicate-free idx for a 36-cell
+    source passed validation and the grain died stage2-empty-segment on a plan the
+    model itself contested as truncated. Addressing is necessary, not sufficient:
+    the plan must COVER the source, else the port ships truncated."""
+    cells = [{"idx": i, "cell_type": "markdown"} for i in range(10)]
+    errors = d.creation_plan_addressing(cells, 36)
+    assert len(errors) == 1 and errors[0].startswith("coverage: 26 source cell(s)")
+    assert "10, 11, 12" in errors[0]
+    assert d.creation_plan_addressing(cells, 10) == []
 
 
 def test_a_fully_addressed_creation_plan_is_accepted():
@@ -396,14 +409,18 @@ def test_a_repaired_plan_is_the_one_that_gets_built(monkeypatch):
         stages.append(stage)
         if stage.startswith("2-build"):
             raise BuildReached()
-        return {"response": '```json\n{"cells": [{"idx": 0}, {"idx": 21}]}\n```',
+        # The repair must now be COMPLETE (#27305): a partially-repaired plan
+        # (2 cells for a 22-cell source) is refused by the coverage rule, never
+        # built. The model answers the coverage error with the full plan.
+        cells = ", ".join(f'{{"idx": {i}}}' for i in range(22))
+        return {"response": f'```json\n{{"cells": [{cells}]}}\n```',
                 "conversation_id": "conv-1"}
 
     monkeypatch.setattr(d, "sk_call_retry", fake_call)
     plan_cells = [{"idx": 0}, {"idx": 22}]
     with pytest.raises(BuildReached):
         asyncio.run(d.create_segments(object(), args, rec, "conv-1", plan_cells, 22, ""))
-    assert plan_cells == [{"idx": 0}, {"idx": 21}]
+    assert plan_cells == [{"idx": i} for i in range(22)]
     assert stages[0] == "1-plan-repair"
     assert stages[1].startswith("2-build"), "the build runs on the REPAIRED plan"
 
