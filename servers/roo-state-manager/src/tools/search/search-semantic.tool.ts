@@ -47,7 +47,9 @@ type FallbackReason =
     | 'embedding_circuit_breaker_active'
     | 'qdrant_circuit_breaker_active'
     | 'embedding_api_error'
-    | 'embedding_timeout';
+    | 'embedding_timeout'
+    | 'qdrant_api_error'
+    | 'qdrant_timeout';
 
 /**
  * #4880: which breaker short-circuited a semantic search, and how long it stays
@@ -2556,9 +2558,12 @@ export const searchTasksByContentTool = {
             console.warn(`[WARN] Semantic search failed (${classified.mode}), falling back to text: ${semanticErrorMsg}`);
 
             // #1496: Determine fallback reason from classified error
+            // #4880: name the component that failed — a Qdrant timeout used to be
+            // reported as `embedding_timeout` (SEARCH_BREAKER_PER_COMPONENT=0 keeps that).
+            const qdrantFailed = isPerComponentBreakerEnabled() && failedStage === 'search';
             const fallbackReason: FallbackReason = isAbortOrTimeout(semanticError)
-                ? 'embedding_timeout'
-                : 'embedding_api_error';
+                ? (qdrantFailed ? 'qdrant_timeout' : 'embedding_timeout')
+                : (qdrantFailed ? 'qdrant_api_error' : 'embedding_api_error');
 
             // Fallback vers la recherche textuelle simple (legacy — default path)
             try {

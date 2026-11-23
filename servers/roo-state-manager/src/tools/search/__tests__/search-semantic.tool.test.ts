@@ -2946,6 +2946,34 @@ describe('helper functions (indirect via handler)', () => {
 				expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
 			});
 
+			test('the FIRST failing call names qdrant too (qdrant_timeout, not embedding_timeout)', async () => {
+				vi.useRealTimers();
+				_resetEmbeddingCircuitBreaker();
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: new Array(1536).fill(0.1) }]
+				});
+				mockQdrantClient.query.mockRejectedValueOnce(qdrantTimeout());
+
+				const payload = getJsonPayload(await runSearch('qdrant first failure label'));
+
+				expect(payload.fallback_reason).toBe('qdrant_timeout');
+				expect(payload).not.toHaveProperty('circuit_open');
+			});
+
+			test('kill switch =0 keeps the legacy first-call label (embedding_timeout)', async () => {
+				vi.useRealTimers();
+				_resetEmbeddingCircuitBreaker();
+				process.env.SEARCH_BREAKER_PER_COMPONENT = '0';
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: new Array(1536).fill(0.1) }]
+				});
+				mockQdrantClient.query.mockRejectedValueOnce(qdrantTimeout());
+
+				const payload = getJsonPayload(await runSearch('qdrant first failure legacy label'));
+
+				expect(payload.fallback_reason).toBe('embedding_timeout');
+			});
+
 			test('an embedding failure still arms the EMBEDDING breaker, reason unchanged', async () => {
 				vi.useFakeTimers();
 				_resetEmbeddingCircuitBreaker();
