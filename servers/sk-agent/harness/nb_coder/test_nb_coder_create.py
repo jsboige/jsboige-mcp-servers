@@ -747,3 +747,45 @@ def test_gate_call_uses_explicit_propagated_path(tmp_path):
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+# ------------------------------------- local modules are part of the material (23/11)
+
+def test_local_modules_are_named_in_both_creation_prompts(tmp_path):
+    """CoursIA#28208: six creation turns died on the same pair of findings —
+    « RegimeRps est une heuristique nouvelle, pas un port de detect_regime ». The module
+    (GameTheory/limit_sets.py) sits in the worktree beside the source notebook and the
+    notebook imports it, but no prompt ever showed it: the coder received the twin's CELLS
+    (plus prose, comments, outputs), invented a replacement, and the verifier rejected it
+    every round. A port's material is the notebook PLUS the local modules it imports, so
+    their names and signatures belong in the plan prompt and in every segment prompt.
+    """
+    (tmp_path / "limit_sets.py").write_text(
+        "import numpy as np\n"
+        "def detect_regime(times, traj, *,\n"
+        "                  tol_point: float = 2e-3,\n"
+        "                  window_frac: float = 0.2):\n"
+        "    return 'point_fixe', {}\n\n"
+        "def stag_hunt_matrices():\n"
+        "    return None, None\n", encoding="utf-8")
+    src = write_nb(tmp_path / "T-Python.ipynb", [
+        {"cell_type": "code",
+         "source": "import limit_sets\nfrom numpy import zeros\n", "metadata": {}},
+    ])
+    mods = D.local_modules(src)
+    assert [m["file"] for m in mods] == ["limit_sets.py"], "only the LOCAL module resolves"
+    joined = ", ".join(mods[0]["defs"])
+    assert "detect_regime(" in joined and "tol_point" in joined, \
+        "a signature spanning several lines is caught whole"
+    assert "stag_hunt_matrices()" in joined
+
+    block = D.local_module_block(mods)
+    assert "limit_sets.py" in block and "N'invente JAMAIS" in block
+
+    p1 = D.creation_prompt(1, {"title": "t", "body": "b", "comments": ""},
+                           "N-CSharp.ipynb", "T-Python.ipynb",
+                           {"kernel_name": "k"}, "", "VUE", modules=mods)
+    p2 = D.creation_json_prompt([{"idx": 0, "cell_type": "code"}], 1, modules=mods)
+    for p in (p1, p2):
+        assert "MODULES PYTHON LOCAUX" in p and "limit_sets.py" in p
+    assert D.local_module_block([]) == "" and D.local_modules(None) == []

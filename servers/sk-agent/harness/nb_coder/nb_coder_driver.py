@@ -1556,8 +1556,79 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
 
 
 # ---------------------------------------------------------------- creation mode (--source-nb)
+LOCAL_MODULE_DEF_CAP = 24   # signatures listed per local module
+
+
+def local_modules(src_nb) -> list[dict]:
+    """Python modules living NEXT TO the source notebook that its code imports.
+
+    23/11 (CoursIA#28208): six creation turns died on the same pair of findings —
+    « RegimeRps est une heuristique nouvelle, pas un port de detect_regime ». The module
+    (GameTheory/limit_sets.py) sits in the worktree beside the source notebook, but no
+    prompt ever showed it: the coder received the twin's CELLS only (plus prose, comments
+    and outputs), then invented a replacement that the verifier rejected every round. A
+    port's material is the notebook PLUS the local modules it imports; their names and
+    signatures go into the plan and segment prompts, and the coder reads the files
+    themselves from the worktree.
+
+    Bounded on purpose: module names and top-level signatures, never bodies — the file is
+    in the worktree and `Read` is the right instrument for it. Only modules that resolve
+    to a real `<folder>/<name>.py` are returned (numpy and friends drop out here).
+    """
+    if not src_nb:
+        return []
+    try:
+        nb = json.loads(Path(src_nb).read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    names: list[str] = []
+    for cell in nb.get("cells") or []:
+        if cell.get("cell_type") != "code":
+            continue
+        for line in _text(cell.get("source")).splitlines():
+            m = re.match(r"\s*(?:from\s+([A-Za-z_]\w*)[\s.]|import\s+([A-Za-z_]\w*))", line)
+            if not m:
+                continue
+            n = m.group(1) or m.group(2)
+            if n and n not in names:
+                names.append(n)
+    folder = Path(src_nb).parent
+    out: list[dict] = []
+    for n in names:
+        p = folder / f"{n}.py"
+        if not p.is_file():
+            continue
+        try:
+            txt = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+        # the signature may span lines (detect_regime does) — `[^)]*` crosses newlines
+        defs = [f"{fn}({' '.join(a.split())})"[:160]
+                for fn, a in re.findall(r"^def\s+(\w+)\s*\(([^)]*)\)", txt, re.M)]
+        out.append({"name": n, "file": p.name, "defs": defs[:LOCAL_MODULE_DEF_CAP]})
+    return out
+
+
+def local_module_block(modules: list | None) -> str:
+    """Prompt block naming the source notebook's local modules. '' when none."""
+    if not modules:
+        return ""
+    lines = []
+    for m in modules:
+        defs = ", ".join(m["defs"]) if m["defs"] else "(aucune fonction de premier niveau)"
+        lines.append(f"- `{m['file']}` — {defs}")
+    return ("\n\nMODULES PYTHON LOCAUX DU DOSSIER SOURCE — ils sont DANS TON WORKTREE, à côté "
+            "du carnet source, et ce carnet les importe :\n" + "\n".join(lines) +
+            "\nLIS le fichier (Read) et PORTE les fonctions qu'il utilise — mêmes seuils, "
+            "mêmes constantes, mêmes libellés de verdict. N'invente JAMAIS une heuristique à "
+            "la place d'une fonction du module : le vérificateur compare au module source et "
+            "rejette toute réimplémentation non équivalente (mesuré CoursIA#28208 : six tours "
+            "perdus à ce motif).\n")
+
+
 def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel: dict,
-                    ctx: str, view: str, conventions: str = "", cs_view: str = "") -> str:
+                    ctx: str, view: str, conventions: str = "", cs_view: str = "",
+                    modules: list | None = None) -> str:
     """Stage 1 in creation mode: the target notebook does NOT exist on origin/main — the
     model plans the COMPLETE twin from the Python source + the issue's cell table.
     Measured 17/11 (#27099 dry pass): asking for FULL cell sources here returned a
@@ -1575,6 +1646,7 @@ def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel
         f"Noyau canonique d'exécution : {kernel['kernel_name']}\n\n"
         f"## Contexte de série\n{ctx}\n\n"
         f"## Jumeau Python (structure à porter)\n{view}\n\n"
+        + local_module_block(modules)
         + (f"## Jumeau C# du même carnet (portage antérieur — RÉFÉRENCE de traduction)\n"
            f"{cs_view}\n\n"
            "Ce port C# du même carnet éclaire ton portage : structure retenue, découpage des "
@@ -1668,7 +1740,8 @@ PORT_CONTENT_RULES = (
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
                          src_cells: list | None = None,
-                         cs_cells: list | None = None) -> str:
+                         cs_cells: list | None = None,
+                         modules: list | None = None) -> str:
     """Stage 2 in creation mode, ONE SEGMENT at a time: the model returns the sources of
     the plan's cells i..j only. Measured 17/11: the whole-notebook single-shot answer
     does not survive the output budget. The harness assembles every segment.
@@ -1762,7 +1835,7 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
         "n'appelles aucun outil d'écriture.\n\n"
         f"Cellules de cette tranche (index du PLAN, ordre du carnet) :\n"
         + json.dumps(segment_cells, ensure_ascii=False)[:9000] + "\n"
-        + prose + comments + refs + "\n"
+        + prose + comments + refs + local_module_block(modules) + "\n"
         + CREATION_LINK_COUNT_RULES + "\n"
         + PORT_CONTENT_RULES + "\n"
         + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
@@ -2075,6 +2148,9 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     with the missing idx listed."""
     all_cells: list = []
     seg_reports: list = []
+    # 23/11: the source notebook's local .py modules are part of the material a port must
+    # reproduce — computed once, injected into every segment prompt (CoursIA#28208)
+    mods = local_modules(getattr(args, "source_nb", None)) if src_cells else []
     if creation_plan_seq_fill(plan_cells, n_src_cells):
         # A count-exact, order-only plan (the agent system prompt's own schema,
         # CoursIA#28079) is addressable as-is — recorded, then validated below
@@ -2108,7 +2184,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         unparsed/empty answer returns parsed=None and the caller decides."""
         env = await sk_call_retry(session, args, rec, stage,
                                   creation_json_prompt(tranche, n_src_cells, conventions,
-                                                       src_cells, cs_cells), conv,
+                                                       src_cells, cs_cells, modules=mods), conv,
                                   max_tokens=BUILD_MAX_TOKENS)
         part, env = await parse_or_repair(session, args, rec, stage, env, conv,
                                           max_tokens=BUILD_MAX_TOKENS)
@@ -2178,7 +2254,7 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             # smaller tranche, so the omissions cannot hide in a long answer again
             env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
                                       creation_json_prompt(missing, n_src_cells,
-                                                           conventions), conv,
+                                                           conventions, modules=mods), conv,
                                       max_tokens=BUILD_MAX_TOKENS)
             conv = env.get("conversation_id") or conv
             part2, env = await parse_or_repair(session, args, rec, f"2-build+{si}+repair",
@@ -7461,7 +7537,8 @@ async def run(args, rec: dict) -> dict:
                                               ctx, view, conventions)
             elif create_mode:
                 prompt = creation_prompt(args.issue, issue_eff, args.notebook, args.source_nb,
-                                         kernel, ctx, view, conventions, cs_view)
+                                         kernel, ctx, view, conventions, cs_view,
+                                         modules=local_modules(src_nb))
             else:
                 prompt = plan_prompt(args.issue, issue_eff, args.notebook, kernel,
                                      ctx, view, conventions)
