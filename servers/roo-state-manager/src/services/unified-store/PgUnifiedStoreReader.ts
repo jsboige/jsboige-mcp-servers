@@ -280,25 +280,36 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
     return this.mapRooSyncMessageRow(result.rows[0]);
   }
 
-  async getRooSyncChannelMessages(): Promise<RooSyncMessageRow[]> {
+  async getRooSyncChannelMessages(opts?: RooSyncMailboxReadOptions): Promise<RooSyncMessageRow[]> {
     if (!this.pool) await this.init();
     if (!this.pool) throw new Error('Pool not initialized');
 
     // Same live set as getRooSyncMailbox minus the recipient clause — the
     // global scans (#4302) are recipient-blind by design. Explicit columns
     // (#4131 B15); the partial index idx_roosync_messages_channel_live
-    // (created_at DESC, migrations/011) serves the ordered scan. Full body:
-    // both consumers (cleanupExpiredMessages, sendExpiryReminders) map rows
-    // to full Messages.
+    // (created_at DESC, migrations/011) serves the ordered scan.
+    // #4731 — `bodyChars` bounds the one unbounded column exactly as the
+    // mailbox read does. Neither consumer reads `body` (cleanup decides on
+    // options.expires_at/auto_destruct, reminders on options + subject), so
+    // the sweeps pass `{ bodyChars: 0 }` and the payload stays server-side
+    // (8.66 MB of 10.90 MB per scan measured on po-204, 23/11).
+    const bodyChars = opts?.bodyChars;
+    const bodyExpr = bodyChars === undefined
+      ? 'body'
+      : bodyChars > 0 ? 'LEFT(body, $1) AS body' : "'' AS body";
+    const params: number[] = [];
+    if (bodyChars !== undefined && bodyChars > 0) params.push(bodyChars);
+
     const result = await this.pool.query(
       `SELECT id, thread_id, from_machine, from_workspace, to_machine, to_workspace,
-              subject, body, priority, status, tags, attachment_refs, created_at,
+              subject, ${bodyExpr}, priority, status, tags, attachment_refs, created_at,
               reply_to, read_by, read_by_workspace, options, destroyed_at, destroyed_reason,
               reminder_sent_at
        FROM roosync_messages
        WHERE status <> 'archived'
          AND destroyed_at IS NULL
-       ORDER BY created_at DESC`
+       ORDER BY created_at DESC`,
+      params,
     );
 
     return result.rows.map(row => this.mapRooSyncMessageRow(row));
