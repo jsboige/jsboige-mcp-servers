@@ -477,6 +477,66 @@ export function selectVariantCollection(
 }
 
 /**
+ * #4880: bounds ONE candidate's signature scroll inside the content-match sweep.
+ *
+ * Measured ai-01, 23/11 13:20Z (read-only): on a cold Qdrant the 3 largest ws-*
+ * collections each burned the 15 000 ms client timeout (15 014 / 15 006 / 15 002 ms)
+ * while every other candidate answered in ~10 ms. The sweep is SERIAL, so 3 cold
+ * candidates alone cost ~45 s and the search hit its 50 s deadline (phase
+ * content_match_fallback) — a cold cache read as "the index is missing".
+ *
+ * Same defensive parsing as resolveVariantLivenessTimeout: a NaN/≤0 bound would fire
+ * setTimeout at ~0 ms and read EVERY candidate as unprobed — an env typo must never
+ * disarm the sweep. Invalid values fall back to 3000 ms.
+ */
+export function resolveContentMatchSignatureTimeout(raw: string | undefined): number {
+	const t = parseFloat(raw ?? '3000');
+	return Number.isFinite(t) && t > 0 ? t : 3000;
+}
+
+/** Sentinel: this candidate's signature scroll exceeded the bound. */
+const SIGNATURE_PROBE_TIMED_OUT = Symbol('signature-probe-timed-out');
+type SignatureProbe = { dirs: Set<string>; paths: string[] } | null | typeof SIGNATURE_PROBE_TIMED_OUT;
+
+/**
+ * One candidate's signature scroll, BOUNDED.
+ *
+ * Same Promise.race + clearTimeout-on-both-exits shape as the variant-liveness probe
+ * in search-codebase.tool.ts: the losing setTimeout of a race must not stay pending for
+ * the full bound on every candidate. A candidate that exceeds the bound is reported as
+ * TIMED OUT (distinct from an unreadable one) so the caller can COUNT it.
+ */
+async function boundedCollectionSignature(
+	qdrant: any,
+	collectionName: string,
+	timeoutMs: number
+): Promise<SignatureProbe> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<typeof SIGNATURE_PROBE_TIMED_OUT>(r => {
+		timer = setTimeout(() => r(SIGNATURE_PROBE_TIMED_OUT), timeoutMs);
+	});
+	// getCollectionSignature swallows its own errors (it returns null), but a late
+	// rejection after the race was lost must never become an unhandled rejection.
+	const read: Promise<{ dirs: Set<string>; paths: string[] } | null> =
+		Promise.resolve(getCollectionSignature(qdrant, collectionName)).catch(() => null);
+	return Promise.race([read, timeout]).then(
+		v => { clearTimeout(timer); return v; },
+		() => { clearTimeout(timer); return null; },
+	);
+}
+
+/**
+ * The outcome of a content-match sweep, for the caller's observability.
+ *
+ * #4880: `unprobed_candidates` counts the candidates whose signature scroll exceeded
+ * CONTENT_MATCH_SIGNATURE_TIMEOUT_MS. A MISS with this count > 0 is a COLD-CACHE miss,
+ * not a proof that no collection matches — the two must never read the same.
+ */
+export interface ContentMatchProbeStats {
+	unprobed_candidates: number;
+}
+
+/**
  * Find the ws-* collection whose indexed top-level directories best match the workspace's
  * actual directory structure. Content-based fallback when hash resolution fails.
  *
@@ -491,17 +551,25 @@ export function selectVariantCollection(
  * tie-break. Liveness applies only when ≥2 candidates are decidable; otherwise the
  * legacy score ranking stands (first on tie — candidates arrive points_count desc).
  *
+ * #4880: each candidate's signature scroll is BOUNDED
+ * (CONTENT_MATCH_SIGNATURE_TIMEOUT_MS, default 3000). A candidate that exceeds the
+ * bound is SKIPPED — treated like an unreadable one — and COUNTED. The thresholds and
+ * the selection logic are untouched; only the time one cold candidate may cost changes.
+ *
  * @param qdrant - Qdrant client
  * @param candidates - ws-* collection names to probe (pre-sorted by points_count desc)
  * @param workspaceSignature - top-level dirs of the workspace on disk (null = skip)
  * @param workspaceRoot - requested workspace root (enables the liveness preference)
+ * @param stats - optional out-param carrying the sweep's counters (the miss path has
+ *   no match object to carry them)
  * @returns the selected match with its metrics + liveness, or null
  */
 export async function findCollectionByContent(
 	qdrant: any,
 	candidates: string[],
 	workspaceSignature: Set<string> | null,
-	workspaceRoot?: string
+	workspaceRoot?: string,
+	stats?: ContentMatchProbeStats
 ): Promise<{
 	name: string;
 	jaccard: number;
@@ -512,8 +580,11 @@ export async function findCollectionByContent(
 	liveness_flipped_selection?: boolean;
 	writer: WsWriterSignal | null | undefined;
 	writer_flipped_selection?: boolean;
+	/** #4880: candidates skipped because their signature scroll exceeded the bound. */
+	unprobed_candidates: number;
 } | null> {
 	if (!workspaceSignature || workspaceSignature.size === 0 || candidates.length === 0) {
+		if (stats) stats.unprobed_candidates = 0;
 		return null;
 	}
 
@@ -521,6 +592,7 @@ export async function findCollectionByContent(
 	const discriminantDirs = new Set([...workspaceSignature].filter(d => !GENERIC_DIRS.has(d)));
 
 	const scanned = Math.min(candidates.length, CONTENT_MATCH_MAX_CANDIDATES);
+	const signatureTimeoutMs = resolveContentMatchSignatureTimeout(process.env.CONTENT_MATCH_SIGNATURE_TIMEOUT_MS);
 	type Accepted = {
 		name: string;
 		jaccard: number;
@@ -532,10 +604,16 @@ export async function findCollectionByContent(
 		writer: WsWriterSignal | null | undefined;
 	};
 	const accepted: Accepted[] = [];
+	let unprobedCandidates = 0;
 
 	for (let i = 0; i < scanned; i++) {
 		const name = candidates[i];
-		const sig = await getCollectionSignature(qdrant, name);
+		const sig = await boundedCollectionSignature(qdrant, name, signatureTimeoutMs);
+		// #4880: a cold candidate is skipped like an unreadable one — and counted.
+		if (sig === SIGNATURE_PROBE_TIMED_OUT) {
+			unprobedCandidates++;
+			continue;
+		}
 		if (!sig || sig.dirs.size === 0) continue;
 
 		// Jaccard similarity between workspace dirs and collection's indexed dirs.
@@ -573,6 +651,9 @@ export async function findCollectionByContent(
 			});
 		}
 	}
+	// #4880: the counters are published even on a MISS — a miss caused by cold
+	// candidates must be distinguishable from a miss caused by no match.
+	if (stats) stats.unprobed_candidates = unprobedCandidates;
 	if (accepted.length === 0) return null;
 
 	// Liveness for every accepted candidate — paths already sampled by the signature
@@ -631,6 +712,8 @@ export async function findCollectionByContent(
 		...(flipped ? { liveness_flipped_selection: true } : {}),
 		...(selectionBasis === 'writer' && flipped ? { writer_flipped_selection: true } : {}),
 		writer: winner.writer,
+		// #4880: the candidates this sweep could not probe (cold signature scroll).
+		unprobed_candidates: unprobedCandidates,
 	};
 }
 
