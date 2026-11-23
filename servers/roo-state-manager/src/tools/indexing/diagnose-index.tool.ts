@@ -16,6 +16,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { StoredConversation } from '../../services/unified-store/types.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { getEmbeddingModel, getEmbeddingQueryClient } from '../../services/openai.js';
+import { resolveSearchClientTimeoutMs } from '../search/search-client-timeout.js';
 
 // #1275: Cache embedding connectivity check to avoid consuming API credits on every diagnose call.
 // TTL: 5 minutes (same as circuit breaker pattern).
@@ -497,9 +498,17 @@ export async function handleDiagnoseSemanticIndex(
                     const norm = Math.sqrt(squaredNorm) || 1;
                     const normalisedVector = probeVector.map(v => v / norm);
 
+                    // #4880: the probe runs on the same client the real searches use
+                    // (ms#1892) — its abort sits above the server budget, so a slow
+                    // search is timed by the server, not cut at QDRANT_TIMEOUT_MS.
+                    // QDRANT_SEARCH_TIMEOUT_ALIGN=0 keeps the shared client.
+                    const searchClientTimeoutMs = resolveSearchClientTimeoutMs();
+                    const probeClient = searchClientTimeoutMs === null
+                        ? qdrant
+                        : getQdrantClient({ timeoutMs: searchClientTimeoutMs });
                     const probeStartedAt = Date.now();
                     try {
-                        await qdrant.query(collectionName, {
+                        await probeClient.query(collectionName, {
                             query: { nearest: normalisedVector },
                             limit: 1,
                             with_payload: false,
@@ -530,10 +539,10 @@ export async function handleDiagnoseSemanticIndex(
                         if (probeErrorType === 'timeout') {
                             diagnostics.details.search_probe = 'timeout';
                             diagnostics.warnings.push(
-                                `Sonde de recherche bornée expirée après ${probeTimeoutSec} s: ${searchProbeError.message}`
+                                `Sonde de recherche bornée expirée après ${elapsedMs} ms (budget serveur ${probeTimeoutSec} s): ${searchProbeError.message}`
                             );
                             diagnostics.details.search_probe_recommendation =
-                                `La recherche vectorielle bornée a expiré après ${probeTimeoutSec} s : la latence de lecture est ` +
+                                `La recherche vectorielle bornée a expiré après ${elapsedMs} ms (budget serveur ${probeTimeoutSec} s) : la latence de lecture est ` +
                                 "côté serveur (Qdrant). NE PAS réinitialiser la collection sur ce verdict — l'expiration n'est pas " +
                                 'une corruption ; mesurez la charge Qdrant avant toute action sur la collection.';
                         } else {

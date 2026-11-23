@@ -15,7 +15,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock QdrantClient and OpenAI clients using hoisting to avoid initialization order issues
 // Matching the pattern from search-semantic.tool.test.ts
-const { mockQdrantClient, mockOpenAIClient } = vi.hoisted(() => ({
+const { mockQdrantClient, mockOpenAIClient, qdrantClientRequests } = vi.hoisted(() => ({
+	// #4880: every getQdrantClient(opts) call, to assert which client the probe used
+	qdrantClientRequests: [] as Array<{ timeoutMs?: number } | undefined>,
 	mockQdrantClient: {
 		getCollections: vi.fn(),
 		getCollection: vi.fn(),
@@ -33,7 +35,10 @@ const { mockQdrantClient, mockOpenAIClient } = vi.hoisted(() => ({
 // Mock the qdrant service module - return mock instance directly
 // Path: from __tests__/ go up 3 levels to reach src/, then services/
 vi.mock('../../../services/qdrant.js', () => ({
-	getQdrantClient: () => mockQdrantClient,
+	getQdrantClient: (opts?: { timeoutMs?: number }) => {
+		qdrantClientRequests.push(opts);
+		return mockQdrantClient;
+	},
 	resetQdrantClient: vi.fn()
 }));
 
@@ -1728,6 +1733,40 @@ describe('diagnose-index.tool (unit tests)', () => {
 
 			expect(parsed.details.search_probe).toBe('error');
 			expect(parsed.status).toBe('degraded');
+		});
+
+		it('runs the probe on the aligned search client (abort above the server budget)', async () => {
+			qdrantClientRequests.length = 0;
+
+			await handleDiagnoseSemanticIndex(conversationCache);
+
+			// default QDRANT_SEARCH_TIMEOUT_MS=30000 → client abort 35 000 ms (ms#1892)
+			expect(qdrantClientRequests).toContainEqual({ timeoutMs: 35000 });
+			expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
+		});
+
+		it('reports the measured elapsed time, not the server budget, when the probe expires', async () => {
+			const timeoutError: any = new Error('This operation was aborted');
+			timeoutError.name = 'QdrantClientTimeoutError';
+			mockQdrantClient.query.mockRejectedValue(timeoutError);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			const warning = parsed.warnings.find((w: string) => w.startsWith('Sonde de recherche bornée expirée'));
+			expect(warning).toContain(`après ${parsed.details.search_probe_ms} ms (budget serveur 30 s)`);
+		});
+
+		it('kill switch QDRANT_SEARCH_TIMEOUT_ALIGN=0 keeps the probe on the shared client', async () => {
+			qdrantClientRequests.length = 0;
+			process.env.QDRANT_SEARCH_TIMEOUT_ALIGN = '0';
+			try {
+				await handleDiagnoseSemanticIndex(conversationCache);
+			} finally {
+				delete process.env.QDRANT_SEARCH_TIMEOUT_ALIGN;
+			}
+
+			expect(qdrantClientRequests.some(opts => opts?.timeoutMs !== undefined)).toBe(false);
+			expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
 		});
 	});
 });
