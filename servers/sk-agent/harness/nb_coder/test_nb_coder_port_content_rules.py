@@ -87,6 +87,14 @@ def test_the_rules_pin_exercises_to_the_source_and_forbid_partial_segments():
     # an executed cell into a stub nor swap the house figure convention for a package.
     assert "Le tableau « Cellules à porter » de l'issue est INDICATIF" in r
     assert "la stubber casse la clause de parité numérique" in r
+    # 2026-11-23 batch o16, CoursIA#27740: the model refused at the FIRST cell —
+    # « sans risquer de substituer un calcul non équivalent » — because the RECETTE
+    # rule read as a ban on any hand-written reimplementation. The doctrine must
+    # name the frontier: same definition = réimplémentation (expected), another
+    # method = substitution (forbidden).
+    assert "est une RÉIMPLÉMENTATION" in r
+    assert "mesure autre chose" in r
+    assert "craint de « substituer un calcul non " in r
     body = _body(r)
     assert body in D.creation_json_prompt(
         [{"idx": 1, "cell_type": "code", "titre": "x"}], 3, "")
