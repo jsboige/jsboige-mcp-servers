@@ -6168,6 +6168,10 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
         note_content_verdict(rec, "verify-same-served-model")
     elif rc == 0 and entry.get("verdict") == "approve":
         note_content_verdict(rec, "verify-approved")
+        # The approval is bound to the bytes judged: a resume that re-runs stage 5 alone
+        # (23/11) refuses a build written since this verdict.
+        with contextlib.suppress(OSError):
+            entry["built_sha256"] = hashlib.sha256(built_nb.read_bytes()).hexdigest()
     elif rc == 1 and entry.get("verdict") == "reject":
         note_content_verdict(rec, "verify-reject")
     else:
@@ -6400,8 +6404,25 @@ def _load_drift_module():
     return mod
 
 
-def stage5_source_drift(wt_path: Path, src_twin: str) -> dict:
-    """Did the port's source twin move on origin/main since the worktree's base?
+def stage5_base_rev(wt_path: Path, rec: dict) -> str:
+    """The revision the port was BUILT on: the worktree head its trace recorded.
+
+    On a resume that failed past the branch (a push or a create failure) the worktree sits
+    on the previous attempt's commit, whose twin already carries the integration's nav
+    link: measured from THERE, a markdown cell the source gained since reads ``structure``
+    and the approved build is refused again (23/11). HEAD only when the trace records no
+    head this repository still resolves."""
+    head = ((rec.get("stages") or {}).get("worktree") or {}).get("head")
+    if head:
+        rc, _ = _git(wt_path, "rev-parse", "-q", "--verify", f"{head}^{{commit}}", timeout=60)
+        if rc == 0:
+            return str(head)
+    return "HEAD"
+
+
+def stage5_source_drift(wt_path: Path, src_twin: str, rebase: bool = True,
+                        base_rev: str = "HEAD", old_blob: str | None = None) -> dict:
+    """Did the port's source twin move on origin/main since the port was built?
 
     22/11, CoursIA main red for every open PR: #27805 ported Sudoku-07-Norvig while
     #27348 added three cells to its Python twin; merged on stale checks, the port
@@ -6411,20 +6432,91 @@ def stage5_source_drift(wt_path: Path, src_twin: str) -> dict:
     integration edits (nav link, README row, reseal) land on the fresh twin;
     `structure`/`code`/`deleted` refuse the push (the port is stale, a retry
     re-ports from the new source). A fetch that fails leaves the comparison to
-    the last known origin/main and says so -- fail-open, as before this guard."""
+    the last known origin/main and says so -- fail-open, as before this guard.
+
+    ``rebase=False`` measures and leaves the worktree on the build's base: stage 5
+    grafts first when the source only gained markdown cells (23/11), then re-bases.
+    ``base_rev`` is the revision the port was built on (``stage5_base_rev``);
+    ``old_blob`` the source as a previous delivery attempt measured it (a build
+    already grafted is aligned with THAT source)."""
     rc_f, out_f = _git(wt_path, "fetch", "-q", "origin", "main")
     try:
-        drift = _load_drift_module().source_drift(wt_path, "HEAD", src_twin)
+        drift = _load_drift_module().source_drift(wt_path, base_rev, src_twin,
+                                                  old_blob=old_blob)
     except Exception as e:  # never a blocker on an instrument failure
         return {"drift": "unmeasured", "error": f"{type(e).__name__}: {e}"[:300]}
     if rc_f != 0:
         drift["fetch_error"] = out_f[:200]
-    if drift.get("drift") == "markdown-only":
+    if rebase and drift.get("drift") in ("markdown-only", "markdown-added"):
         rc, out = _git(wt_path, "checkout", "-q", "--detach", "origin/main")
         drift["rebased"] = rc == 0
         if rc != 0:
             drift["rebase_error"] = out[:300]
     return drift
+
+
+def _nb_style(text: str, nb: dict) -> dict:
+    """How a notebook file was serialised, found by round-trip: the style whose
+    re-serialisation of the parsed notebook gives back its own text. A rewrite then
+    differs from the file only by what was changed in it, never by indent, key order,
+    escapes or a trailing newline. Falls back to nbformat's own style."""
+    for indent in (1, 2, None):
+        for sort_keys in (True, False):
+            for ascii_ in (False, True):
+                for tail in ("\n", ""):
+                    kw = {"indent": indent, "sort_keys": sort_keys, "ensure_ascii": ascii_}
+                    if indent is None:
+                        kw["separators"] = (",", ":")
+                    if json.dumps(nb, **kw) + tail == text:
+                        return {"kw": kw, "tail": tail}
+    return {"kw": {"indent": 1, "sort_keys": True, "ensure_ascii": False}, "tail": "\n"}
+
+
+def stage5_graft_markdown(wt_path: Path, src_twin: str, drift: dict,
+                          built_nb: Path, base_rev: str = "HEAD",
+                          old_blob: str | None = None) -> dict:
+    """Copy into the built port the markdown cells its source twin gained on origin/main.
+
+    Admitted only by `graft_markdown` (the port is cell-aligned with the source it was
+    built on; the source gained markdown cells and nothing else). The source the port is
+    aligned with is read where `stage5_source_drift` measured from: ``old_blob`` when
+    readable, else ``base_rev``. The build is rewritten
+    in the run dir, its previous bytes kept next to it (`<build>.pre-graft-<ts>Z.ipynb`),
+    in the file's own serialisation and line endings -- the notebook that will be pushed
+    differs from the approved one by the added cells and nothing else. Deterministic:
+    no model turn, no git gesture."""
+    try:
+        mod = _load_drift_module()
+        raw = built_nb.read_bytes()
+        text = raw.decode("utf-8-sig").replace("\r\n", "\n")
+        port = json.loads(text)
+        old_nb = ((mod.blob_notebook(wt_path, old_blob) if old_blob else None)
+                  or mod.notebook_at(wt_path, base_rev, src_twin))
+        res = mod.graft_markdown(port, old_nb,
+                                 mod.notebook_at(wt_path, "origin/main", src_twin))
+        if res.get("error"):
+            return {"ok": False, "error": res["error"]}
+        cells, already = res.pop("cells"), res.pop("already")
+        backup = None
+        if not already:
+            backup = built_nb.with_name(
+                f"{built_nb.stem}.pre-graft-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.ipynb")
+            shutil.copy2(built_nb, backup)
+            style = _nb_style(text, port)
+            out = json.dumps(port | {"cells": cells}, **style["kw"]) + style["tail"]
+            if b"\r\n" in raw:
+                out = out.replace("\n", "\r\n")
+            try:
+                with open(built_nb, "w", encoding="utf-8", newline="") as fh:
+                    fh.write(out)
+            except OSError as e:
+                shutil.copy2(backup, built_nb)     # never leave a half-written approved build
+                raise e
+    except Exception as e:  # refuses loudly; an approved build is never shipped half-grafted
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"[:200]}
+    return {"ok": True, "inserted": res["inserted"], "count": res["count"], "already": already,
+            "backup": backup.name if backup else None,
+            "sha256": hashlib.sha256(built_nb.read_bytes()).hexdigest()}
 
 
 def integration_pr_lines(integ: dict | None) -> str:
@@ -6492,20 +6584,72 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
 
     cm0 = rec.get("create_mode") or {}
     src0 = cm0.get("source") if isinstance(cm0, dict) else None
+    pr_resume = bool((rec.get("stages") or {}).get("pr_resume"))
+
+    def _rebase() -> bool:
+        """Detach onto today's origin/main. False when it failed -- and the refusal is
+        written: an integration replayed on a stale base is not pushed on a guess."""
+        rc, out = _git(wt_path, "checkout", "-q", "--detach", "origin/main")
+        if rc == 0:
+            entry["rebased"] = True
+            return True
+        entry["error"] = f"re-base on origin/main failed: {out[:300]}"
+        rec["verdict"], rec["pr"] = "pr-rebase-failed", entry
+        return False
+
     if src0:
-        drift = stage5_source_drift(wt_path, str(src0))
+        # Measured BEFORE any git gesture, so that a graft refused below leaves HEAD where
+        # it was -- a worktree left on origin/main would read "no drift" on the next
+        # attempt and push a port without the cells the source gained. Measured FROM the
+        # source the port is aligned with, never from wherever a previous attempt left
+        # the worktree: that attempt's main blob when it delivered an already-grafted
+        # build (stages.pr_resume carries it), else the build's base, the head the
+        # trace recorded (stage5_base_rev).
+        base_rev = stage5_base_rev(wt_path, rec)
+        old_blob = ((rec.get("stages") or {}).get("pr_resume") or {}).get("main_blob")
+        drift = stage5_source_drift(wt_path, str(src0), rebase=False, base_rev=base_rev,
+                                    old_blob=old_blob)
         entry["source_drift"] = drift
+        entry["base_rev"] = base_rev
         if drift.get("drift") in ("structure", "code", "deleted"):
             entry["error"] = (f"source twin {src0} changed on origin/main since the build "
                               f"({drift['drift']}): the port is stale, no PR")
             rec["verdict"], rec["pr"] = f"source-drifted:{drift['drift']}", entry
             return
-        if drift.get("drift") == "markdown-only" and not drift.get("rebased"):
-            entry["error"] = f"markdown-only drift, re-base failed: {drift.get('rebase_error')}"
-            rec["verdict"], rec["pr"] = "source-drifted:rebase-failed", entry
+        if drift.get("drift") == "markdown-added":
+            # 23/11, CoursIA#28209: an APPROVED 44-cell port, then #28239 inserted ONE
+            # markdown cell at index 43 of the 44-cell Python twin and stage 5 read it
+            # "structure" -> the port was refused. An addition of markdown cells changes
+            # no cell the verifier judged: the added cells are copied verbatim into the
+            # port at the index they hold in the fresh source (deterministic, no model
+            # turn), and the approval stays true for everything it judged.
+            grafted = stage5_graft_markdown(wt_path, str(src0), drift, built_nb,
+                                            base_rev=base_rev, old_blob=old_blob)
+            entry["graft"] = {k: v for k, v in grafted.items() if k != "cells"}
+            if not grafted.get("ok"):
+                entry["error"] = f"markdown-added drift, graft refused: {grafted.get('error')}"
+                rec["verdict"], rec["pr"] = "source-drifted:graft-failed", entry
+                return
+        # The integration lands on the fresh twin. Every refusal above has returned
+        # already, so nothing below finds the worktree on origin/main by accident.
+        if drift.get("drift") in ("markdown-only", "markdown-added"):
+            if _rebase():
+                drift["rebased"] = True
+            else:
+                return
+        elif pr_resume and not _rebase():
             return
+    elif pr_resume and not _rebase():
+        # no source twin to measure (edit mode, spec twin): the same start
+        return
 
-    rc, out = _git(wt_path, "checkout", "-b", branch)
+    # A resume re-creates its branch from origin/main as a first run does, drift or not
+    # (above): the worktree may sit on the previous attempt's branch, and a second commit
+    # stacked on that one would be empty (the same build, an idempotent integration).
+    # It also meets the branch its previous attempt left in the repo (the scheduler
+    # releases a failed grain's worktree, never its branch). Nothing is force-pushed -- a
+    # branch already on origin with other bytes is refused by the push below, as before.
+    rc, out = _git(wt_path, "checkout", "-B" if pr_resume else "-b", branch)
     if rc != 0:
         entry["error"] = out[:300]
         rec["verdict"], rec["pr"] = "pr-branch-failed", entry
@@ -6560,10 +6704,15 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         entry["integration"] = {"skipped": "no source twin in the repo "
                                            "(edit mode or spec twin)"}
 
+    graft = entry.get("graft") or {}
+    graft_idx = ", ".join(str(g["index"]) for g in graft.get("inserted") or [])
     commit_body = (
         f"{desc}\n\n"
         + "\n".join(f"- cell {g.get('cell')} ({g.get('geste')}): {_text(g.get('but')).strip()}"
                     for g in (rec.get("plan") or {}).get("plan") or [] if isinstance(g, dict))
+        + (f"\n\nCellule(s) markdown {graft_idx} : ajoutées au jumeau source sur main après "
+          f"la construction du portage, recopiées telles quelles aux mêmes indices "
+          f"(greffe déterministe, code inchangé)." if graft.get("count") else "")
         + f"\n\nProducteur : {args.agent} (harnais nb_coder, stages 0-5)."
         + f"\nVérification indépendante : {args.verifier_agent} — "
         f"{(rec.get('verify') or {}).get('verdict')} "
@@ -6684,6 +6833,11 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
            f"{(entry.get('source_drift') or {}).get('main_blob')}, cellules de code "
            "identiques) : intégration rejouée sur la version fraîche."
            if (entry.get("source_drift") or {}).get("rebased") else "")
+        + (f"\n- Le jumeau source a **gagné {graft['count']} cellule(s) markdown** sur `main` "
+           f"depuis la construction (indice(s) {graft_idx} sur le jumeau frais) : recopiée(s) "
+           "telles quelles dans le portage aux mêmes indices — greffe déterministe, aucun "
+           "tour de modèle ; aucune cellule jugée par le vérificateur n'a changé."
+           if graft.get("count") else "")
         + f"\n{issue_link_line(args.issue, issue, args.notebook)}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
@@ -7578,6 +7732,43 @@ _REVISE_CARRY = ("plan", "kernel", "kernel_cwd", "create_mode", "create_metadata
                  "built_notebook", "conversation_id", "execution", "c2", "gates", "structure",
                  "verify", "revisions", "exec_mode", "repo_origin", "last_content_verdict")
 
+# Stage 5 refused to DELIVER an approved build. The content was judged; only the delivery
+# gestures are worth retrying -- on the build as it is.
+PR_REFUSED_VERDICTS = ("source-drifted:", "pr-branch-failed", "pr-git-failed",
+                       "pr-push-failed", "pr-repo-unresolved", "pr-create-failed",
+                       "pr-rebase-failed")
+
+
+def approved_build_state(prior: dict, built: Path, out_dir: Path, issue) -> dict:
+    """Is the build on disk the one the verifier approved? (stage-5-only resume, 23/11)
+
+    ``changed`` False only on a measured proof. A trace written since 23/11 binds the
+    approval to the build's sha256 (and a graft binds its own: the approved cells plus
+    the markdown the source gained). An older trace is held to its last verify record:
+    the build must not have been written after that verification finished. No record,
+    no proof. Fail-closed before anything is pushed."""
+    out: dict = {"changed": True}
+    try:
+        digest = hashlib.sha256(built.read_bytes()).hexdigest()
+    except OSError as e:
+        return out | {"why": f"build unreadable: {e}"[:160]}
+    out["sha256"] = digest[:16]
+    bound = {(prior.get("verify") or {}).get("built_sha256"),
+             ((prior.get("pr") or {}).get("graft") or {}).get("sha256")} - {None}
+    if bound:
+        return out | {"by": "sha256", "changed": digest not in bound}
+    try:
+        last = json.loads((out_dir / f"verify-{issue}.json").read_text(encoding="utf-8"))
+        t = datetime.fromisoformat(str(last["finished"]).replace("Z", "+00:00"))
+    except (OSError, ValueError, KeyError, TypeError):
+        return out | {"why": "no verify record to hold the build to"}
+    if t.tzinfo is None:
+        t = t.replace(tzinfo=timezone.utc)
+    mtime = datetime.fromtimestamp(built.stat().st_mtime, timezone.utc)
+    return out | {"by": "mtime-vs-last-verify", "changed": mtime > t,
+                  "built_mtime": mtime.isoformat(timespec="seconds"),
+                  "verify_finished": t.isoformat(timespec="seconds")}
+
 
 async def run_revision(args, rec: dict) -> dict:
     """--revise-from <issue-N.json> / --verify-from <issue-N.json>: resume a grain without
@@ -7614,13 +7805,20 @@ async def run_revision(args, rec: dict) -> dict:
     # The content field, when present, is what this gate decides on; old traces fall back
     # to the top-level verdict unchanged.
     content_prior = prior.get("last_content_verdict") or prior.get("verdict")
+    stage5_only = False
     if resume_from:
         # a late-claim refusal is resumable once the holder RELEASED the notebook: the
         # build was approved and only the reservation failed (21/11, #27851). The live
         # scoped claim re-read below refuses again while another lane still holds it.
         late_refused = (str(prior.get("verdict") or "").startswith(LATE_CLAIM_REFUSED)
                         and (prior.get("verify") or {}).get("verdict") == "approve")
-        if prior.get("verdict") != "verify-error" and not late_refused:
+        # 23/11 (#28209): stage 5 refused to DELIVER an approved build (a source drift
+        # made of one markdown cell). The build on disk is the one the verifier
+        # approved: stage 5 is re-run on it as it is -- no gate, no verify, no model turn.
+        stage5_only = (str(prior.get("verdict") or "").startswith(PR_REFUSED_VERDICTS)
+                       and content_prior == "verify-approved"
+                       and (prior.get("verify") or {}).get("verdict") == "approve")
+        if prior.get("verdict") != "verify-error" and not late_refused and not stage5_only:
             rec["verdict"] = f"refused-verify-not-crashed:{prior.get('verdict')}"
             return rec
     elif content_prior != "verify-reject":
@@ -7704,7 +7902,7 @@ async def run_revision(args, rec: dict) -> dict:
     src_nb = _prior_src_nb(prior, wt_path, args.notebook)
     exec_dir = Path(prior.get("kernel_cwd") or "")
     for label, p in (("worktree", wt_path), ("built", built), ("source", src_nb),
-                     ("kernel-cwd", exec_dir)):
+                     *(() if stage5_only else (("kernel-cwd", exec_dir),))):
         if not str(p) or not p.exists():
             rec["verdict"] = f"refused-revise-{label}-missing:{p}"
             return rec
@@ -7744,6 +7942,34 @@ async def run_revision(args, rec: dict) -> dict:
            or (prior.get("create_mode") or {}).get("target") or "")
     kname = (args.kernel_override or (tag_kernel(tgt) if create_mode else None)
              or (prior.get("kernel") or {}).get("kernel_name") or "")
+    if stage5_only:
+        # Only a build PROVEN untouched since its approval is delivered; the worktree is
+        # the one the run recorded (restored above at its head when the scheduler had
+        # released it), so stage 5 measures the drift against the build's own base.
+        state = approved_build_state(prior, built, out_dir, args.issue)
+        # The source as the previous attempt measured it, when the build it delivered
+        # from is aligned with it (no drift, markdown-only drift, or a graft that
+        # succeeded): a cell the source gained SINCE is grafted onto the grafted build.
+        # A build the previous attempt could not align (graft refused, structure/code
+        # drift) is measured from its own base again.
+        prev_pr = prior.get("pr") if isinstance(prior.get("pr"), dict) else {}
+        prev_drift, prev_graft = prev_pr.get("source_drift") or {}, prev_pr.get("graft") or {}
+        aligned = (prev_drift.get("drift") in ("none", "markdown-only")
+                   or (prev_drift.get("drift") == "markdown-added" and prev_graft.get("ok")))
+        rec["stages"]["pr_resume"] = {
+            "from": prior.get("verdict"), "build": state,
+            "main_blob": prev_drift.get("main_blob")
+            if aligned and prev_drift.get("main_blob") else None}
+        rec["revised_from"]["mode"] = "pr"
+        if state["changed"]:
+            rec["verdict"] = ("refused-pr-resume-build-changed:"
+                              f"{state.get('by') or state.get('why') or 'unproven'}")
+            return rec
+        note_content_verdict(rec, "verify-approved")
+        if args.max_stage >= 5 and late_reservation(args, rec):
+            stage5_pr(args, rec, wt_path, built, issue, token)
+        rec["finished"] = utcnow()
+        return rec
     if resume_from:
         # verify-error is NOT a verdict: the verifier process crashed on an instrument
         # failure (20/11: the shared GitHub REST bucket ran out mid-run), so the build was

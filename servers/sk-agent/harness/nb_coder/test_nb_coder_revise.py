@@ -843,6 +843,146 @@ def test_resume_refuses_when_the_worktree_cannot_be_restored(monkeypatch, tmp_pa
     assert len(rs["restore"]) == 1 and seen["loop"] == 0
 
 
+# ------------------------------ --verify-from on an APPROVED build stage 5 could not deliver
+# 23/11, CoursIA#28209: approved at the 19th verifier pass, then refused at stage 5 by a
+# source drift made of ONE markdown cell. Every resume mode refused that trace
+# (refused-verify-not-crashed:source-drifted:structure, refused-revise-not-rejected) and
+# the approved build had no way back. The build is delivered as it is: no gate, no verify.
+
+PR_REFUSED = "source-drifted:structure"
+
+
+def _pr_trace(tmp_path, **over) -> Path:
+    """An approved build that stage 5 refused to deliver; the approval is bound to the
+    build's bytes (stage4_verify writes built_sha256 on every approval)."""
+    _trace(tmp_path)                                   # lays out worktree, twin and build
+    built = tmp_path / "nb_8_built.ipynb"
+    import hashlib
+    base = dict(verdict=PR_REFUSED, last_content_verdict="verify-approved",
+                verify={"verdict": "approve", "findings": [],
+                        "built_sha256": hashlib.sha256(built.read_bytes()).hexdigest()})
+    base.update(over)
+    return _trace(tmp_path, **base)
+
+
+def _no_reverify(*a, **k):
+    raise AssertionError("an approved build is not gated or verified again")
+
+
+def test_verify_from_redelivers_an_approved_build_without_a_model_turn(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    monkeypatch.setattr(D, "gates_then_verify", _no_reverify)
+    got = _resume(_verify_args(tmp_path, _pr_trace(tmp_path)))
+    assert got["verdict"] == "pr-created" and seen["pr"] == 1 and seen["loop"] == 0
+    assert got["calls"] == []                          # nothing re-paid
+    assert got["verify"]["findings"] == []             # the approval is carried as it was
+    assert got["revised_from"]["mode"] == "pr" and got["last_content_verdict"] == "verify-approved"
+    build = got["stages"]["pr_resume"]
+    assert build["from"] == PR_REFUSED
+    assert build["build"]["changed"] is False and build["build"]["by"] == "sha256"
+
+
+def test_a_pr_resume_stops_below_stage_5(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    monkeypatch.setattr(D, "gates_then_verify", _no_reverify)
+    got = _resume(_verify_args(tmp_path, _pr_trace(tmp_path), max_stage=4))
+    assert got["verdict"] == "verify-approved" and seen["pr"] == 0
+
+
+def test_a_pr_resume_needs_a_kernel_cwd_no_longer(monkeypatch, tmp_path):
+    # stage 5 executes nothing: a kernel cwd swept since the build is not a reason to throw
+    # an approved port away
+    seen = _stub_resume(monkeypatch)
+    got = _resume(_verify_args(tmp_path, _pr_trace(tmp_path, kernel_cwd="Z:/swept")))
+    assert got["verdict"] == "pr-created" and seen["pr"] == 1
+
+
+def test_a_pr_resume_refuses_a_build_written_since_its_approval(monkeypatch, tmp_path):
+    seen = _stub_resume(monkeypatch)
+    trace = _pr_trace(tmp_path)
+    (tmp_path / "nb_8_built.ipynb").write_text('{"cells": []}', encoding="utf-8")
+    got = _resume(_verify_args(tmp_path, trace))
+    assert got["verdict"] == "refused-pr-resume-build-changed:sha256"
+    assert seen["pr"] == 0 and seen["loop"] == 0
+
+
+def test_a_pr_resume_accepts_the_build_a_graft_wrote(monkeypatch, tmp_path):
+    # a grafted build differs from the approved bytes by the markdown cells the source
+    # gained: the graft records its own digest (stage5_graft_markdown) and that one is
+    # accepted too -- the approved digest alone no longer matches
+    import hashlib
+    seen = _stub_resume(monkeypatch)
+    built = tmp_path / "nb_8_built.ipynb"
+    trace = _pr_trace(tmp_path)                       # approval bound to the bytes on disk
+    built.write_text('{"cells": [{"cell_type": "markdown"}]}', encoding="utf-8")
+    t = json.loads(trace.read_text(encoding="utf-8"))
+    t["pr"] = {"graft": {"ok": True,
+                         "sha256": hashlib.sha256(built.read_bytes()).hexdigest()}}
+    trace.write_text(json.dumps(t), encoding="utf-8")
+    got = _resume(_verify_args(tmp_path, trace))
+    assert got["verdict"] == "pr-created" and seen["pr"] == 1
+
+
+def test_an_older_trace_is_held_to_its_last_verify_record(monkeypatch, tmp_path):
+    """Pre-23/11 traces bind nothing: #28209's own. The build must not have been written
+    after its last verification finished -- and with no record, nothing proves it."""
+    import hashlib
+    from datetime import datetime, timezone
+    seen = _stub_resume(monkeypatch)
+    built = tmp_path / "nb_8_built.ipynb"
+    trace = _pr_trace(tmp_path, verify={"verdict": "approve"})
+    got = _resume(_verify_args(tmp_path, trace))
+    assert got["verdict"] == ("refused-pr-resume-build-changed:"
+                             "no verify record to hold the build to")
+    (tmp_path / "verify-8.json").write_text(json.dumps(
+        {"verdict": "approve", "finished": "2026-11-23T18:26:53+00:00"}), encoding="utf-8")
+    before = int(datetime(2026, 11, 23, 18, 26, 40, tzinfo=timezone.utc).timestamp())
+    os.utime(built, (before, before))                  # written 13 s before the verdict
+    got = _resume(_verify_args(tmp_path, trace))
+    assert got["verdict"] == "pr-created" and seen["pr"] == 1
+    os.utime(built, (before + 60, before + 60))        # written 47 s after it
+    got = _resume(_verify_args(tmp_path, trace))
+    assert got["verdict"] == "refused-pr-resume-build-changed:mtime-vs-last-verify"
+    assert got["stages"]["pr_resume"]["build"]["changed"] is True
+
+
+@pytest.mark.parametrize("over, verdict", [
+    # stage 5 refused, but the content was never approved
+    ({"last_content_verdict": "verify-reject",
+      "verify": {"verdict": "reject", "findings": FINDINGS}},
+     f"refused-verify-not-crashed:{PR_REFUSED}"),
+    # an approval whose top-level refusal is not a stage-5 one
+    ({"verdict": "refused-claim-check-not-scoped"},
+     "refused-verify-not-crashed:refused-claim-check-not-scoped"),
+    # delivered already: nothing to resume
+    ({"verdict": "pr-created"}, "refused-verify-not-crashed:pr-created"),
+])
+def test_only_a_stage5_refusal_of_an_approval_is_a_pr_resume(monkeypatch, tmp_path, over,
+                                                             verdict):
+    seen = _stub_resume(monkeypatch)
+    monkeypatch.setattr(D, "gates_then_verify", _no_reverify)
+    got = _resume(_verify_args(tmp_path, _pr_trace(tmp_path, **over)))
+    assert got["verdict"] == verdict and seen["pr"] == 0 and seen["loop"] == 0
+
+
+def test_every_stage5_refusal_verdict_names_itself_in_the_gate():
+    """Source pin: a refusal stage 5 can write without landing in PR_REFUSED_VERDICTS
+    could never be resumed -- the list is read from the code, never re-typed."""
+    import re
+    src = Path(D.__file__).read_text(encoding="utf-8")
+    fn = src.split("def stage5_pr", 1)[1].split("\ndef ", 1)[0]
+    written = set(re.findall(r'rec\["verdict"\], rec\["pr"\] = (\S+), entry', fn))
+    names = {w.strip('",') for w in written if not w.startswith("f")}
+    assert names == {"pr-branch-failed", "pr-git-failed", "pr-push-failed",
+                     "pr-repo-unresolved", "pr-create-failed", "source-drifted:graft-failed",
+                     "pr-rebase-failed"}
+    prefixes = set(D.PR_REFUSED_VERDICTS)
+    assert "source-drifted:" in prefixes          # the gate of every source-drifted:<class>
+    assert all(n in prefixes or any(n.startswith(p) for p in prefixes) for n in names)
+    # …and the f-string ones (source-drifted:<class>) are covered by that prefix
+    assert all(w.startswith('f"source-drifted:') for w in written if w.startswith("f"))
+
+
 def test_restore_worktree_adds_a_detached_tree_at_the_trace_head(monkeypatch, tmp_path):
     cmds = []
     dest = tmp_path / "wt"
