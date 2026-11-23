@@ -1958,11 +1958,21 @@ PORT_CONTENT_RULES = (
     "calcule. Le stub rend une valeur neutre ; un contrôle éventuel compare à des valeurs "
     "de référence FIGÉES (littéraux), jamais à un calcul qui implémente la réponse.\n"
     "- ALÉA NUMPY : si le jumeau tire ses DONNÉES d'un générateur numpy (`default_rng`, "
-    "PCG64, SeedSequence, `normal`), ne réimplémente pas ce générateur : il ne tirera pas "
-    "les mêmes nombres. Reprends les données d'ENTRÉE tirées par le jumeau sous forme de "
-    "tableau littéral, dis-le en prose (« données tirées par le jumeau, reprises telles "
-    "quelles »), puis CALCULE tous les résultats à partir d'elles. Ne recopie jamais une "
-    "SORTIE du jumeau à la place d'un calcul.\n")
+    "PCG64, SeedSequence, `normal`), deux cas :\n"
+    "  · tirage PETIT et VISIBLE dans les sorties du jumeau → reprends les données "
+    "d'ENTRÉE tirées sous forme de tableau littéral, dis-le en prose (« données tirées "
+    "par le jumeau, reprises telles quelles »), puis CALCULE tous les résultats à partir "
+    "d'elles. Ne recopie jamais une SORTIE du jumeau à la place d'un calcul.\n"
+    "  · protocole MONTE-CARLO (trajectoires, milliers de tirages, seuls des agrégats "
+    "sont visibles) → PORTE LE PROTOCOLE : même graine déclarée, même loi, même taille "
+    "d'échantillon, mêmes seuils, avec un RNG cible seedé (convention des jumeaux "
+    "ICT-15/15h, #27734 : xorshift64*). Les quantités DÉTERMINISTES sortent identiques "
+    "au dernier chiffre affiché ; les quantités STOCHASTIQUES sont TES résultats réels, "
+    "et la prose nomme l'écart (« graine fixe, RNG différent de numpy : source +0.471, "
+    "ce carnet +0.427 »). Un jumeau C# exécute POUR DE VRAI : jamais de cellule "
+    "« indisponible », « non calculé » ni message d'excuse à la place d'un calcul "
+    "(rejet vérificateur garanti — mesuré 23/11, fournée o11 : 4 carnets rejetés à ce "
+    "seul motif après 3-4 tours de révision).\n")
 
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
@@ -4464,11 +4474,13 @@ def twin_reference_view(nb_path, max_chars: int = TWIN_REF_VIEW_CAP) -> str:
 
 
 TWIN_VALUES_RULE = (
-    "- VALEURS : chaque valeur affichée par le jumeau (nombre, tableau, verdict, booléen) "
-    "doit sortir À L'IDENTIQUE de ton exécution — mêmes instances, mêmes paramètres, même "
-    "précision d'affichage. Un écart de valeur avec la sortie de référence est un rejet "
-    "garanti ; si la bibliothèque cible ne peut pas reproduire une valeur, dis-le en prose "
-    "et affiche l'écart mesuré, n'affiche jamais une autre valeur comme si c'était la même.\n")
+    "- VALEURS : chaque valeur DÉTERMINISTE affichée par le jumeau (nombre, tableau, "
+    "verdict, booléen) doit sortir À L'IDENTIQUE de ton exécution — mêmes instances, "
+    "mêmes paramètres, même précision d'affichage. Une valeur qui dépend d'un TIRAGE "
+    "aléatoire n'est pas reproductible à l'identique : porte le protocole (même graine "
+    "déclarée, RNG cible seedé) et affiche TON résultat réel, l'écart nommé en prose. "
+    "Un écart sur une valeur déterministe est un rejet garanti ; une cellule "
+    "« indisponible » à la place d'un calcul l'est tout autant.\n")
 
 
 def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",

@@ -559,6 +559,28 @@ def test_repair_prompt_contract():
 
 
 # ------------------------------------------------- prose authority + markdown repair (17/11 #27104)
+# ------------------------------------------- stochastic twin doctrine (23/11, fournée o11)
+def test_the_prompt_teaches_the_montecarlo_branch():
+    """o11 wipe (4× verify-reject + 1 refusal): the twin's stochastic cells were degraded
+    to « indisponible » placeholders because ALÉA NUMPY only offered the literal-array
+    branch (impossible for Monte-Carlo protocols) and TWIN_VALUES demanded « À
+    L'IDENTIQUE ». The merged twin ICT-15h IS the convention: port the protocol with a
+    seeded RNG, deterministic to the last digit, stochastic = own real results, gap
+    named. The prompt must teach both branches, and never leave « indisponible » as the
+    model's best move."""
+    seg = [{"idx": 1, "cell_type": "code", "titre": "langevin"}]
+    twin = [{"cell_type": "markdown", "source": "# t"},
+            {"cell_type": "code", "source": "rng = np.random.default_rng(0)\nprint(rng.normal(size=1500))"}]
+    p = D.creation_json_prompt(seg, 2, "", src_cells=twin)
+    assert "MONTE-CARLO" in p                       # the second branch exists
+    assert "PORTE LE PROTOCOLE" in p
+    assert "xorshift64*" in p                       # the merged-twin convention (#27734)
+    assert "tableau littéral" in p                  # the small-draws branch survives
+    assert "jamais de cellule « indisponible »" in p
+    v = D.TWIN_VALUES_RULE
+    assert "DÉTERMINISTE" in v and "TIRAGE" in v and "indisponible" in v
+
+
 def test_creation_json_prompt_injects_twin_prose():
     """The twin's markdown prose is handed to the builder VERBATIM — the model must
     COPY it, not regenerate it (regenerated prose came back corrupted: Cyrillic/CJK)."""
