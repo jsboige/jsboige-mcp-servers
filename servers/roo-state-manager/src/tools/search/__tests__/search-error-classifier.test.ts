@@ -193,6 +193,32 @@ describe('classifySearchError', () => {
 		expect(result.mode).toBe('qdrant_backend_slow');
 	});
 
+	// #4880: the shape the 1.20 JS client ACTUALLY throws (measured ai-01 23/11
+	// with a 1 s server budget): message = HTTP status text, reason on `data`.
+	// The two tests above put the reason in the message — a shape that never
+	// reaches the classifier, so they stayed green while this one fell to unknown.
+	const qdrant120Error = (reason: string) => makeError('Internal Server Error', {
+		status: 500,
+		data: { status: { error: reason }, time: 1.0026 },
+	});
+
+	it("#4880: Qdrant's own search timeout in the 1.20 client's shape → qdrant_backend_slow", async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const err = qdrant120Error("Service internal error: 1 of 1 read operations failed:\n  Timeout error: Operation 'Search' timed out after 999.251028ms");
+		const result = await classifySearchError(err, 'search');
+		expect(result.mode).toBe('qdrant_backend_slow');
+		expect(result.originalError).toContain("Operation 'Search' timed out");
+	});
+
+	it('#4880: joining a NON-timeout reason does not make a 500 look like a slow search', async () => {
+		process.env.QDRANT_URL = 'https://qdrant.example.org';
+		mockFetch.mockResolvedValue({ ok: true, status: 200 });
+		const result = await classifySearchError(qdrant120Error('Service internal error: segment checksum mismatch'), 'search');
+		expect(result.mode).not.toBe('qdrant_backend_slow');
+		expect(result.originalError).toContain('segment checksum mismatch');
+	});
+
 	it("Qdrant's own search timeout with no HTTP status still enters the timeout branch", async () => {
 		process.env.QDRANT_URL = 'https://qdrant.example.org';
 		mockFetch.mockResolvedValue({ ok: true, status: 200 });

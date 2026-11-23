@@ -31,25 +31,45 @@ async function testQdrantConnection(): Promise<void> {
  * polyfill 'fetch' est déjà en place avant l'instanciation.
  * @returns {QdrantClient} L'instance du client Qdrant.
  */
-export function getQdrantClient(): QdrantClient {
+export function getQdrantClient(options: { timeoutMs?: number } = {}): QdrantClient {
+  // #4880: the client aborts every request at its own `timeout` — the per-call
+  // `timeout` of query()/scroll() is a SERVER-side budget and cannot extend it.
+  // A caller that hands the server a longer budget than QDRANT_TIMEOUT_MS asks
+  // for a client whose abort sits above that budget; otherwise the server-side
+  // budget is dead (measured ai-01 23/11: searches of 15-30 s cut at 15 s).
+  // #831: timeout to prevent hanging on large collections
+  // #851: 15s default, configurable via env for 10M+ vector collection
+  const baseTimeoutMs = parseInt(process.env.QDRANT_TIMEOUT_MS || '15000');
+  const wanted = options.timeoutMs;
+  if (typeof wanted === 'number' && Number.isFinite(wanted) && wanted > baseTimeoutMs) {
+    const existing = extendedClients.get(wanted);
+    if (existing) return existing;
+    const extended = new QdrantClient({ ...baseQdrantConfig(), timeout: wanted });
+    extendedClients.set(wanted, extended);
+    return extended;
+  }
   if (!client) {
-    const qdrantConfig = {
-      url: process.env.QDRANT_URL,
-      apiKey: process.env.QDRANT_API_KEY,
-      port: 443, // Force HTTPS port
-      // #4808: client/server version gap must be visible — was false since the
-      // 1.16 pin while the fleet server moved to 1.20.0, hiding 4 minor versions
-      // of drift. Re-enabled now that the client is aligned on the server line.
-      checkCompatibility: true,
-      // #831: Add timeout to prevent hanging on large collections
-      // #851: 15s default, configurable via env for 10M+ vector collection
-      timeout: parseInt(process.env.QDRANT_TIMEOUT_MS || '15000'),
-    };
+    const qdrantConfig = { ...baseQdrantConfig(), timeout: baseTimeoutMs };
 
     client = new QdrantClient(qdrantConfig);
     console.log(`Qdrant client initialized with URL: ${process.env.QDRANT_URL}, timeout: ${qdrantConfig.timeout}ms`);
   }
   return client;
+}
+
+/** #4880: clients whose abort budget exceeds QDRANT_TIMEOUT_MS, keyed by that budget. */
+const extendedClients = new Map<number, QdrantClient>();
+
+function baseQdrantConfig() {
+  return {
+    url: process.env.QDRANT_URL,
+    apiKey: process.env.QDRANT_API_KEY,
+    port: 443, // Force HTTPS port
+    // #4808: client/server version gap must be visible — was false since the
+    // 1.16 pin while the fleet server moved to 1.20.0, hiding 4 minor versions
+    // of drift. Re-enabled now that the client is aligned on the server line.
+    checkCompatibility: true,
+  };
 }
 
 /**
@@ -60,6 +80,7 @@ export function getQdrantClient(): QdrantClient {
  */
 export function resetQdrantClient(): void {
   client = null;
+  extendedClients.clear();
   console.log('Qdrant client reset.');
 }
 

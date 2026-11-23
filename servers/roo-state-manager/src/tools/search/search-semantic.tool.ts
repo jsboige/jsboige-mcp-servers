@@ -12,6 +12,7 @@ import { getHostIdentifier, splitChunkId } from '../../services/task-indexer/Chu
 import { resetEmbeddingCircuitBreaker as resetWriteCircuitBreaker } from '../../services/task-indexer/VectorIndexer.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
 import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
+import { resolveSearchClientTimeoutMs } from './search-client-timeout.js';
 import { getUnifiedStoreReader } from '../../services/unified-store/reader-factory.js';
 import type { StoredConversation, UnifiedStoreSearchFilters } from '../../services/unified-store/types.js';
 
@@ -93,6 +94,7 @@ export function isClassifiedInfrastructureError(result: CallToolResult): boolean
 // #2167: Bumped default retry count from 1→2 (3 total attempts) for embedding reliability
 const SEMANTIC_RETRY_COUNT = parseInt(process.env.SEMANTIC_RETRY_COUNT || '2');
 const SEMANTIC_RETRY_BACKOFF_MS = parseInt(process.env.SEMANTIC_RETRY_BACKOFF_MS || '2000');
+
 
 /**
  * #1394 : enrichissement `conversation_stats` d'un groupe de résultats depuis
@@ -447,17 +449,23 @@ function setCachedQueryEmbedding(query: string, embedding: number[]): void {
  * #249/#2167: Retry wrapper with exponential backoff for transient network/timeout errors.
  * Retries on 5xx, abort, timeout, and resource exhaustion (EMFILE).
  * Does NOT retry on 4xx or validation errors.
+ * #4880: `retryTimeouts: false` stops retrying an abort/timeout — for a call
+ * whose attempt already spent the whole search budget, a retry only multiplies
+ * the wait before the fallback (and re-queues the same heavy read on a server
+ * that is slow precisely on it). A CONNECT-phase timeout spent no search
+ * budget, so it stays retryable.
  */
-async function withRetry<T>(fn: () => Promise<T>, retries: number = SEMANTIC_RETRY_COUNT, backoffMs: number = SEMANTIC_RETRY_BACKOFF_MS): Promise<T> {
+async function withRetry<T>(fn: () => Promise<T>, retries: number = SEMANTIC_RETRY_COUNT, backoffMs: number = SEMANTIC_RETRY_BACKOFF_MS, retryTimeouts: boolean = true): Promise<T> {
     try {
         return await fn();
     } catch (error) {
         if (retries <= 0) throw error;
-        const isRetryable = isHttpServerError(error) || isAbortOrTimeout(error) || isResourceExhausted(error);
+        const timeoutRetryable = retryTimeouts ? isAbortOrTimeout(error) : isConnectPhaseTimeout(error);
+        const isRetryable = isHttpServerError(error) || timeoutRetryable || isResourceExhausted(error);
         if (!isRetryable) throw error;
         console.warn(`[WARN] #249/#2300: Retrying after transient error (${retries} left): ${error instanceof Error ? error.message : String(error)}`);
         await new Promise(resolve => setTimeout(resolve, backoffMs));
-        return withRetry(fn, retries - 1, backoffMs * 2);
+        return withRetry(fn, retries - 1, backoffMs * 2, retryTimeouts);
     }
 }
 
@@ -492,6 +500,17 @@ function isAbortOrTimeout(error: unknown): boolean {
     const code = (error as any)?.code || '';
     return msg.includes('abort') || msg.includes('timeout') || msg.includes('ETIMEDOUT') ||
         msg.includes('This operation was aborted') || code === 'UND_ERR_CONNECT_TIMEOUT';
+}
+
+/**
+ * #4880: a timeout raised while CONNECTING (undici code on the error or on its
+ * `cause`, the shape of `fetch failed`) — no request reached the server, so no
+ * search budget was spent and a retry is still worth it.
+ */
+function isConnectPhaseTimeout(error: unknown): boolean {
+    const code = (error as any)?.code;
+    const causeCode = (error as any)?.cause?.code;
+    return code === 'UND_ERR_CONNECT_TIMEOUT' || causeCode === 'UND_ERR_CONNECT_TIMEOUT';
 }
 
 /**
@@ -1836,9 +1855,18 @@ export const searchTasksByContentTool = {
             // 14M+ vector collection. Sent only when strictly positive so the
             // historical no-offset request shape (and its tests) stay unchanged.
             const effectiveOffset = Math.min(Math.max(offset || 0, 0), 10000);
+            // #4880: the vector queries (first window + refills) run on a client whose
+            // abort sits above `searchTimeoutSec`, so the server-side budget applies,
+            // and an attempt that timed out is not retried (it already spent the
+            // budget). Kill switch QDRANT_SEARCH_TIMEOUT_ALIGN=0 → shared client.
+            const searchClientTimeoutMs = resolveSearchClientTimeoutMs();
+            const searchQdrant = searchClientTimeoutMs === null
+                ? qdrant
+                : getQdrantClient({ timeoutMs: searchClientTimeoutMs });
+            const retrySearchTimeouts = searchClientTimeoutMs === null;
             // #4808: client 1.20.0 removed the deprecated search() — query({nearest}) is the
             // API-equivalent form; the normalization below already handles { points: [...] }.
-            const searchResults = await withRetry(() => qdrant.query(collectionName, {
+            const searchResults = await withRetry(() => searchQdrant.query(collectionName, {
                 query: { nearest: queryVector },
                 limit: diversifyLimit,
                 ...(effectiveOffset > 0 ? { offset: effectiveOffset } : {}),
@@ -1855,7 +1883,7 @@ export const searchTasksByContentTool = {
                     include: ANN_PAYLOAD_INCLUDE
                 },
                 timeout: searchTimeoutSec,
-            }));
+            }), SEMANTIC_RETRY_COUNT, SEMANTIC_RETRY_BACKOFF_MS, retrySearchTimeouts);
 
 
             // Obtenir l'identifiant de la machine actuelle pour l'en-tête
@@ -1901,7 +1929,7 @@ export const searchTasksByContentTool = {
                 const refillOffset = effectiveOffset + candidatesFetched;
                 if (!budgetShort || !windowExhausted || !filterConsumed) break;
                 if (refillOffset > ANN_MAX_OFFSET) break;
-                const refillRaw = await withRetry(() => qdrant.query(collectionName, {
+                const refillRaw = await withRetry(() => searchQdrant.query(collectionName, {
                     query: { nearest: queryVector },
                     limit: diversifyLimit,
                     offset: refillOffset,
@@ -1916,7 +1944,7 @@ export const searchTasksByContentTool = {
                     },
                     with_payload: { include: ANN_PAYLOAD_INCLUDE },
                     timeout: searchTimeoutSec,
-                }));
+                }), SEMANTIC_RETRY_COUNT, SEMANTIC_RETRY_BACKOFF_MS, retrySearchTimeouts);
                 const refillPoints = Array.isArray(refillRaw)
                     ? refillRaw
                     : (refillRaw as any).result || (refillRaw as any).points || [];
