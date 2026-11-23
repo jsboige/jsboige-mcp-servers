@@ -73,6 +73,13 @@ def test_the_rules_pin_exercises_to_the_source_and_forbid_partial_segments():
     assert "<nom>_calcule" in r
     assert "AUCUNE CELLULE OMISE" in r
     assert "segment partiel" in r
+    # 2026-11-23 batch o15, CoursIA#27740: the model refused twice (« Je ne peux pas
+    # fournir un port complet et fidèle des simulations et des proxys dans cette
+    # tranche ») although the sources were in the prompt — the twin uses gudhi, which
+    # has no C# equivalent, and no rule turned that into a legal move.
+    assert "BIBLIOTHÈQUE PYTHON SANS ÉQUIVALENT C#" in r
+    assert "union-find" in r
+    assert "est un ÉCHEC du carnet" in r
     body = _body(r)
     assert body in D.creation_json_prompt(
         [{"idx": 1, "cell_type": "code", "titre": "x"}], 3, "")
