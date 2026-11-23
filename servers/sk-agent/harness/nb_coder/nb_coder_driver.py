@@ -1973,6 +1973,13 @@ def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
     segment_keep_valid() correctly dropped every one, but an empty repair then returned
     parsed JSON and apply_create reported success with cells_written=0. Never invent the
     indices: an unaddressable plan is a stage-1 defect and must say so, with every reason.
+
+    CoursIA#27305 (23/11, Terra): a well-formed, in-bounds, duplicate-free plan of 10
+    entries for a 36-cell SOURCE passed validation here and the grain died
+    stage2-empty-segment — the model itself contested the truncated plan ("il ne
+    couvrait que les indices 0 a 9"). Addressing alone was necessary, not sufficient:
+    a plan that does not COVER every source cell would have shipped a truncated port.
+    Missing coverage is an error like any other; the repair re-ask names it.
     """
     errors = []
     seen = set()
@@ -1991,6 +1998,12 @@ def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
             errors.append(f"position {pos}: duplicate idx {idx}")
         else:
             seen.add(idx)
+    missing = sorted(set(range(n_src_cells)) - seen)
+    if missing:
+        head = ", ".join(str(i) for i in missing[:12])
+        errors.append(f"coverage: {len(missing)} source cell(s) unaddressed "
+                      f"({head}{'...' if len(missing) > 12 else ''}) — the plan must "
+                      f"address every one of the {n_src_cells} source cells exactly once")
     return errors
 
 
