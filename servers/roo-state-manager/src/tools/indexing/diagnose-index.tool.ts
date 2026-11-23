@@ -248,13 +248,15 @@ export async function handleDiagnoseSemanticIndex(
                 // WORKING Qdrant (measured 23/11 13:10Z: abort at ~15 s). Reporting
                 // `connection_failed` sent agents to re-check a healthy config.
                 // Inside diagnose nobody cancels the call: both classifications
-                // mean the client gave up waiting on a live server.
+                // mean the client gave up waiting. That alone does not separate a
+                // slow server from a host that never answers (no prior liveness
+                // probe here), so the message names both and points at /healthz.
                 diagnostics.status = 'degraded';
                 diagnostics.details.qdrant_connection = 'timeout';
                 diagnostics.details.qdrant_list_ms = listElapsedMs;
                 diagnostics.errors.push(
-                    `Listage des collections expiré après ${listElapsedMs} ms : Qdrant répond lentement ` +
-                    `(latence côté serveur, pas un problème de configuration ni de connectivité) : ${listError.message}`
+                    `Listage des collections expiré après ${listElapsedMs} ms : le client a abandonné l'attente ` +
+                    `(serveur Qdrant lent, ou hôte qui ne répond pas) : ${listError.message}`
                 );
             } else {
                 // getCollections a échoué → problème de connexion
@@ -759,14 +761,15 @@ export async function handleDiagnoseSemanticIndex(
     if (diagnostics.details.qdrant_connection === 'failed') {
         recommendations.push('Vérifiez la configuration Qdrant (URL, clé API, connectivité réseau)');
     }
-    // #4880 — the collection listing expired on a slow but WORKING Qdrant. The
-    // config/key/network lead is a false one here: the server answered too late.
+    // #4880 — the collection listing expired. Measured case: a slow but WORKING
+    // Qdrant, where the config/key lead was a false one. A host that never answers
+    // gives the same sign, hence /healthz first to tell the two apart.
     if (diagnostics.details.qdrant_connection === 'timeout') {
         recommendations.push(
-            `Le listage des collections Qdrant a expiré après ${diagnostics.details.qdrant_list_ms} ms : ` +
-            'la latence de lecture est côté serveur (Qdrant). Ce verdict ne signale ni un problème de ' +
-            'configuration ni un problème de connectivité — NE PAS réinitialiser la collection sur ce seul ' +
-            "verdict (une expiration n'est pas une corruption) ; mesurez la charge Qdrant avant toute action."
+            `Le listage des collections Qdrant a expiré après ${diagnostics.details.qdrant_list_ms} ms. ` +
+            'Un serveur Qdrant lent (cas mesuré #4880) et un hôte qui ne répond pas donnent ce même signe : ' +
+            'interrogez GET /healthz du serveur pour trancher avant de soupçonner la configuration. ' +
+            "NE PAS réinitialiser la collection sur ce seul verdict (une expiration n'est pas une corruption)."
         );
     }
     if (diagnostics.details.dimension_check?.collection_matches_live === false) {
