@@ -6,9 +6,7 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "servers/roo-state-manager",
-    "servers/jinavigator-server",
-    "servers/jupyter-mcp-server"
+    "servers/roo-state-manager"
   ],
   "scripts": {
     "install-all": "node scripts/install-all.cjs",
