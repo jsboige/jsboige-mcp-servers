@@ -1605,12 +1605,16 @@ LOCAL_MODULE_RENDER_DEF_CAP = 6   # signatures RENDERED per module in the prompt
                                    #  prompts, unparseable stub answers)
 LOCAL_MODULE_BLOCK_CHAR_CAP = 6000  # signature-listing part of the block
 LOCAL_MODULE_SOURCE_FILE_CAP = 30000   # chars of ONE imported leaf's full source
-LOCAL_MODULE_SOURCE_TOTAL_CAP = 70000  # chars across every inlined source
+LOCAL_MODULE_SOURCE_TOTAL_CAP = 140000  # chars across every inlined source
 # (o9 ICT, 23/11: with signatures only, the build call — a tool-less single shot —
 #  answered « le contenu de basin_family.py … n'est pas disponibles dans le message,
 #  et la lecture demandée précédemment a échoué » and died stage2-short-segment:0 on
 #  every ICT grain. The leaf the notebook imports gets its SOURCE inline; the rest of
-#  the package stays signature-only. Measured leaves: 9.8-22.8 KB each, 1-2 per grain.)
+#  the package stays signature-only. Measured leaves: 9.8-22.8 KB each, 1-2 per grain.
+#  o10 ICT, 23/11 soir: 70k was too tight for a real dependency set — ICT-15j names
+#  SEVEN leaves (98 583 chars measured) and the 5th in render order (bistable.py,
+#  cumulative 72 568) fell off the budget; the model's refusal named exactly that
+#  file. 140k fits every measured set while still bounding the 2.5 MB package.)
 
 
 def _top_level_defs(p: Path) -> list[str]:

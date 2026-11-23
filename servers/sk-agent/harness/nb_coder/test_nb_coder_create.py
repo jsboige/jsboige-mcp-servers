@@ -912,19 +912,27 @@ def test_the_imported_leafs_full_source_is_inlined(tmp_path, monkeypatch):
 
 
 def test_inlined_sources_are_bounded():
-    """Three named leaves of 40k chars each must not blow the prompt back into
-    the o8 regime: per-file and total caps hold at render, and the overflow is
-    named — never silent."""
-    mods = [{"name": f"pkg.m{i}", "file": f"Series/ict/m{i}.py",
+    """Real dependency sets (ICT-15j: seven named leaves, 98 583 chars measured
+    o10) must fit WHOLE — the 140k total exists for the 2.5 MB package, not to
+    starve a real set (o10: bistable.py fell off a 70k budget at cumulative
+    72 568, and the model's refusal named exactly that file). Beyond the cap,
+    overflow falls to the named listing — never silent."""
+    seven = [{"name": f"pkg.m{i}", "file": f"Series/ict/m{i}.py",
+              "defs": [f"fn_{i}(x)"],
+              "source": "x" * (9000 + i * 2000)} for i in range(7)]
+    blk = D.local_module_block(seven)      # 105 000 chars — under the cap
+    assert blk.count("SOURCE COMPLÈTE") == 7, \
+        "a real measured dependency set fits whole"
+    over = [{"name": f"pkg.m{i}", "file": f"Series/ict/m{i}.py",
              "defs": [f"fn_{i}(x)"],
-             "source": "x" * 40000} for i in range(3)]
-    blk = D.local_module_block(mods)
-    assert len(blk) <= (D.LOCAL_MODULE_SOURCE_TOTAL_CAP
-                        + D.LOCAL_MODULE_BLOCK_CHAR_CAP + 800), \
+             "source": "z" * 40000} for i in range(6)]
+    blk2 = D.local_module_block(over)      # 6x30k = 180k > 140k
+    assert len(blk2) <= (D.LOCAL_MODULE_SOURCE_TOTAL_CAP
+                         + D.LOCAL_MODULE_BLOCK_CHAR_CAP + 800), \
         "inlined sources obey the total cap, listing obeys its own"
-    assert blk.count("SOURCE COMPLÈTE") == 2, \
-        "third leaf over budget falls back to signatures, first two are inlined"
-    assert "signatures seulement" in blk, "overflow lands in the named listing"
+    assert blk2.count("SOURCE COMPLÈTE") == 4, \
+        "the 5th leaf over budget falls back to signatures, first four inline"
+    assert "signatures seulement" in blk2, "overflow lands in the named listing"
     one = D.local_module_block([{"name": "pkg.big", "file": "Series/ict/big.py",
                                  "defs": ["fn(x)"], "source": "y" * 50000}])
     assert len(one) <= D.LOCAL_MODULE_SOURCE_FILE_CAP + 1500, \
