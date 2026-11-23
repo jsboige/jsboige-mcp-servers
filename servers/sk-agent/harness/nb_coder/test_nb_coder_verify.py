@@ -181,6 +181,27 @@ def test_image_swap_changes_the_digest(tmp_path):
     assert v.outputs_digest(c)[0]["sha"] == da["sha"]
 
 
+def test_prompt_marks_the_issue_table_as_indicative():
+    """Fournée o15 (23/11), two reject classes on the same material:
+    - CoursIA#27741: 3 major findings demanding stubs for cells the SOURCE itself
+      executes (`centre_m`, `predire_recolle`, `session_bookmaker`) — stubbing them
+      destroys the numeric parity the acceptance also demands. The issue's own spec
+      says the archetype column is a « classification voltron heuristique ».
+    - CoursIA#27742: rejected for drawing SVG instead of ScottPlot — the .NET column
+      is « indicative, à affiner par le producteur », and the merged ICT-15f/15i
+      twins draw in SVG.
+    Neither indicative column may carry a rejection."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "INDICATIF" in p
+    assert "classification voltron heuristique" in p
+    assert "la stubber" in p and "parité numérique" in p
+    assert "ScottPlot" in p
+    assert "la colonne est indicative, la convention est binding" in p
+    # a stub WITHOUT the source executing it stays a firm major (the rule is scoped)
+    assert "quota d'exercices" in p
+
+
 def test_prompt_scopes_the_verdict_to_the_deliverable():
     """4/4 rejects measured on the pilot grains (16/11) were rejecting on facts the
     verifier cannot observe: chain procedure (claims, MCP, coordinator approval) and

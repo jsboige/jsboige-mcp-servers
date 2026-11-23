@@ -80,6 +80,13 @@ def test_the_rules_pin_exercises_to_the_source_and_forbid_partial_segments():
     assert "BIBLIOTHÈQUE PYTHON SANS ÉQUIVALENT C#" in r
     assert "union-find" in r
     assert "est un ÉCHEC du carnet" in r
+    # 2026-11-23 batch o15, CoursIA#27741/#27742: the issues' « Cellules à porter »
+    # table marks executed cells as « exercice » (⇒ stub) and names ScottPlot, yet the
+    # acceptance demands numeric parity and the conventions mandate SVG. The table is
+    # the issue's own heuristic classification — the builder must not let it convert
+    # an executed cell into a stub nor swap the house figure convention for a package.
+    assert "Le tableau « Cellules à porter » de l'issue est INDICATIF" in r
+    assert "la stubber casse la clause de parité numérique" in r
     body = _body(r)
     assert body in D.creation_json_prompt(
         [{"idx": 1, "cell_type": "code", "titre": "x"}], 3, "")
