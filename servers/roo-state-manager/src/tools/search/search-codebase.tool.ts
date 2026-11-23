@@ -1677,8 +1677,13 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 					unprobed_candidates: contentMatch.unprobed_candidates ?? 0,
 				};
 				// #4880: only a SUCCESSFUL resolution is cached — a miss or an
-				// error never reaches this line.
-				writeContentMatchCache(contentMatchKey, contentMatch.name, contentMatchDetails);
+				// error never reaches this line. And only a COMPLETE sweep: when a
+				// candidate was skipped cold, the winner was chosen without it — the
+				// live collection may be the skipped one, and caching would pin a
+				// stale twin for the whole TTL. The next search re-sweeps instead.
+				if ((contentMatch.unprobed_candidates ?? 0) === 0) {
+					writeContentMatchCache(contentMatchKey, contentMatch.name, contentMatchDetails);
+				}
 			} else {
 				// No strict content-match → honest diagnostic. Enrich with the collection
 				// signatures we probed so the caller can identify theirs visually.

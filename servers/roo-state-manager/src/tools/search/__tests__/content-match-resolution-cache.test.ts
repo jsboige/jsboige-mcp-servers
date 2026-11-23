@@ -253,6 +253,34 @@ describe('#4880 — content-match: bounded candidate probe + resolution cache', 
 			expect(mockQdrant.getCollections.mock.calls.length).toBe(2);
 		});
 
+		test('a match found by a PARTIAL sweep (a cold candidate skipped) is not cached', async () => {
+			process.env.CONTENT_MATCH_RESOLUTION_CACHE_TTL_MS = '60000';
+			process.env.CONTENT_MATCH_SIGNATURE_TIMEOUT_MS = '30';
+			primeContentMatch();
+			// A larger cold candidate, probed first (points desc): it might be the live
+			// collection, so a match chosen without it must not be pinned for the TTL.
+			const neverResolves = new Promise(() => {});
+			mockQdrant.getCollections.mockResolvedValue({
+				collections: [{ name: 'ws-cold-big' }, { name: 'ws-contentmatched' }, { name: 'ws-unrelated' }]
+			});
+			const baseGetCollection = mockQdrant.getCollection.getMockImplementation()!;
+			mockQdrant.getCollection.mockImplementation(async (name: string) =>
+				name === 'ws-cold-big' ? { points_count: 50000, status: 'green' } : baseGetCollection(name));
+			const baseScroll = mockQdrant.scroll.getMockImplementation()!;
+			mockQdrant.scroll.mockImplementation(async (name: string, opts: any) =>
+				name === 'ws-cold-big' ? neverResolves : baseScroll(name, opts));
+
+			const first = JSON.parse((await handleCodebaseSearch({ query: 'foo', workspace: '/ws/cm-cache-partial' })).content[0].text);
+			expect(first.collection_resolved_by).toBe('content-match');
+			expect(first.collection).toBe('ws-contentmatched');
+			expect(first.content_match.unprobed_candidates).toBe(1);
+
+			const second = JSON.parse((await handleCodebaseSearch({ query: 'bar', workspace: '/ws/cm-cache-partial' })).content[0].text);
+			// Not served from the cache — the sweep ran again.
+			expect(second.content_match.cached).toBeUndefined();
+			expect(mockQdrant.getCollections.mock.calls.length).toBe(2);
+		});
+
 		test('a miss is never cached — the next search re-runs the sweep', async () => {
 			process.env.CONTENT_MATCH_RESOLUTION_CACHE_TTL_MS = '60000';
 			process.env.CONTENT_MATCH_SIGNATURE_TIMEOUT_MS = '30';
