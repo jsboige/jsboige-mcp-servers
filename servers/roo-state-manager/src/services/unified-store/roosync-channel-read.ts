@@ -28,7 +28,7 @@
 
 import type { Message, MessageListItem } from '../MessageManager.js';
 import type { RooSyncMessageRow, RooSyncMessageUpdate } from './types.js';
-import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
+import type { IUnifiedStoreReader, RooSyncMailboxReadOptions } from './UnifiedStoreReader.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { isChannelReadPgEnabled } from './pg-read-gates.js';
 import { ensureBackfillMarkersFresh } from './pg-backfill-marker.js';
@@ -230,16 +230,36 @@ export async function readChannelMailboxFromPg(
 }
 
 /**
+ * #4731 — the body projection the two background sweeps ask for. Bodyless is
+ * the DEFAULT, never an opt-in: neither consumer reads `body` (cleanup decides
+ * on `options.expires_at`/`auto_destruct`, reminders on `options` + subject),
+ * and the bodies were 79 % of the full-pool payload (8.66 MB of 10.90 MB,
+ * measured on po-204, 23/11 — 1 134 ms vs 329 ms per scan).
+ *
+ * Kill-switch: `ROOSYNC_CHANNEL_SWEEP_BODYLESS=0` restores the full body on
+ * both sweeps (diagnosis only — the fix is the default).
+ */
+export function channelSweepBodyChars(): number | undefined {
+  return process.env.ROOSYNC_CHANNEL_SWEEP_BODYLESS === '0' ? undefined : 0;
+}
+
+/**
  * #4302 — the WHOLE channel pool from PG (cleanupExpiredMessages,
  * sendExpiryReminders), parity with the GDrive pool those scans iterate
  * today: every non-archived, non-destroyed message regardless of recipient.
  *
+ * @param opts Body projection (#4731). The sweeps pass
+ *   `{ bodyChars: channelSweepBodyChars() }`; omitted, the read keeps its
+ *   historic full-body contract.
  * @returns Full messages (newest first), or **null** when PG is unavailable
  *   — the caller must then fall back to the GDrive path.
  */
-export async function readWholeChannelFromPg(reader: IUnifiedStoreReader): Promise<Message[] | null> {
+export async function readWholeChannelFromPg(
+  reader: IUnifiedStoreReader,
+  opts?: RooSyncMailboxReadOptions
+): Promise<Message[] | null> {
   try {
-    const rows = await reader.getRooSyncChannelMessages();
+    const rows = await reader.getRooSyncChannelMessages(opts);
     return rows.map(mapRowToMessage);
   } catch (error) {
     logger.warn('[channel-pg] channel pool read failed — caller should fall back to GDrive', { error: String(error) });
