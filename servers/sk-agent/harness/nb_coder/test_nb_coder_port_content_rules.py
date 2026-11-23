@@ -39,6 +39,22 @@ def test_the_rules_name_both_classes():
     assert "Ne recopie jamais une SORTIE du jumeau" in r
 
 
+def test_the_rules_forbid_stub_results_and_recipe_substitution():
+    """2026-11-23 batch o13: two builder-side classes the verifier rejected 4 rounds each.
+    - 27741: every source computation was delegated to exercise stubs (neutral zeros, TODO);
+    - 27742: library calls replaced by graph proxies / a hand-rolled simulation, and the
+      regimes R0/R1 left «à compléter». Both rules must reach creation AND revision."""
+    r = D.PORT_CONTENT_RULES
+    assert "CALCULS ≠ EXERCICES" in r
+    assert "jamais le remplacement d'un calcul de la source" in r
+    assert "R0/R1 restent à compléter" in r
+    assert "RECETTE À L'IDENTIQUE" in r
+    assert "équivalent C#" in r and "mesure " in r and "AUTRE CHOSE" in r
+    assert "mêmes définitions, mêmes paramètres, même quantité" in r
+    body = _body(r)
+    assert body in D.revision_prompt(ISSUE, "view", FINDINGS, twin_view="<twin>")
+
+
 def test_every_creation_slice_carries_the_rules():
     seg = [{"idx": 3, "cell_type": "code", "titre": "x"}]
     assert D.PORT_CONTENT_RULES in D.creation_json_prompt(seg, 5, "")
