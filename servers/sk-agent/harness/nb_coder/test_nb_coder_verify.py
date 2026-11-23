@@ -229,6 +229,24 @@ def test_prompt_does_not_demand_a_solved_exercise_and_judges_parity_against_the_
     assert "Juge la parité contre le jumeau" in p
 
 
+def test_prompt_does_not_invent_a_no_hints_exercise_criterion():
+    """CoursIA#28208 (23/11), third rejection round: with the two fences above in place,
+    the verifier rejected again on a phrase it fabricated itself -- the acceptance
+    criteria demanded the port of a notebook « sans solution ni indice », a formula
+    absent from the issue, from the conventions and from the source. The source's
+    exercise cells carry step-by-step guidance comments and `indice :` lines, which
+    the conventions explicitly allow (only the SOLVED result is banned), so demanding
+    their removal makes a faithful port impossible and the grain oscillates. The prompt
+    must name the fabricated criterion and what a faithful stub keeps."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "commentaires de guidage" in p
+    assert "reste le port FIDÈLE" in p
+    assert "solution ou le " in p and "résultat révélé" in p
+    assert "sans solution ni indice" in p
+    assert "N'invente pas un critère plus strict" in p
+
+
 # ------------------------------------------------- call errors reach the trace (21/11)
 
 

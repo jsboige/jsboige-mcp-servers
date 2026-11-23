@@ -327,7 +327,13 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         "la SOURCE affiche ce seuil théorique. Juge la parité contre le jumeau, jamais contre "
         "l'énoncé analytique : un détecteur à horizon fini peut légitimement basculer ailleurs "
         "que le mur exact, et afficher cet écart est alors la preuve de la mesure, pas une "
-        "faute.\n\n"
+        "faute.\n"
+        "- Un **stub qui conserve les commentaires de guidage de la SOURCE** (étapes, "
+        "« indice : … ») reste le port FIDÈLE : la convention bannit la **solution ou le "
+        "résultat révélé**, et autorise explicitement les valeurs attendues en commentaire. "
+        "N'invente pas un critère plus strict (« sans solution ni indice ») : il rend le port "
+        "fidèle impossible et fait osciller le grain (mesuré CoursIA#28208, 23/11 : trois "
+        "rejets citant une formule d'acceptation absente de toute convention).\n\n"
         "Rends UNIQUEMENT un bloc ```json :\n"
         '{"verdict":"approve|reject","findings":[{"cell":<index du LIVRABLE>,"severity":"major|minor",'
         '"detail":"..."}],"checked":["..."]}\n'
