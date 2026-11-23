@@ -21,6 +21,7 @@ import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { getEmbeddingShadowingStatus, type EmbeddingShadowingStatus } from '../../services/embedding-endpoints.js';
 import * as os from 'os';
 import { getCallerContext } from '../../transport/caller-context.js';
+import { effectiveQdrantUrl } from '../../services/qdrant-url.js';
 
 const logger = createLogger('HealthView');
 
@@ -498,7 +499,9 @@ export type QdrantProbeResult = {
  * and now asserts the rendered *cause*).
  */
 export async function probeQdrantBackend(): Promise<QdrantProbeResult> {
-  const qdrantUrl = process.env.QDRANT_URL;
+  // #4880: dial what the client dials — a `localhost` probe resolved on a
+  // saturated libuv threadpool would report a healthy Qdrant unreachable.
+  const qdrantUrl = effectiveQdrantUrl(process.env.QDRANT_URL);
   if (!qdrantUrl) return { reachable: false, kind: 'unconfigured' };
   const apiKey = process.env.QDRANT_API_KEY;
   const timeoutMs = parseInt(process.env.QDRANT_HEALTH_PROBE_TIMEOUT_MS || '8000', 10);

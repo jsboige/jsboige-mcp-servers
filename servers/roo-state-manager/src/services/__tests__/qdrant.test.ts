@@ -118,6 +118,37 @@ describe('qdrant', () => {
 		}));
 	});
 
+	// ---- #4880: extended abort budget for callers that hand Qdrant a longer one ----
+
+	test('#4880: a timeoutMs above QDRANT_TIMEOUT_MS builds a client with THAT abort budget', () => {
+		(getQdrantClient as any)({ timeoutMs: 35000 });
+		expect(MockedQdrantClient).toHaveBeenCalledTimes(1);
+		expect(MockedQdrantClient).toHaveBeenCalledWith(expect.objectContaining({
+			url: 'https://qdrant.example.com',
+			apiKey: 'test-key',
+			timeout: 35000
+		}));
+	});
+
+	test('#4880: the extended client is cached per budget and cleared by resetQdrantClient', () => {
+		(getQdrantClient as any)({ timeoutMs: 35000 });
+		(getQdrantClient as any)({ timeoutMs: 35000 });
+		expect(MockedQdrantClient).toHaveBeenCalledTimes(1);
+		(getQdrantClient as any)({ timeoutMs: 50000 });
+		expect(MockedQdrantClient).toHaveBeenCalledTimes(2);
+		resetQdrantClient();
+		(getQdrantClient as any)({ timeoutMs: 35000 });
+		expect(MockedQdrantClient).toHaveBeenCalledTimes(3);
+	});
+
+	test('#4880: a timeoutMs at or below QDRANT_TIMEOUT_MS reuses the shared client', () => {
+		(getQdrantClient as any)({ timeoutMs: 15000 });
+		(getQdrantClient as any)({ timeoutMs: 5000 });
+		getQdrantClient();
+		expect(MockedQdrantClient).toHaveBeenCalledTimes(1);
+		expect(MockedQdrantClient).toHaveBeenCalledWith(expect.objectContaining({ timeout: 15000 }));
+	});
+
 	// ---- getCollectionSize ----
 
 	test('getCollectionSize returns points_count from collection', async () => {

@@ -12,7 +12,7 @@
  * output <= maxSizeBytes, whatever the (mocked) LLM does.
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { condenseTextIfTooLarge, truncateToMaxSize } from '../dashboard.js';
 
 // Mirror the LLM-client mock used by dashboard.test.ts.
@@ -40,6 +40,7 @@ const CAP = 2 * 1024; // small cap keeps fixtures tiny; the function takes the c
 const oversizedText = (`${'X'.repeat(100)}\n`).repeat(80); // 80 lines × 101 B ≈ 8 KB
 const oversizedLLMReply = (`${'Y'.repeat(120)}\n`).repeat(80); // still ≈ 9.7 KB > CAP
 const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+const savedFallbackApiFormat = process.env.FALLBACK_API_FORMAT;
 
 beforeEach(() => {
   mockChatCreate.mockReset();
@@ -51,6 +52,15 @@ beforeEach(() => {
   mockGetFallbackClient.mockReturnValue(null);
   mockFallbackCreate.mockReset();
   delete process.env.OPENAI_BASE_URL;
+  // #4872 hermeticity (ai-01 review, file-scope pin convention ms#1551): the seat .env
+  // carries FALLBACK_API_FORMAT=anthropic — without a pin, cloudCondenseOnce takes the
+  // /messages route and the chat-completions mock is never called (2/14 red on Windows).
+  process.env.FALLBACK_API_FORMAT = 'openai';
+});
+
+afterEach(() => {
+  if (savedFallbackApiFormat === undefined) delete process.env.FALLBACK_API_FORMAT;
+  else process.env.FALLBACK_API_FORMAT = savedFallbackApiFormat;
 });
 
 describe('truncateToMaxSize (deterministic floor #2463)', () => {
@@ -175,5 +185,47 @@ describe('#4872 — cloud-first order for the size guard', () => {
     expect(out).toBe('primary condensed under cap');
     expect(mockChatCreate).toHaveBeenCalledTimes(1);
     expect(mockFallbackCreate).not.toHaveBeenCalled();
+  });
+
+  it('#4872 (a): cloud-first keeps serving the primary while the pass has time left', async () => {
+    // Measured defect (ai-01, 23/11): in cloud-first order the trailing cloud block
+    // is SKIPPED, but the primary's clamp still subtracted the #3962 cloud reserve —
+    // the shared pass deadline is mostly consumed by the time the Summary guard
+    // runs, so the 35-82s reserve refused the primary every pass ("pass deadline
+    // reached the cloud reserve") while the budget it protected was never spent.
+    // Here: 20s left, reserve pinned to 18s → the BASE refuses the primary (< 5s
+    // floor) and truncates; cloud-first drops the reserve → the primary runs.
+    const savedReserve = process.env.CONDENSE_CLOUD_RESERVE_MS;
+    process.env.CONDENSE_CLOUD_RESERVE_MS = '18000';
+    try {
+      // Timeout-shaped (APIConnectionTimeoutError by constructor.name) =
+      // non-retryable for isRetryableFallbackError → the chain fails fast, no
+      // backoff sleeps eating the 20s budget the test manipulates.
+      class APIConnectionTimeoutError extends Error {}
+      mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+      mockFallbackCreate.mockRejectedValue(new APIConnectionTimeoutError('Request timed out.'));
+      mockChatCreate.mockResolvedValue({ choices: [{ message: { content: 'primary condensed under cap' } }] });
+      const passDeadline = Date.now() + 20000;
+      const out = await condenseTextIfTooLarge(oversizedText, CAP, 'Status', passDeadline, undefined, true);
+      expect(out).toBe('primary condensed under cap');
+      expect(mockChatCreate).toHaveBeenCalledTimes(1);
+    } finally {
+      if (savedReserve === undefined) delete process.env.CONDENSE_CLOUD_RESERVE_MS;
+      else process.env.CONDENSE_CLOUD_RESERVE_MS = savedReserve;
+    }
+  });
+
+  it("#4872 (c): the guard's cloud chain sizes its output budget to the cap, not the shared ceiling", async () => {
+    // Measured defect (ai-01, 23/11): glm-4.7 spent the shared 7200-token budget
+    // reasoning before any text and the attempt expired (~36s for a ~1500-token
+    // summary). The guard's cloud chain now asks for cap/2 BYTES of tokens (≈1.5x
+    // the largest legitimate sub-cap answer): a 2 KB cap → 1024, not 7200 — an
+    // overthinking model fails fast on its output budget (finish_reason 'length'
+    // → next model) instead of hanging to the attempt timeout.
+    mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+    mockFallbackCreate.mockResolvedValue(cloudReply('cloud condensed under cap'));
+    await condenseTextIfTooLarge(oversizedText, CAP, 'Status', undefined, undefined, true);
+    expect(mockFallbackCreate).toHaveBeenCalledTimes(1);
+    expect(mockFallbackCreate.mock.calls[0][0].max_tokens).toBe(Math.ceil(CAP / 2));
   });
 });

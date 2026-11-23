@@ -180,8 +180,11 @@ export interface IUnifiedStoreReader {
    * recipient), newest first. Bounds the global scans (cleanupExpiredMessages,
    * sendExpiryReminders) that iterate the entire GDrive pool today: the
    * mailbox read is recipient-scoped and cannot express them.
+   *
+   * #4731 — `opts.bodyChars` bounds the body exactly as the mailbox read
+   * does; the sweeps pass `{ bodyChars: 0 }` (neither consumer reads it).
    */
-  getRooSyncChannelMessages(): Promise<RooSyncMessageRow[]>;
+  getRooSyncChannelMessages(opts?: RooSyncMailboxReadOptions): Promise<RooSyncMessageRow[]>;
 
   // ─── RooSync dashboard reads (#3151 Phase C) ─────────────────────
 

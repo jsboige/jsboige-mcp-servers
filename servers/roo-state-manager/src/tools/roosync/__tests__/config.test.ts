@@ -18,6 +18,7 @@ const mockCollectConfig = vi.fn();
 const mockPublishConfig = vi.fn();
 const mockApplyConfig = vi.fn();
 const mockApplyProfile = vi.fn();
+const mockRollbackWorkspaceTemplateConfig = vi.fn();
 const mockGetConfigVersion = vi.fn();
 
 vi.mock('../../../services/RooSyncService.js', () => ({
@@ -26,7 +27,8 @@ vi.mock('../../../services/RooSyncService.js', () => ({
       collectConfig: mockCollectConfig,
       publishConfig: mockPublishConfig,
       applyConfig: mockApplyConfig,
-      applyProfile: mockApplyProfile
+      applyProfile: mockApplyProfile,
+      rollbackWorkspaceTemplateConfig: mockRollbackWorkspaceTemplateConfig
     }),
     getConfigService: () => ({
       getConfigVersion: mockGetConfigVersion
@@ -75,6 +77,32 @@ describe('ConfigArgsSchema', () => {
       expect(() => ConfigArgsSchema.parse({
         action: 'collect',
         targets: ['invalid-target']
+      })).toThrow();
+    });
+  });
+
+  describe('workspace-template (#3111)', () => {
+    test('accepts target workspace-template with workspacePath on apply', () => {
+      expect(() => ConfigArgsSchema.parse({
+        action: 'apply', targets: ['workspace-template'], workspacePath: '/abs/ws'
+      })).not.toThrow();
+    });
+
+    test('accepts rollback with target workspace-template and workspacePath', () => {
+      expect(() => ConfigArgsSchema.parse({
+        action: 'rollback', targets: ['workspace-template'], workspacePath: '/abs/ws'
+      })).not.toThrow();
+    });
+
+    test('rejects apply on workspace-template without workspacePath', () => {
+      expect(() => ConfigArgsSchema.parse({
+        action: 'apply', targets: ['workspace-template']
+      })).toThrow();
+    });
+
+    test('rejects rollback without the workspace-template target', () => {
+      expect(() => ConfigArgsSchema.parse({
+        action: 'rollback', targets: ['modes'], workspacePath: '/abs/ws'
       })).toThrow();
     });
   });
@@ -428,6 +456,49 @@ describe('roosyncConfig', { testTimeout: 30000 }, () => {
         expect.objectContaining({
           backup: false
         })
+      );
+    });
+
+    test('#3111: workspace-template without dryRun defaults the WHOLE call to dryRun:true', async () => {
+      mockApplyConfig.mockResolvedValue({
+        success: true,
+        filesApplied: 0,
+        backupPath: null,
+        errors: [],
+        workspaceTemplate: { simulate: true, created: ['/ws/CLAUDE.md.template'], skippedExisting: [], journalPath: null }
+      });
+
+      const result = await roosyncConfig({
+        action: 'apply',
+        targets: ['workspace-template'],
+        workspacePath: '/abs/ws'
+      } as ConfigArgs);
+
+      expect(mockApplyConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ dryRun: true, workspacePath: '/abs/ws' })
+      );
+      expect(result.status).toBe('success');
+      expect(result.message).toContain('dry-run');
+    });
+
+    test('#3111: workspace-template with dryRun:false writes', async () => {
+      mockApplyConfig.mockResolvedValue({
+        success: true,
+        filesApplied: 1,
+        backupPath: null,
+        errors: [],
+        workspaceTemplate: { simulate: false, created: ['/ws/CLAUDE.md.template'], skippedExisting: [], journalPath: '/j.json' }
+      });
+
+      await roosyncConfig({
+        action: 'apply',
+        targets: ['workspace-template'],
+        workspacePath: '/abs/ws',
+        dryRun: false
+      } as ConfigArgs);
+
+      expect(mockApplyConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ dryRun: false })
       );
     });
 

@@ -25,7 +25,7 @@ export type ClaudeCodeScope = 'user' | 'project' | 'settings';
 export const VALID_BASE_TARGETS: readonly string[] = [
   'modes', 'mcp', 'profiles', 'roomodes', 'model-configs', 'rules',
   'settings', 'claude-config', 'claude-settings', 'modes-yaml',
-  'schtasks', 'schedules',
+  'schtasks', 'schedules', 'workspace-template',
 ];
 
 /**
@@ -34,7 +34,7 @@ export const VALID_BASE_TARGETS: readonly string[] = [
  */
 export const ConfigArgsSchema = z.object({
   // Action requise
-  action: z.enum(['collect', 'publish', 'apply', 'apply_profile']).describe('Action: collect, publish, apply, or apply_profile'),
+  action: z.enum(['collect', 'publish', 'apply', 'apply_profile', 'rollback']).describe('Action: collect, publish, apply, apply_profile, or rollback'),
 
   // Paramètres communs
   machineId: z.string().optional().describe('Machine ID (default: ROOSYNC_MACHINE_ID)'),
@@ -75,9 +75,9 @@ export const ConfigArgsSchema = z.object({
       });
     },
     {
-      message: "Target invalide. Valeurs acceptées: all (collect uniquement, exclusif), modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings, modes-yaml, schtasks, schedules, mcp:<server>, services:<name>, env:<service>"
+      message: "Target invalide. Valeurs acceptées: all (collect uniquement, exclusif), modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings, modes-yaml, schtasks, schedules, workspace-template, mcp:<server>, services:<name>, env:<service>"
     }
-  ).describe('Targets: all (#4611 — MachineConfig complète en un appel, collect uniquement), modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings (snapshot masqué de ~/.claude/settings.json, #3545), modes-yaml, schtasks, schedules (.roo/schedules.json, #2411 ID-based merge), mcp:<server>, services:<name>, env:<service>. Default: ["modes", "mcp"]'),
+  ).describe('Targets: all (#4611 — MachineConfig complète en un appel, collect uniquement), modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings (snapshot masqué de ~/.claude/settings.json, #3545), modes-yaml, schtasks, schedules (.roo/schedules.json, #2411 ID-based merge), workspace-template (#3111 — modèles de workspace, apply create-only, requis workspacePath), mcp:<server>, services:<name>, env:<service>. Default: ["modes", "mcp"]'),
 
   // Pour publish (requiert collect préalable OU packagePath)
   packagePath: z.string().optional().describe('Package path from collect. If omitted with publish+targets, does collect+publish atomically'),
@@ -95,7 +95,10 @@ export const ConfigArgsSchema = z.object({
   sourceMachineId: z.string().optional().describe('Source machine ID for model-configs.json (default: local file)'),
 
   // #2543 Phase 1(b) — target extension for vscdb writes
-  targetExtension: z.enum(['roo', 'zoo']).optional().describe('Target extension for vscdb writes. "roo" = RooVeterinaryInc.roo-cline, "zoo" = ZooCodeOrganization.zoo-code. Default: "roo"')
+  targetExtension: z.enum(['roo', 'zoo']).optional().describe('Target extension for vscdb writes. "roo" = RooVeterinaryInc.roo-cline, "zoo" = ZooCodeOrganization.zoo-code. Default: "roo"'),
+
+  // #3111 — workspace destination for target workspace-template
+  workspacePath: z.string().optional().describe('Absolute workspace destination. REQUIRED for action=apply/rollback with target workspace-template (#3111). Apply is create-only: existing files are never overwritten, and dryRun defaults to TRUE (writing requires dryRun:false explicitly).')
 }).refine(
   (data) => {
     // #4611 — la target "all" est COLLECT-ONLY : elle rend la MachineConfig unifiée
@@ -103,6 +106,15 @@ export const ConfigArgsSchema = z.object({
     // publish/apply enverrait `['all']` au collecteur de paquets, qui ne connaît
     // pas cette cible — l'échec serait obscur et tardif.
     if (data.targets?.includes('all') && data.action !== 'collect') {
+      return false;
+    }
+    // #3111 — workspace-template : apply/rollback exigent un workspacePath ABSOLU.
+    const wtSelected = data.targets?.includes('workspace-template') ?? false;
+    if ((data.action === 'apply' || data.action === 'rollback') && wtSelected && !data.workspacePath) {
+      return false;
+    }
+    // #3111 — rollback ne concerne QUE workspace-template (rien d'autre n'a de journal).
+    if (data.action === 'rollback' && !wtSelected) {
       return false;
     }
     // Validation spécifique par action
@@ -125,7 +137,7 @@ export const ConfigArgsSchema = z.object({
     return true;
   },
   {
-    message: "Pour action=publish: 'version' et 'description' requis + 'packagePath' OU 'targets'. Pour action=apply_profile: 'profileName' requis. La target 'all' est collect-only (#4611)."
+    message: "Pour action=publish: 'version' et 'description' requis + 'packagePath' OU 'targets'. Pour action=apply_profile: 'profileName' requis. La target 'all' est collect-only (#4611). Pour target 'workspace-template': 'workspacePath' requis en apply/rollback (#3111), et 'rollback' exige la target workspace-template."
   }
 );
 
@@ -137,7 +149,7 @@ export type ConfigArgs = z.infer<typeof ConfigArgsSchema>;
  * @returns Liste des targets validés
  * @throws ConfigSharingServiceError si un target est invalide
  */
-function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | 'schtasks' | 'schedules' | `mcp:${string}` | `services:${string}` | `env:${string}`)[] {
+function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | 'schtasks' | 'schedules' | 'workspace-template' | `mcp:${string}` | `services:${string}` | `env:${string}`)[] {
   if (!targets) return [];
 
   return targets.map(target => {
@@ -184,7 +196,7 @@ function parseTargets(targets?: string[]): ('modes' | 'mcp' | 'profiles' | 'scht
     }
 
     throw new ConfigSharingServiceError(
-      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings, modes-yaml, schtasks, schedules, mcp:<nomServeur>, services:<nomService>, env:<nomService>`,
+      `Target invalide: '${target}'. Valeurs acceptées: modes, mcp, profiles, roomodes, model-configs, rules, settings, claude-config, claude-settings, modes-yaml, schtasks, schedules, workspace-template, mcp:<nomServeur>, services:<nomService>, env:<nomService>`,
       ConfigSharingServiceErrorCode.INVALID_TARGET_FORMAT,
       { target }
     );
@@ -593,29 +605,48 @@ export async function roosyncConfig(args: ConfigArgs) {
           }
         }
 
+        const parsedTargets = parseTargets(targets);
+        // #3111 — dryRun par défaut = TRUE dès que workspace-template est demandé :
+        // sans valeur explicite, TOUTE la passe simule (jamais un mélange
+        // « wt simulé / autres cibles écrites »). `dryRun:false` reste explicite.
+        const effectiveDryRun = args.dryRun === undefined && parsedTargets.includes('workspace-template')
+          ? true
+          : args.dryRun;
+
         const result = await configSharingService.applyConfig({
           version,
           machineId,
-          targets: parseTargets(targets),
+          targets: parsedTargets,
           backup,
-          dryRun,
+          // #3111 — valeur BRUTE quand elle est posée : pour target
+          // workspace-template, `undefined` simule (seul `false` explicite écrit).
+          dryRun: effectiveDryRun,
           scope, // Issue #601 - Pass scope to apply
-          validate // #2413 - Propagate validate flag
+          validate, // #2413 - Propagate validate flag
+          workspacePath: args.workspacePath // #3111 - required for workspace-template
         });
 
         // #2413 — Si validation activée et drift détecté, marquer le statut comme drift
         const validationFailed = !!result.validation && result.validation.success === false;
         const overallSuccess = result.success && !validationFailed;
 
+        const wtSimulate = result.workspaceTemplate?.simulate === true;
+
+        let message = overallSuccess
+          ? (result.validation ? 'Configuration appliquée et validée avec succès' : 'Configuration appliquée avec succès')
+          : (validationFailed ? 'Configuration appliquée mais drift détecté lors de la validation' : 'Échec de l\'application de la configuration');
+        if (overallSuccess && wtSimulate) {
+          message = `workspace-template: dry-run — ${result.workspaceTemplate!.created.length} fichier(s) prévu(s), rien n'a été écrit (dryRun:false pour écrire)`;
+        }
+
         return {
           status: overallSuccess ? 'success' : (validationFailed ? 'drift' : 'error'),
-          message: overallSuccess
-            ? (result.validation ? 'Configuration appliquée et validée avec succès' : 'Configuration appliquée avec succès')
-            : (validationFailed ? 'Configuration appliquée mais drift détecté lors de la validation' : 'Échec de l\'application de la configuration'),
+          message,
           filesApplied: result.filesApplied,
           backupPath: result.backupPath,
           errors: result.errors,
-          validation: result.validation
+          validation: result.validation,
+          workspaceTemplate: result.workspaceTemplate
         };
       }
 
@@ -671,9 +702,39 @@ export async function roosyncConfig(args: ConfigArgs) {
         };
       }
 
+      // #3111 — rollback de la cible workspace-template (journal create-only)
+      case 'rollback': {
+        const { targets, workspacePath } = args;
+
+        const result = await configSharingService.rollbackWorkspaceTemplateConfig({
+          targets: parseTargets(targets),
+          workspacePath,
+          dryRun: args.dryRun
+        });
+
+        const removed = result.filesRemoved;
+        const skipped = result.filesSkippedModified;
+        const skippedNote = skipped > 0
+          ? ` — ${skipped} fichier(s) modifié(s) depuis l'apply épargné(s) (journal conservé)`
+          : '';
+        return {
+          status: result.success ? 'success' : 'error',
+          message: result.success
+            ? (result.dryRun
+              ? `Rollback workspace-template simulé — ${removed} fichier(s) seraient supprimés${skippedNote}`
+              : `Rollback workspace-template effectué — ${removed} fichier(s) supprimés, ${result.dirsRemoved} répertoire(s) élagués${skippedNote}`)
+            : 'Échec du rollback workspace-template',
+          filesRemoved: result.filesRemoved,
+          filesSkippedModified: result.filesSkippedModified,
+          dirsRemoved: result.dirsRemoved,
+          journalPath: result.journalPath,
+          errors: result.errors
+        };
+      }
+
       default:
         throw new ConfigSharingServiceError(
-          `Action invalide: ${action}. Valeurs acceptées: collect, publish, apply, apply_profile`,
+          `Action invalide: ${action}. Valeurs acceptées: collect, publish, apply, apply_profile, rollback`,
           ConfigSharingServiceErrorCode.COLLECTION_FAILED,
           { action }
         );

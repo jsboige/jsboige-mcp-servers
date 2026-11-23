@@ -16,6 +16,8 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import type { StoredConversation } from '../../services/unified-store/types.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { getEmbeddingModel, getEmbeddingQueryClient } from '../../services/openai.js';
+import { resolveSearchClientTimeoutMs } from '../search/search-client-timeout.js';
+import { qdrantServerReason } from '../search/search-error-classifier.js';
 
 // #1275: Cache embedding connectivity check to avoid consuming API credits on every diagnose call.
 // TTL: 5 minutes (same as circuit breaker pattern).
@@ -179,6 +181,63 @@ export function _classifyDeepDiagnosticError(
 }
 
 /**
+ * #4880 criterion 2 — budget for the collection metadata call.
+ *
+ * `getCollection()` triggers an exhaustive point count: on the 15 M-point
+ * conversation collection it can burn the whole client timeout (measured
+ * ~15 s on ai-01, 23/11). The exact count is an IO-bound metric, not a health
+ * signal, so diagnose waits at most this budget and then continues on a
+ * bounded read.
+ *
+ * `DIAGNOSE_COLLECTION_INFO_BUDGET_MS` — non-numeric or <= 0 falls back to
+ * the 5 s default. Kill switch `DIAGNOSE_COUNT_OFF_PATH=0` restores the
+ * pre-fix behaviour exactly (unbounded await + #3217 path on every failure).
+ */
+const COLLECTION_INFO_DEFAULT_BUDGET_MS = 5000;
+
+function _collectionInfoBudgetMs(): number {
+    const raw = parseInt(process.env.DIAGNOSE_COLLECTION_INFO_BUDGET_MS ?? '', 10);
+    return Number.isFinite(raw) && raw > 0 ? raw : COLLECTION_INFO_DEFAULT_BUDGET_MS;
+}
+
+type CollectionInfoOutcome =
+    | { kind: 'resolved'; info: any }
+    | { kind: 'rejected'; error: any }
+    | { kind: 'budget_expired' };
+
+/**
+ * #4880 criterion 2 — await `getCollection` for at most `budgetMs`.
+ *
+ * Never rejects: the caller branches on the outcome. A rejection arriving
+ * after the budget expired is swallowed by the `.catch` below so it cannot
+ * surface as an unhandled rejection.
+ */
+async function _getCollectionWithinBudget(
+    qdrant: ReturnType<typeof getQdrantClient>,
+    collectionName: string,
+    budgetMs: number
+): Promise<CollectionInfoOutcome> {
+    // Promise.resolve().then(...) turns a synchronous throw into a rejection so
+    // the caller's catch handles it exactly like the unbounded await did.
+    const infoPromise: Promise<any> = Promise.resolve().then(() => qdrant.getCollection(collectionName));
+    infoPromise.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race<CollectionInfoOutcome>([
+            infoPromise.then(
+                info => ({ kind: 'resolved' as const, info }),
+                error => ({ kind: 'rejected' as const, error })
+            ),
+            new Promise<CollectionInfoOutcome>(resolve => {
+                timer = setTimeout(() => resolve({ kind: 'budget_expired' }), budgetMs);
+            }),
+        ]);
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
+}
+
+/**
  * Options for the diagnose tool. All optional — preserves backward compatibility.
  */
 export interface DiagnoseIndexOptions {
@@ -236,14 +295,34 @@ export async function handleDiagnoseSemanticIndex(
         // Vérifier si la collection existe en listant toutes les collections
         let collections;
         let getCollectionsSucceeded = false;
+        const listStartedAt = Date.now();
         try {
             collections = await qdrant.getCollections();
             getCollectionsSucceeded = true;
         } catch (listError: any) {
-            // getCollections a échoué → problème de connexion
-            diagnostics.status = 'connection_failed';
-            diagnostics.details.qdrant_connection = 'failed';
-            diagnostics.errors.push(`Impossible de se connecter à Qdrant: ${listError.message}`);
+            const listElapsedMs = Date.now() - listStartedAt;
+            const listErrorType = _classifyDeepDiagnosticError(listError);
+            if (listErrorType === 'timeout' || listErrorType === 'caller_cancelled') {
+                // #4880 — the collection listing hit the CLIENT timeout on a slow but
+                // WORKING Qdrant (measured 23/11 13:10Z: abort at ~15 s). Reporting
+                // `connection_failed` sent agents to re-check a healthy config.
+                // Inside diagnose nobody cancels the call: both classifications
+                // mean the client gave up waiting. That alone does not separate a
+                // slow server from a host that never answers (no prior liveness
+                // probe here), so the message names both and points at /healthz.
+                diagnostics.status = 'degraded';
+                diagnostics.details.qdrant_connection = 'timeout';
+                diagnostics.details.qdrant_list_ms = listElapsedMs;
+                diagnostics.errors.push(
+                    `Listage des collections expiré après ${listElapsedMs} ms : le client a abandonné l'attente ` +
+                    `(serveur Qdrant lent, ou hôte qui ne répond pas) : ${listError.message}`
+                );
+            } else {
+                // getCollections a échoué → problème de connexion
+                diagnostics.status = 'connection_failed';
+                diagnostics.details.qdrant_connection = 'failed';
+                diagnostics.errors.push(`Impossible de se connecter à Qdrant: ${listError.message}`);
+            }
             // Continue to collect OpenAI and environment info despite Qdrant failure
             collections = null; // Mark as failed but don't return early
         }
@@ -258,48 +337,242 @@ export async function handleDiagnoseSemanticIndex(
         if (collection) {
             diagnostics.details.collection_exists = true;
 
+            // #4880 criterion 2 — the exact count must not sit on the critical
+            // path. `DIAGNOSE_COUNT_OFF_PATH=0` restores the pre-fix behaviour.
+            const countOffPath = process.env.DIAGNOSE_COUNT_OFF_PATH !== '0';
+            const collectionInfoBudgetMs = _collectionInfoBudgetMs();
+            let collectionInfoResolved = false;
+            let collectionInfoDeferred = false;
+            let collectionInfoDeferredReason = '';
+
             // Obtenir des informations sur la collection
             try {
-                const collectionInfo = await qdrant.getCollection(collectionName);
-                const dimVal = (collectionInfo.config?.params?.vectors as any)?.size;
-                collectionDimension = typeof dimVal === 'number' ? dimVal : undefined;
-
-                diagnostics.details.collection_info = {
-                    vectors_count: (collectionInfo as any).vectors_count,
-                    indexed_vectors_count: collectionInfo.indexed_vectors_count || 0,
-                    points_count: collectionInfo.points_count,
-                    config: {
-                        distance: (collectionInfo.config?.params?.vectors as any)?.distance || 'unknown',
-                        size: dimVal ?? 'unknown',
-                    },
-                };
-
-                if (collectionInfo.points_count === 0) {
-                    diagnostics.status = 'empty_collection';
-                    diagnostics.errors.push('La collection existe mais ne contient aucun point indexé');
+                let collectionInfo: any = undefined;
+                if (countOffPath) {
+                    const outcome = await _getCollectionWithinBudget(qdrant, collectionName, collectionInfoBudgetMs);
+                    if (outcome.kind === 'resolved') {
+                        collectionInfo = outcome.info;
+                        collectionInfoResolved = true;
+                    } else if (outcome.kind === 'budget_expired') {
+                        collectionInfoDeferred = true;
+                        collectionInfoDeferredReason = `getCollection n'a pas répondu en ${collectionInfoBudgetMs} ms`;
+                    } else {
+                        throw outcome.error;
+                    }
                 } else {
-                    diagnostics.status = 'healthy';
+                    collectionInfo = await qdrant.getCollection(collectionName);
+                    collectionInfoResolved = true;
+                }
+
+                if (collectionInfoResolved) {
+                    const dimVal = (collectionInfo.config?.params?.vectors as any)?.size;
+                    collectionDimension = typeof dimVal === 'number' ? dimVal : undefined;
+
+                    diagnostics.details.collection_info = {
+                        vectors_count: (collectionInfo as any).vectors_count,
+                        indexed_vectors_count: collectionInfo.indexed_vectors_count || 0,
+                        points_count: collectionInfo.points_count,
+                        config: {
+                            distance: (collectionInfo.config?.params?.vectors as any)?.distance || 'unknown',
+                            size: dimVal ?? 'unknown',
+                        },
+                    };
+
+                    if (collectionInfo.points_count === 0) {
+                        diagnostics.status = 'empty_collection';
+                        diagnostics.errors.push('La collection existe mais ne contient aucun point indexé');
+                    } else {
+                        diagnostics.status = 'healthy';
+                    }
                 }
             } catch (collectionInfoError: any) {
-                diagnostics.errors.push(`Erreur lors de l'accès à la collection: ${collectionInfoError.message}`);
-                // #3217 — getCollection() triggers an exhaustive point count that can
-                // exceed the client timeout on large collections ("This operation was
-                // aborted"), reporting collection_error for a collection a real search
-                // traverses in under a second. Ground truth before declaring error:
-                // probe with a bounded read (scroll limit 1 — no vector, so no
-                // dependency on the embedding backend).
+                const collectionInfoErrorType = _classifyDeepDiagnosticError(collectionInfoError);
+                if (countOffPath && (collectionInfoErrorType === 'timeout' || collectionInfoErrorType === 'caller_cancelled')) {
+                    // #4880 criterion 2 — a timeout/abort on the exhaustive count is
+                    // the COUNT being slow (IO-bound), not a collection fault. Defer
+                    // it: the bounded read + search probe decide the verdict.
+                    collectionInfoDeferred = true;
+                    collectionInfoDeferredReason = collectionInfoError.message;
+                } else {
+                    diagnostics.errors.push(`Erreur lors de l'accès à la collection: ${collectionInfoError.message}`);
+                    // #3217 — getCollection() triggers an exhaustive point count that can
+                    // exceed the client timeout on large collections ("This operation was
+                    // aborted"), reporting collection_error for a collection a real search
+                    // traverses in under a second. Ground truth before declaring error:
+                    // probe with a bounded read (scroll limit 1 — no vector, so no
+                    // dependency on the embedding backend).
+                    try {
+                        await qdrant.scroll(collectionName, { limit: 1, with_payload: false, with_vector: false });
+                        diagnostics.status = 'degraded';
+                        diagnostics.details.collection_probe = 'readable';
+                        diagnostics.errors.push(
+                            'Statut rétrogradé collection_error→degraded : lecture de test réussie — ' +
+                            "seul l'appel de métadonnées (comptage exhaustif) a échoué, la collection reste accessible."
+                        );
+                    } catch (probeError: any) {
+                        const probeErrorType = _classifyDeepDiagnosticError(probeError);
+                        diagnostics.details.collection_probe_error_type = probeErrorType;
+                        if (probeErrorType === 'timeout') {
+                            diagnostics.status = 'degraded';
+                            diagnostics.details.collection_probe = 'timeout';
+                            diagnostics.errors.push(
+                                `Lecture bornée expirée après QDRANT_TIMEOUT_MS=${process.env.QDRANT_TIMEOUT_MS || '15000'}: ${probeError.message}`
+                            );
+                        } else {
+                            diagnostics.status = 'collection_error';
+                            diagnostics.details.collection_probe = 'unreadable';
+                            diagnostics.errors.push(`Lecture de test échouée: ${probeError.message}`);
+                        }
+                    }
+                }
+            }
+
+            if (collectionInfoDeferred) {
+                // #4880 criterion 2 — the count is IO-bound, not a health signal.
+                // Record the approximation, then ONE bounded read (with the vector,
+                // so the dimension can feed the search probe) decides readability.
+                diagnostics.details.collection_info = {
+                    status: 'io_bound_pending',
+                    budget_ms: collectionInfoBudgetMs,
+                };
+                diagnostics.warnings.push(
+                    `Comptage exact des points non obtenu dans le budget ${collectionInfoBudgetMs} ms ` +
+                    `(IO-bound, pas une panne) : ${collectionInfoDeferredReason}. ` +
+                    'Le comptage exhaustif reste hors du chemin critique du diagnostic : ' +
+                    'la lecture bornée ci-dessous et la sonde de recherche décident du statut.'
+                );
                 try {
-                    await qdrant.scroll(collectionName, { limit: 1, with_payload: false, with_vector: false });
-                    diagnostics.status = 'degraded';
+                    const probeResult: any = await qdrant.scroll(collectionName, { limit: 1, with_payload: false, with_vector: true });
                     diagnostics.details.collection_probe = 'readable';
-                    diagnostics.errors.push(
-                        'Statut rétrogradé collection_error→degraded : lecture de test réussie — ' +
-                        "seul l'appel de métadonnées (comptage exhaustif) a échoué, la collection reste accessible."
-                    );
+                    const probePoints: any[] = Array.isArray(probeResult)
+                        ? probeResult
+                        : (probeResult?.points || probeResult?.result?.points || []);
+                    // An unfiltered limit-1 read that returns NO point means the
+                    // collection is empty — same verdict as the in-budget count of 0,
+                    // never a green (#3257).
+                    if (probePoints.length === 0) {
+                        diagnostics.status = 'empty_collection';
+                        diagnostics.errors.push('La collection existe mais ne contient aucun point indexé');
+                    } else {
+                        diagnostics.status = 'healthy';
+                    }
+                    const firstVector = probePoints[0]?.vector;
+                    // Plain number[] only — a named-vector object leaves the dimension
+                    // unknown, and the search probe reports 'skipped'.
+                    if (Array.isArray(firstVector) && firstVector.length > 0) {
+                        collectionDimension = firstVector.length;
+                    }
                 } catch (probeError: any) {
-                    diagnostics.status = 'collection_error';
-                    diagnostics.details.collection_probe = 'unreadable';
-                    diagnostics.errors.push(`Lecture de test échouée: ${probeError.message}`);
+                    const probeErrorType = _classifyDeepDiagnosticError(probeError);
+                    diagnostics.details.collection_probe_error_type = probeErrorType;
+                    if (probeErrorType === 'timeout') {
+                        diagnostics.status = 'degraded';
+                        diagnostics.details.collection_probe = 'timeout';
+                        diagnostics.errors.push(
+                            `Lecture bornée expirée après QDRANT_TIMEOUT_MS=${process.env.QDRANT_TIMEOUT_MS || '15000'}: ${probeError.message}`
+                        );
+                    } else {
+                        diagnostics.status = 'collection_error';
+                        diagnostics.details.collection_probe = 'unreadable';
+                        diagnostics.errors.push(`Lecture de test échouée: ${probeError.message}`);
+                    }
+                }
+            }
+
+            // #4880 — diagnose must TIME the search path, not only the metadata path.
+            // Measured 23/11: `roosync_search(action:"diagnose")` reported status=healthy
+            // in 1.1 s while a real semantic search was KO after 52 s — diagnose never
+            // exercised the search path, so a green verdict hid an out-of-budget index.
+            // Run a bounded nearest probe (limit 1, no payload, ANN) and degrade the
+            // verdict when it is slow / times out / errors.
+            if (diagnostics.status === 'healthy') {
+                if (typeof collectionDimension !== 'number') {
+                    diagnostics.details.search_probe = 'skipped';
+                } else {
+                    const rawTimeoutMs = parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10);
+                    const probeTimeoutMs = Number.isFinite(rawTimeoutMs) ? Math.min(rawTimeoutMs, 30000) : 30000;
+                    const probeTimeoutSec = Math.ceil(probeTimeoutMs / 1000);
+                    const rawSlowThresholdMs = parseInt(process.env.DIAGNOSE_SEARCH_PROBE_SLOW_MS || '5000', 10);
+                    const slowThresholdMs = Number.isFinite(rawSlowThresholdMs) ? rawSlowThresholdMs : 5000;
+
+                    // Fresh random unit vector on every call: a repeated diagnose must
+                    // not be served from a cache — the query vector changes each time.
+                    const probeVector: number[] = new Array(collectionDimension);
+                    let squaredNorm = 0;
+                    for (let i = 0; i < collectionDimension; i++) {
+                        const value = Math.random() * 2 - 1;
+                        probeVector[i] = value;
+                        squaredNorm += value * value;
+                    }
+                    const norm = Math.sqrt(squaredNorm) || 1;
+                    const normalisedVector = probeVector.map(v => v / norm);
+
+                    // #4880: the probe runs on the same client the real searches use
+                    // (ms#1892) — its abort sits above the server budget, so a slow
+                    // search is timed by the server, not cut at QDRANT_TIMEOUT_MS.
+                    // QDRANT_SEARCH_TIMEOUT_ALIGN=0 keeps the shared client.
+                    const searchClientTimeoutMs = resolveSearchClientTimeoutMs();
+                    const probeClient = searchClientTimeoutMs === null
+                        ? qdrant
+                        : getQdrantClient({ timeoutMs: searchClientTimeoutMs });
+                    const probeStartedAt = Date.now();
+                    try {
+                        await probeClient.query(collectionName, {
+                            query: { nearest: normalisedVector },
+                            limit: 1,
+                            with_payload: false,
+                            params: { exact: false },
+                            timeout: probeTimeoutSec
+                        });
+                        const elapsedMs = Date.now() - probeStartedAt;
+                        diagnostics.details.search_probe_ms = elapsedMs;
+                        if (elapsedMs > slowThresholdMs) {
+                            diagnostics.status = 'degraded';
+                            diagnostics.details.search_probe = 'slow';
+                            diagnostics.warnings.push(
+                                `Sonde de recherche bornée lente : ${elapsedMs} ms au-delà du seuil ${slowThresholdMs} ms`
+                            );
+                            diagnostics.details.search_probe_recommendation =
+                                `La latence de lecture est côté serveur (Qdrant) : une recherche vectorielle bornée ` +
+                                `(limit 1) a mis ${elapsedMs} ms pour un seuil de ${slowThresholdMs} ms. ` +
+                                "NE PAS réinitialiser la collection sur ce verdict — la latence serveur n'est pas une corruption ; " +
+                                'mesurez la charge Qdrant avant toute action sur la collection.';
+                        } else {
+                            diagnostics.details.search_probe = 'service-grade';
+                        }
+                    } catch (searchProbeError: any) {
+                        const elapsedMs = Date.now() - probeStartedAt;
+                        diagnostics.details.search_probe_ms = elapsedMs;
+                        const probeErrorType = _classifyDeepDiagnosticError(searchProbeError);
+                        // #4880: with the aligned client the SERVER budget fires first —
+                        // Qdrant answers 500 "Internal Server Error" and the reason
+                        // ("Operation 'Search' timed out") lives only in data.status.error.
+                        // That is the probe's own budget expiring, not a crash.
+                        const serverReason = qdrantServerReason(searchProbeError);
+                        const serverTimedOut = serverReason !== null && /timed out|timeout/i.test(serverReason);
+                        const probeErrorText = serverReason
+                            ? `${searchProbeError.message} — ${serverReason}`
+                            : searchProbeError.message;
+                        diagnostics.status = 'degraded';
+                        if (probeErrorType === 'timeout' || serverTimedOut) {
+                            diagnostics.details.search_probe = 'timeout';
+                            diagnostics.warnings.push(
+                                `Sonde de recherche bornée expirée après ${elapsedMs} ms (budget serveur ${probeTimeoutSec} s): ${probeErrorText}`
+                            );
+                            diagnostics.details.search_probe_recommendation =
+                                `La recherche vectorielle bornée a expiré après ${elapsedMs} ms (budget serveur ${probeTimeoutSec} s) : la latence de lecture est ` +
+                                "côté serveur (Qdrant). NE PAS réinitialiser la collection sur ce verdict — l'expiration n'est pas " +
+                                'une corruption ; mesurez la charge Qdrant avant toute action sur la collection.';
+                        } else {
+                            diagnostics.details.search_probe = 'error';
+                            diagnostics.warnings.push(
+                                `Sonde de recherche bornée échouée: ${probeErrorText}`
+                            );
+                            diagnostics.details.search_probe_recommendation =
+                                `La recherche vectorielle bornée a échoué (${probeErrorText}). ` +
+                                'NE PAS réinitialiser la collection sur ce seul verdict — vérifiez la latence et la charge du serveur Qdrant.';
+                        }
+                    }
                 }
             }
         } else if (getCollectionsSucceeded) {
@@ -576,8 +849,8 @@ export async function handleDiagnoseSemanticIndex(
     // never hides WHICH layer failed: a deep-diagnostics abort with qdrant=healthy
     // and embeddings=healthy means the backends are fine — only the requested deep
     // pass did not run to completion.
-    const infraConn = (v: unknown): 'healthy' | 'failed' | 'unknown' =>
-        v === 'success' ? 'healthy' : v === 'failed' ? 'failed' : 'unknown';
+    const infraConn = (v: unknown): 'healthy' | 'degraded' | 'failed' | 'unknown' =>
+        v === 'success' ? 'healthy' : v === 'timeout' ? 'degraded' : v === 'failed' ? 'failed' : 'unknown';
     diagnostics.infrastructure_status = {
         qdrant: infraConn(diagnostics.details.qdrant_connection),
         embeddings: infraConn(diagnostics.details.openai_connection),
@@ -601,11 +874,27 @@ export async function handleDiagnoseSemanticIndex(
             'roosync_indexing action=reset puis rebuild_task_index.'
         );
     }
-    if (diagnostics.details.collection_probe === 'readable') {
+    if (diagnostics.details.collection_probe === 'timeout') {
+        recommendations.push(
+            'Les métadonnées et la lecture bornée (scroll limit 1) ont expiré. '
+            + 'Indisponibilité temporaire ou charge Qdrant possible ; la lisibilité durable et la corruption ne sont pas établies. '
+            + `Le budget actuel est QDRANT_TIMEOUT_MS=${process.env.QDRANT_TIMEOUT_MS || '15000'} ; `
+            + 'mesurer la latence Qdrant avant de l\'augmenter. Ne pas réinitialiser la collection sur ce seul verdict.'
+        );
+    }
+    if (diagnostics.details.collection_probe === 'readable' &&
+        diagnostics.details.collection_info?.status !== 'io_bound_pending') {
+        // #4880 criterion 2 — the io_bound case is already explained by its warning
+        // and may end `healthy`: keep the "healthy = 0 recommendations" contract.
         recommendations.push(
             "L'appel de métadonnées (comptage exhaustif des points) a échoué, mais une lecture réelle " +
             'réussit — la recherche sémantique reste opérationnelle, aucune action requise sur la collection.'
         );
+    }
+    // #4880 — the bounded search probe verdict (slow / timeout / error) carries its own
+    // recommendation: server-side read latency, and explicitly NO reset of the collection.
+    if (diagnostics.details.search_probe_recommendation) {
+        recommendations.push(diagnostics.details.search_probe_recommendation as string);
     }
     if (diagnostics.details.openai_connection === 'failed') {
         // #2766: route the recommendation by root cause to kill the false-positive
@@ -637,6 +926,17 @@ export async function handleDiagnoseSemanticIndex(
     }
     if (diagnostics.details.qdrant_connection === 'failed') {
         recommendations.push('Vérifiez la configuration Qdrant (URL, clé API, connectivité réseau)');
+    }
+    // #4880 — the collection listing expired. Measured case: a slow but WORKING
+    // Qdrant, where the config/key lead was a false one. A host that never answers
+    // gives the same sign, hence /healthz first to tell the two apart.
+    if (diagnostics.details.qdrant_connection === 'timeout') {
+        recommendations.push(
+            `Le listage des collections Qdrant a expiré après ${diagnostics.details.qdrant_list_ms} ms. ` +
+            'Un serveur Qdrant lent (cas mesuré #4880) et un hôte qui ne répond pas donnent ce même signe : ' +
+            'interrogez GET /healthz du serveur pour trancher avant de soupçonner la configuration. ' +
+            "NE PAS réinitialiser la collection sur ce seul verdict (une expiration n'est pas une corruption)."
+        );
     }
     if (diagnostics.details.dimension_check?.collection_matches_live === false) {
         recommendations.push(

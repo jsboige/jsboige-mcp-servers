@@ -15,11 +15,15 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // Mock QdrantClient and OpenAI clients using hoisting to avoid initialization order issues
 // Matching the pattern from search-semantic.tool.test.ts
-const { mockQdrantClient, mockOpenAIClient } = vi.hoisted(() => ({
+const { mockQdrantClient, mockOpenAIClient, qdrantClientRequests } = vi.hoisted(() => ({
+	// #4880: every getQdrantClient(opts) call, to assert which client the probe used
+	qdrantClientRequests: [] as Array<{ timeoutMs?: number } | undefined>,
 	mockQdrantClient: {
 		getCollections: vi.fn(),
 		getCollection: vi.fn(),
-		scroll: vi.fn()
+		scroll: vi.fn(),
+		// #4880 — bounded search probe (diagnose times the real search path)
+		query: vi.fn()
 	},
 	mockOpenAIClient: {
 		embeddings: {
@@ -31,7 +35,10 @@ const { mockQdrantClient, mockOpenAIClient } = vi.hoisted(() => ({
 // Mock the qdrant service module - return mock instance directly
 // Path: from __tests__/ go up 3 levels to reach src/, then services/
 vi.mock('../../../services/qdrant.js', () => ({
-	getQdrantClient: () => mockQdrantClient,
+	getQdrantClient: (opts?: { timeoutMs?: number }) => {
+		qdrantClientRequests.push(opts);
+		return mockQdrantClient;
+	},
 	resetQdrantClient: vi.fn()
 }));
 
@@ -81,6 +88,9 @@ describe('diagnose-index.tool (unit tests)', () => {
 		mockOpenAIClient.embeddings.create.mockResolvedValue({
 			data: [{ embedding: new Array(1536).fill(0.1) }]
 		});
+		// #4880 — the bounded search probe must succeed by default, otherwise every
+		// existing healthy-path test would degrade on the probe.
+		mockQdrantClient.query.mockResolvedValue({ points: [] });
 	};
 
 	beforeEach(() => {
@@ -317,6 +327,68 @@ describe('diagnose-index.tool (unit tests)', () => {
 		});
 	});
 
+	// ============================================================
+	// #4880 — getCollections timeout is SERVER LATENCY, not connection_failed.
+	// Measured 23/11 13:10Z: `getCollections` hit the client timeout (~15 s,
+	// "This operation was aborted") on a slow but WORKING Qdrant. diagnose
+	// reported `connection_failed` + "Vérifiez la configuration Qdrant (URL,
+	// clé API, connectivité réseau)" → agents were sent to re-check a
+	// healthy config.
+	// ============================================================
+
+	describe('#4880 — getCollections timeout is server latency, not connection_failed', () => {
+		beforeEach(() => {
+			// The incident shape: a raw AbortError reaching the handler. Inside
+			// diagnose nobody cancels the call — the CLIENT timed out.
+			mockQdrantClient.getCollections.mockRejectedValue(
+				Object.assign(new Error('This operation was aborted'), { name: 'AbortError' })
+			);
+		});
+
+		it('reports degraded (NOT connection_failed) when the collection listing aborts', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.details.qdrant_connection).toBe('timeout');
+			expect(typeof parsed.details.qdrant_list_ms).toBe('number');
+			expect(parsed.infrastructure_status.qdrant).toBe('degraded');
+		});
+
+		it('reports the elapsed listing time in errors', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.errors.some((e: string) => e.includes('Listage des collections expiré'))).toBe(true);
+			expect(parsed.errors.some((e: string) => e.includes(`${parsed.details.qdrant_list_ms} ms`))).toBe(true);
+		});
+
+		it('routes the recommendation to server latency and forbids a collection reset', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			// The false lead: a config/key/network check on a healthy Qdrant.
+			expect(parsed.recommendations.some((r: string) => r.includes('URL, clé API'))).toBe(false);
+			expect(parsed.recommendations.some((r: string) => r.includes('NE PAS réinitialiser'))).toBe(true);
+		});
+
+		it('still collects the OpenAI information after the listing timeout', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.openai_connection).toBe('success');
+			expect(mockOpenAIClient.embeddings.create).toHaveBeenCalled();
+		});
+
+		it('keeps connection_failed for a non-abort failure (ECONNREFUSED)', async () => {
+			mockQdrantClient.getCollections.mockRejectedValue(new Error('ECONNREFUSED'));
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.status).toBe('connection_failed');
+			expect(parsed.details.qdrant_connection).toBe('failed');
+			expect(parsed.recommendations).toContain(
+				'Vérifiez la configuration Qdrant (URL, clé API, connectivité réseau)'
+			);
+		});
+	});
+
 	describe('collection access error scenario', () => {
 		beforeEach(() => {
 			// Set up this scenario's mocks (override defaults)
@@ -353,6 +425,10 @@ describe('diagnose-index.tool (unit tests)', () => {
 	// client timeout, "This operation was aborted") while a real read succeeds
 	// in under a second — diagnose must not report collection_error for a
 	// collection that is actually readable.
+	// NOTE (#4880 criterion 2): the abort/timeout signature used below now routes
+	// through the io_bound_pending path (count off the critical path), not the
+	// #3217 downgrade — the non-timeout (e.g. 404/500) path still uses #3217 and
+	// is covered by 'collection access error scenario'.
 	// ============================================================
 
 	describe('#3217 — probe-gated collection status', () => {
@@ -364,28 +440,35 @@ describe('diagnose-index.tool (unit tests)', () => {
 			mockQdrantClient.getCollection.mockRejectedValue(new Error('This operation was aborted'));
 		});
 
-		it('downgrades to degraded when a bounded real read succeeds (metadata timeout, collection fine)', async () => {
-			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+		it('keeps the count off the verdict when a bounded real read succeeds (count IO-bound, not a fault)', async () => {
+			mockQdrantClient.scroll.mockResolvedValue({ points: [{ id: 'p1' }] });
 
 			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
 
-			expect(parsed.status).toBe('degraded');
+			// #4880 criterion 2 — an abort/timeout on getCollection is now recorded as
+			// io_bound_pending (warning), never as an error: the count alone does not
+			// downgrade. No vector in the probe result ⇒ dimension unknown ⇒ search
+			// probe 'skipped', status healthy.
+			expect(parsed.details.collection_info.status).toBe('io_bound_pending');
 			expect(parsed.details.collection_probe).toBe('readable');
-			// Self-consistency restored: no more collection_error while the connection
+			expect(parsed.warnings.some((w: string) => w.includes('IO-bound, pas une panne'))).toBe(true);
+			expect(parsed.errors).toEqual([]);
+			expect(parsed.details.search_probe).toBe('skipped');
+			expect(parsed.status).toBe('healthy');
+			// Self-consistency: no more collection_error while the connection
 			// succeeded and the collection exists.
 			expect(parsed.details.qdrant_connection).toBe('success');
 			expect(parsed.details.collection_exists).toBe(true);
-			expect(parsed.errors.some((e: string) => e.includes('collection_error→degraded'))).toBe(true);
 		});
 
-		it('probes with a bounded scroll (limit 1, no payload, no vector)', async () => {
+		it('probes with a bounded scroll (limit 1, no payload, WITH the vector for the dimension)', async () => {
 			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
 
 			await handleDiagnoseSemanticIndex(conversationCache);
 
 			expect(mockQdrantClient.scroll).toHaveBeenCalledWith(
 				'test-roo-state-manager',
-				{ limit: 1, with_payload: false, with_vector: false }
+				{ limit: 1, with_payload: false, with_vector: true }
 			);
 		});
 
@@ -399,12 +482,52 @@ describe('diagnose-index.tool (unit tests)', () => {
 			expect(parsed.errors.some((e: string) => e.includes('Lecture de test échouée'))).toBe(true);
 		});
 
-		it('recommends no collection action when readable despite metadata failure', async () => {
+		it('reports a timed-out bounded read without claiming corruption', async () => {
+			const originalTimeout = process.env.QDRANT_TIMEOUT_MS;
+			process.env.QDRANT_TIMEOUT_MS = '23450';
+			try {
+				const timeoutError: any = new Error('This operation was aborted');
+				timeoutError.name = 'QdrantClientTimeoutError';
+				mockQdrantClient.scroll.mockRejectedValue(timeoutError);
+
+				const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+				expect(parsed.status).toBe('degraded');
+				expect(parsed.details.collection_probe).toBe('timeout');
+				expect(parsed.details.collection_probe_error_type).toBe('timeout');
+				expect(parsed.errors.some((e: string) => e.includes('QDRANT_TIMEOUT_MS=23450'))).toBe(true);
+				expect(parsed.recommendations.some((r: string) => r.includes('QDRANT_TIMEOUT_MS=23450'))).toBe(true);
+				expect(parsed.recommendations.some((r: string) => r.includes('Ne pas réinitialiser'))).toBe(true);
+				expect(parsed.recommendations.some((r: string) => r.includes('action=reset'))).toBe(false);
+			} finally {
+				if (originalTimeout === undefined) delete process.env.QDRANT_TIMEOUT_MS;
+				else process.env.QDRANT_TIMEOUT_MS = originalTimeout;
+			}
+		});
+
+		it('reports empty_collection, never healthy, when the deferred bounded read returns NO point', async () => {
 			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
 
 			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
 
-			expect(parsed.recommendations.some((r: string) => r.includes('recherche sémantique reste opérationnelle'))).toBe(true);
+			// Same verdict as the in-budget count of 0 (#3257: no false green).
+			expect(parsed.details.collection_info.status).toBe('io_bound_pending');
+			expect(parsed.details.collection_probe).toBe('readable');
+			expect(parsed.status).toBe('empty_collection');
+			expect(parsed.errors).toContain('La collection existe mais ne contient aucun point indexé');
+		});
+
+		it('recommends no collection action when readable despite metadata failure', async () => {
+			mockQdrantClient.scroll.mockResolvedValue({ points: [{ id: 'p1' }] });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			// #4880 criterion 2 — the abort path is io_bound now: the guidance rides
+			// the warning instead of a recommendation, and no collection action is
+			// suggested.
+			expect(parsed.warnings.some((w: string) => w.includes('IO-bound, pas une panne'))).toBe(true);
+			expect(parsed.recommendations.some((r: string) => r.includes('réellement inaccessible'))).toBe(false);
+			expect(parsed.recommendations.some((r: string) => r.includes('action=reset'))).toBe(false);
 		});
 
 		it('recommends Qdrant-side action when genuinely unreadable', async () => {
@@ -413,6 +536,157 @@ describe('diagnose-index.tool (unit tests)', () => {
 			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
 
 			expect(parsed.recommendations.some((r: string) => r.includes('réellement inaccessible'))).toBe(true);
+		});
+	});
+
+	// ============================================================
+	// #4880 criterion 2 — the exhaustive count is off the critical path.
+	// Measured on ai-01 (23/11): getCollection() on the 15 M-point
+	// conversation collection can burn the whole client timeout (~15 s)
+	// BEFORE anything else runs, and a failure there used to skip the
+	// #4880 search probe entirely (it needs collectionDimension, which
+	// only getCollection provided). Exact count = IO-bound metric, not a
+	// health signal.
+	// ============================================================
+
+	describe('#4880 criterion 2 — exact count off the diagnose critical path', () => {
+		it('bounds getCollection, records io_bound_pending and still times the search probe', async () => {
+			process.env.DIAGNOSE_COLLECTION_INFO_BUDGET_MS = '25';
+			// Never settles: only the budget timer can end the wait.
+			mockQdrantClient.getCollection.mockReturnValue(new Promise(() => {}));
+			mockQdrantClient.scroll.mockResolvedValue({
+				points: [{ id: 'p1', vector: new Array(1536).fill(0.01) }]
+			});
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.collection_info).toEqual({ status: 'io_bound_pending', budget_ms: 25 });
+			expect(parsed.warnings.some((w: string) => w.includes('IO-bound, pas une panne'))).toBe(true);
+			expect(parsed.warnings.some((w: string) => w.includes('25 ms'))).toBe(true);
+			expect(parsed.details.collection_probe).toBe('readable');
+			expect(mockQdrantClient.scroll).toHaveBeenCalledWith(
+				'test-roo-state-manager',
+				{ limit: 1, with_payload: false, with_vector: true }
+			);
+			// Dimension taken from the probe point's plain vector → the #4880 search
+			// probe runs on the real search path, and its fast answer keeps the verdict.
+			const [, queryArgs] = mockQdrantClient.query.mock.calls[0];
+			expect(queryArgs.query.nearest as number[]).toHaveLength(1536);
+			expect(parsed.details.search_probe).toBe('service-grade');
+			expect(parsed.status).toBe('healthy');
+			expect(parsed.errors).toEqual([]);
+		});
+
+		it('treats a getCollection timeout/abort as the COUNT being slow, not a failure', async () => {
+			const timeoutError: any = new Error('This operation was aborted');
+			timeoutError.name = 'QdrantClientTimeoutError';
+			mockQdrantClient.getCollection.mockRejectedValue(timeoutError);
+			mockQdrantClient.scroll.mockResolvedValue({
+				points: [{ id: 'p1', vector: new Array(1536).fill(0.01) }]
+			});
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.collection_info.status).toBe('io_bound_pending');
+			expect(parsed.warnings.some((w: string) => w.includes('IO-bound, pas une panne'))).toBe(true);
+			expect(parsed.errors).toEqual([]);
+			expect(parsed.details.collection_probe).toBe('readable');
+			expect(parsed.details.search_probe).toBe('service-grade');
+			expect(parsed.status).toBe('healthy');
+			// "healthy = 0 recommendations" stays true: the io_bound case is a warning.
+			expect(parsed.recommendations).toEqual([]);
+		});
+
+		it('keeps the #3217 path unchanged for a NON-timeout getCollection failure', async () => {
+			mockQdrantClient.getCollection.mockRejectedValue(new Error('Permission denied'));
+			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.collection_info).toBeUndefined();
+			expect(parsed.details.collection_probe).toBe('readable');
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.errors.some((e: string) => e.includes('collection_error→degraded'))).toBe(true);
+			expect(mockQdrantClient.scroll).toHaveBeenCalledWith(
+				'test-roo-state-manager',
+				{ limit: 1, with_payload: false, with_vector: false }
+			);
+			// Search probe stays gated as before: status is already degraded.
+			expect(parsed.details.search_probe).toBeUndefined();
+			expect(mockQdrantClient.query).not.toHaveBeenCalled();
+		});
+
+		it('leaves the dimension unknown when the probe vector is a named-vector object', async () => {
+			process.env.DIAGNOSE_COLLECTION_INFO_BUDGET_MS = '25';
+			mockQdrantClient.getCollection.mockReturnValue(new Promise(() => {}));
+			mockQdrantClient.scroll.mockResolvedValue({
+				points: [{ id: 'p1', vector: { content: new Array(1536).fill(0.01) } }]
+			});
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.collection_probe).toBe('readable');
+			expect(parsed.details.search_probe).toBe('skipped');
+			expect(parsed.details.search_probe_ms).toBeUndefined();
+			expect(parsed.details.dimension_check).toBeUndefined();
+			expect(mockQdrantClient.query).not.toHaveBeenCalled();
+			expect(parsed.status).toBe('healthy');
+		});
+
+		it('kill switch DIAGNOSE_COUNT_OFF_PATH=0 restores the unbounded await', async () => {
+			process.env.DIAGNOSE_COUNT_OFF_PATH = '0';
+			process.env.DIAGNOSE_COLLECTION_INFO_BUDGET_MS = '5';
+			// Resolves well after the budget would have expired: the await is unbounded.
+			mockQdrantClient.getCollection.mockImplementation(
+				() => new Promise(resolve => setTimeout(() => resolve({
+					vectors_count: 1,
+					indexed_vectors_count: 1,
+					points_count: 1,
+					config: { params: { vectors: { distance: 'Cosine', size: 1536 } } }
+				}), 40))
+			);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.collection_info.points_count).toBe(1);
+			expect(parsed.details.collection_info.status).toBeUndefined();
+			expect(parsed.warnings.some((w: string) => w.includes('IO-bound, pas une panne'))).toBe(false);
+			expect(parsed.status).toBe('healthy');
+		});
+
+		it('kill switch DIAGNOSE_COUNT_OFF_PATH=0 keeps the old #3217 gate on failure', async () => {
+			process.env.DIAGNOSE_COUNT_OFF_PATH = '0';
+			const abortError: any = new Error('This operation was aborted');
+			abortError.name = 'QdrantClientTimeoutError';
+			mockQdrantClient.getCollection.mockRejectedValue(abortError);
+			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			// Pre-fix behaviour exactly: #3217 downgrade to degraded, no io_bound_pending,
+			// profiled with the vectorless read, search probe not run.
+			expect(parsed.details.collection_info).toBeUndefined();
+			expect(parsed.details.collection_probe).toBe('readable');
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.errors.some((e: string) => e.includes('collection_error→degraded'))).toBe(true);
+			expect(mockQdrantClient.scroll).toHaveBeenCalledWith(
+				'test-roo-state-manager',
+				{ limit: 1, with_payload: false, with_vector: false }
+			);
+			expect(parsed.details.search_probe).toBeUndefined();
+		});
+
+		it('keeps the in-budget behaviour identical (exact counts, dimension, search probe)', async () => {
+			process.env.DIAGNOSE_COLLECTION_INFO_BUDGET_MS = '5000';
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.collection_info.points_count).toBe(100);
+			expect(parsed.details.collection_info.config.size).toBe(1536);
+			expect(parsed.warnings).toEqual([]);
+			expect(parsed.errors).toEqual([]);
+			expect(parsed.details.search_probe).toBe('service-grade');
+			expect(parsed.status).toBe('healthy');
 		});
 	});
 
@@ -1399,6 +1673,142 @@ describe('diagnose-index.tool (unit tests)', () => {
 
 			expect(parsed.details.openai_connection).toBe('success');
 			expect(parsed.details.openai_error_type).toBeUndefined();
+		});
+	});
+
+	// ============================================================
+	// #4880 — diagnose must TIME the search path.
+	// Measured 23/11: `roosync_search(action:"diagnose")` reported
+	// status=healthy in 1.1 s at 12:29Z while a real semantic search
+	// was KO after 52 s at 12:26Z. diagnose never exercised the
+	// search path (it read getCollection, and only on failure a
+	// scroll limit 1) → a false green. The fix times a bounded
+	// nearest probe (limit 1, no payload, ANN) and degrades the
+	// verdict when it is slow / times out / errors.
+	// ============================================================
+	describe('#4880 — bounded search probe', () => {
+		beforeEach(() => {
+			mockQdrantClient.query.mockResolvedValue({ points: [] });
+		});
+
+		it('reports service-grade when the bounded probe is fast (status stays healthy)', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('service-grade');
+			expect(parsed.status).toBe('healthy');
+			expect(typeof parsed.details.search_probe_ms).toBe('number');
+		});
+
+		it('probes with limit 1, no payload and a fresh normalised unit vector', async () => {
+			await handleDiagnoseSemanticIndex(conversationCache);
+
+			expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
+			const [collectionName, args] = mockQdrantClient.query.mock.calls[0];
+			expect(collectionName).toBe('test-roo-state-manager');
+			expect(args.limit).toBe(1);
+			expect(args.with_payload).toBe(false);
+			const vec = args.query.nearest as number[];
+			expect(vec).toHaveLength(1536);
+			const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
+			expect(norm).toBeCloseTo(1, 5);
+		});
+
+		it('degrades the verdict when the probe is slower than the threshold', async () => {
+			process.env.DIAGNOSE_SEARCH_PROBE_SLOW_MS = '20';
+			mockQdrantClient.query.mockImplementation(
+				() => new Promise((resolve) => setTimeout(() => resolve({ points: [] }), 60))
+			);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('slow');
+			expect(parsed.status).toBe('degraded');
+			expect(typeof parsed.details.search_probe_ms).toBe('number');
+			expect(parsed.details.search_probe_ms).toBeGreaterThan(20);
+		});
+
+		it('reports a timeout when the bounded probe expires', async () => {
+			const timeoutError: any = new Error('This operation was aborted');
+			timeoutError.name = 'QdrantClientTimeoutError';
+			mockQdrantClient.query.mockRejectedValue(timeoutError);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('timeout');
+			expect(parsed.status).toBe('degraded');
+		});
+
+		it('reports an error when the bounded probe fails for another reason', async () => {
+			mockQdrantClient.query.mockRejectedValue(new Error('boom'));
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('error');
+			expect(parsed.status).toBe('degraded');
+		});
+
+		// #4880: the production shape since ms#1892 — the server budget fires before
+		// the client abort, so the client throws a bare 500 "Internal Server Error"
+		// with the reason only in data.status.error.
+		const qdrantServerError = (reason: string) => Object.assign(new Error('Internal Server Error'), {
+			status: 500,
+			data: { status: { error: reason } }
+		});
+
+		it('labels the SERVER-side search timeout (500, reason in data.status.error) as a timeout', async () => {
+			mockQdrantClient.query.mockRejectedValue(qdrantServerError(
+				"Service internal error: 1 of 1 read operations failed:\n  Timeout error: Operation 'Search' timed out"
+			));
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('timeout');
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.warnings.some((w: string) => w.includes("Operation 'Search' timed out"))).toBe(true);
+			expect(parsed.details.search_probe_recommendation).toContain('NE PAS réinitialiser');
+		});
+
+		it('keeps a non-timeout server 500 as an error, with the server reason in the wording', async () => {
+			mockQdrantClient.query.mockRejectedValue(qdrantServerError('Service internal error: segment is not ready'));
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('error');
+			expect(parsed.warnings.some((w: string) => w.includes('segment is not ready'))).toBe(true);
+		});
+
+		it('runs the probe on the aligned search client (abort above the server budget)', async () => {
+			qdrantClientRequests.length = 0;
+
+			await handleDiagnoseSemanticIndex(conversationCache);
+
+			// default QDRANT_SEARCH_TIMEOUT_MS=30000 → client abort 35 000 ms (ms#1892)
+			expect(qdrantClientRequests).toContainEqual({ timeoutMs: 35000 });
+			expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
+		});
+
+		it('reports the measured elapsed time, not the server budget, when the probe expires', async () => {
+			const timeoutError: any = new Error('This operation was aborted');
+			timeoutError.name = 'QdrantClientTimeoutError';
+			mockQdrantClient.query.mockRejectedValue(timeoutError);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			const warning = parsed.warnings.find((w: string) => w.startsWith('Sonde de recherche bornée expirée'));
+			expect(warning).toContain(`après ${parsed.details.search_probe_ms} ms (budget serveur 30 s)`);
+		});
+
+		it('kill switch QDRANT_SEARCH_TIMEOUT_ALIGN=0 keeps the probe on the shared client', async () => {
+			qdrantClientRequests.length = 0;
+			process.env.QDRANT_SEARCH_TIMEOUT_ALIGN = '0';
+			try {
+				await handleDiagnoseSemanticIndex(conversationCache);
+			} finally {
+				delete process.env.QDRANT_SEARCH_TIMEOUT_ALIGN;
+			}
+
+			expect(qdrantClientRequests.some(opts => opts?.timeoutMs !== undefined)).toBe(false);
+			expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
 		});
 	});
 });

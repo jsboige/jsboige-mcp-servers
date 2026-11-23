@@ -4,6 +4,8 @@
  * get directional signals for remediation instead of generic messages.
  */
 
+import { effectiveQdrantUrl } from '../../services/qdrant-url.js';
+
 /** Classified failure modes for search operations */
 export type FailureMode =
 	| 'embedding_unreachable'    // POST embedding fail → service down or DNS
@@ -106,7 +108,9 @@ export function isTimeoutLikeError(error: unknown): boolean {
  * Timeout: 5 seconds (short, for diagnostic only).
  */
 async function probeQdrantHealth(): Promise<{ ok: boolean; latencyMs: number; status?: number }> {
-	const qdrantUrl = process.env.QDRANT_URL || 'http://localhost:6333';
+	// #4880: same dialled URL as the client — a probe that resolves `localhost`
+	// on a saturated threadpool would fail with it and misread a healthy Qdrant.
+	const qdrantUrl = effectiveQdrantUrl(process.env.QDRANT_URL || 'http://localhost:6333');
 	const apiKey = process.env.QDRANT_API_KEY;
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), 5000);
@@ -138,10 +142,10 @@ async function probeQdrantHealth(): Promise<{ ok: boolean; latencyMs: number; st
 const QDRANT_OWN_SEARCH_TIMEOUT = /Operation '?Search'? timed out/i;
 
 // #4881: RFC1918 private ranges join the loopback exemption. Fleet executors
-// hit Qdrant directly on its native port (192.168.0.47:6333 measured on
-// po-204; same topology on the po-203 lane that reported the verdict) — no
-// reverse proxy sits in that path, so a timed-out search there is Qdrant
-// itself being slow, exactly like the #4352 localhost case.
+// hit Qdrant directly on its native port (synthetic example: 10.0.0.5:6333,
+// measured on po-204) — no reverse proxy sits in that path, so a timed-out
+// search there is Qdrant itself being slow, exactly like the #4352 localhost
+// case.
 function isPrivateLanHost(host: string): boolean {
 	if (/^10\./.test(host)) return true;
 	const m = /^172\.(\d+)\./.exec(host);
@@ -172,17 +176,36 @@ function qdrantHasNoProxyInPath(errorMsg: string): boolean {
  * Returns { ok: false } when the POST itself fails/aborts (the proxy-drop
  * signature), and null when the probe cannot run (listing failure, no
  * collections, malformed body): no proof either way.
+ *
+ * Follow-ups c.7090296934: (a) kill-switch QDRANT_LIGHT_POST_PROBE=0 (fleet
+ * convention: the fix is the default, the env var exists only to turn it
+ * off); (b) the caller bounds the probe by the time left before the
+ * codebase_search global deadline — otherwise the worst case (5 s listing +
+ * 10 s scroll) stacks after the search abort and the deadline response wins,
+ * losing the proxy/backend distinction.
  */
-async function probeLightPost(): Promise<{ ok: boolean; latencyMs: number } | null> {
-	const qdrantUrl = process.env.QDRANT_URL || 'http://localhost:6333';
+async function probeLightPost(budgetMs?: number): Promise<{ ok: boolean; latencyMs: number } | null> {
+	if ((process.env.QDRANT_LIGHT_POST_PROBE ?? '').trim() === '0') return null;
+	// #4880: same dialled URL as the client — a probe that resolves `localhost`
+	// on a saturated threadpool would fail with it and misread a healthy Qdrant.
+	const qdrantUrl = effectiveQdrantUrl(process.env.QDRANT_URL || 'http://localhost:6333');
 	const apiKey = process.env.QDRANT_API_KEY;
 	const headers: Record<string, string> = { 'content-type': 'application/json' };
 	if (apiKey) headers['api-key'] = apiKey;
 
+	// (b) budget: listing min(5000, budget), scroll min(10000, what the listing
+	// did NOT consume). The remainder is measured from the ELAPSED time, never
+	// from the listing CAP — subtracting the cap (5000) from a 5000 ms budget
+	// left 0 for the scroll and silently skipped the probe. A budget below 50 ms
+	// means no useful probe — return null (no proof either way).
+	const probeStart = Date.now();
+	const listingBudget = typeof budgetMs === 'number' ? Math.min(5000, budgetMs) : 5000;
+	if (listingBudget < 50) return null;
+
 	let collectionName: string | undefined;
 	try {
 		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), 5000);
+		const timer = setTimeout(() => controller.abort(), listingBudget);
 		try {
 			const resp = await fetch(`${qdrantUrl}/collections`, { headers, signal: controller.signal });
 			let body: unknown = null;
@@ -200,8 +223,13 @@ async function probeLightPost(): Promise<{ ok: boolean; latencyMs: number } | nu
 	}
 	if (typeof collectionName !== 'string' || !collectionName) return null;
 
+	// The scroll gets what the listing left of the deadline budget, capped at 10 s.
+	const remainingBudget = typeof budgetMs === 'number' ? budgetMs - (Date.now() - probeStart) : 10000;
+	const scrollBudget = Math.min(10000, remainingBudget);
+	if (scrollBudget < 50) return null;
+
 	const controller = new AbortController();
-	const timer = setTimeout(() => controller.abort(), 10000);
+	const timer = setTimeout(() => controller.abort(), scrollBudget);
 	const start = Date.now();
 	try {
 		await fetch(`${qdrantUrl}/collections/${encodeURIComponent(collectionName)}/points/scroll`, {
@@ -253,6 +281,15 @@ export function unwrapTransportCause(error: unknown): { code: string; message: s
 }
 
 /**
+ * #4880: the reason Qdrant gave for a failed request, as the JS client carries
+ * it (`error.data.status.error`); null when the error has none.
+ */
+export function qdrantServerReason(error: unknown): string | null {
+	const reason = (error as any)?.data?.status?.error;
+	return typeof reason === 'string' && reason.trim() ? reason.trim() : null;
+}
+
+/**
  * Check if an error is an HTTP 5xx server error (eligible for circuit breaker).
  */
 function isHttpServerError(error: unknown): boolean {
@@ -267,9 +304,21 @@ function isHttpServerError(error: unknown): boolean {
  */
 export async function classifySearchError(
 	error: unknown,
-	operation: 'embedding' | 'search' | 'codebase_search'
+	operation: 'embedding' | 'search' | 'codebase_search',
+	/** #4881 follow-up (b): ms remaining before the caller's global deadline;
+	 * the light-POST probe is bounded inside it so the deadline response never
+	 * eats the classification. Undefined = no bound (roosync_search). */
+	probeBudgetMs?: number
 ): Promise<ClassifiedError> {
-	const errorMsg = error instanceof Error ? error.message : String(error);
+	const baseErrorMsg = error instanceof Error ? error.message : String(error);
+	// #4880: the Qdrant JS client (1.20) throws with the HTTP status text as its
+	// message ("Internal Server Error") and the server's reason in
+	// `data.status.error` — e.g. "Timeout error: Operation 'Search' timed out
+	// after 999ms" (measured ai-01 23/11). Without the reason, Qdrant's own
+	// search timeout matched none of the message tests below and fell to
+	// `unknown`; the #4352 QDRANT_OWN_SEARCH_TIMEOUT test never saw its text.
+	const qdrantReason = qdrantServerReason(error);
+	const errorMsg = qdrantReason ? `${baseErrorMsg}: ${qdrantReason}` : baseErrorMsg;
 	// #3344: undici sets no `.code` on "fetch failed" — the errno lives on `.cause`.
 	const unwrapped = unwrapTransportCause(error);
 	const errorCode = (error as any)?.code || unwrapped?.code || '';
@@ -374,6 +423,9 @@ export async function classifySearchError(
 		// (Qdrant's own "Operation 'Search' timed out", #4352) still enters.
 		const isEmbeddingSdkTimeout = /^request timed out\.?$/i.test(errorMsg);
 		if ((!isEmbeddingSdkTimeout && isTimeoutLikeError(error)) ||
+			// #4880: Qdrant's own search timeout arrives as a 500 whose message is
+			// only "Internal Server Error" — its reason (joined above) decides.
+			QDRANT_OWN_SEARCH_TIMEOUT.test(errorMsg) ||
 			errorStatus === 408 ||
 			isHttpServerError(error)) {
 			// Probe health endpoint to classify
@@ -392,7 +444,7 @@ export async function classifySearchError(
 					// dropped. The light-scroll probe decides; when it cannot
 					// run, the legacy proxy_drop verdict stands but stays
 					// unverified (the message says so).
-					const lightPost = await probeLightPost();
+					const lightPost = await probeLightPost(probeBudgetMs);
 					if (lightPost?.ok) {
 						return {
 							mode: 'qdrant_backend_slow',

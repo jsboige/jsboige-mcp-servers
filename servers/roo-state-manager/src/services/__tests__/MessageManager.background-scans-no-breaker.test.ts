@@ -47,6 +47,7 @@ const mocks = vi.hoisted(() => ({
   pgActive: true,
   wholeFails: false,
   wholeCalls: 0,
+  wholeOpts: [] as unknown[],
   inboxFails: false,
   inboxItems: [] as Array<Record<string, unknown>>,
   sharedPath: '',
@@ -63,8 +64,9 @@ vi.mock('../unified-store/roosync-channel-read.js', async (importOriginal) => {
   return {
     ...actual,
     getChannelPgReader: () => (mocks.pgActive ? { stub: true } : null),
-    readWholeChannelFromPg: async () => {
+    readWholeChannelFromPg: async (_reader: unknown, opts?: unknown) => {
       mocks.wholeCalls++;
+      mocks.wholeOpts.push(opts);
       return mocks.wholeFails ? null : [];
     },
     readChannelInboxFromPg: async () => (mocks.inboxFails ? null : mocks.inboxItems),
@@ -93,6 +95,7 @@ const ENV_KEYS = [
   'CHANNEL_PG_BREAKER_MS',
   'CHANNEL_PG_SWEEP_SLOW_MS',
   'CHANNEL_PG_REMINDER_BUDGET_MS',
+  'ROOSYNC_CHANNEL_SWEEP_BODYLESS',
 ] as const;
 
 const PG_MESSAGE = {
@@ -119,6 +122,7 @@ describe('#4731 lever (a) — background sweeps never fail the interactive inbox
     mocks.pgActive = true;
     mocks.wholeFails = false;
     mocks.wholeCalls = 0;
+    mocks.wholeOpts = [];
     mocks.inboxFails = false;
     mocks.inboxItems = [];
     mocks.sharedPath = mkdtempSync(join(tmpdir(), 'rsm-4731-'));
@@ -136,6 +140,7 @@ describe('#4731 lever (a) — background sweeps never fail the interactive inbox
     delete process.env.UNIFIED_STORE_PG_URL;
     delete process.env.CHANNEL_PG_SWEEP_SLOW_MS;
     delete process.env.CHANNEL_PG_REMINDER_BUDGET_MS;
+    delete process.env.ROOSYNC_CHANNEL_SWEEP_BODYLESS;
     resetChannelPgBreakerForTests();
 
     manager = new MessageManager(mocks.sharedPath);
@@ -280,5 +285,32 @@ describe('#4731 lever (a) — background sweeps never fail the interactive inbox
     expect(await manager.sendExpiryReminders()).toBe(0);
     expect(mocks.wholeCalls).toBe(1); // probed despite backoff + spent budget
     expect(channelPgBreakerState().reminderDeferred).toBe(0);
+  });
+
+  test('#4731 — both sweeps read the channel WITHOUT bodies by default (bodyChars: 0)', async () => {
+    // The bodies are 79 % of the full-pool payload (8.66 MB of 10.90 MB,
+    // measured po-204 23/11) and neither consumer reads `body`: cleanup
+    // decides on options.expires_at/auto_destruct, reminders on options +
+    // subject. The option must be asked for by BOTH sweep call sites.
+    setPgPrimaryEnv();
+    mocks.wholeFails = false;
+
+    await manager.cleanupExpiredMessages();
+    await manager.sendExpiryReminders();
+
+    expect(mocks.wholeCalls).toBe(2);
+    expect(mocks.wholeOpts).toEqual([{ bodyChars: 0 }, { bodyChars: 0 }]);
+  });
+
+  test('#4731 — kill-switch ROOSYNC_CHANNEL_SWEEP_BODYLESS=0 restores the full body (diagnosis only)', async () => {
+    // Fleet convention: the fix IS the default; the env var only turns it off.
+    setPgPrimaryEnv();
+    process.env.ROOSYNC_CHANNEL_SWEEP_BODYLESS = '0';
+    mocks.wholeFails = false;
+
+    await manager.cleanupExpiredMessages();
+
+    expect(mocks.wholeCalls).toBe(1);
+    expect((mocks.wholeOpts[0] as { bodyChars?: number }).bodyChars).toBeUndefined();
   });
 });
