@@ -434,8 +434,54 @@ def test_contested_only_is_a_verifiable_reply_not_an_unparsed_one(monkeypatch, t
     assert entry["result"] == "verify-reject"
     assert entry["exec_verdict"] == "contested-only"
     assert calls["kernels"] == 0 and calls["stops"] == 0
+    assert entry["contest"] == "maintained"
     assert calls["verify"][0]["contested"] == [
         {"cell": 1, "why": "Les corpus Ciqual et RecipeML sont absents."}]
+
+
+@pytest.mark.parametrize("contested, findings, want", [
+    ([{"cell": 2}], [{"cell": 10}], False),                # lifted: the reject moved
+    ([{"cell": 2}], [{"cell": 10}, {"cell": 2}], True),      # still rejected on the contest
+    ([{"cell": 2}, {"cell": 3}], [{"cell": 3}], True),      # one of two maintained
+    ([], [{"cell": 10}], True),                              # nothing identifiable: no proven lift
+    (["pas un dict", {"why": "sans cellule"}], [{"cell": 10}], True),
+])
+def test_contest_maintained_reads_the_cells(contested, findings, want):
+    assert D.contest_maintained(contested, findings) is want
+
+
+def test_a_lifted_contest_hands_the_new_findings_to_the_builder(monkeypatch, tmp_path):
+    """Fournée o20 (CoursIA#27742, 23/11): the builder contested cell 2 and edited nothing.
+    The verifier, reading the module sources for the first time, LIFTED cell 2 and rejected
+    on cell 10 instead. The old rule stopped the invocation on any reject after a contest,
+    so the new finding never reached the builder: the grain died on a finding it was never
+    shown (126 s, rc -1). A lifted contest continues the loop like any other reject."""
+    built = _nb(tmp_path)
+    contest = '```json\n{"cells":[],"contested":[{"cell":2,"why":"réimplémentation fidèle"}]}\n```'
+    new = [{"cell": 3, "severity": "major", "detail": "R2 inverse les coups avant le payoff"}]
+    calls = _fake_engine(monkeypatch, [contest, REVISION], [("reject", new), ("approve", [])])
+    rec = _rejected_rec()
+    _loop(_loop_args(revise_rounds=2), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-approved"
+    r0, r1 = rec["revisions"]
+    assert r0["exec_verdict"] == "contested-only" and r0["contest"] == "lifted"
+    assert calls["sk"][1]["stage"] == "6-revise+1"
+    assert "R2 inverse les coups avant le payoff" in calls["sk"][1]["prompt"]
+    assert calls["verify"][1]["findings"] == new and r1["result"] == "verify-approved"
+    assert calls["kernels"] == 1                       # none for the untouched draft, one after
+
+
+def test_a_lifted_contest_without_a_new_finding_still_stops(monkeypatch, tmp_path):
+    """A reject that names no finding gives the builder nothing to act on."""
+    built = _nb(tmp_path)
+    before = built.read_bytes()
+    contest = '```json\n{"cells":[],"contested":[{"cell":2,"why":"réimplémentation fidèle"}]}\n```'
+    calls = _fake_engine(monkeypatch, [contest], [("reject", [])])
+    rec = _rejected_rec()
+    _loop(_loop_args(revise_rounds=3), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-reject" and built.read_bytes() == before
+    assert len(rec["revisions"]) == 1 and "contest" not in rec["revisions"][0]
+    assert len(calls["sk"]) == 1 and calls["kernels"] == 0
 
 
 def test_a_verifier_can_resolve_a_contested_finding_without_an_edit(monkeypatch, tmp_path):

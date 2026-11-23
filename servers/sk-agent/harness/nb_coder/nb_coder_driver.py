@@ -7379,6 +7379,25 @@ async def revision_dotnet_api(pm, rec: dict, kname: str, exec_dir: Path, built_p
     return (g or {}).get("block") or ""
 
 
+def _cell_ids(items) -> set:
+    return {i.get("cell") for i in (items or []) if isinstance(i, dict)
+            and isinstance(i.get("cell"), int)}
+
+
+def contest_maintained(contested, findings) -> bool:
+    """Whether a verifier that re-judged an UNCHANGED draft still rejects on a cell the
+    builder CONTESTED. Read only by the stop rule of a contested-only round: a maintained
+    contest is final for the invocation (looping would ask the builder the same question
+    again, CoursIA#27288), while a reject whose contested cells were all LIFTED rests on
+    findings the builder has never seen and must be handed over. Measured fournée o20,
+    CoursIA#27742 (23/11): the builder contested cell 2; the verifier, reading the module
+    sources for the first time, lifted cell 2 and rejected on cell 10 instead — the old
+    rule stopped there and the new finding never reached the builder. No usable cell on
+    the contested side is NOT a proven lift: the reject stands (stop)."""
+    cells = _cell_ids(contested)
+    return not cells or bool(cells & _cell_ids(findings))
+
+
 async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path: Path,
                       kname: str, exec_dir: Path, conventions: str, create_mode: bool,
                       wt_path: Path, out_dir: Path) -> None:
@@ -7506,10 +7525,21 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         entry["elapsed_s"] = round(time.time() - t0, 1)
         done += 1
         if contested_only:
-            # The unchanged draft was independently judged once. Looping would ask the
-            # builder to contest the same findings again; a resumed invocation may add
-            # missing data or a new strategy before paying another revision.
-            break
+            # The unchanged draft was independently judged once more. A reject that still
+            # stands on a cell the builder CONTESTED is final for this invocation: looping
+            # would ask it to contest the same finding again (CoursIA#27288), and a resumed
+            # invocation may add missing data or a new strategy before paying another
+            # revision. A reject whose contested cells were all LIFTED is another matter:
+            # it rests on findings the builder has never seen, and the loop goes on to hand
+            # them over (fournée o20, CoursIA#27742 — contest_maintained).
+            out = [f for f in (rec.get("verify") or {}).get("findings") or []
+                   if isinstance(f, dict)]
+            if (not str(rec.get("verdict") or "").startswith("verify-") or not out):
+                break               # not re-judged, or nothing actionable: as before
+            entry["contest"] = ("maintained" if contest_maintained(entry.get("contested"), out)
+                                else "lifted")
+            if entry["contest"] == "maintained":
+                break
         if (rec.get("verdict") == "verify-reject"
                 and revise_round_extends(done, budget, cap, source_in,
                                          (rec.get("verify") or {}).get("source"),
