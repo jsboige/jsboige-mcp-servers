@@ -194,6 +194,22 @@ def test_prompt_scopes_the_verdict_to_the_deliverable():
     assert "PAR LE LIVRABLE" in p
 
 
+def test_prompt_fences_out_pr_stage_repo_artifacts():
+    """CoursIA#27440 (23/11): eight verify-rejects round after round on criteria the
+    ISSUE body lists but the HARNESS only satisfies at PR stage -- twin_pairs.d
+    registration with its first attestation, the twin's CATALOG-STATUS block. The
+    reseal runs after the integration commit, i.e. after the verifier's own verdict,
+    so no revision can ever clear those findings ("nothing-applied" rounds). The
+    prompt must fence those artifacts out like chain procedure, or every port on an
+    issue carrying them oscillates to death."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "artefacts d'intégration du dépôt" in p
+    assert "twin_pairs.d/" in p
+    assert "CATALOG-STATUS" in p
+    assert "APRÈS ton verdict" in p
+
+
 # ------------------------------------------------- call errors reach the trace (21/11)
 
 
