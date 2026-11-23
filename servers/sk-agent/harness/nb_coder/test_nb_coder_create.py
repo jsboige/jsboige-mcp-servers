@@ -836,3 +836,35 @@ def test_a_package_above_the_notebook_folder_is_part_of_the_material(tmp_path, m
     assert "nerve_b1(" in joined and "discrimination_verdict(" in joined
     block = D.local_module_block(mods)
     assert "Series/ict/nerve_discriminant.py" in block
+    # o8 regression (23/11, ICT grains #27737/#27740/#27742): with an ABSOLUTE
+    # source path — what production passes — `file` used to fall back to
+    # `p.as_posix()`, leaking `D:/dev/claudish/.tmp/…` into the prompt while the
+    # block's own header said « chemin relatif à la racine du worktree ».
+    (tmp_path / ".git").mkdir(exist_ok=True)
+    abs_mods = D.local_modules(str(nbdir / "T-Python.ipynb"))
+    abs_files = [m["file"] for m in abs_mods]
+    assert "Series/ict/nerve_discriminant.py" in abs_files, \
+        "an absolute input still yields a worktree-relative path"
+    assert not any(str(tmp_path) in f for f in abs_files), \
+        "no machine path leaks into the prompt"
+
+
+def test_a_module_block_is_bounded_and_names_the_rest():
+    """o8 (23/11): rendering every signature of every ancestor-resolved file
+    pushed stage-2 prompts to ~61k tokens, and the model's answers degraded to
+    unparseable 440-char stubs — every ICT grain died `stage2-short-segment`.
+    Six signatures per module name the material; the FILE carries the rest, and
+    the whole block stays under LOCAL_MODULE_BLOCK_CHAR_CAP (+ header/footer).
+    """
+    mods = [{"name": "ict.big", "file": "Series/ict/big.py",
+             "defs": [f"fn_{i}(x)" for i in range(10)]}]
+    blk = D.local_module_block(mods)
+    assert "fn_5(" in blk and "fn_6(" not in blk, "at most six signatures rendered"
+    assert "+4 autres" in blk, "the unrendered signatures are named, not silent"
+    many = [{"name": f"m{i}", "file": f"Series/ict/m{i}.py",
+             "defs": [f"fn_{i}_{j}(x, y=None, *, tol=1e-9, label='signature-longue-pour-forcer-la-troncature')"
+                      for j in range(6)]} for i in range(40)]
+    blk2 = D.local_module_block(many)
+    assert len(blk2) <= D.LOCAL_MODULE_BLOCK_CHAR_CAP + 700, \
+        "the block is bounded however many modules resolve"
+    assert "autres modules" in blk2, "truncated modules are named, not silent"

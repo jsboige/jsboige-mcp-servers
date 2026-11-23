@@ -1600,6 +1600,10 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
 LOCAL_MODULE_DEF_CAP = 24   # signatures listed per local module
 LOCAL_MODULE_FILE_CAP = 12  # files listed per imported package
 LOCAL_MODULE_TOTAL_CAP = 20  # entries across every import, prompt stays bounded
+LOCAL_MODULE_RENDER_DEF_CAP = 6   # signatures RENDERED per module in the prompt block
+                                   # (o8 ICT: 24x13 rendered signatures = ~61k-token stage-2
+                                   #  prompts, unparseable stub answers)
+LOCAL_MODULE_BLOCK_CHAR_CAP = 6000  # whole rendered block — the files carry the rest
 
 
 def _top_level_defs(p: Path) -> list[str]:
@@ -1691,21 +1695,69 @@ def local_modules(src_nb) -> list[dict]:
                 continue
             seen.add(key)
             out.append({"name": n,
-                        "file": p.name if p.parent == folder else key,
+                        "file": p.name if p.parent == folder
+                        else _worktree_rel(p),
                         "defs": _top_level_defs(p)})
             if len(out) >= LOCAL_MODULE_TOTAL_CAP:
                 return out
     return out
 
 
+def _worktree_rel(p: Path) -> str:
+    """`p` relative to its worktree root — NEVER the absolute machine path.
+
+    Measured 23/11 (o8, ICT grains): the ancestor-resolved files fell back to
+    `p.as_posix()`, i.e. `D:/dev/claudish/.tmp/nbst/o8/worktrees/…` leaked into
+    the prompt while its own header said « chemin relatif à la racine du
+    worktree ». The model was told one thing and shown another. Two anchors,
+    in order: the process cwd when `p` sits under it (a driver launched from
+    the worktree root — and every test that chdir's into its tmp repo), then
+    the first `.git` walking up (a FILE in a linked worktree, a dir in a main
+    checkout). Bare filename as the last resort.
+    """
+    try:
+        return p.resolve().relative_to(Path.cwd().resolve()).as_posix()
+    except ValueError:
+        pass
+    for d in (p.parent, *p.parent.parents):
+        if (d / ".git").exists():
+            try:
+                return p.relative_to(d).as_posix()
+            except ValueError:
+                break
+    return p.name
+
+
 def local_module_block(modules: list | None) -> str:
-    """Prompt block naming the source notebook's local modules. '' when none."""
+    """Prompt block naming the source notebook's local modules. '' when none.
+
+    Bounded on purpose (measured 23/11, fournée o8, grains ICT #27737/#27740/#27742):
+    rendering every signature of every ancestor-resolved file pushed the stage-2
+    prompt to ~61k tokens, and the model's answers degraded to unparseable stubs
+    (440-char replies, no JSON) — every ICT grain died `stage2-short-segment`.
+    Six signatures per module name the material; the FILE carries the rest and
+    `Read` is the declared instrument. The whole block stays under
+    LOCAL_MODULE_BLOCK_CHAR_CAP."""
     if not modules:
         return ""
     lines = []
+    total = 0
+    shown = 0
     for m in modules:
-        defs = ", ".join(m["defs"]) if m["defs"] else "(aucune fonction de premier niveau)"
-        lines.append(f"- `{m['file']}` — {defs}")
+        defs = m["defs"][:LOCAL_MODULE_RENDER_DEF_CAP]
+        more = len(m["defs"]) - len(defs)
+        s = ", ".join(defs) if defs else "(aucune fonction de premier niveau)"
+        if more > 0:
+            s += f" … +{more} autres dans le fichier"
+        line = f"- `{m['file']}` — {s}"
+        if total + len(line) > LOCAL_MODULE_BLOCK_CHAR_CAP:
+            rest = len(modules) - shown
+            lines.append(f"- … (+{rest} autres modules du même dossier — mêmes règles : "
+                         f"lire le fichier, ne rien inventer)")
+            break
+        lines.append(line)
+        total += len(line)
+        shown += 1
     return ("\n\nMODULES PYTHON LOCAUX DU DOSSIER SOURCE — ils sont DANS TON WORKTREE "
             "(chemin relatif à la racine du worktree), et ce carnet les importe :\n"
             + "\n".join(lines) +
