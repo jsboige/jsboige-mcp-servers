@@ -86,23 +86,25 @@ CHARS_PER_TOKEN = INCIDENT_CHARS / INCIDENT_TOKENS  # 3.8792...
 #: Output budget the engine reserves (vLLM checks prompt + max_tokens).
 MAX_GEN_TOKENS = 4_096
 
-#: The condensation contract the nb_coder seat entries declare
-#: (nb_coder_seat_entries.example.json, ms#1832): BALANCED preset, hot
-#: window 8, and a 16 000-char cap so the kernel outputs (~12 KB) ride the
-#: hot window in full.
+#: The condensation contract the nb_coder seat entries declare, verbatim
+#: (nb_coder_seat_entries.example.json, ms#1832): enabled + BALANCED preset,
+#: no overrides — BALANCED resolves to hot window 8 / 8 000-char cap
+#: (sk_context_condensation._PRESETS), so the replay rides the seat
+#: contract itself, never a bespoke variant.
 NBCODER_CONDENSATION = {
     "enabled": True,
     "preset": "balanced",
-    "tool_result_window": 8,
-    "max_tool_chars": 16_000,
 }
 
 #: Morphology defaults: one turn of ``ROUNDS`` update_cell rounds, each
 #: adding ~16 KB (call arguments + kernel output) to the request history —
-#: the growth that killed CoursIA#27027 at round ~62.
+#: the growth that killed CoursIA#27027 at round ~62. Kernel outputs are
+#: modeled at 6 000 chars, under the BALANCED 8 000-char cap, so the
+#: hot-window verbatim property holds under the real seat contract; the
+#: arguments carry the rest of the per-round growth.
 ROUNDS = 70
-ARGS_CHARS = 4_000
-RESULT_CHARS = 12_000
+ARGS_CHARS = 10_000
+RESULT_CHARS = 6_000
 
 INSTRUCTION = (
     "Construis le carnet demande cellule par cellule "
@@ -253,18 +255,19 @@ class _EngineHandler(BaseHTTPRequestHandler):
         messages = req.get("messages") or []
         blob, n_msgs, n_calls = _blob_of(messages)
         tokens = count_tokens(blob, per_message=n_msgs, per_tool_call=n_calls)
-        rec = EngineRecord(
-            index=len(self.state.requests),
-            chars=len(blob),
-            tokens=tokens,
-            instruction_seen=INSTRUCTION in blob,
-            full_rounds=[
-                r
-                for r in range(1, self.state.rounds_planned + 1)
-                if any(m.get("content") == tool_result(r) for m in messages)
-            ],
-        )
+        full_rounds = [
+            r
+            for r in range(1, self.state.rounds_planned + 1)
+            if any(m.get("content") == tool_result(r) for m in messages)
+        ]
         with self.state.lock:
+            rec = EngineRecord(
+                index=len(self.state.requests),
+                chars=len(blob),
+                tokens=tokens,
+                instruction_seen=INSTRUCTION in blob,
+                full_rounds=full_rounds,
+            )
             self.state.requests.append(rec)
         limit = self.state.max_model_len - self.state.max_gen_tokens
         if tokens > self.state.max_model_len:
@@ -300,7 +303,6 @@ class _EngineHandler(BaseHTTPRequestHandler):
                 },
             )
             return
-        _ = limit  # (kept for symmetry with the engine's check)
         last = _last_round_seen(messages)
         if last >= self.state.final_after:
             self._send(

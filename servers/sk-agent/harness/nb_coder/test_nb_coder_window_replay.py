@@ -96,10 +96,17 @@ def test_green_condensation_completes_under_the_window(report):
     # The instruction rode EVERY request verbatim.
     assert eng["instruction_every_request"]
 
-    # Hot window: the last TOOL_RESULT_WINDOW kernel outputs ride the final
-    # request in full; earlier ones were pruned (differential condensation).
+    # Hot window: the last BALANCED-window kernel outputs ride the final
+    # request in full (6 000-char payloads, under the preset's 8 000 cap);
+    # earlier ones were pruned (differential condensation). The window is
+    # read from the REAL resolver, not mirrored here.
+    from sk_context_condensation import CondensationConfig
+
+    hot_window = CondensationConfig.from_dict(
+        w.NBCODER_CONDENSATION
+    ).resolved().tool_result_window
     last = eng["last_request"]
-    hot = set(range(w.ROUNDS - w.NBCODER_CONDENSATION["tool_result_window"] + 1, w.ROUNDS + 1))
+    hot = set(range(w.ROUNDS - hot_window + 1, w.ROUNDS + 1))
     assert hot.issubset(set(last["full_rounds"])), last["full_rounds"]
     early = [r for r in last["full_rounds"] if r not in hot]
     assert len(early) < (w.ROUNDS - len(hot)), "no differential reduction"
