@@ -74,6 +74,11 @@ export function breakerOpenWindowMs(failures: number): number {
 // CIRCUIT_BREAKER_TIMEOUT_MS, so a re-entry landing just past that window
 // probes HALF_OPEN with exactly one batch — the breaker's own semantics.
 const UPSERT_RECOVERY_PAUSE_MS = CIRCUIT_BREAKER_TIMEOUT_MS + 5000;
+// #4879 review W1: a grown breaker window (up to 15 min) is waited out in
+// slices of at most this length, each followed by the g5 fence check and an
+// onProgress beat — the inactivity watchdog (default 180 s) must keep seeing a
+// live loop. No Qdrant call happens between slices.
+const UPSERT_RECOVERY_SLICE_MS = 60000;
 
 /**
  * #4352 (c.325): total wall-clock budget a single indexTask ATTEMPT may spend
@@ -768,8 +773,9 @@ export async function safeQdrantUpsert(points: PointStruct[], failureContext?: U
  * - The g5 inactivity fence is checked between every wait
  *   (`throwIfIndexingAborted`): a fenced run exits at its next checkpoint,
  *   exactly as before.
- * - `onProgress` fires on every re-entry, deliberately: the loop is alive and
- *   fence-checked, not hung. The watchdog keeps its authority over a probe
+ * - `onProgress` fires after every sleep slice (at most 60 s, #4879) and so
+ *   before every re-entry, deliberately: the loop is alive and fence-checked,
+ *   not hung. The watchdog keeps its authority over a probe
  *   that genuinely hangs (one upsert call stuck past the inactivity budget
  *   fires the fence → abort, unchanged).
  *
@@ -804,11 +810,15 @@ export async function safeQdrantUpsertWithWindowRecovery(
         // to allow its HALF_OPEN probe (+ margin), never less than one first window.
         const untilProbe = getCircuitBreakerState().msUntilHalfOpen + 5000;
         const pause = Math.min(Math.max(UPSERT_RECOVERY_PAUSE_MS, untilProbe), budget.remainingMs);
-        await new Promise(resolve => setTimeout(resolve, pause));
-        // g5 fence between waits — a fenced run must not sleep through its abort.
-        throwIfIndexingAborted(options, taskId);
-        // Alive + fence-checked: this is deliberate bounded waiting, not a hang.
-        options?.onProgress?.();
+        for (let slept = 0; slept < pause;) {
+            const slice = Math.min(UPSERT_RECOVERY_SLICE_MS, pause - slept);
+            await new Promise(resolve => setTimeout(resolve, slice));
+            slept += slice;
+            // g5 fence between waits — a fenced run must not sleep through its abort.
+            throwIfIndexingAborted(options, taskId);
+            // Alive + fence-checked: this is deliberate bounded waiting, not a hang.
+            options?.onProgress?.();
+        }
         success = await upsert(points, failureContext);
         budget.remainingMs -= Date.now() - iterStart;
         if (success) {

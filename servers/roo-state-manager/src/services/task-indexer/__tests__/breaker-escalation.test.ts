@@ -185,4 +185,54 @@ describe('#4879 — REAL breaker escalation against a stalled Qdrant', () => {
         expect(await pending).toBe(true);
         expect(stub).toHaveBeenCalledTimes(2);
     });
+
+    /** Trip, then fail three HALF_OPEN probes: the window grows 30 → 60 → 120 → 240 s. */
+    async function growWindowTo240s(mod: typeof import('../VectorIndexer.js')): Promise<void> {
+        mockUpsert.mockRejectedValue(http503());
+        for (let i = 0; i < 3; i++) await runUpsert(mod);
+        for (const w of [30_000, 60_000, 120_000]) {
+            vi.advanceTimersByTime(w + 1);
+            await runUpsert(mod);
+        }
+        expect(mod.getCircuitBreakerState().msUntilHalfOpen).toBe(240_000);
+    }
+
+    test('5. review W1: a grown window is waited out in ≤60 s slices — onProgress beats each slice, no re-entry in between', async () => {
+        const mod = await import('../VectorIndexer.js');
+        await growWindowTo240s(mod);
+
+        const onProgress = vi.fn();
+        const stub = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+        const budget: UpsertRecoveryBudget = { remainingMs: 600_000 };
+        const pending = mod.safeQdrantUpsertWithWindowRecovery(onePoint(), 't-slices', { onProgress } as any, budget, stub as any);
+
+        await vi.advanceTimersByTimeAsync(60_001);
+        expect(onProgress).toHaveBeenCalledTimes(1); // first beat well under the 180 s inactivity watchdog
+        expect(stub).toHaveBeenCalledTimes(1);       // still waiting: no Qdrant call
+        await vi.advanceTimersByTimeAsync(120_000);  // t ≈ 180 s
+        expect(onProgress).toHaveBeenCalledTimes(3);
+        expect(stub).toHaveBeenCalledTimes(1);
+        await vi.advanceTimersByTimeAsync(65_000);   // t ≈ 245 s = window + 5 s margin
+        expect(await pending).toBe(true);
+        expect(stub).toHaveBeenCalledTimes(2);
+        expect(onProgress).toHaveBeenCalledTimes(5); // 60 + 60 + 60 + 60 + 5
+    });
+
+    test('5b. review W1: a fence abort during a long wait stops at the next slice, not at the end of the window', async () => {
+        const mod = await import('../VectorIndexer.js');
+        await growWindowTo240s(mod);
+
+        const ac = new AbortController();
+        const stub = vi.fn().mockResolvedValue(false);
+        let outcome = 'pending';
+        mod.safeQdrantUpsertWithWindowRecovery(onePoint(), 't-fence', { signal: ac.signal } as any, { remainingMs: 600_000 }, stub as any)
+            .then(() => { outcome = 'resolved'; }, () => { outcome = 'rejected'; });
+
+        await vi.advanceTimersByTimeAsync(30_000);
+        ac.abort();
+        await vi.advanceTimersByTimeAsync(30_001);   // end of the first 60 s slice
+        await vi.advanceTimersByTimeAsync(0);
+        expect(outcome).toBe('rejected');            // pre-W1: still asleep until ~245 s
+        expect(stub).toHaveBeenCalledTimes(1);
+    });
 });
