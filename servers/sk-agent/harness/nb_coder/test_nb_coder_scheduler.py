@@ -11,8 +11,10 @@ from this directory."""
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -931,3 +933,27 @@ def test_queue_refuses_contradictory_resume(tmp_path, item, match):
                  encoding="utf-8")
     with pytest.raises(S.QueueError, match=match):
         S.load_queue(q)
+
+
+def test_refresh_gh_env_is_a_no_op_without_an_app(monkeypatch):
+    monkeypatch.delenv("NBCODER_GH_APP_ID", raising=False)
+    monkeypatch.delenv("NBCODER_GH_KEY", raising=False)
+    monkeypatch.setenv("GH_TOKEN", "keep")
+    S.refresh_gh_env("D:/CoursIA")
+    assert os.environ["GH_TOKEN"] == "keep"
+
+
+def test_refresh_gh_env_rebinds_from_the_mint(tmp_path, monkeypatch):
+    monkeypatch.setenv("NBCODER_GH_APP_ID", "1")
+    monkeypatch.setenv("NBCODER_GH_KEY", str(tmp_path / "k.pem"))
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"] = argv
+        return SimpleNamespace(returncode=0, stdout="ghs_new\n", stderr="")
+
+    monkeypatch.setattr(S.subprocess, "run", fake_run)
+    monkeypatch.setenv("GH_TOKEN", "stale")
+    S.refresh_gh_env(tmp_path)
+    assert os.environ["GH_TOKEN"] == "ghs_new"
+    assert "--quiet" in seen["argv"]
