@@ -53,7 +53,7 @@ export function getQdrantClient(options: { timeoutMs?: number } = {}): QdrantCli
     const qdrantConfig = { ...baseQdrantConfig(), timeout: baseTimeoutMs };
 
     client = new QdrantClient(qdrantConfig);
-    console.log(`Qdrant client initialized with URL: ${process.env.QDRANT_URL}, timeout: ${qdrantConfig.timeout}ms`);
+    console.log(`Qdrant client initialized with URL: ${qdrantConfig.url}, timeout: ${qdrantConfig.timeout}ms`);
   }
   return client;
 }

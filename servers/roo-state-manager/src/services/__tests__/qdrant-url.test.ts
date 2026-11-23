@@ -37,7 +37,8 @@ describe('effectiveQdrantUrl', () => {
         ['http://localhost:6333', 'http://127.0.0.1:6333'],
         ['http://localhost:6333/', 'http://127.0.0.1:6333/'],
         ['http://LOCALHOST:6333', 'http://127.0.0.1:6333'],
-        ['https://localhost', 'https://127.0.0.1'],
+        ['HTTP://localhost:6333', 'HTTP://127.0.0.1:6333'],
+        ['http://user:pw@localhost:6333', 'http://user:pw@127.0.0.1:6333'],
         ['http://localhost:6333/prefix', 'http://127.0.0.1:6333/prefix'],
     ])('dials %s as %s', (raw, expected) => {
         expect(effectiveQdrantUrl(raw)).toBe(expected);
@@ -50,6 +51,12 @@ describe('effectiveQdrantUrl', () => {
         'http://localhost.example.com:6333',
         'http://mylocalhost:6333',
         'http://[::1]:6333',
+        // TLS checks the certificate against the dialled host: a cert for the
+        // name `localhost` would fail once dialled as 127.0.0.1.
+        'https://localhost',
+        'https://localhost:6333',
+        // `localhost` outside the authority is never touched.
+        'http://10.0.0.5:6333/localhost?h=localhost',
     ])('leaves %s unchanged', (raw) => {
         expect(effectiveQdrantUrl(raw)).toBe(raw);
     });
