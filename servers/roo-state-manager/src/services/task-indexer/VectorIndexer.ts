@@ -9,7 +9,7 @@ import { extractChunksFromTask, extractChunksFromClaudeSession, splitChunk, Chun
 import { networkMetrics } from './QdrantHealthMonitor.js';
 import { GenericError, GenericErrorCode } from '../../types/errors.js';
 import { getDefaultLogger } from '../../utils/logger.js';
-import { loadIndexedHashes, appendIndexedHashes, clearIndexedHashLedgers } from './IndexedHashLedger.js';
+import { loadIndexedHashLedger, appendIndexedHashes, appendAbsentHashes, clearIndexedHashLedgers } from './IndexedHashLedger.js';
 
 type PointStruct = Schemas['PointStruct'];
 
@@ -1110,11 +1110,21 @@ async function preflightDedupByContentHash(
 ): Promise<{
     subChunks: Array<{ chunk: Chunk; contentHash: string }>;
     scrollFailed: boolean;
+    /** Sub-chunks skipped because the ledger lists their hash as present (v1.2: true hits). */
     ledgerHits: number;
     scrollBatches: number;
+    /** v1.2: unique hashes handed to the scroll this pass. */
+    scanned: number;
+    /** v1.2: of `scanned`, the hashes a PREVIOUS pass already found absent. */
+    rescanned: number;
+    /** v1.2: of `scanned`, the hashes scanned for the first time. */
+    newScan: number;
+    /** v1.2: unique hashes this pass's answered batches found absent. */
+    absent: number;
 }> {
-    const b2Stats = { scrollFailed: false, ledgerHits: 0, scrollBatches: 0 };
-    if (subChunks.length === 0) return { subChunks, ...b2Stats };
+    const b2Stats = { scrollFailed: false, ledgerHits: 0, scrollBatches: 0, scanned: 0, rescanned: 0, absent: 0 };
+    const b2Counters = () => ({ ...b2Stats, newScan: b2Stats.scanned - b2Stats.rescanned });
+    if (subChunks.length === 0) return { subChunks, ...b2Counters() };
 
     try {
         const qdrant = getQdrantClient();
@@ -1142,51 +1152,81 @@ async function preflightDedupByContentHash(
             // fully-indexed session, against a handful after this subtraction.
             // The subtraction is fail-SAFE: a ledger entry wrongly skipped is
             // re-checked by the post-embed dedup (#1985), never a lost chunk.
-            const ledger = await loadIndexedHashes(taskId);
-            const newHashes = [...new Set(entries.map(sc => sc.contentHash))]
-                .filter(h => !ledger.has(h));
-            b2Stats.ledgerHits += entries.length - newHashes.length;
+            const ledger = await loadIndexedHashLedger(taskId);
+            // v1.2: a TRUE ledger hit is a sub-chunk whose hash the ledger lists as
+            // present. Until v1.1 the counter was `entries − unique-after-ledger`,
+            // i.e. the true hits PLUS every duplicate sub-chunk of the session
+            // (measured on po-2028, 23/11: an EMPTY ledger printed `ledgerHits=1451`).
+            b2Stats.ledgerHits += entries.filter(sc => ledger.present.has(sc.contentHash)).length;
+            // v1.2: per-pass re-scan accounting. A hash a PREVIOUS pass already found
+            // absent is a RE-SCAN; one never scanned before is a new scan. Both are
+            // scrolled — an absent line is a measurement, never a skip decision.
+            const toScan: string[] = [];
+            let taskRescanned = 0;
+            for (const h of new Set(entries.map(sc => sc.contentHash))) {
+                if (ledger.present.has(h)) continue;
+                if (ledger.absent.has(h)) taskRescanned++;
+                toScan.push(h);
+            }
             const existingHashes = new Set<string>();
-            for (let i = 0; i < newHashes.length; i += BATCH_SIZE) {
-                const batch = newHashes.slice(i, i + BATCH_SIZE);
-                // #4352 g5: a fenced run stops BEFORE the next scroll batch —
-                // same checkpoint contract as the embedding windows.
-                throwIfIndexingAborted(options, taskId ?? '');
-                try {
-                    await collectExistingContentHashes(qdrant, batch, existingHashes, taskId);
-                    b2Stats.scrollBatches++;
-                    options?.onProgress?.(); // #4352 g5: an answered contentHash scroll IS progress
-                } catch (scrollError: any) {
-                    // #4861: FAIL CLOSED. The previous behaviour kept the chunks on a
-                    // scroll failure ("post-index dedup will catch them") — under Qdrant
-                    // saturation that re-embedded entire already-indexed sessions and
-                    // hammered the upsert path, the exact amplification loop that made
-                    // the 89-minute passes. Abort the pass; the next tick retries. The
-                    // outer catch (scrollFailed arm) throws a deferral error and THIS
-                    // line is what reaches roosync-*.log on a Claude-session host.
-                    loopLog(`[#4861] B2 contentHash scroll FAILED for task ${taskId} batch at ${i}/${newHashes.length}: ${scrollError?.message || scrollError} — failing closed, indexing deferred to next tick`);
-                    b2Stats.scrollFailed = true;
-                    throw scrollError;
+            const absentNow: string[] = []; // hashes this pass's ANSWERED batches found absent
+            try {
+                for (let i = 0; i < toScan.length; i += BATCH_SIZE) {
+                    const batch = toScan.slice(i, i + BATCH_SIZE);
+                    // #4352 g5: a fenced run stops BEFORE the next scroll batch —
+                    // same checkpoint contract as the embedding windows.
+                    throwIfIndexingAborted(options, taskId ?? '');
+                    try {
+                        await collectExistingContentHashes(qdrant, batch, existingHashes, taskId);
+                        b2Stats.scrollBatches++;
+                        options?.onProgress?.(); // #4352 g5: an answered contentHash scroll IS progress
+                        // The batch answered completely: what it did not return is absent.
+                        for (const h of batch) if (!existingHashes.has(h)) absentNow.push(h);
+                    } catch (scrollError: any) {
+                        // #4861: FAIL CLOSED. The previous behaviour kept the chunks on a
+                        // scroll failure ("post-index dedup will catch them") — under Qdrant
+                        // saturation that re-embedded entire already-indexed sessions and
+                        // hammered the upsert path, the exact amplification loop that made
+                        // the 89-minute passes. Abort the pass; the next tick retries. The
+                        // outer catch (scrollFailed arm) throws a deferral error and THIS
+                        // line is what reaches roosync-*.log on a Claude-session host.
+                        loopLog(`[#4861] B2 contentHash scroll FAILED for task ${taskId} batch at ${i}/${toScan.length}: ${scrollError?.message || scrollError} — failing closed, indexing deferred to next tick`);
+                        b2Stats.scrollFailed = true;
+                        throw scrollError;
+                    }
                 }
+                for (const sc of entries) {
+                    if (ledger.present.has(sc.contentHash) || existingHashes.has(sc.contentHash)) skipped++;
+                    else kept.push(sc);
+                }
+            } finally {
+                // #4861 v1.1: LEARN the hashes the scroll just confirmed present. Without
+                // this append, a session indexed BEFORE the ledger existed is found and
+                // skipped by the scroll at every pass but never re-upserted, so its full
+                // scroll repeats indefinitely (ai-01 review, 22/11). Same fail-safe
+                // contract as the L1794 append: these hashes were confirmed in Qdrant
+                // FOR THIS task_id, and a failed append only means a re-scroll next pass.
+                //
+                // v1.2: in a `finally` — the batches that ANSWERED before a fail-closed
+                // abort (or a watchdog fence) established something true; dropping it
+                // made every retry restart at batch 0 (measured on po-2028, 23/11
+                // 00:39Z: abort at batch 1300/8731, ~2 min of answered scrolls lost).
+                // Both appends never throw, so the original error propagates intact.
+                await appendIndexedHashes(taskId, [...existingHashes]);
+                // Absent, and ONCE each: only the hashes the ledger did not list as
+                // absent yet (a re-scan that finds them absent again adds no line).
+                await appendAbsentHashes(taskId, absentNow.filter(h => !ledger.absent.has(h)));
             }
-            // #4861 v1.1: LEARN the hashes the scroll just confirmed present. Without
-            // this append, a session indexed BEFORE the ledger existed is found and
-            // skipped by the scroll at every pass but never re-upserted, so its full
-            // scroll repeats indefinitely (ai-01 review, 22/11). Same fail-safe
-            // contract as the L1794 append: these hashes were confirmed in Qdrant
-            // FOR THIS task_id, and a failed append only means a re-scroll next pass.
-            await appendIndexedHashes(taskId, [...existingHashes]);
-            for (const sc of entries) {
-                if (ledger.has(sc.contentHash) || existingHashes.has(sc.contentHash)) skipped++;
-                else kept.push(sc);
-            }
+            b2Stats.scanned += toScan.length;
+            b2Stats.rescanned += taskRescanned;
+            b2Stats.absent += new Set(absentNow).size;
         }
 
         if (skipped > 0) {
             console.log(`[#2369] Preflight contentHash dedup: ${skipped}/${subChunks.length} sub-chunks already in Qdrant for their own task — skipped before embedding`);
         }
         _metrics.embeddings_preflight_skipped_total += skipped;
-        return { subChunks: kept, ...b2Stats };
+        return { subChunks: kept, ...b2Counters() };
     } catch (error: any) {
         // #4352 (ai-01 review of ms#1695): a watchdog abort thrown by the fence
         // above is NOT a scroll/dedup failure — swallowing it here returned the
@@ -1207,7 +1247,7 @@ async function preflightDedupByContentHash(
             );
         }
         console.warn(`[#2369] Preflight contentHash dedup failed (non-blocking): ${error?.message || error}`);
-        return { subChunks, ...b2Stats };
+        return { subChunks, ...b2Counters() };
     }
 }
 
@@ -1655,7 +1695,10 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             // #4861: ledgerHits + scrollBatches make the proportionality visible
             // in the file log — the issue's closure criterion is a re-pass whose
             // Qdrant reads scale with the NEW tail, not the session size.
-            loopLog(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length} left, ledgerHits=${b2LedgerHits}, scrollBatches=${b2ScrollBatches})`);
+            // v1.2: scanned / rescanned / newScan / absent make the convergence
+            // MEASURABLE pass by pass — `rescanned` is the re-scan counter of a
+            // pass (hashes a previous pass already found absent).
+            loopLog(`⏱️ [#4352-loop] ${taskId}: phase B2 (contentHash preflight) done +${Date.now() - startedAt}ms (${subChunksToEmbed.length} left, ledgerHits=${b2LedgerHits}, scrollBatches=${b2ScrollBatches}, scanned=${b2Result.scanned}, rescanned=${b2Result.rescanned}, newScan=${b2Result.newScan}, absent=${b2Result.absent})`);
         }
         // #4352 grain code (GO ai-01 20261111-1205): the embedding loop's input,
         // recorded after BOTH pre-flight dedups so `pending == 0` means "nothing
