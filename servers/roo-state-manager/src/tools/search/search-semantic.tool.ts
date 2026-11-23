@@ -11,7 +11,7 @@ import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 import { getHostIdentifier, splitChunkId } from '../../services/task-indexer/ChunkExtractor.js';
 import { resetEmbeddingCircuitBreaker as resetWriteCircuitBreaker } from '../../services/task-indexer/VectorIndexer.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
-import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
+import { classifySearchError, formatClassifiedError, qdrantServerReason } from './search-error-classifier.js';
 import { resolveSearchClientTimeoutMs } from './search-client-timeout.js';
 import { getUnifiedStoreReader } from '../../services/unified-store/reader-factory.js';
 import type { StoredConversation, UnifiedStoreSearchFilters } from '../../services/unified-store/types.js';
@@ -22,11 +22,44 @@ import type { StoredConversation, UnifiedStoreSearchFilters } from '../../servic
 let lastEmbeddingFailureTime = 0;
 const EMBEDDING_CIRCUIT_BREAKER_TTL_MS = parseInt(process.env.EMBEDDING_CIRCUIT_BREAKER_TTL_MS || '300000');
 
+// #4880: the semantic SEARCH path has TWO remote components — the embedding API
+// and Qdrant. The breaker used to arm the EMBEDDING breaker on ANY 5xx/timeout,
+// including a Qdrant one: a stalled vector store then made every semantic query
+// return `embedding_circuit_breaker_active` for the whole TTL — the wrong
+// component named, the operator sent to the wrong backend. Per-component arming
+// keeps the load shedding (the server is stalling for minutes and repeated 30 s
+// searches make it worse) while naming Qdrant when Qdrant is what failed.
+let lastQdrantFailureTime = 0;
+const QDRANT_SEARCH_CIRCUIT_BREAKER_TTL_MS = parseInt(process.env.QDRANT_SEARCH_CIRCUIT_BREAKER_TTL_MS || '300000');
+
+/**
+ * #4880: kill switch. `SEARCH_BREAKER_PER_COMPONENT=0` restores the pre-#4880
+ * behaviour exactly (any 5xx/timeout arms the embedding breaker; the Qdrant
+ * breaker is neither armed nor consulted). The fix is the DEFAULT; the env var
+ * only turns it off. Read at use time so a runtime toggle (and a test) works.
+ */
+function isPerComponentBreakerEnabled(): boolean {
+    return process.env.SEARCH_BREAKER_PER_COMPONENT !== '0';
+}
+
 // #1496: Fallback observability — reason codes when semantic degrades to text
 type FallbackReason =
     | 'embedding_circuit_breaker_active'
+    | 'qdrant_circuit_breaker_active'
     | 'embedding_api_error'
-    | 'embedding_timeout';
+    | 'embedding_timeout'
+    | 'qdrant_api_error'
+    | 'qdrant_timeout';
+
+/**
+ * #4880: which breaker short-circuited a semantic search, and how long it stays
+ * open. Carried into the fallback payload so a caller can back off knowingly
+ * instead of retrying blind.
+ */
+interface CircuitBreakerNotice {
+    component: 'embedding' | 'qdrant';
+    remainingMs: number;
+}
 
 /**
  * #1496: Inject fallback metadata into a CallToolResult's JSON payload.
@@ -39,7 +72,11 @@ type FallbackReason =
  * rewriting the whole content would erase that warning — so the JSON block is
  * located by parsing and replaced in place, the other blocks are preserved.
  */
-function injectFallbackMeta(result: CallToolResult, reason: FallbackReason): CallToolResult {
+function injectFallbackMeta(
+    result: CallToolResult,
+    reason: FallbackReason,
+    circuit?: CircuitBreakerNotice
+): CallToolResult {
     const content = [...(result.content ?? [])];
     const payloadIndex = content.findIndex(item => {
         if (!('text' in item) || typeof item.text !== 'string') return false;
@@ -54,6 +91,13 @@ function injectFallbackMeta(result: CallToolResult, reason: FallbackReason): Cal
             fallback_reason: reason,
             original_search_mode: 'semantic',
             actual_search_mode: 'text',
+            // #4880: only a breaker short-circuit carries the circuit fields; the
+            // existing fields above are unchanged (the #1496 contract).
+            ...(circuit ? {
+                circuit_open: true,
+                circuit_component: circuit.component,
+                circuit_remaining_ms: circuit.remainingMs,
+            } : {}),
         };
         content[payloadIndex] = { type: 'text' as const, text: JSON.stringify(enriched, null, 2) };
         return { ...result, content };
@@ -514,11 +558,37 @@ function isConnectPhaseTimeout(error: unknown): boolean {
 }
 
 /**
+ * #4880: how a failed semantic search should ARM the breaker and be LABELLED.
+ * Since ms#1892 the server budget fires before the client abort, so the
+ * production Qdrant timeout is `Error("Internal Server Error")` with
+ * `status: 500` and the real reason only in `data.status.error` — a message-only
+ * test sees neither a 5xx nor a timeout there. The joined reason and the HTTP
+ * status are read HERE only: the retry predicates stay message-based on
+ * purpose (a server search that spent its whole budget must not be re-queued).
+ * `SEARCH_BREAKER_PER_COMPONENT=0` keeps the pre-#4880 message-only reading.
+ */
+function semanticFailureShape(error: unknown): { tripsBreaker: boolean; isTimeout: boolean } {
+    const messageTimeout = isAbortOrTimeout(error);
+    const messageServerError = isHttpServerError(error);
+    if (!isPerComponentBreakerEnabled()) {
+        return { tripsBreaker: messageServerError || messageTimeout, isTimeout: messageTimeout };
+    }
+    const reason = qdrantServerReason(error);
+    const status = (error as any)?.status;
+    const isTimeout = messageTimeout || (reason !== null && /timed out|timeout/i.test(reason));
+    const isServerError = messageServerError || (typeof status === 'number' && status >= 500);
+    return { tripsBreaker: isServerError || isTimeout, isTimeout };
+}
+
+/**
  * Reset the circuit breaker state and query embedding cache (for testing).
  * @internal
  */
 export function _resetEmbeddingCircuitBreaker(): void {
     lastEmbeddingFailureTime = 0;
+    // #4880: both semantic-search breakers are cleared together — a test (or a
+    // reset) that leaves the Qdrant breaker armed would leak into the next call.
+    lastQdrantFailureTime = 0;
     queryEmbeddingCache.clear();
 }
 
@@ -1530,16 +1600,22 @@ export const searchTasksByContentTool = {
                 chunk_type, role, tool_name, has_errors, model, start_date, end_date, exclude_tool_results, reset_circuit_breaker } = args;
 
         // #2634: Reset circuit breaker(s) on explicit request (runtime reset without VS Code restart).
-        // Two recovery surfaces are reset together so a single call restores BOTH the semantic
+        // Three recovery surfaces are reset together so a single call restores BOTH the semantic
         // SEARCH path and the INDEXING path after a Qdrant/embedding outage:
         //   1. the embedding-API breaker in THIS module (gates query embedding for search)
         //   2. the Qdrant write breaker in VectorIndexer (gates upserts during indexing)
+        //   3. the Qdrant search breaker in THIS module (#4880, see below)
         if (reset_circuit_breaker) {
             const apiWasArmed = lastEmbeddingFailureTime > 0 && (Date.now() - lastEmbeddingFailureTime) < EMBEDDING_CIRCUIT_BREAKER_TTL_MS;
+            // #4880: the Qdrant search breaker is a THIRD recovery surface — one
+            // reset must clear it too, otherwise a Qdrant stall outlives the reset.
+            const qdrantWasArmed = isPerComponentBreakerEnabled()
+                && lastQdrantFailureTime > 0
+                && (Date.now() - lastQdrantFailureTime) < QDRANT_SEARCH_CIRCUIT_BREAKER_TTL_MS;
             _resetEmbeddingCircuitBreaker();
             const writePrevious = resetWriteCircuitBreaker();
             const writeWasArmed = writePrevious.state === 'OPEN';
-            console.log(`[INFO] #2634: Circuit breakers reset (embedding_api_armed: ${apiWasArmed}, write_breaker_armed: ${writeWasArmed}). Caches cleared, ready for fresh connection test.`);
+            console.log(`[INFO] #2634/#4880: Circuit breakers reset (embedding_api_armed: ${apiWasArmed}, qdrant_search_armed: ${qdrantWasArmed}, write_breaker_armed: ${writeWasArmed}). Caches cleared, ready for fresh connection test.`);
 
             // Return diagnostic result showing the reset succeeded
             return {
@@ -1548,14 +1624,15 @@ export const searchTasksByContentTool = {
                     type: 'text',
                     text: JSON.stringify({
                         circuit_breaker_reset: true,
-                        was_armed: apiWasArmed || writeWasArmed,
+                        was_armed: apiWasArmed || qdrantWasArmed || writeWasArmed,
                         embedding_api_breaker: { was_armed: apiWasArmed },
+                        qdrant_search_breaker: { was_armed: qdrantWasArmed },
                         write_breaker: {
                             was_armed: writeWasArmed,
                             previous_state: writePrevious.state,
                             previous_failure_count: writePrevious.failureCount
                         },
-                        message: 'Embedding circuit breakers (search + indexing) have been reset. Semantic search is now enabled.',
+                        message: 'Search circuit breakers (embedding API, Qdrant) and the indexing write breaker have been reset. Semantic search is now enabled.',
                         timestamp: new Date().toISOString()
                     }, null, 2)
                 }]
@@ -1641,14 +1718,59 @@ export const searchTasksByContentTool = {
                     { query: args.search_query, workspace: args.workspace },
                     conversationCache
                 );
-                // #1496: Tag fallback results so callers know semantic was skipped
-                return injectFallbackMeta(fallbackResult, 'embedding_circuit_breaker_active');
+                // #1496/#4880: Tag fallback results so callers know semantic was skipped,
+                // and name the component whose breaker is open.
+                return injectFallbackMeta(fallbackResult, 'embedding_circuit_breaker_active', {
+                    component: 'embedding',
+                    remainingMs,
+                });
             } catch (fallbackError) {
                 return {
                     isError: false,
                     content: [{
                         type: 'text',
                         text: `Embedding API indisponible (circuit breaker actif). Fallback textuel échoué: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
+                    }] as any
+                };
+            }
+        }
+
+        // #4880: the QDRANT breaker is separate — a stalled vector store must not be
+        // reported as an embeddings failure. Same load shedding, right component named.
+        // The payload says which component is open and for how long; the readable
+        // warning leads (same #4287 convention), the structured block follows.
+        if (isPerComponentBreakerEnabled() && lastQdrantFailureTime > 0
+            && (now - lastQdrantFailureTime) < QDRANT_SEARCH_CIRCUIT_BREAKER_TTL_MS) {
+            const remainingMs = QDRANT_SEARCH_CIRCUIT_BREAKER_TTL_MS - (now - lastQdrantFailureTime);
+            const remainingSec = Math.ceil(remainingMs / 1000);
+            console.warn(`[WARN] #4880: Qdrant search circuit breaker active, skipping semantic search (${remainingSec}s remaining). Using text fallback.`);
+            try {
+                const fallbackResult = await fallbackHandler(
+                    { query: args.search_query, workspace: args.workspace },
+                    conversationCache
+                );
+                const enriched = injectFallbackMeta(fallbackResult, 'qdrant_circuit_breaker_active', {
+                    component: 'qdrant',
+                    remainingMs,
+                });
+                return {
+                    ...enriched,
+                    content: [
+                        {
+                            type: 'text' as const,
+                            text: `⚠️ SEMANTIC DEGRADED — qdrant (vector store) was recently too slow or failed; this search was NOT attempted ` +
+                                  `(circuit breaker active, ${remainingSec}s remaining). Results are TEXT search only. ` +
+                                  `Run roosync_search(action: "diagnose") to inspect the collection, or wait for the breaker to expire.`
+                        },
+                        ...(enriched.content ?? []),
+                    ],
+                };
+            } catch (fallbackError) {
+                return {
+                    isError: false,
+                    content: [{
+                        type: 'text',
+                        text: `Qdrant search indisponible (circuit breaker actif). Fallback textuel échoué: ${fallbackError instanceof Error ? fallbackError.message : String(fallbackError)}`
                     }] as any
                 };
             }
@@ -2421,9 +2543,19 @@ export const searchTasksByContentTool = {
 
         } catch (semanticError) {
             // #1232: Activate circuit breaker on HTTP 5xx OR AbortError/timeout
-            if (isHttpServerError(semanticError) || isAbortOrTimeout(semanticError)) {
-                lastEmbeddingFailureTime = Date.now();
-                console.warn(`[WARN] #1232: Embedding circuit breaker activated for ${EMBEDDING_CIRCUIT_BREAKER_TTL_MS / 1000}s`);
+            // #4880: arm the breaker of the component that ACTUALLY failed. Pre-#4880
+            // (and with SEARCH_BREAKER_PER_COMPONENT=0) every such failure armed the
+            // embedding breaker, so a Qdrant timeout got reported back as
+            // `embedding_circuit_breaker_active` for the whole TTL — wrong component.
+            const failureShape = semanticFailureShape(semanticError);
+            if (failureShape.tripsBreaker) {
+                if (isPerComponentBreakerEnabled() && failedStage === 'search') {
+                    lastQdrantFailureTime = Date.now();
+                    console.warn(`[WARN] #4880: Qdrant search circuit breaker activated for ${QDRANT_SEARCH_CIRCUIT_BREAKER_TTL_MS / 1000}s (vector store failed or timed out)`);
+                } else {
+                    lastEmbeddingFailureTime = Date.now();
+                    console.warn(`[WARN] #1232: Embedding circuit breaker activated for ${EMBEDDING_CIRCUIT_BREAKER_TTL_MS / 1000}s`);
+                }
             }
 
             const semanticErrorMsg = semanticError instanceof Error ? semanticError.message : String(semanticError);
@@ -2451,9 +2583,12 @@ export const searchTasksByContentTool = {
             console.warn(`[WARN] Semantic search failed (${classified.mode}), falling back to text: ${semanticErrorMsg}`);
 
             // #1496: Determine fallback reason from classified error
-            const fallbackReason: FallbackReason = isAbortOrTimeout(semanticError)
-                ? 'embedding_timeout'
-                : 'embedding_api_error';
+            // #4880: name the component that failed — a Qdrant timeout used to be
+            // reported as `embedding_timeout` (SEARCH_BREAKER_PER_COMPONENT=0 keeps that).
+            const qdrantFailed = isPerComponentBreakerEnabled() && failedStage === 'search';
+            const fallbackReason: FallbackReason = failureShape.isTimeout
+                ? (qdrantFailed ? 'qdrant_timeout' : 'embedding_timeout')
+                : (qdrantFailed ? 'qdrant_api_error' : 'embedding_api_error');
 
             // Fallback vers la recherche textuelle simple (legacy — default path)
             try {
