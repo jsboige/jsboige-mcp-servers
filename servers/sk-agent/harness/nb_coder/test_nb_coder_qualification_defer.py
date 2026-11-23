@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# --- provenance ---------------------------------------------------------------
+# Canonical home is sk-agent: new harness fixes belong here, not in vllm.
+# Authored here (ms#1864 RELACHEE deferral tests) — no vllm counterpart.
+# Harness base is the vllm re-copy @ 7a09e1caec22441d9402ab25a222206c8905bfe1.
+# -----------------------------------------------------------------------------
 """Offline tests for CoursIA's temporary RELACHEE qualification refusal.
 
 The driver-side rc=1 classification belongs to ms#1859. These tests pin only the
