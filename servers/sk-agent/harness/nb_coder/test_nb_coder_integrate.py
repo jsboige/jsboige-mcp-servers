@@ -800,6 +800,38 @@ def test_latex_backslash_u_is_not_an_ascii_escape():
         assert "très" in after and JSON_UP in after
 
 
+def test_apply_nb_accepts_a_whitespace_only_difference(tmp_path):
+    """CoursIA#28242 (23/11, fournée o15): a model-emitted ``"outputs": [\\n   ]``
+    where the dumper writes ``[]`` carries the SAME parsed object, yet the old
+    round-trip guard refused it — and the refusal cost the README row and the nav
+    edge, i.e. the guards the integration exists to satisfy. A difference that
+    survives whitespace stripping is real and keeps the refusal."""
+    nb = {"cells": [_md("t\n"), _code("print(1)\n")], "metadata": {},
+          "nbformat": 4, "nbformat_minor": 5}
+    canonical = json.dumps(nb, ensure_ascii=False, indent=1)
+    fmt = nbci.detect_nb_format(canonical)
+    assert nbci.dump_nb(json.loads(canonical), fmt) == canonical
+
+    loose = canonical.replace('"outputs": []', '"outputs": [\n   ]', 1)
+    assert loose != canonical
+    path = tmp_path / "T.ipynb"
+    path.write_text(loose, encoding="utf-8")
+    assert nbci.apply_nb(path, nb, fmt, loose) is True       # normalised, declared
+    assert path.read_text(encoding="utf-8") == nbci.dump_nb(nb, fmt)
+
+    # a divergence that survives whitespace stripping: a duplicated key is
+    # canonicalised away by the dump, so the text is NOT the same object.
+    dup = canonical.replace('"metadata": {}', '"metadata": {"a": 1, "a": 2}', 1)
+    assert dup != canonical
+    path.write_text(dup, encoding="utf-8")
+    try:
+        nbci.apply_nb(path, nb, fmt, dup)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a divergence that survives stripping must still refuse")
+
+
 def test_format_detection_round_trips_both_encodings():
     """Raw non-ASCII + control-char escapes (ANSI colours in outputs) is
     ensure_ascii=False; a pure-ASCII file with real backslash-u escapes is
