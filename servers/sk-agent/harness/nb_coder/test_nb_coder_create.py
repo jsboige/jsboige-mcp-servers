@@ -868,3 +868,64 @@ def test_a_module_block_is_bounded_and_names_the_rest():
     assert len(blk2) <= D.LOCAL_MODULE_BLOCK_CHAR_CAP + 700, \
         "the block is bounded however many modules resolve"
     assert "autres modules" in blk2, "truncated modules are named, not silent"
+
+
+def test_the_imported_leafs_full_source_is_inlined(tmp_path, monkeypatch):
+    """o9 (23/11 soir, cinq grains ICT morts `stage2-short-segment:0` avec des
+    prompts SAINS à 13-19k tokens) : le bloc borné a corrigé le bloat mais
+    affamé le build — l'appel est un single-shot SANS outils, et la réponse
+    mesurée fut « le contenu de basin_family.py … ne sont pas disponibles dans
+    le message, et la lecture demandée précédemment a échoué ». Ce que le
+    carnet NOMME (`from ict import basin_family`) porte désormais sa SOURCE
+    COMPLÈTE ; le reste du paquet reste en signatures."""
+    pkg = tmp_path / "Series" / "ict"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "basin_family.py").write_text(
+        "BASIN_BODY_MARKER = 0x5eed\n"
+        "def basin_family_dynamics(traj, *, tol=1e-9):\n"
+        "    return traj, tol\n", encoding="utf-8")
+    (pkg / "neighbor_module.py").write_text(
+        "def neighbor(x):\n    return x\n", encoding="utf-8")
+    nbdir = tmp_path / "Series" / "ICT-15f"
+    nbdir.mkdir()
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source":
+                     "from ict import basin_family as bf\n"
+                     "import ict\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    (nbdir / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")
+
+    monkeypatch.chdir(tmp_path)          # production: cwd is the worktree root
+    mods = D.local_modules("Series/ICT-15f/T-Python.ipynb")
+    srcs = {m["file"]: m for m in mods if "source" in m}
+    assert "Series/ict/basin_family.py" in srcs, \
+        "`from ict import basin_family` resolves the LEAF, not just the package"
+    assert "BASIN_BODY_MARKER" in srcs["Series/ict/basin_family.py"]["source"], \
+        "the leaf's BODY is in the material, not its signatures alone"
+    assert "Series/ict/neighbor_module.py" not in srcs, \
+        "a file the notebook never names stays signature-only"
+    block = D.local_module_block(mods)
+    assert "SOURCE COMPLÈTE" in block and "BASIN_BODY_MARKER" in block
+    assert "neighbor(" in block, "the rest of the package stays listed"
+    assert "tu n'as pas d'outil de lecture" in block, \
+        "the instruction matches the tool-less reality of the build call"
+
+
+def test_inlined_sources_are_bounded():
+    """Three named leaves of 40k chars each must not blow the prompt back into
+    the o8 regime: per-file and total caps hold at render, and the overflow is
+    named — never silent."""
+    mods = [{"name": f"pkg.m{i}", "file": f"Series/ict/m{i}.py",
+             "defs": [f"fn_{i}(x)"],
+             "source": "x" * 40000} for i in range(3)]
+    blk = D.local_module_block(mods)
+    assert len(blk) <= (D.LOCAL_MODULE_SOURCE_TOTAL_CAP
+                        + D.LOCAL_MODULE_BLOCK_CHAR_CAP + 800), \
+        "inlined sources obey the total cap, listing obeys its own"
+    assert blk.count("SOURCE COMPLÈTE") == 2, \
+        "third leaf over budget falls back to signatures, first two are inlined"
+    assert "signatures seulement" in blk, "overflow lands in the named listing"
+    one = D.local_module_block([{"name": "pkg.big", "file": "Series/ict/big.py",
+                                 "defs": ["fn(x)"], "source": "y" * 50000}])
+    assert len(one) <= D.LOCAL_MODULE_SOURCE_FILE_CAP + 1500, \
+        "a single huge leaf is capped at the file cap"

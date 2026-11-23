@@ -1603,7 +1603,14 @@ LOCAL_MODULE_TOTAL_CAP = 20  # entries across every import, prompt stays bounded
 LOCAL_MODULE_RENDER_DEF_CAP = 6   # signatures RENDERED per module in the prompt block
                                    # (o8 ICT: 24x13 rendered signatures = ~61k-token stage-2
                                    #  prompts, unparseable stub answers)
-LOCAL_MODULE_BLOCK_CHAR_CAP = 6000  # whole rendered block — the files carry the rest
+LOCAL_MODULE_BLOCK_CHAR_CAP = 6000  # signature-listing part of the block
+LOCAL_MODULE_SOURCE_FILE_CAP = 30000   # chars of ONE imported leaf's full source
+LOCAL_MODULE_SOURCE_TOTAL_CAP = 70000  # chars across every inlined source
+# (o9 ICT, 23/11: with signatures only, the build call — a tool-less single shot —
+#  answered « le contenu de basin_family.py … n'est pas disponibles dans le message,
+#  et la lecture demandée précédemment a échoué » and died stage2-short-segment:0 on
+#  every ICT grain. The leaf the notebook imports gets its SOURCE inline; the rest of
+#  the package stays signature-only. Measured leaves: 9.8-22.8 KB each, 1-2 per grain.)
 
 
 def _top_level_defs(p: Path) -> list[str]:
@@ -1641,6 +1648,49 @@ def _resolve_import(folder: Path, dotted: str) -> list[Path]:
     return []
 
 
+def _import_statements(nb) -> list[tuple[str, list[str]]]:
+    """(dotted_module, [imported_names]) per import line, in cell order.
+
+    `from ict import basin_family as bf` -> ("ict", ["basin_family"]) — the LEAF,
+    which `_resolve_import` alone never sees. `import ict.meta_proxy` ->
+    ("ict.meta_proxy", []). Names strip their `as` alias and the parenthesised
+    single-line form.
+    """
+    out: list[tuple[str, list[str]]] = []
+    for cell in nb.get("cells") or []:
+        if cell.get("cell_type") != "code":
+            continue
+        for line in _text(cell.get("source")).splitlines():
+            m = re.match(r"\s*from\s+([A-Za-z_][\w.]*)\s+import\s+(.+?)\s*$", line)
+            if m:
+                names = [n.strip().split(" as ")[0].strip()
+                         for n in m.group(2).strip("()").split(",")]
+                out.append((m.group(1), [n for n in names if n]))
+                continue
+            m = re.match(r"\s*import\s+([A-Za-z_][\w.]*)", line)
+            if m:
+                out.append((m.group(1), []))
+    return out
+
+
+def _module_entry(folder: Path, p: Path, name: str, source: bool) -> dict:
+    """One material entry. `source=True` inlines the file's text (capped); the
+    build call has no tools, « lire le fichier » n'y résout rien (mesuré o9)."""
+    e = {"name": name,
+         "file": p.name if p.parent == folder else _worktree_rel(p),
+         "defs": _top_level_defs(p)}
+    if source:
+        try:
+            txt = p.read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            txt = ""
+        if len(txt) > LOCAL_MODULE_SOURCE_FILE_CAP:
+            txt = txt[:LOCAL_MODULE_SOURCE_FILE_CAP] + \
+                f"\n# … source tronquée ({len(txt)} caractères au total)\n"
+        e["source"] = txt
+    return e
+
+
 def local_modules(src_nb) -> list[dict]:
     """Python modules a source notebook imports that live in its worktree.
 
@@ -1649,9 +1699,7 @@ def local_modules(src_nb) -> list[dict]:
     (GameTheory/limit_sets.py) sits in the worktree beside the source notebook, but no
     prompt ever showed it: the coder received the twin's CELLS only (plus prose, comments
     and outputs), then invented a replacement that the verifier rejected every round. A
-    port's material is the notebook PLUS the local modules it imports; their names and
-    signatures go into the plan and segment prompts, and the coder reads the files
-    themselves from the worktree.
+    port's material is the notebook PLUS the local modules it imports.
 
     23/11, same day (#27740/#27737): the module is not always BESIDE the notebook —
     `ICT-Series/ict/` is a package one level above the notebook folder, so the
@@ -1661,9 +1709,18 @@ def local_modules(src_nb) -> list[dict]:
     its first two ancestors, packages expand to their files, and a package named
     twice (`import ict`, `from ict.x import y`) is listed once.
 
-    Bounded on purpose: module names and top-level signatures, never bodies — the file is
-    in the worktree and `Read` is the right instrument for it. Only paths that resolve
-    to a real `.py` are returned (numpy and friends drop out here).
+    23/11 soir (fournée o9, mêmes grains, correctif borné en vol) : signatures seules =
+    refus fondé — l'appel de build est un single-shot SANS outils, la réponse mesurée
+    fut « le contenu de basin_family.py … ne sont pas disponibles dans le message, et
+    la lecture demandée précédemment a échoué » (5 grains ICT morts
+    `stage2-short-segment:0`, prompts sains à 13-19k tokens — la taille n'était plus
+    en cause). Ce que le carnet NOMME (`from ict import basin_family`,
+    `import ict.meta_proxy`, module beside) résout maintenant vers sa FEUILLE et
+    porte sa SOURCE COMPLÈTE (bornée) ; un paquet nu (`import ict`) reste en
+    signatures — la feuille importée porte ce qui manque.
+
+    Only paths that resolve to a real `.py` are returned (numpy and friends drop
+    out here).
     """
     if not src_nb:
         return []
@@ -1671,35 +1728,39 @@ def local_modules(src_nb) -> list[dict]:
         nb = json.loads(Path(src_nb).read_text(encoding="utf-8"))
     except Exception:
         return []
-    names: list[str] = []
-    for cell in nb.get("cells") or []:
-        if cell.get("cell_type") != "code":
-            continue
-        for line in _text(cell.get("source")).splitlines():
-            m = (re.match(r"\s*from\s+([A-Za-z_][\w.]*)\s+import\b", line)
-                 or re.match(r"\s*import\s+([A-Za-z_][\w.]*)", line))
-            if not m:
-                continue
-            n = m.group(1).rstrip(".")
-            if n and n not in names:
-                names.append(n)
     folder = Path(src_nb).parent
+    stmts = _import_statements(nb)
     out: list[dict] = []
     seen: set = set()
-    # explicit submodules first: a bare package expands to its (capped) file list,
-    # which must never crowd out the `ict.nerve_discriminant` the notebook names
-    for n in sorted(names, key=lambda s: -s.count(".")):
-        for p in _resolve_import(folder, n):
-            key = p.as_posix()
-            if key in seen:
-                continue
-            seen.add(key)
-            out.append({"name": n,
-                        "file": p.name if p.parent == folder
-                        else _worktree_rel(p),
-                        "defs": _top_level_defs(p)})
-            if len(out) >= LOCAL_MODULE_TOTAL_CAP:
-                return out
+
+    def _emit(p: Path, name: str, source: bool) -> bool:
+        key = p.as_posix()
+        if key in seen or len(out) >= LOCAL_MODULE_TOTAL_CAP:
+            return False
+        seen.add(key)
+        out.append(_module_entry(folder, p, name, source))
+        return True
+
+    # pass 1 — the leaves the notebook NAMES: from-import names that are files,
+    # and every import resolving to a SINGLE file (dotted leaf, beside module)
+    for dotted, names in stmts:
+        for leaf in names:
+            parts = [p for p in dotted.split(".") if p] + [leaf]
+            for root in (folder, *list(folder.parents)[:2]):
+                cand = root.joinpath(*parts).with_suffix(".py")
+                if cand.is_file():
+                    _emit(cand, f"{dotted}.{leaf}", True)
+                    break
+    for dotted, _ in stmts:
+        files = _resolve_import(folder, dotted)
+        if len(files) == 1:
+            _emit(files[0], dotted, True)
+
+    # pass 2 — bare packages: signature listing only (capped), never crowding
+    # out the leaves above
+    for dotted, _ in stmts:
+        for p in _resolve_import(folder, dotted):
+            _emit(p, dotted, False)
     return out
 
 
@@ -1729,43 +1790,63 @@ def _worktree_rel(p: Path) -> str:
 
 
 def local_module_block(modules: list | None) -> str:
-    """Prompt block naming the source notebook's local modules. '' when none.
+    """Prompt block for the source notebook's local modules. '' when none.
 
-    Bounded on purpose (measured 23/11, fournée o8, grains ICT #27737/#27740/#27742):
-    rendering every signature of every ancestor-resolved file pushed the stage-2
-    prompt to ~61k tokens, and the model's answers degraded to unparseable stubs
-    (440-char replies, no JSON) — every ICT grain died `stage2-short-segment`.
-    Six signatures per module name the material; the FILE carries the rest and
-    `Read` is the declared instrument. The whole block stays under
-    LOCAL_MODULE_BLOCK_CHAR_CAP."""
+    Two sections. SOURCES COMPLÈTES: every module the notebook NAMES (`from ict
+    import basin_family`, `import ict.meta_proxy`, module beside the notebook)
+    renders its full text, bounded per file and in total — the build call is a
+    tool-less single shot, and signatures alone drew a founded refusal on every
+    ICT grain of fournée o9 (23/11 : « le contenu de basin_family.py … pas
+    disponibles dans le message, et la lecture demandée précédemment a échoué »,
+    `stage2-short-segment:0`). SIGNATURES: the rest of a bare package stays
+    listed — six signatures per file, the whole listing under
+    LOCAL_MODULE_BLOCK_CHAR_CAP (the o8 lesson: 24x13 rendered signatures pushed
+    stage-2 prompts to ~61k tokens and answers degraded to unparseable stubs)."""
     if not modules:
         return ""
-    lines = []
-    total = 0
-    shown = 0
+    src_parts: list[str] = []
+    src_total = 0
+    list_lines: list[str] = []
+    list_total = 0
+    overflow = 0
     for m in modules:
+        txt = m.get("source")
+        if txt is not None:
+            txt = txt[:LOCAL_MODULE_SOURCE_FILE_CAP]   # defensive: _module_entry
+            if src_total + len(txt) <= LOCAL_MODULE_SOURCE_TOTAL_CAP or not src_parts:
+                src_parts.append(f"### `{m['file']}` — module `{m['name']}`, SOURCE COMPLÈTE\n"
+                                 f"```python\n{txt}\n```")
+                src_total += len(txt)
+                continue
+            overflow += 1   # budget spent: falls through to its signature line
         defs = m["defs"][:LOCAL_MODULE_RENDER_DEF_CAP]
         more = len(m["defs"]) - len(defs)
         s = ", ".join(defs) if defs else "(aucune fonction de premier niveau)"
         if more > 0:
             s += f" … +{more} autres dans le fichier"
         line = f"- `{m['file']}` — {s}"
-        if total + len(line) > LOCAL_MODULE_BLOCK_CHAR_CAP:
-            rest = len(modules) - shown
-            lines.append(f"- … (+{rest} autres modules du même dossier — mêmes règles : "
-                         f"lire le fichier, ne rien inventer)")
+        if list_total + len(line) > LOCAL_MODULE_BLOCK_CHAR_CAP:
+            overflow += len(modules)
             break
-        lines.append(line)
-        total += len(line)
-        shown += 1
-    return ("\n\nMODULES PYTHON LOCAUX DU DOSSIER SOURCE — ils sont DANS TON WORKTREE "
-            "(chemin relatif à la racine du worktree), et ce carnet les importe :\n"
-            + "\n".join(lines) +
-            "\nLIS le fichier (Read) et PORTE les fonctions qu'il utilise — mêmes seuils, "
-            "mêmes constantes, mêmes libellés de verdict. N'invente JAMAIS une heuristique à "
-            "la place d'une fonction du module : le vérificateur compare au module source et "
-            "rejette toute réimplémentation non équivalente (mesuré CoursIA#28208 : six tours "
-            "perdus à ce motif).\n")
+        list_lines.append(line)
+        list_total += len(line)
+    head = ("\n\nMODULES PYTHON LOCAUX DU DOSSIER SOURCE — ce carnet les importe "
+            "(chemins relatifs à la racine du worktree).\n")
+    parts = []
+    if src_parts:
+        parts.append("SOURCES COMPLÈTES des modules importés (le port se fait À PARTIR "
+                     "D'ELLES — tu n'as pas d'outil de lecture) :\n\n" + "\n\n".join(src_parts))
+    if list_lines:
+        parts.append("Autres fichiers du paquet (signatures seulement) :\n" + "\n".join(list_lines))
+    if overflow:
+        parts.append(f"(+{overflow} autres modules non montrés — mêmes règles : ne rien "
+                     f"inventer, porteur = le carnet source)")
+    return (head + "\n\n".join(parts) +
+            "\nPORTE les fonctions utilisées — mêmes seuils, mêmes constantes, mêmes "
+            "libellés de verdict. N'invente JAMAIS une heuristique à la place d'une "
+            "fonction d'un module ci-dessus : le vérificateur compare au module source "
+            "et rejette toute réimplémentation non équivalente (mesuré CoursIA#28208 : "
+            "six tours perdus à ce motif).\n")
 
 
 def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel: dict,
