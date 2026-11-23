@@ -312,6 +312,86 @@ export async function handleDiagnoseSemanticIndex(
                     }
                 }
             }
+
+            // #4880 — diagnose must TIME the search path, not only the metadata path.
+            // Measured 23/11: `roosync_search(action:"diagnose")` reported status=healthy
+            // in 1.1 s while a real semantic search was KO after 52 s — diagnose never
+            // exercised the search path, so a green verdict hid an out-of-budget index.
+            // Run a bounded nearest probe (limit 1, no payload, ANN) and degrade the
+            // verdict when it is slow / times out / errors.
+            if (diagnostics.status === 'healthy') {
+                if (typeof collectionDimension !== 'number') {
+                    diagnostics.details.search_probe = 'skipped';
+                } else {
+                    const rawTimeoutMs = parseInt(process.env.QDRANT_SEARCH_TIMEOUT_MS || '30000', 10);
+                    const probeTimeoutMs = Number.isFinite(rawTimeoutMs) ? Math.min(rawTimeoutMs, 30000) : 30000;
+                    const probeTimeoutSec = Math.ceil(probeTimeoutMs / 1000);
+                    const rawSlowThresholdMs = parseInt(process.env.DIAGNOSE_SEARCH_PROBE_SLOW_MS || '5000', 10);
+                    const slowThresholdMs = Number.isFinite(rawSlowThresholdMs) ? rawSlowThresholdMs : 5000;
+
+                    // Fresh random unit vector on every call: a repeated diagnose must
+                    // not be served from a cache — the query vector changes each time.
+                    const probeVector: number[] = new Array(collectionDimension);
+                    let squaredNorm = 0;
+                    for (let i = 0; i < collectionDimension; i++) {
+                        const value = Math.random() * 2 - 1;
+                        probeVector[i] = value;
+                        squaredNorm += value * value;
+                    }
+                    const norm = Math.sqrt(squaredNorm) || 1;
+                    const normalisedVector = probeVector.map(v => v / norm);
+
+                    const probeStartedAt = Date.now();
+                    try {
+                        await qdrant.query(collectionName, {
+                            query: { nearest: normalisedVector },
+                            limit: 1,
+                            with_payload: false,
+                            params: { exact: false },
+                            timeout: probeTimeoutSec
+                        });
+                        const elapsedMs = Date.now() - probeStartedAt;
+                        diagnostics.details.search_probe_ms = elapsedMs;
+                        if (elapsedMs > slowThresholdMs) {
+                            diagnostics.status = 'degraded';
+                            diagnostics.details.search_probe = 'slow';
+                            diagnostics.warnings.push(
+                                `Sonde de recherche bornée lente : ${elapsedMs} ms au-delà du seuil ${slowThresholdMs} ms`
+                            );
+                            diagnostics.details.search_probe_recommendation =
+                                `La latence de lecture est côté serveur (Qdrant) : une recherche vectorielle bornée ` +
+                                `(limit 1) a mis ${elapsedMs} ms pour un seuil de ${slowThresholdMs} ms. ` +
+                                "NE PAS réinitialiser la collection sur ce verdict — la latence serveur n'est pas une corruption ; " +
+                                'mesurez la charge Qdrant avant toute action sur la collection.';
+                        } else {
+                            diagnostics.details.search_probe = 'service-grade';
+                        }
+                    } catch (searchProbeError: any) {
+                        const elapsedMs = Date.now() - probeStartedAt;
+                        diagnostics.details.search_probe_ms = elapsedMs;
+                        const probeErrorType = _classifyDeepDiagnosticError(searchProbeError);
+                        diagnostics.status = 'degraded';
+                        if (probeErrorType === 'timeout') {
+                            diagnostics.details.search_probe = 'timeout';
+                            diagnostics.warnings.push(
+                                `Sonde de recherche bornée expirée après ${probeTimeoutSec} s: ${searchProbeError.message}`
+                            );
+                            diagnostics.details.search_probe_recommendation =
+                                `La recherche vectorielle bornée a expiré après ${probeTimeoutSec} s : la latence de lecture est ` +
+                                "côté serveur (Qdrant). NE PAS réinitialiser la collection sur ce verdict — l'expiration n'est pas " +
+                                'une corruption ; mesurez la charge Qdrant avant toute action sur la collection.';
+                        } else {
+                            diagnostics.details.search_probe = 'error';
+                            diagnostics.warnings.push(
+                                `Sonde de recherche bornée échouée: ${searchProbeError.message}`
+                            );
+                            diagnostics.details.search_probe_recommendation =
+                                `La recherche vectorielle bornée a échoué (${searchProbeError.message}). ` +
+                                'NE PAS réinitialiser la collection sur ce seul verdict — vérifiez la latence et la charge du serveur Qdrant.';
+                        }
+                    }
+                }
+            }
         } else if (getCollectionsSucceeded) {
             // Only set missing_collection if getCollections succeeded but collection wasn't found
             diagnostics.details.collection_exists = false;
@@ -624,6 +704,11 @@ export async function handleDiagnoseSemanticIndex(
             "L'appel de métadonnées (comptage exhaustif des points) a échoué, mais une lecture réelle " +
             'réussit — la recherche sémantique reste opérationnelle, aucune action requise sur la collection.'
         );
+    }
+    // #4880 — the bounded search probe verdict (slow / timeout / error) carries its own
+    // recommendation: server-side read latency, and explicitly NO reset of the collection.
+    if (diagnostics.details.search_probe_recommendation) {
+        recommendations.push(diagnostics.details.search_probe_recommendation as string);
     }
     if (diagnostics.details.openai_connection === 'failed') {
         // #2766: route the recommendation by root cause to kill the false-positive

@@ -13,7 +13,9 @@ import OpenAI from 'openai';
 // Create mock instances FIRST (before vi.mock)
 const mockQdrantClient = {
   getCollections: vi.fn(),
-  getCollection: vi.fn()
+  getCollection: vi.fn(),
+  // #4880 — diagnose now times a bounded search probe on the real search path.
+  query: vi.fn()
 } as unknown as QdrantClient;
 
 const mockOpenAIClient = {
@@ -119,6 +121,10 @@ describe('diagnose-index', () => {
     (mockOpenAIClient.embeddings.create as any).mockResolvedValue({
       data: [{ embedding: new Array(1536).fill(0.1) }]
     });
+
+    // #4880 — the bounded search probe succeeds by default: the healthy path must
+    // not degrade just because the mock client has no query() implementation.
+    (mockQdrantClient.query as any).mockResolvedValue({ points: [] });
   });
 
   afterEach(() => {

@@ -19,7 +19,9 @@ const { mockQdrantClient, mockOpenAIClient } = vi.hoisted(() => ({
 	mockQdrantClient: {
 		getCollections: vi.fn(),
 		getCollection: vi.fn(),
-		scroll: vi.fn()
+		scroll: vi.fn(),
+		// #4880 — bounded search probe (diagnose times the real search path)
+		query: vi.fn()
 	},
 	mockOpenAIClient: {
 		embeddings: {
@@ -81,6 +83,9 @@ describe('diagnose-index.tool (unit tests)', () => {
 		mockOpenAIClient.embeddings.create.mockResolvedValue({
 			data: [{ embedding: new Array(1536).fill(0.1) }]
 		});
+		// #4880 — the bounded search probe must succeed by default, otherwise every
+		// existing healthy-path test would degrade on the probe.
+		mockQdrantClient.query.mockResolvedValue({ points: [] });
 	};
 
 	beforeEach(() => {
@@ -1422,6 +1427,78 @@ describe('diagnose-index.tool (unit tests)', () => {
 
 			expect(parsed.details.openai_connection).toBe('success');
 			expect(parsed.details.openai_error_type).toBeUndefined();
+		});
+	});
+
+	// ============================================================
+	// #4880 — diagnose must TIME the search path.
+	// Measured 23/11: `roosync_search(action:"diagnose")` reported
+	// status=healthy in 1.1 s at 12:29Z while a real semantic search
+	// was KO after 52 s at 12:26Z. diagnose never exercised the
+	// search path (it read getCollection, and only on failure a
+	// scroll limit 1) → a false green. The fix times a bounded
+	// nearest probe (limit 1, no payload, ANN) and degrades the
+	// verdict when it is slow / times out / errors.
+	// ============================================================
+	describe('#4880 — bounded search probe', () => {
+		beforeEach(() => {
+			mockQdrantClient.query.mockResolvedValue({ points: [] });
+		});
+
+		it('reports service-grade when the bounded probe is fast (status stays healthy)', async () => {
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('service-grade');
+			expect(parsed.status).toBe('healthy');
+			expect(typeof parsed.details.search_probe_ms).toBe('number');
+		});
+
+		it('probes with limit 1, no payload and a fresh normalised unit vector', async () => {
+			await handleDiagnoseSemanticIndex(conversationCache);
+
+			expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
+			const [collectionName, args] = mockQdrantClient.query.mock.calls[0];
+			expect(collectionName).toBe('test-roo-state-manager');
+			expect(args.limit).toBe(1);
+			expect(args.with_payload).toBe(false);
+			const vec = args.query.nearest as number[];
+			expect(vec).toHaveLength(1536);
+			const norm = Math.sqrt(vec.reduce((sum, v) => sum + v * v, 0));
+			expect(norm).toBeCloseTo(1, 5);
+		});
+
+		it('degrades the verdict when the probe is slower than the threshold', async () => {
+			process.env.DIAGNOSE_SEARCH_PROBE_SLOW_MS = '20';
+			mockQdrantClient.query.mockImplementation(
+				() => new Promise((resolve) => setTimeout(() => resolve({ points: [] }), 60))
+			);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('slow');
+			expect(parsed.status).toBe('degraded');
+			expect(typeof parsed.details.search_probe_ms).toBe('number');
+			expect(parsed.details.search_probe_ms).toBeGreaterThan(20);
+		});
+
+		it('reports a timeout when the bounded probe expires', async () => {
+			const timeoutError: any = new Error('This operation was aborted');
+			timeoutError.name = 'QdrantClientTimeoutError';
+			mockQdrantClient.query.mockRejectedValue(timeoutError);
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('timeout');
+			expect(parsed.status).toBe('degraded');
+		});
+
+		it('reports an error when the bounded probe fails for another reason', async () => {
+			mockQdrantClient.query.mockRejectedValue(new Error('boom'));
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('error');
+			expect(parsed.status).toBe('degraded');
 		});
 	});
 });
