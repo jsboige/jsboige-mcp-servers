@@ -981,7 +981,7 @@ def test_a_fresh_override_lifts_the_three_day_relache_wait(tmp_path, monkeypatch
 
     class P:
         returncode = 0
-        stdout = "myia-ai-01 [OVERRIDE] lane myia-po-2028:claudish -- paths: ...\n"
+        stdout = "2026-11-23T03:41:00Z [OVERRIDE] lane myia-po-2028:claudish -- paths: ...\n"
         stderr = ""
 
     def fake_run(argv, **kw):
@@ -990,10 +990,45 @@ def test_a_fresh_override_lifts_the_three_day_relache_wait(tmp_path, monkeypatch
 
     monkeypatch.setattr(S.subprocess, "run", fake_run)
     s._relache_override_probe(now=1000.0)
-    assert calls, "the probe reads the issue's last comment"
+    assert calls, "the probe reads the issue's marker thread"
     assert g["not_before"] == 1000.0, "the OVERRIDE lifts the three-day wait"
     events = [l for l in (tmp_path / "state" / "scheduler.jsonl").read_text().splitlines()]
     assert any("relache-override-lifted" in l for l in events)
+
+
+def test_a_released_newer_than_the_override_keeps_the_guard(tmp_path, monkeypatch):
+    """23/11 generalization (GO ai01-c0025-claudish-ovr5): the probe walks the WHOLE
+    marker thread, not just the last comment. The decisive case is a fresh OVERRIDE
+    that a subsequent auto-[RELEASED] would have hidden from a last-comment reader —
+    but here the RELEASED is NEWER than the OVERRIDE, so the release is still the
+    operative event and the three-day guard must HOLD (never retry early)."""
+    s, key, g = _deferred_relache(tmp_path)
+
+    class P:
+        returncode = 0
+        # OVERRIDE first, then a NEWER auto-RELEASED that supersedes it.
+        stdout = ("2026-11-23T03:41:00Z [OVERRIDE] lane myia-po-2028:claudish -- paths: ...\n"
+                  "2026-11-23T04:48:00Z [RELEASED] myia-po-2028:claudish — stage2 mur\n")
+        stderr = ""
+
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: P())
+    s._relache_override_probe(now=1000.0)
+    assert g["not_before"] != 1000.0, "a RELEASED newer than the OVERRIDE keeps the guard"
+
+
+def test_the_newest_marker_being_an_override_lifts(tmp_path, monkeypatch):
+    """A RELEASED followed by a NEWER OVERRIDE lifts: the OVERRIDE is the operative event."""
+    s, key, g = _deferred_relache(tmp_path)
+
+    class P:
+        returncode = 0
+        stdout = ("2026-11-23T04:48:00Z [RELEASED] myia-po-2028:claudish — stage2 mur\n"
+                  "2026-11-23T04:58:00Z [OVERRIDE] lane myia-po-2028:claudish -- paths: ...\n")
+        stderr = ""
+
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: P())
+    s._relache_override_probe(now=1000.0)
+    assert g["not_before"] == 1000.0, "the newest OVERRIDE lifts the wait"
 
 
 def test_the_probe_is_best_effort_on_a_gh_failure(tmp_path, monkeypatch):
@@ -1017,7 +1052,7 @@ def test_the_probe_is_rate_limited_per_interval(tmp_path, monkeypatch):
 
     class P:
         returncode = 0
-        stdout = "myia-ai-01 [OVERRIDE] lane x\n"
+        stdout = "2026-11-23T03:41:00Z [OVERRIDE] lane x\n"
         stderr = ""
 
     monkeypatch.setattr(S.subprocess, "run",

@@ -1220,12 +1220,19 @@ class Scheduler:
         further out -- a self-perpetuating denial of service across every grain the
         coordinator had already re-armed.
 
-        The probe reads the LAST comment of each deferred-RELACHEE issue at most
-        once every RELACHEE_PROBE_INTERVAL_S. An [OVERRIDE] by another actor
+        The probe reads the marker comments of each deferred-RELACHEE issue at
+        most once every RELACHEE_PROBE_INTERVAL_S. An [OVERRIDE] by another actor
         (the coordinator) is the event the guard itself reads to lift RELACHEE;
-        when one is the newest marker, not_before is dropped to now and the
-        guard re-qualifies on the next launch. Best-effort: a gh failure leaves
-        the three-day guard in place, exactly as before.
+        not_before is dropped to now and the guard re-qualifies on the next launch.
+
+        23/11 generalization (GO coordinator ai01-c0025-claudish-ovr5): reading only
+        the LAST comment missed the OVERRIDE whenever the grain's own auto-published
+        [RELEASED] (fired by the next failing attempt) buried it -- measured four
+        OVERRIDE -> attempt -> RELEASED -> OVERRIDE round-trips in two hours on the
+        Integrales grains. The probe now walks the WHOLE marker thread and lifts
+        when the NEWEST qualification marker is an [OVERRIDE] that is more recent
+        than every [RELEASED] after it. Best-effort: a gh failure leaves the
+        three-day guard in place, exactly as before.
         """
         candidates = [(k, g) for k, g in self.state["grains"].items()
                       if g.get("status") == "deferred"
@@ -1245,7 +1252,9 @@ class Scheduler:
             try:
                 p = subprocess.run(["gh", "api",
                                     f"repos/{CLAIM_REPO_SLUG}/issues/{issue}/comments",
-                                    "--jq", '.[-1] | "\\(.user.login) \\(.body)"'],
+                                    "--jq",
+                                    '.[] | select(.body | test("\\[(OVERRIDE|RELEASED)\\]")) '
+                                    '| "\\(.created_at) \\(.body | split("\n")[0])"'],
                                    capture_output=True, text=True, encoding="utf-8",
                                    errors="replace", timeout=30)
             except Exception as exc:
@@ -1255,11 +1264,17 @@ class Scheduler:
                 self._event("relache-probe-error", key=key,
                             detail=(p.stderr or "").strip()[:120])
                 continue
-            text = (p.stdout or "").strip()
-            if "[OVERRIDE]" in text.split(" ", 1)[-1][:200]:
+            lines = [l for l in (p.stdout or "").splitlines() if l.strip()]
+            if not lines:
+                continue
+            # The thread is chronological; the last marker line decides. Lift only
+            # when that newest marker is an OVERRIDE (a RELEASED last means the
+            # release is still the operative event -- keep the three-day guard).
+            newest = lines[-1]
+            if "[OVERRIDE]" in newest:
                 g["not_before"] = now
                 self._event("relache-override-lifted", key=key, issue=issue,
-                            marker=text[:140])
+                            marker=newest[:140])
 
     def _eligible(self, now: float) -> list[str]:
         out = []
