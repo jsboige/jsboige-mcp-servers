@@ -215,20 +215,43 @@ SPEC_TASK = (
 )
 
 
+TWIN_REFERENCE_HEAD = (
+    "## SOURCE — sorties de RÉFÉRENCE (code et TEXTE réellement affiché par le jumeau)\n"
+    "La vue SOURCE ci-dessus ne montre que le CODE des cellules. Voici, pour chaque cellule "
+    "code de la SOURCE, son code et le texte qu'elle affiche RÉELLEMENT : c'est la référence "
+    "des valeurs à reproduire — la même que le producteur a lue. Une valeur que le LIVRABLE "
+    "cite comme « référence Python » est VÉRIFIABLE dès que son texte figure ici : ne la "
+    "rejette jamais comme « absente de la SOURCE » sans l'avoir cherchée dans cette "
+    "section. À l'inverse, une valeur attribuée au jumeau et absente de ces sorties est un "
+    "constat. Une coupe est toujours déclarée (« …[sortie coupée : N caractères] », « vue "
+    "de référence coupée ») : le producteur a lu la même vue, donc ce qui est coupé n'a été "
+    "vu par personne — une valeur attribuée au jumeau depuis une zone coupée n'a pas pu être "
+    "lue, c'est un constat.\n\n")
+
+
 def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                   conventions: str, src_digest: list[dict] | None = None,
                   built_digest: list[dict] | None = None,
                   diffs: list[dict] | None = None, mode: str = "source",
                   built_outputs: dict | None = None, prior: dict | None = None,
-                  modules: list | None = None) -> str:
+                  modules: list[dict] | None = None, twin_view: str = "") -> str:
     """``modules`` (23/11 soir): the SOURCE's local .py modules, the SAME renderings the
     builder's creation and revision prompts carry. Without them the verifier reads less
     than the builder and can only reject a faithful reimplementation as unverifiable
-    (CoursIA#27742: « ne peut pas être vérifié, à partir de la SOURCE fournie »)."""
+    (CoursIA#27742: « ne peut pas être vérifié, à partir de la SOURCE fournie »).
+
+    ``twin_view`` (23/11 soir, fournée o7): the SOURCE's code cells with the text they
+    really display — the reference the builder reads (`twin_reference_view`, 22/11). Before,
+    the verifier's only source outputs were the diff annex: 12 000 characters shared by
+    every differing cell, i.e. spent on the first few. A value the deliverable cited from
+    a later cell was then « absent de la SOURCE » (CoursIA#28206: three rounds maintained
+    on « mixture programmes L = [0. 0. 0. 0. 1.] », a stored output the builder quoted
+    verbatim)."""
     spec = mode == "spec"
     annex = ""
     if spec:
         modules = None      # a [SPEC] twin imports nothing local
+        twin_view = ""      # a [SPEC] twin displays nothing
         # 20/11 --from-spec: digests/diffs against a [SPEC] twin are noise (every cell
         # "edited", every source digest empty). The views show SOURCES only, so the
         # deliverable's outputs come in their own annex (IT08 #27460: rejected as
@@ -287,6 +310,7 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         + (f"## SOURCE — jumeau de spec (plan imposé, généré par le harnais)\n{src_view}\n\n"
            if spec else
            f"## SOURCE — carnet d'origine (branche main, RÉFÉRENCE)\n{src_view}\n\n")
+        + (TWIN_REFERENCE_HEAD + f"{twin_view}\n\n" if twin_view else "")
         + nbcd.local_module_verifier_block(modules)
         + f"## LIVRABLE — carnet produit (À VÉRIFIER)\n{built_view}\n\n"
         + annex
@@ -340,6 +364,13 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         "- Le fait que les faits mécaniques soient des affirmations du producteur : ils sont "
         "prévus pour être contre-vérifiés sur les deux vues, et c'est ce que tu fais ; leur "
         "seule présence ne suffit ni à approuver ni à rejeter.\n"
+        "- Une **valeur CITÉE par le LIVRABLE comme une référence de la SOURCE** : elle se "
+        "vérifie dans la section « sorties de RÉFÉRENCE », qui porte le texte réellement "
+        "affiché par le jumeau. Une valeur qui s'y trouve est VÉRIFIABLE — la déclarer "
+        "« absente de la SOURCE » sans l'y avoir cherchée est un faux constat, et le "
+        "producteur qui la cite exactement a raison. Mesuré 23/11, fournée o7, "
+        "CoursIA#28206 : rejet maintenu trois tours (« la SOURCE fournie ne contient pas "
+        "cette sortie ») sur une sortie stockée en entier dans le jumeau.\n"
         "- Le **tableau « Cellules à porter » de l'issue est INDICATIF** : sa colonne "
         "Archetype est une « classification voltron heuristique » et sa colonne « Équivalent "
         ".NET » est « indicative, à affiner par le producteur » (verbatim des specs parité). "
@@ -515,13 +546,19 @@ def main() -> int:
         diffs = cell_diffs(src_p, built_p)
         rec["diff_cells"] = [d["cell"] for d in diffs]
         rec["diff_kinds"] = [d["kind"] for d in diffs]
+        # The reference the BUILDER reads reaches the verifier too (fournée o7): the twin's
+        # code cells with the text they really display. The diff annex alone is 12 000
+        # characters for every differing cell — a port differs on all of them, so the last
+        # cells' outputs were « [tronqué] » and their values « absents de la SOURCE ».
+        twin_view = (nbcd.twin_reference_view(src_p) if args.mode != "spec" else "")
+        rec["twin_view_chars"] = len(twin_view)
         prompt = verify_prompt(issue, nbcd.build_view(src_p), nbcd.build_view(built_p),
                                facts, conventions,
                                outputs_digest(src_p), outputs_digest(built_p), diffs,
                                mode=args.mode,
                                built_outputs=(built_outputs_annex(built_p)
                                               if args.mode == "spec" else None),
-                               prior=prior,
+                               prior=prior, twin_view=twin_view,
                                # the verifier reads what the builder read (23/11 soir):
                                # never in spec mode — a [SPEC] twin imports nothing
                                modules=(nbcd.local_modules(str(src_p))

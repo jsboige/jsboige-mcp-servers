@@ -231,6 +231,53 @@ def test_the_verifier_reads_the_modules_the_builder_reads(tmp_path, monkeypatch)
     assert "le port se fait À PARTIR" not in with_mods
 
 
+def test_the_verifier_reads_the_reference_outputs_the_builder_reads(tmp_path):
+    """Fournée o7 (23/11), CoursIA#28206: the builder quoted the Python twin's stored
+    output verbatim (« mixture programmes L = [0. 0. 0. 0. 1.] », cellule 34) and the
+    verifier rejected three rounds running with « la SOURCE fournie ne contient pas
+    cette sortie ». Each was right about what it could see: the builder's prompt carries
+    the twin's code AND real outputs (22/11); the verifier's carried the code alone, plus
+    a 12 000-character diff annex that a port exhausts on its first cells. The reference
+    must travel on both sides of the parity."""
+    src = _nb(tmp_path, [_code([_stream("solution retenue : equilibre auxiliaire [12]\n"
+                                        "  mixture programmes L = [0. 0. 0. 0. 1.]\n")])],
+              "T-Python.ipynb")
+    issue = {"title": "t", "body": "b"}
+    bare = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "mixture programmes L" not in bare                  # nothing is invented
+    assert "## SOURCE — sorties de RÉFÉRENCE" not in bare     # no reference, no section
+    view = v.nbcd.twin_reference_view(src)
+    assert "mixture programmes L" in view, "the builder's renderer must carry the output first"
+    with_ref = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [], twin_view=view)
+    # the reference stands with the SOURCE, ahead of the deliverable it frames
+    assert (with_ref.index("## SOURCE — carnet d'origine")
+            < with_ref.index("## SOURCE — sorties de RÉFÉRENCE")
+            < with_ref.index("mixture programmes L")
+            < with_ref.index("## LIVRABLE"))
+    # the symmetric rule of the builder's TWIN_VALUES_RULE, present with or without a twin
+    for p in (bare, with_ref):
+        assert "valeur CITÉE par le LIVRABLE comme une référence de la SOURCE" in p
+        assert "est VÉRIFIABLE" in p
+        assert "absente de la SOURCE » sans l'y avoir cherchée est un faux constat" in p
+    # a declared cut is never a licence: what is cut has been read by nobody
+    assert "ce qui est coupé n'a été vu par personne" in with_ref
+    # a [SPEC] twin displays nothing: the view never rides a spec verdict
+    spec = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [], mode="spec", twin_view=view)
+    assert "mixture programmes L" not in spec
+    assert "## SOURCE — sorties de RÉFÉRENCE" not in spec
+
+
+def test_stage4_hands_the_twin_reference_to_the_verifier(monkeypatch, tmp_path):
+    """The wire, not only the renderer: stage 4 builds the reference from the SOURCE file
+    it is given, and the call carries it. A rule without its material is a promise."""
+    ok = {"response": '```json\n{"verdict": "approve", "findings": []}\n```'}
+    rc, t, prompts = _run_main_prompts(monkeypatch, tmp_path, [ok])
+    assert rc == 0 and len(prompts) == 1
+    assert "## SOURCE — sorties de RÉFÉRENCE" in prompts[0]
+    assert "SORTIE RÉELLE du jumeau (référence)" in prompts[0]
+    assert t["twin_view_chars"] > 0
+
+
 def test_prompt_marks_the_issue_table_as_indicative():
     """Fournée o15 (23/11), two reject classes on the same material:
     - CoursIA#27741: 3 major findings demanding stubs for cells the SOURCE itself
