@@ -36,6 +36,7 @@ import {
 	isContentMatchLivenessEnabled,
 	estimateCollectionLiveness,
 	resolveVariantLivenessTimeout,
+	resolveContentMatchSignatureTimeout,
 	selectVariantCollection,
 	findCollectionByContent,
 	isWriterSignalEnabled,
@@ -56,6 +57,7 @@ export {
 	isContentMatchLivenessEnabled,
 	estimateCollectionLiveness,
 	resolveVariantLivenessTimeout,
+	resolveContentMatchSignatureTimeout,
 	selectVariantCollection,
 	findCollectionByContent,
 	isWriterSignalEnabled,
@@ -151,6 +153,142 @@ const CONTENT_MATCH_LIVENESS_WARN_RATIO = parseFloat(process.env.CONTENT_MATCH_L
 const VARIANT_LIVENESS_PROBE_TIMEOUT_MS = resolveVariantLivenessTimeout(process.env.VARIANT_LIVENESS_PROBE_TIMEOUT_MS);
 /** #4863: bounds each ws-writer sentinel probe (shared with the probe module's env contract). */
 const WRITER_SENTINEL_PROBE_TIMEOUT_MS = resolveWriterProbeTimeout(process.env.WRITER_SENTINEL_PROBE_TIMEOUT_MS);
+
+// ─── #4880: the content-match resolution cache ────────────────────────────────
+// Measured ai-01, 23/11 13:20Z (read-only): for the workspace `d:/roo-extensions` NO
+// `ws-*` collection matches any of the 4 hash spellings (each answers 404 in <30 ms),
+// so EVERY codebase_search runs the content-match fallback. That fallback probes up to
+// 64 candidates SERIALLY (one 200-point payload-only scroll each); on a cold Qdrant the
+// 3 largest collections each burned the 15 000 ms client timeout (15 014 / 15 006 /
+// 15 002 ms) while the others answered in ~10 ms — ~47 s in total, so the call hit its
+// 50 s deadline (`qdrant_backend_slow`, phase `content_match_fallback`). A warm pass
+// took 6.3 s and resolved by `content-match` — but NOTHING cached the resolution, so
+// every later call re-paid the whole sweep.
+//
+// This cache holds the RESOLUTION (the collection name + its content-match details) per
+// workspace: the next search skips listWorkspaceCollections, the getCollection ranking
+// loop and findCollectionByContent entirely and serves the same collection.
+//
+// Only a SUCCESSFUL resolution is cached — a miss or an error is never cached, and an
+// expired entry is dropped on read. If the cached collection later answers 404, the
+// entry is deleted so the next search sweeps again instead of serving a dead name.
+
+/** TTL of the resolution cache — `0` disables it (kill-switch). Read at call time. */
+export function resolveContentMatchCacheTtlMs(raw: string | undefined): number {
+	const t = Number.parseInt(raw ?? '600000', 10);
+	// A negative or unparsable value falls back to the default: the cache is an
+	// optimisation — an env typo must never silently disarm it. `0` is the explicit
+	// kill-switch (the pre-#4880 behaviour: every search re-pays the sweep).
+	if (!Number.isFinite(t) || t < 0) return 600000;
+	return t;
+}
+
+/** Cache key: the workspace path, normalised (lowercase, forward slashes, no trailing slash). */
+export function contentMatchCacheKey(workspace: string): string {
+	return workspace.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+/** The `content_match` block of a codebase_search response. */
+export interface ContentMatchDetails {
+	jaccard: number; jaccard_threshold: number;
+	overlap?: number; overlap_threshold?: number;
+	shared_discriminant_dirs?: number; accepted_via?: 'jaccard' | 'overlap';
+	selection_basis?: 'score' | 'liveness' | 'writer';
+	liveness_ratio?: number; liveness_checked_paths?: number;
+	liveness_flipped_selection?: boolean;
+	writer: WsWriterSignal | null | undefined;
+	writer_flipped_selection?: boolean;
+	/** #4880: candidates the sweep could not probe (their signature scroll was cold). */
+	unprobed_candidates?: number;
+	/** #4880: this resolution came from the cache — the sweep was NOT re-run. */
+	cached?: boolean;
+}
+
+/** Per-workspace cache of a SUCCESSFUL content-match resolution. */
+const contentMatchCache = new Map<string, { name: string; details: ContentMatchDetails; expiresAt: number }>();
+/**
+ * Upper bound on the cache size. The workspace fleet is small, but the key comes
+ * from the CALLER — an unbounded map keyed by a caller-supplied path must not
+ * grow forever. The oldest entries are dropped first (the Map preserves
+ * insertion order).
+ */
+const CONTENT_MATCH_CACHE_MAX_ENTRIES = 128;
+
+/** Test hook — clears the resolution cache between suites. */
+export function _resetContentMatchCacheForTests(): void {
+	contentMatchCache.clear();
+}
+
+/** Reads a live cache entry (null = miss, expired entries are dropped). */
+function readContentMatchCache(key: string): { name: string; details: ContentMatchDetails } | null {
+	const ttlMs = resolveContentMatchCacheTtlMs(process.env.CONTENT_MATCH_RESOLUTION_CACHE_TTL_MS);
+	if (ttlMs <= 0) return null; // kill-switch
+	const entry = contentMatchCache.get(key);
+	if (!entry) return null;
+	if (entry.expiresAt <= Date.now()) {
+		contentMatchCache.delete(key);
+		return null;
+	}
+	return { name: entry.name, details: entry.details };
+}
+
+/** Stores a successful resolution. Misses and errors never reach this. */
+function writeContentMatchCache(key: string, name: string, details: ContentMatchDetails): void {
+	const ttlMs = resolveContentMatchCacheTtlMs(process.env.CONTENT_MATCH_RESOLUTION_CACHE_TTL_MS);
+	if (ttlMs <= 0) return; // kill-switch
+	contentMatchCache.set(key, { name, details: { ...details }, expiresAt: Date.now() + ttlMs });
+	if (contentMatchCache.size <= CONTENT_MATCH_CACHE_MAX_ENTRIES) return;
+	// Over the cap: the expired entries first, then the oldest (the Map preserves
+	// insertion order). The cache is an optimisation — dropping an entry only
+	// costs the next search one sweep.
+	const now = Date.now();
+	for (const [k, v] of contentMatchCache) {
+		if (v.expiresAt <= now) contentMatchCache.delete(k);
+	}
+	for (const k of contentMatchCache.keys()) {
+		if (contentMatchCache.size <= CONTENT_MATCH_CACHE_MAX_ENTRIES) break;
+		contentMatchCache.delete(k);
+	}
+}
+
+/**
+ * #4880: true when an error says THIS collection is GONE (404 / not found).
+ *
+ * Deliberately narrow: an unrelated "model not found" (the embedder) must not drop
+ * the cached resolution, and a 404 that names no collection is not this
+ * collection's fault either.
+ */
+function isCollectionGoneError(error: unknown, collectionName: string): boolean {
+	const status = (error as any)?.status ?? (error as any)?.code ?? (error as any)?.response?.status;
+	if (status === 404) return true;
+	const message = error instanceof Error ? error.message : String(error);
+	if (!/not found|does not exist|doesn't exist/i.test(message)) return false;
+	return message.includes(collectionName) || /collection/i.test(message);
+}
+
+/**
+ * #4880: one diagnostic signature scroll, BOUNDED. Same Promise.race +
+ * clearTimeout-on-both-exits shape as the variant-liveness probe: the losing setTimeout
+ * of a race must not stay pending for the full bound on every collection. A collection
+ * that exceeds the bound reads like an unreadable one (no top_dirs) — never like a
+ * collection without top-level dirs.
+ */
+async function boundedDiagnosticSignature(
+	qdrant: any,
+	collectionName: string,
+	timeoutMs: number
+): Promise<{ dirs: Set<string>; paths: string[] } | null> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const timeout = new Promise<null>(r => {
+		timer = setTimeout(() => r(null), timeoutMs);
+	});
+	const read: Promise<{ dirs: Set<string>; paths: string[] } | null> =
+		Promise.resolve(getCollectionSignature(qdrant, collectionName)).catch(() => null);
+	return Promise.race([read, timeout]).then(
+		v => { clearTimeout(timer); return v; },
+		() => { clearTimeout(timer); return null; },
+	);
+}
 
 // ─── #2609 V2(c)(b): partial-collection detection at resolution time ──────────
 // V2(b) verdict (c.5869551111): the served collection ws-d2ffdbaa832aed16 was
@@ -1331,6 +1469,12 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 	// (capped at MAX_LIMIT) is enough cross-file headroom; the HNSW cost (hnsw_ef) is unchanged.
 	const fetchLimit = Math.min(effectiveLimit * 3, MAX_LIMIT);
 
+	// #4880: the cache entry THIS call served its resolution from (null when the
+	// resolution was fresh). If the collection turns out to be gone (404), the entry
+	// is dropped so the next search sweeps again instead of serving a dead name for
+	// the whole TTL. Declared here so the catch block can see it.
+	let contentMatchCacheEntry: { key: string; name: string } | null = null;
+
 	try {
 		phase.current = 'collection_resolution';
 		// 1. Calculer les variantes possibles du nom de collection
@@ -1342,16 +1486,7 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 		let collectionName = '';
 		// Tracks how the collection was resolved — 'hash' (normal) or 'content-match' (L1 fallback).
 		let collectionResolvedBy: 'hash' | 'content-match' = 'hash';
-		let contentMatchDetails: {
-			jaccard: number; jaccard_threshold: number;
-			overlap?: number; overlap_threshold?: number;
-			shared_discriminant_dirs?: number; accepted_via?: 'jaccard' | 'overlap';
-			selection_basis?: 'score' | 'liveness' | 'writer';
-			liveness_ratio?: number; liveness_checked_paths?: number;
-			liveness_flipped_selection?: boolean;
-			writer: WsWriterSignal | null | undefined;
-			writer_flipped_selection?: boolean;
-		} | undefined;
+		let contentMatchDetails: ContentMatchDetails | undefined;
 		// points_count of the hash-matched collection (if any). Used to detect the
 		// "collection exists but is empty" blind-spot: the hash resolves to a real
 		// collection that was never populated (e.g. the indexer hashed a different path
@@ -1454,6 +1589,31 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 		if (hashMatchedEmpty) {
 			collectionName = '';
 		}
+		// #4880: a content-match resolution is cached per workspace — the sweep
+		// (listWorkspaceCollections + the getCollection ranking loop + up to 64
+		// signature scrolls) is paid ONCE per workspace per TTL, not once per search.
+		// Only a SUCCESSFUL resolution is ever cached, and only the hash-MISS path
+		// consults it: a hash-resolved collection stays more authoritative than a
+		// remembered content-match.
+		const contentMatchKey = contentMatchCacheKey(workspace);
+		if (!collectionName) {
+			const cachedResolution = readContentMatchCache(contentMatchKey);
+			if (cachedResolution) {
+				collectionName = cachedResolution.name;
+				collectionResolvedBy = 'content-match';
+				// #4880 + #4863: the RESOLUTION is cached, the FRESHNESS verdict is
+				// not. The ws-writer sentinel says WHO refreshes the corpus — a
+				// remembered verdict would report a stale freshness for the whole
+				// TTL ("liveness is NOT freshness", and a writer is not a memory).
+				// One bounded retrieve re-reads it; the sweep is what we skip.
+				const cachedWriter = isWriterSignalEnabled()
+					? await probeWsWriterSentinel(qdrant, cachedResolution.name, { timeoutMs: WRITER_SENTINEL_PROBE_TIMEOUT_MS })
+					: cachedResolution.details.writer;
+				contentMatchDetails = { ...cachedResolution.details, writer: cachedWriter, cached: true };
+				// Remembered so a 404 on the cached collection drops the entry.
+				contentMatchCacheEntry = { key: contentMatchKey, name: cachedResolution.name };
+			}
+		}
 		if (!collectionName) {
 			phase.current = 'content_match_fallback';
 			const allWsCollections = await listWorkspaceCollections();
@@ -1474,8 +1634,12 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 
 			// Try content-based matching (STRICT threshold — never serve a low-confidence guess).
 			const workspaceSignature = getWorkspaceRootSignature(workspace);
+			// #4880: the sweep's counters — a candidate whose signature scroll was
+			// cold is SKIPPED, and the count says so (a miss caused by cold
+			// candidates must never read like "no collection matches").
+			const contentMatchStats = { unprobed_candidates: 0 };
 			const contentMatch = workspaceSignature
-				? await findCollectionByContent(qdrant, candidates, workspaceSignature, workspace)
+				? await findCollectionByContent(qdrant, candidates, workspaceSignature, workspace, contentMatchStats)
 				: null;
 
 			if (contentMatch) {
@@ -1507,7 +1671,19 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 					...(contentMatch.liveness_flipped_selection ? { liveness_flipped_selection: true } : {}),
 					writer: contentMatch.writer,
 					...(contentMatch.writer_flipped_selection ? { writer_flipped_selection: true } : {}),
+					// #4880: candidates the sweep could not probe (cold signature
+					// scroll) — the match was found WITHOUT them, so the reader
+					// knows the sweep was partial.
+					unprobed_candidates: contentMatch.unprobed_candidates ?? 0,
 				};
+				// #4880: only a SUCCESSFUL resolution is cached — a miss or an
+				// error never reaches this line. And only a COMPLETE sweep: when a
+				// candidate was skipped cold, the winner was chosen without it — the
+				// live collection may be the skipped one, and caching would pin a
+				// stale twin for the whole TTL. The next search re-sweeps instead.
+				if ((contentMatch.unprobed_candidates ?? 0) === 0) {
+					writeContentMatchCache(contentMatchKey, contentMatch.name, contentMatchDetails);
+				}
 			} else {
 				// No strict content-match → honest diagnostic. Enrich with the collection
 				// signatures we probed so the caller can identify theirs visually.
@@ -1518,9 +1694,14 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 				// them self-identify. One payload-only scroll per diagnostic entry.
 				const collectionDiagnostics = [];
 				const sigByCollection = new Map<string, string[] | null>();
+				// #4880: the diagnostic's own signature scrolls are BOUNDED too —
+				// they hit the SAME cold collections the sweep just skipped, and an
+				// unbounded scroll here would re-create the deadline the bound was
+				// written to avoid.
+				const diagnosticTimeoutMs = resolveContentMatchSignatureTimeout(process.env.CONTENT_MATCH_SIGNATURE_TIMEOUT_MS);
 				for (const r of ranked.slice(0, 10)) {
-					const sig = await getCollectionSignature(qdrant, r.name);
-					const topDirs = sig?.dirs ? [...sig.dirs].slice(0, 8) : null;
+					const sig = await boundedDiagnosticSignature(qdrant, r.name, diagnosticTimeoutMs);
+					const topDirs = sig && sig.dirs ? [...sig.dirs].slice(0, 8) : null;
 					sigByCollection.set(r.name, topDirs);
 					collectionDiagnostics.push({
 						collection: r.name,
@@ -1566,6 +1747,11 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 							content_match_discriminant_dirs_required: { jaccard_path: 1, overlap_path: 2 },
 							content_match_candidates_total: candidates.length,
 							content_match_candidates_scanned: scannedCandidates,
+							// #4880: candidates the sweep could NOT probe (their signature
+							// scroll was cold). A miss with this count > 0 is a cold-cache
+							// miss, not a proof that no collection matches — without it the
+							// two read identically.
+							content_match_unprobed_candidates: contentMatchStats.unprobed_candidates,
 							collection_signatures: signatureSamples,
 							existing_collections: collectionDiagnostics,
 							fallback_list_tried: true,
@@ -2280,6 +2466,12 @@ async function handleCodebaseSearchUnbounded(args: CodebaseSearchArgs, phase: Co
 		};
 
 	} catch (error) {
+		// #4880: the cached collection is GONE (404 / not found) — drop the entry so
+		// the next search for this workspace sweeps again instead of serving a dead
+		// name for the whole TTL.
+		if (contentMatchCacheEntry && isCollectionGoneError(error, contentMatchCacheEntry.name)) {
+			contentMatchCache.delete(contentMatchCacheEntry.key);
+		}
 		// #2063 P1: Classified error reporting for actionable diagnostics
 		// #3279: If the error was tagged by the embedding sub-catch, route it through the
 		// embedding-classifier branch (which handles embedding_unreachable / embedding_timeout)
