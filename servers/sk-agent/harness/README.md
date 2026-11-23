@@ -31,6 +31,7 @@ of one harness was the mistake this cutover ends.
 | `nb_coder/nb_coder_driver.py` | stages 0-5 of issue → notebook → PR (claim, plan, build, gates, verify, harness PR) |
 | `nb_coder/nb_coder_scheduler.py` | capacity-aware batch scheduler above the driver (in-flight cap against the live engine gauge, ramp, STOP file) |
 | `nb_coder/nb_coder_verify.py` | stage 4 — independent verifier (producer ≠ verifier) |
+| `nb_coder/nb_coder_window_replay.py` | #4816 criterion 3 — the 262 144-token window witness: replays the CoursIA#27027 morphology through the REAL turn machinery (SK OpenAI connector over real HTTP) against an engine enforcing the incident contract; red (no condensation → 400 mid-turn) vs green (seat-entry condensation → turn completes under the window). `--live-probe` pins the modeled contract against a real engine with ONE over-window request |
 | `nb_coder/issue_from_finding.py` | deterministic issue body from an nb_audit finding |
 | `nb_audit/nb_audit_runner.py` | hourly pre-audit runner (series scoping, PR-skip, record writing) |
 | `nb_audit/nb_audit_driver.py` | per-notebook audit driver through sk-agent (sk-agent stdio) |
