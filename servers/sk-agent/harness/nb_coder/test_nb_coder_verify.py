@@ -252,6 +252,20 @@ def test_prompt_marks_the_issue_table_as_indicative():
     assert "quota d'exercices" in p
 
 
+def test_prompt_reads_the_inventory_count_as_a_count():
+    """Fournée o22 (23/11), CoursIA#27742: the acceptance line « Exercices répertoriés par
+    l'inventaire : 5 (>= 3, OK) » is the COUNT of a mechanical inventory that classes
+    `regime_r0` / `regime_r1` as exercises, while the issue's Objet asks for « au moins
+    trois ». The deliverable carried the three real exercises; the verifier rejected, then
+    MAINTAINED the rejection on the builder's correct contest (« le quota de cinq n'est
+    donc pas atteint ») and the invocation stopped there. A count is not a quota."""
+    p = v.verify_prompt({"title": "t", "body": "b"}, "SRC", "BUILT", {}, "", [], [], [])
+    assert "COMPTE de l'inventaire mécanique, pas un quota de N" in p
+    assert "ne l'écris jamais « quota non atteint »" in p
+    assert ("ne compte jamais comme exercices manquants les cellules que la source "
+            "exécute") in p
+
+
 def test_prompt_scopes_the_verdict_to_the_deliverable():
     """4/4 rejects measured on the pilot grains (16/11) were rejecting on facts the
     verifier cannot observe: chain procedure (claims, MCP, coordinator approval) and
