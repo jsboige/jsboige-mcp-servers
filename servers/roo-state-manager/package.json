@@ -5,7 +5,7 @@
   "main": "build-out/index.js",
   "type": "module",
   "scripts": {
-    "prebuild": "npm install && npm run build -w @vibesync/core",
+    "prebuild": "npm run build -w @vibesync/core",
     "pretest": "npm run build -w @vibesync/core",
     "clean:build": "node scripts/clean-build.mjs",
     "build": "npm run clean:build && tsc && node scripts/publish-build.mjs",
