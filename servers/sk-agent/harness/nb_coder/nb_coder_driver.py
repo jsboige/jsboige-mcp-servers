@@ -1859,6 +1859,31 @@ def local_module_block(modules: list | None) -> str:
     stage-2 prompts to ~61k tokens and answers degraded to unparseable stubs)."""
     if not modules:
         return ""
+    src_parts, list_lines, overflow = _local_module_render(modules)
+    head = ("\n\nMODULES PYTHON LOCAUX DU DOSSIER SOURCE — ce carnet les importe "
+            "(chemins relatifs à la racine du worktree).\n")
+    parts = []
+    if src_parts:
+        parts.append("SOURCES COMPLÈTES des modules importés (le port se fait À PARTIR "
+                     "D'ELLES — tu n'as pas d'outil de lecture) :\n\n" + "\n\n".join(src_parts))
+    if list_lines:
+        parts.append("Autres fichiers du paquet (signatures seulement) :\n" + "\n".join(list_lines))
+    if overflow:
+        parts.append(f"(+{overflow} autres modules non montrés — mêmes règles : ne rien "
+                     f"inventer, porteur = le carnet source)")
+    return (head + "\n\n".join(parts) +
+            "\nPORTE les fonctions utilisées — mêmes seuils, mêmes constantes, mêmes "
+            "libellés de verdict. N'invente JAMAIS une heuristique à la place d'une "
+            "fonction d'un module ci-dessus : le vérificateur compare au module source "
+            "et rejette toute réimplémentation non équivalente (mesuré CoursIA#28208 : "
+            "six tours perdus à ce motif).\n")
+
+
+def _local_module_render(modules: list) -> tuple[list[str], list[str], int]:
+    """The two renderings a local-module list splits into, shared by every prompt that
+    carries them: full sources (bounded per file and in total), signature lines for the
+    rest, and the overflow count (23/11: the builder's and the verifier's block must show
+    the SAME definitions — a verifier reading less than the builder cannot judge it)."""
     src_parts: list[str] = []
     src_total = 0
     list_lines: list[str] = []
@@ -1885,23 +1910,45 @@ def local_module_block(modules: list | None) -> str:
             break
         list_lines.append(line)
         list_total += len(line)
-    head = ("\n\nMODULES PYTHON LOCAUX DU DOSSIER SOURCE — ce carnet les importe "
-            "(chemins relatifs à la racine du worktree).\n")
+    return src_parts, list_lines, overflow
+
+
+def local_module_verifier_block(modules: list | None) -> str:
+    """The SAME module sources, framed for the verifier. '' when none.
+
+    23/11 soir (CoursIA#27742, fournée o18): the revision prompt had just been given the
+    modules, the builder produced a faithful reimplementation and argued it — and the
+    verifier rejected with « le degré du graphe des transitions observées ne peut pas
+    être vérifié, à partir de la SOURCE fournie, comme équivalent à la sensibilité
+    calculée par sensitivity_distribution ». Its own words named the gap: the verifier
+    read less than the builder. `local_sensitivity` counts exactly those neighbours
+    (`observed_adjacency`, f(y) ≠ f(x)) — the source says so, and the verifier never
+    saw the source. Material AND rule travel together, on both sides of the parity."""
+    if not modules:
+        return ""
+    src_parts, list_lines, overflow = _local_module_render(modules)
+    head = ("\n\nMODULES PYTHON LOCAUX QUE LA SOURCE IMPORTE — leurs définitions ne figurent "
+            "dans aucune cellule du jumeau ; la recette qu'ils portent est ici.\n")
     parts = []
     if src_parts:
-        parts.append("SOURCES COMPLÈTES des modules importés (le port se fait À PARTIR "
-                     "D'ELLES — tu n'as pas d'outil de lecture) :\n\n" + "\n\n".join(src_parts))
+        parts.append("SOURCES COMPLÈTES des modules importés — DÉFINITIONS DE RÉFÉRENCE, la "
+                     "partie de la SOURCE qui ne vit pas dans ses cellules :\n\n"
+                     + "\n\n".join(src_parts))
     if list_lines:
         parts.append("Autres fichiers du paquet (signatures seulement) :\n" + "\n".join(list_lines))
     if overflow:
-        parts.append(f"(+{overflow} autres modules non montrés — mêmes règles : ne rien "
-                     f"inventer, porteur = le carnet source)")
+        parts.append(f"(+{overflow} autres modules non montrés — signatures et seuls)")
     return (head + "\n\n".join(parts) +
-            "\nPORTE les fonctions utilisées — mêmes seuils, mêmes constantes, mêmes "
-            "libellés de verdict. N'invente JAMAIS une heuristique à la place d'une "
-            "fonction d'un module ci-dessus : le vérificateur compare au module source "
-            "et rejette toute réimplémentation non équivalente (mesuré CoursIA#28208 : "
-            "six tours perdus à ce motif).\n")
+            "\nJuge la RECETTE À L'IDENTIQUE **sur ces définitions**. Un LIVRABLE qui réécrit "
+            "en C# la MÊME définition (mêmes entrées, mêmes paramètres, même quantité mesurée, "
+            "mêmes sorties) est une RÉIMPLÉMENTATION FIDÈLE — le geste attendu quand la "
+            "bibliothèque n'a pas d'équivalent .NET — et n'est PAS une substitution, même "
+            "s'il ne subsiste aucun appel de bibliothèque dans le carnet. SUBSTITUTION, c'est "
+            "une AUTRE méthode qui mesure autre chose : là, rejette en nommant, ligne à ligne, "
+            "ce que la définition ci-dessus calcule et ce que le LIVRABLE calcule à sa place. "
+            "N'écris jamais « ne peut pas être vérifié à partir de la SOURCE fournie » : la "
+            "définition est ci-dessus, compare-les (mesuré CoursIA#27742 : huit tours de "
+            "révision perdus à cette phrase, le port étant fidèle).\n")
 
 
 def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel: dict,

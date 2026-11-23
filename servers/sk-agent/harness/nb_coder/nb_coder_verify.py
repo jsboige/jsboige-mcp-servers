@@ -219,10 +219,15 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                   conventions: str, src_digest: list[dict] | None = None,
                   built_digest: list[dict] | None = None,
                   diffs: list[dict] | None = None, mode: str = "source",
-                  built_outputs: dict | None = None, prior: dict | None = None) -> str:
+                  built_outputs: dict | None = None, prior: dict | None = None,
+                  modules: list | None = None) -> str:
+    """``modules`` (23/11 soir): the SOURCE's local .py modules, the SAME renderings the
+    builder's creation and revision prompts carry. Without them the verifier reads less
+    than the builder and can only reject a faithful reimplementation as unverifiable
+    (CoursIA#27742: « ne peut pas être vérifié, à partir de la SOURCE fournie »)."""
     spec = mode == "spec"
-    annex = ""
     if spec:
+        modules = None      # a [SPEC] twin imports nothing local
         # 20/11 --from-spec: digests/diffs against a [SPEC] twin are noise (every cell
         # "edited", every source digest empty). The views show SOURCES only, so the
         # deliverable's outputs come in their own annex (IT08 #27460: rejected as
@@ -236,6 +241,7 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                       "C'est sur ce texte que tu juges le point 2 (attendus affichés). Une "
                       "coupe est toujours signalée par `[tronqué : …]`.\n"
                       f"{json.dumps(built_outputs, ensure_ascii=False, indent=1)}\n\n")
+    annex = ""
     if src_digest is not None and built_digest is not None:
         annex += ("## Annexe sorties — empreintes par cellule code (source | livrable)\n"
                   "Chaque entrée : cell, n=nombre de blocs de sortie, types, bytes, "
@@ -281,6 +287,7 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         + (f"## SOURCE — jumeau de spec (plan imposé, généré par le harnais)\n{src_view}\n\n"
            if spec else
            f"## SOURCE — carnet d'origine (branche main, RÉFÉRENCE)\n{src_view}\n\n")
+        + nbcd.local_module_verifier_block(modules)
         + f"## LIVRABLE — carnet produit (À VÉRIFIER)\n{built_view}\n\n"
         + annex
         + "## Faits mécaniques du harnais (des AFFIRMATIONS du producteur — à contre-vérifier "
@@ -348,7 +355,17 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
         "Graphique/Formatter) alors que la colonne « Équivalent .NET » nomme un package "
         "(ScottPlot…) n'est PAS un rejet : la colonne est indicative, la convention est "
         "binding. Mesuré 23/11, fournée o15, CoursIA#27742 (rejet « ScottPlot non utilisé » "
-        "alors que les jumeaux ICT-15f/15i mergés dessinent en SVG).\n\n"
+        "alors que les jumeaux ICT-15f/15i mergés dessinent en SVG).\n"
+        "- Une **RÉIMPLÉMENTATION fidèle d'un module local** : la SOURCE appelle des "
+        "fonctions définies dans les modules ci-dessus (`spectral_summary`, "
+        "`sensitivity_distribution`, …) ; un LIVRABLE qui réécrit en C# la MÊME définition "
+        "— mêmes entrées, mêmes paramètres, même quantité mesurée, mêmes sorties — n'est PAS "
+        "une substitution, et l'absence d'appel de bibliothèque n'est pas un constat. "
+        "Compare la définition et le port ligne à ligne AVANT de trancher ; rejette seulement "
+        "une AUTRE méthode qui mesure autre chose, en la nommant. Mesuré 23/11, fournée "
+        "o18, CoursIA#27742 : rejet « le degré du graphe des transitions observées ne peut "
+        "pas être vérifié … comme équivalent » alors que `local_sensitivity` compte "
+        "exactement ces voisins.\n\n"
         "Rends UNIQUEMENT un bloc ```json :\n"
         '{"verdict":"approve|reject","findings":[{"cell":<index du LIVRABLE>,"severity":"major|minor",'
         '"detail":"..."}],"checked":["..."]}\n'
@@ -496,7 +513,11 @@ def main() -> int:
                                mode=args.mode,
                                built_outputs=(built_outputs_annex(built_p)
                                               if args.mode == "spec" else None),
-                               prior=prior)
+                               prior=prior,
+                               # the verifier reads what the builder read (23/11 soir):
+                               # never in spec mode — a [SPEC] twin imports nothing
+                               modules=(nbcd.local_modules(str(src_p))
+                                        if args.mode != "spec" else None))
         rec["prompt_chars"] = len(prompt)
         env, dt = asyncio.run(call_verifier(args, prompt))
         retry = verify_retry_reason(env, args.max_tokens)
