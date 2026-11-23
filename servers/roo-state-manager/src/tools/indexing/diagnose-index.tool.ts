@@ -17,6 +17,7 @@ import type { StoredConversation } from '../../services/unified-store/types.js';
 import { getQdrantClient } from '../../services/qdrant.js';
 import { getEmbeddingModel, getEmbeddingQueryClient } from '../../services/openai.js';
 import { resolveSearchClientTimeoutMs } from '../search/search-client-timeout.js';
+import { qdrantServerReason } from '../search/search-error-classifier.js';
 
 // #1275: Cache embedding connectivity check to avoid consuming API credits on every diagnose call.
 // TTL: 5 minutes (same as circuit breaker pattern).
@@ -442,11 +443,19 @@ export async function handleDiagnoseSemanticIndex(
                 );
                 try {
                     const probeResult: any = await qdrant.scroll(collectionName, { limit: 1, with_payload: false, with_vector: true });
-                    diagnostics.status = 'healthy';
                     diagnostics.details.collection_probe = 'readable';
                     const probePoints: any[] = Array.isArray(probeResult)
                         ? probeResult
                         : (probeResult?.points || probeResult?.result?.points || []);
+                    // An unfiltered limit-1 read that returns NO point means the
+                    // collection is empty — same verdict as the in-budget count of 0,
+                    // never a green (#3257).
+                    if (probePoints.length === 0) {
+                        diagnostics.status = 'empty_collection';
+                        diagnostics.errors.push('La collection existe mais ne contient aucun point indexé');
+                    } else {
+                        diagnostics.status = 'healthy';
+                    }
                     const firstVector = probePoints[0]?.vector;
                     // Plain number[] only — a named-vector object leaves the dimension
                     // unknown, and the search probe reports 'skipped'.
@@ -535,11 +544,20 @@ export async function handleDiagnoseSemanticIndex(
                         const elapsedMs = Date.now() - probeStartedAt;
                         diagnostics.details.search_probe_ms = elapsedMs;
                         const probeErrorType = _classifyDeepDiagnosticError(searchProbeError);
+                        // #4880: with the aligned client the SERVER budget fires first —
+                        // Qdrant answers 500 "Internal Server Error" and the reason
+                        // ("Operation 'Search' timed out") lives only in data.status.error.
+                        // That is the probe's own budget expiring, not a crash.
+                        const serverReason = qdrantServerReason(searchProbeError);
+                        const serverTimedOut = serverReason !== null && /timed out|timeout/i.test(serverReason);
+                        const probeErrorText = serverReason
+                            ? `${searchProbeError.message} — ${serverReason}`
+                            : searchProbeError.message;
                         diagnostics.status = 'degraded';
-                        if (probeErrorType === 'timeout') {
+                        if (probeErrorType === 'timeout' || serverTimedOut) {
                             diagnostics.details.search_probe = 'timeout';
                             diagnostics.warnings.push(
-                                `Sonde de recherche bornée expirée après ${elapsedMs} ms (budget serveur ${probeTimeoutSec} s): ${searchProbeError.message}`
+                                `Sonde de recherche bornée expirée après ${elapsedMs} ms (budget serveur ${probeTimeoutSec} s): ${probeErrorText}`
                             );
                             diagnostics.details.search_probe_recommendation =
                                 `La recherche vectorielle bornée a expiré après ${elapsedMs} ms (budget serveur ${probeTimeoutSec} s) : la latence de lecture est ` +
@@ -548,10 +566,10 @@ export async function handleDiagnoseSemanticIndex(
                         } else {
                             diagnostics.details.search_probe = 'error';
                             diagnostics.warnings.push(
-                                `Sonde de recherche bornée échouée: ${searchProbeError.message}`
+                                `Sonde de recherche bornée échouée: ${probeErrorText}`
                             );
                             diagnostics.details.search_probe_recommendation =
-                                `La recherche vectorielle bornée a échoué (${searchProbeError.message}). ` +
+                                `La recherche vectorielle bornée a échoué (${probeErrorText}). ` +
                                 'NE PAS réinitialiser la collection sur ce seul verdict — vérifiez la latence et la charge du serveur Qdrant.';
                         }
                     }

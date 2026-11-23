@@ -441,7 +441,7 @@ describe('diagnose-index.tool (unit tests)', () => {
 		});
 
 		it('keeps the count off the verdict when a bounded real read succeeds (count IO-bound, not a fault)', async () => {
-			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+			mockQdrantClient.scroll.mockResolvedValue({ points: [{ id: 'p1' }] });
 
 			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
 
@@ -505,8 +505,20 @@ describe('diagnose-index.tool (unit tests)', () => {
 			}
 		});
 
-		it('recommends no collection action when readable despite metadata failure', async () => {
+		it('reports empty_collection, never healthy, when the deferred bounded read returns NO point', async () => {
 			mockQdrantClient.scroll.mockResolvedValue({ points: [] });
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			// Same verdict as the in-budget count of 0 (#3257: no false green).
+			expect(parsed.details.collection_info.status).toBe('io_bound_pending');
+			expect(parsed.details.collection_probe).toBe('readable');
+			expect(parsed.status).toBe('empty_collection');
+			expect(parsed.errors).toContain('La collection existe mais ne contient aucun point indexé');
+		});
+
+		it('recommends no collection action when readable despite metadata failure', async () => {
+			mockQdrantClient.scroll.mockResolvedValue({ points: [{ id: 'p1' }] });
 
 			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
 
@@ -1733,6 +1745,36 @@ describe('diagnose-index.tool (unit tests)', () => {
 
 			expect(parsed.details.search_probe).toBe('error');
 			expect(parsed.status).toBe('degraded');
+		});
+
+		// #4880: the production shape since ms#1892 — the server budget fires before
+		// the client abort, so the client throws a bare 500 "Internal Server Error"
+		// with the reason only in data.status.error.
+		const qdrantServerError = (reason: string) => Object.assign(new Error('Internal Server Error'), {
+			status: 500,
+			data: { status: { error: reason } }
+		});
+
+		it('labels the SERVER-side search timeout (500, reason in data.status.error) as a timeout', async () => {
+			mockQdrantClient.query.mockRejectedValue(qdrantServerError(
+				"Service internal error: 1 of 1 read operations failed:\n  Timeout error: Operation 'Search' timed out"
+			));
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('timeout');
+			expect(parsed.status).toBe('degraded');
+			expect(parsed.warnings.some((w: string) => w.includes("Operation 'Search' timed out"))).toBe(true);
+			expect(parsed.details.search_probe_recommendation).toContain('NE PAS réinitialiser');
+		});
+
+		it('keeps a non-timeout server 500 as an error, with the server reason in the wording', async () => {
+			mockQdrantClient.query.mockRejectedValue(qdrantServerError('Service internal error: segment is not ready'));
+
+			const parsed = JSON.parse((await handleDiagnoseSemanticIndex(conversationCache)).content[0].text);
+
+			expect(parsed.details.search_probe).toBe('error');
+			expect(parsed.warnings.some((w: string) => w.includes('segment is not ready'))).toBe(true);
 		});
 
 		it('runs the probe on the aligned search client (abort above the server budget)', async () => {
