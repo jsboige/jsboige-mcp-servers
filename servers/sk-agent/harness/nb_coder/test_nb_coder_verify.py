@@ -210,6 +210,25 @@ def test_prompt_fences_out_pr_stage_repo_artifacts():
     assert "APRÈS ton verdict" in p
 
 
+def test_prompt_does_not_demand_a_solved_exercise_and_judges_parity_against_the_twin():
+    """CoursIA#28208 (23/11): the verifier rejected EIGHT revision rounds on a single
+    major -- « la bisection sur les verdicts mesurés ne localise pas le mur w=l à
+    ±0,01 ». Measured on the source: no executed bisection exists. Cell 18 is a
+    five-row table of measured regimes, and cell 25 is « Exercice 3 -- bisection sur
+    w » with `mur_exo3 = None  # TODO etudiant` printing « Exercice a completer ».
+    The verifier was therefore demanding the resolution of a student exercise, and it
+    compared a MEASURED finite-horizon detector threshold to the ANALYTIC wall. Both
+    shapes are unsatisfiable by construction, so the prompt must fence them out."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "exercice que la SOURCE laisse en TODO" in p
+    assert "TODO etudiant" in p
+    assert "stub compilable est le port" in p
+    assert "ne demande pas " in p and "de résoudre l'exercice" in p
+    assert "MESURÉE" in p and "seuil théorique" in p
+    assert "Juge la parité contre le jumeau" in p
+
+
 # ------------------------------------------------- call errors reach the trace (21/11)
 
 
