@@ -101,3 +101,39 @@ def test_relachee_requalifies_only_after_the_wait(tmp_path):
     clock["t"] = g["not_before"] + 1
     assert sched.tick()["launched"] == 1
     assert g["status"] == "running" and g["attempts"] == 2
+
+
+# A --revise-from launch refused at its reservation step WRAPS the inner verdict
+# (ms#1859's driver). Measured live 23/11 on CoursIA#28069: the wrapped RELACHEE
+# sailed past the exact-match deferral and terminated the grain.
+@pytest.mark.parametrize("inner,deferred_kind", [
+    (S.CLAIM_RELEASED_VERDICT, "qualification-deferred"),
+    ("deferred-by-capacity-gate:yellow", "deferred"),
+])
+def test_revise_wrapped_verdicts_classify_on_the_inner_form(tmp_path, inner, deferred_kind):
+    clock = {"t": 1000.0}
+    wrapped = S.REVISE_REFUSAL_PREFIX + inner
+    sched = _sched(tmp_path, [wrapped], clock)
+    sched.tick()
+    clock["t"] += 10
+    sched.tick()
+    g = sched.state["grains"]["#1:Dir/N1.ipynb"]
+    assert g["status"] == "deferred"
+    assert g["last_verdict"] == inner, "state records the UNWRAPPED form"
+    events = [json.loads(line) for line in
+              (sched.state_dir / "scheduler.jsonl").read_text().splitlines()]
+    assert any(e["kind"] == deferred_kind for e in events)
+    assert not any(e["kind"] == "failed" for e in events)
+
+
+def test_revise_wrapped_permanent_qualification_stays_terminal(tmp_path):
+    clock = {"t": 1000.0}
+    wrapped = S.REVISE_REFUSAL_PREFIX + "refused-claim-not-qualified:GEL"
+    sched = _sched(tmp_path, [wrapped], clock)
+    sched.tick()
+    clock["t"] += 10
+    sched.tick()
+    g = sched.state["grains"]["#1:Dir/N1.ipynb"]
+    assert g["status"] == "failed"
+    assert g["last_verdict"] == "refused-claim-not-qualified:GEL"
+    assert sched.state["ramp"]["admission_failed"] == 1
