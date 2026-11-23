@@ -11,7 +11,7 @@ import { handleSearchTasksSemanticFallback } from './search-fallback.tool.js';
 import { getHostIdentifier, splitChunkId } from '../../services/task-indexer/ChunkExtractor.js';
 import { resetEmbeddingCircuitBreaker as resetWriteCircuitBreaker } from '../../services/task-indexer/VectorIndexer.js';
 import { parseFilterDate, isWithinDateRange } from '../../utils/date-filters.js';
-import { classifySearchError, formatClassifiedError } from './search-error-classifier.js';
+import { classifySearchError, formatClassifiedError, qdrantServerReason } from './search-error-classifier.js';
 import { resolveSearchClientTimeoutMs } from './search-client-timeout.js';
 import { getUnifiedStoreReader } from '../../services/unified-store/reader-factory.js';
 import type { StoredConversation, UnifiedStoreSearchFilters } from '../../services/unified-store/types.js';
@@ -555,6 +555,29 @@ function isConnectPhaseTimeout(error: unknown): boolean {
     const code = (error as any)?.code;
     const causeCode = (error as any)?.cause?.code;
     return code === 'UND_ERR_CONNECT_TIMEOUT' || causeCode === 'UND_ERR_CONNECT_TIMEOUT';
+}
+
+/**
+ * #4880: how a failed semantic search should ARM the breaker and be LABELLED.
+ * Since ms#1892 the server budget fires before the client abort, so the
+ * production Qdrant timeout is `Error("Internal Server Error")` with
+ * `status: 500` and the real reason only in `data.status.error` — a message-only
+ * test sees neither a 5xx nor a timeout there. The joined reason and the HTTP
+ * status are read HERE only: the retry predicates stay message-based on
+ * purpose (a server search that spent its whole budget must not be re-queued).
+ * `SEARCH_BREAKER_PER_COMPONENT=0` keeps the pre-#4880 message-only reading.
+ */
+function semanticFailureShape(error: unknown): { tripsBreaker: boolean; isTimeout: boolean } {
+    const messageTimeout = isAbortOrTimeout(error);
+    const messageServerError = isHttpServerError(error);
+    if (!isPerComponentBreakerEnabled()) {
+        return { tripsBreaker: messageServerError || messageTimeout, isTimeout: messageTimeout };
+    }
+    const reason = qdrantServerReason(error);
+    const status = (error as any)?.status;
+    const isTimeout = messageTimeout || (reason !== null && /timed out|timeout/i.test(reason));
+    const isServerError = messageServerError || (typeof status === 'number' && status >= 500);
+    return { tripsBreaker: isServerError || isTimeout, isTimeout };
 }
 
 /**
@@ -1577,10 +1600,11 @@ export const searchTasksByContentTool = {
                 chunk_type, role, tool_name, has_errors, model, start_date, end_date, exclude_tool_results, reset_circuit_breaker } = args;
 
         // #2634: Reset circuit breaker(s) on explicit request (runtime reset without VS Code restart).
-        // Two recovery surfaces are reset together so a single call restores BOTH the semantic
+        // Three recovery surfaces are reset together so a single call restores BOTH the semantic
         // SEARCH path and the INDEXING path after a Qdrant/embedding outage:
         //   1. the embedding-API breaker in THIS module (gates query embedding for search)
         //   2. the Qdrant write breaker in VectorIndexer (gates upserts during indexing)
+        //   3. the Qdrant search breaker in THIS module (#4880, see below)
         if (reset_circuit_breaker) {
             const apiWasArmed = lastEmbeddingFailureTime > 0 && (Date.now() - lastEmbeddingFailureTime) < EMBEDDING_CIRCUIT_BREAKER_TTL_MS;
             // #4880: the Qdrant search breaker is a THIRD recovery surface — one
@@ -2523,7 +2547,8 @@ export const searchTasksByContentTool = {
             // (and with SEARCH_BREAKER_PER_COMPONENT=0) every such failure armed the
             // embedding breaker, so a Qdrant timeout got reported back as
             // `embedding_circuit_breaker_active` for the whole TTL — wrong component.
-            if (isHttpServerError(semanticError) || isAbortOrTimeout(semanticError)) {
+            const failureShape = semanticFailureShape(semanticError);
+            if (failureShape.tripsBreaker) {
                 if (isPerComponentBreakerEnabled() && failedStage === 'search') {
                     lastQdrantFailureTime = Date.now();
                     console.warn(`[WARN] #4880: Qdrant search circuit breaker activated for ${QDRANT_SEARCH_CIRCUIT_BREAKER_TTL_MS / 1000}s (vector store failed or timed out)`);
@@ -2561,7 +2586,7 @@ export const searchTasksByContentTool = {
             // #4880: name the component that failed — a Qdrant timeout used to be
             // reported as `embedding_timeout` (SEARCH_BREAKER_PER_COMPONENT=0 keeps that).
             const qdrantFailed = isPerComponentBreakerEnabled() && failedStage === 'search';
-            const fallbackReason: FallbackReason = isAbortOrTimeout(semanticError)
+            const fallbackReason: FallbackReason = failureShape.isTimeout
                 ? (qdrantFailed ? 'qdrant_timeout' : 'embedding_timeout')
                 : (qdrantFailed ? 'qdrant_api_error' : 'embedding_api_error');
 

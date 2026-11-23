@@ -2974,6 +2974,67 @@ describe('helper functions (indirect via handler)', () => {
 				expect(payload.fallback_reason).toBe('embedding_timeout');
 			});
 
+			// #4880: the PRODUCTION shape since ms#1892 — the server budget (30 s) fires
+			// before the client abort (35 s), so the JS client throws a bare
+			// "Internal Server Error" with status 500 and the reason only in
+			// data.status.error (same shape as search-error-classifier.test.ts).
+			const qdrantServerError = (reason: string) => Object.assign(new Error('Internal Server Error'), {
+				status: 500,
+				data: { status: { error: reason } }
+			});
+			const SERVER_TIMEOUT_REASON = "Service internal error: 1 of 1 read operations failed:\n  Timeout error: Operation 'Search' timed out";
+
+			test('a SERVER-side Qdrant timeout (500, reason in data.status.error) arms the qdrant breaker as qdrant_timeout', async () => {
+				vi.useRealTimers();
+				_resetEmbeddingCircuitBreaker();
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: new Array(1536).fill(0.1) }]
+				});
+				mockQdrantClient.query.mockRejectedValueOnce(qdrantServerError(SERVER_TIMEOUT_REASON));
+
+				const first = getJsonPayload(await runSearch('qdrant server timeout first'));
+				expect(first.fallback_reason).toBe('qdrant_timeout');
+
+				const second = getJsonPayload(await runSearch('qdrant server timeout repeat'));
+				expect(second.fallback_reason).toBe('qdrant_circuit_breaker_active');
+				expect(second.circuit_component).toBe('qdrant');
+				// Not retried (the budget was spent) and not re-attempted while open.
+				expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
+			});
+
+			test('a Qdrant 500 that is NOT a timeout arms the qdrant breaker as qdrant_api_error', async () => {
+				vi.useRealTimers();
+				_resetEmbeddingCircuitBreaker();
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: new Array(1536).fill(0.1) }]
+				});
+				mockQdrantClient.query.mockRejectedValueOnce(qdrantServerError('Service internal error: segment is not ready'));
+
+				const first = getJsonPayload(await runSearch('qdrant server error first'));
+				expect(first.fallback_reason).toBe('qdrant_api_error');
+
+				const second = getJsonPayload(await runSearch('qdrant server error repeat'));
+				expect(second.fallback_reason).toBe('qdrant_circuit_breaker_active');
+				expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
+			});
+
+			test('kill switch =0 keeps the pre-#4880 message-only reading of the server-timeout shape', async () => {
+				vi.useRealTimers();
+				_resetEmbeddingCircuitBreaker();
+				process.env.SEARCH_BREAKER_PER_COMPONENT = '0';
+				mockOpenAIClient.embeddings.create
+					.mockResolvedValueOnce({ data: [{ embedding: new Array(1536).fill(0.1) }] })
+					.mockResolvedValueOnce({ data: [{ embedding: new Array(1536).fill(0.1) }] });
+				mockQdrantClient.query.mockRejectedValueOnce(qdrantServerError(SERVER_TIMEOUT_REASON));
+
+				const first = getJsonPayload(await runSearch('legacy server timeout first'));
+				expect(first.fallback_reason).toBe('embedding_api_error');
+
+				// Legacy: the bare message trips no breaker, so the next call searches again.
+				await runSearch('legacy server timeout repeat');
+				expect(mockQdrantClient.query).toHaveBeenCalledTimes(2);
+			});
+
 			test('an embedding failure still arms the EMBEDDING breaker, reason unchanged', async () => {
 				vi.useFakeTimers();
 				_resetEmbeddingCircuitBreaker();
