@@ -465,9 +465,16 @@ describe('handleDiagnoseSemanticIndex', () => {
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);
 
-            expect(diag.errors.length).toBeGreaterThan(0);
-            const errorText = diag.errors.join(' ');
-            expect(errorText).toContain('Timeout reading collection');
+            // #4880 criterion 2 — a getCollection timeout is the exhaustive COUNT
+            // being slow (IO-bound, not a fault): the raw message is kept in
+            // warnings, and the bounded read decides the status (this mock has no
+            // scroll implementation, so the read itself fails → collection_error).
+            expect(mockQdrant.getCollection).toHaveBeenCalled();
+            const warningText = diag.warnings.join(' ');
+            expect(warningText).toContain('Timeout reading collection');
+            expect(warningText).toContain('IO-bound, pas une panne');
+            expect(diag.details.collection_info.status).toBe('io_bound_pending');
+            expect(diag.status).toBe('collection_error');
         });
 
         it('should return collection_error when getCollections succeeds but getCollection fails', async () => {

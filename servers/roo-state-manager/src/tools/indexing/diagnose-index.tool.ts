@@ -179,6 +179,63 @@ export function _classifyDeepDiagnosticError(
 }
 
 /**
+ * #4880 criterion 2 — budget for the collection metadata call.
+ *
+ * `getCollection()` triggers an exhaustive point count: on the 15 M-point
+ * conversation collection it can burn the whole client timeout (measured
+ * ~15 s on ai-01, 23/11). The exact count is an IO-bound metric, not a health
+ * signal, so diagnose waits at most this budget and then continues on a
+ * bounded read.
+ *
+ * `DIAGNOSE_COLLECTION_INFO_BUDGET_MS` — non-numeric or <= 0 falls back to
+ * the 5 s default. Kill switch `DIAGNOSE_COUNT_OFF_PATH=0` restores the
+ * pre-fix behaviour exactly (unbounded await + #3217 path on every failure).
+ */
+const COLLECTION_INFO_DEFAULT_BUDGET_MS = 5000;
+
+function _collectionInfoBudgetMs(): number {
+    const raw = parseInt(process.env.DIAGNOSE_COLLECTION_INFO_BUDGET_MS ?? '', 10);
+    return Number.isFinite(raw) && raw > 0 ? raw : COLLECTION_INFO_DEFAULT_BUDGET_MS;
+}
+
+type CollectionInfoOutcome =
+    | { kind: 'resolved'; info: any }
+    | { kind: 'rejected'; error: any }
+    | { kind: 'budget_expired' };
+
+/**
+ * #4880 criterion 2 — await `getCollection` for at most `budgetMs`.
+ *
+ * Never rejects: the caller branches on the outcome. A rejection arriving
+ * after the budget expired is swallowed by the `.catch` below so it cannot
+ * surface as an unhandled rejection.
+ */
+async function _getCollectionWithinBudget(
+    qdrant: ReturnType<typeof getQdrantClient>,
+    collectionName: string,
+    budgetMs: number
+): Promise<CollectionInfoOutcome> {
+    // Promise.resolve().then(...) turns a synchronous throw into a rejection so
+    // the caller's catch handles it exactly like the unbounded await did.
+    const infoPromise: Promise<any> = Promise.resolve().then(() => qdrant.getCollection(collectionName));
+    infoPromise.catch(() => {});
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race<CollectionInfoOutcome>([
+            infoPromise.then(
+                info => ({ kind: 'resolved' as const, info }),
+                error => ({ kind: 'rejected' as const, error })
+            ),
+            new Promise<CollectionInfoOutcome>(resolve => {
+                timer = setTimeout(() => resolve({ kind: 'budget_expired' }), budgetMs);
+            }),
+        ]);
+    } finally {
+        if (timer !== undefined) clearTimeout(timer);
+    }
+}
+
+/**
  * Options for the diagnose tool. All optional — preserves backward compatibility.
  */
 export interface DiagnoseIndexOptions {
@@ -278,44 +335,123 @@ export async function handleDiagnoseSemanticIndex(
         if (collection) {
             diagnostics.details.collection_exists = true;
 
+            // #4880 criterion 2 — the exact count must not sit on the critical
+            // path. `DIAGNOSE_COUNT_OFF_PATH=0` restores the pre-fix behaviour.
+            const countOffPath = process.env.DIAGNOSE_COUNT_OFF_PATH !== '0';
+            const collectionInfoBudgetMs = _collectionInfoBudgetMs();
+            let collectionInfoResolved = false;
+            let collectionInfoDeferred = false;
+            let collectionInfoDeferredReason = '';
+
             // Obtenir des informations sur la collection
             try {
-                const collectionInfo = await qdrant.getCollection(collectionName);
-                const dimVal = (collectionInfo.config?.params?.vectors as any)?.size;
-                collectionDimension = typeof dimVal === 'number' ? dimVal : undefined;
-
-                diagnostics.details.collection_info = {
-                    vectors_count: (collectionInfo as any).vectors_count,
-                    indexed_vectors_count: collectionInfo.indexed_vectors_count || 0,
-                    points_count: collectionInfo.points_count,
-                    config: {
-                        distance: (collectionInfo.config?.params?.vectors as any)?.distance || 'unknown',
-                        size: dimVal ?? 'unknown',
-                    },
-                };
-
-                if (collectionInfo.points_count === 0) {
-                    diagnostics.status = 'empty_collection';
-                    diagnostics.errors.push('La collection existe mais ne contient aucun point indexé');
+                let collectionInfo: any = undefined;
+                if (countOffPath) {
+                    const outcome = await _getCollectionWithinBudget(qdrant, collectionName, collectionInfoBudgetMs);
+                    if (outcome.kind === 'resolved') {
+                        collectionInfo = outcome.info;
+                        collectionInfoResolved = true;
+                    } else if (outcome.kind === 'budget_expired') {
+                        collectionInfoDeferred = true;
+                        collectionInfoDeferredReason = `getCollection n'a pas répondu en ${collectionInfoBudgetMs} ms`;
+                    } else {
+                        throw outcome.error;
+                    }
                 } else {
-                    diagnostics.status = 'healthy';
+                    collectionInfo = await qdrant.getCollection(collectionName);
+                    collectionInfoResolved = true;
+                }
+
+                if (collectionInfoResolved) {
+                    const dimVal = (collectionInfo.config?.params?.vectors as any)?.size;
+                    collectionDimension = typeof dimVal === 'number' ? dimVal : undefined;
+
+                    diagnostics.details.collection_info = {
+                        vectors_count: (collectionInfo as any).vectors_count,
+                        indexed_vectors_count: collectionInfo.indexed_vectors_count || 0,
+                        points_count: collectionInfo.points_count,
+                        config: {
+                            distance: (collectionInfo.config?.params?.vectors as any)?.distance || 'unknown',
+                            size: dimVal ?? 'unknown',
+                        },
+                    };
+
+                    if (collectionInfo.points_count === 0) {
+                        diagnostics.status = 'empty_collection';
+                        diagnostics.errors.push('La collection existe mais ne contient aucun point indexé');
+                    } else {
+                        diagnostics.status = 'healthy';
+                    }
                 }
             } catch (collectionInfoError: any) {
-                diagnostics.errors.push(`Erreur lors de l'accès à la collection: ${collectionInfoError.message}`);
-                // #3217 — getCollection() triggers an exhaustive point count that can
-                // exceed the client timeout on large collections ("This operation was
-                // aborted"), reporting collection_error for a collection a real search
-                // traverses in under a second. Ground truth before declaring error:
-                // probe with a bounded read (scroll limit 1 — no vector, so no
-                // dependency on the embedding backend).
+                const collectionInfoErrorType = _classifyDeepDiagnosticError(collectionInfoError);
+                if (countOffPath && (collectionInfoErrorType === 'timeout' || collectionInfoErrorType === 'caller_cancelled')) {
+                    // #4880 criterion 2 — a timeout/abort on the exhaustive count is
+                    // the COUNT being slow (IO-bound), not a collection fault. Defer
+                    // it: the bounded read + search probe decide the verdict.
+                    collectionInfoDeferred = true;
+                    collectionInfoDeferredReason = collectionInfoError.message;
+                } else {
+                    diagnostics.errors.push(`Erreur lors de l'accès à la collection: ${collectionInfoError.message}`);
+                    // #3217 — getCollection() triggers an exhaustive point count that can
+                    // exceed the client timeout on large collections ("This operation was
+                    // aborted"), reporting collection_error for a collection a real search
+                    // traverses in under a second. Ground truth before declaring error:
+                    // probe with a bounded read (scroll limit 1 — no vector, so no
+                    // dependency on the embedding backend).
+                    try {
+                        await qdrant.scroll(collectionName, { limit: 1, with_payload: false, with_vector: false });
+                        diagnostics.status = 'degraded';
+                        diagnostics.details.collection_probe = 'readable';
+                        diagnostics.errors.push(
+                            'Statut rétrogradé collection_error→degraded : lecture de test réussie — ' +
+                            "seul l'appel de métadonnées (comptage exhaustif) a échoué, la collection reste accessible."
+                        );
+                    } catch (probeError: any) {
+                        const probeErrorType = _classifyDeepDiagnosticError(probeError);
+                        diagnostics.details.collection_probe_error_type = probeErrorType;
+                        if (probeErrorType === 'timeout') {
+                            diagnostics.status = 'degraded';
+                            diagnostics.details.collection_probe = 'timeout';
+                            diagnostics.errors.push(
+                                `Lecture bornée expirée après QDRANT_TIMEOUT_MS=${process.env.QDRANT_TIMEOUT_MS || '15000'}: ${probeError.message}`
+                            );
+                        } else {
+                            diagnostics.status = 'collection_error';
+                            diagnostics.details.collection_probe = 'unreadable';
+                            diagnostics.errors.push(`Lecture de test échouée: ${probeError.message}`);
+                        }
+                    }
+                }
+            }
+
+            if (collectionInfoDeferred) {
+                // #4880 criterion 2 — the count is IO-bound, not a health signal.
+                // Record the approximation, then ONE bounded read (with the vector,
+                // so the dimension can feed the search probe) decides readability.
+                diagnostics.details.collection_info = {
+                    status: 'io_bound_pending',
+                    budget_ms: collectionInfoBudgetMs,
+                };
+                diagnostics.warnings.push(
+                    `Comptage exact des points non obtenu dans le budget ${collectionInfoBudgetMs} ms ` +
+                    `(IO-bound, pas une panne) : ${collectionInfoDeferredReason}. ` +
+                    'Le comptage exhaustif reste hors du chemin critique du diagnostic : ' +
+                    'la lecture bornée ci-dessous et la sonde de recherche décident du statut.'
+                );
                 try {
-                    await qdrant.scroll(collectionName, { limit: 1, with_payload: false, with_vector: false });
-                    diagnostics.status = 'degraded';
+                    const probeResult: any = await qdrant.scroll(collectionName, { limit: 1, with_payload: false, with_vector: true });
+                    diagnostics.status = 'healthy';
                     diagnostics.details.collection_probe = 'readable';
-                    diagnostics.errors.push(
-                        'Statut rétrogradé collection_error→degraded : lecture de test réussie — ' +
-                        "seul l'appel de métadonnées (comptage exhaustif) a échoué, la collection reste accessible."
-                    );
+                    const probePoints: any[] = Array.isArray(probeResult)
+                        ? probeResult
+                        : (probeResult?.points || probeResult?.result?.points || []);
+                    const firstVector = probePoints[0]?.vector;
+                    // Plain number[] only — a named-vector object leaves the dimension
+                    // unknown, and the search probe reports 'skipped'.
+                    if (Array.isArray(firstVector) && firstVector.length > 0) {
+                        collectionDimension = firstVector.length;
+                    }
                 } catch (probeError: any) {
                     const probeErrorType = _classifyDeepDiagnosticError(probeError);
                     diagnostics.details.collection_probe_error_type = probeErrorType;
@@ -719,7 +855,10 @@ export async function handleDiagnoseSemanticIndex(
             + 'mesurer la latence Qdrant avant de l\'augmenter. Ne pas réinitialiser la collection sur ce seul verdict.'
         );
     }
-    if (diagnostics.details.collection_probe === 'readable') {
+    if (diagnostics.details.collection_probe === 'readable' &&
+        diagnostics.details.collection_info?.status !== 'io_bound_pending') {
+        // #4880 criterion 2 — the io_bound case is already explained by its warning
+        // and may end `healthy`: keep the "healthy = 0 recommendations" contract.
         recommendations.push(
             "L'appel de métadonnées (comptage exhaustif des points) a échoué, mais une lecture réelle " +
             'réussit — la recherche sémantique reste opérationnelle, aucune action requise sur la collection.'
