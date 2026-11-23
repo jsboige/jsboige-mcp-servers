@@ -6880,6 +6880,7 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         entry["draft_backup"] = str(backup)
         t0 = time.time()
         applied = False
+        contested_only = False
         async with mcp_sessions(out_dir) as (sk, pm):
             api_block = ""
             if source_in == "execution" and kname.startswith(".net"):
@@ -6897,9 +6898,21 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
             entry["conversation_id"] = env.get("conversation_id")
             part, env = await parse_or_repair(sk, args, rec, f"6-revise+{rnd}", env, None,
                                               max_tokens=BUILD_MAX_TOKENS)
-            if not part or not part.get("cells"):
+            if not part:
                 entry["result"] = (gate_refusal(env) or call_failure(env) or "unparsed")
                 entry["raw_tail"] = (env.get("response") or "")[-1500:]
+            elif not part.get("cells") and part.get("contested"):
+                # A valid, cell-free answer is the documented contest path, not a malformed
+                # reply. CoursIA#27288 (23/11, o1/Terra): the builder correctly explained
+                # that the twin's gitignored Ciqual/RecipeML corpora were absent; the old
+                # branch discarded that reply as "unparsed". No cell changed, so the draft
+                # needs neither a new kernel nor the gates. The independent verifier sees
+                # the contest, and a maintained reject stops this invocation.
+                entry["apply"] = {"replaced": [], "unknown_idx": [], "bad": [],
+                                  "type_changed": []}
+                entry["addressed"] = part.get("addressed") or []
+                entry["contested"] = part.get("contested")
+                entry["result"] = "contested-only"
             else:
                 rep = apply_revision(built_path, part)
                 entry["apply"] = rep
@@ -6930,11 +6943,15 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                                                   "kernel_id": rec["kernel_id"]})
                     execution_verdict(rec, built_path)
         entry["elapsed_build_s"] = round(time.time() - t0, 1)
-        if not applied:
+        contested_only = entry.get("result") == "contested-only"
+        if not applied and not contested_only:
             break                       # the draft is untouched; verdict stays verify-reject
-        # No structure re-check: apply_revision never inserts, deletes or re-types a cell,
-        # and verify_structure_create would now flag the re-executed outputs as stale.
-        entry["exec_verdict"] = rec["verdict"]
+        if contested_only:
+            # No cell changed: re-execution and gates would only rewrite the artifact
+            # that was just judged. Re-enter ONLY the independent verification stage,
+            # with the builder's contest attached as the claims to counter-check.
+            rec["verdict"] = "gates-ok"
+        entry["exec_verdict"] = "contested-only" if contested_only else rec["verdict"]
         prior = {"round": rnd, "findings": findings, "addressed": entry.get("addressed"),
                  "contested": entry.get("contested")}
         gates_then_verify(args, rec, src_nb, built_path, create_mode, kname, wt_path, out_dir,
@@ -6948,6 +6965,11 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
             entry["majors_out"] = sum(1 for f in out if f.get("severity") == "major")
         entry["elapsed_s"] = round(time.time() - t0, 1)
         done += 1
+        if contested_only:
+            # The unchanged draft was independently judged once. Looping would ask the
+            # builder to contest the same findings again; a resumed invocation may add
+            # missing data or a new strategy before paying another revision.
+            break
         if (rec.get("verdict") == "verify-reject"
                 and revise_round_extends(done, budget, cap, source_in,
                                          (rec.get("verify") or {}).get("source"),

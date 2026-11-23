@@ -1,3 +1,8 @@
+# --- provenance (roo-extensions #4781 harness mutualisation) -----------------
+# Copied verbatim from jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
+# original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_port_content_rules.py
+# Source of truth: jsboige/jsboige-mcp-servers since ms#1860.
+# -----------------------------------------------------------------------------
 #!/usr/bin/env python3
 """Offline tests: the two content rules a port must follow, in the prompts that write code.
 

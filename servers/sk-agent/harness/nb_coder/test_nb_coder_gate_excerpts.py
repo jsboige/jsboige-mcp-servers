@@ -1,3 +1,8 @@
+# --- provenance (roo-extensions #4781 harness mutualisation) -----------------
+# Copied verbatim from jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
+# original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_gate_excerpts.py
+# Source of truth: jsboige/jsboige-mcp-servers since ms#1860.
+# -----------------------------------------------------------------------------
 #!/usr/bin/env python3
 """Offline tests: gate findings a reviser can act on — 2026-11-22 salvage.
 

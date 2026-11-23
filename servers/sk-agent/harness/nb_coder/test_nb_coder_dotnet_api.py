@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# --- provenance (roo-extensions #4781 harness mutualisation) -----------------
+# Copied verbatim from jsboige/vllm @ 7a09e1caec22441d9402ab25a222206c8905bfe1
+# original path: myia_vllm/scripts/adoption/nb_coder/test_nb_coder_dotnet_api.py
+# Source of truth: jsboige/jsboige-mcp-servers since ms#1860.
+# -----------------------------------------------------------------------------
 """Offline tests for .NET API grounding of repair and revision rounds — 2026-11-22.
 
 ICT-15 C# salvage (CoursIA#27735/27736/27740/27741): every grain died built-execution-failed

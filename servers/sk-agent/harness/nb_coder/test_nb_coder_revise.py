@@ -413,6 +413,42 @@ def test_an_unparsed_revision_keeps_the_reject_and_the_draft(monkeypatch, tmp_pa
     assert calls["kernels"] == 0 and calls["verify"] == []
 
 
+def test_contested_only_is_a_verifiable_reply_not_an_unparsed_one(monkeypatch, tmp_path):
+    """CoursIA#27288, o1 (23/11): Terra parsed cleanly, returned no edits and contested the
+    three missing-data findings. The old branch reported that answer as `unparsed` and never
+    gave the verifier the builder's explanation. Nothing changes on disk, so no kernel is paid.
+    A maintained reject is final for this invocation, not a loop over the same unchanged draft.
+    """
+    built = _nb(tmp_path)
+    before = built.read_bytes()
+    answer = ('**Awaiting required data**```json\n'
+              '{"cells":[],"addressed":[],"contested":'
+              '[{"cell":1,"why":"Les corpus Ciqual et RecipeML sont absents."}]}\n```')
+    calls = _fake_engine(monkeypatch, [answer], [("reject", FINDINGS)])
+    rec = _rejected_rec()
+    _loop(_loop_args(revise_rounds=3), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-reject" and built.read_bytes() == before
+    assert len(rec["revisions"]) == 1
+    entry = rec["revisions"][0]
+    assert entry["result"] == "verify-reject"
+    assert entry["exec_verdict"] == "contested-only"
+    assert calls["kernels"] == 0 and calls["stops"] == 0
+    assert calls["verify"][0]["contested"] == [
+        {"cell": 1, "why": "Les corpus Ciqual et RecipeML sont absents."}]
+
+
+def test_a_verifier_can_resolve_a_contested_finding_without_an_edit(monkeypatch, tmp_path):
+    built = _nb(tmp_path)
+    before = built.read_bytes()
+    answer = '```json\n{"cells":[],"contested":[{"cell":2,"why":"déjà qualifiée"}]}\n```'
+    calls = _fake_engine(monkeypatch, [answer], [("approve", [])])
+    rec = _rejected_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-approved" and built.read_bytes() == before
+    assert rec["revisions"][0]["result"] == "verify-approved"
+    assert calls["kernels"] == 0
+
+
 def test_a_revision_that_applies_nothing_stops(monkeypatch, tmp_path):
     built = _nb(tmp_path)
     bad = '```json\n{"cells":[{"idx":1,"cell_type":"markdown","source":"x"}]}\n```'
