@@ -437,6 +437,13 @@ def _run_claim_guard(argv: list[str], repo: Path):
 # notebook (or whose file list cannot be trusted) still refuses; a disjoint one defers,
 # because the occupation ends when that PR merges -- the scheduler retries with backoff.
 CLAIM_IMPLICIT_VERDICT = "deferred-by-claim-implicit-occupation"
+# 22/11 (salvage, CoursIA#28064..#28081): the guard's consumer-side QUALIFICATION also
+# exits 1, before any claim is read -- e.g. RELACHEE, the issue's last marker is a
+# [RELEASED] younger than the window, OUR OWN lane's included. The driver read every
+# rc=1 as "held by another lane": seven grains were reported as cross-lane collisions
+# that did not exist. The code is read from the guard's `[QUALIFICATION] <CODE> :` line.
+CLAIM_NOT_QUALIFIED_VERDICT = "refused-claim-not-qualified"
+_QUALIFICATION_RE = re.compile(r"\[QUALIFICATION\]\s+([A-Z][A-Z_]*)\s*:")
 # GitHub's PR payload previews at most 100 files: a list that long may hide ours.
 _PR_FILES_PREVIEW_CAP = 100
 
@@ -501,10 +508,23 @@ def implicit_verdict(cc: dict) -> str:
         f"#{i.get('number')}" for i in implicit)
 
 
+def qualification_code(cc: dict) -> str | None:
+    """The guard's `[QUALIFICATION] <CODE>` (RELACHEE, GEL, LABEL, HORSFLOTTE...), or None.
+
+    Printed on stderr; `_guard_result` keeps it in `out` (no stdout) or `warnings`."""
+    for key in ("out", "warnings"):
+        m = _QUALIFICATION_RE.search(cc.get(key) or "")
+        if m:
+            return m.group(1)
+    return None
+
+
 def claim_verdict(cc: dict) -> str | None:
     """Fail-closed reading of a SCOPED claim check (#466).
 
-    rc=1  -> a live claim conflicts on THIS notebook's path: refuse.
+    rc=1  -> the grain is not qualified (`[QUALIFICATION] <CODE>`, e.g. a recent
+             [RELEASED]): refuse under that code, never as a cross-lane collision.
+             Otherwise a live claim conflicts on THIS notebook's path: refuse.
     rc=2  -> the scoped check still cannot decide (old script without --paths, path
              absent from every open diff): refuse rather than run unprotected -- the
              pre-#466 driver treated this as pass-through.
@@ -519,6 +539,9 @@ def claim_verdict(cc: dict) -> str | None:
         return f"{CLAIM_TIMEOUT_VERDICT}:check"
     rc = cc.get("rc")
     if rc == 1:
+        code = qualification_code(cc)
+        if code:
+            return f"{CLAIM_NOT_QUALIFIED_VERDICT}:{code}"
         return "refused-claim-held-by-another-lane"
     if rc is None:
         return "refused-claim-check-broken"
@@ -1018,6 +1041,69 @@ def series_canonical_meta(repo: Path, rel: str) -> dict:
         except Exception:
             continue
     return {}
+
+
+# A target's language tag names the only kernelspec its notebook may declare. Measured
+# 22/11 on CoursIA#27996 (Complexity-07c-…-Rust): the queue's --meta-from pointed at the
+# C# twin (the porting reference), so the Rust port shipped `.net-csharp` metadata while
+# --kernel-override rust executed it — every gate green, the maintainer's review red.
+TAG_KERNELS = {"Rust": "rust", "CSharp": ".net-csharp"}
+
+
+def tag_kernel(rel: str) -> str | None:
+    """Kernelspec name the target's language tag requires (None: tag not constrained)."""
+    stem = Path(rel or "").stem
+    return TAG_KERNELS.get(stem.rsplit("-", 1)[1]) if "-" in stem else None
+
+
+def meta_for_kernel(repo: Path, rel: str, kernel_name: str) -> dict:
+    """kernelspec + language_info of an existing notebook whose kernelspec IS kernel_name:
+    the target's folder first (tag siblings, then any), then the notebook tree's siblings
+    carrying the same tag. {} when none — the caller refuses before any spend."""
+    d, stem = Path(rel).parent, Path(rel).stem
+    tag = stem.rsplit("-", 1)[1] if "-" in stem else ""
+    pools = [sorted((repo / d).glob(f"*-{tag}.ipynb")) if tag else [],
+             sorted((repo / d).glob("*.ipynb"))]
+    if tag:
+        pools.append(sorted(repo.glob(f"MyIA.AI.Notebooks/**/*-{tag}.ipynb")))
+    seen: set = set()
+    for pool in pools:
+        for nb in pool:
+            if nb.name == Path(rel).name or nb in seen:
+                continue
+            seen.add(nb)
+            try:
+                meta = json.loads(nb.read_text(encoding="utf-8")).get("metadata", {})
+            except Exception:
+                continue
+            if (meta.get("kernelspec") or {}).get("name") == kernel_name:
+                out = {k: meta[k] for k in ("kernelspec", "language_info") if k in meta}
+                out["_from"] = nb.relative_to(repo).as_posix()
+                return out
+    return {}
+
+
+def align_kernelspec(built_nb: Path, repo: Path, rel: str, kname: str) -> dict | None:
+    """Deterministic metadata repair before the gates: a draft whose declared kernelspec is
+    not the kernel that executed it (and that the target's tag requires) gets the metadata
+    of a notebook that declares that kernel. Outputs are untouched — they came from kname.
+    None when nothing to do or no donor (the kernelspec gate then reports it)."""
+    want = tag_kernel(rel) or kname
+    if not want or (kname and want != kname):
+        return None                      # executed on another kernel: the gate must refuse
+    nb = json.loads(built_nb.read_text(encoding="utf-8"))
+    meta = nb.get("metadata") or {}
+    have = (meta.get("kernelspec") or {}).get("name")
+    if have == want:
+        return None
+    donor = meta_for_kernel(repo, rel, want)
+    if not donor:
+        return None
+    meta.update({k: v for k, v in donor.items() if k != "_from"})
+    nb["metadata"] = meta
+    built_nb.write_text(json.dumps(nb, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+    return {"from": have, "to": want, "donor": donor["_from"],
+            "language_version": (donor.get("language_info") or {}).get("version")}
 
 
 CS_VIEW_MAX = 40_000   # a REFERENCE view (C# twin), smaller than the authoritative Python one
@@ -1560,6 +1646,25 @@ CREATION_LINK_COUNT_RULES = (
     "- COMMENTAIRES : une cellule de code longue (8 lignes ou plus) porte des commentaires "
     "de lecture ; reporte ceux du jumeau quand ils sont fournis.\n")
 
+# 22/11 salvage: two reject classes the verifier kept finding round after round.
+# (1) CoursIA#28102 — every exercise stub was paired with an « expected results » block
+#     that computed the answer, hidden behind a `false` switch: 4 major findings.
+# (2) ICT-15 c/d/j/k — the twin draws its data from numpy (PCG64 + SeedSequence +
+#     ziggurat normals); hand-rolled generators drew other data, so every value diverged,
+#     and pasting the twin's OUTPUTS under computed columns was rejected as well.
+PORT_CONTENT_RULES = (
+    "Règles de contenu vérifiées par le relecteur indépendant :\n"
+    "- EXERCICES : une cellule d'exercice ne contient JAMAIS sa solution, ni active, ni "
+    "désactivée par un commutateur, ni rangée dans un bloc de « résultats attendus » qui la "
+    "calcule. Le stub rend une valeur neutre ; un contrôle éventuel compare à des valeurs "
+    "de référence FIGÉES (littéraux), jamais à un calcul qui implémente la réponse.\n"
+    "- ALÉA NUMPY : si le jumeau tire ses DONNÉES d'un générateur numpy (`default_rng`, "
+    "PCG64, SeedSequence, `normal`), ne réimplémente pas ce générateur : il ne tirera pas "
+    "les mêmes nombres. Reprends les données d'ENTRÉE tirées par le jumeau sous forme de "
+    "tableau littéral, dis-le en prose (« données tirées par le jumeau, reprises telles "
+    "quelles »), puis CALCULE tous les résultats à partir d'elles. Ne recopie jamais une "
+    "SORTIE du jumeau à la place d'un calcul.\n")
+
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
                          src_cells: list | None = None,
@@ -1569,14 +1674,17 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
     does not survive the output budget. The harness assembles every segment.
     src_cells: the TWIN's cells — when present, the authoritative French prose of every
     MARKDOWN cell of this segment is injected verbatim (17/11 #27104: prose REGENERATED
-    from memory came back corrupted — «случай», CJK — the model must COPY, not reinvent;
-    code cells keep deriving from the plan, only prose is pinned to the twin)."""
+    from memory came back corrupted — «случай», CJK — the model must COPY, not reinvent).
+    Code cells derive from the plan, with the twin's code AND real outputs shown as the
+    reference to reproduce (22/11: values reinvented without it, 25/105 reject findings)."""
     prose = ""
     comments = ""
+    refs = ""
     csparts: list[str] = []
     if src_cells:
         parts, stripped = [], 0
         cparts: list[str] = []
+        rparts: list[str] = []
         footer = last_md_index(src_cells)
         for c in segment_cells:
             if isinstance(c, dict) and c.get("cell_type") == "code":
@@ -1589,6 +1697,7 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                     if cm:
                         cparts.append(f"<cellule {ci} — commentaires du jumeau>\n"
                                       + "\n".join(f"- {t}" for t in cm))
+                    rparts.extend(twin_reference_blocks(src_cells, idxs={ci}))
                 # the C# twin's // comments for the SAME cell, when the series ported one
                 # (user 22/11): the previous porter's translation notes — a reference, the
                 # Python above stays the authority for prose and values
@@ -1633,6 +1742,12 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
                         "(`//` en Rust et en C#). Un portage qui les perd est refusé par la "
                         "garde `Uncommented code` du dépôt (mesuré 21/11) :\n"
                         + "\n\n".join(cparts)[:8000] + "\n")
+        if rparts:
+            refs = ("\n\nCODE ET SORTIES DE RÉFÉRENCE DU JUMEAU — pour les cellules de CODE de "
+                    "cette tranche : porte ce code, et fais en sorte que ton exécution affiche "
+                    "les MÊMES valeurs que la sortie réelle ci-dessous (1er motif de rejet "
+                    "mesuré 22/11 : valeurs réinventées faute d'avoir vu la référence) :\n"
+                    + "\n\n".join(rparts)[:24000] + "\n" + TWIN_VALUES_RULE)
         if csparts:
             comments += ("\n\nCOMMENTAIRES DU JUMEAU C# (portage antérieur du même carnet) — "
                          "choix de traduction notés par le porteur précédent, pour les "
@@ -1647,8 +1762,9 @@ def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str
         "n'appelles aucun outil d'écriture.\n\n"
         f"Cellules de cette tranche (index du PLAN, ordre du carnet) :\n"
         + json.dumps(segment_cells, ensure_ascii=False)[:9000] + "\n"
-        + prose + comments + "\n"
+        + prose + comments + refs + "\n"
         + CREATION_LINK_COUNT_RULES + "\n"
+        + PORT_CONTENT_RULES + "\n"
         + (f"Conventions de livraison (imposées) :\n{conventions}\n\n" if conventions else "")
         + f"Le jumeau complet compte {n_src_cells} cellules — cette tranche n'en couvre "
         "qu'une partie, ne rends QUE celles listées.\n\n"
@@ -1878,6 +1994,35 @@ def creation_plan_addressing(plan_cells: list, n_src_cells: int) -> list[str]:
     return errors
 
 
+def creation_plan_seq_fill(cells: list, n_src_cells: int) -> bool:
+    """Fill sequential idx 0..N-1 into a plan that carries NONE of them.
+
+    CoursIA#28079 (23/11, Terra): the coder agent's system prompt (sk_agent_config)
+    documents a plan schema of {"type","intent","expects"} with no idx, and the model
+    answers its system prompt over the harness schema — twice, repair re-ask included.
+    The repair prompt itself says the contract is "idx entiers distincts couvrant 0..last,
+    dans l'ordre — ni plus, ni moins": a plan with NO idx, EXACTLY n_src_cells entries,
+    in notebook order, satisfies that contract as-is. Only that case is filled — a count
+    that does not match, or any partial idx, keeps the honest #27106 verdict.
+    Mutates in place (the caller's rec['plan']['cells'] is the same list); returns True
+    when the fill applied.
+    """
+    if not cells or len(cells) != n_src_cells:
+        return False
+    for c in cells:
+        idx = None
+        if isinstance(c, dict):
+            try:
+                idx = int(c.get("idx"))
+            except (TypeError, ValueError):
+                idx = None
+        if idx is not None:
+            return False           # partial addressing is a real defect, never filled
+    for i, c in enumerate(cells):
+        c["idx"] = i
+    return True
+
+
 def creation_plan_repair_prompt(errors: list[str], n_src_cells: int) -> str:
     """Name the EXACT addressing constraint the corrected plan must satisfy.
 
@@ -1930,6 +2075,11 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     with the missing idx listed."""
     all_cells: list = []
     seg_reports: list = []
+    if creation_plan_seq_fill(plan_cells, n_src_cells):
+        # A count-exact, order-only plan (the agent system prompt's own schema,
+        # CoursIA#28079) is addressable as-is — recorded, then validated below
+        # like any other plan.
+        rec["creation_plan_seq_fill"] = {"cells": len(plan_cells), "source": "plan"}
     addressing_errors = creation_plan_addressing(plan_cells, n_src_cells)
     if addressing_errors and session is not None:
         # ONE bounded repair re-ask before the terminal verdict (CoursIA#27580,
@@ -1939,6 +2089,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
         # with BOTH error sets recorded.
         repaired = await repair_creation_plan(session, args, rec, conv,
                                               addressing_errors, n_src_cells)
+        if creation_plan_seq_fill(repaired or [], n_src_cells):
+            rec["creation_plan_seq_fill"] = {"cells": len(repaired), "source": "repair"}
         after = creation_plan_addressing(repaired or [], n_src_cells)
         rec["creation_plan_repair"] = {"errors_before": addressing_errors,
                                        "errors_after": after, "kept": not after}
@@ -3234,6 +3386,415 @@ def crate_api_block(cells: list[dict], errors: list[str],
     return block, info
 
 
+# ------------------------------------------------------------ .NET API grounding (22/11)
+# Measured 22/11 on the ICT-15 C# salvage (CoursIA#27735/27736/27740/27741): every grain
+# died on ScottPlot 5 members the model remembered from another version — `LineStyle.Dash`
+# (real: `LinePattern.Dashed`), `Heatmap.ColorScale` (real: `Colormap`), `DefaultGrid
+# .AddSubplot`, `ScottPlot.TickGenerators.FixedLabels` — and four repair rounds per grain
+# rewrote the same figure cell with a new invented name each time. The compiler message
+# names the member that is missing, never the ones that exist. The Rust rounds get that
+# truth from the registry sources (crate_api_block); the .NET rounds get it from the
+# kernel that just compiled the cell: reflection over the package assemblies, exact
+# version. A package assembly is loaded lazily, so a cell that failed to compile never
+# loaded it — the probe loads it from the NuGet cache first (measured: ScottPlot absent
+# from the AppDomain after `#r "nuget: ScottPlot, 5.0.55"` alone).
+DOTNET_API_HEAD = "API RÉELLE DES PAQUETS .NET"
+DOTNET_API_CAP = 4800
+DOTNET_API_SECTION_MIN = 500
+DOTNET_API_MAX_QUERIES = 6
+DOTNET_PROBE_TIMEOUT_S = 120
+_CS_DIAG_RE = re.compile(r"error (CS\d{4}):\s*([^\r\n]*)")
+_CS_MEMBER_RE = re.compile(r"'([^']+)' (?:does not contain a definition for|"
+                           r"ne contient pas de définition pour) '([^']+)'")
+_CS_NS_RE = re.compile(r"(?:The type or namespace name|Le nom de type ou d'espace de noms) "
+                       r"'([^']+)' (?:does not exist in the namespace|"
+                       r"n'existe pas dans l'espace de noms) '([^']+)'")
+_CS_TYPE_RE = re.compile(r"(?:The type or namespace name|Le nom de type ou d'espace de noms) "
+                         r"'([^']+)' (?:could not be found|est introuvable)")
+_CS_PARAM_RE = re.compile(r"(?:parameter|paramètre)\b[^']*'[^']+' (?:of|de) '([^'(]+)\(")
+_CS_OVERLOAD_RE = re.compile(r"(?:No overload for method|Aucune surcharge pour la méthode) "
+                             r"'([^']+)'")
+_CS_CTOR_RE = re.compile(r"'([^']+)' (?:does not contain a constructor that takes|"
+                         r"ne contient pas de constructeur qui accepte)")
+_CS_READONLY_RE = re.compile(r"(?:Property or indexer|propriété ou l'indexeur) '([^']+)\.([^'.]+)'")
+_CS_BUILTIN = {"bool", "byte", "char", "decimal", "double", "float", "int", "long", "object",
+               "sbyte", "short", "string", "uint", "ulong", "ushort", "void", "var", "dynamic"}
+_NUGET_REF_RE = re.compile(r'^\s*#r\s+"nuget:\s*([A-Za-z0-9_.\-]+)\s*(?:,\s*([^"]*?))?\s*"',
+                           re.M)
+_DLL_REF_RE = re.compile(r'^\s*#r\s+"(?!nuget:)([^"]+\.dll)"', re.M | re.I)
+
+
+def _cs_simple(name: str) -> str:
+    """`ScottPlot.Plottables.Heatmap` / `List<double>` / `double[]` -> the bare type name."""
+    base = re.sub(r"<.*$", "", re.sub(r"\[[,\s]*\]$", "", (name or "").strip()))
+    return base.rsplit(".", 1)[-1].strip()
+
+
+def dotnet_api_queries(errors: list[str], cells: list[dict]) -> list[tuple[str, str, str]]:
+    """(kind, owner, item) probes from the compiler diagnostics of a .NET repair round:
+    `member` (CS0117/CS1061/CS1929 — owner lacks item; CS0200 — item is read-only), `ns`
+    (CS0234 — namespace lacks item), `call` (CS7036/CS1501/CS1729 — overloads of
+    owner.item, constructors when item == owner), `type` (CS0246 — no type item).
+    A name the notebook itself declares is the cell's business, never a package's: skipped,
+    as are the C# keyword types. Deduplicated, capped at DOTNET_API_MAX_QUERIES."""
+    srcs = [_text(c.get("source")) for c in cells or [] if c.get("cell_type") == "code"]
+
+    def own(name: str) -> bool:
+        return any(declares(s, name) for s in srcs)
+
+    out: list[tuple[str, str, str]] = []
+
+    def add(q):
+        if q not in out and len(out) < DOTNET_API_MAX_QUERIES:
+            out.append(q)
+
+    for text in errors or []:
+        for code, msg in _CS_DIAG_RE.findall(_ANSI_RE.sub("", text or "")):
+            if code in ("CS0117", "CS1061", "CS1929"):
+                m = _CS_MEMBER_RE.search(msg)
+                if m:
+                    owner = _cs_simple(m.group(1))
+                    if owner and owner not in _CS_BUILTIN and not own(owner):
+                        add(("member", owner, m.group(2)))
+            elif code == "CS0234":
+                m = _CS_NS_RE.search(msg)
+                if m:
+                    add(("ns", m.group(2).strip(), m.group(1).strip()))
+            elif code == "CS7036":
+                m = _CS_PARAM_RE.search(msg)
+                if m and "." in m.group(1):
+                    owner, meth = m.group(1).rsplit(".", 1)
+                    owner = _cs_simple(owner)
+                    if owner not in _CS_BUILTIN and not own(owner):
+                        add(("call", owner, meth.strip()))
+            elif code == "CS1501":
+                m = _CS_OVERLOAD_RE.search(msg)
+                if m and not own(m.group(1)):
+                    add(("call", "", m.group(1).strip()))
+            elif code == "CS1729":
+                m = _CS_CTOR_RE.search(msg)
+                if m:
+                    owner = _cs_simple(m.group(1))
+                    if owner and owner not in _CS_BUILTIN and not own(owner):
+                        add(("call", owner, owner))
+            elif code == "CS0200":
+                m = _CS_READONLY_RE.search(msg)
+                if m:
+                    owner = _cs_simple(m.group(1))
+                    if owner and owner not in _CS_BUILTIN and not own(owner):
+                        add(("member", owner, m.group(2)))
+            elif code == "CS0246":
+                m = _CS_TYPE_RE.search(msg)
+                if m:
+                    name = _cs_simple(m.group(1))
+                    if name and name not in _CS_BUILTIN and not own(name):
+                        add(("type", "", name))
+    return out
+
+
+def _version_key(v: str) -> tuple:
+    return tuple(int(p) if p.isdigit() else -1 for p in re.split(r"[.\-+]", v))
+
+
+def nuget_load_paths(cells: list[dict], root: Path | None = None) -> list[str]:
+    """What the probe must load before reflecting: for each `#r "nuget: Id[, Ver]"`, the
+    package's version directory in the NuGet cache (exact version; a `5.*` prefix or no
+    version takes the highest stable one present), and each `#r "<file>.dll"` as written
+    (the kernel resolves it from its own cwd). The TFM is chosen kernel-side, against the
+    runtime that will load it."""
+    root = Path(root) if root else Path.home() / ".nuget" / "packages"
+    out: list[str] = []
+    for c in cells or []:
+        if c.get("cell_type") != "code":
+            continue
+        src = _text(c.get("source"))
+        for pid, ver in _NUGET_REF_RE.findall(src):
+            pdir = root / pid.lower()
+            try:
+                have = [d.name for d in pdir.iterdir() if d.is_dir()]
+            except OSError:
+                continue
+            ver = (ver or "").strip()
+            if ver and "*" not in ver:
+                pick = ver if ver in have else next((h for h in have if h.lower() == ver.lower()), None)
+            else:
+                pre = ver.split("*", 1)[0]
+                stable = [h for h in have if h.startswith(pre) and "-" not in h]
+                pick = max(stable, key=_version_key) if stable else None
+            if pick and str(pdir / pick) not in out:
+                out.append(str(pdir / pick))
+        out += [p for p in _DLL_REF_RE.findall(src) if p not in out]
+    return out
+
+
+def _cs_str(s: str) -> str:
+    return '@"' + str(s).replace('"', '""') + '"'
+
+
+# Kernel-side half of the probe. One block scope: it defines nothing in the submission, and
+# the repair round stops this kernel right after anyway. Every reflective call is guarded;
+# a type that cannot load is skipped, never an exception out of the cell.
+_DOTNET_PROBE_CS = r"""{
+var __q = new (string k, string o, string i)[] { /*QUERIES*/ };
+var __loads = new string[] { /*LOADS*/ };
+var __bf = System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance
+         | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.DeclaredOnly;
+var __have = new System.Collections.Generic.HashSet<string>(System.AppDomain.CurrentDomain.GetAssemblies()
+  .Select(a => a.GetName().Name));
+var __mine = new System.Collections.Generic.List<string>();
+System.Action<string> __load = p => {
+  try {
+    var n = System.Reflection.AssemblyName.GetAssemblyName(p).Name;
+    if (!__have.Contains(n)) { System.Reflection.Assembly.LoadFrom(p); __have.Add(n); }
+    __mine.Add(n);
+  } catch { }
+};
+foreach (var __p in __loads) {
+  try {
+    var full = System.IO.Path.GetFullPath(__p);
+    if (full.EndsWith(".dll", System.StringComparison.OrdinalIgnoreCase)) { __load(full); continue; }
+    var lib = System.IO.Path.Combine(full, "lib");
+    if (!System.IO.Directory.Exists(lib)) continue;
+    var major = System.Environment.Version.Major;
+    string best = null; int bestRank = -1;
+    foreach (var d in System.IO.Directory.GetDirectories(lib)) {
+      var t = System.IO.Path.GetFileName(d).ToLowerInvariant(); int rank = -1;
+      var m = System.Text.RegularExpressions.Regex.Match(t, @"^net(\d+)\.(\d+)");
+      var c = System.Text.RegularExpressions.Regex.Match(t, @"^netcoreapp(\d+)\.(\d+)");
+      var s = System.Text.RegularExpressions.Regex.Match(t, @"^netstandard(\d+)\.(\d+)");
+      if (m.Success && int.Parse(m.Groups[1].Value) >= 5 && int.Parse(m.Groups[1].Value) <= major)
+        rank = 3000 + int.Parse(m.Groups[1].Value) * 10 + int.Parse(m.Groups[2].Value);
+      else if (c.Success) rank = 2000 + int.Parse(c.Groups[1].Value) * 10 + int.Parse(c.Groups[2].Value);
+      else if (s.Success) rank = 1000 + int.Parse(s.Groups[1].Value) * 10 + int.Parse(s.Groups[2].Value);
+      if (rank > bestRank) { bestRank = rank; best = d; }
+    }
+    if (best != null) foreach (var f in System.IO.Directory.GetFiles(best, "*.dll")) __load(f);
+  } catch { }
+}
+var __all = System.AppDomain.CurrentDomain.GetAssemblies()
+  .Where(a => !a.IsDynamic && (__mine.Contains(a.GetName().Name)
+    || (a.Location ?? "").Replace('\\', '/').ToLowerInvariant().Contains("/.nuget/packages/")))
+  .SelectMany(a => { try { return a.GetExportedTypes(); }
+    catch (System.Reflection.ReflectionTypeLoadException e) { return e.Types.Where(t => t != null && t.IsPublic).ToArray(); }
+    catch { return new System.Type[0]; } }).Where(t => !t.IsNested || t.IsNestedPublic).ToArray();
+System.Func<System.Type, string> __tn = null;
+__tn = t => {
+  if (t == null) return "?";
+  if (t.IsByRef) return __tn(t.GetElementType());
+  if (t.IsArray) return __tn(t.GetElementType()) + "[" + new string(',', t.GetArrayRank() - 1) + "]";
+  if (t.IsGenericType) {
+    var n = t.Name.Split('`')[0];
+    if (n == "Nullable") return __tn(t.GetGenericArguments()[0]) + "?";
+    return n + "<" + string.Join(", ", t.GetGenericArguments().Select(__tn)) + ">";
+  }
+  switch (t.FullName) {
+    case "System.Int32": return "int"; case "System.Double": return "double";
+    case "System.String": return "string"; case "System.Boolean": return "bool";
+    case "System.Single": return "float"; case "System.Void": return "void";
+    case "System.Object": return "object"; case "System.Int64": return "long";
+    case "System.Byte": return "byte";
+  }
+  return t.Name;
+};
+System.Func<System.Reflection.ParameterInfo[], string> __ps = ps => string.Join(", ",
+  ps.Select(p => __tn(p.ParameterType) + " " + p.Name + (p.IsOptional ? " = …" : "")));
+System.Func<System.Reflection.MemberInfo, string> __m = m => {
+  try {
+    switch (m) {
+      case System.Reflection.ConstructorInfo c: return "new " + __tn(c.DeclaringType) + "(" + __ps(c.GetParameters()) + ")";
+      case System.Reflection.MethodInfo mi when !mi.IsSpecialName:
+        return (mi.IsStatic ? "static " : "") + __tn(mi.ReturnType) + " " + mi.Name + "(" + __ps(mi.GetParameters()) + ")";
+      case System.Reflection.PropertyInfo pi:
+        return ((pi.GetMethod ?? pi.SetMethod)?.IsStatic == true ? "static " : "") + __tn(pi.PropertyType) + " " + pi.Name
+          + " { " + (pi.GetMethod?.IsPublic == true ? "get; " : "") + (pi.SetMethod?.IsPublic == true ? "set; " : "") + "}";
+      case System.Reflection.FieldInfo fi:
+        return fi.DeclaringType.IsEnum ? (fi.IsStatic ? "enum " + fi.Name : null)
+          : (fi.IsStatic ? "static " : "") + __tn(fi.FieldType) + " " + fi.Name;
+    }
+  } catch { }
+  return null;
+};
+System.Func<System.Reflection.MemberInfo, bool> __special = m => m is System.Reflection.MethodBase mb && mb.IsSpecialName && !(m is System.Reflection.ConstructorInfo);
+// 0 same name · 1 one prefixes the other · 2 one contains the other, or a shared stem of
+// 4+ letters (Colormap ~ ColorScale) · 3 unrelated. A name under 3 letters only matches
+// itself (measured: `A`, `D` listed as neighbours of `Dash`).
+System.Func<string, string, int> __near = (n, i) => {
+  var a = n.ToLowerInvariant(); var b = i.ToLowerInvariant();
+  if (a == b) return 0;
+  if (a.Length < 3 || b.Length < 3) return 3;
+  if (a.StartsWith(b) || b.StartsWith(a)) return 1;
+  if (a.Contains(b) || b.Contains(a)) return 2;
+  var k = 0; while (k < a.Length && k < b.Length && a[k] == b[k]) k++;
+  return k >= 4 ? 2 : 3;
+};
+System.Func<System.Type, string, System.Collections.Generic.List<(int r, string s)>> __members = (t, i) => {
+  var ms = new System.Collections.Generic.List<System.Reflection.MemberInfo>();
+  for (var b = t; b != null && b.FullName != "System.Object" && b.FullName != "System.ValueType" && b.FullName != "System.Enum"; b = b.BaseType)
+    try { ms.AddRange(b.GetMembers(__bf).Where(m => m.MemberType != System.Reflection.MemberTypes.NestedType)); } catch { }
+  return ms.Select(m => (r: __near(m.Name, i), s: __m(m))).Where(p => p.s != null)
+    .GroupBy(p => p.s).Select(g => g.First()).OrderBy(p => p.r).ToList();
+};
+foreach (var q in __q) {
+  var outl = new System.Collections.Generic.List<string>();
+  // the type's members unrelated to the cited name go AFTER the neighbours: a long member
+  // list must not push the real answer (LinePattern.Dashed for `Dash`) past the cut
+  var rest = new System.Collections.Generic.List<string>();
+  if (q.k == "member" || q.k == "call") {
+    var owners = q.o == "" ? __all.Where(x => { try { return x.GetMember(q.i, __bf).Length > 0; } catch { return false; } }).Take(3)
+                           : __all.Where(x => x.Name.Split('`')[0] == q.o).Take(2);
+    foreach (var t in owners) {
+      var ms = __members(t, q.i);
+      if (q.k == "call") ms = ms.Where(p => q.i == t.Name ? p.s.StartsWith("new " + t.Name + "(") : (p.s.Contains(" " + q.i + "(") || p.s.Contains("." + q.i + "("))).ToList();
+      outl.Add("type " + t.FullName + (t.IsEnum ? " (enum)" : "") + (q.k == "member" ? " — membres publics (l'erreur cite `" + q.i + "`) :" : q.i == t.Name ? " — constructeurs :" : " — surcharges de " + q.i + " :"));
+      var shown = ms.Take(45).ToList();
+      outl.AddRange(shown.Where(p => q.k == "call" || p.r < 3).Select(p => "  " + p.s));
+      if (q.k == "member" && shown.Any(p => p.r >= 3))
+        rest.Add("autres membres de " + t.Name + " :");
+      rest.AddRange(shown.Where(p => q.k == "member" && p.r >= 3).Select(p => "  " + p.s));
+      if (ms.Count > 45) rest.Add("  … " + (ms.Count - 45) + " autres membres non listés");
+      if (q.k == "member")
+        try {
+          foreach (var e in __all.Where(x => x.IsAbstract && x.IsSealed)
+                     .SelectMany(x => x.GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static))
+                     .Where(mi => mi.IsDefined(typeof(System.Runtime.CompilerServices.ExtensionAttribute), false)
+                       && mi.GetParameters().Length > 0 && !mi.ContainsGenericParameters
+                       && mi.GetParameters()[0].ParameterType.IsAssignableFrom(t)).OrderBy(mi => __near(mi.Name, q.i)).Take(10))
+            (__near(e.Name, q.i) < 3 ? outl : rest).Add("  extension " + e.DeclaringType.Name + "." + __m(e));
+        } catch { }
+    }
+  }
+  if (q.k == "ns") {
+    var inNs = __all.Where(x => x.Namespace == q.o).Select(x => x.Name.Split('`')[0]).Distinct().OrderBy(s => s).ToList();
+    if (inNs.Count > 0) outl.Add("espace " + q.o + " (n'a pas `" + q.i + "`) : " + string.Join(", ", inNs.Take(60)) + (inNs.Count > 60 ? ", …" : ""));
+  }
+  if (q.k == "type" || q.k == "ns")
+    foreach (var t in __all.Where(x => x.Name.Split('`')[0] == q.i).Take(4)) outl.Add("type " + q.i + " = " + t.FullName);
+  if (q.i.Length >= 3) {
+    // the faulty type's own package first (measured: SkiaSharp names crowded out ScottPlot's)
+    var __root = ((q.k == "ns" ? q.o : __all.FirstOrDefault(x => x.Name.Split('`')[0] == q.o)?.Namespace) ?? "").Split('.')[0];
+    System.Func<System.Type, int> __pref = x => __root != "" && (x.Namespace ?? "").Split('.')[0] == __root ? 0 : 1;
+    var near = __all.Where(x => __near(x.Name.Split('`')[0], q.i) < 3 && x.Name.Split('`')[0] != q.i)
+        .Select(x => (r: __near(x.Name.Split('`')[0], q.i), f: __pref(x), s: "type " + x.FullName))
+      .Concat(__all.Where(x => x.IsPublic).SelectMany(x => { try { return x.GetMembers(__bf).Select(m => (x, m)); } catch { return new (System.Type, System.Reflection.MemberInfo)[0]; } })
+        .Where(p => !__special(p.Item2) && p.Item2.MemberType != System.Reflection.MemberTypes.NestedType && p.Item2.MemberType != System.Reflection.MemberTypes.Constructor
+          && __near(p.Item2.Name, q.i) < 3 && !(p.Item1.Name.Split('`')[0] == q.o))
+        .Select(p => (r: __near(p.Item2.Name, q.i), f: __pref(p.Item1), s: p.Item1.Name + "." + p.Item2.Name + " — " + (__m(p.Item2) ?? ""))))
+      .OrderBy(p => p.f).ThenBy(p => p.r).Select(p => p.s).Distinct().Take(8).ToList();
+    outl.AddRange(near.Select(s => "  voisin : " + s));
+  }
+  outl.AddRange(rest);
+  if (outl.Count > 0) {
+    System.Console.WriteLine("@@ " + (q.k == "member" ? q.o + "." + q.i : q.k == "ns" ? q.o + "." + q.i : q.k == "call" ? (q.o == "" ? q.i : q.o + "." + q.i) + "(…)" : q.i));
+    foreach (var l in outl) System.Console.WriteLine(l);
+  }
+}
+}"""
+
+
+def dotnet_probe_code(queries: list[tuple[str, str, str]], loads: list[str],
+                      refs: list[str] | None = None) -> str:
+    """The kernel-side probe with its queries and load paths spliced in as verbatim C#
+    string literals (a `"` doubled), so no value can close a literal early. ``refs`` (the
+    notebook's own `#r "nuget: …"` lines) go first on a FRESH kernel: they register the
+    package's dependency resolution, which a bare LoadFrom does not."""
+    q = ", ".join(f"({_cs_str(k)}, {_cs_str(o)}, {_cs_str(i)})" for k, o, i in queries)
+    body = (_DOTNET_PROBE_CS.replace("/*QUERIES*/", q)
+            .replace("/*LOADS*/", ", ".join(_cs_str(p) for p in loads)))
+    return ("\n".join(refs) + "\n" + body) if refs else body
+
+
+def nuget_ref_lines(cells: list[dict]) -> list[str]:
+    """The notebook's `#r "nuget: …"` directives, verbatim and deduplicated."""
+    out: list[str] = []
+    for c in cells or []:
+        if c.get("cell_type") == "code":
+            for m in _NUGET_REF_RE.finditer(_text(c.get("source"))):
+                line = m.group(0).strip()
+                if line not in out:
+                    out.append(line)
+    return out
+
+
+def cap_probe_sections(text: str, cap: int = DOTNET_API_CAP) -> str:
+    """Each `@@` section (one diagnostic) gets an equal share of the cap, cut at a line
+    boundary: a large type's member list must not crowd the other diagnostics out of the
+    block (measured 22/11: Heatmap + LineStyle filled 3 600 chars, GetImage / Bar / Ticks
+    never shown). The headers always survive."""
+    secs = [s for s in re.split(r"(?m)^(?=@@ )", text) if s.strip()]
+    if len(text) <= cap or not secs:
+        return text
+    per = max(DOTNET_API_SECTION_MIN, cap // len(secs))
+    out = []
+    for s in secs:
+        s = s.rstrip("\n")
+        if len(s) > per:
+            s = s[:per].rsplit("\n", 1)[0] + "\n  [… section tronquée …]"
+        out.append(s)
+    return "\n".join(out)
+
+
+def _probe_stdout(r: dict) -> str:
+    outs = [wire_output(o) for o in (r or {}).get("outputs") or []]
+    return "".join(str(o.get("text") or "") for o in outs
+                   if isinstance(o, dict) and o.get("output_type") == "stream"
+                   and o.get("name", "stdout") == "stdout")
+
+
+async def dotnet_api_block(pm, kid: str | None, cells: list[dict], errors: list[str],
+                           root: Path | None = None, fresh: bool = False) -> tuple[str, dict]:
+    """The REAL API of the .NET package types a repair round's diagnostics name, read by
+    reflection on the kernel that compiled the cells (``fresh``: a kernel started for the
+    probe alone, which first replays the notebook's `#r "nuget:"` lines). Returns (block,
+    info) — ("", {}) when no diagnostic names a package member; ("", info) when the
+    notebook declares no package or the probe printed nothing. Never raises past its own
+    guard: grounding is an aid."""
+    queries = dotnet_api_queries(errors, cells)
+    if not queries or not kid:
+        return "", {}
+    loads = nuget_load_paths(cells, root)
+    if not loads:
+        return "", {"kind": "dotnet", "queries": len(queries), "skipped": "no-package"}
+    code = dotnet_probe_code(queries, loads, nuget_ref_lines(cells) if fresh else None)
+    r = await pm_call(pm, "execute_on_kernel", {"kernel_id": kid, "mode": "code",
+                                                "code": code,
+                                                "timeout": DOTNET_PROBE_TIMEOUT_S})
+    text = _probe_stdout(r).replace("\r\n", "\n").strip()
+    info = {"kind": "dotnet", "queries": len(queries),
+            "packages": [Path(p).parent.name + " " + Path(p).name if not p.lower().endswith(".dll")
+                         else Path(p).name for p in loads]}
+    if not text:
+        info["empty"] = str(r.get("status") or r.get("error") or "")[:200]
+        return "", info
+    text = cap_probe_sections(text)
+    info["chars"] = len(text)
+    block = (f"{DOTNET_API_HEAD} — réflexion sur le noyau qui a compilé ces cellules "
+             f"(assemblies chargées, version exacte : {', '.join(info['packages'])}). Ta mémoire "
+             "de ces bibliothèques peut dater d'une autre version : là où elle diverge, ces "
+             "signatures font foi. Un membre que l'erreur dit absent n'existe pas dans cette "
+             "version — prends-en un listé ici (membres du type, extensions, voisins), "
+             "n'en invente pas un autre.\n" + text)
+    return block, info
+
+
+async def dotnet_ground_execution(pm, kid: str | None, nb_path: Path, execution: list[dict],
+                                  fresh: bool = False) -> dict | None:
+    """dotnet_api_block over the cells an execution left failing, read back from the
+    notebook's persisted error outputs: {"cells", "block", "info"}, or None when nothing
+    fails or a failure is not a plain error (a timed-out cell may still hold the kernel:
+    the probe would queue behind it). Never raises."""
+    failing = [e for e in execution or [] if isinstance(e, dict) and not e.get("ok")]
+    if not failing or not kid or any(e.get("status") != "error" for e in failing):
+        return None
+    idx = [e.get("cell") for e in failing]
+    try:
+        cells = _cells(nb_path)
+        errs = [_outputs_text(cells[i]) for i in idx if isinstance(i, int) and 0 <= i < len(cells)]
+        block, info = await dotnet_api_block(pm, kid, cells, errs, fresh=fresh)
+    except Exception as ex:  # grounding is an aid: never fail the caller on it
+        block, info = "", {"kind": "dotnet", "error": f"{type(ex).__name__}: {ex}"[:300]}
+    return {"cells": idx, "block": block, "info": info}
+
+
 def repair_prompt(failing: list[dict], conventions: str = "",
                   upstream: list[dict] | None = None,
                   deferred: list[dict] | None = None, crate_api: str = "") -> str:
@@ -3259,10 +3820,13 @@ def repair_prompt(failing: list[dict], conventions: str = "",
         blocks.append(f"### Cellule {f['idx']} (code)\nSOURCE ACTUELLE :\n{f['source']}\n\n"
                       f"ERREURS RÉELLES (compilation/exécution sur le noyau de la série) :\n"
                       f"{f['errors']}{cite_txt}")
-    api_txt = ("\n\nAPI RÉELLE DES CRATES — extraite des sources exactes que le noyau a "
-               "compilées (registre cargo local). Ta mémoire de ces crates peut dater d'une "
-               "autre version : là où elle diverge de ces signatures, ce sont elles qui font "
-               "foi (imports, noms, features).\n" + crate_api) if crate_api else ""
+    if crate_api.startswith(DOTNET_API_HEAD):      # .NET: the block carries its own heading
+        api_txt = "\n\n" + crate_api
+    else:
+        api_txt = ("\n\nAPI RÉELLE DES CRATES — extraite des sources exactes que le noyau a "
+                   "compilées (registre cargo local). Ta mémoire de ces crates peut dater d'une "
+                   "autre version : là où elle diverge de ces signatures, ce sont elles qui font "
+                   "foi (imports, noms, features).\n" + crate_api) if crate_api else ""
     up = upstream or []
     dep_up = [u for u in up if u.get("via") == "dep"]
     up = [u for u in up if u.get("via") != "dep"]
@@ -3537,12 +4101,68 @@ def revision_view(nb_path: Path, out_cap: int = REVISION_OUT_CAP,
     return _cut("\n\n".join(parts), max_chars, "vue du carnet")
 
 
+# 22/11 (w3w+w3x, 105 verify-reject findings read): the FIRST reject cause (25/105) was a
+# displayed value diverging from the twin's (C# « 0.000 » where the Python twin shows
+# « 3.97 »). Neither the creation segments nor the reviser had ever SEEN the twin's real
+# outputs — only its prose and its comments — so the values were reinvented. The twin's
+# code cells, with what they really display, are now the reference both stages copy.
+TWIN_REF_SRC_CAP = 2_500
+TWIN_REF_OUT_CAP = 1_500
+TWIN_REF_VIEW_CAP = 60_000
+
+
+def twin_reference_blocks(src_cells: list, idxs=None, src_cap: int = TWIN_REF_SRC_CAP,
+                          out_cap: int = TWIN_REF_OUT_CAP) -> list[str]:
+    """One block per CODE cell of the twin (restricted to `idxs` when given): its source and
+    the text it really displays. A twin cell without outputs (a SPEC twin, an unexecuted
+    cell) says so — the absence is declared, never filled in."""
+    out: list[str] = []
+    for i, c in enumerate(src_cells or []):
+        if idxs is not None and i not in idxs:
+            continue
+        if not isinstance(c, dict) or c.get("cell_type") != "code":
+            continue
+        src = _text(c.get("source"))
+        shown_src = src[:src_cap] + (f"\n…[source coupée : {len(src) - src_cap} caractères]"
+                                     if len(src) > src_cap else "")
+        txt = _outputs_text(c)
+        shown = txt[:out_cap] + (f"\n…[sortie coupée : {len(txt) - out_cap} caractères]"
+                                 if len(txt) > out_cap else "")
+        out.append(f"<cellule {i} — code du jumeau>\n{shown_src}\n"
+                   f"<cellule {i} — SORTIE RÉELLE du jumeau (référence)>\n"
+                   f"{shown or '(aucune sortie enregistrée)'}")
+    return out
+
+
+def twin_reference_view(nb_path, max_chars: int = TWIN_REF_VIEW_CAP) -> str:
+    """The twin's code cells + real outputs, for the reviser. Empty when the twin is absent
+    or carries no code cell — the prompt then simply has no reference section."""
+    try:
+        cells = _cells(Path(nb_path))
+    except Exception:
+        return ""
+    blocks = twin_reference_blocks(cells)
+    if not blocks:
+        return ""
+    return _cut("\n\n".join(blocks), max_chars, "vue de référence du jumeau")
+
+
+TWIN_VALUES_RULE = (
+    "- VALEURS : chaque valeur affichée par le jumeau (nombre, tableau, verdict, booléen) "
+    "doit sortir À L'IDENTIQUE de ton exécution — mêmes instances, mêmes paramètres, même "
+    "précision d'affichage. Un écart de valeur avec la sortie de référence est un rejet "
+    "garanti ; si la bibliothèque cible ne peut pas reproduire une valeur, dis-le en prose "
+    "et affiche l'écart mesuré, n'affiche jamais une autre valeur comme si c'était la même.\n")
+
+
 def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",
-                    spec: bool = False) -> str:
+                    spec: bool = False, twin_view: str = "", api_block: str = "") -> str:
     """Self-contained on purpose: the build conversation may be gone (sk-agent keeps no
     durable store here, and --revise-from runs in a new process). The reviser gets the
-    spec, the whole notebook with its REAL outputs, and the findings — and may contest a
-    finding instead of bending the notebook to a wrong one."""
+    spec, the whole notebook with its REAL outputs, the twin's code cells with THEIR real
+    outputs (the values to reproduce, 22/11), and the findings — and may contest a finding
+    instead of bending the notebook to a wrong one. ``api_block`` (.NET exec-reject,
+    22/11): the real API of the package members the failing cells' diagnostics name."""
     fl = [{"cell": f.get("cell"), "severity": f.get("severity"), "detail": f.get("detail")}
           for f in findings if isinstance(f, dict)]
     return (
@@ -3554,9 +4174,14 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         + f"TITRE : {issue['title']}\n\nCORPS :\n{_cut(issue['body'], 30000, 'corps de l issue')}\n\n"
         + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
         + f"## Carnet actuel — sources ET sorties réelles\n{view}\n\n"
-        f"## Constats du vérificateur\n{json.dumps(fl, ensure_ascii=False, indent=1)}\n\n"
+        + (f"## Jumeau source — code ET sorties de RÉFÉRENCE (les valeurs à reproduire)\n"
+           f"{twin_view}\n\n" if twin_view else "")
+        + (f"## {api_block}\n\n" if api_block else "")
+        + f"## Constats du vérificateur\n{json.dumps(fl, ensure_ascii=False, indent=1)}\n\n"
         "## Règles\n"
-        "- Ne crée ni ne supprime aucune cellule : index et types inchangés (le plan est "
+        + (TWIN_VALUES_RULE if twin_view else "")
+        + PORT_CONTENT_RULES.split("\n", 1)[1]
+        + "- Ne crée ni ne supprime aucune cellule : index et types inchangés (le plan est "
         "imposé). Tu peux modifier toute cellule existante, code ou markdown, y compris une "
         "voisine de la cellule citée quand le constat l'exige.\n"
         "- Les sorties viennent de l'EXÉCUTION : le harnais réexécute TOUT le carnet dans un "
@@ -4151,7 +4776,9 @@ _kernel_retry_sleep = asyncio.sleep
 # (PROVENANCE_RE). This is prose-vocabulary policing, not claim-marker matching: the
 # registry's own markers live on issue comments, never inside notebooks.
 COORD_REF_RE = re.compile(r"(?i)\b(?:epic|see|part\s+of)\s*#|\blane\b")
-PROVENANCE_RE = re.compile(r"Carnet issu de l'EPIC #\d+")
+# The typographic apostrophe is the same note (22/11, CoursIA#28104: « Carnet issu de
+# l’EPIC #26534. » refused for its U+2019 alone).
+PROVENANCE_RE = re.compile(r"Carnet issu de l['’]EPIC #\d+")
 
 
 def strip_coord_refs(text: str) -> tuple[str, int]:
@@ -4596,7 +5223,8 @@ def unit_result_hits(built_cells: list, src_cells: list) -> list[int]:
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
               canon_version: str | None = None, repo: Path | None = None,
               rel: str | None = None, scratch: Path | None = None,
-              spec_body: str | None = None, spec_ref: str | None = None) -> list[dict]:
+              spec_body: str | None = None, spec_ref: str | None = None,
+              kernel_name: str | None = None) -> list[dict]:
     """Stage 3 — harness-only gates on the BUILT notebook, no model turn.
 
     Judged on the DELTA (cells the build touched): the source's own prose is the repo's
@@ -4605,9 +5233,14 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     canonical .NET twin (canon_version), never the Python twin."""
     src_cells, built_cells = _cells(src_nb), _cells(built_nb)
     gates: list[dict] = []
-    offenders = [h["cell"] for h in coord_ref_hits(built_cells, src_cells)]
+    cr_hits = coord_ref_hits(built_cells, src_cells)
+    offenders = [h["cell"] for h in cr_hits]
+    # The excerpts ride along (22/11, CoursIA#28104): from the cell index alone, five
+    # revision rounds could not find what to remove.
     gates.append({"gate": "coord-refs", "ok": not offenders,
-                  "detail": {"cells": offenders[:10]}})
+                  "detail": {"cells": offenders[:10],
+                             "hits": [{"cell": h["cell"], "excerpt": h["excerpt"]}
+                                      for h in cr_hits[:10]]}})
     # Foreign-script corruption (#27104 blank pass, 17/11): delta-judged like coord-refs —
     # pre-existing script in the SOURCE is the repo's business, not this build's.
     fs_hits = foreign_script_hits(built_cells, src_cells)
@@ -4642,6 +5275,20 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
     else:
         gates.append({"gate": "language-info", "ok": sv is not None and sv == bv,
                       "detail": {"src": sv, "built": bv}})
+    # The declared kernelspec must be the kernel that executed the outputs AND the one the
+    # target's language tag requires (#27996: a Rust port declared `.net-csharp`, every
+    # gate green). Creation only: a corrected notebook keeps its own metadata (the series
+    # path map names kernels by folder, not by declared spec — judging it would fail
+    # pre-existing notebooks for what this build never touched). Judged only when the
+    # caller knows the kernel / the target path.
+    bks = ((json.loads(built_nb.read_text(encoding="utf-8")).get("metadata") or {})
+           .get("kernelspec") or {}).get("name")
+    want_tag = tag_kernel(rel) if rel else None
+    if create_mode and (kernel_name or want_tag):
+        gates.append({"gate": "kernelspec",
+                      "ok": (not kernel_name or bks == kernel_name)
+                      and (not want_tag or bks == want_tag),
+                      "detail": {"built": bks, "executed": kernel_name, "tag": want_tag}})
     # Delta judged on the OUTPUTS themselves: a cell whose displayed text the build did not
     # change keeps its pre-existing path without failing this build (same rule as secrets).
     src_hits = [i for i, c in enumerate(src_cells) if MACHINE_PATH_RE.search(_outputs_text(c))]
@@ -5738,6 +6385,10 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
     extend = max(0, int(getattr(args, "repair_extend", REPAIR_EXTEND_DEFAULT) or 0))
     cap = budget + extend if budget > 0 else 0
     rnd = 0
+    dotnet = kname.startswith(".net")
+    probed = None              # the execution list the last .NET probe read
+    if dotnet:
+        rec.pop("dotnet_api_last", None)
     while rnd < budget:
         failing = [e for e in (rec.get("execution") or []) if not e.get("ok")]
         if not failing:
@@ -5791,6 +6442,16 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
                                                       absent=absent)
             except Exception as ex:  # grounding is an aid: never fail the round on it
                 api_info = {"error": f"{type(ex).__name__}: {ex}"[:300]}
+        # .NET: the same truth by reflection on the kernel that just compiled the cells
+        # (ICT-15, 22/11: four rounds per grain re-invented ScottPlot members).
+        elif dotnet and kid:
+            g = await dotnet_ground_execution(pm, kid, scratch, rec.get("execution"))
+            probed = rec.get("execution")
+            if g:
+                crate_api, api_info = g["block"], g["info"]
+                rec["dotnet_api_last"] = g
+            else:
+                rec.pop("dotnet_api_last", None)
         # Upstream definitions the stack crosses (#27314): offered, bounded, never demanded.
         failing_idx = {d["idx"] for d in detail}
         upstream: list[dict] = []
@@ -5898,6 +6559,15 @@ async def repair_kernel_errors(sk, pm, args, rec: dict, scratch: Path, kname: st
             rec.setdefault("repair_extensions", []).append(
                 {"stage": stage, "after_round": rnd - 1, "failing_before": len(failing),
                  "failing_after": after, "budget": budget})
+    # Rounds spent, cells still failing: the probe reads the FINAL execution while its
+    # kernel is alive, so the constructive loop's first round gets the API too
+    # (exec-reject findings, revise_loop). The caller stops the kernel.
+    if dotnet and kid and rec.get("execution") is not probed:
+        g = await dotnet_ground_execution(pm, kid, scratch, rec.get("execution"))
+        if g:
+            rec["dotnet_api_last"] = g
+        else:
+            rec.pop("dotnet_api_last", None)
     return kid, conv
 
 
@@ -5955,7 +6625,7 @@ async def mcp_sessions(out_dir: Path):
 # from the canon/create_metadata, not from cell sources), so routing them into the
 # constructive loop would burn model rounds on an unfixable target (measured 20/11:
 # language-info failed with canon None AND built None — nothing a cell edit can do).
-_GATE_NON_REPAIRABLE = {"language-info"}
+_GATE_NON_REPAIRABLE = {"language-info", "kernelspec"}
 
 # Actionable phrasing per measured failing gate (20/11 funnel: machine-path 3,
 # svg-display 2, coord-refs 1). Falls back to a generic instruction for new gates.
@@ -5964,8 +6634,23 @@ _GATE_FIX_TEXT = {
                     "par un chemin relatif au dépôt ou par un littéral de données",
     "svg-display": "la cellule doit AFFICHER une figure vectorielle SVG (sortie réelle), pas "
                    "une image encodée ni un chemin de fichier",
-    "coord-refs": "les renvois entre cellules (références croisées) sont incohérents : aligne "
-                  "les références citées avec les cellules réelles du carnet",
+    # 22/11, CoursIA#28104: the former text ("cross-cell references are inconsistent")
+    # described another defect; five revision rounds aligned cell numbers and the
+    # `lane` word stayed. The gate is COORD_REF_RE: an issue-tracker reference.
+    "coord-refs": "la cellule porte une référence de coordination — `EPIC #…`, `see #…`, "
+                  "`part of #…` ou le mot `lane` (toute casse) : supprime cette mention ou "
+                  "reformule sans elle (« voie », « filière », ou rien) ; aucun numéro "
+                  "d'issue dans les cellules. Seule exception : la note de provenance "
+                  "`> Carnet issu de l'EPIC #N.`, admise UNIQUEMENT dans la DERNIÈRE cellule "
+                  "markdown du carnet — si l'extrait est cette note placée ailleurs, "
+                  "retire-la de cette cellule (au besoin, remets-la en fin de la dernière "
+                  "cellule markdown)",
+    # 22/11, CoursIA#27742: « Les valeurs下列 sont… » survived three rounds told only
+    # "fix the cell", with no cell named (the hits carried it, the finding did not).
+    "foreign-script": "la cellule contient des caractères d'un autre système d'écriture "
+                      "(cyrillique, kana, hangul, idéogrammes CJK) glissés par la génération : "
+                      "réécris la phrase de l'extrait en français correct, sans aucun de ces "
+                      "caractères ; ne touche pas au reste de la cellule",
     "dead-links": "lien vers un fichier absent du dépôt : pointe un carnet voisin qui EXISTE "
                   "(souvent le jumeau Python ou C# de ce voisin) ou retire le lien — ne "
                   "translittère jamais un suffixe `-Python` en `-Rust`",
@@ -5998,6 +6683,11 @@ _GATE_FIX_TEXT = {
 }
 
 
+# Gates whose detail carries {"cell", "excerpt"} hits that are safe to quote back to the
+# model (never `secrets`: its detail holds indices only, and must stay that way).
+_GATE_EXCERPT_GATES = {"coord-refs", "foreign-script"}
+
+
 def gate_repair_findings(rec: dict) -> list[dict]:
     """Synthesize verifier-shaped findings from the failing gates, so the EXISTING
     constructive loop can repair a gates-failed build instead of dying terminal.
@@ -6016,6 +6706,17 @@ def gate_repair_findings(rec: dict) -> list[dict]:
             for e in entries:
                 out.append({"cell": e.get("cell"), "severity": "major",
                             "detail": f"porte {g.get('gate')} en échec — {fix} ; {e.get('text')}"})
+            continue
+        hits = (g.get("detail") or {}).get("hits") \
+            if isinstance(g.get("detail"), dict) and g.get("gate") in _GATE_EXCERPT_GATES else None
+        if hits:
+            # one finding per offending cell, WITH the offending excerpt (#28104/#27742)
+            fix = _GATE_FIX_TEXT[g["gate"]]
+            for h in hits:
+                if isinstance(h, dict):
+                    out.append({"cell": h.get("cell"), "severity": "major",
+                                "detail": f"porte {g['gate']} en échec — {fix} ; extrait "
+                                          f"fautif : « {str(h.get('excerpt') or '').strip()} »"})
             continue
         detail = g.get("detail") if isinstance(g.get("detail"), (str, int, float)) else json.dumps(
             g.get("detail") or {}, ensure_ascii=False)
@@ -6101,12 +6802,18 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
         rel = _norm_rel(getattr(args, "notebook", None) or "")
         if create_mode and rel:
             rec["link_fix"] = resolve_dead_links(built_path, src_nb, wt_path, rel)
+            align = align_kernelspec(built_path, wt_path, rel, kname)
+            if align:
+                rec["kernelspec_align"] = align
+                rec.setdefault("create_metadata", {}).update(
+                    {"kernelspec": align["to"], "language_version": align["language_version"]})
         tg = time.time()
         rec["gates"] = run_gates(src_nb, built_path, create_mode=create_mode,
                                  canon_version=(rec.get("create_metadata") or {})
                                  .get("language_version"),
                                  repo=wt_path, rel=_norm_rel(getattr(args, "notebook", None) or ""),
-                                 scratch=out_dir, spec_body=spec_body, spec_ref=spec_ref)
+                                 scratch=out_dir, spec_body=spec_body, spec_ref=spec_ref,
+                                 kernel_name=kname)
         rec["gates_s"] = round(time.time() - tg, 1)
         bad = [g["gate"] for g in rec["gates"] if not g.get("ok")]
         rec["verdict"] = "gates-ok" if not bad else f"gates-failed:{','.join(bad)}"
@@ -6139,6 +6846,36 @@ def gates_then_verify(args, rec: dict, src_nb: Path, built_path: Path, create_mo
             rec["verify"] = {"verdict": "exec-reject", "findings": findings,
                              "source": "execution"}
             rec["verdict"] = "verify-reject"
+
+
+async def revision_dotnet_api(pm, rec: dict, kname: str, exec_dir: Path, built_path: Path,
+                              entry: dict) -> str:
+    """The .NET API block for an exec-reject revision round: the one the last repair
+    rounds probed when it covers the cells failing NOW, else a probe on a kernel started
+    for it alone (a --revise-from resume: the build's kernel died with its process).
+    Recorded on the revision entry; "" when nothing applies. Never raises."""
+    now = [e.get("cell") for e in rec.get("execution") or []
+           if isinstance(e, dict) and not e.get("ok")]
+    g = rec.get("dotnet_api_last")
+    if not g or g.get("cells") != now:
+        g, pkid = None, None
+        try:
+            pkid = await start_kernel(pm, kname, exec_dir)
+            if pkid:
+                g = await dotnet_ground_execution(pm, pkid, built_path, rec.get("execution"),
+                                                  fresh=True)
+        except Exception as ex:  # grounding is an aid: never fail the round on it
+            g = {"cells": now, "block": "",
+                 "info": {"kind": "dotnet", "error": f"{type(ex).__name__}: {ex}"[:300]}}
+        finally:
+            if pkid:
+                await pm_call(pm, "manage_kernel", {"action": "stop", "kernel_id": pkid})
+        if g:
+            g["info"] = {**(g.get("info") or {}), "fresh": True}
+            rec["dotnet_api_last"] = g
+    if g:
+        entry["dotnet_api"] = g.get("info")
+    return (g or {}).get("block") or ""
 
 
 async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path: Path,
@@ -6179,18 +6916,39 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
         entry["draft_backup"] = str(backup)
         t0 = time.time()
         applied = False
+        contested_only = False
         async with mcp_sessions(out_dir) as (sk, pm):
+            api_block = ""
+            if source_in == "execution" and kname.startswith(".net"):
+                api_block = await revision_dotnet_api(pm, rec, kname, exec_dir, built_path,
+                                                      entry)
             env = await sk_call_retry(
                 sk, args, rec, f"6-revise+{rnd}",
                 revision_prompt(issue, revision_view(built_path), findings, conventions,
-                                spec=bool(getattr(args, "from_spec", False))),
+                                spec=bool(getattr(args, "from_spec", False)),
+                                twin_view=(twin_reference_view(src_nb)
+                                           if src_nb and Path(src_nb) != Path(built_path)
+                                           else ""),
+                                api_block=api_block),
                 None, max_tokens=BUILD_MAX_TOKENS)
             entry["conversation_id"] = env.get("conversation_id")
             part, env = await parse_or_repair(sk, args, rec, f"6-revise+{rnd}", env, None,
                                               max_tokens=BUILD_MAX_TOKENS)
-            if not part or not part.get("cells"):
+            if not part:
                 entry["result"] = (gate_refusal(env) or call_failure(env) or "unparsed")
                 entry["raw_tail"] = (env.get("response") or "")[-1500:]
+            elif not part.get("cells") and part.get("contested"):
+                # A valid, cell-free answer is the documented contest path, not a malformed
+                # reply. CoursIA#27288 (23/11, o1/Terra): the builder correctly explained
+                # that the twin's gitignored Ciqual/RecipeML corpora were absent; the old
+                # branch discarded that reply as "unparsed". No cell changed, so the draft
+                # needs neither a new kernel nor the gates. The independent verifier sees
+                # the contest, and a maintained reject stops this invocation.
+                entry["apply"] = {"replaced": [], "unknown_idx": [], "bad": [],
+                                  "type_changed": []}
+                entry["addressed"] = part.get("addressed") or []
+                entry["contested"] = part.get("contested")
+                entry["result"] = "contested-only"
             else:
                 rep = apply_revision(built_path, part)
                 entry["apply"] = rep
@@ -6221,11 +6979,15 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                                                   "kernel_id": rec["kernel_id"]})
                     execution_verdict(rec, built_path)
         entry["elapsed_build_s"] = round(time.time() - t0, 1)
-        if not applied:
+        contested_only = entry.get("result") == "contested-only"
+        if not applied and not contested_only:
             break                       # the draft is untouched; verdict stays verify-reject
-        # No structure re-check: apply_revision never inserts, deletes or re-types a cell,
-        # and verify_structure_create would now flag the re-executed outputs as stale.
-        entry["exec_verdict"] = rec["verdict"]
+        if contested_only:
+            # No cell changed: re-execution and gates would only rewrite the artifact
+            # that was just judged. Re-enter ONLY the independent verification stage,
+            # with the builder's contest attached as the claims to counter-check.
+            rec["verdict"] = "gates-ok"
+        entry["exec_verdict"] = "contested-only" if contested_only else rec["verdict"]
         prior = {"round": rnd, "findings": findings, "addressed": entry.get("addressed"),
                  "contested": entry.get("contested")}
         gates_then_verify(args, rec, src_nb, built_path, create_mode, kname, wt_path, out_dir,
@@ -6239,6 +7001,11 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
             entry["majors_out"] = sum(1 for f in out if f.get("severity") == "major")
         entry["elapsed_s"] = round(time.time() - t0, 1)
         done += 1
+        if contested_only:
+            # The unchanged draft was independently judged once. Looping would ask the
+            # builder to contest the same findings again; a resumed invocation may add
+            # missing data or a new strategy before paying another revision.
+            break
         if (rec.get("verdict") == "verify-reject"
                 and revise_round_extends(done, budget, cap, source_in,
                                          (rec.get("verify") or {}).get("source"),
@@ -6427,7 +7194,13 @@ async def run_revision(args, rec: dict) -> dict:
         return rec
     create_mode = bool(prior.get("create_mode"))
     args.from_spec = bool((prior.get("create_mode") or {}).get("spec_twin"))
-    kname = args.kernel_override or (prior.get("kernel") or {}).get("kernel_name") or ""
+    # A creation's trace may record the --meta-from kernel while --kernel-override executed
+    # it (#27996: trace `.net-csharp`, outputs from `rust`) — the target's language tag
+    # outranks the recorded name, or the resume would re-execute Rust cells on .NET.
+    tgt = (getattr(args, "notebook", None)
+           or (prior.get("create_mode") or {}).get("target") or "")
+    kname = (args.kernel_override or (tag_kernel(tgt) if create_mode else None)
+             or (prior.get("kernel") or {}).get("kernel_name") or "")
     if resume_from:
         # verify-error is NOT a verdict: the verifier process crashed on an instrument
         # failure (20/11: the shared GitHub REST bucket ran out mid-run), so the build was
@@ -6601,18 +7374,37 @@ async def run(args, rec: dict) -> dict:
         # that carries the target's language tag.
         twin_meta = spec_meta_d or series_canonical_meta(wt_path, args.notebook)
         twin_kernel = (twin_meta.get("kernelspec") or {}).get("name")
-        if twin_kernel:
+        # The deliverable declares the kernel that EXECUTES it: --kernel-override, else the
+        # one the target's language tag requires. A --meta-from naming another language
+        # (the C# twin used as porting reference for a Rust port) only lends its metadata
+        # when it matches; otherwise a sibling that does is used, or the grain is refused
+        # here, before any token (#27996: `.net-csharp` shipped on a Rust notebook).
+        need = getattr(args, "kernel_override", None) or tag_kernel(args.notebook)
+        mismatch = None
+        if need and twin_kernel != need:
+            alt = meta_for_kernel(wt_path, args.notebook, need)
+            rec["meta_kernel_fix"] = {"meta_kernel": twin_kernel, "required": need,
+                                      "replaced_from": alt.get("_from")}
+            if alt:
+                twin_meta = {k: v for k, v in alt.items() if k != "_from"}
+                twin_kernel = need
+                spec_meta_d = {}
+            elif twin_kernel:
+                mismatch = f"create-meta-kernel-mismatch:{twin_kernel}!={need}"
+            # no metadata at all and no donor: the create-no-canonical-meta refusal below
+        if twin_kernel and not mismatch:
             kernel["kernel_name"] = twin_kernel
             kernel["kernel_source"] = "canonical-twin-kernelspec"
             if spec_meta_d:
                 kernel["kernel_source"] = "meta-from-kernelspec"
         else:
-            # No canonical metadata: the skeleton would carry {} and the language-info gate
-            # would fail only AFTER the whole build was paid (claudish PROPOSAL, 20/11).
-            # Refuse before the capacity gate and any token; --meta-from is the remedy.
+            # No canonical metadata (or only one naming another kernel): the skeleton would
+            # carry {} / the wrong kernelspec and a gate would fail only AFTER the whole
+            # build was paid (claudish PROPOSAL, 20/11; #27996). Refuse before the capacity
+            # gate and any token; --meta-from naming the required kernel is the remedy.
             rec["kernel"] = kernel
-            rec["verdict"] = ("create-no-canonical-meta:"
-                              f"{Path(args.notebook).parent.as_posix()}")
+            rec["verdict"] = mismatch or ("create-no-canonical-meta:"
+                                          f"{Path(args.notebook).parent.as_posix()}")
             return rec
     rec["kernel"] = kernel
     rec["src_nb"] = str(src_nb)

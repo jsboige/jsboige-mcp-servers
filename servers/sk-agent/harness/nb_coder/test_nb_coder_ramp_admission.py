@@ -68,6 +68,7 @@ def _events(sched, kind):
 ADMISSION_VERDICTS = [
     "refused-claim-implicit-occupation",
     "refused-claim-held-by-another-lane",
+    "refused-claim-not-qualified:RELACHEE",
     "refused-claim-check-broken",
     "refused-claim-check-not-scoped",
     "refused-claim-post-failed",

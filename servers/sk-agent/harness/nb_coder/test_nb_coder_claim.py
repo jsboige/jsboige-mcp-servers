@@ -60,6 +60,43 @@ def test_claim_verdict_is_fail_closed():
     assert v({"rc": 0}) is None
 
 
+# The guard's wording (CoursIA scripts/check_lane_claim.py, consumer-side qualification).
+_RELACHEE_LINE = ("[QUALIFICATION] RELACHEE : rendue par myia-po-2028:claudish il y a 0.1 j "
+                  "(< 7 j) : lire son motif -- grain non qualifie : ni reclame, ni edite "
+                  "(la qualification est prealable a l'action).")
+
+
+def test_rc1_qualification_is_not_a_cross_lane_collision():
+    """22/11 salvage: our own recent [RELEASED] exits 1 through the QUALIFICATION leg;
+    the driver used to report it as a claim held by another lane."""
+    v = nbcd.claim_verdict
+    # stderr only -> `out` carries it (the guard returns before printing any JSON)
+    assert v({"rc": 1, "out": _RELACHEE_LINE}) == "refused-claim-not-qualified:RELACHEE"
+    # stdout present -> stderr rides in `warnings`
+    assert v({"rc": 1, "out": "{}", "warnings": _RELACHEE_LINE}) == \
+        "refused-claim-not-qualified:RELACHEE"
+    assert v({"rc": 1, "out": "[QUALIFICATION] GEL : gel mainteneur"}) == \
+        "refused-claim-not-qualified:GEL"
+    # no qualification line -> still a live collision
+    assert v({"rc": 1, "out": "BLOCKED: [CLAIMED] lane myia-po-2023:CoursIA"}) == \
+        "refused-claim-held-by-another-lane"
+    # the code is only read on rc=1: rc=0 stays clear even if the text mentions it
+    assert v({"rc": 0, "out": _RELACHEE_LINE}) is None
+
+
+def test_not_qualified_never_stops_a_run_midway():
+    """A qualification refusal is not a live collision: the mid-run probe must not
+    throw away an engine run on it."""
+    assert "refused-claim-not-qualified:RELACHEE" not in nbcd.MIDRUN_COLLISIONS
+
+
+def test_guard_result_keeps_the_qualification_line(tmp_path):
+    from types import SimpleNamespace
+    p = SimpleNamespace(returncode=1, stdout="", stderr=_RELACHEE_LINE + "\n")
+    cc = nbcd._guard_result(p, "MyIA.AI.Notebooks/x.ipynb")
+    assert nbcd.claim_verdict(cc) == "refused-claim-not-qualified:RELACHEE"
+
+
 def test_start_kernel_sends_working_dir(monkeypatch, tmp_path):
     """#27021: the kernel cwd must be the source notebook's directory, not the out-dir."""
     captured = {}
