@@ -226,6 +226,7 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
     than the builder and can only reject a faithful reimplementation as unverifiable
     (CoursIA#27742: « ne peut pas être vérifié, à partir de la SOURCE fournie »)."""
     spec = mode == "spec"
+    annex = ""
     if spec:
         modules = None      # a [SPEC] twin imports nothing local
         # 20/11 --from-spec: digests/diffs against a [SPEC] twin are noise (every cell
@@ -241,7 +242,6 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                       "C'est sur ce texte que tu juges le point 2 (attendus affichés). Une "
                       "coupe est toujours signalée par `[tronqué : …]`.\n"
                       f"{json.dumps(built_outputs, ensure_ascii=False, indent=1)}\n\n")
-    annex = ""
     if src_digest is not None and built_digest is not None:
         annex += ("## Annexe sorties — empreintes par cellule code (source | livrable)\n"
                   "Chaque entrée : cell, n=nombre de blocs de sortie, types, bytes, "
