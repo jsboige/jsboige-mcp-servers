@@ -93,6 +93,20 @@ function getTextContent(result: any): string {
 	return result.content?.[0]?.text || '';
 }
 
+/**
+ * #4880: the degradation banner leads the response (#4287), so the structured
+ * payload is no longer always content[0]. Return the first block that parses
+ * as JSON.
+ */
+function getJsonPayload(result: any): any {
+	for (const item of result.content ?? []) {
+		if (item && typeof item.text === 'string') {
+			try { return JSON.parse(item.text); } catch { /* banner or prose block */ }
+		}
+	}
+	throw new Error('No JSON payload block found in result');
+}
+
 function makeCache(): Map<string, StoredConversation> {
 	return new Map();
 }
@@ -2863,6 +2877,176 @@ describe('helper functions (indirect via handler)', () => {
 				expect(parsed.write_breaker).toBeDefined();
 				expect(typeof parsed.write_breaker.was_armed).toBe('boolean');
 				expect(parsed.write_breaker.previous_state).toBeDefined();
+			});
+		});
+
+		// ============================================================
+		// #4880: per-component circuit breaker
+		// A Qdrant 5xx/timeout used to arm the EMBEDDING breaker, so a stalled
+		// vector store made every semantic search answer `embedding_circuit_breaker_active`
+		// for 5 minutes — the wrong component named. The load shedding stays; the
+		// breaker (and its reason) now names the component that actually failed.
+		// ============================================================
+
+		describe('#4880: per-component search circuit breaker', () => {
+			// The error classifier probes Qdrant's /healthz (and sometimes a light
+			// POST) on a search-stage timeout: keep every test hermetic.
+			const mockFetchHealth = vi.fn(async () => ({
+				ok: true,
+				status: 200,
+				json: async () => ({ result: { collections: [{ name: 'c' }] } })
+			}));
+
+			const runSearch = (query: string) => searchTasksByContentTool.handler(
+				{ search_query: query, workspace: 'roo-extensions' },
+				makeCache(),
+				mockEnsureCache,
+				defaultFallback
+			);
+
+			// #1892: with the aligned client, a timed-out vector query is NOT retried
+			// (no backoff timers), which keeps these tests fast and deterministic.
+			const qdrantTimeout = () => new Error('This operation was aborted');
+
+			beforeEach(() => {
+				vi.stubGlobal('fetch', mockFetchHealth);
+			});
+
+			afterEach(() => {
+				vi.unstubAllGlobals();
+				delete process.env.SEARCH_BREAKER_PER_COMPONENT;
+			});
+
+			test('a Qdrant timeout arms the QDRANT breaker: second call not attempted, names qdrant', async () => {
+				vi.useRealTimers();
+				_resetEmbeddingCircuitBreaker();
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: new Array(1536).fill(0.1) }]
+				});
+				mockQdrantClient.query.mockRejectedValueOnce(qdrantTimeout());
+
+				// First call: the Qdrant search times out -> text fallback.
+				await runSearch('qdrant timeout trigger');
+
+				// Second call: load shedding — the search is not attempted at all.
+				const result = await runSearch('qdrant timeout repeat');
+				const payload = getJsonPayload(result);
+
+				expect(payload.fallback_reason).toBe('qdrant_circuit_breaker_active');
+				expect(payload.fallback_reason).not.toContain('embedding');
+				expect(payload.circuit_open).toBe(true);
+				expect(payload.circuit_component).toBe('qdrant');
+				expect(typeof payload.circuit_remaining_ms).toBe('number');
+				expect(payload.circuit_remaining_ms).toBeGreaterThan(0);
+				// The readable banner leads (#4287) and says the search was NOT attempted.
+				expect(getTextContent(result)).toContain('qdrant');
+				expect(getTextContent(result)).toContain('NOT attempted');
+				expect(getTextContent(result)).toMatch(/\d+s remaining/);
+				// The Qdrant query ran once only (first call).
+				expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
+			});
+
+			test('an embedding failure still arms the EMBEDDING breaker, reason unchanged', async () => {
+				vi.useFakeTimers();
+				_resetEmbeddingCircuitBreaker();
+				const mockError = Object.assign(new Error('Service Unavailable'), {
+					response: { status: 503, statusText: 'Service Unavailable', data: {} }
+				});
+				// #249/#2167: exhaust withRetry (1 initial + 2 retries).
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+				mockOpenAIClient.embeddings.create.mockRejectedValueOnce(mockError);
+
+				const first = runSearch('embedding breaker trigger');
+				await vi.runAllTimersAsync();
+				await first;
+
+				const result = await runSearch('embedding breaker repeat');
+				const payload = getJsonPayload(result);
+
+				expect(payload.fallback_reason).toBe('embedding_circuit_breaker_active');
+				expect(payload.circuit_open).toBe(true);
+				expect(payload.circuit_component).toBe('embedding');
+				// The Qdrant search was never reached in either call.
+				expect(mockQdrantClient.query).not.toHaveBeenCalled();
+			});
+
+			test('the Qdrant breaker stops blocking after its TTL', async () => {
+				vi.useFakeTimers();
+				_resetEmbeddingCircuitBreaker();
+				mockOpenAIClient.embeddings.create.mockResolvedValue({
+					data: [{ embedding: new Array(1536).fill(0.1) }]
+				});
+				mockQdrantClient.query.mockRejectedValueOnce(qdrantTimeout());
+
+				const first = runSearch('qdrant ttl trigger');
+				await vi.runAllTimersAsync();
+				await first;
+
+				// Default TTL is 300 s — advance past it.
+				vi.advanceTimersByTime(310000);
+
+				mockQdrantClient.query.mockResolvedValueOnce({ points: [] });
+				const result = await runSearch('qdrant ttl expired');
+
+				// The search was attempted again and succeeded semantically.
+				expect(mockQdrantClient.query).toHaveBeenCalledTimes(2);
+				const payload = getJsonPayload(result);
+				expect(payload.fallback_used).toBe(false);
+				expect(payload).not.toHaveProperty('circuit_open');
+			});
+
+			test('reset_circuit_breaker clears the QDRANT breaker too', async () => {
+				vi.useRealTimers();
+				_resetEmbeddingCircuitBreaker();
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: new Array(1536).fill(0.1) }]
+				});
+				mockQdrantClient.query.mockRejectedValueOnce(qdrantTimeout());
+
+				// Arm the Qdrant breaker.
+				await runSearch('reset trigger');
+
+				const resetResult = await searchTasksByContentTool.handler(
+					{ search_query: 'test', reset_circuit_breaker: true },
+					makeCache(),
+					mockEnsureCache,
+					defaultFallback
+				);
+				const parsedReset = JSON.parse(getTextContent(resetResult));
+				expect(parsedReset.qdrant_search_breaker).toBeDefined();
+				expect(parsedReset.qdrant_search_breaker.was_armed).toBe(true);
+				expect(parsedReset.was_armed).toBe(true);
+
+				// The next search reaches Qdrant again.
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: new Array(1536).fill(0.1) }]
+				});
+				mockQdrantClient.query.mockResolvedValueOnce({ points: [] });
+				await runSearch('after reset');
+
+				expect(mockQdrantClient.query).toHaveBeenCalledTimes(2);
+			});
+
+			test('kill switch SEARCH_BREAKER_PER_COMPONENT=0 restores the legacy embedding-breaker arming', async () => {
+				vi.useRealTimers();
+				process.env.SEARCH_BREAKER_PER_COMPONENT = '0';
+				_resetEmbeddingCircuitBreaker();
+				mockOpenAIClient.embeddings.create.mockResolvedValueOnce({
+					data: [{ embedding: new Array(1536).fill(0.1) }]
+				});
+				mockQdrantClient.query.mockRejectedValueOnce(qdrantTimeout());
+
+				// First call: a QDRANT timeout, legacy arming.
+				await runSearch('legacy trigger');
+
+				const result = await runSearch('legacy repeat');
+				const payload = getJsonPayload(result);
+
+				// Today's behaviour exactly: the EMBEDDING breaker is armed.
+				expect(payload.fallback_reason).toBe('embedding_circuit_breaker_active');
+				expect(payload.circuit_component).toBe('embedding');
+				expect(mockQdrantClient.query).toHaveBeenCalledTimes(1);
 			});
 		});
 	});
