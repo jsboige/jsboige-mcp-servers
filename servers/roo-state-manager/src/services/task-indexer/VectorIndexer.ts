@@ -98,6 +98,31 @@ type CircuitBreakerState = 'CLOSED' | 'OPEN' | 'HALF_OPEN';
 let circuitBreakerState: CircuitBreakerState = 'CLOSED';
 let failureCount = 0;
 let lastFailureTime = 0;
+let collectionSetup: Promise<void> | undefined;
+
+function invalidateCollectionSetup(): void {
+    collectionSetup = undefined;
+}
+
+function ensureCollectionSetupOnce(): Promise<void> {
+    if (!collectionSetup) {
+        const pending = ensureCollectionExists();
+        collectionSetup = pending;
+        pending.catch(() => {
+            if (collectionSetup === pending) invalidateCollectionSetup();
+        });
+    }
+    return collectionSetup;
+}
+
+function isCollectionNotFound(error: any): boolean {
+    if ((error?.status ?? error?.response?.status) === 404) return true;
+    return /\b404\b|not.?found|doesn'?t exist|does not exist|no such/i.test(String(error?.message ?? error ?? ''));
+}
+
+function invalidateCollectionSetupOnNotFound(error: any): void {
+    if (isCollectionNotFound(error)) invalidateCollectionSetup();
+}
 
 /**
  * #2165: Observable circuit-breaker state.
@@ -489,7 +514,7 @@ export async function ensureCollectionExists() {
             console.log(`Collection "${COLLECTION_NAME}" created successfully (size=${vectorSize}, max_indexing_threads=2)`);
         }
 
-        // #2699/#2700/#2712: Ensure payload indexes on every filtered field (idempotent, every boot).
+        // #2699/#2700/#2712: every filtered field needs an index. indexTask caches this setup once per process.
         await ensureFilteredPayloadIndexes();
     } catch (error) {
         console.error('Error ensuring Qdrant collection exists:', error);
@@ -525,10 +550,10 @@ const FILTERED_PAYLOAD_INDEXES: ReadonlyArray<{ field: string; schema: 'keyword'
 /**
  * #2699/#2700/#2712: Ensure a payload index exists on every filtered field.
  *
- * Called from both `ensureCollectionExists` (idempotent, every boot — heals an
- * existing collection) and `resetCollection` (fresh collection, instant build on
- * 0 points). Without this, a reset/recreate starts with zero indexes and the
- * next filtered query reintroduces the github-2699 storm (gap #2700).
+ * Called from `ensureCollectionExists` (cached by indexTask once per process)
+ * and `resetCollection` (fresh collection, instant build on 0 points). Without
+ * this, a reset/recreate starts with zero indexes and the next filtered query
+ * reintroduces the github-2699 storm (gap #2700).
  *
  * Idempotent: Qdrant re-creating an existing index is a no-op (returns acknowledged).
  * Non-blocking: `wait: false` so indexes build in the background without stalling
@@ -664,6 +689,7 @@ export async function safeQdrantUpsert(points: PointStruct[], failureContext?: U
                 console.log(`✅ [safeQdrantUpsert] Batch ${batchIdx + 1}/${totalBatches} réussi - ${batch.length} points (${attemptDuration}ms)`);
 
             } catch (error: any) {
+                invalidateCollectionSetupOnNotFound(error);
                 attempt++;
                 const attemptDuration = Date.now() - attemptStartTime;
 
@@ -946,6 +972,7 @@ async function dedupByContentHash(points: PointStruct[]): Promise<PointStruct[]>
                 try {
                     await collectExistingContentHashes(qdrant, batch, existingHashes, taskId === '' ? undefined : taskId);
                 } catch (scrollError: any) {
+                    invalidateCollectionSetupOnNotFound(scrollError);
                     console.warn(`[#1985] Dedup scroll failed for batch ${i}: ${scrollError?.message || scrollError}`);
                 }
             }
@@ -1195,6 +1222,7 @@ async function preflightDedupByContentHash(
         // in the logs. Rethrow: the abort must reject the run HERE, immediately,
         // keeping the marked error's message and watchdogAbort detail intact.
         if (error?.details?.watchdogAbort === true) throw error;
+        invalidateCollectionSetupOnNotFound(error);
         if (b2Stats.scrollFailed) {
             // #4861: scroll failure detected above — surface the fail-closed
             // signal to the caller (indexTask throws the deferral, mirroring
@@ -1565,7 +1593,7 @@ export async function indexTask(taskId: string, taskPath: string, source: 'roo' 
             );
         }
 
-        await ensureCollectionExists();
+        await ensureCollectionSetupOnce();
 
         // Dispatch to appropriate chunk extractor based on source
         const chunks = source === 'claude-code'
@@ -1988,6 +2016,7 @@ export const RESET_SAFETY_FLOOR = 10_000;
  *   need a full wipe (e.g. embedding-dimension change) must opt in with `force: true`.
  */
 export async function resetCollection(options?: { force?: boolean }): Promise<void> {
+    invalidateCollectionSetup();
     try {
         const qdrant = getQdrantClient();
 
@@ -2255,12 +2284,17 @@ export async function cleanupOldVectors(
             // Scroll to get a batch of point IDs matching the filter
             const scrolled = await retryWithBackoff(async () => {
                 const qdrant = getQdrantClient();
-                return await qdrant.scroll(COLLECTION_NAME, {
-                    filter,
-                    limit: BATCH_SIZE,
-                    with_payload: false,
-                    with_vector: false
-                });
+                try {
+                    return await qdrant.scroll(COLLECTION_NAME, {
+                        filter,
+                        limit: BATCH_SIZE,
+                        with_payload: false,
+                        with_vector: false
+                    });
+                } catch (error) {
+                    invalidateCollectionSetupOnNotFound(error);
+                    throw error;
+                }
             }, `Qdrant cleanup scroll (batch at ${totalDeleted})`);
 
             networkMetrics.qdrantCalls++;
