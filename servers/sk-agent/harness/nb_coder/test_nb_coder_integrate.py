@@ -1052,3 +1052,222 @@ def test_attestation_by_reads_plain_and_quoted():
     assert nbci._attestation_by("date: x\nby: myia-ai-01:vllm\n") == "myia-ai-01:vllm"
     assert nbci._attestation_by("by: 'myia-po-2028:claudish'\n") == "myia-po-2028:claudish"
     assert nbci._attestation_by("date: x\n") is None
+
+
+# ---------------- twin-link form and red guards (24/11, po-2028 measure on CoursIA)
+#
+# Five first deliveries opened with « Garde `check-nav-chain` : exit 1 (ÉCHEC) »
+# printed in their own PR body (#28199: 1 NEW finding, #28282/#28288/#28291/
+# #28293: 14 each): the integration wrote the twin links as navigation edges in
+# series nobody navigates. The organ's own source states the convention -- a twin
+# parity link (`| ↔ Python | [Search-03c — LDS (Python)](..)`) « n'est pas une
+# arete, volontairement » -- so the link takes that form there.
+
+SOLO = "MyIA.AI.Notebooks/Serie"
+TWIN, PORT = f"{SOLO}/Solo-01-Python.ipynb", f"{SOLO}/Solo-01-Rust.ipynb"
+
+
+class _Proc:
+    def __init__(self, stdout="", rc=0):
+        self.stdout, self.returncode = stdout, rc
+
+
+def _organ_answers(monkeypatch, report, port_tracked=True):
+    """`subprocess.run` faked: the organ prints `report` (a dict, or raw text),
+    `git ls-files` answers for the port. Returns the calls seen."""
+    calls = []
+
+    def fake_run(argv, **kw):
+        if argv[0] == "git":
+            calls.append(("git", argv[-1], kw["cwd"]))
+            return _Proc(rc=0 if port_tracked else 1)
+        calls.append(("organ", tuple(argv[1:]), kw["cwd"]))
+        return _Proc(report if isinstance(report, str) else json.dumps(report))
+
+    monkeypatch.setattr(nbci.subprocess, "run", fake_run)
+    return calls
+
+
+def _state(nb, reason):
+    return {"series": SOLO, "notebooks": nb, "reason": reason}
+
+
+def _report(*not_judged, series=(), wrapped=()):
+    return {"total_findings": 0, "findings": [], "wrapped": list(wrapped),
+            "not_judged": list(not_judged), "series": list(series), "scanned": 2122}
+
+
+def test_series_state_is_read_from_the_twin_own_series(tmp_path, monkeypatch):
+    organ = tmp_path / nbci.GUARDS[0][1][0]
+    organ.parent.mkdir(parents=True)
+    organ.write_text("", encoding="utf-8")
+    calls = _organ_answers(monkeypatch, _report(
+        {"series": "MyIA.AI.Notebooks/Ailleurs", "notebooks": 9,
+         "reason": "no_internal_nav_edge"}, _state(3, "no_internal_nav_edge")))
+    assert nbci.series_without_internal_edge(tmp_path, TWIN, PORT) is True
+    assert calls == [("organ", (nbci.GUARDS[0][1][0], "--json", TWIN), str(tmp_path)),
+                     ("git", PORT, str(tmp_path))]
+
+
+def test_series_state_follows_the_organ_verdict(tmp_path, monkeypatch):
+    organ = tmp_path / nbci.GUARDS[0][1][0]
+    organ.parent.mkdir(parents=True)
+    organ.write_text("", encoding="utf-8")
+    ask = nbci.series_without_internal_edge
+    # measured on main: InfoQuant has 2 notebooks; with the port, 3
+    _organ_answers(monkeypatch, _report(_state(3, "no_internal_nav_edge")))
+    assert ask(tmp_path, TWIN, PORT) is True
+    # the ICT-15 ports: 14 notebooks on the former base, 13 orphan entries
+    _organ_answers(monkeypatch, _report(_state(15, "no_internal_nav_edge")))
+    assert ask(tmp_path, TWIN, PORT) is True
+    # a lone pair becomes a wrapped chain under marked links (measured): marked stays
+    _organ_answers(monkeypatch, _report(_state(2, "no_internal_nav_edge")))
+    assert ask(tmp_path, TWIN, PORT) is False
+    _organ_answers(monkeypatch, _report(_state(1, "series_single_notebook")))
+    assert ask(tmp_path, TWIN, PORT) is False
+    # the twin alone, the port not in the index yet: the organ does not count it
+    _organ_answers(monkeypatch, _report(_state(1, "series_single_notebook")), port_tracked=False)
+    assert ask(tmp_path, TWIN, PORT) is False
+    # two notebooks and a port the organ cannot see: three in the PR
+    _organ_answers(monkeypatch, _report(_state(2, "no_internal_nav_edge")), port_tracked=False)
+    assert ask(tmp_path, TWIN, PORT) is True
+    # a judged series, or a wrapped one: the marked edge is the convention
+    _organ_answers(monkeypatch, _report(series=[{"series": SOLO, "notebooks": 4}]))
+    assert ask(tmp_path, TWIN, PORT) is False
+    _organ_answers(monkeypatch, _report(wrapped=[{"series": SOLO, "notebooks": 4}]))
+    assert ask(tmp_path, TWIN, PORT) is False
+
+
+def test_series_state_is_unmeasured_when_the_organ_cannot_answer(tmp_path, monkeypatch):
+    organ = tmp_path / nbci.GUARDS[0][1][0]
+    organ.parent.mkdir(parents=True)
+    organ.write_text("", encoding="utf-8")
+    ask = nbci.series_without_internal_edge
+    _organ_answers(monkeypatch, "FAIL: 1 NEW finding(s) vs baseline")   # not JSON
+    assert ask(tmp_path, TWIN, PORT) is None
+    _organ_answers(monkeypatch, _report({"series": "MyIA.AI.Notebooks/Ailleurs",
+                                         "notebooks": 3, "reason": "no_internal_nav_edge"}))
+    assert ask(tmp_path, TWIN, PORT) is None          # silent on that series
+    _organ_answers(monkeypatch, _report({"series": SOLO, "notebooks": "trois",
+                                         "reason": "no_internal_nav_edge"}))
+    assert ask(tmp_path, TWIN, PORT) is None          # count of an unknown shape
+
+    def hangs(argv, **kw):
+        raise nbci.subprocess.TimeoutExpired(argv, kw["timeout"])
+
+    monkeypatch.setattr(nbci.subprocess, "run", hangs)
+    assert ask(tmp_path, TWIN, PORT) is None
+    organ.unlink()
+    assert ask(tmp_path, TWIN, PORT) is None          # no organ in this worktree
+
+
+def test_twin_link_form_names_the_series_state(tmp_path, monkeypatch):
+    for answer, form in ((True, {"form": "marker-free", "series": "no_internal_nav_edge"}),
+                         (False, {"form": "marked", "series": "judged"}),
+                         (None, {"form": "marked", "series": "unmeasured"})):
+        monkeypatch.setattr(nbci, "series_without_internal_edge",
+                            lambda *a, _a=answer: _a)
+        assert nbci.twin_link_form(tmp_path, TWIN, PORT) == form
+
+
+def _series_repo(repo: Path, twin_cells) -> None:
+    _nb(repo / TWIN, twin_cells)
+    _nb(repo / PORT, [_md("# Solo 01\n\nIntro.\n"), _code("fn main() {}\n")])
+    _readme(repo / f"{SOLO}/README.md", "| 01 | [Solo 01](Solo-01-Python.ipynb) | desc |\n")
+
+
+def _cells(path: Path) -> list[dict]:
+    return json.loads(path.read_text(encoding="utf-8"))["cells"]
+
+
+def test_twin_links_carry_no_nav_marker_in_a_series_nobody_navigates(tmp_path, monkeypatch):
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        _series_repo(repo, [_md("## Navigation\n\n| ← | [Index](README.md) |"),
+                            _md("# Solo 01\n\nIntro."), _code("x=1\n")])
+        monkeypatch.setattr(nbci, "series_without_internal_edge", lambda *a: True)
+        res = nbci.integrate(repo, PORT, TWIN)
+        assert res["nav_form"] == {"form": "marker-free",
+                                   "series": "no_internal_nav_edge"}
+        assert res["nav"]["how"] == "added-marker-free-link"
+        assert res["nav"]["cells"] == [1]          # the Navigation cell is no host
+        assert res["touched"] == [TWIN, PORT, f"{SOLO}/README.md"]
+        cells = _cells(repo / TWIN)
+        assert "".join(cells[0]["source"]) == "## Navigation\n\n| ← | [Index](README.md) |"
+        assert "".join(cells[1]["source"]) == ("**Jumeau Rust** : "
+                                               "[jumeau Rust](Solo-01-Rust.ipynb)\n\n"
+                                               "# Solo 01\n\nIntro.")
+        assert cells[2] == _code("x=1\n")          # markdown only
+        assert nbci._nav_edge_exists(cells, "Solo-01-Rust.ipynb") is False
+        assert nbci._link_exists(cells, "Solo-01-Rust.ipynb") is True
+        assert res["back"]["how"] == "added-marker-free-link"
+        back = _cells(repo / PORT)
+        assert "".join(back[0]["source"]).startswith(
+            "**Jumeau Python** : [jumeau Python](Solo-01-Python.ipynb)\n\n")
+        assert nbci._nav_edge_exists(back, "Solo-01-Python.ipynb") is False
+        # idempotent, on a link marked or not
+        snapshot = {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()}
+        again = nbci.integrate(repo, PORT, TWIN)
+        assert again["touched"] == [] and again["nav"]["todo"] is False
+        assert again["back"]["todo"] is False
+        assert {p: p.read_bytes() for p in repo.rglob("*") if p.is_file()} == snapshot
+        msg = nbci.integration_commit_message(res, "myia-po-2028:claudish")
+        assert "ligne README + lien de jumeau + lien retour" in msg
+        assert "arête nav" not in msg
+
+
+def test_twin_links_stay_marked_when_the_series_is_judged_or_unmeasured(tmp_path, monkeypatch):
+    import tempfile
+    marked = ("**Navigation** : [jumeau Rust](Solo-01-Rust.ipynb)\n\n# Solo 01\n\nIntro.")
+    for answer, series in ((False, "judged"), (None, "unmeasured")):
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            _series_repo(repo, [_md("# Solo 01\n\nIntro."), _code("x=1\n")])
+            monkeypatch.setattr(nbci, "series_without_internal_edge",
+                                lambda *a, _a=answer: _a)
+            res = nbci.integrate(repo, PORT, TWIN)
+            assert res["nav_form"] == {"form": "marked", "series": series}
+            assert res["nav"]["how"] == "added-minimal-nav-bar"
+            assert "".join(_cells(repo / TWIN)[0]["source"]) == marked
+            assert nbci._nav_edge_exists(_cells(repo / TWIN), "Solo-01-Rust.ipynb")
+            msg = nbci.integration_commit_message(res, "myia-po-2028:claudish")
+            assert "arête nav" in msg and "lien de jumeau + " not in msg
+
+
+def test_marker_free_link_never_lands_in_a_hot_cell_or_a_navigation_context(tmp_path):
+    twin = _nb(tmp_path / "T.ipynb", [
+        _md("## Navigation\n\n| ← | [Index](README.md) |"),
+        dict(_md("# Titre\n\nIntro."), id="hot"),
+        _md("## Suite\n\nTexte."), _code("x=1\n")])
+    plan = nbci.plan_nav_link(twin, "Solo-01-Rust.ipynb", {"hot"}, marked=False)
+    assert plan["todo"] and plan["how"] == "added-marker-free-link"
+    assert plan["cells"] == [2]
+    assert "".join(plan["_nb"]["cells"][2]["source"]) == (
+        "**Jumeau Rust** : [jumeau Rust](Solo-01-Rust.ipynb)\n\n## Suite\n\nTexte.")
+    # a twin whose every markdown cell is a navigation context: the marked
+    # shapes plan it and the replayed guard judges
+    nav_only = _nb(tmp_path / "N.ipynb", [_md("## Navigation\n\n| ← | [Index](README.md) |"),
+                                          _code("x=1\n")])
+    plan = nbci.plan_nav_link(nav_only, "Solo-01-Rust.ipynb", set(), marked=False)
+    assert plan["how"] == "appended-under-navigation-cell"
+    # the port's own name carries a nav word: the organ reads that link as an
+    # edge however it is written
+    plan = nbci.plan_nav_link(twin, "Solo-01-Next-Rust.ipynb", {"hot"}, marked=False)
+    assert plan["how"] != "added-marker-free-link"
+    # a MARKED link already in place is the twin link too: nothing is written
+    already = _nb(tmp_path / "A.ipynb", [
+        _md("**Navigation** : [jumeau Rust](Solo-01-Rust.ipynb)\n\n# Titre\n")])
+    plan = nbci.plan_nav_link(already, "Solo-01-Rust.ipynb", set(), marked=False)
+    assert plan == {"todo": False, "why": "twin link already present"}
+
+
+def test_red_guards_counts_only_a_measured_rc():
+    guards = [{"guard": "check-nav-chain", "cmd": "python …", "rc": 1, "tail": "FAIL: 1 NEW"},
+              {"guard": "readme-notebook-coverage", "cmd": "python …", "rc": 0, "tail": ""},
+              {"guard": "translation-drift", "cmd": "python …", "rc": None,
+               "tail": "TimeoutExpired: …"}]
+    assert nbci.red_guards(guards) == ["check-nav-chain"]
+    assert nbci.red_guards([guards[1], guards[2]]) == []
+    assert nbci.red_guards([{"guard": "x", "rc": 2}, {"guard": "y", "rc": "1"}]) == ["x"]
+    assert nbci.red_guards(None) == [] and nbci.red_guards([]) == []

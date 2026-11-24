@@ -421,6 +421,87 @@ def _nav_edge_exists(cells: list[dict], new_name: str) -> bool:
     return False
 
 
+def _link_exists(cells: list[dict], new_name: str) -> bool:
+    """True when a markdown cell links `new_name` -- marked or not."""
+    for cell in cells:
+        if cell.get("cell_type") != "markdown":
+            continue
+        if any(m.group(2).rsplit("/", 1)[-1] == new_name
+               for m in LINK_RE.finditer(cell_text(cell))):
+            return True
+    return False
+
+
+def _git_tracked(worktree: Path, rel: str) -> bool:
+    """True when `rel` is in the worktree's index: the organ counts a notebook
+    only when git tracks it, so a port still untracked is not a member yet."""
+    proc = subprocess.run(["git", "ls-files", "--error-unmatch", "--",
+                           rel.replace("\\", "/")],
+                          cwd=str(worktree), capture_output=True)
+    return proc.returncode == 0
+
+
+def series_without_internal_edge(worktree: Path, source_nb: str,
+                                 notebook: str | None = None) -> bool | None:
+    """Ask the worktree's own nav-chain organ whether the series of `source_nb`
+    is the one state in which a MARKED twin link is red: NO internal
+    navigation edge, and members other than the pair (`source_nb` + the port
+    `notebook`). The organ's JSON report names that series under `not_judged`
+    with the reason `no_internal_nav_edge` and its notebook count.
+
+    A MARKED link IS a navigation edge for the organ. In such a series the
+    twin link and the back link are the only two edges: the organ starts
+    judging a series nobody navigates, every other member becomes an orphan
+    entry and the pair an independent chain -- measured red on first delivery
+    (CoursIA#28199: 1 NEW finding; the four ICT-15 ports #28282/#28288/#28291/
+    #28293: 14 each). The organ reads a twin link with no nav marker as a
+    reference, not an edge: the series stays unjudged.
+
+    False for every other state the organ names (a judged series needs the
+    marked edge; a lone pair becomes a wrapped chain under marked links --
+    both measured with the real organ). None when the organ could not answer
+    (absent, timeout, unreadable report, silent on that series): the caller
+    keeps the marked form and the replayed guard judges."""
+    worktree = Path(worktree)
+    source_nb = source_nb.replace("\\", "/")
+    organ = worktree / GUARDS[0][1][0]
+    if not organ.is_file():
+        return None
+    try:
+        proc = subprocess.run([sys.executable, GUARDS[0][1][0], "--json", source_nb],
+                              cwd=str(worktree), capture_output=True, text=True,
+                              encoding="utf-8", errors="replace",
+                              timeout=GUARD_TIMEOUT_S)
+        report = json.loads(proc.stdout or "")
+        series = source_nb.rsplit("/", 1)[0]
+        if any(s.get("series") == series
+               for key in ("series", "wrapped") for s in report[key]):
+            return False
+        named = [s for s in report["not_judged"] if s.get("series") == series]
+        if not named:
+            return None  # the organ said nothing about that series
+        if named[0].get("reason") != "no_internal_nav_edge":
+            return False  # series_single_notebook: the twin is alone
+        members = named[0].get("notebooks")
+        if not isinstance(members, int):
+            return None
+        port_seen = bool(notebook) and _git_tracked(worktree, notebook)
+        return members - 1 - (1 if port_seen else 0) >= 1
+    except (subprocess.TimeoutExpired, OSError, ValueError, KeyError, TypeError,
+            AttributeError):
+        return None
+
+
+def twin_link_form(worktree: Path, source_nb: str,
+                   notebook: str | None = None) -> dict:
+    """`{"form": "marked" | "marker-free", "series": ...}` for the twin links of
+    a port whose source twin is `source_nb` (read: the organ's report, no write)."""
+    unjudged = series_without_internal_edge(worktree, source_nb, notebook)
+    if unjudged is True:
+        return {"form": "marker-free", "series": "no_internal_nav_edge"}
+    return {"form": "marked", "series": "judged" if unjudged is False else "unmeasured"}
+
+
 def visible_text(text: str) -> str:
     """Markdown with every link reduced to its text: a filename such as
     `Complexity-03c-ComplexityZoo-Navigation-Python.ipynb` is not a nav
@@ -638,8 +719,15 @@ def _insert_sibling_line(lines: list[str], j: int, label: str, stem: str,
 
 def plan_nav_link(twin_path: Path, nb_rel: str,
                   hot: set[str] | None = None, *, lang: str | None = None,
-                  base_stem: str | None = None, origin: bool = False) -> dict:
+                  base_stem: str | None = None, origin: bool = False,
+                  marked: bool = True) -> dict:
     """Plan the inbound nav edge in the Python twin.
+
+    ``marked=False`` (a series the organ reports as `not_judged` /
+    `no_internal_nav_edge`, see `series_without_internal_edge`) writes the same
+    link OUTSIDE every navigation context, where the organ reads a link and not
+    an edge -- the series stays unjudged. It is idempotent on any link to the
+    twin, marked or not.
 
     Shapes, all measured on the lot-1 fixes: extend every existing nav bar with
     ` | [label](new.ipynb)` (Search-03d cell 0, ChoixSocial cells 0+27) -- or,
@@ -676,8 +764,10 @@ def plan_nav_link(twin_path: Path, nb_rel: str,
     hot = hot or set()
     nb, fmt, raw = load_nb(twin_path)
     cells = nb["cells"]
-    if _nav_edge_exists(cells, new_name):
-        return {"todo": False, "why": "nav edge already present"}
+    already = _nav_edge_exists(cells, new_name) if marked else _link_exists(cells, new_name)
+    if already:
+        return {"todo": False, "why": "nav edge already present" if marked
+                else "twin link already present"}
 
     def is_hot(i: int) -> bool:
         return bool(cells[i].get("id")) and cells[i]["id"] in hot
@@ -685,6 +775,11 @@ def plan_nav_link(twin_path: Path, nb_rel: str,
     all_bars = _nav_bar_cells(cells)
     hot_skipped = sorted(i for i in all_bars if is_hot(i))
     extra = {"hot_skipped": hot_skipped} if hot_skipped else {}
+    if not marked:
+        free = _plan_marker_free_link(twin_path, nb, fmt, raw, cells, is_hot,
+                                      new_name, lang, base_stem, extra)
+        if free:
+            return free  # else no cell outside a navigation context: the marked shapes
     bars = {i: j for i, j in all_bars.items() if not is_hot(i)}
     if bars:
         changed, labels, hows = [], [], set()
@@ -772,6 +867,36 @@ def plan_nav_link(twin_path: Path, nb_rel: str,
                          **extra})
 
 
+def _plan_marker_free_link(path: Path, nb: dict, fmt: dict, raw: str, cells: list[dict],
+                           is_hot, new_name: str, lang: str, base_stem: str | None,
+                           extra: dict) -> dict | None:
+    """`marked=False`: one line on top of the first non-hot markdown cell that
+    is no navigation context (the word, or a marked line: the organ reads an
+    edge from the cell or the line, whatever the link says). None when there is
+    no such cell, or when the twin's own name carries a nav word -- that link
+    is an edge however it is written; the caller then plans the marked shapes."""
+    label = _family_label(cells, base_stem, lang) or f"jumeau {lang}"
+    if any(k in f"{label} {new_name}".lower() for k in NAV_KEYWORDS):
+        return None
+    for i, cell in enumerate(cells):
+        if cell.get("cell_type") != "markdown" or is_hot(i):
+            continue
+        text = cell_text(cell)
+        if "navigation" in text.lower() or any(
+                m in visible_text(line).lower()
+                for line in text.splitlines() for m in NAV_LINE_MARKERS):
+            continue
+        set_cell_text(cell, f"**Jumeau {lang}** : [{label}]({new_name})\n\n" + text)
+        return _finish_plan(path, nb, fmt, raw,
+                            {"todo": True, "how": "added-marker-free-link",
+                             "cells": [i], "label": label,
+                             "note": "series without internal nav edge (organ: "
+                                     "not_judged/no_internal_nav_edge): the twin "
+                                     "link carries no nav marker",
+                             **extra})
+    return None
+
+
 def _finish_plan(path: Path, nb: dict, fmt: dict, raw: str, plan: dict) -> dict:
     assert_markdown_only(json.loads(raw)["cells"], nb["cells"], path.name)
     plan["file"] = str(path)
@@ -799,14 +924,16 @@ def twin_display_lang(nb_rel: str) -> str:
     return "Python"
 
 
-def plan_back_link(worktree: Path, notebook: str, source_nb: str) -> dict:
+def plan_back_link(worktree: Path, notebook: str, source_nb: str,
+                   marked: bool = True) -> dict:
     """Outbound edge: the NEW port links back to its source twin (22/11,
     CoursIA#27905 + #27864 reviews). The port copies the twin's nav bar, and
     that bar cannot name the twin itself: the Rust notebook linked the C# twin
     and the series, never its Python original, and each review asked for the
     edge by hand. Same shapes and markdown-only proof as the inbound edge, on
     the new notebook; idempotent (a link to the twin in a nav context is an
-    edge already)."""
+    edge already). ``marked`` follows the inbound link: in a series without
+    internal nav edge both twin links stay out of every navigation context."""
     notebook = notebook.replace("\\", "/")
     source_nb = source_nb.replace("\\", "/")
     new_path = Path(worktree) / notebook
@@ -833,7 +960,7 @@ def plan_back_link(worktree: Path, notebook: str, source_nb: str) -> dict:
                 return {"todo": False, "why": "twin already linked by its language"}
     base_stem, _ = split_port_name(notebook)
     return plan_nav_link(new_path, source_nb, set(), lang=lang,
-                         base_stem=base_stem, origin=True)
+                         base_stem=base_stem, origin=True, marked=marked)
 
 
 # ------------------------------------------------------------------ registry
@@ -1649,6 +1776,14 @@ def replay_guards(worktree: Path, notebook: str | None = None) -> list[dict]:
     return out
 
 
+def red_guards(guards: list[dict] | None) -> list[str]:
+    """Names of the replayed guards that MEASURED red (an integer rc other than
+    0). A guard that could not run (rc None: timeout, organ missing) says
+    nothing: it is unmeasured, never red."""
+    return [g["guard"] for g in guards or []
+            if isinstance(g.get("rc"), int) and g["rc"] != 0]
+
+
 # ------------------------------------------------------------------ integrate
 
 def integrate(worktree: Path, notebook: str, source_nb: str,
@@ -1656,6 +1791,8 @@ def integrate(worktree: Path, notebook: str, source_nb: str,
     """Apply the two file edits (README row + inbound nav link). Returns the
     plan for each plus the touched repo-relative files. Idempotent: on an
     already-integrated branch both plans report todo=False and nothing moves.
+    The twin links are navigation edges (`marked`) unless the organ reports the
+    series as not judged (`nav_form`, read BEFORE any write).
     `spec_body`/`spec_ref` thread the lot spec's `## Tolerances` contract into
     the conformance entry (declared-absent Rust sides instead of strict
     measures the spec itself does not ask for)."""
@@ -1665,9 +1802,12 @@ def integrate(worktree: Path, notebook: str, source_nb: str,
     twin = worktree / source_nb
     if not twin.is_file():
         return {"error": f"source notebook not found: {source_nb}"}
-    nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb))
+    nav_form = twin_link_form(worktree, source_nb, notebook)
+    nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb),
+                        marked=nav_form["form"] == "marked")
     apply_nav_link(nav)
-    back = plan_back_link(worktree, notebook, source_nb)
+    back = plan_back_link(worktree, notebook, source_nb,
+                          marked=nav_form["form"] == "marked")
     apply_nav_link(back)
     readme = plan_readme_row(worktree, notebook, source_nb)
     apply_readme_row(readme)
@@ -1679,6 +1819,7 @@ def integrate(worktree: Path, notebook: str, source_nb: str,
               ([readme["file"]] if readme.get("todo") else []) + \
               ([conf["file"]] if conf.get("todo") else [])
     return {"notebook": notebook, "source_nb": source_nb,
+            "nav_form": nav_form,
             "nav": {k: v for k, v in nav.items() if not k.startswith("_")},
             "back": {k: v for k, v in back.items() if not k.startswith("_")},
             "readme": {k: v for k, v in readme.items() if k != "path"},
@@ -1698,9 +1839,16 @@ def integration_commit_message(result: dict, lane: str) -> str:
         parts.append("ligne README")
         why.append("ligne README exigée par readme-notebook-coverage")
     if result.get("source_nb") in touched:
-        parts.append("arête nav")
-        why.append("arête entrante exigée par check-nav-chain (le jumeau Python ne "
-                   "change qu'en markdown : barre/section Navigation)")
+        if (result.get("nav_form") or {}).get("form") == "marker-free":
+            parts.append("lien de jumeau")
+            why.append("lien de jumeau sans marqueur de navigation : la série n'a pas "
+                       "encore d'arête interne (not_judged/no_internal_nav_edge), un "
+                       "lien marqué la ferait juger et ses autres carnets orphelins "
+                       "(le jumeau Python ne change qu'en markdown)")
+        else:
+            parts.append("arête nav")
+            why.append("arête entrante exigée par check-nav-chain (le jumeau Python ne "
+                       "change qu'en markdown : barre/section Navigation)")
     if result.get("notebook") in touched:
         parts.append("lien retour")
         why.append("lien du nouveau carnet vers son jumeau d'origine (la barre "
@@ -1730,12 +1878,15 @@ def plan_only(worktree: Path, notebook: str, source_nb: str,
     twin = worktree / source_nb
     if not twin.is_file():
         return {"error": f"source notebook not found: {source_nb}"}
-    nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb))
-    back = plan_back_link(worktree, notebook, source_nb)
+    nav_form = twin_link_form(worktree, source_nb, notebook)
+    nav = plan_nav_link(twin, notebook, hot_cell_ids(worktree, source_nb),
+                        marked=nav_form["form"] == "marked")
+    back = plan_back_link(worktree, notebook, source_nb,
+                          marked=nav_form["form"] == "marked")
     readme = plan_readme_row(worktree, notebook, source_nb)
     conf = plan_conformance(worktree, notebook, source_nb,
                             spec_body=spec_body, spec_ref=spec_ref)
-    return {"notebook": notebook, "source_nb": source_nb,
+    return {"notebook": notebook, "source_nb": source_nb, "nav_form": nav_form,
             "nav": {k: v for k, v in nav.items()
                     if not k.startswith("_") and k != "file"},
             "back": {k: v for k, v in back.items()

@@ -196,3 +196,69 @@ def test_source_drifted_is_a_content_failure_for_the_ramp():
     sch = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(sch)
     assert sch.failure_class("source-drifted:structure") == "content"
+
+
+def _text_commit(r: Path, rel: str, msg: str) -> str:
+    p = r / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text("autre\n", encoding="utf-8", newline="")
+    _sh("git", "add", rel, cwd=r)
+    _sh("git", "commit", "-q", "-m", msg, cwd=r)
+    return _head(r)
+
+
+def _main_moved_elsewhere(td: Path) -> tuple[Path, str, str]:
+    """The worktree sits on the build base, detached; origin/main moved
+    another file; the source twin is the same on both."""
+    r = _repo(td)
+    base = _commit(r, SRC, BASE, "base")
+    _sh("git", "checkout", "-q", "-b", "tmp", cwd=r)
+    main = _text_commit(r, "Sudoku/autre.txt", "main moved")
+    _sh("git", "checkout", "-q", "--detach", base, cwd=r)
+    _sh("git", "update-ref", "refs/remotes/origin/main", main, cwd=r)
+    _sh("git", "branch", "-q", "-D", "tmp", cwd=r)
+    return r, base, main
+
+
+def test_stage5_no_source_drift_starts_the_branch_on_origin_main(tmp_path):
+    """24/11, po-2028 measure: CoursIA#28196 and #28200 were delivered on their
+    build base, where `Scripts Tests (CPU)` fails on OTHER lanes' pairs -- the
+    same head is green with main merged, no other change. CI tests the PR head
+    merged with main: a twin that did not move no longer pins the branch to
+    the build base."""
+    nbcd = _driver()
+    r, base, main = _main_moved_elsewhere(tmp_path)
+    drift = nbcd.stage5_source_drift(r, SRC)
+    assert drift["drift"] == "none"
+    assert "fetch_error" in drift  # no remote here: fail-open, said
+    assert drift["base_refresh"] == {"from": base[:10], "to": main[:10], "rebased": True}
+    assert _head(r) == main and (r / "Sudoku/autre.txt").is_file()
+    # on main already: nothing left to move, and the twin still reads unmoved
+    again = nbcd.stage5_source_drift(r, SRC)
+    assert again["drift"] == "none"
+    assert again["base_refresh"] == {"rebased": False, "why": "already on origin/main"}
+    assert _head(r) == main
+
+
+def test_stage5_base_refresh_never_drops_the_worktree_own_commits(tmp_path):
+    """A worktree that holds commits outside origin/main stays where it is:
+    not moving is the behaviour before 24/11."""
+    nbcd = _driver()
+    r, base, main = _main_moved_elsewhere(tmp_path)
+    own = _text_commit(r, "Sudoku/mine.txt", "work of the worktree")
+    drift = nbcd.stage5_source_drift(r, SRC)
+    assert drift["drift"] == "none"
+    assert drift["base_refresh"] == {"rebased": False,
+                                     "why": "worktree holds commits outside origin/main"}
+    assert _head(r) == own
+
+
+def test_pr_integration_red_is_a_content_failure_for_the_ramp():
+    """A served run whose repo guards measured red: never a run failure that
+    would block the ramp."""
+    spec = importlib.util.spec_from_file_location("nbcs_red", _HERE / "nb_coder_scheduler.py")
+    sch = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sch)
+    assert sch.failure_class("pr-integration-red:check-nav-chain") == "content"
+    assert sch.failure_class(
+        "pr-integration-red:check-nav-chain+readme-notebook-coverage") == "content"

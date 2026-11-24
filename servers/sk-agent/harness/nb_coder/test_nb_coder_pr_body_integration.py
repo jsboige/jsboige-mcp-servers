@@ -57,11 +57,13 @@ def _run_stage5(tmp_path, monkeypatch, fake_integrate):
            "calls": [], "conversation_id": "p",
            "gates": [{"gate": "kernel-metadata", "ok": True}]}
 
+    real = d._load_integrate_module()      # read before the fake replaces it
     fake = SimpleNamespace(
         integrate=fake_integrate,
         register_pair=lambda *a, **k: {"registered": False},
         find_twin_pair=lambda *a, **k: None,
-        replay_guards=lambda *a, **k: [{"guard": "readme-notebook-coverage", "rc": 0}])
+        replay_guards=lambda *a, **k: [{"guard": "readme-notebook-coverage", "rc": 0}],
+        red_guards=real.red_guards)
     monkeypatch.setattr(d, "_load_integrate_module", lambda: fake)
     monkeypatch.setattr(d, "lane_predecessor", lambda *a, **k: None)
     bodies = []
