@@ -2630,8 +2630,10 @@ export class ConfigSharingService implements IConfigSharingService {
     // jamais rien sans preuve (create-only ne rend plus l'orphelin invisible).
     const journalPathForWs = simulate ? null : this.workspaceTemplateJournalPath(workspacePath);
     const journalFiles = new Set<string>();
-    // Lu UNE fois par apply (avant le premier flush), pas à chaque fichier.
-    let journalPrev: { files: string[]; dirs: string[]; hashes: Record<string, string> } | null = null;
+    // Entrées explicitement RETIRÉES dans CET apply (course create-only perdue :
+    // le fichier n'est pas de notre fait). Sans ce filtre, la relecture du journal
+    // à chaque flush réintroduirait l'entrée qu'on vient de retirer localement.
+    const journalRemoved = new Set<string>();
     const flushJournal = async (): Promise<void> => {
       if (!journalPathForWs) return;
       // Les ancêtres créés AU-DESSUS du workspace ne sont pas journalisés : la
@@ -2640,20 +2642,25 @@ export class ConfigSharingService implements IConfigSharingService {
       // neuf (chemin encore inexistant) réellement réparable.
       const dirsInWorkspace = Array.from(createdDirsSet).filter(d => this.isPathWithin(d, workspacePath));
       if (journalFiles.size === 0 && dirsInWorkspace.length === 0) return;
-      if (journalPrev === null) {
-        journalPrev = { files: [], dirs: [], hashes: {} };
-        if (existsSync(journalPathForWs)) {
-          try {
-            const prev = await readJSONFileWithoutBOM<{ files?: string[]; createdDirs?: string[]; fileHashes?: Record<string, string> }>(journalPathForWs);
-            journalPrev = { files: prev.files || [], dirs: prev.createdDirs || [], hashes: prev.fileHashes || {} };
-          } catch (mergeErr) {
-            errors.push(`workspace-template: journal existant illisible, réécrit: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`);
-          }
+      // #3111 (revue coordinateur 24/11) — RELU à CHAQUE flush, jamais mis en
+      // cache pour tout l'apply : un apply concurrent sur le même workspace
+      // enrichit le journal entre nos propres écritures. Faire l'union sur un
+      // instantané lu une seule fois au départ réécrirait le journal complet en
+      // PERDANT les entrées de l'autre — le rollback ne pourrait alors plus
+      // supprimer les fichiers qu'il a créés.
+      let journalPrev: { files: string[]; dirs: string[]; hashes: Record<string, string> } = { files: [], dirs: [], hashes: {} };
+      if (existsSync(journalPathForWs)) {
+        try {
+          const prev = await readJSONFileWithoutBOM<{ files?: string[]; createdDirs?: string[]; fileHashes?: Record<string, string> }>(journalPathForWs);
+          journalPrev = { files: prev.files || [], dirs: prev.createdDirs || [], hashes: prev.fileHashes || {} };
+        } catch (mergeErr) {
+          errors.push(`workspace-template: journal existant illisible, réécrit: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`);
         }
       }
-      const unionFiles = Array.from(new Set<string>([...journalPrev.files, ...journalFiles]));
+      const unionFiles = Array.from(new Set<string>([...journalPrev.files, ...journalFiles])).filter(f => !journalRemoved.has(f));
       const unionDirs = Array.from(new Set<string>([...journalPrev.dirs, ...dirsInWorkspace]));
-      const unionHashes = { ...journalPrev.hashes, ...fileHashes };
+      const unionHashes: Record<string, string> = { ...journalPrev.hashes, ...fileHashes };
+      for (const f of journalRemoved) delete unionHashes[f];
       await this.writeWorkspaceTemplateJournal(journalPathForWs, workspacePath, unionFiles, unionDirs, unionHashes);
     };
     /** Solde le journal ; rend false si la durabilité n'est plus garantie. */
@@ -2723,7 +2730,20 @@ export class ConfigSharingService implements IConfigSharingService {
                 await fs.copyFile(tmp, dest, fsConstants.COPYFILE_EXCL);
                 published = true;
               } catch (cfErr) {
-                if ((cfErr as NodeJS.ErrnoException).code !== 'EEXIST') throw cfErr;
+                if ((cfErr as NodeJS.ErrnoException).code !== 'EEXIST') {
+                  // Une copie interrompue (ex. ENOSPC) laisse une destination
+                  // PARTIELLE dont le sha256 ≠ l'intention : le rollback
+                  // l'épargnerait comme « modifiée » et le create-only bloquerait
+                  // le retry. On retire ce reste (créé par CE copyFile) avant de
+                  // propager. ENOENT ignoré : destination jamais créée ou déjà
+                  // retirée ; un autre échec ne masque pas la cause d'origine.
+                  try { await fs.unlink(dest); } catch (unlinkErr) {
+                    if ((unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+                      errors.push(`workspace-template: destination partielle non retirée ${dest}: ${unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr)}`);
+                    }
+                  }
+                  throw cfErr;
+                }
               }
             }
           }
@@ -2732,6 +2752,7 @@ export class ConfigSharingService implements IConfigSharingService {
             // retire du journal (l'intention n'a jamais été réalisée) et on
             // l'annonce comme existant.
             journalFiles.delete(dest);
+            journalRemoved.add(dest);
             delete fileHashes[dest];
             await safeFlush();
             skippedExisting.push(segs.join('/'));

@@ -47,9 +47,10 @@ const savedJournalEnv = process.env.ROOSYNC_WORKSPACE_TEMPLATE_JOURNAL_DIR;
  */
 function publishWorkspaceTemplatePackage(
   files: Record<string, string>,
-  manifestOverride?: Array<{ path: string; hash: string; type: string; size: number }>
+  manifestOverride?: Array<{ path: string; hash: string; type: string; size: number }>,
+  machineId = 'test-machine'
 ): { versionDir: string } {
-  const versionDir = join(fakeShared, 'configs', 'test-machine', 'v1.0.0-2026-09-08T00-00-00Z');
+  const versionDir = join(fakeShared, 'configs', machineId, 'v1.0.0-2026-09-08T00-00-00Z');
   mkdirSync(versionDir, { recursive: true });
   const fileEntries = Object.keys(files).map(p => ({ path: p, hash: 'x', type: 'other', size: 1 }));
   const manifest = {
@@ -65,7 +66,7 @@ function publishWorkspaceTemplatePackage(
     mkdirSync(dirname(p), { recursive: true });
     writeFileSync(p, content, 'utf-8');
   }
-  writeFileSync(join(fakeShared, 'configs', 'test-machine', 'latest.json'), JSON.stringify({
+  writeFileSync(join(fakeShared, 'configs', machineId, 'latest.json'), JSON.stringify({
     version: '1.0.0', timestamp: '2026-09-08T00:00:00Z', path: versionDir, manifest,
   }), 'utf-8');
   return { versionDir };
@@ -394,6 +395,157 @@ describe('workspace-template — échec d’écriture en milieu de boucle (revue
     expect(rb.success).toBe(true);
     expect(rb.filesRemoved).toBe(3);
     expect(readdirSync(workspaceDir)).toEqual([]);
+  });
+});
+
+describe('workspace-template — applies concurrents / repli copyFile (revue coordinateur, 24/11)', () => {
+  /** Échoue net (message explicite) si un point de rendez-vous n'est jamais atteint. */
+  const within = async <T>(p: Promise<T>, what: string, ms = 5000): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([p, new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`point de rendez-vous jamais atteint : ${what}`)), ms);
+      })]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  it('deux applies entrelacés ne se perdent pas leurs entrées de journal', async () => {
+    // Deux paquets DISTINCTS : chacun crée un fichier que l'autre ne journalise pas.
+    publishWorkspaceTemplatePackage({
+      'workspace-template/a1.md': 'A1\n',
+      'workspace-template/a2.md': 'A2\n',
+    });
+    publishWorkspaceTemplatePackage({ 'workspace-template/b1.md': 'B1\n' }, undefined, 'other-machine');
+    const pA1 = join(wsReal, 'a1.md');
+    const pA2 = join(wsReal, 'a2.md');
+    const pB1 = join(wsReal, 'b1.md');
+
+    // Ordonnancement imposé : A publie a1 (journal = {a1}) et s'arrête ENTRE deux
+    // flush ; B s'exécute COMPLET pendant l'attente (journal = {a1, b1}) ; A
+    // reprend et solde a2. C'est le dernier écrivain.
+    const realLink = fsPromises.link.bind(fsPromises);
+    let parked!: () => void;
+    const parkedP = new Promise<void>(r => { parked = r; });
+    let release!: () => void;
+    const releaseP = new Promise<void>(r => { release = r; });
+    const linkSpy = vi.spyOn(fsPromises, 'link').mockImplementation(((src: any, dest: any) => {
+      const linked = realLink(src, dest);
+      if (!String(dest).endsWith('a1.md')) return linked;
+      return linked.then(async () => { parked(); await releaseP; });
+    }) as any);
+
+    let aRes: any;
+    let bRes: any;
+    try {
+      const a = service.applyConfig({
+        version: 'latest', machineId: 'test-machine',
+        targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: false,
+      });
+      await within(parkedP, 'A n’a jamais publié a1.md');
+      bRes = await service.applyConfig({
+        version: 'latest', machineId: 'other-machine',
+        targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: false,
+      });
+      release();
+      aRes = await within(a, 'A n’a pas repris');
+    } finally {
+      linkSpy.mockRestore();
+    }
+
+    expect(aRes.errors).toEqual([]);
+    expect(bRes.errors).toEqual([]);
+    expect(aRes.workspaceTemplate!.created.sort()).toEqual([pA1, pA2].sort());
+    expect(bRes.workspaceTemplate!.created).toEqual([pB1]);
+
+    // L'entrée de B doit SURVIVRE à la réécriture finale de A : sans relecture du
+    // journal à chaque flush, A réécrit depuis son seul instantané de départ et
+    // le rollback ne peut plus retirer b1.
+    const journalPath = aRes.workspaceTemplate!.journalPath ?? bRes.workspaceTemplate!.journalPath;
+    expect(journalPath).toBeTruthy();
+    const journal = JSON.parse(readFileSync(journalPath!, 'utf-8'));
+    expect([...journal.files].sort()).toEqual([pA1, pA2, pB1].sort());
+    expect(journal.fileHashes[pB1]).toBe(createHash('sha256').update('B1\n').digest('hex'));
+
+    const rbDry = await service.rollbackWorkspaceTemplateConfig({
+      targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: true,
+    });
+    expect(rbDry.filesRemoved).toBe(3);
+  });
+
+  it('une course create-only perdue en milieu de boucle retire bien l’entrée du journal', async () => {
+    publishWorkspaceTemplatePackage({
+      'workspace-template/a.md': 'A\n',
+      'workspace-template/sub/b.md': 'B\n',
+    });
+
+    // Un autre acteur crée a.md entre l'intention journalisée et la publication.
+    const realLink = fsPromises.link.bind(fsPromises);
+    const linkSpy = vi.spyOn(fsPromises, 'link').mockImplementation(((src: any, dest: any) => {
+      if (!String(dest).endsWith('a.md')) return realLink(src, dest);
+      return fsPromises.writeFile(dest, 'FOREIGN\n').then(() => {
+        throw Object.assign(new Error('EEXIST injected'), { code: 'EEXIST' });
+      });
+    }) as any);
+
+    let result: any;
+    try {
+      result = await service.applyConfig({
+        version: 'latest', machineId: 'test-machine',
+        targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: false,
+      });
+    } finally {
+      linkSpy.mockRestore();
+    }
+
+    const pA = join(wsReal, 'a.md');
+    const pB = join(wsReal, 'sub', 'b.md');
+    expect(result.errors).toEqual([]);
+    expect(result.workspaceTemplate!.skippedExisting).toEqual(['a.md']);
+    expect(readFileSync(join(workspaceDir, 'a.md'), 'utf-8')).toBe('FOREIGN\n');
+    // a.md n'est PAS de notre fait : son intention doit rester retirée du journal,
+    // alors même que le flush le RELIT depuis le disque.
+    const journal = JSON.parse(readFileSync(result.workspaceTemplate!.journalPath, 'utf-8'));
+    expect(journal.files).toEqual([pB]);
+    expect(journal.fileHashes[pA]).toBeUndefined();
+  });
+
+  it('un échec copyFile de repli ne laisse PAS de destination partielle', async () => {
+    publishWorkspaceTemplatePackage({ 'workspace-template/a.md': 'A\n' });
+
+    // Le repli n'est atteint que si `link` échoue pour une raison AUTRE que EEXIST
+    // (FS sans liens durs) ; `copyFile` peut alors échouer APRÈS avoir créé la
+    // destination (copie interrompue, ex. ENOSPC en cours d'écriture) : sans
+    // retrait, un fichier TRONQUÉ reste sur disque.
+    const linkSpy = vi.spyOn(fsPromises, 'link').mockRejectedValue(Object.assign(new Error('EPERM injected'), { code: 'EPERM' }));
+    const copySpy = vi.spyOn(fsPromises, 'copyFile').mockImplementation((async (src: any, dest: any) => {
+      await fsPromises.writeFile(dest, 'PARTIAL');
+      throw Object.assign(new Error('ENOSPC injected'), { code: 'ENOSPC' });
+    }) as any);
+
+    let result: any;
+    try {
+      result = await service.applyConfig({
+        version: 'latest', machineId: 'test-machine',
+        targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: false,
+      });
+    } finally {
+      linkSpy.mockRestore();
+      copySpy.mockRestore();
+    }
+
+    expect(result.errors.some((e: string) => e.includes('ENOSPC injected'))).toBe(true);
+    // Ni un reste de copie (le rollback l'épargnerait, son sha256 ≠ l'intention),
+    // ni un fichier temporaire, et le create-only reste REJOUABLE.
+    expect(existsSync(join(workspaceDir, 'a.md'))).toBe(false);
+    expect(readdirSync(workspaceDir).filter(n => n.includes('.roosync-wt-tmp-'))).toEqual([]);
+    const retry = await service.applyConfig({
+      version: 'latest', machineId: 'test-machine',
+      targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: false,
+    });
+    expect(retry.errors).toEqual([]);
+    expect(readFileSync(join(workspaceDir, 'a.md'), 'utf-8')).toBe('A\n');
   });
 });
 
