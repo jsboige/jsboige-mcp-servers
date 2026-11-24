@@ -256,7 +256,7 @@ describe('VectorIndexer', () => {
 			await expect(ensureCollectionExists()).rejects.toThrow('Connection refused');
 		});
 
-		// #2699/#2700: payload index on task_id must be ensured (idempotent, every boot)
+        // #2699/#2700: payload index on task_id is ensured during collection setup
 		test('ensures a task_id payload index when collection already exists', async () => {
 			const { ensureCollectionExists } = await import('../VectorIndexer.js');
 			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
