@@ -2284,16 +2284,18 @@ export async function cleanupOldVectors(
             // Scroll to get a batch of point IDs matching the filter
             const scrolled = await retryWithBackoff(async () => {
                 const qdrant = getQdrantClient();
-                return await qdrant.scroll(COLLECTION_NAME, {
-                    filter,
-                    limit: BATCH_SIZE,
-                    with_payload: false,
-                    with_vector: false
-                });
-            }, `Qdrant cleanup scroll (batch at ${totalDeleted})`).catch(error => {
-                invalidateCollectionSetupOnNotFound(error);
-                throw error;
-            });
+                try {
+                    return await qdrant.scroll(COLLECTION_NAME, {
+                        filter,
+                        limit: BATCH_SIZE,
+                        with_payload: false,
+                        with_vector: false
+                    });
+                } catch (error) {
+                    invalidateCollectionSetupOnNotFound(error);
+                    throw error;
+                }
+            }, `Qdrant cleanup scroll (batch at ${totalDeleted})`);
 
             networkMetrics.qdrantCalls++;
 
