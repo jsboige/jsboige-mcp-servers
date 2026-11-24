@@ -96,13 +96,14 @@ async function freshModule() {
 
 describe('VectorIndexer — #4902 collection setup cache', () => {
     beforeEach(async () => {
+        vi.doUnmock('../IndexedHashLedger.js');
         vi.clearAllMocks();
         vi.useRealTimers();
         vi.spyOn(console, 'log').mockImplementation(() => {});
         vi.spyOn(console, 'warn').mockImplementation(() => {});
         vi.spyOn(console, 'error').mockImplementation(() => {});
         process.env.QDRANT_UPSERT_RECOVERY_MS = '0';
-        ledgerTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'rsm-4902-'));
+        ledgerTmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'rsm-4903-'));
         process.env.INDEX_HASH_LEDGER_DIR = ledgerTmpDir;
         mockGetCollections.mockResolvedValue({ collections: [{ name: COLLECTION }] });
         mockCreateCollection.mockResolvedValue(undefined);
@@ -193,6 +194,18 @@ describe('VectorIndexer — #4902 collection setup cache', () => {
         await indexTask('cache-after-upsert-404', '/nowhere');
         expect(mockGetCollections).toHaveBeenCalledTimes(2);
         expect(mockCreateCollection).toHaveBeenCalledTimes(1);
+        expect(mockCreatePayloadIndex).toHaveBeenCalledTimes(22);
+    });
+
+    test('a partial payload-index setup is not cached for the next task', async () => {
+        const { indexTask } = await freshModule();
+        mockCreatePayloadIndex.mockRejectedValueOnce(new Error('temporary payload index failure'));
+
+        // The failed field remains non-fatal for collection use in this task.
+        await expect(indexTask('cache-partial-a', '/nowhere')).resolves.toEqual([]);
+        await expect(indexTask('cache-partial-b', '/nowhere')).resolves.toEqual([]);
+
+        expect(mockGetCollections).toHaveBeenCalledTimes(2);
         expect(mockCreatePayloadIndex).toHaveBeenCalledTimes(22);
     });
 

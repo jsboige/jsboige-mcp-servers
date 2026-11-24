@@ -562,6 +562,7 @@ const FILTERED_PAYLOAD_INDEXES: ReadonlyArray<{ field: string; schema: 'keyword'
  */
 async function ensureFilteredPayloadIndexes(): Promise<void> {
     const qdrant = getQdrantClient();
+    let allIndexesEnsured = true;
     for (const { field, schema } of FILTERED_PAYLOAD_INDEXES) {
         try {
             await qdrant.createPayloadIndex(COLLECTION_NAME, {
@@ -570,9 +571,13 @@ async function ensureFilteredPayloadIndexes(): Promise<void> {
                 wait: false,
             });
         } catch (error: any) {
+            allIndexesEnsured = false;
             console.warn(`Could not ensure payload index on "${field}":`, error?.message ?? error);
         }
     }
+    // #4903: collection use remains non-fatal, but a partial setup must not be
+    // cached as complete; the next indexTask retries the whole idempotent set.
+    if (!allIndexesEnsured) invalidateCollectionSetup();
 }
 
 /**
