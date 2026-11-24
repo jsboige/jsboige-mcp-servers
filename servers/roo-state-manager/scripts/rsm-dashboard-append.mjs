@@ -44,9 +44,19 @@
  *      `dualWriteDashboardSync` swallows its errors, so a boolean derived
  *      from "it didn't throw" was structurally always true.
  *
- * Exit codes: 0 posted (a PG-sync miss is a WARN, not an error — the GDrive
- * write stands and the journal reconcile converges it) · 1 file write failed
- * (nothing posted) · 2 usage / contract violation.
+ * PG-primary gate (#4915 — Phase D #4131): the CLI follows the SAME gate as
+ * the MCP tool (`writeDashboardFile`, dashboard.ts). When
+ * `isDashboardPgPrimary()` is true, PG is written FIRST (checked variant) and
+ * the GDrive file is only a bounded mirror stamped `mirrorExportAt` — the
+ * Phase D instrument counts a stamped file as an export, an unstamped one as
+ * a residual write. When PG fails, or when the gate is closed, the file-first
+ * path runs unchanged (no stamp): a #3761 escalation is never lost.
+ *
+ * Exit codes: 0 posted — at least one surface holds the message (a PG-sync
+ * miss on the file-first path is a WARN, not an error: the GDrive write
+ * stands and the journal reconcile converges it; a failed MIRROR under the
+ * gate is a WARN too: PG holds the message) · 1 no surface held it (file
+ * write failed) · 2 usage / contract violation.
  *
  * Usage (from servers/roo-state-manager/):
  *   node scripts/rsm-dashboard-append.mjs --machine myia-po-2023 --content-file msg.txt
@@ -164,7 +174,7 @@ loadEnv(path.join(RSM_ROOT, '.env'));
 // and store writes the MCP host serves, not a private copy (G-R pattern).
 const buildDir = resolveBuildDir(RSM_ROOT);
 const buildUrl = (rel) => pathToFileURL(path.join(buildDir, rel)).href;
-const { dualWriteDashboardSyncChecked } = await import(
+const { dualWriteDashboardSyncChecked, isDashboardPgPrimary } = await import(
   buildUrl('services/unified-store/roosync-dashboard-store.js')
 );
 const {
@@ -250,13 +260,39 @@ try {
       ? buildAppendMessage({ machineId, workspace: authorWorkspace, content, messageId, nowIso, rand })
       : buildListenerEscalationMessage({ machineId, content, nowIso, rand });
     const next = nextDashboardState(dashboard, message);
-    const markdown = buildDashboardMarkdown(next);
+
+    // #4915 PG-primary gate — the same gate as `writeDashboardFile`
+    // (dashboard.ts), applied by hand rather than by delegation: the tool
+    // returns no PG verdict on its file-first path (void dual-write) while
+    // `pgSynced` below feeds the PS callers' logs; and it redacts (#3584),
+    // stages and re-reads the store — behaviour the gate-closed path must not
+    // gain (byte-for-byte unchanged here). Decided BEFORE the markdown is
+    // built: the stamp is part of the bytes.
+    // `null` = gate closed (no attempt); otherwise the attempt's own verdict.
+    let pgFirst = null;
+    if (isDashboardPgPrimary()) {
+      try {
+        const outcome = await dualWriteDashboardSyncChecked(next);
+        pgFirst = { ok: outcome?.ok === true, reason: outcome?.reason };
+      } catch (err) {
+        pgFirst = { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+      if (!pgFirst.ok) {
+        console.error(`WARN: porte PG-primaire ouverte, écriture PG en échec (${pgFirst.reason}) — repli sur le chemin fichier d’abord, sans tampon`);
+      }
+    }
+    const pgMirrorMode = pgFirst?.ok === true;
+    // Stamp at write time, as the tool does: the instrument compares it to
+    // the file mtime.
+    const exportStamp = pgMirrorMode ? { mirrorExportAt: new Date().toISOString() } : undefined;
+    const markdown = buildDashboardMarkdown(next, exportStamp);
     const targetPath = getDashboardPath(key);
 
     // process.exit inside the locked section would skip the finally (and leak
     // the lock to its TTL); a top-level `return` is a SyntaxError in ESM.
     // The section computes into flags, the exit happens AFTER the release.
     let writeFailed = false;
+    let mirrorFailure;
     try {
       mkdirSync(path.dirname(targetPath), { recursive: true });
       // Review item 1 (détention bornée): the writeFile carries the abort
@@ -268,25 +304,39 @@ try {
       });
     } catch (err) {
       writeFailed = true;
-      console.error(`ERREUR: écriture GDrive impossible (${targetPath}) : ${err instanceof Error ? err.message : String(err)}`);
-      process.exitCode = 1;
+      const reason = err instanceof Error ? err.message : String(err);
+      if (pgMirrorMode) {
+        // #4915: under the gate the file is only the mirror — PG holds the
+        // message, so a failed mirror degrades, it never loses the escalation.
+        mirrorFailure = reason;
+        console.error(`WARN: écriture du miroir GDrive impossible (${targetPath}) : ${reason} — le store PG (primaire) tient le message`);
+      } else {
+        console.error(`ERREUR: écriture GDrive impossible (${targetPath}) : ${reason}`);
+        process.exitCode = 1;
+      }
     }
 
-    if (!writeFailed) {
+    // #4915: a failed MIRROR still leaves the message posted (PG is primary);
+    // a failed file-first write posts nothing.
+    if (!writeFailed || pgMirrorMode) {
       posted = true;
 
       // Review item 3: Checked variant decides pgSynced — the void variant
       // swallows its errors, so "it didn't throw" proved nothing. The file half
       // stands either way; the journal reconcile converges a miss.
+      // #4915: in mirror mode PG was written first — that one attempt is the
+      // verdict (no second write). Otherwise the pre-existing post-write sync.
       let pgSynced = true;
       let pgSyncReason;
-      try {
-        const outcome = await dualWriteDashboardSyncChecked(next);
-        pgSynced = outcome?.ok === true;
-        if (!pgSynced) pgSyncReason = outcome?.reason ?? String(outcome);
-      } catch (err) {
-        pgSynced = false;
-        pgSyncReason = err instanceof Error ? err.message : String(err);
+      if (!pgMirrorMode) {
+        try {
+          const outcome = await dualWriteDashboardSyncChecked(next);
+          pgSynced = outcome?.ok === true;
+          if (!pgSynced) pgSyncReason = outcome?.reason ?? String(outcome);
+        } catch (err) {
+          pgSynced = false;
+          pgSyncReason = err instanceof Error ? err.message : String(err);
+        }
       }
       if (!pgSynced) {
         console.error(`WARN: sync PG non confirmée (${pgSyncReason}) — l’écriture GDrive tient, le journal convergera`);
@@ -301,6 +351,9 @@ try {
         totalMessages: next.intercom.totalMessages,
         pgSynced,
       };
+      if (mirrorFailure !== undefined) {
+        output.gdriveDegraded = mirrorFailure; // the GDrive mirror failed; PG holds the message
+      }
     }
   }
 } finally {
