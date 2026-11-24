@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# --- provenance ---------------------------------------------------------------
+# Canonical home is sk-agent: new harness fixes belong here, not in vllm.
+# Authored here (#1916 — the verifier reads the thread's acceptance words) — no vllm counterpart.
+# Harness base is the vllm re-copy @ 7a09e1caec22441d9402ab25a222206c8905bfe1.
+# -----------------------------------------------------------------------------
 """Offline pins: an acceptance amendment posted in the issue THREAD reaches the verifier.
 
 Measured 24/11 on CoursIA#28079 (seat po-2028:claudish). The 23/11 11:52:35Z comment
