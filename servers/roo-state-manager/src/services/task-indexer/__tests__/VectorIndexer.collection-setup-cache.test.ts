@@ -118,6 +118,7 @@ describe('VectorIndexer — #4902 collection setup cache', () => {
 
     afterEach(async () => {
         vi.useRealTimers();
+        vi.doUnmock('../IndexedHashLedger.js');
         vi.restoreAllMocks();
         delete process.env.INDEX_HASH_LEDGER_DIR;
         delete process.env.QDRANT_UPSERT_RECOVERY_MS;
@@ -161,6 +162,19 @@ describe('VectorIndexer — #4902 collection setup cache', () => {
     });
 
     test('an upsert 404 makes the next task re-verify and recreate the collection', async () => {
+        // #4861 v1.2 (ms#1898) made the B2 preflight WRITE its absent lines to the
+        // ledger after the scroll. A real file write does not complete within the
+        // event-loop turns runAllTimersAsync() drains, so under fake timers the upsert
+        // retry is scheduled after the drain and the test hangs (15 s timeout, measured
+        // on main 554cbe29; green on 3b2c719f before ms#1898). Same remedy as the
+        // fake-timer block of VectorIndexer.coverage.test.ts: stub the ledger for this
+        // test only — this suite asserts collection setup, not ledger contents.
+        vi.doMock('../IndexedHashLedger.js', () => ({
+            loadIndexedHashLedger: async () => ({ present: new Set<string>(), absent: new Set<string>() }),
+            appendIndexedHashes: async () => undefined,
+            appendAbsentHashes: async () => undefined,
+            clearIndexedHashLedgers: async () => undefined,
+        }));
         vi.useFakeTimers();
         const { indexTask, resetCircuitBreakerForTest } = await freshModule();
         await indexTask('cache-upsert', '/nowhere');
