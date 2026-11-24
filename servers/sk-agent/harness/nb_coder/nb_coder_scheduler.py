@@ -108,15 +108,33 @@ ITEM_FIELDS = {
 # `crashed:` run failure that consumed its retry and blocked the ramp. Nothing in the
 # grain was wrong; it waits until the bucket refills (`:reset=<epoch>`, read by the driver
 # from the free rate_limit endpoint) and launches again.
+# deferred-by-provider-rate-limit (23/11): a MODEL provider's 429. Measured 00:08-00:09Z on
+# po-2028:claudish: a five-hour usage window ran dry under two concurrent batches, four
+# stage-2 builds died as `stage2-call-failed: … 'rate_limit_error' …` — run failures, each
+# one posting [RELEASED], which CoursIA's guard reads as a three-day, fleet-wide RELACHEE on
+# notebooks nothing had judged; a fifth, released on the reject a walled revision round never
+# answered, met the same refusal one call later. The driver names the refusal bare; `:wall`
+# marks a window wall, probed hourly (PROVIDER_WALL_WAIT_S) rather than waited out on its
+# announced clock.
+PROVIDER_RATE_LIMIT_VERDICT = "deferred-by-provider-rate-limit"
 DEFERRED_VERDICT_PREFIXES = (
     "deferred-by-capacity-gate",
     "deferred-by-claim-timeout",
     "deferred-by-claim-implicit-occupation",
     "deferred-by-github-rate-limit",
+    PROVIDER_RATE_LIMIT_VERDICT,
 )
 # A reset further than this is not believed: the core bucket refills every hour.
 GITHUB_RESET_MAX_S = 3700.0
 GITHUB_RESET_MARGIN_S = 30.0
+# The floor a provider window wall is probed at. The announced reset is not waited on: read
+# as UTC, the measured sample (reset at 08:48:53 for a wall met at 00:09Z) outlasts the
+# five-hour window the same message names, so its clock's offset is unknown. One hour is the
+# finest step that still walks that longest measured wall inside the default six launches —
+# the first meets the wall, the next five land at 1h, 2h, 3h, 4h and 5h — and a relaunch into
+# a wall that holds costs one short call, so a step too short is cheap where a step too long
+# is the grain idle.
+PROVIDER_WALL_WAIT_S = 3600.0
 
 # A recent [RELEASED] is a TEMPORARY qualification refusal, not a cross-lane
 # collision and not a failed notebook. CoursIA's authoritative guard applies a
@@ -157,6 +175,16 @@ def github_reset_wait(verdict: str, now: float) -> float | None:
                 return None
             return min(max(reset - now, 0.0) + GITHUB_RESET_MARGIN_S, GITHUB_RESET_MAX_S)
     return None
+
+
+def provider_wall_wait(verdict: str) -> float | None:
+    """The hourly floor a provider WINDOW-WALL deferral carries, or None (ordinary backoff).
+
+    `wall` is read as a whole `:`-separated part, never as a substring: the excerpt that
+    follows it in the verdict is the provider's own message."""
+    if not verdict.startswith(PROVIDER_RATE_LIMIT_VERDICT):
+        return None
+    return PROVIDER_WALL_WAIT_S if "wall" in verdict.split(":")[1:] else None
 
 DONE_VERDICT_SUFFIXES = (
     "built-executed-ok",
@@ -1139,6 +1167,9 @@ class Scheduler:
                 reset_wait = github_reset_wait(verdict, self.clock())
                 if reset_wait is not None:
                     wait = max(wait, reset_wait)
+                wall_wait = provider_wall_wait(verdict)
+                if wall_wait is not None:
+                    wait = max(wait, wall_wait)
                 g["not_before"] = self.clock() + wait
                 ramp["deferred"] += 1
                 self._event("deferred", key=key, rc=rc, verdict=verdict,

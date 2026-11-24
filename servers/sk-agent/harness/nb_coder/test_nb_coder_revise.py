@@ -414,6 +414,71 @@ def test_an_unparsed_revision_keeps_the_reject_and_the_draft(monkeypatch, tmp_pa
     assert calls["kernels"] == 0 and calls["verify"] == []
 
 
+# The same window wall as WALL in test_nb_coder_rate_limit.py (pinned there character for
+# character against CoursIA#28097's record). CoursIA#28069 met it on 23/11 at its revise
+# call and at that call's retry (00:08:13Z and 00:08:30Z, driver.log, batch s6r).
+PROVIDER_WALL = ('("<class \'semantic_kernel.connectors.ai.open_ai.services.open_ai_chat_completion.'
+                 'OpenAIChatCompletion\'> service failed to complete the prompt", RateLimitError('
+                 '"Error code: 429 - {\'error\': {\'message\': \'Usage limit reached for 5 hour. '
+                 'Your limit will reset at 2026-11-23 08:48:53\', \'type\': \'rate_limit_error\', '
+                 '\'code\': None}}"))')
+
+
+@pytest.mark.parametrize("source, seeded, origin", [
+    ("execution", "exec_repair", "built-execution-failed"),
+    ("gates", "gate_repair", "gates-failed:parity"),
+])
+def test_a_walled_revision_round_defers_the_run_and_keeps_the_reject(
+        monkeypatch, tmp_path, source, seeded, origin):
+    """CoursIA#28069 (23/11 00:08Z): the built notebook was rejected on its execution, and
+    the revise call met the five-hour wall. Left on its reject the grain came out
+    `built-execution-failed` -- a content failure, [RELEASED], a three-day fleet-wide lock
+    for a repair the provider refused to hear. The refusal is the run's verdict (the
+    scheduler defers); the reject it interrupted is kept for a --revise-from resume, and
+    the exhaustion-restore must not trade it back for the seeded origin."""
+    built = _nb(tmp_path)
+    before = built.read_bytes()
+    calls = {"sk": []}
+
+    @contextlib.asynccontextmanager
+    async def fake_sessions(out_dir):
+        yield "SK", "PM"
+
+    async def fake_sk(sk, args, rec, stage, prompt, conv, max_tokens=None, model=None):
+        calls["sk"].append(stage)
+        return {"response": "", "error": PROVIDER_WALL, "conversation_id": "cx"}
+
+    def never(*a, **k):
+        raise AssertionError("a refused round pays no kernel, no gate and no verifier")
+
+    monkeypatch.setattr(D, "mcp_sessions", fake_sessions)
+    monkeypatch.setattr(D, "sk_call_retry", fake_sk)
+    monkeypatch.setattr(D, "start_kernel", never)
+    monkeypatch.setattr(D, "run_gates", never)
+    monkeypatch.setattr(D, "stage4_verify", never)
+    rec = _rejected_rec()
+    rec["verify"] = {"verdict": "exec-reject" if source == "execution" else "gate-reject",
+                     "findings": list(FINDINGS), "source": source}
+    rec[seeded] = {"from": origin, "findings": len(FINDINGS), "seeded": 1, "resumed": True}
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert calls["sk"] == ["6-revise+0"]             # neither repaired into the wall nor retried
+    assert rec["verdict"].startswith("deferred-by-provider-rate-limit:wall: ")
+    assert "reset at 2026-11-23 08:48:53" in rec["verdict"]
+    assert rec["last_content_verdict"] == "verify-reject"
+    assert rec["revisions"][0]["result"].startswith("call-failed: ")   # the cause, by name
+    assert built.read_bytes() == before              # the judged draft is the draft kept
+
+
+def test_an_ordinary_dead_answer_in_a_round_still_keeps_the_reject(monkeypatch, tmp_path):
+    """The control: an answer that is merely unparsed is no refusal — the reject stands."""
+    built = _nb(tmp_path)
+    _fake_engine(monkeypatch, ["je ne sais pas"], [])
+    rec = _rejected_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-reject"
+    assert "last_content_verdict" not in rec
+
+
 def test_contested_only_is_a_verifiable_reply_not_an_unparsed_one(monkeypatch, tmp_path):
     """CoursIA#27288, o1 (23/11): Terra parsed cleanly, returned no edits and contested the
     three missing-data findings. The old branch reported that answer as `unparsed` and never
@@ -584,6 +649,7 @@ def _stub_resume(monkeypatch, claim_rc=0, blocking=False):
 
     async def fake_loop(args, rec, **kw):
         seen["loop"] += 1
+        seen["entry"] = rec.get("verdict")          # what the loop is handed
         seen["kw"] = kw
         seen["from_spec"] = args.from_spec
         rec["verdict"] = "verify-approved"
@@ -647,6 +713,31 @@ def test_a_refusal_poisoned_trace_still_revises(monkeypatch, tmp_path):
         tmp_path, verdict="refused-claim-check-not-scoped",
         last_content_verdict="verify-reject")))
     assert got["verdict"] == "pr-created" and seen["loop"] == 1 and seen["pr"] == 1
+
+
+def test_the_loop_is_entered_on_the_carried_judgment_not_on_the_refusal(monkeypatch, tmp_path):
+    """A trace whose top-level verdict a refusal overwrote must hand the loop the JUDGMENT:
+    its first check is `verdict == verify-reject`, so handed the refusal it would break at
+    once and give that refusal back as this run's verdict. Both measured overwrites of
+    23/11: the claim guard's, and a provider wall met during a revision round."""
+    for top in ("refused-claim-check-not-scoped",
+                "deferred-by-provider-rate-limit:wall: Error code: 429"):
+        seen = _stub_resume(monkeypatch)
+        got = _resume(_rev_args(tmp_path, _trace(
+            tmp_path, verdict=top, last_content_verdict="verify-reject")))
+        assert seen["entry"] == "verify-reject", top
+        assert got["verdict"] == "pr-created" and seen["loop"] == 1 and seen["pr"] == 1
+
+
+def test_a_carried_field_that_names_no_reject_buys_no_revision(monkeypatch, tmp_path):
+    """Only `verify-reject` in the carried field enters the loop; any other value is
+    refused before a spend, named for what it carries."""
+    for carried in ("deferred-by-capacity-gate", "gates-ok", "verify-approved", ""):
+        seen = _stub_resume(monkeypatch)
+        got = _resume(_rev_args(tmp_path, _trace(
+            tmp_path, verdict="gates-ok", last_content_verdict=carried)))
+        assert got["verdict"] == f"refused-revise-not-rejected:{carried or 'gates-ok'}"
+        assert seen["loop"] == 0 and seen["pr"] == 0
 
 
 def test_a_poisoned_trace_without_a_content_verdict_still_refuses(monkeypatch, tmp_path):
