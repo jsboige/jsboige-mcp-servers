@@ -98,6 +98,9 @@ describe('VectorIndexer', () => {
 		// needs an answering scroll mock or B2 now (correctly) fails closed.
 		// Permissive default: nothing exists in Qdrant.
 		mockScroll.mockResolvedValue({ points: [], next_page_offset: null });
+        // #4910: a failed count now skips retrieve. These fixtures model a healthy
+        // server, so answer the size probe explicitly to keep retrieve under test.
+        mockCount.mockResolvedValue({ count: 100 });
 	});
 
 	afterEach(async () => {

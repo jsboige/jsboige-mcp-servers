@@ -1040,7 +1040,12 @@ async function preflightDedupByChunkId(
                 console.log(`[#2209] Collection has ~${collectionInfo.count} points — skipping preflight dedup, relying on post-index content-hash dedup`);
                 return { subChunks, qdrantReachable: true };
             }
-        } catch { /* ignore count failure, proceed with preflight */ }
+        } catch (countError: any) {
+            // #4910: an outage makes count fail precisely when retrieve is most
+            // expensive. Match the >5M path: B2 and post-index dedup remain active.
+            console.warn(`[#4910] Preflight count failed (${countError?.message || countError}) — skipping retrieve, relying on B2/post-index dedup`);
+            return { subChunks, qdrantReachable: true };
+        }
 
         const chunkIds = subChunks.map(sc => sc.chunk.chunk_id);
         const existingContentHashes = new Map<string, string>(); // chunk_id -> contentHash
@@ -1054,6 +1059,10 @@ async function preflightDedupByChunkId(
             try {
                 // #2209: Race with 5s timeout — slow retrieves on large collections
                 // should not block indexing indefinitely or trip the circuit breaker.
+                // qdrant-js 1.20.0 (dist/esm/qdrant-client.js:344) exposes only a
+                // SERVER-side timeout (seconds), not a per-call AbortSignal. The
+                // constructor-level timeout is a client abort; this local 5s race
+                // therefore leaves the request running on the server.
                 const points = await Promise.race([
                     qdrant.retrieve(COLLECTION_NAME, {
                         ids: batch,
@@ -1077,6 +1086,9 @@ async function preflightDedupByChunkId(
                     // #2209: Timeouts don't mean Qdrant is down — just slow on large collections.
                     // Don't mark as unreachable to avoid tripping circuit breaker.
                     console.warn(`[#2209] Preflight retrieve timed out for batch at offset ${i} — treating as non-fatal`);
+                    // #4910: stop at ONE potentially orphaned server request. The
+                    // remaining batches stay unknown → indexed, as timed-out ones did.
+                    break;
                 } else {
                     // #2165: A non-timeout failure does NOT mean "no existing points" — it means
                     // we don't know. Track it so the caller can back off instead of
