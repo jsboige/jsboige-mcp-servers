@@ -960,9 +960,10 @@ def test_refresh_gh_env_rebinds_from_the_mint(tmp_path, monkeypatch):
 
 
 # ------------------------------------------- RELACHEE override probe (23/11)
-def _deferred_relache(tmp_path):
+def _deferred_relache(tmp_path, items=None):
     """One grain deferred on refused-claim-not-qualified:RELACHEE, not_before 3 days out."""
-    s = make_sched(tmp_path, [item(1)])
+    s = make_sched(tmp_path, items or [item(1)])
+    s.args.lane = "myia-po-2028:claudish"
     key = next(iter(s.state["grains"]))
     g = s.state["grains"][key]
     g.update({"status": "deferred", "last_verdict": S.CLAIM_RELEASED_VERDICT,
@@ -970,30 +971,76 @@ def _deferred_relache(tmp_path):
     return s, key, g
 
 
+def _fake_thread(bodies):
+    """The paginated reader's stdout: one `@json` line per comment body, oldest first."""
+    return "\n".join(json.dumps(b, ensure_ascii=False) for b in bodies) + "\n"
+
+
+def _override(lane="myia-po-2028:claudish", head="Grain rendu a la lane (bénéficiaire ci-dessus)."):
+    """The coordinator's re-arm gesture, as measured on CoursIA#28077 (23/11): the
+    [OVERRIDE] is its OWN line, the prose after it quotes the marker it lifts."""
+    return f"[OVERRIDE] lane {lane} -- paths: Dir/N1.ipynb\n{head}\n" + (
+        "Le [RELEASED] de 04:48Z est leve par ce geste ; relire le motif du [RELEASED].")
+
+
 def test_a_fresh_override_lifts_the_three_day_relache_wait(tmp_path, monkeypatch):
     """Measured 23/11 on CoursIA#28077/#28080/#28050/#28079: the coordinator's four
     [OVERRIDE]s (03:41Z) lifted releases caused by a harness defect, yet the grains
     slept the FULL three-day window from the refusal — and each retry pushed its own
-    not_before three days further. A newer [OVERRIDE] marker is the event the guard
-    itself reads: the probe must drop not_before so the guard re-qualifies now."""
+    not_before three days further. A newer [OVERRIDE] marker naming this lane is the
+    event the guard itself reads: the probe must drop not_before so the guard re-qualifies."""
     s, key, g = _deferred_relache(tmp_path)
     calls = []
 
-    class P:
-        returncode = 0
-        stdout = "2026-11-23T03:41:00Z [OVERRIDE] lane myia-po-2028:claudish -- paths: ...\n"
-        stderr = ""
-
     def fake_run(argv, **kw):
-        calls.append(argv)
-        return P()
+        calls.append((argv, kw))
+        return SimpleNamespace(returncode=0, stdout=_fake_thread(
+            ["[RELEASED] lane myia-po-2028:claudish -- grain ended without a PR",
+             _override()]), stderr="")
 
     monkeypatch.setattr(S.subprocess, "run", fake_run)
     s._relache_override_probe(now=1000.0)
     assert calls, "the probe reads the issue's marker thread"
+    argv, kw = calls[0]
+    # Review ms#1875: the WHOLE thread is read -- every page, one JSON body per comment,
+    # bounded by the same read timeout as the claim release (the probe is in tick()).
+    assert "--paginate" in argv
+    assert any(a.startswith("repos/jsboige/CoursIA/issues/1/comments?") for a in argv)
+    assert "per_page=100" in next(a for a in argv if a.startswith("repos/"))
+    assert argv[-1] == ".[].body | @json"
+    assert kw.get("timeout") == S.CLAIM_READ_TIMEOUT_S
     assert g["not_before"] == 1000.0, "the OVERRIDE lifts the three-day wait"
     events = [l for l in (tmp_path / "state" / "scheduler.jsonl").read_text().splitlines()]
     assert any("relache-override-lifted" in l for l in events)
+
+
+def test_the_marker_is_found_on_any_line_of_any_comment(tmp_path, monkeypatch):
+    """Review ms#1875: the marker is not only the comment's first line. A RELEASED on
+    line 1 whose lift sits three lines lower, under a bold header and a quote, still
+    lifts -- and a RELEASED quoted mid-sentence is NOT a marker."""
+    s, key, g = _deferred_relache(tmp_path)
+    body = ("**Reprise** — le [RELEASED] precedent n'etait pas un refus du port :\n"
+            "il venait d'un defaut du harnais, corrige depuis.\n"
+            "> **[OVERRIDE] lane myia-po-2028:claudish -- paths: Dir/N1.ipynb**\n"
+            "Relire le motif du [RELEASED] avant de relancer.")
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=_fake_thread(
+            ["[RELEASED] lane myia-po-2028:claudish -- fin", body]), stderr=""))
+    s._relache_override_probe(now=1000.0)
+    assert g["not_before"] == 1000.0
+
+
+def test_an_override_naming_another_lane_keeps_the_guard(tmp_path, monkeypatch):
+    """The guard grants an [OVERRIDE] to its NAMED lane only: lifting on an override
+    addressed to a sibling would send this lane to a refusal and re-arm three days."""
+    s, key, g = _deferred_relache(tmp_path)
+    before = g["not_before"]
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=_fake_thread(
+            ["[RELEASED] lane myia-po-2028:claudish -- fin", _override("myia-ai-01:CoursIA")]),
+        stderr=""))
+    s._relache_override_probe(now=1000.0)
+    assert g["not_before"] == before
 
 
 def test_a_released_newer_than_the_override_keeps_the_guard(tmp_path, monkeypatch):
@@ -1003,46 +1050,55 @@ def test_a_released_newer_than_the_override_keeps_the_guard(tmp_path, monkeypatc
     but here the RELEASED is NEWER than the OVERRIDE, so the release is still the
     operative event and the three-day guard must HOLD (never retry early)."""
     s, key, g = _deferred_relache(tmp_path)
-
-    class P:
-        returncode = 0
-        # OVERRIDE first, then a NEWER auto-RELEASED that supersedes it.
-        stdout = ("2026-11-23T03:41:00Z [OVERRIDE] lane myia-po-2028:claudish -- paths: ...\n"
-                  "2026-11-23T04:48:00Z [RELEASED] myia-po-2028:claudish — stage2 mur\n")
-        stderr = ""
-
-    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: P())
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=_fake_thread(
+            [_override(), "[RELEASED] lane myia-po-2028:claudish — stage2 mur"]), stderr=""))
     s._relache_override_probe(now=1000.0)
     assert g["not_before"] != 1000.0, "a RELEASED newer than the OVERRIDE keeps the guard"
 
 
-def test_the_newest_marker_being_an_override_lifts(tmp_path, monkeypatch):
-    """A RELEASED followed by a NEWER OVERRIDE lifts: the OVERRIDE is the operative event."""
+def test_a_released_by_another_lane_buries_the_lift(tmp_path, monkeypatch):
+    """The guard (`tapis_attente.relachee`) reads the thread's LAST marker whoever posted
+    it: a sibling lane's [RELEASED] buries my lift exactly like my own. Dropping the
+    sibling's marker from the walk would launch on a guard that still says RELACHEE."""
     s, key, g = _deferred_relache(tmp_path)
+    before = g["not_before"]
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=_fake_thread(
+            [_override(), "[RELEASED] lane myia-po-2023:CoursIA-2 -- mur 429"]), stderr=""))
+    s._relache_override_probe(now=1000.0)
+    assert g["not_before"] == before, "a RELEASED last keeps the guard, whoever signed it"
 
-    class P:
-        returncode = 0
-        stdout = ("2026-11-23T04:48:00Z [RELEASED] myia-po-2028:claudish — stage2 mur\n"
-                  "2026-11-23T04:58:00Z [OVERRIDE] lane myia-po-2028:claudish -- paths: ...\n")
-        stderr = ""
 
-    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: P())
+def test_the_newest_marker_being_an_override_lifts(tmp_path, monkeypatch):
+    """A RELEASED followed by a NEWER OVERRIDE lifts: the OVERRIDE is the operative event --
+    mine, and also a sibling's (older markers of any lane never block the newest one)."""
+    s, key, g = _deferred_relache(tmp_path)
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=_fake_thread(
+            ["[RELEASED] lane myia-po-2028:claudish — stage2 mur", _override()]), stderr=""))
     s._relache_override_probe(now=1000.0)
     assert g["not_before"] == 1000.0, "the newest OVERRIDE lifts the wait"
+    s, key, g = _deferred_relache(tmp_path / "b", [item(1)])
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=_fake_thread(
+            ["[RELEASED] lane myia-po-2023:CoursIA-2 -- mur 429", _override()]), stderr=""))
+    s._relache_override_probe(now=1000.0)
+    assert g["not_before"] == 1000.0, "a sibling's OLDER RELEASED does not bury my OVERRIDE"
 
 
 def test_the_probe_is_best_effort_on_a_gh_failure(tmp_path, monkeypatch):
     """A dead gh leaves the three-day guard exactly as before — never an early retry."""
     s, key, g = _deferred_relache(tmp_path)
     before = g["not_before"]
-
-    class P:
-        returncode = 1
-        stdout = ""
-        stderr = "HTTP 503"
-
-    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: P())
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=1, stdout="", stderr="HTTP 503"))
     s._relache_override_probe(now=1000.0)
+    assert g["not_before"] == before
+    # A reader timeout is a gh failure like any other: no exception escapes tick().
+    monkeypatch.setattr(S.subprocess, "run", lambda *a, **k: (_ for _ in ()).throw(
+        TimeoutError("gh timed out")))
+    s._relache_override_probe(now=1000.0 + S.RELACHEE_PROBE_INTERVAL_S + 1)
     assert g["not_before"] == before
 
 
@@ -1050,13 +1106,11 @@ def test_the_probe_is_rate_limited_per_interval(tmp_path, monkeypatch):
     s, key, g = _deferred_relache(tmp_path)
     n = []
 
-    class P:
-        returncode = 0
-        stdout = "2026-11-23T03:41:00Z [OVERRIDE] lane x\n"
-        stderr = ""
+    def fake_run(*a, **k):
+        n.append(1)
+        return SimpleNamespace(returncode=0, stdout=_fake_thread([_override()]), stderr="")
 
-    monkeypatch.setattr(S.subprocess, "run",
-                        lambda *a, **k: (n.append(1), P())[1])
+    monkeypatch.setattr(S.subprocess, "run", fake_run)
     s._relache_override_probe(now=1000.0)
     s._relache_override_probe(now=1000.0 + 60)   # inside the interval: no call
     assert len(n) == 1
@@ -1065,3 +1119,23 @@ def test_the_probe_is_rate_limited_per_interval(tmp_path, monkeypatch):
     g["not_before"] = 1000.0 + S.CLAIM_RELEASED_WAIT_S
     s._relache_override_probe(now=1000.0 + S.RELACHEE_PROBE_INTERVAL_S + 1)
     assert len(n) == 2
+
+
+def test_the_probe_is_bounded_per_interval_and_round_robin(tmp_path, monkeypatch):
+    """The read is synchronous in tick(), each thread bounded by CLAIM_READ_TIMEOUT_S:
+    at most RELACHEE_PROBE_MAX_READS threads per interval, and the grains left over
+    come first at the next interval (a starved grain would never see its lift)."""
+    s, key, g = _deferred_relache(tmp_path, [item(n) for n in range(1, 9)])   # 2 x 4 grains
+    for k, gr in s.state["grains"].items():
+        gr.update({"status": "deferred", "last_verdict": S.CLAIM_RELEASED_VERDICT,
+                   "not_before": 1000.0 + S.CLAIM_RELEASED_WAIT_S})
+    seen = []
+    monkeypatch.setattr(S.subprocess, "run", lambda argv, **k: (
+        seen.append(next(a for a in argv if a.startswith("repos/"))),
+        SimpleNamespace(returncode=0, stdout="", stderr=""))[1])
+    s._relache_override_probe(now=1000.0)
+    assert len(seen) == S.RELACHEE_PROBE_MAX_READS
+    s._relache_override_probe(now=1000.0 + S.RELACHEE_PROBE_INTERVAL_S + 1)
+    assert len(seen) == 2 * S.RELACHEE_PROBE_MAX_READS
+    assert seen[S.RELACHEE_PROBE_MAX_READS] != seen[0], "the next interval starts elsewhere"
+    assert len(set(seen)) == len(seen), "no thread is read twice before the others"
