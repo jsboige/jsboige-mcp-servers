@@ -33,9 +33,14 @@ const targets = [
   'pathe/dist/shared/pathe.M-eThtNZ.mjs',
   'pathe/dist/shared/pathe.BSlhyZSM.cjs',
   '@vitest/coverage-v8/dist/provider.js',
-].map((relative) => {
+].flatMap((relative) => {
+  // Patch EVERY installed copy, not just the first one found: a workspace
+  // member may resolve pathe from the hoisted root while a test launched from
+  // the package directory resolves the local copy. Patching only the first
+  // candidate left the copy actually loaded unpatched (measured on #4886).
   const candidates = nodeModulesRoots.map((base) => join(base, relative));
-  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0];
+  const existing = candidates.filter((candidate) => existsSync(candidate));
+  return existing.length ? existing : [candidates[0]];
 });
 
 const oldPattern = 'function normalizeWindowsPath(input = "") {\n  if (!input) {';
@@ -53,7 +58,11 @@ for (const filePath of targets) {
       continue;
     }
     if (!content.includes(oldPattern)) {
-      console.log(`[pathe-patch] Pattern not found (version changed?): ${filePath}`);
+      // An installed file whose pattern is not recognised is NOT a skip: the
+      // workaround is silently off for that copy. Fail so the gate sees it
+      // instead of reporting "0 patched, N skipped" as a success.
+      console.error(`[pathe-patch] ERROR: pattern not found (version changed?): ${filePath}`);
+      process.exitCode = 1;
       skipped++;
       continue;
     }
