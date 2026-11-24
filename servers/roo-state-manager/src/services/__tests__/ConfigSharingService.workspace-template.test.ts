@@ -547,6 +547,63 @@ describe('workspace-template — applies concurrents / repli copyFile (revue coo
     expect(retry.errors).toEqual([]);
     expect(readFileSync(join(workspaceDir, 'a.md'), 'utf-8')).toBe('A\n');
   });
+
+  it('si le retrait de la destination partielle échoue, il est signalé sans masquer l’ENOSPC', async () => {
+    publishWorkspaceTemplatePackage({ 'workspace-template/a.md': 'A\n' });
+
+    const realUnlink = fsPromises.unlink.bind(fsPromises);
+    const linkSpy = vi.spyOn(fsPromises, 'link').mockRejectedValue(Object.assign(new Error('EPERM injected'), { code: 'EPERM' }));
+    const copySpy = vi.spyOn(fsPromises, 'copyFile').mockImplementation((async (src: any, dest: any) => {
+      await fsPromises.writeFile(dest, 'PARTIAL');
+      throw Object.assign(new Error('ENOSPC injected'), { code: 'ENOSPC' });
+    }) as any);
+    const unlinkSpy = vi.spyOn(fsPromises, 'unlink').mockImplementation(((file: any) => {
+      if (String(file).includes('.roosync-wt-tmp-')) return realUnlink(file);
+      return Promise.reject(Object.assign(new Error('EBUSY injected'), { code: 'EBUSY' }));
+    }) as any);
+
+    let result: any;
+    try {
+      result = await service.applyConfig({
+        version: 'latest', machineId: 'test-machine',
+        targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: false,
+      });
+    } finally {
+      linkSpy.mockRestore();
+      copySpy.mockRestore();
+      unlinkSpy.mockRestore();
+    }
+
+    // La cause d'origine reste lisible, et l'échec de retrait est RAPPORTÉ (pas
+    // absorbé) — c'est l'état où un reste existe réellement sur disque.
+    expect(result.errors.some((e: string) => e.includes('ENOSPC injected'))).toBe(true);
+    expect(result.errors.some((e: string) => e.includes('destination partielle non retirée'))).toBe(true);
+  });
+
+  it('un journal pré-existant illisible est signalé puis réécrit, sans bloquer l’apply', async () => {
+    publishWorkspaceTemplatePackage({
+      'workspace-template/a.md': 'A\n',
+      'workspace-template/sub/b.md': 'B\n',
+      'workspace-template/sub/deep/c.md': 'C\n',
+    });
+
+    // La relecture du journal à CHAQUE flush passe par cette branche : un journal
+    // illisible est signalé, puis réécrit valide par le flush qui l'a lu — le
+    // flush suivant le relit donc sans erreur. Exactement un signalement = la
+    // branche a été exercée ET n'a pas répété par fichier.
+    const journalPath = createHash('sha256').update(wsReal).digest('hex').slice(0, 16);
+    writeFileSync(join(journalDir, `${journalPath}.json`), 'NOT JSON', 'utf-8');
+
+    const result = await service.applyConfig({
+      version: 'latest', machineId: 'test-machine',
+      targets: ['workspace-template'], workspacePath: workspaceDir, dryRun: false,
+    });
+
+    expect(result.workspaceTemplate!.created).toHaveLength(3);
+    expect(result.errors.filter((e: string) => e.includes('journal existant illisible'))).toHaveLength(1);
+    const journal = JSON.parse(readFileSync(result.workspaceTemplate!.journalPath, 'utf-8'));
+    expect([...journal.files].sort()).toEqual([join(wsReal, 'a.md'), join(wsReal, 'sub', 'b.md'), join(wsReal, 'sub', 'deep', 'c.md')].sort());
+  });
 });
 
 describe('workspace-template — refus des chemins pathologiques', () => {
