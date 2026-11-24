@@ -650,6 +650,26 @@ def test_resume_old_trace_livereads_the_reservation(monkeypatch, tmp_path):
     assert got["stages"]["claim_reservation"] == {"verdict": None, "live_recheck": True}
 
 
+def test_resume_released_reservation_is_refused_even_if_the_trace_attests_one(monkeypatch, tmp_path):
+    # 24/11 (salvage o33): the paid trace of #28082 carried claim_reservation.verdict None,
+    # and run_revision() admitted the resume on that attestation -- while the grain had been
+    # [RELEASED] hours earlier. A trace says what WAS, the guard says what IS.
+    seen = _stub_resume(monkeypatch, claim_rc=1)
+    trace = _trace(tmp_path)                       # claim_reservation: {"verdict": None}
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"].startswith("refused-revise-no-reservation:")
+    assert seen["loop"] == 0 and seen["pr"] == 0, "nothing may be spent on a released grain"
+
+
+def test_resume_live_reservation_still_admits(monkeypatch, tmp_path):
+    # the other half of the same rule: a reservation attested in the trace AND still held
+    # now resumes normally -- the live re-read must not turn into a blanket refusal
+    seen = _stub_resume(monkeypatch, claim_rc=0)
+    trace = _trace(tmp_path)
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"] == "pr-created" and seen["loop"] == 1
+    assert got["stages"]["claim_reservation"].get("verdict") is None
+
 def test_resume_old_trace_live_conflict_refuses(monkeypatch, tmp_path):
     seen = _stub_resume(monkeypatch, claim_rc=1)
     trace = _trace(tmp_path, stages={"worktree": {"path": str(tmp_path / "wt"),
@@ -663,7 +683,13 @@ def test_resume_old_trace_live_conflict_refuses(monkeypatch, tmp_path):
 def test_resume_rereads_the_claim_and_the_capacity_gate(monkeypatch, tmp_path):
     seen = _stub_resume(monkeypatch, claim_rc=1)
     got = _resume(_rev_args(tmp_path, _trace(tmp_path)))
-    assert got["verdict"] == "refused-claim-held-by-another-lane" and seen["loop"] == 0
+    # 24/11: the reservation branch now re-reads the LIVE claim instead of trusting the
+    # trace's attestation (a [RELEASED] grain was admitted). The refusal therefore carries
+    # the same refused-revise-no-reservation:<code> shape as the two sibling branches, and
+    # it happens BEFORE refresh_gh_token/fetch_issue instead of at the later claim_check:
+    # same refusal, zero loop, less spend.
+    assert got["verdict"] == "refused-revise-no-reservation:refused-claim-held-by-another-lane"
+    assert seen["loop"] == 0
     seen = _stub_resume(monkeypatch, blocking=True)
     got = _resume(_rev_args(tmp_path, _trace(tmp_path)))
     assert got["verdict"] == "deferred-by-capacity-gate" and seen["loop"] == 0
