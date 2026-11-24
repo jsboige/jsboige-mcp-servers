@@ -483,7 +483,20 @@ describe('VectorIndexer — coverage complement (#833 C3)', () => {
 			// Restore the env AND drop the module graph: these tests import VectorIndexer
 			// under their own window ('2'), and a later un-pinned test would otherwise
 			// inherit that already-loaded window instead of the file-scope '0'.
-			afterEach(() => { if (prev === undefined) delete process.env.EMBEDDING_OPS_PER_MINUTE; else process.env.EMBEDDING_OPS_PER_MINUTE = prev; vi.resetModules(); });
+			afterEach(() => { if (prev === undefined) delete process.env.EMBEDDING_OPS_PER_MINUTE; else process.env.EMBEDDING_OPS_PER_MINUTE = prev; vi.resetModules(); vi.doUnmock('../IndexedHashLedger.js'); });
+			// #4861 v1.2: the B2 ledger now WRITES after the scroll (its absent lines). The
+			// fake-timer tests below drive indexTask() and assert after 1 s of FAKE time; a
+			// real file write does not complete in that many event-loop turns (measured 5/5
+			// runs: 0 embedding request), so the ledger is stubbed for this block only. The
+			// file-backed behaviour runs with real timers in b2-incremental.test.ts.
+			beforeEach(() => {
+				vi.doMock('../IndexedHashLedger.js', () => ({
+					loadIndexedHashLedger: async () => ({ present: new Set<string>(), absent: new Set<string>() }),
+					appendIndexedHashes: async () => undefined,
+					appendAbsentHashes: async () => undefined,
+					clearIndexedHashLedgers: async () => undefined,
+				}));
+			});
 			const heavy = (id: string) => chunk(id, 'z'.repeat(30000) + id);
 
 			test('a request past the budget waits until the oldest slot leaves the window', async () => {
