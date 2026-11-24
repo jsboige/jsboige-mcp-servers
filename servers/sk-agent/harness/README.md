@@ -67,6 +67,25 @@ claim lane: `NBCODER_LANE` has no default, so `--claim` fails loud instead of cl
 another seat's identity (vllm#438). The hourly wrapper carries the seat's checkout as its
 own `-Repo` parameter — launcher configuration, not harness configuration.
 
+## Preflight refusals (what a launch answers before it pays anything)
+
+`nb_coder_driver.py` refuses at launch, writes a trace + ledger line, and exits 2 with the
+remedy on stderr (a scheduled loop reads the refusal back instead of mistaking it for a
+quiet run). Three families, each with its own verdict, asked in this order:
+
+| verdict | what it means | the remedy it names |
+|---|---|---|
+| `refused-wiring-unresolved` | one of the five wired paths above does not exist here | point the env var at a real path |
+| `refused-credential-unresolved` | a model this launch calls reads its key through `api_key_env`, and that variable is empty here (sk-agent would send `no-key` and the first call would answer `401 invalid proxy authentication`) | export the named variable in the launching shell |
+| `refused-target-unresolved` | the launch's own target cannot be reached from a freshly fetched `origin/main` — absent with no twin, a named twin absent, a creation flag on an existing target, a `--meta-from` absent | fix the queue line (`--source-nb`, `--from-spec`, or the path) |
+
+Only names are printed — role, agent, model entry, variable, path — never a value. Every
+check fails OPEN on what it cannot read (unreadable config, unknown preset, literal key, a
+git ref it cannot resolve, a path git reports as `exists on disk` with another spelling),
+and it never speaks for a resume (`--revise-from` / `--verify-from` read their creation
+mode from the trace). `NBCODER_PREFLIGHT_CREDENTIALS=0` disables the credential check
+alone, for a seat whose endpoint deliberately serves without a key.
+
 ## Requirements
 
 - Python 3.11+; the **sk-agent venv** is the intended interpreter (it carries `mcp`).
