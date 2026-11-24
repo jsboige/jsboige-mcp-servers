@@ -1,4 +1,9 @@
 #!/usr/bin/env python3
+# --- provenance ---------------------------------------------------------------
+# Canonical home is sk-agent: new harness fixes belong here, not in vllm.
+# Authored here (#1914 preflight refusals) — no vllm counterpart.
+# Harness base is the vllm re-copy @ 7a09e1caec22441d9402ab25a222206c8905bfe1.
+# -----------------------------------------------------------------------------
 """Offline pins for the two preflight refusals added 24/11 (o34, o34b).
 
 Both were measured on CoursIA#28079 within one evening, on po-2028:claudish. A creation
