@@ -12183,8 +12183,14 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     const messageBlocks = markdownContent.split(/(?=^### \[)/m).filter(b => b.trim());
     for (const rawBlock of messageBlocks) {
       const block = rawBlock.replace(/\n---\s*$/, '').trim();
-      // v3 (#1363) + #1956: parse header then metadata lines
-      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n([\s\S]+)/);
+      // v3 (#1363) + #1956: parse header then metadata lines.
+      // Le groupe optionnel de tags legacy prend une ESPACE LITTÉRALE, comme le
+      // parseur principal (dashboard-markdown.ts). Un `\s+` franchit le retour
+      // à la ligne et absorbe la ligne `[msg: <id>]` qui suit immédiatement le
+      // header (forme émise par buildArchiveMessagesMarkdown) : l'id persisté
+      // était régénéré à la lecture, et un `scope: <messageId>` ne résolvait
+      // plus une fois l'escalade archivée (signal r1210, 24/11).
+      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)( \[[^\]]+\])?\n([\s\S]+)/);
       if (headerMatch) {
         const [, timestamp, machineId, workspace, , afterHeader] = headerMatch;
         let persistedId: string | undefined;
