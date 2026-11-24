@@ -49,6 +49,7 @@ from mcp.client.stdio import stdio_client                      # noqa: E402
 # How much of a differing cell's text is shown to the verifier, per cell and in total.
 CELL_TEXT_CAP = 1200
 TOTAL_TEXT_CAP = 12_000
+CUT_TAG_ROOM = 64        # what a declared cut needs to SAY how much it hides (its tag is ≤ 46)
 
 
 def utcnow() -> str:
@@ -60,7 +61,8 @@ def _text(x) -> str:
 
 
 def cell_output_text(cell: dict) -> str:
-    """The DISPLAYED text of a cell's outputs, concatenated.
+    """The DISPLAYED text of a cell's outputs, concatenated, with the fingerprint of every
+    non-text payload INLINE — at the payload's own position (shared with `outputs_digest`).
 
     Concatenation is the point: stdout buffer boundaries are an artefact of the print, not a
     content difference. What the reader sees is the concatenation.
@@ -82,12 +84,11 @@ def cell_output_text(cell: dict) -> str:
         # fingerprint of its bytes, a silent image swap leaves every digest unchanged
         # (finding 26858 c.17 — the display_data image was invisible to the annex).
         for mime in sorted(data):
-            if mime.startswith("text/") or mime == "application/json":
+            if not nbcd.is_nontext_mime(mime):
                 continue
             blob = _text(data.get(mime))
             if blob:
-                bits.append(f"[{mime} {len(blob)}b sha1:"
-                            f"{hashlib.sha1(blob.encode()).hexdigest()[:12]}]")
+                bits.append(nbcd.nontext_marker(mime, blob))
         bits.append(_text(o.get("traceback")))
         bits.append(str(o.get("evalue") or ""))
         chunks.append((False, "\n".join(b for b in bits if b)))
@@ -121,6 +122,29 @@ def outputs_digest(nb_path: Path) -> list[dict]:
     return rows
 
 
+def _cut_declared(text: str, room: int) -> str:
+    """At most `room` characters of `text`, the cut SAID inside that room."""
+    if len(text) <= room:
+        return text
+    if room < CUT_TAG_ROOM:
+        return "[tronqué]"[:room]
+    shown = room - CUT_TAG_ROOM
+    return text[:shown] + f"…[tronqué : {len(text) - shown} caractères non affichés]"
+
+
+def _nontext_field(src: dict | None, built: dict | None) -> dict:
+    """`nontext` for a diff row when either side displays a non-text payload.
+
+    It sits BESIDE the texts, never inside them: no text cut and no budget reaches it.
+    CoursIA#28338: a 154 KB stream pushed the deliverable's SVG fingerprint past
+    CELL_TEXT_CAP; the annex showed the critic a SOURCE figure and no deliverable figure,
+    and five revision rounds could not show what the instrument hid.
+    """
+    rows = {"src": nbcd.nontext_witness(src) if src else [],
+            "built": nbcd.nontext_witness(built) if built else []}
+    return {"nontext": rows} if rows["src"] or rows["built"] else {}
+
+
 def cell_diffs(src_path: Path, built_path: Path) -> list[dict]:
     """Cells whose displayed output text differs, with the text of both sides.
 
@@ -134,12 +158,14 @@ def cell_diffs(src_path: Path, built_path: Path) -> list[dict]:
     for i in sorted(set(src_by_idx) | set(built_by_idx)):
         s, b = src_by_idx.get(i), built_by_idx.get(i)
         if s is None:
-            diffs.append({"cell": i, "kind": "added",
-                           "src_text": None, "built_text": cell_output_text(b)[:CELL_TEXT_CAP]})
+            diffs.append({"cell": i, "kind": "added", "src_text": None,
+                          "built_text": _cut_declared(cell_output_text(b), CELL_TEXT_CAP),
+                          **_nontext_field(None, b)})
             continue
         if b is None:
             diffs.append({"cell": i, "kind": "removed",
-                           "src_text": cell_output_text(s)[:CELL_TEXT_CAP], "built_text": None})
+                          "src_text": _cut_declared(cell_output_text(s), CELL_TEXT_CAP),
+                          "built_text": None, **_nontext_field(s, None)})
             continue
         st, bt = cell_output_text(s), cell_output_text(b)
         if st == bt:
@@ -148,19 +174,21 @@ def cell_diffs(src_path: Path, built_path: Path) -> list[dict]:
         # Say so, so the verifier does not read the change as an unexplained alteration.
         edited = _text(s.get("source")) != _text(b.get("source"))
         diffs.append({"cell": i, "kind": "edited" if edited else "outputs-changed",
-                       "src_text": st[:CELL_TEXT_CAP], "built_text": bt[:CELL_TEXT_CAP]})
+                      "src_text": _cut_declared(st, CELL_TEXT_CAP),
+                      "built_text": _cut_declared(bt, CELL_TEXT_CAP),
+                      **_nontext_field(s, b)})
     budget = TOTAL_TEXT_CAP
     for d in diffs:
         for k in ("src_text", "built_text"):
             if not d.get(k):
                 continue
-            if budget <= 0:
+            if budget < CUT_TAG_ROOM:
                 d[k] = "[tronqué]"          # the marker itself counts against the budget
                 budget -= len(d[k])
                 continue
-            room = min(len(d[k]), budget)
-            d[k] = d[k][:room] + ("…" if room < len(d[k]) else "")
-            budget -= room
+            if len(d[k]) > budget:
+                d[k] = _cut_declared(d[k], budget)
+            budget -= len(d[k])
     return diffs
 
 
@@ -186,9 +214,13 @@ def built_outputs_annex(nb_path: Path) -> dict:
         if room < len(text):
             shown += f"…[tronqué : {len(text) - room} caractères non affichés]"
         budget -= room
-        rows.append({"cell": i, "execution_count": c.get("execution_count"),
-                     "types": sorted({o.get("output_type") for o in outs}),
-                     "bytes": len(text), "text": shown})
+        row = {"cell": i, "execution_count": c.get("execution_count"),
+               "types": sorted({o.get("output_type") for o in outs}),
+               "bytes": len(text), "text": shown}
+        witness = nbcd.nontext_witness(c)     # outside every cut, like the diff annex
+        if witness:
+            row["nontext"] = witness
+        rows.append(row)
     return {"kernelspec": (meta.get("kernelspec") or {}).get("name"),
             "language_version": (meta.get("language_info") or {}).get("version"),
             "cells": rows}
@@ -232,7 +264,8 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
             annex += ("## Annexe sorties du LIVRABLE — texte affiché par cellule code\n"
                       "Les vues ci-dessus ne montrent que le CODE des cellules. Voici, pour "
                       "chaque cellule code du LIVRABLE, son compteur d'exécution, les types de "
-                      "sortie et le TEXTE réellement affiché (images : empreinte des octets). "
+                      "sortie et le TEXTE réellement affiché (images : le champ `nontext`, "
+                      "jamais coupé, donne leur empreinte et, pour un SVG, ce qu'il dessine). "
                       "C'est sur ce texte que tu juges le point 2 (attendus affichés). Une "
                       "coupe est toujours signalée par `[tronqué : …]`.\n"
                       f"{json.dumps(built_outputs, ensure_ascii=False, indent=1)}\n\n")
@@ -255,6 +288,10 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
                   "`removed` = cellule apparue ou disparue. **Juge sur le TEXTE, pas sur le "
                   "fait qu'il diffère** : un changement demandé par l'issue n'est pas une "
                   "altération.\n"
+                  "Les lignes `[affichage non textuel …]` du champ `nontext` sont les sorties "
+                  "non textuelles de la cellule (images), lues par le harnais dans le carnet "
+                  "exécuté et jamais coupées : empreinte des octets, puis pour un SVG son "
+                  "canvas, ses éléments et ses étiquettes.\n"
                   f"{json.dumps(diffs, ensure_ascii=False, indent=1)}\n\n")
     if prior:
         # 20/11 review loop: the deliverable was REVISED after a reject. Without its own

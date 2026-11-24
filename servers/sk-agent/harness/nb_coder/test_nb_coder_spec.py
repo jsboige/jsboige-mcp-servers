@@ -521,6 +521,30 @@ def test_spec_outputs_annex_declares_its_cut(tmp_path):
     assert row["text"].endswith("[tronqué : 500 caractères non affichés]")
 
 
+def test_spec_outputs_annex_declares_a_figure(tmp_path):
+    """Spec mode drops the diff annex (a [SPEC] twin has no outputs): a creation that draws
+    a figure must still show it to the critic, beside the text, never inside the cut."""
+    cells = json.loads(_executed_nb(tmp_path).read_text(encoding="utf-8"))["cells"]
+    cells[1]["outputs"] = [{"output_type": "stream", "name": "stdout",
+                            "text": "Z" * (V.CELL_TEXT_CAP + 500)},
+                           {"output_type": "display_data",
+                            "data": {"image/svg+xml": "<svg width='10' height='20'>"
+                                                      "<text>converge</text></svg>"}}]
+    p = tmp_path / "fig.ipynb"
+    p.write_text(json.dumps({"cells": cells, "metadata": {}, "nbformat": 4,
+                             "nbformat_minor": 5}), encoding="utf-8")
+    row = V.built_outputs_annex(p)["cells"][0]      # the first CODE cell is cells[1]
+    assert row["cell"] == 1
+    assert "nontext" in row and "image/svg+xml" in row["nontext"][0]
+    assert "«converge»" in row["nontext"][0]
+    # The cut is still declared on the TEXT (which carries the inline marker, hence 538 and
+    # not 500 hidden): the witness is simply no longer dependent on that text.
+    full = V.cell_output_text(cells[1])
+    assert row["bytes"] == len(full)
+    assert row["text"].endswith(f"[tronqué : {len(full) - V.CELL_TEXT_CAP} caractères non affichés]")
+    assert "affichage non textuel" not in row["text"]
+
+
 def test_short_desc_names_a_spec_creation():
     """CoursIA#27481 (20/11): a from-spec creation was titled '<stem> — edit' because its
     plan carries 'cells', not 'plan', and _short_desc only knew edit gestures."""
