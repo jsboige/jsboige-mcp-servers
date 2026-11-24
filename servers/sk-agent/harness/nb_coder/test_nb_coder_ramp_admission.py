@@ -73,6 +73,10 @@ ADMISSION_VERDICTS = [
     "refused-claim-check-not-scoped",
     "refused-claim-post-failed",
     "refused-claim-not-verified",
+    # the stage-5 preflight (ms#1912 review, 24/11): the delivery branch of this grain
+    # is already there -- kept local, or already on origin
+    "refused-branch-held:local",
+    "refused-branch-held:pushed",
 ]
 
 

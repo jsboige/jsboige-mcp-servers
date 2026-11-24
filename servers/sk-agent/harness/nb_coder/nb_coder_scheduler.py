@@ -209,6 +209,12 @@ CONTENT_FAILURE_PREFIXES = (
 # po-2024 holds it.
 ADMISSION_FAILURE_PREFIXES = (
     "refused-claim",
+    # 24/11 (ms#1912 review): a stage-5 relaunch whose deterministic delivery branch
+    # already exists -- refused by the driver's preflight BEFORE any model call. The
+    # first pass kept the branch (a `pr-integration-red` and its commits), so nothing
+    # is judged here either: the engine was never asked. Same class as the claim
+    # refusals -- it costs nothing and must not hold the ramp for the whole retry loop.
+    "refused-branch-held",
 )
 
 

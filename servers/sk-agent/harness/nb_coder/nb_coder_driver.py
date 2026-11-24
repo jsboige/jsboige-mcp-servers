@@ -6039,6 +6039,51 @@ def default_pr_branch(issue_n: int, notebook: str) -> str:
     return f"nbcoder/auto-{issue_n}-{stem or 'nb'}-{h}"
 
 
+def delivery_branch(args) -> str:
+    """The branch stage 5 will cut -- and the one the stage-5 preflight must look at.
+
+    One expression, two call sites on purpose (ms#1912 review, 24/11): a refusal that
+    computes the name differently from `checkout -b` would miss the collision it exists
+    to prevent."""
+    return args.pr_branch or default_pr_branch(args.issue, args.notebook)
+
+
+def held_branch(repo: Path, branch: str) -> dict | None:
+    """The LOCAL branch `<branch>` when it exists, with what a relaunch must know.
+
+    A stage-5 refusal (`pr-integration-red`) leaves its branch behind with its commits,
+    and `default_pr_branch` is deterministic: the next launch of the same grain re-pays
+    plan, build and verify, then dies at `checkout -b <same name>` with
+    `pr-branch-failed` -- a class `run` verdict that blocks the ramp (measured in the
+    ms#1912 review, 24/11). Read BEFORE any model call so that relaunch is refused
+    instead (`refused-branch-held`); `None` when the name is free.
+
+    `pushed` is true when the branch has an upstream, or when origin advertises it: a
+    push that TIMED OUT can have landed without `-u` having recorded the upstream --
+    `_push_branch` judges exactly that case by ls-remote, and this reads it the same
+    way. A remote that cannot be read is not evidence of a push: the branch is then
+    reported unpushed and the push that follows judges, as before."""
+    rc, out = _git(repo, "rev-parse", "--verify", "-q", f"refs/heads/{branch}")
+    if rc != 0 or not out.strip():
+        return None
+    head = out.strip()
+    urc, uout = _git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                     f"{branch}@{{upstream}}")
+    upstream = uout.strip() if urc == 0 and uout.strip() else None
+    pushed = bool(upstream)
+    if not pushed:
+        try:
+            lrc, lout = _git(repo, "ls-remote", "--heads", "origin",
+                             f"refs/heads/{branch}", timeout=120)
+        except subprocess.TimeoutExpired:
+            lrc, lout = 1, ""
+        pushed = lrc == 0 and bool(lout.strip())
+    arc, aout = _git(repo, "rev-list", "--count", f"origin/main..{branch}")
+    ahead = int(aout.strip()) if arc == 0 and aout.strip().isdigit() else None
+    return {"branch": branch, "head": head, "pushed": pushed, "upstream": upstream,
+            "commits_ahead": ahead}
+
+
 def pr_title(issue_n: int, desc: str, create_mode) -> str:
     """House form. A creation (port or spec twin) ADDS a notebook: `Add(notebooks,…)`.
     Titling a port `Fix(notebooks,…) — portage` was a maintainer Concern on CoursIA#27598."""
@@ -6260,7 +6305,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     PR create, delivery comment on the issue."""
     t0 = time.time()
     nb_rel = args.notebook.replace("\\", "/")
-    branch = args.pr_branch or default_pr_branch(args.issue, args.notebook)
+    branch = delivery_branch(args)
     desc = _short_desc(args, rec.get("plan") or {}, rec.get("create_mode"))
     entry: dict = {"branch": branch}
     executed_as, kernel_note = published_execution_kernel(args, rec)
@@ -7994,6 +8039,41 @@ def _keep_prior_trace(out: Path, prefix: str) -> str:
     raise OSError(f"no free snapshot name beside {out}")   # never fall back to overwriting
 
 
+def _record_refusal(args, verdict: str, **fields) -> None:
+    """Write a refusal's trace and ledger line before `ap.error`, preserving the record
+    it would overwrite. Factored out of `_preflight` (24/11, ms#1912 review) so that
+    every refusal before spend leaves the same evidence -- see `_preflight`: without
+    it a scheduled loop cannot tell "ran and refused" from "never ran".
+
+    An existing record is PRESERVED, never overwritten (o33): a relaunched or resumed
+    grain's out_dir is the OLD run directory, and the paid record of the first pass --
+    execution, findings, gates, the kept branch's commit -- is exactly what a refusal
+    of the second pass must not erase. `_keep_prior_trace` never replaces a copy: two
+    refusals in the same second (a retry loop) get two files."""
+    out_dir = Path(args.out_dir)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"issue-{args.issue}.json"
+        kept = None
+        if out.is_file():
+            prefix = ("pre-verify" if args.verify_from
+                      else "pre-revise" if args.revise_from else "pre-refusal")
+            kept = _keep_prior_trace(out, prefix)
+        rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
+               "finished": utcnow(), "lane": args.lane, "dry": True, "calls": [],
+               "verdict": verdict}
+        rec.update(fields)
+        if kept:
+            rec["preserved_prior_trace"] = kept
+        out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+        with open(out_dir / "ledger.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({k: rec.get(k) for k in
+                                 ("issue", "notebook", "started", "finished", "verdict", "lane")}
+                                | {"calls": 0, "preserved_prior_trace": kept}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass          # the refusal must not be masked by a failed trace write
+
+
 def _preflight(ap, args) -> None:
     """Refuse before any spend when a wired path cannot exist (F3, vllm#441).
 
@@ -8029,28 +8109,59 @@ def _preflight(ap, args) -> None:
         return
     detail = "seat wiring does not resolve here — point the env var at a real path: " \
              + " | ".join(missing)
-    out_dir = Path(args.out_dir)
-    try:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out = out_dir / f"issue-{args.issue}.json"
-        kept = None
-        if out.is_file():
-            prefix = ("pre-verify" if args.verify_from
-                      else "pre-revise" if args.revise_from else "pre-refusal")
-            kept = _keep_prior_trace(out, prefix)
-        rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-               "finished": utcnow(), "lane": args.lane, "dry": True, "calls": [],
-               "verdict": "refused-wiring-unresolved",
-               "wiring_missing": missing}
-        if kept:
-            rec["preserved_prior_trace"] = kept
-        out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
-        with open(out_dir / "ledger.jsonl", "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({k: rec.get(k) for k in
-                                 ("issue", "notebook", "started", "finished", "verdict", "lane")}
-                                | {"calls": 0, "preserved_prior_trace": kept}, ensure_ascii=False) + "\n")
-    except OSError:
-        pass          # the refusal must not be masked by a failed trace write
+    _record_refusal(args, "refused-wiring-unresolved", wiring_missing=missing)
+    ap.error(detail)
+
+
+def _refuse_held_branch(ap, args) -> None:
+    """Refuse a stage-5 launch whose delivery branch is already there, before any spend.
+
+    ms#1912 review (24/11, myia-ai-01): a `pr-integration-red` grain keeps its branch
+    (deterministic name, `default_pr_branch`) with its commits, unpushed. The relaunch
+    of that grain re-paid plan, build and verify, then died at `checkout -b <same
+    name>` with `pr-branch-failed` -- class `run`, so it blocked the ramp too. Stage 5
+    is the only place a branch is cut, so a kept branch always means an earlier launch
+    reached it; and no resume of THIS driver admits a stage-5 trace (`run_revision`
+    refuses every `pr-*` prior), so the refusal can only ever stop a fresh relaunch.
+
+    The gate stands before `engine_tokens()` is read: zero model call. Two readings,
+    one per verdict suffix -- `:pushed` (origin holds the branch: the delivery exists,
+    follow the PR) and `:local` (the kept commits are local only: repair and push that
+    branch, or move it aside deliberately before a rebuild). Either way the commits are
+    NOT touched: the refusal is what keeps them."""
+    held = held_branch(Path(args.repo), delivery_branch(args))
+    if not held:
+        return
+    # The first pass's own trace sits where this refusal is about to be written: read
+    # its verdict first (it names the guard that was red), then let the recorder keep it.
+    prior = Path(args.out_dir) / f"issue-{args.issue}.json"
+    held["prior_verdict"] = None
+    if prior.is_file():
+        try:
+            held["prior_verdict"] = (json.loads(prior.read_text(encoding="utf-8"))
+                                     or {}).get("verdict")
+        except (OSError, ValueError):
+            pass
+    branch, short = held["branch"], held["head"][:10]
+    n = held.get("commits_ahead")
+    count = (f"{n} commit(s) outside origin/main" if isinstance(n, int)
+             else "commit count unmeasured")
+    if held["pushed"]:
+        where = f"pushed ({held['upstream'] or 'advertised by origin'})"
+        recovery = (f"the branch is on origin at {short}: a PR may already exist -- "
+                    f"check `gh pr list --head {branch}` and follow or repair that one; "
+                    f"do not relaunch the grain")
+    else:
+        where = "local, never pushed"
+        recovery = (f"the kept commits stay on `{branch}` ({short}, {count}): repair and "
+                    f"push that branch, or -- to rebuild deliberately -- move it aside "
+                    f"first: `git -C {args.repo} branch -m {branch} {branch}-kept-{short}` "
+                    f"(never delete paid work)")
+    verdict = f"refused-branch-held:{'pushed' if held['pushed'] else 'local'}"
+    detail = (f"delivery branch {branch} already exists in {args.repo} ({short}, {where}) "
+              f"-- a relaunch would pay the whole build, then fail at `checkout -b`. "
+              f"Refused before any model call. Recovery: {recovery}")
+    _record_refusal(args, verdict, held_branch=held, recovery=recovery)
     ap.error(detail)
 
 
@@ -8261,6 +8372,9 @@ def main() -> int:
                  "nothing, the spec turn would never run (declare --spec-mode skip)")
     if args.max_stage >= 1:   # stage 0 is git-only: a claim must not require the MCP wiring
         _preflight(ap, args)
+    if args.max_stage >= 5:   # stage 5 cuts the delivery branch: one of the same grain
+                              # already held would be paid for, then collide (ms#1912)
+        _refuse_held_branch(ap, args)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
            "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
            # declared per-step models (#4831): what the lane asked for -- what each turn

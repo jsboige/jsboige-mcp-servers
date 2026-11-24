@@ -751,13 +751,14 @@ def test_the_published_kernel_prefers_the_execution_record_to_carried_metadata()
 
 def _stage5_kernel_delivery(tmp_path, monkeypatch, rec, create_mode=None, guards=None,
                             expect="pr-created", flags=None, drift=None,
-                            nav_form=None, reseal=False):
+                            nav_form=None, reseal=False, pr_branch="nbcoder/kernel-27947"):
     """Real branch, real commit, real push to a bare origin; gh and the repo
     integration are fakes that return what the caller wants to read back.
     `guards` is what the fake integration replayed; `drift` replaces the
     source-drift reading; `expect` is the verdict the caller wants read;
     `nav_form` is what the integration decided for the twin link; `reseal`
-    makes the twin pair exist, so the reseal commit is written."""
+    makes the twin pair exist, so the reseal commit is written; `pr_branch`
+    None lets stage 5 cut its own default name."""
     from types import SimpleNamespace
 
     real = d._load_integrate_module()      # read before the fake replaces it
@@ -767,7 +768,7 @@ def _stage5_kernel_delivery(tmp_path, monkeypatch, rec, create_mode=None, guards
     built = tmp_path / "built.ipynb"
     built.write_text("{}", encoding="utf-8")
     args = SimpleNamespace(
-        issue=27947, notebook=nb_rel, pr_branch="nbcoder/kernel-27947", agent="producer",
+        issue=27947, notebook=nb_rel, pr_branch=pr_branch, agent="producer",
         verifier_agent="critic", grain_tier="MED", lane="myia-po-2028:claudish",
         pr_base="main", pr_repo="jsboige/CoursIA", out_dir=str(tmp_path),
         kernel_override=None, **(flags or {}))
@@ -845,6 +846,166 @@ def test_stage5_keeps_the_branch_unpushed_on_a_measured_red_guard(tmp_path, monk
     assert re.fullmatch(r"[0-9a-f]{7,}", pr["commit"]), pr["commit"]
     assert "branch not pushed" in pr["error"]
     assert pr["integration"]["guards"] == _RED_GUARDS      # the tails stay in the trace
+
+
+# ---- two launches of the same grain (ms#1912 review, 24/11) ---------------------
+
+def _sh(*cmd):
+    import subprocess
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    assert p.returncode == 0, (cmd, p.stderr)
+    return p.stdout
+
+
+def _resolved_wiring(monkeypatch, tmp_path):
+    """A seat whose five wiring paths exist: `_preflight` lets the run through, so the
+    branch preflight is the only refusal that can fire."""
+    seat = tmp_path / "seat"
+    (seat / "venv" / "Scripts").mkdir(parents=True)
+    (seat / "sk_agent.py").write_text("# stub\n", encoding="utf-8")
+    (seat / "venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+    (seat / "sk_agent_config.json").write_text("{}\n", encoding="utf-8")
+    (seat / "papermill").mkdir()
+    (seat / "papermill" / "python.exe").write_text("", encoding="utf-8")
+    monkeypatch.setattr(d, "SK_DIR", seat)
+    monkeypatch.setattr(d, "SK_PY", seat / "venv" / "Scripts" / "python.exe")
+    monkeypatch.setattr(d, "SK_CONFIG", seat / "sk_agent_config.json")
+    monkeypatch.setattr(d, "PM_PY", seat / "papermill" / "python.exe")
+    monkeypatch.setattr(d, "PM_CWD", seat / "papermill")
+
+
+_RELUNCH_ARGV = ["nb_coder_driver.py", "--issue", "27947",
+                 "--notebook", "Series/Planners-05c-Rust.ipynb", "--max-stage", "5",
+                 "--lane", "myia-po-2028:claudish"]
+
+
+def test_a_relaunch_of_a_red_grain_stops_before_any_model_call(tmp_path, monkeypatch,
+                                                               capsys):
+    """ms#1912 review (myia-ai-01, 24/11): a `pr-integration-red` grain keeps its
+    deterministic branch with its commits. Its relaunch used to re-pay plan, build and
+    verify, then die at `checkout -b <same name>` with `pr-branch-failed` -- class
+    `run`, so it blocked the ramp as well. Two launches of ONE grain on one real repo:
+    the first is kept unpushed; the second is refused at the driver's preflight, with
+    zero model call, an explicit verdict and recovery, and the first pass's branch and
+    trace exactly where they were."""
+    # launch 1 -- served, a repo guard measured red: the branch is cut and kept
+    sent = _stage5_kernel_delivery(tmp_path, monkeypatch, dict(_STALE_KERNEL_TRACE),
+                                   create_mode=True, guards=_RED_GUARDS, pr_branch=None,
+                                   expect="pr-integration-red:check-nav-chain")
+    wt = tmp_path / "wt"                    # _push_repo's clone: the branch lives here
+    branch = d.default_pr_branch(27947, "Series/Planners-05c-Rust.ipynb")
+    assert sent["local_branch"] == branch   # stage 5 cut its own default name
+    head = _sh("git", "-C", str(wt), "rev-parse", f"refs/heads/{branch}").strip()
+    _sh("git", "-C", str(wt), "push", "-q", "origin", "main")   # a readable origin/main
+    paid = {"issue": 27947, "notebook": "Series/Planners-05c-Rust.ipynb",
+            "verdict": "pr-integration-red:check-nav-chain",
+            "calls": [{"turn": "build"}], "pr": {"branch": branch, "commit": head[:7]}}
+    out_dir = tmp_path / "run"
+    out_dir.mkdir()
+    (out_dir / "issue-27947.json").write_text(json.dumps(paid), encoding="utf-8")
+
+    # launch 2 -- the whole driver entry point, wiring resolved
+    _resolved_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [*_RELUNCH_ARGV, "--repo", str(wt),
+                                      "--out-dir", str(out_dir)])
+    with pytest.raises(SystemExit) as e:
+        d.main()
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert branch in err and "Refused before any model call" in err
+
+    rec = json.loads((out_dir / "issue-27947.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-branch-held:local"
+    assert rec["calls"] == []
+    assert "engine_tokens_before" not in rec       # the baseline of a run was never taken
+    held = rec["held_branch"]
+    assert (held["branch"], held["head"]) == (branch, head)
+    assert held["pushed"] is False and held["upstream"] is None
+    assert held["commits_ahead"] == 1              # the first pass's notebook commit
+    assert held["prior_verdict"] == "pr-integration-red:check-nav-chain"
+    assert (f"`git -C {wt} branch -m {branch} {branch}-kept-" in rec["recovery"]
+            and "never delete paid work" in rec["recovery"])
+    # the paid trace of launch 1 is kept, named, and byte-for-byte what it was
+    kept = list(out_dir.glob("issue-27947.pre-refusal-*.json"))
+    assert len(kept) == 1
+    assert json.loads(kept[0].read_text(encoding="utf-8")) == paid
+    assert rec["preserved_prior_trace"] == str(kept[0])
+    led = json.loads((out_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert led["verdict"] == "refused-branch-held:local" and led["calls"] == 0
+    # the first pass is untouched: same head, still on no remote, no `-kept-` ref created
+    assert _sh("git", "-C", str(wt), "rev-parse", f"refs/heads/{branch}").strip() == head
+    remote = _sh("git", "-C", str(wt), "ls-remote", "--heads", "origin")
+    assert f"refs/heads/{branch}" not in remote
+    assert "-kept-" not in _sh("git", "-C", str(wt), "for-each-ref", "--format=%(refname)")
+
+
+def test_a_pushed_delivery_branch_is_refused_and_names_the_pr(tmp_path, monkeypatch):
+    """The other reading: the branch is on origin, so the delivery exists. Nothing is
+    renamed (a fresh push over it is the remote's to judge); the recovery names the
+    PR to follow instead of a rebuild."""
+    wt, _ = _push_repo(tmp_path)
+    branch = d.default_pr_branch(27947, "Series/Planners-05c-Rust.ipynb")
+    _sh("git", "-C", str(wt), "checkout", "-q", "-b", branch)
+    (wt / "b.txt").write_text("b", encoding="utf-8")
+    _sh("git", "-C", str(wt), "add", "b.txt")
+    _sh("git", "-C", str(wt), "-c", "user.email=t@t", "-c", "user.name=t",
+        "commit", "-q", "-m", "b")
+    _sh("git", "-C", str(wt), "push", "-q", "-u", "origin", branch)
+    held = d.held_branch(wt, branch)
+    assert held["pushed"] is True and held["upstream"] == f"origin/{branch}"
+    out_dir = tmp_path / "run"
+    monkeypatch.setattr(sys, "argv", [*_RELUNCH_ARGV, "--repo", str(wt),
+                                      "--out-dir", str(out_dir)])
+    args = d.build_parser().parse_args()
+    with pytest.raises(SystemExit) as e:
+        d._refuse_held_branch(d.build_parser(), args)
+    assert e.value.code == 2
+    rec = json.loads((out_dir / "issue-27947.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-branch-held:pushed"
+    assert f"`gh pr list --head {branch}`" in rec["recovery"]
+    assert "branch -m" not in rec["recovery"]
+    assert "preserved_prior_trace" not in rec       # nothing was there to keep
+    assert rec["held_branch"]["head"] == held["head"]
+    assert _sh("git", "-C", str(wt), "rev-parse", f"refs/heads/{branch}").strip() == held["head"]
+
+
+def test_a_landed_push_without_upstream_reads_as_pushed(tmp_path):
+    """`_push_branch` judges a timed-out push by the remote; the reading does the same.
+    A push that landed without `-u` left no upstream: it must not be mistaken for a
+    local keep, which the recovery would tell the lane to move aside."""
+    wt, _ = _push_repo(tmp_path)
+    _sh("git", "-C", str(wt), "push", "-q", "origin", "main")
+    held = d.held_branch(wt, "main")
+    assert held["pushed"] is True and held["upstream"] is None
+    assert held["commits_ahead"] == 0
+
+
+def test_a_free_branch_name_is_not_a_refusal(tmp_path):
+    wt, _ = _push_repo(tmp_path)
+    assert d.held_branch(wt, "nbcoder/auto-27947-free-000000") is None
+
+
+def test_the_branch_preflight_stands_before_any_spend_and_only_for_stage_5():
+    """Source pin: the refusal is wired in main() after the wiring preflight, before the
+    engine-token baseline (the first thing a run reads), under `--max-stage 5` -- a run
+    that stops at stage 4 never cuts a branch."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    main_fn = src.split("\ndef main() -> int:", 1)[1]
+    gate = main_fn.index("if args.max_stage >= 5:")
+    call = main_fn.index("_refuse_held_branch(ap, args)")
+    assert main_fn.index("_preflight(ap, args)") < gate < call
+    assert call < main_fn.index("engine_tokens()")
+
+
+def test_stage5_and_the_preflight_read_one_branch_name():
+    """A refusal that computed the name its own way could miss the collision it exists
+    to prevent: stage 5 and the preflight share `delivery_branch`."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    stage5 = src.split("def stage5_pr(", 1)[1].split("\ndef ", 1)[0]
+    assert "branch = delivery_branch(args)" in stage5
+    assert "default_pr_branch(" not in stage5
+    preflight = src.split("def _refuse_held_branch(", 1)[1].split("\ndef ", 1)[0]
+    assert "delivery_branch(args)" in preflight
 
 
 def test_stage5_guards_that_could_not_run_are_not_red(tmp_path, monkeypatch):
