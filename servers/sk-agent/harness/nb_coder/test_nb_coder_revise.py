@@ -1179,6 +1179,67 @@ def test_revision_prompt_carries_twin_reference_and_values_rule():
     assert "RÉFÉRENCE" not in bare and "VALEURS :" not in bare
 
 
+# -------------------------------------------------- figures in the views (CoursIA#28338)
+# The reviser read its own draft through `_outputs_text`, which renders text mimes only: a
+# cell whose whole output is a figure read as « (aucune sortie) » — a FALSE statement made to
+# the model — and the twin's figure read as « (aucune sortie enregistrée) ». Neither the
+# reviser nor the builder had ever seen the figure they were asked to reproduce.
+
+
+def _figure_cell():
+    return {"cell_type": "code", "source": "draw()", "metadata": {}, "execution_count": 1,
+            "outputs": [{"output_type": "display_data",
+                         "data": {"image/svg+xml": "<svg width='40' height='40'>"
+                                                   "<text>j(t)</text><polyline points='0,0'/></svg>"}}]}
+
+
+def _fig_nb(tmp_path, cells, name="fig.ipynb"):
+    return _write(tmp_path / name, {"cells": cells, "metadata": {},
+                                    "nbformat": 4, "nbformat_minor": 5})
+
+
+def test_twin_reference_view_declares_a_figure(tmp_path):
+    p = _fig_nb(tmp_path, [_figure_cell()])
+    view = D.twin_reference_view(p)
+    assert "(aucune sortie enregistrée)" not in view, "a figure IS an output"
+    assert "image/svg+xml" in view and "«j(t)»" in view
+    assert "SORTIE RÉELLE du jumeau" in view
+
+
+def test_twin_reference_view_keeps_declaring_a_real_absence(tmp_path):
+    p = _fig_nb(tmp_path, [{"cell_type": "code", "source": "x = 1", "metadata": {},
+                            "execution_count": 1, "outputs": []}])
+    assert "(aucune sortie enregistrée)" in D.twin_reference_view(p)
+
+
+def test_revision_view_declares_a_figure(tmp_path):
+    view = D.revision_view(_fig_nb(tmp_path, [_figure_cell()]))
+    assert "(aucune sortie)" not in view
+    assert "image/svg+xml" in view and "«j(t)»" in view
+
+
+def test_figure_survives_the_revision_view_cut(tmp_path):
+    cell = _figure_cell()
+    cell["outputs"].insert(0, {"output_type": "stream", "name": "stdout",
+                               "text": "0 1.3 0.4\n" * 4000})
+    view = D.revision_view(_fig_nb(tmp_path, [cell]))
+    assert "…[sortie tronquée :" in view
+    assert "image/svg+xml" in view and "«j(t)»" in view, \
+        "a long stream must not hide the figure that follows it"
+
+
+def test_delta_gates_still_compare_the_text_only():
+    """The error digests and the machine-path / svg-display delta gates key on
+    `_outputs_text`: a figure must NOT enter that string (a pre-existing figure on one side
+    of a port is not a new defect, and an error digest is text)."""
+    c = _figure_cell()
+    assert D._outputs_text(c) == ""
+    c["outputs"].insert(0, {"output_type": "stream", "name": "stdout", "text": "kept\n"})
+    assert D._outputs_text(c) == "kept\n"
+    assert D._svg_text_offenders([c]) == []      # the figure is display_data, not text
+    assert D.nontext_witness(c), "the witness lives in its own helper"
+
+
 def test_creation_segment_carries_twin_reference_outputs(tmp_path):
     cells = D._cells(_twin(tmp_path))
     p = D.creation_json_prompt([{"idx": 1, "cell_type": "code"}], 3, "", src_cells=cells)

@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import fnmatch
 import hashlib
@@ -4149,8 +4150,10 @@ def revision_view(nb_path: Path, out_cap: int = REVISION_OUT_CAP,
             shown = out[:out_cap]
             if len(out) > out_cap:
                 shown += f"\n…[sortie tronquée : {len(out) - out_cap} caractères non affichés]"
+            witness = nontext_witness(c)      # outside the cut: a figure is never starved
             block += (f"\n--- sortie réelle (execution_count={c.get('execution_count')}) ---\n"
-                      f"{shown or '(aucune sortie)'}")
+                      f"{shown if (shown or witness) else '(aucune sortie)'}"
+                      + "".join(f"\n{line}" for line in witness))
         parts.append(block)
     return _cut("\n\n".join(parts), max_chars, "vue du carnet")
 
@@ -4182,9 +4185,11 @@ def twin_reference_blocks(src_cells: list, idxs=None, src_cap: int = TWIN_REF_SR
         txt = _outputs_text(c)
         shown = txt[:out_cap] + (f"\n…[sortie coupée : {len(txt) - out_cap} caractères]"
                                  if len(txt) > out_cap else "")
+        witness = nontext_witness(c)          # outside the cut: a figure is never starved
         out.append(f"<cellule {i} — code du jumeau>\n{shown_src}\n"
                    f"<cellule {i} — SORTIE RÉELLE du jumeau (référence)>\n"
-                   f"{shown or '(aucune sortie enregistrée)'}")
+                   f"{shown if (shown or witness) else '(aucune sortie enregistrée)'}"
+                   + "".join(f"\n{line}" for line in witness))
     return out
 
 
@@ -4954,6 +4959,127 @@ def _outputs_text(cell: dict) -> str:
         parts.append(_text(o.get("traceback")))
         parts.append(str(o.get("evalue") or ""))
     return "\n".join(p for p in parts if p)
+
+
+# ---------------------------------------------------------- non-text payloads (24/11)
+# A figure IS part of what a cell displays, and no text rendering shows it. Measured on
+# CoursIA#28338 (fournée o30): the C# port displayed a 152 KB image/svg+xml after a 154 KB
+# stream. The reviser's view rendered the cell as its stream alone, the twin reference
+# rendered the Python figure as « (aucune sortie enregistrée) », and the verifier's diff
+# annex cut the cell at 1 200 characters — before the fingerprint. Five rounds long, neither
+# the reviser nor the critic ever saw the figure: the critic could only report it
+# unverifiable and the reviser had nothing to show. A view that claims to show what a cell
+# displays DECLARES its non-text payloads: their absence is otherwise a false statement made
+# to the model. `_outputs_text` itself is NOT touched — the error digests and the delta
+# gates (machine-path, svg-display) compare its text.
+NON_TEXT_ELEMENTS_MAX = 12       # SVG element kinds listed
+NON_TEXT_LABEL_MAX = 10          # SVG labels quoted
+NON_TEXT_LABEL_CHARS = 40        # per label
+NON_TEXT_STRUCTURE_CAP = 480     # a structure line never exceeds this, its cut declared
+
+
+def is_nontext_mime(mime) -> bool:
+    """False for what the text renderings already show (text/*, JSON)."""
+    return not (mime.startswith("text/") or mime == "application/json")
+
+
+def nontext_payloads(cell: dict) -> list[tuple[str, str]]:
+    """`(mime, payload-as-text)` of every non-text payload of a cell's outputs — a figure, a
+    PDF — in output order, each output's mimes sorted: the order every consumer shares."""
+    rows: list[tuple[str, str]] = []
+    for o in cell.get("outputs") or []:
+        if not isinstance(o, dict) or o.get("output_type") == "stream":
+            continue
+        data = o.get("data") or {}
+        for mime in (sorted(data) if isinstance(data, dict) else []):
+            if is_nontext_mime(mime):
+                blob = _text(data.get(mime))
+                if blob:
+                    rows.append((mime, blob))
+    return rows
+
+
+def nontext_marker(mime: str, blob: str) -> str:
+    """The ONE fingerprint of a non-text payload: the digests hash it, the annexes show it.
+    A silent image swap must move every digest that carries it (finding 26858 c.17)."""
+    return f"[{mime} {len(blob)}b sha1:{hashlib.sha1(blob.encode()).hexdigest()[:12]}]"
+
+
+_SVG_ROOT_RE = re.compile(r"<svg\b([^>]*)>")
+_SVG_TAG_RE = re.compile(r"<([A-Za-z][\w:.-]*)")
+_SVG_ATTR_RE = re.compile(r"([\w:.-]+)\s*=\s*([\"'])(.*?)\2")
+_SVG_TEXT_RE = re.compile(r"<text\b[^>]*>(.*?)</text>", re.S)
+
+
+def _svg_structure(blob: str) -> str:
+    """What an SVG draws, in one bounded line: its canvas, its element counts, its labels.
+    The bytes are fingerprinted by `nontext_marker`; this is what tells two figures of equal
+    size apart, and lets a reader check a label against the code that claims to draw it.
+
+    Bounded by WHOLE labels, never by characters: a label is either quoted whole or counted
+    in « +N étiquettes non listées » — a cut by characters would drop that very count."""
+    counts: dict[str, int] = {}
+    for tag in _SVG_TAG_RE.findall(blob):
+        counts[tag] = counts.get(tag, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    elements = ", ".join(f"{tag[:24]}×{n}" for tag, n in ranked[:NON_TEXT_ELEMENTS_MAX])
+    if len(ranked) > NON_TEXT_ELEMENTS_MAX:
+        elements += f", +{len(ranked) - NON_TEXT_ELEMENTS_MAX} autres"
+    labels: list[str] = []
+    for inner in _SVG_TEXT_RE.findall(blob):
+        label = " ".join(re.sub(r"<[^>]+>", "", inner).split())
+        if label and label not in labels:
+            labels.append(label)
+    canvas = ""
+    root = _SVG_ROOT_RE.search(blob)
+    if root:
+        attrs = {k: v for k, _q, v in _SVG_ATTR_RE.findall(root.group(1))}
+        canvas = " ".join(f"{k}={attrs[k][:NON_TEXT_LABEL_CHARS]}"
+                          for k in ("width", "height", "viewBox") if attrs.get(k))
+    head = " | ".join(p for p in (canvas, f"éléments : {elements}" if elements else "") if p)
+    hidden_tail = 32                 # room kept for «  ; +NNN étiquettes non listées »
+    room = NON_TEXT_STRUCTURE_CAP - len(head) - len(" | étiquettes : ") - hidden_tail
+    quoted: list[str] = []
+    for label in labels:
+        text = f"«{label[:NON_TEXT_LABEL_CHARS]}{'…' if len(label) > NON_TEXT_LABEL_CHARS else ''}»"
+        cost = len(text) + (3 if quoted else 0)
+        if len(quoted) >= NON_TEXT_LABEL_MAX or sum(map(len, quoted)) + 3 * len(quoted) + cost > room:
+            break
+        quoted.append(text)
+    hidden = len(labels) - len(quoted)
+    if hidden > 0:
+        quoted.append(f"+{hidden} étiquettes non listées")
+    line = " | ".join(p for p in (head, f"étiquettes : {' ; '.join(quoted)}" if quoted else "")
+                      if p)
+    if len(line) > NON_TEXT_STRUCTURE_CAP:       # last resort: a hostile canvas or tag names
+        line = (line[:NON_TEXT_STRUCTURE_CAP]
+                + f"…[+{len(line) - NON_TEXT_STRUCTURE_CAP} caractères]")
+    return line
+
+
+def _png_structure(blob: str) -> str:
+    """`PNG <width>x<height>`, read from the IHDR of a base64 payload; "" when the payload is
+    not a PNG. The header is 33 bytes, so a 150 KB figure costs 44 characters decoded."""
+    try:
+        head = base64.b64decode(blob[:44], validate=False)[:33]
+    except (ValueError, TypeError):
+        return ""
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        return ""
+    return f"PNG {int.from_bytes(head[16:20], 'big')}x{int.from_bytes(head[20:24], 'big')}"
+
+
+def nontext_witness(cell: dict) -> list[str]:
+    """One line per non-text payload a cell displays: the marker, then what is readable of
+    the drawing. Every view that claims to show what a cell displays appends these lines
+    OUTSIDE its text cuts — a verbose stream must never hide the figure that follows it."""
+    lines: list[str] = []
+    for mime, blob in nontext_payloads(cell):
+        structure = (_svg_structure(blob) if mime == "image/svg+xml"
+                     else _png_structure(blob) if mime == "image/png" else "")
+        lines.append(f"[affichage non textuel {nontext_marker(mime, blob)[1:-1]}]"
+                     + (f" — {structure}" if structure else ""))
+    return lines
 
 
 # Relative link targets in markdown: `](target)` / `](<target> "title")` and href="...".
