@@ -7365,7 +7365,20 @@ async def run_revision(args, rec: dict) -> dict:
             rec["verdict"] = f"refused-revise-no-reservation:{live_v}"
             return rec
     elif prior_cr and prior_cr.get("verdict") is None:
-        pass  # attested in the trace: an admitted reservation, re-read at its time
+        # A reservation attested in an OLD trace is not a reservation held NOW. Measured
+        # 24/11 (salvage o33): the paid trace of #28082 carried a claim_reservation with
+        # verdict None, and run_revision() admitted the resume on it -- while the grain had
+        # been [RELEASED] on 24/11 00:06Z. The grain would have been built unreserved, and
+        # under CoursIA's RELACHEE rule a recent [RELEASED] (< RELACHE_J days) disqualifies
+        # re-claiming, so the reservation could not have been taken again either. Re-read
+        # the LIVE scoped claim exactly like the no-attestation branch below: still ours,
+        # admitted; released or held elsewhere, refused with the guard's own code.
+        live = check_claim(Path(args.repo), args.issue, args.lane, _norm_rel(args.notebook))
+        live_v = claim_verdict(live)
+        if live_v is not None:
+            rec["stages"]["claim_reservation"] = {**prior_cr, "live_recheck": live_v}
+            rec["verdict"] = f"refused-revise-no-reservation:{live_v}"
+            return rec
     elif prior_cr:
         rec["verdict"] = "refused-revise-no-reservation"
         return rec
