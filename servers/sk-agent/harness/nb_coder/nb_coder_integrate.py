@@ -924,7 +924,12 @@ def register_pair(worktree: Path, source_rel: str, nb_rel: str, lane: str,
         f"  parity_level: native-both\n"
         f"  known_differences:\n"
         f"    - \"Enregistrement de livraison ({lane}, harnais nb_coder stages 0-5) : "
-        f"portage C# de {Path(source_rel).name}. Execution reelle sur kernel "
+        f"portage C# de {Path(source_rel).name}. "
+        # `kernel_read` is set when stage 5 found NO recorded execution (an old
+        # trace, or no cell ever ran): the name is a READING, not a measurement,
+        # and the registry must not upgrade it to "Execution reelle". The value
+        # stays ASCII -- the accented PR-body note never enters this line.
+        f"{'Kernel lu (execution non enregistree)' if facts.get('kernel_read') else 'Execution reelle sur kernel'} "
         f"{facts.get('kernel', 'n/a')} : {facts.get('executed_cells', 'n/a')} cellules, "
         f"0 erreur. Verification independente : {facts.get('verdict', 'n/a')}. "
         f"Premiere attestation ecrite par l'integration de livraison (check_twin_parity "
@@ -1862,7 +1867,8 @@ def main(argv: list[str] | None = None) -> int:
                     help="lane identity for the twin-parity reseal")
     ap.add_argument("--facts", default=None,
                     help="JSON delivery facts for the C# pair registration "
-                         "(kernel, executed_cells, verdict)")
+                         "(kernel, executed_cells, verdict; optional kernel_read=true "
+                         "when no execution was recorded: the kernel was read, not measured)")
     args = ap.parse_args(argv)
     wt = Path(args.worktree)
     facts = json.loads(args.facts) if args.facts else None
