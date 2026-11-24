@@ -1147,6 +1147,127 @@ def test_scheduler_forwards_revise_rounds(tmp_path):
     assert "--revise-rounds 2" in joined2                 # the scheduler default applies
 
 
+# --- a wiring refusal must never destroy the trace it refuses (24/11, o33) -----------
+# A resumed grain's --out-dir IS the old run directory. _preflight() wrote its refusal at
+# out_dir/issue-<N>.json unconditionally, so a seat whose wiring did not resolve erased the
+# paid record (execution, findings, gates, worktree head) and the scheduler then read the
+# refusal back and posted [RELEASED] on a grain that had never been judged.
+
+_PAID = {"issue": 1, "notebook": "S/N.ipynb", "verdict": "verify-reject",
+         "last_content_verdict": "verify-reject", "calls": [{"turn": "build"}],
+         "execution": {"executed_cells": 17, "errors": []},
+         "verify": {"verdict": "reject", "findings": [{"cell": 3, "issue": "stub"}]},
+         "stages": {"worktree": {"path": "D:/repo/.tmp/wt-1", "head": "abc123"}},
+         "built_notebook": {"path": "D:/out/nb_1_built.ipynb"}}
+
+
+def _unresolved_wiring(monkeypatch, tmp_path):
+    """A seat directory holding only sk_agent.py: SK_DIR resolves, the venv does not."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    (seat / "sk_agent.py").write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setattr(D, "SK_DIR", seat)
+    monkeypatch.setattr(D, "SK_PY", seat / "venv/Scripts/python.exe")
+    monkeypatch.setattr(D, "SK_CONFIG", seat / "sk_agent_config.json")
+    monkeypatch.setattr(D, "PM_PY", seat / "no-python.exe")
+    monkeypatch.setattr(D, "PM_CWD", seat / "no-papermill")
+    return seat
+
+
+def _refusal_argv(out_dir, resume=("--revise-from",)):
+    return ["nb_coder_driver.py", "--issue", "1", "--notebook", "S/N.ipynb",
+            "--repo", "D:/repo", "--max-stage", "5", "--out-dir", str(out_dir),
+            *resume, str(out_dir / "issue-1.json")]
+
+
+def test_a_wiring_refusal_never_overwrites_the_paid_trace_it_resumes(monkeypatch, tmp_path, capsys):
+    _unresolved_wiring(monkeypatch, tmp_path)
+    out = tmp_path / "issue-1.json"
+    out.write_text(json.dumps(_PAID), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", _refusal_argv(tmp_path))
+    with pytest.raises(SystemExit) as e:
+        D.main()
+    assert e.value.code == 2
+    assert "NBCODER_SK_PY" in capsys.readouterr().err        # the refusal still says why
+    kept = list(tmp_path.glob("issue-1.pre-revise-*.json"))
+    assert len(kept) == 1, "the paid record must be snapshotted before the refusal is written"
+    assert json.loads(kept[0].read_text(encoding="utf-8")) == _PAID, "and byte-for-byte intact"
+    rec = json.loads(out.read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-wiring-unresolved"
+    assert rec["preserved_prior_trace"] == str(kept[0]), "the refusal must NAME what it kept"
+    led = json.loads((tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert led["verdict"] == "refused-wiring-unresolved"
+    assert led["preserved_prior_trace"] == str(kept[0]), "the ledger must point at it too"
+
+
+def test_the_refusal_of_a_verify_from_keeps_its_trace_too(monkeypatch, tmp_path):
+    _unresolved_wiring(monkeypatch, tmp_path)
+    paid = _PAID | {"verdict": "verify-error: rc=2", "last_content_verdict": None}
+    (tmp_path / "issue-1.json").write_text(json.dumps(paid), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", _refusal_argv(tmp_path, resume=("--verify-from",)))
+    with pytest.raises(SystemExit):
+        D.main()
+    kept = list(tmp_path.glob("issue-1.pre-verify-*.json"))
+    assert len(kept) == 1 and json.loads(kept[0].read_text(encoding="utf-8")) == paid
+
+
+def test_a_refusal_without_a_prior_record_still_writes_its_own_trace(monkeypatch, tmp_path):
+    """The F3-1 contract is unchanged: a refusal leaves an out-dir, a trace and a ledger line."""
+    _unresolved_wiring(monkeypatch, tmp_path)
+    out_dir = tmp_path / "fresh"
+    monkeypatch.setattr(sys, "argv", _refusal_argv(out_dir))
+    with pytest.raises(SystemExit):
+        D.main()
+    rec = json.loads((out_dir / "issue-1.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-wiring-unresolved"
+    assert "preserved_prior_trace" not in rec, "nothing existed: nothing to claim preserved"
+    assert not list(out_dir.glob("issue-1.pre-*.json"))
+    assert len((out_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_a_second_refusal_in_the_same_second_keeps_both_copies(monkeypatch, tmp_path):
+    """A retry loop lands two refusals in one second: the copy name must not collide."""
+    _unresolved_wiring(monkeypatch, tmp_path)
+    from datetime import datetime as real_datetime
+    monkeypatch.setattr(D, "datetime", type("FrozenSecond", (), {
+        "now": staticmethod(lambda tz=None: real_datetime(2026, 11, 24, 8, 26, 28))}))
+    (tmp_path / "issue-1.json").write_text(json.dumps(_PAID), encoding="utf-8")
+    for _ in range(2):
+        monkeypatch.setattr(sys, "argv", _refusal_argv(tmp_path))
+        with pytest.raises(SystemExit):
+            D.main()
+    kept = sorted(tmp_path.glob("issue-1.pre-revise-*.json"))
+    assert len(kept) == 2, "the second snapshot must not replace the first"
+    bodies = [json.loads(p.read_text(encoding="utf-8")) for p in kept]
+    assert any(b.get("calls") == _PAID["calls"] for b in bodies), "the paid copy survives"
+    refusal = json.loads((tmp_path / "issue-1.json").read_text(encoding="utf-8"))
+    assert refusal["preserved_prior_trace"] in {str(p) for p in kept}, \
+        "the second refusal must point at ITS copy, not at the one it did not make"
+
+def test_a_resolved_wiring_refuses_nothing(monkeypatch, tmp_path):
+    seat = _unresolved_wiring(monkeypatch, tmp_path)
+    (seat / "venv/Scripts").mkdir(parents=True)
+    (seat / "venv/Scripts/python.exe").write_text("", encoding="utf-8")
+    (seat / "sk_agent_config.json").write_text("{}", encoding="utf-8")
+    (seat / "no-python.exe").write_text("", encoding="utf-8")
+    (seat / "no-papermill").mkdir()
+    called = []
+
+    async def fake_rev(args, rec):
+        called.append(True)
+        rec["verdict"] = "verify-approved"
+        return rec
+
+    monkeypatch.setattr(D, "run_revision", fake_rev)
+    monkeypatch.setattr(D, "engine_tokens", lambda: {})
+    monkeypatch.setattr(sys, "argv", _refusal_argv(tmp_path))
+    D.main()
+    assert called, "a fully resolved seat must not be refused"
+    assert json.loads((tmp_path / "issue-1.json").read_text(encoding="utf-8"))["verdict"] \
+        == "verify-approved"
+
+
+
 # ---------------------------------------------------------------- twin reference (22/11)
 # 25 of 105 verify-reject findings (w3a-w3x) were values the builder reinvented: the
 # reviser saw the findings and the draft, never what the twin actually printed.

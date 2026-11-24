@@ -7829,6 +7829,29 @@ async def run(args, rec: dict) -> dict:
     return rec
 
 
+def _keep_prior_trace(out: Path, prefix: str) -> str:
+    """Snapshot `out` next to itself and return the copy's path; never replace a copy.
+
+    A second-resolution timestamp collides on any retry inside the same second (a scheduler
+    relaunching a refusal is exactly that case), and shutil.copy2 would silently replace the
+    earlier snapshot -- the very loss this function exists to prevent. O_EXCL makes the race
+    a fresh suffix instead of a lost record.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    for n in range(1000):
+        keep = out.with_name(f"issue-{out.stem.removeprefix('issue-')}.{prefix}-{stamp}"
+                             + ("" if n == 0 else f"-{n}") + ".json")
+        try:
+            fd = os.open(keep, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as dst, open(out, "rb") as src:
+            shutil.copyfileobj(src, dst)
+        shutil.copystat(out, keep)
+        return str(keep)
+    raise OSError(f"no free snapshot name beside {out}")   # never fall back to overwriting
+
+
 def _preflight(ap, args) -> None:
     """Refuse before any spend when a wired path cannot exist (F3, vllm#441).
 
@@ -7841,6 +7864,17 @@ def _preflight(ap, args) -> None:
     A refusal still leaves a TRACE (F3-1, co-review of #442): a scheduled loop cannot tell
     "ran and refused" from "never ran" if the refusal leaves no out-dir and no ledger line.
     The trace is written here, before ap.error, with the refusal itself as the verdict.
+
+    An existing record is PRESERVED, never overwritten (24/11, o33): a resumed grain's
+    out_dir is the OLD run directory, so writing here replaced the PAID record -- execution,
+    findings, gates, worktree head -- with the refusal, BEFORE main()'s pre-revise rename
+    could keep it, and the scheduler's run_trace() then read back the refusal and posted
+    [RELEASED] on a grain that had never been judged. Keep it renamed, exactly as main()
+    does, and name what was kept in the refusal itself.
+
+    The kept name has only a SECOND of resolution, and a retry loop is precisely the case
+    where two refusals land in the same second: the second copy would silently replace the
+    first. `_keep_prior_trace` never replaces an existing copy, it adds a suffix instead.
     """
     missing = [f"{name}={path}" for name, path, ok in (
         ("sk_agent.py (NBCODER_SK_DIR)", SK_DIR / "sk_agent.py", (SK_DIR / "sk_agent.py").is_file()),
@@ -7856,16 +7890,23 @@ def _preflight(ap, args) -> None:
     out_dir = Path(args.out_dir)
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"issue-{args.issue}.json"
+        kept = None
+        if out.is_file():
+            prefix = ("pre-verify" if args.verify_from
+                      else "pre-revise" if args.revise_from else "pre-refusal")
+            kept = _keep_prior_trace(out, prefix)
         rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
                "finished": utcnow(), "lane": args.lane, "dry": True, "calls": [],
                "verdict": "refused-wiring-unresolved",
                "wiring_missing": missing}
-        (out_dir / f"issue-{args.issue}.json").write_text(
-            json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+        if kept:
+            rec["preserved_prior_trace"] = kept
+        out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
         with open(out_dir / "ledger.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({k: rec.get(k) for k in
                                  ("issue", "notebook", "started", "finished", "verdict", "lane")}
-                                | {"calls": 0}, ensure_ascii=False) + "\n")
+                                | {"calls": 0, "preserved_prior_trace": kept}, ensure_ascii=False) + "\n")
     except OSError:
         pass          # the refusal must not be masked by a failed trace write
     ap.error(detail)
@@ -8104,10 +8145,8 @@ def main() -> int:
     if (args.revise_from or args.verify_from) and out.is_file():
         # the trace being resumed is usually THIS file: keep it, renamed, never overwritten
         prefix = "pre-verify" if args.verify_from else "pre-revise"
-        keep = out.with_name(f"issue-{args.issue}.{prefix}-"
-                             f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
-        shutil.copy2(out, keep)
-        rec["revised_from"] = (rec.get("revised_from") or {}) | {"kept_as": str(keep)}
+        keep = _keep_prior_trace(out, prefix)
+        rec["revised_from"] = (rec.get("revised_from") or {}) | {"kept_as": keep}
     if content_verdict_class(rec.get("verdict")):
         rec["last_content_verdict"] = rec["verdict"]
     out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
