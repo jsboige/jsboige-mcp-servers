@@ -135,6 +135,14 @@ CLAIM_RELEASED_VERDICT = "refused-claim-not-qualified:RELACHEE"
 # all see the unwrapped inner form; the raw line stays in the driver log.
 REVISE_REFUSAL_PREFIX = "refused-revise-no-reservation:"
 CLAIM_RELEASED_WAIT_S = 3 * 86400.0 + 60.0
+# While deferred on that verdict, how often the scheduler probes the issue for a
+# newer [OVERRIDE] marker that lifts the release early. One gh call per issue per
+# interval, best-effort; 5 min keeps the App bucket cost negligible.
+RELACHEE_PROBE_INTERVAL_S = 300.0
+# The probe is synchronous in tick(): at most this many threads are read per interval,
+# round-robin over the deferred grains, so a thread GitHub hangs on (each read is bounded
+# by CLAIM_READ_TIMEOUT_S) can hold neither the tick nor the grains behind it.
+RELACHEE_PROBE_MAX_READS = 4
 
 
 def github_reset_wait(verdict: str, now: float) -> float | None:
@@ -503,6 +511,53 @@ def last_claim_marker(bodies: list[str]) -> tuple[str, str] | None:
     return last
 
 
+def issue_comment_bodies(issue: int) -> list[str]:
+    """Every comment body of an issue, oldest first: one `@json` line per comment, every
+    page read. Raises when GitHub does not answer."""
+    p = subprocess.run(["gh", "api", "--paginate",
+                        f"repos/{CLAIM_REPO_SLUG}/issues/{issue}/comments?per_page=100",
+                        "--jq", ".[].body | @json"],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=CLAIM_READ_TIMEOUT_S)
+    if p.returncode != 0:
+        raise RuntimeError(f"gh rc={p.returncode}: {(p.stderr or '').strip()[:160]}")
+    return [json.loads(line) for line in p.stdout.splitlines() if line.strip()]
+
+
+# The two markers the RELACHEE probe reads, line-anchored like CLAIM_MARK_RE and the
+# guard's reducer: a marker quoted mid-sentence is not a marker.
+RELACHEE_MARK_RE = re.compile(r"(?m)^[ \t>*_]*\[\s*(OVERRIDE|RELEASED)\s*\]([^\n]*)",
+                              re.IGNORECASE)
+_RELACHEE_LANE_RE = re.compile(r"\blane\s+(\S+)", re.IGNORECASE)
+
+
+def relache_markers(bodies: list[str]) -> list[tuple[str, str, str]]:
+    """(kind, named lane, marker line) of every [OVERRIDE]/[RELEASED] of the thread, in
+    order, on EVERY line of EVERY comment -- whatever the lane: the guard decides RELACHEE
+    on the thread's LAST marker, whoever posted it (CoursIA `tapis_attente.relachee`), so a
+    sibling lane's [RELEASED] buries a lift exactly like my own."""
+    out: list[tuple[str, str, str]] = []
+    for body in bodies:
+        for m in RELACHEE_MARK_RE.finditer(body or ""):
+            named = _RELACHEE_LANE_RE.search(m.group(2))
+            out.append((m.group(1).upper(), named.group(1) if named else "", m.group(0)))
+    return out
+
+
+def relache_lift(markers: list[tuple[str, str, str]], lane: str) -> str | None:
+    """The marker line that lifts the three-day wait for `lane`, or None.
+
+    Lifts only when the NEWEST marker is an [OVERRIDE] naming `lane`: the guard's own
+    re-arm gesture (`[OVERRIDE] lane <machine:workspace>` grants the grain to the named
+    lane and closes every other one). A [RELEASED] last keeps the guard. An [OVERRIDE]
+    for ANOTHER lane, or one naming none, is refused at the next launch: lifting on it
+    would burn an attempt and re-arm three more days."""
+    if not markers or not lane:
+        return None
+    kind, named, line = markers[-1]
+    return line if kind == "OVERRIDE" and named == lane else None
+
+
 class GuardClaims:
     """The two GitHub legs of a claim release. Injectable as `claims` in offline tests."""
 
@@ -511,15 +566,7 @@ class GuardClaims:
 
     def last_marker(self, issue: int) -> tuple[str, str] | None:
         """Raises when GitHub does not answer: a release is never decided blind."""
-        p = subprocess.run(["gh", "api", "--paginate",
-                            f"repos/{CLAIM_REPO_SLUG}/issues/{issue}/comments?per_page=100",
-                            "--jq", ".[].body | @json"],
-                           capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=CLAIM_READ_TIMEOUT_S)
-        if p.returncode != 0:
-            raise RuntimeError(f"gh rc={p.returncode}: {(p.stderr or '').strip()[:160]}")
-        return last_claim_marker([json.loads(line) for line in p.stdout.splitlines()
-                                  if line.strip()])
+        return last_claim_marker(issue_comment_bodies(issue))
 
     def release(self, issue: int, lane: str, notebook: str, note: str) -> tuple[int, str]:
         script = self.repo / "scripts" / "check_lane_claim.py"
@@ -1202,6 +1249,83 @@ class Scheduler:
             return kept("remove-failed", out)
         self._event("worktree-released", key=key, worktree=str(wt))
 
+    def _relache_override_probe(self, now: float) -> None:
+        """A deferred-RELACHEE grain is re-offered as soon as a newer marker lifts
+        the release, instead of sleeping the guard's whole three-day window.
+
+        Measured 23/11 (CoursIA#28077/#28080/#28050/#28079): the coordinator posted
+        four [OVERRIDE]s at 03:41Z to lift releases that were themselves the
+        side-effect of a harness defect (ms#1859-squash regression, fixed at
+        8e635548). The grains stayed deferred until 03:29Z + 3 days regardless,
+        because CLAIM_RELEASED_WAIT_S re-reads the FULL window from the refusal
+        (the guard exports only a rounded age, so the deferral plays safe). With
+        every deferral sleeping three days, each retry reset its own not_before
+        further out -- a self-perpetuating denial of service across every grain the
+        coordinator had already re-armed.
+
+        The probe reads the marker comments of each deferred-RELACHEE issue at
+        most once every RELACHEE_PROBE_INTERVAL_S, over the SAME paginated
+        reader as the claim release (`issue_comment_bodies`, bounded by
+        CLAIM_READ_TIMEOUT_S): a thread longer than one page is read whole, and
+        the marker is looked for on EVERY line of every comment (review
+        ms#1875), never only on the comment's first line. At most
+        RELACHEE_PROBE_MAX_READS threads per interval, round-robin, because the
+        read is synchronous in tick(): a thread GitHub hangs on must not hold
+        the tick nor the grains behind it.
+
+        23/11 generalization (GO coordinator ai01-c0025-claudish-ovr5): reading only
+        the LAST comment missed the OVERRIDE whenever the grain's own auto-published
+        [RELEASED] (fired by the next failing attempt) buried it -- measured four
+        OVERRIDE -> attempt -> RELEASED -> OVERRIDE round-trips in two hours on the
+        Integrales grains. The probe now walks the WHOLE marker thread and lifts
+        when the NEWEST qualification marker is an [OVERRIDE] that is more recent
+        than every [RELEASED] after it. Best-effort: a gh failure leaves the
+        three-day guard in place, exactly as before.
+
+        24/11 alignment on the guard (`CoursIA scripts/coordination/
+        tapis_attente.relachee`): RELACHEE holds while the thread's LAST marker is
+        a [RELEASED] younger than three days, whatever the lane. The probe
+        therefore lifts only when the newest marker is an [OVERRIDE] naming THIS
+        lane (`[OVERRIDE] lane <machine:workspace>` grants the grain to its named
+        beneficiary, #10223): a [RELEASED] last -- mine or a sibling's -- keeps
+        the guard, and an [OVERRIDE] for another lane, or one naming none, is
+        refused at the next launch, so lifting on it would burn an attempt and
+        re-arm three more days. Every read is a pre-offer; the guard alone decides.
+        """
+        candidates = [(k, g) for k, g in self.state["grains"].items()
+                      if g.get("status") == "deferred"
+                      and g.get("last_verdict") == CLAIM_RELEASED_VERDICT
+                      and (g.get("not_before") or 0) > now]
+        if not candidates:
+            return
+        last_probe = self.state.get("relache_probe_ts") or 0
+        if now - last_probe < RELACHEE_PROBE_INTERVAL_S:
+            return
+        self.state["relache_probe_ts"] = now
+        if candidates:
+            offset = int(self.state.get("relache_probe_offset") or 0) % len(candidates)
+            ordered = candidates[offset:] + candidates[:offset]
+            self.state["relache_probe_offset"] = offset + RELACHEE_PROBE_MAX_READS
+        lane = self.args.lane or ""
+        for key, g in ordered[:RELACHEE_PROBE_MAX_READS]:
+            item = self.items_by_key.get(key) or {}
+            issue = item.get("issue")
+            if not issue:
+                continue
+            try:
+                bodies = issue_comment_bodies(issue)
+            except Exception as exc:
+                self._event("relache-probe-error", key=key, detail=str(exc)[:120])
+                continue
+            # The thread is chronological; the last marker decides. Lift only when
+            # that newest marker is an OVERRIDE naming this lane (a RELEASED last
+            # means the release is still the operative event -- keep the guard).
+            newest = relache_lift(relache_markers(bodies), lane)
+            if newest:
+                g["not_before"] = now
+                self._event("relache-override-lifted", key=key, issue=issue,
+                            marker=newest[:140])
+
     def _eligible(self, now: float) -> list[str]:
         out = []
         for key, g in self.state["grains"].items():
@@ -1251,6 +1375,7 @@ class Scheduler:
         gate = self.gate()
         self.state["last_gate"] = gate
         self._observe_gate(gate, now)
+        self._relache_override_probe(now)
 
         pending = self._eligible(now)
         held = None
