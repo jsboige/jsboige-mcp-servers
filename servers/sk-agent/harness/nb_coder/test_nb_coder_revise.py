@@ -491,6 +491,52 @@ def test_a_dead_kernel_after_revision_is_not_verified(monkeypatch, tmp_path):
     _loop(_loop_args(), rec, built, tmp_path)
     assert rec["verdict"] == "kernel-start-failed" and calls["verify"] == []
     assert rec["revisions"][0]["result"] == "kernel-start-failed"
+    assert "executed_kernel" not in rec     # a start that returned no kernel is no execution
+
+
+def test_a_revision_records_the_kernel_it_actually_started(monkeypatch, tmp_path):
+    """#28332: the carried record says .net-csharp, while the resume selected rust
+    from the target tag. The execution record, not that stale metadata, feeds stage 5."""
+    built = _nb(tmp_path)
+    _fake_engine(monkeypatch, [REVISION], [("approve", [])])
+    rec = _rejected_rec()
+    rec["kernel"] = {"kernel_name": ".net-csharp", "kernel_source": "meta-from-kernelspec"}
+    rec["kernelspec_align"] = {"from": ".net-csharp", "to": "rust"}
+    asyncio.run(D.revise_loop(
+        _loop_args(), rec, issue={"title": "T", "body": "B"},
+        src_nb=tmp_path / "twin.ipynb", built_path=built, kname="rust",
+        exec_dir=tmp_path, conventions="", create_mode=True, wt_path=tmp_path,
+        out_dir=tmp_path))
+    assert rec["verdict"] == "verify-approved"
+    assert rec["executed_kernel"]["name"] == "rust"
+    assert rec["executed_kernel"]["kernel_id"] == "k1"
+    assert rec["executed_kernel"]["source"] == "manage_kernel-start"
+    assert D.published_execution_kernel(_loop_args(), rec) == ("rust", "")
+
+
+def test_a_kernel_that_ran_no_cell_is_never_an_executed_kernel(monkeypatch, tmp_path):
+    """exec mode `none` still starts a kernel: a start is not an execution, and
+    stage 5 must fall back to a READING rather than claim a measurement."""
+    rec = {"kernel_id": "k1", "execution": [],
+           "kernelspec_align": {"from": ".net-csharp", "to": "rust"}}
+    D.note_execution_kernel(rec, "rust")
+    assert "executed_kernel" not in rec
+    name, note = D.published_execution_kernel(_loop_args(), rec)
+    assert name == "rust" and "noyau lu" in note and "exécution non enregistrée" in note
+
+
+def test_a_resume_without_a_new_execution_keeps_the_paid_kernel_record(
+        monkeypatch, tmp_path):
+    """--verify-from can publish without a builder turn: both the measured kernel
+    and the old-trace alignment fallback survive the carry."""
+    seen = _stub_resume(monkeypatch)
+    measured = {"name": "rust", "source": "manage_kernel-start"}
+    got = _resume(_rev_args(tmp_path, _trace(
+        tmp_path, executed_kernel=measured,
+        kernelspec_align={"from": ".net-csharp", "to": "rust"})))
+    assert got["verdict"] == "pr-created" and seen["pr"] == 1
+    assert got["executed_kernel"] == measured
+    assert got["kernelspec_align"]["to"] == "rust"
 
 
 # ---------------------------------------------------------------- --revise-from

@@ -721,3 +721,167 @@ def test_push_runs_for_real_without_a_timeout(tmp_path):
     assert rc == 0
     head = sh("git", "-C", str(wt), "rev-parse", "HEAD").strip()
     assert sh("git", "-C", str(wt), "ls-remote", "origin", "refs/heads/main").split()[0] == head
+
+
+# ---- executed kernel published at delivery (CoursIA #28332, 24/11) ----
+
+def test_the_published_kernel_prefers_the_execution_record_to_carried_metadata():
+    """The resume carried the C# donor's kernel but started Rust. The aligned
+    metadata is a fallback for an old trace, never a replacement for the measured
+    execution request; a value merely read is labeled as such."""
+    from types import SimpleNamespace
+
+    rec = {"kernel": {"kernel_name": ".net-csharp"},
+           "kernelspec_align": {"from": ".net-csharp", "to": "rust"},
+           "executed_kernel": {"name": "rust", "source": "manage_kernel-start"}}
+    args = SimpleNamespace(kernel_override=None)
+    assert d.published_execution_kernel(args, rec) == ("rust", "")
+    del rec["executed_kernel"]
+    name, note = d.published_execution_kernel(args, rec)
+    assert name == "rust" and "noyau lu" in note and "non enregistré" in note
+    rec["executed_kernel"] = {"name": ".net-csharp"}
+    assert d.published_execution_kernel(args, rec) == (".net-csharp", "")
+    args.kernel_override = "rust"
+    del rec["kernelspec_align"]
+    del rec["executed_kernel"]
+    name, note = d.published_execution_kernel(args, rec)
+    assert name == "rust" and "--kernel-override" in note
+
+
+def _stage5_kernel_delivery(tmp_path, monkeypatch, rec, create_mode=None):
+    """Real branch, real commit, real push to a bare origin; gh and the repo
+    integration are fakes that return what the caller wants to read back."""
+    from types import SimpleNamespace
+
+    wt, sh = _push_repo(tmp_path)
+    nb_rel = "Series/Planners-05c-Rust.ipynb"
+    (wt / "Series").mkdir()
+    built = tmp_path / "built.ipynb"
+    built.write_text("{}", encoding="utf-8")
+    args = SimpleNamespace(
+        issue=27947, notebook=nb_rel, pr_branch="nbcoder/kernel-27947", agent="producer",
+        verifier_agent="critic", grain_tier="MED", lane="myia-po-2028:claudish",
+        pr_base="main", pr_repo="jsboige/CoursIA", out_dir=str(tmp_path),
+        kernel_override=None)
+    sent = {"facts": None}
+    monkeypatch.setattr(d, "lane_predecessor", lambda *a: None)
+
+    def fake_gh(argv, token=None, timeout=60):
+        if argv[1].endswith("/pulls"):
+            body_arg = next(a for a in argv if a.startswith("body=@"))
+            sent["body"] = Path(body_arg[6:]).read_text(encoding="utf-8")
+            return 0, json.dumps({"number": 28332, "html_url": "pr-url"})
+        return 0, "{}"
+
+    monkeypatch.setattr(d, "gh", fake_gh)
+    if create_mode is not None:
+        rec["create_mode"] = {"source": "Series/Planners-05c-Python.ipynb",
+                              "target": nb_rel}
+        monkeypatch.setattr(d, "stage5_source_drift", lambda *a: {"drift": "none"})
+
+        def register_pair(w, s, n, lane, facts=None):
+            sent["facts"] = facts
+            return {"registered": False}
+
+        monkeypatch.setattr(d, "_load_integrate_module", lambda: SimpleNamespace(
+            integrate=lambda *a, **k: {"touched": [], "nav": {}, "readme": {}, "pair": None},
+            register_pair=register_pair,
+            find_twin_pair=lambda *a: None, replay_guards=lambda *a: []))
+    d.stage5_pr(args, rec, wt, built, {"issue": 27947}, None)
+    assert rec["verdict"] == "pr-created", rec.get("pr")
+    sent["commit"] = sh("git", "-C", str(wt), "log", "-1", "--format=%B")
+    return sent
+
+
+_STALE_KERNEL_TRACE = {
+    "plan": {"plan": []},
+    "verify": {"verdict": "approve", "model_used": "terra", "findings": []},
+    # the C# twin lent its metadata; that is what stage 5 used to publish
+    "kernel": {"kernel_name": ".net-csharp", "kernel_source": "meta-from-kernelspec"},
+    "kernelspec_align": {"from": ".net-csharp", "to": "rust"},
+    "execution": [{"cell": i, "ok": True} for i in range(11)],
+    "c2": {"sequential": True}, "calls": [], "conversation_id": "p"}
+
+
+@pytest.mark.parametrize("carried, expected, note", [
+    # the trace as this fix writes it: the start was recorded, nothing is read
+    ({"executed_kernel": {"name": "rust", "source": "manage_kernel-start"}}, "rust", ""),
+    # a trace written before the record existed: the alignment is read, and says so
+    ({}, "rust", " (noyau lu : alignement kernelspec, exécution non enregistrée)"),
+])
+def test_stage5_body_and_commit_name_the_kernel_that_executed(
+        tmp_path, monkeypatch, carried, expected, note):
+    """Measured #28332 shape: inherited .net-csharp, real rust execution. Capture the
+    body passed to gh (the driver unlinks its scratch file) and the real commit
+    message, so neither public execution claim can regress independently."""
+    sent = _stage5_kernel_delivery(tmp_path, monkeypatch,
+                                   {**_STALE_KERNEL_TRACE, **carried})
+    assert f"execute_on_kernel, kernel `{expected}`{note})" in sent["body"]
+    assert ".net-csharp" not in sent["body"]
+    assert f"Exécution : kernel {expected}{note}," in sent["commit"]
+    assert ".net-csharp" not in sent["commit"]
+
+
+def test_the_pair_registration_fact_names_the_executed_kernel(tmp_path, monkeypatch):
+    """The twin registry states `Execution reelle sur kernel <name>`: the same
+    stale field fed it. Only the name goes there (its line is ASCII, unaccented)."""
+    sent = _stage5_kernel_delivery(
+        tmp_path, monkeypatch,
+        {**_STALE_KERNEL_TRACE,
+         "executed_kernel": {"name": "rust", "source": "manage_kernel-start"}},
+        create_mode=True)
+    assert sent["facts"] == {"kernel": "rust", "kernel_read": False,
+                             "executed_cells": 11, "verdict": "approve"}
+
+
+def test_the_pair_registration_fact_marks_a_read_kernel(tmp_path, monkeypatch):
+    """An old trace with no execution record: the registry must not print
+    `Execution reelle` for a name that was only READ."""
+    sent = _stage5_kernel_delivery(tmp_path, monkeypatch, dict(_STALE_KERNEL_TRACE),
+                                   create_mode=True)
+    assert sent["facts"]["kernel"] == "rust" and sent["facts"]["kernel_read"] is True
+
+
+def test_a_stale_metadata_name_never_feeds_a_published_execution_fact():
+    """The #28332 wiring, pinned against reintroduction: stage 5 never reads
+    rec["kernel"] straight (the registry fact, the commit and the PR body are
+    covered behaviorally above) and resolves the kernel exactly once."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    fn = src.split("def stage5_pr(", 1)[1].split("\n# ", 1)[0]
+    assert 'rec.get("kernel")' not in fn
+    assert "rec.get('kernel'" not in fn
+    assert fn.count("published_execution_kernel(args, rec)") == 1
+    for published in ('facts = {"kernel": executed_as,',
+                      "{executed_as}{kernel_note}, ", "`{executed_as}`{kernel_note})"):
+        assert published in fn, published
+
+
+def test_the_first_run_records_the_kernel_it_executed_on():
+    """run() opens real MCP sessions and has no offline end-to-end harness: the
+    recording site is pinned where it stands -- after the execution verdict, on the
+    very name every execution site of run() uses. A start alone must not record."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    run = src.split("async def run(", 1)[1]
+    assert "execution_verdict(rec, scratch)\n" in run
+    verdict = run.index("execution_verdict(rec, scratch)")
+    record = run.index("note_execution_kernel(rec, kname_used)")
+    assert verdict < record < run.index("gates_then_verify(args, rec, src_nb, built_path")
+    assert run.index('kid = await start_kernel(pm, args.kernel_override') < verdict, \
+        "recording at the start would claim an execution before the cells ran"
+    # the existing guard on the three override-aware execution sites still holds
+    assert src.count('args.kernel_override or kernel["kernel_name"]') == 3
+
+
+def test_a_kernel_start_alone_is_not_an_execution_measurement():
+    """exec mode `none` starts a kernel and runs no cell; a repair restart that
+    returns none clears rec["kernel_id"] while cells of the round never ran."""
+    for rec in ({"kernel_id": "k1", "execution": []},      # nothing executed
+                {"kernel_id": None, "execution": [{"cell": 0, "ok": True}]},  # dead restart
+                {"kernel_id": "k1"},                       # crashed before execution
+                {}):
+        d.note_execution_kernel(rec, "rust")
+        assert "executed_kernel" not in rec, rec
+    ran = {"kernel_id": "k1", "execution": [{"cell": 0, "ok": False}]}
+    d.note_execution_kernel(ran, "rust")
+    assert ran["executed_kernel"]["name"] == "rust"     # a failed cell still RAN
+    assert ran["executed_kernel"]["kernel_id"] == "k1"

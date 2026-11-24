@@ -6157,6 +6157,57 @@ def integration_pr_lines(integ: dict | None) -> str:
     return "\n\n" + "\n".join(lines)
 
 
+# A delivery names the kernel that EXECUTED the deliverable. `rec["kernel"]` is not it:
+# on a creation that is the kernel the metadata was lent from, and a --revise-from resume
+# carries it untouched. Measured on CoursIA#28332 (24/11, Planners-05c-…-Rust): every
+# kernel the harness started was `rust` (driver log, `kernelspec_align.to`) while the
+# commit and the PR body said `.net-csharp`. Stage 5 reads the execution record instead.
+# The record is written where an execution RESULT exists (`note_execution_kernel`), never
+# at a kernel start alone.
+# A trace that holds none (written before the record existed, or no kernel ever started)
+# is READ, never measured -- and the published line says so.
+_KERNEL_READ_SOURCES = {"align": "alignement kernelspec",
+                        "override": "--kernel-override",
+                        "selection": "sélection d'avant-exécution"}
+
+
+def published_execution_kernel(args, rec: dict) -> tuple[str | None, str]:
+    """(kernel to publish at delivery, provenance note -- "" when measured).
+
+    Precedence: the recorded execution; then, on a trace that recorded none, readings --
+    the alignment (align_kernelspec refuses to write unless its target equals the
+    kernel the execution path named), --kernel-override (the resume's own precedence,
+    #27996), and the pre-execution selection, which is what every body published
+    before. A reading is NOT a measurement: its note says where it was read and
+    that no execution was recorded.
+    """
+    measured = (rec.get("executed_kernel") or {}).get("name")
+    if measured:
+        return measured, ""
+
+    def read(source: str, value: str | None) -> tuple[str | None, str]:
+        return value, f" (noyau lu : {_KERNEL_READ_SOURCES[source]}, exécution non enregistrée)"
+
+    aligned = (rec.get("kernelspec_align") or {}).get("to")
+    if aligned:
+        return read("align", aligned)
+    override = getattr(args, "kernel_override", None)
+    if override:
+        return read("override", override)
+    return read("selection", (rec.get("kernel") or {}).get("kernel_name"))
+
+
+def note_execution_kernel(rec: dict, kname: str) -> None:
+    """Record the kernel that PRODUCED the trace's execution result. Called right
+    after `execution_verdict` read `rec["execution"]`. A kernel id alone is not an
+    execution: exec mode `none` starts a kernel and runs nothing, and a repair
+    restart that returned none leaves the cells of its round unexecuted
+    (`rec["kernel_id"]` is then none). Never called for the .NET API probe."""
+    if kname and rec.get("kernel_id") and rec.get("execution"):
+        rec["executed_kernel"] = {"name": kname, "kernel_id": rec["kernel_id"],
+                                  "source": "manage_kernel-start"}
+
+
 def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
               token: str | None) -> None:
     """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
@@ -6168,6 +6219,9 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     branch = args.pr_branch or default_pr_branch(args.issue, args.notebook)
     desc = _short_desc(args, rec.get("plan") or {}, rec.get("create_mode"))
     entry: dict = {"branch": branch}
+    executed_as, kernel_note = published_execution_kernel(args, rec)
+    entry["published_kernel"] = {"name": executed_as, "note": kernel_note,
+                                 "record": rec.get("executed_kernel")}
 
     cm0 = rec.get("create_mode") or {}
     src0 = cm0.get("source") if isinstance(cm0, dict) else None
@@ -6217,7 +6271,8 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
             else:
                 for f in integ.get("touched", []):
                     _git(wt_path, "add", "--", f)
-                facts = {"kernel": (rec.get("kernel") or {}).get("kernel_name"),
+                facts = {"kernel": executed_as,
+                         "kernel_read": bool(kernel_note),
                          "executed_cells": len(rec.get("execution") or []),
                          "verdict": (rec.get("verify") or {}).get("verdict")}
                 reg = nbci.register_pair(wt_path, str(src_twin), nb_rel,
@@ -6248,7 +6303,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         f"{(rec.get('verify') or {}).get('verdict')} "
         f"(modèle {(rec.get('verify') or {}).get('model_used')})."
         + f"\nModèle servi : {identity_line((rec.get('verify') or {}).get('identity'))}."
-        + f"\nExécution : kernel {rec.get('kernel', {}).get('kernel_name')}, "
+        + f"\nExécution : kernel {executed_as}{kernel_note}, "
         f"{len(rec.get('execution') or [])} cellules exécutées, C.2 "
         f"{'séquentiel' if (rec.get('c2') or {}).get('sequential') else 'BROKEN'}."
         + "\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
@@ -6339,7 +6394,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         + "\n".join(f"- cell {g.get('cell')} ({g.get('geste')}): {_text(g.get('but')).strip()}"
                     for g in (rec.get("plan") or {}).get("plan") or [] if isinstance(g, dict))
         + "\n\n## Mesures\n\n"
-        f"- **Exécution réelle** (execute_on_kernel, kernel `{rec.get('kernel', {}).get('kernel_name')}`) : "
+        f"- **Exécution réelle** (execute_on_kernel, kernel `{executed_as}`{kernel_note}) : "
         f"{n_exec} cellules, 0 erreur. C.2 : execution_count séquentiel — "
         f"{'oui' if (rec.get('c2') or {}).get('sequential') else 'NON'}.\n"
         f"- **Gates** : {', '.join(gates_ok) or 'aucun'} OK"
@@ -7158,6 +7213,7 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                             pm, "manage_kernel", {"action": "stop",
                                                   "kernel_id": rec["kernel_id"]})
                     execution_verdict(rec, built_path)
+                    note_execution_kernel(rec, kname)
         entry["elapsed_build_s"] = round(time.time() - t0, 1)
         contested_only = entry.get("result") == "contested-only"
         if not applied and not contested_only:
@@ -7222,7 +7278,8 @@ def _prior_src_nb(prior: dict, wt_path: Path, notebook: str) -> Path:
 # and so that stage 5 composes the same PR body as an uninterrupted run.
 _REVISE_CARRY = ("plan", "kernel", "kernel_cwd", "create_mode", "create_metadata", "src_nb",
                  "built_notebook", "conversation_id", "execution", "c2", "gates", "structure",
-                 "verify", "revisions", "exec_mode", "repo_origin", "last_content_verdict")
+                 "verify", "revisions", "exec_mode", "repo_origin", "last_content_verdict",
+                 "executed_kernel", "kernelspec_align")
 
 
 async def run_revision(args, rec: dict) -> dict:
@@ -7815,6 +7872,8 @@ async def run(args, rec: dict) -> dict:
     # ---- stages 3-5: harness-only (no model turn inside these), then the review loop
     built_path = Path((rec.get("built_notebook") or {}).get("path") or "")
     kname_used = args.kernel_override or kernel["kernel_name"]
+    if rec.get("kernel_id"):
+        note_execution_kernel(rec, kname_used)
     gates_then_verify(args, rec, src_nb, built_path, create_mode, kname_used,
                       Path(wt["path"]), out_dir,
                       spec_body=issue.get("body"), spec_ref=_spec_ref(args, issue))
