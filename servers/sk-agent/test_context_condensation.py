@@ -435,21 +435,22 @@ async def test_fallback_summariser_handles_empty():
 
 
 @pytest.mark.asyncio
-@pytest.mark.xfail(
-    reason="#3944 residual, reachable mid-turn since #4816: _pass_threshold "
-    "pops call and result messages independently. With balanced payloads the "
-    "budget crossing lands on a RESULT (the big message), so pairs drop whole "
-    "and the invariant holds; with a LARGE call followed by a SMALL result "
-    "(long arguments, one-word result) the crossing lands on the call and "
-    "orphan FunctionResultContent survives — breaks the thread on SK / "
-    "OpenAI-compatible endpoints. strict=True flips loud the day a fix "
-    "lands (pop the pair together, or skip to keep it whole).",
-    strict=True,
-)
 async def test_threshold_never_orphans_a_tool_result():
+    """#3944 residual, fixed with #4816: pass 4 trims atomic call+result units.
+
+    The legacy pass popped call and result messages independently. With
+    balanced payloads the budget crossing landed on a RESULT (the big
+    message), so pairs dropped whole and the invariant held; with a LARGE
+    call followed by a SMALL result (long arguments, one-word result) the
+    crossing landed on the CALL and an orphan FunctionResultContent
+    survived — the pairing broken on the wire.
+    This was the strict xfail pinning the residual; since #4816 a call and
+    its results are trimmed together, so the pin flips green.
+    """
     # Two pairs of (large call ~500 tok, small result ~10 tok): the soft
-    # target (window 1000 x 0.5 x 0.6 = 300 tok) is crossed by POPPING A
-    # CALL, leaving both results orphaned — the reachable boundary.
+    # target (window 1000 x 0.5 x 0.6 = 300 tok) used to be crossed by
+    # POPPING A CALL, leaving both results orphaned — the reachable
+    # boundary. Both pairs must now go together.
     messages = [
         _text_msg(AuthorRole.SYSTEM, "system prompt"),
         _text_msg(AuthorRole.USER, "mission"),
@@ -496,6 +497,288 @@ async def test_threshold_never_orphans_a_tool_result():
                 assert item.id in call_ids, (
                     f"orphan tool result {item.id!r} survived the threshold pass"
                 )
+    assert [_message_text(msg) for msg in out] == [
+        "system prompt",
+        "mission",
+        "latest question",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# #4816: the threshold pass keeps a tool call and its results atomic
+# ---------------------------------------------------------------------------
+
+
+def _pairing(messages):
+    """(orphan_results, dangling_calls) by call id — the pairing baseline.
+
+    The input's own pair is the reference: a pass that breaks one moves it.
+    """
+    open_ids: list = []
+    orphan = 0
+    for message in messages:
+        for item in message.items:
+            if isinstance(item, FunctionCallContent):
+                open_ids.append(item.id)
+            elif isinstance(item, FunctionResultContent):
+                if item.id in open_ids:
+                    open_ids.remove(item.id)
+                else:
+                    orphan += 1
+    return orphan, len(open_ids)
+
+
+def _call_with_id(i, args: str = "{}") -> ChatMessageContent:
+    return ChatMessageContent(
+        role=AuthorRole.ASSISTANT,
+        items=[FunctionCallContent(id=f"call-{i}", function_name="t", arguments=args)],
+    )
+
+
+def _result_with_id(i, payload: str = "ok") -> ChatMessageContent:
+    return ChatMessageContent(
+        role=AuthorRole.TOOL,
+        items=[FunctionResultContent(id=f"call-{i}", function_name="t", result=payload)],
+    )
+
+
+def _item_ids(messages, item_type) -> list:
+    return [
+        item.id
+        for message in messages
+        for item in message.items
+        if isinstance(item, item_type)
+    ]
+
+
+@pytest.mark.asyncio
+async def test_threshold_keeps_a_pair_whole_when_the_floor_straddles_it():
+    """The keep floor is a lower bound on messages — never a pair to split.
+
+    recent_message_window=3 over two small pairs: reaching the floor meant
+    popping the second pair's CALL and leaving its result behind. The pass
+    stops one message above the floor instead — more context retained,
+    never a broken pair.
+    """
+    messages = [
+        _text_msg(AuthorRole.SYSTEM, "system prompt"),
+        _text_msg(AuthorRole.USER, "mission"),
+        _call_with_id(1),
+        _result_with_id(1),
+        _call_with_id(2),
+        _result_with_id(2),
+    ]
+    cfg = CondensationConfig(enabled=True, recent_message_window=3)
+    condenser = ContextCondenser(config=cfg)
+    out, m = await condenser._pass_threshold(messages, None, cfg)
+    assert m.messages_out == 4  # keep=3, +1: the second pair travels whole
+    assert _item_ids(out, FunctionResultContent) == ["call-2"]
+    assert _pairing(out) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_threshold_never_trims_an_unresolved_call():
+    """Mid-turn: the current call has no result yet while this pass runs.
+
+    SK 1.42 builds a tool's result message only after its auto-invocation
+    filter stack returns (``Kernel.invoke_function_call``), so the live
+    history ends with an unresolved call. Trimming it orphans the result
+    that lands a moment later.
+    """
+    messages = [
+        _text_msg(AuthorRole.SYSTEM, "system prompt"),
+        _text_msg(AuthorRole.USER, "mission"),
+    ]
+    for i in range(1, 5):
+        messages += [_call_with_id(i), _result_with_id(i)]
+    messages.append(_call_with_id("live"))
+    cfg = CondensationConfig(enabled=True, recent_message_window=2)
+    condenser = ContextCondenser(config=cfg)
+    out, _ = await condenser._pass_threshold(messages, None, cfg)
+    assert _item_ids(out, FunctionCallContent) == ["call-live"]
+    assert _pairing(out) == (0, 1)  # still in flight — nothing orphaned
+
+
+def _parallel_group(g, results: int = 2) -> list:
+    """One assistant message issuing two calls, plus ``results`` of their
+    result messages (1 = the sibling is still in flight)."""
+    group = [
+        ChatMessageContent(
+            role=AuthorRole.ASSISTANT,
+            items=[
+                FunctionCallContent(id=f"call-{g}a", function_name="t", arguments="{}"),
+                FunctionCallContent(id=f"call-{g}b", function_name="t", arguments="{}"),
+            ],
+        ),
+        _result_with_id(f"{g}a"),
+    ]
+    if results == 2:
+        group.append(_result_with_id(f"{g}b"))
+    return group
+
+
+@pytest.mark.asyncio
+async def test_threshold_trims_parallel_call_groups_whole():
+    messages = [
+        _text_msg(AuthorRole.SYSTEM, "system prompt"),
+        _text_msg(AuthorRole.USER, "mission"),
+    ]
+    for g in range(1, 4):
+        messages += _parallel_group(g)
+    cfg = CondensationConfig(enabled=True, recent_message_window=4)
+    condenser = ContextCondenser(config=cfg)
+    out, m = await condenser._pass_threshold(messages, None, cfg)
+    assert m.messages_out == 5  # system + mission + the last group (3 messages)
+    assert _item_ids(out, FunctionCallContent) == ["call-3a", "call-3b"]
+    assert _item_ids(out, FunctionResultContent) == ["call-3a", "call-3b"]
+    assert _pairing(out) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_threshold_never_trims_a_partially_resolved_parallel_group():
+    """A sibling result still in flight freezes its whole group.
+
+    SK appends each parallel call's result when its own filter chain
+    returns, so mid-turn the live history can hold a two-call group with
+    one result. Trimming the group would orphan the sibling landing next.
+    """
+    messages = [
+        _text_msg(AuthorRole.SYSTEM, "system prompt"),
+        _text_msg(AuthorRole.USER, "mission"),
+    ]
+    for g in range(1, 3):
+        messages += _parallel_group(g)
+    messages += _parallel_group(3, results=1)
+    # keep=1: the floor alone would let the pass trim the last group.
+    cfg = CondensationConfig(enabled=True, recent_message_window=1)
+    condenser = ContextCondenser(config=cfg)
+    out, _ = await condenser._pass_threshold(messages, None, cfg)
+    assert _item_ids(out, FunctionCallContent) == ["call-3a", "call-3b"]
+    assert _item_ids(out, FunctionResultContent) == ["call-3a"]
+    assert _pairing(out) == (0, 1)
+
+
+@pytest.mark.asyncio
+async def test_threshold_drops_a_parallel_group_whole_when_the_target_crosses_inside_it():
+    """The soft target may fall INSIDE a group: one big result, one small.
+
+    Legacy popped the call message, then the big result, reached the
+    target and stopped — leaving the small sibling result orphaned.
+    """
+    messages = [
+        _text_msg(AuthorRole.SYSTEM, "system prompt"),
+        _text_msg(AuthorRole.USER, "mission"),
+        ChatMessageContent(
+            role=AuthorRole.ASSISTANT,
+            items=[
+                FunctionCallContent(id="call-1a", function_name="t", arguments="{}"),
+                FunctionCallContent(id="call-1b", function_name="t", arguments="{}"),
+            ],
+        ),
+        _result_with_id("1a", payload="y" * 2_000),  # ~500 tokens
+        _result_with_id("1b"),  # ~0 token
+        _text_msg(AuthorRole.USER, "latest question"),
+    ]
+    cfg = CondensationConfig(
+        enabled=True, recent_message_window=2, trigger_fraction=0.5
+    )
+    condenser = ContextCondenser(config=cfg)
+    out, _ = await condenser._pass_threshold(messages, 1000, cfg)  # target: 300 tok
+    assert _pairing(out) == (0, 0)
+    assert [_message_text(msg) for msg in out] == [
+        "system prompt",
+        "mission",
+        "latest question",
+    ]
+
+
+def _legacy_threshold(messages, context_window, cfg):
+    """Pass 4 as it ran before #4816, verbatim — the characterization oracle.
+
+    Wherever the old algorithm kept every pair whole, the new one must
+    reproduce it message for message.
+    """
+    keep = max(cfg.recent_message_window, 1)
+    if len(messages) <= keep:
+        return list(messages)
+    target = None
+    if context_window and cfg.trigger_fraction is not None:
+        target = int(context_window * cfg.trigger_fraction * 0.6)
+    out = list(messages)
+    while len(out) > keep:
+        total = sum(_message_tokens(m) for m in out)
+        if target is not None and total <= target:
+            break
+        first_user_idx = next(
+            (i for i, m in enumerate(out) if m.role == AuthorRole.USER), None
+        )
+        idx = next(
+            (
+                i
+                for i, m in enumerate(out)
+                if m.role != AuthorRole.SYSTEM and i != first_user_idx
+            ),
+            None,
+        )
+        if idx is None:
+            break
+        out.pop(idx)
+    return out
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "call_size,result_size",
+    [(20, 20), (2_000, 20), (20, 6_000), (2_000, 6_000)],
+)
+@pytest.mark.parametrize("pairs", [0, 1, 2, 3, 5])
+@pytest.mark.parametrize("keep", [1, 2, 3, 4, 6])
+@pytest.mark.parametrize("target", [None, 300, 30_000])
+@pytest.mark.parametrize("calls_per_message", [1, 2])
+async def test_threshold_is_legacy_identical_where_legacy_kept_pairs_whole(
+    pairs, keep, target, call_size, result_size, calls_per_message
+):
+    messages = [
+        _text_msg(AuthorRole.SYSTEM, "system prompt"),
+        _text_msg(AuthorRole.USER, "mission"),
+    ]
+    for i in range(1, pairs + 1):
+        suffixes = "ab"[:calls_per_message]
+        messages.append(
+            ChatMessageContent(
+                role=AuthorRole.ASSISTANT,
+                items=[
+                    FunctionCallContent(
+                        id=f"call-{i}{suffix}",
+                        function_name="t",
+                        arguments="x" * call_size,
+                    )
+                    for suffix in suffixes
+                ],
+            )
+        )
+        messages += [
+            _result_with_id(f"{i}{suffix}", payload="y" * result_size)
+            for suffix in suffixes
+        ]
+    messages.append(_text_msg(AuthorRole.USER, "latest question"))
+
+    cfg = CondensationConfig(enabled=True, recent_message_window=keep)
+    window = None
+    if target is not None:
+        cfg.trigger_fraction = 0.5
+        window = int(target / 0.5 / 0.6)  # same derivation as the pass
+    condenser = ContextCondenser(config=cfg)
+
+    baseline = _pairing(messages)
+    legacy = _legacy_threshold(messages, window, cfg)
+    out, _ = await condenser._pass_threshold(messages, window, cfg)
+
+    assert _pairing(out) == baseline, "the new pass broke a pair the input had"
+    if _pairing(legacy) == baseline:
+        assert [id(msg) for msg in out] == [id(msg) for msg in legacy], (
+            "diverged from the legacy output where that output was pairing-safe"
+        )
 
 
 # ---------------------------------------------------------------------------
