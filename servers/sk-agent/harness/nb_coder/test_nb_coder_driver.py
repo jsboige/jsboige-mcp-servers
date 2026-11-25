@@ -17,6 +17,7 @@ not an invented shape — a pin built on a made-up payload protects nothing.
 Skipped when `mcp` is not importable (the driver imports the MCP client at load).
 """
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -748,21 +749,29 @@ def test_the_published_kernel_prefers_the_execution_record_to_carried_metadata()
     assert name == "rust" and "--kernel-override" in note
 
 
-def _stage5_kernel_delivery(tmp_path, monkeypatch, rec, create_mode=None):
+def _stage5_kernel_delivery(tmp_path, monkeypatch, rec, create_mode=None, guards=None,
+                            expect="pr-created", flags=None, drift=None,
+                            nav_form=None, reseal=False, pr_branch="nbcoder/kernel-27947"):
     """Real branch, real commit, real push to a bare origin; gh and the repo
-    integration are fakes that return what the caller wants to read back."""
+    integration are fakes that return what the caller wants to read back.
+    `guards` is what the fake integration replayed; `drift` replaces the
+    source-drift reading; `expect` is the verdict the caller wants read;
+    `nav_form` is what the integration decided for the twin link; `reseal`
+    makes the twin pair exist, so the reseal commit is written; `pr_branch`
+    None lets stage 5 cut its own default name."""
     from types import SimpleNamespace
 
+    real = d._load_integrate_module()      # read before the fake replaces it
     wt, sh = _push_repo(tmp_path)
     nb_rel = "Series/Planners-05c-Rust.ipynb"
     (wt / "Series").mkdir()
     built = tmp_path / "built.ipynb"
     built.write_text("{}", encoding="utf-8")
     args = SimpleNamespace(
-        issue=27947, notebook=nb_rel, pr_branch="nbcoder/kernel-27947", agent="producer",
+        issue=27947, notebook=nb_rel, pr_branch=pr_branch, agent="producer",
         verifier_agent="critic", grain_tier="MED", lane="myia-po-2028:claudish",
         pr_base="main", pr_repo="jsboige/CoursIA", out_dir=str(tmp_path),
-        kernel_override=None)
+        kernel_override=None, **(flags or {}))
     sent = {"facts": None}
     monkeypatch.setattr(d, "lane_predecessor", lambda *a: None)
 
@@ -777,20 +786,280 @@ def _stage5_kernel_delivery(tmp_path, monkeypatch, rec, create_mode=None):
     if create_mode is not None:
         rec["create_mode"] = {"source": "Series/Planners-05c-Python.ipynb",
                               "target": nb_rel}
-        monkeypatch.setattr(d, "stage5_source_drift", lambda *a: {"drift": "none"})
+        monkeypatch.setattr(d, "stage5_source_drift",
+                            lambda *a: drift or {"drift": "none"})
 
         def register_pair(w, s, n, lane, facts=None):
             sent["facts"] = facts
             return {"registered": False}
 
+        integ = {"touched": [], "nav": {}, "readme": {}, "pair": None}
+        if nav_form is not None:
+            integ["nav_form"] = nav_form
+        if reseal:
+            audit = wt / "scripts" / "notebook_tools" / "twin_pairs.d" / "x.yaml"
+            audit.parent.mkdir(parents=True)
+            audit.write_text("attestation: 1\n", encoding="utf-8")
         monkeypatch.setattr(d, "_load_integrate_module", lambda: SimpleNamespace(
-            integrate=lambda *a, **k: {"touched": [], "nav": {}, "readme": {}, "pair": None},
+            integrate=lambda *a, **k: integ,
             register_pair=register_pair,
-            find_twin_pair=lambda *a: None, replay_guards=lambda *a: []))
+            find_twin_pair=lambda *a: ("x.yaml" if reseal else None),
+            reseal_pair=lambda *a, **k: {"audit_files": ["x.yaml"]},
+            replay_guards=lambda *a: list(guards or []),
+            red_guards=real.red_guards))
     d.stage5_pr(args, rec, wt, built, {"issue": 27947}, None)
-    assert rec["verdict"] == "pr-created", rec.get("pr")
+    assert rec["verdict"] == expect, rec.get("pr")
+    sent["rec"] = rec
     sent["commit"] = sh("git", "-C", str(wt), "log", "-1", "--format=%B")
+    sent["messages"] = [m.strip() for m in                      # newest first
+                        sh("git", "-C", str(wt), "log", "-3", "--format=%B%x1e").split("\x1e")
+                        if m.strip()]
+    sent["remote_heads"] = sh("git", "-C", str(wt), "ls-remote", "--heads", "origin").strip()
+    sent["local_branch"] = sh("git", "-C", str(wt), "rev-parse", "--abbrev-ref", "HEAD").strip()
     return sent
+
+
+_RED_GUARDS = [
+    {"guard": "check-nav-chain", "cmd": "python scripts/…/check_notebook_nav_chain.py …",
+     "rc": 1, "tail": "FAIL: 1 NEW finding(s) vs baseline (imputables au diff):\n"
+                       "  [independent_chain] MyIA.AI.Notebooks/Physique/InformationQuantique"},
+    {"guard": "readme-notebook-coverage", "cmd": "python …", "rc": 0, "tail": ""},
+]
+
+
+def test_stage5_keeps_the_branch_unpushed_on_a_measured_red_guard(tmp_path, monkeypatch):
+    """24/11, po-2028 measure: CoursIA#28199/#28282/#28288/#28291/#28293 were
+    opened with « Garde `check-nav-chain` : exit 1 (ÉCHEC) » printed in their own
+    PR body (the trace of #28293 records the same rc, verdict `pr-created`). CI
+    raises the same red, and every repair push restarts the PR's dwell. The
+    commits, the branch, the guard and its tail stay; the push and the PR do
+    not."""
+    sent = _stage5_kernel_delivery(tmp_path, monkeypatch, dict(_STALE_KERNEL_TRACE),
+                                   create_mode=True, guards=_RED_GUARDS,
+                                   expect="pr-integration-red:check-nav-chain")
+    pr = sent["rec"]["pr"]
+    assert sent["remote_heads"] == ""                      # nothing reached origin
+    assert "body" not in sent                              # no PR was asked for
+    assert sent["local_branch"] == "nbcoder/kernel-27947"  # the branch is there, local
+    assert "Exécution : kernel rust" in sent["commit"]     # with its notebook commit
+    # the trace names that commit: until 24/11 the field held `_git`'s return code
+    assert re.fullmatch(r"[0-9a-f]{7,}", pr["commit"]), pr["commit"]
+    assert "branch not pushed" in pr["error"]
+    assert pr["integration"]["guards"] == _RED_GUARDS      # the tails stay in the trace
+
+
+# ---- two launches of the same grain (ms#1912 review, 24/11) ---------------------
+
+def _sh(*cmd):
+    import subprocess
+    p = subprocess.run(cmd, capture_output=True, text=True)
+    assert p.returncode == 0, (cmd, p.stderr)
+    return p.stdout
+
+
+def _resolved_wiring(monkeypatch, tmp_path):
+    """A seat whose five wiring paths exist: `_preflight` lets the run through, so the
+    branch preflight is the only refusal that can fire."""
+    seat = tmp_path / "seat"
+    (seat / "venv" / "Scripts").mkdir(parents=True)
+    (seat / "sk_agent.py").write_text("# stub\n", encoding="utf-8")
+    (seat / "venv" / "Scripts" / "python.exe").write_text("", encoding="utf-8")
+    (seat / "sk_agent_config.json").write_text("{}\n", encoding="utf-8")
+    (seat / "papermill").mkdir()
+    (seat / "papermill" / "python.exe").write_text("", encoding="utf-8")
+    monkeypatch.setattr(d, "SK_DIR", seat)
+    monkeypatch.setattr(d, "SK_PY", seat / "venv" / "Scripts" / "python.exe")
+    monkeypatch.setattr(d, "SK_CONFIG", seat / "sk_agent_config.json")
+    monkeypatch.setattr(d, "PM_PY", seat / "papermill" / "python.exe")
+    monkeypatch.setattr(d, "PM_CWD", seat / "papermill")
+
+
+_RELUNCH_ARGV = ["nb_coder_driver.py", "--issue", "27947",
+                 "--notebook", "Series/Planners-05c-Rust.ipynb", "--max-stage", "5",
+                 "--lane", "myia-po-2028:claudish"]
+
+
+def test_a_relaunch_of_a_red_grain_stops_before_any_model_call(tmp_path, monkeypatch,
+                                                               capsys):
+    """ms#1912 review (myia-ai-01, 24/11): a `pr-integration-red` grain keeps its
+    deterministic branch with its commits. Its relaunch used to re-pay plan, build and
+    verify, then die at `checkout -b <same name>` with `pr-branch-failed` -- class
+    `run`, so it blocked the ramp as well. Two launches of ONE grain on one real repo:
+    the first is kept unpushed; the second is refused at the driver's preflight, with
+    zero model call, an explicit verdict and recovery, and the first pass's branch and
+    trace exactly where they were."""
+    # launch 1 -- served, a repo guard measured red: the branch is cut and kept
+    sent = _stage5_kernel_delivery(tmp_path, monkeypatch, dict(_STALE_KERNEL_TRACE),
+                                   create_mode=True, guards=_RED_GUARDS, pr_branch=None,
+                                   expect="pr-integration-red:check-nav-chain")
+    wt = tmp_path / "wt"                    # _push_repo's clone: the branch lives here
+    branch = d.default_pr_branch(27947, "Series/Planners-05c-Rust.ipynb")
+    assert sent["local_branch"] == branch   # stage 5 cut its own default name
+    head = _sh("git", "-C", str(wt), "rev-parse", f"refs/heads/{branch}").strip()
+    _sh("git", "-C", str(wt), "push", "-q", "origin", "main")   # a readable origin/main
+    paid = {"issue": 27947, "notebook": "Series/Planners-05c-Rust.ipynb",
+            "verdict": "pr-integration-red:check-nav-chain",
+            "calls": [{"turn": "build"}], "pr": {"branch": branch, "commit": head[:7]}}
+    out_dir = tmp_path / "run"
+    out_dir.mkdir()
+    (out_dir / "issue-27947.json").write_text(json.dumps(paid), encoding="utf-8")
+
+    # launch 2 -- the whole driver entry point, wiring resolved
+    _resolved_wiring(monkeypatch, tmp_path)
+    monkeypatch.setattr(sys, "argv", [*_RELUNCH_ARGV, "--repo", str(wt),
+                                      "--out-dir", str(out_dir)])
+    with pytest.raises(SystemExit) as e:
+        d.main()
+    assert e.value.code == 2
+    err = capsys.readouterr().err
+    assert branch in err and "Refused before any model call" in err
+
+    rec = json.loads((out_dir / "issue-27947.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-branch-held:local"
+    assert rec["calls"] == []
+    assert "engine_tokens_before" not in rec       # the baseline of a run was never taken
+    held = rec["held_branch"]
+    assert (held["branch"], held["head"]) == (branch, head)
+    assert held["pushed"] is False and held["upstream"] is None
+    assert held["commits_ahead"] == 1              # the first pass's notebook commit
+    assert held["prior_verdict"] == "pr-integration-red:check-nav-chain"
+    assert (f"`git -C {wt} branch -m {branch} {branch}-kept-" in rec["recovery"]
+            and "never delete paid work" in rec["recovery"])
+    # the paid trace of launch 1 is kept, named, and byte-for-byte what it was
+    kept = list(out_dir.glob("issue-27947.pre-refusal-*.json"))
+    assert len(kept) == 1
+    assert json.loads(kept[0].read_text(encoding="utf-8")) == paid
+    assert rec["preserved_prior_trace"] == str(kept[0])
+    led = json.loads((out_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert led["verdict"] == "refused-branch-held:local" and led["calls"] == 0
+    # the first pass is untouched: same head, still on no remote, no `-kept-` ref created
+    assert _sh("git", "-C", str(wt), "rev-parse", f"refs/heads/{branch}").strip() == head
+    remote = _sh("git", "-C", str(wt), "ls-remote", "--heads", "origin")
+    assert f"refs/heads/{branch}" not in remote
+    assert "-kept-" not in _sh("git", "-C", str(wt), "for-each-ref", "--format=%(refname)")
+
+
+def test_a_pushed_delivery_branch_is_refused_and_names_the_pr(tmp_path, monkeypatch):
+    """The other reading: the branch is on origin, so the delivery exists. Nothing is
+    renamed (a fresh push over it is the remote's to judge); the recovery names the
+    PR to follow instead of a rebuild."""
+    wt, _ = _push_repo(tmp_path)
+    branch = d.default_pr_branch(27947, "Series/Planners-05c-Rust.ipynb")
+    _sh("git", "-C", str(wt), "checkout", "-q", "-b", branch)
+    (wt / "b.txt").write_text("b", encoding="utf-8")
+    _sh("git", "-C", str(wt), "add", "b.txt")
+    _sh("git", "-C", str(wt), "-c", "user.email=t@t", "-c", "user.name=t",
+        "commit", "-q", "-m", "b")
+    _sh("git", "-C", str(wt), "push", "-q", "-u", "origin", branch)
+    held = d.held_branch(wt, branch)
+    assert held["pushed"] is True and held["upstream"] == f"origin/{branch}"
+    out_dir = tmp_path / "run"
+    monkeypatch.setattr(sys, "argv", [*_RELUNCH_ARGV, "--repo", str(wt),
+                                      "--out-dir", str(out_dir)])
+    args = d.build_parser().parse_args()
+    with pytest.raises(SystemExit) as e:
+        d._refuse_held_branch(d.build_parser(), args)
+    assert e.value.code == 2
+    rec = json.loads((out_dir / "issue-27947.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-branch-held:pushed"
+    assert f"`gh pr list --head {branch}`" in rec["recovery"]
+    assert "branch -m" not in rec["recovery"]
+    assert "preserved_prior_trace" not in rec       # nothing was there to keep
+    assert rec["held_branch"]["head"] == held["head"]
+    assert _sh("git", "-C", str(wt), "rev-parse", f"refs/heads/{branch}").strip() == held["head"]
+
+
+def test_a_landed_push_without_upstream_reads_as_pushed(tmp_path):
+    """`_push_branch` judges a timed-out push by the remote; the reading does the same.
+    A push that landed without `-u` left no upstream: it must not be mistaken for a
+    local keep, which the recovery would tell the lane to move aside."""
+    wt, _ = _push_repo(tmp_path)
+    _sh("git", "-C", str(wt), "push", "-q", "origin", "main")
+    held = d.held_branch(wt, "main")
+    assert held["pushed"] is True and held["upstream"] is None
+    assert held["commits_ahead"] == 0
+
+
+def test_a_free_branch_name_is_not_a_refusal(tmp_path):
+    wt, _ = _push_repo(tmp_path)
+    assert d.held_branch(wt, "nbcoder/auto-27947-free-000000") is None
+
+
+def test_the_branch_preflight_stands_before_any_spend_and_only_for_stage_5():
+    """Source pin: the refusal is wired in main() after the wiring preflight, before the
+    engine-token baseline (the first thing a run reads), under `--max-stage 5` -- a run
+    that stops at stage 4 never cuts a branch."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    main_fn = src.split("\ndef main() -> int:", 1)[1]
+    gate = main_fn.index("if args.max_stage >= 5:")
+    call = main_fn.index("_refuse_held_branch(ap, args)")
+    assert main_fn.index("_preflight(ap, args)") < gate < call
+    assert call < main_fn.index("engine_tokens()")
+
+
+def test_stage5_and_the_preflight_read_one_branch_name():
+    """A refusal that computed the name its own way could miss the collision it exists
+    to prevent: stage 5 and the preflight share `delivery_branch`."""
+    src = Path(d.__file__).read_text(encoding="utf-8")
+    stage5 = src.split("def stage5_pr(", 1)[1].split("\ndef ", 1)[0]
+    assert "branch = delivery_branch(args)" in stage5
+    assert "default_pr_branch(" not in stage5
+    preflight = src.split("def _refuse_held_branch(", 1)[1].split("\ndef ", 1)[0]
+    assert "delivery_branch(args)" in preflight
+
+
+def test_stage5_guards_that_could_not_run_are_not_red(tmp_path, monkeypatch):
+    """A guard that timed out or lost its organ says nothing (rc None): the PR
+    opens, and its body names the guard NON MESURÉE -- never ÉCHEC."""
+    unmeasured = [{"guard": "check-nav-chain", "cmd": "python …", "rc": None,
+                   "tail": "TimeoutExpired: …"},
+                  {"guard": "twin-parity-changed", "cmd": "python …", "rc": 0, "tail": ""}]
+    sent = _stage5_kernel_delivery(tmp_path, monkeypatch, dict(_STALE_KERNEL_TRACE),
+                                   create_mode=True, guards=unmeasured)
+    assert "Garde `check-nav-chain` : exit None (NON MESURÉE)" in sent["body"]
+    assert "Garde `twin-parity-changed` : exit 0 (OK)" in sent["body"]
+    assert "ÉCHEC" not in sent["body"]
+
+
+def test_stage5_pushes_a_red_branch_only_when_asked(tmp_path, monkeypatch):
+    """`--push-on-red-guards` restores the behaviour before 24/11; the body
+    still publishes the red guard."""
+    sent = _stage5_kernel_delivery(tmp_path, monkeypatch, dict(_STALE_KERNEL_TRACE),
+                                   create_mode=True, guards=_RED_GUARDS,
+                                   flags={"push_on_red_guards": True})
+    assert "nbcoder/kernel-27947" in sent["remote_heads"]
+    assert "Garde `check-nav-chain` : exit 1 (ÉCHEC)" in sent["body"]
+
+
+def test_stage5_body_names_the_base_refresh(tmp_path, monkeypatch):
+    """The PR body says on which tree the guards were read."""
+    refresh = {"drift": "none", "base_refresh": {"from": "1111111111", "to": "2222222222",
+                                                 "rebased": True}}
+    sent = _stage5_kernel_delivery(tmp_path, monkeypatch, dict(_STALE_KERNEL_TRACE),
+                                   create_mode=True, drift=refresh)
+    assert ("Base `main` rafraîchie avant l'intégration (`1111111111` → `2222222222`) : "
+            "les gardes sont lues sur l'arbre que la CI teste.") in sent["body"]
+
+
+@pytest.mark.parametrize("nav_form, word, other", [
+    ({"form": "marker-free", "series": "no_internal_nav_edge"}, "lien de jumeau",
+     "arête nav"),
+    ({"form": "marked", "series": "judged"}, "arête nav", None),
+    # the integration said nothing about the form (trace written before it)
+    (None, "arête nav", None),
+])
+def test_stage5_reseal_commit_names_the_link_that_was_added(tmp_path, monkeypatch,
+                                                            nav_form, word, other):
+    """The reseal commit says what it re-sealed after, with the word the
+    integration commit and the PR body use: a marker-free twin link is not a
+    nav edge."""
+    sent = _stage5_kernel_delivery(tmp_path, monkeypatch, dict(_STALE_KERNEL_TRACE),
+                                   create_mode=True, nav_form=nav_form, reseal=True)
+    last = sent["messages"][0]                     # git log: newest first
+    assert last.startswith("Chore(twin-parity,#27947): rescelle"), last
+    assert f"ligne README et {word}." in last
+    if other:
+        assert other not in last
 
 
 _STALE_KERNEL_TRACE = {

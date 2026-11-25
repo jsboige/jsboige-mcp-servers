@@ -6102,6 +6102,51 @@ def default_pr_branch(issue_n: int, notebook: str) -> str:
     return f"nbcoder/auto-{issue_n}-{stem or 'nb'}-{h}"
 
 
+def delivery_branch(args) -> str:
+    """The branch stage 5 will cut -- and the one the stage-5 preflight must look at.
+
+    One expression, two call sites on purpose (ms#1912 review, 24/11): a refusal that
+    computes the name differently from `checkout -b` would miss the collision it exists
+    to prevent."""
+    return args.pr_branch or default_pr_branch(args.issue, args.notebook)
+
+
+def held_branch(repo: Path, branch: str) -> dict | None:
+    """The LOCAL branch `<branch>` when it exists, with what a relaunch must know.
+
+    A stage-5 refusal (`pr-integration-red`) leaves its branch behind with its commits,
+    and `default_pr_branch` is deterministic: the next launch of the same grain re-pays
+    plan, build and verify, then dies at `checkout -b <same name>` with
+    `pr-branch-failed` -- a class `run` verdict that blocks the ramp (measured in the
+    ms#1912 review, 24/11). Read BEFORE any model call so that relaunch is refused
+    instead (`refused-branch-held`); `None` when the name is free.
+
+    `pushed` is true when the branch has an upstream, or when origin advertises it: a
+    push that TIMED OUT can have landed without `-u` having recorded the upstream --
+    `_push_branch` judges exactly that case by ls-remote, and this reads it the same
+    way. A remote that cannot be read is not evidence of a push: the branch is then
+    reported unpushed and the push that follows judges, as before."""
+    rc, out = _git(repo, "rev-parse", "--verify", "-q", f"refs/heads/{branch}")
+    if rc != 0 or not out.strip():
+        return None
+    head = out.strip()
+    urc, uout = _git(repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name",
+                     f"{branch}@{{upstream}}")
+    upstream = uout.strip() if urc == 0 and uout.strip() else None
+    pushed = bool(upstream)
+    if not pushed:
+        try:
+            lrc, lout = _git(repo, "ls-remote", "--heads", "origin",
+                             f"refs/heads/{branch}", timeout=120)
+        except subprocess.TimeoutExpired:
+            lrc, lout = 1, ""
+        pushed = lrc == 0 and bool(lout.strip())
+    arc, aout = _git(repo, "rev-list", "--count", f"origin/main..{branch}")
+    ahead = int(aout.strip()) if arc == 0 and aout.strip().isdigit() else None
+    return {"branch": branch, "head": head, "pushed": pushed, "upstream": upstream,
+            "commits_ahead": ahead}
+
+
 def pr_title(issue_n: int, desc: str, create_mode) -> str:
     """House form. A creation (port or spec twin) ADDS a notebook: `Add(notebooks,…)`.
     Titling a port `Fix(notebooks,…) — portage` was a maintainer Concern on CoursIA#27598."""
@@ -6153,7 +6198,11 @@ def stage5_source_drift(wt_path: Path, src_twin: str) -> dict:
     integration edits (nav link, README row, reseal) land on the fresh twin;
     `structure`/`code`/`deleted` refuse the push (the port is stale, a retry
     re-ports from the new source). A fetch that fails leaves the comparison to
-    the last known origin/main and says so -- fail-open, as before this guard."""
+    the last known origin/main and says so -- fail-open, as before this guard.
+
+    24/11: a source twin that did NOT move no longer pins the branch to the
+    build base -- `none` starts it on the fetched origin/main too
+    (`_stage5_base_refresh`)."""
     rc_f, out_f = _git(wt_path, "fetch", "-q", "origin", "main")
     try:
         drift = _load_drift_module().source_drift(wt_path, "HEAD", src_twin)
@@ -6166,13 +6215,45 @@ def stage5_source_drift(wt_path: Path, src_twin: str) -> dict:
         drift["rebased"] = rc == 0
         if rc != 0:
             drift["rebase_error"] = out[:300]
+    elif drift.get("drift") == "none":
+        drift["base_refresh"] = _stage5_base_refresh(wt_path)
     return drift
+
+
+def _stage5_base_refresh(wt_path: Path) -> dict:
+    """Start the branch on origin/main when main moved while the grain ran and
+    the source twin did not (24/11, po-2028 measure: CoursIA#28196 and #28200
+    were delivered on a base where `Scripts Tests (CPU)` fails on OTHER lanes'
+    pairs -- both green on the same head with main merged, no other change).
+    CI tests the PR head merged with main: the guards must read that tree, not
+    the build base. Read before the branch: stage 5 always cuts a FRESH branch
+    off a detached worktree, so the move adds no commit -- and it is refused
+    when the worktree holds commits outside origin/main (a `rev-list` the
+    instrument cannot read refuses too: not moving is the former behaviour).
+    It fails on a local change main would overwrite and is then only
+    reported -- fail-open, the replayed guards judge."""
+    head_rc, head = _git(wt_path, "rev-parse", "--short=10", "HEAD")
+    main_rc, main = _git(wt_path, "rev-parse", "--short=10", "origin/main")
+    if head_rc != 0 or main_rc != 0 or head == main:
+        return {"rebased": False, "why": "already on origin/main" if head == main
+                else "origin/main unreadable"}
+    ahead_rc, ahead = _git(wt_path, "rev-list", "--count", "origin/main..HEAD")
+    if ahead_rc != 0 or ahead.strip() != "0":
+        return {"rebased": False, "why": "worktree holds commits outside origin/main"
+                if ahead_rc == 0 else "rev-list origin/main..HEAD unreadable"}
+    rc, out = _git(wt_path, "checkout", "-q", "--detach", "origin/main")
+    rec = {"from": head, "to": main, "rebased": rc == 0}
+    if rc != 0:
+        rec["error"] = out[:300]
+    return rec
 
 
 def integration_pr_lines(integ: dict | None) -> str:
     """PR-body section for the stage-5 repo integration (21/11): one line per
     replayed guard with its exit code. A guard still red AFTER integration is
-    reported as such -- never hidden, never a reason to abort the PR."""
+    reported as such -- never hidden. Since 24/11 a guard that MEASURED red
+    keeps the branch unpushed (stage5_pr); with --push-on-red-guards the PR
+    opens anyway and this section says what is red."""
     if not isinstance(integ, dict):
         return ""
     if integ.get("error"):
@@ -6181,11 +6262,18 @@ def integration_pr_lines(integ: dict | None) -> str:
                 f"rester rouges.")
     if integ.get("skipped"):
         return f"\n\n## Intégration dépôt\n\n- {integ['skipped']}."
+    marker_free = (integ.get("nav_form") or {}).get("form") == "marker-free"
     lines = ["## Intégration dépôt\n"]
     if integ.get("readme"):
         note = f" -- {integ['nav_note']}" if integ.get("nav_note") else ""
-        lines.append(f"- Ligne README (`{integ['readme']}`) et arête nav "
-                     f"(`{integ.get('nav')}`) ajoutées sur le jumeau Python{note}.")
+        edge = ("lien de jumeau" if marker_free else "arête nav")
+        lines.append(f"- Ligne README (`{integ['readme']}`) et {edge} "
+                     f"(`{integ.get('nav')}`) ajoutés sur le jumeau Python{note}.")
+    if marker_free:
+        lines.append("- Liens de jumeau **sans marqueur de navigation** : la série n'a pas "
+                     "encore d'arête de navigation interne (`not_judged` / "
+                     "`no_internal_nav_edge`) ; un lien marqué la ferait juger et ses "
+                     "autres carnets resteraient hors chaîne.")
     if integ.get("back"):
         lines.append(f"- Lien retour vers le jumeau d'origine ajouté au nouveau carnet "
                      f"(`{integ['back']}`, markdown seul).")
@@ -6213,8 +6301,9 @@ def integration_pr_lines(integ: dict | None) -> str:
         lines.append(f"- Paire « {reseal['pair']} » rescellée, attestation en "
                      f"dernière opération{tail}.")
     for g in integ.get("guards") or []:
-        mark = "OK" if g.get("rc") == 0 else f"ÉCHEC"
-        lines.append(f"- Garde `{g['guard']}` : exit {g.get('rc')} ({mark}).")
+        rc = g.get("rc")
+        mark = "OK" if rc == 0 else ("ÉCHEC" if isinstance(rc, int) else "NON MESURÉE")
+        lines.append(f"- Garde `{g['guard']}` : exit {rc} ({mark}).")
     if integ.get("guards_error"):
         lines.append(f"- Gardes non rejouées : `{integ['guards_error']}`.")
     return "\n\n" + "\n".join(lines)
@@ -6279,7 +6368,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     PR create, delivery comment on the issue."""
     t0 = time.time()
     nb_rel = args.notebook.replace("\\", "/")
-    branch = args.pr_branch or default_pr_branch(args.issue, args.notebook)
+    branch = delivery_branch(args)
     desc = _short_desc(args, rec.get("plan") or {}, rec.get("create_mode"))
     entry: dict = {"branch": branch}
     executed_as, kernel_note = published_execution_kernel(args, rec)
@@ -6343,6 +6432,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
                 if reg.get("registered"):
                     _git(wt_path, "add", "--", reg["file"])
                 entry["integration"] = {"files": integ["touched"],
+                                        "nav_form": integ.get("nav_form"),
                                         "nav": (integ["nav"] or {}).get("how"),
                                         "nav_note": (integ["nav"] or {}).get("note"),
                                         "back": (integ.get("back") or {}).get("how")
@@ -6389,7 +6479,9 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         entry["error"] = f"commit: {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-git-failed", entry
         return
-    entry["commit"], _ = _git(wt_path, "rev-parse", "--short", "HEAD")
+    # `_git` returns (rc, out): the trace's `commit` is the short hash. Until
+    # 24/11 it held the return code -- `commit: 0` in the trace of CoursIA#28293.
+    _, entry["commit"] = _git(wt_path, "rev-parse", "--short", "HEAD")
 
     # Twin-parity reseal, AFTER the integration commit (the tool records the
     # git blob SHAs at HEAD: notebook, README row and inbound link must be in
@@ -6406,12 +6498,16 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
                 if reseal.get("audit_files"):
                     _git(wt_path, "add", "--",
                          "scripts/notebook_tools/twin_pairs.d")
+                    # The same word as the integration commit and the PR body:
+                    # a marker-free twin link is not a nav edge.
+                    nav_word = ("lien de jumeau" if (integ.get("nav_form") or {})
+                                .get("form") == "marker-free" else "arête nav")
                     _git(wt_path, *_GIT_IDENTITY, "commit", "-m",
                          f"Chore(twin-parity,#{args.issue}): rescelle « {pair} » "
                          "après l'ajout du lien jumeau\n\n"
-                         "Le jumeau Python ne change qu'en markdown (navigation). "
+                         "Le jumeau Python ne change qu'en markdown. "
                          "Attestation écrite en DERNIÈRE opération, après carnet, "
-                         "ligne README et arête nav.\n\n"
+                         f"ligne README et {nav_word}.\n\n"
                          f"Lane: {args.lane}\n"
                          "Co-Authored-By: Claude Sonnet 5.5 "
                          "<noreply@anthropic.com>\n")
@@ -6421,6 +6517,21 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
             integ["guards"] = nbci.replay_guards(wt_path, nb_rel)
         except Exception as e:
             integ["guards_error"] = f"{type(e).__name__}: {e}"[:300]
+
+    # A repo guard that MEASURED red after the integration keeps the branch
+    # unpushed (24/11, po-2028 measure: CoursIA#28199/#28282/#28288/#28291/#28293
+    # were opened with « Garde `check-nav-chain` : exit 1 (ÉCHEC) » printed in
+    # their own PR body, and the trace of #28293 records the same rc). CI raises
+    # the same red on the PR, and every repair push restarts its dwell. The
+    # commits, the branch and the guards' tails stay in the trace. A guard that
+    # could not run is unmeasured, never red; --push-on-red-guards restores the
+    # former behaviour.
+    red = _load_integrate_module().red_guards(integ.get("guards"))
+    if red and not getattr(args, "push_on_red_guards", False):
+        entry["error"] = (f"repo guards red after integration: {', '.join(red)} "
+                          f"-- branch not pushed")
+        rec["verdict"], rec["pr"] = f"pr-integration-red:{'+'.join(red)}", entry
+        return
 
     rc, out = _push_branch(wt_path, branch)
     if rc != 0:
@@ -6445,6 +6556,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     entry["repo"] = repo_slug
     prev = lane_predecessor(repo_slug, args.lane, token)
     entry["grain_prev"] = prev if prev else "unreadable (tag declares no predecessor)"
+    refresh = (entry.get("source_drift") or {}).get("base_refresh") or {}
     pr_body = (
         f"{grain_tag(args.grain_tier, args.lane, prev=prev)}\n\n"
         f"**Grain** : lane `{args.lane}`. Issue #{args.issue}. "
@@ -6481,6 +6593,9 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
            f"{(entry.get('source_drift') or {}).get('main_blob')}, cellules de code "
            "identiques) : intégration rejouée sur la version fraîche."
            if (entry.get("source_drift") or {}).get("rebased") else "")
+        + (f"\n- Base `main` rafraîchie avant l'intégration (`{refresh['from']}` → "
+           f"`{refresh['to']}`) : les gardes sont lues sur l'arbre que la CI teste."
+           if refresh.get("rebased") else "")
         + f"\n{issue_link_line(args.issue, issue, args.notebook)}\n\n"
         "🤖 Generated with [Claude Code](https://claude.com/claude-code)")
     body_file = built_nb.parent / f"pr-body-{args.issue}.md"
@@ -8003,6 +8118,41 @@ def _keep_prior_trace(out: Path, prefix: str) -> str:
     raise OSError(f"no free snapshot name beside {out}")   # never fall back to overwriting
 
 
+def _record_refusal(args, verdict: str, **fields) -> None:
+    """Write a refusal's trace and ledger line before `ap.error`, preserving the record
+    it would overwrite. Factored out of `_preflight` (24/11, ms#1912 review) so that
+    every refusal before spend leaves the same evidence -- see `_preflight`: without
+    it a scheduled loop cannot tell "ran and refused" from "never ran".
+
+    An existing record is PRESERVED, never overwritten (o33): a relaunched or resumed
+    grain's out_dir is the OLD run directory, and the paid record of the first pass --
+    execution, findings, gates, the kept branch's commit -- is exactly what a refusal
+    of the second pass must not erase. `_keep_prior_trace` never replaces a copy: two
+    refusals in the same second (a retry loop) get two files."""
+    out_dir = Path(args.out_dir)
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"issue-{args.issue}.json"
+        kept = None
+        if out.is_file():
+            prefix = ("pre-verify" if args.verify_from
+                      else "pre-revise" if args.revise_from else "pre-refusal")
+            kept = _keep_prior_trace(out, prefix)
+        rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
+               "finished": utcnow(), "lane": args.lane, "dry": True, "calls": [],
+               "verdict": verdict}
+        rec.update(fields)
+        if kept:
+            rec["preserved_prior_trace"] = kept
+        out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+        with open(out_dir / "ledger.jsonl", "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({k: rec.get(k) for k in
+                                 ("issue", "notebook", "started", "finished", "verdict", "lane")}
+                                | {"calls": 0, "preserved_prior_trace": kept}, ensure_ascii=False) + "\n")
+    except OSError:
+        pass          # the refusal must not be masked by a failed trace write
+
+
 def _preflight(ap, args) -> None:
     """Refuse before any spend when a wired path cannot exist (F3, vllm#441).
 
@@ -8038,28 +8188,59 @@ def _preflight(ap, args) -> None:
         return
     detail = "seat wiring does not resolve here — point the env var at a real path: " \
              + " | ".join(missing)
-    out_dir = Path(args.out_dir)
-    try:
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out = out_dir / f"issue-{args.issue}.json"
-        kept = None
-        if out.is_file():
-            prefix = ("pre-verify" if args.verify_from
-                      else "pre-revise" if args.revise_from else "pre-refusal")
-            kept = _keep_prior_trace(out, prefix)
-        rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
-               "finished": utcnow(), "lane": args.lane, "dry": True, "calls": [],
-               "verdict": "refused-wiring-unresolved",
-               "wiring_missing": missing}
-        if kept:
-            rec["preserved_prior_trace"] = kept
-        out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
-        with open(out_dir / "ledger.jsonl", "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({k: rec.get(k) for k in
-                                 ("issue", "notebook", "started", "finished", "verdict", "lane")}
-                                | {"calls": 0, "preserved_prior_trace": kept}, ensure_ascii=False) + "\n")
-    except OSError:
-        pass          # the refusal must not be masked by a failed trace write
+    _record_refusal(args, "refused-wiring-unresolved", wiring_missing=missing)
+    ap.error(detail)
+
+
+def _refuse_held_branch(ap, args) -> None:
+    """Refuse a stage-5 launch whose delivery branch is already there, before any spend.
+
+    ms#1912 review (24/11, myia-ai-01): a `pr-integration-red` grain keeps its branch
+    (deterministic name, `default_pr_branch`) with its commits, unpushed. The relaunch
+    of that grain re-paid plan, build and verify, then died at `checkout -b <same
+    name>` with `pr-branch-failed` -- class `run`, so it blocked the ramp too. Stage 5
+    is the only place a branch is cut, so a kept branch always means an earlier launch
+    reached it; and no resume of THIS driver admits a stage-5 trace (`run_revision`
+    refuses every `pr-*` prior), so the refusal can only ever stop a fresh relaunch.
+
+    The gate stands before `engine_tokens()` is read: zero model call. Two readings,
+    one per verdict suffix -- `:pushed` (origin holds the branch: the delivery exists,
+    follow the PR) and `:local` (the kept commits are local only: repair and push that
+    branch, or move it aside deliberately before a rebuild). Either way the commits are
+    NOT touched: the refusal is what keeps them."""
+    held = held_branch(Path(args.repo), delivery_branch(args))
+    if not held:
+        return
+    # The first pass's own trace sits where this refusal is about to be written: read
+    # its verdict first (it names the guard that was red), then let the recorder keep it.
+    prior = Path(args.out_dir) / f"issue-{args.issue}.json"
+    held["prior_verdict"] = None
+    if prior.is_file():
+        try:
+            held["prior_verdict"] = (json.loads(prior.read_text(encoding="utf-8"))
+                                     or {}).get("verdict")
+        except (OSError, ValueError):
+            pass
+    branch, short = held["branch"], held["head"][:10]
+    n = held.get("commits_ahead")
+    count = (f"{n} commit(s) outside origin/main" if isinstance(n, int)
+             else "commit count unmeasured")
+    if held["pushed"]:
+        where = f"pushed ({held['upstream'] or 'advertised by origin'})"
+        recovery = (f"the branch is on origin at {short}: a PR may already exist -- "
+                    f"check `gh pr list --head {branch}` and follow or repair that one; "
+                    f"do not relaunch the grain")
+    else:
+        where = "local, never pushed"
+        recovery = (f"the kept commits stay on `{branch}` ({short}, {count}): repair and "
+                    f"push that branch, or -- to rebuild deliberately -- move it aside "
+                    f"first: `git -C {args.repo} branch -m {branch} {branch}-kept-{short}` "
+                    f"(never delete paid work)")
+    verdict = f"refused-branch-held:{'pushed' if held['pushed'] else 'local'}"
+    detail = (f"delivery branch {branch} already exists in {args.repo} ({short}, {where}) "
+              f"-- a relaunch would pay the whole build, then fail at `checkout -b`. "
+              f"Refused before any model call. Recovery: {recovery}")
+    _record_refusal(args, verdict, held_branch=held, recovery=recovery)
     ap.error(detail)
 
 
@@ -8170,6 +8351,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="branch name (default nbcoder/auto-<issue>-<notebook stem>-<hash>: "
                          "one branch per grain, a lot issue holds several; seat-neutral, "
                          "#433 review)")
+    ap.add_argument("--push-on-red-guards", action="store_true",
+                    help="stage 5: push and open the PR although a replayed repo guard "
+                         "MEASURED red (the behaviour before 24/11: a PR born red, "
+                         "repaired by hand, each repair push restarting its dwell)")
     ap.add_argument("--timeout", type=int, default=1500)
     ap.add_argument("--max-tokens", type=int, default=16384)
     ap.add_argument("--repair-rounds", type=int, default=2,
@@ -8266,6 +8451,9 @@ def main() -> int:
                  "nothing, the spec turn would never run (declare --spec-mode skip)")
     if args.max_stage >= 1:   # stage 0 is git-only: a claim must not require the MCP wiring
         _preflight(ap, args)
+    if args.max_stage >= 5:   # stage 5 cuts the delivery branch: one of the same grain
+                              # already held would be paid for, then collide (ms#1912)
+        _refuse_held_branch(ap, args)
     rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
            "lane": args.lane, "dry": args.max_stage < 5, "stages": {}, "calls": [],
            # declared per-step models (#4831): what the lane asked for -- what each turn

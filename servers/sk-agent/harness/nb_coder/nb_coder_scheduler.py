@@ -228,6 +228,11 @@ CONTENT_FAILURE_PREFIXES = (
     # origin/main while the port was built. The engine served the whole run; the port is
     # stale, so stage 5 refuses the push and a retry re-ports from the new source.
     "source-drifted",
+    # 24/11: plan, build and verify were served, then a repo guard replayed after
+    # the integration MEASURED red and stage 5 kept the branch unpushed. A served
+    # run: it proves the capacity and never blocks the ramp; the branch and the
+    # guards' tails are in the trace for the lane to repair.
+    "pr-integration-red",
 )
 
 
@@ -241,6 +246,12 @@ CONTENT_FAILURE_PREFIXES = (
 # po-2024 holds it.
 ADMISSION_FAILURE_PREFIXES = (
     "refused-claim",
+    # 24/11 (ms#1912 review): a stage-5 relaunch whose deterministic delivery branch
+    # already exists -- refused by the driver's preflight BEFORE any model call. The
+    # first pass kept the branch (a `pr-integration-red` and its commits), so nothing
+    # is judged here either: the engine was never asked. Same class as the claim
+    # refusals -- it costs nothing and must not hold the ramp for the whole retry loop.
+    "refused-branch-held",
 )
 
 
