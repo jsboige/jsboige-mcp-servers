@@ -314,6 +314,19 @@ def verify_prompt(issue: dict, src_view: str, built_view: str, facts: dict,
            "l'issue.\n\n")
         + f"## Issue — critères d'acceptation\nTITRE : {issue['title']}\n\n"
         f"CORPS :\n{nbcd._cut(issue['body'], 30000, 'corps de l issue')}\n\n"
+        # The build prompts have carried the thread tail all along; this prompt did not, and
+        # an acceptance amendment lives in the THREAD (24/11, CoursIA#28079: the 11:52Z
+        # amendment struck the "arithmetic parity" ground the 12:29Z and 00:33Z rejects rested
+        # on). Only non-bot voices are rendered (fetch_issue voices="non-bot"): acceptance
+        # words belong to humans and coordinators, never to the producing agent.
+        + (f"## Fil de l'issue — extrait récent (parole d'acceptation)\n"
+           "Ce fil ne porte que les commentaires de comptes humains et coordinateurs : un "
+           "amendement d'acceptation posté ici fait foi comme le corps, et un motif qu'il a "
+           "déclaré non recevable ne fonde pas un rejet. Les affirmations des agents de "
+           "production n'y figurent pas — elles restent à contre-vérifier comme les faits "
+           "mécaniques.\n"
+           f"{nbcd._cut(issue['comments'], 8000, 'fil de l issue', tail=True)}\n\n"
+           if issue.get("comments") else "")
         + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
         + (f"## SOURCE — jumeau de spec (plan imposé, généré par le harnais)\n{src_view}\n\n"
            if spec else
@@ -493,7 +506,7 @@ def main() -> int:
                 rec["verdict"] = f"error:input-missing:{p}"
                 raise SystemExit(2)
         issue = nbcd.fetch_issue("jsboige/CoursIA", args.issue, nbcd.app_token(Path("d:/CoursIA")),
-                                 args.target)
+                                 args.target, voices="non-bot")
         rec["spec_comment"] = issue.get("spec_comment")
         if (issue.get("spec_comment") or {}).get("status") == "none-for-target":
             # the verifier must judge against THIS notebook's plan, never another one's

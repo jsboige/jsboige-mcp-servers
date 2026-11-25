@@ -96,3 +96,20 @@ powershell.exe -NoProfile -File harness/nb_audit/register_hourly.ps1
 `test-sk-agent` CI job) is the guard that the copy carries **no seat binding**: it loads
 the modules from this tree, asserts the sibling resolution, the env override, and the
 writer contract that keeps notebook sources in list-of-lines form (CoursIA convention).
+
+## What the verifier reads (producer ≠ verifier, 24/11)
+
+`nb_coder_verify.py` judges on the issue **title, body and the thread's non-bot voices** — the
+human and coordinator accounts, i.e. the ones that arbitrate acceptance — plus the source, the
+deliverable, the mechanical facts and its own previous round. An acceptance amendment posted in
+the thread therefore reaches it. A producing agent's own thread posts (claims, releases, consignes)
+never do: `fetch_issue(..., voices="non-bot")` keeps them out of the prompt, so "independent" is
+not just a rule on models. Spec drafts are bot-posted by design and are unaffected: the selection
+of a target's spec still reads every comment.
+
+The reviser (`revision_prompt`) gets the same thread tail as the build prompts, so it can contest
+a finding an amendment has struck instead of bending the notebook to it. The driver forwards its
+`--conventions` to the verifier: the builder and the verifier judge delivery against one text.
+
+Pins: `nb_coder/test_nb_coder_acceptance_thread.py` (measured on CoursIA#28079 — the 23/11 11:52Z
+amendment, then two rejects resting on the ground it had struck).

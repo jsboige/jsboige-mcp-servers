@@ -359,7 +359,8 @@ def _thread_entry(c: dict, body: str | None = None) -> str:
     return f"--- {c.get('login')} {c.get('created_at')}\n{c.get('body') if body is None else body}"
 
 
-def select_target_spec(issue: dict, comments: list[dict], target: str | None) -> dict:
+def select_target_spec(issue: dict, comments: list[dict], target: str | None,
+                       voices: str = "all") -> dict:
     """Rewrite ``issue`` body/thread for ``target`` and return what was decided.
 
     status:
@@ -367,6 +368,12 @@ def select_target_spec(issue: dict, comments: list[dict], target: str | None) ->
       - ``no-spec-comments``  the thread has no targeted spec draft: nothing changes
       - ``selected``          the target's spec (the LATEST one if revised) joins the body
       - ``none-for-target``   the lot has specs, none for this notebook: the caller refuses
+
+    ``voices="non-bot"`` renders only the comments of human and coordinator accounts —
+    the INDEPENDENT verifier reads acceptance words, never a production agent's own claims
+    (24/11, CoursIA#28079: the 11:52Z acceptance amendment was posted in the thread and the
+    verifier, fed the body alone, re-rejected on the very ground it struck, at 12:29Z and
+    00:33Z). Spec selection still reads every comment: specs are bot-posted by design.
     """
     specs = [(k, t) for k, c in enumerate(comments)
              if (t := spec_draft_target(c.get("body") or ""))]
@@ -380,6 +387,8 @@ def select_target_spec(issue: dict, comments: list[dict], target: str | None) ->
     chosen = mine[-1] if mine else None
     entries = []
     for k, c in enumerate(comments):
+        if voices == "non-bot" and str(c.get("login") or "").endswith("[bot]"):
+            continue                      # a producing agent's words never reach the verifier
         t = next((t for kk, t in specs if kk == k), None)
         if not tgt or t is None:
             entries.append(_thread_entry(c))
@@ -404,10 +413,12 @@ def select_target_spec(issue: dict, comments: list[dict], target: str | None) ->
     return info
 
 
-def fetch_issue(slug: str, n: int, token: str | None, target: str | None = None) -> dict:
+def fetch_issue(slug: str, n: int, token: str | None, target: str | None = None,
+                voices: str = "all") -> dict:
     """Issue body + thread. ``target`` (repo-relative notebook) scopes a lot issue's spec
     drafts to that notebook — see select_target_spec. ``issue["spec_comment"]`` records
-    the decision; ``none-for-target`` must stop the run before any token is spent."""
+    the decision; ``none-for-target`` must stop the run before any token is spent.
+    ``voices`` is passed through: the verifier asks for ``non-bot`` (see select_target_spec)."""
     rc, out = gh(["api", f"repos/{slug}/issues/{n}",
                   "--jq", '{"title":.title,"state":.state,"body":(.body // ""),"labels":[.labels[].name]}'],
                  token)
@@ -427,7 +438,7 @@ def fetch_issue(slug: str, n: int, token: str | None, target: str | None = None)
         issue["comments"] = f"(comments unparsable: {e})"
         issue["spec_comment"] = {"status": "comments-unreadable"}
         return issue
-    issue["spec_comment"] = select_target_spec(issue, comments, target)
+    issue["spec_comment"] = select_target_spec(issue, comments, target, voices=voices)
     return issue
 
 
@@ -4249,6 +4260,11 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         + ("## Issue — spec (plan des cellules, attendus, interdits)\n" if spec
            else "## Issue — critères d'acceptation\n")
         + f"TITRE : {issue['title']}\n\nCORPS :\n{_cut(issue['body'], 30000, 'corps de l issue')}\n\n"
+        # the build prompts have carried the thread tail since the lot workflow; the reviser
+        # did not (24/11, CoursIA#28079: an acceptance amendment lived in the thread only, and
+        # a reviser that cannot read it bends the notebook to a finding the thread struck).
+        + (f"## Fil (extrait récent)\n{_cut(issue['comments'], 8000, 'fil de l issue', tail=True)}\n\n"
+           if issue.get("comments") else "")
         + (f"## Conventions de livraison (imposées)\n{conventions}\n\n" if conventions else "")
         + f"## Carnet actuel — sources ET sorties réelles\n{view}\n\n"
         + (f"## Jumeau source — code ET sorties de RÉFÉRENCE (les valeurs à reproduire)\n"
@@ -5872,6 +5888,10 @@ def stage4_verify(args, rec: dict, src_nb: Path, built_nb: Path, out_dir: Path,
            "--out-dir", str(out_dir), "--timeout", str(args.verify_timeout)]
     if getattr(args, "verifier_model", None):    # #4831: the audit step's model, per pass
         cmd += ["--model", args.verifier_model]
+    if getattr(args, "conventions", None):
+        # without this the verifier read the verifier-side DEFAULT while the builder was
+        # handed whatever the caller chose: one judgment on one text (24/11).
+        cmd += ["--conventions", str(args.conventions)]
     if getattr(args, "notebook", None):
         # same spec scoping as the producer: on a lot issue, THIS notebook's [SPEC-DRAFT]
         cmd += ["--target", _norm_rel(args.notebook)]
