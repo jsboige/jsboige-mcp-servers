@@ -261,7 +261,20 @@ describe('#4872 (b) — the guard lines name their process (pid + served vintage
     // parent directory IS the vintage the measurement needs to tell builds apart.
     expect(condenseGuardProvenance('/srv/rsm/build-9bd1e87c2a5a4eeb/index.js', 4242))
       .toBe('[pid=4242 vintage=build-9bd1e87c2a5a4eeb]');
-    expect(condenseGuardProvenance(undefined, 7)).toBe('[pid=7 vintage=unknown]');
+    expect(condenseGuardProvenance('', 7)).toBe('[pid=7 vintage=unknown]');
+  });
+
+  it('defaults the entry to process.argv[1] — the production call passes no argument', () => {
+    // Regression: with no default, `condenseGuardProvenance()` stamped
+    // `vintage=unknown` on every real host, so a per-build count stayed impossible
+    // and the whole stamp was decorative. The guard's own call site is bare.
+    const savedEntry = process.argv[1];
+    try {
+      process.argv[1] = '/srv/rsm/build-9bd1e87c2a5a4eeb/index.js';
+      expect(condenseGuardProvenance()).toBe(`[pid=${process.pid} vintage=build-9bd1e87c2a5a4eeb]`);
+    } finally {
+      process.argv[1] = savedEntry;
+    }
   });
 
   it('trigger, failed attempt and truncation lines all carry the stamp ON the marker line', async () => {

@@ -357,8 +357,13 @@ export function computePrimaryAttemptTimeoutMs(
  * `getServedBuildId()` (tools/search) is deliberate, but that helper is not
  * imported: dragging the search tool's module graph into the dashboard path for
  * a basename is a side effect this stamp does not justify.
+ *
+ * `entryPath` defaults to `process.argv[1]`, as `getServedBuildId` does: the
+ * production call site passes no argument, and a parameter with no default made
+ * every real stamp read `vintage=unknown`, which defeats the attribution this
+ * stamp exists for.
  */
-export function condenseGuardProvenance(entryPath?: string, pid?: number): string {
+export function condenseGuardProvenance(entryPath: string | null = process.argv[1] ?? '', pid?: number): string {
   let vintage = 'unknown';
   try {
     if (entryPath) vintage = path.basename(path.dirname(path.resolve(entryPath)));
