@@ -87,7 +87,7 @@ def _commit(r: Path, rel: str, nb: dict, msg: str) -> str:
     _sh("git", "add", rel, cwd=r)
     _sh("git", "commit", "-q", "-m", msg, cwd=r)
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=r, capture_output=True,
-                          text=True, check=True).stdout.strip()
+                          text=True, encoding="utf-8", errors="replace", check=True).stdout.strip()
 
 
 SRC = "Sudoku/Sudoku-07-Norvig-Python.ipynb"
@@ -117,7 +117,7 @@ def test_source_absent_at_base_or_unreadable_main_is_unmeasured(tmp_path):
     _sh("git", "rm", "-q", SRC, cwd=r)
     _sh("git", "commit", "-q", "-m", "drop twin", cwd=r)
     main = subprocess.run(["git", "rev-parse", "HEAD"], cwd=r, capture_output=True,
-                          text=True, check=True).stdout.strip()
+                          text=True, encoding="utf-8", errors="replace", check=True).stdout.strip()
     _sh("git", "update-ref", "refs/remotes/origin/main", main, cwd=r)
     assert nbdr.source_drift(r, gone, SRC)["drift"] == "deleted"
 
@@ -169,7 +169,7 @@ def _worktree_on(tmp_path, main_nb):
 
 def _head(r):
     return subprocess.run(["git", "rev-parse", "HEAD"], cwd=r, capture_output=True,
-                          text=True, check=True).stdout.strip()
+                          text=True, encoding="utf-8", errors="replace", check=True).stdout.strip()
 
 
 def test_stage5_markdown_only_drift_rebases_on_origin_main(tmp_path):

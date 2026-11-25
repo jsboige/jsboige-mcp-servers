@@ -523,7 +523,7 @@ class TestProbeStdin:
                 stdin=subprocess.PIPE,  # deliberately left OPEN until the end
                 stdout=subprocess.PIPE,
                 stderr=err,
-                text=True,
+                text=True, encoding="utf-8", errors="replace",
             )
             try:
                 verdict = proc.stdout.read().strip()

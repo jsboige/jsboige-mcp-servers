@@ -444,7 +444,7 @@ class TestChildStdin:
             env = dict(os.environ, PATH=tmp + os.pathsep + os.environ.get("PATH", ""))
             proc = subprocess.Popen([sys.executable, "-c", code], stdin=subprocess.PIPE,
                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                                    env=env, text=True)
+                                    env=env, text=True, encoding="utf-8", errors="replace")
             out = []
             reader = threading.Thread(target=lambda: out.append(proc.stdout.read()))
             reader.start()

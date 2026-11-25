@@ -256,7 +256,7 @@ def test_inventory_generator_check_mode_passes():
             [sys.executable, str(HERE / "generate_inventory.py"),
              "--doc-path", str(doc)],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             cwd=str(HERE),
         )
         assert render.returncode == 0, (
@@ -266,7 +266,7 @@ def test_inventory_generator_check_mode_passes():
             [sys.executable, str(HERE / "generate_inventory.py"),
              "--check", "--doc-path", str(doc)],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             cwd=str(HERE),
         )
         assert result.returncode == 0, (
@@ -304,7 +304,7 @@ def test_deployment_doc_check_detects_drift():
         render = subprocess.run(
             [sys.executable, str(HERE / "generate_inventory.py"),
              "--doc-path", str(inv)],
-            capture_output=True, text=True, cwd=str(HERE),
+            capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(HERE),
         )
         assert render.returncode == 0, render.stderr
         for text, expected_ok in ((good, True), (bad, False)):
@@ -313,7 +313,7 @@ def test_deployment_doc_check_detects_drift():
                 [sys.executable, str(HERE / "generate_inventory.py"),
                  "--check", "--doc-path", str(inv),
                  "--deployment-doc", str(dep)],
-                capture_output=True, text=True, cwd=str(HERE),
+                capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=str(HERE),
             )
             if expected_ok:
                 assert result.returncode == 0, (

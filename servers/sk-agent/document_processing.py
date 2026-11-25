@@ -346,7 +346,7 @@ def _ppt_to_images(
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=120,  # 2 minute timeout
         )
 
@@ -428,7 +428,7 @@ def _doc_to_text(doc_path: str) -> str:
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=120,
         )
 
@@ -502,7 +502,7 @@ def _doc_to_images(
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=120,
         )
 
@@ -596,7 +596,7 @@ def _xlsx_to_csv(xlsx_path: str, max_sheets: int = 10) -> list[tuple[str, str]]:
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=120,
         )
 
@@ -662,7 +662,7 @@ def _xlsx_to_images(
             ],
             stdin=subprocess.DEVNULL,
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             timeout=120,
         )
 
