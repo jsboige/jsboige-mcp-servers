@@ -2220,7 +2220,10 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
                     elif call_timed_out(henv):
                         rec["verdict"] = f"stage2-timeout:{si}+h{hi}"
                     else:
-                        rec["verdict"] = f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}"
+                        # scheduler defer contract: a provider 429 stays unprefixed
+                        rec["verdict"] = (
+                            provider_rate_refusal(henv)
+                            or f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}")
                     rec["stage2_raw_tail"] = (henv.get("response") or "")[-3000:]
                     return {}
                 kept += hkept
@@ -2233,7 +2236,11 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             if gate_refusal(env):
                 rec["verdict"] = gate_refusal(env)   # scheduler defer contract
             elif not part:
-                rec["verdict"] = f"stage2-{call_failure(env) or 'unparsed'}:{si}"
+                # scheduler defer contract: a provider 429 stays unprefixed (23/11: four
+                # builds walled mid-flight were failed and released as stage2-call-failed)
+                rec["verdict"] = (
+                    provider_rate_refusal(env)
+                    or f"stage2-{call_failure(env) or 'unparsed'}:{si}")
             else:
                 rec["verdict"] = f"stage2-empty-segment:{si}"
             rec["stage2_raw_tail"] = (env.get("response") or "")[-3000:]
@@ -4545,7 +4552,8 @@ async def spec_stage(sk, args, rec: dict, issue: dict, kernel: dict, ctx: str, v
                    "chars": len(spec_text), "elapsed_s": round(time.time() - tspec, 1)}
     if not spec_text:
         rec["spec"]["failed"] = True
-        rec["verdict"] = f"spec-{call_failure(env_s) or 'no-answer'}"
+        rec["verdict"] = (provider_rate_refusal(env_s)   # scheduler defer contract
+                          or f"spec-{call_failure(env_s) or 'no-answer'}")
         return None
     spec_body = _cut(spec_text, SPEC_BODY_CAP, "spec")
     spec_path = Path(out_dir) / f"spec-{args.issue}.md"
@@ -4651,6 +4659,47 @@ def gate_refusal(env: dict) -> str:
     return ""
 
 
+# A MODEL provider's 429 says as little about the grain as the capacity gate's refusal — but
+# not every 429 lasts the same. Measured in nb_coder records 23/11 00:08-00:09Z
+# (po-2028:claudish, batches s6g and s6r): 'Usage limit reached for 5 hour. Your limit will
+# reset at …' — a five-hour WINDOW WALL that ran dry under two concurrent batches. Four
+# stage-2 builds died as `stage2-call-failed: … 'rate_limit_error' …`, the scheduler classed
+# each a run failure and posted [RELEASED], which CoursIA's guard reads as a three-day,
+# fleet-wide RELACHEE on notebooks nothing had judged. A fifth (#28069) met it one call
+# later, on a revision round, and was released on the reject that round never answered --
+# revise_loop carries the same reading there. The transient wording ('Error code: 429 - {…
+# 'code': '1302', 'message': 'Rate limit reached for requests'}}') is measured in this
+# fleet's notebook outputs, not yet in a harness verdict: the same markers name it, and it
+# takes the ordinary backoff — only the wall waits.
+_PROVIDER_RATE_LIMIT_MARKERS = ("rate_limit_error", "ratelimiterror", "error code: 429",
+                                "rate limit reached", "too many requests")
+_PROVIDER_WALL_RE = re.compile(r"usage limit reached|will reset at", re.I)
+PROVIDER_RATE_LIMIT_VERDICT = "deferred-by-provider-rate-limit"
+
+
+def provider_rate_refusal(env: dict) -> str:
+    """The bare scheduler deferral for a provider 429 carried by an envelope, or "".
+
+    Read at every site that assembles a VERDICT from a model call that never answered,
+    before `call_failure` — which keeps naming the cause `call-failed` for the diagnostic
+    records. The verdict must stay unprefixed: the scheduler matches its deferral prefixes
+    from the first character (`stage2-deferred-…` would fail the grain all the same).
+
+    `:wall` marks a window wall. Its announced clock is NOT waited on: read as UTC, the
+    measured sample (reset at 08:48:53 for a wall hit at 00:09Z) outlasts the five-hour
+    window the same message names, so its offset is unknown. The scheduler probes hourly
+    instead (PROVIDER_WALL_WAIT_S, there); the other form takes the ordinary backoff."""
+    err = (env.get("error") or "").strip()
+    if not err:
+        return ""
+    low = err.lower()
+    hit = next((m for m in _PROVIDER_RATE_LIMIT_MARKERS if m in low), "")
+    if not hit:
+        return ""
+    wall = ":wall" if _PROVIDER_WALL_RE.search(err) else ""
+    return f"{PROVIDER_RATE_LIMIT_VERDICT}{wall}: {_excerpt(err, hit)}"
+
+
 def looks_truncated(env: dict) -> bool:
     """An answer cut by max_tokens ends inside the JSON, not on its fence or brace. Asking
     the model to re-emit it under the same budget would cut it again: that case is the
@@ -4691,8 +4740,11 @@ async def parse_or_repair(session: ClientSession, args, rec: dict, stage: str, e
         {"stage": stage, "error": err[:400], "ok": obj2 is not None,
          "error_after": err2[:400] if obj2 is None else "",
          "failure": call_failure(env2) or gate_refusal(env2)})
-    # A gate refusal on the repair call is a deferral, and the caller reads it from env.
-    return (obj2, env2) if obj2 is not None or gate_refusal(env2) else (None, env)
+    # A gate refusal or a provider 429 on the repair call is a deferral, and the caller
+    # reads it from env: handing back the ORIGINAL (unparsed, error-less) answer would name
+    # the grain `unparsed` — a failure — for a refusal that says retry.
+    return ((obj2, env2) if obj2 is not None or gate_refusal(env2)
+            or provider_rate_refusal(env2) else (None, env))
 
 
 PM_READ_TIMEOUT_S = 300
@@ -7183,6 +7235,18 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
             if not part:
                 entry["result"] = (gate_refusal(env) or call_failure(env) or "unparsed")
                 entry["raw_tail"] = (env.get("response") or "")[-1500:]
+                refusal = gate_refusal(env) or provider_rate_refusal(env)
+                if refusal:
+                    # scheduler defer contract: the round was never held, so the reject it
+                    # would have answered is not this run's last word either. Measured 23/11
+                    # 00:08Z (CoursIA#28069, batch s6r): an execution the builder had to
+                    # answer, and the revise call met the five-hour wall — left on its
+                    # reject the grain was failed and [RELEASED], a three-day fleet-wide
+                    # lock for a repair the provider refused to hear. The reject is kept in
+                    # last_content_verdict for a --revise-from resume; the entry keeps
+                    # naming the cause.
+                    rec["last_content_verdict"] = rec["verdict"]
+                    rec["verdict"] = refusal
             elif not part.get("cells") and part.get("contested"):
                 # A valid, cell-free answer is the documented contest path, not a malformed
                 # reply. CoursIA#27288 (23/11, o1/Terra): the builder correctly explained
@@ -7265,10 +7329,14 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
     # the gates were fixed overwrote verify.source, so this only touches the never-fixed
     # case. Execution repair follows the same rule (verify.source "execution"); a kernel
     # that died during a round keeps its own verdict instead of being masked.
+    # A deferral (capacity gate, provider 429) met during a round is the run's verdict too:
+    # the scheduler defers, and the repair is had when the refusal lifts, instead of the
+    # grain being released on a repair nobody could attempt (CoursIA#28069, 23/11 00:08Z).
     src = (rec.get("verify") or {}).get("source")
     if (src in ("gates", "execution")
             and not str(rec.get("verdict") or "").startswith(("verify-approved",
                                                                MIDRUN_REFUSED))
+            and not str(rec.get("verdict") or "").startswith("deferred-by-")
             and rec.get("verdict") != "kernel-start-failed"):
         origin = rec.get("gate_repair" if src == "gates" else "exec_repair") or {}
         rec["verdict"] = origin.get("from") or rec["verdict"]
@@ -7484,9 +7552,7 @@ async def run_revision(args, rec: dict) -> dict:
         # a seeded gate repair enters the loop as a reject; the exhaustion-restore
         # inside revise_loop brings the honest gates-failed verdict back if the
         # repair never succeeds
-        resumed = ((rec.get("gate_repair") or {}).get("resumed")
-                   or (rec.get("exec_repair") or {}).get("resumed"))
-        rec["verdict"] = "verify-reject" if resumed else prior["verdict"]
+        rec["verdict"] = "verify-reject"
     await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built, kname=kname,
                       exec_dir=exec_dir, conventions=conventions, create_mode=create_mode,
                       wt_path=wt_path, out_dir=out_dir)
@@ -7750,14 +7816,15 @@ async def run(args, rec: dict) -> dict:
             rec["stage1_s"] = round(time.time() - t1, 1)
             if args.max_stage < 2:
                 rec["verdict"] = ("stage1-only" if plan
-                                  else gate_refusal(env)
+                                  else gate_refusal(env) or provider_rate_refusal(env)
                                   or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             if not plan:
                 # a mid-flight gate refusal defers (scheduler retries with backoff),
                 # everything else that killed the plan call stays terminal — 18/11
-                # wave-1c #27103 burned terminally on exactly this distinction.
-                rec["verdict"] = (gate_refusal(env)
+                # wave-1c #27103 burned terminally on exactly this distinction. A provider
+                # 429 defers for the same reason (23/11).
+                rec["verdict"] = (gate_refusal(env) or provider_rate_refusal(env)
                                   or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             exec_idx = plan.get("execute_cells") or []
@@ -7830,7 +7897,8 @@ async def run(args, rec: dict) -> dict:
             if not exists:
                 rec["verdict"] = "build-no-notebook"
             elif not rec["built_notebook"]["changed"]:
-                rec["verdict"] = f"build-{call_failure(env2) or 'no-change'}"
+                rec["verdict"] = (provider_rate_refusal(env2)   # scheduler defer contract
+                                  or f"build-{call_failure(env2) or 'no-change'}")
             else:
                 rec["structure"] = (verify_structure_create(src_nb, scratch) if create_mode
                                     else verify_structure(src_nb, scratch, plan))
