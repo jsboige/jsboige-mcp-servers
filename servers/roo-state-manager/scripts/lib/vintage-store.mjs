@@ -21,7 +21,21 @@
  * vintage reads the copy it was published with, never the dist/ of a later
  * build.
  *
- * @version 1.1.0 — issue #4918 (bundled workspace dependencies); 1.0.0 — #3713
+ * Publication completeness (ms#1910 review of #4918): a vintage directory only
+ * ever appears under its FINAL name through an atomic rename of a staged tree
+ * whose content hash — recomputed on the copy — equals that name. A copy
+ * interrupted by a crash leaves `build-<id>.staging-<pid>` behind, which is
+ * never listed, never marked, and is discarded by the next publish. An
+ * existing directory whose content no longer hashes to its own name is an
+ * incomplete or corrupted copy: the publish refuses it and never marks it.
+ * The id IS the completion witness — a first-copied file (package.json) says
+ * nothing about the files that follow it.
+ *
+ * @version 1.2.0 — ms#1910 review (staged publication, hash verified on the
+ *   copy, stale staging cleanup, runtime files excluded from the read-back,
+ *   workspace packages read from `dependencies` and told from regular ones by
+ *   the install tree); 1.1.0 — issue #4918 (bundled workspace dependencies);
+ *   1.0.0 — #3713
  */
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
@@ -83,37 +97,63 @@ export function bundleMount(name) {
 }
 
 /**
- * The installed copy of `name` as Node finds it from `fromDir` — node_modules/
- * <name> at every level walking up — as a REAL path. npm links a workspace
- * member there, so the real path is what tells a workspace package (outside
- * every node_modules) from a regular dependency. null when not installed.
+ * Where Node finds `name` from `fromDir` — node_modules/<name> at every level
+ * walking up — at the path it was installed at: a link for a workspace
+ * member, a directory for a regular dependency. null when not installed.
  */
 export function findInstalledPackage(name, fromDir) {
   const segments = ['node_modules', ...name.split('/')];
   for (let dir = fromDir; ; dir = path.dirname(dir)) {
     const candidate = path.join(dir, ...segments);
-    if (fs.existsSync(path.join(candidate, 'package.json'))) return fs.realpathSync(candidate);
+    if (fs.existsSync(path.join(candidate, 'package.json'))) return candidate;
     if (path.dirname(dir) === dir) return null;
   }
 }
 
-const isRegularDependency = (realDir) => realDir.split(/[\\/]/).includes('node_modules');
+/** The node_modules directory holding `entry` — the install tree an entry never leaves unless it is a link out of it. */
+function installTreeOf(entry) {
+  for (let dir = entry; ; dir = path.dirname(dir)) {
+    if (path.basename(dir) === 'node_modules') return dir;
+    if (path.dirname(dir) === dir) return null;
+  }
+}
+
+function isInside(tree, dir) {
+  const rel = path.relative(tree, dir);
+  return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
+}
+
+/**
+ * A regular dependency is installed inside the node_modules tree that holds
+ * its entry and never leaves it — a pnpm store too, which links to `.pnpm/`
+ * under the same tree. npm links a workspace member from elsewhere: its
+ * source tree, rebuilt in place, so its real path escapes that tree. The test
+ * is on that escape, not on the segments of the real path — a workspace
+ * checked out under a folder named node_modules is still a workspace
+ * (ms#1910 review).
+ */
+function isRegularDependency(entry, realDir) {
+  const tree = installTreeOf(entry);
+  return tree !== null && isInside(tree, realDir);
+}
 
 /**
  * The dependencies of the package at `packageDir` that are workspace packages
  * — the ones a vintage must carry. Returns [{ name, realDir }].
+ *
+ * `dependencies` only: what the emitted code resolves at runtime is declared
+ * there. A devDependency is build- and test-time, and a workspace package
+ * declared as one must not be able to fail the publish for lack of a build
+ * (ms#1910 review).
  */
 export function workspaceDependencies(packageDir) {
   const manifest = JSON.parse(fs.readFileSync(path.join(packageDir, 'package.json'), 'utf-8'));
-  const names = new Set([
-    ...Object.keys(manifest.dependencies || {}),
-    ...Object.keys(manifest.devDependencies || {}),
-    ...Object.keys(manifest.peerDependencies || {}),
-  ]);
   const bundled = [];
-  for (const name of names) {
-    const realDir = findInstalledPackage(name, packageDir);
-    if (realDir && !isRegularDependency(realDir)) bundled.push({ name, realDir });
+  for (const name of Object.keys(manifest.dependencies || {})) {
+    const entry = findInstalledPackage(name, packageDir);
+    if (!entry) continue;
+    const realDir = fs.realpathSync(entry);
+    if (!isRegularDependency(entry, realDir)) bundled.push({ name, realDir });
   }
   return bundled;
 }
@@ -157,19 +197,73 @@ export function copyTree(src, dst) {
 }
 
 /**
- * Put the bundled packages inside a vintage directory. Returns the number of
- * files written; a package whose manifest is already there is left alone.
+ * Put the bundled packages inside a freshly staged vintage directory. Returns
+ * the number of files written. Nothing is inferred from what the target
+ * already holds: publication stages a NEW tree and renames it into place, so
+ * there is no "already bundled" state to detect — and none to get wrong. (The
+ * test this replaces — package.json present — was the first file copied, not
+ * the last: an interrupted copy passed it with a partial dist/.)
  */
 export function bundleInto(vintageDir, bundled) {
   let written = 0;
   for (const { name, realDir } of bundled) {
     const target = path.join(vintageDir, ...bundleMount(name).split('/'));
-    if (fs.existsSync(path.join(target, 'package.json'))) continue;
     for (const entry of BUNDLED_ENTRIES) {
       written += copyTree(path.join(realDir, entry), path.join(target, entry));
     }
   }
   return written;
+}
+
+/** `<vintage>.staging-<pid>`: a tree being copied. Not a vintage — no marker can name it, no wrapper can serve it, no listing shows it. */
+export function stagingPathFor(vintagePath, pid = process.pid) {
+  return `${vintagePath}.staging-${pid}`;
+}
+
+const STAGING_PATTERN = /^build-[0-9a-f]{16}\.staging-(\d+)$/;
+
+/**
+ * Remove the staging trees of publish processes that are gone — the pid
+ * liveness convention of `.ref-<pid>`. A live pid's staging belongs to a
+ * concurrent publish and is left alone. Returns the names removed.
+ */
+export function cleanStaleStaging(root, { alive = isPidAlive } = {}) {
+  const removed = [];
+  for (const ent of fs.readdirSync(root, { withFileTypes: true })) {
+    const m = STAGING_PATTERN.exec(ent.name);
+    if (!m || !ent.isDirectory() || alive(Number.parseInt(m[1], 10))) continue;
+    fs.rmSync(path.join(root, ent.name), { recursive: true, force: true });
+    removed.push(ent.name);
+  }
+  return removed;
+}
+
+/**
+ * Files a vintage gains AFTER it was published. They date it or belong to the
+ * host serving it; they are not its content. Every writer into a vintage root
+ * must be listed here: write-build-info.mjs, mcp-wrapper.cjs (twice).
+ */
+const isPostPublicationFile = (name) =>
+  name === 'build-info.json' || name === '.tools-cache.json' || /^\.ref-\d+$/.test(name);
+
+/**
+ * The vintage name a directory on disk actually carries: its content hash read
+ * back from the copy, without the post-publication files at its root (and
+ * ONLY at its root — a bundled dist keeps every file it has).
+ *
+ * Equals the name the sources gave (`vintageNameFor`) when the copy is
+ * faithful. Any other result is an incomplete or corrupted tree: the id is
+ * what proves a copy complete, so such a directory is never marked current.
+ */
+export function vintageNameOnDisk(dir) {
+  const entries = [];
+  for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (isPostPublicationFile(ent.name)) continue;
+    if (ent.isDirectory()) collectTree(path.join(dir, ent.name), ent.name, entries);
+    else if (ent.isFile()) entries.push(`${ent.name}:${digest(path.join(dir, ent.name))}`);
+  }
+  entries.sort();
+  return `build-${createHash('sha256').update(entries.join('\n')).digest('hex').slice(0, 16)}`;
 }
 
 /** Vintages present under root, newest first (directory mtime). */
