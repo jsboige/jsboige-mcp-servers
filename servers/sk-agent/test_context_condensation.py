@@ -496,3 +496,65 @@ async def test_threshold_never_orphans_a_tool_result():
                 assert item.id in call_ids, (
                     f"orphan tool result {item.id!r} survived the threshold pass"
                 )
+
+
+# ---------------------------------------------------------------------------
+# Pass 2 (#4816): pruning a tool result must keep the pair identity
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_truncate_old_tools_preserves_the_tool_call_id():
+    """Pruning rewrites the payload only — the pair identity must survive.
+
+    SK renders a TOOL message's wire field as ``items[0].id or ""``
+    (``ChatMessageContent.to_dict``), so a rebuilt FunctionResultContent
+    that dropped ``id`` sent ``tool_call_id: ""`` — a result nothing on
+    the wire ties to its call.
+    """
+    messages = []
+    for i in range(1, 5):
+        messages.append(
+            ChatMessageContent(
+                role=AuthorRole.ASSISTANT,
+                items=[
+                    FunctionCallContent(
+                        id=f"call-{i}",
+                        plugin_name="nb",
+                        function_name="update_cell",
+                        arguments="{}",
+                    )
+                ],
+            )
+        )
+        messages.append(
+            ChatMessageContent(
+                role=AuthorRole.TOOL,
+                items=[
+                    FunctionResultContent(
+                        id=f"call-{i}",
+                        plugin_name="nb",
+                        function_name="update_cell",
+                        result="r" * 40,
+                    )
+                ],
+            )
+        )
+    cfg = CondensationConfig(enabled=True, tool_result_window=2)
+    condenser = ContextCondenser(config=cfg)
+    out, _ = await condenser._pass_truncate_old_tools(messages, cfg)
+
+    wire = [msg.to_dict() for msg in out if msg.role == AuthorRole.TOOL]
+    assert [w["tool_call_id"] for w in wire] == [f"call-{i}" for i in range(1, 5)]
+    assert wire[0]["content"].startswith("[tool result pruned")
+    assert wire[1]["content"].startswith("[tool result pruned")
+    assert wire[2]["content"] == "r" * 40
+    assert wire[3]["content"] == "r" * 40
+    # plugin_name rides along too (SK 1.42 field, read by the connector)
+    kept = [
+        item
+        for msg in out
+        for item in msg.items
+        if isinstance(item, FunctionResultContent)
+    ]
+    assert all(item.plugin_name == "nb" for item in kept)

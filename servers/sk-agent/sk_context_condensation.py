@@ -526,19 +526,18 @@ def _set_tool_result_text(
 ) -> ChatMessageContent:
     """Replace ``FunctionResultContent.result`` text in a copy of the message.
 
-    Tool calls themselves are preserved; only the result payload is
-    rewritten. When a message carries multiple tool results, each is
+    Only the payload changes: ``id``, ``call_id`` and ``plugin_name`` stay
+    on the item (#4816) — they are what pairs the result with its call on
+    the wire. When a message carries multiple tool results, each is
     rewritten to the same compact form.
     """
     new_items: list[Any] = []
     for item in message.items:
         if isinstance(item, FunctionResultContent):
-            new_items.append(
-                FunctionResultContent(
-                    function_name=item.function_name,
-                    result=new_text,
-                )
-            )
+            # Rebuilding the item dropped ``id``, and SK renders a TOOL
+            # message's wire field as ``items[0].id or ""`` — the pruned
+            # result then travelled as an unpaired ``tool_call_id``.
+            new_items.append(item.model_copy(update={"result": new_text}))
         else:
             new_items.append(item)
     return ChatMessageContent(role=message.role, items=new_items)
