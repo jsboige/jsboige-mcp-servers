@@ -36,6 +36,11 @@
  *      BOUNDED (`UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS`, default
  *      30 s, read at call time — same convention as the G-B lot 1 bounds)
  *      so lock detention cannot be indefinite (07/10 class).
+ *      Re-review on #4915 (po-2028 04:48Z pt 2, po-2024 05:00Z addendum):
+ *      the PG-first attempt runs BETWEEN the base read and the file rewrite
+ *      and can outlive the lock TTL (30 s, never renewed). After a failed
+ *      attempt the fallback RE-TAKES the lock and re-reads its base before
+ *      rewriting — a concurrent append that landed meanwhile is not erased.
  *   2. #3782: the base state comes from `readDashboardFile` — the choke
  *      point that makes a retired (merged-away) key invisible in BOTH
  *      halves. The first head called `readDashboardFromPg` directly, which
@@ -49,8 +54,11 @@
  * `isDashboardPgPrimary()` is true, PG is written FIRST (checked variant) and
  * the GDrive file is only a bounded mirror stamped `mirrorExportAt` — the
  * Phase D instrument counts a stamped file as an export, an unstamped one as
- * a residual write. When PG fails, or when the gate is closed, the file-first
- * path runs unchanged (no stamp): a #3761 escalation is never lost.
+ * a residual write. When the gate is closed the file-first path is
+ * byte-for-byte unchanged (no stamp). When PG fails, the file-first path
+ * re-takes the lock and re-reads its base first (that attempt may have
+ * outlived the lock TTL), then writes as before (no stamp): a #3761
+ * escalation is never lost.
  *
  * Exit codes: 0 posted — at least one surface holds the message (a PG-sync
  * miss on the file-first path is a WARN, not an error: the GDrive write
@@ -202,10 +210,35 @@ const author = { machineId, workspace: authorWorkspace };
 
 // Review item 1 (verrou append, fail-open): #3761 escalations must never be
 // dropped, so an unacquired lock proceeds unserialized and says so. Holder
-// shape = CondenseLockInfo (same as the cross-post path).
-const holder = { machineId, workspace: 'listener', pid: process.pid, acquiredAt: new Date().toISOString() };
-const lockOwned = await acquireAppendLock(key, holder);
-const unserialized = !lockOwned;
+// shape = CondenseLockInfo (same as the cross-post path). The holder is
+// re-issued at every take: `acquiredAt` is part of the ownership check and
+// starts the TTL (dashboard.ts — 30 s, never renewed).
+const newHolder = () => ({ machineId, workspace: 'listener', pid: process.pid, acquiredAt: new Date().toISOString() });
+const holder = newHolder();
+let ownedHolder = (await acquireAppendLock(key, holder)) ? holder : null;
+let unserialized = ownedHolder === null;
+
+// Re-review #4915 (po-2028 04:48Z point 2, po-2024 05:00Z addendum): the
+// PG-first attempt below sits BETWEEN the base read and the full file rewrite,
+// and can outlive the lock TTL (the re-review measures the attempt at ~46,5 s
+// of connection timeouts against 30 s). Past the TTL another writer may have
+// taken the lock and appended: the lock held here is then stale, and a rewrite
+// from the pre-attempt base would erase that append — its only copy, since PG
+// is the half that failed. Release-then-acquire: a stolen lock is not released
+// (holder mismatch, dashboard.ts) and a fresh `acquiredAt` restarts the TTL.
+// Both PG halves are bounded (3 s) and never throw, so this adds no unbounded
+// wait to the fallback.
+async function retakeAppendLock() {
+  if (ownedHolder) {
+    await releaseAppendLock(key, ownedHolder);
+    ownedHolder = null;
+  }
+  const candidate = newHolder();
+  if (await acquireAppendLock(key, candidate)) {
+    ownedHolder = candidate;
+  }
+  return ownedHolder !== null;
+}
 
 // Review item 1 (re-review 11:04Z): the base read runs UNDER the lock — a
 // pre-lock snapshot would fold on stale state and overwrite the previous
@@ -243,8 +276,61 @@ try {
   // #4090 idempotence: a stable id already present means this exact alert was
   // already posted. Fold/write are skipped — no second message, no counter
   // bump — and the JSON says so. This runs INSIDE the lock so two concurrent
-  // posters of the same id cannot both miss it.
-  if (shouldDeduplicate(dashboard, messageId ?? null)) {
+  // posters of the same id cannot both miss it; the re-check after a failed PG
+  // attempt (below) keeps that promise when the lock had expired meanwhile.
+  let deduplicated = shouldDeduplicate(dashboard, messageId ?? null);
+  let message = null;
+  let next = null;
+  // `null` = gate closed (no attempt); otherwise the attempt's own verdict.
+  let pgFirst = null;
+  if (!deduplicated) {
+    const nowIso = new Date().toISOString();
+    message = mode === 'dashboard'
+      ? buildAppendMessage({ machineId, workspace: authorWorkspace, content, messageId, nowIso, rand })
+      : buildListenerEscalationMessage({ machineId, content, nowIso, rand });
+    next = nextDashboardState(dashboard, message);
+
+    // #4915 PG-primary gate — the same gate as `writeDashboardFile`
+    // (dashboard.ts), applied by hand rather than by delegation: the tool
+    // returns no PG verdict on its file-first path (void dual-write) while
+    // `pgSynced` below feeds the PS callers' logs; and it redacts (#3584),
+    // stages and re-reads the store — behaviour the gate-closed path must not
+    // gain (byte-for-byte unchanged here). Decided BEFORE the markdown is
+    // built: the stamp is part of the bytes.
+    if (isDashboardPgPrimary()) {
+      try {
+        const outcome = await dualWriteDashboardSyncChecked(next);
+        pgFirst = { ok: outcome?.ok === true, reason: outcome?.reason };
+      } catch (err) {
+        pgFirst = { ok: false, reason: err instanceof Error ? err.message : String(err) };
+      }
+      if (!pgFirst.ok) {
+        console.error(`WARN: porte PG-primaire ouverte, écriture PG en échec (${pgFirst.reason}) — repli sur le chemin fichier d’abord, sans tampon`);
+        // Re-review #4915: the attempt above can outlive the append lock TTL,
+        // so the lock taken at the top may be stale — and the fallback below
+        // rewrites the WHOLE file. Re-take, then re-read: the fold must run on
+        // what is on disk NOW, or the rewrite erases an append that exists
+        // nowhere else (PG is the half that failed). Fail-open as at the top: a
+        // lock that cannot be re-taken (a stolen one is live) proceeds
+        // unserialized and says so — the re-read still runs, it is what makes
+        // the rewrite safe in both cases.
+        unserialized = !(await retakeAppendLock());
+        dashboard = await readDashboardFile(key);
+        if (dashboard) {
+          base = 'file';
+        } else {
+          dashboard = createEmptyDashboard(dashboardTarget ? dashboardTarget.type : 'machine', key, author);
+          base = 'created';
+        }
+        deduplicated = shouldDeduplicate(dashboard, messageId ?? null);
+        if (!deduplicated) {
+          next = nextDashboardState(dashboard, message);
+        }
+      }
+    }
+  }
+
+  if (deduplicated) {
     posted = true;
     output = {
       ok: true,
@@ -255,32 +341,6 @@ try {
       totalMessages: dashboard.intercom.totalMessages ?? dashboard.intercom.messages.length,
     };
   } else {
-    const nowIso = new Date().toISOString();
-    const message = mode === 'dashboard'
-      ? buildAppendMessage({ machineId, workspace: authorWorkspace, content, messageId, nowIso, rand })
-      : buildListenerEscalationMessage({ machineId, content, nowIso, rand });
-    const next = nextDashboardState(dashboard, message);
-
-    // #4915 PG-primary gate — the same gate as `writeDashboardFile`
-    // (dashboard.ts), applied by hand rather than by delegation: the tool
-    // returns no PG verdict on its file-first path (void dual-write) while
-    // `pgSynced` below feeds the PS callers' logs; and it redacts (#3584),
-    // stages and re-reads the store — behaviour the gate-closed path must not
-    // gain (byte-for-byte unchanged here). Decided BEFORE the markdown is
-    // built: the stamp is part of the bytes.
-    // `null` = gate closed (no attempt); otherwise the attempt's own verdict.
-    let pgFirst = null;
-    if (isDashboardPgPrimary()) {
-      try {
-        const outcome = await dualWriteDashboardSyncChecked(next);
-        pgFirst = { ok: outcome?.ok === true, reason: outcome?.reason };
-      } catch (err) {
-        pgFirst = { ok: false, reason: err instanceof Error ? err.message : String(err) };
-      }
-      if (!pgFirst.ok) {
-        console.error(`WARN: porte PG-primaire ouverte, écriture PG en échec (${pgFirst.reason}) — repli sur le chemin fichier d’abord, sans tampon`);
-      }
-    }
     const pgMirrorMode = pgFirst?.ok === true;
     // Stamp at write time, as the tool does: the instrument compares it to
     // the file mtime.
@@ -357,8 +417,8 @@ try {
     }
   }
 } finally {
-  if (lockOwned) {
-    await releaseAppendLock(key, holder);
+  if (ownedHolder) {
+    await releaseAppendLock(key, ownedHolder);
   }
 }
 

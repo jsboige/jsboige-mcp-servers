@@ -10,6 +10,18 @@
  *
  * `readDashboardFile` returns a fixed WITNESS dashboard (one existing message)
  * so the gate-closed bytes are a stable golden.
+ *
+ * Re-review of #4915 (po-2028 04:48Z point 2, po-2024 05:00Z addendum), two
+ * knobs:
+ *   - `RSM_APPEND_TEST_CONCURRENT=during-pg|same-id`: the SECOND and later
+ *     reads see the concurrent append that landed on the key while the CLI was
+ *     inside its PG attempt (store-stub.mjs lands it in the target file during
+ *     attempt 1). `during-pg` = a message from another lane (must survive the
+ *     fallback rewrite); `same-id` = OUR stable id (the re-read must dedup,
+ *     #4090).
+ *   - `RSM_APPEND_TEST_RELOCK=deny`: every acquisition after the first is
+ *     refused — the stolen-lock case. The CLI must proceed unserialized (and
+ *     say so), never drop the escalation.
  */
 import { appendFileSync } from 'node:fs';
 
@@ -25,6 +37,20 @@ const WITNESS = {
   author: { machineId: 'myia-po-2023', workspace: 'listener' },
   content: '[WARN][LISTENER][#3761] temoin.',
 };
+
+const CONCURRENT = {
+  id: 'myia-po-2024:listener:ic-20261124T115959-0000',
+  timestamp: '2026-11-24T11:59:59.000Z',
+  author: { machineId: 'myia-po-2024', workspace: 'listener' },
+  content: '[WARN][LISTENER][#3761] temoin concurrent.',
+};
+
+const concurrentMessage = () =>
+  process.env.RSM_APPEND_TEST_CONCURRENT === 'same-id'
+    ? { ...CONCURRENT, id: process.env.RSM_APPEND_TEST_NEW_ID ?? CONCURRENT.id }
+    : CONCURRENT;
+
+let reads = 0;
 
 export function buildDashboardKey(type, machineId, workspace) {
   return workspace ? `${type}-${machineId}-${workspace}` : `${type}-${machineId}`;
@@ -43,13 +69,17 @@ export function createEmptyDashboard(type, key, author) {
 
 export async function readDashboardFile(key) {
   journal('read');
+  reads += 1;
+  const landed = reads > 1 && Boolean(process.env.RSM_APPEND_TEST_CONCURRENT);
+  const messages = landed ? [WITNESS, concurrentMessage()] : [WITNESS];
+  const last = messages[messages.length - 1];
   return {
     key,
     type: 'machine',
     status: { markdown: '*Aucun contenu.*' },
-    lastModified: WITNESS.timestamp,
-    lastModifiedBy: WITNESS.author,
-    intercom: { messages: [WITNESS], totalMessages: 1 },
+    lastModified: last.timestamp,
+    lastModifiedBy: last.author,
+    intercom: { messages, totalMessages: messages.length },
   };
 }
 
@@ -73,9 +103,13 @@ export function buildDashboardMarkdown(dashboard, exportStamp) {
   return `---\n${frontmatter.join('\n')}\n---\n\n## Intercom\n\n${body}`;
 }
 
+let acquires = 0;
+
 export async function acquireAppendLock(key, holder) {
-  journal(`lock:acquire:${key}:${holder.workspace}`);
-  return true;
+  acquires += 1;
+  const refused = process.env.RSM_APPEND_TEST_RELOCK === 'deny' && acquires > 1;
+  journal(`lock:acquire${refused ? ':refused' : ''}:${key}:${holder.workspace}`);
+  return !refused;
 }
 
 export async function releaseAppendLock(key) {

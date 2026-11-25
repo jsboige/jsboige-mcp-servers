@@ -20,6 +20,14 @@
  * same harness with gate=closed/pg=ok and is frozen here: the gate-closed
  * output must never drift. The real `buildDashboardMarkdown` stamp contract is
  * pinned separately by dashboard-export-stamp.test.ts.
+ *
+ * Re-review of #4915 (po-2028 04:48Z point 2, po-2024 05:00Z addendum): the PG
+ * attempt runs BETWEEN the base read and the full file rewrite and can outlive
+ * the append lock TTL (30 s, never renewed). The last describe proves the
+ * fallback re-takes the lock and RE-READS its base before rewriting — a
+ * concurrent append that landed during the attempt survives — and that a lock
+ * that cannot be re-taken degrades to the fail-open `unserialized` path
+ * instead of dropping the escalation.
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -61,6 +69,49 @@ const STAMPED = GOLDEN.replace(
   `totalMessages: 2\nmirrorExportAt: ${STAMP}\n---`
 );
 
+// Re-review #4915: the message another lane appends while our PG attempt runs.
+const CONCURRENT_ID = 'myia-po-2024:listener:ic-20261124T115959-0000';
+
+// The target file as the OTHER writer leaves it (store-stub lands exactly
+// these bytes during our first PG attempt).
+const CONCURRENT_FILE = [
+  '---',
+  'type: machine',
+  '---',
+  '',
+  '## Intercom',
+  '',
+  '### [2026-11-24T11:59:59.000Z] myia-po-2024|listener',
+  `[msg: ${CONCURRENT_ID}]`,
+  '[WARN][LISTENER][#3761] temoin concurrent.',
+  '',
+].join('\n');
+
+// The fallback rewrite must keep the concurrent message: witness + concurrent
+// + ours, counter 3.
+const RACE_FILE = [
+  '---',
+  'type: machine',
+  `lastModified: ${STAMP}`,
+  'totalMessages: 3',
+  '---',
+  '',
+  '## Intercom',
+  '',
+  '### [2026-11-23T08:00:00.000Z] myia-po-2023|listener',
+  '[msg: myia-po-2023:listener:ic-20261123T080000-ab12]',
+  '[WARN][LISTENER][#3761] temoin.',
+  '',
+  '### [2026-11-24T11:59:59.000Z] myia-po-2024|listener',
+  `[msg: ${CONCURRENT_ID}]`,
+  '[WARN][LISTENER][#3761] temoin concurrent.',
+  '',
+  `### [${STAMP}] myia-po-2023|listener`,
+  `[msg: ${NEW_ID}]`,
+  '[WARN][LISTENER][#3761] Reveil non delivrable pour myia-po-2024.',
+  '',
+].join('\n');
+
 const EXPECTED_OUTPUT = {
   ok: true,
   key: KEY,
@@ -75,6 +126,11 @@ type Scenario = {
   gate: 'open' | 'closed';
   pg: 'ok' | 'fail' | 'fail-once' | 'throw';
   writeFail?: boolean;
+  // Re-review #4915 knobs (see the fixture docstrings).
+  concurrent?: 'during-pg' | 'same-id';
+  relock?: 'deny';
+  key?: string;       // dashboard key, when argv selects another surface
+  argv?: string[];    // full CLI args, replacing the escalation defaults
 };
 
 type Run = {
@@ -113,7 +169,8 @@ function runScenario(scenario: Scenario): Run {
     copyFileSync(path.join(FIXTURES, 'fake-clock.mjs'), path.join(root, 'fake-clock.mjs'));
 
     const journalPath = path.join(root, 'journal.log');
-    const target = path.join(root, 'out', `${KEY}.md`);
+    const key = scenario.key ?? KEY;
+    const target = path.join(root, 'out', `${key}.md`);
     if (scenario.writeFail) mkdirSync(target, { recursive: true }); // a directory: writeFile must throw
 
     const env: NodeJS.ProcessEnv = { ...process.env };
@@ -124,6 +181,8 @@ function runScenario(scenario: Scenario): Run {
       RSM_APPEND_TEST_PG: scenario.pg,
       RSM_APPEND_TEST_TARGET: target,
       RSM_APPEND_TEST_NEW_ID: NEW_ID,
+      RSM_APPEND_TEST_CONCURRENT: scenario.concurrent ?? '',
+      RSM_APPEND_TEST_RELOCK: scenario.relock ?? '',
     });
 
     const res = spawnSync(
@@ -131,8 +190,10 @@ function runScenario(scenario: Scenario): Run {
       [
         '--import', pathToFileURL(path.join(root, 'fake-clock.mjs')).href,
         path.join(root, 'scripts', 'rsm-dashboard-append.mjs'),
-        '--machine', 'myia-po-2023',
-        '--content', '[WARN][LISTENER][#3761] Reveil non delivrable pour myia-po-2024.',
+        ...(scenario.argv ?? [
+          '--machine', 'myia-po-2023',
+          '--content', '[WARN][LISTENER][#3761] Reveil non delivrable pour myia-po-2024.',
+        ]),
       ],
       { encoding: 'utf8', env, timeout: 30000 }
     );
@@ -155,8 +216,8 @@ function runScenario(scenario: Scenario): Run {
 
 const LOCK = `lock:acquire:${KEY}:listener`;
 const UNLOCK = `lock:release:${KEY}`;
-const sync = (fileHasNew: boolean, attempt: number) =>
-  `pg:sync:fileHasNew=${fileHasNew}:messages=2:attempt=${attempt}`;
+const sync = (fileHasNew: boolean, attempt: number, messages = 2) =>
+  `pg:sync:fileHasNew=${fileHasNew}:messages=${messages}:attempt=${attempt}`;
 const withoutGate = (journal: string[]) => journal.filter((l) => !l.startsWith('gate:'));
 
 describe('#4915 gate closed — the pre-existing behaviour, byte for byte', () => {
@@ -242,6 +303,9 @@ describe('#4915 gate open + PG failure — the unchanged file-first fallback', (
       'read',
       'gate:open',
       sync(false, 1), // primary attempt, before the file
+      UNLOCK, // re-review: the pre-attempt lock is dropped…
+      LOCK, // …and re-taken under a fresh TTL before the base is re-read
+      'read',
       'markdown:none',
       'path',
       sync(true, 2), // fallback retry, after the file — the pre-#4915 path
@@ -271,6 +335,9 @@ describe('#4915 gate open + PG failure — the unchanged file-first fallback', (
       'read',
       'gate:open',
       sync(false, 1),
+      UNLOCK,
+      LOCK,
+      'read',
       'markdown:none',
       'path',
       sync(true, 2),
@@ -291,9 +358,93 @@ describe('#4915 gate open + PG failure — the unchanged file-first fallback', (
       'read',
       'gate:open',
       sync(false, 1),
+      UNLOCK,
+      LOCK,
+      'read',
       'markdown:none',
       'path',
       UNLOCK,
     ]);
+  }, 15000);
+});
+
+describe('#4915 re-review — the fallback re-takes the lock and re-reads its base', () => {
+  it('a concurrent append that landed during the PG attempt survives the fallback rewrite', () => {
+    const run = runScenario({ gate: 'open', pg: 'fail', concurrent: 'during-pg' });
+
+    expect(run.status).toBe(0);
+    // Witness + concurrent + ours: the rewrite folded on the FRESH base.
+    expect(run.file).toBe(RACE_FILE);
+    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, totalMessages: 3, pgSynced: false });
+    expect(run.journal).toEqual([
+      LOCK,
+      'read',
+      'gate:open',
+      sync(false, 1), // primary attempt, on the pre-attempt base
+      'concurrent:append', // the other writer completes DURING that attempt
+      UNLOCK, // the possibly-stale lock is dropped…
+      LOCK, // …and re-taken before anything is rewritten
+      'read', // base re-read under the fresh lock: it carries the concurrent message
+      'markdown:none',
+      'path',
+      sync(true, 2, 3), // post-write retry, three messages folded
+      UNLOCK,
+    ]);
+    expect(run.stderr).toContain('WARN');
+  }, 15000);
+
+  it('a lock that cannot be re-taken proceeds unserialized (fail-open) and never drops the escalation', () => {
+    const run = runScenario({ gate: 'open', pg: 'fail', relock: 'deny' });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBe(GOLDEN); // no concurrent writer: the escalation is written anyway
+    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, pgSynced: false, unserialized: true });
+    expect(run.journal).toEqual([
+      LOCK,
+      'read',
+      'gate:open',
+      sync(false, 1),
+      UNLOCK, // release attempt on the stolen lock is a no-op in the API
+      `lock:acquire:refused:${KEY}:listener`,
+      'read', // the re-read still runs: it is what makes the rewrite safe
+      'markdown:none',
+      'path',
+      sync(true, 2),
+    ]);
+    expect(run.journal.at(-1)).not.toBe(UNLOCK); // never owned → never released
+  }, 15000);
+
+  it('a stable id that landed during the PG attempt is a dedup, not a second message (#4090)', () => {
+    const K = 'workspace-myia-po-2023-roo-extensions';
+    const L = `lock:acquire:${K}:listener`;
+    const U = `lock:release:${K}`;
+    const run = runScenario({
+      gate: 'open',
+      pg: 'fail',
+      concurrent: 'same-id',
+      key: K,
+      argv: [
+        '--machine', 'myia-po-2023',
+        '--dashboard', 'workspace:roo-extensions',
+        '--message-id', NEW_ID,
+        '--author-workspace', 'roo-extensions',
+        '--content', '[WARN] temoin id stable.',
+      ],
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.parsed).toEqual({
+      ok: true,
+      key: K,
+      base: 'file',
+      deduplicated: true,
+      messageId: NEW_ID,
+      totalMessages: 2,
+    });
+    // Nothing is written: the fresh base already carries our stable id, and the
+    // file is exactly what the other writer left (it landed OUR id — that is
+    // what makes this the re-post case).
+    expect(run.file).toBe(CONCURRENT_FILE.replace(`[msg: ${CONCURRENT_ID}]`, `[msg: ${NEW_ID}]`));
+    expect(run.journal).toEqual([L, 'read', 'gate:open', sync(false, 1), 'concurrent:append', U, L, 'read', U]);
   }, 15000);
 });
