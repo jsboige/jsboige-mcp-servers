@@ -27,6 +27,8 @@ import {
   parseAppendArgs,
   buildAppendMessage,
   shouldDeduplicate,
+  fileOnlyMessages,
+  withFileOnlyMessages,
 } from '../../../../scripts/lib/dashboard-journal.mjs';
 import { readFileSync } from 'fs';
 import path from 'path';
@@ -200,6 +202,72 @@ describe('G-C SQL parity with the reader (drift-guard)', () => {
     expect(SQL_RECENT_KEYS).toContain("interval '1 hour'");
     // The window is a bound parameter, never interpolated client-side.
     expect(SQL_RECENT_KEYS).toContain('$1::int');
+  });
+});
+
+// Review ms#1919 (ai-01, 25/11): `readDashboardFile` answers from PG as soon
+// as the key has a readable row (dashboard.ts), so the file half is read
+// directly — and the two halves have to be compared. Identity across them is a
+// persisted id OR the content key, never the id alone: `parseDashboardMarkdown`
+// synthesizes a FRESH id at every parse for a block that carries no `[msg: ]`.
+describe('ms#1919 — file-only messages across the two halves', () => {
+  const msg = (id: string | undefined, content: string, timestamp = '2026-11-24T12:00:00.000Z') => ({
+    id,
+    timestamp,
+    author: { machineId: 'myia-po-2024', workspace: 'listener' },
+    content,
+  });
+  const state = (...messages: ReturnType<typeof msg>[]) => ({
+    intercom: { messages, totalMessages: messages.length },
+  });
+
+  it('returns the file messages the state does not hold, in file order', () => {
+    const witness = msg('w-1', 'witness');
+    const ours = msg('o-1', 'ours');
+    const a = msg('a-1', 'file only A');
+    const b = msg('b-1', 'file only B');
+    expect(fileOnlyMessages(state(witness, ours), state(witness, a, ours, b))).toEqual([a, b]);
+  });
+
+  it('an id-less block is NOT file-only: the re-synthesized id differs, the content does not', () => {
+    // Exactly what two parses of the same block produce (dashboard-markdown.ts
+    // generates a new id when no `[msg: …]` is persisted).
+    const idlessFirst = msg('idless-7-po-2023-listener', 'same text');
+    const idlessSecond = msg('idless-9-po-2023-listener', ' same text ');
+    expect(fileOnlyMessages(state(idlessFirst), state(idlessSecond))).toEqual([]);
+  });
+
+  it('the content key normalises CRLF and the block edges (the file round-trip)', () => {
+    const fromPg = msg('pg-1', 'line one\nline two');
+    const fromFile = { ...msg(undefined, 'line one\r\nline two\n'), id: 'idless-2-x-y' };
+    expect(fileOnlyMessages(state(fromPg), state(fromFile))).toEqual([]);
+  });
+
+  it('a missing or empty file state holds nothing more', () => {
+    expect(fileOnlyMessages(state(msg('a', 'x')), null)).toEqual([]);
+    expect(fileOnlyMessages(null, state(msg('a', 'x')))).toEqual([msg('a', 'x')]);
+    expect(fileOnlyMessages(state(), state())).toEqual([]);
+  });
+
+  it('withFileOnlyMessages folds base order then file order, and the counter never goes down', () => {
+    const witness = msg('w-1', 'witness');
+    const ours = msg('o-1', 'ours');
+    const extra = msg('e-1', 'file only');
+    const base = state(witness, ours);
+    const file = { intercom: { messages: [witness, extra], totalMessages: 5 } };
+
+    const folded = withFileOnlyMessages(base, file);
+    expect(folded.intercom.messages).toEqual([witness, ours, extra]);
+    expect(folded.intercom.totalMessages).toBe(5);
+    // The input is never mutated.
+    expect(base.intercom.messages).toEqual([witness, ours]);
+    expect(base.intercom.totalMessages).toBe(2);
+  });
+
+  it('withFileOnlyMessages returns the SAME object when there is nothing to fold', () => {
+    const base = state(msg('w-1', 'witness'));
+    expect(withFileOnlyMessages(base, state(msg('w-1', 'witness')))).toBe(base);
+    expect(withFileOnlyMessages(base, null)).toBe(base);
   });
 });
 

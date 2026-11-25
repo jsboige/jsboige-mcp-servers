@@ -179,6 +179,53 @@ export function nextDashboardState(dashboard, message) {
   };
 }
 
+// Identity of a message across two reads of the same key that do NOT come from
+// the same half (PG rows vs the parsed file). An id only counts when it was
+// persisted (`[msg: …]`): `parseDashboardMarkdown` synthesizes a FRESH id at
+// every parse for a block that carries none (dashboard-markdown.ts), so an
+// id-only comparison would see a "file-only addition" in every id-less block.
+// The content key is what survives the file round-trip (CRLF → LF, trimmed
+// block) — same basis as the module's own `intercomMessageFingerprint`.
+const messageKey = (m) =>
+  `${m.timestamp}|${m.author?.machineId}|${m.author?.workspace}|${String(m.content ?? '').replace(/\r\n/g, '\n').trim()}`;
+
+/**
+ * #4915 (review ms#1919): the messages a FILE state holds that `state` does
+ * not. `readDashboardFile` answers from PG as soon as the key has a readable
+ * row there, so an append whose own PG attempt failed — it exists only in the
+ * file — is invisible to that read. Returns the file messages absent from
+ * `state`, in file order; empty when the file holds nothing more.
+ */
+export function fileOnlyMessages(state, fileState) {
+  const own = state?.intercom?.messages ?? [];
+  const ownIds = new Set(own.map((m) => m.id));
+  const ownKeys = new Set(own.map(messageKey));
+  return (fileState?.intercom?.messages ?? []).filter(
+    (m) => !ownIds.has(m.id) && !ownKeys.has(messageKey(m))
+  );
+}
+
+/**
+ * Same read, with the file-only messages folded in: base order, then the
+ * file-only ones in file order. The counter never goes down. Returns `state`
+ * itself when there is nothing to fold. The input is never mutated.
+ */
+export function withFileOnlyMessages(state, fileState) {
+  const extra = fileOnlyMessages(state, fileState);
+  if (extra.length === 0) {
+    return state;
+  }
+  const total = (d) => d.intercom.totalMessages ?? d.intercom.messages.length;
+  return {
+    ...state,
+    intercom: {
+      ...state.intercom,
+      messages: [...state.intercom.messages, ...extra],
+      totalMessages: Math.max(total(state), total(fileState)),
+    },
+  };
+}
+
 // ── CLI arg grammar (shared, testable) ──────────────────────────────────────
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/;

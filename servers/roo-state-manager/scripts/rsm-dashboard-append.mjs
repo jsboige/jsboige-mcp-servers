@@ -60,6 +60,27 @@
  * outlived the lock TTL), then writes as before (no stamp): a #3761
  * escalation is never lost.
  *
+ * Review ms#1919 (ai-01, 25/11 — two ways to lose an append that exists ONLY
+ * in the file, i.e. one whose own PG attempt failed). The cause of both:
+ * `readDashboardFile` answers from PG as soon as the key has a readable row
+ * there, so a file-only append is invisible to it, and the CLI rewrites the
+ * WHOLE file. The file half is therefore also read directly (`readFileHalf`),
+ * under the re-taken lock, right before any file write:
+ *   1. fallback after a PG failure — the messages present only in the file
+ *      are folded into the re-read base (`withFileOnlyMessages`), so the
+ *      rewrite keeps them and the post-write PG sync carries them to PG. The
+ *      retirement guard is untouched: a key `readDashboardFile` does not
+ *      answer for (retired, #3782) is never rebuilt from its file.
+ *   2. PG success — the attempt can be LATE (past the lock TTL). A mirror
+ *      written from the pre-attempt base would erase a file-only append and
+ *      stamp the result as an export of PG. The lock is re-taken on success
+ *      too; the mirror is written only when it is known not to drop
+ *      anything: not written (and not stamped) when the lock could not be
+ *      re-taken, when the file half could not be read, or when the file
+ *      carries a message absent from the written state. `gdriveSkipped: true`
+ *      says so in the JSON (nominal: PG holds the message), stderr says why.
+ * The gate-closed path reads nothing more and is unchanged.
+ *
  * Exit codes: 0 posted — at least one surface holds the message (a PG-sync
  * miss on the file-first path is a WARN, not an error: the GDrive write
  * stands and the journal reconcile converges it; a failed MIRROR under the
@@ -74,12 +95,12 @@
  */
 
 import { readFileSync, mkdirSync } from 'fs';
-import { writeFile } from 'fs/promises';
+import { readFile, writeFile } from 'fs/promises';
 import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
 import { randomInt } from 'node:crypto';
 import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
-import { validateEscalationContent, validateTaggedContent, buildListenerEscalationMessage, buildAppendMessage, shouldDeduplicate, parseAppendArgs, nextDashboardState } from './lib/dashboard-journal.mjs';
+import { validateEscalationContent, validateTaggedContent, buildListenerEscalationMessage, buildAppendMessage, shouldDeduplicate, parseAppendArgs, nextDashboardState, fileOnlyMessages, withFileOnlyMessages } from './lib/dashboard-journal.mjs';
 
 // --- .env loader (zero-dep, same contract as backfill-roosync-read-state.mjs) ---
 function loadEnv(file) {
@@ -199,6 +220,40 @@ const {
 const gdriveWriteTimeoutMs = () =>
   Number(process.env.UNIFIED_STORE_DASHBOARD_GDRIVE_WRITE_TIMEOUT_MS) || 30000;
 
+// The served markdown PARSER, loaded on first use: it ships since #3151
+// Phase C (dashboard.ts delegates the format to it), but only the gated paths
+// below read the file half — a vintage that predated it must not be able to
+// break the gate-closed path at import time.
+let fileHalfParser = null;
+async function parseFileHalf(content, key) {
+  fileHalfParser ??= (await import(buildUrl('tools/roosync/dashboard-markdown.js'))).parseDashboardMarkdown;
+  return fileHalfParser(content, key);
+}
+
+// The FILE half, as it is on disk NOW (review ms#1919): `readDashboardFile`
+// answers from PG as soon as the key has a readable row there (dashboard.ts),
+// so a message that exists only in the file is invisible to it. Same bound and
+// same CRLF normalisation as the tool's own file read. `error` is null for a
+// missing file (nothing to preserve) and carries the reason otherwise — a
+// caller must never rewrite a half it could not check.
+async function readFileHalf(filePath, key) {
+  let content;
+  try {
+    content = await readFile(filePath, {
+      encoding: 'utf8',
+      signal: AbortSignal.timeout(gdriveWriteTimeoutMs())
+    });
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : String(err);
+    return { state: null, error: err?.code === 'ENOENT' ? null : reason };
+  }
+  try {
+    return { state: await parseFileHalf(content.replace(/\r\n/g, '\n'), key), error: null };
+  } catch (err) {
+    return { state: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 const machineId = machineArg.trim().toLowerCase();
 // #4090: --dashboard selects the fleet surface; absent it stays the machine
 // escalation key by construction (#3761). Message ids stay machine-prefixed
@@ -227,7 +282,9 @@ let unserialized = ownedHolder === null;
 // is the half that failed. Release-then-acquire: a stolen lock is not released
 // (holder mismatch, dashboard.ts) and a fresh `acquiredAt` restarts the TTL.
 // Both PG halves are bounded (3 s) and never throw, so this adds no unbounded
-// wait to the fallback.
+// wait to the fallback. Review ms#1919: called after the attempt on BOTH
+// outcomes — a success can be late too, and the mirror then faces the same
+// stale lock (and a file-only append it must not erase).
 async function retakeAppendLock() {
   if (ownedHolder) {
     await releaseAppendLock(key, ownedHolder);
@@ -267,6 +324,10 @@ let posted = false;
 let output = null;
 try {
   dashboard = await readDashboardFile(key);
+  // Review ms#1919: null here means the key is absent OR retired (#3782). The
+  // file half (read below, gated paths only) is consulted for a key this choke
+  // point declared live — a retired key's file is never rebuilt into a write.
+  let liveKey = dashboard !== null;
   if (dashboard) {
     base = 'file';
   } else {
@@ -283,6 +344,10 @@ try {
   let next = null;
   // `null` = gate closed (no attempt); otherwise the attempt's own verdict.
   let pgFirst = null;
+  // Review ms#1919 item 2: set when the GDrive mirror must NOT be written.
+  let mirrorSkip = null;
+  // Resolved once per gated append: the freshness check and the write share it.
+  let resolvedPath = null;
   if (!deduplicated) {
     const nowIso = new Date().toISOString();
     message = mode === 'dashboard'
@@ -304,21 +369,51 @@ try {
       } catch (err) {
         pgFirst = { ok: false, reason: err instanceof Error ? err.message : String(err) };
       }
-      if (!pgFirst.ok) {
+      // Review ms#1919: the attempt above sits between the lock take and the
+      // file write and can outlive the append lock TTL (30 s, never renewed) —
+      // a SUCCESS can be late too. The lock is re-taken on BOTH outcomes, and
+      // nothing reads or writes the file before that.
+      const relocked = await retakeAppendLock();
+      resolvedPath = getDashboardPath(key);
+      if (pgFirst.ok) {
+        // The file is only the mirror here: it is rewritten only when that is
+        // known not to drop anything. A skip costs nothing — PG (the primary
+        // half) holds the message — whereas a mirror written from the
+        // pre-attempt state erases a file-only append and stamps the result as
+        // an export of PG.
+        if (!relocked) {
+          mirrorSkip = 'verrou append non repris (un autre détenteur écrit la clé)';
+        } else {
+          const fileHalf = liveKey ? await readFileHalf(resolvedPath, key) : { state: null, error: null };
+          if (fileHalf.error !== null) {
+            mirrorSkip = `moitié fichier illisible (${fileHalf.error})`;
+          } else if (fileOnlyMessages(next, fileHalf.state).length > 0) {
+            mirrorSkip = 'le fichier porte un ajout absent de l’état écrit dans PG';
+          }
+        }
+      } else {
         console.error(`WARN: porte PG-primaire ouverte, écriture PG en échec (${pgFirst.reason}) — repli sur le chemin fichier d’abord, sans tampon`);
-        // Re-review #4915: the attempt above can outlive the append lock TTL,
-        // so the lock taken at the top may be stale — and the fallback below
-        // rewrites the WHOLE file. Re-take, then re-read: the fold must run on
-        // what is on disk NOW, or the rewrite erases an append that exists
-        // nowhere else (PG is the half that failed). Fail-open as at the top: a
+        // Re-review #4915: the lock taken at the top may be stale and the
+        // fallback below rewrites the WHOLE file. Re-read under the fresh
+        // lock, then fold on what is on disk NOW. Fail-open as at the top: a
         // lock that cannot be re-taken (a stolen one is live) proceeds
-        // unserialized and says so — the re-read still runs, it is what makes
-        // the rewrite safe in both cases.
-        unserialized = !(await retakeAppendLock());
+        // unserialized and says so — the re-read still runs.
+        unserialized = !relocked;
         dashboard = await readDashboardFile(key);
         if (dashboard) {
           base = 'file';
+          // Review ms#1919 item 1: this read answers from PG as soon as the
+          // key has a readable row — it does not show an append that exists
+          // only in the file. Fold those in: the rewrite keeps them, and the
+          // post-write PG sync below carries them to PG.
+          const fileHalf = await readFileHalf(resolvedPath, key);
+          if (fileHalf.error !== null) {
+            console.error(`WARN: moitié fichier illisible (${fileHalf.error}) — repli sans vérification des ajouts uniquement fichier`);
+          }
+          dashboard = withFileOnlyMessages(dashboard, fileHalf.state);
         } else {
+          // Absent or retired (#3782): the file half is NOT consulted — the
+          // retirement guard keeps the last word on what a retired key holds.
           dashboard = createEmptyDashboard(dashboardTarget ? dashboardTarget.type : 'machine', key, author);
           base = 'created';
         }
@@ -340,13 +435,29 @@ try {
       messageId,
       totalMessages: dashboard.intercom.totalMessages ?? dashboard.intercom.messages.length,
     };
+  } else if (mirrorSkip !== null) {
+    // Review ms#1919 item 2: PG (the primary half) holds the message; the
+    // mirror is neither rewritten nor stamped. Nominal state, said in stderr.
+    posted = true;
+    console.error(`WARN: miroir GDrive non écrit — ${mirrorSkip} ; le store PG (primaire) tient le message`);
+    output = {
+      ok: true,
+      key,
+      base,
+      unserialized,
+      messageId: message.id,
+      totalMessages: next.intercom.totalMessages,
+      pgSynced: true,
+      gdriveSkipped: true, // the GDrive mirror was NOT written at this append; PG holds the message
+    };
   } else {
     const pgMirrorMode = pgFirst?.ok === true;
     // Stamp at write time, as the tool does: the instrument compares it to
     // the file mtime.
     const exportStamp = pgMirrorMode ? { mirrorExportAt: new Date().toISOString() } : undefined;
     const markdown = buildDashboardMarkdown(next, exportStamp);
-    const targetPath = getDashboardPath(key);
+    // Gate-closed: resolved here, exactly where it always was.
+    const targetPath = resolvedPath ?? getDashboardPath(key);
 
     // process.exit inside the locked section would skip the finally (and leak
     // the lock to its TTL); a top-level `return` is a SyntaxError in ESM.
@@ -405,7 +516,7 @@ try {
       output = {
         ok: true,
         key,
-        base,          // file | created — which half supplied the base state
+        base,          // file = a live dashboard supplied the base (PG-first under the read gate) | created
         unserialized,  // true = the append lock could not be acquired (fail-open)
         messageId: message.id,
         totalMessages: next.intercom.totalMessages,

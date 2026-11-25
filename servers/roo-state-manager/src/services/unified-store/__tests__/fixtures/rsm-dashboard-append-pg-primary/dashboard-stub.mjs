@@ -8,22 +8,34 @@
  * generator is pinned separately by `dashboard-export-stamp.test.ts`; here the
  * subject is the CLI's write ORDER and its stamping decision.
  *
- * `readDashboardFile` returns a fixed WITNESS dashboard (one existing message)
- * so the gate-closed bytes are a stable golden.
+ * REVIEW ms#1919 (ai-01, 25/11) — `readDashboardFile` used to answer from a
+ * fixed in-memory WITNESS, which hid the priority the review is about: the real
+ * one answers from PG as soon as the key has a readable row there
+ * (`dashboard.ts:2651-2672`) and only falls back to the file. A double that
+ * always answers "the file" cannot show an append that exists ONLY in the file
+ * being lost. So:
+ *   - `RSM_APPEND_TEST_PG_READ=pg` → the PG view answers every read (`read:pg`):
+ *     the witness alone, WITHOUT whatever landed in the file meanwhile. That is
+ *     the measurable difference between the two sources.
+ *   - default → the FILE view answers (`read:file`): the real target parsed by
+ *     the served parser's twin (`dashboard-markdown-stub.mjs`), i.e. exactly
+ *     what `readDashboardFromGdrive` + `parseDashboardMarkdown` would produce.
+ *   - `RSM_APPEND_TEST_RETIRED=reread` → the second and later reads answer null
+ *     (`read:retired`): the key was retired while the CLI was inside its PG
+ *     attempt (#3782 — a retired key must not be resurrected).
+ *   - a DIRECTORY target is the harness' "the file half is unreadable" setup:
+ *     it answers `read:unreadable` with the witness view, which keeps the rest
+ *     of the flow exercised without depending on fs error shapes (the CLI's own
+ *     `readFileHalf` is what has to report unreadability).
  *
- * Re-review of #4915 (po-2028 04:48Z point 2, po-2024 05:00Z addendum), two
- * knobs:
- *   - `RSM_APPEND_TEST_CONCURRENT=during-pg|same-id`: the SECOND and later
- *     reads see the concurrent append that landed on the key while the CLI was
- *     inside its PG attempt (store-stub.mjs lands it in the target file during
- *     attempt 1). `during-pg` = a message from another lane (must survive the
- *     fallback rewrite); `same-id` = OUR stable id (the re-read must dedup,
- *     #4090).
+ * Re-review knobs kept from #4915:
+ *   - `RSM_APPEND_TEST_CONCURRENT=during-pg|same-id`: attempt 1 of the PG write
+ *     lands a concurrent append in the target file (store-stub.mjs).
  *   - `RSM_APPEND_TEST_RELOCK=deny`: every acquisition after the first is
- *     refused — the stolen-lock case. The CLI must proceed unserialized (and
- *     say so), never drop the escalation.
+ *     refused — the stolen-lock case.
  */
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, statSync } from 'node:fs';
+import { parseDashboardMarkdown } from './dashboard-markdown.js';
 
 const journal = (line) => {
   if (process.env.RSM_APPEND_TEST_JOURNAL) {
@@ -38,17 +50,14 @@ const WITNESS = {
   content: '[WARN][LISTENER][#3761] temoin.',
 };
 
-const CONCURRENT = {
-  id: 'myia-po-2024:listener:ic-20261124T115959-0000',
-  timestamp: '2026-11-24T11:59:59.000Z',
-  author: { machineId: 'myia-po-2024', workspace: 'listener' },
-  content: '[WARN][LISTENER][#3761] temoin concurrent.',
-};
-
-const concurrentMessage = () =>
-  process.env.RSM_APPEND_TEST_CONCURRENT === 'same-id'
-    ? { ...CONCURRENT, id: process.env.RSM_APPEND_TEST_NEW_ID ?? CONCURRENT.id }
-    : CONCURRENT;
+const witnessView = (key) => ({
+  key,
+  type: 'machine',
+  status: { markdown: '*Aucun contenu.*' },
+  lastModified: WITNESS.timestamp,
+  lastModifiedBy: WITNESS.author,
+  intercom: { messages: [WITNESS], totalMessages: 1 },
+});
 
 let reads = 0;
 
@@ -68,19 +77,40 @@ export function createEmptyDashboard(type, key, author) {
 }
 
 export async function readDashboardFile(key) {
-  journal('read');
   reads += 1;
-  const landed = reads > 1 && Boolean(process.env.RSM_APPEND_TEST_CONCURRENT);
-  const messages = landed ? [WITNESS, concurrentMessage()] : [WITNESS];
-  const last = messages[messages.length - 1];
-  return {
-    key,
-    type: 'machine',
-    status: { markdown: '*Aucun contenu.*' },
-    lastModified: last.timestamp,
-    lastModifiedBy: last.author,
-    intercom: { messages, totalMessages: messages.length },
-  };
+  const target = process.env.RSM_APPEND_TEST_TARGET ?? '';
+
+  if (process.env.RSM_APPEND_TEST_RETIRED === 'reread' && reads > 1) {
+    journal('read:retired');
+    return null;
+  }
+
+  // PG first, as `dashboard.ts` does: a readable row answers, the file is only
+  // the fallback. The PG view never carries the concurrent append.
+  if (process.env.RSM_APPEND_TEST_PG_READ === 'pg') {
+    journal('read:pg');
+    return witnessView(key);
+  }
+
+  let isFile = false;
+  let exists = true;
+  try {
+    isFile = statSync(target).isFile();
+  } catch {
+    exists = false;
+    isFile = false;
+  }
+  if (!exists) {
+    journal('read:null'); // absent: the CLI creates an empty base
+    return null;
+  }
+  if (!isFile) {
+    journal('read:unreadable'); // a directory: the harness' unreadable-half setup
+    return witnessView(key);
+  }
+
+  journal('read:file');
+  return parseDashboardMarkdown(readFileSync(target, 'utf8').replace(/\r\n/g, '\n'), key);
 }
 
 export function getDashboardPath() {
