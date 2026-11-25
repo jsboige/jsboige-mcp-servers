@@ -90,9 +90,10 @@
  * The lock serialises; the cadence STAMP paces. Each host keeps its own clock
  * (first pass 90 s after start, then every interval), so with the lock alone
  * every new host still ran a full pass of its own (13 per 24 h on po-204,
- * 5 inside one 6 h window). A pass that runs to its end stamps a second
- * per-machine row (`dashboard-reconcile-main-pass-cadence:<machine>`) and a
- * tick that finds it returns `mainPassSkipped: 'cadence'`.
+ * 5 inside one 6 h window). A pass that runs to its end with NOTHING left to
+ * redo — no counted error, no failed mirror write (ms#1926 review) — stamps a
+ * second per-machine row (`dashboard-reconcile-main-pass-cadence:<machine>`) and
+ * a tick that finds it returns `mainPassSkipped: 'cadence'`.
  * `ROOSYNC_DASHBOARD_RECONCILE_MAIN_PASS_CADENCE=0` restores the lock alone.
  *
  * Env-gate: same flags as the dual-write (UNIFIED_STORE_DUAL_WRITE=1 +
@@ -824,14 +825,24 @@ export async function reconcileDashboardsFromGDrive(
         mainPassLockHolder,
         cadenceStampTtlMs
       );
-      if (cadenceStatus === 'acquired') {
-        await writer.releaseRooSyncDashboardLock?.(mainPassCadenceKey(), mainPassLockHolder);
-      }
     } catch (error) {
       cadenceStampTtlMs = 0;
       logger.warn(
         `[dashboard-reconcile] Main-pass cadence check failed (${String(error)}) — pass runs on the lock alone`
       );
+    }
+    if (cadenceStatus === 'acquired') {
+      try {
+        await writer.releaseRooSyncDashboardLock?.(mainPassCadenceKey(), mainPassLockHolder);
+      } catch (error) {
+        // ms#1926 review — NOT a check failure: the row taken above stays for
+        // its TTL, i.e. it IS the window's stamp from now on. Disarming the end
+        // stamp here would leave a machine silenced by a row no complete pass
+        // put there; the pass must still stamp (it will find the row 'held').
+        logger.warn(
+          `[dashboard-reconcile] Main-pass cadence check row release failed (${String(error)}) — the TTL will reap it`
+        );
+      }
     }
     if (cadenceStatus === 'held') {
       result.mainPassSkipped = 'cadence';
@@ -1487,24 +1498,47 @@ export async function reconcileDashboardsFromGDrive(
   }
   // #4850 — stamp the window BEFORE the lock goes: a tick landing in between
   // must find one of the two rows, never a free machine.
+  //
+  // ms#1926 review — only a pass that left NOTHING to redo may stamp. Per-file
+  // errors and failed mirror writes are counted, never thrown, and the reader's
+  // own words on the PG-read branch are "Next pass retries": with a stamp that
+  // retry lands one window later, on work already known to be undone. The two
+  // `Deferred` counters are deliberately NOT part of the test: they are the
+  // per-pass budget doing its job, and a seat whose backlog outlives one pass
+  // would otherwise never pace — the cadence would switch itself off exactly
+  // where passes are heaviest.
+  const leftNothingToRedo =
+    result.errors === 0 &&
+    result.failures.length === 0 &&
+    result.mirrorRepairFailed === 0 &&
+    result.mirrorMaterializeFailed === 0;
   if (cadenceStampTtlMs > 0 && tryAcquireStamp) {
-    try {
-      // 'held' = another pass of this machine stamped while this one ran (the
-      // lock's 30 min TTL was stolen under a long pass): the window is marked
-      // either way, nothing to redo.
-      await tryAcquireStamp(
-        mainPassCadenceKey(),
-        JSON.stringify({
-          machine: reconcileMachineId(),
-          pid: process.pid,
-          at: new Date().toISOString(),
-        }),
-        cadenceStampTtlMs
+    if (!leftNothingToRedo) {
+      logger.info(
+        `[dashboard-reconcile] Main pass left work to redo (${result.errors} error(s), ` +
+          `${result.failures.length} file failure(s), ${result.mirrorRepairFailed} mirror repair(s) and ` +
+          `${result.mirrorMaterializeFailed} materialization(s) failed) — no cadence stamp, the next tick ` +
+          `re-runs (#4850, ms#1926 review)`
       );
-    } catch (error) {
-      logger.warn(
-        `[dashboard-reconcile] Main-pass cadence stamp failed (${String(error)}) — the next tick will run again`
-      );
+    } else {
+      try {
+        // 'held' = another pass of this machine stamped while this one ran (the
+        // lock's 30 min TTL was stolen under a long pass): the window is marked
+        // either way, nothing to redo.
+        await tryAcquireStamp(
+          mainPassCadenceKey(),
+          JSON.stringify({
+            machine: reconcileMachineId(),
+            pid: process.pid,
+            at: new Date().toISOString(),
+          }),
+          cadenceStampTtlMs
+        );
+      } catch (error) {
+        logger.warn(
+          `[dashboard-reconcile] Main-pass cadence stamp failed (${String(error)}) — the next tick will run again`
+        );
+      }
     }
   }
   await releaseMainPassLock();

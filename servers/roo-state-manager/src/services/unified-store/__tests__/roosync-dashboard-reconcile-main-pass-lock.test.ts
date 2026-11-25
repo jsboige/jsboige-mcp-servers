@@ -154,10 +154,18 @@ describe('dashboard reconcile — main-pass lock (#4850)', () => {
   /** Throw on that key's Nth call (1 = the cadence check, 2 = the end stamp). */
   let failAcquireKeyAtCall: number | null;
   let readerCalls: string[];
+  /** ms#1926 review — the next N PG reads throw (a transient failure, counted). */
+  let readerFailures: number;
+  /** Key whose release throws (second point of the ms#1926 review). */
+  let failReleaseKey: string | null;
 
   const readerDouble = {
     async getRooSyncDashboard(key: string) {
       readerCalls.push(key);
+      if (readerFailures > 0) {
+        readerFailures--;
+        throw new Error('connection terminated unexpectedly');
+      }
       return null;
     },
   };
@@ -188,6 +196,9 @@ describe('dashboard reconcile — main-pass lock (#4850)', () => {
     },
     async releaseRooSyncDashboardLock(key: string, holder: string) {
       releaseCalls.push({ key, holder });
+      if (failReleaseKey !== null && key === failReleaseKey) {
+        throw new Error('lock release unreachable for ' + key);
+      }
       if (locks.get(key) === holder) {
         locks.delete(key);
         lockAcquiredAt.delete(key);
@@ -252,6 +263,8 @@ describe('dashboard reconcile — main-pass lock (#4850)', () => {
     failAcquireKey = null;
     failAcquireKeyAtCall = null;
     readerCalls = [];
+    readerFailures = 0;
+    failReleaseKey = null;
     readState.mdReads = [];
     readState.blockNextMdRead = false;
     readState.readStarted = null;
@@ -454,6 +467,60 @@ describe('dashboard reconcile — main-pass lock (#4850)', () => {
     expect(done.mainPassSkipped).toBeUndefined();
     expect(locks.has(mainPassCadenceKey())).toBe(true); // stamped at the end
     expect(locks.has(mainPassLockKey())).toBe(false); // and the lock is gone
+  });
+
+  test('une passe qui laisse du travail à refaire (erreur PG) ne tamponne pas — le tick suivant relit', async () => {
+    // po-2023's reproduction on the head (ms#1926 review): the reader throws
+    // once, the pass counts the failure and still completes `ok` — and the
+    // head stamped the window anyway, so the retry the reader itself announces
+    // ("Next pass retries") landed a whole window later.
+    readerFailures = 1;
+
+    const first = await runCadencedPass();
+
+    expect(first.status).toBe('ok');
+    expect(first.errors).toBe(1);
+    expect(first.failures).toEqual([expect.stringContaining('PG read failed')]);
+    expect(first.gapMessages).toBe(0); // the file was never healed
+    expect(first.mainPassSkipped).toBeUndefined();
+    expect(locks.has(mainPassCadenceKey())).toBe(false); // work left → no stamp
+    expect(locks.has(mainPassLockKey())).toBe(false); // and the lock still goes
+
+    readState.mdReads = [];
+    readerCalls.length = 0;
+
+    const nextTick = await runCadencedPass();
+
+    expect(nextTick.mainPassSkipped).toBeUndefined(); // NOT 'cadence'
+    expect(nextTick.errors).toBe(0);
+    expect(nextTick.gapMessages).toBe(1); // the PG read phase ran for the key
+    expect(readerCalls.length).toBeGreaterThan(0);
+    expect(readState.mdReads).toHaveLength(1);
+    // This one left nothing to redo → it stamps, and the tick after it is refused.
+    expect([...locks.keys()]).toEqual([mainPassCadenceKey()]);
+    const afterComplete = await runCadencedPass();
+    expect(afterComplete.mainPassSkipped).toBe('cadence');
+  });
+
+  test('au contrôle, un relâchement qui jette ne désarme pas le tampon de fin', async () => {
+    // Second point of the ms#1926 review: the check ACQUIRED its row (no stamp
+    // existed) and its release threw. The row stays for its TTL — from now on
+    // it IS the window's mark — so the pass must still stamp at its end
+    // (it finds the row 'held'); disarming it would leave a machine silenced
+    // by a row no complete pass put there.
+    failReleaseKey = mainPassCadenceKey();
+
+    const result = await runCadencedPass();
+
+    expect(result.mainPassSkipped).toBeUndefined();
+    expect(result.parsedKeys).toBe(1);
+    // check → acquired; end stamp → attempted (held): two asks for the cadence row
+    expect(acquireCalls.filter((c) => c.key === mainPassCadenceKey())).toHaveLength(2);
+    expect([...locks.keys()]).toEqual([mainPassCadenceKey()]); // the window IS marked
+    expect(locks.has(mainPassLockKey())).toBe(false);
+
+    failReleaseKey = null;
+    expect((await runCadencedPass()).mainPassSkipped).toBe('cadence');
   });
 
   test('cadence injoignable (throw au contrôle) → passe sur le verrou seul, jamais bloquée', async () => {
