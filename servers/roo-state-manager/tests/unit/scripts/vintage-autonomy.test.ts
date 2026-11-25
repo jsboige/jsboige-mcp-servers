@@ -366,4 +366,47 @@ describe('a copy that did not finish (ms#1910 review)', () => {
         expect(currentVintage()).not.toBe(first);
         expect(fs.readFileSync(vintageCopy(currentVintage(), 'dist', 'index.js'), 'utf-8')).toBe(CORE_V3);
     });
+
+    // Two publishes of one build race for the final name. The rename of the
+    // loser fails; what sits there is then READ BACK, never trusted.
+    function otherPublishWinsTheName(script: string, alsoWrite: string): void {
+        const anchor = 'fs.renameSync(stagingDir, vintageDir);';
+        const text = fs.readFileSync(script, 'utf-8');
+        expect(text, 'the line this test injects before').toContain(anchor);
+        const wins = `fs.cpSync(stagingDir, vintageDir, { recursive: true });${alsoWrite}`;
+        fs.writeFileSync(script, text.replace(anchor, `${wins}\n${anchor}`), 'utf-8');
+    }
+
+    it('is read back, not trusted, when another publish put the same content under the final name first', () => {
+        expect(publish().status).toBe(0);
+        const first = currentVintage();
+        buildSharedCore('core-v2');
+        otherPublishWinsTheName(path.join(server, 'scripts', 'publish-build.mjs'), '');
+
+        const r = publish();
+        expect(r.status).toBe(0);
+        expect(r.output).toContain('was published concurrently');
+        expect(r.output).not.toContain('REFUSED');
+        expect(currentVintage()).not.toBe(first);
+        expect(vintageNames()).toHaveLength(2);
+        expect(fs.readFileSync(vintageCopy(currentVintage(), 'dist', 'index.js'), 'utf-8')).toBe(CORE_V2);
+        expect(fs.readdirSync(server).filter((name) => name.includes('.staging-'))).toEqual([]);
+    });
+
+    it('is refused when the tree that won the final name does not hash to it', () => {
+        expect(publish().status).toBe(0);
+        const first = currentVintage();
+        buildSharedCore('core-v2');
+        otherPublishWinsTheName(
+            path.join(server, 'scripts', 'publish-build.mjs'),
+            ` fs.writeFileSync(path.join(vintageDir, 'stray.js'), 'x');`,
+        );
+
+        const refused = publish();
+        expect(refused.status).not.toBe(0);
+        expect(refused.output).toContain('REFUSED:');
+        expect(refused.output).toContain('published concurrently');
+        expect(currentVintage()).toBe(first);
+        expect(fs.readdirSync(server).filter((name) => name.includes('.staging-'))).toEqual([]);
+    });
 });
