@@ -456,7 +456,18 @@ def check_claim(repo: Path, n: int, lane: str, notebook: str,
 # on a calm bucket (measured 21/11 02:5xZ), and a reservation makes three calls. Under
 # load one call passed 120 s and the TimeoutExpired escaped as `crashed:` (21/11 02:35Z,
 # MGS-28, #27133) -- a terminal failure for a grain that had done nothing wrong.
-CLAIM_GUARD_TIMEOUT_S = 300
+#
+# 24/11: 300 was AT PARITY with the guard's own budget. The guard bounds its complete
+# open-PR enumeration itself (`CHECK_LANE_CLAIM_GH_TIMEOUT_TOTAL`, 300 s,
+# check_lane_claim.py) and answers a fail-closed UNKNOWN when it cannot be established;
+# it still has to read the thread and fetch PR heads around it. A harness budget equal to
+# that inner budget kills every slow call BEFORE the guard can answer, and the leaf reads
+# as unschedulable. Measured on CoursIA#28017 (192 open PRs): one scoped check took 181 s
+# standalone (23:14->23:17Z); the scheduler's first two attempts were killed at 300 s and
+# cost 2 x 5.6 min of launch + backoff, the third was admitted in under 250 s (launched
+# 23:15:04Z, next stage 23:19:13Z). 600 keeps the guard's own verdict reachable (inner
+# 300 + thread and head legs) and stays ~3x the standalone measurement.
+CLAIM_GUARD_TIMEOUT_S = 600
 CLAIM_TIMEOUT_VERDICT = "deferred-by-claim-timeout"
 
 

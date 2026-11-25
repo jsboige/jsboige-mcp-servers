@@ -299,7 +299,18 @@ def test_the_guard_budget_is_the_new_one(monkeypatch, guard_repo):
         return SimpleNamespace(returncode=0, stdout="CLEAR", stderr="")
     monkeypatch.setattr(d.subprocess, "run", fake_run)
     assert d.claim_verdict(d.check_claim(guard_repo, 1, "lane", "N.ipynb")) is None
-    assert seen["timeout"] == d.CLAIM_GUARD_TIMEOUT_S == 300
+    assert seen["timeout"] == d.CLAIM_GUARD_TIMEOUT_S == 600
+
+
+def test_the_guard_budget_outlives_the_guard_own_budget():
+    """24/11 (CoursIA#28017, 192 open PRs): the guard bounds its complete open-PR
+    enumeration itself (300 s, `CHECK_LANE_CLAIM_GH_TIMEOUT_TOTAL`) and answers a
+    fail-closed UNKNOWN past it. At parity the harness killed every slow call first
+    (two attempts at 300 s) while the same check took 181 s standalone and under 250 s
+    on the third attempt. The budget must stay strictly above the guard's, so that a slow
+    GitHub yields the guard's own verdict instead of a kill."""
+    assert d.CLAIM_GUARD_TIMEOUT_S > 300
+    assert d.CLAIM_LOCK_WAIT_S == 3 * d.CLAIM_GUARD_TIMEOUT_S + 120
 
 
 def test_a_post_that_times_out_is_deferred(monkeypatch, guard_repo):
