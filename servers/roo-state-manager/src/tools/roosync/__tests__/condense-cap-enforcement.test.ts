@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { condenseTextIfTooLarge, truncateToMaxSize } from '../dashboard.js';
+import { condenseTextIfTooLarge, truncateToMaxSize, condenseGuardProvenance } from '../dashboard.js';
 
 // Mirror the LLM-client mock used by dashboard.test.ts.
 const mockChatCreate = vi.fn();
@@ -227,5 +227,79 @@ describe('#4872 — cloud-first order for the size guard', () => {
     await condenseTextIfTooLarge(oversizedText, CAP, 'Status', undefined, undefined, true);
     expect(mockFallbackCreate).toHaveBeenCalledTimes(1);
     expect(mockFallbackCreate.mock.calls[0][0].max_tokens).toBe(Math.ceil(CAP / 2));
+  });
+});
+
+describe('#4872 (b) — the guard lines name their process (pid + served vintage)', () => {
+  // A 24 h count can only be attributed to a build if each marker line names its
+  // process: several hosts share one journal day and one segment can carry several
+  // vintages (measured 25/11: 26/32 truncations, unattributable — c.7147814854).
+  const STAMP = /\[pid=\d+ vintage=[^\]\s]+\]/;
+
+  /** Console entries split into physical lines: the stamp must ride the MARKER line. */
+  async function captureConsoleError<T>(run: () => Promise<T>): Promise<{ result: T; lines: string[] }> {
+    const entries: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...args: any[]) => {
+      entries.push(args.map(String).join(' '));
+    });
+    try {
+      const result = await run();
+      return { result, lines: entries.flatMap(e => e.split('\n')) };
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  function requireLine(lines: string[], marker: string): string {
+    const line = lines.find(l => l.includes(marker));
+    expect(line, `missing journal line: ${marker}`).toBeTruthy();
+    return line as string;
+  }
+
+  it('derives the vintage from the served entry path, and never throws without one', () => {
+    // Hosts run `node …/build-<sha16>/index.js` (verified on po-2024, 25/11): the
+    // parent directory IS the vintage the measurement needs to tell builds apart.
+    expect(condenseGuardProvenance('/srv/rsm/build-9bd1e87c2a5a4eeb/index.js', 4242))
+      .toBe('[pid=4242 vintage=build-9bd1e87c2a5a4eeb]');
+    expect(condenseGuardProvenance(undefined, 7)).toBe('[pid=7 vintage=unknown]');
+  });
+
+  it('trigger, failed attempt and truncation lines all carry the stamp ON the marker line', async () => {
+    // Failing-on-base assertion: without (b) these three lines carry neither pid
+    // nor vintage — exactly why the 25/11 post-fix window could not be attributed.
+    const { result, lines } = await captureConsoleError(async () => {
+      mockChatCreate.mockRejectedValue(new Error('gateway 502')); // both primary attempts throw
+      return condenseTextIfTooLarge(oversizedText, CAP, 'Status');
+    });
+    expect(bytes(result)).toBeLessThanOrEqual(CAP);
+    expect(requireLine(lines, 'Status exceeds size limit, auto-condensing')).toMatch(STAMP);
+    expect(requireLine(lines, 'Auto-condense Status attempt 1 failed')).toMatch(STAMP);
+    const truncation = requireLine(lines, 'LLM did not converge');
+    expect(truncation).toMatch(STAMP);
+    // And it is the live process's own stamp, not a placeholder.
+    expect(truncation).toContain(`[pid=${process.pid} vintage=`);
+  });
+
+  it('the "pass deadline reached the cloud reserve" line carries it too (one of the criterion markers)', async () => {
+    // Unattributed, this marker would stay uncountable per build after the fix.
+    const savedReserve = process.env.CONDENSE_CLOUD_RESERVE_MS;
+    process.env.CONDENSE_CLOUD_RESERVE_MS = '18000';
+    try {
+      // 1s of pass left against an 18s reserve → the primary must refuse to start.
+      const { lines } = await captureConsoleError(() =>
+        condenseTextIfTooLarge(oversizedText, CAP, 'Summary', Date.now() + 1000));
+      expect(requireLine(lines, 'pass deadline reached the cloud reserve (#3962)')).toMatch(STAMP);
+    } finally {
+      if (savedReserve === undefined) delete process.env.CONDENSE_CLOUD_RESERVE_MS;
+      else process.env.CONDENSE_CLOUD_RESERVE_MS = savedReserve;
+    }
+  });
+
+  it('the cloud-first success line carries it as well', async () => {
+    mockGetFallbackClient.mockReturnValue({ chat: { completions: { create: mockFallbackCreate } } });
+    mockFallbackCreate.mockResolvedValue({ choices: [{ message: { content: 'cloud condensed under cap', finish_reason: 'stop' } }] });
+    const { lines } = await captureConsoleError(() =>
+      condenseTextIfTooLarge(oversizedText, CAP, 'Summary', undefined, undefined, true));
+    expect(requireLine(lines, '#4872 cloud-first condensed Summary under cap')).toMatch(STAMP);
   });
 });
