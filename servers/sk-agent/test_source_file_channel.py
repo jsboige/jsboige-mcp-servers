@@ -194,10 +194,14 @@ class TestRefusals:
 
     @pytest.mark.asyncio
     async def test_config_file_refused_via_relative_path(
-        self, stub_manager, fake_config
+        self, stub_manager, fake_config, monkeypatch
     ):
         # The gate compares RESOLVED paths: a relative spelling that lands on
-        # the configuration file must be refused just the same.
+        # the configuration file must be refused just the same. The spelling is
+        # relative to the process cwd, so the cwd moves next to the file first:
+        # os.path.relpath has no answer across two Windows drives (pytest's tmp
+        # on C:, a checkout on D: -> ValueError: path is on mount 'C:').
+        monkeypatch.chdir(fake_config.parent)
         rel = os.path.relpath(str(fake_config))
         assert Path(rel).resolve() == Path(sk_agent.CONFIG_PATH).resolve()
         raw = _parse(
