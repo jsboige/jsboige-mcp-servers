@@ -12220,17 +12220,43 @@ type ArchiveListing = {
   archives: string[];
   /** Batches PG named that no local file names. */
   pgOnly: number;
+  /** Batches whose identity with a local file is PROVEN by message ids — listed once. */
+  mergedByIdentity: number;
   /**
-   * Batches attached to a local file by stamp PROXIMITY. Identity is not
-   * verifiable: 302 of the 2313 local archives of `workspace-roo-extensions`
-   * carry `[msg:]` lines (measured po-2024 26/11), so a majority of files
-   * cannot be matched to a batch by message id, and reading every candidate
-   * file to try would put a few hundred DriveFS reads on each listing.
+   * Batches near a local file whose identity could NOT be proven. They are
+   * listed IN ADDITION to the file, never dropped: a stamp inside the window is
+   * a candidate, not a twin (coordinator pre-review 26/11 — « le listing écarte
+   * un lot PG si un fichier est proche de ≤6 min, sans identité commune »).
    */
-  mergedByProximity: number;
+  unprovenTwins: number;
+  /**
+   * Unproven pairs whose synthetic name already exists locally, so the listing
+   * cannot make the batch reachable (the read path serves the file for that
+   * name). Counted and said — never silently doubled, never silently dropped.
+   * Zero on `workspace-roo-extensions` at the 26/11 measurement: the 6 pairs
+   * whose stamps fell in the same second were all PROVEN twins.
+   */
+  shadowedTwins: number;
   /** Why the PG half may be narrower than the key's history. */
   gap: ArchivePgGap;
 };
+
+/**
+ * A stamp inside the window makes a batch a CANDIDATE twin, not a twin:
+ * `archived_at` is stamped by three writers (the condensation, the reconcile
+ * archival pass #3151-D and the archive-scan heal) and no column records which
+ * one wrote it. Measured po-2024 26/11 on `workspace-roo-extensions`: 40
+ * candidate pairs, and one local file had TWO candidate batches — 11 rows and 21
+ * rows for a file carrying 21 ids — i.e. proximity alone would have swallowed a
+ * batch that is a different event. Identity is proven the only way it can be:
+ * every message id of the local file is a row of the batch.
+ *
+ * Cost, measured on the same seat: one file read 7 ms p50 / 23 ms max, one batch
+ * read 7 ms p50 / 12 ms max — 40 pairs cost 0.6 s. The cap only bounds a
+ * pathological key; past it a pair stays UNPROVEN and both are listed, so the
+ * budget never buys a lost batch.
+ */
+const ARCHIVE_IDENTITY_CHECK_MAX = 64;
 
 /** Says out loud that the PG half did not answer — a partial window, never a silent one. */
 function archiveGapNote(gap: ArchivePgGap): string {
@@ -12246,58 +12272,144 @@ function archiveGapNote(gap: ArchivePgGap): string {
   }
 }
 
+/** Says out loud that the name's stamp lands on several batches — no identity to pick by. */
+function archiveAmbiguousNote(ambiguous: number): string {
+  return ambiguous > 0
+    ? ` [${ambiguous} lots PG tombent dans la fenêtre de cet horodatage — aucun ne peut être identifié sans le contenu du fichier]`
+    : '';
+}
+
+/**
+ * The message ids a LOCAL archive carries, or null when identity cannot be
+ * proven from it: no id at all (a format older than the `[msg:]` emission), a
+ * header-shaped block without one (a mix cannot be shown to be only the batch's
+ * rows), or an unreadable file (a DriveFS husk, a file gone between readdir and
+ * read). Same block split and `[msg:]` anchor as the archive reader below.
+ */
+async function localArchiveMessageIds(archiveDir: string, name: string): Promise<Set<string> | null> {
+  let content: string;
+  try {
+    content = (await fs.readFile(path.join(archiveDir, name), 'utf8')).replace(/\r\n/g, '\n');
+  } catch {
+    return null;
+  }
+  const ids = new Set<string>();
+  let idless = 0;
+  const blocks = content.split(/(?=^### \[)/m).filter(b => b.trim());
+  for (const raw of blocks) {
+    const block = raw.replace(/\n---\s*$/, '').trim();
+    if (!block.startsWith('### [')) continue;
+    const header = block.match(/^### \[[^\]]+\]\s+[^|\n]+\|[^|\s\n]+(?: \[[^\]]+\])?\n([\s\S]+)/);
+    const id = header?.[1].match(/^\[msg: ([^\]]+)\]/);
+    if (id) ids.add(id[1]);
+    else idless++;
+  }
+  return ids.size === 0 || idless > 0 ? null : ids;
+}
+
+/**
+ * True when a PG batch and a local archive name are proven to tell the same
+ * condensation: every message id the file carries is a row of the batch. A
+ * stamp inside the window is only what makes the pair worth checking; a file
+ * without ids, an unreadable file or a batch PG does not hand over prove
+ * nothing — the caller then lists both.
+ */
+async function batchIsProvenTwin(
+  key: string,
+  batch: { archivedAt: string },
+  candidate: string,
+  archiveDir: string
+): Promise<boolean> {
+  const fileIds = await localArchiveMessageIds(archiveDir, candidate);
+  if (!fileIds) return false;
+  const read = await fetchArchivedDashboardBatch(key, batch.archivedAt);
+  if (read.gap !== null || !read.messages || read.messages.length === 0) return false;
+  const batchIds = new Set(read.messages.map(m => m.id));
+  return [...fileIds].every(id => batchIds.has(id));
+}
+
 /**
  * Listing = this seat's files + the PG batches no local file names. Fail-open:
  * no PG story returns the file listing unchanged — never a smaller window.
  * Synthetic names use the writer's naming rule, so a consumer that dates an
  * archive by its name (check-degraded-escalations) windows them like the rest.
  *
- * A batch is every archived ROW of the key sharing one `archived_at` second,
- * not necessarily a condensation: two other passes stamp `archived_at` (the
- * reconcile archival pass #3151-D and the archive-scan heal) and no column
- * records which setter wrote a stamp (review ms#1934, finding 2 — a known
- * limitation, named here and in the PR body). For the organ that reads this
- * listing the unit is right either way: it wants every archived message.
+ * A batch is listed under its own name UNLESS a local file is proven to be its
+ * twin (every id of the file is a row of the batch). A batch merely NEAR a file
+ * is listed in addition — `archived_at` is stamped by three passes and no column
+ * says which, so near is not same (review ms#1934, finding 2, and the
+ * coordinator's pre-review: a batch dropped on proximity is a completeness
+ * defect). The count of unproven pairs is reported, never hidden.
  */
 async function listArchivesWithPgBatches(
   key: string,
-  localArchives: string[]
+  localArchives: string[],
+  archiveDir: string
 ): Promise<ArchiveListing> {
-  const localStamps = localArchives
-    .map(name => archiveNameStampMs(key, name))
-    .filter((ms): ms is number => ms !== null);
+  const stampedLocal = localArchives
+    .map(name => ({ name, ms: archiveNameStampMs(key, name) }))
+    .filter((f): f is { name: string; ms: number } => f.ms !== null);
   const { batches, gap } = await fetchArchivedDashboardBatches(key);
   if (batches.length === 0) {
-    return { archives: localArchives, pgOnly: 0, mergedByProximity: 0, gap };
+    return { archives: localArchives, pgOnly: 0, mergedByIdentity: 0, unprovenTwins: 0, shadowedTwins: 0, gap };
   }
   const extra: string[] = [];
-  let mergedByProximity = 0;
+  const localNames = new Set(localArchives);
+  let mergedByIdentity = 0;
+  let unprovenTwins = 0;
+  let shadowedTwins = 0;
+  let checks = 0;
   for (const batch of batches) {
     const batchMs = Date.parse(batch.archivedAt);
     if (Number.isNaN(batchMs)) continue;
-    if (localStamps.some(ms => batchMatchesNameStamp(batchMs, ms))) {
-      mergedByProximity += 1;
+    const candidates = stampedLocal.filter(f => batchMatchesNameStamp(batchMs, f.ms));
+    let proven = false;
+    for (const candidate of candidates) {
+      // Past the cap the pair simply stays unproven: listed twice, not lost.
+      if (checks >= ARCHIVE_IDENTITY_CHECK_MAX) break;
+      checks += 1;
+      if (await batchIsProvenTwin(key, batch, candidate.name, archiveDir)) {
+        proven = true;
+        break;
+      }
+    }
+    if (proven) {
+      mergedByIdentity += 1;
       continue;
     }
     const name = archiveNameForBatch(key, batch.archivedAt);
+    if (candidates.length > 0) {
+      // Near but not proven: listed IN ADDITION — unless the name it would take
+      // already exists locally. The read path serves a readable file for that
+      // name, so the batch's rows would be unreachable under it; counted and
+      // said, rather than a duplicate name pretending to be a second archive.
+      if (name && localNames.has(name)) {
+        shadowedTwins += 1;
+        continue;
+      }
+      unprovenTwins += 1;
+    }
     if (name) extra.push(name);
   }
   if (extra.length === 0) {
-    return { archives: localArchives, pgOnly: 0, mergedByProximity, gap };
+    return { archives: localArchives, pgOnly: 0, mergedByIdentity, unprovenTwins, shadowedTwins, gap };
   }
   // Same order rule as the file listing: the stamp sorts chronologically.
   return {
     archives: [...localArchives, ...extra].sort().reverse(),
-    pgOnly: extra.length,
-    mergedByProximity,
+    pgOnly: extra.length - unprovenTwins,
+    mergedByIdentity,
+    unprovenTwins,
+    shadowedTwins,
     gap,
   };
 }
 
 /**
  * A name this seat cannot read, served from its PG batch. `data` null → the
- * caller keeps today's answer (the file-only behaviour); `gap` says whether
- * PG was even asked and answered.
+ * caller keeps today's answer (the file-only behaviour); `gap` says whether PG
+ * was even asked and answered; `ambiguous` counts the batches the name's stamp
+ * cannot choose between.
  */
 async function readArchiveFromPg(
   key: string,
@@ -12305,27 +12417,34 @@ async function readArchiveFromPg(
 ): Promise<{
   data: { key: string; archivedAt: string; messageCount: number; messages: IntercomMessage[] } | null;
   gap: ArchivePgGap;
+  ambiguous: number;
 }> {
   const nameStampMs = archiveNameStampMs(key, archiveFile);
   // Not a name the writer produces (fork copies, `-wt-cleanup-…`, `pre-merge`):
   // PG has nothing to say about it, and neither did the code before this grain.
-  if (nameStampMs === null) return { data: null, gap: null };
+  if (nameStampMs === null) return { data: null, gap: null, ambiguous: 0 };
   const { batches, gap } = await fetchArchivedDashboardBatches(key);
-  if (gap !== null) return { data: null, gap };
-  // Nearest first: two batches inside the window is not a case the writer
-  // produces, but a deterministic pick must not depend on the listing order.
-  const batch = batches
+  if (gap !== null) return { data: null, gap, ambiguous: 0 };
+  const candidates = batches
     .map(b => ({ batch: b, ms: Date.parse(b.archivedAt) }))
     .filter(({ ms }) => !Number.isNaN(ms) && batchMatchesNameStamp(ms, nameStampMs))
-    .sort((a, b) => Math.abs(a.ms - nameStampMs) - Math.abs(b.ms - nameStampMs))[0]?.batch;
-  if (!batch) return { data: null, gap: null };
+    .sort((a, b) => Math.abs(a.ms - nameStampMs) - Math.abs(b.ms - nameStampMs));
+  // Measured po-2024 26/11: a name CAN sit inside the window of two batches — a
+  // reconcile archival pass stamps `archived_at` minutes after the condensation
+  // (11 rows beside a 21-id file). With no content here there is no id to choose
+  // by, and serving the nearest would hand another event's messages under this
+  // name: refuse, and say how many candidates there were.
+  if (candidates.length === 0) return { data: null, gap: null, ambiguous: 0 };
+  if (candidates.length > 1) return { data: null, gap: null, ambiguous: candidates.length };
+  const batch = candidates[0].batch;
   const read = await fetchArchivedDashboardBatch(key, batch.archivedAt);
   if (read.gap !== null || !read.messages || read.messages.length === 0) {
-    return { data: null, gap: read.gap };
+    return { data: null, gap: read.gap, ambiguous: 0 };
   }
   return {
     data: { key, archivedAt: batch.archivedAt, messageCount: read.messages.length, messages: read.messages },
     gap: null,
+    ambiguous: 0,
   };
 }
 
@@ -12361,7 +12480,10 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
       // #4131 residual : un lot archivé par un AUTRE siège n'a pas de .md ici
       // — le listing le nomme quand même (listArchivesWithPgBatches), et dit
       // quand PG n'a pas répondu au lieu de laisser croire à une fenêtre pleine.
-      const { archives, pgOnly, mergedByProximity, gap } = await listArchivesWithPgBatches(key, localArchives);
+      // Un lot n'est retiré que si un fichier local est PROUVÉ son jumeau (ids) ;
+      // proche mais non prouvé, il est listé EN PLUS et compté.
+      const { archives, pgOnly, mergedByIdentity, unprovenTwins, shadowedTwins, gap } =
+        await listArchivesWithPgBatches(key, localArchives, archiveDir);
       return {
         success: true,
         action: 'read_archive',
@@ -12372,8 +12494,14 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         pgArchiveWindow: gap ?? 'complete',
         message: `${archives.length} archive(s) trouvée(s) pour '${key}'`
           + (pgOnly > 0 ? ` (dont ${pgOnly} sans fichier local, servies par PG)` : '')
-          + (mergedByProximity > 0
-            ? ` [${mergedByProximity} lot(s) PG rattaché(s) à un fichier par proximité d'horodatage — identité non vérifiable]`
+          + (mergedByIdentity > 0
+            ? ` [${mergedByIdentity} lot(s) PG jumeaux d'un fichier local (identité prouvée par les ids de message), listés une seule fois]`
+            : '')
+          + (unprovenTwins > 0
+            ? ` [${unprovenTwins} lot(s) PG proche(s) d'un fichier local sans preuve d'identité — listés en plus, jamais écartés]`
+            : '')
+          + (shadowedTwins > 0
+            ? ` [${shadowedTwins} lot(s) PG proche(s) d'un fichier local portent son nom sans preuve d'identité — non atteignables par ce nom]`
             : '')
           + archiveGapNote(gap)
       };
@@ -12489,9 +12617,11 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     // `archiveData` qu'une lecture fichier ; pas de lot → la réponse
     // d'aujourd'hui, plus la raison quand la fenêtre PG était partielle.
     let gap: ArchivePgGap = null;
+    let ambiguous = 0;
     if (enoent || error instanceof ArchiveHuskError) {
       const fromPg = await readArchiveFromPg(key, args.archiveFile);
       gap = fromPg.gap;
+      ambiguous = fromPg.ambiguous;
       if (fromPg.data) {
         return {
           success: true,
@@ -12515,14 +12645,14 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         // Absent de la poche PG : le motif de fenêtre partielle dit que
         // « introuvable » vaut pour ce que PG a pu montrer, pas pour la flotte.
         ...(gap !== null ? { pgArchiveWindow: gap } : {}),
-        message: `Archive '${args.archiveFile}' introuvable${archiveGapNote(gap)}`
+        message: `Archive '${args.archiveFile}' introuvable${archiveAmbiguousNote(ambiguous)}${archiveGapNote(gap)}`
       };
     }
-    if (error instanceof ArchiveHuskError && gap !== null) {
-      // Illisible ET PG muet : la cause n'est pas « archive vide » seule, et
-      // un consommateur qui ne voit que « frontmatter manquant » conclurait à
-      // un transport sain (classe exit 1 de #4796).
-      throw new ArchiveHuskError(`${(error as Error).message}${archiveGapNote(gap)}`);
+    if (error instanceof ArchiveHuskError && (gap !== null || ambiguous > 0)) {
+      // Illisible ET PG muet (ou plusieurs lots candidats) : la cause n'est pas
+      // « archive vide » seule, et un consommateur qui ne voit que « frontmatter
+      // manquant » conclurait à un transport sain (classe exit 1 de #4796).
+      throw new ArchiveHuskError(`${(error as Error).message}${archiveAmbiguousNote(ambiguous)}${archiveGapNote(gap)}`);
     }
     throw error;
   }

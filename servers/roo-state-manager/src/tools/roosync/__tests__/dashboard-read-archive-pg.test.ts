@@ -23,9 +23,13 @@
  *   - les DEUX familles de nom de l'écrivain sont couvertes : canonique et
  *     `-fallback.md` (review ms#1934, finding 1) ; les autres familles
  *     (`-wt-cleanup-…`) ne sont pas de la forme d'un lot, PG ne les sert pas ;
- *   - un rattachement fichier ↔ lot PG est dit pour ce qu'il est (proximité
- *     d'horodatage, identité non vérifiable) et une fenêtre PG partielle est
- *     DITE (note + champ `pgArchiveWindow`), jamais silencieuse.
+ *   - un lot n'est retiré du listing que si un fichier local est PROUVÉ son
+ *     jumeau (tous ses ids de message sont des lignes du lot) ; proche mais non
+ *     prouvé, il est listé EN PLUS et compté — la proximité seule écartait des
+ *     lots distincts (mesure 26/11 : 40 couples, 39 jumeaux, 1 lot distinct) ;
+ *   - une fenêtre PG partielle est DITE (note + champ `pgArchiveWindow`), jamais
+ *     silencieuse ; un nom qui tombe dans la fenêtre de plusieurs lots n'est
+ *     servi par aucun (sans contenu, il n'y a pas d'identité pour choisir).
  *
  * Seules les deux lectures PG ajoutées par ce grain sont doublées : le chemin
  * fichier reste réel (fs + parser), c'est lui qui garde la précédence.
@@ -127,6 +131,36 @@ async function writeArchiveFile(archiveDir: string, fileName: string): Promise<v
   );
 }
 
+/** An archive in the pre-`[msg:]` format: header-shaped, no id to prove identity with. */
+async function writeArchiveFileWithoutIds(archiveDir: string, fileName: string): Promise<void> {
+  await writeFile(
+    path.join(archiveDir, fileName),
+    [
+      '---',
+      'type: workspace',
+      `originalKey: ${KEY}`,
+      'archivedAt: 2026-11-25T17:02:28.400Z',
+      'messageCount: 1',
+      '---',
+      '',
+      '### [2026-11-25T16:50:00.000Z] test-machine|test-workspace',
+      '[DONE] lu depuis le fichier',
+      '',
+    ].join('\n'),
+    'utf8'
+  );
+}
+
+/** What the listing prints when a batch was recognised as a file's twin. */
+function identityNote(count: number): string {
+  return ` [${count} lot(s) PG jumeaux d'un fichier local (identité prouvée par les ids de message), listés une seule fois]`;
+}
+
+/** …and when a batch was merely near a file: listed in addition, never dropped. */
+function unprovenNote(count: number): string {
+  return ` [${count} lot(s) PG proche(s) d'un fichier local sans preuve d'identité — listés en plus, jamais écartés]`;
+}
+
 describe('read_archive — repli PG (#4131 residual)', () => {
   let tmpDir: string;
   let archiveDir: string;
@@ -163,6 +197,8 @@ describe('read_archive — repli PG (#4131 residual)', () => {
       { archivedAt: '2026-11-25T19:06:16.000Z', messageCount: 4 },
       { archivedAt: '2026-11-25T17:02:29.000Z', messageCount: 3 },
     ]));
+    // Le lot 17:02:29 porte les messages du fichier → jumeau PROUVÉ.
+    mockFetchBatch.mockResolvedValue(batchOf(fileMessages));
     const res = await list();
     expect(res.success).toBe(true);
     // 17-02-29 n'apparaît pas : c'est le jumeau PG du fichier 17-02-28.
@@ -171,10 +207,12 @@ describe('read_archive — repli PG (#4131 residual)', () => {
       name('2026-11-25T19-06-16'),
       name('2026-11-25T17-02-28'),
     ]);
-    // Le rattachement est dit pour ce qu'il est : une proximité, pas une identité.
+    // La seule paire proche a été vérifiée par les ids de message.
+    expect(mockFetchBatch).toHaveBeenCalledWith(KEY, '2026-11-25T17:02:29.000Z');
+    expect(mockFetchBatch).toHaveBeenCalledTimes(1);
     expect((res as any).message).toBe(
       `3 archive(s) trouvée(s) pour '${KEY}' (dont 2 sans fichier local, servies par PG)`
-      + ` [1 lot(s) PG rattaché(s) à un fichier par proximité d'horodatage — identité non vérifiable]`
+      + identityNote(1)
     );
     expect((res as any).pgArchiveWindow).toBe('complete');
   });
@@ -184,12 +222,76 @@ describe('read_archive — repli PG (#4131 residual)', () => {
     mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T22:59:28.000Z', messageCount: 9 },
     ]));
+    mockFetchBatch.mockResolvedValue(batchOf(fileMessages));
     const res = await list();
     expect((res as any).archives).toEqual([name('2026-11-25T22-58-20')]);
     expect((res as any).message).toBe(
-      `1 archive(s) trouvée(s) pour '${KEY}'`
-      + ` [1 lot(s) PG rattaché(s) à un fichier par proximité d'horodatage — identité non vérifiable]`
+      `1 archive(s) trouvée(s) pour '${KEY}'` + identityNote(1)
     );
+  });
+
+  it('proche mais DISTINCT : un lot dont les ids ne couvrent pas le fichier est listé EN PLUS, jamais écarté', async () => {
+    // Mesure po-2024 26/11 : un fichier a deux lots candidats — une passe de
+    // réconciliation pose `archived_at` quelques minutes après la condensation.
+    // La proximité seule écartait ce lot : perte de complétude (pré-revue ai-01).
+    await writeArchiveFile(archiveDir, name('2026-11-25T20-25-29'));
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-25T20:25:30.000Z', messageCount: 2 },
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages)); // aucun id commun
+    const res = await list();
+    expect((res as any).archives).toEqual([
+      name('2026-11-25T20-25-30'),
+      name('2026-11-25T20-25-29'),
+    ]);
+    expect((res as any).message).toBe(
+      `2 archive(s) trouvée(s) pour '${KEY}'` + unprovenNote(1)
+    );
+    expect((res as any).message).not.toContain('sans fichier local');
+  });
+
+  it('proche, non prouvé, et le nom du lot est déjà pris localement → compté, pas dédoublé en silence', async () => {
+    await writeArchiveFile(archiveDir, name('2026-11-25T20-25-29'));
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 2 }, // même seconde
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
+    const res = await list();
+    // Un second nom identique ne serait qu'un doublon : la lecture servirait le
+    // fichier. Le lot est donc impossible à atteindre par son nom — et le dit.
+    expect((res as any).archives).toEqual([name('2026-11-25T20-25-29')]);
+    expect((res as any).message).toBe(
+      `1 archive(s) trouvée(s) pour '${KEY}'`
+      + ` [1 lot(s) PG proche(s) d'un fichier local portent son nom sans preuve d'identité — non atteignables par ce nom]`
+    );
+  });
+
+  it('sous-ensemble : tous les ids du fichier sont des lignes du lot → jumeau prouvé, un seul nom', async () => {
+    await writeArchiveFile(archiveDir, name('2026-11-25T20-25-29'));
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 3 },
+    ]));
+    // Le lot contient le message du fichier ET des lignes que le fichier ne cite pas.
+    mockFetchBatch.mockResolvedValue(batchOf([...fileMessages, ...pgMessages]));
+    const res = await list();
+    expect((res as any).archives).toEqual([name('2026-11-25T20-25-29')]);
+    expect((res as any).message).toBe(
+      `1 archive(s) trouvée(s) pour '${KEY}'` + identityNote(1)
+    );
+  });
+
+  it('fichier au format antérieur (aucun `[msg:]`) → identité non prouvable, lot listé en plus', async () => {
+    await writeArchiveFileWithoutIds(archiveDir, name('2026-11-25T20-25-29'));
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-25T20:25:31.000Z', messageCount: 2 },
+    ]));
+    const res = await list();
+    expect((res as any).archives).toHaveLength(2);
+    expect((res as any).message).toBe(
+      `2 archive(s) trouvée(s) pour '${KEY}'` + unprovenNote(1)
+    );
+    // Sans id dans le fichier, le lot n'est même pas lu.
+    expect(mockFetchBatch).not.toHaveBeenCalled();
   });
 
   it('fenêtre bornée : 10 min après un fichier = une AUTRE condensation ; au-delà de 2 s AVANT = pas un jumeau', async () => {
@@ -200,6 +302,7 @@ describe('read_archive — repli PG (#4131 residual)', () => {
       { archivedAt: '2026-11-25T09:59:56.000Z', messageCount: 6 }, // 4 s AVANT 10-00-00 : distinct
       { archivedAt: '2026-11-25T08:48:23.000Z', messageCount: 7 }, // 601 s après 08-38-22 : distinct
     ]));
+    mockFetchBatch.mockResolvedValue(batchOf(fileMessages));
     const res = await list();
     expect((res as any).archives).toEqual([
       name('2026-11-25T10-00-00'),
@@ -208,6 +311,7 @@ describe('read_archive — repli PG (#4131 residual)', () => {
       name('2026-11-25T08-38-22'),
     ]);
     expect((res as any).message).toContain('dont 2 sans fichier local');
+    expect((res as any).message).toContain(identityNote(1));
   });
 
   it('pas d\'histoire PG → le listing d\'actuel, mot pour mot', async () => {
@@ -225,11 +329,12 @@ describe('read_archive — repli PG (#4131 residual)', () => {
     mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 2 },
     ]));
+    mockFetchBatch.mockResolvedValue(batchOf(fileMessages));
     const res = await list();
     expect((res as any).archives).toEqual([`${KEY}-2026-11-25T20-25-29-fallback.md`]);
     // Ni doublon sous le nom canonique, ni lot compté « sans fichier local ».
     expect((res as any).message).not.toContain('sans fichier local');
-    expect((res as any).message).toContain('1 lot(s) PG rattaché(s) à un fichier');
+    expect((res as any).message).toContain(identityNote(1));
   });
 
   it('coque `-fallback` (placeholder DriveFS non hydraté) → servie par PG, plus de rejet', async () => {
@@ -388,6 +493,36 @@ describe('read_archive — repli PG (#4131 residual)', () => {
     expect(res.success).toBe(false);
     expect((res as any).message).toContain('introuvable');
     expect((res as any).message).not.toContain('FENÊTRE PARTIELLE');
+    expect(mockFetchBatch).not.toHaveBeenCalled();
+  });
+
+  // ─── ambiguïté (mesurée : un nom peut tomber dans la fenêtre de DEUX lots) ──
+
+  it('DEUX lots dans la fenêtre d\'un nom ABSENT → aucun n\'est servi, la réponse dit combien', async () => {
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-26T00:27:11.000Z', messageCount: 21 },
+      { archivedAt: '2026-11-26T00:33:08.000Z', messageCount: 11 },
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
+    const res = await read(name('2026-11-26T00-27-11'));
+    expect(res.success).toBe(false);
+    expect((res as any).message).toBe(
+      `Archive '${name('2026-11-26T00-27-11')}' introuvable`
+      + ` [2 lots PG tombent dans la fenêtre de cet horodatage — aucun ne peut être identifié sans le contenu du fichier]`
+    );
+    // Servir « le plus proche » rendrait les messages d'un AUTRE événement sous ce nom.
+    expect(mockFetchBatch).not.toHaveBeenCalled();
+  });
+
+  it('DEUX lots dans la fenêtre d\'une COQUE → le rejet husk porte l\'ambiguïté, pas un contenu deviné', async () => {
+    const husk = name('2026-11-26T00-27-11');
+    await writeFile(path.join(archiveDir, husk), '', 'utf8');
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-26T00:27:11.000Z', messageCount: 21 },
+      { archivedAt: '2026-11-26T00:33:08.000Z', messageCount: 11 },
+    ]));
+    await expect(read(husk)).rejects.toThrow(/frontmatter manquant/);
+    await expect(read(husk)).rejects.toThrow(/2 lots PG tombent dans la fenêtre/);
     expect(mockFetchBatch).not.toHaveBeenCalled();
   });
 
