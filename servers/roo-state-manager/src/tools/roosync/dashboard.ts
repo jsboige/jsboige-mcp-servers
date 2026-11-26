@@ -66,6 +66,8 @@ import {
   dualWriteDashboardSyncChecked,
   probeDashboardJournalForHydration,
   fetchArchivedDashboardMessageIds,
+  fetchArchivedDashboardBatches,
+  fetchArchivedDashboardBatch,
   getDashboardRetirement,
   listRetiredDashboardKeys,
   listRooSyncDashboardKeysFromPg,
@@ -12139,6 +12141,115 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
   }
 }
 
+// ─── #4131 residual — PG fallback of read_archive ──────────────────────────
+//
+// `handleReadArchive` lists and reads this seat's G: mirror only. Condensation
+// writes its `.md` on the seat that performs it (`writeArchiveAtomically`), and
+// the PG-primary gate no longer maintains the G: dashboard copy (Phase D): the
+// mirror is one seat's archive window, not the fleet's. Measured po-2024
+// 26/11 on `workspace-roo-extensions`: 9 condensation batches in PG over 30 h,
+// 2 files on disk. `check-degraded-escalations` reads that listing, so a
+// `[REPAIRED]` or a `[DEGRADED]` archived by another seat was invisible here —
+// a confident verdict over a blind window.
+//
+// The store of record is `roosync_dashboard_messages` (`archived_at IS NOT
+// NULL`). The listing gains the batches PG holds and no local file names; a
+// name this seat cannot read (file absent, or a DriveFS placeholder that reads
+// as a frontmatter-less husk — the exit-1 class of #4796) is served from its
+// PG batch in the SAME `archiveData` envelope a file read returns. A readable
+// file keeps precedence; no PG story = today's behaviour, never less.
+
+/** A listed archive whose content carries no frontmatter (husk / placeholder). */
+class ArchiveHuskError extends Error {}
+
+const ARCHIVE_NAME_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})$/;
+
+/**
+ * Name-stamp ↔ batch-stamp relation. The writer computes the file name BEFORE
+ * it writes the archive, and `archived_at` is stamped by the dashboard write
+ * that follows (merge, DriveFS lock, dual-write) — so the PG stamp lands AFTER
+ * the name stamp: 0-1 s measured, up to the G: write path's lock waits (~68 s,
+ * #3205). Six minutes one-sided covers it with margin and stays far below the
+ * shortest inter-batch interval observed on a key (49 min). The other
+ * direction is clock skew only.
+ */
+const ARCHIVE_BATCH_AFTER_NAME_MS = 6 * 60_000;
+const ARCHIVE_NAME_AFTER_BATCH_MS = 2_000;
+
+/** Epoch ms of the stamp `<key>-YYYY-MM-DDTHH-MM-SS.md` carries, else null. */
+function archiveNameStampMs(key: string, name: string): number | null {
+  if (!name.startsWith(`${key}-`) || !name.endsWith('.md')) return null;
+  const match = name.slice(key.length + 1, -3).match(ARCHIVE_NAME_PATTERN);
+  if (!match) return null;
+  const ms = Date.parse(`${match[1]}T${match[2]}:${match[3]}:${match[4]}Z`);
+  return Number.isNaN(ms) ? null : ms;
+}
+
+/** The archive name PG derives for a batch — the writer's own naming rule. */
+function archiveNameForBatch(key: string, archivedAtIso: string): string | null {
+  const ms = Date.parse(archivedAtIso);
+  if (Number.isNaN(ms)) return null;
+  return `${key}-${new Date(ms).toISOString().replace(/[:.]/g, '-').substring(0, 19)}.md`;
+}
+
+/** True when a PG batch and an archive name stamp tell the same condensation. */
+function batchMatchesNameStamp(batchMs: number, nameStampMs: number): boolean {
+  const delta = batchMs - nameStampMs;
+  return delta >= -ARCHIVE_NAME_AFTER_BATCH_MS && delta <= ARCHIVE_BATCH_AFTER_NAME_MS;
+}
+
+/**
+ * Listing = this seat's files + the PG batches no local file names. Fail-open:
+ * no PG story returns the file listing unchanged — never a smaller window.
+ * Synthetic names use the writer's naming rule, so a consumer that dates an
+ * archive by its name (check-degraded-escalations) windows them like the rest.
+ */
+async function listArchivesWithPgBatches(
+  key: string,
+  localArchives: string[]
+): Promise<{ archives: string[]; pgOnly: number }> {
+  const batches = await fetchArchivedDashboardBatches(key);
+  if (!batches || batches.length === 0) return { archives: localArchives, pgOnly: 0 };
+  const localStamps = localArchives
+    .map(name => archiveNameStampMs(key, name))
+    .filter((ms): ms is number => ms !== null);
+  const extra: string[] = [];
+  for (const batch of batches) {
+    const batchMs = Date.parse(batch.archivedAt);
+    if (Number.isNaN(batchMs)) continue;
+    if (localStamps.some(ms => batchMatchesNameStamp(batchMs, ms))) continue;
+    const name = archiveNameForBatch(key, batch.archivedAt);
+    if (name) extra.push(name);
+  }
+  if (extra.length === 0) return { archives: localArchives, pgOnly: 0 };
+  // Same order rule as the file listing: the stamp sorts chronologically.
+  return { archives: [...localArchives, ...extra].sort().reverse(), pgOnly: extra.length };
+}
+
+/**
+ * A name this seat cannot read, served from its PG batch. Null → the caller
+ * keeps today's answer (the file-only behaviour).
+ */
+async function readArchiveFromPg(
+  key: string,
+  archiveFile: string
+): Promise<{ key: string; archivedAt: string; messageCount: number; messages: IntercomMessage[] } | null> {
+  const nameStampMs = archiveNameStampMs(key, archiveFile);
+  if (nameStampMs === null) return null;
+  const batches = await fetchArchivedDashboardBatches(key);
+  if (!batches) return null;
+  // Nearest first: two batches inside the window is not a case the writer
+  // produces, but a deterministic pick must not depend on the listing order.
+  const batch = batches
+    .map(b => ({ batch: b, ms: Date.parse(b.archivedAt) }))
+    .filter(({ ms }) => !Number.isNaN(ms) && batchMatchesNameStamp(ms, nameStampMs))
+    .sort((a, b) => Math.abs(a.ms - nameStampMs) - Math.abs(b.ms - nameStampMs))[0]?.batch;
+  if (!batch) return null;
+  const messages = await fetchArchivedDashboardBatch(key, batch.archivedAt);
+  if (!messages || messages.length === 0) return null;
+  return { key, archivedAt: batch.archivedAt, messageCount: messages.length, messages };
+}
+
 async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
   // #3459: fail-closed. Le mkdir récursif ci-dessous recréerait la racine du store
   // et rendrait `existsSync(sharedPath)` vrai pour toutes les autres gardes.
@@ -12164,10 +12275,13 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     try {
       const files = await fs.readdir(archiveDir);
       const keyPrefix = key + '-';
-      const archives = files
+      const localArchives = files
         .filter(f => f.startsWith(keyPrefix) && f.endsWith('.md'))
         .sort()
         .reverse(); // Plus récents en premier
+      // #4131 residual : un lot condensé par un AUTRE siège n'a pas de .md
+      // ici — le listing le nomme quand même (listArchivesWithPgBatches).
+      const { archives, pgOnly } = await listArchivesWithPgBatches(key, localArchives);
       return {
         success: true,
         action: 'read_archive',
@@ -12176,6 +12290,7 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         request: requestEcho,
         archives,
         message: `${archives.length} archive(s) trouvée(s) pour '${key}'`
+          + (pgOnly > 0 ? ` (dont ${pgOnly} sans fichier local, servies par PG)` : '')
       };
     } catch (error) {
       // #4643 : un readdir en échec n'est PAS « aucune archive » — la liste
@@ -12202,7 +12317,7 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     // Parser le frontmatter
     const frontmatterMatch = content.match(/^---\n([\s\S]+?)\n---/);
     if (!frontmatterMatch) {
-      throw new Error(`Format archive invalide: frontmatter manquant dans ${archivePath}`);
+      throw new ArchiveHuskError(`Format archive invalide: frontmatter manquant dans ${archivePath}`);
     }
 
     const archiveFrontmatter = yaml.load(frontmatterMatch[1]) as {
@@ -12282,7 +12397,26 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
       message: `Archive '${args.archiveFile}' lue (${archiveFrontmatter.messageCount} messages)`
     };
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+    const enoent = (error as NodeJS.ErrnoException).code === 'ENOENT';
+    // #4131 residual : un nom que ce siège ne peut pas lire — fichier absent,
+    // ou coque sans frontmatter (placeholder DriveFS non hydraté, la classe
+    // exit 1 de #4796) — peut nommer un lot que PG tient. Même enveloppe
+    // `archiveData` qu'une lecture fichier ; pas de lot → réponse d'aujourd'hui.
+    if (enoent || error instanceof ArchiveHuskError) {
+      const fromPg = await readArchiveFromPg(key, args.archiveFile);
+      if (fromPg) {
+        return {
+          success: true,
+          action: 'read_archive',
+          key,
+          type: args.type ?? '',
+          request: requestEcho,
+          archiveData: fromPg,
+          message: `Archive '${args.archiveFile}' lue depuis PG (${fromPg.messageCount} messages)`
+        };
+      }
+    }
+    if (enoent) {
       return {
         success: false,
         action: 'read_archive',

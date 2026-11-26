@@ -244,6 +244,26 @@ export interface RooSyncDashboardMessageRow {
 }
 
 /**
+ * One condensation batch of a dashboard key (#4131 residual, follow-up of the
+ * #4929 diagnosis).
+ *
+ * A batch is the set of journal rows sharing one `date_trunc('second',
+ * archived_at)` — the second the archive file name carries
+ * (`<key>-YYYY-MM-DDTHH-MM-SS.md`). It is the read-side unit `read_archive`
+ * needs in order to NAME a batch whose `.md` exists only on another seat:
+ * condensation writes that file on the seat that performs it, and the
+ * PG-primary gate no longer maintains the G: dashboard copy (Phase D), so the
+ * local mirror is one seat's archive window, not the fleet's (measured
+ * po-2024 26/11: 9 batches in PG over 30 h, 2 files on disk).
+ */
+export interface ArchivedDashboardBatch {
+  /** Batch stamp, ISO-8601 (the rows' `archived_at`, truncated to the second). */
+  archivedAt: string;
+  /** Journal rows the batch carries. */
+  messageCount: number;
+}
+
+/**
  * A row of `harmonization_campaigns` (migrations/013, #3544).
  *
  * The queryable columns duplicate the cheap filters (status, target, canon

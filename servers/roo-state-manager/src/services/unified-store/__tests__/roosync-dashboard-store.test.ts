@@ -30,6 +30,9 @@ import type {
 
 const mockGetRooSyncDashboard = vi.fn().mockResolvedValue(null);
 const mockGetArchivedIds = vi.fn().mockResolvedValue(null);
+// #4131 residual — archive surface reads (read_archive PG fallback).
+const mockGetArchivedBatches = vi.fn().mockResolvedValue(null);
+const mockGetArchivedBatch = vi.fn().mockResolvedValue(null);
 // Review #1244 : isNull pilotable — la vraie factory rend un Null reader sans
 // UNIFIED_STORE_DUAL_WRITE=1 ; le test du reader dédié exige ce comportement.
 // Invariant (#1369, arbitrage NanoClaw 05/10) : value=false ⇔ factory réelle
@@ -44,6 +47,8 @@ vi.mock('../reader-factory.js', () => ({
     getRooSyncDashboard: mockGetRooSyncDashboard,
     // #3782 tombstones : décision merge — ids archivés sur la clé.
     getArchivedRooSyncDashboardMessageIds: mockGetArchivedIds,
+    getArchivedRooSyncDashboardBatches: mockGetArchivedBatches,
+    getArchivedRooSyncDashboardBatch: mockGetArchivedBatch,
   }),
   resetReaderInstance: vi.fn(),
 }));
@@ -95,6 +100,9 @@ import {
   dualWriteDashboardDelete,
   backfillDashboardToStore,
   fetchArchivedDashboardMessageIds,
+  fetchArchivedDashboardBatches,
+  fetchArchivedDashboardBatch,
+  mapRowToIntercomMessage,
   resetArchivedIdsReaderForTests,
 } from '../roosync-dashboard-store.js';
 import { PgUnifiedStoreWriter } from '../PgUnifiedStoreWriter.js';
@@ -709,5 +717,220 @@ describe('PgUnifiedStoreReader.getArchivedRooSyncDashboardMessageIds SQL shape',
     expect(sql).toContain('message_id = $2');
     expect(sql).toContain('LIMIT 1');
     expect(call![1]).toEqual(['workspace-roo-extensions', 'stall-x']);
+  });
+});
+
+// ─── #4131 residual — archive surface reads (read_archive PG fallback) ──
+//
+// Mesuré po-2024 26/11 : 9 lots de condensation en PG sur 30 h, 2 fichiers
+// sur le miroir du siège. `read_archive` ne lisait que le miroir — la fenêtre
+// d'un siège n'était pas celle de la flotte.
+
+describe('fetchArchivedDashboardBatches / fetchArchivedDashboardBatch (#4131 residual)', () => {
+  function withPgUrl(fn: () => void | Promise<void>): () => Promise<void> {
+    return async () => {
+      process.env.UNIFIED_STORE_PG_URL = 'postgres://t:t@localhost:5432/x';
+      try {
+        await fn();
+      } finally {
+        delete process.env.UNIFIED_STORE_PG_URL;
+        delete process.env.UNIFIED_STORE_DUAL_WRITE;
+      }
+    };
+  }
+
+  beforeEach(() => {
+    mockLoggerWarn.mockClear();
+  });
+
+  test('la porte est la CAPACITÉ (PG_URL) : sans PG_URL → null, reader jamais consulté', async () => {
+    delete process.env.UNIFIED_STORE_PG_URL;
+    expect(await fetchArchivedDashboardBatches('workspace-x')).toBeNull();
+    expect(await fetchArchivedDashboardBatch('workspace-x', '2026-11-25T17:02:29.000Z')).toBeNull();
+    expect(mockGetArchivedBatches).not.toHaveBeenCalled();
+    expect(mockGetArchivedBatch).not.toHaveBeenCalled();
+  });
+
+  test('hit → les lots du reader, ordre conservé (plus récent d\'abord)', withPgUrl(async () => {
+    mockGetArchivedBatches.mockResolvedValueOnce([
+      { archivedAt: '2026-11-26T00:07:21.000Z', messageCount: 19 },
+      { archivedAt: '2026-11-25T22:58:23.000Z', messageCount: 17 },
+    ]);
+    const result = await fetchArchivedDashboardBatches('workspace-roo-extensions');
+    expect(result).toEqual([
+      { archivedAt: '2026-11-26T00:07:21.000Z', messageCount: 19 },
+      { archivedAt: '2026-11-25T22:58:23.000Z', messageCount: 17 },
+    ]);
+    expect(mockGetArchivedBatches).toHaveBeenCalledWith('workspace-roo-extensions');
+  }));
+
+  test('clé sans archive → [] : l\'histoire existe, elle est vide (pas null)', withPgUrl(async () => {
+    mockGetArchivedBatches.mockResolvedValueOnce([]);
+    expect(await fetchArchivedDashboardBatches('global')).toEqual([]);
+  }));
+
+  test('hit lot → lignes du journal en IntercomMessage, le mapping de la lecture vivante', withPgUrl(async () => {
+    mockGetArchivedBatch.mockResolvedValueOnce([{
+      id: 7,
+      dashboard_key: 'workspace-roo-extensions',
+      message_id: 'myia-po-2024:roo-extensions:ic-1',
+      author_machine: 'myia-po-2024',
+      author_workspace: 'roo-extensions',
+      content: '[DEGRADED] lecture d\'archive aveugle',
+      tags: ['ERROR', 'claude-interactive'],
+      team_stage: null,
+      reply_to: 'ic-0',
+      acknowledged_at: null,
+      archived_at: '2026-11-25T17:02:29.100Z',
+      created_at: '2026-11-25T16:40:00.000Z',
+    }]);
+    const result = await fetchArchivedDashboardBatch('workspace-roo-extensions', '2026-11-25T17:02:29.000Z');
+    // archiveData.messages doit avoir la forme que le chemin fichier sert.
+    expect(result).toEqual([{
+      id: 'myia-po-2024:roo-extensions:ic-1',
+      timestamp: '2026-11-25T16:40:00.000Z',
+      author: { machineId: 'myia-po-2024', workspace: 'roo-extensions' },
+      content: '[DEGRADED] lecture d\'archive aveugle',
+      reply_to: 'ic-0',
+      tags: ['ERROR', 'claude-interactive'],
+    }]);
+    expect(mockGetArchivedBatch).toHaveBeenCalledWith('workspace-roo-extensions', '2026-11-25T17:02:29.000Z');
+  }));
+
+  test('reader en échec → null + WARN, des deux lectures (jamais de throw vers read_archive)', withPgUrl(async () => {
+    mockGetArchivedBatches.mockRejectedValueOnce(new Error('connection refused'));
+    mockGetArchivedBatch.mockRejectedValueOnce(new Error('connection refused'));
+    expect(await fetchArchivedDashboardBatches('global')).toBeNull();
+    expect(await fetchArchivedDashboardBatch('global', '2026-11-25T17:02:29.000Z')).toBeNull();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('[archive-pg] batch listing failed'),
+      expect.objectContaining({ key: 'global' })
+    );
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('[archive-pg] batch read failed'),
+      expect.objectContaining({ key: 'global', batchSecondIso: '2026-11-25T17:02:29.000Z' })
+    );
+  }));
+
+  test('reader muet > 3 s → timeout → null, des deux lectures', withPgUrl(async () => {
+    mockGetArchivedBatches.mockImplementationOnce(() => new Promise(() => { /* never resolves */ }));
+    mockGetArchivedBatch.mockImplementationOnce(() => new Promise(() => { /* never resolves */ }));
+    vi.useFakeTimers();
+    try {
+      const pendingBatches = fetchArchivedDashboardBatches('global');
+      const pendingBatch = fetchArchivedDashboardBatch('global', '2026-11-25T17:02:29.000Z');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await pendingBatches).toBeNull();
+      expect(await pendingBatch).toBeNull();
+      expect(mockLoggerWarn).toHaveBeenCalledWith(
+        expect.stringContaining('[archive-pg] batch listing timed out'),
+        expect.objectContaining({ key: 'global' })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  }));
+
+  test('SANS dual-write mais AVEC PG_URL → servi par le reader dédié (vraie classe, pool pg mocké)', withPgUrl(async () => {
+    delete process.env.UNIFIED_STORE_DUAL_WRITE;
+    mockFactoryIsNull.value = true;
+    resetArchivedIdsReaderForTests();
+    try {
+      mockGetArchivedBatches.mockClear();
+      mockQuery.mockClear();
+      // Self-init probe (SELECT 1) puis le listing des lots.
+      mockQuery.mockResolvedValueOnce({ rows: [{ '1': 1 }] })
+        .mockResolvedValueOnce({
+          rows: [{ batch_at: new Date('2026-11-25T17:02:29.000Z'), message_count: 3 }],
+        });
+      const result = await fetchArchivedDashboardBatches('workspace-roo-extensions');
+      expect(result).toEqual([{ archivedAt: '2026-11-25T17:02:29.000Z', messageCount: 3 }]);
+      // Servi par le reader dédié (pool pg), PAS par le double factory.
+      expect(mockGetArchivedBatches).not.toHaveBeenCalled();
+      const call = mockQuery.mock.calls.find(c => String(c[0]).includes('date_trunc'));
+      expect(call).toBeDefined();
+      expect(call![1]).toEqual(['workspace-roo-extensions']);
+    } finally {
+      mockFactoryIsNull.value = false;
+    }
+  }));
+});
+
+describe('PgUnifiedStoreReader — SQL shape des lectures de lots (#4131 residual)', () => {
+  const reader = new PgUnifiedStoreReader({ connectionString: 'postgres://t:t@localhost:5432/x' });
+
+  test('lots : groupés par date_trunc(second, archived_at), archived_at IS NOT NULL, clé paramétrée, plus récent d\'abord', async () => {
+    mockQuery.mockClear();
+    // Premier appel = self-init SELECT 1.
+    mockQuery.mockResolvedValueOnce({ rows: [{ '1': 1 }] })
+      .mockResolvedValueOnce({
+        rows: [
+          { batch_at: new Date('2026-11-26T00:07:21.400Z'), message_count: 19 },
+          { batch_at: new Date('2026-11-25T22:58:23.900Z'), message_count: 17 },
+        ],
+      });
+    const result = await reader.getArchivedRooSyncDashboardBatches('workspace-roo-extensions');
+    expect(result).toEqual([
+      { archivedAt: '2026-11-26T00:07:21.400Z', messageCount: 19 },
+      { archivedAt: '2026-11-25T22:58:23.900Z', messageCount: 17 },
+    ]);
+
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('date_trunc'));
+    expect(call).toBeDefined();
+    const sql = String(call![0]);
+    expect(sql).toContain("date_trunc('second', archived_at)");
+    expect(sql).toContain('FROM roosync_dashboard_messages');
+    expect(sql).toContain('dashboard_key = $1');
+    expect(sql).toContain('archived_at IS NOT NULL');
+    expect(sql).toContain('GROUP BY 1');
+    expect(sql).toContain('ORDER BY 1 DESC');
+    expect(call![1]).toEqual(['workspace-roo-extensions']);
+  });
+
+  test('un lot : date_trunc(second) = $2::timestamptz, ordre du fichier (created_at ASC, id ASC), lignes mappées', async () => {
+    mockQuery.mockClear();
+    // Reader déjà initialisé par le test précédent — pas de SELECT 1.
+    mockQuery.mockResolvedValueOnce({
+      rows: [
+        { id: 2, dashboard_key: 'workspace-roo-extensions', message_id: 'ic-b', author_machine: 'm', author_workspace: 'w', content: 'second', tags: [], team_stage: null, reply_to: null, acknowledged_at: null, archived_at: new Date('2026-11-25T17:02:29.500Z'), created_at: new Date('2026-11-25T16:41:00.000Z') },
+        { id: 1, dashboard_key: 'workspace-roo-extensions', message_id: 'ic-a', author_machine: 'm', author_workspace: 'w', content: 'first', tags: [], team_stage: null, reply_to: null, acknowledged_at: null, archived_at: new Date('2026-11-25T17:02:29.200Z'), created_at: new Date('2026-11-25T16:40:00.000Z') },
+      ],
+    });
+    const result = await reader.getArchivedRooSyncDashboardBatch('workspace-roo-extensions', '2026-11-25T17:02:29.000Z');
+    expect(result.map(m => m.message_id)).toEqual(['ic-b', 'ic-a']); // server-side ordering preserved
+    expect(result[1].archived_at).toBe('2026-11-25T17:02:29.200Z');
+
+    const sql = String(mockQuery.mock.calls[0][0]);
+    expect(sql).toContain('FROM roosync_dashboard_messages');
+    expect(sql).toContain('dashboard_key = $1');
+    expect(sql).toContain('archived_at IS NOT NULL');
+    expect(sql).toContain("date_trunc('second', archived_at) = $2::timestamptz");
+    expect(sql).toContain('ORDER BY created_at ASC, id ASC');
+    expect(mockQuery.mock.calls[0][1]).toEqual(['workspace-roo-extensions', '2026-11-25T17:02:29.000Z']);
+  });
+});
+
+describe('mapRowToIntercomMessage (#4131 residual — mapping partagé)', () => {
+  test('ligne sans message_id → id déterministe dérivé du BIGSERIAL, champs optionnels absents', () => {
+    const msg = mapRowToIntercomMessage({
+      id: 42,
+      dashboard_key: 'global',
+      message_id: null,
+      author_machine: 'm',
+      author_workspace: 'w',
+      content: 'legacy',
+      tags: [],
+      team_stage: null,
+      reply_to: null,
+      acknowledged_at: null,
+      archived_at: null,
+      created_at: '2026-11-25T16:40:00.000Z',
+    });
+    expect(msg).toEqual({
+      id: 'm:w:pg-42',
+      timestamp: '2026-11-25T16:40:00.000Z',
+      author: { machineId: 'm', workspace: 'w' },
+      content: 'legacy',
+    });
   });
 });
