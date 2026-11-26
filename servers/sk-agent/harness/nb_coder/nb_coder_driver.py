@@ -2191,8 +2191,23 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             return "truncated"
         return "timeout" if call_timed_out(env) else ""
 
+    # 26/11 (myia-po-2028:claudish, CoursIA#28707): the mid-run probe ran only at the
+    # stage boundaries, and the creation build is ONE stage of 5+ model calls over ~8
+    # min. The foreign [CLAIMED] landed at 04:02:13Z, between tranche 1 and tranche 2;
+    # the "build" probe fired at 04:08:05Z, after four more calls -- 347 201 prompt
+    # tokens spent building a notebook another lane already held. A probe before every
+    # build call but the FIRST (the "plan" probe covers that one) bounds the exposure
+    # to the call in flight. Inert unless --claim-late deferred the claim.
+    probed = {"n": 0}
+
+    def claim_stop(stage: str) -> bool:
+        probed["n"] += 1
+        return probed["n"] > 1 and midrun_claim_abort(args, rec, stage)
+
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
+        if claim_stop(f"build+{si}"):
+            return {}
         kept, missing, part, env = await ask_tranche(seg, f"2-build+{si}")
         conv = env.get("conversation_id") or conv
         chars_first = len(env.get("response") or "")
@@ -2209,6 +2224,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             halves = [seg[:max(1, len(seg) // 2)], seg[max(1, len(seg) // 2):]]
             kept, missing, chars_first = [], [], 0
             for hi, half in enumerate(h for h in halves if h):
+                if claim_stop(f"build+{si}+h{hi}"):
+                    return {}
                 hkept, hmiss, hpart, henv = await ask_tranche(half, f"2-build+{si}+h{hi}")
                 conv = henv.get("conversation_id") or conv
                 chars_first += len(henv.get("response") or "")
@@ -2247,6 +2264,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             return {}
         repair = None
         if missing:
+            if claim_stop(f"build+{si}+repair"):
+                return {}
             # one repair round for EXACTLY the omitted cells — same prompt shape,
             # smaller tranche, so the omissions cannot hide in a long answer again
             env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
