@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   ServicesConfigService,
@@ -239,5 +240,32 @@ describe('ServicesConfigService', () => {
       // For a service-kind collect, executeScript is called once per collectSingle.
       expect(mockExecutor.executeScript).toHaveBeenCalledTimes(1);
     });
+  });
+
+  // ============================================================
+  // SERVICE_REGISTRY health endpoints (roo-extensions#4906)
+  // ============================================================
+
+  describe('SERVICE_REGISTRY healthEndpoint hosts', () => {
+    // A probe URL whose host is a NAME (localhost included) goes through
+    // getaddrinfo on libuv's thread pool. When the indexer saturates that pool
+    // with file I/O, the resolution queues behind it and the probe times out
+    // while the service is up — the mechanism measured on the search path
+    // (roo-extensions#4880, ms#1897). An IP literal never resolves: the probe
+    // only pays the connection.
+    const probed = SERVICE_REGISTRY.filter((e) => e.healthEndpoint);
+
+    it('pins every probed entry (the per-entry guard below is not vacuous)', () => {
+      expect(probed.map((e) => e.name)).toEqual(['qdrant', 'vllm', 'sk-agent']);
+    });
+
+    it.each(probed.map((e) => [e.name, e.healthEndpoint as string]))(
+      '%s: the healthEndpoint host is an IP literal',
+      (_name, endpoint) => {
+        const { hostname } = new URL(endpoint);
+        // new URL() keeps the brackets of an IPv6 literal.
+        expect(isIP(hostname.replace(/^\[|\]$/g, ''))).not.toBe(0);
+      },
+    );
   });
 });

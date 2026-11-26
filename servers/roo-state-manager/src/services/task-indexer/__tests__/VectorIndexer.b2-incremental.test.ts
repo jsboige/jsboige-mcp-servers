@@ -26,7 +26,17 @@
  *   5. v1.1 — hashes the scroll confirms PRESENT are learned by the ledger:
  *      a session indexed before the ledger existed converges to zero scrolls
  *      on its second pass (mutant C: removing the scroll-found append makes
- *      pass 2 re-scroll the full session).
+ *      pass 2 re-scroll the full session);
+ *   6. v1.2 — `ledgerHits` counts TRUE ledger hits. Measured on po-2028
+ *      (23/11): an EMPTY ledger printed `ledgerHits=1451` — the counter was
+ *      `entries − unique`, i.e. duplicate content inside one session;
+ *   7. v1.2 — the done line carries a per-pass RE-SCAN counter: hashes a
+ *      previous pass already found absent are `rescanned`, never scanned
+ *      before are `newScan`;
+ *   8. v1.2 — a fail-closed abort keeps the scroll progress of the batches
+ *      that answered: the retry does not restart at batch 0 (measured on
+ *      po-2028, 23/11 00:39Z: an abort at batch 1300/8731 threw away ~2 min
+ *      of answered scrolls).
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as crypto from 'crypto';
@@ -186,12 +196,17 @@ describe('VectorIndexer — #4861 B2 incremental pass + fail-closed scroll', () 
 			const scrollsPass1 = mockScroll.mock.calls.length;
 			expect(scrollsPass1).toBeGreaterThanOrEqual(3);
 
-			// The ledger must now hold the 250 confirmed-written hashes.
+			// The ledger must now hold the 250 confirmed-written hashes. v1.2: the
+			// file also carries one `absent` line per hash — written by the B2 pass
+			// that found them absent, before this pass embedded them. Present lines
+			// are the bare ones; each hash has at most one of each kind.
 			const files = await fsp.readdir(ledgerTmpDir);
 			expect(files.length).toBe(1);
 			const ledgerContent = await fsp.readFile(path.join(ledgerTmpDir, files[0]), 'utf8');
-			const ledgerHashes = new Set(ledgerContent.split('\n').filter(Boolean));
+			const ledgerLines = ledgerContent.split('\n').filter(Boolean);
+			const ledgerHashes = new Set(ledgerLines.filter(l => !l.startsWith('absent ')));
 			expect(ledgerHashes.size).toBe(250);
+			expect(ledgerLines.filter(l => l.startsWith('absent ')).length).toBe(250);
 			expect(ledgerHashes.has(hashOf(chunkOf(0).content))).toBe(true);
 
 			// Pass 2: SAME session + 1 new sub-chunk (the tail).
@@ -401,6 +416,140 @@ describe('VectorIndexer — #4861 B2 incremental pass + fail-closed scroll', () 
 			expect(doneLines.length).toBe(2);
 			expect(doneLines[1]).toMatch(/ledgerHits=3/);
 			expect(doneLines[1]).toMatch(/scrollBatches=1/);
+		} finally {
+			infoSpy.mockRestore();
+			restore();
+		}
+	});
+
+	// ── 6. v1.2: honest counters ─────────────────────────────────────────────
+
+	test('ledgerHits counts TRUE ledger hits — duplicate content inside a session is not a ledger hit', async () => {
+		const { indexTask } = await freshModule();
+		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const restore = silenceConsole();
+		const loopLines: string[] = [];
+		const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((line: string) => {
+			loopLines.push(String(line));
+		});
+		try {
+			// 4 sub-chunks, 3 distinct contents (the second repeats the first),
+			// and NO ledger on disk: nothing can be a ledger hit.
+			const dupe = { ...chunkOf(1), content: chunkOf(0).content };
+			mockExtractTask.mockResolvedValue([chunkOf(0), dupe, chunkOf(2), chunkOf(3)]);
+			await indexTask('t-4861', '/nowhere', 'roo', undefined, {});
+
+			const doneLines = loopLines.filter(l => l.includes('phase B2 (contentHash preflight) done'));
+			expect(doneLines.length).toBe(1);
+			expect(doneLines[0]).toMatch(/ledgerHits=0,/);
+			// 3 distinct hashes, all scanned for the first time, none present.
+			expect(doneLines[0]).toMatch(/scrollBatches=1,/);
+			expect(doneLines[0]).toMatch(/scanned=3,/);
+			expect(doneLines[0]).toMatch(/rescanned=0,/);
+			expect(doneLines[0]).toMatch(/newScan=3,/);
+		} finally {
+			infoSpy.mockRestore();
+			restore();
+		}
+	});
+
+	// ── 7 + 8. v1.2: re-scan counter + progress kept across a fail-closed abort
+
+	/**
+	 * 150 sub-chunks → 2 scroll batches. Batch 1 (hashes 0–99) answers: every
+	 * other hash is present. Batch 2 (hashes 100–149) REJECTS → the pass aborts
+	 * fail-closed: nothing is embedded, nothing is upserted.
+	 */
+	function armAbortingScroll() {
+		const batch2First = hashOf(chunkOf(100).content);
+		mockScroll.mockImplementation((_collection: string, params: any) => {
+			const requested: string[] = (params?.filter?.should ?? [])
+				.map((m: any) => m?.match?.value)
+				.filter(Boolean);
+			if (requested.includes(batch2First)) {
+				return Promise.reject(new Error('scroll timeout (saturation)'));
+			}
+			const present = requested.filter((_h: string, idx: number) => idx % 2 === 0);
+			return Promise.resolve({
+				points: present.map((h: string) => ({ id: `p-${h}`, payload: { contentHash: h } })),
+				next_page_offset: null,
+			});
+		});
+	}
+
+	test('a fail-closed abort KEEPS the progress of the batches that answered — the retry does not restart at batch 0', async () => {
+		const { indexTask, resetCircuitBreakerForTest } = await freshModule();
+		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const restore = silenceConsole();
+		const loopLines: string[] = [];
+		const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((line: string) => {
+			loopLines.push(String(line));
+		});
+		try {
+			mockExtractTask.mockResolvedValue(Array.from({ length: 150 }, (_, i) => chunkOf(i)));
+			armAbortingScroll();
+			await expect(indexTask('t-4861', '/nowhere', 'roo', undefined, {}))
+				.rejects.toMatchObject({ details: expect.objectContaining({ scrollFailed: true }) });
+			expect(mockEmbeddingsCreate).not.toHaveBeenCalled();
+
+			// The 50 hashes batch 1 confirmed PRESENT are learned although the
+			// pass aborted (mutant: moving the append back after the loop makes
+			// this file empty again).
+			const files = (await fsp.readdir(ledgerTmpDir)).filter(f => f.endsWith('.hashes'));
+			expect(files.length).toBe(1);
+			const ledger = new Set(
+				(await fsp.readFile(path.join(ledgerTmpDir, files[0]), 'utf8')).split('\n').filter(Boolean),
+			);
+			expect(ledger.has(hashOf(chunkOf(0).content))).toBe(true);
+			expect(ledger.has(hashOf(chunkOf(98).content))).toBe(true);
+			expect(ledger.has(hashOf(chunkOf(1).content))).toBe(false);
+
+			// Retry: Qdrant answers again (nothing present). Only the 100 hashes
+			// that never got an answer are scrolled → 1 batch, never 2.
+			resetCircuitBreakerForTest();
+			mockScroll.mockResolvedValue({ points: [], next_page_offset: null });
+			await indexTask('t-4861', '/nowhere', 'roo', undefined, {});
+			const doneLines = loopLines.filter(l => l.includes('phase B2 (contentHash preflight) done'));
+			expect(doneLines.length).toBe(1);
+			expect(doneLines[0]).toMatch(/ledgerHits=50,/);
+			expect(doneLines[0]).toMatch(/scrollBatches=1,/);
+			// Absent, ONCE each: the 50 re-scanned hashes were absent again and
+			// added no line (mutant: dropping the caller's `absentNow − absentPrev`
+			// filter → 150).
+			const raw2 = await fsp.readFile(path.join(ledgerTmpDir, files[0]), 'utf8');
+			expect(raw2.split('\n').filter(l => l.startsWith('absent ')).length).toBe(100);
+		} finally {
+			infoSpy.mockRestore();
+			restore();
+		}
+	});
+
+	test('per-pass re-scan counter: hashes a previous pass found ABSENT are rescanned, never-scanned ones are newScan', async () => {
+		const { indexTask, resetCircuitBreakerForTest } = await freshModule();
+		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const restore = silenceConsole();
+		const loopLines: string[] = [];
+		const infoSpy = vi.spyOn(getDefaultLogger(), 'info').mockImplementation((line: string) => {
+			loopLines.push(String(line));
+		});
+		try {
+			// Pass 1 (aborts): batch 1 finds 50 present + 50 absent; batch 2 never answers.
+			mockExtractTask.mockResolvedValue(Array.from({ length: 150 }, (_, i) => chunkOf(i)));
+			armAbortingScroll();
+			await expect(indexTask('t-4861', '/nowhere', 'roo', undefined, {}))
+				.rejects.toMatchObject({ details: expect.objectContaining({ scrollFailed: true }) });
+
+			// Pass 2: 100 hashes to scan = the 50 known-absent ones (a RE-SCAN)
+			// + the 50 of the aborted batch (first scan).
+			resetCircuitBreakerForTest();
+			mockScroll.mockResolvedValue({ points: [], next_page_offset: null });
+			await indexTask('t-4861', '/nowhere', 'roo', undefined, {});
+			const doneLines = loopLines.filter(l => l.includes('phase B2 (contentHash preflight) done'));
+			expect(doneLines.length).toBe(1);
+			expect(doneLines[0]).toMatch(/scanned=100,/);
+			expect(doneLines[0]).toMatch(/rescanned=50,/);
+			expect(doneLines[0]).toMatch(/newScan=50,/);
+			expect(doneLines[0]).toMatch(/absent=100/);
 		} finally {
 			infoSpy.mockRestore();
 			restore();

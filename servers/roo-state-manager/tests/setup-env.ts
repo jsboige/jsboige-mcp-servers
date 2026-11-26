@@ -82,3 +82,19 @@ if (!process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR) {
   process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-tus-cache-'));
   registerRsmTestTempDir(process.env.ROOSYNC_TOOL_USAGE_CACHE_DIR);
 }
+
+// #4861 v1.2 — per-WORKER contentHash ledger dir, and unlike the three above it
+// is set UNCONDITIONALLY. The ledger defaults to
+// ~/.roo-state-manager/index-hash-ledgers (IndexedHashLedger.ts
+// ledgerRootDir) and `clearIndexedHashLedgers()` deletes that whole directory;
+// resetCollection and cleanupOldVectors both call it, and three suites reach
+// it without setting a dir (indexing-controls, task-indexer,
+// reset-collection.tool). Measured on po-2028, 22/11: 40+
+// `[#4861] index-hash ledgers cleared` lines in the test log of one full local
+// run. No production ledger existed on that seat yet (first one written
+// 22/11 22:09Z); the next full run would have deleted the seat's real ledgers,
+// i.e. the scroll work of every indexed session. A value inherited from the
+// shell or .env is overridden on purpose: a test run must never point at it.
+// The suites that test the ledger itself override it with their own dir.
+process.env.INDEX_HASH_LEDGER_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'rsm-test-hash-ledger-'));
+registerRsmTestTempDir(process.env.INDEX_HASH_LEDGER_DIR);

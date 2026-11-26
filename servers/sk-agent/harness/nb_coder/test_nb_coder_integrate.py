@@ -463,6 +463,24 @@ def test_register_pair_csharp_only_and_honest():
         # second registration is refused (idempotent)
         assert not nbci.register_pair(wt, "N/S-Python.ipynb", "N/S-CSharp.ipynb",
                                       "lane")["registered"]
+        assert "Execution reelle sur kernel .net-csharp" in text
+
+
+def test_register_pair_never_upgrades_a_read_kernel_to_an_execution():
+    """#28332: with no recorded execution the registry names the kernel that was
+    READ, and does not print the measured wording. ASCII, as the schema expects."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        wt = Path(td)
+        (wt / "scripts" / "notebook_tools" / "twin_pairs.d").mkdir(parents=True)
+        cs = nbci.register_pair(wt, "N/S-Python.ipynb", "N/S-CSharp.ipynb", "lane",
+                                facts={"kernel": "rust", "kernel_read": True,
+                                       "executed_cells": 0, "verdict": "approve"})
+        assert cs["registered"]
+        text = (wt / cs["file"]).read_text(encoding="utf-8")
+        assert "Execution reelle" not in text
+        assert "Kernel lu (execution non enregistree) rust" in text
+        assert text.isascii()
 
 
 # ---------------------------------------------------------------- sync-main

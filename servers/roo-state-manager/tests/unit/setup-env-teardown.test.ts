@@ -30,7 +30,7 @@ const CHILD_SCRIPT = `
 const { pathToFileURL } = await import('node:url');
 const fs = await import('node:fs');
 await import(pathToFileURL(process.env.SETUP_ENV_PATH).href);
-const keys = ['ROOSYNC_LOCK_DIR', 'ROOSYNC_SCAN_LOCK_DIR', 'ROOSYNC_TOOL_USAGE_CACHE_DIR'];
+const keys = ['ROOSYNC_LOCK_DIR', 'ROOSYNC_SCAN_LOCK_DIR', 'ROOSYNC_TOOL_USAGE_CACHE_DIR', 'INDEX_HASH_LEDGER_DIR'];
 const dirs = keys.map((k) => process.env[k]);
 const existed = dirs.map((d) => fs.existsSync(d));
 console.log(JSON.stringify({ dirs, existed }));
@@ -62,9 +62,9 @@ describe('Maintenance#358 — setup-env per-worker temp dirs are torn down at pr
       existed: boolean[];
     };
 
-    // The child really created its own three dirs (they existed while alive).
-    expect(dirs).toHaveLength(3);
-    dirs.forEach((d) => expect(d).toMatch(/rsm-test-(locks|scan-locks|tus-cache)-/));
+    // The child really created its own four dirs (they existed while alive).
+    expect(dirs).toHaveLength(4);
+    dirs.forEach((d) => expect(d).toMatch(/rsm-test-(locks|scan-locks|tus-cache|hash-ledger)-/));
     existed.forEach((e) => expect(e).toBe(true));
 
     // After normal child exit, the exit handler must have removed them.
@@ -119,7 +119,7 @@ describe('Maintenance#358 — setup-env per-worker temp dirs are torn down at pr
       });
       child.once('error', reject);
     });
-    expect(dirs).toHaveLength(3);
+    expect(dirs).toHaveLength(4);
     dirs.forEach((d) => expect(fs.existsSync(d as string)).toBe(true));
 
     child.kill(); // platform kill — Windows: uncatachable hard kill
@@ -159,4 +159,22 @@ describe('Maintenance#358 — setup-env per-worker temp dirs are torn down at pr
     expect(removed).toBe(1);
     expect(fs.existsSync(planted)).toBe(false);
   }, 30_000);
+
+  it('every os.tmpdir() mkdtemp prefix in setup-env.ts is in the sweep list (class guard)', async () => {
+    // roo-extensions#4861 v1.2 added a fourth per-worker dir
+    // (rsm-test-hash-ledger-) without its RSM_TEST_DIR_PREFIXES entry: on
+    // Windows, where only the sweep can clean a hard-killed fork worker, that
+    // is one leaked dir per test file per run — the Maintenance#358 class.
+    // This pins the invariant on the source itself, so the next per-worker
+    // dir cannot ship without its sweep entry. Runs on every platform.
+    const { RSM_TEST_DIR_PREFIXES } = await import('../setup-env-teardown');
+    const source = fs.readFileSync(SETUP_ENV, 'utf-8');
+    const created = [...source.matchAll(/mkdtempSync\(\s*path\.join\(\s*os\.tmpdir\(\)\s*,\s*'([^']+)'\s*\)/g)]
+      .map((m) => m[1]);
+    // The regex must keep seeing setup-env's dirs: an empty match would make
+    // the guard vacuous (e.g. after a refactor of the mkdtemp call form).
+    expect(created.length).toBeGreaterThanOrEqual(4);
+    const missing = created.filter((p) => !(RSM_TEST_DIR_PREFIXES as readonly string[]).includes(p));
+    expect(missing).toEqual([]);
+  });
 });

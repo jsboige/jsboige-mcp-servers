@@ -6,15 +6,18 @@
 //     workers by signal on Linux). On Windows, child.kill() is
 //     TerminateProcess semantics: NO handler can run, ever.
 //  2. MAIN-PROCESS SWEEP: sweepRsmTestWorkerDirs(sinceMs), called from the
-//     vitest globalSetup returned teardown, removes the three setup-env
+//     vitest globalSetup returned teardown, removes the setup-env
 //     prefixes created since the run started — this is the only vector that
 //     works on Windows-hard-killed fork workers (measured: 2 913 dirs
 //     survived one CI-config run with the in-process handler alone).
 //
-// Sweep scope is deliberately narrow — exactly the three prefixes setup-env
-// creates (rsm-test-locks-, rsm-test-scan-locks-, rsm-test-tus-cache-) —
-// never the broader rsm-test-* namespace, parts of which belong to suites
-// that manage their own dirs.
+// Sweep scope is deliberately narrow — exactly the prefixes setup-env
+// creates (rsm-test-locks-, rsm-test-scan-locks-, rsm-test-tus-cache-,
+// rsm-test-hash-ledger-) — never the broader rsm-test-* namespace, parts of
+// which belong to suites that manage their own dirs. A test pins that every
+// os.tmpdir() mkdtemp prefix in setup-env.ts is listed here: a new
+// per-worker dir without its sweep entry leaks one dir per test file on
+// Windows (roo-extensions#4861 v1.2 added rsm-test-hash-ledger- without it).
 //
 // Concurrency caveat: two simultaneous runs of this suite on the same host
 // would let one run's sweep delete the other run's live worker dirs (their
@@ -28,6 +31,7 @@ export const RSM_TEST_DIR_PREFIXES = [
   'rsm-test-locks-',
   'rsm-test-scan-locks-',
   'rsm-test-tus-cache-',
+  'rsm-test-hash-ledger-',
 ] as const;
 
 const ownedDirs: string[] = [];
@@ -59,7 +63,7 @@ export function registerRsmTestTempDir(dir: string): void {
   }
 }
 
-/** Remove setup-env worker dirs (three prefixes) created since `sinceMs`.
+/** Remove setup-env worker dirs (RSM_TEST_DIR_PREFIXES) created since `sinceMs`.
  * Returns the number of dirs removed. Never throws.
  *
  * Back-date `sinceMs` by >= 1s: kernel inode timestamps use the coarse

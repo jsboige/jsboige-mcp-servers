@@ -414,6 +414,71 @@ def test_an_unparsed_revision_keeps_the_reject_and_the_draft(monkeypatch, tmp_pa
     assert calls["kernels"] == 0 and calls["verify"] == []
 
 
+# The same window wall as WALL in test_nb_coder_rate_limit.py (pinned there character for
+# character against CoursIA#28097's record). CoursIA#28069 met it on 23/11 at its revise
+# call and at that call's retry (00:08:13Z and 00:08:30Z, driver.log, batch s6r).
+PROVIDER_WALL = ('("<class \'semantic_kernel.connectors.ai.open_ai.services.open_ai_chat_completion.'
+                 'OpenAIChatCompletion\'> service failed to complete the prompt", RateLimitError('
+                 '"Error code: 429 - {\'error\': {\'message\': \'Usage limit reached for 5 hour. '
+                 'Your limit will reset at 2026-11-23 08:48:53\', \'type\': \'rate_limit_error\', '
+                 '\'code\': None}}"))')
+
+
+@pytest.mark.parametrize("source, seeded, origin", [
+    ("execution", "exec_repair", "built-execution-failed"),
+    ("gates", "gate_repair", "gates-failed:parity"),
+])
+def test_a_walled_revision_round_defers_the_run_and_keeps_the_reject(
+        monkeypatch, tmp_path, source, seeded, origin):
+    """CoursIA#28069 (23/11 00:08Z): the built notebook was rejected on its execution, and
+    the revise call met the five-hour wall. Left on its reject the grain came out
+    `built-execution-failed` -- a content failure, [RELEASED], a three-day fleet-wide lock
+    for a repair the provider refused to hear. The refusal is the run's verdict (the
+    scheduler defers); the reject it interrupted is kept for a --revise-from resume, and
+    the exhaustion-restore must not trade it back for the seeded origin."""
+    built = _nb(tmp_path)
+    before = built.read_bytes()
+    calls = {"sk": []}
+
+    @contextlib.asynccontextmanager
+    async def fake_sessions(out_dir):
+        yield "SK", "PM"
+
+    async def fake_sk(sk, args, rec, stage, prompt, conv, max_tokens=None, model=None):
+        calls["sk"].append(stage)
+        return {"response": "", "error": PROVIDER_WALL, "conversation_id": "cx"}
+
+    def never(*a, **k):
+        raise AssertionError("a refused round pays no kernel, no gate and no verifier")
+
+    monkeypatch.setattr(D, "mcp_sessions", fake_sessions)
+    monkeypatch.setattr(D, "sk_call_retry", fake_sk)
+    monkeypatch.setattr(D, "start_kernel", never)
+    monkeypatch.setattr(D, "run_gates", never)
+    monkeypatch.setattr(D, "stage4_verify", never)
+    rec = _rejected_rec()
+    rec["verify"] = {"verdict": "exec-reject" if source == "execution" else "gate-reject",
+                     "findings": list(FINDINGS), "source": source}
+    rec[seeded] = {"from": origin, "findings": len(FINDINGS), "seeded": 1, "resumed": True}
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert calls["sk"] == ["6-revise+0"]             # neither repaired into the wall nor retried
+    assert rec["verdict"].startswith("deferred-by-provider-rate-limit:wall: ")
+    assert "reset at 2026-11-23 08:48:53" in rec["verdict"]
+    assert rec["last_content_verdict"] == "verify-reject"
+    assert rec["revisions"][0]["result"].startswith("call-failed: ")   # the cause, by name
+    assert built.read_bytes() == before              # the judged draft is the draft kept
+
+
+def test_an_ordinary_dead_answer_in_a_round_still_keeps_the_reject(monkeypatch, tmp_path):
+    """The control: an answer that is merely unparsed is no refusal — the reject stands."""
+    built = _nb(tmp_path)
+    _fake_engine(monkeypatch, ["je ne sais pas"], [])
+    rec = _rejected_rec()
+    _loop(_loop_args(), rec, built, tmp_path)
+    assert rec["verdict"] == "verify-reject"
+    assert "last_content_verdict" not in rec
+
+
 def test_contested_only_is_a_verifiable_reply_not_an_unparsed_one(monkeypatch, tmp_path):
     """CoursIA#27288, o1 (23/11): Terra parsed cleanly, returned no edits and contested the
     three missing-data findings. The old branch reported that answer as `unparsed` and never
@@ -537,6 +602,52 @@ def test_a_dead_kernel_after_revision_is_not_verified(monkeypatch, tmp_path):
     _loop(_loop_args(), rec, built, tmp_path)
     assert rec["verdict"] == "kernel-start-failed" and calls["verify"] == []
     assert rec["revisions"][0]["result"] == "kernel-start-failed"
+    assert "executed_kernel" not in rec     # a start that returned no kernel is no execution
+
+
+def test_a_revision_records_the_kernel_it_actually_started(monkeypatch, tmp_path):
+    """#28332: the carried record says .net-csharp, while the resume selected rust
+    from the target tag. The execution record, not that stale metadata, feeds stage 5."""
+    built = _nb(tmp_path)
+    _fake_engine(monkeypatch, [REVISION], [("approve", [])])
+    rec = _rejected_rec()
+    rec["kernel"] = {"kernel_name": ".net-csharp", "kernel_source": "meta-from-kernelspec"}
+    rec["kernelspec_align"] = {"from": ".net-csharp", "to": "rust"}
+    asyncio.run(D.revise_loop(
+        _loop_args(), rec, issue={"title": "T", "body": "B"},
+        src_nb=tmp_path / "twin.ipynb", built_path=built, kname="rust",
+        exec_dir=tmp_path, conventions="", create_mode=True, wt_path=tmp_path,
+        out_dir=tmp_path))
+    assert rec["verdict"] == "verify-approved"
+    assert rec["executed_kernel"]["name"] == "rust"
+    assert rec["executed_kernel"]["kernel_id"] == "k1"
+    assert rec["executed_kernel"]["source"] == "manage_kernel-start"
+    assert D.published_execution_kernel(_loop_args(), rec) == ("rust", "")
+
+
+def test_a_kernel_that_ran_no_cell_is_never_an_executed_kernel(monkeypatch, tmp_path):
+    """exec mode `none` still starts a kernel: a start is not an execution, and
+    stage 5 must fall back to a READING rather than claim a measurement."""
+    rec = {"kernel_id": "k1", "execution": [],
+           "kernelspec_align": {"from": ".net-csharp", "to": "rust"}}
+    D.note_execution_kernel(rec, "rust")
+    assert "executed_kernel" not in rec
+    name, note = D.published_execution_kernel(_loop_args(), rec)
+    assert name == "rust" and "noyau lu" in note and "exécution non enregistrée" in note
+
+
+def test_a_resume_without_a_new_execution_keeps_the_paid_kernel_record(
+        monkeypatch, tmp_path):
+    """--verify-from can publish without a builder turn: both the measured kernel
+    and the old-trace alignment fallback survive the carry."""
+    seen = _stub_resume(monkeypatch)
+    measured = {"name": "rust", "source": "manage_kernel-start"}
+    got = _resume(_rev_args(tmp_path, _trace(
+        tmp_path, executed_kernel=measured,
+        kernelspec_align={"from": ".net-csharp", "to": "rust"})))
+    assert got["verdict"] == "pr-created" and seen["pr"] == 1
+    assert got["executed_kernel"] == measured
+    assert got["kernelspec_align"]["to"] == "rust"
 
 
 # ---------------------------------------------------------------- --revise-from
@@ -584,6 +695,7 @@ def _stub_resume(monkeypatch, claim_rc=0, blocking=False):
 
     async def fake_loop(args, rec, **kw):
         seen["loop"] += 1
+        seen["entry"] = rec.get("verdict")          # what the loop is handed
         seen["kw"] = kw
         seen["from_spec"] = args.from_spec
         rec["verdict"] = "verify-approved"
@@ -649,6 +761,31 @@ def test_a_refusal_poisoned_trace_still_revises(monkeypatch, tmp_path):
     assert got["verdict"] == "pr-created" and seen["loop"] == 1 and seen["pr"] == 1
 
 
+def test_the_loop_is_entered_on_the_carried_judgment_not_on_the_refusal(monkeypatch, tmp_path):
+    """A trace whose top-level verdict a refusal overwrote must hand the loop the JUDGMENT:
+    its first check is `verdict == verify-reject`, so handed the refusal it would break at
+    once and give that refusal back as this run's verdict. Both measured overwrites of
+    23/11: the claim guard's, and a provider wall met during a revision round."""
+    for top in ("refused-claim-check-not-scoped",
+                "deferred-by-provider-rate-limit:wall: Error code: 429"):
+        seen = _stub_resume(monkeypatch)
+        got = _resume(_rev_args(tmp_path, _trace(
+            tmp_path, verdict=top, last_content_verdict="verify-reject")))
+        assert seen["entry"] == "verify-reject", top
+        assert got["verdict"] == "pr-created" and seen["loop"] == 1 and seen["pr"] == 1
+
+
+def test_a_carried_field_that_names_no_reject_buys_no_revision(monkeypatch, tmp_path):
+    """Only `verify-reject` in the carried field enters the loop; any other value is
+    refused before a spend, named for what it carries."""
+    for carried in ("deferred-by-capacity-gate", "gates-ok", "verify-approved", ""):
+        seen = _stub_resume(monkeypatch)
+        got = _resume(_rev_args(tmp_path, _trace(
+            tmp_path, verdict="gates-ok", last_content_verdict=carried)))
+        assert got["verdict"] == f"refused-revise-not-rejected:{carried or 'gates-ok'}"
+        assert seen["loop"] == 0 and seen["pr"] == 0
+
+
 def test_a_poisoned_trace_without_a_content_verdict_still_refuses(monkeypatch, tmp_path):
     # old traces carry no last_content_verdict: the top-level verdict decides, unchanged
     seen = _stub_resume(monkeypatch)
@@ -696,6 +833,26 @@ def test_resume_old_trace_livereads_the_reservation(monkeypatch, tmp_path):
     assert got["stages"]["claim_reservation"] == {"verdict": None, "live_recheck": True}
 
 
+def test_resume_released_reservation_is_refused_even_if_the_trace_attests_one(monkeypatch, tmp_path):
+    # 24/11 (salvage o33): the paid trace of #28082 carried claim_reservation.verdict None,
+    # and run_revision() admitted the resume on that attestation -- while the grain had been
+    # [RELEASED] hours earlier. A trace says what WAS, the guard says what IS.
+    seen = _stub_resume(monkeypatch, claim_rc=1)
+    trace = _trace(tmp_path)                       # claim_reservation: {"verdict": None}
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"].startswith("refused-revise-no-reservation:")
+    assert seen["loop"] == 0 and seen["pr"] == 0, "nothing may be spent on a released grain"
+
+
+def test_resume_live_reservation_still_admits(monkeypatch, tmp_path):
+    # the other half of the same rule: a reservation attested in the trace AND still held
+    # now resumes normally -- the live re-read must not turn into a blanket refusal
+    seen = _stub_resume(monkeypatch, claim_rc=0)
+    trace = _trace(tmp_path)
+    got = _resume(_rev_args(tmp_path, trace))
+    assert got["verdict"] == "pr-created" and seen["loop"] == 1
+    assert got["stages"]["claim_reservation"].get("verdict") is None
+
 def test_resume_old_trace_live_conflict_refuses(monkeypatch, tmp_path):
     seen = _stub_resume(monkeypatch, claim_rc=1)
     trace = _trace(tmp_path, stages={"worktree": {"path": str(tmp_path / "wt"),
@@ -709,7 +866,13 @@ def test_resume_old_trace_live_conflict_refuses(monkeypatch, tmp_path):
 def test_resume_rereads_the_claim_and_the_capacity_gate(monkeypatch, tmp_path):
     seen = _stub_resume(monkeypatch, claim_rc=1)
     got = _resume(_rev_args(tmp_path, _trace(tmp_path)))
-    assert got["verdict"] == "refused-claim-held-by-another-lane" and seen["loop"] == 0
+    # 24/11: the reservation branch now re-reads the LIVE claim instead of trusting the
+    # trace's attestation (a [RELEASED] grain was admitted). The refusal therefore carries
+    # the same refused-revise-no-reservation:<code> shape as the two sibling branches, and
+    # it happens BEFORE refresh_gh_token/fetch_issue instead of at the later claim_check:
+    # same refusal, zero loop, less spend.
+    assert got["verdict"] == "refused-revise-no-reservation:refused-claim-held-by-another-lane"
+    assert seen["loop"] == 0
     seen = _stub_resume(monkeypatch, blocking=True)
     got = _resume(_rev_args(tmp_path, _trace(tmp_path)))
     assert got["verdict"] == "deferred-by-capacity-gate" and seen["loop"] == 0
@@ -1333,6 +1496,127 @@ def test_scheduler_forwards_revise_rounds(tmp_path):
     assert "--revise-rounds 2" in joined2                 # the scheduler default applies
 
 
+# --- a wiring refusal must never destroy the trace it refuses (24/11, o33) -----------
+# A resumed grain's --out-dir IS the old run directory. _preflight() wrote its refusal at
+# out_dir/issue-<N>.json unconditionally, so a seat whose wiring did not resolve erased the
+# paid record (execution, findings, gates, worktree head) and the scheduler then read the
+# refusal back and posted [RELEASED] on a grain that had never been judged.
+
+_PAID = {"issue": 1, "notebook": "S/N.ipynb", "verdict": "verify-reject",
+         "last_content_verdict": "verify-reject", "calls": [{"turn": "build"}],
+         "execution": {"executed_cells": 17, "errors": []},
+         "verify": {"verdict": "reject", "findings": [{"cell": 3, "issue": "stub"}]},
+         "stages": {"worktree": {"path": "D:/repo/.tmp/wt-1", "head": "abc123"}},
+         "built_notebook": {"path": "D:/out/nb_1_built.ipynb"}}
+
+
+def _unresolved_wiring(monkeypatch, tmp_path):
+    """A seat directory holding only sk_agent.py: SK_DIR resolves, the venv does not."""
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    (seat / "sk_agent.py").write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setattr(D, "SK_DIR", seat)
+    monkeypatch.setattr(D, "SK_PY", seat / "venv/Scripts/python.exe")
+    monkeypatch.setattr(D, "SK_CONFIG", seat / "sk_agent_config.json")
+    monkeypatch.setattr(D, "PM_PY", seat / "no-python.exe")
+    monkeypatch.setattr(D, "PM_CWD", seat / "no-papermill")
+    return seat
+
+
+def _refusal_argv(out_dir, resume=("--revise-from",)):
+    return ["nb_coder_driver.py", "--issue", "1", "--notebook", "S/N.ipynb",
+            "--repo", "D:/repo", "--max-stage", "5", "--out-dir", str(out_dir),
+            *resume, str(out_dir / "issue-1.json")]
+
+
+def test_a_wiring_refusal_never_overwrites_the_paid_trace_it_resumes(monkeypatch, tmp_path, capsys):
+    _unresolved_wiring(monkeypatch, tmp_path)
+    out = tmp_path / "issue-1.json"
+    out.write_text(json.dumps(_PAID), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", _refusal_argv(tmp_path))
+    with pytest.raises(SystemExit) as e:
+        D.main()
+    assert e.value.code == 2
+    assert "NBCODER_SK_PY" in capsys.readouterr().err        # the refusal still says why
+    kept = list(tmp_path.glob("issue-1.pre-revise-*.json"))
+    assert len(kept) == 1, "the paid record must be snapshotted before the refusal is written"
+    assert json.loads(kept[0].read_text(encoding="utf-8")) == _PAID, "and byte-for-byte intact"
+    rec = json.loads(out.read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-wiring-unresolved"
+    assert rec["preserved_prior_trace"] == str(kept[0]), "the refusal must NAME what it kept"
+    led = json.loads((tmp_path / "ledger.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    assert led["verdict"] == "refused-wiring-unresolved"
+    assert led["preserved_prior_trace"] == str(kept[0]), "the ledger must point at it too"
+
+
+def test_the_refusal_of_a_verify_from_keeps_its_trace_too(monkeypatch, tmp_path):
+    _unresolved_wiring(monkeypatch, tmp_path)
+    paid = _PAID | {"verdict": "verify-error: rc=2", "last_content_verdict": None}
+    (tmp_path / "issue-1.json").write_text(json.dumps(paid), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", _refusal_argv(tmp_path, resume=("--verify-from",)))
+    with pytest.raises(SystemExit):
+        D.main()
+    kept = list(tmp_path.glob("issue-1.pre-verify-*.json"))
+    assert len(kept) == 1 and json.loads(kept[0].read_text(encoding="utf-8")) == paid
+
+
+def test_a_refusal_without_a_prior_record_still_writes_its_own_trace(monkeypatch, tmp_path):
+    """The F3-1 contract is unchanged: a refusal leaves an out-dir, a trace and a ledger line."""
+    _unresolved_wiring(monkeypatch, tmp_path)
+    out_dir = tmp_path / "fresh"
+    monkeypatch.setattr(sys, "argv", _refusal_argv(out_dir))
+    with pytest.raises(SystemExit):
+        D.main()
+    rec = json.loads((out_dir / "issue-1.json").read_text(encoding="utf-8"))
+    assert rec["verdict"] == "refused-wiring-unresolved"
+    assert "preserved_prior_trace" not in rec, "nothing existed: nothing to claim preserved"
+    assert not list(out_dir.glob("issue-1.pre-*.json"))
+    assert len((out_dir / "ledger.jsonl").read_text(encoding="utf-8").splitlines()) == 1
+
+
+def test_a_second_refusal_in_the_same_second_keeps_both_copies(monkeypatch, tmp_path):
+    """A retry loop lands two refusals in one second: the copy name must not collide."""
+    _unresolved_wiring(monkeypatch, tmp_path)
+    from datetime import datetime as real_datetime
+    monkeypatch.setattr(D, "datetime", type("FrozenSecond", (), {
+        "now": staticmethod(lambda tz=None: real_datetime(2026, 11, 24, 8, 26, 28))}))
+    (tmp_path / "issue-1.json").write_text(json.dumps(_PAID), encoding="utf-8")
+    for _ in range(2):
+        monkeypatch.setattr(sys, "argv", _refusal_argv(tmp_path))
+        with pytest.raises(SystemExit):
+            D.main()
+    kept = sorted(tmp_path.glob("issue-1.pre-revise-*.json"))
+    assert len(kept) == 2, "the second snapshot must not replace the first"
+    bodies = [json.loads(p.read_text(encoding="utf-8")) for p in kept]
+    assert any(b.get("calls") == _PAID["calls"] for b in bodies), "the paid copy survives"
+    refusal = json.loads((tmp_path / "issue-1.json").read_text(encoding="utf-8"))
+    assert refusal["preserved_prior_trace"] in {str(p) for p in kept}, \
+        "the second refusal must point at ITS copy, not at the one it did not make"
+
+def test_a_resolved_wiring_refuses_nothing(monkeypatch, tmp_path):
+    seat = _unresolved_wiring(monkeypatch, tmp_path)
+    (seat / "venv/Scripts").mkdir(parents=True)
+    (seat / "venv/Scripts/python.exe").write_text("", encoding="utf-8")
+    (seat / "sk_agent_config.json").write_text("{}", encoding="utf-8")
+    (seat / "no-python.exe").write_text("", encoding="utf-8")
+    (seat / "no-papermill").mkdir()
+    called = []
+
+    async def fake_rev(args, rec):
+        called.append(True)
+        rec["verdict"] = "verify-approved"
+        return rec
+
+    monkeypatch.setattr(D, "run_revision", fake_rev)
+    monkeypatch.setattr(D, "engine_tokens", lambda: {})
+    monkeypatch.setattr(sys, "argv", _refusal_argv(tmp_path))
+    D.main()
+    assert called, "a fully resolved seat must not be refused"
+    assert json.loads((tmp_path / "issue-1.json").read_text(encoding="utf-8"))["verdict"] \
+        == "verify-approved"
+
+
+
 # ---------------------------------------------------------------- twin reference (22/11)
 # 25 of 105 verify-reject findings (w3a-w3x) were values the builder reinvented: the
 # reviser saw the findings and the draft, never what the twin actually printed.
@@ -1363,6 +1647,67 @@ def test_revision_prompt_carries_twin_reference_and_values_rule():
     assert "VALEURS :" in p
     bare = D.revision_prompt({"title": "T", "body": "B"}, "V", [])
     assert "RÉFÉRENCE" not in bare and "VALEURS :" not in bare
+
+
+# -------------------------------------------------- figures in the views (CoursIA#28338)
+# The reviser read its own draft through `_outputs_text`, which renders text mimes only: a
+# cell whose whole output is a figure read as « (aucune sortie) » — a FALSE statement made to
+# the model — and the twin's figure read as « (aucune sortie enregistrée) ». Neither the
+# reviser nor the builder had ever seen the figure they were asked to reproduce.
+
+
+def _figure_cell():
+    return {"cell_type": "code", "source": "draw()", "metadata": {}, "execution_count": 1,
+            "outputs": [{"output_type": "display_data",
+                         "data": {"image/svg+xml": "<svg width='40' height='40'>"
+                                                   "<text>j(t)</text><polyline points='0,0'/></svg>"}}]}
+
+
+def _fig_nb(tmp_path, cells, name="fig.ipynb"):
+    return _write(tmp_path / name, {"cells": cells, "metadata": {},
+                                    "nbformat": 4, "nbformat_minor": 5})
+
+
+def test_twin_reference_view_declares_a_figure(tmp_path):
+    p = _fig_nb(tmp_path, [_figure_cell()])
+    view = D.twin_reference_view(p)
+    assert "(aucune sortie enregistrée)" not in view, "a figure IS an output"
+    assert "image/svg+xml" in view and "«j(t)»" in view
+    assert "SORTIE RÉELLE du jumeau" in view
+
+
+def test_twin_reference_view_keeps_declaring_a_real_absence(tmp_path):
+    p = _fig_nb(tmp_path, [{"cell_type": "code", "source": "x = 1", "metadata": {},
+                            "execution_count": 1, "outputs": []}])
+    assert "(aucune sortie enregistrée)" in D.twin_reference_view(p)
+
+
+def test_revision_view_declares_a_figure(tmp_path):
+    view = D.revision_view(_fig_nb(tmp_path, [_figure_cell()]))
+    assert "(aucune sortie)" not in view
+    assert "image/svg+xml" in view and "«j(t)»" in view
+
+
+def test_figure_survives_the_revision_view_cut(tmp_path):
+    cell = _figure_cell()
+    cell["outputs"].insert(0, {"output_type": "stream", "name": "stdout",
+                               "text": "0 1.3 0.4\n" * 4000})
+    view = D.revision_view(_fig_nb(tmp_path, [cell]))
+    assert "…[sortie tronquée :" in view
+    assert "image/svg+xml" in view and "«j(t)»" in view, \
+        "a long stream must not hide the figure that follows it"
+
+
+def test_delta_gates_still_compare_the_text_only():
+    """The error digests and the machine-path / svg-display delta gates key on
+    `_outputs_text`: a figure must NOT enter that string (a pre-existing figure on one side
+    of a port is not a new defect, and an error digest is text)."""
+    c = _figure_cell()
+    assert D._outputs_text(c) == ""
+    c["outputs"].insert(0, {"output_type": "stream", "name": "stdout", "text": "kept\n"})
+    assert D._outputs_text(c) == "kept\n"
+    assert D._svg_text_offenders([c]) == []      # the figure is display_data, not text
+    assert D.nontext_witness(c), "the witness lives in its own helper"
 
 
 def test_creation_segment_carries_twin_reference_outputs(tmp_path):

@@ -18,11 +18,25 @@ import { getDefaultLogger } from '../../utils/logger.js';
  * indexed before the ledger existed re-scrolled in full at each pass). B2
  * subtracts them before scrolling.
  *
- * Storage: ndjson, one contentHash per line, one file per task_id under
- * `INDEX_HASH_LEDGER_DIR` (default `~/.roo-state-manager/index-hash-ledgers`).
- * Append-only, deduplicated on read. Single logical writer per seat (the
- * leader drain); concurrent appends are harmless (lines are atomic at this
- * size, the loader builds a Set).
+ * Storage: ndjson, one file per task_id under `INDEX_HASH_LEDGER_DIR` (default
+ * `~/.roo-state-manager/index-hash-ledgers`). Two line kinds:
+ *   `<contentHash>`         PRESENT — confirmed in Qdrant for this task_id
+ *   `absent <contentHash>`  a B2 pass scrolled it and it was NOT present (v1.2)
+ * Append-only, deduplicated on read; a hash carrying both lines is PRESENT.
+ * Single logical writer per seat (the leader drain); concurrent appends are
+ * harmless (lines are atomic at this size, the loader builds a Set).
+ *
+ * v1.2 — why the absent set exists. The B2 done line measures convergence per
+ * pass: `rescanned` counts the hashes a PREVIOUS pass already found absent,
+ * `newScan` the ones scanned for the first time. Without it, a pass that aborts
+ * after answered batches (fail-closed scroll failure, watchdog) restarts at
+ * batch 0 and nothing in the log tells a first scan from a re-scan. A hash is
+ * appended as absent ONCE (the caller passes `absentNow − absentPrev`), so the
+ * file holds at most one present + one absent line per distinct contentHash.
+ * An absent line is a MEASUREMENT of a past pass, never a skip decision: B2
+ * still scrolls every non-present hash. (Skipping known-absent hashes is a
+ * separate change — it needs a staleness story for points another seat
+ * upserts, or a reindex.)
  *
  * Failure semantics — the ledger is an OPTIMISATION, never a source of truth:
  * - read failure  -> empty set (legacy full-scan behaviour) + warn in file log
@@ -58,17 +72,41 @@ function ledgerFilePath(taskId: string): string {
     return path.join(ledgerRootDir(), ledgerFileName(taskId));
 }
 
+/** Line prefix of a hash a past B2 pass found ABSENT (v1.2). */
+const ABSENT_PREFIX = 'absent ';
+
+/** What the ledger of one task_id knows about contentHashes (v1.2). */
+export interface IndexedHashLedger {
+    /** Confirmed PRESENT in Qdrant for this task_id. */
+    present: Set<string>;
+    /** A previous B2 pass scrolled this hash and it was NOT present. */
+    absent: Set<string>;
+}
+
 /**
- * Load the set of contentHashes recorded as indexed for `taskId`.
- * Any read problem (missing file included) yields an EMPTY set — never throws.
+ * Load the present and absent contentHash sets recorded for `taskId`.
+ * A pre-v1.2 file (bare hashes only) loads as all-present. A hash carrying
+ * both lines is present — its absent line is stale. Any read problem (missing
+ * file included) yields EMPTY sets — never throws.
  */
-export async function loadIndexedHashes(taskId: string): Promise<Set<string>> {
-    const out = new Set<string>();
+export async function loadIndexedHashLedger(taskId: string): Promise<IndexedHashLedger> {
+    const present = new Set<string>();
+    const absent = new Set<string>();
     try {
-        const raw = await fs.readFile(ledgerFilePath(taskId), 'utf8');
-        for (const line of raw.split('\n')) {
+        const lines = (await fs.readFile(ledgerFilePath(taskId), 'utf8')).split('\n');
+        // Two passes so a fully-indexed session never materialises both sets at
+        // once (the leader's 443k-sub-chunk sessions): present first, then only
+        // the absent lines that are still absent.
+        for (const line of lines) {
             const h = line.trim();
-            if (h) out.add(h);
+            if (h && !h.startsWith(ABSENT_PREFIX)) present.add(h);
+        }
+        for (const line of lines) {
+            const h = line.trim();
+            if (h.startsWith(ABSENT_PREFIX)) {
+                const a = h.slice(ABSENT_PREFIX.length).trim();
+                if (a && !present.has(a)) absent.add(a);
+            }
         }
     } catch (err: any) {
         if (err?.code !== 'ENOENT') {
@@ -78,22 +116,36 @@ export async function loadIndexedHashes(taskId: string): Promise<Set<string>> {
             getDefaultLogger().warn(`[#4861] ledger unreadable for task ${taskId}: ${err?.message || err} — falling back to full scroll`);
         }
     }
-    return out;
+    return { present, absent };
+}
+
+/** Append one line per entry — never throws (see `appendIndexedHashes`). */
+async function appendLedgerLines(taskId: string, lines: string[]): Promise<void> {
+    if (lines.length === 0) return;
+    try {
+        await fs.mkdir(ledgerRootDir(), { recursive: true });
+        await fs.appendFile(ledgerFilePath(taskId), lines.map((l) => `${l}\n`).join(''), 'utf8');
+    } catch (err: any) {
+        getDefaultLogger().warn(`[#4861] ledger append failed for task ${taskId} (${lines.length} hashes): ${err?.message || err} — next pass will re-scroll them`);
+    }
 }
 
 /**
- * Append `hashes` to the ledger of `taskId`. Never throws: a failed append
- * only means the next pass re-scrolls those hashes (correct, just slower).
+ * Append `hashes` to the ledger of `taskId` as PRESENT. Never throws: a failed
+ * append only means the next pass re-scrolls those hashes (correct, just slower).
  */
 export async function appendIndexedHashes(taskId: string, hashes: string[]): Promise<void> {
-    const unique = [...new Set(hashes.filter(Boolean))];
-    if (unique.length === 0) return;
-    try {
-        await fs.mkdir(ledgerRootDir(), { recursive: true });
-        await fs.appendFile(ledgerFilePath(taskId), unique.map((h) => `${h}\n`).join(''), 'utf8');
-    } catch (err: any) {
-        getDefaultLogger().warn(`[#4861] ledger append failed for task ${taskId} (${unique.length} hashes): ${err?.message || err} — next pass will re-scroll them`);
-    }
+    await appendLedgerLines(taskId, [...new Set(hashes.filter(Boolean))]);
+}
+
+/**
+ * v1.2: record `hashes` as ABSENT for `taskId` — a B2 pass scrolled them and
+ * they were not in Qdrant. The caller passes only the ones the ledger does not
+ * list as absent yet, so each hash is written at most once. Same never-throws
+ * contract: a failed append only under-counts `rescanned` on the next pass.
+ */
+export async function appendAbsentHashes(taskId: string, hashes: string[]): Promise<void> {
+    await appendLedgerLines(taskId, [...new Set(hashes.filter(Boolean))].map((h) => `${ABSENT_PREFIX}${h}`));
 }
 
 /**

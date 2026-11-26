@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import fnmatch
 import hashlib
@@ -455,7 +456,18 @@ def check_claim(repo: Path, n: int, lane: str, notebook: str,
 # on a calm bucket (measured 21/11 02:5xZ), and a reservation makes three calls. Under
 # load one call passed 120 s and the TimeoutExpired escaped as `crashed:` (21/11 02:35Z,
 # MGS-28, #27133) -- a terminal failure for a grain that had done nothing wrong.
-CLAIM_GUARD_TIMEOUT_S = 300
+#
+# 24/11: 300 was AT PARITY with the guard's own budget. The guard bounds its complete
+# open-PR enumeration itself (`CHECK_LANE_CLAIM_GH_TIMEOUT_TOTAL`, 300 s,
+# check_lane_claim.py) and answers a fail-closed UNKNOWN when it cannot be established;
+# it still has to read the thread and fetch PR heads around it. A harness budget equal to
+# that inner budget kills every slow call BEFORE the guard can answer, and the leaf reads
+# as unschedulable. Measured on CoursIA#28017 (192 open PRs): one scoped check took 181 s
+# standalone (23:14->23:17Z); the scheduler's first two attempts were killed at 300 s and
+# cost 2 x 5.6 min of launch + backoff, the third was admitted in under 250 s (launched
+# 23:15:04Z, next stage 23:19:13Z). 600 keeps the guard's own verdict reachable (inner
+# 300 + thread and head legs) and stays ~3x the standalone measurement.
+CLAIM_GUARD_TIMEOUT_S = 600
 CLAIM_TIMEOUT_VERDICT = "deferred-by-claim-timeout"
 
 
@@ -2646,7 +2658,10 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
                     elif call_timed_out(henv):
                         rec["verdict"] = f"stage2-timeout:{si}+h{hi}"
                     else:
-                        rec["verdict"] = f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}"
+                        # scheduler defer contract: a provider 429 stays unprefixed
+                        rec["verdict"] = (
+                            provider_rate_refusal(henv)
+                            or f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}")
                     rec["stage2_raw_tail"] = (henv.get("response") or "")[-3000:]
                     return {}
                 kept += hkept
@@ -2659,7 +2674,11 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             if gate_refusal(env):
                 rec["verdict"] = gate_refusal(env)   # scheduler defer contract
             elif not part:
-                rec["verdict"] = f"stage2-{call_failure(env) or 'unparsed'}:{si}"
+                # scheduler defer contract: a provider 429 stays unprefixed (23/11: four
+                # builds walled mid-flight were failed and released as stage2-call-failed)
+                rec["verdict"] = (
+                    provider_rate_refusal(env)
+                    or f"stage2-{call_failure(env) or 'unparsed'}:{si}")
             else:
                 rec["verdict"] = f"stage2-empty-segment:{si}"
             rec["stage2_raw_tail"] = (env.get("response") or "")[-3000:]
@@ -4587,8 +4606,10 @@ def revision_view(nb_path: Path, out_cap: int = REVISION_OUT_CAP,
             shown = out[:out_cap]
             if len(out) > out_cap:
                 shown += f"\n…[sortie tronquée : {len(out) - out_cap} caractères non affichés]"
+            witness = nontext_witness(c)      # outside the cut: a figure is never starved
             block += (f"\n--- sortie réelle (execution_count={c.get('execution_count')}) ---\n"
-                      f"{shown or '(aucune sortie)'}")
+                      f"{shown if (shown or witness) else '(aucune sortie)'}"
+                      + "".join(f"\n{line}" for line in witness))
         parts.append(block)
     return _cut("\n\n".join(parts), max_chars, "vue du carnet")
 
@@ -4620,9 +4641,11 @@ def twin_reference_blocks(src_cells: list, idxs=None, src_cap: int = TWIN_REF_SR
         txt = _outputs_text(c)
         shown = txt[:out_cap] + (f"\n…[sortie coupée : {len(txt) - out_cap} caractères]"
                                  if len(txt) > out_cap else "")
+        witness = nontext_witness(c)          # outside the cut: a figure is never starved
         out.append(f"<cellule {i} — code du jumeau>\n{shown_src}\n"
                    f"<cellule {i} — SORTIE RÉELLE du jumeau (référence)>\n"
-                   f"{shown or '(aucune sortie enregistrée)'}")
+                   f"{shown if (shown or witness) else '(aucune sortie enregistrée)'}"
+                   + "".join(f"\n{line}" for line in witness))
     return out
 
 
@@ -4976,7 +4999,8 @@ async def spec_stage(sk, args, rec: dict, issue: dict, kernel: dict, ctx: str, v
                    "chars": len(spec_text), "elapsed_s": round(time.time() - tspec, 1)}
     if not spec_text:
         rec["spec"]["failed"] = True
-        rec["verdict"] = f"spec-{call_failure(env_s) or 'no-answer'}"
+        rec["verdict"] = (provider_rate_refusal(env_s)   # scheduler defer contract
+                          or f"spec-{call_failure(env_s) or 'no-answer'}")
         return None
     spec_body = _cut(spec_text, SPEC_BODY_CAP, "spec")
     spec_path = Path(out_dir) / f"spec-{args.issue}.md"
@@ -5082,6 +5106,47 @@ def gate_refusal(env: dict) -> str:
     return ""
 
 
+# A MODEL provider's 429 says as little about the grain as the capacity gate's refusal — but
+# not every 429 lasts the same. Measured in nb_coder records 23/11 00:08-00:09Z
+# (po-2028:claudish, batches s6g and s6r): 'Usage limit reached for 5 hour. Your limit will
+# reset at …' — a five-hour WINDOW WALL that ran dry under two concurrent batches. Four
+# stage-2 builds died as `stage2-call-failed: … 'rate_limit_error' …`, the scheduler classed
+# each a run failure and posted [RELEASED], which CoursIA's guard reads as a three-day,
+# fleet-wide RELACHEE on notebooks nothing had judged. A fifth (#28069) met it one call
+# later, on a revision round, and was released on the reject that round never answered --
+# revise_loop carries the same reading there. The transient wording ('Error code: 429 - {…
+# 'code': '1302', 'message': 'Rate limit reached for requests'}}') is measured in this
+# fleet's notebook outputs, not yet in a harness verdict: the same markers name it, and it
+# takes the ordinary backoff — only the wall waits.
+_PROVIDER_RATE_LIMIT_MARKERS = ("rate_limit_error", "ratelimiterror", "error code: 429",
+                                "rate limit reached", "too many requests")
+_PROVIDER_WALL_RE = re.compile(r"usage limit reached|will reset at", re.I)
+PROVIDER_RATE_LIMIT_VERDICT = "deferred-by-provider-rate-limit"
+
+
+def provider_rate_refusal(env: dict) -> str:
+    """The bare scheduler deferral for a provider 429 carried by an envelope, or "".
+
+    Read at every site that assembles a VERDICT from a model call that never answered,
+    before `call_failure` — which keeps naming the cause `call-failed` for the diagnostic
+    records. The verdict must stay unprefixed: the scheduler matches its deferral prefixes
+    from the first character (`stage2-deferred-…` would fail the grain all the same).
+
+    `:wall` marks a window wall. Its announced clock is NOT waited on: read as UTC, the
+    measured sample (reset at 08:48:53 for a wall hit at 00:09Z) outlasts the five-hour
+    window the same message names, so its offset is unknown. The scheduler probes hourly
+    instead (PROVIDER_WALL_WAIT_S, there); the other form takes the ordinary backoff."""
+    err = (env.get("error") or "").strip()
+    if not err:
+        return ""
+    low = err.lower()
+    hit = next((m for m in _PROVIDER_RATE_LIMIT_MARKERS if m in low), "")
+    if not hit:
+        return ""
+    wall = ":wall" if _PROVIDER_WALL_RE.search(err) else ""
+    return f"{PROVIDER_RATE_LIMIT_VERDICT}{wall}: {_excerpt(err, hit)}"
+
+
 def looks_truncated(env: dict) -> bool:
     """An answer cut by max_tokens ends inside the JSON, not on its fence or brace. Asking
     the model to re-emit it under the same budget would cut it again: that case is the
@@ -5122,8 +5187,11 @@ async def parse_or_repair(session: ClientSession, args, rec: dict, stage: str, e
         {"stage": stage, "error": err[:400], "ok": obj2 is not None,
          "error_after": err2[:400] if obj2 is None else "",
          "failure": call_failure(env2) or gate_refusal(env2)})
-    # A gate refusal on the repair call is a deferral, and the caller reads it from env.
-    return (obj2, env2) if obj2 is not None or gate_refusal(env2) else (None, env)
+    # A gate refusal or a provider 429 on the repair call is a deferral, and the caller
+    # reads it from env: handing back the ORIGINAL (unparsed, error-less) answer would name
+    # the grain `unparsed` — a failure — for a refusal that says retry.
+    return ((obj2, env2) if obj2 is not None or gate_refusal(env2)
+            or provider_rate_refusal(env2) else (None, env))
 
 
 PM_READ_TIMEOUT_S = 300
@@ -5401,6 +5469,127 @@ def _outputs_text(cell: dict) -> str:
         parts.append(_text(o.get("traceback")))
         parts.append(str(o.get("evalue") or ""))
     return "\n".join(p for p in parts if p)
+
+
+# ---------------------------------------------------------- non-text payloads (24/11)
+# A figure IS part of what a cell displays, and no text rendering shows it. Measured on
+# CoursIA#28338 (fournée o30): the C# port displayed a 152 KB image/svg+xml after a 154 KB
+# stream. The reviser's view rendered the cell as its stream alone, the twin reference
+# rendered the Python figure as « (aucune sortie enregistrée) », and the verifier's diff
+# annex cut the cell at 1 200 characters — before the fingerprint. Five rounds long, neither
+# the reviser nor the critic ever saw the figure: the critic could only report it
+# unverifiable and the reviser had nothing to show. A view that claims to show what a cell
+# displays DECLARES its non-text payloads: their absence is otherwise a false statement made
+# to the model. `_outputs_text` itself is NOT touched — the error digests and the delta
+# gates (machine-path, svg-display) compare its text.
+NON_TEXT_ELEMENTS_MAX = 12       # SVG element kinds listed
+NON_TEXT_LABEL_MAX = 10          # SVG labels quoted
+NON_TEXT_LABEL_CHARS = 40        # per label
+NON_TEXT_STRUCTURE_CAP = 480     # a structure line never exceeds this, its cut declared
+
+
+def is_nontext_mime(mime) -> bool:
+    """False for what the text renderings already show (text/*, JSON)."""
+    return not (mime.startswith("text/") or mime == "application/json")
+
+
+def nontext_payloads(cell: dict) -> list[tuple[str, str]]:
+    """`(mime, payload-as-text)` of every non-text payload of a cell's outputs — a figure, a
+    PDF — in output order, each output's mimes sorted: the order every consumer shares."""
+    rows: list[tuple[str, str]] = []
+    for o in cell.get("outputs") or []:
+        if not isinstance(o, dict) or o.get("output_type") == "stream":
+            continue
+        data = o.get("data") or {}
+        for mime in (sorted(data) if isinstance(data, dict) else []):
+            if is_nontext_mime(mime):
+                blob = _text(data.get(mime))
+                if blob:
+                    rows.append((mime, blob))
+    return rows
+
+
+def nontext_marker(mime: str, blob: str) -> str:
+    """The ONE fingerprint of a non-text payload: the digests hash it, the annexes show it.
+    A silent image swap must move every digest that carries it (finding 26858 c.17)."""
+    return f"[{mime} {len(blob)}b sha1:{hashlib.sha1(blob.encode()).hexdigest()[:12]}]"
+
+
+_SVG_ROOT_RE = re.compile(r"<svg\b([^>]*)>")
+_SVG_TAG_RE = re.compile(r"<([A-Za-z][\w:.-]*)")
+_SVG_ATTR_RE = re.compile(r"([\w:.-]+)\s*=\s*([\"'])(.*?)\2")
+_SVG_TEXT_RE = re.compile(r"<text\b[^>]*>(.*?)</text>", re.S)
+
+
+def _svg_structure(blob: str) -> str:
+    """What an SVG draws, in one bounded line: its canvas, its element counts, its labels.
+    The bytes are fingerprinted by `nontext_marker`; this is what tells two figures of equal
+    size apart, and lets a reader check a label against the code that claims to draw it.
+
+    Bounded by WHOLE labels, never by characters: a label is either quoted whole or counted
+    in « +N étiquettes non listées » — a cut by characters would drop that very count."""
+    counts: dict[str, int] = {}
+    for tag in _SVG_TAG_RE.findall(blob):
+        counts[tag] = counts.get(tag, 0) + 1
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    elements = ", ".join(f"{tag[:24]}×{n}" for tag, n in ranked[:NON_TEXT_ELEMENTS_MAX])
+    if len(ranked) > NON_TEXT_ELEMENTS_MAX:
+        elements += f", +{len(ranked) - NON_TEXT_ELEMENTS_MAX} autres"
+    labels: list[str] = []
+    for inner in _SVG_TEXT_RE.findall(blob):
+        label = " ".join(re.sub(r"<[^>]+>", "", inner).split())
+        if label and label not in labels:
+            labels.append(label)
+    canvas = ""
+    root = _SVG_ROOT_RE.search(blob)
+    if root:
+        attrs = {k: v for k, _q, v in _SVG_ATTR_RE.findall(root.group(1))}
+        canvas = " ".join(f"{k}={attrs[k][:NON_TEXT_LABEL_CHARS]}"
+                          for k in ("width", "height", "viewBox") if attrs.get(k))
+    head = " | ".join(p for p in (canvas, f"éléments : {elements}" if elements else "") if p)
+    hidden_tail = 32                 # room kept for «  ; +NNN étiquettes non listées »
+    room = NON_TEXT_STRUCTURE_CAP - len(head) - len(" | étiquettes : ") - hidden_tail
+    quoted: list[str] = []
+    for label in labels:
+        text = f"«{label[:NON_TEXT_LABEL_CHARS]}{'…' if len(label) > NON_TEXT_LABEL_CHARS else ''}»"
+        cost = len(text) + (3 if quoted else 0)
+        if len(quoted) >= NON_TEXT_LABEL_MAX or sum(map(len, quoted)) + 3 * len(quoted) + cost > room:
+            break
+        quoted.append(text)
+    hidden = len(labels) - len(quoted)
+    if hidden > 0:
+        quoted.append(f"+{hidden} étiquettes non listées")
+    line = " | ".join(p for p in (head, f"étiquettes : {' ; '.join(quoted)}" if quoted else "")
+                      if p)
+    if len(line) > NON_TEXT_STRUCTURE_CAP:       # last resort: a hostile canvas or tag names
+        line = (line[:NON_TEXT_STRUCTURE_CAP]
+                + f"…[+{len(line) - NON_TEXT_STRUCTURE_CAP} caractères]")
+    return line
+
+
+def _png_structure(blob: str) -> str:
+    """`PNG <width>x<height>`, read from the IHDR of a base64 payload; "" when the payload is
+    not a PNG. The header is 33 bytes, so a 150 KB figure costs 44 characters decoded."""
+    try:
+        head = base64.b64decode(blob[:44], validate=False)[:33]
+    except (ValueError, TypeError):
+        return ""
+    if len(head) < 24 or head[:8] != b"\x89PNG\r\n\x1a\n" or head[12:16] != b"IHDR":
+        return ""
+    return f"PNG {int.from_bytes(head[16:20], 'big')}x{int.from_bytes(head[20:24], 'big')}"
+
+
+def nontext_witness(cell: dict) -> list[str]:
+    """One line per non-text payload a cell displays: the marker, then what is readable of
+    the drawing. Every view that claims to show what a cell displays appends these lines
+    OUTSIDE its text cuts — a verbose stream must never hide the figure that follows it."""
+    lines: list[str] = []
+    for mime, blob in nontext_payloads(cell):
+        structure = (_svg_structure(blob) if mime == "image/svg+xml"
+                     else _png_structure(blob) if mime == "image/png" else "")
+        lines.append(f"[affichage non textuel {nontext_marker(mime, blob)[1:-1]}]"
+                     + (f" — {structure}" if structure else ""))
+    return lines
 
 
 # Relative link targets in markdown: `](target)` / `](<target> "title")` and href="...".
@@ -6570,6 +6759,57 @@ def integration_pr_lines(integ: dict | None) -> str:
     return "\n\n" + "\n".join(lines)
 
 
+# A delivery names the kernel that EXECUTED the deliverable. `rec["kernel"]` is not it:
+# on a creation that is the kernel the metadata was lent from, and a --revise-from resume
+# carries it untouched. Measured on CoursIA#28332 (24/11, Planners-05c-…-Rust): every
+# kernel the harness started was `rust` (driver log, `kernelspec_align.to`) while the
+# commit and the PR body said `.net-csharp`. Stage 5 reads the execution record instead.
+# The record is written where an execution RESULT exists (`note_execution_kernel`), never
+# at a kernel start alone.
+# A trace that holds none (written before the record existed, or no kernel ever started)
+# is READ, never measured -- and the published line says so.
+_KERNEL_READ_SOURCES = {"align": "alignement kernelspec",
+                        "override": "--kernel-override",
+                        "selection": "sélection d'avant-exécution"}
+
+
+def published_execution_kernel(args, rec: dict) -> tuple[str | None, str]:
+    """(kernel to publish at delivery, provenance note -- "" when measured).
+
+    Precedence: the recorded execution; then, on a trace that recorded none, readings --
+    the alignment (align_kernelspec refuses to write unless its target equals the
+    kernel the execution path named), --kernel-override (the resume's own precedence,
+    #27996), and the pre-execution selection, which is what every body published
+    before. A reading is NOT a measurement: its note says where it was read and
+    that no execution was recorded.
+    """
+    measured = (rec.get("executed_kernel") or {}).get("name")
+    if measured:
+        return measured, ""
+
+    def read(source: str, value: str | None) -> tuple[str | None, str]:
+        return value, f" (noyau lu : {_KERNEL_READ_SOURCES[source]}, exécution non enregistrée)"
+
+    aligned = (rec.get("kernelspec_align") or {}).get("to")
+    if aligned:
+        return read("align", aligned)
+    override = getattr(args, "kernel_override", None)
+    if override:
+        return read("override", override)
+    return read("selection", (rec.get("kernel") or {}).get("kernel_name"))
+
+
+def note_execution_kernel(rec: dict, kname: str) -> None:
+    """Record the kernel that PRODUCED the trace's execution result. Called right
+    after `execution_verdict` read `rec["execution"]`. A kernel id alone is not an
+    execution: exec mode `none` starts a kernel and runs nothing, and a repair
+    restart that returned none leaves the cells of its round unexecuted
+    (`rec["kernel_id"]` is then none). Never called for the .NET API probe."""
+    if kname and rec.get("kernel_id") and rec.get("execution"):
+        rec["executed_kernel"] = {"name": kname, "kernel_id": rec["kernel_id"],
+                                  "source": "manage_kernel-start"}
+
+
 def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
               token: str | None) -> None:
     """Stage 5 — harness-only GitHub gestures: the model never writes to git or GitHub.
@@ -6581,6 +6821,9 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
     branch = args.pr_branch or default_pr_branch(args.issue, args.notebook)
     desc = _short_desc(args, rec.get("plan") or {}, rec.get("create_mode"))
     entry: dict = {"branch": branch}
+    executed_as, kernel_note = published_execution_kernel(args, rec)
+    entry["published_kernel"] = {"name": executed_as, "note": kernel_note,
+                                 "record": rec.get("executed_kernel")}
 
     cm0 = rec.get("create_mode") or {}
     src0 = cm0.get("source") if isinstance(cm0, dict) else None
@@ -6682,7 +6925,8 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
             else:
                 for f in integ.get("touched", []):
                     _git(wt_path, "add", "--", f)
-                facts = {"kernel": (rec.get("kernel") or {}).get("kernel_name"),
+                facts = {"kernel": executed_as,
+                         "kernel_read": bool(kernel_note),
                          "executed_cells": len(rec.get("execution") or []),
                          "verdict": (rec.get("verify") or {}).get("verdict")}
                 reg = nbci.register_pair(wt_path, str(src_twin), nb_rel,
@@ -6718,7 +6962,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         f"{(rec.get('verify') or {}).get('verdict')} "
         f"(modèle {(rec.get('verify') or {}).get('model_used')})."
         + f"\nModèle servi : {identity_line((rec.get('verify') or {}).get('identity'))}."
-        + f"\nExécution : kernel {rec.get('kernel', {}).get('kernel_name')}, "
+        + f"\nExécution : kernel {executed_as}{kernel_note}, "
         f"{len(rec.get('execution') or [])} cellules exécutées, C.2 "
         f"{'séquentiel' if (rec.get('c2') or {}).get('sequential') else 'BROKEN'}."
         + "\n\nCo-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>")
@@ -6809,7 +7053,7 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         + "\n".join(f"- cell {g.get('cell')} ({g.get('geste')}): {_text(g.get('but')).strip()}"
                     for g in (rec.get("plan") or {}).get("plan") or [] if isinstance(g, dict))
         + "\n\n## Mesures\n\n"
-        f"- **Exécution réelle** (execute_on_kernel, kernel `{rec.get('kernel', {}).get('kernel_name')}`) : "
+        f"- **Exécution réelle** (execute_on_kernel, kernel `{executed_as}`{kernel_note}) : "
         f"{n_exec} cellules, 0 erreur. C.2 : execution_count séquentiel — "
         f"{'oui' if (rec.get('c2') or {}).get('sequential') else 'NON'}.\n"
         f"- **Gates** : {', '.join(gates_ok) or 'aucun'} OK"
@@ -7614,6 +7858,18 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
             if not part:
                 entry["result"] = (gate_refusal(env) or call_failure(env) or "unparsed")
                 entry["raw_tail"] = (env.get("response") or "")[-1500:]
+                refusal = gate_refusal(env) or provider_rate_refusal(env)
+                if refusal:
+                    # scheduler defer contract: the round was never held, so the reject it
+                    # would have answered is not this run's last word either. Measured 23/11
+                    # 00:08Z (CoursIA#28069, batch s6r): an execution the builder had to
+                    # answer, and the revise call met the five-hour wall — left on its
+                    # reject the grain was failed and [RELEASED], a three-day fleet-wide
+                    # lock for a repair the provider refused to hear. The reject is kept in
+                    # last_content_verdict for a --revise-from resume; the entry keeps
+                    # naming the cause.
+                    rec["last_content_verdict"] = rec["verdict"]
+                    rec["verdict"] = refusal
             elif not part.get("cells") and part.get("contested"):
                 # A valid, cell-free answer is the documented contest path, not a malformed
                 # reply. CoursIA#27288 (23/11, o1/Terra): the builder correctly explained
@@ -7655,6 +7911,7 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                             pm, "manage_kernel", {"action": "stop",
                                                   "kernel_id": rec["kernel_id"]})
                     execution_verdict(rec, built_path)
+                    note_execution_kernel(rec, kname)
         entry["elapsed_build_s"] = round(time.time() - t0, 1)
         contested_only = entry.get("result") == "contested-only"
         if not applied and not contested_only:
@@ -7706,10 +7963,14 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
     # the gates were fixed overwrote verify.source, so this only touches the never-fixed
     # case. Execution repair follows the same rule (verify.source "execution"); a kernel
     # that died during a round keeps its own verdict instead of being masked.
+    # A deferral (capacity gate, provider 429) met during a round is the run's verdict too:
+    # the scheduler defers, and the repair is had when the refusal lifts, instead of the
+    # grain being released on a repair nobody could attempt (CoursIA#28069, 23/11 00:08Z).
     src = (rec.get("verify") or {}).get("source")
     if (src in ("gates", "execution")
             and not str(rec.get("verdict") or "").startswith(("verify-approved",
                                                                MIDRUN_REFUSED))
+            and not str(rec.get("verdict") or "").startswith("deferred-by-")
             and rec.get("verdict") != "kernel-start-failed"):
         origin = rec.get("gate_repair" if src == "gates" else "exec_repair") or {}
         rec["verdict"] = origin.get("from") or rec["verdict"]
@@ -7730,7 +7991,8 @@ def _prior_src_nb(prior: dict, wt_path: Path, notebook: str) -> Path:
 # and so that stage 5 composes the same PR body as an uninterrupted run.
 _REVISE_CARRY = ("plan", "kernel", "kernel_cwd", "create_mode", "create_metadata", "src_nb",
                  "built_notebook", "conversation_id", "execution", "c2", "gates", "structure",
-                 "verify", "revisions", "exec_mode", "repo_origin", "last_content_verdict")
+                 "verify", "revisions", "exec_mode", "repo_origin", "last_content_verdict",
+                 "executed_kernel", "kernelspec_align")
 
 # Stage 5 refused to DELIVER an approved build. The content was judged; only the delivery
 # gestures are worth retrying -- on the build as it is.
@@ -7860,7 +8122,20 @@ async def run_revision(args, rec: dict) -> dict:
             rec["verdict"] = f"refused-revise-no-reservation:{live_v}"
             return rec
     elif prior_cr and prior_cr.get("verdict") is None:
-        pass  # attested in the trace: an admitted reservation, re-read at its time
+        # A reservation attested in an OLD trace is not a reservation held NOW. Measured
+        # 24/11 (salvage o33): the paid trace of #28082 carried a claim_reservation with
+        # verdict None, and run_revision() admitted the resume on it -- while the grain had
+        # been [RELEASED] on 24/11 00:06Z. The grain would have been built unreserved, and
+        # under CoursIA's RELACHEE rule a recent [RELEASED] (< RELACHE_J days) disqualifies
+        # re-claiming, so the reservation could not have been taken again either. Re-read
+        # the LIVE scoped claim exactly like the no-attestation branch below: still ours,
+        # admitted; released or held elsewhere, refused with the guard's own code.
+        live = check_claim(Path(args.repo), args.issue, args.lane, _norm_rel(args.notebook))
+        live_v = claim_verdict(live)
+        if live_v is not None:
+            rec["stages"]["claim_reservation"] = {**prior_cr, "live_recheck": live_v}
+            rec["verdict"] = f"refused-revise-no-reservation:{live_v}"
+            return rec
     elif prior_cr:
         rec["verdict"] = "refused-revise-no-reservation"
         return rec
@@ -7983,9 +8258,7 @@ async def run_revision(args, rec: dict) -> dict:
         # a seeded gate repair enters the loop as a reject; the exhaustion-restore
         # inside revise_loop brings the honest gates-failed verdict back if the
         # repair never succeeds
-        resumed = ((rec.get("gate_repair") or {}).get("resumed")
-                   or (rec.get("exec_repair") or {}).get("resumed"))
-        rec["verdict"] = "verify-reject" if resumed else prior["verdict"]
+        rec["verdict"] = "verify-reject"
     await revise_loop(args, rec, issue=issue, src_nb=src_nb, built_path=built, kname=kname,
                       exec_dir=exec_dir, conventions=conventions, create_mode=create_mode,
                       wt_path=wt_path, out_dir=out_dir)
@@ -8250,14 +8523,15 @@ async def run(args, rec: dict) -> dict:
             rec["stage1_s"] = round(time.time() - t1, 1)
             if args.max_stage < 2:
                 rec["verdict"] = ("stage1-only" if plan
-                                  else gate_refusal(env)
+                                  else gate_refusal(env) or provider_rate_refusal(env)
                                   or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             if not plan:
                 # a mid-flight gate refusal defers (scheduler retries with backoff),
                 # everything else that killed the plan call stays terminal — 18/11
-                # wave-1c #27103 burned terminally on exactly this distinction.
-                rec["verdict"] = (gate_refusal(env)
+                # wave-1c #27103 burned terminally on exactly this distinction. A provider
+                # 429 defers for the same reason (23/11).
+                rec["verdict"] = (gate_refusal(env) or provider_rate_refusal(env)
                                   or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             exec_idx = plan.get("execute_cells") or []
@@ -8330,7 +8604,8 @@ async def run(args, rec: dict) -> dict:
             if not exists:
                 rec["verdict"] = "build-no-notebook"
             elif not rec["built_notebook"]["changed"]:
-                rec["verdict"] = f"build-{call_failure(env2) or 'no-change'}"
+                rec["verdict"] = (provider_rate_refusal(env2)   # scheduler defer contract
+                                  or f"build-{call_failure(env2) or 'no-change'}")
             else:
                 rec["structure"] = (verify_structure_create(src_nb, scratch) if create_mode
                                     else verify_structure(src_nb, scratch, plan))
@@ -8396,6 +8671,8 @@ async def run(args, rec: dict) -> dict:
     # ---- stages 3-5: harness-only (no model turn inside these), then the review loop
     built_path = Path((rec.get("built_notebook") or {}).get("path") or "")
     kname_used = args.kernel_override or kernel["kernel_name"]
+    if rec.get("kernel_id"):
+        note_execution_kernel(rec, kname_used)
     gates_then_verify(args, rec, src_nb, built_path, create_mode, kname_used,
                       Path(wt["path"]), out_dir,
                       spec_body=issue.get("body"), spec_ref=_spec_ref(args, issue))
@@ -8410,6 +8687,150 @@ async def run(args, rec: dict) -> dict:
     return rec
 
 
+def _keep_prior_trace(out: Path, prefix: str) -> str:
+    """Snapshot `out` next to itself and return the copy's path; never replace a copy.
+
+    A second-resolution timestamp collides on any retry inside the same second (a scheduler
+    relaunching a refusal is exactly that case), and shutil.copy2 would silently replace the
+    earlier snapshot -- the very loss this function exists to prevent. O_EXCL makes the race
+    a fresh suffix instead of a lost record.
+    """
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    for n in range(1000):
+        keep = out.with_name(f"issue-{out.stem.removeprefix('issue-')}.{prefix}-{stamp}"
+                             + ("" if n == 0 else f"-{n}") + ".json")
+        try:
+            fd = os.open(keep, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as dst, open(out, "rb") as src:
+            shutil.copyfileobj(src, dst)
+        shutil.copystat(out, keep)
+        return str(keep)
+    raise OSError(f"no free snapshot name beside {out}")   # never fall back to overwriting
+
+
+def _seat_credential_gaps(args) -> list[str]:
+    """Model entries whose key cannot resolve in THIS environment (24/11, o34b).
+
+    Measured 24/11 19:13Z (po-2028:claudish, CoursIA#28079): the `nb-*` entries of the
+    seat's config name their key through `api_key_env: ZAI_API_KEY`, nothing defined that
+    variable on the seat, and sk-agent's `resolve_api_key()` fell back to its `no-key`
+    default. The launch paid stage 0 (worktree, claim pre-check, issue read -- 60 s),
+    opened the two MCP sessions, and its first model call answered
+    `401 invalid proxy authentication`: a 125 s corpse, one call, verdict
+    `stage1-auth-failed`. The seat's launcher knew the export; the harness never asked.
+
+    Refuses on NAMES only -- role, agent, model entry, environment variable -- never on a
+    value, and only the certain case: the variable sk-agent will read is empty here AND the
+    entry carries no literal it would fall back to. Everything this cannot read (an
+    unreadable config, an unknown preset, a model entry it cannot find) is left to sk-agent,
+    which refuses those by name. `NBCODER_PREFLIGHT_CREDENTIALS=0` disables the check for a
+    seat whose endpoint serves without a key.
+    """
+    if os.environ.get("NBCODER_PREFLIGHT_CREDENTIALS", "").strip() == "0":
+        return []
+    try:
+        cfg = json.loads(Path(SK_CONFIG).read_text(encoding="utf-8"))
+        agents = {a["id"]: a for a in cfg.get("agents") or [] if isinstance(a, dict) and a.get("id")}
+        models = {m["id"]: m for m in cfg.get("models") or [] if isinstance(m, dict) and m.get("id")}
+    except Exception:
+        return []                 # not this check's question: the path check above already ran
+    roles = [("coder", args.agent, args.coder_model)]
+    if args.max_stage >= 4:       # the verifier is a separate process on the same config + env
+        roles.append(("verifier", args.verifier_agent, args.verifier_model))
+    if args.spec_mode == "run":
+        roles.append(("spec", args.agent, args.spec_model))
+    gaps: list[str] = []
+    judged: set[str] = set()
+    for role, agent_id, override in roles:
+        ref = override or (agents.get(agent_id) or {}).get("model")
+        model = models.get(ref)
+        if not ref or not model or ref in judged:
+            continue
+        judged.add(ref)
+        var = str(model.get("api_key_env") or "").strip()
+        literal = model.get("api_key")
+        usable = isinstance(literal, str) and literal.strip() not in ("", "no-key")
+        if var and not usable and not (os.environ.get(var) or "").strip():
+            gaps.append(f"{role}: agent {agent_id} -> model {ref} reads its key from "
+                        f"${var}, which is not set in this environment")
+    return gaps
+
+
+def _tree_has(repo: Path, rev: str, rel: str) -> str | None:
+    """Is `rel` in `rev`'s tree? "in-tree", "absent" (provably) or None (git cannot answer).
+
+    `git cat-file -e` exits 128 for an absent path and for everything it cannot read (no
+    such rev, not a repository), so the verdict is read from its message: only `does not
+    exist in` is an absence. A path that `exists on disk, but not in` the rev (measured
+    24/11: a spelling that differs by case, on a case-insensitive filesystem) is neither:
+    the main checkout's working tree says nothing about the fresh worktree, so the check
+    stays out of the way.
+    """
+    p = subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{rev}:{rel}"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, timeout=120)
+    if p.returncode == 0:
+        return "in-tree"
+    return "absent" if "does not exist in" in (p.stderr or "") else None
+
+
+def _launch_target_gap(args) -> dict | None:
+    """A launch whose own target, twin or metadata cannot be reached (24/11, o34).
+
+    Measured 24/11 (po-2028:claudish, CoursIA#28079): a creation grain queued without its
+    twin. The driver built the worktree, ran the claim pre-check and read the issue before
+    `run()` found an absent target and no `--source-nb`: 95 s, verdict
+    `notebook-not-found`, nothing on the issue naming what was missing. The answer needed
+    only the ref the worktree is cut from, which was known before any of that was paid.
+
+    The same holds for the three other answers `run()`'s target resolution draws from that
+    ref alone (`target-already-exists`, `meta-from-not-found`, `source-nb-not-found`), so
+    they are asked here too, in `run()`'s own order. Read against a FRESH origin/main -- the
+    fetch `prepare_worktree` makes: on a stale ref the check would refuse a correction
+    whose target merged since the last fetch. A resume (`--revise-from` / `--verify-from`)
+    reads its creation mode from the trace and is not asked. When git cannot answer,
+    nothing is refused.
+    """
+    if args.revise_from or args.verify_from:
+        return None
+    repo = Path(args.repo)
+
+    def norm(s) -> str:
+        return str(s).replace("\\", "/")
+    try:
+        fetched = subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin", "main"],
+                                 capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                                 timeout=120)
+        if fetched.returncode != 0:
+            return None                # an unreadable or stale ref is never an answer
+        rev = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+                              "origin/main^{commit}"], capture_output=True, text=True,
+                             timeout=60).stdout.strip()
+        if not rev:
+            return None
+        gap = {"origin_main": rev[:10]}
+        target = _tree_has(repo, rev, norm(args.notebook))
+        creation = bool(args.source_nb or args.from_spec)
+        if target == "in-tree" and creation:
+            return gap | {"reason": "target-already-exists", "target": norm(args.notebook)}
+        if creation and args.meta_from and _tree_has(repo, rev, norm(args.meta_from)) == "absent":
+            return gap | {"reason": "meta-from-not-found", "meta_from": norm(args.meta_from)}
+        if args.source_nb:
+            twin = _tree_has(repo, rev, norm(args.source_nb))
+            if twin == "absent":
+                return gap | {"reason": "source-nb-absent", "source_nb": norm(args.source_nb),
+                              "target": norm(args.notebook)}
+            return None                # the twin resolves (or git cannot say): the creation proceeds
+        if not creation and target == "absent":
+            return gap | {"reason": "creation-grain-without-twin", "target": norm(args.notebook)}
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
 def _preflight(ap, args) -> None:
     """Refuse before any spend when a wired path cannot exist (F3, vllm#441).
 
@@ -8422,6 +8843,22 @@ def _preflight(ap, args) -> None:
     A refusal still leaves a TRACE (F3-1, co-review of #442): a scheduled loop cannot tell
     "ran and refused" from "never ran" if the refusal leaves no out-dir and no ledger line.
     The trace is written here, before ap.error, with the refusal itself as the verdict.
+
+    An existing record is PRESERVED, never overwritten (24/11, o33): a resumed grain's
+    out_dir is the OLD run directory, so writing here replaced the PAID record -- execution,
+    findings, gates, worktree head -- with the refusal, BEFORE main()'s pre-revise rename
+    could keep it, and the scheduler's run_trace() then read back the refusal and posted
+    [RELEASED] on a grain that had never been judged. Keep it renamed, exactly as main()
+    does, and name what was kept in the refusal itself.
+
+    The kept name has only a SECOND of resolution, and a retry loop is precisely the case
+    where two refusals land in the same second: the second copy would silently replace the
+    first. `_keep_prior_trace` never replaces an existing copy, it adds a suffix instead.
+
+    Three refusals, one per thing a seat gets wrong (24/11): a wired PATH that does not
+    resolve here, a model CREDENTIAL that does not resolve here (`_seat_credential_gaps`), a
+    TARGET the launch cannot reach (`_launch_target_gap`). Each is asked only once the
+    previous one is clean, and each names its own remedy in its own verdict.
     """
     missing = [f"{name}={path}" for name, path, ok in (
         ("sk_agent.py (NBCODER_SK_DIR)", SK_DIR / "sk_agent.py", (SK_DIR / "sk_agent.py").is_file()),
@@ -8430,23 +8867,68 @@ def _preflight(ap, args) -> None:
         ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
         ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
     ) if not ok]
-    if not missing:
+    credential = [] if missing else _seat_credential_gaps(args)
+    target_gap = None if (missing or credential) else _launch_target_gap(args)
+    if not missing and not credential and not target_gap:
         return
-    detail = "seat wiring does not resolve here — point the env var at a real path: " \
-             + " | ".join(missing)
+    if missing:
+        verdict = "refused-wiring-unresolved"
+        detail = ("seat wiring does not resolve here — point the env var at a real path: "
+                  + " | ".join(missing))
+    elif credential:
+        verdict = "refused-credential-unresolved"
+        detail = ("a model this launch calls cannot authenticate here — export the named "
+                  "environment variable in the launching shell (never write a key in the "
+                  "config or on a command line); sk-agent sends no usable key and the first "
+                  "call answers 401: " + " | ".join(credential)
+                  + " | NBCODER_PREFLIGHT_CREDENTIALS=0 disables this check")
+    else:
+        verdict = "refused-target-unresolved"
+        gap = target_gap or {}
+        sha = gap.get("origin_main")
+        reason = gap.get("reason")
+        if reason == "source-nb-absent":
+            detail = (f"--source-nb {gap.get('source_nb')} is absent from origin/main ({sha}): "
+                      "a creation grain's twin must exist there")
+        elif reason == "target-already-exists":
+            detail = (f"{gap.get('target')} already exists on origin/main ({sha}) and this "
+                      "launch declares a creation (--source-nb / --from-spec): a correction "
+                      "drops those flags, a creation names a target that does not exist yet")
+        elif reason == "meta-from-not-found":
+            detail = (f"--meta-from {gap.get('meta_from')} is absent from origin/main ({sha}): "
+                      "the created deliverable inherits that notebook's kernelspec and "
+                      "language_info")
+        else:
+            detail = (f"{gap.get('target')} is absent from origin/main ({sha}) and this launch "
+                      "names no twin — a creation grain passes --source-nb <repo-relative twin> "
+                      "(or --from-spec with --meta-from); a correction names a notebook that "
+                      "exists on origin/main")
     out_dir = Path(args.out_dir)
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
+        out = out_dir / f"issue-{args.issue}.json"
+        kept = None
+        if out.is_file():
+            prefix = ("pre-verify" if args.verify_from
+                      else "pre-revise" if args.revise_from else "pre-refusal")
+            kept = _keep_prior_trace(out, prefix)
         rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
                "finished": utcnow(), "lane": args.lane, "dry": True, "calls": [],
-               "verdict": "refused-wiring-unresolved",
-               "wiring_missing": missing}
-        (out_dir / f"issue-{args.issue}.json").write_text(
-            json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
+               "verdict": verdict, "refusal": detail}
+        if missing:
+            rec["wiring_missing"] = missing
+        if credential:
+            rec["credential_missing"] = credential
+        if target_gap:
+            rec["target_gap"] = target_gap
+        if kept:
+            rec["preserved_prior_trace"] = kept
+        out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
         with open(out_dir / "ledger.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({k: rec.get(k) for k in
                                  ("issue", "notebook", "started", "finished", "verdict", "lane")}
-                                | {"calls": 0}, ensure_ascii=False) + "\n")
+                                | {"calls": 0, "preserved_prior_trace": kept,
+                                   "refusal": detail[:600]}, ensure_ascii=False) + "\n")
     except OSError:
         pass          # the refusal must not be masked by a failed trace write
     ap.error(detail)
@@ -8685,10 +9167,8 @@ def main() -> int:
     if (args.revise_from or args.verify_from) and out.is_file():
         # the trace being resumed is usually THIS file: keep it, renamed, never overwritten
         prefix = "pre-verify" if args.verify_from else "pre-revise"
-        keep = out.with_name(f"issue-{args.issue}.{prefix}-"
-                             f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.json")
-        shutil.copy2(out, keep)
-        rec["revised_from"] = (rec.get("revised_from") or {}) | {"kept_as": str(keep)}
+        keep = _keep_prior_trace(out, prefix)
+        rec["revised_from"] = (rec.get("revised_from") or {}) | {"kept_as": keep}
     if content_verdict_class(rec.get("verdict")):
         rec["last_content_verdict"] = rec["verdict"]
     out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")

@@ -87,7 +87,9 @@ export interface ApplyConfigResult {
   /**
    * #3111 — Résumé de la cible `workspace-template` quand elle est demandée.
    * `created` porte les chemins ABSOLUS créés en apply réel, ou les chemins
-   * PRÉVUS en dry-run (défaut true pour cette cible).
+   * PRÉVUS en dry-run (défaut true pour cette cible). `skippedExisting` porte
+   * des chemins RELATIFS au workspace (convention distincte, documentée ici :
+   * la revue po-2028 du 23/11 l'avait relevée).
    */
   workspaceTemplate?: {
     simulate: boolean;

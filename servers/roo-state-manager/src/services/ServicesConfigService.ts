@@ -117,7 +117,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     owner: 'myia-ai-01',
     windowsServiceName: 'Qdrant',
     ports: [6333],
-    healthEndpoint: 'http://localhost:6333/healthz',
+    healthEndpoint: 'http://127.0.0.1:6333/healthz',
   },
   {
     name: 'iis',
@@ -136,7 +136,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     // Do NOT use /v1/models here: it requires the API key, so an unauthenticated
     // probeHealth() GET always returns 401 → false "vLLM DOWN" even when the
     // engine is perfectly healthy (reproduced 2026-07-04 on ai-01).
-    healthEndpoint: 'http://localhost:5002/health',
+    healthEndpoint: 'http://127.0.0.1:5002/health',
     startCommand: 'python',
     startArgs: ['-m', 'vllm.entrypoints.openai.api_server', '--port', '5002', '--model', 'qwen3.6-35b-a3b'],
   },
@@ -146,7 +146,7 @@ export const SERVICE_REGISTRY: ServiceRegistryEntry[] = [
     owner: 'myia-ai-01',
     containerName: 'sk-agent',
     ports: [8765],
-    healthEndpoint: 'http://localhost:8765/health',
+    healthEndpoint: 'http://127.0.0.1:8765/health',
   },
 ];
 
