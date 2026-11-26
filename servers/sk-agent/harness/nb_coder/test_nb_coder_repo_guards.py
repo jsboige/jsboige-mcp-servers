@@ -283,6 +283,71 @@ def test_prose_counts_gate_clean(tmp_path):
     assert g == {"gate": "prose-counts", "ok": True, "detail": {"measured": True}}
 
 
+# 26/11, batch o40 (#28644, #28645): the real checker's exemption audit prints a rationale
+# holding U+2192. Under the Windows default code page print() raised UnicodeEncodeError,
+# the process exited 1 with its stdout cut inside [ALLOWLIST], and two notebooks that held
+# no count were rejected on the tail of that report (two revision rounds each, the second
+# one lost its bibliography). The fake below reproduces it on any platform.
+
+_PQC_REPORT_CRASH = r'''
+import sys
+if not sys.flags.utf8_mode:
+    sys.stdout.reconfigure(encoding="cp1252")       # the console encoding of the seat
+print("[OK] aucun compteur quantitatif en prose.")
+print("")
+print("[ALLOWLIST] 2 exemption(s) motivee(s) de la classe artifact, 2 compteur(s) couvert(s) :")
+print("    pourquoi : la mesure est historique (audit c.1252 → CSV).")
+print("  B/README.md  (1)  24 cellules")
+'''
+
+
+def test_prose_counts_guard_runs_in_utf8_mode(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    _tool(repo, "check_prose_quantitative_claims.py", _PQC_REPORT_CRASH)
+    for name in ("PYTHONUTF8", "PYTHONIOENCODING"):
+        monkeypatch.delenv(name, raising=False)      # the seat of the incident: neither set
+    g = nbcd.prose_counts_gate(repo, "a/b.ipynb", _nb(tmp_path / "b.ipynb", [_md("ok")]),
+                               tmp_path / "out")
+    assert g == {"gate": "prose-counts", "ok": True, "detail": {"measured": True}}
+
+
+_PQC_UNSITED = r'''
+import sys
+print("[OK] aucun compteur quantitatif en prose.")
+print("")
+print("[ALLOWLIST] 1 exemption(s) motivee(s) de la classe artifact, 1 compteur(s) couvert(s) :")
+print("  Other/README.md  (1)  40 lignes")
+sys.stderr.write("Traceback (most recent call last):\nUnicodeEncodeError: 'charmap' codec\n")
+sys.exit(1)
+'''
+
+
+def test_prose_counts_gate_rc1_without_a_row_is_declared_not_rejected(tmp_path):
+    # rc 1 names a counter only through its rows. No row before [ALLOWLIST] = the
+    # instrument failed, and a finding the reviser cannot locate only burns rounds.
+    repo = tmp_path / "repo"
+    _tool(repo, "check_prose_quantitative_claims.py", _PQC_UNSITED)
+    g = nbcd.prose_counts_gate(repo, "a/b.ipynb", _nb(tmp_path / "b.ipynb", [_md("ok")]),
+                               tmp_path / "out")
+    assert g["gate"] == "prose-counts" and g["ok"] is True
+    assert g["detail"]["measured"] is False and g["detail"]["rc"] == 1
+    assert g["detail"]["refus_header"] is False
+    assert "UnicodeEncodeError" in g["detail"]["error"]
+
+
+def test_prose_counts_gate_refus_header_without_a_row_is_declared(tmp_path):
+    # a [REFUS] header whose rows the driver cannot read is a format that moved: declared
+    # with the header named, never passed off as measured and never turned into a finding
+    repo = tmp_path / "repo"
+    _tool(repo, "check_prose_quantitative_claims.py",
+          'import sys\nprint("[REFUS] 2 compteur(s) quantitatif(s) en prose, 1 fichier(s) :")\n'
+          'print("  elsewhere:12  2 mesures")\nsys.exit(1)\n')
+    g = nbcd.prose_counts_gate(repo, "a/b.ipynb", _nb(tmp_path / "b.ipynb", [_md("ok")]),
+                               tmp_path / "out")
+    assert g["ok"] is True and g["detail"]["measured"] is False
+    assert g["detail"]["refus_header"] is True and g["detail"]["rc"] == 1
+
+
 # ------------------------------------------------------------------ wiring
 
 def test_run_gates_adds_repo_guards_in_create_mode_only(tmp_path):

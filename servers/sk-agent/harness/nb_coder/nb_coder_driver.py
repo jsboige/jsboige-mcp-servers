@@ -5265,6 +5265,15 @@ def _repo_guard_tool(repo: Path, name: str) -> Path:
     return repo / "scripts" / "notebook_tools" / name
 
 
+def _guard_env() -> dict[str, str]:
+    """UTF-8 mode for a repo-guard subprocess. The guards print a French report holding
+    glyphs outside cp1252 (U+2192 in the exemption rationales): on a Windows seat without
+    UTF-8 mode ``print`` raises UnicodeEncodeError, the process exits 1 with its stdout cut
+    mid-report, and rc 1 reads as « counter found » (measured 26/11, batch o40: #28644 and
+    #28645 were rejected on the tail of an audit their notebooks never entered)."""
+    return {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+
 def _unmeasured(gate: str, **why) -> dict:
     """A repo guard that could not run is DECLARED (measured: false), never a silent pass
     and never a build failure: the PR's CI stays the judge of what the harness missed."""
@@ -5292,7 +5301,8 @@ def uncommented_code_gate(repo: Path, built_nb: Path) -> dict:
     try:
         pr = subprocess.run([sys.executable, str(tool), "--file", str(built_nb), "--json"],
                             cwd=str(repo), capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+                            errors="replace", timeout=REPO_GUARD_TIMEOUT_S,
+                            env=_guard_env())
         data = json.loads(pr.stdout or "{}") if pr.returncode in (0, 1) else None
     except (subprocess.TimeoutExpired, ValueError, OSError) as e:
         return _unmeasured("uncommented-code", error=f"{type(e).__name__}: {e}"[:300])
@@ -5328,7 +5338,7 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
             pr = subprocess.run([sys.executable, str(tool), "--all", "--root", root,
                                  "--strict"], cwd=str(repo), capture_output=True, text=True,
                                 encoding="utf-8", errors="replace",
-                                timeout=REPO_GUARD_TIMEOUT_S)
+                                timeout=REPO_GUARD_TIMEOUT_S, env=_guard_env())
     except (subprocess.TimeoutExpired, OSError) as e:
         return _unmeasured("prose-counts", error=f"{type(e).__name__}: {e}"[:300])
     if pr.returncode == 0:
@@ -5337,12 +5347,21 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
         return _unmeasured("prose-counts", rc=pr.returncode,
                            error=(pr.stderr or pr.stdout or "")[-300:])
     snippets: list[str] = []
+    refus_header = False
     for ln in (pr.stdout or "").splitlines():
         if ln.startswith("[ALLOWLIST"):
             break                      # the exemption audit reuses the row format
+        refus_header = refus_header or ln.startswith("[REFUS")
         m = PROSE_COUNT_ROW_RE.match(ln)
         if m:
             snippets += [x.strip() for x in m.group(3).split(", ") if x.strip()]
+    if not snippets:
+        # rc 1 names a counter ONLY through its rows. None before [ALLOWLIST] is the
+        # instrument failing (a report that crashed, a row format that moved), not a
+        # count: the reviser has nothing to act on, and the rounds it burns damage the
+        # notebook (26/11, o40 #28645: two revisions, the bibliography gone).
+        return _unmeasured("prose-counts", rc=pr.returncode, refus_header=refus_header,
+                           error=(pr.stderr or pr.stdout or "")[-300:])
     md = [(i, _text(c.get("source"))) for i, c in enumerate(_cells(built_nb))
           if c.get("cell_type") == "markdown"]
     findings = []
@@ -5351,8 +5370,6 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
         findings.append({"cell": where[0] if where else None,
                          "text": f"compteur « {sn} »"
                                  + (f" (cellule {', '.join(map(str, where))})" if where else "")})
-    if not findings:
-        findings = [{"cell": None, "text": (pr.stdout or "")[-600:]}]
     return {"gate": "prose-counts", "ok": False,
             "detail": {"measured": True,
                        "cells": [f["cell"] for f in findings if f["cell"] is not None][:10],
@@ -5368,7 +5385,8 @@ def _anchor_findings(tool: Path, repo: Path, nb: Path) -> list[dict] | None:
     organ did not answer with its JSON (rc 2, timeout, unparsable)."""
     pr = subprocess.run([sys.executable, str(tool), "--json", str(nb)], cwd=str(repo),
                         capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+                        errors="replace", timeout=REPO_GUARD_TIMEOUT_S,
+                        env=_guard_env())
     if pr.returncode not in (0, 1):
         return None
     try:
@@ -5692,7 +5710,8 @@ def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
     try:
         p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path),
                             "--variant", "both"],
-                           capture_output=True, text=True, timeout=120)
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120, env=_guard_env())
         return {"ok": p.returncode == 0, "rc": p.returncode,
                 "out": (p.stdout or p.stderr or "")[-500:]}
     except subprocess.TimeoutExpired:
