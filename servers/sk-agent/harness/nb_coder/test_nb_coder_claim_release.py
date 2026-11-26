@@ -252,6 +252,23 @@ def test_a_first_content_failure_on_a_built_notebook_keeps_the_claim(tmp_path):
     assert g["resumable_trace"] == skipped["trace"]      # and the salvage is one flag away
 
 
+def test_a_grain_with_no_record_in_state_never_crashes_the_release(tmp_path):
+    """Review ai-01 (26/11): resumable_trace() tolerates a key with no grain record
+    (`.get(key, {})`); the write beside it assumed one and would have raised KeyError --
+    in a release path, which aborts the cycle. The trace stays named in the event."""
+    spawn = _leaving(BUILT, "built-execution-failed", 1)
+    sched = _sched(tmp_path, [LOT5], spawn, FakeClaims())
+    sched.run()
+    key = "#27133:Dir/Search-11-Rust.ipynb"
+    recorded = sched.state["grains"].pop(key)
+    assert recorded["resumable_trace"]                    # the run itself had the record
+    sched._release_claim(key, LOT5, "built-execution-failed")
+    skipped = _events(sched, "claim-release-skipped")[-1]
+    assert skipped["reason"] == "resumable-first-content-failure"
+    assert Path(skipped["trace"]) == sched.run_trace(LOT5)
+    assert key not in sched.state["grains"], "no empty grain record is invented"
+
+
 @pytest.mark.parametrize("verdict", [
     "gates-failed: conformance",
     "verify-reject: findings",

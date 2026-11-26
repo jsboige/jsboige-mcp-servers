@@ -1325,7 +1325,12 @@ class Scheduler:
                                reason="sibling-grain-active")
         trace = self.resumable_trace(key, item, verdict)
         if trace is not None:
-            self.state["grains"][key]["resumable_trace"] = str(trace)
+            # the callee tolerates a key with no grain record (`.get(key, {})`); this write
+            # must too -- a KeyError here aborts the release path (review ai-01, 26/11).
+            # The trace is named in the event either way.
+            grain = (self.state.get("grains") or {}).get(key)
+            if grain is not None:
+                grain["resumable_trace"] = str(trace)
             return self._event("claim-release-skipped", key=key, issue=issue,
                                reason="resumable-first-content-failure", trace=str(trace))
         try:
