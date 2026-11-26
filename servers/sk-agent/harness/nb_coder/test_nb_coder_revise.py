@@ -1146,6 +1146,26 @@ def test_every_stage5_refusal_verdict_names_itself_in_the_gate():
     assert all(w.startswith('f"source-drifted:') for w in written if w.startswith("f"))
 
 
+@pytest.mark.parametrize("verdict, recorded, lease", [
+    ("pr-create-failed", "c" * 40, "c" * 40),   # pushed, then died at `gh pr create`
+    ("pr-create-failed", None, None),           # an older trace recorded no commit
+    ("pr-push-failed", "c" * 40, None),         # nothing proved to have landed
+    (PR_REFUSED, "c" * 40, None),               # refused before any branch
+])
+def test_only_a_resume_from_pr_create_failed_holds_a_lease(monkeypatch, tmp_path, verdict,
+                                                           recorded, lease):
+    """The lease of the stage-5 push exists exactly where the previous attempt is known to
+    have left its branch on origin (#1885 review): a run that died at `gh pr create`. Any
+    other refusal gets none, so a same-named branch on origin stays refused -- never
+    force-replaced -- and a trace that records no commit cannot lease one."""
+    seen = _stub_resume(monkeypatch)
+    monkeypatch.setattr(D, "gates_then_verify", _no_reverify)
+    pr = {"branch": "nbcoder/auto-8"} | ({"head_sha": recorded} if recorded else {})
+    got = _resume(_verify_args(tmp_path, _pr_trace(tmp_path, verdict=verdict, pr=pr)))
+    assert got["verdict"] == "pr-created" and seen["pr"] == 1
+    assert got["stages"]["pr_resume"]["pushed_sha"] == lease
+
+
 def test_restore_worktree_adds_a_detached_tree_at_the_trace_head(monkeypatch, tmp_path):
     cmds = []
     dest = tmp_path / "wt"

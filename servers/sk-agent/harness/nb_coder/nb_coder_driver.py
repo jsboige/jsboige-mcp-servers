@@ -1644,10 +1644,27 @@ def _top_level_defs(p: Path) -> list[str]:
             ][:LOCAL_MODULE_DEF_CAP]
 
 
+def _ancestor_roots(folder: Path) -> list[Path]:
+    """The notebook's folder and its first two ancestors -- never past the worktree root.
+
+    The root is the first `.git` walking up (a FILE in a linked worktree, a dir in a main
+    checkout): the anchor `_worktree_rel` already reads. The runs' worktrees lie side by
+    side (`.tmp/nbst/o14/worktrees/<grain>/…`), so a notebook sitting AT its worktree root
+    walked two levels up, into its neighbours' material (#1885 review). With no `.git`
+    above -- a bare folder, a relative path in a test -- no boundary is known and the walk
+    stays what it was."""
+    stop = next((d for d in (folder, *folder.parents) if (d / ".git").exists()), None)
+    # a root is kept when it IS the worktree root or lies inside it -- dropped when the
+    # root is one of ITS parents (it sits above the boundary)
+    return [r for r in (folder, *list(folder.parents)[:2])
+            if stop is None or r == stop or stop in r.parents]
+
+
 def _resolve_import(folder: Path, dotted: str) -> list[Path]:
     """Files one import names: `<module>.py`, or every `<pkg>/*.py` for a package.
 
-    Searched in the notebook's folder, then its first two ancestors. Series
+    Searched in the notebook's folder, then its first two ancestors inside its worktree
+    (`_ancestor_roots`). Series
     folders keep their package one level ABOVE the notebook folder (measured
     23/11, CoursIA#27740/#27737: `ICT-Series/ict/` imported from
     `ICT-Series/ICT-15-IntegratedComplexity/ICT-15j-…`); the beside-the-notebook
@@ -1659,7 +1676,7 @@ def _resolve_import(folder: Path, dotted: str) -> list[Path]:
     parts = [p for p in dotted.split(".") if p]
     if not parts:
         return []
-    for root in (folder, *list(folder.parents)[:2]):
+    for root in _ancestor_roots(folder):
         base = root.joinpath(*parts)
         if base.with_suffix(".py").is_file():
             return [base.with_suffix(".py")]
@@ -1668,19 +1685,58 @@ def _resolve_import(folder: Path, dotted: str) -> list[Path]:
     return []
 
 
+def _logical_lines(src: str) -> list[str]:
+    """A cell's source as LOGICAL lines: a parenthesised continuation is ONE item.
+
+    Built from the tokens, so a bracket inside a string or a comment opens nothing and
+    a line of a docstring is never a statement. Two tokens of one row keep the SOURCE
+    text between them (`import os.path` keeps its dots); a continuation joins with one
+    space, and a comment leaves with its token. A cell the lexer refuses (an unterminated
+    quote in a `%%bash` cell, an indentation it cannot read) falls back to its physical
+    lines -- the scan as it was before #1885's review."""
+    src = src.replace("\r\n", "\n").replace("\r", "\n")
+    lines = src.splitlines()
+
+    def gap(before, after) -> str:
+        return lines[before[0] - 1][before[1]:after[1]] if before[0] == after[0] else " "
+
+    out: list[str] = []
+    buf: list[str] = []
+    prev = None
+    try:
+        for tok in tokenize.generate_tokens(io.StringIO(src).readline):
+            if tok.type in (tokenize.NEWLINE, tokenize.ENDMARKER):
+                if buf:
+                    out.append("".join(buf))
+                buf, prev = [], None
+            elif tok.type in (tokenize.NL, tokenize.COMMENT, tokenize.INDENT,
+                              tokenize.DEDENT):
+                continue
+            else:
+                if prev is not None:
+                    buf.append(gap(prev, tok.start))
+                buf.append(tok.string)
+                prev = tok.end
+    except Exception:
+        return src.splitlines()
+    if buf:
+        out.append("".join(buf))
+    return out
+
+
 def _import_statements(nb) -> list[tuple[str, list[str]]]:
-    """(dotted_module, [imported_names]) per import line, in cell order.
+    """(dotted_module, [imported_names]) per import statement, in cell order.
 
     `from ict import basin_family as bf` -> ("ict", ["basin_family"]) — the LEAF,
     which `_resolve_import` alone never sees. `import ict.meta_proxy` ->
     ("ict.meta_proxy", []). Names strip their `as` alias and the parenthesised
-    single-line form.
+    form, on one line or across several (`_logical_lines`).
     """
     out: list[tuple[str, list[str]]] = []
     for cell in nb.get("cells") or []:
         if cell.get("cell_type") != "code":
             continue
-        for line in _text(cell.get("source")).splitlines():
+        for line in _logical_lines(_text(cell.get("source"))):
             m = re.match(r"\s*from\s+([A-Za-z_][\w.]*)\s+import\s+(.+?)\s*$", line)
             if m:
                 names = [n.strip().split(" as ")[0].strip()
@@ -1791,7 +1847,7 @@ def local_modules(src_nb) -> list[dict]:
     for dotted, names in stmts:
         for leaf in names:
             parts = [p for p in dotted.split(".") if p] + [leaf]
-            for root in (folder, *list(folder.parents)[:2]):
+            for root in _ancestor_roots(folder):
                 cand = root.joinpath(*parts).with_suffix(".py")
                 if cand.is_file():
                     if _emit(cand, f"{dotted}.{leaf}", True):
@@ -6385,16 +6441,24 @@ def _git(wt: Path, *git_args: str, timeout: int = 300) -> tuple[int, str]:
 PUSH_TIMEOUT_S = 900
 
 
-def _push_branch(wt: Path, branch: str, timeout: int = PUSH_TIMEOUT_S) -> tuple[int, str]:
+def _push_branch(wt: Path, branch: str, timeout: int = PUSH_TIMEOUT_S,
+                 lease: str | None = None) -> tuple[int, str]:
     """`git push -u origin <branch>` that never crashes the grain (22/11, CoursIA#28018).
 
     CoursIA's pre-push hook is `git lfs pre-push`: a manual push of #28018 took 85 s, the
     driver's took more than its 300 s timer, and the uncaught TimeoutExpired crashed a
     grain whose notebook was built AND approved. A timed-out push is judged by the remote,
     not the timer: if origin's branch already points at HEAD the push landed and stage 5
-    goes on; otherwise it is a plain push failure, recorded, never a crash."""
+    goes on; otherwise it is a plain push failure, recorded, never a crash.
+
+    `lease` is the full sha of the commit a PREVIOUS attempt of the same grain pushed
+    (a resume from `pr-create-failed`, #1885 review). The push then carries
+    `--force-with-lease=refs/heads/<branch>:<sha>`: origin is replaced only while it still
+    sits on that commit, and refuses anything else. Never set on a first run, or on a
+    resume that has no such record -- a same-named branch is then refused, as before."""
+    extra = [f"--force-with-lease=refs/heads/{branch}:{lease}"] if lease else []
     try:
-        return _git(wt, "push", "-u", "origin", branch, timeout=timeout)
+        return _git(wt, "push", "-u", *extra, "origin", branch, timeout=timeout)
     except subprocess.TimeoutExpired:
         pass
     try:
@@ -6698,9 +6762,11 @@ def stage5_graft_markdown(wt_path: Path, src_twin: str, drift: dict,
             try:
                 with open(built_nb, "w", encoding="utf-8", newline="") as fh:
                     fh.write(out)
-            except OSError as e:
+            except Exception:
+                # the file is truncated by now: ANY failure of the write restores it -- a
+                # disk error, and an encoding one too (UnicodeEncodeError is a ValueError)
                 shutil.copy2(backup, built_nb)     # never leave a half-written approved build
-                raise e
+                raise
     except Exception as e:  # refuses loudly; an approved build is never shipped half-grafted
         return {"ok": False, "error": f"{type(e).__name__}: {e}"[:200]}
     return {"ok": True, "inserted": res["inserted"], "count": res["count"], "already": already,
@@ -6985,7 +7051,9 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         entry["error"] = f"commit: {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-git-failed", entry
         return
-    entry["commit"], _ = _git(wt_path, "rev-parse", "--short", "HEAD")
+    # `_git` returns (rc, out): the sha is the SECOND element (this read recorded `0`
+    # until #1885's review measured it).
+    _, entry["commit"] = _git(wt_path, "rev-parse", "--short", "HEAD")
 
     # Twin-parity reseal, AFTER the integration commit (the tool records the
     # git blob SHAs at HEAD: notebook, README row and inbound link must be in
@@ -7018,11 +7086,20 @@ def stage5_pr(args, rec: dict, wt_path: Path, built_nb: Path, issue: dict,
         except Exception as e:
             integ["guards_error"] = f"{type(e).__name__}: {e}"[:300]
 
-    rc, out = _push_branch(wt_path, branch)
+    # A resume from `pr-create-failed` finds its OWN branch on origin: the previous attempt
+    # pushed it, then died at `gh pr create`. Rebuilt on today's origin/main the new commit
+    # is not its descendant, so a plain push is refused (non-fast-forward) and the grain
+    # would loop to `pr-push-failed` (ai-01, #1885). The lease is the commit that attempt
+    # recorded at its push: origin is replaced only while it still sits there. A first run,
+    # and every other resume, pushes without one and is refused as before.
+    lease = ((rec.get("stages") or {}).get("pr_resume") or {}).get("pushed_sha")
+    rc, out = _push_branch(wt_path, branch, lease=lease)
     if rc != 0:
         entry["error"] = f"push: {out[:300]}"
         rec["verdict"], rec["pr"] = "pr-push-failed", entry
         return
+    # The full commit origin now holds: what a later resume may replace, under lease.
+    _, entry["head_sha"] = _git(wt_path, "rev-parse", "HEAD")
 
     n_exec = len(rec.get("execution") or [])
     gates_ok, gates_unmeasured = split_gates(rec.get("gates") or [])
@@ -8234,7 +8311,12 @@ async def run_revision(args, rec: dict) -> dict:
         rec["stages"]["pr_resume"] = {
             "from": prior.get("verdict"), "build": state,
             "main_blob": prev_drift.get("main_blob")
-            if aligned and prev_drift.get("main_blob") else None}
+            if aligned and prev_drift.get("main_blob") else None,
+            # The commit the previous attempt pushed before dying at `gh pr create`: the
+            # stage-5 push may replace exactly that one, under lease (#1885). Absent from an
+            # older trace -> no lease -> a same-named branch is refused, never force-replaced.
+            "pushed_sha": (prev_pr.get("head_sha") or None)
+            if prior.get("verdict") == "pr-create-failed" else None}
         rec["revised_from"]["mode"] = "pr"
         if state["changed"]:
             rec["verdict"] = ("refused-pr-resume-build-changed:"

@@ -437,6 +437,53 @@ def test_stage5_graft_refusal_leaves_the_build_and_the_worktree_untouched(tmp_pa
     assert _head(r) == base and "rebased" not in rec["pr"]["source_drift"]
 
 
+def test_the_graft_restores_the_approved_build_on_any_failed_write(tmp_path):
+    """#1885 review: the backup was restored on `OSError` only. The write is one
+    `fh.write(out)`: it can also die ENCODING (UnicodeEncodeError is a ValueError), and
+    the file is already truncated by then -- an approved build left half-written."""
+    mo = pytest.MonkeyPatch()
+    try:
+        _hered(mo, tmp_path)
+        nbcd = _driver()
+        r, base, main = _ported_repo(tmp_path, GAINED)
+        out = tmp_path / "out"
+        out.mkdir()
+        built = _port_file(out, BASE)
+        raw = built.read_bytes()
+        real_open = open
+
+        class Dying:
+            """The real `open(..., "w")` -- truncation included -- then a write that dies
+            encoding, as `fh.write` does on a string the file's codec cannot encode."""
+
+            def __init__(self, fh):
+                self._fh = fh
+
+            def __enter__(self):
+                self._fh.__enter__()
+                return self
+
+            def __exit__(self, *a):
+                return self._fh.__exit__(*a)
+
+            def write(self, _text):
+                raise UnicodeEncodeError("utf-8", "\ud800", 0, 1, "unexpected end of data")
+
+        def dying_open(path, mode="r", *a, **k):
+            fh = real_open(path, mode, *a, **k)
+            return Dying(fh) if "w" in mode else fh
+
+        mo.setattr(nbcd, "open", dying_open, raising=False)
+        res = nbcd.stage5_graft_markdown(r, SRC, {}, built, base_rev="HEAD")
+    finally:
+        mo.undo()
+
+    assert res["ok"] is False and res["error"].startswith("UnicodeEncodeError"), res
+    assert built.read_bytes() == raw, "the approved build is back, byte for byte"
+    (backup,) = list(out.glob("nb_7_built.pre-graft-*.ipynb"))
+    assert backup.read_bytes() == raw
+
+
 def test_stage5_measure_only_leaves_the_worktree_where_it_is(tmp_path):
     nbcd = _driver()
     r, base, main = _ported_repo(tmp_path, GAINED)
@@ -690,3 +737,137 @@ def test_stage5_base_rev_is_the_head_the_trace_recorded(tmp_path):
     assert nbcd.stage5_base_rev(r, {"stages": {"worktree": {"head": base[:9]}}}) == base[:9]
     assert nbcd.stage5_base_rev(r, {"stages": {"worktree": {"head": "0" * 9}}}) == "HEAD"
     assert nbcd.stage5_base_rev(r, {"stages": {}}) == "HEAD"
+
+
+# ------------------------- the same-named branch ON ORIGIN (#1885 review, ai-01)
+# A run that dies at `gh pr create` has already PUSHED its branch, and the resume rebuilds
+# it on today's origin/main under the same deterministic name. The tests above never
+# modelled that branch: the previous attempt's stayed a local `nbcoder/auto-7-prev`.
+
+
+def _origin_head(r: Path, ref: str) -> str:
+    out = subprocess.run(["git", "-C", str(r), "ls-remote", "origin", ref], capture_output=True,
+                         text=True, check=True).stdout.split()
+    return out[0] if out else ""
+
+
+def _attempt_pushed_under_the_resume_name(r: Path, nbcd) -> str:
+    """The previous attempt's branch, on origin under the name the resume uses again.
+    Returns the full sha origin holds."""
+    name = nbcd.default_pr_branch(7, PORT)
+    _sh("git", "push", "-q", "origin", f"nbcoder/auto-7-prev:refs/heads/{name}", cwd=r)
+    sha = _origin_head(r, f"refs/heads/{name}")
+    assert sha and sha == _head(r), "origin holds the previous attempt's commit"
+    return sha
+
+
+def _recording_pushes(mo, nbcd) -> list:
+    """Every `_push_branch` call with the lease it was given -- then the real push."""
+    seen = []
+    real = nbcd._push_branch
+
+    def fake(wt, branch, *a, lease=None, **k):
+        seen.append((branch, lease))
+        return real(wt, branch, *a, lease=lease, **k)
+
+    mo.setattr(nbcd, "_push_branch", fake)
+    return seen
+
+
+def _resumed_after_a_pushed_create_failure(td: Path):
+    """Repo, build and stage-5 arguments of a resume from `pr-create-failed` whose
+    previous attempt pushed under the resume's own branch name."""
+    nbcd = _driver()
+    r, base, main = _ported_repo(td, GAINED)
+    main_blob = nbdr.blob_at(r, main, SRC)
+    _previous_attempt(r, LINKED, "integration de la tentative precedente")
+    pushed = _attempt_pushed_under_the_resume_name(r, nbcd)
+    out = td / "out"
+    out.mkdir()
+    built = _port_file(out, GAINED)
+    args, rec = _resumed(out, r, base, main_blob[:12], "pr-create-failed")
+    rec["stages"]["pr_resume"]["pushed_sha"] = pushed
+    return nbcd, r, main, out, built, args, rec, pushed
+
+
+def test_a_resume_from_pr_create_failed_replaces_only_the_commit_it_pushed(tmp_path):
+    """The previous attempt pushed the branch and died at `gh pr create`. The resume finds
+    it on origin, not an ancestor of the commit it rebuilds on origin/main: under the lease
+    of the recorded sha the push replaces it and the PR is created. The trace then holds
+    the new sha, which is what a later resume may replace in turn."""
+    mo = pytest.MonkeyPatch()
+    try:
+        _hered(mo, tmp_path)
+        nbcd, r, main, out, built, args, rec, pushed = _resumed_after_a_pushed_create_failure(
+            tmp_path)
+        _stub_delivery(mo, nbcd)
+        pushes = _recording_pushes(mo, nbcd)
+        nbcd.stage5_pr(args, rec, r, built, {"issue": 7}, None)
+    finally:
+        mo.undo()
+
+    name = nbcd.default_pr_branch(7, PORT)
+    assert rec["verdict"] == "pr-created", rec.get("pr")
+    assert pushes == [(name, pushed)], "one push, under the lease of the recorded commit"
+    assert rec["pr"]["head_sha"] == _head(r) and _head(r) != pushed
+    # the short sha recorded beside it is a sha too -- it read `0` (the rc) until this pin
+    assert rec["pr"]["commit"] != 0 and _head(r).startswith(rec["pr"]["commit"])
+    assert _origin_head(r, f"refs/heads/{name}") == _head(r), "origin holds the resume's commit"
+    parent = subprocess.run(["git", "-C", str(r), "rev-parse", "HEAD^"], capture_output=True,
+                            text=True, check=True).stdout.strip()
+    assert parent == main
+
+
+def test_a_first_run_never_replaces_a_same_named_branch_on_origin(tmp_path):
+    """No resume, so no lease: the push is refused as a non-fast-forward and the grain ends
+    `pr-push-failed`, origin untouched. A branch nobody recorded is never overwritten."""
+    mo = pytest.MonkeyPatch()
+    try:
+        _hered(mo, tmp_path)
+        nbcd = _driver()
+        r, base, main = _ported_repo(tmp_path, GAINED)
+        _previous_attempt(r, LINKED, "integration de la tentative precedente")
+        pushed = _attempt_pushed_under_the_resume_name(r, nbcd)
+        out = tmp_path / "out"
+        out.mkdir()
+        built = _port_file(out, BASE)                 # a first run: built on the base
+        args, rec = _stage5(out)                       # a first run: no pr_resume
+        rec["stages"]["worktree"] = {"path": str(r), "head": base[:9]}
+        _stub_delivery(mo, nbcd)
+        pushes = _recording_pushes(mo, nbcd)
+        nbcd.stage5_pr(args, rec, r, built, {"issue": 7}, None)
+    finally:
+        mo.undo()
+
+    name = nbcd.default_pr_branch(7, PORT)
+    assert rec["verdict"] == "pr-push-failed", rec.get("pr")
+    assert pushes == [(name, None)], "a first run pushes without any lease"
+    assert "rejected" in rec["pr"]["error"] or "fetch first" in rec["pr"]["error"]
+    assert "head_sha" not in rec["pr"]
+    assert _origin_head(r, f"refs/heads/{name}") == pushed, "origin is left as it was"
+
+
+def test_the_lease_refuses_a_branch_moved_past_the_recorded_commit(tmp_path):
+    """Someone moved the branch after the attempt that recorded it: the lease no longer
+    matches, origin refuses, and nothing is replaced. The refusal is the recorded one."""
+    mo = pytest.MonkeyPatch()
+    try:
+        _hered(mo, tmp_path)
+        nbcd, r, main, out, built, args, rec, pushed = _resumed_after_a_pushed_create_failure(
+            tmp_path)
+        name = nbcd.default_pr_branch(7, PORT)
+        # the tip of origin/main (a commit, never the repo's local `main`, which stayed
+        # on the build's base), forced onto the grain's branch by another hand
+        _sh("git", "push", "-q", "-f", "origin", f"{main}:refs/heads/{name}", cwd=r)
+        assert _origin_head(r, f"refs/heads/{name}") == main != pushed
+        _stub_delivery(mo, nbcd)
+        pushes = _recording_pushes(mo, nbcd)
+        nbcd.stage5_pr(args, rec, r, built, {"issue": 7}, None)
+    finally:
+        mo.undo()
+
+    assert rec["verdict"] == "pr-push-failed", rec.get("pr")
+    assert pushes == [(name, pushed)]
+    assert "stale info" in rec["pr"]["error"]
+    assert "head_sha" not in rec["pr"]
+    assert _origin_head(r, f"refs/heads/{name}") == main, "the moved branch is still there"

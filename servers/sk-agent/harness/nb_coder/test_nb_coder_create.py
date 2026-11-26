@@ -768,11 +768,6 @@ def test_gate_call_uses_explicit_propagated_path(tmp_path):
     assert off == {"verdict": "off", "mode": "off", "exit": None,
                    "blocking_refusal": False}
 
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q"]))
-
-
 # ------------------------------------- local modules are part of the material (23/11)
 
 def test_local_modules_are_named_in_both_creation_prompts(tmp_path):
@@ -1065,3 +1060,122 @@ def test_inlined_sources_are_bounded():
                                  "defs": ["fn(x)"], "source": "y" * 50000}])
     assert len(one) <= D.LOCAL_MODULE_SOURCE_FILE_CAP + 1500, \
         "a single huge leaf is capped at the file cap"
+
+
+def test_a_parenthesised_multiline_import_is_read(tmp_path, monkeypatch):
+    """#1885 review: `_import_statements` scanned PHYSICAL lines, so the PEP 8 form of a
+    long import -- `from ict import (`, one name per line, `)` -- matched nothing and its
+    leaves reached no prompt at all. A cell is read as LOGICAL lines, from its tokens: a
+    bracket inside a string or a comment opens nothing, a line of a docstring is not a
+    statement, and a cell the lexer refuses is scanned line by line, as before."""
+    pkg = tmp_path / "Series" / "ict"
+    pkg.mkdir(parents=True)
+    (pkg / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "basin_family.py").write_text(
+        "BASIN_MARKER = 1\ndef basin():\n    return 0\n", encoding="utf-8")
+    (pkg / "spectral.py").write_text(
+        "SPECTRAL_MARKER = 2\ndef spectral():\n    return 0\n", encoding="utf-8")
+    nbdir = tmp_path / "Series" / "ICT-15j"
+    nbdir.mkdir()
+    # beside the notebook, and named by a line of a DOCSTRING: not an import
+    (nbdir / "fake_module.py").write_text("def fake():\n    return 0\n", encoding="utf-8")
+    nb = {"cells": [
+        # list-form source; the continuation; a comment inside the brackets; an alias
+        {"cell_type": "code", "metadata": {}, "source": [
+            "import numpy as np\n",
+            "from ict import (          # the leaves this notebook uses\n",
+            "    basin_family,\n",
+            "    spectral as SP,\n",
+            ")\n",
+            "import os.path\n"]},
+        {"cell_type": "code", "metadata": {}, "source":
+            'doc = """\nimport fake_module\n"""\n'
+            'x = "("\n'
+            "from ict import meta_missing\n"},       # a bracket in a string opens nothing
+        # the lexer refuses this one (unterminated quote): scanned line by line, as before
+        {"cell_type": "code", "metadata": {}, "source":
+            "%%bash\necho it's not quoted\nimport json\n"}],
+        "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    src = nbdir / "T-Python.ipynb"
+    src.write_text(json.dumps(nb), encoding="utf-8")
+
+    stmts = D._import_statements(nb)
+    assert stmts == [("numpy", []), ("ict", ["basin_family", "spectral"]), ("os.path", []),
+                     ("ict", ["meta_missing"]), ("json", [])], stmts
+
+    monkeypatch.chdir(tmp_path)
+    mods = D.local_modules(str(src))
+    files = {m["file"]: m for m in mods}
+    assert "Series/ict/basin_family.py" in files and "Series/ict/spectral.py" in files, \
+        "the leaves of a multi-line import are material, like any named leaf"
+    assert "BASIN_MARKER" in files["Series/ict/basin_family.py"]["source"]
+    assert "fake_module.py" not in files, "a docstring line is not an import"
+
+
+def test_the_ancestor_walk_never_leaves_the_worktree(tmp_path, monkeypatch):
+    """#1885 review: the walk was "not clamped to the worktree root". The runs' worktrees
+    lie side by side (`.tmp/nbst/o14/worktrees/<grain>/…`), so a notebook sitting AT its
+    worktree root walked two levels up and read a neighbour's package as its own material.
+    The boundary is the first `.git` walking up -- a FILE in a linked worktree, a dir in a
+    main checkout. Inside it the walk is unchanged; with no `.git` above nothing is known,
+    and nothing is clamped."""
+    runs = tmp_path / "worktrees"
+    theirs = runs / "pkg"                    # a neighbour's package: outside both worktrees
+    theirs.mkdir(parents=True)
+    (theirs / "__init__.py").write_text("", encoding="utf-8")
+    (theirs / "leaf.py").write_text("def outside():\n    return 0\n", encoding="utf-8")
+    nb = {"cells": [{"cell_type": "code", "metadata": {}, "source": "from pkg import leaf\n"}],
+          "metadata": {}, "nbformat": 4, "nbformat_minor": 5}
+    linked = runs / "wt-a"                   # a linked worktree: `.git` is a FILE
+    linked.mkdir()
+    (linked / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")    # AT its root
+    checkout = runs / "wt-b"                 # a main checkout: `.git` is a dir
+    (checkout / "Notebooks").mkdir(parents=True)
+    (checkout / "Notebooks" / "T-Python.ipynb").write_text(json.dumps(nb), encoding="utf-8")
+    own = checkout / "pkg"                   # ITS package, one level above the notebook
+    own.mkdir()
+    (own / "__init__.py").write_text("", encoding="utf-8")
+    (own / "leaf.py").write_text("def inside():\n    return 0\n", encoding="utf-8")
+
+    def files(nb_path) -> list[str]:
+        return sorted(m["file"] for m in D.local_modules(str(nb_path)))
+
+    monkeypatch.chdir(tmp_path)
+    assert files(linked / "T-Python.ipynb") == ["worktrees/pkg/__init__.py",
+                                               "worktrees/pkg/leaf.py"], \
+        "no `.git` above: no boundary is known, the walk reaches the neighbour as it did"
+    assert files(checkout / "Notebooks" / "T-Python.ipynb") == ["worktrees/wt-b/pkg/__init__.py",
+                                                               "worktrees/wt-b/pkg/leaf.py"]
+
+    (linked / ".git").write_text("gitdir: ../.git/worktrees/wt-a\n", encoding="utf-8")
+    (checkout / ".git").mkdir()
+    assert files(linked / "T-Python.ipynb") == [], \
+        "a notebook at its worktree root never reads what lies outside it"
+    assert files(checkout / "Notebooks" / "T-Python.ipynb") == ["worktrees/wt-b/pkg/__init__.py",
+                                                               "worktrees/wt-b/pkg/leaf.py"], \
+        "one level above the notebook folder, INSIDE the worktree: still material"
+
+
+def test_the_verifier_block_stays_under_its_measured_bound():
+    """#1885 review: "the verifier prompt can grow by up to about 200 000 characters;
+    measure it". Measured 26/11: 147 526 chars at the worst -- 12 sources that fill the
+    140 000 budget, 12 signature-only entries at the 6 000 listing cap, 1 102 of prose and
+    the framing -- and 126 831 on the largest real source notebook (ICT-15j, 8 sources),
+    inside a 217 508-char verifier prompt. A cap moved up moves that number: re-measure,
+    then move this pin."""
+    half = D.LOCAL_MODULE_TOTAL_CAP // 2
+    per = D.LOCAL_MODULE_SOURCE_TOTAL_CAP // half - 120
+    full = [{"name": "pkg.leaf" + str(i), "file": "Series/ict/leaf" + str(i) + ".py", "defs": [],
+             "source": "x" * per} for i in range(half)]
+    listed = [{"name": "pkg.other" + str(i), "file": "Series/ict/other" + str(i) + ".py",
+               "defs": [f"fn{j}({'a' * 140})" for j in range(40)]}
+              for i in range(D.LOCAL_MODULE_TOTAL_CAP - half)]
+    blk = D.local_module_verifier_block(full + listed)
+    assert blk.count("`, SOURCE COMPLÈTE") == half, "every source fits: the budget is full"
+    assert len(blk) <= 147_600, f"the verifier block grew to {len(blk)} chars -- re-measure"
+    assert "signatures seulement" in blk, "the listed half is under the listing cap"
+    assert D.local_module_verifier_block(None) == "" == D.local_module_verifier_block([])
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))
