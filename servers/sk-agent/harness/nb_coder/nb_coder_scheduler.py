@@ -108,15 +108,33 @@ ITEM_FIELDS = {
 # `crashed:` run failure that consumed its retry and blocked the ramp. Nothing in the
 # grain was wrong; it waits until the bucket refills (`:reset=<epoch>`, read by the driver
 # from the free rate_limit endpoint) and launches again.
+# deferred-by-provider-rate-limit (23/11): a MODEL provider's 429. Measured 00:08-00:09Z on
+# po-2028:claudish: a five-hour usage window ran dry under two concurrent batches, four
+# stage-2 builds died as `stage2-call-failed: … 'rate_limit_error' …` — run failures, each
+# one posting [RELEASED], which CoursIA's guard reads as a three-day, fleet-wide RELACHEE on
+# notebooks nothing had judged; a fifth, released on the reject a walled revision round never
+# answered, met the same refusal one call later. The driver names the refusal bare; `:wall`
+# marks a window wall, probed hourly (PROVIDER_WALL_WAIT_S) rather than waited out on its
+# announced clock.
+PROVIDER_RATE_LIMIT_VERDICT = "deferred-by-provider-rate-limit"
 DEFERRED_VERDICT_PREFIXES = (
     "deferred-by-capacity-gate",
     "deferred-by-claim-timeout",
     "deferred-by-claim-implicit-occupation",
     "deferred-by-github-rate-limit",
+    PROVIDER_RATE_LIMIT_VERDICT,
 )
 # A reset further than this is not believed: the core bucket refills every hour.
 GITHUB_RESET_MAX_S = 3700.0
 GITHUB_RESET_MARGIN_S = 30.0
+# The floor a provider window wall is probed at. The announced reset is not waited on: read
+# as UTC, the measured sample (reset at 08:48:53 for a wall met at 00:09Z) outlasts the
+# five-hour window the same message names, so its clock's offset is unknown. One hour is the
+# finest step that still walks that longest measured wall inside the default six launches —
+# the first meets the wall, the next five land at 1h, 2h, 3h, 4h and 5h — and a relaunch into
+# a wall that holds costs one short call, so a step too short is cheap where a step too long
+# is the grain idle.
+PROVIDER_WALL_WAIT_S = 3600.0
 
 # A recent [RELEASED] is a TEMPORARY qualification refusal, not a cross-lane
 # collision and not a failed notebook. CoursIA's authoritative guard applies a
@@ -135,6 +153,15 @@ CLAIM_RELEASED_VERDICT = "refused-claim-not-qualified:RELACHEE"
 # all see the unwrapped inner form; the raw line stays in the driver log.
 REVISE_REFUSAL_PREFIX = "refused-revise-no-reservation:"
 CLAIM_RELEASED_WAIT_S = 3 * 86400.0 + 60.0
+# The whole window from the refusal is the starting point, not the last word: the probe
+# below reads the thread and bounds the wait to the guard's own expiry. Measured 24/11 on
+# CoursIA#28018: [RELEASED] 22/11 09:38Z, refused by the lane 24/11 22:50Z, deferred to
+# 27/11 22:51Z -- 2.6 days past the expiry the guard applies (25/11 09:39Z). The guard
+# dates a marker on its comment's `created_at` (coordination/tapis_marqueurs.py) and
+# holds while round(age in days, 1) < 3 (coordination/tapis_attente.py): it lets the
+# grain through from 2.95 days, so a retry at released_at + CLAIM_RELEASED_WAIT_S is
+# still never early. The bound only shortens a FUTURE wait; an [OVERRIDE] still lifts at
+# once, and the next launch's qualification check remains the sole authority.
 # While deferred on that verdict, how often the scheduler probes the issue for a
 # newer [OVERRIDE] marker that lifts the release early. One gh call per issue per
 # interval, best-effort; 5 min keeps the App bucket cost negligible.
@@ -157,6 +184,16 @@ def github_reset_wait(verdict: str, now: float) -> float | None:
                 return None
             return min(max(reset - now, 0.0) + GITHUB_RESET_MARGIN_S, GITHUB_RESET_MAX_S)
     return None
+
+
+def provider_wall_wait(verdict: str) -> float | None:
+    """The hourly floor a provider WINDOW-WALL deferral carries, or None (ordinary backoff).
+
+    `wall` is read as a whole `:`-separated part, never as a substring: the excerpt that
+    follows it in the verdict is the provider's own message."""
+    if not verdict.startswith(PROVIDER_RATE_LIMIT_VERDICT):
+        return None
+    return PROVIDER_WALL_WAIT_S if "wall" in verdict.split(":")[1:] else None
 
 DONE_VERDICT_SUFFIXES = (
     "built-executed-ok",
@@ -524,6 +561,27 @@ def issue_comment_bodies(issue: int) -> list[str]:
     return [json.loads(line) for line in p.stdout.splitlines() if line.strip()]
 
 
+def issue_comment_timeline(issue: int) -> list[tuple[str, str]]:
+    """(created_at, body) of every comment of an issue, oldest first: the same paginated
+    read as issue_comment_bodies, plus each comment's creation time -- the instant the
+    guard dates a marker on (CoursIA `tapis_marqueurs`: `quand = created_at`). Raises
+    when GitHub does not answer."""
+    p = subprocess.run(["gh", "api", "--paginate",
+                        f"repos/{CLAIM_REPO_SLUG}/issues/{issue}/comments?per_page=100",
+                        "--jq", '.[] | [.created_at, (.body // "")] | @json'],
+                       capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=CLAIM_READ_TIMEOUT_S)
+    if p.returncode != 0:
+        raise RuntimeError(f"gh rc={p.returncode}: {(p.stderr or '').strip()[:160]}")
+    out: list[tuple[str, str]] = []
+    for line in p.stdout.splitlines():
+        if not line.strip():
+            continue
+        created, body = json.loads(line)
+        out.append((created or "", body or ""))
+    return out
+
+
 # The two markers the RELACHEE probe reads, line-anchored like CLAIM_MARK_RE and the
 # guard's reducer: a marker quoted mid-sentence is not a marker.
 RELACHEE_MARK_RE = re.compile(r"(?m)^[ \t>*_]*\[\s*(OVERRIDE|RELEASED)\s*\]([^\n]*)",
@@ -556,6 +614,44 @@ def relache_lift(markers: list[tuple[str, str, str]], lane: str) -> str | None:
         return None
     kind, named, line = markers[-1]
     return line if kind == "OVERRIDE" and named == lane else None
+
+
+# The guard's own pause condition (#27726, CoursIA `tapis_marqueurs`): `attend: #N` or
+# `attend: Q<id>` anywhere in the comment makes EVERY marker of that comment a PAUSE
+# with no delay, not a three-day release. Quoted code poses neither (the guard strips
+# its fences before reading), and neither is read here.
+_RELACHE_PAUSE_RE = re.compile(r"\battend\s*:\s*[#\w]", re.IGNORECASE)
+_RELACHE_FENCE_RE = re.compile(r"```.*?(?:```|\Z)", re.DOTALL)
+
+
+def _iso_epoch(stamp: str) -> float | None:
+    """Epoch seconds of a GitHub `created_at`, or None when it does not parse. A date
+    without an offset is refused: read as local time it would date the release wrong."""
+    if not stamp:
+        return None
+    try:
+        moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment.timestamp() if moment.tzinfo else None
+
+
+def relache_release_epoch(timeline: list[tuple[str, str]]) -> float | None:
+    """Epoch seconds of the [RELEASED] that ends the marker thread, or None.
+
+    None whenever the three-day window cannot be dated from the thread alone: no marker,
+    an [OVERRIDE] last (the lift is `relache_lift`'s to decide), a release whose comment
+    carries a pause condition, or a comment whose creation time does not parse. The
+    caller then keeps its conservative wait."""
+    kind, epoch = "", None
+    for created, body in timeline:
+        texte = _RELACHE_FENCE_RE.sub("", body or "")
+        dated = _iso_epoch(created) if not _RELACHE_PAUSE_RE.search(texte) else None
+        for m in RELACHEE_MARK_RE.finditer(texte):
+            kind, epoch = m.group(1).upper(), dated
+    if kind != "RELEASED" or epoch is None:
+        return None
+    return epoch
 
 
 class GuardClaims:
@@ -1139,6 +1235,9 @@ class Scheduler:
                 reset_wait = github_reset_wait(verdict, self.clock())
                 if reset_wait is not None:
                     wait = max(wait, reset_wait)
+                wall_wait = provider_wall_wait(verdict)
+                if wall_wait is not None:
+                    wait = max(wait, wall_wait)
                 g["not_before"] = self.clock() + wait
                 ramp["deferred"] += 1
                 self._event("deferred", key=key, rc=rc, verdict=verdict,
@@ -1291,6 +1390,12 @@ class Scheduler:
         the guard, and an [OVERRIDE] for another lane, or one naming none, is
         refused at the next launch, so lifting on it would burn an attempt and
         re-arm three more days. Every read is a pre-offer; the guard alone decides.
+
+        24/11 bound: the same read dates the [RELEASED] the guard is holding on, so a
+        grain that is NOT lifted gets its wait bounded to that release's own expiry
+        (released_at + CLAIM_RELEASED_WAIT_S) instead of three days from the refusal.
+        Measured 24/11 on CoursIA#28018: released 22/11 09:38Z, refused 24/11 22:50Z,
+        deferred to 27/11 22:51Z -- for a guard that expires 25/11 09:39Z.
         """
         candidates = [(k, g) for k, g in self.state["grains"].items()
                       if g.get("status") == "deferred"
@@ -1313,18 +1418,35 @@ class Scheduler:
             if not issue:
                 continue
             try:
-                bodies = issue_comment_bodies(issue)
+                timeline = issue_comment_timeline(issue)
             except Exception as exc:
                 self._event("relache-probe-error", key=key, detail=str(exc)[:120])
                 continue
             # The thread is chronological; the last marker decides. Lift only when
             # that newest marker is an OVERRIDE naming this lane (a RELEASED last
             # means the release is still the operative event -- keep the guard).
-            newest = relache_lift(relache_markers(bodies), lane)
+            newest = relache_lift(relache_markers([body for _, body in timeline]), lane)
             if newest:
                 g["not_before"] = now
                 self._event("relache-override-lifted", key=key, issue=issue,
                             marker=newest[:140])
+                continue
+            # No lift: the guard's window still runs, but from the RELEASE itself, not
+            # from this lane's refusal of it. Only a FUTURE expiry is written back -- a
+            # release already past the window does not explain the refusal, and the
+            # bound must never be what makes a grain eligible.
+            released = relache_release_epoch(timeline)
+            if released is None:
+                continue
+            expiry = released + CLAIM_RELEASED_WAIT_S
+            if now < expiry < (g.get("not_before") or 0):
+                g["not_before"] = expiry
+                self._event("relache-expiry-bounded", key=key, issue=issue,
+                            released_at=datetime.fromtimestamp(
+                                released, timezone.utc).isoformat(timespec="seconds"),
+                            retry_in_s=round(expiry - now, 1),
+                            retry_at=datetime.fromtimestamp(
+                                expiry, timezone.utc).isoformat(timespec="seconds"))
 
     def _eligible(self, now: float) -> list[str]:
         out = []

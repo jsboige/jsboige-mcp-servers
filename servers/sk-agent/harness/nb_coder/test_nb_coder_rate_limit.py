@@ -12,8 +12,11 @@ issue fetch 30 s after launch with `crashed:RuntimeError: issue fetch failed rc=
 "API rate limit exceeded for user ID …"}`. The scheduler classed that as a run failure: the
 grain's retry was spent and the ramp's promotion blocked, for a refusal that said nothing
 about the grain. The driver now names it a deferral with the bucket's reset epoch, and the
-scheduler waits until then."""
+scheduler waits until then.
 
+The same contract for a MODEL provider's 429 (23/11, section at the end of this file)."""
+
+import asyncio
 import importlib.util
 import json
 from pathlib import Path
@@ -112,3 +115,180 @@ def test_an_absurd_reset_is_capped_and_a_past_one_is_not_negative():
     assert S.github_reset_wait(v + "10", 100.0) == S.GITHUB_RESET_MARGIN_S
     assert S.github_reset_wait(v + "oops", 0.0) is None
     assert S.github_reset_wait("deferred-by-capacity-gate", 0.0) is None
+
+
+# ---- a MODEL provider's 429 (23/11) ---------------------------------------------------
+# Verbatim: the `error` of call "2-build+32" in the 23/11 run record of CoursIA#28097
+# (po-2028:claudish, batch s6r). With its three siblings (#28064, #28065, #28085) it was
+# failed as a run failure on its first launch in that batch and [RELEASED] — a three-day
+# fleet-wide lock. The same wall met inside a revision round: test_nb_coder_revise.py.
+WALL = ('("<class \'semantic_kernel.connectors.ai.open_ai.services.open_ai_chat_completion.'
+        'OpenAIChatCompletion\'> service failed to complete the prompt", RateLimitError('
+        '"Error code: 429 - {\'error\': {\'message\': \'Usage limit reached for 5 hour. Your '
+        'limit will reset at 2026-11-23 08:48:53\', \'type\': \'rate_limit_error\', '
+        '\'code\': None}}"))')
+# The transient wording: measured in this fleet's notebook outputs (code 1302), not yet in
+# a harness verdict. Named by the same markers, without the wall marker.
+TRANSIENT = ("Error code: 429 - {'error': {'code': '1302', "
+             "'message': 'Rate limit reached for requests'}}")
+
+
+def test_the_real_wall_is_a_bare_deferral_marked_wall():
+    v = d.provider_rate_refusal({"error": WALL})
+    assert v.startswith("deferred-by-provider-rate-limit:wall: ")
+    # the excerpt is centred on the cause: it names the announced reset and the type
+    assert "reset at 2026-11-23 08:48:53" in v and "'type': 'rate_limit_error'" in v
+
+
+def test_the_transient_wording_is_the_ordinary_deferral():
+    v = d.provider_rate_refusal({"error": TRANSIENT})
+    assert v.startswith("deferred-by-provider-rate-limit: ")
+    assert ":wall" not in v.split(":")[1:] and "Rate limit reached for requests" in v
+
+
+def test_nothing_else_is_deferred_by_it():
+    gate = "capacity gate refused dispatch to model 'x' (verdict yellow); retry after 3600s"
+    assert d.provider_rate_refusal({"error": gate}) == ""            # the gate's, not ours
+    assert d.gate_refusal({"error": gate}).startswith("deferred-by-capacity-gate")
+    assert d.provider_rate_refusal({"error": "401 invalid proxy authentication"}) == ""
+    assert d.provider_rate_refusal(
+        {"error": "claudish: unknown model nb-luna — not found in any provider catalog"}) == ""
+    assert d.provider_rate_refusal({"error": "TimeoutError: read timed out"}) == ""
+    # GitHub's bucket is the OTHER rate limit: it keeps its own verdict and reset epoch
+    assert d.provider_rate_refusal({"error": REAL}) == ""
+    assert d.provider_rate_refusal({}) == ""
+    assert d.provider_rate_refusal({"response": "an answer"}) == ""
+
+
+def test_the_diagnostic_naming_of_the_cause_is_untouched():
+    assert d.call_failure({"error": WALL}).startswith("call-failed: ")
+
+
+def test_the_driver_verdict_is_one_the_scheduler_defers_on():
+    """The contract between the two modules: the scheduler matches its prefixes from the
+    FIRST character, so the verdict must be bare — `stage2-` + deferral still failed."""
+    assert S.PROVIDER_RATE_LIMIT_VERDICT == d.PROVIDER_RATE_LIMIT_VERDICT
+    assert S.PROVIDER_RATE_LIMIT_VERDICT in S.DEFERRED_VERDICT_PREFIXES
+    for env in ({"error": WALL}, {"error": TRANSIENT}):
+        assert d.provider_rate_refusal(env).startswith(S.DEFERRED_VERDICT_PREFIXES)
+
+
+def test_a_walled_build_defers_bare_with_one_call_spent(monkeypatch):
+    plan_cells = [{"idx": i, "cell_type": "code", "titre": f"c{i}"} for i in range(8)]
+    calls = []
+
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
+        calls.append(stage)
+        return {"response": "", "error": WALL, "conversation_id": "cx"}
+
+    monkeypatch.setattr(d, "sk_call_retry", fake)
+    rec: dict = {}
+    assert asyncio.run(d.create_segments(None, None, rec, None, plan_cells, 8, "")) == {}
+    assert calls == ["2-build+0"]                 # neither bisected nor repaired into the wall
+    assert rec["verdict"].startswith("deferred-by-provider-rate-limit:wall: ")
+    assert "bisected" not in rec
+
+
+def test_a_walled_format_repair_hands_the_refusal_back(monkeypatch):
+    """The build answered, its JSON did not decode, and the repair call met the wall. The
+    caller must see the REFUSAL: handed the original error-less answer, it would name the
+    grain `unparsed` and fail it."""
+
+    async def fake(session, args, rec, stage, prompt, conv, max_tokens=None):
+        return {"response": "", "error": WALL, "conversation_id": "cx"}
+
+    monkeypatch.setattr(d, "sk_call_retry", fake)
+    env = {"response": "```json\nceci n'est pas du JSON\n```", "conversation_id": "cx"}
+    obj, out = asyncio.run(d.parse_or_repair(None, None, {}, "2-build+0", env, "cx"))
+    assert obj is None and out is not env
+    assert d.provider_rate_refusal(out).startswith("deferred-by-provider-rate-limit:wall: ")
+
+
+def _journal(sched, kind):
+    path = sched.journal_path
+    rows = [json.loads(l) for l in path.read_text(encoding="utf-8").splitlines() if l.strip()]
+    return [r for r in rows if r["kind"] == kind]
+
+
+def test_a_walled_grain_is_probed_hourly_and_never_released(tmp_path):
+    clock = {"t": 1000.0}
+    sched = _sched(tmp_path, "deferred-by-provider-rate-limit:wall: " + WALL[:120], clock)
+    released = []
+    sched._release_claim = lambda *a, **k: released.append(a)
+    sched.tick()
+    clock["t"] += 10
+    sched.tick()
+    g = sched.state["grains"]["#1:Dir/N1.ipynb"]
+    ramp = sched.state["ramp"]
+    assert g["status"] == "deferred" and g["attempts"] == 1
+    assert g["not_before"] == 1010.0 + S.PROVIDER_WALL_WAIT_S
+    assert ramp["failed"] == 0 and ramp.get("content_failed", 0) == 0
+    assert ramp["deferred"] == 1
+    clock["t"] = g["not_before"] - 1
+    assert sched.tick()["launched"] == 0          # the wall is still met
+    clock["t"] = g["not_before"] + 1
+    assert sched.tick()["launched"] == 1          # probed an hour later, not waited out
+    assert released == [] and not _journal(sched, "claim-released")
+    assert not _journal(sched, "failed")
+
+
+def test_without_the_wall_marker_the_ordinary_backoff_applies(tmp_path):
+    clock = {"t": 1000.0}
+    sched = _sched(tmp_path, "deferred-by-provider-rate-limit: " + TRANSIENT, clock)
+    sched.tick()
+    clock["t"] += 10
+    sched.tick()
+    g = sched.state["grains"]["#1:Dir/N1.ipynb"]
+    assert g["status"] == "deferred"
+    assert g["not_before"] == 1010.0 + sched.args.backoff_s
+
+
+def test_an_exhausted_wall_ends_terminal_on_the_path_that_never_releases(tmp_path):
+    """A wall that outlasts the launches ends `attempts-exhausted`, never `failed`: the
+    claim is kept and no [RELEASED] is posted."""
+    clock = {"t": 1000.0}
+    sched = _sched(tmp_path, "deferred-by-provider-rate-limit:wall: " + WALL[:120], clock)
+    sched.args.max_attempts = 2
+    released = []
+    sched._release_claim = lambda *a, **k: released.append(a)
+    sched.tick()                                  # launch 1
+    clock["t"] += 10
+    sched.tick()                                  # deferred once
+    for _ in range(3):
+        g = sched.state["grains"]["#1:Dir/N1.ipynb"]
+        clock["t"] = max(clock["t"], (g.get("not_before") or 0)) + 1
+        sched.tick()                              # relaunch when due, then the next reap
+    g = sched.state["grains"]["#1:Dir/N1.ipynb"]
+    assert g["status"] == "failed" and g["attempts"] == 2
+    assert released == [] and not _journal(sched, "failed")
+    assert not _journal(sched, "claim-released")
+    assert _journal(sched, "attempts-exhausted")
+
+
+def test_the_control_an_ordinary_failure_does_release(tmp_path):
+    """Proves the recorder above is live: an ordinary failure does reach the release."""
+    clock = {"t": 1000.0}
+    sched = _sched(tmp_path, "stage2-call-failed: something else", clock)
+    released = []
+    sched._release_claim = lambda *a, **k: released.append(a)
+    sched.tick()
+    clock["t"] += 10
+    sched.tick()
+    assert sched.state["grains"]["#1:Dir/N1.ipynb"]["status"] == "failed"
+    assert released and _journal(sched, "failed")
+
+
+def test_every_deferral_is_named_bare():
+    """The invariant the two modules share: a deferral is recognised by its first
+    characters, so no caller may assemble one behind a stage prefix."""
+    for prefix in S.DEFERRED_VERDICT_PREFIXES:
+        assert prefix.startswith("deferred-by-"), prefix
+
+
+def test_the_wall_marker_is_a_whole_part_never_a_substring():
+    w = S.provider_wall_wait
+    assert w("deferred-by-provider-rate-limit:wall: x") == S.PROVIDER_WALL_WAIT_S
+    assert w("deferred-by-provider-rate-limit: firewall: x") is None
+    assert w("deferred-by-provider-rate-limit: x") is None
+    assert w("deferred-by-github-rate-limit:reset=5: wall") is None
+    assert w("deferred-by-capacity-gate") is None
