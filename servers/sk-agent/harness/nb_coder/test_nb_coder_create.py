@@ -747,10 +747,6 @@ def test_gate_call_uses_explicit_propagated_path(tmp_path):
                    "blocking_refusal": False}
 
 
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q"]))
-
-
 # ------------------------------------- local modules are part of the material (23/11)
 
 def test_local_modules_are_named_in_both_creation_prompts(tmp_path):
@@ -791,3 +787,58 @@ def test_local_modules_are_named_in_both_creation_prompts(tmp_path):
     for p in (p1, p2):
         assert "MODULES PYTHON LOCAUX" in p and "limit_sets.py" in p
     assert D.local_module_block([]) == "" and D.local_modules(None) == []
+
+
+def test_a_comma_import_list_names_every_module(tmp_path):
+    """Review ai-01 (23/11): `import a, b` named `a` alone. A notebook importing two local
+    modules on one line was shown one of them, and was left to invent the other."""
+    (tmp_path / "limit_sets.py").write_text("def detect_regime(t):\n    return 'point_fixe'\n",
+                                            encoding="utf-8")
+    (tmp_path / "matrices.py").write_text("def payoff(a, b):\n    return 0.0\n", encoding="utf-8")
+    src = write_nb(tmp_path / "T-Python.ipynb", [
+        {"cell_type": "code",
+         "source": "import limit_sets, matrices\nimport os.path, limit_sets as ls\n",
+         "metadata": {}},
+    ])
+    files = [m["file"] for m in D.local_modules(src)]
+    assert files == ["limit_sets.py", "matrices.py"], \
+        "both names of the list, once each; `os` resolves no file here"
+
+
+def test_a_signature_whose_default_calls_is_published_whole(tmp_path):
+    """Review ai-01 (23/11): a read up to the FIRST `)` published
+    `tol_of(x, scale=max(1e-3, EPS)` -- half a signature, for a default that calls."""
+    (tmp_path / "limit_sets.py").write_text(
+        "EPS = 1e-9\n"
+        "def tol_of(x, scale=max(1e-3, EPS)):\n"
+        "    return x * scale\n\n"
+        "def pair(a: tuple[int, int] = (0, 0)) -> tuple[int, int]:\n"
+        "    return a\n\n"
+        "def broken(x=(1:\n"
+        "    pass\n", encoding="utf-8")
+    src = write_nb(tmp_path / "T-Python.ipynb", [
+        {"cell_type": "code", "source": "import limit_sets\n", "metadata": {}},
+    ])
+    assert D.local_modules(src)[0]["defs"] == [
+        "tol_of(x, scale=max(1e-3, EPS))", "pair(a: tuple[int, int] = (0, 0))"], \
+        "both signatures whole; the one that never closes is left out"
+
+
+def test_the_block_never_claims_the_verifier_reads_the_module(tmp_path):
+    """Review ai-01 (23/11), the blocking point: the block said the verifier « compare au
+    module source ». False -- `verify_prompt` receives `build_view()` of the two notebooks
+    and nothing of the module. A check the harness cannot keep is a reason for the coder to
+    lean on it instead of reading the file. The Read instruction is also spelled out: it
+    sits beside a no-WRITE-tool constraint, and reading is not writing."""
+    mods = [{"name": "m", "file": "m.py", "defs": ["f(x)"]}]
+    block = D.local_module_block(mods)
+    assert "compare au module source" not in block
+    assert "rejette toute réimplémentation" not in block
+    assert "le vérificateur ne reçoit ni le module ni son fichier" in block
+    assert "lire n'est pas écrire" in block
+    p2 = D.creation_json_prompt([{"idx": 0, "cell_type": "code"}], 1, modules=mods)
+    assert "n'appelles aucun outil d'écriture" in p2 and "lire n'est pas écrire" in p2
+
+
+if __name__ == "__main__":
+    sys.exit(pytest.main([__file__, "-q"]))

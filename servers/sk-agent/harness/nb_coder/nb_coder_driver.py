@@ -1610,6 +1610,31 @@ def verify_structure(src_path: Path, built_path: Path, plan: dict) -> dict:
 
 # ---------------------------------------------------------------- creation mode (--source-nb)
 LOCAL_MODULE_DEF_CAP = 24   # signatures listed per local module
+LOCAL_MODULE_DEF_CHARS = 160  # characters kept per signature
+_FROM_IMPORT_RE = re.compile(r"\s*from\s+([A-Za-z_]\w*)[\s.]")
+_IMPORT_RE = re.compile(r"\s*import\s+(.+)$")
+_MODULE_NAME_RE = re.compile(r"\s*([A-Za-z_]\w*)")
+_DEF_RE = re.compile(r"^def\s+(\w+)\s*\(", re.M)
+
+
+def _top_level_defs(txt: str) -> list[str]:
+    """`name(args)` for each top-level `def` of a module, its parentheses balanced.
+
+    A signature may span lines (`detect_regime` does) and a default may itself call
+    (`scale=max(1e-3, EPS)`): a read up to the FIRST `)` published half of it (review
+    ai-01, 23/11). A signature that never closes is left out, never published truncated.
+    """
+    out: list[str] = []
+    for m in _DEF_RE.finditer(txt):
+        i, depth = m.end(), 1
+        while i < len(txt) and depth:
+            depth += (txt[i] == "(") - (txt[i] == ")")
+            i += 1
+        if depth:
+            continue
+        args = " ".join(txt[m.end():i - 1].split())
+        out.append(f"{m.group(1)}({args})"[:LOCAL_MODULE_DEF_CHARS])
+    return out
 
 
 def local_modules(src_nb) -> list[dict]:
@@ -1639,12 +1664,21 @@ def local_modules(src_nb) -> list[dict]:
         if cell.get("cell_type") != "code":
             continue
         for line in _text(cell.get("source")).splitlines():
-            m = re.match(r"\s*(?:from\s+([A-Za-z_]\w*)[\s.]|import\s+([A-Za-z_]\w*))", line)
-            if not m:
-                continue
-            n = m.group(1) or m.group(2)
-            if n and n not in names:
-                names.append(n)
+            m = _FROM_IMPORT_RE.match(line)
+            if m:
+                cands = [m.group(1)]
+            else:
+                m = _IMPORT_RE.match(line)
+                if not m:
+                    continue
+                # `import a, b as c, d.e` names three modules: `a`, `b` and the root of the
+                # dotted one. One name per item, so a comma list no longer hides its second
+                # module (review ai-01, 23/11)
+                cands = [mm.group(1) for mm in (_MODULE_NAME_RE.match(item)
+                                                 for item in m.group(1).split(",")) if mm]
+            for n in cands:
+                if n not in names:
+                    names.append(n)
     folder = Path(src_nb).parent
     out: list[dict] = []
     for n in names:
@@ -1655,10 +1689,8 @@ def local_modules(src_nb) -> list[dict]:
             txt = p.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-        # the signature may span lines (detect_regime does) — `[^)]*` crosses newlines
-        defs = [f"{fn}({' '.join(a.split())})"[:160]
-                for fn, a in re.findall(r"^def\s+(\w+)\s*\(([^)]*)\)", txt, re.M)]
-        out.append({"name": n, "file": p.name, "defs": defs[:LOCAL_MODULE_DEF_CAP]})
+        out.append({"name": n, "file": p.name,
+                    "defs": _top_level_defs(txt)[:LOCAL_MODULE_DEF_CAP]})
     return out
 
 
@@ -1672,11 +1704,11 @@ def local_module_block(modules: list | None) -> str:
         lines.append(f"- `{m['file']}` — {defs}")
     return ("\n\nMODULES PYTHON LOCAUX DU DOSSIER SOURCE — ils sont DANS TON WORKTREE, à côté "
             "du carnet source, et ce carnet les importe :\n" + "\n".join(lines) +
-            "\nLIS le fichier (Read) et PORTE les fonctions qu'il utilise — mêmes seuils, "
-            "mêmes constantes, mêmes libellés de verdict. N'invente JAMAIS une heuristique à "
-            "la place d'une fonction du module : le vérificateur compare au module source et "
-            "rejette toute réimplémentation non équivalente (mesuré CoursIA#28208 : six tours "
-            "perdus à ce motif).\n")
+            "\nLIS le fichier (Read — lire n'est pas écrire) et PORTE les fonctions qu'il "
+            "utilise — mêmes seuils, mêmes constantes, mêmes libellés de verdict. "
+            "N'invente JAMAIS une heuristique à la place d'une fonction du module : le "
+            "vérificateur ne reçoit ni le module ni son fichier, c'est toi qui le portes "
+            "depuis le fichier (mesuré CoursIA#28208 : six tours perdus à ce motif).\n")
 
 
 def creation_prompt(issue_n: int, issue: dict, rel: str, source_rel: str, kernel: dict,
