@@ -463,6 +463,24 @@ def test_register_pair_csharp_only_and_honest():
         # second registration is refused (idempotent)
         assert not nbci.register_pair(wt, "N/S-Python.ipynb", "N/S-CSharp.ipynb",
                                       "lane")["registered"]
+        assert "Execution reelle sur kernel .net-csharp" in text
+
+
+def test_register_pair_never_upgrades_a_read_kernel_to_an_execution():
+    """#28332: with no recorded execution the registry names the kernel that was
+    READ, and does not print the measured wording. ASCII, as the schema expects."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        wt = Path(td)
+        (wt / "scripts" / "notebook_tools" / "twin_pairs.d").mkdir(parents=True)
+        cs = nbci.register_pair(wt, "N/S-Python.ipynb", "N/S-CSharp.ipynb", "lane",
+                                facts={"kernel": "rust", "kernel_read": True,
+                                       "executed_cells": 0, "verdict": "approve"})
+        assert cs["registered"]
+        text = (wt / cs["file"]).read_text(encoding="utf-8")
+        assert "Execution reelle" not in text
+        assert "Kernel lu (execution non enregistree) rust" in text
+        assert text.isascii()
 
 
 # ---------------------------------------------------------------- sync-main
@@ -654,6 +672,52 @@ def test_back_link_on_a_crlf_port_keeps_its_line_endings():
         assert b"Serie-03b-Python.ipynb" in after
         assert after.count(b"\n") == after.count(b"\r\n")   # no bare LF left
         assert (repo / src).read_bytes().count(b"\r\n") == 0  # LF twin stays LF
+
+
+def test_a_whitespace_only_reformat_is_normalised_and_declared():
+    """CoursIA#28242 (23/11): the built port carried ONE model-emitted
+    ``"outputs": [`` + ``]`` where the dumper writes ``[]``; the round-trip
+    refused, the README row and the nav edges were never applied, and the
+    PR's guards went red. A difference that is ONLY insignificant whitespace
+    keeps the data byte-exact, so it is normalised and reported instead."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        new, src = _pair(repo, ARG_BAR)
+        raw = (repo / new).read_bytes().decode("utf-8")
+        expanded = raw.replace('   "outputs": [],',
+                               '   "outputs": [\n   ],', 1)
+        assert expanded != raw                       # the fixture really carries it
+        (repo / new).write_bytes(expanded.encode("utf-8"))
+        first = nbci.integrate(repo, new, src)
+        assert first["back"]["todo"] and new in first["touched"]
+        assert first["back"].get("normalized") is True
+        after = (repo / new).read_bytes().decode("utf-8")
+        assert '"outputs": [\n   ]' not in after     # canonical shape restored
+        assert "Serie-03b-Python.ipynb" in after     # the link did land
+        second = nbci.integrate(repo, new, src)
+        assert not second["back"].get("normalized")  # byte-exact now, nothing to say
+
+
+def test_a_non_whitespace_serialisation_difference_still_refuses():
+    """The tolerance above is whitespace ONLY. The dumper cannot reproduce an
+    escaped solidus (`\\/` parses to `/`, which json re-emits bare), and that
+    is a real serialisation choice -- not ours to silently rewrite. The loud
+    refusal stays for everything the whitespace test does not explain."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        repo = Path(td)
+        new, src = _pair(repo, ARG_BAR)
+        raw = (repo / new).read_bytes().decode("utf-8")
+        escaped = raw.replace("let x = 1;", "let x = 1; \\/\\/ c", 1)
+        assert escaped != raw
+        (repo / new).write_bytes(escaped.encode("utf-8"))
+        try:
+            nbci.integrate(repo, new, src)
+        except ValueError as exc:
+            assert "byte-faithful round-trip failed" in str(exc)
+        else:                                        # pragma: no cover
+            raise AssertionError("a non-whitespace difference must keep the refusal")
 
 
 def test_back_link_mirrors_the_bar_twin_label():

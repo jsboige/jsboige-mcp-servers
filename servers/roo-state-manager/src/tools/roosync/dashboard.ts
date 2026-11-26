@@ -317,16 +317,60 @@ const condenseCloudReserveMs = (promptBytes?: number): number => {
  * No passDeadlineMs (tests, non-condensation callers) → the base timeout as-is.
  * #3962 piste 4: `promptBytes` (the cloud prompt the fallback would send) sizes the
  * default reserve; omitted → the historical fixed 35s.
+ * #4872 (a): `cloudFirst` drops the reserve — in cloud-first order the guard's
+ * trailing cloud block is SKIPPED (the chain already ran before the primary), so
+ * there is no reserve to hold back. Measured on ai-01 (23/11): with the shared
+ * pass deadline mostly consumed by the time the Summary guard runs, subtracting
+ * the 35-82s reserve refused the primary every pass even with time left, while
+ * the budget it protected was never spent. The summary generating leg keeps the
+ * reserve: ITS trailing cloud is real in cloud-first order.
  */
 export function computePrimaryAttemptTimeoutMs(
   baseTimeoutMs: number,
   passDeadlineMs?: number,
   promptBytes?: number,
+  cloudFirst?: boolean,
 ): number | null {
   if (passDeadlineMs === undefined) return baseTimeoutMs;
-  const availableMs = (passDeadlineMs - condenseCloudReserveMs(promptBytes)) - Date.now();
+  const reserveMs = cloudFirst ? 0 : condenseCloudReserveMs(promptBytes);
+  const availableMs = (passDeadlineMs - reserveMs) - Date.now();
   if (availableMs < FB_DEADLINE_SKIP_FLOOR_MS) return null;
   return Math.min(baseTimeoutMs, availableMs);
+}
+
+/**
+ * #4872 (b): provenance stamp for the size guard's journal lines — `[pid=… vintage=…]`.
+ *
+ * Several RSM hosts append to the same journal file, and a rotated segment can
+ * carry more than one vintage (measured 25/11 on ai-01: 597-688 segments/day,
+ * three vintages inside one segment). Without a per-process stamp a 24 h count
+ * cannot say whether the fixed build was among the writers: the post-fix window
+ * measured 26/32 truncations and stayed unattributable, so neither the fix nor a
+ * regression could be concluded (issue comment c.7147814854).
+ *
+ * The stamp rides the SAME line as the marker, not the logger's metadata block
+ * (printed on following lines): a one-line grep can then count per process where
+ * a block would need a parser.
+ *
+ * The vintage is the `build-<sha16>` directory this process was launched from —
+ * hosts run `node …/build-<sha16>/index.js` (verified on po-2024). Parity with
+ * `getServedBuildId()` (tools/search) is deliberate, but that helper is not
+ * imported: dragging the search tool's module graph into the dashboard path for
+ * a basename is a side effect this stamp does not justify.
+ *
+ * `entryPath` defaults to `process.argv[1]`, as `getServedBuildId` does: the
+ * production call site passes no argument, and a parameter with no default made
+ * every real stamp read `vintage=unknown`, which defeats the attribution this
+ * stamp exists for.
+ */
+export function condenseGuardProvenance(entryPath: string | null = process.argv[1] ?? '', pid?: number): string {
+  let vintage = 'unknown';
+  try {
+    if (entryPath) vintage = path.basename(path.dirname(path.resolve(entryPath)));
+  } catch {
+    // Unreadable process state must never break a log line: keep 'unknown'.
+  }
+  return `[pid=${pid ?? process.pid} vintage=${vintage}]`;
 }
 
 // #2267 follow-up: per-request timeout for condensation LLM calls. Runaway
@@ -545,6 +589,19 @@ function withWriteDeadline<T>(p: Promise<T>, ms: number, label: string): Promise
 // to max_tokens. 30000 tokens × ~37 tok/s = ~810s, > 600s gateway = HTTP 502.
 // Bounding at 12000 capped a runaway at ~325s; 7200 caps it at ~195s (2026-07-04).
 const CONDENSE_LLM_MAX_TOKENS = 7200;
+
+// #4872 (c): the size guard's cloud chain gets an output budget sized to the cap it
+// must SATISFY, not the shared 7200-token ceiling. Measured on ai-01 (23/11): the
+// summary leg's glm-4.7 cloud attempt expired at ~36 s for a ~1500-token summary —
+// a thinking-prone backend spends a large token budget reasoning before any text,
+// then the attempt times out. tokens ≈ bytes / 3, so a cap/2 BYTES budget gives
+// ~1.5× headroom over the largest legitimate sub-cap answer while bounding the
+// burn: 5 KB → 2560 tokens, 15 KB → 7200 (the min() keeps the status leg
+// unchanged). An overthinking model then fails FAST on its output budget
+// (isBudgetTruncatedFinish → next model in the chain) instead of hanging to the
+// attempt timeout. Model-list choice stays seat env (FALLBACK_LLM_MODEL_ID etc.).
+const guardCloudMaxTokensForCap = (maxSizeBytes: number): number =>
+  Math.min(CONDENSE_LLM_MAX_TOKENS, Math.ceil(maxSizeBytes / 2));
 
 // #2426 Phase C+ follow-up: Detect LLM provider for thinking-mode control.
 // vLLM (local) supports chat_template_kwargs; z.ai and other remote APIs reject it (400).
@@ -5396,8 +5453,11 @@ export async function condenseTextIfTooLarge(
     && missingSectionsOf(text, requiredSections).length === 0
     ? requiredSections
     : null;
+  // #4872 (b): every line of this guard names the emitting process. One stamp per
+  // pass — pid and entry path cannot change while the guard runs.
+  const prov = condenseGuardProvenance();
 
-  logger.info(`${label} exceeds size limit, auto-condensing`, { sizeBytes, limit: maxSizeBytes, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
+  logger.info(`${label} exceeds size limit, auto-condensing ${prov}`, { sizeBytes, limit: maxSizeBytes, sizeKB: `${(sizeBytes / 1024).toFixed(1)}KB` });
 
   // #2598 follow-up — Mechanism 2 (the dedicated "too big" condenser) is the ONLY
   // size guardian and MUST make the cap a HARD guarantee, not best-effort. Every
@@ -5430,7 +5490,8 @@ export async function condenseTextIfTooLarge(
     cloudSystemPrompt,
     text,
     {
-      maxTokens: CONDENSE_LLM_MAX_TOKENS, temperature: 0.3, passDeadlineMs,
+      // #4872 (c): budget sized to THIS guard's cap — see guardCloudMaxTokensForCap.
+      maxTokens: guardCloudMaxTokensForCap(maxSizeBytes), temperature: 0.3, passDeadlineMs,
       validate: cloudGuardValidator,
     },
   );
@@ -5449,7 +5510,7 @@ export async function condenseTextIfTooLarge(
     if (cfCloud && 'content' in cfCloud) {
       const cfSize = Buffer.byteLength(cfCloud.content, 'utf8');
       if (cfSize <= maxSizeBytes) {
-        logger.info(`#4872 cloud-first condensed ${label} under cap`, { afterKB: `${(cfSize / 1024).toFixed(1)}KB`, capKB: `${capKb}KB`, model: cfCloud.model });
+        logger.info(`#4872 cloud-first condensed ${label} under cap ${prov}`, { afterKB: `${(cfSize / 1024).toFixed(1)}KB`, capKB: `${capKb}KB`, model: cfCloud.model });
         return cfCloud.content;
       }
       if (cfSize < bestSize) { bestCandidate = cfCloud.content; bestSize = cfSize; }
@@ -5473,9 +5534,11 @@ export async function condenseTextIfTooLarge(
     // #3962 piste 2: same deadline clamp as the pass condensers — the primary
     // spends only what's left beyond the cloud reserve; on refusal, fall through
     // to the cloud fallback below (which runs on the reserve).
-    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(CONDENSE_LLM_TIMEOUT_MS, passDeadlineMs, sizeBytes);
+    // #4872 (a): cloud-first order → no reserve (the trailing cloud block below
+    // is skipped — the chain already ran).
+    const attemptTimeoutMs = computePrimaryAttemptTimeoutMs(CONDENSE_LLM_TIMEOUT_MS, passDeadlineMs, sizeBytes, cloudFirst);
     if (attemptTimeoutMs === null) {
-      logger.warn(`Auto-condense ${label}: primary attempt refused — pass deadline reached the cloud reserve (#3962)`, { attempt });
+      logger.warn(`Auto-condense ${label}: primary attempt refused — pass deadline reached the cloud reserve (#3962) ${prov}`, { attempt });
       break;
     }
     const targetKb = attempt === 1 ? capKb : Math.max(1, Math.floor((maxSizeBytes * 0.8) / 1024));
@@ -5563,7 +5626,7 @@ RÈGLES :
       });
     } catch (error) {
       const elapsed = Date.now() - startTime;
-      logger.warn(`Auto-condense ${label} attempt ${attempt} failed`, {
+      logger.warn(`Auto-condense ${label} attempt ${attempt} failed ${prov}`, {
         elapsed: `${elapsed}ms`,
         error: error instanceof Error ? error.message : String(error)
       });
@@ -5597,7 +5660,7 @@ RÈGLES :
   // backstop on the smallest candidate so ${label} NEVER exceeds its cap (the #2598 bug).
   // #4434 review (b): omission-marker wrapper — the floor's output must say
   // what was dropped instead of reading as a complete document.
-  logger.warn(`Auto-condense ${label}: LLM did not converge under ${capKb}KB, applying deterministic truncation`, {
+  logger.warn(`Auto-condense ${label}: LLM did not converge under ${capKb}KB, applying deterministic truncation ${prov}`, {
     bestKB: `${(bestSize / 1024).toFixed(1)}KB`
   });
   return truncateWithOmissionMarker(bestCandidate, maxSizeBytes, label);
@@ -12158,8 +12221,14 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     const messageBlocks = markdownContent.split(/(?=^### \[)/m).filter(b => b.trim());
     for (const rawBlock of messageBlocks) {
       const block = rawBlock.replace(/\n---\s*$/, '').trim();
-      // v3 (#1363) + #1956: parse header then metadata lines
-      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)(\s+\[[^\]]+\])?\n([\s\S]+)/);
+      // v3 (#1363) + #1956: parse header then metadata lines.
+      // Le groupe optionnel de tags legacy prend une ESPACE LITTÉRALE, comme le
+      // parseur principal (dashboard-markdown.ts). Un `\s+` franchit le retour
+      // à la ligne et absorbe la ligne `[msg: <id>]` qui suit immédiatement le
+      // header (forme émise par buildArchiveMessagesMarkdown) : l'id persisté
+      // était régénéré à la lecture, et un `scope: <messageId>` ne résolvait
+      // plus une fois l'escalade archivée (signal r1210, 24/11).
+      const headerMatch = block.match(/### \[([^\]]+)\]\s+([^|]+)\|([^|\s]+)( \[[^\]]+\])?\n([\s\S]+)/);
       if (headerMatch) {
         const [, timestamp, machineId, workspace, , afterHeader] = headerMatch;
         let persistedId: string | undefined;

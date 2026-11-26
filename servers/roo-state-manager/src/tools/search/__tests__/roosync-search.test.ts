@@ -399,6 +399,17 @@ describe('roosync_search', () => {
 			}
 		});
 
+		test('#4880: a slow qdrant is reported reachable-but-slow, never unreachable', async () => {
+			const result = await degradeWithMode('qdrant_backend_slow');
+			const first = getTextContent(result, 0);
+			expect(first).toMatch(/reachable but too slow/i);
+			expect(first).toMatch(/action: "diagnose"/);
+			expect(first).not.toMatch(/unreachable/i);
+			// the other qdrant modes keep their own wording
+			const outage = getTextContent(await degradeWithMode('qdrant_unreachable'), 0);
+			expect(outage).not.toMatch(/reachable but too slow/i);
+		});
+
 		test('an embedding outage still names the embedding backend (unchanged)', async () => {
 			const result = await degradeWithMode('embedding_unreachable');
 			const first = getTextContent(result, 0);

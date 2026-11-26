@@ -136,6 +136,132 @@ def test_diff_text_is_bounded(tmp_path):
     d = v.cell_diffs(a, b)
     assert all(len(x["src_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
     assert all(len(x["built_text"]) <= v.CELL_TEXT_CAP + 1 for x in d)
+    assert all("nontext" not in x for x in d), "no figure -> no witness field (shape stable)"
+
+
+# ------------------------------------------------- non-text witness (CoursIA#28338, 24/11)
+# Fournée o30, Jauge-01 C# port: the deliverable printed a 154 681-char stream and then a
+# 152 039-char image/svg+xml. The SOURCE's own figure was a 41 280-char PNG, shown as
+# `[image/png 41280b sha1:…]` because its cell was short. The diff annex cut the BUILT cell
+# at CELL_TEXT_CAP — 14 lines of a table — and the SVG fingerprint came AFTER the stream,
+# so the critic was handed a SOURCE figure and NO deliverable figure. Its finding was
+# exactly what the instrument said: « l'annexe ne donne que le type général "display_data",
+# sans son MIME ni son contenu ». Five revision rounds could not fix an instrument.
+
+
+def _svg_cell(stream: str, labels=("trajectoire (plan)", "x", "y")):
+    body = "".join(f"<text x='1' y='2'>{t}</text>" for t in labels)
+    return _code([_stream(stream),
+                  {"output_type": "display_data",
+                   "data": {"image/svg+xml": "<svg xmlns='http://www.w3.org/2000/svg' "
+                                             "width='800' height='410' viewBox='0 0 800 410'>"
+                                             f"<polyline points='0,0 1,1'/>{body}</svg>"}}],
+                 source="draw()")
+
+
+def test_long_stream_never_hides_the_figure(tmp_path):
+    """The exact #28338 shape: the witness must survive CELL_TEXT_CAP, with the cut said."""
+    a = _nb(tmp_path, [_code([_stream("tiny\n")], source="draw()")], "a.ipynb")
+    b = _nb(tmp_path, [_svg_cell("t x y\n" + "0 1.3 0.4\n" * 4000)], "b.ipynb")
+    d = v.cell_diffs(a, b)[0]
+    assert d["nontext"]["built"], "the deliverable's figure is declared beside the text"
+    line = d["nontext"]["built"][0]
+    assert line.startswith("[affichage non textuel image/svg+xml ")
+    assert "sha1:" in line and "width=800 height=410" in line
+    assert "polyline×1" in line and "«trajectoire (plan)»" in line
+    assert "«x»" in line and "«y»" in line       # the labels are readable by the critic
+    assert "affichage non textuel" not in d["built_text"], "the witness is NOT in the text"
+    assert len(d["built_text"]) <= v.CELL_TEXT_CAP
+    assert "[tronqué :" in d["built_text"], "the cut is declared, never silent"
+    assert d["nontext"]["src"] == []             # no invention on the side without a figure
+
+
+def test_nontext_witness_survives_the_total_budget(tmp_path, monkeypatch):
+    """The OTHER starvation: TOTAL_TEXT_CAP exhausts on early cells and replaces a later
+    cell's text. A budget-exhausted cell must still DECLARE its figure, not read as empty."""
+    monkeypatch.setattr(v, "TOTAL_TEXT_CAP", 2 * v.CELL_TEXT_CAP)
+    filler = "f" * (v.CELL_TEXT_CAP + 1)
+    # Two differing cells eat the whole budget (1 200 + 1 200); the figure comes THIRD.
+    src = _nb(tmp_path, [_code([_stream(filler)], source="print(1)"),
+                        _code([_stream(filler)], source="print(2)")], "a.ipynb")
+    built = _nb(tmp_path, [_code([_stream(filler[:-1] + "g")], source="print(1)"),
+                          _code([_stream(filler[:-1] + "g")], source="print(2)"),
+                          _svg_cell("0 1.3 0.4\n" * 4000)], "b.ipynb")
+    d = v.cell_diffs(src, built)
+    assert [x["kind"] for x in d] == ["outputs-changed", "outputs-changed", "added"]
+    assert d[-1]["built_text"] == "[tronqué]", "the text is gone — the budget was spent"
+    assert "image/svg+xml" in d[-1]["nontext"]["built"][0], \
+        "the budget never reaches the witness"
+    assert all(len(x[k] or "") <= v.CELL_TEXT_CAP for x in d for k in ("src_text", "built_text"))
+
+
+def test_svg_structure_is_bounded_even_on_a_hostile_payload():
+    """A figure with hundreds of labels must not become a new way to inflate the annex — and
+    the bound must not be a cut by characters, which would drop the very count of what is
+    not listed (measured on the first version of this fix: « +52 caractères » cut)."""
+    blob = "<svg width='9' height='9'>" + "".join(
+        f"<text>{i:05d} {'L' * 80}</text>" for i in range(500)) + "</svg>"
+    line = v.nbcd.nontext_witness(
+        {"outputs": [{"output_type": "display_data", "data": {"image/svg+xml": blob}}]})[0]
+    head, _, structure = line.partition(" — ")
+    assert len(structure) <= v.nbcd.NON_TEXT_STRUCTURE_CAP
+    assert "caractères]" not in structure, "bounded by WHOLE labels, not by characters"
+    quoted = structure.count("«")
+    assert 5 <= quoted < v.nbcd.NON_TEXT_LABEL_MAX, "the ROOM stops it before the count limit"
+    assert f"+{500 - quoted} étiquettes non listées" in structure   # every one is accounted for
+    assert structure.endswith("étiquettes non listées")
+    assert "text×500" in structure
+
+
+def test_png_dimensions_are_read_without_decoding_the_whole_figure():
+    """The PNG IHDR is 33 bytes: a multi-MB figure must cost 44 characters decoded."""
+    import base64
+    import struct
+    raw = (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR"
+           + struct.pack(">IIBBBBB", 12, 7, 8, 2, 0, 0, 0))
+    cell = {"outputs": [{"output_type": "display_data",
+                         "data": {"image/png": base64.b64encode(raw).decode(),
+                                  "text/plain": "<Figure size 1000x400 with 2 Axes>"}}]}
+    line = v.nbcd.nontext_witness(cell)[0]
+    assert "image/png" in line and "PNG 12x7" in line
+    assert "<Figure" not in line, "the text stub is not duplicated in the witness"
+    assert v.nbcd._png_structure("not base64 at all %%") == ""
+    assert v.nbcd._png_structure("QUJDRA==") == ""      # decodes, but is not a PNG
+
+
+def test_marker_is_invariant_to_base64_line_wrapping():
+    """A figure payload stored as a list of wrapped lines is ONE payload, not several."""
+    import base64
+    raw = b"\x89PNG\r\n\x1a\n" + b"IHDR" + b"\x00" * 40
+    blob = base64.b64encode(raw).decode()
+    whole = {"outputs": [{"output_type": "display_data", "data": {"image/png": blob}}]}
+    wrapped = {"outputs": [{"output_type": "display_data",
+                            "data": {"image/png": [blob[:20], blob[20:]]}}]}
+    assert v.nbcd.nontext_witness(whole) == v.nbcd.nontext_witness(wrapped)
+
+
+def test_prompt_says_what_the_nontext_field_is():
+    """The critic reads a new field: the annex header must say it is the real output of the
+    executed notebook, never cut — and nothing about how to judge it."""
+    src = (Path(__file__).parent / "nb_coder_verify.py").read_text(encoding="utf-8")
+    block = src.split("## Annexe différences", 1)[1]
+    assert "[affichage non textuel" in block and "nontext" in block
+    assert "ne jamais rejeter" not in block.lower(), "no verdict steering in the instrument"
+
+
+def test_digest_changes_when_the_figure_changes(tmp_path):
+    """Guard of the seam: `cell_output_text` must carry the marker INLINE (it is what
+    outputs_digest hashes), not only the annex's own witness lines."""
+    import base64
+    a = _nb(tmp_path, [_code([{"output_type": "display_data",
+                               "data": {"image/png": base64.b64encode(b"AAAA").decode()}}])], "a.ipynb")
+    b = _nb(tmp_path, [_code([{"output_type": "display_data",
+                               "data": {"image/png": base64.b64encode(b"BBBB").decode()}}])], "b.ipynb")
+    ca = json.loads(a.read_text(encoding="utf-8"))["cells"][0]
+    cb = json.loads(b.read_text(encoding="utf-8"))["cells"][0]
+    assert v.cell_output_text(ca) != v.cell_output_text(cb)
+    assert "[image/png " in v.cell_output_text(ca)
+    assert v.outputs_digest(a)[0]["sha"] != v.outputs_digest(b)[0]["sha"]
 
 
 def test_verify_output_budget_default_is_32768():
@@ -208,6 +334,53 @@ def test_prompt_fences_out_pr_stage_repo_artifacts():
     assert "twin_pairs.d/" in p
     assert "CATALOG-STATUS" in p
     assert "APRÈS ton verdict" in p
+    # 23/11: the fence named the pair registration but not the two edits
+    # nb_coder_integrate also writes at stage PR — the inbound nav edge on the
+    # source twin and the folder's README row. Three port grains (28206, 28211,
+    # 28213) rejected round after round on "Le lien entrant [Version C#] est
+    # absent du carnet Python de référence", i.e. on a criterion the harness
+    # satisfies after the verdict; #28225 proves the integration writes it.
+    assert "arête de navigation entrante" in p
+    assert "Version C#" in p
+    assert "README" in p
+    assert "satisfait par le harnais" in p
+
+
+def test_prompt_does_not_demand_a_solved_exercise_and_judges_parity_against_the_twin():
+    """CoursIA#28208 (23/11): the verifier rejected EIGHT revision rounds on a single
+    major -- « la bisection sur les verdicts mesurés ne localise pas le mur w=l à
+    ±0,01 ». Measured on the source: no executed bisection exists. Cell 18 is a
+    five-row table of measured regimes, and cell 25 is « Exercice 3 -- bisection sur
+    w » with `mur_exo3 = None  # TODO etudiant` printing « Exercice a completer ».
+    The verifier was therefore demanding the resolution of a student exercise, and it
+    compared a MEASURED finite-horizon detector threshold to the ANALYTIC wall. Both
+    shapes are unsatisfiable by construction, so the prompt must fence them out."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "exercice que la SOURCE laisse en TODO" in p
+    assert "TODO etudiant" in p
+    assert "stub compilable est le port" in p
+    assert "ne demande pas " in p and "de résoudre l'exercice" in p
+    assert "MESURÉE" in p and "seuil théorique" in p
+    assert "Juge la parité contre le jumeau" in p
+
+
+def test_prompt_does_not_invent_a_no_hints_exercise_criterion():
+    """CoursIA#28208 (23/11), third rejection round: with the two fences above in place,
+    the verifier rejected again on a phrase it fabricated itself -- the acceptance
+    criteria demanded the port of a notebook « sans solution ni indice », a formula
+    absent from the issue, from the conventions and from the source. The source's
+    exercise cells carry step-by-step guidance comments and `indice :` lines, which
+    the conventions explicitly allow (only the SOLVED result is banned), so demanding
+    their removal makes a faithful port impossible and the grain oscillates. The prompt
+    must name the fabricated criterion and what a faithful stub keeps."""
+    issue = {"title": "t", "body": "b"}
+    p = v.verify_prompt(issue, "SRC", "BUILT", {}, "", [], [], [])
+    assert "commentaires de guidage" in p
+    assert "reste le port FIDÈLE" in p
+    assert "solution ou le " in p and "résultat révélé" in p
+    assert "sans solution ni indice" in p
+    assert "N'invente pas un critère plus strict" in p
 
 
 # ------------------------------------------------- call errors reach the trace (21/11)

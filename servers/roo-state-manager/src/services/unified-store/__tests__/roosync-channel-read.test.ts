@@ -668,6 +668,31 @@ describe('PgUnifiedStoreReader channel SQL shape', () => {
     expect(mockQuery.mock.calls.at(-1)![1]).toEqual([['myia-ai-01', 'all', 'All']]);
   });
 
+  test('channel sweep bodyChars=0 blanks ONLY the payload — same live set and ordering (#4731)', async () => {
+    const { PgUnifiedStoreReader } = await import('../PgUnifiedStoreReader.js');
+    const reader = new PgUnifiedStoreReader({
+      connectionString: 'postgres://t:t@localhost:5432/x',
+    });
+
+    // Full-fidelity read: the reference SQL (whole-pool scans, #4302).
+    await reader.getRooSyncChannelMessages();
+    const fullSql = String(mockQuery.mock.calls.at(-1)![0]);
+
+    // #4731: the sweeps' projection — constant '' body, everything else equal.
+    await reader.getRooSyncChannelMessages({ bodyChars: 0 });
+    const bodylessSql = String(mockQuery.mock.calls.at(-1)![0]);
+
+    expect(bodylessSql).toContain("'' AS body");
+    // Same row selection: the body projection is the ONLY difference.
+    expect(bodylessSql.replace("'' AS body", 'body')).toBe(fullSql);
+    expect(bodylessSql).toContain("status <> 'archived'");
+    expect(bodylessSql).toContain('destroyed_at IS NULL');
+    expect(bodylessSql).toContain('ORDER BY created_at DESC');
+    expect(bodylessSql).not.toContain('SELECT *');
+    // Constant '' — no bind parameter for the body.
+    expect(mockQuery.mock.calls.at(-1)![1]).toEqual([]);
+  });
+
   test('by-id lookup is a primary-key select', async () => {
     const { PgUnifiedStoreReader } = await import('../PgUnifiedStoreReader.js');
     const reader = new PgUnifiedStoreReader({

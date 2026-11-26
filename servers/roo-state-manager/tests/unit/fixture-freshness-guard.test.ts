@@ -58,6 +58,25 @@ const FROZEN_FIXTURE_RE = new RegExp(
 const CONTROLLED_CLOCK_MARKER_RE =
   /^\s*(?:\/\/|\*|#)\s*fixture-freshness-guard:\s*controlled-clock\b/;
 
+/**
+ * Égalité de chemins pour l'auto-exclusion.
+ *
+ * Windows : `path.resolve` ne normalise PAS la casse de la lettre de lecteur.
+ * Sous vitest, `import.meta.url` rend `d:\dev\…` (casse du cwd de lancement)
+ * tandis que `glob({absolute:true})` rend `D:\dev\…` (casse du volume). Une
+ * comparaison `===` sur chemins résolus est donc FAUSSE sur ce siège : le
+ * fichier ne se reconnaissait pas lui-même et la garde signalait ses propres
+ * lignes de contre-épreuve (6/111/120/139), rouge Windows-only sur `main`
+ * depuis la fermeture de #3673. Mesuré po-2027 23/11 (c.05:30Z).
+ */
+function samePath(a: string, b: string): boolean {
+  const ra = path.resolve(a);
+  const rb = path.resolve(b);
+  return process.platform === 'win32'
+    ? ra.toLowerCase() === rb.toLowerCase()
+    : ra === rb;
+}
+
 interface FileVerdict {
   exempted: boolean;
   /** violations au format "lineNo: trimmed line" */
@@ -90,7 +109,7 @@ describe('Garde fraîcheur des fixtures temporelles (#3673)', () => {
       // dans sa doc et dans ses contre-épreuves. La contre-épreuve 3 prouve
       // que cette exclusion n'est PAS une auto-exemption : évalué comme un
       // fichier tiers, il rendrait exempted=false avec violations.
-      if (path.resolve(f) === path.resolve(OWN_PATH)) continue;
+      if (samePath(f, OWN_PATH)) continue;
       const lines = readFileSync(f, 'utf-8').split('\n');
       const verdict = evaluateLines(lines);
       if (verdict.exempted) continue;
@@ -140,6 +159,26 @@ describe('Garde fraîcheur des fixtures temporelles (#3673)', () => {
       ]);
       expect(verdict.exempted).toBe(false);
       expect(verdict.violations).toHaveLength(1);
+    });
+
+    it('5. auto-exclusion : deux écritures de la MÊME lettre de lecteur sont le même chemin', () => {
+      // Régression Windows-only : `import.meta.url` rendait `d:\…` et `glob`
+      // rendait `D:\…` ; `path.resolve` ne normalise pas la casse du lecteur,
+      // donc `===` échouait et la garde flaggait ses propres lignes.
+      const lower = OWN_PATH.charAt(0).toLowerCase() + OWN_PATH.slice(1);
+      const upper = OWN_PATH.charAt(0).toUpperCase() + OWN_PATH.slice(1);
+      if (process.platform === 'win32') {
+        expect(samePath(lower, upper)).toBe(true);
+      }
+      // Hors Windows la casse est significative : la seule assertion portable
+      // est qu'un chemin est égal à lui-même.
+      expect(samePath(OWN_PATH, OWN_PATH)).toBe(true);
+    });
+
+    it('6. auto-exclusion : deux fichiers DISTINCTS du même dossier restent distincts', () => {
+      const dir = path.dirname(OWN_PATH);
+      const sibling = path.join(dir, 'some-other-guard.test.ts');
+      expect(samePath(OWN_PATH, sibling)).toBe(false);
     });
   });
 });

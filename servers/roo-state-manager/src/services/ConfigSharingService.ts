@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
-import { join, dirname, basename } from 'path';
-import { existsSync, mkdirSync } from 'fs';
+import { join, dirname, basename, relative, isAbsolute, resolve as resolvePath, sep, parse as parsePath } from 'path';
+import { existsSync, mkdirSync, constants as fsConstants } from 'fs';
 import { createHash } from 'crypto';
 import { execFileSync, execSync } from 'child_process';
 import { homedir } from 'os';
@@ -22,6 +22,7 @@ import { IConfigSharingService,
    ConfigManifest,
    ConfigManifestFile,
    DiffResult,
+   ConfigTarget, // #3111 — rollbackWorkspaceTemplateConfig options
    ClaudeCodeScope // #601: Import ClaudeCodeScope type
 } from '../types/config-sharing.js';
 import { IInventoryCollector, IConfigService } from '../types/baseline.js';
@@ -160,6 +161,12 @@ export class ConfigSharingService implements IConfigSharingService {
       manifest.files.push(...schedulesFiles);
     }
 
+    // #3111 — Collecte du modèle de workspace (.claude/configs/workspace-template)
+    if (options.targets.includes('workspace-template')) {
+      const workspaceTemplateFiles = await this.collectWorkspaceTemplate(tempDir);
+      manifest.files.push(...workspaceTemplateFiles);
+    }
+
     // Calcul de la taille totale
     for (const file of manifest.files) {
       totalSize += file.size;
@@ -291,6 +298,8 @@ export class ConfigSharingService implements IConfigSharingService {
     // échouerait à tort sur un create (fichier absent). On round-trip le contenu
     // qui SERAIT écrit — check de santé du package avant l'apply réel.
     const plannedValidations: Array<{ target: string; success: boolean; details?: any }> = [];
+    // #3111 — résumé de la cible workspace-template, remonté dans ApplyConfigResult
+    let workspaceTemplateResult: ApplyConfigResult['workspaceTemplate'];
 
     try {
       // 1. Localiser la version source
@@ -558,6 +567,32 @@ export class ConfigSharingService implements IConfigSharingService {
         }
       }
 
+      // #3111 — workspace-template target : copie CREATE-ONLY de modèles dans un
+      // workspace. Opt-in uniquement (jamais appliqué implicitement via applyAll) ;
+      // dryRun par défaut = TRUE pour cette cible (seul dryRun:false écrit).
+      const hasWorkspaceTemplateTarget = options.targets?.includes('workspace-template') || false;
+      if (hasWorkspaceTemplateTarget) {
+        try {
+          const wt = await this.applyWorkspaceTemplate(configDir, options, errors);
+          const simulate = options.dryRun !== false;
+          if (!simulate) {
+            filesApplied += wt.created.length;
+          }
+          workspaceTemplateResult = {
+            simulate,
+            created: wt.created,
+            skippedExisting: wt.skippedExisting,
+            journalPath: wt.journalPath,
+          };
+          this.logger.info(
+            `workspace-template ${simulate ? '(dry-run)' : 'appliqué'}: ${wt.created.length} créé(s), ${wt.skippedExisting.length} existant(s) ignoré(s)` +
+            (wt.journalPath ? ` — journal ${wt.journalPath}` : '')
+          );
+        } catch (wtErr) {
+          errors.push(`workspace-template apply failed: ${wtErr instanceof Error ? wtErr.message : String(wtErr)}`);
+        }
+      }
+
       this.logger.info('Targets de configuration', {
         applyAll,
         hasMcpTarget,
@@ -581,7 +616,8 @@ export class ConfigSharingService implements IConfigSharingService {
           if (applyAll) {
             // #3545 — claude-settings n'est JAMAIS appliqué implicitement :
             // apply sélectif explicite uniquement (canon.json validé).
-            shouldProcess = !file.path.startsWith('claude-settings/');
+            // #3111 — workspace-template est opt-in (workspacePath requis).
+            shouldProcess = !file.path.startsWith('claude-settings/') && !file.path.startsWith('workspace-template/');
           } else if (file.path.startsWith('roo-modes/')) {
             shouldProcess = hasModesTarget;
           } else if (file.path === 'mcp-settings/mcp_settings.json') {
@@ -602,6 +638,9 @@ export class ConfigSharingService implements IConfigSharingService {
             shouldProcess = hasModesYamlTarget;
           } else if (file.path.startsWith('claude-settings/')) {
             // #3545 — géré par le bloc dédié ci-dessus (canon uniquement), pas de copy
+            shouldProcess = false;
+          } else if (file.path.startsWith('workspace-template/')) {
+            // #3111 — géré par le bloc dédié (create-only + journal), pas de copy
             shouldProcess = false;
           } else if (file.path.startsWith('schedules/')) {
             shouldProcess = hasSchedulesTarget;
@@ -931,7 +970,8 @@ export class ConfigSharingService implements IConfigSharingService {
             filesApplied: 0, // 0 car rien n'a été écrit
             errors,
             dryRunDetails: details, // Champ hypothétique ajouté au résultat pour le rapport
-            validation: dryRunValidation
+            validation: dryRunValidation,
+            workspaceTemplate: workspaceTemplateResult
         } as any;
     }
 
@@ -948,7 +988,8 @@ export class ConfigSharingService implements IConfigSharingService {
       success: errors.length === 0,
       filesApplied,
       errors,
-      validation
+      validation,
+      workspaceTemplate: workspaceTemplateResult
     };
   }
 
@@ -2300,6 +2341,74 @@ export class ConfigSharingService implements IConfigSharingService {
   }
 
   /**
+   * #3111 — Résout le répertoire source des modèles de workspace.
+   * `ROOSYNC_WORKSPACE_TEMPLATE_DIR` s'il est posé (autoritaire), sinon remontée
+   * depuis process.cwd() (≤ 8 niveaux) jusqu'à un dossier contenant
+   * `.claude/configs/workspace-template`.
+   */
+  private resolveWorkspaceTemplateSource(): string | null {
+    const explicit = process.env.ROOSYNC_WORKSPACE_TEMPLATE_DIR;
+    if (explicit) {
+      return explicit;
+    }
+    let current = process.cwd();
+    for (let i = 0; i <= 8; i++) {
+      const candidate = join(current, '.claude', 'configs', 'workspace-template');
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+    return null;
+  }
+
+  /**
+   * #3111 — Collecte le modèle de workspace dans le paquet, layout préservé.
+   * Les entrées du manifeste portent `workspace-template/<relative>`.
+   */
+  private async collectWorkspaceTemplate(tempDir: string): Promise<ConfigManifestFile[]> {
+    const files: ConfigManifestFile[] = [];
+    const destRoot = join(tempDir, 'workspace-template');
+
+    const srcDir = this.resolveWorkspaceTemplateSource();
+    if (!srcDir || !existsSync(srcDir)) {
+      throw new ConfigSharingServiceError(
+        'workspace-template: source template not found (set ROOSYNC_WORKSPACE_TEMPLATE_DIR)',
+        ConfigSharingServiceErrorCode.COLLECTION_FAILED,
+        { srcDir: srcDir ?? null }
+      );
+    }
+
+    await this.copyRecursive(srcDir, destRoot);
+
+    const walk = async (dir: string): Promise<void> => {
+      const entries = await fs.readdir(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        const abs = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          await walk(abs);
+        } else if (entry.isFile()) {
+          const rel = relative(destRoot, abs).split(sep).join('/');
+          const hash = await this.calculateHash(abs);
+          const stats = await fs.stat(abs);
+          files.push({
+            path: `workspace-template/${rel}`,
+            hash,
+            type: 'other',
+            size: stats.size,
+          });
+        }
+      }
+    };
+    await walk(destRoot);
+
+    this.logger.info(`${files.length} fichiers workspace-template collectés depuis: ${srcDir}`);
+    return files;
+  }
+
+  /**
    * #2411 — Merge schedules by ID (source overrides target where IDs match)
    *
    * Strategy:
@@ -2330,5 +2439,507 @@ export class ConfigSharingService implements IConfigSharingService {
     }
 
     return result;
+  }
+
+  // -------------------------------------------------------------------------
+  // #3111 — Cible `workspace-template` : apply CREATE-ONLY + journal de rollback.
+  // -------------------------------------------------------------------------
+
+  /**
+   * #3111 — Chemin du journal pour un workspace (un fichier par workspace, clé
+   * = sha256(realpath(workspacePath))[:16]).
+   */
+  private workspaceTemplateJournalPath(workspacePath: string): string {
+    const journalDir = process.env.ROOSYNC_WORKSPACE_TEMPLATE_JOURNAL_DIR
+      || join(homedir(), '.roo-state-manager', 'workspace-template-journal');
+    const key = createHash('sha256').update(workspacePath).digest('hex').slice(0, 16);
+    return join(journalDir, `${key}.json`);
+  }
+
+  /** realpath best-effort : retombe sur resolve() si le chemin n'existe pas encore. */
+  private async resolveRealPathSafe(p: string): Promise<string> {
+    try {
+      return await fs.realpath(p);
+    } catch {
+      return resolvePath(p);
+    }
+  }
+
+  /** Garde-catastrophe : refuse une racine de disque ou le répertoire personnel. */
+  private isCatastrophicWorkspacePath(p: string): boolean {
+    const norm = (s: string) => {
+      const r = resolvePath(s);
+      return process.platform === 'win32' ? r.toLowerCase() : r;
+    };
+    const resolved = resolvePath(p);
+    const driveRoot = parsePath(resolved).root;
+    if (driveRoot && norm(resolved) === norm(driveRoot)) {
+      return true;
+    }
+    const home = homedir();
+    if (home && norm(resolved) === norm(home)) {
+      return true;
+    }
+    return false;
+  }
+
+  /** #3111 — `child` est-il `parent` ou l'un de ses descendants (comparaison normalisée) ? */
+  private isPathWithin(child: string, parent: string): boolean {
+    const norm = (s: string) => {
+      const r = resolvePath(s);
+      return process.platform === 'win32' ? r.toLowerCase() : r;
+    };
+    const c = norm(child);
+    const p = norm(parent);
+    return c === p || c.startsWith(p.endsWith(sep) ? p : p + sep);
+  }
+
+  /** #3111 — Égalité de deux chemins après normalisation (realpath déjà appliqué en amont). */
+  private isSamePath(a: string, b: string): boolean {
+    return this.isPathWithin(a, b) && this.isPathWithin(b, a);
+  }
+
+  /**
+   * #3111 — Le fichier journalisé est-il encore EXACTEMENT ce que l'apply a écrit ?
+   * Journal ancien sans empreinte : traité comme intact (compatibilité).
+   * Illisible : traité comme modifié (fail-closed — on ne supprime pas ce qu'on
+   * ne peut pas prouver intact).
+   */
+  private async isTemplateFileUnchanged(file: string, expectedHash?: string): Promise<boolean> {
+    if (!expectedHash) return true;
+    try {
+      const current = await fs.readFile(file);
+      return createHash('sha256').update(current).digest('hex') === expectedHash;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Crée `dir` en pistant les répertoires RÉELLEMENT créés (shallow-first).
+   *
+   * #3111 (revue po-2028, 23/11) — création NIVEAU PAR NIVEAU, chaque répertoire
+   * étant enregistré DÈS qu'il existe. L'ancienne forme `mkdir({recursive:true})`
+   * puis remplissage du Set ne laissait aucune trace d'un `mkdir` partiellement
+   * réussi : un ENOSPC au milieu de l'arborescence créait des ancêtres orphelins
+   * hors journal, que le create-only rendait ensuite non réparables.
+   */
+  private async ensureDirsTracked(dir: string, createdDirsSet: Set<string>): Promise<void> {
+    const missing: string[] = [];
+    let current = dir;
+    while (!existsSync(current)) {
+      missing.push(current);
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+    if (missing.length === 0) return;
+    // `missing` est deepest-first : on l'inverse pour créer parent avant enfant.
+    for (const d of missing.reverse()) {
+      try {
+        await fs.mkdir(d);
+      } catch (mkdirErr) {
+        // Course bénigne : un autre acteur a créé le répertoire entre-temps.
+        // Il n'est alors PAS de notre fait : ne pas l'enregistrer comme créé.
+        if ((mkdirErr as NodeJS.ErrnoException).code === 'EEXIST') continue;
+        throw mkdirErr;
+      }
+      createdDirsSet.add(d);
+    }
+  }
+
+  private async writeWorkspaceTemplateJournal(
+    journalPath: string,
+    workspacePath: string,
+    files: string[],
+    createdDirs: string[],
+    fileHashes: Record<string, string>
+  ): Promise<void> {
+    await fs.mkdir(dirname(journalPath), { recursive: true });
+    const payload = {
+      workspacePath,
+      appliedAt: new Date().toISOString(),
+      files,
+      fileHashes,
+      createdDirs,
+    };
+    // #3111 — écriture atomique du journal aussi : une coupure pendant sa
+    // réécriture ne tronque pas un journal existant (le précédent reste lisible).
+    const tmp = `${journalPath}.tmp-${process.pid}-${Date.now()}`;
+    try {
+      await fs.writeFile(tmp, JSON.stringify(payload, null, 2), 'utf-8');
+      await fs.rename(tmp, journalPath);
+    } catch (err) {
+      try { await fs.unlink(tmp); } catch { /* tmp jamais créé / déjà retiré */ }
+      throw err;
+    }
+  }
+
+  /**
+   * #3111 — Applique les modèles `workspace-template/<rel>` du paquet dans
+   * `options.workspacePath`. Create-only : jamais d'écrasement. dryRun par
+   * défaut = TRUE (`options.dryRun !== false` simule). Écrit un journal des
+   * fichiers créés pour un rollback ultérieur.
+   */
+  private async applyWorkspaceTemplate(
+    configDir: string,
+    options: ApplyConfigOptions,
+    errors: string[]
+  ): Promise<{ created: string[]; skippedExisting: string[]; journalPath: string | null }> {
+    const created: string[] = [];
+    const skippedExisting: string[] = [];
+    const createdDirsSet = new Set<string>();
+    // #3111 — empreinte du contenu ÉCRIT : le rollback n'efface que ce qui est
+    // encore intact (un fichier modifié depuis l'apply est épargné et signalé).
+    const fileHashes: Record<string, string> = {};
+    // dryRun DEFAULT = TRUE pour cette cible : seul `false` explicite écrit.
+    const simulate = options.dryRun !== false;
+
+    // 1. Valider le workspace destination
+    const workspacePathRaw = options.workspacePath;
+    if (!workspacePathRaw) {
+      errors.push('workspace-template: workspacePath est requis pour apply (chemin absolu).');
+      return { created, skippedExisting, journalPath: null };
+    }
+    if (!isAbsolute(workspacePathRaw)) {
+      errors.push(`workspace-template: workspacePath doit être ABSOLU: ${workspacePathRaw}`);
+      return { created, skippedExisting, journalPath: null };
+    }
+    const workspacePath = await this.resolveRealPathSafe(workspacePathRaw);
+    if (this.isCatastrophicWorkspacePath(workspacePath)) {
+      errors.push(`workspace-template: workspacePath refusé (racine de disque ou répertoire personnel): ${workspacePath}`);
+      return { created, skippedExisting, journalPath: null };
+    }
+
+    // 2. Lire le manifeste du paquet, ne garder que workspace-template/
+    const manifestPath = join(configDir, 'manifest.json');
+    if (!existsSync(manifestPath)) {
+      errors.push(`workspace-template: manifest introuvable dans le paquet: ${manifestPath}`);
+      return { created, skippedExisting, journalPath: null };
+    }
+    const manifest = await readJSONFileWithoutBOM<ConfigManifest>(manifestPath);
+    const entries = (manifest.files || []).filter(
+      f => typeof f.path === 'string' && f.path.startsWith('workspace-template/')
+    );
+
+    // #3111 (revue po-2028, 23/11 ; 2ᵉ passe) — journal DURABLE, écrit AVANT
+    // publication : l'INTENTION (chemin + empreinte) est journalisée, PUIS le
+    // fichier est publié atomiquement SANS écrasement. Un kill/ENOSPC à
+    // n'importe quel instant laisse donc un journal ⊇ ce qui est sur disque ;
+    // le rollback ignore les entrées absentes (jamais créées) et ne supprime
+    // jamais rien sans preuve (create-only ne rend plus l'orphelin invisible).
+    const journalPathForWs = simulate ? null : this.workspaceTemplateJournalPath(workspacePath);
+    const journalFiles = new Set<string>();
+    // Entrées explicitement RETIRÉES dans CET apply (course create-only perdue :
+    // le fichier n'est pas de notre fait). Sans ce filtre, la relecture du journal
+    // à chaque flush réintroduirait l'entrée qu'on vient de retirer localement.
+    const journalRemoved = new Set<string>();
+    const flushJournal = async (): Promise<void> => {
+      if (!journalPathForWs) return;
+      // Les ancêtres créés AU-DESSUS du workspace ne sont pas journalisés : la
+      // cohérence fail-closed du rollback exige tout DANS le workspace, et les
+      // laisser vides est inoffensif — c'est ce qui rend un apply sur workspace
+      // neuf (chemin encore inexistant) réellement réparable.
+      const dirsInWorkspace = Array.from(createdDirsSet).filter(d => this.isPathWithin(d, workspacePath));
+      if (journalFiles.size === 0 && dirsInWorkspace.length === 0) return;
+      // #3111 (revue coordinateur 24/11) — RELU à CHAQUE flush, jamais mis en
+      // cache pour tout l'apply : un apply concurrent sur le même workspace
+      // enrichit le journal entre nos propres écritures. Faire l'union sur un
+      // instantané lu une seule fois au départ réécrirait le journal complet en
+      // PERDANT les entrées de l'autre — le rollback ne pourrait alors plus
+      // supprimer les fichiers qu'il a créés.
+      let journalPrev: { files: string[]; dirs: string[]; hashes: Record<string, string> } = { files: [], dirs: [], hashes: {} };
+      if (existsSync(journalPathForWs)) {
+        try {
+          const prev = await readJSONFileWithoutBOM<{ files?: string[]; createdDirs?: string[]; fileHashes?: Record<string, string> }>(journalPathForWs);
+          journalPrev = { files: prev.files || [], dirs: prev.createdDirs || [], hashes: prev.fileHashes || {} };
+        } catch (mergeErr) {
+          errors.push(`workspace-template: journal existant illisible, réécrit: ${mergeErr instanceof Error ? mergeErr.message : String(mergeErr)}`);
+        }
+      }
+      const unionFiles = Array.from(new Set<string>([...journalPrev.files, ...journalFiles])).filter(f => !journalRemoved.has(f));
+      const unionDirs = Array.from(new Set<string>([...journalPrev.dirs, ...dirsInWorkspace]));
+      const unionHashes: Record<string, string> = { ...journalPrev.hashes, ...fileHashes };
+      for (const f of journalRemoved) delete unionHashes[f];
+      await this.writeWorkspaceTemplateJournal(journalPathForWs, workspacePath, unionFiles, unionDirs, unionHashes);
+    };
+    /** Solde le journal ; rend false si la durabilité n'est plus garantie. */
+    const safeFlush = async (): Promise<boolean> => {
+      try {
+        await flushJournal();
+        return true;
+      } catch (jErr) {
+        errors.push(`workspace-template: journal non réécrit: ${jErr instanceof Error ? jErr.message : String(jErr)}`);
+        return false;
+      }
+    };
+
+    for (const entry of entries) {
+      const relRaw = entry.path.slice('workspace-template/'.length);
+      const segs = relRaw.split(/[\\/]+/);
+      // Refuser tout segment `..`/vide, un chemin absolu, ou une sortie du workspace.
+      if (!relRaw || isAbsolute(relRaw) || segs.some(s => s === '..' || s === '' || s === '.')) {
+        errors.push(`workspace-template: chemin invalide (segment interdit): ${entry.path}`);
+        continue;
+      }
+      const dest = resolvePath(workspacePath, relRaw);
+      if (dest !== workspacePath && !dest.startsWith(workspacePath + sep)) {
+        errors.push(`workspace-template: chemin hors workspace refusé: ${entry.path}`);
+        continue;
+      }
+      const sourcePath = join(configDir, 'workspace-template', ...segs);
+      if (!existsSync(sourcePath)) {
+        errors.push(`workspace-template: fichier source absent du paquet: ${entry.path}`);
+        continue;
+      }
+      if (existsSync(dest)) {
+        // Create-only : jamais d'écrasement.
+        skippedExisting.push(segs.join('/'));
+        continue;
+      }
+      if (simulate) {
+        created.push(dest);
+        continue;
+      }
+      try {
+        await this.ensureDirsTracked(dirname(dest), createdDirsSet);
+        const buffer = await fs.readFile(sourcePath);
+        const hash = createHash('sha256').update(buffer).digest('hex');
+        // 1) INTENTION journalisée AVANT toute écriture. Si ce flush échoue, on
+        //    n'écrit RIEN : jamais de fichier sur disque absent du journal.
+        fileHashes[dest] = hash;
+        journalFiles.add(dest);
+        if (!(await safeFlush())) break;
+        // 2) Tmp complet puis publication ATOMIQUE SANS ÉCRASEMENT.
+        const tmp = `${dest}.roosync-wt-tmp-${process.pid}-${Date.now()}`;
+        try {
+          await fs.writeFile(tmp, buffer);
+          // `link` publie SANS remplacer : EEXIST si la destination est apparue.
+          // `rename` REMPLACERAIT silencieusement (MOVEFILE_REPLACE_EXISTING sur
+          // Windows, mesuré par la vérification indépendante du 23/11) — il
+          // violerait le create-only dans la fenêtre de course.
+          let published = false;
+          try {
+            await fs.link(tmp, dest);
+            published = true;
+          } catch (linkErr) {
+            if ((linkErr as NodeJS.ErrnoException).code !== 'EEXIST') {
+              // FS sans liens durs (FAT/exFAT) : repli copyFile EXCL, qui refuse
+              // aussi une destination existante.
+              try {
+                await fs.copyFile(tmp, dest, fsConstants.COPYFILE_EXCL);
+                published = true;
+              } catch (cfErr) {
+                if ((cfErr as NodeJS.ErrnoException).code !== 'EEXIST') {
+                  // Une copie interrompue (ex. ENOSPC) laisse une destination
+                  // PARTIELLE dont le sha256 ≠ l'intention : le rollback
+                  // l'épargnerait comme « modifiée » et le create-only bloquerait
+                  // le retry. On retire ce reste (créé par CE copyFile) avant de
+                  // propager. ENOENT ignoré : destination jamais créée ou déjà
+                  // retirée ; un autre échec ne masque pas la cause d'origine.
+                  try { await fs.unlink(dest); } catch (unlinkErr) {
+                    if ((unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+                      errors.push(`workspace-template: destination partielle non retirée ${dest}: ${unlinkErr instanceof Error ? unlinkErr.message : String(unlinkErr)}`);
+                    }
+                  }
+                  throw cfErr;
+                }
+              }
+            }
+          }
+          if (!published) {
+            // Course create-only : le fichier n'est PAS de notre fait — on le
+            // retire du journal (l'intention n'a jamais été réalisée) et on
+            // l'annonce comme existant.
+            journalFiles.delete(dest);
+            journalRemoved.add(dest);
+            delete fileHashes[dest];
+            await safeFlush();
+            skippedExisting.push(segs.join('/'));
+            continue;
+          }
+        } finally {
+          try { await fs.unlink(tmp); } catch { /* jamais créé / déjà retiré */ }
+        }
+        created.push(dest);
+      } catch (fileErr) {
+        errors.push(`workspace-template: écriture échouée pour ${segs.join('/')}: ${fileErr instanceof Error ? fileErr.message : String(fileErr)}`);
+        // Solde l'intention AVANT de rendre la main (les entrées non réalisées
+        // sont inoffensives : le rollback ignore les fichiers absents). Puis on
+        // s'arrête — un disque plein ne se répare pas en réessayant le suivant.
+        await safeFlush();
+        break;
+      }
+    }
+
+    // 3. Journal : s'il existe (créations, no-op sur journal antérieur, ou solde
+    // après échec), on le rend au caller ; sinon null.
+    const journalPath: string | null =
+      !simulate && journalPathForWs && existsSync(journalPathForWs) ? journalPathForWs : null;
+
+    return { created, skippedExisting, journalPath };
+  }
+
+  /**
+   * #3111 — Rollback de la cible workspace-template. Supprime UNIQUEMENT les
+   * fichiers listés dans le journal, élague les répertoires créés (deepest
+   * first, ENOTEMPTY ignoré), puis supprime le journal. `dryRun:true` simule.
+   */
+  public async rollbackWorkspaceTemplateConfig(options: {
+    targets?: ConfigTarget[];
+    workspacePath?: string;
+    dryRun?: boolean;
+  }): Promise<{
+    success: boolean;
+    filesRemoved: number;
+    filesSkippedModified: number;
+    dirsRemoved: number;
+    journalPath: string | null;
+    errors: string[];
+    dryRun: boolean;
+  }> {
+    const errors: string[] = [];
+    const result = await this.rollbackWorkspaceTemplate(options, errors);
+    return { ...result, errors };
+  }
+
+  private async rollbackWorkspaceTemplate(
+    options: { targets?: ConfigTarget[]; workspacePath?: string; dryRun?: boolean },
+    errors: string[]
+  ): Promise<{
+    success: boolean;
+    filesRemoved: number;
+    filesSkippedModified: number;
+    dirsRemoved: number;
+    journalPath: string | null;
+    dryRun: boolean;
+  }> {
+    const simulate = options.dryRun === true;
+
+    if (!options.targets || !options.targets.includes('workspace-template')) {
+      errors.push('workspace-template: rollback exige targets contenant "workspace-template".');
+      return { success: false, filesRemoved: 0, filesSkippedModified: 0, dirsRemoved: 0, journalPath: null, dryRun: simulate };
+    }
+
+    const workspacePathRaw = options.workspacePath;
+    if (!workspacePathRaw || !isAbsolute(workspacePathRaw)) {
+      errors.push(`workspace-template: workspacePath ABSOLU requis pour rollback: ${workspacePathRaw ?? '(absent)'}`);
+      return { success: false, filesRemoved: 0, filesSkippedModified: 0, dirsRemoved: 0, journalPath: null, dryRun: simulate };
+    }
+
+    const workspacePath = await this.resolveRealPathSafe(workspacePathRaw);
+    if (this.isCatastrophicWorkspacePath(workspacePath)) {
+      errors.push(`workspace-template: workspacePath refusé (racine de disque ou répertoire personnel): ${workspacePath}`);
+      return { success: false, filesRemoved: 0, filesSkippedModified: 0, dirsRemoved: 0, journalPath: null, dryRun: simulate };
+    }
+
+    // #3111 (revue po-2028, 23/11) — deux clés possibles : `realpath` (le workspace
+    // existe aujourd'hui) et `resolve` (apply fait quand il n'existait pas encore).
+    // Le repli couvre les différences d'ÉCRITURE (casse, nom court 8.3) ; un alias
+    // STRUCTUREL (jonction/symlink) reste refusé par la cohérence fail-closed
+    // ci-dessous — jamais de suppression sur un workspace déclaré différent.
+    const primaryJournal = this.workspaceTemplateJournalPath(workspacePath);
+    const altJournal = this.workspaceTemplateJournalPath(resolvePath(workspacePathRaw));
+    const journalPath = existsSync(primaryJournal)
+      ? primaryJournal
+      : (altJournal !== primaryJournal && existsSync(altJournal) ? altJournal : primaryJournal);
+    if (!existsSync(journalPath)) {
+      errors.push(`workspace-template: no journal for ${workspacePathRaw} (nothing to roll back)`);
+      return { success: false, filesRemoved: 0, filesSkippedModified: 0, dirsRemoved: 0, journalPath: null, dryRun: simulate };
+    }
+
+    let journal: { workspacePath?: string; files?: string[]; fileHashes?: Record<string, string>; createdDirs?: string[] };
+    try {
+      journal = await readJSONFileWithoutBOM<{ workspacePath?: string; files?: string[]; fileHashes?: Record<string, string>; createdDirs?: string[] }>(journalPath);
+    } catch (err) {
+      errors.push(`workspace-template: journal illisible ${journalPath}: ${err instanceof Error ? err.message : String(err)}`);
+      return { success: false, filesRemoved: 0, filesSkippedModified: 0, dirsRemoved: 0, journalPath, dryRun: simulate };
+    }
+
+    const files = journal.files || [];
+    const createdDirs = journal.createdDirs || [];
+    const fileHashes = journal.fileHashes || {};
+
+    // #3111 — Fail-closed : le journal ne décrit QUE des cibles créées DANS le
+    // workspace. Un journal corrompu ou édité (entrée hors workspace, workspace
+    // déclaré différent) annule TOUT le rollback — jamais de suppression sur la
+    // foi d'une liste non vérifiée.
+    const journalCoherent =
+      (journal.workspacePath === undefined || this.isSamePath(journal.workspacePath, workspacePath)) &&
+      files.every(f => typeof f === 'string' && this.isPathWithin(f, workspacePath)) &&
+      createdDirs.every(d => typeof d === 'string' && this.isPathWithin(d, workspacePath)) &&
+      Object.keys(fileHashes).every(k => this.isPathWithin(k, workspacePath));
+    if (!journalCoherent) {
+      errors.push(`workspace-template: journal refusé (entrée hors workspace ou workspace déclaré différent): ${journalPath}`);
+      return { success: false, filesRemoved: 0, filesSkippedModified: 0, dirsRemoved: 0, journalPath, dryRun: simulate };
+    }
+
+    if (simulate) {
+      let intact = 0;
+      let modified = 0;
+      for (const f of files) {
+        if (!existsSync(f)) continue;
+        if (await this.isTemplateFileUnchanged(f, fileHashes[f])) intact++;
+        else modified++;
+      }
+      return { success: true, filesRemoved: intact, filesSkippedModified: modified, dirsRemoved: 0, journalPath, dryRun: true };
+    }
+
+    // 1. Supprimer UNIQUEMENT les fichiers listés ET encore intacts. Un fichier
+    //    modifié depuis l'apply n'est PAS une sortie de ce service : il est
+    //    épargné, signalé, et reste au journal (pas de suppression sans preuve).
+    let filesRemoved = 0;
+    const skippedModified: string[] = [];
+    for (const f of files) {
+      if (!existsSync(f)) continue;
+      if (!(await this.isTemplateFileUnchanged(f, fileHashes[f]))) {
+        skippedModified.push(f);
+        continue;
+      }
+      try {
+        await fs.unlink(f);
+        filesRemoved++;
+      } catch (err) {
+        errors.push(`workspace-template: suppression impossible ${f}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // 2. Élaguer les répertoires créés, du plus profond au moins profond.
+    let dirsRemoved = 0;
+    const sortedDirs = [...createdDirs].sort((a, b) => b.length - a.length);
+    for (const d of sortedDirs) {
+      if (!existsSync(d)) continue;
+      try {
+        await fs.rmdir(d);
+        dirsRemoved++;
+      } catch (err: any) {
+        if (err && (err.code === 'ENOTEMPTY' || err.code === 'ENOENT' || err.code === 'EEXIST')) {
+          continue; // non vide ou déjà absent : attendu, on continue
+        }
+        errors.push(`workspace-template: rmdir impossible ${d}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    // 3. Journal : retiré quand tout est soldé ; sinon réécrit avec les seuls
+    //    fichiers épargnés (modifiés) pour qu'un rollback ultérieur les retrouve.
+    if (skippedModified.length === 0) {
+      try {
+        await fs.unlink(journalPath);
+      } catch (err) {
+        errors.push(`workspace-template: suppression du journal impossible ${journalPath}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    } else {
+      try {
+        const keptHashes: Record<string, string> = {};
+        for (const f of skippedModified) {
+          if (fileHashes[f]) keptHashes[f] = fileHashes[f];
+        }
+        await this.writeWorkspaceTemplateJournal(journalPath, workspacePath, skippedModified, createdDirs, keptHashes);
+      } catch (err) {
+        errors.push(`workspace-template: réécriture du journal impossible ${journalPath}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
+    return { success: errors.length === 0, filesRemoved, filesSkippedModified: skippedModified.length, dirsRemoved, journalPath, dryRun: false };
   }
 }

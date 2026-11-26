@@ -54,6 +54,7 @@ function parseDiagnostics(result: any): any {
 function createMockQdrant(overrides: Partial<{
     getCollections: ReturnType<typeof vi.fn>;
     getCollection: ReturnType<typeof vi.fn>;
+    query: ReturnType<typeof vi.fn>;
 }> = {}) {
     return {
         getCollections: overrides.getCollections ?? vi.fn().mockResolvedValue({
@@ -71,7 +72,10 @@ function createMockQdrant(overrides: Partial<{
                     }
                 }
             }
-        })
+        }),
+        // #4880 — diagnose now times a bounded search probe on the real search path:
+        // the mock must answer it, otherwise the healthy path degrades.
+        query: overrides.query ?? vi.fn().mockResolvedValue({ points: [] })
     };
 }
 
@@ -461,9 +465,16 @@ describe('handleDiagnoseSemanticIndex', () => {
             const result = await handleDiagnoseSemanticIndex(conversationCache);
             const diag = parseDiagnostics(result);
 
-            expect(diag.errors.length).toBeGreaterThan(0);
-            const errorText = diag.errors.join(' ');
-            expect(errorText).toContain('Timeout reading collection');
+            // #4880 criterion 2 — a getCollection timeout is the exhaustive COUNT
+            // being slow (IO-bound, not a fault): the raw message is kept in
+            // warnings, and the bounded read decides the status (this mock has no
+            // scroll implementation, so the read itself fails → collection_error).
+            expect(mockQdrant.getCollection).toHaveBeenCalled();
+            const warningText = diag.warnings.join(' ');
+            expect(warningText).toContain('Timeout reading collection');
+            expect(warningText).toContain('IO-bound, pas une panne');
+            expect(diag.details.collection_info.status).toBe('io_bound_pending');
+            expect(diag.status).toBe('collection_error');
         });
 
         it('should return collection_error when getCollections succeeds but getCollection fails', async () => {

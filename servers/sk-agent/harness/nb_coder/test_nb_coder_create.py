@@ -240,8 +240,10 @@ def test_count_mismatch_or_partial_idx_stays_unaddressable():
     partial = [{"type": "code", "intent": "x"} for _ in range(3)]
     partial[1]["idx"] = 1
     assert D.creation_plan_seq_fill(partial, 3) is False
-    assert D.creation_plan_addressing(wrong_count, 10) == [
-        f"position {p}: missing/non-integer idx" for p in range(12)]
+    errors = D.creation_plan_addressing(wrong_count, 10)
+    assert errors[:12] == [f"position {p}: missing/non-integer idx" for p in range(12)]
+    assert errors[12].startswith("coverage: 10 source cell(s) unaddressed")
+    assert len(errors) == 13
 
 
 def test_create_segments_short_segment_repaired(monkeypatch):

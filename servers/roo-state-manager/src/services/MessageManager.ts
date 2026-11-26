@@ -47,6 +47,7 @@ import {
   readWholeChannelFromPg,
   readChannelSweepRowsFromPg,
   mapRowToMessage,
+  channelSweepBodyChars,
 } from './unified-store/roosync-channel-read.js';
 // #3151 Phase D — PG-primary channel writes (env-gated, GDrive fallback on
 // PG failure). The dual-write above made GDrive primary and PG the mirror;
@@ -2641,7 +2642,11 @@ export class MessageManager {
         return 0;
       }
       const startedAt = Date.now();
-      const pgPool = await readWholeChannelFromPg(pgReader);
+      // #4731 — bodyless sweep read: neither consumer below reads `body`
+      // (cleanup: options.expires_at/auto_destruct; reminders: options +
+      // subject/id/from/to). Default bodyless, kill-switch
+      // ROOSYNC_CHANNEL_SWEEP_BODYLESS=0 restores the full body.
+      const pgPool = await readWholeChannelFromPg(pgReader, { bodyChars: channelSweepBodyChars() });
       noteChannelPgSweepDuration(Date.now() - startedAt);
       if (pgPool !== null) {
         noteChannelPgReadSuccess();
@@ -2726,7 +2731,8 @@ export class MessageManager {
       }
       noteChannelPgReminderProbe();
       const startedAt = Date.now();
-      const pgPool = await readWholeChannelFromPg(pgReader);
+      // #4731 — same bodyless projection as the cleanup sweep (see above).
+      const pgPool = await readWholeChannelFromPg(pgReader, { bodyChars: channelSweepBodyChars() });
       noteChannelPgSweepDuration(Date.now() - startedAt);
       if (pgPool !== null) {
         logger.info(`[channel-pg] reminder scan served from PG in ${Date.now() - startedAt}ms (${pgPool.length} messages)`);

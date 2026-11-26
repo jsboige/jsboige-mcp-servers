@@ -154,6 +154,23 @@ describe('probeQdrantBackend (#2628/#2977 regression suite)', () => {
     expect(calledUrl).toBe('https://qdrant.example.com/collections');
   });
 
+  // #4880: the probe dials the SAME URL as the Qdrant client.
+  it('dials a localhost QDRANT_URL as 127.0.0.1 (kill switch keeps the name)', async () => {
+    process.env.QDRANT_URL = 'http://localhost:6333';
+    delete process.env.QDRANT_LOOPBACK_LITERAL;
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 200 });
+    await probeQdrantBackend();
+    expect(mockFetch.mock.calls[0][0]).toBe('http://127.0.0.1:6333/collections');
+    process.env.QDRANT_LOOPBACK_LITERAL = '0';
+    try {
+      mockFetch.mockResolvedValueOnce({ ok: true, status: 200 });
+      await probeQdrantBackend();
+      expect(mockFetch.mock.calls[1][0]).toBe('http://localhost:6333/collections');
+    } finally {
+      delete process.env.QDRANT_LOOPBACK_LITERAL;
+    }
+  });
+
   // #2977: each non-reachable outcome now carries a cause-specific kind. 401/403 = AUTH
   // (server up, key refused); 503/500/404 = HTTP (server answered, request failed).
   it.each([
