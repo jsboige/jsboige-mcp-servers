@@ -171,6 +171,13 @@ Variables de wiring (`NBCODER_SK_DIR/SK_PY/SK_CONFIG`, `NBCODER_GATE`,
 `NBCODER_ENGINE_METRICS`, `NBCODER_KERNEL_MAP`, `SK_AGENT_NB_CODER_HOME`) :
 résolution sibling par défaut, surchargeables — détail dans `harness/README.md`.
 
+**Prévol (24/11)** : avant toute dépense, le pilote refuse trois familles de défaut —
+chemin câblé absent (`refused-wiring-unresolved`), variable de clé vide nommée par
+`api_key_env` (`refused-credential-unresolved`), cible/tumeur/métadonnée injoignable sur
+un `origin/main` fraîchement récupéré (`refused-target-unresolved`). Trace + ligne de
+journal, sortie 2, remède sur stderr ; `NBCODER_PREFLIGHT_CREDENTIALS=0` désarme le seul
+contrôle de crédit. Détail : `harness/README.md` §Preflight refusals.
+
 ## 5. Schedulé vs à-la-demande — un seul état
 
 - **po-2028 (MiniMax), ai-01:vllm (swift)** : le planificateur
