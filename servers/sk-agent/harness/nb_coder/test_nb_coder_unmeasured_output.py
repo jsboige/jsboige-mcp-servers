@@ -2,7 +2,7 @@
 # NEW in this tree (26/11): no jsboige/vllm original. The failure class it pins (a twin
 # declaring a parity comparison it never ran) was measured on CoursIA batch o41, after the
 # 22/11 cutover. This tree is the source of truth; the vllm copy of the sibling tests stays
-# frozen at 7a09e1caec22 — never re-copy it over this tree.
+# frozen at 7a09e1caec22441d9402ab25a222206c8905bfe1 — never re-copy it over this tree.
 # -----------------------------------------------------------------------------
 """unmeasured-output gate (26/11, CoursIA batch o41): the producer left its cited-data
 collection EMPTY and guarded the parity comparison behind it. The cell ran clean, its
