@@ -188,6 +188,25 @@ def test_the_build_probe_runs_before_every_tranche_but_the_first(monkeypatch):
     assert "verdict" not in rec
 
 
+def test_a_second_entry_that_skipped_the_plan_probe_probes_its_first_tranche(monkeypatch):
+    """Review ai-01 (26/11): the one skip belongs to the first build call of the RUN, not
+    to the first call of each entry into create_segments. Entered twice on the same record
+    without the "plan" probe in between, the second entry probes its own first tranche --
+    and a claim taken in between is seen before any model call."""
+    calls = []
+    _quiet_model(monkeypatch, calls)
+    readings = iter(["myia-po-2024:CoursIA"])   # the marker is there from the second entry on
+    monkeypatch.setattr(D, "last_foreign_marker", lambda *a: next(readings))
+    monkeypatch.setattr(D, "check_claim", lambda *a: {"ok": False, "rc": 1})
+    rec = _build_rec()
+    asyncio.run(D.create_segments(None, _args(), rec, None, _plan(8), 8, ""))
+    assert rec["midrun_claim_plan_covered"] == "build+0"
+    out = asyncio.run(D.create_segments(None, _args(), rec, None, _plan(8), 8, ""))
+    assert out == {}
+    assert calls == ["2-build+0"], "the second entry never reaches its first tranche"
+    assert rec["verdict"] == "late-claim-refused:midrun:build+0:myia-po-2024:CoursIA"
+
+
 def test_no_build_probe_when_the_claim_was_not_deferred(monkeypatch):
     calls = []
     _quiet_model(monkeypatch, calls)
@@ -197,6 +216,7 @@ def test_no_build_probe_when_the_claim_was_not_deferred(monkeypatch):
     assert calls == ["2-build+0", "2-build+8", "2-build+16"]
     assert [c["idx"] for c in out["cells"]] == list(range(18))
     assert "midrun_claim_probes" not in rec
+    assert "midrun_claim_plan_covered" not in rec
 
 
 def test_a_claim_taken_between_two_tranches_stops_before_the_next_call(monkeypatch):

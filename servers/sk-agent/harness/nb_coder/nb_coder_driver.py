@@ -930,13 +930,19 @@ def last_foreign_marker(issue_n: int, lane: str, slug: str = _GH_PIN_REPO) -> st
     return None
 
 
+def midrun_armed(rec: dict) -> bool:
+    """True when the claim was DEFERRED (--claim-late): the only state in which a mid-run
+    probe has anything to guard."""
+    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
+    return cr.get("deferred") == "late"
+
+
 def midrun_claim_abort(args, rec: dict, stage: str) -> bool:
     """True when the run must stop now: the claim was deferred (--claim-late), another
     lane's marker is the issue's last word, and the scoped guard sees a COLLISION on this
     notebook (held by another lane, or an occupying PR that may touch it). A guard that
     times out, is broken, or answers a disjoint occupation never stops the run."""
-    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
-    if cr.get("deferred") != "late":
+    if not midrun_armed(rec):
         return False
     holder = last_foreign_marker(args.issue, args.lane)
     probe: dict = {"stage": stage, "at": utcnow(), "holder": holder}
@@ -2198,11 +2204,16 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
     # tokens spent building a notebook another lane already held. A probe before every
     # build call but the FIRST (the "plan" probe covers that one) bounds the exposure
     # to the call in flight. Inert unless --claim-late deferred the claim.
-    probed = {"n": 0}
-
+    # The one skip is RUN-scoped, not invocation-scoped (review ai-01, 26/11): the stage it
+    # covered is named in the record the one time it is skipped, so an entry into this
+    # function that did not pass the "plan" probe (a second call site added later, a resume
+    # that does not replay plan) finds the name and probes its own first tranche.
     def claim_stop(stage: str) -> bool:
-        probed["n"] += 1
-        return probed["n"] > 1 and midrun_claim_abort(args, rec, stage)
+        if rec.get("midrun_claim_plan_covered"):
+            return midrun_claim_abort(args, rec, stage)
+        if midrun_armed(rec):
+            rec["midrun_claim_plan_covered"] = stage
+        return False
 
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
