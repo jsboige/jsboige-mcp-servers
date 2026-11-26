@@ -81,11 +81,32 @@
  *      says so in the JSON (nominal: PG holds the message), stderr says why.
  * The gate-closed path reads nothing more and is unchanged.
  *
+ * Pre-review ms#1919 (ai-01, 26/11 04:03Z — two constats on the head above):
+ *   1. PG success, key ABSENT at the first read: the file half used to be
+ *      skipped entirely (`liveKey ? read : nothing`), so a key PG does not
+ *      answer for but whose file exists was mirrored from a ONE-message
+ *      state — the file's own content erased. The file half is now read on
+ *      that path too, for the freshness comparison only: nothing is folded
+ *      (the retirement guard keeps the last word on what a retired key
+ *      holds), the mirror is simply not written when the file carries a
+ *      message the written state lacks.
+ *   2. PG failure AND the file half unreadable: the CLI cannot know what the
+ *      file holds, so it REFUSES the whole-file rewrite instead of blind-
+ *      overwriting another lane's only copy. The escalation is not dropped:
+ *      it is held on the PG half by a second bounded attempt. When that
+ *      attempt fails too, nothing holds the message — exit 1 with the named
+ *      reasons, which is the honest signal (a silent rewrite that erases
+ *      someone else's append is the worse failure).
+ * The gate-closed path reads nothing more and is unchanged.
+ *
  * Exit codes: 0 posted — at least one surface holds the message (a PG-sync
  * miss on the file-first path is a WARN, not an error: the GDrive write
  * stands and the journal reconcile converges it; a failed MIRROR under the
- * gate is a WARN too: PG holds the message) · 1 no surface held it (file
- * write failed) · 2 usage / contract violation.
+ * gate is a WARN too: PG holds the message; a REFUSED fallback rewrite is a
+ * WARN when the PG retry holds it — `gdriveSkipped: true` +
+ * `fileRewriteSkipped`) · 1 no surface held it (file write failed, or the
+ * fallback rewrite was refused AND the PG retry failed) · 2 usage / contract
+ * violation.
  *
  * Usage (from servers/roo-state-manager/):
  *   node scripts/rsm-dashboard-append.mjs --machine myia-po-2023 --content-file msg.txt
@@ -325,9 +346,10 @@ let output = null;
 try {
   dashboard = await readDashboardFile(key);
   // Review ms#1919: null here means the key is absent OR retired (#3782). The
-  // file half (read below, gated paths only) is consulted for a key this choke
-  // point declared live — a retired key's file is never rebuilt into a write.
-  let liveKey = dashboard !== null;
+  // file half is NOT folded into the base on that path (a retired key's file is
+  // never rebuilt into a write), but it IS still read before a mirror write:
+  // pre-review 26/11 constat 1 — a key PG does not answer for can have a file,
+  // and mirroring a one-message state would erase it.
   if (dashboard) {
     base = 'file';
   } else {
@@ -346,6 +368,9 @@ try {
   let pgFirst = null;
   // Review ms#1919 item 2: set when the GDrive mirror must NOT be written.
   let mirrorSkip = null;
+  // Pre-review constat 2: set when the file half could not be read on the
+  // fallback path — the rewrite is then refused (never blind-overwrite).
+  let fileRewriteRefused = null;
   // Resolved once per gated append: the freshness check and the write share it.
   let resolvedPath = null;
   if (!deduplicated) {
@@ -384,7 +409,11 @@ try {
         if (!relocked) {
           mirrorSkip = 'verrou append non repris (un autre détenteur écrit la clé)';
         } else {
-          const fileHalf = liveKey ? await readFileHalf(resolvedPath, key) : { state: null, error: null };
+          // Pre-review 26/11 constat 1: read on THIS path too — the first read
+          // answering null (absent/retired key) does not prove the file is
+          // empty, and a mirror built from a one-message state would erase it.
+          // Comparison only: nothing is folded into `next`.
+          const fileHalf = await readFileHalf(resolvedPath, key);
           if (fileHalf.error !== null) {
             mirrorSkip = `moitié fichier illisible (${fileHalf.error})`;
           } else if (fileOnlyMessages(next, fileHalf.state).length > 0) {
@@ -408,9 +437,13 @@ try {
           // post-write PG sync below carries them to PG.
           const fileHalf = await readFileHalf(resolvedPath, key);
           if (fileHalf.error !== null) {
-            console.error(`WARN: moitié fichier illisible (${fileHalf.error}) — repli sans vérification des ajouts uniquement fichier`);
+            // Pre-review 26/11 constat 2: the file half could not be read, so
+            // the CLI cannot know what the rewrite would destroy. Refuse it —
+            // the PG half takes the message instead (branch below).
+            fileRewriteRefused = fileHalf.error;
+          } else {
+            dashboard = withFileOnlyMessages(dashboard, fileHalf.state);
           }
-          dashboard = withFileOnlyMessages(dashboard, fileHalf.state);
         } else {
           // Absent or retired (#3782): the file half is NOT consulted — the
           // retirement guard keeps the last word on what a retired key holds.
@@ -450,6 +483,42 @@ try {
       pgSynced: true,
       gdriveSkipped: true, // the GDrive mirror was NOT written at this append; PG holds the message
     };
+  } else if (fileRewriteRefused !== null) {
+    // Pre-review 26/11 constat 2: PG failed AND the file half could not be
+    // read. Rewriting the whole file from a base that cannot be checked would
+    // blind-overwrite whatever the file holds (another lane's only copy, when
+    // its own PG attempt failed). The rewrite is refused; the escalation is
+    // held on the PG half by one more bounded attempt — it is never dropped
+    // silently. If that attempt fails too, nothing holds the message: exit 1
+    // with both reasons named (a silent erase is the worse failure).
+    let pgSynced = true;
+    let pgSyncReason;
+    try {
+      const outcome = await dualWriteDashboardSyncChecked(next);
+      pgSynced = outcome?.ok === true;
+      if (!pgSynced) pgSyncReason = outcome?.reason ?? String(outcome);
+    } catch (err) {
+      pgSynced = false;
+      pgSyncReason = err instanceof Error ? err.message : String(err);
+    }
+    if (pgSynced) {
+      posted = true;
+      console.error(`WARN: repli fichier refusé — moitié fichier illisible (${fileRewriteRefused}) ; le store PG (primaire) tient le message`);
+      output = {
+        ok: true,
+        key,
+        base,
+        unserialized,
+        messageId: message.id,
+        totalMessages: next.intercom.totalMessages,
+        pgSynced: true,
+        gdriveSkipped: true, // the file was NOT rewritten: its content could not be read
+        fileRewriteSkipped: fileRewriteRefused,
+      };
+    } else {
+      console.error(`ERREUR: repli fichier refusé (moitié fichier illisible : ${fileRewriteRefused}) et sync PG en échec (${pgSyncReason}) — aucune surface ne tient le message`);
+      process.exitCode = 1;
+    }
   } else {
     const pgMirrorMode = pgFirst?.ok === true;
     // Stamp at write time, as the tool does: the instrument compares it to

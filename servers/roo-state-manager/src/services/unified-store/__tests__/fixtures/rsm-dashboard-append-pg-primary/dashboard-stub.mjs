@@ -85,6 +85,15 @@ export async function readDashboardFile(key) {
     return null;
   }
 
+  // Pre-review ms#1919 (ai-01, 26/11 constat 1): the FIRST read answers null
+  // while the file exists — a key PG holds no readable row for, whose file
+  // still carries content. The mirror must not be built from a one-message
+  // state and erase it.
+  if (process.env.RSM_APPEND_TEST_ABSENT === 'first' && reads === 1) {
+    journal('read:absent');
+    return null;
+  }
+
   // PG first, as `dashboard.ts` does: a readable row answers, the file is only
   // the fallback. The PG view never carries the concurrent append.
   if (process.env.RSM_APPEND_TEST_PG_READ === 'pg') {

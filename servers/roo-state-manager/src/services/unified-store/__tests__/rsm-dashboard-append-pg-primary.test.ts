@@ -155,6 +155,7 @@ type Scenario = {
   readOnly?: boolean; // seeded, then write-protected: the read succeeds, the write throws
   pgRead?: 'pg';      // PG answers the reads (dashboard.ts PG-first) — never the concurrent append
   retired?: 'reread'; // the key is retired before the re-read (#3782)
+  absentFirst?: boolean; // pre-review 26/11 (1): the FIRST read answers null, the file exists
   seed?: string | null; // file state before the run (default SEED_FILE; null = no file)
 };
 
@@ -227,6 +228,7 @@ function runScenario(scenario: Scenario): Run {
       RSM_APPEND_TEST_RELOCK: scenario.relock ?? '',
       RSM_APPEND_TEST_PG_READ: scenario.pgRead ?? '',
       RSM_APPEND_TEST_RETIRED: scenario.retired ?? '',
+      RSM_APPEND_TEST_ABSENT: scenario.absentFirst ? 'first' : '',
     });
 
     const res = spawnSync(
@@ -337,7 +339,9 @@ describe('#4915 gate open + PG ok — PG first, G: is a stamped mirror', () => {
     ]);
   }, 15000);
 
-  it('a key that was absent gets its mirror: no file half to preserve, nothing to skip', () => {
+  it('a key that was absent and has NO file gets its mirror: nothing on disk to preserve', () => {
+    // Pre-review 26/11: "absent" alone no longer means "nothing to preserve" —
+    // see the pre-review describe for a key whose file exists.
     const run = runScenario({ gate: 'open', pg: 'ok', seed: null });
 
     expect(run.status).toBe(0);
@@ -453,22 +457,28 @@ describe('#4915 gate open + PG failure — the unchanged file-first fallback', (
     expect(run.stderr).not.toContain('ERREUR');
   }, 15000);
 
-  it('PG failed AND the file write failed → nothing holds the message, exit 1', () => {
+  it('PG failed AND the file half unreadable → rewrite refused, exit 1 when PG fails again', () => {
+    // Pre-review 26/11 constat 2: the file half cannot be read, so a whole-file
+    // rewrite would blind-overwrite it. It is refused (no `markdown` line at
+    // all) and the message is offered to PG one more time; that second attempt
+    // is the only surface left, and when it fails nothing holds the message.
     const run = runScenario({ gate: 'open', pg: 'fail', writeFail: true });
 
     expect(run.status).toBe(1);
     expect(run.stdout.trim()).toBe('');
     expect(run.stderr).toContain('ERREUR');
+    expect(run.stderr).toContain('repli fichier refusé');
+    expect(run.stderr).toContain('aucune surface ne tient le message');
     expect(run.journal).toEqual([
       LOCK,
       'read:unreadable',
       'gate:open',
-      sync(false, 1),
+      sync(false, 1), // the failed primary attempt
       UNLOCK,
       LOCK,
       'path',
-      'read:unreadable',
-      'markdown:none',
+      'read:unreadable', // the re-read, then the file half fails
+      sync(false, 2), // the only surface left — and it fails too
       UNLOCK,
     ]);
   }, 15000);
@@ -694,6 +704,72 @@ describe('ms#1919 (2) — a LATE PG success never rewrites nor stamps a stale mi
       UNLOCK,
       REFUSED,
       'path',
+    ]);
+  }, 15000);
+});
+
+// ── Pre-review ms#1919 (ai-01, 26/11 04:03Z — two constats) ────────────────
+describe('ms#1919 pre-review — the two constats on the previous head', () => {
+  it('a key PG answers null for still guards its file: no mirror, no erase', () => {
+    // Constat 1: the first read answers null (absent/retired key) while the
+    // file holds another lane's messages. ON 808b809d this path skipped the
+    // file half entirely and mirrored a ONE-message state over it.
+    const run = runScenario({ gate: 'open', pg: 'ok', absentFirst: true, seed: FILE_ONLY_SEED });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBe(FILE_ONLY_SEED); // untouched — nothing was mirrored over it
+    expect(run.parsed).toEqual({
+      ok: true,
+      key: KEY,
+      base: 'created',
+      unserialized: false,
+      messageId: NEW_ID,
+      totalMessages: 1,
+      pgSynced: true,
+      gdriveSkipped: true,
+    });
+    expect(run.stderr).toContain('miroir');
+    expect(run.stderr).toContain('ajout');
+    expect(run.stderr).not.toContain('ERREUR');
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:absent',
+      'gate:open',
+      sync(false, 1, 1),
+      UNLOCK,
+      LOCK,
+      'path',
+      UNLOCK, // no markdown line: the mirror was skipped
+    ]);
+  }, 15000);
+
+  it('an unreadable file half refuses the fallback rewrite and holds the message in PG', () => {
+    // Constat 2: PG failed AND the file half cannot be read. A whole-file
+    // rewrite would blind-overwrite it. Refused; the PG retry carries it.
+    const run = runScenario({ gate: 'open', pg: 'fail-once', writeFail: true });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBeNull(); // the directory was never replaced by a file
+    expect(run.parsed).toEqual({
+      ...EXPECTED_OUTPUT,
+      gdriveSkipped: true,
+      fileRewriteSkipped: expect.any(String),
+    });
+    expect(run.stderr).toContain('repli fichier refusé');
+    expect(run.stderr).toContain('illisible');
+    expect(run.stderr).not.toContain('ERREUR');
+    expect(pgSyncLines(run.journal)).toEqual([sync(false, 1), sync(false, 2)]);
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:unreadable',
+      'gate:open',
+      sync(false, 1), // the failed primary attempt
+      UNLOCK,
+      LOCK,
+      'path',
+      'read:unreadable', // the re-read, then the file half fails
+      sync(false, 2), // the only surface left: PG, second bounded attempt
+      UNLOCK,
     ]);
   }, 15000);
 });
