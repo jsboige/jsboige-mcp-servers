@@ -138,7 +138,6 @@ CLAIM_RELEASED_WAIT_S = 3 * 86400.0 + 60.0
 # While deferred on that verdict, how often the scheduler probes the issue for a
 # newer [OVERRIDE] marker that lifts the release early. One gh call per issue per
 # interval, best-effort; 5 min keeps the App bucket cost negligible.
-RELACHEE_PROBE_INTERVAL_S = 300.0
 
 
 def github_reset_wait(verdict: str, now: float) -> float | None:
@@ -1206,61 +1205,6 @@ class Scheduler:
             return kept("remove-failed", out)
         self._event("worktree-released", key=key, worktree=str(wt))
 
-    def _relache_override_probe(self, now: float) -> None:
-        """A deferred-RELACHEE grain is re-offered as soon as a newer marker lifts
-        the release, instead of sleeping the guard's whole three-day window.
-
-        Measured 23/11 (CoursIA#28077/#28080/#28050/#28079): the coordinator posted
-        four [OVERRIDE]s at 03:41Z to lift releases that were themselves the
-        side-effect of a harness defect (ms#1859-squash regression, fixed at
-        8e635548). The grains stayed deferred until 03:29Z + 3 days regardless,
-        because CLAIM_RELEASED_WAIT_S re-reads the FULL window from the refusal
-        (the guard exports only a rounded age, so the deferral plays safe). With
-        every deferral sleeping three days, each retry reset its own not_before
-        further out -- a self-perpetuating denial of service across every grain the
-        coordinator had already re-armed.
-
-        The probe reads the LAST comment of each deferred-RELACHEE issue at most
-        once every RELACHEE_PROBE_INTERVAL_S. An [OVERRIDE] by another actor
-        (the coordinator) is the event the guard itself reads to lift RELACHEE;
-        when one is the newest marker, not_before is dropped to now and the
-        guard re-qualifies on the next launch. Best-effort: a gh failure leaves
-        the three-day guard in place, exactly as before.
-        """
-        candidates = [(k, g) for k, g in self.state["grains"].items()
-                      if g.get("status") == "deferred"
-                      and g.get("last_verdict") == CLAIM_RELEASED_VERDICT
-                      and (g.get("not_before") or 0) > now]
-        if not candidates:
-            return
-        last_probe = self.state.get("relache_probe_ts") or 0
-        if now - last_probe < RELACHEE_PROBE_INTERVAL_S:
-            return
-        self.state["relache_probe_ts"] = now
-        for key, g in candidates:
-            item = self.items_by_key.get(key) or {}
-            issue = item.get("issue")
-            if not issue:
-                continue
-            try:
-                p = subprocess.run(["gh", "api",
-                                    f"repos/{CLAIM_REPO_SLUG}/issues/{issue}/comments",
-                                    "--jq", '.[-1] | "\\(.user.login) \\(.body)"'],
-                                   capture_output=True, text=True, encoding="utf-8",
-                                   errors="replace", timeout=30)
-            except Exception as exc:
-                self._event("relache-probe-error", key=key, detail=str(exc)[:120])
-                continue
-            if p.returncode != 0:
-                self._event("relache-probe-error", key=key,
-                            detail=(p.stderr or "").strip()[:120])
-                continue
-            text = (p.stdout or "").strip()
-            if "[OVERRIDE]" in text.split(" ", 1)[-1][:200]:
-                g["not_before"] = now
-                self._event("relache-override-lifted", key=key, issue=issue,
-                            marker=text[:140])
-
     def _eligible(self, now: float) -> list[str]:
         out = []
         for key, g in self.state["grains"].items():
@@ -1310,7 +1254,6 @@ class Scheduler:
         gate = self.gate()
         self.state["last_gate"] = gate
         self._observe_gate(gate, now)
-        self._relache_override_probe(now)
 
         pending = self._eligible(now)
         held = None
