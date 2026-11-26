@@ -1714,9 +1714,13 @@ PORT_CONTENT_RULES = (
     "- ALÉA NUMPY : si le jumeau tire ses DONNÉES d'un générateur numpy (`default_rng`, "
     "PCG64, SeedSequence, `normal`), ne réimplémente pas ce générateur : il ne tirera pas "
     "les mêmes nombres. Reprends les données d'ENTRÉE tirées par le jumeau sous forme de "
-    "tableau littéral, dis-le en prose (« données tirées par le jumeau, reprises telles "
-    "quelles »), puis CALCULE tous les résultats à partir d'elles. Ne recopie jamais une "
-    "SORTIE du jumeau à la place d'un calcul.\n")
+    "tableau littéral COMPLET — jamais tronqué, jamais laissé vide (26/11, o41 : un carnet "
+    "a rejeté « les flux uniformes NumPy cités ne sont pas renseignés ») — dis-le en prose "
+    "(« données tirées par le jumeau, reprises telles quelles »), puis CALCULE tous les "
+    "résultats à partir d'elles ET COMPARE ces résultats recalculés à ceux que le jumeau "
+    "affiche, sous une tolérance déclarée. Ne recopie jamais une SORTIE du jumeau à la "
+    "place d'un calcul, et ne garde jamais la comparaison derrière un test que le tableau "
+    "vide rend faux.\n")
 
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
@@ -4228,8 +4232,26 @@ TWIN_VALUES_RULE = (
     "- VALEURS : chaque valeur affichée par le jumeau (nombre, tableau, verdict, booléen) "
     "doit sortir À L'IDENTIQUE de ton exécution — mêmes instances, mêmes paramètres, même "
     "précision d'affichage. Un écart de valeur avec la sortie de référence est un rejet "
-    "garanti ; si la bibliothèque cible ne peut pas reproduire une valeur, dis-le en prose "
-    "et affiche l'écart mesuré, n'affiche jamais une autre valeur comme si c'était la même.\n")
+    "garanti ; n'affiche jamais une autre valeur comme si c'était la même.\n"
+    # 26/11, CoursIA batch o41: the former tail (« si la bibliothèque cible ne peut pas
+    # reproduire une valeur, dis-le en prose et affiche l'écart mesuré ») is where the
+    # dormant branch was born — the producer "said it in prose" from an `else` that printed
+    # « non mesuré », with the comparison never run; 3 of 4 grains lost. A draw is not a
+    # cited datum, and the comparison is EXECUTED on either route.
+    "- TIRAGES : une valeur que la source obtient par un tirage (`random.seed`, "
+    "`random.Random(graine)`, `random.choice`, `np.random.default_rng`) n'est pas une donnée "
+    "à recopier, et son absence ne dispense d'AUCUNE comparaison. Deux voies, et la "
+    "comparaison est EXÉCUTÉE dans les deux : (a) RECONSTRUIS le générateur de la source "
+    "dans le langage cible (`random.Random(graine)` se rejoue : MT19937, `getrandbits`, "
+    "rejet jusqu'à un indice valide) puis compare à tolérance déclarée ; (b) générateur non "
+    "reconstructible à coût raisonnable (PCG64 de NumPy, module local) : compare les valeurs "
+    "que tu recalculeras à celles que la source AFFICHE, citées comme telles et NON VIDES, "
+    "sous tolérance déclarée, ou asserte un invariant (régime, ordre, signe). INTERDIT : "
+    "garder la comparaison derrière un test qui n'est jamais pris parce que la collection "
+    "de valeurs citées est VIDE, et afficher sinon « non mesuré » / « non attesté » — la "
+    "cellule tourne, la comparaison n'a jamais eu lieu, le vérificateur rejette à chaque "
+    "tour. Un fait réellement hors de portée du jumeau (HTTP réel, tokens Python, durée) se "
+    "dit dans une cellule MARKDOWN, jamais dans la sortie d'une cellule de code.\n")
 
 
 def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",
@@ -5481,6 +5503,43 @@ def unit_result_hits(built_cells: list, src_cells: list) -> list[int]:
             and not (i < len(src_cells) and _shows_unit_result(src_cells[i]))]
 
 
+# A twin that SAYS a comparison was not made. Measured 26/11 (CoursIA batch o41): 3 of 4
+# creation grains ended verify-reject on this one major, restated at every round — the
+# producer left its cited-data collection EMPTY and guarded the parity comparison behind
+# it, so the cell ran clean and printed « Parité … non attestée », « NON MESURÉ — aucune
+# comparaison exécutée », « Références citées, non recalculées ». Deterministic on the
+# OUTPUTS: catch it right after execution, before a verifier turn is paid.
+# Deliberately NARROW — a bare « non mesuré » is not charged: the approved twin of the same
+# batch prints « Citations seules, non mesurées ici : … HTTP réelles, tokens … » beside its
+# attestation (facts no twin can measure), and it must pass. Only a phrasing that states a
+# comparison did not happen is; the past participle carries the accent on purpose (`mesuré`
+# ≠ the noun `mesure`, and « pas de mesure » must not match).
+_UNMEASURED_RE = re.compile(
+    r"non\s+attest|aucune\s+comparaison|non\s+recalcul|non\s+ex[éÉ]cut"
+    r"|\bpas\s+(?:été\s+|encore\s+|jamais\s+)?(?:mesur|recalcul|rejou|ex[éÉ]cut|compar)[éÉ]e?s?\b"
+    r"|not\s+measured|unmeasured|not\s+replayed", re.I)
+
+
+def _unmeasured_line(cell: dict) -> str:
+    """First output line of a CODE cell that declares a comparison was not made ('' = none)."""
+    if cell.get("cell_type") != "code":
+        return ""
+    for line in _outputs_text(cell).splitlines():
+        if _UNMEASURED_RE.search(line):
+            return line.strip()[:240]
+    return ""
+
+
+def unmeasured_output_hits(built_cells: list, src_cells: list) -> list[tuple[int, str]]:
+    """(cell index, offending output line) for every built cell that declares a comparison
+    was not made while the twin at the same index does not — the twin's own declaration
+    (a genuinely out-of-scope measure it prints too) is the repo's business, not this
+    build's."""
+    return [(i, line) for i, c in enumerate(built_cells)
+            if (line := _unmeasured_line(c))
+            and not (i < len(src_cells) and _unmeasured_line(src_cells[i]))]
+
+
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
               canon_version: str | None = None, repo: Path | None = None,
               rel: str | None = None, scratch: Path | None = None,
@@ -5578,6 +5637,13 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
                                            "text": f"cellule {i} : affiche « () », que le "
                                                    f"jumeau n'affiche pas"}
                                           for i in unit_hits][:REPO_GUARD_FINDINGS_MAX]}})
+    um_hits = unmeasured_output_hits(built_cells, src_cells)
+    gates.append({"gate": "unmeasured-output", "ok": not um_hits,
+                  "detail": {"cells": [i for i, _ in um_hits][:10],
+                             "findings": [{"cell": i,
+                                           "text": f"cellule {i} : la sortie déclare une "
+                                                   f"mesure non faite — « {line} »"}
+                                          for i, line in um_hits][:REPO_GUARD_FINDINGS_MAX]}})
     if create_mode and repo is not None and rel and scratch is not None \
             and (repo / "scripts").is_dir():
         gates += repo_guard_gates(repo, rel, built_nb, scratch)
@@ -6986,6 +7052,26 @@ _GATE_FIX_TEXT = {
                    "bloc (`for`, `while`, `if` ou `{ … }`) sans point-virgule : termine ce "
                    "dernier bloc par `};` — sous evcxr cela supprime la sortie `()` sans "
                    "avertissement ; ne touche pas au reste de la cellule",
+    # 26/11, CoursIA batch o41: three twins printed « non attestée », « NON MESURÉ — aucune
+    # comparaison exécutée », « non recalculées »; the verifier restated the same major
+    # through seven revision rounds told only what was wrong. The remedy is the shape the
+    # approved twin of the batch used (reconstructed CPython draws, declared tolerance,
+    # « N comparaisons ; écart maximal … »).
+    "unmeasured-output": "la cellule déclare qu'une comparaison n'a pas eu lieu (« non "
+                         "attesté », « NON MESURÉ », « non recalculées ») : la collection de "
+                         "valeurs citées est vide et le test qui la garde n'est jamais pris. "
+                         "Refais la comparaison pour de vrai — (a) RECONSTRUIS le "
+                         "générateur de la source dans le langage cible "
+                         "(`random.Random(graine)` : MT19937, `getrandbits`, rejet jusqu'à un "
+                         "indice valide) et compare à tolérance déclarée ; (b) générateur "
+                         "non reconstructible à coût raisonnable (PCG64 de NumPy, module "
+                         "local) : compare les valeurs que tu recalculeras à celles que la "
+                         "source AFFICHE, citées comme telles et NON VIDES, sous tolérance "
+                         "déclarée, ou asserte un invariant (régime, ordre, signe). Supprime "
+                         "le message « non mesuré » et son garde ; n'affiche jamais une autre "
+                         "valeur comme si c'était la même. Un fait réellement hors de portée "
+                         "du jumeau (HTTP réel, tokens, durée) se dit dans une cellule "
+                         "MARKDOWN, jamais dans la sortie d'une cellule de code",
     "prose-anchor": "la prose (markdown) cite un chiffre que les sorties de CE carnet "
                     "n'affichent pas — souvent recopié du jumeau, dont les mesures "
                     "diffèrent : remplace-le par la valeur imprimée par la cellule de code "
