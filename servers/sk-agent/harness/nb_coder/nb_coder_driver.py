@@ -5638,8 +5638,10 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
                                                    f"jumeau n'affiche pas"}
                                           for i in unit_hits][:REPO_GUARD_FINDINGS_MAX]}})
     um_hits = unmeasured_output_hits(built_cells, src_cells)
+    # `measured: True` is explicit here: split_gates() reads an absent key as measured, but a
+    # reader that asks the detail directly would see None (review ai-01, 26/11).
     gates.append({"gate": "unmeasured-output", "ok": not um_hits,
-                  "detail": {"cells": [i for i, _ in um_hits][:10],
+                  "detail": {"measured": True, "cells": [i for i, _ in um_hits][:10],
                              "findings": [{"cell": i,
                                            "text": f"cellule {i} : la sortie déclare une "
                                                    f"mesure non faite — « {line} »"}

@@ -107,6 +107,21 @@ def test_markdown_cell_never_flagged(tmp_path):
     assert _gate(nbcd.run_gates(src, built), "unmeasured-output")["ok"] is True
 
 
+def test_the_gate_declares_it_measured_whatever_it_finds(tmp_path):
+    """Review ai-01 (26/11): the detail carried no `measured` key, where `_unmeasured()`
+    writes False and prose-counts writes True. The gate always ran on the built cells, so
+    both verdicts say so; a pass lands in the measured bucket, a fail in neither."""
+    src = _nb(tmp_path / "s.ipynb", [_code([_stream("gain moyen 4.83\n")])])
+    for line, ok in (("Parité EXP3 non attestée : les flux cités ne sont pas renseignés.\n",
+                      False),
+                     ("§4 : CONFORME, 33 comparaisons ; écart maximal 0.00431356.\n", True)):
+        built = _nb(tmp_path / "b.ipynb", [_code([_stream(line)], "VerifierEcart(4, 4.83);")])
+        g = _gate(nbcd.run_gates(src, built, create_mode=True), "unmeasured-output")
+        assert g["ok"] is ok
+        assert g["detail"]["measured"] is True
+        assert nbcd.split_gates([g]) == (["unmeasured-output"] if ok else [], [])
+
+
 def test_gate_routes_to_repair_with_the_reconstruction_remedy(tmp_path):
     src = _nb(tmp_path / "s.ipynb", [_code([_stream("4.83\n")]), _code([_stream("30\n")])])
     built = _nb(tmp_path / "b.ipynb", [
