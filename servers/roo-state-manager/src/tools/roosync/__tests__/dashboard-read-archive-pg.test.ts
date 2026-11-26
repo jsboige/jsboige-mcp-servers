@@ -24,16 +24,20 @@
  *     `-fallback.md` (review ms#1934, finding 1) ; les autres familles
  *     (`-wt-cleanup-…`) ne sont pas de la forme d'un lot, PG ne les sert pas ;
  *   - un lot n'est retiré du listing que si un fichier local est PROUVÉ son
- *     jumeau (tous ses ids de message sont des lignes du lot) ; proche mais non
- *     prouvé, il est listé EN PLUS et compté — la proximité seule écartait des
- *     lots distincts (mesure 26/11 : 40 couples, 39 jumeaux, 1 lot distinct) ;
+ *     jumeau (mêmes ids de message, en nombre égal — un sous-ensemble ne prouve
+ *     rien) ; proche mais non prouvé, il est listé EN PLUS et compté — la
+ *     proximité seule écartait des lots distincts (mesure 26/11 : 40 couples,
+ *     39 jumeaux, 1 lot distinct) ;
  *   - une fenêtre PG partielle est DITE (note + champ `pgArchiveWindow`), jamais
  *     silencieuse ; un nom qui tombe dans la fenêtre de plusieurs lots n'est
  *     servi par aucun (sans contenu, il n'y a pas d'identité pour choisir) ;
- *   - le plafond d'identité (64 comparaisons par listing) dit SÉPARÉMENT les
- *     couples contrôlés et réfutés de ceux que le budget n'a jamais comparés :
- *     présenter un non-contrôlé comme un réfuté transformerait 6 vraies paires
- *     laissées de côté en 6 affirmations fausses (review ms#1934, 26/11).
+ *   - les DEUX budgets d'identité disent SÉPARÉMENT les couples contrôlés et
+ *     réfutés de ceux que le budget n'a jamais comparés : présenter un
+ *     non-contrôlé comme un réfuté transformerait 6 vraies paires laissées de
+ *     côté en 6 affirmations fausses (review ms#1934, 26/11). Le compte (64
+ *     comparaisons) ne borne pas le TEMPS qu'elles prennent — un store froid
+ *     répond un lot en 3 s — donc une horloge de 1 500 ms le double, et le
+ *     listing dit laquelle des deux a tenu (review po-2023, finding 1) ;
  *
  * Seules les deux lectures PG ajoutées par ce grain sont doublées : le chemin
  * fichier reste réel (fs + parser), c'est lui qui garde la précédence.
@@ -117,7 +121,11 @@ function batchOf(messages: IntercomMessage[] | null, gap: Gap = null) {
   return { messages, gap };
 }
 
-async function writeArchiveFile(archiveDir: string, fileName: string): Promise<void> {
+async function writeArchiveFile(
+  archiveDir: string,
+  fileName: string,
+  messages: IntercomMessage[] = fileMessages
+): Promise<void> {
   await writeFile(
     path.join(archiveDir, fileName),
     [
@@ -125,10 +133,10 @@ async function writeArchiveFile(archiveDir: string, fileName: string): Promise<v
       'type: workspace',
       `originalKey: ${KEY}`,
       'archivedAt: 2026-11-25T17:02:28.400Z',
-      `messageCount: ${fileMessages.length}`,
+      `messageCount: ${messages.length}`,
       '---',
       '',
-      buildArchiveMessagesMarkdown(fileMessages),
+      buildArchiveMessagesMarkdown(messages),
       '',
     ].join('\n'),
     'utf8'
@@ -165,9 +173,12 @@ function unprovenNote(count: number): string {
   return ` [${count} lot(s) PG proche(s) d'un fichier local sans preuve d'identité — listés en plus, jamais écartés]`;
 }
 
-/** …and when the identity budget ran out before the pair could be compared. */
-function uncheckedNote(count: number): string {
-  return ` [${count} lot(s) PG proche(s) d'un fichier local NON CONTRÔLÉS — budget d'identité épuisé (64 comparaisons par listing) : identité ni prouvée ni réfutée, listés en plus]`;
+/** …and when an identity budget ran out before the pair could be compared. */
+function uncheckedNote(count: number, stop: 'comparisons' | 'time' = 'comparisons'): string {
+  const budget = stop === 'time'
+    ? "budget de temps d'identité épuisé (1500 ms par listing)"
+    : "budget d'identité épuisé (64 comparaisons par listing)";
+  return ` [${count} lot(s) PG proche(s) d'un fichier local NON CONTRÔLÉS — ${budget} : identité ni prouvée ni réfutée, listés en plus]`;
 }
 
 describe('read_archive — repli PG (#4131 residual)', () => {
@@ -275,18 +286,57 @@ describe('read_archive — repli PG (#4131 residual)', () => {
     );
   });
 
-  it('sous-ensemble : tous les ids du fichier sont des lignes du lot → jumeau prouvé, un seul nom', async () => {
+  it('identité STRICTE : un lot qui porte d\'AUTRES lignes que le fichier n\'est pas son jumeau — listé en plus', async () => {
+    // Le sous-ensemble suffisait avant la review po-2023 (finding 2) : un lot
+    // qui archive AUSSI d'autres messages passait pour le jumeau du fichier et
+    // quittait le listing — ses lignes propres n'étaient plus atteignables.
     await writeArchiveFile(archiveDir, name('2026-11-25T20-25-29'));
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-25T20:25:30.000Z', messageCount: 3 },
+    ]));
+    // Le lot contient le message du fichier ET deux lignes que le fichier ne cite pas.
+    mockFetchBatch.mockResolvedValue(batchOf([...fileMessages, ...pgMessages]));
+    const res = await list();
+    expect((res as any).archives).toEqual([
+      name('2026-11-25T20-25-30'),
+      name('2026-11-25T20-25-29'),
+    ]);
+    expect((res as any).message).toBe(
+      `2 archive(s) trouvée(s) pour '${KEY}'` + unprovenNote(1)
+    );
+    expect((res as any).message).not.toContain('jumeaux');
+  });
+
+  it('identité STRICTE : un lot TRONQUÉ (moins de lignes que le fichier n\'en cite) n\'est pas son jumeau', async () => {
+    // Taille égale est une partie NÉCESSAIRE de la preuve, pas un raccourci :
+    // une lecture de lot amputée par la borne du store n'a pas à passer.
+    await writeArchiveFile(archiveDir, name('2026-11-25T21-00-00'), [...fileMessages, ...pgMessages]);
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-25T21:00:01.000Z', messageCount: 3 },
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(fileMessages)); // 1 ligne rendue pour 3 ids cités
+    const res = await list();
+    expect((res as any).archives).toEqual([
+      name('2026-11-25T21-00-01'),
+      name('2026-11-25T21-00-00'),
+    ]);
+    expect((res as any).message).toBe(
+      `2 archive(s) trouvée(s) pour '${KEY}'` + unprovenNote(1)
+    );
+  });
+
+  it('mêmes ids, même nombre → jumeau prouvé, un seul nom (l\'égalité stricte ne coûte aucun vrai jumeau)', async () => {
+    await writeArchiveFile(archiveDir, name('2026-11-25T20-25-29'), [...fileMessages, ...pgMessages]);
     mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 3 },
     ]));
-    // Le lot contient le message du fichier ET des lignes que le fichier ne cite pas.
     mockFetchBatch.mockResolvedValue(batchOf([...fileMessages, ...pgMessages]));
     const res = await list();
     expect((res as any).archives).toEqual([name('2026-11-25T20-25-29')]);
     expect((res as any).message).toBe(
       `1 archive(s) trouvée(s) pour '${KEY}'` + identityNote(1)
     );
+    expect((res as any).identityBudgetStop).toBeNull();
   });
 
   it('fichier au format antérieur (aucun `[msg:]`) → identité non prouvable, lot listé en plus', async () => {
@@ -326,18 +376,74 @@ describe('read_archive — repli PG (#4131 residual)', () => {
       const idx = Math.round((Date.parse(archivedAt) - BASE - 1000) / STEP);
       return batchOf(idx < 10 ? pgMessages : fileMessages);
     });
-    const res = await list();
+    // Horloge figée : ce test éprouve le budget de COMPTE, l'horloge ne doit
+    // pas pouvoir le devancer sur un disque CI lent.
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(BASE);
+    let res: Awaited<ReturnType<typeof list>>;
+    try {
+      res = await list();
+    } finally {
+      nowSpy.mockRestore();
+    }
     // 70 fichiers + 10 réfutés listés en plus + 6 non contrôlés listés en plus.
     expect((res as any).archives).toHaveLength(70 + 10 + 6);
     expect(mockFetchBatch).toHaveBeenCalledTimes(64);
+    expect((res as any).identityBudgetStop).toBe('comparisons');
     expect((res as any).message).toBe(
       `86 archive(s) trouvée(s) pour '${KEY}'`
       + identityNote(54)
       + unprovenNote(10)
-      + uncheckedNote(6)
+      + uncheckedNote(6, 'comparisons')
     );
     // Ni « 70 sans preuve », ni les non-contrôlés comptés comme des réfutés.
     expect((res as any).message).not.toContain('70 lot(s)');
+    expect((res as any).message).not.toContain('sans fichier local');
+    expect((res as any).message).not.toContain('1500 ms');
+  });
+
+  it('budget de TEMPS : 10 vrais jumeaux, un lot rendu en 400 ms → 4 prouvés, 6 NON CONTRÔLÉS, et c\'est l\'horloge qui a tenu', async () => {
+    // 64 comparaisons rapides tiennent le plafond de compte ; sur un store
+    // froid ou dégradé chacune peut durer jusqu'à la course de 3 s — 3 min de
+    // listing dans un organe qui tourne à chaque cycle. L'horloge borne
+    // l'ENTAME d'une comparaison (review po-2023 ms#1934, finding 1).
+    const PAIRS = 10;
+    const BASE = Date.parse('2026-11-20T00:00:00Z');
+    const STEP = 10 * 60_000; // > la fenêtre de rattachement (6 min), un lot = un candidat
+    const isoAt = (i: number) => new Date(BASE + i * STEP).toISOString();
+    const stamps: string[] = [];
+    for (let i = 0; i < PAIRS; i += 1) {
+      const stamp = isoAt(i).replace(/[:.]/g, '-').substring(0, 19);
+      stamps.push(stamp);
+      await writeArchiveFile(archiveDir, name(stamp));
+    }
+    mockFetchBatches.mockResolvedValue(windowOf(stamps.map((_, i) => ({
+      archivedAt: new Date(BASE + i * STEP + 1000).toISOString(),
+      messageCount: 1,
+    }))));
+    let clock = Date.parse('2026-11-26T12:00:00Z');
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    mockFetchBatch.mockImplementation(async () => {
+      clock += 400; // ce store rend un lot en 400 ms
+      return batchOf(fileMessages);
+    });
+    let res: Awaited<ReturnType<typeof list>>;
+    try {
+      res = await list();
+    } finally {
+      nowSpy.mockRestore();
+    }
+    // Entamées à 0, 400, 800 et 1 200 ms ; la 5ᵉ le serait à 1 600 ms ≥ 1 500 ms.
+    expect(mockFetchBatch).toHaveBeenCalledTimes(4);
+    expect((res as any).identityBudgetStop).toBe('time');
+    // 10 fichiers + 6 lots non contrôlés listés en plus.
+    expect((res as any).archives).toHaveLength(10 + 6);
+    expect((res as any).message).toBe(
+      `16 archive(s) trouvée(s) pour '${KEY}'`
+      + identityNote(4)
+      + uncheckedNote(6, 'time')
+    );
+    // Le plafond de compte n'a pas été atteint (4 comparaisons) : il n'est pas nommé.
+    expect((res as any).message).not.toContain('64 comparaisons');
     expect((res as any).message).not.toContain('sans fichier local');
   });
 

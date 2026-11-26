@@ -39,7 +39,7 @@ import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import type { RooSyncLockAcquireStatus, UnifiedStoreWriteOutcome } from './UnifiedStoreWriter.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { PgUnifiedStoreReader } from './PgUnifiedStoreReader.js';
-import { withColdPoolResume } from './pg-cold-pool-resume.js';
+import { isPgConnectionTimeout, withColdPoolResume } from './pg-cold-pool-resume.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { isPgFlagOn } from './pg-flags.js';
 import {
@@ -452,6 +452,17 @@ const ARCHIVE_BATCH_TIMEOUT_MS = 3000;
 const ARCHIVE_STATEMENT_TIMEOUT_MS = 2500;
 
 /**
+ * CONNECT-phase bound, strictly below the same client race. Without it the
+ * pool keeps node-postgres' 15 000 ms default while the caller stops awaiting
+ * at 3 000 ms: on a host whose connect hangs (the cold-pool signature of
+ * #4731, measured 26/11) the orphan is still CONNECTING when the race is lost,
+ * and on a `poolMax: 1` pool that orphan holds the only slot — every later
+ * read of the batch listing waits on it. Bounding the connect means the pool
+ * gives up on its own before the caller does (review ms#1934, finding 3).
+ */
+const ARCHIVE_CONNECT_TIMEOUT_MS = 2500;
+
+/**
  * Archive reads ride their OWN one-connection pool, never the shared reader:
  * the bound above only holds on a pool whose config is ours, and an organ
  * cycle's listing must neither starve the write path's pool nor be starved by
@@ -466,6 +477,7 @@ function getArchiveReader(pgUrl: string): PgUnifiedStoreReader {
       connectionString: pgUrl,
       poolMax: 1,
       statementTimeoutMs: ARCHIVE_STATEMENT_TIMEOUT_MS,
+      connectionTimeoutMillis: ARCHIVE_CONNECT_TIMEOUT_MS,
     });
   }
   return dedicatedArchiveReader;
@@ -498,6 +510,14 @@ export async function fetchArchivedDashboardBatches(
     }
     return { batches: result ?? [], gap: null };
   } catch (error) {
+    // A connect-phase timeout is PG not ANSWERING in time, not a failed
+    // read. The dedicated pool now gives up on its own (ARCHIVE_CONNECT_TIMEOUT_MS,
+    // under the race), so what the race used to report as a timeout arrives
+    // here instead — same condition, same gap.
+    if (isPgConnectionTimeout(error)) {
+      logger.warn('[archive-pg] batch listing timed out (connection) — file-only listing stands', { key });
+      return { batches: [], gap: 'timeout' };
+    }
     logger.warn('[archive-pg] batch listing failed — file-only listing stands', {
       key,
       error: String(error),
@@ -545,6 +565,13 @@ export async function fetchArchivedDashboardBatch(
     }
     return { messages: result ? result.map(mapRowToIntercomMessage) : null, gap: null };
   } catch (error) {
+    if (isPgConnectionTimeout(error)) {
+      logger.warn('[archive-pg] batch read timed out (connection) — the file answer stands', {
+        key,
+        batchSecondIso,
+      });
+      return { messages: null, gap: 'timeout' };
+    }
     logger.warn('[archive-pg] batch read failed — the file answer stands', {
       key,
       batchSecondIso,

@@ -881,7 +881,7 @@ describe('fetchArchivedDashboardBatches / fetchArchivedDashboardBatch (#4131 res
     }
   }));
 
-  test('les lectures d\'archive ont leur PROPRE pool (poolMax 1) et bornent la requête SOUS la course de 3 s', withPgUrl(async () => {
+  test('les lectures d\'archive ont leur PROPRE pool (poolMax 1) et bornent la requête ET la connexion SOUS la course de 3 s', withPgUrl(async () => {
     mockPoolConfigs.length = 0;
     primeReader({ rows: [] });
     expect(await fetchArchivedDashboardBatches('workspace-roo-extensions'))
@@ -891,6 +891,32 @@ describe('fetchArchivedDashboardBatches / fetchArchivedDashboardBatch (#4131 res
     const config = mockPoolConfigs[mockPoolConfigs.length - 1];
     expect(config.max).toBe(1);
     expect(config.statement_timeout as number).toBeLessThan(3000);
+    // La phase de CONNEXION aussi : sans cette borne le pool garde le défaut
+    // de 15 s, la course client rend la main à 3 s et le connect orphelin
+    // occupe l'unique slot du pool (review ms#1934, finding 3).
+    expect(config.connectionTimeoutMillis as number).toBeLessThan(3000);
+    expect(config.connectionTimeoutMillis as number).toBeLessThan(15000);
+  }));
+
+  test('timeout de CONNEXION (signature node-postgres) → gap `timeout`, pas `error` : PG n\'a pas répondu à temps', withPgUrl(async () => {
+    // Depuis la borne de connexion (2 500 ms < course 3 000 ms) c'est le POOL
+    // qui rejette le premier, avant la course : sans cette classification le
+    // listing aurait dit « lecture PG en échec » là où il disait « n'a pas
+    // répondu à temps » quand la course gagnait.
+    const connectTimeout = new Error('Connection terminated due to connection timeout');
+    primeReader(connectTimeout);
+    expect(await fetchArchivedDashboardBatches('global')).toEqual({ batches: [], gap: 'timeout' });
+    primeReader(new Error('Connection terminated due to connection timeout'));
+    expect(await fetchArchivedDashboardBatch('global', '2026-11-25T17:02:29.000Z'))
+      .toEqual({ messages: null, gap: 'timeout' });
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('[archive-pg] batch listing timed out (connection)'),
+      expect.objectContaining({ key: 'global' })
+    );
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining('[archive-pg] batch read timed out (connection)'),
+      expect.objectContaining({ key: 'global', batchSecondIso: '2026-11-25T17:02:29.000Z' })
+    );
   }));
 });
 
