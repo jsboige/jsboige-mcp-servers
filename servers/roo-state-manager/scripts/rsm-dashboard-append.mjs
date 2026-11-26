@@ -99,6 +99,24 @@
  *      someone else's append is the worse failure).
  * The gate-closed path reads nothing more and is unchanged.
  *
+ * Tier-2 review ms#1919 (ai-01, 26/11 15:59Z — the two formal blockers):
+ *   1. PG success, a STATUS update lands during the attempt: it writes no
+ *      message, so the file-only comparison could not see it, and the mirror
+ *      rendered the PRE-attempt status over the newer one, then stamped the
+ *      result `mirrorExportAt`. The mirror is now also skipped when the file
+ *      carries a status that differs from the base's and is not older than it
+ *      (`fileStatusSupersedes`). A file merely BEHIND PG — the ordinary state
+ *      of a mirror between two exports — is still mirrored.
+ *   2. PG failure, the re-read answers null: the base used to be emptied
+ *      without looking at the file. A file that exists is now read, and only a
+ *      CONFIRMED retirement (active mark, #3782) ignores it. Anything else —
+ *      the mark lookup fails open, so "not confirmed" includes an unreachable
+ *      store — is an undetermined base: the rewrite is refused through the
+ *      same branch as an unreadable half (message held in PG, file untouched,
+ *      `fileRewriteSkipped` carries the reason). No file at all keeps the
+ *      pre-existing behaviour: the empty base is the true one.
+ * The gate-closed path reads nothing more and is unchanged.
+ *
  * Exit codes: 0 posted — at least one surface holds the message (a PG-sync
  * miss on the file-first path is a WARN, not an error: the GDrive write
  * stands and the journal reconcile converges it; a failed MIRROR under the
@@ -121,7 +139,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
 import { randomInt } from 'node:crypto';
 import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
-import { validateEscalationContent, validateTaggedContent, buildListenerEscalationMessage, buildAppendMessage, shouldDeduplicate, parseAppendArgs, nextDashboardState, fileOnlyMessages, withFileOnlyMessages } from './lib/dashboard-journal.mjs';
+import { validateEscalationContent, validateTaggedContent, buildListenerEscalationMessage, buildAppendMessage, shouldDeduplicate, parseAppendArgs, nextDashboardState, fileOnlyMessages, withFileOnlyMessages, fileStatusSupersedes } from './lib/dashboard-journal.mjs';
 
 // --- .env loader (zero-dep, same contract as backfill-roosync-read-state.mjs) ---
 function loadEnv(file) {
@@ -224,7 +242,7 @@ loadEnv(path.join(RSM_ROOT, '.env'));
 // and store writes the MCP host serves, not a private copy (G-R pattern).
 const buildDir = resolveBuildDir(RSM_ROOT);
 const buildUrl = (rel) => pathToFileURL(path.join(buildDir, rel)).href;
-const { dualWriteDashboardSyncChecked, isDashboardPgPrimary } = await import(
+const { dualWriteDashboardSyncChecked, isDashboardPgPrimary, getDashboardRetirement } = await import(
   buildUrl('services/unified-store/roosync-dashboard-store.js')
 );
 const {
@@ -368,8 +386,10 @@ try {
   let pgFirst = null;
   // Review ms#1919 item 2: set when the GDrive mirror must NOT be written.
   let mirrorSkip = null;
-  // Pre-review constat 2: set when the file half could not be read on the
-  // fallback path — the rewrite is then refused (never blind-overwrite).
+  // Pre-review constat 2 / tier-2 review blocker 2: set when the fallback
+  // rewrite must be refused — the file half could not be read, or the null
+  // base is not established as an empty one. `kind` names which, and decides
+  // the reason printed: 'unreadable' is never said of an undetermined base.
   let fileRewriteRefused = null;
   // Resolved once per gated append: the freshness check and the write share it.
   let resolvedPath = null;
@@ -418,6 +438,14 @@ try {
             mirrorSkip = `moitié fichier illisible (${fileHalf.error})`;
           } else if (fileOnlyMessages(next, fileHalf.state).length > 0) {
             mirrorSkip = 'le fichier porte un ajout absent de l’état écrit dans PG';
+          } else if (fileStatusSupersedes(dashboard, fileHalf.state)) {
+            // Tier-2 review (ai-01, 26/11) blocker 1: a status update writes no
+            // message, so the comparison above cannot see it. The mirror would
+            // render the PRE-attempt status over the newer one and stamp the
+            // result as an export of PG. `dashboard` — the base the PG write was
+            // built from — is the reference for "newer", never `next` (whose
+            // stamp is our own message's).
+            mirrorSkip = 'le fichier porte un statut plus récent que l’état écrit dans PG (intercom identique)';
           }
         }
       } else {
@@ -440,13 +468,28 @@ try {
             // Pre-review 26/11 constat 2: the file half could not be read, so
             // the CLI cannot know what the rewrite would destroy. Refuse it —
             // the PG half takes the message instead (branch below).
-            fileRewriteRefused = fileHalf.error;
+            fileRewriteRefused = { kind: 'unreadable', detail: fileHalf.error };
           } else {
             dashboard = withFileOnlyMessages(dashboard, fileHalf.state);
           }
         } else {
-          // Absent or retired (#3782): the file half is NOT consulted — the
-          // retirement guard keeps the last word on what a retired key holds.
+          // `readDashboardFile` answered null. That is a retired key (#3782),
+          // an absent file — or an UNDETERMINED absence: DriveFS answering
+          // ENOENT while the file is on disk. The three are not
+          // interchangeable: the empty base below rewrites the WHOLE file.
+          // Tier-2 review (ai-01, 26/11) blocker 2 — the file half is
+          // consulted first, and only a CONFIRMED retirement may ignore a file
+          // that exists. The lookup fails open (null on timeout or error): an
+          // unconfirmed null is an unknown base, never an empty one.
+          const fileHalf = await readFileHalf(resolvedPath, key);
+          if (fileHalf.error !== null) {
+            fileRewriteRefused = { kind: 'unreadable', detail: fileHalf.error };
+          } else if (fileHalf.state !== null && !(await getDashboardRetirement(key))) {
+            fileRewriteRefused = {
+              kind: 'undetermined',
+              detail: 'fichier présent, lecture du dashboard nulle et aucun retrait confirmé',
+            };
+          }
           dashboard = createEmptyDashboard(dashboardTarget ? dashboardTarget.type : 'machine', key, author);
           base = 'created';
         }
@@ -491,6 +534,11 @@ try {
     // held on the PG half by one more bounded attempt — it is never dropped
     // silently. If that attempt fails too, nothing holds the message: exit 1
     // with both reasons named (a silent erase is the worse failure).
+    // Tier-2 review blocker 2: the same refusal for an undetermined base — a
+    // file is there, the read answered null, and nothing confirms a retirement.
+    const refusal = fileRewriteRefused.kind === 'unreadable'
+      ? `moitié fichier illisible (${fileRewriteRefused.detail})`
+      : `base indéterminée (${fileRewriteRefused.detail})`;
     let pgSynced = true;
     let pgSyncReason;
     try {
@@ -503,7 +551,7 @@ try {
     }
     if (pgSynced) {
       posted = true;
-      console.error(`WARN: repli fichier refusé — moitié fichier illisible (${fileRewriteRefused}) ; le store PG (primaire) tient le message`);
+      console.error(`WARN: repli fichier refusé — ${refusal} ; le store PG (primaire) tient le message`);
       output = {
         ok: true,
         key,
@@ -512,11 +560,11 @@ try {
         messageId: message.id,
         totalMessages: next.intercom.totalMessages,
         pgSynced: true,
-        gdriveSkipped: true, // the file was NOT rewritten: its content could not be read
-        fileRewriteSkipped: fileRewriteRefused,
+        gdriveSkipped: true, // the file was NOT rewritten: its content could not be established
+        fileRewriteSkipped: fileRewriteRefused.detail,
       };
     } else {
-      console.error(`ERREUR: repli fichier refusé (moitié fichier illisible : ${fileRewriteRefused}) et sync PG en échec (${pgSyncReason}) — aucune surface ne tient le message`);
+      console.error(`ERREUR: repli fichier refusé (${refusal}) et sync PG en échec (${pgSyncReason}) — aucune surface ne tient le message`);
       process.exitCode = 1;
     }
   } else {

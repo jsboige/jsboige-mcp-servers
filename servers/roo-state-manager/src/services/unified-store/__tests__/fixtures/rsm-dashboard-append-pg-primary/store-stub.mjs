@@ -18,6 +18,11 @@
  * the read double parses it, the two review findings are OBSERVABLE here —
  * a PG-answered re-read (RSM_APPEND_TEST_PG_READ=pg) does not see this message,
  * and a late PG success still faces it on disk.
+ *
+ * Tier-2 review ms#1919 (ai-01, 26/11): `RSM_APPEND_TEST_CONCURRENT=status`
+ * lands a STATUS update alone (same intercom, newer `lastModified`), and
+ * `getDashboardRetirement` is doubled so the CLI can tell a CONFIRMED
+ * retirement from an unconfirmed null (`RSM_APPEND_TEST_RETIRED_MARK`).
  */
 import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -66,6 +71,40 @@ function concurrentFileText(m) {
   ].join('\n');
 }
 
+/** Byte-identical to the harness' `STATUS_CHANGED_FILE` expectation. */
+const STATUS_CHANGED = {
+  lastModified: '2026-11-24T11:59:59.000Z',
+  status: '*Statut changé pendant l’essai PG.*',
+};
+
+function statusChangedFileText() {
+  return [
+    '---',
+    'type: machine',
+    `lastModified: ${STATUS_CHANGED.lastModified}`,
+    'totalMessages: 1',
+    '---',
+    '',
+    '## Status',
+    '',
+    STATUS_CHANGED.status,
+    '',
+    '## Intercom',
+    '',
+    WITNESS_BLOCK,
+  ].join('\n');
+}
+
+function landStatusChange(target) {
+  try {
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, statusChangedFileText(), 'utf8');
+    journal('concurrent:status');
+  } catch {
+    // Directory target: the write must fail, nothing lands.
+  }
+}
+
 function landConcurrentAppend(target) {
   const mode = process.env.RSM_APPEND_TEST_CONCURRENT;
   if (!mode) return;
@@ -95,10 +134,30 @@ export async function dualWriteDashboardSyncChecked(dashboard) {
   const newId = process.env.RSM_APPEND_TEST_NEW_ID ?? '\u0000';
   const fileHasNew = target !== '' && isRegularFile(target) && readFileSync(target, 'utf8').includes(newId);
   journal(`pg:sync:fileHasNew=${fileHasNew}:messages=${dashboard.intercom.messages.length}:attempt=${++attempts}`);
-  if (attempts === 1) landConcurrentAppend(target);
+  if (attempts === 1) {
+    // Tier-2 review (ai-01, 26/11 blocker 1): `status` lands a STATUS update
+    // instead — same intercom, newer `lastModified`. No message comparison can
+    // see it.
+    if (process.env.RSM_APPEND_TEST_CONCURRENT === 'status') landStatusChange(target);
+    else landConcurrentAppend(target);
+  }
   const mode = process.env.RSM_APPEND_TEST_PG;
   if (mode === 'throw') throw new Error('connection terminated');
   if (mode === 'fail') return { ok: false, reason: 'exhausted' };
   if (mode === 'fail-once' && attempts === 1) return { ok: false, reason: 'exhausted' };
   return { ok: true };
+}
+
+/**
+ * #3782 retirement mark, as `roosync-dashboard-store.ts` serves it: an ACTIVE
+ * mark, or null — which the real one also answers when the lookup fails or
+ * times out (fail-open). `RSM_APPEND_TEST_RETIRED_MARK=1` confirms the
+ * retirement; unset, the null the read double answered is UNCONFIRMED.
+ */
+export async function getDashboardRetirement(key) {
+  const confirmed = process.env.RSM_APPEND_TEST_RETIRED_MARK === '1';
+  journal(`retirement:${confirmed ? 'mark' : 'none'}`);
+  return confirmed
+    ? { sourceKey: key, targetKey: 'machine-myia-ai-01', retiredBy: 'myia-ai-01', retiredAt: '2026-11-24T11:00:00.000Z' }
+    : null;
 }

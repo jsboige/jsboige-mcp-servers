@@ -43,6 +43,19 @@
  *      file carries a message PG does not hold (`gdriveSkipped: true`).
  * Every witness of those describes is RED on 7eca4d8c and GREEN on the fixed
  * head; the mutations listed in the PR body prove it.
+ *
+ * Tier-2 review ms#1919 (ai-01, 26/11 15:59Z — CHANGES_REQUESTED on 2cb4e0bb):
+ *   1. a STATUS change writes no message, so `fileOnlyMessages` is blind to it
+ *      — after a PG success the mirror compared the intercom only. The witness
+ *      lands a status change on the file during the attempt and requires the
+ *      mirror to be skipped, not stamped. Its control keeps a file that is
+ *      merely BEHIND PG mirrored (otherwise the mirror would freeze forever).
+ *   2. `readDashboardFile` can answer `null` after a PG failure: a retired key,
+ *      an absent file — or an UNDETERMINED absence. The witness seeds a
+ *      file-only append, makes the re-read answer `null` and requires the file
+ *      to be left untouched. The explicit-retirement case (#3782) stays a fresh
+ *      file and now states its mark. Both are RED on 2cb4e0bb; the PR comment
+ *      lists the mutations.
  */
 import { describe, it, expect } from 'vitest';
 import { spawnSync } from 'node:child_process';
@@ -93,7 +106,14 @@ const FILE_ONLY_BLOCK = block(
 // Joined on '\n': a multi-line literal would turn CRLF under core.autocrlf
 // and stop matching the CLI's LF bytes. Each block ends with its own '\n', so
 // the join leaves exactly one blank line between two blocks.
-const dashboardFile = (lastModified: string, totalMessages: number, blocks: string[]) =>
+// `status` (optional) emits the `## Status` section the real renderer writes
+// (dashboard.ts `buildDashboardMarkdown`); without it the bytes are unchanged.
+const dashboardFile = (
+  lastModified: string,
+  totalMessages: number,
+  blocks: string[],
+  status?: string
+) =>
   [
     '---',
     'type: machine',
@@ -101,6 +121,7 @@ const dashboardFile = (lastModified: string, totalMessages: number, blocks: stri
     `totalMessages: ${totalMessages}`,
     '---',
     '',
+    ...(status === undefined ? [] : ['## Status', '', status, '']),
     '## Intercom',
     '',
     ...blocks,
@@ -132,6 +153,30 @@ const FILE_ONLY_SEED = dashboardFile('2026-11-24T10:00:00.000Z', 2, [WITNESS_BLO
 /** Ours alone: the base of a key that was absent or retired at the re-read. */
 const FRESH_FILE = dashboardFile(STAMP, 1, [OUR_BLOCK]);
 
+// ── Tier-2 review ms#1919 (ai-01, 26/11) — the two formal blockers ──────────
+
+const OLD_STATUS = '*Statut d’avant l’essai PG.*';
+
+/**
+ * The target carries a status: what a mirror would render over. Used both by
+ * the status-change witness (the file moves AHEAD of the base) and by its
+ * control (the file is BEHIND a PG that is ahead — the ordinary state of a
+ * mirror between two exports).
+ */
+const STATUS_SEED = dashboardFile(WITNESS_STAMP, 1, [WITNESS_BLOCK], OLD_STATUS);
+
+/**
+ * The target as a STATUS update leaves it during our PG attempt: the SAME
+ * intercom (blocker 1 — "sans ajout de message"), a different status, a newer
+ * `lastModified`. The store stub lands exactly these bytes.
+ */
+const STATUS_CHANGED_FILE = dashboardFile(
+  CONCURRENT_STAMP,
+  1,
+  [WITNESS_BLOCK],
+  '*Statut changé pendant l’essai PG.*'
+);
+
 const EXPECTED_OUTPUT = {
   ok: true,
   key: KEY,
@@ -147,14 +192,15 @@ type Scenario = {
   pg: 'ok' | 'fail' | 'fail-once' | 'throw';
   writeFail?: boolean; // target is a DIRECTORY: unreadable file half AND a failing write
   // Re-review #4915 knobs (see the fixture docstrings).
-  concurrent?: 'during-pg' | 'same-id';
+  concurrent?: 'during-pg' | 'same-id' | 'status';
   relock?: 'deny';
   key?: string;       // dashboard key, when argv selects another surface
   argv?: string[];    // full CLI args, replacing the escalation defaults
   // Review ms#1919 knobs.
   readOnly?: boolean; // seeded, then write-protected: the read succeeds, the write throws
-  pgRead?: 'pg';      // PG answers the reads (dashboard.ts PG-first) — never the concurrent append
-  retired?: 'reread'; // the key is retired before the re-read (#3782)
+  pgRead?: 'pg' | 'pg-ahead'; // PG answers the reads (dashboard.ts PG-first) — never the concurrent append
+  retired?: 'reread'; // readDashboardFile answers null from the re-read on
+  retirementMark?: boolean; // …and a retirement mark CONFIRMS it (#3782); unset = unconfirmed
   absentFirst?: boolean; // pre-review 26/11 (1): the FIRST read answers null, the file exists
   seed?: string | null; // file state before the run (default SEED_FILE; null = no file)
 };
@@ -228,6 +274,7 @@ function runScenario(scenario: Scenario): Run {
       RSM_APPEND_TEST_RELOCK: scenario.relock ?? '',
       RSM_APPEND_TEST_PG_READ: scenario.pgRead ?? '',
       RSM_APPEND_TEST_RETIRED: scenario.retired ?? '',
+      RSM_APPEND_TEST_RETIRED_MARK: scenario.retirementMark ? '1' : '',
       RSM_APPEND_TEST_ABSENT: scenario.absentFirst ? 'first' : '',
     });
 
@@ -613,6 +660,9 @@ describe('ms#1919 (1) — the fallback keeps an append that exists only in the F
       pgRead: 'pg',
       concurrent: 'during-pg',
       retired: 'reread',
+      // The EXPLICIT retirement case (tier-2 review): the null is confirmed by
+      // an active mark, which is what authorises ignoring the file.
+      retirementMark: true,
     });
 
     expect(run.status).toBe(0);
@@ -633,7 +683,8 @@ describe('ms#1919 (1) — the fallback keeps an append that exists only in the F
       UNLOCK,
       LOCK,
       'path',
-      'read:retired', // null → the file half is NOT consulted
+      'read:retired', // null → the file half is not FOLDED, but it is read…
+      'retirement:mark', // …and only the confirmed mark lets it be ignored
       'markdown:none',
       sync(true, 2, 1),
       UNLOCK,
@@ -769,6 +820,127 @@ describe('ms#1919 pre-review — the two constats on the previous head', () => {
       'path',
       'read:unreadable', // the re-read, then the file half fails
       sync(false, 2), // the only surface left: PG, second bounded attempt
+      UNLOCK,
+    ]);
+  }, 15000);
+});
+
+// ── Tier-2 review ms#1919 (ai-01, 26/11 15:59Z — the two formal blockers) ────
+describe('ms#1919 tier-2 review — a status change during the attempt, an undetermined absence', () => {
+  it('blocker 1 — a STATUS change that landed during the PG attempt, intercom identical: no mirror, no stamp', () => {
+    // No message comparison can see this write: the intercom is the same. On
+    // 2cb4e0bb the mirror renders the pre-attempt status over the newer one
+    // and stamps the result `mirrorExportAt` — "export à jour" while it is not.
+    const run = runScenario({ gate: 'open', pg: 'ok', concurrent: 'status', seed: STATUS_SEED });
+
+    expect(run.status).toBe(0);
+    // The file is exactly what the status writer left: untouched, unstamped.
+    expect(run.file).toBe(STATUS_CHANGED_FILE); // RED on 2cb4e0bb: status replaced, then stamped
+    expect(run.parsed).toEqual({ ...EXPECTED_OUTPUT, gdriveSkipped: true });
+    expect(run.stderr).toContain('WARN');
+    expect(run.stderr).toContain('miroir');
+    expect(run.stderr).toContain('statut');
+    expect(run.stderr).not.toContain('ERREUR');
+    expect(pgSyncLines(run.journal)).toEqual([sync(false, 1)]);
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:file',
+      'gate:open',
+      sync(false, 1),
+      'concurrent:status', // a status only: no message lands
+      UNLOCK,
+      LOCK,
+      'path',
+      UNLOCK, // no markdown line: the mirror was skipped, and nothing was stamped
+    ]);
+  }, 15000);
+
+  it('blocker 1, control — a file merely BEHIND PG (older status, older stamp) still gets its mirror', () => {
+    // The ordinary state of a mirror between two exports: PG holds a newer
+    // status than the file. Refusing here would freeze the file for good — the
+    // file is not "newer", it is stale, and the mirror is the catch-up.
+    const run = runScenario({ gate: 'open', pg: 'ok', pgRead: 'pg-ahead', seed: STATUS_SEED });
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toBe('');
+    expect(run.file).toBe(STAMPED); // the catch-up mirror IS written, and stamped
+    expect(run.parsed).toEqual(EXPECTED_OUTPUT);
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:pg',
+      'gate:open',
+      sync(false, 1),
+      UNLOCK,
+      LOCK,
+      'path',
+      STAMP_LINE,
+      UNLOCK,
+    ]);
+  }, 15000);
+
+  it('blocker 2 — a NULL re-read while the file EXISTS and no retirement confirms it: rewrite refused', () => {
+    // `readDashboardFile` answered null, the file holds another lane's
+    // messages, and NOTHING says the key is retired. On 2cb4e0bb the empty
+    // state is written over the file: its content is erased. An unconfirmed
+    // absence is an unknown base, not an empty one.
+    const run = runScenario({ gate: 'open', pg: 'fail-once', seed: FILE_ONLY_SEED, retired: 'reread' });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBe(FILE_ONLY_SEED); // RED on 2cb4e0bb: replaced by FRESH_FILE
+    expect(run.parsed).toEqual({
+      ok: true,
+      key: KEY,
+      base: 'created',
+      unserialized: false,
+      messageId: NEW_ID,
+      totalMessages: 1,
+      pgSynced: true,
+      gdriveSkipped: true,
+      fileRewriteSkipped: expect.any(String),
+    });
+    expect(run.stderr).toContain('repli fichier refusé');
+    expect(run.stderr).toContain('indétermin');
+    expect(run.stderr).not.toContain('ERREUR');
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:file',
+      'gate:open',
+      sync(false, 1, 3), // the failed primary attempt: the file's two messages + ours
+      UNLOCK,
+      LOCK,
+      'path',
+      'read:undetermined', // null, while the file is there…
+      'retirement:none', // …and nothing confirms a retirement
+      sync(false, 2, 1), // no markdown line: the file is not rewritten; PG holds the message
+      UNLOCK,
+    ]);
+  }, 15000);
+
+  it('blocker 2, control — a NULL re-read with NO file still writes the escalation (nothing to preserve)', () => {
+    // The #3761 promise on a brand-new machine key while PG is down: with no
+    // file, the empty base is the TRUE base and the write must happen.
+    const run = runScenario({ gate: 'open', pg: 'fail', seed: null });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBe(FRESH_FILE);
+    expect(run.parsed).toEqual({
+      ...EXPECTED_OUTPUT,
+      base: 'created',
+      totalMessages: 1,
+      pgSynced: false,
+    });
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:null',
+      'gate:open',
+      sync(false, 1, 1),
+      UNLOCK,
+      LOCK,
+      'path',
+      'read:null',
+      // no `retirement:` line: with no file there is nothing a mark would change
+      'markdown:none',
+      sync(true, 2, 1),
       UNLOCK,
     ]);
   }, 15000);

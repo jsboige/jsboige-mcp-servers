@@ -22,7 +22,14 @@
  *     what `readDashboardFromGdrive` + `parseDashboardMarkdown` would produce.
  *   - `RSM_APPEND_TEST_RETIRED=reread` → the second and later reads answer null
  *     (`read:retired`): the key was retired while the CLI was inside its PG
- *     attempt (#3782 — a retired key must not be resurrected).
+ *     attempt (#3782 — a retired key must not be resurrected). With
+ *     `RSM_APPEND_TEST_RETIRED_MARK` unset the same null is journaled
+ *     `read:undetermined`: the file exists, `readDashboardFile` answers null
+ *     and NOTHING confirms the retirement — the tier-2 review's second case
+ *     (ai-01, 26/11), where the base is unknown rather than empty.
+ *   - `RSM_APPEND_TEST_PG_READ=pg-ahead` → the PG view answers (`read:pg`) with
+ *     a status and a `lastModified` NEWER than the file's: the ordinary state
+ *     of a mirror between two exports. The mirror must still be written there.
  *   - a DIRECTORY target is the harness' "the file half is unreadable" setup:
  *     it answers `read:unreadable` with the witness view, which keeps the rest
  *     of the flow exercised without depending on fs error shapes (the CLI's own
@@ -59,6 +66,10 @@ const witnessView = (key) => ({
   intercom: { messages: [WITNESS], totalMessages: 1 },
 });
 
+// `pg-ahead`: the PG row as a status update left it after the last export.
+const PG_AHEAD_STATUS = '*Statut écrit dans PG après le dernier export.*';
+const PG_AHEAD_STAMP = '2026-11-24T11:30:00.000Z';
+
 let reads = 0;
 
 export function buildDashboardKey(type, machineId, workspace) {
@@ -81,7 +92,10 @@ export async function readDashboardFile(key) {
   const target = process.env.RSM_APPEND_TEST_TARGET ?? '';
 
   if (process.env.RSM_APPEND_TEST_RETIRED === 'reread' && reads > 1) {
-    journal('read:retired');
+    // Same null, two different stories: a CONFIRMED retirement (the CLI must
+    // not resurrect the key) or an undetermined absence (the CLI must not
+    // replace a file it cannot account for).
+    journal(process.env.RSM_APPEND_TEST_RETIRED_MARK === '1' ? 'read:retired' : 'read:undetermined');
     return null;
   }
 
@@ -96,8 +110,15 @@ export async function readDashboardFile(key) {
 
   // PG first, as `dashboard.ts` does: a readable row answers, the file is only
   // the fallback. The PG view never carries the concurrent append.
-  if (process.env.RSM_APPEND_TEST_PG_READ === 'pg') {
+  const pgRead = process.env.RSM_APPEND_TEST_PG_READ;
+  if (pgRead === 'pg' || pgRead === 'pg-ahead') {
     journal('read:pg');
+    if (pgRead === 'pg-ahead') {
+      // PG moved ahead of its last export: same read priority, NEWER status and
+      // stamp than the file's. That is the ordinary state of a mirror between
+      // two exports — a stale file is mirrored, it is not "a newer status".
+      return { ...witnessView(key), status: { markdown: PG_AHEAD_STATUS }, lastModified: PG_AHEAD_STAMP };
+    }
     return witnessView(key);
   }
 

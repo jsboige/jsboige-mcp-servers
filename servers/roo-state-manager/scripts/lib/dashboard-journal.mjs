@@ -226,6 +226,34 @@ export function withFileOnlyMessages(state, fileState) {
   };
 }
 
+/**
+ * #4915 (tier-2 review ai-01, 26/11 blocker 1): a STATUS change writes no
+ * message, so `fileOnlyMessages` is blind to it — a file whose status was
+ * updated during the PG attempt looks unchanged, and a mirror rendered from
+ * the pre-attempt base replaces it, then stamps the result `mirrorExportAt`
+ * ("up to date" while PG holds the older status).
+ *
+ * Returns true when the file's status DIFFERS from `state`'s and the file is
+ * not provably older: only then may the file not be replaced. A file that is
+ * merely BEHIND the base (its `lastModified` precedes the base's — the normal
+ * state of a mirror between two exports) is still mirrored: the status in
+ * `state` is the newer one, and refusing would freeze the file for good.
+ * An empty status on the file carries no claim to lose (older renderers wrote
+ * no section), and an undated file makes no freshness claim either.
+ */
+export function fileStatusSupersedes(state, fileState) {
+  const fileStatus = fileState?.status?.markdown;
+  if (typeof fileStatus !== 'string' || fileStatus.trim() === '') return false;
+  const stateStatus = state?.status?.markdown;
+  if (fileStatus.trim() === String(stateStatus ?? '').trim()) return false;
+  const fileAt = Date.parse(fileState?.lastModified ?? '');
+  if (Number.isNaN(fileAt)) return false;
+  const stateAt = Date.parse(state?.lastModified ?? '');
+  // An undated base cannot prove the file stale: the file's claim stands.
+  if (Number.isNaN(stateAt)) return true;
+  return fileAt >= stateAt;
+}
+
 // ── CLI arg grammar (shared, testable) ──────────────────────────────────────
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/;
