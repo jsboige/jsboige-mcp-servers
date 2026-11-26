@@ -8033,6 +8033,127 @@ def _keep_prior_trace(out: Path, prefix: str) -> str:
     raise OSError(f"no free snapshot name beside {out}")   # never fall back to overwriting
 
 
+def _seat_credential_gaps(args) -> list[str]:
+    """Model entries whose key cannot resolve in THIS environment (24/11, o34b).
+
+    Measured 24/11 19:13Z (po-2028:claudish, CoursIA#28079): the `nb-*` entries of the
+    seat's config name their key through `api_key_env: ZAI_API_KEY`, nothing defined that
+    variable on the seat, and sk-agent's `resolve_api_key()` fell back to its `no-key`
+    default. The launch paid stage 0 (worktree, claim pre-check, issue read -- 60 s),
+    opened the two MCP sessions, and its first model call answered
+    `401 invalid proxy authentication`: a 125 s corpse, one call, verdict
+    `stage1-auth-failed`. The seat's launcher knew the export; the harness never asked.
+
+    Refuses on NAMES only -- role, agent, model entry, environment variable -- never on a
+    value, and only the certain case: the variable sk-agent will read is empty here AND the
+    entry carries no literal it would fall back to. Everything this cannot read (an
+    unreadable config, an unknown preset, a model entry it cannot find) is left to sk-agent,
+    which refuses those by name. `NBCODER_PREFLIGHT_CREDENTIALS=0` disables the check for a
+    seat whose endpoint serves without a key.
+    """
+    if os.environ.get("NBCODER_PREFLIGHT_CREDENTIALS", "").strip() == "0":
+        return []
+    try:
+        cfg = json.loads(Path(SK_CONFIG).read_text(encoding="utf-8"))
+        agents = {a["id"]: a for a in cfg.get("agents") or [] if isinstance(a, dict) and a.get("id")}
+        models = {m["id"]: m for m in cfg.get("models") or [] if isinstance(m, dict) and m.get("id")}
+    except Exception:
+        return []                 # not this check's question: the path check above already ran
+    roles = [("coder", args.agent, args.coder_model)]
+    if args.max_stage >= 4:       # the verifier is a separate process on the same config + env
+        roles.append(("verifier", args.verifier_agent, args.verifier_model))
+    if args.spec_mode == "run":
+        roles.append(("spec", args.agent, args.spec_model))
+    gaps: list[str] = []
+    judged: set[str] = set()
+    for role, agent_id, override in roles:
+        ref = override or (agents.get(agent_id) or {}).get("model")
+        model = models.get(ref)
+        if not ref or not model or ref in judged:
+            continue
+        judged.add(ref)
+        var = str(model.get("api_key_env") or "").strip()
+        literal = model.get("api_key")
+        usable = isinstance(literal, str) and literal.strip() not in ("", "no-key")
+        if var and not usable and not (os.environ.get(var) or "").strip():
+            gaps.append(f"{role}: agent {agent_id} -> model {ref} reads its key from "
+                        f"${var}, which is not set in this environment")
+    return gaps
+
+
+def _tree_has(repo: Path, rev: str, rel: str) -> str | None:
+    """Is `rel` in `rev`'s tree? "in-tree", "absent" (provably) or None (git cannot answer).
+
+    `git cat-file -e` exits 128 for an absent path and for everything it cannot read (no
+    such rev, not a repository), so the verdict is read from its message: only `does not
+    exist in` is an absence. A path that `exists on disk, but not in` the rev (measured
+    24/11: a spelling that differs by case, on a case-insensitive filesystem) is neither:
+    the main checkout's working tree says nothing about the fresh worktree, so the check
+    stays out of the way.
+    """
+    p = subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{rev}:{rel}"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, timeout=120)
+    if p.returncode == 0:
+        return "in-tree"
+    return "absent" if "does not exist in" in (p.stderr or "") else None
+
+
+def _launch_target_gap(args) -> dict | None:
+    """A launch whose own target, twin or metadata cannot be reached (24/11, o34).
+
+    Measured 24/11 (po-2028:claudish, CoursIA#28079): a creation grain queued without its
+    twin. The driver built the worktree, ran the claim pre-check and read the issue before
+    `run()` found an absent target and no `--source-nb`: 95 s, verdict
+    `notebook-not-found`, nothing on the issue naming what was missing. The answer needed
+    only the ref the worktree is cut from, which was known before any of that was paid.
+
+    The same holds for the three other answers `run()`'s target resolution draws from that
+    ref alone (`target-already-exists`, `meta-from-not-found`, `source-nb-not-found`), so
+    they are asked here too, in `run()`'s own order. Read against a FRESH origin/main -- the
+    fetch `prepare_worktree` makes: on a stale ref the check would refuse a correction
+    whose target merged since the last fetch. A resume (`--revise-from` / `--verify-from`)
+    reads its creation mode from the trace and is not asked. When git cannot answer,
+    nothing is refused.
+    """
+    if args.revise_from or args.verify_from:
+        return None
+    repo = Path(args.repo)
+
+    def norm(s) -> str:
+        return str(s).replace("\\", "/")
+    try:
+        fetched = subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin", "main"],
+                                 capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                                 timeout=120)
+        if fetched.returncode != 0:
+            return None                # an unreadable or stale ref is never an answer
+        rev = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+                              "origin/main^{commit}"], capture_output=True, text=True,
+                             timeout=60).stdout.strip()
+        if not rev:
+            return None
+        gap = {"origin_main": rev[:10]}
+        target = _tree_has(repo, rev, norm(args.notebook))
+        creation = bool(args.source_nb or args.from_spec)
+        if target == "in-tree" and creation:
+            return gap | {"reason": "target-already-exists", "target": norm(args.notebook)}
+        if creation and args.meta_from and _tree_has(repo, rev, norm(args.meta_from)) == "absent":
+            return gap | {"reason": "meta-from-not-found", "meta_from": norm(args.meta_from)}
+        if args.source_nb:
+            twin = _tree_has(repo, rev, norm(args.source_nb))
+            if twin == "absent":
+                return gap | {"reason": "source-nb-absent", "source_nb": norm(args.source_nb),
+                              "target": norm(args.notebook)}
+            return None                # the twin resolves (or git cannot say): the creation proceeds
+        if not creation and target == "absent":
+            return gap | {"reason": "creation-grain-without-twin", "target": norm(args.notebook)}
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
 def _preflight(ap, args) -> None:
     """Refuse before any spend when a wired path cannot exist (F3, vllm#441).
 
@@ -8056,6 +8177,11 @@ def _preflight(ap, args) -> None:
     The kept name has only a SECOND of resolution, and a retry loop is precisely the case
     where two refusals land in the same second: the second copy would silently replace the
     first. `_keep_prior_trace` never replaces an existing copy, it adds a suffix instead.
+
+    Three refusals, one per thing a seat gets wrong (24/11): a wired PATH that does not
+    resolve here, a model CREDENTIAL that does not resolve here (`_seat_credential_gaps`), a
+    TARGET the launch cannot reach (`_launch_target_gap`). Each is asked only once the
+    previous one is clean, and each names its own remedy in its own verdict.
     """
     missing = [f"{name}={path}" for name, path, ok in (
         ("sk_agent.py (NBCODER_SK_DIR)", SK_DIR / "sk_agent.py", (SK_DIR / "sk_agent.py").is_file()),
@@ -8064,10 +8190,42 @@ def _preflight(ap, args) -> None:
         ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
         ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
     ) if not ok]
-    if not missing:
+    credential = [] if missing else _seat_credential_gaps(args)
+    target_gap = None if (missing or credential) else _launch_target_gap(args)
+    if not missing and not credential and not target_gap:
         return
-    detail = "seat wiring does not resolve here — point the env var at a real path: " \
-             + " | ".join(missing)
+    if missing:
+        verdict = "refused-wiring-unresolved"
+        detail = ("seat wiring does not resolve here — point the env var at a real path: "
+                  + " | ".join(missing))
+    elif credential:
+        verdict = "refused-credential-unresolved"
+        detail = ("a model this launch calls cannot authenticate here — export the named "
+                  "environment variable in the launching shell (never write a key in the "
+                  "config or on a command line); sk-agent sends no usable key and the first "
+                  "call answers 401: " + " | ".join(credential)
+                  + " | NBCODER_PREFLIGHT_CREDENTIALS=0 disables this check")
+    else:
+        verdict = "refused-target-unresolved"
+        gap = target_gap or {}
+        sha = gap.get("origin_main")
+        reason = gap.get("reason")
+        if reason == "source-nb-absent":
+            detail = (f"--source-nb {gap.get('source_nb')} is absent from origin/main ({sha}): "
+                      "a creation grain's twin must exist there")
+        elif reason == "target-already-exists":
+            detail = (f"{gap.get('target')} already exists on origin/main ({sha}) and this "
+                      "launch declares a creation (--source-nb / --from-spec): a correction "
+                      "drops those flags, a creation names a target that does not exist yet")
+        elif reason == "meta-from-not-found":
+            detail = (f"--meta-from {gap.get('meta_from')} is absent from origin/main ({sha}): "
+                      "the created deliverable inherits that notebook's kernelspec and "
+                      "language_info")
+        else:
+            detail = (f"{gap.get('target')} is absent from origin/main ({sha}) and this launch "
+                      "names no twin — a creation grain passes --source-nb <repo-relative twin> "
+                      "(or --from-spec with --meta-from); a correction names a notebook that "
+                      "exists on origin/main")
     out_dir = Path(args.out_dir)
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -8079,15 +8237,21 @@ def _preflight(ap, args) -> None:
             kept = _keep_prior_trace(out, prefix)
         rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
                "finished": utcnow(), "lane": args.lane, "dry": True, "calls": [],
-               "verdict": "refused-wiring-unresolved",
-               "wiring_missing": missing}
+               "verdict": verdict, "refusal": detail}
+        if missing:
+            rec["wiring_missing"] = missing
+        if credential:
+            rec["credential_missing"] = credential
+        if target_gap:
+            rec["target_gap"] = target_gap
         if kept:
             rec["preserved_prior_trace"] = kept
         out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
         with open(out_dir / "ledger.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({k: rec.get(k) for k in
                                  ("issue", "notebook", "started", "finished", "verdict", "lane")}
-                                | {"calls": 0, "preserved_prior_trace": kept}, ensure_ascii=False) + "\n")
+                                | {"calls": 0, "preserved_prior_trace": kept,
+                                   "refusal": detail[:600]}, ensure_ascii=False) + "\n")
     except OSError:
         pass          # the refusal must not be masked by a failed trace write
     ap.error(detail)
