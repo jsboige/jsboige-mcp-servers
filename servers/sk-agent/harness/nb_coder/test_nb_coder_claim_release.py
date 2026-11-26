@@ -9,7 +9,11 @@
 
 Nothing released the claim of a grain that failed after reserving: the issue stayed locked
 for other lanes until the guard's 48 h stale threshold. Offline: fake claims, fake driver,
-no GitHub. Run: python -m pytest test_nb_coder_claim_release.py -q from this directory."""
+no GitHub. Run: python -m pytest test_nb_coder_claim_release.py -q from this directory.
+
+26/11 — one failure no longer releases: a FIRST content failure whose run left a resumable
+trace keeps the claim (bottom of this file). The claim guard reads any [RELEASED] as a
+close of the whole issue for 3 days, which froze the lane's own salvage."""
 
 import importlib.util
 import json
@@ -43,12 +47,12 @@ class FakeClaims:
         return self.release_rc, "posted" if self.release_rc == 0 else "error: 502"
 
 
-def _sched(tmp_path, items, spawn, claims, claim=True, max_active=2):
+def _sched(tmp_path, items, spawn, claims, claim=True, max_active=2, extra=()):
     q = tmp_path / "queue.jsonl"
     q.write_text("\n".join(json.dumps(x) for x in items) + "\n", encoding="utf-8")
     argv = ["--queue", str(q), "--state-dir", str(tmp_path / "state"), "--repo", "D:/CoursIA",
             "--max-active", str(max_active), "--lane", ME]
-    args = S.parse_args(argv + (["--claim"] if claim else []))
+    args = S.parse_args(argv + (["--claim"] if claim else []) + list(extra))
     sched = S.Scheduler(args, spawn=spawn, gate=lambda: dict(GREEN), sleep=lambda s=0: None,
                         clock=lambda: 1000.0, git=lambda argv, timeout=300: (1, "no tree"),
                         claims=claims)
@@ -206,3 +210,138 @@ def test_guard_claims_release_goes_through_the_guard(monkeypatch, tmp_path):
         raise subprocess.TimeoutExpired(argv, 240)
     monkeypatch.setattr(S.subprocess, "run", timeout)
     assert S.GuardClaims(str(tmp_path)).release(12, ME, "Dir/I.ipynb", "x")[0] == -1
+
+
+# --- 26/11: a FIRST content failure keeps the claim when its trace is resumable ---------
+# Measured on CoursIA#27133 (lot 5, five Rust ports): the o39b batch ended on one
+# built-execution-failed (Search-11); the scheduler posted `[RELEASED] … -- paths:
+# …/Search-11-Metaheuristics-Rust.ipynb` (comment 7183109434, 05:01:21Z). The claim guard
+# reads ANY [RELEASED] as a full close of the lane on the whole ISSUE (RELACHEE 3 days,
+# every lane), so the two salvage launches of the next batch (05:04:30Z, 05:06:35Z) were
+# refused before any model call — on drafts already built and paid for.
+
+LOT5 = {"issue": 27133, "notebook": "Dir/Search-11-Rust.ipynb"}
+BUILT = {"verdict": "built-execution-failed", "built_notebook": "nb_27133_built.ipynb"}
+
+
+def _leaving(rec, verdict, rc):
+    """A driver that leaves `rec` in ITS --out-dir (where the scheduler reads it back),
+    then ends on (verdict, rc). `rec=None` leaves no record at all."""
+    def spawn(cmd):
+        if rec is not None:
+            out = Path(cmd[cmd.index("--out-dir") + 1])
+            out.mkdir(parents=True, exist_ok=True)
+            (out / f"issue-{cmd[cmd.index('--issue') + 1]}.json").write_text(
+                rec if isinstance(rec, str) else json.dumps(rec), encoding="utf-8")
+        return S.FakeProc(verdict, rc, 0)
+    return spawn
+
+
+def test_a_first_content_failure_on_a_built_notebook_keeps_the_claim(tmp_path):
+    claims = FakeClaims()
+    spawn = _leaving(BUILT, "built-execution-failed", 1)
+    sched = _sched(tmp_path, [LOT5], spawn, claims)
+    sched.run()
+    assert claims.reads == [] and claims.releases == []   # nothing is asked of GitHub
+    assert not _events(sched, "claim-released")
+    skipped, = _events(sched, "claim-release-skipped")
+    assert skipped["reason"] == "resumable-first-content-failure" and skipped["issue"] == 27133
+    assert Path(skipped["trace"]) == sched.run_trace(LOT5)
+    g = sched.state["grains"]["#27133:Dir/Search-11-Rust.ipynb"]
+    assert g["status"] == "failed"                       # the grain itself is still a failure
+    assert g["resumable_trace"] == skipped["trace"]      # and the salvage is one flag away
+
+
+@pytest.mark.parametrize("verdict", [
+    "gates-failed: conformance",
+    "verify-reject: findings",
+    "built-structure-mismatch: 3 cells",
+])
+def test_every_judged_notebook_verdict_qualifies(tmp_path, verdict):
+    spawn = _leaving(BUILT, verdict, 1)
+    sched = _sched(tmp_path, [LOT5], spawn, FakeClaims())
+    sched.run()
+    skipped, = _events(sched, "claim-release-skipped")
+    assert skipped["reason"] == "resumable-first-content-failure"
+
+
+@pytest.mark.parametrize("verdict", [
+    "call-failed: timeout",             # a run failure: nothing was judged
+    "refused-claim-held-by-another-lane",
+    "",
+])
+def test_a_non_content_failure_releases_as_before(tmp_path, verdict):
+    spawn = _leaving(BUILT, verdict, 1)
+    sched = _sched(tmp_path, [LOT5], spawn, FakeClaims())
+    sched.run()
+    sched_claims = sched.claims
+    assert len(sched_claims.releases) == 1 and sched_claims.reads == [27133]
+    assert _events(sched, "claim-released")
+
+
+@pytest.mark.parametrize("rec", [
+    {},                                              # nothing was built: nothing to resume
+    {"verdict": "built-execution-failed"},           # judged, but no notebook behind it
+    "{not json",
+    None,                                            # the run left no record at all
+])
+def test_without_a_built_notebook_behind_it_the_claim_is_released(tmp_path, rec):
+    sched = _sched(tmp_path, [LOT5], _leaving(rec, "built-execution-failed", 1), FakeClaims())
+    sched.run()
+    if rec is None:
+        assert sched.run_trace(LOT5) is None         # no record: nothing to resume from
+    assert len(sched.claims.releases) == 1
+
+
+def test_a_second_content_failure_on_a_resumed_grain_releases(tmp_path):
+    """The salvage round itself ends on a content verdict: the draft had its chance."""
+    prior = tmp_path / "o39b" / "runs" / "x" / "issue-27133.json"
+    prior.parent.mkdir(parents=True)
+    prior.write_text(json.dumps(BUILT), encoding="utf-8")
+    item = dict(LOT5, revise_from=str(prior))
+    sched = _sched(tmp_path, [item], _leaving(BUILT, "built-execution-failed", 1), FakeClaims())
+    sched.run()
+    assert len(sched.claims.releases) == 1
+    assert _events(sched, "claim-released")
+
+
+def test_a_launch_resumed_after_a_verifier_crash_releases_on_a_content_failure(tmp_path):
+    """`resume_from` (the verify-error recovery) is a resume too."""
+    claims = FakeClaims()
+    sched = _sched(tmp_path, [LOT5], _leaving(BUILT, "verify-reject: findings", 1), claims)
+    sched.state["grains"]["#27133:Dir/Search-11-Rust.ipynb"]["resume_from"] = "t.json"
+    sched.run()
+    assert len(claims.releases) == 1
+
+
+def _write_record(sched, item, rec):
+    """Put a grain's verdict record where run_trace() reads it (the driver's job)."""
+    path = (Path(sched.args.out_root) / f"issue-{S.grain_slug(item)}"
+            / f"issue-{item['issue']}.json")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(rec if isinstance(rec, str) else json.dumps(rec), encoding="utf-8")
+    return path
+
+
+def test_the_resume_signal_alone_decides_not_the_record(tmp_path):
+    """Unit-level pin of the two resume checks: the resumable record IS present at the
+    grain's own run dir (the witness below returns it for a plain item), and an explicit
+    --revise-from / --verify-from must still keep nothing — the end-to-end resumed test
+    only proves the release, because a resumed driver writes next to its trace."""
+    key = "#27133:Dir/Search-11-Rust.ipynb"
+    item = dict(LOT5, revise_from=str(tmp_path / "old" / "issue-27133.json"))
+    sched = _sched(tmp_path, [item], _leaving(BUILT, "built-execution-failed", 1), FakeClaims())
+    rec = _write_record(sched, LOT5, BUILT)
+    assert sched.run_trace(LOT5) == rec                          # the witness
+    assert sched.resumable_trace(key, LOT5, "built-execution-failed") == rec
+    assert sched.resumable_trace(key, item, "built-execution-failed") is None
+    assert sched.resumable_trace(key, dict(LOT5, verify_from="t.json"),
+                                 "built-execution-failed") is None
+
+
+def test_the_old_behavior_is_one_flag_away(tmp_path):
+    sched = _sched(tmp_path, [LOT5], _leaving(BUILT, "built-execution-failed", 1), FakeClaims(),
+                   extra=["--release-on-first-content-failure"])
+    sched.run()
+    assert len(sched.claims.releases) == 1
+    assert "resumable_trace" not in sched.state["grains"]["#27133:Dir/Search-11-Rust.ipynb"]
