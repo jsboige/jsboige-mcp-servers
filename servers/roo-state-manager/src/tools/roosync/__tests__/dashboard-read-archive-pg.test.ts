@@ -29,7 +29,11 @@
  *     lots distincts (mesure 26/11 : 40 couples, 39 jumeaux, 1 lot distinct) ;
  *   - une fenêtre PG partielle est DITE (note + champ `pgArchiveWindow`), jamais
  *     silencieuse ; un nom qui tombe dans la fenêtre de plusieurs lots n'est
- *     servi par aucun (sans contenu, il n'y a pas d'identité pour choisir).
+ *     servi par aucun (sans contenu, il n'y a pas d'identité pour choisir) ;
+ *   - le plafond d'identité (64 comparaisons par listing) dit SÉPARÉMENT les
+ *     couples contrôlés et réfutés de ceux que le budget n'a jamais comparés :
+ *     présenter un non-contrôlé comme un réfuté transformerait 6 vraies paires
+ *     laissées de côté en 6 affirmations fausses (review ms#1934, 26/11).
  *
  * Seules les deux lectures PG ajoutées par ce grain sont doublées : le chemin
  * fichier reste réel (fs + parser), c'est lui qui garde la précédence.
@@ -159,6 +163,11 @@ function identityNote(count: number): string {
 /** …and when a batch was merely near a file: listed in addition, never dropped. */
 function unprovenNote(count: number): string {
   return ` [${count} lot(s) PG proche(s) d'un fichier local sans preuve d'identité — listés en plus, jamais écartés]`;
+}
+
+/** …and when the identity budget ran out before the pair could be compared. */
+function uncheckedNote(count: number): string {
+  return ` [${count} lot(s) PG proche(s) d'un fichier local NON CONTRÔLÉS — budget d'identité épuisé (64 comparaisons par listing) : identité ni prouvée ni réfutée, listés en plus]`;
 }
 
 describe('read_archive — repli PG (#4131 residual)', () => {
@@ -292,6 +301,44 @@ describe('read_archive — repli PG (#4131 residual)', () => {
     );
     // Sans id dans le fichier, le lot n'est même pas lu.
     expect(mockFetchBatch).not.toHaveBeenCalled();
+  });
+
+  it('plafond d\'identité : 10 couples réfutés puis 60 vrais jumeaux — 54 prouvés, 6 NON CONTRÔLÉS dits à part', async () => {
+    // Un seul compteur pour tout le listing (64 comparaisons) : les réfutés du
+    // début mangent le budget des jumeaux derrière eux. Les compter ensemble
+    // ferait dire « 16 lots sans preuve d'identité » là où 6 n'ont jamais été
+    // comparés (review ms#1934, 26/11).
+    const PAIRS = 70;
+    const BASE = Date.parse('2026-11-20T00:00:00Z');
+    const STEP = 10 * 60_000; // > la fenêtre de rattachement (6 min), un lot = un candidat
+    const isoAt = (i: number) => new Date(BASE + i * STEP).toISOString();
+    const stamps: string[] = [];
+    for (let i = 0; i < PAIRS; i += 1) {
+      const stamp = isoAt(i).replace(/[:.]/g, '-').substring(0, 19);
+      stamps.push(stamp);
+      await writeArchiveFile(archiveDir, name(stamp));
+    }
+    mockFetchBatches.mockResolvedValue(windowOf(stamps.map((_, i) => ({
+      archivedAt: new Date(BASE + i * STEP + 1000).toISOString(),
+      messageCount: 2,
+    }))));
+    mockFetchBatch.mockImplementation(async (_key: string, archivedAt: string) => {
+      const idx = Math.round((Date.parse(archivedAt) - BASE - 1000) / STEP);
+      return batchOf(idx < 10 ? pgMessages : fileMessages);
+    });
+    const res = await list();
+    // 70 fichiers + 10 réfutés listés en plus + 6 non contrôlés listés en plus.
+    expect((res as any).archives).toHaveLength(70 + 10 + 6);
+    expect(mockFetchBatch).toHaveBeenCalledTimes(64);
+    expect((res as any).message).toBe(
+      `86 archive(s) trouvée(s) pour '${KEY}'`
+      + identityNote(54)
+      + unprovenNote(10)
+      + uncheckedNote(6)
+    );
+    // Ni « 70 sans preuve », ni les non-contrôlés comptés comme des réfutés.
+    expect((res as any).message).not.toContain('70 lot(s)');
+    expect((res as any).message).not.toContain('sans fichier local');
   });
 
   it('fenêtre bornée : 10 min après un fichier = une AUTRE condensation ; au-delà de 2 s AVANT = pas un jumeau', async () => {

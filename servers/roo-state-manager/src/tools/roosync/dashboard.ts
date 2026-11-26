@@ -12230,6 +12230,14 @@ type ArchiveListing = {
    */
   unprovenTwins: number;
   /**
+   * Batches near a local file that the identity budget never got to COMPARE
+   * (or compared only in part). Said apart from `unprovenTwins`: a pair nobody
+   * looked at is not a pair refused — counted with the first, 70 pairs whose
+   * last 60 are true twins read as « 70 without proof » (review ms#1934, the
+   * cap limit). Listed in addition exactly like an unproven one.
+   */
+  uncheckedTwins: number;
+  /**
    * Unproven pairs whose synthetic name already exists locally, so the listing
    * cannot make the batch reachable (the read path serves the file for that
    * name). Counted and said — never silently doubled, never silently dropped.
@@ -12253,8 +12261,11 @@ type ArchiveListing = {
  *
  * Cost, measured on the same seat: one file read 7 ms p50 / 23 ms max, one batch
  * read 7 ms p50 / 12 ms max — 40 pairs cost 0.6 s. The cap only bounds a
- * pathological key; past it a pair stays UNPROVEN and both are listed, so the
- * budget never buys a lost batch.
+ * pathological key; past it a pair stays UNCHECKED and both are listed, so the
+ * budget never buys a lost batch. One counter for the whole listing, spent on
+ * every pair it examines — proven or not — so a run of unprovable pairs eats
+ * the budget of the true twins behind them; the listing says the unchecked
+ * ones apart from the ones checked and found without proof.
  */
 const ARCHIVE_IDENTITY_CHECK_MAX = 64;
 
@@ -12351,12 +12362,13 @@ async function listArchivesWithPgBatches(
     .filter((f): f is { name: string; ms: number } => f.ms !== null);
   const { batches, gap } = await fetchArchivedDashboardBatches(key);
   if (batches.length === 0) {
-    return { archives: localArchives, pgOnly: 0, mergedByIdentity: 0, unprovenTwins: 0, shadowedTwins: 0, gap };
+    return { archives: localArchives, pgOnly: 0, mergedByIdentity: 0, unprovenTwins: 0, uncheckedTwins: 0, shadowedTwins: 0, gap };
   }
   const extra: string[] = [];
   const localNames = new Set(localArchives);
   let mergedByIdentity = 0;
   let unprovenTwins = 0;
+  let uncheckedTwins = 0;
   let shadowedTwins = 0;
   let checks = 0;
   for (const batch of batches) {
@@ -12364,9 +12376,15 @@ async function listArchivesWithPgBatches(
     if (Number.isNaN(batchMs)) continue;
     const candidates = stampedLocal.filter(f => batchMatchesNameStamp(batchMs, f.ms));
     let proven = false;
+    let compared = true;
     for (const candidate of candidates) {
-      // Past the cap the pair simply stays unproven: listed twice, not lost.
-      if (checks >= ARCHIVE_IDENTITY_CHECK_MAX) break;
+      // Past the cap the pair stays UNCHECKED: listed twice, not lost. Not the
+      // same thing as checked-and-refused — a batch compared only in part has
+      // an identity nobody settled, and is counted with the unchecked.
+      if (checks >= ARCHIVE_IDENTITY_CHECK_MAX) {
+        compared = false;
+        break;
+      }
       checks += 1;
       if (await batchIsProvenTwin(key, batch, candidate.name, archiveDir)) {
         proven = true;
@@ -12387,19 +12405,22 @@ async function listArchivesWithPgBatches(
         shadowedTwins += 1;
         continue;
       }
-      unprovenTwins += 1;
+      if (compared) unprovenTwins += 1;
+      else uncheckedTwins += 1;
     }
     if (name) extra.push(name);
   }
   if (extra.length === 0) {
-    return { archives: localArchives, pgOnly: 0, mergedByIdentity, unprovenTwins, shadowedTwins, gap };
+    return { archives: localArchives, pgOnly: 0, mergedByIdentity, unprovenTwins, uncheckedTwins, shadowedTwins, gap };
   }
   // Same order rule as the file listing: the stamp sorts chronologically.
   return {
     archives: [...localArchives, ...extra].sort().reverse(),
-    pgOnly: extra.length - unprovenTwins,
+    // The unchecked are near a file too, so they are not « without a local file ».
+    pgOnly: extra.length - unprovenTwins - uncheckedTwins,
     mergedByIdentity,
     unprovenTwins,
+    uncheckedTwins,
     shadowedTwins,
     gap,
   };
@@ -12482,7 +12503,7 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
       // quand PG n'a pas répondu au lieu de laisser croire à une fenêtre pleine.
       // Un lot n'est retiré que si un fichier local est PROUVÉ son jumeau (ids) ;
       // proche mais non prouvé, il est listé EN PLUS et compté.
-      const { archives, pgOnly, mergedByIdentity, unprovenTwins, shadowedTwins, gap } =
+      const { archives, pgOnly, mergedByIdentity, unprovenTwins, uncheckedTwins, shadowedTwins, gap } =
         await listArchivesWithPgBatches(key, localArchives, archiveDir);
       return {
         success: true,
@@ -12499,6 +12520,9 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
             : '')
           + (unprovenTwins > 0
             ? ` [${unprovenTwins} lot(s) PG proche(s) d'un fichier local sans preuve d'identité — listés en plus, jamais écartés]`
+            : '')
+          + (uncheckedTwins > 0
+            ? ` [${uncheckedTwins} lot(s) PG proche(s) d'un fichier local NON CONTRÔLÉS — budget d'identité épuisé (${ARCHIVE_IDENTITY_CHECK_MAX} comparaisons par listing) : identité ni prouvée ni réfutée, listés en plus]`
             : '')
           + (shadowedTwins > 0
             ? ` [${shadowedTwins} lot(s) PG proche(s) d'un fichier local portent son nom sans preuve d'identité — non atteignables par ce nom]`
