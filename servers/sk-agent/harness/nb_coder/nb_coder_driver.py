@@ -4741,10 +4741,17 @@ def provider_rate_refusal(env: dict) -> str:
 # wiring failure — that endpoint answered. The bare words 'connection error' are NOT a
 # marker: a dead kernel or MCP server reports itself that way, and that one IS the harness's
 # to repair.
-_ENDPOINT_UNREACHABLE_MARKERS = ("apiconnectionerror", "readerror", "writeerror",
-                                 "connecterror", "remoteprotocolerror",
-                                 "error code: 502", "error code: 503", "error code: 504",
-                                 "bad gateway", "service unavailable", "gateway timeout")
+_ENDPOINT_UNREACHABLE_MARKERS = ("apiconnectionerror", "error code: 502", "error code: 503",
+                                 "error code: 504", "bad gateway", "service unavailable",
+                                 "gateway timeout")
+# The httpx class names are generic: `tarfile.ReadError` is not a cut transport. They count
+# only when the transport MODULE names them (`httpcore2.ReadError`, `httpx2.WriteError`),
+# which is how Python reprs them in a chained cause (review ai-01, 26/11 — the measured
+# chain httpcore2.ReadError -> httpx2.ReadError -> APIConnectionError keeps matching on the
+# qualified form or on `apiconnectionerror` alone).
+_QUALIFIED_TRANSPORT_RE = re.compile(
+    r"\b(?:httpx|httpcore)\w*\.(?:readerror|writeerror|connecterror|remoteprotocolerror)\b",
+    re.I)
 ENDPOINT_UNREACHABLE_VERDICT = "deferred-by-endpoint-unreachable"
 
 
@@ -4760,6 +4767,10 @@ def endpoint_unreachable(env: dict) -> str:
         return ""
     low = err.lower()
     hit = next((m for m in _ENDPOINT_UNREACHABLE_MARKERS if m in low), "")
+    if not hit:
+        q = _QUALIFIED_TRANSPORT_RE.search(err)
+        # the excerpt is centred on the CLASS name, as it is for the bare markers
+        hit = q.group(0).rsplit(".", 1)[-1].lower() if q else ""
     if not hit or _TIMEOUT_RE.search(err):
         return ""
     return f"{ENDPOINT_UNREACHABLE_VERDICT}: {_excerpt(err, hit)}"

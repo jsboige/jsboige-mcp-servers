@@ -77,6 +77,23 @@ def test_the_excerpt_keeps_the_marker_when_it_sits_deep_in_a_long_error():
     assert v.startswith("deferred-by-endpoint-unreachable: ") and "httpx2.ReadError" in v
 
 
+def test_a_generic_class_name_only_counts_under_the_transport_module():
+    """Review ai-01 (26/11): `readerror`/`writeerror` were bare substrings, and those class
+    names exist outside the transport (`tarfile.ReadError`). The measured chain names the
+    module, so the qualified form is the whole of what was measured — and the bare one buys
+    a deferral that would loop a grain on a defect retrying cannot cure."""
+    assert d.endpoint_unreachable(
+        {"error": "tarfile.ReadError: not a gzip file"}) == ""
+    assert d.endpoint_unreachable({"error": "ReadError: bad header"}) == ""
+    assert d.endpoint_unreachable({"error": "sqlite3.WriteError: disk I/O error"}) == ""
+    # the qualified forms the client really emits still defer
+    for err in ("httpcore2.ConnectError: [Errno 111] Connection refused",
+                "httpx.WriteError('broken pipe')",
+                "httpcore2.RemoteProtocolError: peer closed the connection"):
+        assert d.endpoint_unreachable({"error": err}).startswith(
+            "deferred-by-endpoint-unreachable: "), err
+
+
 def test_nothing_else_is_deferred_by_it():
     assert d.endpoint_unreachable({"error": GATE}) == ""              # the gate's, not ours
     assert d.endpoint_unreachable({"error": RATE_LIMIT}) == ""        # the 429's, not ours
