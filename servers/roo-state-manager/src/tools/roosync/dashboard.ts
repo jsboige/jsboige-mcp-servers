@@ -77,6 +77,7 @@ import {
   readDashboardSharedLock,
   isDashboardPgPrimary,
 } from '../../services/unified-store/roosync-dashboard-store.js';
+import type { ArchivePgGap } from '../../services/unified-store/types.js';
 import { isPgFlagOn, pgFlagState } from '../../services/unified-store/pg-flags.js';
 import { isDashboardReadPgEnabled } from '../../services/unified-store/pg-read-gates.js';
 // #4608 — état de condensation durable par clé (roosync_store_meta) : passe
@@ -8389,6 +8390,14 @@ export interface DashboardResult {
   forks?: DashboardForkGroup[];
   archives?: string[];
   archiveData?: { key: string; archivedAt: string; messageCount: number; messages: IntercomMessage[] };
+  /**
+   * #4131 residual (review ms#1934) — how complete the PG half of a
+   * `read_archive` answer is. `'complete'` = PG answered for the whole key;
+   * any other value is the reason the window may be this seat's mirror alone
+   * (the same reason `message` spells out). Present only when PG was actually
+   * consulted, so a fork-family name that PG cannot serve carries no field.
+   */
+  pgArchiveWindow?: 'complete' | Exclude<ArchivePgGap, null>;
   overview?: Record<string, {
     key: string;
     status: string;
@@ -12162,7 +12171,15 @@ async function handleDelete(key: string, args: DashboardArgs, requestEcho: Dashb
 /** A listed archive whose content carries no frontmatter (husk / placeholder). */
 class ArchiveHuskError extends Error {}
 
-const ARCHIVE_NAME_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})$/;
+/**
+ * The writer's two name families: the canonical
+ * `<key>-YYYY-MM-DDTHH-MM-SS.md` (dashboard.ts:8029) and the truncation
+ * fallback `<key>-YYYY-MM-DDTHH-MM-SS-fallback.md` (#7088). Both carry the
+ * same stamp, so both must reach the PG fallback — a fallback husk is served
+ * like any other, and a fallback file is its batch's twin (review ms#1934,
+ * finding 1).
+ */
+const ARCHIVE_NAME_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-fallback)?$/;
 
 /**
  * Name-stamp ↔ batch-stamp relation. The writer computes the file name BEFORE
@@ -12198,56 +12215,118 @@ function batchMatchesNameStamp(batchMs: number, nameStampMs: number): boolean {
   return delta >= -ARCHIVE_NAME_AFTER_BATCH_MS && delta <= ARCHIVE_BATCH_AFTER_NAME_MS;
 }
 
+/** A PG batch PG holds that a local file's stamp may or may not be about. */
+type ArchiveListing = {
+  archives: string[];
+  /** Batches PG named that no local file names. */
+  pgOnly: number;
+  /**
+   * Batches attached to a local file by stamp PROXIMITY. Identity is not
+   * verifiable: 302 of the 2313 local archives of `workspace-roo-extensions`
+   * carry `[msg:]` lines (measured po-2024 26/11), so a majority of files
+   * cannot be matched to a batch by message id, and reading every candidate
+   * file to try would put a few hundred DriveFS reads on each listing.
+   */
+  mergedByProximity: number;
+  /** Why the PG half may be narrower than the key's history. */
+  gap: ArchivePgGap;
+};
+
+/** Says out loud that the PG half did not answer — a partial window, never a silent one. */
+function archiveGapNote(gap: ArchivePgGap): string {
+  switch (gap) {
+    case 'timeout':
+      return " [FENÊTRE PARTIELLE : le store PG n'a pas répondu à temps — seuls les fichiers locaux sont listés]";
+    case 'error':
+      return ' [FENÊTRE PARTIELLE : lecture PG en échec — seuls les fichiers locaux sont listés]';
+    case 'no-url':
+      return ' [FENÊTRE LOCALE : ce siège n\'a pas de capacité PG — seuls ses fichiers locaux sont listés]';
+    default:
+      return '';
+  }
+}
+
 /**
  * Listing = this seat's files + the PG batches no local file names. Fail-open:
  * no PG story returns the file listing unchanged — never a smaller window.
  * Synthetic names use the writer's naming rule, so a consumer that dates an
  * archive by its name (check-degraded-escalations) windows them like the rest.
+ *
+ * A batch is every archived ROW of the key sharing one `archived_at` second,
+ * not necessarily a condensation: two other passes stamp `archived_at` (the
+ * reconcile archival pass #3151-D and the archive-scan heal) and no column
+ * records which setter wrote a stamp (review ms#1934, finding 2 — a known
+ * limitation, named here and in the PR body). For the organ that reads this
+ * listing the unit is right either way: it wants every archived message.
  */
 async function listArchivesWithPgBatches(
   key: string,
   localArchives: string[]
-): Promise<{ archives: string[]; pgOnly: number }> {
-  const batches = await fetchArchivedDashboardBatches(key);
-  if (!batches || batches.length === 0) return { archives: localArchives, pgOnly: 0 };
+): Promise<ArchiveListing> {
   const localStamps = localArchives
     .map(name => archiveNameStampMs(key, name))
     .filter((ms): ms is number => ms !== null);
+  const { batches, gap } = await fetchArchivedDashboardBatches(key);
+  if (batches.length === 0) {
+    return { archives: localArchives, pgOnly: 0, mergedByProximity: 0, gap };
+  }
   const extra: string[] = [];
+  let mergedByProximity = 0;
   for (const batch of batches) {
     const batchMs = Date.parse(batch.archivedAt);
     if (Number.isNaN(batchMs)) continue;
-    if (localStamps.some(ms => batchMatchesNameStamp(batchMs, ms))) continue;
+    if (localStamps.some(ms => batchMatchesNameStamp(batchMs, ms))) {
+      mergedByProximity += 1;
+      continue;
+    }
     const name = archiveNameForBatch(key, batch.archivedAt);
     if (name) extra.push(name);
   }
-  if (extra.length === 0) return { archives: localArchives, pgOnly: 0 };
+  if (extra.length === 0) {
+    return { archives: localArchives, pgOnly: 0, mergedByProximity, gap };
+  }
   // Same order rule as the file listing: the stamp sorts chronologically.
-  return { archives: [...localArchives, ...extra].sort().reverse(), pgOnly: extra.length };
+  return {
+    archives: [...localArchives, ...extra].sort().reverse(),
+    pgOnly: extra.length,
+    mergedByProximity,
+    gap,
+  };
 }
 
 /**
- * A name this seat cannot read, served from its PG batch. Null → the caller
- * keeps today's answer (the file-only behaviour).
+ * A name this seat cannot read, served from its PG batch. `data` null → the
+ * caller keeps today's answer (the file-only behaviour); `gap` says whether
+ * PG was even asked and answered.
  */
 async function readArchiveFromPg(
   key: string,
   archiveFile: string
-): Promise<{ key: string; archivedAt: string; messageCount: number; messages: IntercomMessage[] } | null> {
+): Promise<{
+  data: { key: string; archivedAt: string; messageCount: number; messages: IntercomMessage[] } | null;
+  gap: ArchivePgGap;
+}> {
   const nameStampMs = archiveNameStampMs(key, archiveFile);
-  if (nameStampMs === null) return null;
-  const batches = await fetchArchivedDashboardBatches(key);
-  if (!batches) return null;
+  // Not a name the writer produces (fork copies, `-wt-cleanup-…`, `pre-merge`):
+  // PG has nothing to say about it, and neither did the code before this grain.
+  if (nameStampMs === null) return { data: null, gap: null };
+  const { batches, gap } = await fetchArchivedDashboardBatches(key);
+  if (gap !== null) return { data: null, gap };
   // Nearest first: two batches inside the window is not a case the writer
   // produces, but a deterministic pick must not depend on the listing order.
   const batch = batches
     .map(b => ({ batch: b, ms: Date.parse(b.archivedAt) }))
     .filter(({ ms }) => !Number.isNaN(ms) && batchMatchesNameStamp(ms, nameStampMs))
     .sort((a, b) => Math.abs(a.ms - nameStampMs) - Math.abs(b.ms - nameStampMs))[0]?.batch;
-  if (!batch) return null;
-  const messages = await fetchArchivedDashboardBatch(key, batch.archivedAt);
-  if (!messages || messages.length === 0) return null;
-  return { key, archivedAt: batch.archivedAt, messageCount: messages.length, messages };
+  if (!batch) return { data: null, gap: null };
+  const read = await fetchArchivedDashboardBatch(key, batch.archivedAt);
+  if (read.gap !== null || !read.messages || read.messages.length === 0) {
+    return { data: null, gap: read.gap };
+  }
+  return {
+    data: { key, archivedAt: batch.archivedAt, messageCount: read.messages.length, messages: read.messages },
+    gap: null,
+  };
 }
 
 async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: DashboardRequestEcho): Promise<DashboardResult> {
@@ -12279,9 +12358,10 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         .filter(f => f.startsWith(keyPrefix) && f.endsWith('.md'))
         .sort()
         .reverse(); // Plus récents en premier
-      // #4131 residual : un lot condensé par un AUTRE siège n'a pas de .md
-      // ici — le listing le nomme quand même (listArchivesWithPgBatches).
-      const { archives, pgOnly } = await listArchivesWithPgBatches(key, localArchives);
+      // #4131 residual : un lot archivé par un AUTRE siège n'a pas de .md ici
+      // — le listing le nomme quand même (listArchivesWithPgBatches), et dit
+      // quand PG n'a pas répondu au lieu de laisser croire à une fenêtre pleine.
+      const { archives, pgOnly, mergedByProximity, gap } = await listArchivesWithPgBatches(key, localArchives);
       return {
         success: true,
         action: 'read_archive',
@@ -12289,8 +12369,13 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         type: args.type ?? '',
         request: requestEcho,
         archives,
+        pgArchiveWindow: gap ?? 'complete',
         message: `${archives.length} archive(s) trouvée(s) pour '${key}'`
           + (pgOnly > 0 ? ` (dont ${pgOnly} sans fichier local, servies par PG)` : '')
+          + (mergedByProximity > 0
+            ? ` [${mergedByProximity} lot(s) PG rattaché(s) à un fichier par proximité d'horodatage — identité non vérifiable]`
+            : '')
+          + archiveGapNote(gap)
       };
     } catch (error) {
       // #4643 : un readdir en échec n'est PAS « aucune archive » — la liste
@@ -12401,18 +12486,22 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
     // #4131 residual : un nom que ce siège ne peut pas lire — fichier absent,
     // ou coque sans frontmatter (placeholder DriveFS non hydraté, la classe
     // exit 1 de #4796) — peut nommer un lot que PG tient. Même enveloppe
-    // `archiveData` qu'une lecture fichier ; pas de lot → réponse d'aujourd'hui.
+    // `archiveData` qu'une lecture fichier ; pas de lot → la réponse
+    // d'aujourd'hui, plus la raison quand la fenêtre PG était partielle.
+    let gap: ArchivePgGap = null;
     if (enoent || error instanceof ArchiveHuskError) {
       const fromPg = await readArchiveFromPg(key, args.archiveFile);
-      if (fromPg) {
+      gap = fromPg.gap;
+      if (fromPg.data) {
         return {
           success: true,
           action: 'read_archive',
           key,
           type: args.type ?? '',
           request: requestEcho,
-          archiveData: fromPg,
-          message: `Archive '${args.archiveFile}' lue depuis PG (${fromPg.messageCount} messages)`
+          archiveData: fromPg.data,
+          pgArchiveWindow: 'complete',
+          message: `Archive '${args.archiveFile}' lue depuis PG (${fromPg.data.messageCount} messages)`
         };
       }
     }
@@ -12423,8 +12512,17 @@ async function handleReadArchive(key: string, args: DashboardArgs, requestEcho: 
         key,
         type: args.type ?? '',
         request: requestEcho,
-        message: `Archive '${args.archiveFile}' introuvable`
+        // Absent de la poche PG : le motif de fenêtre partielle dit que
+        // « introuvable » vaut pour ce que PG a pu montrer, pas pour la flotte.
+        ...(gap !== null ? { pgArchiveWindow: gap } : {}),
+        message: `Archive '${args.archiveFile}' introuvable${archiveGapNote(gap)}`
       };
+    }
+    if (error instanceof ArchiveHuskError && gap !== null) {
+      // Illisible ET PG muet : la cause n'est pas « archive vide » seule, et
+      // un consommateur qui ne voit que « frontmatter manquant » conclurait à
+      // un transport sain (classe exit 1 de #4796).
+      throw new ArchiveHuskError(`${(error as Error).message}${archiveGapNote(gap)}`);
     }
     throw error;
   }

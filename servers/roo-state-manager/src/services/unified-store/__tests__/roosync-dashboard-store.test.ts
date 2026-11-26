@@ -73,8 +73,18 @@ vi.mock('../writer-factory.js', () => ({
 const mockQuery = vi.fn().mockResolvedValue({ rows: [] });
 const mockConnect = vi.fn().mockResolvedValue({ query: mockQuery, release: vi.fn() });
 const mockPool = { on: vi.fn(), connect: mockConnect, query: mockQuery, end: vi.fn() };
+// Options reçues par CHAQUE `new Pool(...)` d'un lecteur réel (déréférencé
+// seulement à l'appel, comme mockPool — même raison de survie au hoisting).
+const mockPoolConfigs: Array<Record<string, unknown>> = [];
 
-vi.mock('pg', () => ({ default: { Pool: vi.fn(() => mockPool) } }));
+vi.mock('pg', () => ({
+  default: {
+    Pool: vi.fn((config: Record<string, unknown>) => {
+      mockPoolConfigs.push(config);
+      return mockPool;
+    }),
+  },
+}));
 
 // ─── Logger mock (dual-write failure warns must be observable) ──────
 // vi.hoisted: the store calls createLogger at module scope, so the factory
@@ -104,6 +114,7 @@ import {
   fetchArchivedDashboardBatch,
   mapRowToIntercomMessage,
   resetArchivedIdsReaderForTests,
+  resetArchiveReaderForTests,
 } from '../roosync-dashboard-store.js';
 import { PgUnifiedStoreWriter } from '../PgUnifiedStoreWriter.js';
 import { PgUnifiedStoreReader } from '../PgUnifiedStoreReader.js';
@@ -743,34 +754,67 @@ describe('fetchArchivedDashboardBatches / fetchArchivedDashboardBatch (#4131 res
     mockLoggerWarn.mockClear();
   });
 
-  test('la porte est la CAPACITÉ (PG_URL) : sans PG_URL → null, reader jamais consulté', async () => {
-    delete process.env.UNIFIED_STORE_PG_URL;
-    expect(await fetchArchivedDashboardBatches('workspace-x')).toBeNull();
-    expect(await fetchArchivedDashboardBatch('workspace-x', '2026-11-25T17:02:29.000Z')).toBeNull();
-    expect(mockGetArchivedBatches).not.toHaveBeenCalled();
-    expect(mockGetArchivedBatch).not.toHaveBeenCalled();
+  // `primeReader` remplace le défaut de `mockQuery` : on le rend, sinon les
+  // describes suivants (lectures concrètes du reader) liraient `undefined`.
+  afterEach(() => {
+    resetArchiveReaderForTests();
+    mockQuery.mockReset().mockResolvedValue({ rows: [] });
   });
 
-  test('hit → les lots du reader, ordre conservé (plus récent d\'abord)', withPgUrl(async () => {
-    mockGetArchivedBatches.mockResolvedValueOnce([
-      { archivedAt: '2026-11-26T00:07:21.000Z', messageCount: 19 },
-      { archivedAt: '2026-11-25T22:58:23.000Z', messageCount: 17 },
-    ]);
-    const result = await fetchArchivedDashboardBatches('workspace-roo-extensions');
-    expect(result).toEqual([
-      { archivedAt: '2026-11-26T00:07:21.000Z', messageCount: 19 },
-      { archivedAt: '2026-11-25T22:58:23.000Z', messageCount: 17 },
-    ]);
-    expect(mockGetArchivedBatches).toHaveBeenCalledWith('workspace-roo-extensions');
+  /**
+   * Arme le lecteur d'archive DÉDIÉ (vraie classe, pool `pg` mocké) : le
+   * self-init (`SELECT 1`) puis, dans l'ordre, les réponses du test. Depuis la
+   * review ms#1934 les lectures d'archive ne passent plus par le double de
+   * factory : elles ont leur pool, donc c'est `mockQuery` qui les sert.
+   */
+  function primeReader(...responses: Array<{ rows: unknown[] } | 'hang' | Error>): void {
+    resetArchiveReaderForTests();
+    mockQuery.mockReset();
+    mockQuery.mockResolvedValueOnce({ rows: [{ '1': 1 }] });
+    for (const response of responses) {
+      if (response === 'hang') {
+        mockQuery.mockImplementationOnce(() => new Promise(() => { /* never resolves */ }));
+      } else if (response instanceof Error) {
+        mockQuery.mockRejectedValueOnce(response);
+      } else {
+        mockQuery.mockResolvedValueOnce(response);
+      }
+    }
+  }
+
+  test('la porte est la CAPACITÉ (PG_URL) : sans PG_URL → gap `no-url`, reader jamais consulté', async () => {
+    delete process.env.UNIFIED_STORE_PG_URL;
+    resetArchiveReaderForTests();
+    mockQuery.mockClear();
+    expect(await fetchArchivedDashboardBatches('workspace-x')).toEqual({ batches: [], gap: 'no-url' });
+    expect(await fetchArchivedDashboardBatch('workspace-x', '2026-11-25T17:02:29.000Z'))
+      .toEqual({ messages: null, gap: 'no-url' });
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  test('hit → les lots du reader, ordre conservé (plus récent d\'abord), fenêtre complète', withPgUrl(async () => {
+    primeReader({ rows: [
+      { batch_at: new Date('2026-11-26T00:07:21.000Z'), message_count: 19 },
+      { batch_at: new Date('2026-11-25T22:58:23.000Z'), message_count: 17 },
+    ] });
+    expect(await fetchArchivedDashboardBatches('workspace-roo-extensions')).toEqual({
+      batches: [
+        { archivedAt: '2026-11-26T00:07:21.000Z', messageCount: 19 },
+        { archivedAt: '2026-11-25T22:58:23.000Z', messageCount: 17 },
+      ],
+      gap: null,
+    });
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('date_trunc'));
+    expect(call![1]).toEqual(['workspace-roo-extensions']);
   }));
 
-  test('clé sans archive → [] : l\'histoire existe, elle est vide (pas null)', withPgUrl(async () => {
-    mockGetArchivedBatches.mockResolvedValueOnce([]);
-    expect(await fetchArchivedDashboardBatches('global')).toEqual([]);
+  test('clé sans archive → [] : l\'histoire existe, elle est vide (≠ fenêtre partielle)', withPgUrl(async () => {
+    primeReader({ rows: [] });
+    expect(await fetchArchivedDashboardBatches('global')).toEqual({ batches: [], gap: null });
   }));
 
   test('hit lot → lignes du journal en IntercomMessage, le mapping de la lecture vivante', withPgUrl(async () => {
-    mockGetArchivedBatch.mockResolvedValueOnce([{
+    primeReader({ rows: [{
       id: 7,
       dashboard_key: 'workspace-roo-extensions',
       message_id: 'myia-po-2024:roo-extensions:ic-1',
@@ -783,25 +827,30 @@ describe('fetchArchivedDashboardBatches / fetchArchivedDashboardBatch (#4131 res
       acknowledged_at: null,
       archived_at: '2026-11-25T17:02:29.100Z',
       created_at: '2026-11-25T16:40:00.000Z',
-    }]);
+    }] });
     const result = await fetchArchivedDashboardBatch('workspace-roo-extensions', '2026-11-25T17:02:29.000Z');
     // archiveData.messages doit avoir la forme que le chemin fichier sert.
-    expect(result).toEqual([{
-      id: 'myia-po-2024:roo-extensions:ic-1',
-      timestamp: '2026-11-25T16:40:00.000Z',
-      author: { machineId: 'myia-po-2024', workspace: 'roo-extensions' },
-      content: '[DEGRADED] lecture d\'archive aveugle',
-      reply_to: 'ic-0',
-      tags: ['ERROR', 'claude-interactive'],
-    }]);
-    expect(mockGetArchivedBatch).toHaveBeenCalledWith('workspace-roo-extensions', '2026-11-25T17:02:29.000Z');
+    expect(result).toEqual({
+      messages: [{
+        id: 'myia-po-2024:roo-extensions:ic-1',
+        timestamp: '2026-11-25T16:40:00.000Z',
+        author: { machineId: 'myia-po-2024', workspace: 'roo-extensions' },
+        content: '[DEGRADED] lecture d\'archive aveugle',
+        reply_to: 'ic-0',
+        tags: ['ERROR', 'claude-interactive'],
+      }],
+      gap: null,
+    });
+    const call = mockQuery.mock.calls.find(c => String(c[0]).includes('date_trunc'));
+    expect(call![1]).toEqual(['workspace-roo-extensions', '2026-11-25T17:02:29.000Z']);
   }));
 
-  test('reader en échec → null + WARN, des deux lectures (jamais de throw vers read_archive)', withPgUrl(async () => {
-    mockGetArchivedBatches.mockRejectedValueOnce(new Error('connection refused'));
-    mockGetArchivedBatch.mockRejectedValueOnce(new Error('connection refused'));
-    expect(await fetchArchivedDashboardBatches('global')).toBeNull();
-    expect(await fetchArchivedDashboardBatch('global', '2026-11-25T17:02:29.000Z')).toBeNull();
+  test('lecteur en échec → gap `error` + WARN, des deux lectures (jamais de throw vers read_archive)', withPgUrl(async () => {
+    primeReader(new Error('connection refused'));
+    expect(await fetchArchivedDashboardBatches('global')).toEqual({ batches: [], gap: 'error' });
+    primeReader(new Error('connection refused'));
+    expect(await fetchArchivedDashboardBatch('global', '2026-11-25T17:02:29.000Z'))
+      .toEqual({ messages: null, gap: 'error' });
     expect(mockLoggerWarn).toHaveBeenCalledWith(
       expect.stringContaining('[archive-pg] batch listing failed'),
       expect.objectContaining({ key: 'global' })
@@ -812,16 +861,17 @@ describe('fetchArchivedDashboardBatches / fetchArchivedDashboardBatch (#4131 res
     );
   }));
 
-  test('reader muet > 3 s → timeout → null, des deux lectures', withPgUrl(async () => {
-    mockGetArchivedBatches.mockImplementationOnce(() => new Promise(() => { /* never resolves */ }));
-    mockGetArchivedBatch.mockImplementationOnce(() => new Promise(() => { /* never resolves */ }));
+  test('lecteur muet > 3 s → gap `timeout`, des deux lectures', withPgUrl(async () => {
     vi.useFakeTimers();
     try {
+      primeReader('hang');
       const pendingBatches = fetchArchivedDashboardBatches('global');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(await pendingBatches).toEqual({ batches: [], gap: 'timeout' });
+      primeReader('hang');
       const pendingBatch = fetchArchivedDashboardBatch('global', '2026-11-25T17:02:29.000Z');
       await vi.advanceTimersByTimeAsync(3000);
-      expect(await pendingBatches).toBeNull();
-      expect(await pendingBatch).toBeNull();
+      expect(await pendingBatch).toEqual({ messages: null, gap: 'timeout' });
       expect(mockLoggerWarn).toHaveBeenCalledWith(
         expect.stringContaining('[archive-pg] batch listing timed out'),
         expect.objectContaining({ key: 'global' })
@@ -831,28 +881,16 @@ describe('fetchArchivedDashboardBatches / fetchArchivedDashboardBatch (#4131 res
     }
   }));
 
-  test('SANS dual-write mais AVEC PG_URL → servi par le reader dédié (vraie classe, pool pg mocké)', withPgUrl(async () => {
-    delete process.env.UNIFIED_STORE_DUAL_WRITE;
-    mockFactoryIsNull.value = true;
-    resetArchivedIdsReaderForTests();
-    try {
-      mockGetArchivedBatches.mockClear();
-      mockQuery.mockClear();
-      // Self-init probe (SELECT 1) puis le listing des lots.
-      mockQuery.mockResolvedValueOnce({ rows: [{ '1': 1 }] })
-        .mockResolvedValueOnce({
-          rows: [{ batch_at: new Date('2026-11-25T17:02:29.000Z'), message_count: 3 }],
-        });
-      const result = await fetchArchivedDashboardBatches('workspace-roo-extensions');
-      expect(result).toEqual([{ archivedAt: '2026-11-25T17:02:29.000Z', messageCount: 3 }]);
-      // Servi par le reader dédié (pool pg), PAS par le double factory.
-      expect(mockGetArchivedBatches).not.toHaveBeenCalled();
-      const call = mockQuery.mock.calls.find(c => String(c[0]).includes('date_trunc'));
-      expect(call).toBeDefined();
-      expect(call![1]).toEqual(['workspace-roo-extensions']);
-    } finally {
-      mockFactoryIsNull.value = false;
-    }
+  test('les lectures d\'archive ont leur PROPRE pool (poolMax 1) et bornent la requête SOUS la course de 3 s', withPgUrl(async () => {
+    mockPoolConfigs.length = 0;
+    primeReader({ rows: [] });
+    expect(await fetchArchivedDashboardBatches('workspace-roo-extensions'))
+      .toEqual({ batches: [], gap: null });
+    // Ni le double de factory ni le pool partagé : un pool à nous, borné.
+    expect(mockGetArchivedBatches).not.toHaveBeenCalled();
+    const config = mockPoolConfigs[mockPoolConfigs.length - 1];
+    expect(config.max).toBe(1);
+    expect(config.statement_timeout as number).toBeLessThan(3000);
   }));
 });
 

@@ -19,7 +19,13 @@
  *     exit 1 de #4796) est servi par son lot PG, dans la MÊME enveloppe
  *     `archiveData` qu'une lecture fichier ;
  *   - un fichier lisible garde la précédence ; pas d'histoire PG = le
- *     comportement d'avant, jamais une fenêtre plus petite.
+ *     comportement d'avant, jamais une fenêtre plus petite ;
+ *   - les DEUX familles de nom de l'écrivain sont couvertes : canonique et
+ *     `-fallback.md` (review ms#1934, finding 1) ; les autres familles
+ *     (`-wt-cleanup-…`) ne sont pas de la forme d'un lot, PG ne les sert pas ;
+ *   - un rattachement fichier ↔ lot PG est dit pour ce qu'il est (proximité
+ *     d'horodatage, identité non vérifiable) et une fenêtre PG partielle est
+ *     DITE (note + champ `pgArchiveWindow`), jamais silencieuse.
  *
  * Seules les deux lectures PG ajoutées par ce grain sont doublées : le chemin
  * fichier reste réel (fs + parser), c'est lui qui garde la précédence.
@@ -35,9 +41,12 @@ vi.mock('../heartbeat-activity.js', () => ({
   recordSchedulerRunAsync: vi.fn(),
 }));
 
+// Les deux lectures PG rendent `{ ..., gap }` depuis la review ms#1934 : le
+// `null` d'avant confondait « pas de capacité PG », « PG muet » et « PG en
+// échec », donc une fenêtre partielle ne pouvait pas être dite.
 const { mockFetchBatches, mockFetchBatch } = vi.hoisted(() => ({
-  mockFetchBatches: vi.fn().mockResolvedValue(null),
-  mockFetchBatch: vi.fn().mockResolvedValue(null),
+  mockFetchBatches: vi.fn().mockResolvedValue({ batches: [], gap: null }),
+  mockFetchBatch: vi.fn().mockResolvedValue({ messages: null, gap: null }),
 }));
 vi.mock('../../../services/unified-store/roosync-dashboard-store.js', async (importOriginal) => {
   const actual = await importOriginal<
@@ -87,6 +96,19 @@ function name(stamp: string): string {
   return `${KEY}-${stamp}.md`;
 }
 
+type Batches = Array<{ archivedAt: string; messageCount: number }>;
+type Gap = null | 'no-url' | 'timeout' | 'error';
+
+/** PG holds these batches for the key, whole window served. */
+function windowOf(batches: Batches, gap: Gap = null) {
+  return { batches, gap };
+}
+
+/** One batch's rows (or none) and why PG could not hand them over. */
+function batchOf(messages: IntercomMessage[] | null, gap: Gap = null) {
+  return { messages, gap };
+}
+
 async function writeArchiveFile(archiveDir: string, fileName: string): Promise<void> {
   await writeFile(
     path.join(archiveDir, fileName),
@@ -120,8 +142,8 @@ describe('read_archive — repli PG (#4131 residual)', () => {
     delete process.env.OPENAI_BASE_URL;
     delete process.env.OPENAI_CHAT_MODEL_ID;
     delete process.env.EMBEDDING_API_KEY;
-    mockFetchBatches.mockReset().mockResolvedValue(null);
-    mockFetchBatch.mockReset().mockResolvedValue(null);
+    mockFetchBatches.mockReset().mockResolvedValue({ batches: [], gap: null });
+    mockFetchBatch.mockReset().mockResolvedValue({ messages: null, gap: null });
   });
 
   afterEach(async () => {
@@ -136,11 +158,11 @@ describe('read_archive — repli PG (#4131 residual)', () => {
 
   it('listing = fichiers du siège + lots PG sans fichier, plus récent d\'abord, nom par la règle de l\'écrivain', async () => {
     await writeArchiveFile(archiveDir, name('2026-11-25T17-02-28'));
-    mockFetchBatches.mockResolvedValue([
+    mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 5 },
       { archivedAt: '2026-11-25T19:06:16.000Z', messageCount: 4 },
       { archivedAt: '2026-11-25T17:02:29.000Z', messageCount: 3 },
-    ]);
+    ]));
     const res = await list();
     expect(res.success).toBe(true);
     // 17-02-29 n'apparaît pas : c'est le jumeau PG du fichier 17-02-28.
@@ -149,29 +171,35 @@ describe('read_archive — repli PG (#4131 residual)', () => {
       name('2026-11-25T19-06-16'),
       name('2026-11-25T17-02-28'),
     ]);
+    // Le rattachement est dit pour ce qu'il est : une proximité, pas une identité.
     expect((res as any).message).toBe(
       `3 archive(s) trouvée(s) pour '${KEY}' (dont 2 sans fichier local, servies par PG)`
+      + ` [1 lot(s) PG rattaché(s) à un fichier par proximité d'horodatage — identité non vérifiable]`
     );
+    expect((res as any).pgArchiveWindow).toBe('complete');
   });
 
   it('jumeau : un fichier daté 68 s AVANT le lot PG (attente de verrou DriveFS, #3205) — un seul nom, celui du fichier', async () => {
     await writeArchiveFile(archiveDir, name('2026-11-25T22-58-20'));
-    mockFetchBatches.mockResolvedValue([
+    mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T22:59:28.000Z', messageCount: 9 },
-    ]);
+    ]));
     const res = await list();
     expect((res as any).archives).toEqual([name('2026-11-25T22-58-20')]);
-    expect((res as any).message).toBe(`1 archive(s) trouvée(s) pour '${KEY}'`);
+    expect((res as any).message).toBe(
+      `1 archive(s) trouvée(s) pour '${KEY}'`
+      + ` [1 lot(s) PG rattaché(s) à un fichier par proximité d'horodatage — identité non vérifiable]`
+    );
   });
 
   it('fenêtre bornée : 10 min après un fichier = une AUTRE condensation ; au-delà de 2 s AVANT = pas un jumeau', async () => {
     await writeArchiveFile(archiveDir, name('2026-11-25T08-38-22'));
     await writeArchiveFile(archiveDir, name('2026-11-25T10-00-00'));
-    mockFetchBatches.mockResolvedValue([
+    mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T10:00:01.000Z', messageCount: 2 }, // jumeau de 10-00-00 (skew 1 s)
       { archivedAt: '2026-11-25T09:59:56.000Z', messageCount: 6 }, // 4 s AVANT 10-00-00 : distinct
       { archivedAt: '2026-11-25T08:48:23.000Z', messageCount: 7 }, // 601 s après 08-38-22 : distinct
-    ]);
+    ]));
     const res = await list();
     expect((res as any).archives).toEqual([
       name('2026-11-25T10-00-00'),
@@ -187,15 +215,106 @@ describe('read_archive — repli PG (#4131 residual)', () => {
     const res = await list();
     expect((res as any).archives).toEqual([name('2026-11-25T17-02-28')]);
     expect((res as any).message).toBe(`1 archive(s) trouvée(s) pour '${KEY}'`);
+    expect((res as any).pgArchiveWindow).toBe('complete');
+  });
+
+  // ─── famille `-fallback` (review ms#1934, finding 1) ─────────────────
+
+  it('jumeau `-fallback` : le fichier de repli et son lot PG ne sont listés qu\'UNE fois, sous le nom du fichier', async () => {
+    await writeArchiveFile(archiveDir, `${KEY}-2026-11-25T20-25-29-fallback.md`);
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 2 },
+    ]));
+    const res = await list();
+    expect((res as any).archives).toEqual([`${KEY}-2026-11-25T20-25-29-fallback.md`]);
+    // Ni doublon sous le nom canonique, ni lot compté « sans fichier local ».
+    expect((res as any).message).not.toContain('sans fichier local');
+    expect((res as any).message).toContain('1 lot(s) PG rattaché(s) à un fichier');
+  });
+
+  it('coque `-fallback` (placeholder DriveFS non hydraté) → servie par PG, plus de rejet', async () => {
+    const husk = `${KEY}-2026-11-25T20-25-29-fallback.md`;
+    await writeFile(path.join(archiveDir, husk), '', 'utf8');
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 2 },
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
+    const res = await read(husk);
+    expect(res.success).toBe(true);
+    expect((res as any).archiveData.messages).toEqual(pgMessages);
+    expect((res as any).message).toBe(
+      `Archive '${husk}' lue depuis PG (2 messages)`
+    );
+    expect(mockFetchBatch).toHaveBeenCalledWith(KEY, '2026-11-25T20:25:29.000Z');
+  });
+
+  it('`-fallback` ABSENT du siège → son lot PG le sert aussi (même famille, même chemin)', async () => {
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 2 },
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
+    const res = await read(`${KEY}-2026-11-25T20-25-29-fallback.md`);
+    expect(res.success).toBe(true);
+    expect((res as any).archiveData.messages).toEqual(pgMessages);
+  });
+
+  // ─── fenêtre partielle (review ms#1934 : « garder visible une fenêtre
+  // partielle lorsque PG ne répond pas ») ──────────────────────────────
+
+  it.each(['timeout', 'error'] as const)('listing, PG %s → fichiers locaux seuls, mais DIT : note + champ `pgArchiveWindow`', async (gap) => {
+    await writeArchiveFile(archiveDir, name('2026-11-25T17-02-28'));
+    mockFetchBatches.mockResolvedValue(windowOf([], gap));
+    const res = await list();
+    expect(res.success).toBe(true);
+    expect((res as any).archives).toEqual([name('2026-11-25T17-02-28')]);
+    expect((res as any).message).toBe(
+      `1 archive(s) trouvée(s) pour '${KEY}'`
+      + (gap === 'timeout'
+        ? " [FENÊTRE PARTIELLE : le store PG n'a pas répondu à temps — seuls les fichiers locaux sont listés]"
+        : ' [FENÊTRE PARTIELLE : lecture PG en échec — seuls les fichiers locaux sont listés]')
+    );
+    expect((res as any).pgArchiveWindow).toBe(gap);
+  });
+
+  it('lecture, PG muet → « introuvable » garde sa signature et porte la raison', async () => {
+    mockFetchBatches.mockResolvedValue(windowOf([], 'timeout'));
+    const res = await read(name('2026-11-25T20-25-29'));
+    expect(res.success).toBe(false);
+    expect((res as any).message).toBe(
+      `Archive '${name('2026-11-25T20-25-29')}' introuvable`
+      + " [FENÊTRE PARTIELLE : le store PG n'a pas répondu à temps — seuls les fichiers locaux sont listés]"
+    );
+    expect((res as any).pgArchiveWindow).toBe('timeout');
+  });
+
+  it('lecture : lot connu mais PG ne rend pas ses lignes → « introuvable » PARTIEL, pas un lot vide', async () => {
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 2 },
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(null, 'error'));
+    const res = await read(name('2026-11-25T20-25-29'));
+    expect(res.success).toBe(false);
+    expect((res as any).message).toContain('introuvable');
+    expect((res as any).message).toContain('FENÊTRE PARTIELLE');
+    expect((res as any).pgArchiveWindow).toBe('error');
+  });
+
+  it('nom d\'une famille que PG ne peut pas servir (`-wt-cleanup-…`) → « introuvable » seul, PG jamais consulté, pas de champ', async () => {
+    const fork = `${KEY}-wt-cleanup-2026-11-25T20-25-29.md`;
+    const res = await read(fork);
+    expect(res.success).toBe(false);
+    expect((res as any).message).toBe(`Archive '${fork}' introuvable`);
+    expect((res as any).pgArchiveWindow).toBeUndefined();
+    expect(mockFetchBatches).not.toHaveBeenCalled();
   });
 
   // ─── lecture ────────────────────────────────────────────────────────
 
   it('nom d\'un lot PG sans fichier → archiveData servi par PG, même enveloppe qu\'une lecture fichier', async () => {
-    mockFetchBatches.mockResolvedValue([
+    mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 2 },
-    ]);
-    mockFetchBatch.mockResolvedValue(pgMessages);
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
     const res = await read(name('2026-11-25T20-25-29'));
     expect(res.success).toBe(true);
     expect((res as any).archiveData).toEqual({
@@ -207,6 +326,7 @@ describe('read_archive — repli PG (#4131 residual)', () => {
     expect((res as any).message).toBe(
       `Archive '${name('2026-11-25T20-25-29')}' lue depuis PG (2 messages)`
     );
+    expect((res as any).pgArchiveWindow).toBe('complete');
     expect(mockFetchBatch).toHaveBeenCalledWith(KEY, '2026-11-25T20:25:29.000Z');
   });
 
@@ -214,11 +334,11 @@ describe('read_archive — repli PG (#4131 residual)', () => {
     // L'écrivain calcule le nom AVANT l'écriture ; `archived_at` est posé par
     // l'écriture du dashboard qui suit. Paire mesurée : fichier 17-02-28, PG
     // 17:02:29.
-    mockFetchBatches.mockResolvedValue([
+    mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T19:06:16.000Z', messageCount: 12 },
       { archivedAt: '2026-11-25T17:02:29.000Z', messageCount: 3 },
-    ]);
-    mockFetchBatch.mockResolvedValue(pgMessages);
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
     const res = await read(name('2026-11-25T17-02-28'));
     expect(res.success).toBe(true);
     expect((res as any).archiveData.messages).toEqual(pgMessages);
@@ -227,14 +347,15 @@ describe('read_archive — repli PG (#4131 residual)', () => {
 
   it('un fichier LISIBLE garde la précédence — PG n\'est jamais consulté', async () => {
     await writeArchiveFile(archiveDir, name('2026-11-25T17-02-28'));
-    mockFetchBatches.mockResolvedValue([
+    mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T17:02:29.000Z', messageCount: 99 },
-    ]);
-    mockFetchBatch.mockResolvedValue(pgMessages);
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
     const res = await read(name('2026-11-25T17-02-28'));
     expect(res.success).toBe(true);
     expect((res as any).archiveData.messages).toEqual(fileMessages);
     expect((res as any).message).toBe(`Archive '${name('2026-11-25T17-02-28')}' lue (1 messages)`);
+    expect((res as any).pgArchiveWindow).toBeUndefined();
     expect(mockFetchBatches).not.toHaveBeenCalled();
     expect(mockFetchBatch).not.toHaveBeenCalled();
   });
@@ -242,10 +363,10 @@ describe('read_archive — repli PG (#4131 residual)', () => {
   it('coque sans frontmatter (placeholder DriveFS non hydraté, #4796) → servie par PG, plus de rejet', async () => {
     const husk = name('2026-11-25T20-25-29');
     await writeFile(path.join(archiveDir, husk), '', 'utf8');
-    mockFetchBatches.mockResolvedValue([
+    mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 2 },
-    ]);
-    mockFetchBatch.mockResolvedValue(pgMessages);
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
     const res = await read(husk);
     expect(res.success).toBe(true);
     expect((res as any).archiveData.messages).toEqual(pgMessages);
@@ -260,35 +381,38 @@ describe('read_archive — repli PG (#4131 residual)', () => {
   });
 
   it('aucun lot dans la fenêtre du nom → « introuvable »', async () => {
-    mockFetchBatches.mockResolvedValue([
+    mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T08:38:22.000Z', messageCount: 4 },
-    ]);
+    ]));
     const res = await read(name('2026-11-25T20-25-29'));
     expect(res.success).toBe(false);
     expect((res as any).message).toContain('introuvable');
+    expect((res as any).message).not.toContain('FENÊTRE PARTIELLE');
     expect(mockFetchBatch).not.toHaveBeenCalled();
   });
 
   it('lot connu mais vide → « introuvable » (pas un archiveData vide)', async () => {
-    mockFetchBatches.mockResolvedValue([
+    mockFetchBatches.mockResolvedValue(windowOf([
       { archivedAt: '2026-11-25T20:25:29.000Z', messageCount: 0 },
-    ]);
-    mockFetchBatch.mockResolvedValue([]);
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf([]));
     const res = await read(name('2026-11-25T20-25-29'));
     expect(res.success).toBe(false);
-    expect((res as any).message).toContain('introuvable');
-  });
-
-  it('famille de nom non canonique (`-fallback.md`) → PG jamais consulté, « introuvable »', async () => {
-    const res = await read(`${KEY}-2026-11-25T20-25-29-fallback.md`);
-    expect(res.success).toBe(false);
-    expect((res as any).message).toContain('introuvable');
-    expect(mockFetchBatches).not.toHaveBeenCalled();
+    expect((res as any).message).toBe(`Archive '${name('2026-11-25T20-25-29')}' introuvable`);
   });
 
   it('coque sans histoire PG → toujours rejetée (comportement d\'avant : l\'instrument voit sa fenêtre partielle)', async () => {
     const husk = name('2026-11-25T20-25-29');
     await writeFile(path.join(archiveDir, husk), '', 'utf8');
-    await expect(read(husk)).rejects.toThrow(/frontmatter manquant/);
+    await expect(read(husk)).rejects.toThrow(/^Format archive invalide: frontmatter manquant/);
+  });
+
+  it('coque ET PG muet → rejetée, le motif porte la fenêtre partielle (pas « transport sain »)', async () => {
+    const husk = name('2026-11-25T20-25-29');
+    await writeFile(path.join(archiveDir, husk), '', 'utf8');
+    mockFetchBatches.mockResolvedValue(windowOf([], 'timeout'));
+    const rejection = read(husk);
+    await expect(rejection).rejects.toThrow(/frontmatter manquant/);
+    await expect(rejection).rejects.toThrow(/FENÊTRE PARTIELLE/);
   });
 });

@@ -437,12 +437,19 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
   // batches PG holds and let a read serve the one whose file is elsewhere.
 
   /**
-   * Every condensation batch PG holds for a key, newest first.
+   * Every batch of archived rows PG holds for a key, newest first.
    *
    * A batch is the rows sharing one `date_trunc('second', archived_at)`: the
    * second is the resolution of the archive file name, and grouping by it
    * stays correct whether the writer stamped the batch with one `NOW()` (the
    * condense path does) or per-row.
+   *
+   * NOT necessarily a condensation (review ms#1934, finding 2): two other
+   * passes also stamp `archived_at` — the reconcile archival pass (#3151-D)
+   * and the archive-scan heal — and no column records which setter wrote a
+   * stamp. Only the condensation path writes an archive file, so a batch has
+   * a file twin when it happens to; consumers must not read "batch" as
+   * "condensation".
    */
   async getArchivedRooSyncDashboardBatches(key: string): Promise<ArchivedDashboardBatch[]> {
     if (!this.pool) await this.init();
@@ -464,8 +471,8 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
   }
 
   /**
-   * The journal rows of ONE condensation batch (the second an archive name
-   * carries), oldest first — the order the file archive preserves.
+   * The journal rows of ONE batch of archived rows (the second an archive
+   * name carries), oldest first — the order the file archive preserves.
    */
   async getArchivedRooSyncDashboardBatch(
     key: string,

@@ -29,7 +29,8 @@
 
 import type { Dashboard, IntercomMessage } from '../../tools/roosync/dashboard-schemas.js';
 import type {
-  ArchivedDashboardBatch,
+  ArchivedDashboardBatchWindow,
+  ArchivePgGap,
   RooSyncDashboardRow,
   RooSyncDashboardMessageRow,
   DashboardRetirementMark,
@@ -432,19 +433,55 @@ export async function fetchArchivedDashboardMessageIds(key: string, messageId?: 
 // archive window alone. The fallback only ADDS batches that have no local
 // file; a present file keeps precedence for reads.
 //
-// `null` = no PG story (no URL, failure, timeout) → the caller keeps the
-// file-only behaviour, i.e. never a window smaller than today's.
+// A partial window is REPORTED, never silent: the three causes come back as
+// `gap` so the listing and the read can say that PG did not answer. The caller
+// keeps the file-only behaviour in every case — never a window smaller than
+// today's — but a consumer can no longer mistake the seat's mirror for the
+// fleet's archive (review ms#1934 : « garder visible une fenêtre partielle
+// lorsque PG ne répond pas »).
 
 const ARCHIVE_BATCH_TIMEOUT_MS = 3000;
 
-/** Every condensation batch PG holds for a key (newest first), or null. */
+/**
+ * Server-side bound, strictly BELOW the client race. When the race wins, the
+ * caller stops awaiting but the query keeps running to the server's own
+ * `statement_timeout` — on a one-connection pool that orphan blocks every
+ * later read until then (review ms#1934, finding 3). Bounding the query
+ * itself means the server kills it before the client gives up on it.
+ */
+const ARCHIVE_STATEMENT_TIMEOUT_MS = 2500;
+
+/**
+ * Archive reads ride their OWN one-connection pool, never the shared reader:
+ * the bound above only holds on a pool whose config is ours, and an organ
+ * cycle's listing must neither starve the write path's pool nor be starved by
+ * it. One extra connection per host process — what the #3782 tombstones
+ * reader already does on a read-only seat.
+ */
+let dedicatedArchiveReader: PgUnifiedStoreReader | null = null;
+
+function getArchiveReader(pgUrl: string): PgUnifiedStoreReader {
+  if (!dedicatedArchiveReader) {
+    dedicatedArchiveReader = new PgUnifiedStoreReader({
+      connectionString: pgUrl,
+      poolMax: 1,
+      statementTimeoutMs: ARCHIVE_STATEMENT_TIMEOUT_MS,
+    });
+  }
+  return dedicatedArchiveReader;
+}
+
+export function resetArchiveReaderForTests(): void {
+  dedicatedArchiveReader = null;
+}
+
+/** The batch window PG holds for a key, and why it may be partial. */
 export async function fetchArchivedDashboardBatches(
   key: string,
-): Promise<ArchivedDashboardBatch[] | null> {
+): Promise<ArchivedDashboardBatchWindow> {
   const pgUrl = process.env.UNIFIED_STORE_PG_URL;
-  if (!pgUrl) return null;
-  const shared = getUnifiedStoreReader();
-  const reader = shared.isNull() ? getDedicatedArchivedIdsReader(pgUrl) : shared;
+  if (!pgUrl) return { batches: [], gap: 'no-url' };
+  const reader = getArchiveReader(pgUrl);
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolve) => {
@@ -457,33 +494,38 @@ export async function fetchArchivedDashboardBatches(
     ]);
     if (result === null && timedOut) {
       logger.warn('[archive-pg] batch listing timed out — file-only listing stands', { key });
-      return null;
+      return { batches: [], gap: 'timeout' };
     }
-    return result ?? null;
+    return { batches: result ?? [], gap: null };
   } catch (error) {
     logger.warn('[archive-pg] batch listing failed — file-only listing stands', {
       key,
       error: String(error),
     });
-    return null;
+    return { batches: [], gap: 'error' };
   } finally {
     if (timer) clearTimeout(timer);
   }
 }
 
-/**
- * The journal rows of one condensation batch as intercom messages (oldest
- * first), or null when there is no PG story. `[]` means the batch is known
- * and empty — the caller answers "introuvable" for it, not a PG read.
- */
+/** One batch's journal rows, and `gap` when PG could not hand them over. */
+export interface ArchivedDashboardBatchRead {
+  /**
+   * The journal rows of one batch as intercom messages (oldest first). `[]`
+   * means the batch is known and empty — the caller answers "introuvable" for
+   * it, not a PG read. `null` = no PG story (`gap` says which).
+   */
+  messages: IntercomMessage[] | null;
+  gap: ArchivePgGap;
+}
+
 export async function fetchArchivedDashboardBatch(
   key: string,
   batchSecondIso: string,
-): Promise<IntercomMessage[] | null> {
+): Promise<ArchivedDashboardBatchRead> {
   const pgUrl = process.env.UNIFIED_STORE_PG_URL;
-  if (!pgUrl) return null;
-  const shared = getUnifiedStoreReader();
-  const reader = shared.isNull() ? getDedicatedArchivedIdsReader(pgUrl) : shared;
+  if (!pgUrl) return { messages: null, gap: 'no-url' };
+  const reader = getArchiveReader(pgUrl);
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<null>((resolve) => {
@@ -499,16 +541,16 @@ export async function fetchArchivedDashboardBatch(
         key,
         batchSecondIso,
       });
-      return null;
+      return { messages: null, gap: 'timeout' };
     }
-    return result ? result.map(mapRowToIntercomMessage) : null;
+    return { messages: result ? result.map(mapRowToIntercomMessage) : null, gap: null };
   } catch (error) {
     logger.warn('[archive-pg] batch read failed — the file answer stands', {
       key,
       batchSecondIso,
       error: String(error),
     });
-    return null;
+    return { messages: null, gap: 'error' };
   } finally {
     if (timer) clearTimeout(timer);
   }

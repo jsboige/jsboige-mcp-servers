@@ -264,6 +264,25 @@ export interface ArchivedDashboardBatch {
 }
 
 /**
+ * Why the PG archive window can be narrower than the key's full history
+ * (review ms#1934, finding « fenêtre partielle »). `null` = PG answered for
+ * the whole key.
+ *
+ * The three causes used to collapse into one `null`, which read as "no PG
+ * story" — a listing then answered with the seat's mirror alone without
+ * saying so, i.e. a partial window indistinguishable from a complete one.
+ */
+export type ArchivePgGap = 'no-url' | 'timeout' | 'error' | null;
+
+/** One call's view of the PG archive window for a key. */
+export interface ArchivedDashboardBatchWindow {
+  /** Batches of archived rows PG holds for the key, newest first (`[]` = history exists, empty). */
+  batches: ArchivedDashboardBatch[];
+  /** Why `batches` may not be the key's whole history. */
+  gap: ArchivePgGap;
+}
+
+/**
  * A row of `harmonization_campaigns` (migrations/013, #3544).
  *
  * The queryable columns duplicate the cheap filters (status, target, canon
