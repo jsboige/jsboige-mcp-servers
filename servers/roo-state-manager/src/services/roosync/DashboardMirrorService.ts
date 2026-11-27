@@ -26,7 +26,13 @@ export async function repairDashboardMirrorFromPg(
   await withAppendLock(key, holder, async () => {
     const wv = await writeDashboardFile(key, dashboard, undefined, {
       pgPrimaryPreWritten: true,
-      mirrorExportAt
+      mirrorExportAt,
+      // #4596 — le siège a été décidé par la branche `mirrorArmed` du reconcile
+      // (seul appelant de production, via le seam `writeMirror`) : cet appel ne
+      // re-teste pas la désignation. Sans ce drapeau, un siège non désigné
+      // rendrait « réparé » sans écrire, et la moitié GDrive dégradée — le
+      // livrable de cette fonction — cesserait de thrower.
+      mirrorRepairExport: true
     });
     if (wv.gdriveDegraded) {
       throw new Error(`moitié GDrive dégradée à la réparation du miroir : ${wv.gdriveDegraded}`);

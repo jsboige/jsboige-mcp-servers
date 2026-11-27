@@ -89,6 +89,11 @@ describe('condensation anchor × PG divergence (#3151)', () => {
     mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
     mockIsDashboardPgPrimary.mockReturnValue(false);
     mockDualWriteDashboardSyncChecked.mockResolvedValue({ ok: true, reason: 'written' });
+    // #4596 — ce describe teste le MARQUEUR d'export de la condensation, pas la
+    // désignation : sur un siège non désigné le miroir n'est plus écrit du tout
+    // (refus couvert par `dashboard-pg-primary.test.ts` § « #4596 »). `*` rend
+    // le siège écrivain, comme en production sur ai-01.
+    process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '*';
   });
 
   afterEach(async () => {
@@ -96,6 +101,7 @@ describe('condensation anchor × PG divergence (#3151)', () => {
     delete process.env.ROOSYNC_SHARED_PATH;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
     vi.clearAllMocks();
   });
 
@@ -174,6 +180,11 @@ describe('#4131 G-MES — la condensation écrit un EXPORT marqué sous PG-prima
     mockProbeHydration.mockReset().mockResolvedValue({ kind: 'empty' });
     mockIsDashboardPgPrimary.mockReturnValue(false);
     mockDualWriteDashboardSyncChecked.mockResolvedValue({ ok: true, reason: 'written' });
+    // #4596 — ce describe teste le MARQUEUR d'export de la condensation, pas la
+    // désignation : sur un siège non désigné le miroir n'est plus écrit du tout
+    // (refus couvert par `dashboard-pg-primary.test.ts` § « #4596 »). `*` rend
+    // le siège écrivain, comme en production sur ai-01.
+    process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = '*';
   });
 
   afterEach(async () => {
@@ -181,6 +192,7 @@ describe('#4131 G-MES — la condensation écrit un EXPORT marqué sous PG-prima
     delete process.env.ROOSYNC_SHARED_PATH;
     delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.ROOSYNC_WORKSPACE_ID;
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
     vi.clearAllMocks();
   });
 

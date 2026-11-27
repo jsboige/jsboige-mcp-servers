@@ -3561,7 +3561,20 @@ export async function writeDashboardFile(
   // idempotent, mais surtout : si PG flanche entre les deux, le fallback
   // GDrive-first de CETTE fonction throwrait « aucune surface » alors que le
   // message est déjà publié côté PG — le throw serait mensonger).
-  internal?: { pgPrimaryPreWritten?: boolean; mirrorExportAt?: string }
+  // #4596 — `mirrorRepairExport` : cet appel EST l'export de réparation du
+  // reconcile (`repairDashboardMirrorFromPg`), dont le siège a déjà été décidé
+  // par la branche `mirrorArmed`/`isDesignatedMirrorWriter()` du module de
+  // réconciliation, AVANT l'acquisition du verrou de flotte. Re-tester la
+  // désignation ici ne renforcerait rien : cela rendrait injoignable le contrat
+  // de cette fonction, dont le FICHIER est le livrable (une moitié GDrive
+  // dégradée doit thrower, cf. `dashboard-mirror-repair.test.ts`) — un siège non
+  // désigné rendrait « réparé » sans avoir rien écrit. Le drapeau dit que la
+  // décision a eu lieu plus haut, il ne dispense de rien.
+  internal?: {
+    pgPrimaryPreWritten?: boolean;
+    mirrorExportAt?: string;
+    mirrorRepairExport?: boolean;
+  }
 ): Promise<WriteVerifyResult> {
   // #3584 — masquer AVANT toute persistance : ce choke point alimente à la fois le
   // fichier partagé et le miroir PostgreSQL (`dualWriteDashboardSync` ci-dessous), et
@@ -3662,8 +3675,10 @@ export async function writeDashboardFile(
       // autres points. PG tient déjà l'écriture vérifiée : le fichier n'est
       // qu'un export, il appartient à l'écrivain désigné. Décidé AVANT tout
       // travail Drive. Non gardé : le repli sur échec PG ci-dessus, où le
-      // fichier est la seule surface.
-      if (!isDesignatedMirrorWriter()) {
+      // fichier est la seule surface — et l'export de réparation du reconcile
+      // (`mirrorRepairExport`), dont la désignation est tenue par sa branche
+      // `mirrorArmed` : re-tester ici rendrait son contrat de throw injoignable.
+      if (!isDesignatedMirrorWriter() && internal?.mirrorRepairExport !== true) {
         logger.info('[MIRROR-EXPORT #4596] miroir fichier non écrit — ce siège n’est pas l’écrivain désigné du miroir', {
           key,
           writer: dashboardMirrorWriter(),
