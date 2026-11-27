@@ -1,3 +1,10 @@
+# --- provenance (roo-extensions #4781 harness mutualisation) -----------------
+# NEW in this tree (27/11): no jsboige/vllm original. The failure class it pins (the
+# reviser shown the head of a long notebook, its findings naming cells the cut removed)
+# was measured on CoursIA batch o58b, issue #28880 / MGS-23 and MGS-26. This tree is the
+# source of truth; the vllm copy of the sibling tests stays frozen at
+# 7a09e1caec22441d9402ab25a222206c8905bfe1 — never re-copy it over this tree.
+# -----------------------------------------------------------------------------
 """Pins for the reviser's view of a LONG notebook (27/11, CoursIA#28880).
 
 `revision_view()` handed the reviser the first 90 000 characters of a 199 554-character
