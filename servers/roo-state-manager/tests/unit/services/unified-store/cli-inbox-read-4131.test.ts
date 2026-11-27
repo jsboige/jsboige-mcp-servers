@@ -49,7 +49,7 @@ vi.mock('@vibesync/core/utils/logger', () => ({
 }));
 
 import { readCliInboxFromPg } from '../../../../src/services/unified-store/roosync-channel-read.js';
-import { setBackfillMarkerState } from '../../../../src/services/unified-store/pg-backfill-marker.js';
+import { setBackfillMarkerState } from '@vibesync/core/services/unified-store/pg-backfill-marker';
 
 const MACHINE = 'myia-po-2024';
 

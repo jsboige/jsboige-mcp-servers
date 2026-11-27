@@ -71,7 +71,7 @@ import {
   purgeArchivedChannelMessages,
 } from '../roosync-channel-write.js';
 import { getChannelPgReader } from '../roosync-channel-read.js';
-import { setBackfillMarkerState } from '../pg-backfill-marker.js';
+import { setBackfillMarkerState } from '@vibesync/core/services/unified-store/pg-backfill-marker';
 import { PgUnifiedStoreWriter } from '../PgUnifiedStoreWriter.js';
 import { MessageManager } from '../../MessageManager.js';
 

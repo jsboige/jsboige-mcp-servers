@@ -73,7 +73,7 @@ import {
   getChannelMessageFromPg,
 } from '../roosync-channel-read.js';
 import { mapMessageToRow } from '../roosync-channel-dual-write.js';
-import { setBackfillMarkerState } from '../pg-backfill-marker.js';
+import { setBackfillMarkerState } from '@vibesync/core/services/unified-store/pg-backfill-marker';
 import { MessageManager } from '../../MessageManager.js';
 
 vi.unmock('fs');

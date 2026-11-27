@@ -79,8 +79,8 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
 }));
 
 import { roosyncDashboard, getAppendLockPath } from '../dashboard.js';
-import { isDashboardReadPgEnabled } from '@/services/unified-store/pg-read-gates';
-import { setBackfillMarkerState } from '@/services/unified-store/pg-backfill-marker';
+import { isDashboardReadPgEnabled } from '@vibesync/core/services/unified-store/pg-read-gates';
+import { setBackfillMarkerState } from '@vibesync/core/services/unified-store/pg-backfill-marker';
 
 const testTmpBase = path.join(os.tmpdir(), 'dashboard-pg-primary-');
 

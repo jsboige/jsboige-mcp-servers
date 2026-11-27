@@ -29,7 +29,7 @@
 
 import { describe, test, expect, vi } from 'vitest';
 import { fileURLToPath } from 'node:url';
-import { PG_URL_ENV } from '../services/unified-store/pg-flags.js';
+import { PG_URL_ENV } from '@vibesync/core/services/unified-store/pg-flags';
 import { PINNED_TEST_ENV_KEYS } from '../../tests/setup/test-env-pins.js';
 
 describe('#4131 (A) — default-deny : le `.env` du siège n\'atteint plus un fichier de test', () => {
@@ -56,7 +56,7 @@ describe('#4131 (A) — default-deny : le `.env` du siège n\'atteint plus un fi
   });
 
   test('les read-gates PG résolvent OFF dans l’environnement de test (aucun héritage de siège)', async () => {
-    const gates = await import('../services/unified-store/pg-read-gates.js');
+    const gates = await import('@vibesync/core/services/unified-store/pg-read-gates');
 
     expect(gates.isDashboardPgPrimaryEnabled()).toBe(false);
     expect(gates.isDashboardReadPgEnabled()).toBe(false);
@@ -80,7 +80,7 @@ describe('#4131 (A) — garde de dérive : la liste épinglée couvre les gates'
     // mocke `fs` — on prend l'implémentation réelle pour cet import.
     const realFs = await vi.importActual<typeof import('node:fs')>('node:fs');
     const gatesPath = fileURLToPath(
-      new URL('../services/unified-store/pg-read-gates.ts', import.meta.url)
+      new URL('../../../../packages/vibesync-core/src/services/unified-store/pg-read-gates.ts', import.meta.url)
     );
     const source = realFs.readFileSync(gatesPath, 'utf8');
 

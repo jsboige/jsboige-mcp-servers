@@ -25,8 +25,8 @@ import {
   isDashboardReadPgEnabled,
   isDashboardPgPrimaryEnabled,
   isDualWriteExplicitlyOff,
-} from '../pg-read-gates.js';
-import { setBackfillMarkerState } from '../pg-backfill-marker.js';
+} from '../src/services/unified-store/pg-read-gates.js';
+import { setBackfillMarkerState } from '../src/services/unified-store/pg-backfill-marker.js';
 
 const PG_URL = 'postgres://t:t@localhost:5432/x';
 

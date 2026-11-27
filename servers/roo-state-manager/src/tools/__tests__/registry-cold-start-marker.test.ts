@@ -79,7 +79,7 @@ import {
   CHANNEL_BACKFILL_META_KEY,
   DASHBOARD_BACKFILL_META_KEY,
   type BackfillMarkerState,
-} from '../../services/unified-store/pg-backfill-marker.js';
+} from '@vibesync/core/services/unified-store/pg-backfill-marker';
 
 type Handler = (request: unknown) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
 

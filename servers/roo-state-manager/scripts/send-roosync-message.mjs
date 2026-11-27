@@ -151,7 +151,10 @@ const [
   import(buildUrl('services/MessageManager.js')),
   import(buildUrl('services/unified-store/roosync-channel-dual-write.js')),
   import(buildUrl('services/unified-store/writer-factory.js')),
-  import(buildUrl('services/unified-store/pg-backfill-marker.js')),
+  // The vintage's bundled copy of @vibesync/core (#4918): the marker cache is
+  // per module instance, and the server modules loaded here resolve this one,
+  // never the live dist/.
+  import(buildUrl('node_modules/@vibesync/core/dist/services/unified-store/pg-backfill-marker.js')),
 ]);
 
 // getMessageManager() reads process.env.ROOSYNC_SHARED_PATH directly; this

@@ -29,8 +29,8 @@ import type { Message } from '../MessageManager.js';
 import type { RooSyncMessageUpdate } from './types.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { mapMessageToRow } from './roosync-channel-dual-write.js';
-import { isPgFlagOn } from './pg-flags.js';
-import { isChannelPgPrimaryEnabled } from './pg-read-gates.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
+import { isChannelPgPrimaryEnabled } from '@vibesync/core/services/unified-store/pg-read-gates';
 import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('roosync-channel-write');

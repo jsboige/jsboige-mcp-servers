@@ -122,8 +122,9 @@ const [{ getSharedStatePath }, { mapMessageToRow }, { getUnifiedStoreWriter }, {
     import(buildUrl('services/unified-store/roosync-channel-dual-write.js')),
     import(buildUrl('services/unified-store/writer-factory.js')),
     // #4131 + review ms#1540 — the meta key of the completeness marker the
-    // default PG read is gated on (single source of truth with the runtime).
-    import(buildUrl('services/unified-store/pg-backfill-marker.js')),
+    // default PG read is gated on (single source of truth with the runtime,
+    // read from the vintage's bundled copy of @vibesync/core, #4918).
+    import(buildUrl('node_modules/@vibesync/core/dist/services/unified-store/pg-backfill-marker.js')),
     // #4131 + review ms#1540 RE2 — full-scope verdict + foreign-file
     // classification (pure helpers, unit-tested).
     import(buildUrl('services/unified-store/backfill-scope.js')),
