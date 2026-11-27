@@ -16,6 +16,7 @@
 
 import pg from 'pg';
 import type {
+  ArchivedDashboardBatch,
   UnifiedStoreSearchFilters,
   UnifiedStoreSearchHit,
   ConversationRow,
@@ -425,6 +426,69 @@ export class PgUnifiedStoreReader implements IUnifiedStoreReader {
         [key, messageId],
       );
     return result.rows.map(r => r.message_id as string);
+  }
+
+  // ─── Archive surface reads (#4131 residual) ──────────────────────
+  //
+  // `read_archive` reads this seat's G: mirror only. Condensation writes its
+  // `.md` on the seat that performs it, and since Phase D the PG-primary gate
+  // no longer maintains the G: dashboard copy — so the mirror is one seat's
+  // archive window, not the fleet's. These two reads let the listing name the
+  // batches PG holds and let a read serve the one whose file is elsewhere.
+
+  /**
+   * Every batch of archived rows PG holds for a key, newest first.
+   *
+   * A batch is the rows sharing one `date_trunc('second', archived_at)`: the
+   * second is the resolution of the archive file name, and grouping by it
+   * stays correct whether the writer stamped the batch with one `NOW()` (the
+   * condense path does) or per-row.
+   *
+   * NOT necessarily a condensation (review ms#1934, finding 2): two other
+   * passes also stamp `archived_at` — the reconcile archival pass (#3151-D)
+   * and the archive-scan heal — and no column records which setter wrote a
+   * stamp. Only the condensation path writes an archive file, so a batch has
+   * a file twin when it happens to; consumers must not read "batch" as
+   * "condensation".
+   */
+  async getArchivedRooSyncDashboardBatches(key: string): Promise<ArchivedDashboardBatch[]> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query(
+      `SELECT date_trunc('second', archived_at) AS batch_at,
+              COUNT(*)::int AS message_count
+       FROM roosync_dashboard_messages
+       WHERE dashboard_key = $1 AND archived_at IS NOT NULL
+       GROUP BY 1
+       ORDER BY 1 DESC`,
+      [key],
+    );
+    return result.rows.map((row: Record<string, unknown>) => ({
+      archivedAt: toIsoString(row.batch_at) ?? String(row.batch_at),
+      messageCount: Number(row.message_count),
+    }));
+  }
+
+  /**
+   * The journal rows of ONE batch of archived rows (the second an archive
+   * name carries), oldest first — the order the file archive preserves.
+   */
+  async getArchivedRooSyncDashboardBatch(
+    key: string,
+    batchSecondIso: string,
+  ): Promise<RooSyncDashboardMessageRow[]> {
+    if (!this.pool) await this.init();
+    if (!this.pool) throw new Error('Pool not initialized');
+
+    const result = await this.pool.query(
+      `SELECT * FROM roosync_dashboard_messages
+       WHERE dashboard_key = $1 AND archived_at IS NOT NULL
+         AND date_trunc('second', archived_at) = $2::timestamptz
+       ORDER BY created_at ASC, id ASC`,
+      [key, batchSecondIso],
+    );
+    return result.rows.map(r => this.mapRooSyncDashboardMessageRow(r));
   }
 
   async getRooSyncDashboardRetirement(key: string): Promise<DashboardRetirementMark | null> {

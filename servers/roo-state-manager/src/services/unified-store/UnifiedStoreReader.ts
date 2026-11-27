@@ -22,6 +22,7 @@
  */
 
 import type {
+  ArchivedDashboardBatch,
   UnifiedStoreSearchFilters,
   UnifiedStoreSearchHit,
   ConversationRow,
@@ -226,6 +227,23 @@ export interface IUnifiedStoreReader {
    * about one id and must not pull the whole archived history of the key.
    */
   getArchivedRooSyncDashboardMessageIds(key: string, messageId?: string): Promise<string[] | null>;
+  /**
+   * #4131 residual — every condensation batch PG holds for a key, newest
+   * first. Same ungated contract as the archived ids above: this is a
+   * decision input for `read_archive` (which names a listing must carry), NOT
+   * a dashboard-content read — a seat whose content read gate is off still
+   * needs to know the fleet's archive window, or it answers with its own and
+   * calls it the truth. Empty array = the key archived nothing; an
+   * unreachable store THROWS (the caller reads that as "no PG story" and
+   * keeps the file-only behaviour, never as "no archive").
+   */
+  getArchivedRooSyncDashboardBatches(key: string): Promise<ArchivedDashboardBatch[]>;
+  /**
+   * #4131 residual — the journal rows of ONE condensation batch (the second
+   * an archive name carries), oldest first: the order the file archive
+   * preserves. Empty array = that second matches no row.
+   */
+  getArchivedRooSyncDashboardBatch(key: string, batchSecondIso: string): Promise<RooSyncDashboardMessageRow[]>;
 
   // ─── RooSync attachment reads (#3151 §7.5.2) ─────────────────────
 
@@ -312,6 +330,8 @@ export class NullUnifiedStoreReader implements IUnifiedStoreReader {
   async listRetiredRooSyncDashboardKeys(): Promise<string[]> { return []; }
   async listRooSyncDashboardKeys(): Promise<string[]> { return []; }
   async getArchivedRooSyncDashboardMessageIds(_key: string, _messageId?: string): Promise<string[] | null> { return null; }
+  async getArchivedRooSyncDashboardBatches(_key: string): Promise<ArchivedDashboardBatch[]> { return []; }
+  async getArchivedRooSyncDashboardBatch(_key: string, _batchSecondIso: string): Promise<RooSyncDashboardMessageRow[]> { return []; }
   async getRooSyncAttachmentById(_id: string): Promise<(RooSyncAttachmentMetadataRow & { payload: Buffer }) | null> { return null; }
   async listRooSyncAttachmentMetadata(_uuids: string[]): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
   async scanRooSyncAttachments(_messageId?: string): Promise<RooSyncAttachmentMetadataRow[]> { return []; }
