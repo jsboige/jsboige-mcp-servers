@@ -135,7 +135,7 @@ import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { isPgFlagOn } from './pg-flags.js';
-import { isDesignatedMirrorWriter, mirrorWriterMachineId } from './dashboard-mirror-writer.js';
+import { isDesignatedMirrorWriter, reconcileLockMachineId } from './dashboard-mirror-writer.js';
 import { createLogger } from '@vibesync/core/utils/logger';
 import { isGdriveConflictCopyFile } from '../roosync/DashboardMirrorService.js';
 
@@ -456,12 +456,17 @@ export function isMainPassLockEnabled(): boolean {
 }
 
 /**
- * Machine identity — same spelling as the holder payloads of the other locks.
- * Delegates to the mirror-writer module so the lock holder, the cadence stamp
- * and the #4596 writer guard can never disagree about who this seat is.
+ * Machine identity of the LOCK ROWS — the historical hostname spelling,
+ * deliberately frozen. The #4596 election may follow the operator's
+ * declaration (`ROOSYNC_MACHINE_ID`, the stamps' vocabulary); these keys may
+ * not: a host without `.env`, an older-vintage host or a host reading another
+ * `.env` would otherwise stop contending on the same `…:<machine>` row and
+ * stop sharing the #4850 cadence stamp with its own machine's other hosts.
+ * Election ≠ serialisation — the verdict elects a publisher, the key
+ * serialises the pass.
  */
 function reconcileMachineId(): string {
-  return mirrorWriterMachineId();
+  return reconcileLockMachineId();
 }
 
 /**

@@ -17,9 +17,13 @@
  *   - unset / empty  → `myia-ai-01` (the default — option a of the RX169
  *                      arbitration, user agreement 26/11);
  *   - a machine name → only that seat writes; compared case-insensitively
- *                      with the same identity as the reconcile locks
- *                      (`COMPUTERNAME`, upper-case on Windows, hence the
- *                      folding — a strict compare would silence ai-01 itself);
+ *                      with the seat identity of the ELECTION
+ *                      (`ROOSYNC_MACHINE_ID` first, then the hostname —
+ *                      upper-case on Windows, hence the folding: a strict
+ *                      compare would silence ai-01 itself). Two identities
+ *                      live in this module and are NOT the same string: the
+ *                      election follows the operator's declaration, the lock
+ *                      keys keep the hostname spelling — see both functions;
  *   - `*`            → every seat writes again: the kill-switch that restores
  *                      the previous behaviour without a redeployment.
  *
@@ -67,12 +71,43 @@ export function dashboardMirrorWriter(): string {
 }
 
 /**
- * Machine identity of THIS seat — the spelling of the reconcile lock holders
- * (`dashboard-reconcile-main-pass:<machine>`). One implementation, so the
- * guard can never compare against a different identity than the locks.
+ * Hostname spelling — what the lock rows have always been keyed on.
+ *
+ * Every process of ONE machine must keep computing the same
+ * `dashboard-reconcile-main-pass:<machine>` and `…-cadence:<machine>` row:
+ * a host that loaded no `.env`, an older-vintage host and a host reading
+ * another `.env` than its neighbours still contend on one row and share one
+ * completed-pass stamp (#4850). That is why this chain reads the hostname
+ * ONLY — the operator variable must never move a key (see the election
+ * identity below for the variable that does move a verdict).
+ */
+export function reconcileLockMachineId(): string {
+  return process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? 'unknown';
+}
+
+/**
+ * Machine identity of THIS seat for the ELECTION — the vocabulary the
+ * dashboards already speak: `author.machineId` and `condensedBy` are read
+ * from `ROOSYNC_MACHINE_ID`, and it is the first entry of the documented
+ * chain of `resolveMachineIdentity()` in `utils/message-helpers.ts`.
+ *
+ * WHY the variable comes first. Read from the hostname alone, a container or
+ * WSL host of the designated machine (no `COMPUTERNAME`, `HOSTNAME` = a
+ * container id) is never the writer, and the default `myia-ai-01` designates
+ * NOBODY — silently: the 24 h criterion of the issue ("no new ` (N)` copy")
+ * cannot tell one writer from no writer (review of 27/11).
+ *
+ * NOT `resolveMachineIdentity()` itself, on purpose: its first layer is the
+ * identity of the REQUEST (`x-roosync-as`), and the mirror writer is the
+ * HOST that holds the file — never the client that asked for the write.
+ *
+ * NOT the lock spelling either: `reconcileLockMachineId()` above stays on
+ * the hostname, so setting the variable changes a verdict and no key.
  */
 export function mirrorWriterMachineId(): string {
-  return process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? 'unknown';
+  const configured = (process.env.ROOSYNC_MACHINE_ID ?? '').trim();
+  if (configured !== '') return configured.toLowerCase();
+  return reconcileLockMachineId();
 }
 
 /**

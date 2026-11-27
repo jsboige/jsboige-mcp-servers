@@ -954,6 +954,7 @@ message présent seulement sur le fichier
 describe('#4596 — writeDashboardFile n\'exporte le miroir que sur le siège désigné', () => {
   let tmpDir: string;
   const savedComputerName = process.env.COMPUTERNAME;
+  const savedHostName = process.env.HOSTNAME;
   const key = 'workspace-fifth-guarded-point';
 
   const minimalDashboard = () => ({
@@ -1002,6 +1003,8 @@ describe('#4596 — writeDashboardFile n\'exporte le miroir que sur le siège d�
     delete process.env.UNIFIED_STORE_PG_URL;
     if (savedComputerName === undefined) delete process.env.COMPUTERNAME;
     else process.env.COMPUTERNAME = savedComputerName;
+    if (savedHostName === undefined) delete process.env.HOSTNAME;
+    else process.env.HOSTNAME = savedHostName;
   });
 
   it('siège NON désigné : aucun fichier, gdriveSkipped + raison, l\'écriture PG reste acquise', async () => {
@@ -1032,6 +1035,8 @@ describe('#4596 — writeDashboardFile n\'exporte le miroir que sur le siège d�
 
   it('défaut (variable absente) sur le siège par défaut `myia-ai-01` : désigné, fichier écrit', async () => {
     delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+    // Le siège se déclare ET se nomme : les deux sources disent ai-01.
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
     process.env.COMPUTERNAME = 'myia-ai-01';
 
     const wv = await writeDashboardFile(key, minimalDashboard());
@@ -1040,8 +1045,35 @@ describe('#4596 — writeDashboardFile n\'exporte le miroir que sur le siège d�
     expect(existsSync(dashboardPath())).toBe(true);
   });
 
+  it('hôte sans COMPUTERNAME qui déclare `myia-ai-01` (conteneur, WSL) : désigné, fichier écrit (review 27/11)', async () => {
+    // Lu sur le seul hostname, ce siège n'était jamais l'écrivain : le défaut
+    // ne désignait personne, et le critère « aucune copie ` (N)` » restait vert.
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+    delete process.env.COMPUTERNAME;
+    process.env.HOSTNAME = 'a29e7f8c9e1a';
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+
+    const wv = await writeDashboardFile(key, minimalDashboard());
+
+    expect(wv.gdriveSkipped).toBeFalsy();
+    expect(existsSync(dashboardPath())).toBe(true);
+  });
+
+  it('la déclaration nomme un AUTRE siège que le hostname : non désigné', async () => {
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+    process.env.COMPUTERNAME = 'MYIA-AI-01';
+
+    const wv = await writeDashboardFile(key, minimalDashboard());
+
+    expect(wv.gdriveSkipped).toBe(true);
+    expect(wv.gdriveSkippedReason).toBe(MIRROR_SKIP_REASON_NOT_DESIGNATED);
+    expect(existsSync(dashboardPath())).toBe(false);
+  });
+
   it('défaut (variable absente) sur un autre siège : non désigné, miroir laissé au publisher', async () => {
     delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
     process.env.COMPUTERNAME = 'MYIA-PO-2024';
 
     const wv = await writeDashboardFile(key, minimalDashboard());

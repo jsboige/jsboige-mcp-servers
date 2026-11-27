@@ -12,7 +12,9 @@
  *
  * WHAT THESE TESTS PIN (closure criterion 1 of the issue):
  *   - the verdict itself — absent value (default), explicit seat, `*`, case
- *     folding, call-time read, `COMPUTERNAME` → `HOSTNAME` fallback;
+ *     folding, call-time read, the seat identity of the election
+ *     (`ROOSYNC_MACHINE_ID` first, then the hostname) and the lock rows,
+ *     which stay on the hostname whatever that variable says;
  *   - the two guarded points of THIS module: mirror repair AND materialization
  *     are both held by the same branch, and a non-designated seat returns
  *     `mirrorRepairSkipped: 'not-designated-writer'` BEFORE asking for the
@@ -33,6 +35,8 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   reconcileDashboardsFromGDrive,
+  mainPassCadenceKey,
+  mainPassLockKey,
   MIRROR_REPAIR_LOCK_KEY,
 } from '../roosync-dashboard-reconcile.js';
 import {
@@ -42,6 +46,7 @@ import {
   dashboardMirrorWriter,
   isDesignatedMirrorWriter,
   mirrorWriterMachineId,
+  reconcileLockMachineId,
 } from '../dashboard-mirror-writer.js';
 import type { RooSyncDashboardRow, RooSyncDashboardMessageRow } from '../types.js';
 import type { Dashboard } from '../../../tools/roosync/dashboard-schemas.js';
@@ -58,7 +63,7 @@ vi.mock('../roosync-dashboard-store.js', async (importOriginal) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('#4596 — mirror writer verdict (read at call time)', () => {
-  const KEYS = [MIRROR_WRITER_ENV, 'COMPUTERNAME', 'HOSTNAME'] as const;
+  const KEYS = [MIRROR_WRITER_ENV, 'ROOSYNC_MACHINE_ID', 'COMPUTERNAME', 'HOSTNAME'] as const;
   let saved: Record<string, string | undefined>;
 
   beforeEach(() => {
@@ -125,15 +130,66 @@ describe('#4596 — mirror writer verdict (read at call time)', () => {
     expect(isDesignatedMirrorWriter('myia-po-2024')).toBe(true);
   });
 
-  test('machine identity: COMPUTERNAME first (the reconcile lock spelling), HOSTNAME as fallback', () => {
+  test('election identity: `ROOSYNC_MACHINE_ID` first (the stamps’ vocabulary), then COMPUTERNAME, then HOSTNAME', () => {
+    delete process.env.ROOSYNC_MACHINE_ID;
     process.env.COMPUTERNAME = 'MYIA-PO-2024';
     process.env.HOSTNAME = 'ignored-host';
     expect(mirrorWriterMachineId()).toBe('MYIA-PO-2024');
+    // The operator's declaration wins over the hostname, folded to lower case
+    // like every machine id of this store.
+    process.env.ROOSYNC_MACHINE_ID = 'MYIA-PO-2024';
+    expect(mirrorWriterMachineId()).toBe('myia-po-2024');
+    delete process.env.ROOSYNC_MACHINE_ID;
     delete process.env.COMPUTERNAME;
     expect(mirrorWriterMachineId()).toBe('ignored-host');
   });
 
+  test('a host that only DECLARES its machine is a seat — no COMPUTERNAME required (review 27/11)', () => {
+    // A container or WSL host of the designated machine: no COMPUTERNAME,
+    // HOSTNAME = a container id. Read from the hostname alone, the default
+    // `myia-ai-01` designated NOBODY — and the 24 h criterion ("no new ` (N)`
+    // copy") stays green while no mirror is written at all.
+    delete process.env.COMPUTERNAME;
+    process.env.HOSTNAME = 'a29e7f8c9e1a';
+    delete process.env[MIRROR_WRITER_ENV];
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+    expect(mirrorWriterMachineId()).toBe('myia-ai-01');
+    expect(isDesignatedMirrorWriter()).toBe(true);
+    // …the declaration is what elects: the same host declaring another
+    // machine is not the writer.
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+    expect(isDesignatedMirrorWriter()).toBe(false);
+  });
+
+  test('a blank declaration is no declaration — the hostname still speaks', () => {
+    process.env.ROOSYNC_MACHINE_ID = '   ';
+    process.env.COMPUTERNAME = 'MYIA-AI-01';
+    delete process.env[MIRROR_WRITER_ENV];
+    expect(mirrorWriterMachineId()).toBe('MYIA-AI-01');
+    expect(isDesignatedMirrorWriter()).toBe(true);
+  });
+
+  test('election ≠ serialisation: the lock rows keep the hostname spelling, whatever the declaration says', () => {
+    // `mainPassLockKey` and `mainPassCadenceKey` (#4850) are one row PER
+    // MACHINE. If the declaration moved them, a host without `.env`, an
+    // older-vintage host or a host reading another `.env` would stop
+    // contending on its own machine's row.
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+    process.env.COMPUTERNAME = 'MYIA-PO-2024';
+    process.env.HOSTNAME = 'ignored-host';
+    expect(reconcileLockMachineId()).toBe('MYIA-PO-2024');
+    expect(mainPassLockKey()).toBe('dashboard-reconcile-main-pass:MYIA-PO-2024');
+    expect(mainPassCadenceKey()).toBe('dashboard-reconcile-main-pass-cadence:MYIA-PO-2024');
+    // …the fallback of the keys is the lock's own chain, too.
+    delete process.env.COMPUTERNAME;
+    expect(reconcileLockMachineId()).toBe('ignored-host');
+    expect(mainPassLockKey()).toBe('dashboard-reconcile-main-pass:ignored-host');
+    // The election, on the same env, follows the declaration — not the keys.
+    expect(mirrorWriterMachineId()).toBe('myia-po-2024');
+  });
+
   test('the default argument IS this seat — dashboardMirrorWriter and the identity share one source', () => {
+    delete process.env.ROOSYNC_MACHINE_ID;
     process.env.COMPUTERNAME = 'MYIA-PO-2024';
     process.env[MIRROR_WRITER_ENV] = MIRROR_WRITER_DEFAULT;
     expect(isDesignatedMirrorWriter()).toBe(false);
@@ -234,6 +290,7 @@ describe('#4596 — mirror repair and materialization are held by the designatio
       repair: process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR,
       max: process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR_MAX,
       writer: process.env[MIRROR_WRITER_ENV],
+      machineId: process.env.ROOSYNC_MACHINE_ID,
       computer: process.env.COMPUTERNAME,
       host: process.env.HOSTNAME,
     };
@@ -245,6 +302,10 @@ describe('#4596 — mirror repair and materialization are held by the designatio
     delete process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR;
     delete process.env.ROOSYNC_DASHBOARD_MIRROR_REPAIR_MAX;
     delete process.env[MIRROR_WRITER_ENV];
+    // The seat DECLARES itself, as every real host does through its `.env`:
+    // the election reads the declaration first, the hostname only after. Left
+    // to the ambient value, "this seat" would be whatever the setup file set.
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
     process.env.COMPUTERNAME = 'MYIA-PO-2024';
     pgRows = new Map();
     writeMirrorCalls = [];
@@ -269,6 +330,7 @@ describe('#4596 — mirror repair and materialization are held by the designatio
     restore('ROOSYNC_DASHBOARD_MIRROR_REPAIR', saved.repair);
     restore('ROOSYNC_DASHBOARD_MIRROR_REPAIR_MAX', saved.max);
     restore(MIRROR_WRITER_ENV, saved.writer);
+    restore('ROOSYNC_MACHINE_ID', saved.machineId);
     restore('COMPUTERNAME', saved.computer);
     restore('HOSTNAME', saved.host);
     rmSync(dir, { recursive: true, force: true });
@@ -374,6 +436,7 @@ describe('#4596 — mirror repair and materialization are held by the designatio
   });
 
   test('the designated seat (ai-01, default) repairs AND materializes, asking for the fleet lock', async () => {
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
     process.env.COMPUTERNAME = 'MYIA-AI-01';
     write('workspace-a.md', fixture('workspace-a', ['old']));
     pgRows.set('workspace-a', [
@@ -412,6 +475,8 @@ describe('#4596 — mirror repair and materialization are held by the designatio
   });
 
   test('designating THIS seat arms it, whatever the spelling', async () => {
+    // Declaration and hostname spell the seat differently from the variable.
+    process.env.ROOSYNC_MACHINE_ID = 'MYIA-PO-2024';
     process.env[MIRROR_WRITER_ENV] = 'myia-po-2024';
     write('workspace-a.md', fixture('workspace-a', ['old']));
     pgRows.set('workspace-a', [
