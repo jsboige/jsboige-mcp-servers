@@ -12192,9 +12192,12 @@ const ARCHIVE_NAME_PATTERN = /^(\d{4}-\d{2}-\d{2})T(\d{2})-(\d{2})-(\d{2})(?:-fa
  * it writes the archive, and `archived_at` is stamped by the dashboard write
  * that follows (merge, DriveFS lock, dual-write) — so the PG stamp lands AFTER
  * the name stamp: 0-1 s measured, up to the G: write path's lock waits (~68 s,
- * #3205). Six minutes one-sided covers it with margin and stays far below the
- * shortest inter-batch interval observed on a key (49 min). The other
- * direction is clock skew only.
+ * #3205). Six minutes one-sided covers it with margin. It is NOT below every
+ * inter-batch interval: two batches of `workspace-roo-extensions` were stamped
+ * 00:27:13 and 00:33:08 on 26/11 (5 min 55 s, #4947), so a name can sit in the
+ * window of two batches. The window only serves a FILE name; a name the listing
+ * derived from a batch (`archiveNameForBatch`) is matched exactly first, in
+ * `readArchiveFromPg`. The other direction is clock skew only.
  */
 const ARCHIVE_BATCH_AFTER_NAME_MS = 6 * 60_000;
 const ARCHIVE_NAME_AFTER_BATCH_MS = 2_000;
@@ -12508,10 +12511,20 @@ async function readArchiveFromPg(
   if (nameStampMs === null) return { data: null, gap: null, ambiguous: 0 };
   const { batches, gap } = await fetchArchivedDashboardBatches(key);
   if (gap !== null) return { data: null, gap, ambiguous: 0 };
-  const candidates = batches
+  const stamped = batches
     .map(b => ({ batch: b, ms: Date.parse(b.archivedAt) }))
-    .filter(({ ms }) => !Number.isNaN(ms) && batchMatchesNameStamp(ms, nameStampMs))
-    .sort((a, b) => Math.abs(a.ms - nameStampMs) - Math.abs(b.ms - nameStampMs));
+    .filter(({ ms }) => !Number.isNaN(ms));
+  // #4947: the listing names a batch no local file names by the writer's rule
+  // (`archiveNameForBatch`), so such a name must read back to THAT batch, however
+  // many others its window holds — refusing it made a listed name unreadable and
+  // held the escalation organ at exit 1 on every seat. Only a unique exact match
+  // counts; two batches in the same second fall through to the window and refuse.
+  const named = stamped.filter(({ batch }) => archiveNameForBatch(key, batch.archivedAt) === archiveFile);
+  const candidates = named.length === 1
+    ? named
+    : stamped
+      .filter(({ ms }) => batchMatchesNameStamp(ms, nameStampMs))
+      .sort((a, b) => Math.abs(a.ms - nameStampMs) - Math.abs(b.ms - nameStampMs));
   // Measured po-2024 26/11: a name CAN sit inside the window of two batches — a
   // reconcile archival pass stamps `archived_at` minutes after the condensation
   // (11 rows beside a 21-id file). With no content here there is no id to choose

@@ -30,7 +30,9 @@
  *     39 jumeaux, 1 lot distinct) ;
  *   - une fenêtre PG partielle est DITE (note + champ `pgArchiveWindow`), jamais
  *     silencieuse ; un nom qui tombe dans la fenêtre de plusieurs lots n'est
- *     servi par aucun (sans contenu, il n'y a pas d'identité pour choisir) ;
+ *     servi par aucun (sans contenu, il n'y a pas d'identité pour choisir) —
+ *     SAUF le nom qu'un seul lot dérive exactement : c'est celui que le listing
+ *     émet pour ce lot, il doit se relire (#4947, deux lots à 5 min 55 s) ;
  *   - les DEUX budgets d'identité disent SÉPARÉMENT les couples contrôlés et
  *     réfutés de ceux que le budget n'a jamais comparés : présenter un
  *     non-contrôlé comme un réfuté transformerait 6 vraies paires laissées de
@@ -651,9 +653,12 @@ describe('read_archive — repli PG (#4131 residual)', () => {
 
   // ─── ambiguïté (mesurée : un nom peut tomber dans la fenêtre de DEUX lots) ──
 
+  // A FILE name: the writer names before it writes, so its own batch lands 1.4 s
+  // later and no batch derives this exact name — only the window speaks, and it
+  // holds two. (A name a batch derives exactly is served: #4947, below.)
   it('DEUX lots dans la fenêtre d\'un nom ABSENT → aucun n\'est servi, la réponse dit combien', async () => {
     mockFetchBatches.mockResolvedValue(windowOf([
-      { archivedAt: '2026-11-26T00:27:11.000Z', messageCount: 21 },
+      { archivedAt: '2026-11-26T00:27:12.400Z', messageCount: 21 },
       { archivedAt: '2026-11-26T00:33:08.000Z', messageCount: 11 },
     ]));
     mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
@@ -671,11 +676,40 @@ describe('read_archive — repli PG (#4131 residual)', () => {
     const husk = name('2026-11-26T00-27-11');
     await writeFile(path.join(archiveDir, husk), '', 'utf8');
     mockFetchBatches.mockResolvedValue(windowOf([
-      { archivedAt: '2026-11-26T00:27:11.000Z', messageCount: 21 },
+      { archivedAt: '2026-11-26T00:27:12.400Z', messageCount: 21 },
       { archivedAt: '2026-11-26T00:33:08.000Z', messageCount: 11 },
     ]));
     await expect(read(husk)).rejects.toThrow(/frontmatter manquant/);
     await expect(read(husk)).rejects.toThrow(/2 lots PG tombent dans la fenêtre/);
+    expect(mockFetchBatch).not.toHaveBeenCalled();
+  });
+
+  // ─── #4947 : un nom que le listing émet se relit (mesuré ai-01 27/11) ──
+
+  it('nom DÉRIVÉ d\'un lot (listing) → ce lot est servi, même si un 2e lot tombe dans sa fenêtre (5 min 55 s)', async () => {
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-26T00:33:08.100Z', messageCount: 11 },
+      { archivedAt: '2026-11-26T00:27:13.250Z', messageCount: 21 },
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
+    const listing = await list();
+    const listed = name('2026-11-26T00-27-13');
+    expect((listing as any).archives).toContain(listed);
+    const res = await read(listed);
+    expect(res.success).toBe(true);
+    expect((res as any).archiveData.messages).toEqual(pgMessages);
+    expect(mockFetchBatch).toHaveBeenLastCalledWith(KEY, '2026-11-26T00:27:13.250Z');
+  });
+
+  it('DEUX lots dans la MÊME seconde dérivent le même nom → aucun n\'est servi (refus inchangé)', async () => {
+    mockFetchBatches.mockResolvedValue(windowOf([
+      { archivedAt: '2026-11-26T00:27:13.100Z', messageCount: 21 },
+      { archivedAt: '2026-11-26T00:27:13.900Z', messageCount: 11 },
+    ]));
+    mockFetchBatch.mockResolvedValue(batchOf(pgMessages));
+    const res = await read(name('2026-11-26T00-27-13'));
+    expect(res.success).toBe(false);
+    expect((res as any).message).toContain('2 lots PG tombent dans la fenêtre');
     expect(mockFetchBatch).not.toHaveBeenCalled();
   });
 
