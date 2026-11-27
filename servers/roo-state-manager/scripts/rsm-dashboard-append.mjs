@@ -320,8 +320,13 @@ let unserialized = ownedHolder === null;
 // from the pre-attempt base would erase that append — its only copy, since PG
 // is the half that failed. Release-then-acquire: a stolen lock is not released
 // (holder mismatch, dashboard.ts) and a fresh `acquiredAt` restarts the TTL.
-// Both PG halves are bounded (3 s) and never throw, so this adds no unbounded
-// wait to the fallback. Review ms#1919: called after the attempt on BOTH
+// Neither PG half throws, and neither is unbounded: the retirement lookup
+// races a 3 s timer (RETIREMENT_LOOKUP_TIMEOUT_MS, roosync-dashboard-store.ts)
+// and the verified write is bounded by the store's own timeouts —
+// statement_timeout 15 s, connectionTimeoutMillis 15 s, maxRetries 2
+// (PgUnifiedStoreWriter.ts), i.e. the ~46,5 s the #4915 re-read measured, not
+// 3 s (re-review ms#1919, web1 27/11). The refusal path below still adds no
+// OPEN wait to the fallback. Review ms#1919: called after the attempt on BOTH
 // outcomes — a success can be late too, and the mirror then faces the same
 // stale lock (and a file-only append it must not erase).
 async function retakeAppendLock() {
@@ -456,6 +461,15 @@ try {
         // lock that cannot be re-taken (a stolen one is live) proceeds
         // unserialized and says so — the re-read still runs.
         unserialized = !relocked;
+        // Re-review ms#1919 (web1, 27/11): the state read under the lock BEFORE
+        // the attempt is kept. When the re-read answers null the rewrite is
+        // refused below — and PG still owes the message: replaying this base is
+        // exactly the payload the failed attempt carried, whereas an empty
+        // state would reset the key's `content`/`status_json` on the PG side
+        // (`ON CONFLICT (key) DO UPDATE SET content = EXCLUDED.content, …`,
+        // PgUnifiedStoreWriter.ts). `base` needs no capture: nothing here
+        // reassigns it, so the label keeps naming the state restored.
+        const dashboardBeforeAttempt = dashboard;
         dashboard = await readDashboardFile(key);
         if (dashboard) {
           base = 'file';
@@ -490,8 +504,19 @@ try {
               detail: 'fichier présent, lecture du dashboard nulle et aucun retrait confirmé',
             };
           }
-          dashboard = createEmptyDashboard(dashboardTarget ? dashboardTarget.type : 'machine', key, author);
-          base = 'created';
+          if (fileRewriteRefused !== null) {
+            // Re-review ms#1919 (web1 🟠): the refusal protects the FILE, not
+            // the PG half — and the message is still owed to PG. `next` is
+            // rebuilt from the pre-attempt dashboard below, so the second
+            // attempt carries the very payload of the first, id for id. The
+            // file half is deliberately NOT folded in: a null read may be a
+            // retired key's stale file, and #3782 forbids rebuilding it into a
+            // write (the store's own `retired-skip` covers the PG side).
+            dashboard = dashboardBeforeAttempt;
+          } else {
+            dashboard = createEmptyDashboard(dashboardTarget ? dashboardTarget.type : 'machine', key, author);
+            base = 'created';
+          }
         }
         deduplicated = shouldDeduplicate(dashboard, messageId ?? null);
         if (!deduplicated) {

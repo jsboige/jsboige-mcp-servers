@@ -134,6 +134,12 @@ export async function dualWriteDashboardSyncChecked(dashboard) {
   const newId = process.env.RSM_APPEND_TEST_NEW_ID ?? '\u0000';
   const fileHasNew = target !== '' && isRegularFile(target) && readFileSync(target, 'utf8').includes(newId);
   journal(`pg:sync:fileHasNew=${fileHasNew}:messages=${dashboard.intercom.messages.length}:attempt=${++attempts}`);
+  // Re-review ms#1919 (web1, 27/11): the ids each attempt CARRIES, in order —
+  // the witness that a refused second attempt replays the base of the first
+  // instead of an empty state.
+  if (process.env.RSM_APPEND_TEST_SYNC_IDS === '1') {
+    journal(`pg:sync-ids:${dashboard.intercom.messages.map((m) => m.id).join(',')}`);
+  }
   if (attempts === 1) {
     // Tier-2 review (ai-01, 26/11 blocker 1): `status` lands a STATUS update
     // instead — same intercom, newer `lastModified`. No message comparison can

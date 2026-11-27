@@ -202,6 +202,8 @@ type Scenario = {
   retired?: 'reread'; // readDashboardFile answers null from the re-read on
   retirementMark?: boolean; // …and a retirement mark CONFIRMS it (#3782); unset = unconfirmed
   absentFirst?: boolean; // pre-review 26/11 (1): the FIRST read answers null, the file exists
+  // Re-review ms#1919 (web1, 27/11): each PG attempt journals the message ids it carries.
+  syncIds?: boolean;
   seed?: string | null; // file state before the run (default SEED_FILE; null = no file)
 };
 
@@ -276,6 +278,7 @@ function runScenario(scenario: Scenario): Run {
       RSM_APPEND_TEST_RETIRED: scenario.retired ?? '',
       RSM_APPEND_TEST_RETIRED_MARK: scenario.retirementMark ? '1' : '',
       RSM_APPEND_TEST_ABSENT: scenario.absentFirst ? 'first' : '',
+      RSM_APPEND_TEST_SYNC_IDS: scenario.syncIds ? '1' : '',
     });
 
     const res = spawnSync(
@@ -883,6 +886,9 @@ describe('ms#1919 tier-2 review — a status change during the attempt, an undet
     // messages, and NOTHING says the key is retired. On 2cb4e0bb the empty
     // state is written over the file: its content is erased. An unconfirmed
     // absence is an unknown base, not an empty one.
+    // Re-review ms#1919 (web1, 27/11): the refusal protects the FILE, not the
+    // PG half — the retry carries the base of the first attempt (id for id in
+    // the re-review block below), so the output names that base.
     const run = runScenario({ gate: 'open', pg: 'fail-once', seed: FILE_ONLY_SEED, retired: 'reread' });
 
     expect(run.status).toBe(0);
@@ -890,10 +896,10 @@ describe('ms#1919 tier-2 review — a status change during the attempt, an undet
     expect(run.parsed).toEqual({
       ok: true,
       key: KEY,
-      base: 'created',
+      base: 'file',
       unserialized: false,
       messageId: NEW_ID,
-      totalMessages: 1,
+      totalMessages: 3,
       pgSynced: true,
       gdriveSkipped: true,
       fileRewriteSkipped: expect.any(String),
@@ -911,7 +917,7 @@ describe('ms#1919 tier-2 review — a status change during the attempt, an undet
       'path',
       'read:undetermined', // null, while the file is there…
       'retirement:none', // …and nothing confirms a retirement
-      sync(false, 2, 1), // no markdown line: the file is not rewritten; PG holds the message
+      sync(false, 2, 3), // no markdown line: the file is not rewritten; PG holds the same three
       UNLOCK,
     ]);
   }, 15000);
@@ -941,6 +947,70 @@ describe('ms#1919 tier-2 review — a status change during the attempt, an undet
       // no `retirement:` line: with no file there is nothing a mark would change
       'markdown:none',
       sync(true, 2, 1),
+      UNLOCK,
+    ]);
+  }, 15000);
+});
+
+// ── Re-review ms#1919 (web1, 27/11 00:17Z — the residue on head 3be4fce1) ────
+describe('ms#1919 re-review (web1) — a refused rewrite still owes PG the base of the first attempt', () => {
+  it('the second attempt carries the first one’s payload, id for id', () => {
+    // On 3be4fce1 the refusal rebuilt `next` from an EMPTY state: the file was
+    // protected, but the retry sent PG a one-message state in place of the
+    // three-message one the failed attempt carried — and the store replaces
+    // `content`/`status_json` en bloc. The base read under the lock before the
+    // attempt is still in hand: it is the payload to replay.
+    const ids = `pg:sync-ids:${WITNESS_ID},${FILE_ONLY_ID},${NEW_ID}`;
+    const run = runScenario({
+      gate: 'open',
+      pg: 'fail-once',
+      seed: FILE_ONLY_SEED,
+      retired: 'reread',
+      syncIds: true,
+    });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBe(FILE_ONLY_SEED); // the file is still not rewritten
+    expect(run.journal.filter((l) => l.startsWith('pg:sync'))).toEqual([
+      sync(false, 1, 3),
+      ids,
+      sync(false, 2, 3),
+      ids, // the retry: the same three ids, in the same order
+    ]);
+  }, 15000);
+
+  it('the same for an unreadable file half reached through a null re-read', () => {
+    // The other refusal kind, same duty: the first read answered (the file
+    // half is a directory), the re-read is null and the file half still
+    // cannot be read.
+    const run = runScenario({ gate: 'open', pg: 'fail-once', writeFail: true, retired: 'reread' });
+
+    expect(run.status).toBe(0);
+    expect(run.file).toBeNull(); // the directory was never replaced by a file
+    expect(run.parsed).toEqual({
+      ok: true,
+      key: KEY,
+      base: 'file',
+      unserialized: false,
+      messageId: NEW_ID,
+      totalMessages: 2,
+      pgSynced: true,
+      gdriveSkipped: true,
+      fileRewriteSkipped: expect.any(String),
+    });
+    expect(run.stderr).toContain('illisible');
+    expect(run.stderr).not.toContain('ERREUR');
+    expect(run.journal).toEqual([
+      LOCK,
+      'read:unreadable', // the first read: the witness view
+      'gate:open',
+      sync(false, 1),
+      UNLOCK,
+      LOCK,
+      'path',
+      'read:undetermined', // null on the re-read…
+      // no `retirement:` line: the file half already failed to read
+      sync(false, 2), // …and the retry still carries the witness + our message
       UNLOCK,
     ]);
   }, 15000);
