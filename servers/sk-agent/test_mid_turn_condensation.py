@@ -18,7 +18,9 @@ request chat history once per tool round, so that
    instructions do not);
 5. the response envelope reports the mid-turn condensations;
 6. a sibling tool result appended while the passes run is never lost
-   (the write-back preserves post-snapshot appends by identity).
+   (the write-back preserves post-snapshot appends by identity);
+7. no outgoing request carries an unpaired tool message — a call and its
+   results are trimmed whole, and a pruned result keeps its call id (#4816).
 
 The engine is a REAL Semantic Kernel loop (scripted model service, real
 ChatCompletionAgent auto-invocation, real turn filter) — only the
@@ -28,6 +30,7 @@ network is fake. Run:
 """
 
 import asyncio
+import json
 import os
 import sys
 from pathlib import Path
@@ -85,6 +88,35 @@ def payload(round_no: int) -> str:
     return f"round-{round_no}-" + ("D" * (PAYLOAD_CHARS - 10))
 
 
+ARGS_CHARS = 8_000  # big-call / small-result rounds (see _overflow_manager)
+
+
+def _wire_issues(messages) -> tuple[int, int, int]:
+    """(unmatched, blank, unanswered) over the OpenAI wire shape of a request.
+
+    SK renders a TOOL message as ``tool_call_id = items[0].id or ""``. A
+    request is well formed when every tool message names a tool call of a
+    preceding assistant message and every tool call is answered exactly
+    once. Neither this engine nor the replay witness validates the
+    pairing, so a broken request travels silently.
+    """
+    open_ids: list[str] = []
+    unmatched = blank = 0
+    for wire in (message.to_dict() for message in messages):
+        for call in wire.get("tool_calls") or []:
+            open_ids.append(call.get("id") or "")
+        if wire.get("role") != "tool":
+            continue
+        call_id = wire.get("tool_call_id")
+        if not call_id:
+            blank += 1
+        elif call_id in open_ids:
+            open_ids.remove(call_id)
+        else:
+            unmatched += 1
+    return unmatched, blank, len(open_ids)
+
+
 # ---------------------------------------------------------------------------
 # Fake engine — scripted model capturing every outgoing request
 # ---------------------------------------------------------------------------
@@ -100,14 +132,18 @@ class OverflowChatCompletion(ChatCompletionClientBase):
     """
 
     final_after: int = ROUNDS
+    args_chars: int = 0  # >0: pad every call's arguments (big-call rounds)
     model_calls: int = 0
     request_chars: list[int] = Field(default_factory=list)
     prompt_seen: list[bool] = Field(default_factory=list)
     request_tool_payloads: list[list[str]] = Field(default_factory=list)
+    request_wire_issues: list[tuple[int, int, int]] = Field(default_factory=list)
     SUPPORTS_FUNCTION_CALLING = True
 
-    def __init__(self, final_after: int = ROUNDS):
-        super().__init__(ai_model_id="fake-overflow-model", final_after=final_after)
+    def __init__(self, final_after: int = ROUNDS, args_chars: int = 0):
+        super().__init__(
+            ai_model_id="fake-overflow-model", final_after=final_after, args_chars=args_chars
+        )
 
     async def _inner_get_chat_message_contents(self, chat_history, settings):
         self.model_calls += 1
@@ -138,6 +174,7 @@ class OverflowChatCompletion(ChatCompletionClientBase):
         self.request_chars.append(chars)
         self.prompt_seen.append(prompt_seen)
         self.request_tool_payloads.append(payloads)
+        self.request_wire_issues.append(_wire_issues(chat_history.messages))
         # Termination mirrors a real model: read the LATEST round visible
         # (the hot window always carries the most recent results verbatim)
         # — counting visible results would fight the condensation itself.
@@ -145,6 +182,9 @@ class OverflowChatCompletion(ChatCompletionClientBase):
             return [
                 ChatMessageContent(role=AuthorRole.ASSISTANT, content="final-answer")
             ]
+        args = {"n": last_round + 1}
+        if self.args_chars:
+            args["pad"] = "A" * self.args_chars
         return [
             ChatMessageContent(
                 role=AuthorRole.ASSISTANT,
@@ -152,7 +192,7 @@ class OverflowChatCompletion(ChatCompletionClientBase):
                     FunctionCallContent(
                         id=f"call_{self.model_calls}",
                         name=TOOL_NAME,
-                        arguments=f'{{"n": {last_round + 1}}}',
+                        arguments=json.dumps(args),
                     )
                 ],
             )
@@ -162,19 +202,30 @@ class OverflowChatCompletion(ChatCompletionClientBase):
         raise NotImplementedError("streaming not used in these tests")
 
 
-def _overflow_manager(tmp_path: Path):
+def _overflow_manager(
+    tmp_path: Path,
+    *,
+    args_chars: int = 0,
+    small_results: bool = False,
+    condensation: dict | None = None,
+):
     """Manager double with a REAL _handle_text over a real SK agent.
 
     Same construction as test_turn_control._turn_manager, plus the
     condensation plumbing the mid-turn seam needs: a model with a small
     context window and an agent with condensation enabled. The
     summariser falls back to the local no-LLM one (no openai clients).
+
+    ``args_chars`` pads every call's arguments (the nb_coder shape: long
+    arguments, one-line results) and ``condensation`` replaces the agent's
+    block when a test needs different knobs.
     """
     model = ModelConfig(id="m-x", context_window=CONTEXT_WINDOW)
     agent_cfg = AgentConfig(
         id="a-x",
         model="m-x",
-        condensation={
+        condensation=condensation
+        or {
             "enabled": True,
             "trigger_fraction": TRIGGER_FRACTION,
             "tool_result_window": TOOL_RESULT_WINDOW,
@@ -194,7 +245,7 @@ def _overflow_manager(tmp_path: Path):
     manager._openai_clients = {}
     manager._turn_marks = {}
 
-    service = OverflowChatCompletion()
+    service = OverflowChatCompletion(args_chars=args_chars)
     counter: dict = {"calls": 0}
 
     kernel = Kernel()
@@ -203,9 +254,9 @@ def _overflow_manager(tmp_path: Path):
 
     class BigPlugin:
         @kernel_function(description="big")
-        async def big(self, n: int) -> str:
+        async def big(self, n: int, pad: str = "") -> str:
             counter["calls"] = counter["calls"] + 1
-            return payload(n)
+            return f"round-{n}" if small_results else payload(n)
 
     kernel.add_plugin(BigPlugin(), plugin_name="probe")
     agent = ChatCompletionAgent(
@@ -274,6 +325,69 @@ async def test_mid_turn_requests_stay_under_model_budget(tmp_path):
     mid = (result.get("condensation") or {}).get("mid_turn")
     assert mid, "no mid_turn metrics in the response envelope"
     assert any(entry.get("triggered") for entry in mid)
+
+    # (6) Every request is well formed on the wire: each tool message
+    # names the call it answers. The pre-#4816 passes rebuilt pruned
+    # results without their id, so the request carried
+    # ``tool_call_id: ""`` — nothing on the wire said which call that
+    # result answered.
+    assert len(service.request_wire_issues) == len(service.request_chars)
+    malformed = [
+        issue for issue in service.request_wire_issues if issue != (0, 0, 0)
+    ]
+    assert not malformed, (
+        f"malformed tool messages on {len(malformed)} request(s): {malformed[:5]}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_mid_turn_big_calls_small_results_keep_pairs_whole(tmp_path):
+    """The nb_coder shape: 8K-char arguments, one-line results (#4816).
+
+    With big calls and tiny results the soft target is crossed by dropping
+    a CALL, so the legacy threshold pass left its result orphaned at the
+    head of the trimmed history — the #3944 residual, reachable mid-turn
+    since #4816 and measured on the deployed witness. Each pair must now
+    go whole, and no outgoing request may carry an unpaired tool message.
+    """
+    manager, service, counter, agent = _overflow_manager(
+        tmp_path,
+        args_chars=ARGS_CHARS,
+        small_results=True,
+        condensation={
+            "enabled": True,
+            "trigger_fraction": TRIGGER_FRACTION,
+            "tool_result_window": TOOL_RESULT_WINDOW,
+            # Above the argument size, so the summarise pass leaves the
+            # call messages alone: this test isolates the threshold pass.
+            "max_tool_chars": ARGS_CHARS + 1_000,
+        },
+    )
+
+    result = await manager._handle_text("a-x", agent, PROMPT, None, False)
+
+    assert result["status"] == STATUS_COMPLETED
+    assert counter["calls"] == ROUNDS
+    assert result.get("response") == "final-answer"
+
+    # The trimmed regime was reached more than once, so the requests
+    # checked below are requests the condenser had actually rewritten.
+    mid = (result.get("condensation") or {}).get("mid_turn")
+    assert mid, "no mid_turn metrics in the response envelope"
+    assert sum(1 for entry in mid if entry.get("triggered")) >= 2
+
+    peak = max(service.request_chars)
+    assert peak <= BUDGET_CHARS, (
+        f"outgoing request peaked at {peak} chars > budget {BUDGET_CHARS}"
+    )
+    assert all(service.prompt_seen), "the user instruction vanished from a request"
+
+    malformed = [
+        issue for issue in service.request_wire_issues if issue != (0, 0, 0)
+    ]
+    assert not malformed, (
+        f"unpaired tool messages on {len(malformed)} request(s): {malformed[:5]}"
+    )
 
 
 @pytest.mark.asyncio

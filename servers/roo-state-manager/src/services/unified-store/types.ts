@@ -244,6 +244,45 @@ export interface RooSyncDashboardMessageRow {
 }
 
 /**
+ * One condensation batch of a dashboard key (#4131 residual, follow-up of the
+ * #4929 diagnosis).
+ *
+ * A batch is the set of journal rows sharing one `date_trunc('second',
+ * archived_at)` — the second the archive file name carries
+ * (`<key>-YYYY-MM-DDTHH-MM-SS.md`). It is the read-side unit `read_archive`
+ * needs in order to NAME a batch whose `.md` exists only on another seat:
+ * condensation writes that file on the seat that performs it, and the
+ * PG-primary gate no longer maintains the G: dashboard copy (Phase D), so the
+ * local mirror is one seat's archive window, not the fleet's (measured
+ * po-2024 26/11: 9 batches in PG over 30 h, 2 files on disk).
+ */
+export interface ArchivedDashboardBatch {
+  /** Batch stamp, ISO-8601 (the rows' `archived_at`, truncated to the second). */
+  archivedAt: string;
+  /** Journal rows the batch carries. */
+  messageCount: number;
+}
+
+/**
+ * Why the PG archive window can be narrower than the key's full history
+ * (review ms#1934, finding « fenêtre partielle »). `null` = PG answered for
+ * the whole key.
+ *
+ * The three causes used to collapse into one `null`, which read as "no PG
+ * story" — a listing then answered with the seat's mirror alone without
+ * saying so, i.e. a partial window indistinguishable from a complete one.
+ */
+export type ArchivePgGap = 'no-url' | 'timeout' | 'error' | null;
+
+/** One call's view of the PG archive window for a key. */
+export interface ArchivedDashboardBatchWindow {
+  /** Batches of archived rows PG holds for the key, newest first (`[]` = history exists, empty). */
+  batches: ArchivedDashboardBatch[];
+  /** Why `batches` may not be the key's whole history. */
+  gap: ArchivePgGap;
+}
+
+/**
  * A row of `harmonization_campaigns` (migrations/013, #3544).
  *
  * The queryable columns duplicate the cheap filters (status, target, canon

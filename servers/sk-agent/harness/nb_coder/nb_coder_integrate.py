@@ -37,9 +37,12 @@ cycle (~1 h) for remedies a deterministic pass applies itself:
      attestation(s) of the same pair that this branch added under the same
      lane (CoursIA#27855 review: an intermediate seal is not registry history).
   4. C# ports additionally REGISTER the new pair at delivery
-     (``twin_pairs.d/<slug>.yaml``, parity_level native-both, schema python/
+     (``twin_pairs.d/<slug>.yaml``, parity_level semantic, schema python/
      csharp -- a Rust notebook is not a schema member and lot 1 measured no
      Rust registration: Rust ports only re-seal the twin's existing pair).
+     `semantic`, never `native-both`: the registry schema reserves
+     `native-both` for a pair whose EACH side works through a named external
+     engine, and a port re-implements the subject by hand (CoursIA#28196).
 
 All file surgery a script does better than a model turn. The twin edit is
 asserted MARKDOWN-ONLY (cell count and every non-source key identical, code
@@ -893,7 +896,7 @@ def _csharp_member_exists(worktree: Path, nb_rel: str) -> bool:
 def register_pair(worktree: Path, source_rel: str, nb_rel: str, lane: str,
                   facts: dict | None = None) -> dict:
     """Register the NEW pair (source twin + new C# notebook) at delivery —
-    parity_level native-both, schema python/csharp, attestation written LAST
+    parity_level semantic, schema python/csharp, attestation written LAST
     by reseal_pair (po-2028 order, held on 14 PRs). Rust notebooks are NOT
     registered: the registry schema has no rust member and lot 1 measured no
     Rust registration on review-accepted branches.
@@ -901,7 +904,17 @@ def register_pair(worktree: Path, source_rel: str, nb_rel: str, lane: str,
     The entry states DELIVERY facts only (harness, verifier verdict, execution
     count) -- no `bridge_verdict` (optional in the schema; a SOTA verdict is a
     firsthand judgment the harness does not make) and no 'verified firsthand'
-    claim. """
+    claim.
+
+    `semantic`, never `native-both`. The registry schema reserves `native-both`
+    for a pair whose EACH side does the notebook's work through a named
+    external engine -- "un cote qui reimplemente le sujet du notebook a la main
+    n'est PAS natif" -- and a C# port re-implements it by hand on both sides.
+    This generator wrote `native-both` until 25/11; Hermes contested the line
+    on two deliveries (CoursIA Integrales-01, 23/11; CoursIA#28196 Chaines-09,
+    25/11), each contest costing a review round. The delivery record says why
+    the level is `semantic` and why no verdict is carried, so their absence is
+    read as a decision, not as an oversight."""
     source_rel = source_rel.replace("\\", "/")
     nb_rel = nb_rel.replace("\\", "/")
     base_stem, lang = split_port_name(nb_rel)
@@ -921,7 +934,7 @@ def register_pair(worktree: Path, source_rel: str, nb_rel: str, lane: str,
         f"  family: {family}\n"
         f"  python: {source_rel}\n"
         f"  csharp: {nb_rel}\n"
-        f"  parity_level: native-both\n"
+        f"  parity_level: semantic\n"
         f"  known_differences:\n"
         f"    - \"Enregistrement de livraison ({lane}, harnais nb_coder stages 0-5) : "
         f"portage C# de {Path(source_rel).name}. "
@@ -933,7 +946,14 @@ def register_pair(worktree: Path, source_rel: str, nb_rel: str, lane: str,
         f"{facts.get('kernel', 'n/a')} : {facts.get('executed_cells', 'n/a')} cellules, "
         f"0 erreur. Verification independente : {facts.get('verdict', 'n/a')}. "
         f"Premiere attestation ecrite par l'integration de livraison (check_twin_parity "
-        f"--update), en DERNIERE operation (cf #8957).\"\n")
+        f"--update), en DERNIERE operation (cf #8957). "
+        # Why the level is semantic and why no verdict is carried (ASCII, as
+        # the rest of the entry). Neither registry identifier is spelled in
+        # this prose: a registry-wide grep for a level or for a verdict must
+        # only ever hit a field (CoursIA#28196).
+        f"Parite semantic : portage ecrit a la main des deux cotes, sans moteur "
+        f"externe nommable (le niveau natif des deux cotes en exige un par cote). "
+        f"Aucun verdict de pont porte : jugement de premiere main, laisse a la review.\"\n")
     dest = worktree / TWIN_PAIRS_DIR / f"{_slug(name)}.yaml"
     if dest.exists():
         return {"registered": False, "why": f"{dest.name} already exists"}

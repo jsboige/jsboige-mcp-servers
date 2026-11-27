@@ -355,6 +355,8 @@ class TestAsyncJobService:
         # L'override du siège ne doit pas polluer les assertions (elles supposent
         # le fallback sys.executable) — review ai-01 ms#1716.
         monkeypatch.delenv("MCP_JUPYTER_PYTHON", raising=False)
+        monkeypatch.delenv("JUPYTER_DATA_DIR", raising=False)
+        monkeypatch.delenv("JUPYTER_CONFIG_DIR", raising=False)
         manager = AsyncJobService()
         env = manager._build_complete_environment()
 
@@ -370,8 +372,11 @@ class TestAsyncJobService:
         assert env["CONDA_PREFIX"] == resolved.parent.as_posix()
         assert env["CONDA_PYTHON_EXE"] == resolved.as_posix()
         assert env["CONDA_DEFAULT_ENV"] == resolved.parent.name
-        assert env["JUPYTER_DATA_DIR"] == (resolved.parent / "share" / "jupyter").as_posix()
-        assert env["JUPYTER_CONFIG_DIR"] == (resolved.parent / "etc" / "jupyter").as_posix()
+        # #1939 : JUPYTER_DATA_DIR n'est plus épinglé. Dans jupyter_core cette
+        # variable *remplace* le répertoire utilisateur au lieu de s'y ajouter :
+        # l'enfant async ne voyait plus que le kernel de l'env (21 → 1 mesurés).
+        assert "JUPYTER_DATA_DIR" not in env
+        assert "JUPYTER_CONFIG_DIR" not in env
         # Littéraux morts d'origine, formes précises : le nom d'org "jsboige"
         # contient "jsboi" en sous-chaîne — une garde nue faux-positiverait sur
         # tout chemin de checkout CI sous l'org (vu en CI run 42724807735).
@@ -380,6 +385,19 @@ class TestAsyncJobService:
         assert ".conda/envs" not in env["PYTHONPATH"]
         assert env["PYTHONPATH"].endswith("jupyter-papermill-mcp-server")
         assert env["PATH"].startswith(resolved.parent.as_posix())
+
+    def test_build_complete_environment_inherits_jupyter_dirs(self, monkeypatch):
+        """Un JUPYTER_DATA_DIR hérité traverse tel quel (#1939).
+
+        C'est ce qui rend à l'enfant async les kernelspecs de l'utilisateur :
+        la valeur du serveur n'est plus remplacée par le préfixe de l'env.
+        """
+        monkeypatch.delenv("MCP_JUPYTER_PYTHON", raising=False)
+        monkeypatch.setenv("JUPYTER_DATA_DIR", "D:/shared/jupyter-data")
+        monkeypatch.setenv("JUPYTER_CONFIG_DIR", "D:/shared/jupyter-config")
+        env = AsyncJobService()._build_complete_environment()
+        assert env["JUPYTER_DATA_DIR"] == "D:/shared/jupyter-data"
+        assert env["JUPYTER_CONFIG_DIR"] == "D:/shared/jupyter-config"
 
     def test_count_running_jobs(self):
         manager = AsyncJobService()

@@ -182,12 +182,29 @@ export async function roosyncHarmonization(args: HarmonizationArgs): Promise<Rec
       }
       case 'status': {
         const result = await service.status(args.campaign_id!);
+        const campaign = result.campaign;
+        const alignment = `${result.summary.confirmed}/${result.summary.fleet} confirmées, ${result.summary.drifted} en drift, ${result.summary.unknown} état inconnu.`;
+        // #3544 : une campagne fermée n'invite jamais à fermer. Sans cette
+        // branche, `status` répondait « Flotte harmonisée — close possible. » sur
+        // une campagne que `list` rend `closed` (contradiction constatée depuis
+        // web2, po-2027 puis po-2023) : l'organe ne peut pas servir de critère de
+        // fermeture pour un dossier déjà fermé. La mesure reste servie pour
+        // mémoire — c'est l'invitation qui change, pas le verdict de conformité.
+        const message = campaign.status === 'closed'
+          ? `Campagne ${args.campaign_id}: FERMÉE${campaign.closedAt ? ` le ${campaign.closedAt}` : ''}${campaign.closeReason ? ` (${campaign.closeReason})` : ''}. ${alignment} Lecture conservée pour mémoire — plus rien à fermer ; ré-harmoniser exige une nouvelle version de canon.`
+          : `Campagne ${args.campaign_id}: ${alignment} ${result.summary.allConfirmed ? 'Flotte harmonisée — close possible.' : `Machines en attente: relancer action "remind" (cible les machines NON confirmées — no-snapshot, drifted, snapshot-stale… ; le DM prescrit apply → confirm → publish).`}`;
         return {
           status: 'success',
-          message: `Campagne ${args.campaign_id}: ${result.summary.confirmed}/${result.summary.fleet} confirmées, ${result.summary.drifted} en drift, ${result.summary.unknown} état inconnu. ${result.summary.allConfirmed ? 'Flotte harmonisée — close possible.' : `Machines en attente: relancer action "remind" (cible les machines NON confirmées — no-snapshot, drifted, snapshot-stale… ; le DM prescrit apply → confirm → publish).`}`,
+          message,
           summary: result.summary,
           machines: result.machines,
-          canon: { version: result.campaign.canon.version, hash: result.campaign.canon.hash, mode: result.campaign.canon.mode },
+          campaign: {
+            id: campaign.id,
+            status: campaign.status,
+            closedAt: campaign.closedAt ?? null,
+            closeReason: campaign.closeReason ?? null,
+          },
+          canon: { version: campaign.canon.version, hash: campaign.canon.hash, mode: campaign.canon.mode },
         };
       }
       case 'list': {
@@ -198,6 +215,11 @@ export async function roosyncHarmonization(args: HarmonizationArgs): Promise<Rec
           campaigns: records.map(r => ({
             id: r.id,
             status: r.status,
+            // #3544 : close() écrit closedAt et closeReason, et aucune surface de
+            // lecture ne les rendait — un lecteur voyait `closed` sans pouvoir
+            // dire quand ni pourquoi. Les deux champs sont donc servis ici.
+            closedAt: r.closedAt ?? null,
+            closeReason: r.closeReason ?? null,
             targetFile: r.targetFile,
             canonVersion: r.canon.version,
             fleet: r.fleet.length,

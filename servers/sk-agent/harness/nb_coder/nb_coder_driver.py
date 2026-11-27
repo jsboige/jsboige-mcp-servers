@@ -449,7 +449,10 @@ def check_claim(repo: Path, n: int, lane: str, notebook: str,
     if p is None:
         return {"ok": None, "rc": None, "timed_out": True,
                 "error": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
-    return {"ok": p.returncode == 0, **_guard_result(p, notebook)}
+    res = {"ok": p.returncode == 0, **_guard_result(p, notebook)}
+    if res["rc"] == 3 and not from_json:
+        feed_occupation(repo, n, lane, notebook, res)
+    return res
 
 
 # The guard reads GitHub (issue thread, open PRs, their diffs): 44 s for one scoped check
@@ -535,20 +538,202 @@ def _guard_result(p, notebook: str) -> dict:
         }
     if p.returncode == 3:
         target = _norm_rel(notebook)
-        implicit = []
-        for pr in doc.get("implicit_occupation") or []:
-            if not isinstance(pr, dict):
-                continue
-            files = [_norm_rel(f) for f in (pr.get("files") or []) if isinstance(f, str)]
-            implicit.append({
-                "number": pr.get("number"), "lane": pr.get("lane"),
-                "files": files[:5], "file_count": len(files),
-                "touches_notebook": (target in files
-                                     or not files
-                                     or len(files) >= _PR_FILES_PREVIEW_CAP),
-            })
-        res["implicit"] = implicit
+        res["implicit"] = [
+            _implicit_entry(pr.get("number"), pr.get("lane"), [
+                _norm_rel(f) for f in (pr.get("files") or []) if isinstance(f, str)], target)
+            for pr in (doc.get("implicit_occupation") or []) if isinstance(pr, dict)]
     return res
+
+
+def _implicit_entry(number, lane, files: list[str], target: str) -> dict:
+    """One occupying PR as implicit_verdict reads it. `files` are repo-relative.
+
+    The file list is READ when it names this notebook, and not trusted when it is empty
+    or as long as GitHub's 100-path preview (which may hide ours)."""
+    return {
+        "number": number, "lane": lane,
+        "files": files[:5], "file_count": len(files),
+        "touches_notebook": (target in files
+                             or not files
+                             or len(files) >= _PR_FILES_PREVIEW_CAP),
+    }
+
+
+# 25/11 -- the occupation BELT on the guard's rc=3 -----------------------------------------------
+# The guard's IMPLICIT leg keeps, for a lane that already holds its claim, only the open
+# PRs of other lanes ANTERIOR to that claim (CoursIA scripts/check_lane_claim.py 6076-6099,
+# #26751: a PR opened later "reste subsumee par le claim"). A third-party PR opened AFTER
+# the lane's marker therefore never reaches `implicit_occupation`, although it may hold
+# the notebook. One cause, two answers: with an anterior PR left the guard answers rc=3
+# and names the wrong PR; with none left it answers rc=0, CLEAR. CoursIA#27130 got the
+# SECOND on 25/11 14:42Z -- with PR #28250 (opened 23/11, after the claim of 20/11)
+# carrying the five targets of lot 2. Called WITHOUT the date filter, the guard's own
+# reader names it.
+#
+# This is NOT a second guard. On rc=3 only -- where implicit_verdict is consulted -- it
+# hands that one decision point the open PRs of other lanes that occupy the issue, with NO
+# date filter, and refuses nothing itself. WHICH PRs occupy is read by the guard's OWN
+# reader (`_find_open_prs_referencing_issue`, through its documented `prs` injection
+# seam): the reference predicate, the enumeration guard (#24788) and the own-lane
+# exclusion are not duplicated here. The files come from `pulls/N/files` -- never from a
+# title or a branch (#28250's branch carries no notebook name).
+#
+# Bounded, and fail-soft. At most OCCUPATION_PR_CAP PRs' files per pass, one deadline for
+# the pass. A PR whose files were not read is not added; a failed leg voids the pass: it
+# adds nothing and records `occupation_check: unavailable` -- no refusal on a broken
+# instrument, no silent green either (the trace names the leg that died).
+#
+# Out of reach, on purpose: the rc=0 CLEAR the guard gives when NO anterior PR is left
+# never passes here -- and that is the answer #27130 got. This belt does not cover the
+# measured incident; that class stays with the preflight bar and the organ's own fix.
+#
+# REMOVAL CONDITION: delete this block once the guard itself reports, in
+# `implicit_occupation`, the PR posterior to the claim (posed to the CoursIA coordinator
+# 25/11). harness/README.md, Requirements, carries the same sentence.
+OCCUPATION_PR_CAP = 20
+OCCUPATION_PAGE_CAP = 5      # 100 open PRs per REST page
+OCCUPATION_CALL_S = 45       # one REST call
+OCCUPATION_BUDGET_S = 120    # the whole pass
+
+
+def occupation_reader(repo: Path):
+    """The guard's module, loaded from the run's checkout (`<repo>/scripts/check_lane_claim.py`).
+
+    The checkout is an INPUT of the run, like the guard call itself: this is the reader the
+    guard answers with, so the two cannot drift apart. Loaded by path, never from the import
+    cache. Raises when the checkout carries no importable guard, or no reader."""
+    import importlib.util
+    import warnings
+    path = repo / "scripts" / "check_lane_claim.py"
+    if not path.is_file():
+        raise ImportError("check_lane_claim.py absent")
+    spec = importlib.util.spec_from_file_location("check_lane_claim", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("check_lane_claim.py has no import spec")
+    scripts = str(path.parent)
+    saved = sys.modules.get("check_lane_claim")
+    sys.path.append(scripts)      # the guard's `from grain_tag import ...` and siblings
+    try:
+        reader = importlib.util.module_from_spec(spec)
+        sys.modules["check_lane_claim"] = reader
+        with warnings.catch_warnings():
+            # The guard's own compile-time warnings are not this run's (a SyntaxWarning
+            # in a docstring must neither reach the run's log nor fail the load).
+            warnings.simplefilter("ignore")
+            try:
+                spec.loader.exec_module(reader)
+            except SystemExit as e:   # a guard without a __main__ guard runs at import
+                raise ImportError(
+                    f"check_lane_claim.py exited at import (code {e.code})") from None
+    finally:
+        if sys.path[-1:] == [scripts]:
+            sys.path.pop()
+        if saved is None:
+            sys.modules.pop("check_lane_claim", None)
+        else:
+            sys.modules["check_lane_claim"] = saved
+    if not callable(getattr(reader, "_find_open_prs_referencing_issue", None)):
+        raise AttributeError("check_lane_claim.py carries no _find_open_prs_referencing_issue")
+    return reader
+
+
+def _occupation_call(argv: list[str], deadline: float):
+    """One REST leg of the belt: the decoded document, or an exception -- rc != 0, a call
+    that outlives its timeout, an unparsable body, an exhausted budget."""
+    left = deadline - time.monotonic()
+    if left < 2:
+        raise TimeoutError(f"occupation belt out of budget ({OCCUPATION_BUDGET_S}s)")
+    rc, out = gh(argv, timeout=max(2, min(OCCUPATION_CALL_S, int(left))))
+    if rc != 0:
+        raise OSError(f"gh {argv[-1]} rc={rc}: {(out or '')[-160:]}")
+    return json.loads(out)
+
+
+def _occupation_open_prs(slug: str, deadline: float) -> tuple[list[dict], bool]:
+    """Every open PR as the guard's reader takes it -- number, title, body, created_at --
+    and whether the listing stopped at OCCUPATION_PAGE_CAP. No head is carried: provenance
+    stays unestablished for the reader, which then keeps the REST paths it is handed."""
+    prs: list[dict] = []
+    for page in range(1, OCCUPATION_PAGE_CAP + 1):
+        items = _occupation_call(
+            ["api", f"repos/{slug}/pulls?state=open&per_page=100&page={page}"], deadline)
+        if not isinstance(items, list):
+            raise ValueError("open PR listing is not a list")
+        for it in items:
+            if isinstance(it, dict) and isinstance(it.get("number"), int):
+                prs.append({"number": it["number"], "title": it.get("title") or "",
+                            "body": it.get("body") or "",
+                            "created_at": it.get("created_at")})
+        if len(items) < 100:
+            return prs, False
+    return prs, True
+
+
+def occupation_belt(repo: Path, n: int, lane: str, notebook: str,
+                    slug: str = _GH_PIN_REPO) -> dict:
+    """Open PRs of other lanes that occupy issue `n`, each with the files READ for it, plus
+    the pass's trace -- or `status: unavailable` with the leg that died.
+
+    Findings carry no PR whose files were not read: over the cap, or no diff at all. The
+    reader is loaded FIRST, so no REST call leaves without a reader to answer it."""
+    deadline = time.monotonic() + OCCUPATION_BUDGET_S
+    trace: dict = {"status": "ok"}
+    try:
+        reader = occupation_reader(repo)
+        prs, trace["listing_truncated"] = _occupation_open_prs(slug, deadline)
+        trace["listed"] = len(prs)
+        citing = reader._find_open_prs_referencing_issue(n, lane, prs=prs)
+        numbers = sorted(c["number"] for c in citing
+                         if isinstance(c, dict) and isinstance(c.get("number"), int))
+        trace["citing"] = len(numbers)
+        by_number = {pr["number"]: pr for pr in prs}
+        for number in numbers[:OCCUPATION_PR_CAP]:
+            files = _occupation_call(
+                ["api", f"repos/{slug}/pulls/{number}/files?per_page=100"], deadline)
+            if not isinstance(files, list):
+                raise ValueError(f"files of #{number} are not a list")
+            by_number[number]["files"] = [{"path": f["filename"]} for f in files
+                                          if isinstance(f, dict) and f.get("filename")]
+        trace["read"] = min(len(numbers), OCCUPATION_PR_CAP)
+        target = _norm_rel(notebook)
+        findings = []
+        for c in reader._find_open_prs_referencing_issue(n, lane, prs=prs):
+            if not isinstance(c, dict) or not isinstance(c.get("number"), int):
+                continue
+            files = [x for x in (c.get("files") or []) if isinstance(x, str)]
+            if not files:
+                continue          # not read (over the cap), or no diff: nothing to say
+            entry = _implicit_entry(c["number"], c.get("lane"),
+                                    [_norm_rel(x) for x in files], target)
+            entry["source"] = "belt"
+            findings.append(entry)
+        trace["unread"] = len(numbers) - len(findings)
+        return {**trace, "findings": findings}
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, IndexError,
+            ImportError, SyntaxError, subprocess.SubprocessError, RuntimeError) as e:
+        return {**trace, "status": "unavailable",
+                "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+def feed_occupation(repo: Path, n: int, lane: str, notebook: str, res: dict) -> None:
+    """rc=3 only: complete the guard's implicit list with the belt's findings.
+
+    Entries are ADDED, deduped by number; the guard's own entries are never rewritten, so
+    a verdict can only tighten (defer -> refuse on a read collision) or name more PRs."""
+    try:
+        belt = occupation_belt(repo, n, lane, notebook)
+        added = [f for f in belt.pop("findings", None) or []
+                 if f["number"] not in {i.get("number") for i in res.get("implicit") or []}]
+        res["implicit"] = list(res.get("implicit") or []) + added
+        res["occupation_check"] = {**belt, "added": [f["number"] for f in added]}
+        note = (f"error: {belt['error']}" if belt["status"] != "ok"
+                else f"added={[f['number'] for f in added]}")
+    except Exception as e:  # noqa: BLE001 -- the belt never decides: its own crash adds nothing
+        res["occupation_check"] = {"status": "unavailable", "added": [],
+                                   "error": f"{type(e).__name__}: {str(e)[:200]}"}
+        note = f"error: {res['occupation_check']['error']}"
+    print(f"[claim] occupation_check: {res['occupation_check']['status']} ({note})",
+          file=sys.stderr)
 
 
 def implicit_verdict(cc: dict) -> str:
@@ -626,7 +811,10 @@ def post_claim(repo: Path, n: int, lane: str, intention: str,
     if p is None:
         return {"rc": None, "timed_out": True,
                 "out": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
-    return _guard_result(p, notebook)
+    res = _guard_result(p, notebook)
+    if res["rc"] == 3 and not from_json:
+        feed_occupation(repo, n, lane, notebook, res)
+    return res
 
 
 def claim_reservation_verdict(post: dict, verify: dict) -> str | None:
@@ -930,13 +1118,19 @@ def last_foreign_marker(issue_n: int, lane: str, slug: str = _GH_PIN_REPO) -> st
     return None
 
 
+def midrun_armed(rec: dict) -> bool:
+    """True when the claim was DEFERRED (--claim-late): the only state in which a mid-run
+    probe has anything to guard."""
+    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
+    return cr.get("deferred") == "late"
+
+
 def midrun_claim_abort(args, rec: dict, stage: str) -> bool:
     """True when the run must stop now: the claim was deferred (--claim-late), another
     lane's marker is the issue's last word, and the scoped guard sees a COLLISION on this
     notebook (held by another lane, or an occupying PR that may touch it). A guard that
     times out, is broken, or answers a disjoint occupation never stops the run."""
-    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
-    if cr.get("deferred") != "late":
+    if not midrun_armed(rec):
         return False
     holder = last_foreign_marker(args.issue, args.lane)
     probe: dict = {"stage": stage, "at": utcnow(), "holder": holder}
@@ -2195,8 +2389,28 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             return "truncated"
         return "timeout" if call_timed_out(env) else ""
 
+    # 26/11 (myia-po-2028:claudish, CoursIA#28707): the mid-run probe ran only at the
+    # stage boundaries, and the creation build is ONE stage of 5+ model calls over ~8
+    # min. The foreign [CLAIMED] landed at 04:02:13Z, between tranche 1 and tranche 2;
+    # the "build" probe fired at 04:08:05Z, after four more calls -- 347 201 prompt
+    # tokens spent building a notebook another lane already held. A probe before every
+    # build call but the FIRST (the "plan" probe covers that one) bounds the exposure
+    # to the call in flight. Inert unless --claim-late deferred the claim.
+    # The one skip is RUN-scoped, not invocation-scoped (review ai-01, 26/11): the stage it
+    # covered is named in the record the one time it is skipped, so an entry into this
+    # function that did not pass the "plan" probe (a second call site added later, a resume
+    # that does not replay plan) finds the name and probes its own first tranche.
+    def claim_stop(stage: str) -> bool:
+        if rec.get("midrun_claim_plan_covered"):
+            return midrun_claim_abort(args, rec, stage)
+        if midrun_armed(rec):
+            rec["midrun_claim_plan_covered"] = stage
+        return False
+
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
+        if claim_stop(f"build+{si}"):
+            return {}
         kept, missing, part, env = await ask_tranche(seg, f"2-build+{si}")
         conv = env.get("conversation_id") or conv
         chars_first = len(env.get("response") or "")
@@ -2213,6 +2427,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             halves = [seg[:max(1, len(seg) // 2)], seg[max(1, len(seg) // 2):]]
             kept, missing, chars_first = [], [], 0
             for hi, half in enumerate(h for h in halves if h):
+                if claim_stop(f"build+{si}+h{hi}"):
+                    return {}
                 hkept, hmiss, hpart, henv = await ask_tranche(half, f"2-build+{si}+h{hi}")
                 conv = henv.get("conversation_id") or conv
                 chars_first += len(henv.get("response") or "")
@@ -2252,6 +2468,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             return {}
         repair = None
         if missing:
+            if claim_stop(f"build+{si}+repair"):
+                return {}
             # one repair round for EXACTLY the omitted cells — same prompt shape,
             # smaller tranche, so the omissions cannot hide in a long answer again
             env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
