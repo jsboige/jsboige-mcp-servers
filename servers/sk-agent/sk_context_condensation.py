@@ -496,29 +496,59 @@ def _stable_str(obj: Any) -> str:
         return str(obj)
 
 
-def _replace_text_in_message(
-    message: ChatMessageContent, new_text: str
+def _condense_message_payload(
+    message: ChatMessageContent, summary: str, args_cap: int
 ) -> ChatMessageContent:
-    """Return a copy of ``message`` whose TextContent items are collapsed
-    into a single TextContent with ``new_text``.
+    """Return a copy of ``message`` whose bulky payloads carry ``summary``.
 
-    Non-text items (tool calls, images) are preserved in their original
-    order. The returned message has the same role as the input.
+    A message's bulk can live in a TextContent (agent prose) or in the
+    ``arguments`` of a FunctionCallContent (nb_coder's ~10 KB per-round
+    call). The pre-#4816 pass only collapsed text and *appended* a
+    summary to call-only messages, so on the nb_coder morphology it grew
+    the history instead of shrinking it (measured: +69 691 estimated
+    tokens over a 70-round turn, #4816). Oversized arguments are now
+    condensed too, exactly as the issue asks ("paramètres d'appels
+    condensés plus agressivement").
+
+    The call keeps its ``id`` and ``name`` — only the payload changes —
+    so the result still answers the same call on the wire. When the
+    rebuilt message would not be smaller than the original, the original
+    is returned: this pass never grows a message.
     """
+    summary_placed = False
     new_items: list[Any] = []
-    inserted = False
     for item in message.items:
         if isinstance(item, TextContent):
-            if not inserted:
-                new_items.append(TextContent(text=new_text))
-                inserted = True
+            if not summary_placed:
+                new_items.append(TextContent(text=summary))
+                summary_placed = True
             # else: drop the additional TextContent items — they get merged.
             continue
+        if isinstance(item, FunctionCallContent):
+            args_chars = len(_stable_str(getattr(item, "arguments", None) or {}))
+            if args_chars > args_cap:
+                if summary_placed:
+                    # The summary already rides this message's text slot;
+                    # the call only needs a marker, not a second copy.
+                    new_items.append(
+                        item.model_copy(
+                            update={"arguments": {"_condensed_chars": args_chars}}
+                        )
+                    )
+                else:
+                    new_items.append(
+                        item.model_copy(update={"arguments": {"_summary": summary}})
+                    )
+                    summary_placed = True
+                continue
         new_items.append(item)
-    if not inserted:
+    if not summary_placed:
         # Nothing textual to replace — append a TextContent at the end.
-        new_items.append(TextContent(text=new_text))
-    return ChatMessageContent(role=message.role, items=new_items)
+        new_items.append(TextContent(text=summary))
+    condensed = ChatMessageContent(role=message.role, items=new_items)
+    if _message_chars(condensed) >= _message_chars(message):
+        return message
+    return condensed
 
 
 def _set_tool_result_text(
@@ -888,7 +918,13 @@ class ContextCondenser:
         messages: list[ChatMessageContent],
         cfg: CondensationConfig,
     ) -> tuple[list[ChatMessageContent], PassMetrics]:
-        """Summarise non-recent messages (text + oversized tool results)."""
+        """Summarise non-recent messages, text and call arguments alike.
+
+        Differs deliberately from pass 2 (which truncates tool results):
+        here the message keeps its place and its call identity, and only
+        its payload is replaced by a bounded summary. Never grows a
+        message — see :func:`_condense_message_payload`.
+        """
         start = time.monotonic()
         chars_in = sum(_message_chars(m) for m in messages)
         if len(messages) <= cfg.recent_message_window:
@@ -910,7 +946,7 @@ class ContextCondenser:
                 summary = await self._summariser.summarise(
                     text, max_tokens=cfg.summarise_max_tokens
                 )
-                out.append(_replace_text_in_message(m, summary))
+                out.append(_condense_message_payload(m, summary, cfg.max_tool_chars))
             else:
                 out.append(m)
         chars_out = sum(_message_chars(m) for m in out)
