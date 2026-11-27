@@ -4912,9 +4912,22 @@ def gate_refusal(env: dict) -> str:
 # 'code': '1302', 'message': 'Rate limit reached for requests'}}') is measured in this
 # fleet's notebook outputs, not yet in a harness verdict: the same markers name it, and it
 # takes the ordinary backoff — only the wall waits.
+#
+# The same class wears a 403 when what ran dry is a KEY's credit rather than a usage window.
+# Measured 27/11 on po-2028:claudish, two grains of one batch: `Error code: 403 - {'error':
+# {'message': 'Key limit exceeded (total limit). … $20.58 of $20.00 used; does not reset.',
+# 'type': 'permission_error', 'code': None}}` — a cascade step served by OpenRouter, hit at
+# 15:26:11Z (CoursIA#28880) then 16:09:59Z (MGS-27). Nothing in it says 429 and nothing says
+# "will reset at", so both launches were classed run failures and [RELEASED]; the grain had
+# done nothing. "does not reset" must NOT take the wall marker: a dead leg is not a clock to
+# wait on, and the ordinary backoff is what the grain needs.
 _PROVIDER_RATE_LIMIT_MARKERS = ("rate_limit_error", "ratelimiterror", "error code: 429",
-                                "rate limit reached", "too many requests")
+                                "rate limit reached", "too many requests",
+                                "key limit exceeded")
 _PROVIDER_WALL_RE = re.compile(r"usage limit reached|will reset at", re.I)
+# This class's message carries the provider's key URL. A verdict is copied into run records,
+# dashboards and reports: the identifier must not travel with it (never propagate a key id).
+_PROVIDER_KEY_ID_RE = re.compile(r"keys/[0-9a-f]{16,}", re.I)
 PROVIDER_RATE_LIMIT_VERDICT = "deferred-by-provider-rate-limit"
 
 
@@ -4929,7 +4942,10 @@ def provider_rate_refusal(env: dict) -> str:
     `:wall` marks a window wall. Its announced clock is NOT waited on: read as UTC, the
     measured sample (reset at 08:48:53 for a wall hit at 00:09Z) outlasts the five-hour
     window the same message names, so its offset is unknown. The scheduler probes hourly
-    instead (PROVIDER_WALL_WAIT_S, there); the other form takes the ordinary backoff."""
+    instead (PROVIDER_WALL_WAIT_S, there); the other form takes the ordinary backoff.
+
+    A KEY's credit wall arrives as a 403 rather than a 429 and is named by its own marker;
+    its message carries the provider's key URL, which the verdict masks before it travels."""
     err = (env.get("error") or "").strip()
     if not err:
         return ""
@@ -4938,7 +4954,8 @@ def provider_rate_refusal(env: dict) -> str:
     if not hit:
         return ""
     wall = ":wall" if _PROVIDER_WALL_RE.search(err) else ""
-    return f"{PROVIDER_RATE_LIMIT_VERDICT}{wall}: {_excerpt(err, hit)}"
+    excerpt = _PROVIDER_KEY_ID_RE.sub("keys/<masque>", _excerpt(err, hit))
+    return f"{PROVIDER_RATE_LIMIT_VERDICT}{wall}: {excerpt}"
 
 
 # A TRANSPORT CUT says as little about the grain as the refusal above: measured 26/11 01:27Z
