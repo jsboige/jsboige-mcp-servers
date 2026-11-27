@@ -254,6 +254,26 @@ export function fileStatusSupersedes(state, fileState) {
   return fileAt >= stateAt;
 }
 
+/**
+ * #4915 follow-up (re-review ms#1919, web1 27/11): preserve is not carry.
+ * `fileStatusSupersedes` made the mirror SKIP, so the file kept a status PG had
+ * never received — and that preservation lasts one append at most: the base's
+ * `lastModified` advances with every append (`nextDashboardState`), after which
+ * the helper answers false and the next mirror renders the stale PG status over
+ * the newer one — on BOTH surfaces. The status is then lost for good.
+ *
+ * Returns `state` with the file's status carried into it (field-wise, the file
+ * wins on `markdown`), so the caller can report that status to PG and then
+ * render a mirror that is a TRUE export of what PG holds. Inputs are never
+ * mutated; a file without a status carries nothing and `state` is returned
+ * as-is.
+ */
+export function withFileStatus(state, fileState) {
+  const fileStatus = fileState?.status;
+  if (!fileStatus || typeof fileStatus.markdown !== 'string') return state;
+  return { ...state, status: { ...(state?.status ?? {}), ...fileStatus } };
+}
+
 // ── CLI arg grammar (shared, testable) ──────────────────────────────────────
 
 const ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/;

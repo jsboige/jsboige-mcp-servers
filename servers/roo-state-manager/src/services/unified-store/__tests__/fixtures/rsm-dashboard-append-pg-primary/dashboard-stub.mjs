@@ -38,8 +38,13 @@
  * Re-review knobs kept from #4915:
  *   - `RSM_APPEND_TEST_CONCURRENT=during-pg|same-id`: attempt 1 of the PG write
  *     lands a concurrent append in the target file (store-stub.mjs).
+ *     `status-then-append` (follow-up ms#1919): a status on attempt 1, a
+ *     file-only append on attempt 2 (the status carry).
  *   - `RSM_APPEND_TEST_RELOCK=deny`: every acquisition after the first is
- *     refused — the stolen-lock case.
+ *     refused — the stolen-lock case. `deny-second`: only the acquisition after
+ *     the status carry is refused.
+ *   - The renderer writes `## Status` for a status that carries information
+ *     (follow-up ms#1919) — see `buildDashboardMarkdown` below.
  */
 import { appendFileSync, readFileSync, statSync } from 'node:fs';
 import { parseDashboardMarkdown } from './dashboard-markdown.js';
@@ -157,17 +162,30 @@ export function buildDashboardMarkdown(dashboard, exportStamp) {
     `totalMessages: ${dashboard.intercom.totalMessages}`,
   ];
   if (stamp !== null) frontmatter.push(`mirrorExportAt: ${stamp}`);
+  // Follow-up (re-review ms#1919, web1 27/11): the real renderer ALWAYS writes
+  // `## Status` (dashboard.ts — the placeholder when the status is empty). This
+  // twin writes it only when the status says something: without it a carried
+  // status would vanish from the mirror and the loss would be invisible here.
+  // For the empty and placeholder statuses the twin still writes no section —
+  // that keeps the frozen GOLDEN bytes; the difference is the harness', not the
+  // CLI's.
+  const status = typeof dashboard.status?.markdown === 'string' ? dashboard.status.markdown.trim() : '';
+  const statusSection = status !== '' && status !== '*Aucun contenu.*' ? `## Status\n\n${status}\n\n` : '';
   const body = dashboard.intercom.messages
     .map((m) => `### [${m.timestamp}] ${m.author.machineId}|${m.author.workspace}\n[msg: ${m.id}]\n${m.content}\n`)
     .join('\n');
-  return `---\n${frontmatter.join('\n')}\n---\n\n## Intercom\n\n${body}`;
+  return `---\n${frontmatter.join('\n')}\n---\n\n${statusSection}## Intercom\n\n${body}`;
 }
 
 let acquires = 0;
 
 export async function acquireAppendLock(key, holder) {
   acquires += 1;
-  const refused = process.env.RSM_APPEND_TEST_RELOCK === 'deny' && acquires > 1;
+  // `deny`: every acquisition after the first is refused (the stolen lock).
+  // `deny-second` (follow-up ms#1919): only the one after the status carry —
+  // the first re-take succeeds, the second does not.
+  const relock = process.env.RSM_APPEND_TEST_RELOCK;
+  const refused = (relock === 'deny' && acquires > 1) || (relock === 'deny-second' && acquires > 2);
   journal(`lock:acquire${refused ? ':refused' : ''}:${key}:${holder.workspace}`);
   return !refused;
 }

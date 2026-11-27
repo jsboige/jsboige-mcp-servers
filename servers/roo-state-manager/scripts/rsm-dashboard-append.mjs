@@ -117,6 +117,19 @@
  *      pre-existing behaviour: the empty base is the true one.
  * The gate-closed path reads nothing more and is unchanged.
  *
+ * Re-review ms#1946 (ai-01, 27/11 — the carry, and its own blind spot):
+ *   Blocker 1 above only PRESERVED the file's newer status: it was skipped, not
+ *   reported, so PG kept the old one and the two halves diverged for good. The
+ *   status is now CARRIED — a second checked sync of the same payload sends the
+ *   file's status to PG — and only then is the lock re-taken and the question
+ *   asked again. That second check must NOT measure "newer" against `carried`'s
+ *   stamp: `carried.lastModified` is our own message's `nowIso`, so a third
+ *   status landing during the carry with an EARLIER stamp — a seat whose clock
+ *   is behind — would read as "behind PG" and be rendered over. It is compared
+ *   with the status we carried, undated: any dated, non-empty file status that
+ *   DIFFERS from it objects, an unchanged one does not, and the mirror is
+ *   written only when no objection survives the carry.
+ *
  * Exit codes: 0 posted — at least one surface holds the message (a PG-sync
  * miss on the file-first path is a WARN, not an error: the GDrive write
  * stands and the journal reconcile converges it; a failed MIRROR under the
@@ -125,6 +138,10 @@
  * `fileRewriteSkipped`) · 1 no surface held it (file write failed, or the
  * fallback rewrite was refused AND the PG retry failed) · 2 usage / contract
  * violation.
+ * A status carried from the file into PG is reported as
+ * `fileStatusCarried: true` in the output — on the mirror-skip path and on the
+ * written-mirror path alike (the latter also warns: PG now holds a status the
+ * file had already moved past).
  *
  * Usage (from servers/roo-state-manager/):
  *   node scripts/rsm-dashboard-append.mjs --machine myia-po-2023 --content-file msg.txt
@@ -139,7 +156,7 @@ import { fileURLToPath, pathToFileURL } from 'url';
 import path from 'path';
 import { randomInt } from 'node:crypto';
 import { resolveBuildDir } from './lib/resolve-build-dir.mjs';
-import { validateEscalationContent, validateTaggedContent, buildListenerEscalationMessage, buildAppendMessage, shouldDeduplicate, parseAppendArgs, nextDashboardState, fileOnlyMessages, withFileOnlyMessages, fileStatusSupersedes } from './lib/dashboard-journal.mjs';
+import { validateEscalationContent, validateTaggedContent, buildListenerEscalationMessage, buildAppendMessage, shouldDeduplicate, parseAppendArgs, nextDashboardState, fileOnlyMessages, withFileOnlyMessages, fileStatusSupersedes, withFileStatus } from './lib/dashboard-journal.mjs';
 
 // --- .env loader (zero-dep, same contract as backfill-roosync-read-state.mjs) ---
 function loadEnv(file) {
@@ -293,6 +310,30 @@ async function readFileHalf(filePath, key) {
   }
 }
 
+// The three reasons a mirror of `state` must NOT replace the file half, in
+// their review-established order. One function, because the question is asked
+// TWICE now: before the mirror, and again after a status carry has gone to PG
+// (that second PG attempt can outlive its own re-taken lock, exactly as the
+// first one could). `kind` decides how the caller phrases the skip; `reason` is
+// what stderr prints.
+function mirrorObjection(state, fileHalf, statusBase = state) {
+  if (fileHalf.error !== null) {
+    return { kind: 'unreadable', reason: `moitié fichier illisible (${fileHalf.error})` };
+  }
+  if (fileOnlyMessages(state, fileHalf.state).length > 0) {
+    return { kind: 'file-only', reason: 'le fichier porte un ajout absent de l’état écrit dans PG' };
+  }
+  if (fileStatusSupersedes(statusBase, fileHalf.state)) {
+    // Tier-2 review (ai-01, 26/11) blocker 1: a status update writes no
+    // message, so the comparison above cannot see it. The mirror would render
+    // the PRE-attempt status over the newer one and stamp the result as an
+    // export of PG. `statusBase` — the base the PG write was built from — is the
+    // reference for "newer", never the state carrying our own message's stamp.
+    return { kind: 'status', reason: 'le fichier porte un statut plus récent que l’état écrit dans PG (intercom identique)' };
+  }
+  return null;
+}
+
 const machineId = machineArg.trim().toLowerCase();
 // #4090: --dashboard selects the fleet surface; absent it stays the machine
 // escalation key by construction (#3761). Message ids stay machine-prefixed
@@ -391,6 +432,10 @@ try {
   let pgFirst = null;
   // Review ms#1919 item 2: set when the GDrive mirror must NOT be written.
   let mirrorSkip = null;
+  // #4915 follow-up (re-review ms#1919, web1 27/11): `true` = the file's newer
+  // status was reported into PG before the skip decided the mirror; `false` =
+  // that report failed. `null` = the branch was never reached.
+  let statusCarry = null;
   // Pre-review constat 2 / tier-2 review blocker 2: set when the fallback
   // rewrite must be refused — the file half could not be read, or the null
   // base is not established as an empty one. `kind` names which, and decides
@@ -439,18 +484,67 @@ try {
           // empty, and a mirror built from a one-message state would erase it.
           // Comparison only: nothing is folded into `next`.
           const fileHalf = await readFileHalf(resolvedPath, key);
-          if (fileHalf.error !== null) {
-            mirrorSkip = `moitié fichier illisible (${fileHalf.error})`;
-          } else if (fileOnlyMessages(next, fileHalf.state).length > 0) {
-            mirrorSkip = 'le fichier porte un ajout absent de l’état écrit dans PG';
-          } else if (fileStatusSupersedes(dashboard, fileHalf.state)) {
+          const objection = mirrorObjection(next, fileHalf, dashboard);
+          if (objection !== null && objection.kind !== 'status') {
+            mirrorSkip = objection.reason;
+          } else if (objection !== null) {
             // Tier-2 review (ai-01, 26/11) blocker 1: a status update writes no
             // message, so the comparison above cannot see it. The mirror would
             // render the PRE-attempt status over the newer one and stamp the
             // result as an export of PG. `dashboard` — the base the PG write was
             // built from — is the reference for "newer", never `next` (whose
             // stamp is our own message's).
-            mirrorSkip = 'le fichier porte un statut plus récent que l’état écrit dans PG (intercom identique)';
+            //
+            // Follow-up (re-review ms#1919, web1 27/11): a skip PRESERVES, it
+            // does not CARRY. The attempt above wrote PG with the older status;
+            // the skip shields the file for the appends during which it is
+            // still "newer than PG" — and the first append stamped after the
+            // file's own `lastModified` renders the mirror from PG: the status
+            // is then gone from BOTH halves, and PG never had it. So the
+            // file's status is reported into PG first: a second checked sync of
+            // the SAME intercom payload plus that status (journal rows:
+            // idempotent by construction). That attempt can be late too — the
+            // lock is re-taken and the question asked again before anything
+            // touches the file. Any refusal falls back to the skip: the file
+            // keeps its status, as before this change.
+            const carried = withFileStatus(next, fileHalf.state);
+            let carryOk = false;
+            let carryReason;
+            try {
+              const outcome = await dualWriteDashboardSyncChecked(carried);
+              carryOk = outcome?.ok === true;
+              carryReason = outcome?.reason;
+            } catch (err) {
+              carryReason = err instanceof Error ? err.message : String(err);
+            }
+            statusCarry = carryOk;
+            if (!carryOk) {
+              mirrorSkip = `${objection.reason} ; report du statut vers PG en échec (${carryReason})`;
+            } else if (!(await retakeAppendLock())) {
+              mirrorSkip = 'verrou append non repris après le report du statut (un autre détenteur écrit la clé)';
+            } else {
+              resolvedPath = getDashboardPath(key);
+              // Review ms#1946 (ai-01, 27/11, blocking): the base here is NOT
+              // `carried` — its `lastModified` is our own message's stamp, so a
+              // third status landing during the carry with an earlier stamp (a
+              // seat whose clock is behind) read as "behind PG" and was rendered
+              // over. The comparison is with the status we carried, and it carries
+              // no date: `stateAt` is NaN, so any dated, non-empty file status
+              // that DIFFERS from it objects. An unchanged status does not.
+              // `null` would be wrong: `fileStatusSupersedes(null, …)` compares
+              // against '', answers true on every call, and the mirror would
+              // never be written.
+              const again = mirrorObjection(carried, await readFileHalf(resolvedPath, key), {
+                status: carried.status,
+              });
+              if (again !== null) {
+                mirrorSkip = again.reason;
+              } else {
+                // Both halves hold the same status now: the mirror is an export
+                // of what PG holds — our message and the file's status, truly.
+                next = carried;
+              }
+            }
           }
         }
       } else {
@@ -540,7 +634,10 @@ try {
     // Review ms#1919 item 2: PG (the primary half) holds the message; the
     // mirror is neither rewritten nor stamped. Nominal state, said in stderr.
     posted = true;
-    console.error(`WARN: miroir GDrive non écrit — ${mirrorSkip} ; le store PG (primaire) tient le message`);
+    console.error(
+      `WARN: miroir GDrive non écrit — ${mirrorSkip} ; le store PG (primaire) tient le message` +
+        (statusCarry === true ? ' et le statut plus récent du fichier' : '')
+    );
     output = {
       ok: true,
       key,
@@ -551,6 +648,11 @@ try {
       pgSynced: true,
       gdriveSkipped: true, // the GDrive mirror was NOT written at this append; PG holds the message
     };
+    if (statusCarry !== null) {
+      // The file's newer status was at stake at this append: true = it was
+      // reported into PG first; false = that report failed (the file keeps it).
+      output.fileStatusCarried = statusCarry;
+    }
   } else if (fileRewriteRefused !== null) {
     // Pre-review 26/11 constat 2: PG failed AND the file half could not be
     // read. Rewriting the whole file from a base that cannot be checked would
@@ -666,6 +768,12 @@ try {
       };
       if (mirrorFailure !== undefined) {
         output.gdriveDegraded = mirrorFailure; // the GDrive mirror failed; PG holds the message
+      }
+      if (statusCarry === true) {
+        // The mirror above was rendered from the carried state: PG and the file
+        // hold the same status. Additive field — absent on every other append.
+        output.fileStatusCarried = true;
+        console.error('WARN: statut plus récent du fichier reporté dans PG avant l’écriture du miroir');
       }
     }
   }
