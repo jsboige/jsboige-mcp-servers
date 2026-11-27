@@ -84,6 +84,8 @@ import {
   isDesignatedMirrorWriter,
   MIRROR_WRITER_ALL,
   MIRROR_WRITER_ENV,
+  MIRROR_SKIP_REASON_NOT_DESIGNATED,
+  MIRROR_SKIP_REASON_APPEND_MIRROR_OFF,
 } from '../../services/unified-store/dashboard-mirror-writer.js';
 import { isDashboardReadPgEnabled } from '../../services/unified-store/pg-read-gates.js';
 // #4608 — état de condensation durable par clé (roosync_store_meta) : passe
@@ -3032,6 +3034,13 @@ export interface WriteVerifyResult {
    * kill-switch `UNIFIED_STORE_DASHBOARD_APPEND_MIRROR` rétablit l'écriture.
    */
   gdriveSkipped?: true;
+  /**
+   * #4596 — pourquoi le miroir a été sauté, en une valeur stable
+   * (`not-designated-writer` / `append-mirror-off`). Posé par les mêmes sites
+   * que `gdriveSkipped`, et remonté tel quel dans `writeVerification` : un
+   * refus ne se déduit pas de l'état ambiant, il se lit dans le résultat.
+   */
+  gdriveSkippedReason?: string;
 }
 
 /**
@@ -3645,6 +3654,32 @@ export async function writeDashboardFile(
       }
     }
     if (pgMirrorMode) {
+      // #4596 — 5ᵉ point gardé (review ai-01 du 27/11 05:11Z). Cette branche
+      // est la surface NON-append : la passe de condensation détachée, write,
+      // merge, archive, retire, cross-post et l'alerte de troncature y écrivent
+      // le fichier, depuis n'importe quel siège. Le verrou de flotte sérialise
+      // dans le temps, il n'élit personne — c'est le même défaut que les quatre
+      // autres points. PG tient déjà l'écriture vérifiée : le fichier n'est
+      // qu'un export, il appartient à l'écrivain désigné. Décidé AVANT tout
+      // travail Drive. Non gardé : le repli sur échec PG ci-dessus, où le
+      // fichier est la seule surface.
+      if (!isDesignatedMirrorWriter()) {
+        logger.info('[MIRROR-EXPORT #4596] miroir fichier non écrit — ce siège n’est pas l’écrivain désigné du miroir', {
+          key,
+          writer: dashboardMirrorWriter(),
+          restoreWith: `${MIRROR_WRITER_ENV}=${MIRROR_WRITER_ALL}`
+        });
+        wv = {
+          forkSuspected: false,
+          gdriveSkipped: true,
+          gdriveSkippedReason: MIRROR_SKIP_REASON_NOT_DESIGNATED,
+        };
+        // #3774 critère 2 — même verdict que les autres chemins : la relecture
+        // du store (primaire) qualifie l'atterrissage de l'écriture.
+        wv = mergeStoreVerification(wv, await verifyWriteVisibleInStore(key, landedIds));
+        if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
+        return wv;
+      }
       // #4131 G-MES — ici seulement, le fichier est le miroir d'une écriture PG
       // déjà tenue : le marqueur est posé à l'instant du write (la fenêtre PG
       // peut avoir duré — l'écart mtime↔stamp doit rester celui de l'export).
@@ -4323,7 +4358,16 @@ async function appendDashboardIncremental(
     // #4131 G-DASH — état NOMINAL du nouveau défaut, pas une panne : le
     // fichier suivra au prochain tick d'export. L'appelant le voit pour ne pas
     // conclure « fichier à jour » d'un succès.
-    wv = { ...wv, gdriveSkipped: true };
+    // #4596 — la raison suit le verdict jusque dans le résultat MCP (review
+    // ai-01 : le CLI la portait déjà, le résultat MCP non) : un miroir rallumé
+    // par l'opérateur mais refusé faute d'élection n'est pas le défaut #4131.
+    wv = {
+      ...wv,
+      gdriveSkipped: true,
+      gdriveSkippedReason: appendMirrorEnabled && !mirrorWriterDesignated
+        ? MIRROR_SKIP_REASON_NOT_DESIGNATED
+        : MIRROR_SKIP_REASON_APPEND_MIRROR_OFF,
+    };
   }
 
   if (pgPrimaryOk) {

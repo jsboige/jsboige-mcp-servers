@@ -48,6 +48,15 @@ export const MIRROR_WRITER_DEFAULT = 'myia-ai-01';
 export const MIRROR_WRITER_ALL = '*';
 
 /**
+ * Why a mirror write was skipped, as carried by `gdriveSkippedReason` — the
+ * machine-readable twin of each refusal, shared by every caller that reports
+ * one (MCP tool results and the listener CLI) so the two can never drift.
+ */
+export const MIRROR_SKIP_REASON_NOT_DESIGNATED = 'not-designated-writer';
+/** #4131 G-DASH — the default: the per-append mirror is off, the file is a periodic export. */
+export const MIRROR_SKIP_REASON_APPEND_MIRROR_OFF = 'append-mirror-off';
+
+/**
  * The configured publisher, read at call time. An unset, blank or
  * whitespace-only variable means the default — never "nobody writes": a
  * half-typed variable must not freeze the mirror fleet-wide.
