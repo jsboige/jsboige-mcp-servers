@@ -117,6 +117,19 @@
  *      pre-existing behaviour: the empty base is the true one.
  * The gate-closed path reads nothing more and is unchanged.
  *
+ * Re-review ms#1946 (ai-01, 27/11 — the carry, and its own blind spot):
+ *   Blocker 1 above only PRESERVED the file's newer status: it was skipped, not
+ *   reported, so PG kept the old one and the two halves diverged for good. The
+ *   status is now CARRIED — a second checked sync of the same payload sends the
+ *   file's status to PG — and only then is the lock re-taken and the question
+ *   asked again. That second check must NOT measure "newer" against `carried`'s
+ *   stamp: `carried.lastModified` is our own message's `nowIso`, so a third
+ *   status landing during the carry with an EARLIER stamp — a seat whose clock
+ *   is behind — would read as "behind PG" and be rendered over. It is compared
+ *   with the status we carried, undated: any dated, non-empty file status that
+ *   DIFFERS from it objects, an unchanged one does not, and the mirror is
+ *   written only when no objection survives the carry.
+ *
  * Exit codes: 0 posted — at least one surface holds the message (a PG-sync
  * miss on the file-first path is a WARN, not an error: the GDrive write
  * stands and the journal reconcile converges it; a failed MIRROR under the
@@ -125,6 +138,10 @@
  * `fileRewriteSkipped`) · 1 no surface held it (file write failed, or the
  * fallback rewrite was refused AND the PG retry failed) · 2 usage / contract
  * violation.
+ * A status carried from the file into PG is reported as
+ * `fileStatusCarried: true` in the output — on the mirror-skip path and on the
+ * written-mirror path alike (the latter also warns: PG now holds a status the
+ * file had already moved past).
  *
  * Usage (from servers/roo-state-manager/):
  *   node scripts/rsm-dashboard-append.mjs --machine myia-po-2023 --content-file msg.txt
@@ -507,7 +524,19 @@ try {
               mirrorSkip = 'verrou append non repris après le report du statut (un autre détenteur écrit la clé)';
             } else {
               resolvedPath = getDashboardPath(key);
-              const again = mirrorObjection(carried, await readFileHalf(resolvedPath, key));
+              // Review ms#1946 (ai-01, 27/11, blocking): the base here is NOT
+              // `carried` — its `lastModified` is our own message's stamp, so a
+              // third status landing during the carry with an earlier stamp (a
+              // seat whose clock is behind) read as "behind PG" and was rendered
+              // over. The comparison is with the status we carried, and it carries
+              // no date: `stateAt` is NaN, so any dated, non-empty file status
+              // that DIFFERS from it objects. An unchanged status does not.
+              // `null` would be wrong: `fileStatusSupersedes(null, …)` compares
+              // against '', answers true on every call, and the mirror would
+              // never be written.
+              const again = mirrorObjection(carried, await readFileHalf(resolvedPath, key), {
+                status: carried.status,
+              });
               if (again !== null) {
                 mirrorSkip = again.reason;
               } else {

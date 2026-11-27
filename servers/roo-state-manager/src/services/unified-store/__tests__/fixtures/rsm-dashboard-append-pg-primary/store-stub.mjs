@@ -139,6 +139,46 @@ function landFileOnlyAppend(target) {
   }
 }
 
+/**
+ * Review ms#1946 (ai-01, 27/11 — blocking): `status-then-backdated-status`
+ * lands, DURING the carry (attempt 2), a status whose `lastModified` is
+ * EARLIER than our own message's stamp (12:00:00Z) — a seat whose clock is
+ * behind. By date it looks "behind PG"; in time it landed after the carry was
+ * built. Byte-identical to the harness' `BACKDATED_STATUS_FILE`.
+ */
+const STATUS_BACKDATED = {
+  lastModified: '2026-11-24T11:30:00.000Z',
+  status: '*Statut d’un tiers à l’horloge en retard.*',
+};
+
+function statusBackdatedFileText() {
+  return [
+    '---',
+    'type: machine',
+    `lastModified: ${STATUS_BACKDATED.lastModified}`,
+    'totalMessages: 1',
+    '---',
+    '',
+    '## Status',
+    '',
+    STATUS_BACKDATED.status,
+    '',
+    '## Intercom',
+    '',
+    WITNESS_BLOCK,
+  ].join('\n');
+}
+
+function landBackdatedStatus(target) {
+  try {
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(target, statusBackdatedFileText(), 'utf8');
+    journal('concurrent:status-backdated');
+  } catch {
+    // A directory target is the harness' "write must fail" setup: nothing lands.
+  }
+}
+
 function landConcurrentAppend(target) {
   const mode = process.env.RSM_APPEND_TEST_CONCURRENT;
   if (!mode) return;
@@ -189,11 +229,20 @@ export async function dualWriteDashboardSyncChecked(dashboard) {
     // see it. `status-then-append` lands one here too, then a file-only append
     // during the carry (attempt 2).
     const concurrent = process.env.RSM_APPEND_TEST_CONCURRENT;
-    if (concurrent === 'status' || concurrent === 'status-then-append') landStatusChange(target);
+    if (
+      concurrent === 'status' ||
+      concurrent === 'status-then-append' ||
+      concurrent === 'status-then-backdated-status'
+    )
+      landStatusChange(target);
     else landConcurrentAppend(target);
   } else if (attempts === 2) {
     // `status-then-append` only: the carry is a PG attempt too, so it can be late.
     if (process.env.RSM_APPEND_TEST_CONCURRENT === 'status-then-append') landFileOnlyAppend(target);
+    // `status-then-backdated-status`: the same window, but the writer's stamp is
+    // EARLIER than ours (clock skew) — the case the second check misjudged.
+    if (process.env.RSM_APPEND_TEST_CONCURRENT === 'status-then-backdated-status')
+      landBackdatedStatus(target);
   }
   const mode = process.env.RSM_APPEND_TEST_PG;
   if (mode === 'throw') throw new Error('connection terminated');
