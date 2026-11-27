@@ -42,10 +42,11 @@ jobs:
         # is 59 failed / 36 passed (measured 20/10, pytest 9.1.1).
         pip install pytest pytest-asyncio pytest-timeout
         # The server targets the mcp 1.x API (from mcp.server.fastmcp import
-        # FastMCP); pyproject's unbounded 'mcp>=1.0.0' resolves to 2.x where
-        # FastMCP was renamed MCPServer. Pre-installing 1.x (1.27.0 = the
-        # fleet's version) satisfies the constraint and keeps it pinned.
-        pip install 'mcp<2'
+        # FastMCP, renamed MCPServer in 2.x). The ceiling lives in
+        # pyproject.toml ('mcp>=1.0.0,<2') so that THIS install path is what CI
+        # proves: the assertion below goes red if the ceiling is ever lost,
+        # instead of the breakage moving to a seat's fresh venv.
+        python -c "import importlib.metadata as m; v = m.version('mcp'); assert v.split('.')[0] == '1', 'mcp %s is not 1.x' % v; print('mcp', v)"
 
     - name: Run unit tests
       run: |
