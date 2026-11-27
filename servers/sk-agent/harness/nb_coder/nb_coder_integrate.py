@@ -61,7 +61,9 @@ import csv
 import difflib
 import io
 import json
+import os
 import re
+import signal
 import subprocess
 import sys
 import unicodedata
@@ -96,6 +98,68 @@ NAV_LINE_MARKERS = ("precedent", "précédent", "suivant", "suivante", "next",
 LINK_RE = re.compile(r"\[([^\]]*)\]\(([^)]+)\)")
 
 GUARD_TIMEOUT_S = 900
+
+# How long the post-deadline read may wait once the guard tree has been killed.
+GUARD_KILL_GRACE_S = 30
+
+
+def _kill_guard_tree(proc: subprocess.Popen) -> None:
+    """Kill a guard child AND its descendants, so nothing keeps its pipe open."""
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           capture_output=True, timeout=GUARD_KILL_GRACE_S,
+                           stdin=subprocess.DEVNULL)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def run_guard_bounded(cmd: list[str], *, cwd, timeout: float = GUARD_TIMEOUT_S,
+                      grace: float = GUARD_KILL_GRACE_S) -> subprocess.CompletedProcess:
+    """Run a guard script so a grandchild holding its pipe can never wedge the driver.
+
+    ``subprocess.run(..., timeout=T)`` is NOT enough on Windows (po-2028, 27/11): at the
+    deadline CPython kills the CHILD and then re-calls ``communicate()`` with NO timeout.
+    A grandchild that inherited the stdout handle keeps the pipe open, so that second read
+    blocks FOREVER -- the caller sees a live process, zero children (the child was already
+    killed), one thread parked in a pipe read and no further write on disk. It happened in
+    stage 5 of a delivery: CoursIA#27133's MGS-28 commit was made at 06:51:27Z, the guard
+    replay began, and 45 min later the driver was still parked with the branch never
+    pushed. The notebook was built AND approved; the PR had to be pushed by hand.
+
+    Three defences, each addressing one half of that shape:
+      * ``stdin=DEVNULL`` -- a guard that prompts reads EOF instead of waiting on us;
+      * ``stderr=STDOUT`` -- one pipe instead of two, halving the handles a descendant can
+        inherit (and keep open past the child's death);
+      * a BOUNDED second read after killing the whole TREE (``taskkill /T`` on Windows,
+        ``killpg`` elsewhere). A pipe still held past the grace is abandoned, never waited
+        on: an unread guard tail is a missing datapoint, a wedged grain is a lost PR.
+    """
+    popen_kw = {}
+    if os.name != "nt":
+        popen_kw["start_new_session"] = True   # own process group, killable as a whole
+    proc = subprocess.Popen(
+        [sys.executable, *cmd], cwd=str(cwd),
+        stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, encoding="utf-8", errors="replace", **popen_kw)
+    try:
+        out, _ = proc.communicate(timeout=timeout)
+        return subprocess.CompletedProcess(cmd, proc.returncode, out or "", "")
+    except subprocess.TimeoutExpired:
+        _kill_guard_tree(proc)
+        try:
+            out, _ = proc.communicate(timeout=grace)
+        except subprocess.TimeoutExpired:
+            out = ""      # the pipe outlived the tree: give up, never block
+        done = subprocess.CompletedProcess(cmd, None, out or "", "")
+        done.timed_out = True
+        return done
+
 
 # The guards the CI raises on a new notebook, replayed with the exact
 # commands the lot-1 review comments published (CoursIA#27803 c.1).
@@ -976,14 +1040,18 @@ def reseal_pair(worktree: Path, pair_name: str, lane: str) -> dict:
     out = {"pair": pair_name, "forced": False}
 
     def _run(*extra: str) -> subprocess.CompletedProcess:
-        return subprocess.run(
-            [sys.executable, "scripts/notebook_tools/check_twin_parity.py",
+        return run_guard_bounded(
+            ["scripts/notebook_tools/check_twin_parity.py",
              *extra, "--pair", pair_name]
             + (["--by", lane] if "--update" in extra else []),
-            cwd=str(worktree), capture_output=True, text=True, encoding="utf-8",
-            errors="replace", timeout=GUARD_TIMEOUT_S)
+            cwd=worktree)
 
     proc = _run("--update")
+    if getattr(proc, "timed_out", False):
+        # A timed-out seal is not a "no-op that --force might fix": re-running the same
+        # 900 s guard twice more would spend 30 min to reach the same wall (27/11).
+        return out | {"ok": False, "rc": None, "timed_out": True, "audit_files": [],
+                      "tail": (proc.stdout or "")[-400:]}
     audit = _status(worktree, TWIN_PAIRS_DIR.as_posix())
     if proc.returncode == 0 and audit:
         dropped = drop_superseded_attestations(worktree, pair_name, lane, audit)
@@ -2215,16 +2283,17 @@ def replay_guards(worktree: Path, notebook: str | None = None) -> list[dict]:
     out = []
     for name, cmd in guards:
         try:
-            proc = subprocess.run([sys.executable, *cmd], cwd=str(worktree),
-                                  capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace",
-                                  timeout=GUARD_TIMEOUT_S)
-            out.append({"guard": name, "cmd": " ".join(["python", *cmd]),
-                        "rc": proc.returncode,
-                        "tail": (proc.stdout or proc.stderr or "")[-400:]})
-        except (subprocess.TimeoutExpired, OSError) as e:
+            proc = run_guard_bounded(cmd, cwd=worktree)
+        except OSError as e:                      # sys.executable unusable: recorded, not fatal
             out.append({"guard": name, "cmd": " ".join(["python", *cmd]),
                         "rc": None, "tail": f"{type(e).__name__}: {e}"[:400]})
+            continue
+        tail = (proc.stdout or "")[-400:]
+        if getattr(proc, "timed_out", False):
+            tail = (f"TimeoutExpired after {GUARD_TIMEOUT_S}s (tree killed, pipe abandoned "
+                    f"after {GUARD_KILL_GRACE_S}s): {tail}")[:400]
+        out.append({"guard": name, "cmd": " ".join(["python", *cmd]),
+                    "rc": proc.returncode, "tail": tail})
     return out
 
 
