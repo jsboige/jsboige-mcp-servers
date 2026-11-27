@@ -24,7 +24,7 @@ npm run build && npx vitest run --config vitest.config.ci.ts
 
 ### CI failure notifications
 
-When CI fails on `main`, an issue is auto-created with the `ci-failure` label. Fix the issue and close the notification.
+When CI fails on `main`, an issue is auto-created with the `ci-failure` label. Fix the issue and close the notification — or let it close itself: the next green run of `main`'s head closes it automatically, with the run URL as evidence (job `close-on-success` in `/.github/workflows/ci-notify.yml`).
 
 ---
 
