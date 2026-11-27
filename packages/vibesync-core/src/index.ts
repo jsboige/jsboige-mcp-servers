@@ -14,3 +14,4 @@ export * from './utils/logger.js';
 export * from './services/unified-store/pg-flags.js';
 export * from './services/unified-store/pg-backfill-marker.js';
 export * from './services/unified-store/pg-read-gates.js';
+export * from './utils/shared-state-path.js';

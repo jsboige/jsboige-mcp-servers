@@ -19,8 +19,10 @@ const CORE_MODULE_GROUPS: Record<string, string> = {
   'server-config': 'src/config/server-config.ts',
   // Extracted to @vibesync/core (#4886 S2 grain 1).
   'tool-timeouts': 'packages/vibesync-core/src/config/tool-timeouts.ts',
-  // Shared-state paths and lane identity.
-  'shared-state-path': 'src/utils/shared-state-path.ts',
+  // Shared-state paths and lane identity (extracted to @vibesync/core in #4886
+  // S2 grain 4; the file left at src/utils/ is the seat adapter that registers
+  // the #1628 `.env` fallback and re-exports the trunk).
+  'shared-state-path': 'packages/vibesync-core/src/utils/shared-state-path.ts',
   'message-helpers': 'src/utils/message-helpers.ts',
   // Host capability and secret-publication helpers (extracted in #4886 S2 grain 1).
   'server-capabilities': 'packages/vibesync-core/src/utils/server-capabilities.ts',

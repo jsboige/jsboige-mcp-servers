@@ -1,7 +1,7 @@
 /**
  * #3459 — Test structurel anti-contournement (arbitrage ai-01, option b).
  *
- * Le helper `ensureStoreSubdir` (utils/shared-state-path.ts) ne devient la
+ * Le helper `ensureStoreSubdir` (@vibesync/core/utils/shared-state-path) ne devient la
  * propriété du système que s'il est LE SEUL chemin possible. Rien n'empêche
  * un `mkdirSync(join(sharedPath, ...))` écrit demain à côté du helper — par
  * un agent qui ne le connaît pas. Ce test rend ce contournement VISIBLE :
@@ -46,25 +46,34 @@
  * prouve rien six mois plus tard ; un contrôle committé, si.
  *
  * Fichiers exclus :
- * - utils/shared-state-path.ts : le helper lui-même (son mkdirSync EST le
- *   chemin sanctionné — et son nom est exonéré à la voie 2) ;
  * - tools/roosync/roosync_init.ts : l'initialiseur — créer la racine du
  *   store est sa fonction déclarée (`roosync_init` sur store absent).
+ *
+ * Périmètre (#4886 grain 4) : DEUX arbres, balayés comme UN seul ensemble.
+ * `ensureStoreSubdir` vit dans `@vibesync/core` (`packages/vibesync-core/src/`,
+ * sous le préfixe `core/`). Un garde qui ne lirait que `src/` ne verrait plus
+ * aucun mkdir du tronc — ni direct, ni par paramètre. Un seul ensemble, parce
+ * que la voie 2 corrèle un mkdir et son site d'appel : deux balayages séparés
+ * ne verraient pas une fonction du tronc appelée depuis `src/` avec un chemin
+ * dérivé du store. L'adaptateur laissé à `utils/shared-state-path.ts` ne
+ * contient plus de mkdir — il est scanné comme n'importe quel fichier.
  *
  * @module tests/roosync/fail-closed-store-structural
  */
 
 import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'fs';
-import { join, relative } from 'path';
+import { join, relative, sep } from 'path';
 import { fileURLToPath } from 'url';
 import * as ts from 'typescript';
 
 const __filename = fileURLToPath(import.meta.url);
 const SRC_ROOT = join(__dirname, '..', '..', '..');
+/** Le tronc `@vibesync/core` entre dans le même balayage, sous le préfixe `core/` (#4886 grain 4). */
+const CORE_SRC_ROOT = join(SRC_ROOT, '..', '..', '..', 'packages', 'vibesync-core', 'src');
+const CORE_PREFIX = 'core/';
 
 const EXCLUDED = new Set([
-  join('utils', 'shared-state-path.ts'),
   join('tools', 'roosync', 'roosync_init.ts'),
 ]);
 
@@ -386,17 +395,35 @@ export function scanSources(files: SourceSlice[]): Violation[] {
 
 describe('structural: no raw mkdir on a store-root-derived path outside ensureStoreSubdir (#3459 b)', () => {
   it('every mkdir taking a shared-store-derived path routes through the helper (direct or via parameter)', () => {
-    const files: SourceSlice[] = listSourceFiles(SRC_ROOT).map(file => ({
-      rel: relative(SRC_ROOT, file),
-      content: readFileSync(file, 'utf8'),
-    }));
+    const files: SourceSlice[] = [
+      ...listSourceFiles(SRC_ROOT).map(file => ({
+        rel: relative(SRC_ROOT, file),
+        content: readFileSync(file, 'utf8'),
+      })),
+      ...listSourceFiles(CORE_SRC_ROOT).map(file => ({
+        rel: CORE_PREFIX + relative(CORE_SRC_ROOT, file).split(sep).join('/'),
+        content: readFileSync(file, 'utf8'),
+      })),
+    ];
 
     expect(
       scanSources(files),
       'mkdir primitif sur un chemin dérivé de la racine du store HORS ensureStoreSubdir ' +
       '(direct ou par paramètre — migrer vers ensureStoreSubdir(...) — cf. #3459 arbitrage b, ' +
-      'utils/shared-state-path.ts)'
+      '@vibesync/core/utils/shared-state-path)'
     ).toEqual([]);
+  });
+
+  it('le périmètre atteint le fichier du tronc qui déclare ensureStoreSubdir (témoin, #4886 grain 4)', () => {
+    const writers = listSourceFiles(CORE_SRC_ROOT).filter(file =>
+      /export\s+function\s+ensureStoreSubdir\b/.test(readFileSync(file, 'utf8')),
+    );
+    // Ce témoin tombe si le garde redevient aveugle sur le tronc : le helper a
+    // déménagé, ou CORE_SRC_ROOT ne pointe plus vers lui.
+    expect(
+      writers,
+      'le tronc doit porter — et le garde doit voir — la déclaration de ensureStoreSubdir',
+    ).toHaveLength(1);
   });
 });
 
