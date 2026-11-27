@@ -241,7 +241,9 @@ type Scenario = {
   // …and the STATUS it carries (follow-up: the carry reports the FILE's status).
   syncStatus?: boolean;
   // #4596 knobs.
-  mirrorWriterModule?: 'stub' | 'absent'; // absent = pre-#4596 served build (the guard must fail OPEN)
+  // absent = pre-#4596 served build (the guard must fail OPEN, silently).
+  // broken = the module exists without the guard (fail OPEN too, but SAYING so).
+  mirrorWriterModule?: 'stub' | 'absent' | 'broken';
   mirrorWriterDesignated?: boolean; // the stub's answer when the module is present (default true)
   mirrorWriter?: string; // ROOSYNC_DASHBOARD_MIRROR_WRITER as the child sees it (feeds the reason string)
   seed?: string | null; // file state before the run (default SEED_FILE; null = no file)
@@ -295,7 +297,12 @@ function runScenario(scenario: Scenario): Run {
     );
     // #4596 — the served mirror-writer module. Its ABSENCE is a scenario of its
     // own: a host still serving a pre-#4596 build must keep writing the mirror.
-    if (scenario.mirrorWriterModule !== 'absent') {
+    if (scenario.mirrorWriterModule === 'broken') {
+      copyFileSync(
+        path.join(FIXTURES, 'dashboard-mirror-writer-broken.mjs'),
+        path.join(root, 'build', 'services', 'unified-store', 'dashboard-mirror-writer.js')
+      );
+    } else if (scenario.mirrorWriterModule !== 'absent') {
       copyFileSync(
         path.join(FIXTURES, 'dashboard-mirror-writer-stub.mjs'),
         path.join(root, 'build', 'services', 'unified-store', 'dashboard-mirror-writer.js')
@@ -1364,6 +1371,19 @@ describe('#4596 — a PG success on a non-designated seat does not publish the m
       STAMP_LINE,
       UNLOCK,
     ]);
+  }, 15000);
+
+  it('a served module that exists WITHOUT the guard fails open too, and says so (independent review 27/11)', () => {
+    // A broken artifact must not read like the deliberate "module absent"
+    // case above: same fallback (the mirror is written, no skip field), but
+    // the journal of the seat carries the line — `code` names the class, and
+    // the export check throws without one.
+    const run = runScenario({ gate: 'open', pg: 'ok', mirrorWriterModule: 'broken' });
+
+    expect(run.status).toBe(0);
+    expect(run.stderr).toContain('[MIRROR-WRITER #4596] garde non chargée — repli OUVERT (code=none)');
+    expect(run.parsed).toEqual(EXPECTED_OUTPUT);
+    expect(run.file).toBe(STAMPED);
   }, 15000);
 });
 

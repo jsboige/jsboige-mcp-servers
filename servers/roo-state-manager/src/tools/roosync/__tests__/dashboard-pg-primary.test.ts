@@ -1059,8 +1059,22 @@ describe('#4596 — writeDashboardFile n\'exporte le miroir que sur le siège d�
     expect(existsSync(dashboardPath())).toBe(true);
   });
 
-  it('la déclaration nomme un AUTRE siège que le hostname : non désigné', async () => {
+  it('l\'hôte NOMMÉ comme l\'éditeur publie même si sa déclaration dit autre chose (revue indépendante 27/11)', async () => {
+    // Le défaut nomme une MACHINE : son hôte Windows reste l'éditeur quand la
+    // ligne `ROOSYNC_MACHINE_ID` de son `.env` porte une autre valeur — ligne
+    // qu'aucun autre siège ne peut lire avant une fusion.
     delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+    process.env.COMPUTERNAME = 'MYIA-AI-01';
+
+    const wv = await writeDashboardFile(key, minimalDashboard());
+
+    expect(wv.gdriveSkipped).toBeFalsy();
+    expect(existsSync(dashboardPath())).toBe(true);
+  });
+
+  it('ni la déclaration ni le hostname ne nomment l\'éditeur : non désigné', async () => {
+    process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER = 'myia-po-2025';
     process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
     process.env.COMPUTERNAME = 'MYIA-AI-01';
 
@@ -1069,6 +1083,8 @@ describe('#4596 — writeDashboardFile n\'exporte le miroir que sur le siège d�
     expect(wv.gdriveSkipped).toBe(true);
     expect(wv.gdriveSkippedReason).toBe(MIRROR_SKIP_REASON_NOT_DESIGNATED);
     expect(existsSync(dashboardPath())).toBe(false);
+    // Rendu : la variable n'est pas restaurée par l'afterEach de ce describe.
+    delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
   });
 
   it('défaut (variable absente) sur un autre siège : non désigné, miroir laissé au publisher', async () => {

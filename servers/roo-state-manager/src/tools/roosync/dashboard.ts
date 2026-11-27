@@ -83,6 +83,7 @@ import {
   dashboardMirrorWriter,
   isDesignatedMirrorWriter,
   mirrorWriterMachineId,
+  reconcileLockMachineId,
   MIRROR_WRITER_ALL,
   MIRROR_WRITER_ENV,
   MIRROR_SKIP_REASON_NOT_DESIGNATED,
@@ -3683,10 +3684,11 @@ export async function writeDashboardFile(
         logger.info('[MIRROR-EXPORT #4596] miroir fichier non écrit — ce siège n’est pas l’écrivain désigné du miroir', {
           key,
           writer: dashboardMirrorWriter(),
-          // Review 27/11 — the seat as THIS guard reads it: a seat whose
-          // identity resolves to anything but the writer must be able to see
+          // Review 27/11 — the seat as THIS guard reads it, under both of its
+          // names: a seat neither of which is the writer must be able to see
           // why in its own journal, not only in a result field.
           seat: mirrorWriterMachineId(),
+          host: reconcileLockMachineId(),
           restoreWith: `${MIRROR_WRITER_ENV}=${MIRROR_WRITER_ALL}`
         });
         wv = {
@@ -4004,6 +4006,7 @@ async function appendDashboardIncremental(
       key,
       writer: dashboardMirrorWriter(),
       seat: mirrorWriterMachineId(),
+      host: reconcileLockMachineId(),
       restoreWith: `${MIRROR_WRITER_ENV}=${MIRROR_WRITER_ALL}`
     });
   } else if (skipFileMirror) {

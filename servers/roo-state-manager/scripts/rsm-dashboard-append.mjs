@@ -365,7 +365,19 @@ async function loadMirrorWriterGuard() {
       writer: String(mod.dashboardMirrorWriter()),
       envName: String(mod.MIRROR_WRITER_ENV),
     };
-  } catch {
+  } catch (err) {
+    // Independent review 27/11: the open fallback on "the module itself is
+    // absent" is deliberate (pinned by the harness) and stays silent — a host
+    // still serving a pre-#4596 build must not start writing warnings. Any
+    // OTHER failure is a broken artifact and must not read like that first
+    // case: `code` names the class of the failure (none = no `code` at all,
+    // e.g. the export check above), never a secret.
+    const code = err !== null && typeof err === 'object' && 'code' in err ? String(err.code) : 'none';
+    const message = err !== null && typeof err === 'object' && 'message' in err ? String(err.message) : '';
+    const moduleAbsent = code === 'ERR_MODULE_NOT_FOUND' && message.includes('dashboard-mirror-writer');
+    if (!moduleAbsent) {
+      console.error(`[MIRROR-WRITER #4596] garde non chargée — repli OUVERT (code=${code})`);
+    }
     mirrorWriterGuard = { designated: true, writer: null, envName: null };
   }
   return mirrorWriterGuard;

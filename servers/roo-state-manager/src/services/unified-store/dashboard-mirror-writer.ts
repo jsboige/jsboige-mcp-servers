@@ -16,14 +16,15 @@
  * publish the mirror:
  *   - unset / empty  → `myia-ai-01` (the default — option a of the RX169
  *                      arbitration, user agreement 26/11);
- *   - a machine name → only that seat writes; compared case-insensitively
- *                      with the seat identity of the ELECTION
- *                      (`ROOSYNC_MACHINE_ID` first, then the hostname —
- *                      upper-case on Windows, hence the folding: a strict
- *                      compare would silence ai-01 itself). Two identities
- *                      live in this module and are NOT the same string: the
- *                      election follows the operator's declaration, the lock
- *                      keys keep the hostname spelling — see both functions;
+ *   - a machine name → only that seat writes. A seat answers to TWO names,
+ *                      each compared case-insensitively with the writer: what
+ *                      its operator declares (`ROOSYNC_MACHINE_ID`, else the
+ *                      hostname — upper-case on Windows, hence the folding: a
+ *                      strict compare would silence ai-01 itself) AND its
+ *                      hostname. Two identities live in this module and are
+ *                      NOT the same string: the election reads both names,
+ *                      the lock keys keep the hostname spelling alone — see
+ *                      each function;
  *   - `*`            → every seat writes again: the kill-switch that restores
  *                      the previous behaviour without a redeployment.
  *
@@ -86,7 +87,7 @@ export function reconcileLockMachineId(): string {
 }
 
 /**
- * Machine identity of THIS seat for the ELECTION — the vocabulary the
+ * One of the two names of THIS seat for the ELECTION — the vocabulary the
  * dashboards already speak: `author.machineId` and `condensedBy` are read
  * from `ROOSYNC_MACHINE_ID`, and it is the first entry of the documented
  * chain of `resolveMachineIdentity()` in `utils/message-helpers.ts`.
@@ -111,11 +112,36 @@ export function mirrorWriterMachineId(): string {
 }
 
 /**
- * May `machine` (this seat by default) publish the mirror?
- * `*` says yes everywhere; otherwise the comparison folds case on both sides.
+ * The names THIS seat answers to, for the ELECTION — at most two, folded:
+ * its declaration (`mirrorWriterMachineId()`) and its hostname, when that is
+ * another name.
+ *
+ * WHY two. One vocabulary alone elects nobody on a real host. Read from the
+ * hostname alone, a container or WSL host of the designated machine is never
+ * the writer. Read from the declaration alone, the designated machine's own
+ * Windows host is never the writer when the `ROOSYNC_MACHINE_ID` line of its
+ * `.env` carries another value — a line no other seat can read before a merge
+ * (independent review of 27/11), so it must not decide alone. A wrong one of
+ * the two names degrades to the right one.
  */
-export function isDesignatedMirrorWriter(machine: string = mirrorWriterMachineId()): boolean {
+export function mirrorWriterSeatIdentities(): string[] {
+  const declared = mirrorWriterMachineId().trim().toLowerCase();
+  const hostname = reconcileLockMachineId().trim().toLowerCase();
+  return hostname === declared ? [declared] : [declared, hostname];
+}
+
+/**
+ * May THIS seat publish the mirror? `*` says yes everywhere; otherwise the
+ * writer must equal one of the seat's two names (case folded on both sides).
+ *
+ * An explicit `machine` answers for THAT name alone — a pure compare, for
+ * callers naming a seat other than the host: the host's own names are not
+ * consulted.
+ */
+export function isDesignatedMirrorWriter(machine?: string): boolean {
   const writer = dashboardMirrorWriter();
   if (writer === MIRROR_WRITER_ALL) return true;
-  return writer.toLowerCase() === machine.trim().toLowerCase();
+  const wanted = writer.toLowerCase();
+  const names = machine === undefined ? mirrorWriterSeatIdentities() : [machine];
+  return names.some((name) => name.trim().toLowerCase() === wanted);
 }

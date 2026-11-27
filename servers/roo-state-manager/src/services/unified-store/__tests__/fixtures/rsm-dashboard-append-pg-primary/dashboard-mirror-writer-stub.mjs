@@ -2,12 +2,13 @@
  * #4596 — test double of the SERVED `services/unified-store/dashboard-mirror-writer.js`.
  *
  * The verdict ITSELF (unset → `myia-ai-01`, explicit seat, `*`, case folding,
- * call-time read, `COMPUTERNAME` → `HOSTNAME`) is pinned against the REAL
- * module by `roosync-dashboard-reconcile-mirror-writer.test.ts`. This double
- * exists to pin what the CLI does with the answer: consult the served module on
- * the PG-success path, publish no file when it says no, and keep the previous
- * behaviour when the module is absent (pre-#4596 build — the harness simply
- * does not copy this file in that scenario).
+ * call-time read, the two seat names — the declaration `ROOSYNC_MACHINE_ID`
+ * else `COMPUTERNAME` → `HOSTNAME`, and the hostname) is pinned against the
+ * REAL module by `roosync-dashboard-reconcile-mirror-writer.test.ts`. This
+ * double exists to pin what the CLI does with the answer: consult the served
+ * module on the PG-success path, publish no file when it says no, and keep
+ * the previous behaviour when the module is absent (pre-#4596 build — the
+ * harness simply does not copy this file in that scenario).
  *
  * The harness drives the verdict with `RSM_APPEND_TEST_MIRROR_DESIGNATED`
  * (`0` = this seat is not the writer). `dashboardMirrorWriter()` and
@@ -23,6 +24,8 @@ export function dashboardMirrorWriter() {
 }
 
 export function mirrorWriterMachineId() {
+  const configured = (process.env.ROOSYNC_MACHINE_ID ?? '').trim();
+  if (configured !== '') return configured.toLowerCase();
   return process.env.COMPUTERNAME ?? process.env.HOSTNAME ?? 'unknown';
 }
 

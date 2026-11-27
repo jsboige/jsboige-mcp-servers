@@ -12,9 +12,10 @@
  *
  * WHAT THESE TESTS PIN (closure criterion 1 of the issue):
  *   - the verdict itself — absent value (default), explicit seat, `*`, case
- *     folding, call-time read, the seat identity of the election
- *     (`ROOSYNC_MACHINE_ID` first, then the hostname) and the lock rows,
- *     which stay on the hostname whatever that variable says;
+ *     folding, call-time read, the TWO names a seat answers to for the
+ *     election (its declaration — `ROOSYNC_MACHINE_ID` first, then the
+ *     hostname — and its hostname) and the lock rows, which stay on the
+ *     hostname whatever that variable says;
  *   - the two guarded points of THIS module: mirror repair AND materialization
  *     are both held by the same branch, and a non-designated seat returns
  *     `mirrorRepairSkipped: 'not-designated-writer'` BEFORE asking for the
@@ -46,6 +47,7 @@ import {
   dashboardMirrorWriter,
   isDesignatedMirrorWriter,
   mirrorWriterMachineId,
+  mirrorWriterSeatIdentities,
   reconcileLockMachineId,
 } from '../dashboard-mirror-writer.js';
 import type { RooSyncDashboardRow, RooSyncDashboardMessageRow } from '../types.js';
@@ -167,6 +169,33 @@ describe('#4596 — mirror writer verdict (read at call time)', () => {
     delete process.env[MIRROR_WRITER_ENV];
     expect(mirrorWriterMachineId()).toBe('MYIA-AI-01');
     expect(isDesignatedMirrorWriter()).toBe(true);
+  });
+
+  test('a host keeps answering to its NAME when its declaration says otherwise (independent review 27/11)', () => {
+    // The default names a MACHINE. Its own Windows host must publish even
+    // when the `ROOSYNC_MACHINE_ID` line of its `.env` carries another value:
+    // no other seat can read that line before a merge, so it must not decide
+    // alone — read from the declaration alone, the default elected nobody.
+    delete process.env[MIRROR_WRITER_ENV];
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+    process.env.COMPUTERNAME = 'MYIA-AI-01';
+    expect(mirrorWriterSeatIdentities()).toEqual(['myia-po-2024', 'myia-ai-01']);
+    expect(isDesignatedMirrorWriter()).toBe(true);
+    // One name only, when the declaration and the hostname agree.
+    process.env.ROOSYNC_MACHINE_ID = 'MyIA-Ai-01';
+    expect(mirrorWriterSeatIdentities()).toEqual(['myia-ai-01']);
+    expect(isDesignatedMirrorWriter()).toBe(true);
+  });
+
+  test('two names never over-elect: a writer that is neither of them is refused', () => {
+    process.env[MIRROR_WRITER_ENV] = 'myia-po-2025';
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+    process.env.COMPUTERNAME = 'MYIA-AI-01';
+    expect(isDesignatedMirrorWriter()).toBe(false);
+    // An explicit argument is a pure compare: it answers for THAT name, the
+    // host's own names are not consulted.
+    expect(isDesignatedMirrorWriter('myia-po-2025')).toBe(true);
+    expect(isDesignatedMirrorWriter('myia-ai-01')).toBe(false);
   });
 
   test('election ≠ serialisation: the lock rows keep the hostname spelling, whatever the declaration says', () => {
