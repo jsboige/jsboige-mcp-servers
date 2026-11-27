@@ -21,8 +21,17 @@ Grain 2 added the shared logger, which only imports `fs`, `path` and `os`:
 |---|---|
 | `utils/logger` | `servers/roo-state-manager/src/utils/logger.ts` |
 
+Grain 3 added the PG cutover gates, which read only the process environment and
+the backfill completeness marker:
+
+| Module | Source before |
+|---|---|
+| `services/unified-store/pg-flags` | `servers/roo-state-manager/src/services/unified-store/pg-flags.ts` |
+| `services/unified-store/pg-backfill-marker` | `servers/roo-state-manager/src/services/unified-store/pg-backfill-marker.ts` |
+| `services/unified-store/pg-read-gates` | `servers/roo-state-manager/src/services/unified-store/pg-read-gates.ts` |
+
 The remaining trunk modules (`shared-state-path`, `message-helpers`, `server-config`,
-`unified-store/*`, `openai`) stay in the RSM for later grains: their fan-in measured
+`unified-store/*` stores, `openai`) stay in the RSM for later grains: their fan-in measured
 1000+ import sites, which is not reviewable as one change.
 
 ## Consuming it
@@ -45,5 +54,9 @@ npm run build --workspace @vibesync/core   # from the mcps/internal root
 npm run test  --workspace @vibesync/core
 ```
 
-The package has **zero runtime dependencies**; `vitest`, `typescript` and `@types/node`
-are dev-only.
+The package's only runtime dependency is `pg`, imported lazily by
+`pg-backfill-marker` for its one marker lookup; `vitest`, `typescript`, `@types/node`
+and `@types/pg` are dev-only. The workspace lockfile keeps a second copy of `pg` and
+its transitive dependencies under `servers/roo-state-manager/node_modules/` on
+purpose: `ensure-build-fresh.ps1` only reconciles an install under live RSM hosts
+when the lockfile removes nothing (#4918).

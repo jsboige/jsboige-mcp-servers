@@ -53,7 +53,7 @@ import {
   refreshBackfillMarkers,
   resetBackfillMarkerCache,
   setBackfillMarkerState,
-} from '../pg-backfill-marker.js';
+} from '../src/services/unified-store/pg-backfill-marker.js';
 
 const PG_URL = 'postgres://t:t@localhost:5432/x';
 
@@ -258,7 +258,7 @@ describe('backfill completeness marker (#4131)', () => {
     });
 
     test('the channel PG-primary gate stays ON through a failed refresh', async () => {
-      const { isChannelPgPrimaryEnabled, isDashboardPgPrimaryEnabled } = await import('../pg-read-gates.js');
+      const { isChannelPgPrimaryEnabled, isDashboardPgPrimaryEnabled } = await import('../src/services/unified-store/pg-read-gates.js');
       delete process.env.UNIFIED_STORE_CHANNEL_PG_PRIMARY;
       delete process.env.UNIFIED_STORE_DASHBOARD_PG_PRIMARY;
       delete process.env.UNIFIED_STORE_DUAL_WRITE;

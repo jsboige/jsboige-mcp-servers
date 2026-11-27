@@ -28,7 +28,9 @@ const STUBS: Record<string, string> = {
   'utils/shared-state-path.js': `
     export function getSharedStatePath() { return process.env.ROOSYNC_SHARED_PATH; }
   `,
-  'services/unified-store/pg-backfill-marker.js': `
+  // The bundled copy of @vibesync/core a vintage carries (#4918): the script
+  // loads the marker from there, never from the vintage's own tree or the live dist/.
+  'node_modules/@vibesync/core/dist/services/unified-store/pg-backfill-marker.js': `
     import { appendFileSync } from 'node:fs';
     export async function ensureBackfillMarkersFresh(options) {
       appendFileSync(process.env.SEND_CLI_TRACE, 'ensure-start timeoutMs=' + options?.timeoutMs + '\\n');

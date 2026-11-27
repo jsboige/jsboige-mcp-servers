@@ -24,7 +24,7 @@ import {
   perReaderStatus
 } from '../../utils/message-helpers.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
-import { isPgFlagOn } from '../../services/unified-store/pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 
 // Logger instance for manage tool
 const logger: Logger = createLogger('RooSyncManageTool');

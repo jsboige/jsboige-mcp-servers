@@ -40,7 +40,7 @@ import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { isChannelPgPrimary } from './roosync-channel-write.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
-import { isChannelReadPgEnabled } from './pg-read-gates.js';
+import { isChannelReadPgEnabled } from '@vibesync/core/services/unified-store/pg-read-gates';
 import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('roosync-attachment-pg');

@@ -49,7 +49,7 @@ import type { Message } from '../MessageManager.js';
 import type { IUnifiedStoreWriter } from './UnifiedStoreWriter.js';
 import { mapMessageToRow } from './roosync-channel-dual-write.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
-import { isPgFlagOn } from './pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 import { acquireGdriveScanLock } from '../gdrive-scan-lock.js';
 import { createLogger } from '@vibesync/core/utils/logger';
 

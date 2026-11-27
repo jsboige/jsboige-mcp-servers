@@ -34,7 +34,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { createRequire } from 'module';
 import { captureHostEnvKeys, applyEnvFileForNonHostKeys } from './services/host-env-snapshot.js';
 import { recordEmbeddingFileConfig } from './services/embedding-endpoints.js';
-import { isPgFlagOn } from './services/unified-store/pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 // #4352 W2: static import of the participation flags ONLY (dependency-free
 // module). background-services / worker-a-lock stay dynamically imported —
 // the point of the gate is to NOT load them in processes that never entered
@@ -691,7 +691,7 @@ class RooStateManagerServer {
     private async initializeBackfillMarkers(): Promise<void> {
         try {
             const { refreshBackfillMarkers } = await import(
-                './services/unified-store/pg-backfill-marker.js'
+                '@vibesync/core/services/unified-store/pg-backfill-marker'
             );
             await refreshBackfillMarkers();
         } catch (error) {

@@ -78,8 +78,8 @@ import {
   isDashboardPgPrimary,
 } from '../../services/unified-store/roosync-dashboard-store.js';
 import type { ArchivePgGap } from '../../services/unified-store/types.js';
-import { isPgFlagOn, pgFlagState } from '../../services/unified-store/pg-flags.js';
-import { isDashboardReadPgEnabled } from '../../services/unified-store/pg-read-gates.js';
+import { isPgFlagOn, pgFlagState } from '@vibesync/core/services/unified-store/pg-flags';
+import { isDashboardReadPgEnabled } from '@vibesync/core/services/unified-store/pg-read-gates';
 // #4608 — état de condensation durable par clé (roosync_store_meta) : passe
 // morte, issue de passe, horloge de station au-dessus du seuil et contrôle
 // d'atterrissage (verdict ok vs moitié fichier qui n'a pas suivi).

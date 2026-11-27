@@ -41,11 +41,11 @@ import { getUnifiedStoreReader } from './reader-factory.js';
 import { PgUnifiedStoreReader } from './PgUnifiedStoreReader.js';
 import { isPgConnectionTimeout, withColdPoolResume } from './pg-cold-pool-resume.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
-import { isPgFlagOn } from './pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 import {
   isDashboardPgPrimaryEnabled,
   isDashboardReadPgEnabled,
-} from './pg-read-gates.js';
+} from '@vibesync/core/services/unified-store/pg-read-gates';
 import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('roosync-dashboard-store');

@@ -17,7 +17,7 @@
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { NullUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { PgUnifiedStoreReader } from './PgUnifiedStoreReader.js';
-import { isPgFlagOn } from './pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 
 let instance: IUnifiedStoreReader | null = null;
 
