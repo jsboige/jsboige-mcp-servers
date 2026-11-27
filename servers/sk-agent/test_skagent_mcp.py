@@ -12,7 +12,7 @@ async def test_via_mcp():
          "-c", 
          "import asyncio; from sk_agent import list_agents; print(asyncio.run(list_agents()))"],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         timeout=60,
         cwd="D:/dev/roo-extensions/mcps/internal/servers/sk-agent"
     )

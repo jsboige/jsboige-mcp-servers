@@ -197,7 +197,15 @@ def _get_video_info(video_path: str) -> VideoInfo | None:
             "-show_streams",
             video_path,
         ]
-        result = subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30)
+        result = subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+        )
 
         if result.returncode != 0:
             return None

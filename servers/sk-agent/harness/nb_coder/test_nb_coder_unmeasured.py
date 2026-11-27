@@ -32,7 +32,7 @@ def test_split_gates_measured_true_is_ok():
 
 
 def _sh(*cmd, cwd=None):
-    p = subprocess.run(cmd, capture_output=True, text=True, cwd=cwd)
+    p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd)
     assert p.returncode == 0, (cmd, p.stderr)
     return p.stdout
 

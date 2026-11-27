@@ -1158,14 +1158,14 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
     in the repo — only the scratch checkout is discarded); dirty is REFUSED,
     because rebuilding would discard uncommitted work."""
     subprocess.run(["git", "-C", str(repo), "fetch", "origin", "main"],
-                   capture_output=True, text=True, timeout=300)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     origin_main = subprocess.run(["git", "-C", str(repo), "rev-parse", "origin/main"],
-                                 capture_output=True, text=True).stdout.strip()
+                                 capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     if dest.exists() and (dest / ".git").exists() and not fresh:
         head_full = subprocess.run(["git", "-C", str(dest), "rev-parse", "HEAD"],
-                                   capture_output=True, text=True).stdout.strip()
+                                   capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
         dirty = subprocess.run(["git", "-C", str(dest), "status", "--porcelain"],
-                               capture_output=True, text=True).stdout.strip()
+                               capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
         if head_full == origin_main and not dirty:
             return {"path": str(dest), "reused": True, "head": head_full[:9], "ok": True}
         if dirty:
@@ -1177,11 +1177,11 @@ def prepare_worktree(repo: Path, dest: Path, fresh: bool) -> dict:
         # clean but not at origin/main: previous run's branch or stale base -> rebuild
     if dest.exists():
         subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force", str(dest)],
-                       capture_output=True, text=True)
+                       capture_output=True, text=True, encoding="utf-8", errors="replace")
     p = subprocess.run(["git", "-C", str(repo), "worktree", "add", str(dest), "--detach", "origin/main"],
                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300)
     head = subprocess.run(["git", "-C", str(dest), "rev-parse", "--short", "HEAD"],
-                          capture_output=True, text=True).stdout.strip()
+                          capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     return {"path": str(dest), "reused": False, "head": head,
             "ok": p.returncode == 0, "err": (p.stderr or "").strip()[:500]}
 
@@ -1198,7 +1198,7 @@ def restore_worktree(repo: Path, dest: Path, head: str | None) -> dict:
     if not head:
         return {"ok": False, "err": "no worktree head in the trace"}
     subprocess.run(["git", "-C", str(repo), "worktree", "prune"],
-                   capture_output=True, text=True, timeout=120)
+                   capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
     p = subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(dest), head],
                        capture_output=True, text=True, encoding="utf-8", errors="replace",
                        timeout=600)
@@ -1211,7 +1211,7 @@ def engine_tokens() -> dict:
     """Engine-side prompt/generation counters, for a per-pass token delta (CR CoursIA#26534)."""
     try:
         p = subprocess.run(["curl", "-s", "--max-time", "5", ENGINE_METRICS],
-                           capture_output=True, text=True, timeout=10)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=10)
         vals = {}
         for ln in (p.stdout or "").splitlines():
             for key in ("prompt_tokens_total", "generation_tokens_total"):
@@ -7892,7 +7892,7 @@ async def run_revision(args, rec: dict) -> dict:
             return rec
     repo = Path(args.repo)
     origin = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"],
-                            capture_output=True, text=True).stdout.strip()
+                            capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     if "jsboige/CoursIA" not in origin and not args.allow_foreign_origin:
         rec["verdict"] = f"refused-foreign-origin:{origin or 'no-origin'}"
         return rec
@@ -7963,7 +7963,7 @@ async def run(args, rec: dict) -> dict:
     # jsboige/vllm#20250 — right number, wrong repo; multi-remote checkouts also hide this,
     # `git remote -v | head` shows only the alphabetically first remote).
     origin = subprocess.run(["git", "-C", str(repo), "remote", "get-url", "origin"],
-                            capture_output=True, text=True).stdout.strip()
+                            capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.strip()
     rec["repo_origin"] = origin
     if "jsboige/CoursIA" not in origin and not args.allow_foreign_origin:
         rec["verdict"] = f"refused-foreign-origin:{origin or 'no-origin'}"
@@ -8488,7 +8488,7 @@ def _launch_target_gap(args) -> dict | None:
             return None                # an unreadable or stale ref is never an answer
         rev = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
                               "origin/main^{commit}"], capture_output=True, text=True,
-                             timeout=60).stdout.strip()
+                             encoding="utf-8", errors="replace", timeout=60).stdout.strip()
         if not rev:
             return None
         gap = {"origin_main": rev[:10]}

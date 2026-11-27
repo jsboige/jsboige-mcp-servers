@@ -83,7 +83,7 @@ def _run_sync(tmp_path, local, extra_args=(), template=TEMPLATE):
     proc = subprocess.run(
         [sys.executable, str(tmp_path / SCRIPT_NAME), *extra_args],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         cwd=tmp_path,
     )
     return proc, config_path
@@ -465,7 +465,7 @@ def test_missing_local_config_exits_nonzero_with_error():
         proc = subprocess.run(
             [sys.executable, str(tmp / SCRIPT_NAME)],
             capture_output=True,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             cwd=tmp,
         )
         assert proc.returncode == 1

@@ -14,7 +14,7 @@ print(result)
     result = subprocess.run(
         ["D:/dev/roo-extensions/mcps/internal/servers/sk-agent/venv/Scripts/python.exe", "-c", code],
         capture_output=True,
-        text=True,
+        text=True, encoding="utf-8", errors="replace",
         timeout=120,
         cwd="D:/dev/roo-extensions/mcps/internal/servers/sk-agent"
     )

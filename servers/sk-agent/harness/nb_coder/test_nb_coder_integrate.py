@@ -593,7 +593,7 @@ def test_sync_main_aborts_on_foreign_conflict():
         # abort left no merge in progress and our side intact
         p = subprocess.run(["git", "-C", str(wt), "rev-parse", "-q",
                             "--verify", "MERGE_HEAD"],
-                           capture_output=True, text=True)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace")
         assert p.returncode != 0
         assert f.read_text(encoding="utf-8") == "pr side\n"
 
@@ -966,7 +966,7 @@ def _pr_branch_behind_main(td: Path, conflict: bool) -> Path:
 
 def _status(wt: Path) -> str:
     return subprocess.run(["git", "-C", str(wt), "status", "--porcelain"],
-                          capture_output=True, text=True).stdout
+                          capture_output=True, text=True, encoding="utf-8", errors="replace").stdout
 
 
 def _head_subject(wt: Path) -> str:
@@ -997,7 +997,7 @@ def test_sync_main_conflict_merge_concludes_with_the_integration(tmp_path, monke
     assert out["merge"].get("resolved_theirs") == [README_REL]
     assert _status(wt) == ""
     parents = subprocess.run(["git", "-C", str(wt), "log", "-1", "--format=%P"],
-                             capture_output=True, text=True).stdout.split()
+                             capture_output=True, text=True, encoding="utf-8", errors="replace").stdout.split()
     assert len(parents) == 2                            # the merge commit itself
     assert "| main row |" in seen["head_readme"] and "| X-Rust |" in seen["head_readme"]
 
