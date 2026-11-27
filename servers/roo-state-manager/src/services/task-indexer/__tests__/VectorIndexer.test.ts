@@ -551,6 +551,28 @@ describe('VectorIndexer', () => {
 			);
 		});
 
+		// #4928: the per-host count is a cardinality ESTIMATE on purpose. An exact
+		// filtered scan over the served collection (16.3M points measured on ai-01)
+		// is what its caller abandons at 10s (#1199) while the engine keeps scanning
+		// to its own timer -- and the abandoned count opens a 12-15 min read-path
+		// block. The number only feeds verifyQdrantConsistency, compared against a
+		// 25% tolerance, so precision is not needed. Contract: flipping this to
+		// `exact: true` must fail here, not silently restore the block.
+		test('pins the cardinality estimate: exact stays false (#4928)', async () => {
+			vi.useRealTimers();
+			const { countPointsByHostOs } = await import('../VectorIndexer.js');
+
+			mockCount.mockResolvedValue({ count: 12_345 });
+
+			const result = await countPointsByHostOs('win32-x64-MYHOST');
+			expect(result).toBe(12_345);
+			const expectedCollection = process.env.QDRANT_COLLECTION_NAME || 'roo_tasks_semantic_index';
+			expect(mockCount).toHaveBeenCalledWith(
+				expectedCollection,
+				expect.objectContaining({ exact: false })
+			);
+		});
+
 		test('returns 0 on error', async () => {
 			vi.useRealTimers();
 			const { countPointsByHostOs } = await import('../VectorIndexer.js');
