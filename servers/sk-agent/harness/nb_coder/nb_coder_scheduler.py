@@ -116,13 +116,21 @@ ITEM_FIELDS = {
 # answered, met the same refusal one call later. The driver names the refusal bare; `:wall`
 # marks a window wall, probed hourly (PROVIDER_WALL_WAIT_S) rather than waited out on its
 # announced clock.
+# deferred-by-endpoint-unreachable (26/11): the transport to the model endpoint was CUT.
+# Measured 01:27Z on po-2028:claudish (batch o42, CoursIA#28664): the Docker engine of the
+# host restarted mid-run, the proxy came back at 01:28:11Z, and a build call died on
+# `APIConnectionError('Connection error.')` (httpcore2.ReadError). Classed a run failure, it
+# spent the grain's first launch for a refusal the grain never caused. Ordinary backoff: a
+# restart is over in seconds to minutes, and the launches are bounded by --max-attempts.
 PROVIDER_RATE_LIMIT_VERDICT = "deferred-by-provider-rate-limit"
+ENDPOINT_UNREACHABLE_VERDICT = "deferred-by-endpoint-unreachable"
 DEFERRED_VERDICT_PREFIXES = (
     "deferred-by-capacity-gate",
     "deferred-by-claim-timeout",
     "deferred-by-claim-implicit-occupation",
     "deferred-by-github-rate-limit",
     PROVIDER_RATE_LIMIT_VERDICT,
+    ENDPOINT_UNREACHABLE_VERDICT,
 )
 # A reset further than this is not believed: the core bucket refills every hour.
 GITHUB_RESET_MAX_S = 3700.0
