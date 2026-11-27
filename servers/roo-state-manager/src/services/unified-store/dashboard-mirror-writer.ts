@@ -28,6 +28,23 @@
  *   - `*`            → every seat writes again: the kill-switch that restores
  *                      the previous behaviour without a redeployment.
  *
+ * WHAT THE TWO NAMES COST (review round 3, ai-01, 27/11 — measured on a probe).
+ * Reading the declaration at all has a price, and it is NOT the symmetry's:
+ * a seat whose `.env` DECLARES the writer is elected, wherever it runs —
+ * `return [declared]` (the reviewer's own one-line mutant) elects it exactly
+ * the same way. The declaration is not a secondary hint: it is the seat's
+ * identity everywhere else in this store (`author.machineId`, `condensedBy`),
+ * so the election reads the variable the stamps already trust. What the union
+ * ADDS over that mutant is the opposite direction, the designated machine's
+ * own host whose line disagrees (a line no other seat can read before a
+ * merge). What bounds the cost is that a wrong declaration is a configuration
+ * error, visible before it writes: the seat stamps its messages under the same
+ * name, and every mirror write NAMES the divergence (`mirrorWriterDivergence()`,
+ * logged by `dashboard.ts` and the listener CLI) instead of leaving it silent.
+ * On every write, not once per host start: the journal rotates (10 MB a file,
+ * 7 days of retention) and a host lives longer than its first line — a single
+ * line at start would go silent again the day the file is rotated away.
+ *
  * Read at CALL time, never at module load: flipping the variable reaches a
  * live host without a restart (same convention as every bound of this store).
  *
@@ -38,9 +55,9 @@
  * No function here reads, renames or removes an existing ` (N)` copy: those
  * are a user decision (RX169).
  *
- * Dependency-free on purpose (env + process identity only): `dashboard.ts`
- * imports it on the hot append path, and the listener CLI loads it lazily
- * from the served build.
+ * Dependency-free on purpose (env + process identity only): `dashboard.ts` imports it
+ * on the hot append path, and the listener CLI loads it lazily from the
+ * served build.
  */
 
 /** Name of the seat variable. Exported for log lines and restore hints. */
@@ -121,8 +138,15 @@ export function mirrorWriterMachineId(): string {
  * the writer. Read from the declaration alone, the designated machine's own
  * Windows host is never the writer when the `ROOSYNC_MACHINE_ID` line of its
  * `.env` carries another value — a line no other seat can read before a merge
- * (independent review of 27/11), so it must not decide alone. A wrong one of
- * the two names degrades to the right one.
+ * (independent review of 27/11), so it must not decide alone.
+ *
+ * Both senses, said plainly: a wrong DECLARATION degrades to the hostname
+ * (the designated machine's host still publishes), and a hostname that names
+ * another machine — a container id, a renamed box — degrades to the
+ * declaration (a container of the designated machine still publishes). The
+ * same property elects a FOREIGN host whose `.env` declares the writer — the
+ * cost documented in the module header; `mirrorWriterDivergence()` below
+ * makes that case sayable on the write path.
  */
 export function mirrorWriterSeatIdentities(): string[] {
   const declared = mirrorWriterMachineId().trim().toLowerCase();
@@ -144,4 +168,47 @@ export function isDesignatedMirrorWriter(machine?: string): boolean {
   const wanted = writer.toLowerCase();
   const names = machine === undefined ? mirrorWriterSeatIdentities() : [machine];
   return names.some((name) => name.trim().toLowerCase() === wanted);
+}
+
+/**
+ * Why THIS seat's two names disagree, on a seat the writer designates —
+ * `undefined` when the seat answers to one name, is not the writer, or when
+ * `*` hands the mirror to everyone (no election of one seat to speak of).
+ *
+ * `electedBy` is the whole point: a container of the designated machine is
+ * elected by its DECLARATION and that is nominal; a Windows host whose
+ * declaration carries another value is elected by its HOSTNAME, and the
+ * declaration is then a wrong line that also stamps this seat's messages.
+ * A foreign host whose `.env` declares the writer is elected by its
+ * declaration too — that is the cost documented in the module header, and
+ * this record is what lets a journal say it instead of staying silent
+ * (review round 3: the refusal paths already carried `seat`/`host`, the
+ * writing path said nothing).
+ */
+export interface MirrorWriterDivergence {
+  /** Which of the seat's two names `ROOSYNC_DASHBOARD_MIRROR_WRITER` matched. */
+  electedBy: 'declared' | 'hostname';
+  /** The declared identity (`ROOSYNC_MACHINE_ID`, folded; the hostname when nothing is declared). */
+  seat: string;
+  /** The hostname, folded — the second name and the spelling of the lock rows. */
+  host: string;
+  /** The designated writer, folded. */
+  writer: string;
+}
+
+/**
+ * A pure read, with no state: the write paths say it on EVERY mirror write
+ * (module header — the journal rotates, so "once per host" would not stay
+ * readable).
+ */
+export function mirrorWriterDivergence(): MirrorWriterDivergence | undefined {
+  const writer = dashboardMirrorWriter();
+  if (writer === MIRROR_WRITER_ALL) return undefined;
+  const wanted = writer.trim().toLowerCase();
+  const seat = mirrorWriterMachineId().trim().toLowerCase();
+  const host = reconcileLockMachineId().trim().toLowerCase();
+  if (seat === host) return undefined;
+  if (wanted === seat) return { electedBy: 'declared', seat, host, writer: wanted };
+  if (wanted === host) return { electedBy: 'hostname', seat, host, writer: wanted };
+  return undefined;
 }

@@ -1,6 +1,6 @@
 import type { Dashboard } from '../../tools/roosync/dashboard-schemas.js';
 import type { CondenseLockInfo } from '../../tools/roosync/dashboard.js';
-import { withAppendLock, writeDashboardFile } from '../../tools/roosync/dashboard.js';
+import { withAppendLock, writeDashboardFile, mirrorRepairExportGrant } from '../../tools/roosync/dashboard.js';
 
 export const FORK_FILE_RE = /\s\(\d+\)\.md$/;
 
@@ -29,10 +29,12 @@ export async function repairDashboardMirrorFromPg(
       mirrorExportAt,
       // #4596 — le siège a été décidé par la branche `mirrorArmed` du reconcile
       // (seul appelant de production, via le seam `writeMirror`) : cet appel ne
-      // re-teste pas la désignation. Sans ce drapeau, un siège non désigné
+      // re-teste pas la désignation. Sans l'habilitation, un siège non désigné
       // rendrait « réparé » sans écrire, et la moitié GDrive dégradée — le
-      // livrable de cette fonction — cesserait de thrower.
-      mirrorRepairExport: true
+      // livrable de cette fonction — cesserait de thrower. Review round 3 : ce
+      // n'est plus un booléen que tout appelant pouvait poser « pour réparer »,
+      // c'est `mirrorRepairExportGrant()` — `true` ne compile plus.
+      mirrorRepairExport: mirrorRepairExportGrant()
     });
     if (wv.gdriveDegraded) {
       throw new Error(`moitié GDrive dégradée à la réparation du miroir : ${wv.gdriveDegraded}`);

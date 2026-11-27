@@ -365,6 +365,23 @@ async function loadMirrorWriterGuard() {
       writer: String(mod.dashboardMirrorWriter()),
       envName: String(mod.MIRROR_WRITER_ENV),
     };
+    // Review round 3 (ai-01, 27/11): a WRITING seat whose two names disagree
+    // says so — the refusal already names `writer` in the skip reason, the
+    // write said nothing. One process serves one append, so this is said at
+    // each mirrored append; a build without the export (pre-round-3) keeps
+    // its silence.
+    if (mirrorWriterGuard.designated && typeof mod.mirrorWriterDivergence === 'function') {
+      const divergence = mod.mirrorWriterDivergence();
+      if (divergence !== undefined) {
+        console.error(
+          `INFO: [MIRROR-WRITER #4596] ce siège écrit le miroir sous un nom que son hostname ne confirme pas — ` +
+            `élu par ${divergence.electedBy}, déclaré ${divergence.seat}, host ${divergence.host} ; ` +
+            (divergence.electedBy === 'declared'
+              ? 'nominal pour un conteneur de la machine désignée, sinon la ligne ROOSYNC_MACHINE_ID a été recopiée'
+              : 'la déclaration ROOSYNC_MACHINE_ID de ce siège est fausse')
+        );
+      }
+    }
   } catch (err) {
     // Independent review 27/11: the open fallback on "the module itself is
     // absent" is deliberate (pinned by the harness) and stays silent — a host

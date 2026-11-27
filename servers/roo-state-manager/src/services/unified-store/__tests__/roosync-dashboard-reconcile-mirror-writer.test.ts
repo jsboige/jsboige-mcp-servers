@@ -46,6 +46,7 @@ import {
   MIRROR_WRITER_ENV,
   dashboardMirrorWriter,
   isDesignatedMirrorWriter,
+  mirrorWriterDivergence,
   mirrorWriterMachineId,
   mirrorWriterSeatIdentities,
   reconcileLockMachineId,
@@ -224,6 +225,61 @@ describe('#4596 — mirror writer verdict (read at call time)', () => {
     expect(isDesignatedMirrorWriter()).toBe(false);
     process.env[MIRROR_WRITER_ENV] = 'MYIA-PO-2024';
     expect(isDesignatedMirrorWriter()).toBe(true);
+  });
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Round 3 (ai-01, 27/11, COMMENTED) — the union's cost, pinned instead of
+  // argued: the reviewer measured on the real reconcile path that a seat whose
+  // `.env` DECLARES the writer is elected (repair + materialization, lock
+  // asked), where the same host declaring its own name is refused.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  test('a foreign host that DECLARES the writer is elected — the cost of READING the declaration, not of the union (round 3)', () => {
+    // Myia-po-2024 with `ROOSYNC_MACHINE_ID=myia-ai-01`, default writer. The
+    // asymmetry lead of the review (`return [declared]` — accept the hostname
+    // ONLY when nothing is declared) elects this very host identically: its
+    // mutant was run against this file and THIS test stays green under it.
+    // The over-election is the price of reading the declaration at all — the
+    // 14:21Z hole (a container has no other name) — and the declaration is
+    // also what stamps this store's messages, so one identity, one writer.
+    // What the union adds over that mutant is the OTHER direction (the T2
+    // test above), which tour 2 asked for. Pinned as documented behaviour.
+    delete process.env.MIRROR_WRITER_ENV;
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+    process.env.COMPUTERNAME = 'MYIA-PO-2024';
+    expect(isDesignatedMirrorWriter()).toBe(true);
+    // …and the write path can now say WHO elected, on WHICH host.
+    expect(mirrorWriterDivergence()).toEqual({
+      electedBy: 'declared',
+      seat: 'myia-ai-01',
+      host: 'myia-po-2024',
+      writer: 'myia-ai-01',
+    });
+  });
+
+  test('the divergence names the electing name — and stays silent where there is nothing to say', () => {
+    delete process.env[MIRROR_WRITER_ENV];
+    // One name only: the seat and its hostname agree, nothing diverges.
+    process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+    process.env.COMPUTERNAME = 'MYIA-AI-01';
+    expect(mirrorWriterDivergence()).toBeUndefined();
+    // The designated machine's host, elected by its NAME while a line of its
+    // `.env` says another machine: that line is the wrong one — and it also
+    // stamps this seat's messages.
+    process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+    expect(mirrorWriterDivergence()).toEqual({
+      electedBy: 'hostname',
+      seat: 'myia-po-2024',
+      host: 'myia-ai-01',
+      writer: 'myia-ai-01',
+    });
+    // A seat neither of whose names is the writer: the refusal path already
+    // says why, there is no writing seat to explain.
+    process.env[MIRROR_WRITER_ENV] = 'myia-po-2025';
+    expect(mirrorWriterDivergence()).toBeUndefined();
+    // `*` elects no seat in particular.
+    process.env[MIRROR_WRITER_ENV] = MIRROR_WRITER_ALL;
+    expect(mirrorWriterDivergence()).toBeUndefined();
   });
 });
 

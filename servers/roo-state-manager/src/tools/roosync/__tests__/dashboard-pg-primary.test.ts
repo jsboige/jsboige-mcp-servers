@@ -80,6 +80,7 @@ vi.mock('@/services/unified-store/roosync-dashboard-store', () => ({
 
 import { roosyncDashboard, getAppendLockPath, writeDashboardFile } from '../dashboard.js';
 import { MIRROR_SKIP_REASON_NOT_DESIGNATED } from '@/services/unified-store/dashboard-mirror-writer';
+import { Logger } from '@vibesync/core/utils/logger';
 import { isDashboardReadPgEnabled } from '@/services/unified-store/pg-read-gates';
 import { setBackfillMarkerState } from '@/services/unified-store/pg-backfill-marker';
 
@@ -1059,6 +1060,80 @@ describe('#4596 — writeDashboardFile n\'exporte le miroir que sur le siège d�
     expect(existsSync(dashboardPath())).toBe(true);
   });
 
+  it('un hôte qui DÉCLARE l’éditeur écrit — coût assumé, et le chemin d’écriture le dit à chaque écriture (round 3)', async () => {
+    // La sonde de la revue, à CETTE couche : MYIA-PO-2024 dont le `.env`
+    // déclare myia-ai-01 écrit le fichier Drive. Épinglé comme comportement
+    // documenté — la déclaration est l'identité du siège pour les estampilles
+    // aussi, et `return [declared]` (la piste d'asymétrie de la revue) l'élit
+    // à l'identique ; le gain de l'union est l'autre sens. Ce que ce test
+    // épingle en plus est le remède du round 3 : le chemin qui ÉCRIT nomme la
+    // divergence dans le journal — à chaque écriture, pas une fois par hôte
+    // (le journal tourne : 10 Mo par fichier, 7 jours de rétention).
+    const infoSpy = vi.spyOn(Logger.prototype, 'info');
+    try {
+      delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+      process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+      process.env.COMPUTERNAME = 'MYIA-PO-2024';
+
+      for (let write = 1; write <= 2; write++) {
+        const wv = await writeDashboardFile(key, minimalDashboard());
+        expect(wv.gdriveSkipped).toBeFalsy();
+        expect(existsSync(dashboardPath())).toBe(true);
+      }
+
+      const said = () => infoSpy.mock.calls.filter((c) => String(c[0]).includes('[MIRROR-WRITER #4596]'));
+      // Deux écritures, deux lignes : la divergence ne s'éteint pas avec la
+      // rotation du journal.
+      expect(said()).toHaveLength(2);
+      for (const call of said()) {
+        expect(call[1]).toMatchObject({
+          key,
+          writer: 'myia-ai-01',
+          electedBy: 'declared',
+          seat: 'myia-ai-01',
+          host: 'myia-po-2024',
+        });
+      }
+
+      // Contre-exigence (pas de bruit) : un siège dont les deux noms
+      // s'accordent écrit sans rien avoir à dire — la ligne n'existe que sur
+      // un siège qui a une divergence à expliquer.
+      process.env.ROOSYNC_MACHINE_ID = 'myia-ai-01';
+      process.env.COMPUTERNAME = 'MYIA-AI-01';
+      const agreeing = await writeDashboardFile(key, minimalDashboard());
+      expect(agreeing.gdriveSkipped).toBeFalsy();
+      expect(said()).toHaveLength(2);
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
+
+  it('le journal distingue les deux lectures : élu par le HOSTNAME, la déclaration est la fautive (round 3)', async () => {
+    // L'autre sens de la divergence — celui que l'union a apporté au tour 2 :
+    // la machine désignée, élue par son nom, avec une ligne
+    // `ROOSYNC_MACHINE_ID` qui dit une autre machine. La ligne du journal doit
+    // nommer le HOSTNAME comme nom élu, sinon les deux lectures se ressemblent.
+    const infoSpy = vi.spyOn(Logger.prototype, 'info');
+    try {
+      delete process.env.ROOSYNC_DASHBOARD_MIRROR_WRITER;
+      process.env.ROOSYNC_MACHINE_ID = 'myia-po-2024';
+      process.env.COMPUTERNAME = 'MYIA-AI-01';
+
+      const wv = await writeDashboardFile(key, minimalDashboard());
+
+      expect(wv.gdriveSkipped).toBeFalsy();
+      const said = infoSpy.mock.calls.filter((c) => String(c[0]).includes('[MIRROR-WRITER #4596]'));
+      expect(said).toHaveLength(1);
+      expect(said[0][1]).toMatchObject({
+        electedBy: 'hostname',
+        seat: 'myia-po-2024',
+        host: 'myia-ai-01',
+        writer: 'myia-ai-01',
+      });
+    } finally {
+      infoSpy.mockRestore();
+    }
+  });
   it('l\'hôte NOMMÉ comme l\'éditeur publie même si sa déclaration dit autre chose (revue indépendante 27/11)', async () => {
     // Le défaut nomme une MACHINE : son hôte Windows reste l'éditeur quand la
     // ligne `ROOSYNC_MACHINE_ID` de son `.env` porte une autre valeur — ligne

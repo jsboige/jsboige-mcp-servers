@@ -82,6 +82,7 @@ import { isPgFlagOn, pgFlagState } from '../../services/unified-store/pg-flags.j
 import {
   dashboardMirrorWriter,
   isDesignatedMirrorWriter,
+  mirrorWriterDivergence,
   mirrorWriterMachineId,
   reconcileLockMachineId,
   MIRROR_WRITER_ALL,
@@ -3276,6 +3277,35 @@ function logForkSuspicion(key: string, filePath: string, wv: WriteVerifyResult):
 }
 
 /**
+ * #4596 — review round 3 (ai-01, 27/11). Les chemins de REFUS nomment déjà
+ * `seat` et `host` ; le chemin qui ÉCRIT ne disait rien quand les deux noms du
+ * siège divergent. Un siège désigné dont la déclaration et le hostname ne
+ * disent pas la même machine le dit ici, à CHAQUE écriture du miroir — le
+ * journal tourne (10 Mo par fichier, 7 jours de rétention), une seule ligne au
+ * démarrage de l'hôte repartirait au silence dès la rotation. Rien à dire sur
+ * un siège dont les deux noms s'accordent : la ligne n'existe que sur un siège
+ * qui a quelque chose à expliquer. `declared` : cas nominal d'un conteneur de
+ * la machine désignée, et aussi le cas d'un hôte étranger dont le `.env` a
+ * recopié la ligne — le coût écrit dans l'en-tête de `dashboard-mirror-writer`.
+ * `hostname` : la machine désignée par son nom, avec une déclaration fausse
+ * qui estampille aussi ses messages.
+ */
+function logMirrorWriterDivergence(key: string): void {
+  const divergence = mirrorWriterDivergence();
+  if (divergence === undefined) return;
+  logger.info('[MIRROR-WRITER #4596] ce siège écrit le miroir sous un nom que son hostname ne confirme pas', {
+    key,
+    writer: divergence.writer,
+    electedBy: divergence.electedBy,
+    seat: divergence.seat,
+    host: divergence.host,
+    note: divergence.electedBy === 'declared'
+      ? 'nominal pour un conteneur de la machine désignée ; sinon la ligne ROOSYNC_MACHINE_ID de ce siège a été recopiée — la corriger'
+      : 'la déclaration ROOSYNC_MACHINE_ID de ce siège est fausse : le hostname l’a élu, et la déclaration estampille ses messages — la corriger'
+  });
+}
+
+/**
  * #3774 critère 2 — vérifie l'écriture sur le substrat qui fait **autorité** :
  * le store PG, que la flotte lit en primaire (`UNIFIED_STORE_DASHBOARD_READ_PG`),
  * et non la seule projection `.md` (arbitrage : « toute réparation par
@@ -3550,6 +3580,28 @@ async function runGdriveFullWriteHalf(
   }, writeStartedAtMs, landedIds);
 }
 
+// #4596 — review round 3 (mineur, ai-01 27/11) : `mirrorRepairExport` était un
+// booléen — tout appelant TypeScript pouvait lever la désignation en posant
+// `true` « pour réparer ». L'habilitation est un type à marque : `true` ne
+// compile plus, et la seule porte est `mirrorRepairExportGrant()`.
+const mirrorRepairExportBrand: unique symbol = Symbol('dashboard.mirrorRepairExport');
+
+/** #4596 — « la désignation a été décidée plus haut » : cf. `writeDashboardFile`. */
+export interface MirrorRepairExportGrant {
+  readonly [mirrorRepairExportBrand]: true;
+}
+
+/**
+ * #4596 — the capability carried by the reconcile's repair export
+ * (`repairDashboardMirrorFromPg`, the only production holder): its seat was
+ * decided by the `mirrorArmed` branch BEFORE the fleet lock was asked, and
+ * this export's file is its deliverable. Not a flag any caller may raise.
+ */
+export function mirrorRepairExportGrant(): MirrorRepairExportGrant {
+  const grant: MirrorRepairExportGrant = { [mirrorRepairExportBrand]: true };
+  return grant;
+}
+
 /**
  * Écrit un dashboard dans le stockage au format Markdown avec frontmatter YAML
  */
@@ -3570,12 +3622,13 @@ export async function writeDashboardFile(
   // désignation ici ne renforcerait rien : cela rendrait injoignable le contrat
   // de cette fonction, dont le FICHIER est le livrable (une moitié GDrive
   // dégradée doit thrower, cf. `dashboard-mirror-repair.test.ts`) — un siège non
-  // désigné rendrait « réparé » sans avoir rien écrit. Le drapeau dit que la
-  // décision a eu lieu plus haut, il ne dispense de rien.
+  // désigné rendrait « réparé » sans avoir rien écrit. L'habilitation dit que
+  // la décision a eu lieu plus haut, elle ne dispense de rien — et le type
+  // l'empêche d'être posée par un booléen (review round 3).
   internal?: {
     pgPrimaryPreWritten?: boolean;
     mirrorExportAt?: string;
-    mirrorRepairExport?: boolean;
+    mirrorRepairExport?: MirrorRepairExportGrant;
   }
 ): Promise<WriteVerifyResult> {
   // #3584 — masquer AVANT toute persistance : ce choke point alimente à la fois le
@@ -3680,7 +3733,7 @@ export async function writeDashboardFile(
       // fichier est la seule surface — et l'export de réparation du reconcile
       // (`mirrorRepairExport`), dont la désignation est tenue par sa branche
       // `mirrorArmed` : re-tester ici rendrait son contrat de throw injoignable.
-      if (!isDesignatedMirrorWriter() && internal?.mirrorRepairExport !== true) {
+      if (!isDesignatedMirrorWriter() && internal?.mirrorRepairExport === undefined) {
         logger.info('[MIRROR-EXPORT #4596] miroir fichier non écrit — ce siège n’est pas l’écrivain désigné du miroir', {
           key,
           writer: dashboardMirrorWriter(),
@@ -3702,6 +3755,10 @@ export async function writeDashboardFile(
         if (wv.forkSuspected) logForkSuspicion(key, filePath, wv);
         return wv;
       }
+      // #4596 — review round 3 : le siège écrit. Si ses deux noms divergent
+      // (dont via l'habilitation de réparation, qui passe la garde ci-dessus),
+      // c'est dit ici, à chaque écriture du miroir — pas seulement au refus.
+      logMirrorWriterDivergence(key);
       // #4131 G-MES — ici seulement, le fichier est le miroir d'une écriture PG
       // déjà tenue : le marqueur est posé à l'instant du write (la fenêtre PG
       // peut avoir duré — l'écart mtime↔stamp doit rester celui de l'export).
@@ -3999,6 +4056,14 @@ async function appendDashboardIncremental(
   // jamais de message perdu au nom d'un défaut.
   const skipFileMirror =
     fileMirrorDeferrable && (!appendMirrorEnabled || !mirrorWriterDesignated) && pgPrimaryOk;
+  // #4596 — review round 3 : quand cet append ÉCRIT réellement le miroir (le
+  // mode rallumé par un opérateur, sur le siège désigné, PG tenant l'append),
+  // la divergence des deux noms du siège est dite — à chaque miroir écrit,
+  // comme sur le chemin non-append. Un append dont le fichier est la seule
+  // surface (PG en échec) n'écrit pas un miroir et ne dit rien.
+  if (fileMirrorDeferrable && appendMirrorEnabled && mirrorWriterDesignated && pgPrimaryOk) {
+    logMirrorWriterDivergence(key);
+  }
   if (skipFileMirror && appendMirrorEnabled) {
     // #4596 — only the explicit request reaches this line: the default path
     // keeps its own #4131 log below, unchanged on every seat.
