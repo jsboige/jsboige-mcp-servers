@@ -18,7 +18,8 @@ jupyter-client>=8.3.0
 ipykernel>=6.25.0
 
 # Tests E2E (niveau 3) - Serveur MCP complet
-mcp>=1.0.0
+# 1.x obligatoire : mcp.server.fastmcp (renomme MCPServer en 2.x)
+mcp>=1.0.0,<2
 
 # Gestion des notebooks et kernels
 notebook>=6.5.4

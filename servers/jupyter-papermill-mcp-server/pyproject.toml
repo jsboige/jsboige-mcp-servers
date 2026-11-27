@@ -30,8 +30,11 @@ classifiers = [
 
 # Core dependencies
 dependencies = [
-    # MCP Framework
-    "mcp>=1.0.0",
+    # MCP Framework — the 1.x API is load-bearing: the server imports
+    # mcp.server.fastmcp, renamed MCPServer in 2.x. Without the ceiling a fresh
+    # install resolves 2.x and dies at import, so a seat's papermill fallback
+    # goes deaf at provisioning time instead of failing where the cause is.
+    "mcp>=1.0.0,<2",
     
     # Jupyter ecosystem
     "jupyter-client>=7.0.0",
