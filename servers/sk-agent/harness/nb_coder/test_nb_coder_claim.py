@@ -689,3 +689,265 @@ def test_no_live_lane_claim_keeps_the_narrow_write(monkeypatch, tmp_path):
     argv = seen["argv"]
     assert argv[argv.index("--paths") + 1:argv.index("--claim")] == [MGS28]
     assert "scope" not in res and res["verdict"] is None
+
+
+# ---------------------------------------------------------------- 25/11: the occupation belt
+# The guard's IMPLICIT leg keeps, for a lane that already holds its claim, only the open
+# PRs ANTERIOR to it (CoursIA scripts/check_lane_claim.py 6076-6099, #26751). On
+# CoursIA#27130, PR #28250 -- opened after the lane's claim -- carried the five targets
+# of lot 2 and never reached `implicit_occupation`. The belt hands implicit_verdict what
+# the guard's own reader answers WITHOUT the date filter. Its contract (ai-01:vllm, 25/11):
+# not a second guard -- it adds facts, refuses nothing itself, is bounded, and says so
+# when it is down. Condition of removal: harness/README.md, Requirements.
+BELT_LANE = "myia-po-2028:claudish"
+LOT2 = "MyIA.AI.Notebooks/Sudoku/Sudoku-09-GraphColoring-Rust.ipynb"
+LOT2_OTHER = ("MyIA.AI.Notebooks/Search/Part1-Foundations/"
+              "Search-01-StateSpace-Rust.ipynb")
+
+# A stand-in for the guard's reader: the organ's reference predicate verbatim
+# (check_lane_claim.py 2991) and its own-lane exclusion, nothing else. It proves the
+# belt's PLUMBING here; the real reader is run by the test that names it, below.
+BELT_GUARD = r'''\
+import re
+_PR_ISSUE_REF_RE = re.compile(
+    r"(?i)\b(?:closes|fixes|refs|see|resolves|part\s+of|part-of)\s*"
+    r"#(\d+)\b|\B#(\d+)\b"
+)
+
+
+def _find_open_prs_referencing_issue(issue_number, my_lane, prs=None, threshold=None):
+    out = []
+    for pr in prs or []:
+        body = pr.get("body") or ""
+        lane = re.search(r"(?m)\blane[:\s]+(\S+)", body)
+        cited = {int(m.group(1) or m.group(2)) for m in _PR_ISSUE_REF_RE.finditer(body)}
+        if issue_number not in cited or (lane and lane.group(1) == my_lane):
+            continue
+        out.append({"number": pr["number"], "lane": lane.group(1) if lane else None,
+                    "files": [f["path"] for f in pr.get("files") or []]})
+    return sorted(out, key=lambda d: d["number"])
+'''
+
+
+def _belt_pr(number, body, title="", created="2026-11-25T12:40:00Z"):
+    """A PR as the REST listing carries it."""
+    return {"number": number, "title": title, "body": body, "created_at": created}
+
+
+def _belt_28250():
+    """The incident: another lane's PR, opened 25/11 12:40Z (after the lane's claim of
+    20/11 18:25Z), citing the lot issue. Its title and its branch carry no notebook name."""
+    return _belt_pr(28250, "Lot 2.\n\n[DELIVERED] lane myia-po-2024:CoursIA-2 -- five ports\n\n"
+                           "Closes #27130", title="feat: five Rust ports")
+
+
+def _belt_repo(tmp_path, monkeypatch, pages, files_by_number, fail=None, guard=BELT_GUARD):
+    """A checkout whose guard is `guard`, and a `gh` that answers from canned REST
+    documents. `fail` maps a URL fragment to the rc that call dies with."""
+    (tmp_path / "scripts").mkdir(exist_ok=True)
+    if guard is not None:
+        (tmp_path / "scripts" / "check_lane_claim.py").write_text(guard, encoding="utf-8")
+    calls = []
+
+    def fake_gh(argv, token=None, timeout=60):
+        url = argv[-1]
+        calls.append(url)
+        for frag, rc in (fail or {}).items():
+            if frag in url:
+                return rc, f"gh: {url} (HTTP 403)"
+        import json
+        if "/files?" in url:
+            number = int(url.rsplit("/", 2)[1])
+            return 0, json.dumps([{"filename": f} for f in files_by_number.get(number, [])])
+        return 0, json.dumps(pages[int(url.rsplit("page=", 1)[1]) - 1])
+
+    monkeypatch.setattr(nbcd, "gh", fake_gh)
+    return calls
+
+
+def _belt_guard(monkeypatch, rc, implicit):
+    """The guard's PROCESS: a JSON summary that lists only `implicit` (the PRs anterior to
+    the claim), then its verdict lines."""
+    import json
+    from types import SimpleNamespace
+    out = json.dumps({"my_lane": BELT_LANE, "active_claims": {},
+                      "implicit_occupation": implicit}) + f"\nIMPLICIT rc={rc}\n"
+    monkeypatch.setattr(nbcd.subprocess, "run",
+                        lambda argv, **kw: SimpleNamespace(returncode=rc, stdout=out, stderr=""))
+
+
+def test_belt_defers_on_a_pr_posterior_to_the_claim(monkeypatch, tmp_path):
+    """CoursIA#27130: the lane's claim predates PR #28250. The guard's summary carries the
+    anterior PR only; the posterior one -- disjoint from this notebook too -- is now named
+    by the deferral instead of being invisible to it."""
+    calls = _belt_repo(
+        tmp_path, monkeypatch,
+        [[_belt_pr(28500, "closes #27130\nlane myia-po-2024:CoursIA-2", created="2026-11-10T10:00:00Z"),
+          _belt_28250()]],
+        {28500: [LOT2_OTHER], 28250: [LOT2_OTHER, "MyIA.AI.Notebooks/GameTheory/README.md"]})
+    _belt_guard(monkeypatch, 3, [{"number": 28500, "lane": "myia-po-2024:CoursIA-2",
+                                  "files": ["MyIA.AI.Notebooks/Search/README.md"]}])
+    cc = nbcd.check_claim(tmp_path, 27130, BELT_LANE, LOT2)
+    assert nbcd.claim_verdict(cc) == "deferred-by-claim-implicit-occupation:#28500,#28250"
+    assert [i["number"] for i in cc["implicit"]] == [28500, 28250]
+    assert "source" not in cc["implicit"][0] and cc["implicit"][1]["source"] == "belt"
+    assert cc["occupation_check"] == {
+        "status": "ok", "listing_truncated": False, "listed": 2,
+        "citing": 2, "read": 2, "unread": 0, "added": [28250]}
+    assert len(calls) == 3 and calls[0].endswith("page=1")
+
+
+def test_belt_names_the_pr_that_holds_the_notebook(monkeypatch, tmp_path, capsys):
+    """The same posterior PR with the notebook among its files: the one decision point
+    refuses, and its list says on which PR -- a refusal that names nothing teaches no one."""
+    _belt_repo(tmp_path, monkeypatch, [[_belt_28250()]], {28250: [LOT2, "MyIA.AI.Notebooks/Sudoku/README.md"]})
+    _belt_guard(monkeypatch, 3, [])
+    cc = nbcd.check_claim(tmp_path, 27130, BELT_LANE, LOT2)
+    assert nbcd.claim_verdict(cc) == "refused-claim-implicit-occupation"
+    assert [i["number"] for i in cc["implicit"]] == [28250]
+    assert cc["implicit"][0]["touches_notebook"] is True
+    assert cc["implicit"][0]["file_count"] == 2
+    assert "[claim] occupation_check: ok (added=[28250])" in capsys.readouterr().err
+
+
+def test_belt_never_loosens_the_guard_own_verdict(monkeypatch, tmp_path):
+    """The guard's list already refuses on an anterior PR; a disjoint posterior one
+    changes nothing. Entries are added, the guard's own are never rewritten."""
+    _belt_repo(tmp_path, monkeypatch, [[_belt_28250()]], {28250: [LOT2_OTHER]})
+    _belt_guard(monkeypatch, 3, [{"number": 28500, "lane": "x", "files": [LOT2]}])
+    cc = nbcd.check_claim(tmp_path, 27130, BELT_LANE, LOT2)
+    assert nbcd.claim_verdict(cc) == "refused-claim-implicit-occupation"
+    assert cc["implicit"][0]["files"] == [LOT2] and "source" not in cc["implicit"][0]
+
+
+def test_belt_does_not_add_a_pr_the_guard_already_reports(monkeypatch, tmp_path):
+    _belt_repo(tmp_path, monkeypatch, [[_belt_28250()]], {28250: [LOT2_OTHER]})
+    _belt_guard(monkeypatch, 3, [{"number": 28250, "lane": "myia-po-2024:CoursIA-2",
+                                  "files": [LOT2_OTHER]}])
+    cc = nbcd.check_claim(tmp_path, 27130, BELT_LANE, LOT2)
+    assert nbcd.claim_verdict(cc) == "deferred-by-claim-implicit-occupation:#28250"
+    assert len(cc["implicit"]) == 1 and cc["occupation_check"]["added"] == []
+
+
+def test_belt_refuses_nothing_it_did_not_read(monkeypatch, tmp_path):
+    """Over the cap, or no diff at all: not added -- no refusal can come from the belt's
+    own bound. What WAS read is added, and the trace counts the rest."""
+    cap = nbcd.OCCUPATION_PR_CAP
+    prs = [_belt_pr(28200 + i, f"refs #27130\nlane other:{i}") for i in range(cap + 5)]
+    files = {28200 + i: ["MyIA.AI.Notebooks/Other/N.ipynb"] for i in range(cap)}
+    files[28200] = []                       # read: this PR has no diff at all
+    calls = _belt_repo(tmp_path, monkeypatch, [prs], files)
+    _belt_guard(monkeypatch, 3, [])
+    cc = nbcd.check_claim(tmp_path, 27130, BELT_LANE, LOT2)
+    files_calls = [c for c in calls if "/files?" in c]
+    assert len(files_calls) == cap and files_calls[-1].endswith(f"pulls/{28199 + cap}/files?per_page=100")
+    assert [i["number"] for i in cc["implicit"]] == list(range(28201, 28200 + cap))
+    assert cc["occupation_check"]["unread"] == 6
+    assert nbcd.claim_verdict(cc) == nbcd.CLAIM_IMPLICIT_VERDICT + ":" + ",".join(
+        f"#{i}" for i in range(28201, 28200 + cap))
+
+
+@pytest.mark.parametrize("dead", ["pulls?state=open", "/files?"])
+def test_belt_failure_adds_nothing_and_says_so(monkeypatch, tmp_path, capsys, dead):
+    """A dead REST leg is not a verdict: the guard's own list stands, and the trace line
+    says the belt was down -- no refusal on a broken instrument, no silent green."""
+    _belt_repo(tmp_path, monkeypatch, [[_belt_28250()]], {28250: [LOT2]}, fail={dead: 1})
+    _belt_guard(monkeypatch, 3, [{"number": 28500, "lane": "x", "files": [LOT2_OTHER]}])
+    cc = nbcd.check_claim(tmp_path, 27130, BELT_LANE, LOT2)
+    assert nbcd.claim_verdict(cc) == "deferred-by-claim-implicit-occupation:#28500"
+    assert cc["occupation_check"]["status"] == "unavailable"
+    assert cc["occupation_check"]["added"] == [] and [i["number"] for i in cc["implicit"]] == [28500]
+    assert cc["occupation_check"]["error"].startswith("OSError: gh repos/")
+    assert "[claim] occupation_check: unavailable (error: OSError" in capsys.readouterr().err
+
+
+def test_belt_runs_on_rc3_only_and_never_from_json(monkeypatch, tmp_path):
+    """rc=0 is the nominal path (no second guard there); `--from-json` is an offline
+    witness that must read no live GitHub. Neither spends a single REST call."""
+    for rc, from_json in ((0, None), (1, None), (2, None), (3, "witness.json")):
+        calls = _belt_repo(tmp_path, monkeypatch, [[_belt_28250()]], {28250: [LOT2]})
+        _belt_guard(monkeypatch, rc, [{"number": 28250, "lane": "x", "files": [LOT2]}])
+        cc = nbcd.check_claim(tmp_path, 27130, BELT_LANE, LOT2, from_json=from_json)
+        post = nbcd.post_claim(tmp_path, 27130, BELT_LANE, "witness", LOT2, from_json=from_json)
+        assert calls == [] and "occupation_check" not in cc and "occupation_check" not in post
+        if rc == 3:        # the guard's own list still decides, as before the belt
+            assert nbcd.claim_verdict(cc) == "refused-claim-implicit-occupation"
+
+
+def test_belt_feeds_the_write_leg_too(monkeypatch, tmp_path):
+    """The WRITE leg resumes an old claim as readily as the check reads one: same feed."""
+    _belt_repo(tmp_path, monkeypatch, [[_belt_28250()]], {28250: [LOT2]})
+    _belt_guard(monkeypatch, 3, [])
+    post = nbcd.post_claim(tmp_path, 27130, BELT_LANE, "witness", LOT2)
+    assert post["rc"] == 3 and [i["number"] for i in post["implicit"]] == [28250]
+    assert nbcd.implicit_verdict(post) == "refused-claim-implicit-occupation"
+
+
+def test_belt_reads_bodies_and_files_never_titles(monkeypatch, tmp_path):
+    """277 open PRs on 25/11 = three REST pages, all read. A PR occupies by its BODY and
+    its FILES: a title that names the notebook without citing the issue is nothing, and
+    the lane's own PR is not an occupant."""
+    pages = [[_belt_pr(27000 + i, f"refs #{9000 + i}\nlane other:{i}") for i in range(100)],
+             [_belt_pr(27100 + i, "no reference at all") for i in range(100)],
+             [_belt_28250(),
+              _belt_pr(28251, "lane other:9", title=f"twin of {LOT2}"),
+              _belt_pr(28252, f"[DELIVERED] lane {BELT_LANE} -- ours\n\nCloses #27130")]]
+    _belt_repo(tmp_path, monkeypatch, pages, {28250: [LOT2]})
+    belt = nbcd.occupation_belt(tmp_path, 27130, BELT_LANE, LOT2)
+    assert belt["status"] == "ok" and belt["listing_truncated"] is False
+    assert belt["listed"] == 203 and belt["citing"] == 1 and belt["unread"] == 0
+    assert [(f["number"], f["lane"], f["touches_notebook"]) for f in belt["findings"]] == [
+        (28250, "myia-po-2024:CoursIA-2", True)]
+
+
+def test_belt_out_of_budget_or_without_a_reader_makes_no_call(monkeypatch, tmp_path):
+    """No REST call leaves without something to answer it: an exhausted budget, a guard
+    with no reader (renamed symbol), one that cannot even be loaded."""
+    budget = tmp_path / "budget"
+    budget.mkdir()
+    monkeypatch.setattr(nbcd, "OCCUPATION_BUDGET_S", 0)
+    calls = _belt_repo(budget, monkeypatch, [[]], {})
+    out = nbcd.occupation_belt(budget, 27130, BELT_LANE, LOT2)
+    assert out["status"] == "unavailable" and out["error"].startswith("TimeoutError")
+    monkeypatch.setattr(nbcd, "OCCUPATION_BUDGET_S", 120)
+    for i, guard in enumerate(("X = 1\n", "raise SystemExit(3)\n", "def broken(:\n")):
+        home = tmp_path / f"guard{i}"
+        home.mkdir()
+        calls = _belt_repo(home, monkeypatch, [[]], {}, guard=guard)
+        out = nbcd.occupation_belt(home, 27130, BELT_LANE, LOT2)
+        assert out["status"] == "unavailable" and out["error"].split(":")[0] == (
+            "AttributeError", "ImportError", "SyntaxError")[i]
+        assert calls == []
+    assert "check_lane_claim" not in sys.modules
+    assert not any(p.startswith(str(tmp_path)) for p in sys.path)
+
+
+def test_belt_against_the_real_guard_reader(monkeypatch, tmp_path):
+    """The stand-in above proves the plumbing; this one runs the REAL reader of a CoursIA
+    checkout (copied, so the test reads no git state), so a renamed symbol or a changed
+    `prs` seam fails HERE, on any seat that has the checkout, instead of answering
+    `unavailable` in production. Skipped where there is no checkout (CI)."""
+    import os
+    import shutil
+    repo = Path(os.environ.get("NBCODER_TEST_COURSIA_REPO", "D:/dev/CoursIA"))
+    names = ("check_lane_claim.py", "grain_tag.py", "claim_cap_advice.py")
+    if not all((repo / "scripts" / name).is_file() for name in names):
+        pytest.skip("no CoursIA checkout on this seat")
+    (tmp_path / "scripts").mkdir()
+    for name in names:
+        shutil.copyfile(repo / "scripts" / name, tmp_path / "scripts" / name)
+    pages = [[_belt_pr(1, f"lane {BELT_LANE} -- ours\n\nCloses #27130"),
+              _belt_pr(28250, "Lot 2.\n\n[DELIVERED] lane myia-po-2024:CoursIA-2 -- five ports\n\n"
+                              "Closes #27130"),
+              _belt_pr(28251, "lane myia-po-2024:CoursIA-2 -- a long list\n\n" + " ".join(
+                  f"#{n}" for n in range(27140, 27160)) + " -- part of #27130")]]
+    _belt_repo(tmp_path, monkeypatch, pages, {28250: [LOT2, "MyIA.AI.Notebooks/Sudoku/README.md"]},
+               guard=None)
+    try:
+        belt = nbcd.occupation_belt(tmp_path, 27130, BELT_LANE, LOT2)
+    finally:
+        for name in ("grain_tag", "claim_cap_advice"):     # the guard's siblings, cached
+            sys.modules.pop(name, None)
+    assert belt["status"] == "ok" and belt["citing"] == 1, belt
+    assert [(f["number"], f["lane"], f["touches_notebook"], f["source"])
+            for f in belt["findings"]] == [(28250, "myia-po-2024:CoursIA-2", True, "belt")]

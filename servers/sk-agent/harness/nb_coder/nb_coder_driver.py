@@ -449,7 +449,10 @@ def check_claim(repo: Path, n: int, lane: str, notebook: str,
     if p is None:
         return {"ok": None, "rc": None, "timed_out": True,
                 "error": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
-    return {"ok": p.returncode == 0, **_guard_result(p, notebook)}
+    res = {"ok": p.returncode == 0, **_guard_result(p, notebook)}
+    if res["rc"] == 3 and not from_json:
+        feed_occupation(repo, n, lane, notebook, res)
+    return res
 
 
 # The guard reads GitHub (issue thread, open PRs, their diffs): 44 s for one scoped check
@@ -535,20 +538,202 @@ def _guard_result(p, notebook: str) -> dict:
         }
     if p.returncode == 3:
         target = _norm_rel(notebook)
-        implicit = []
-        for pr in doc.get("implicit_occupation") or []:
-            if not isinstance(pr, dict):
-                continue
-            files = [_norm_rel(f) for f in (pr.get("files") or []) if isinstance(f, str)]
-            implicit.append({
-                "number": pr.get("number"), "lane": pr.get("lane"),
-                "files": files[:5], "file_count": len(files),
-                "touches_notebook": (target in files
-                                     or not files
-                                     or len(files) >= _PR_FILES_PREVIEW_CAP),
-            })
-        res["implicit"] = implicit
+        res["implicit"] = [
+            _implicit_entry(pr.get("number"), pr.get("lane"), [
+                _norm_rel(f) for f in (pr.get("files") or []) if isinstance(f, str)], target)
+            for pr in (doc.get("implicit_occupation") or []) if isinstance(pr, dict)]
     return res
+
+
+def _implicit_entry(number, lane, files: list[str], target: str) -> dict:
+    """One occupying PR as implicit_verdict reads it. `files` are repo-relative.
+
+    The file list is READ when it names this notebook, and not trusted when it is empty
+    or as long as GitHub's 100-path preview (which may hide ours)."""
+    return {
+        "number": number, "lane": lane,
+        "files": files[:5], "file_count": len(files),
+        "touches_notebook": (target in files
+                             or not files
+                             or len(files) >= _PR_FILES_PREVIEW_CAP),
+    }
+
+
+# 25/11 -- the occupation BELT on the guard's rc=3 -----------------------------------------------
+# The guard's IMPLICIT leg keeps, for a lane that already holds its claim, only the open
+# PRs of other lanes ANTERIOR to that claim (CoursIA scripts/check_lane_claim.py 6076-6099,
+# #26751: a PR opened later "reste subsumee par le claim"). A third-party PR opened AFTER
+# the lane's marker therefore never reaches `implicit_occupation`, although it may hold
+# the notebook. One cause, two answers: with an anterior PR left the guard answers rc=3
+# and names the wrong PR; with none left it answers rc=0, CLEAR. CoursIA#27130 got the
+# SECOND on 25/11 14:42Z -- with PR #28250 (opened 23/11, after the claim of 20/11)
+# carrying the five targets of lot 2. Called WITHOUT the date filter, the guard's own
+# reader names it.
+#
+# This is NOT a second guard. On rc=3 only -- where implicit_verdict is consulted -- it
+# hands that one decision point the open PRs of other lanes that occupy the issue, with NO
+# date filter, and refuses nothing itself. WHICH PRs occupy is read by the guard's OWN
+# reader (`_find_open_prs_referencing_issue`, through its documented `prs` injection
+# seam): the reference predicate, the enumeration guard (#24788) and the own-lane
+# exclusion are not duplicated here. The files come from `pulls/N/files` -- never from a
+# title or a branch (#28250's branch carries no notebook name).
+#
+# Bounded, and fail-soft. At most OCCUPATION_PR_CAP PRs' files per pass, one deadline for
+# the pass. A PR whose files were not read is not added; a failed leg voids the pass: it
+# adds nothing and records `occupation_check: unavailable` -- no refusal on a broken
+# instrument, no silent green either (the trace names the leg that died).
+#
+# Out of reach, on purpose: the rc=0 CLEAR the guard gives when NO anterior PR is left
+# never passes here -- and that is the answer #27130 got. This belt does not cover the
+# measured incident; that class stays with the preflight bar and the organ's own fix.
+#
+# REMOVAL CONDITION: delete this block once the guard itself reports, in
+# `implicit_occupation`, the PR posterior to the claim (posed to the CoursIA coordinator
+# 25/11). harness/README.md, Requirements, carries the same sentence.
+OCCUPATION_PR_CAP = 20
+OCCUPATION_PAGE_CAP = 5      # 100 open PRs per REST page
+OCCUPATION_CALL_S = 45       # one REST call
+OCCUPATION_BUDGET_S = 120    # the whole pass
+
+
+def occupation_reader(repo: Path):
+    """The guard's module, loaded from the run's checkout (`<repo>/scripts/check_lane_claim.py`).
+
+    The checkout is an INPUT of the run, like the guard call itself: this is the reader the
+    guard answers with, so the two cannot drift apart. Loaded by path, never from the import
+    cache. Raises when the checkout carries no importable guard, or no reader."""
+    import importlib.util
+    import warnings
+    path = repo / "scripts" / "check_lane_claim.py"
+    if not path.is_file():
+        raise ImportError("check_lane_claim.py absent")
+    spec = importlib.util.spec_from_file_location("check_lane_claim", path)
+    if spec is None or spec.loader is None:
+        raise ImportError("check_lane_claim.py has no import spec")
+    scripts = str(path.parent)
+    saved = sys.modules.get("check_lane_claim")
+    sys.path.append(scripts)      # the guard's `from grain_tag import ...` and siblings
+    try:
+        reader = importlib.util.module_from_spec(spec)
+        sys.modules["check_lane_claim"] = reader
+        with warnings.catch_warnings():
+            # The guard's own compile-time warnings are not this run's (a SyntaxWarning
+            # in a docstring must neither reach the run's log nor fail the load).
+            warnings.simplefilter("ignore")
+            try:
+                spec.loader.exec_module(reader)
+            except SystemExit as e:   # a guard without a __main__ guard runs at import
+                raise ImportError(
+                    f"check_lane_claim.py exited at import (code {e.code})") from None
+    finally:
+        if sys.path[-1:] == [scripts]:
+            sys.path.pop()
+        if saved is None:
+            sys.modules.pop("check_lane_claim", None)
+        else:
+            sys.modules["check_lane_claim"] = saved
+    if not callable(getattr(reader, "_find_open_prs_referencing_issue", None)):
+        raise AttributeError("check_lane_claim.py carries no _find_open_prs_referencing_issue")
+    return reader
+
+
+def _occupation_call(argv: list[str], deadline: float):
+    """One REST leg of the belt: the decoded document, or an exception -- rc != 0, a call
+    that outlives its timeout, an unparsable body, an exhausted budget."""
+    left = deadline - time.monotonic()
+    if left < 2:
+        raise TimeoutError(f"occupation belt out of budget ({OCCUPATION_BUDGET_S}s)")
+    rc, out = gh(argv, timeout=max(2, min(OCCUPATION_CALL_S, int(left))))
+    if rc != 0:
+        raise OSError(f"gh {argv[-1]} rc={rc}: {(out or '')[-160:]}")
+    return json.loads(out)
+
+
+def _occupation_open_prs(slug: str, deadline: float) -> tuple[list[dict], bool]:
+    """Every open PR as the guard's reader takes it -- number, title, body, created_at --
+    and whether the listing stopped at OCCUPATION_PAGE_CAP. No head is carried: provenance
+    stays unestablished for the reader, which then keeps the REST paths it is handed."""
+    prs: list[dict] = []
+    for page in range(1, OCCUPATION_PAGE_CAP + 1):
+        items = _occupation_call(
+            ["api", f"repos/{slug}/pulls?state=open&per_page=100&page={page}"], deadline)
+        if not isinstance(items, list):
+            raise ValueError("open PR listing is not a list")
+        for it in items:
+            if isinstance(it, dict) and isinstance(it.get("number"), int):
+                prs.append({"number": it["number"], "title": it.get("title") or "",
+                            "body": it.get("body") or "",
+                            "created_at": it.get("created_at")})
+        if len(items) < 100:
+            return prs, False
+    return prs, True
+
+
+def occupation_belt(repo: Path, n: int, lane: str, notebook: str,
+                    slug: str = _GH_PIN_REPO) -> dict:
+    """Open PRs of other lanes that occupy issue `n`, each with the files READ for it, plus
+    the pass's trace -- or `status: unavailable` with the leg that died.
+
+    Findings carry no PR whose files were not read: over the cap, or no diff at all. The
+    reader is loaded FIRST, so no REST call leaves without a reader to answer it."""
+    deadline = time.monotonic() + OCCUPATION_BUDGET_S
+    trace: dict = {"status": "ok"}
+    try:
+        reader = occupation_reader(repo)
+        prs, trace["listing_truncated"] = _occupation_open_prs(slug, deadline)
+        trace["listed"] = len(prs)
+        citing = reader._find_open_prs_referencing_issue(n, lane, prs=prs)
+        numbers = sorted(c["number"] for c in citing
+                         if isinstance(c, dict) and isinstance(c.get("number"), int))
+        trace["citing"] = len(numbers)
+        by_number = {pr["number"]: pr for pr in prs}
+        for number in numbers[:OCCUPATION_PR_CAP]:
+            files = _occupation_call(
+                ["api", f"repos/{slug}/pulls/{number}/files?per_page=100"], deadline)
+            if not isinstance(files, list):
+                raise ValueError(f"files of #{number} are not a list")
+            by_number[number]["files"] = [{"path": f["filename"]} for f in files
+                                          if isinstance(f, dict) and f.get("filename")]
+        trace["read"] = min(len(numbers), OCCUPATION_PR_CAP)
+        target = _norm_rel(notebook)
+        findings = []
+        for c in reader._find_open_prs_referencing_issue(n, lane, prs=prs):
+            if not isinstance(c, dict) or not isinstance(c.get("number"), int):
+                continue
+            files = [x for x in (c.get("files") or []) if isinstance(x, str)]
+            if not files:
+                continue          # not read (over the cap), or no diff: nothing to say
+            entry = _implicit_entry(c["number"], c.get("lane"),
+                                    [_norm_rel(x) for x in files], target)
+            entry["source"] = "belt"
+            findings.append(entry)
+        trace["unread"] = len(numbers) - len(findings)
+        return {**trace, "findings": findings}
+    except (OSError, ValueError, TypeError, AttributeError, KeyError, IndexError,
+            ImportError, SyntaxError, subprocess.SubprocessError, RuntimeError) as e:
+        return {**trace, "status": "unavailable",
+                "error": f"{type(e).__name__}: {str(e)[:200]}"}
+
+
+def feed_occupation(repo: Path, n: int, lane: str, notebook: str, res: dict) -> None:
+    """rc=3 only: complete the guard's implicit list with the belt's findings.
+
+    Entries are ADDED, deduped by number; the guard's own entries are never rewritten, so
+    a verdict can only tighten (defer -> refuse on a read collision) or name more PRs."""
+    try:
+        belt = occupation_belt(repo, n, lane, notebook)
+        added = [f for f in belt.pop("findings", None) or []
+                 if f["number"] not in {i.get("number") for i in res.get("implicit") or []}]
+        res["implicit"] = list(res.get("implicit") or []) + added
+        res["occupation_check"] = {**belt, "added": [f["number"] for f in added]}
+        note = (f"error: {belt['error']}" if belt["status"] != "ok"
+                else f"added={[f['number'] for f in added]}")
+    except Exception as e:  # noqa: BLE001 -- the belt never decides: its own crash adds nothing
+        res["occupation_check"] = {"status": "unavailable", "added": [],
+                                   "error": f"{type(e).__name__}: {str(e)[:200]}"}
+        note = f"error: {res['occupation_check']['error']}"
+    print(f"[claim] occupation_check: {res['occupation_check']['status']} ({note})",
+          file=sys.stderr)
 
 
 def implicit_verdict(cc: dict) -> str:
@@ -626,7 +811,10 @@ def post_claim(repo: Path, n: int, lane: str, intention: str,
     if p is None:
         return {"rc": None, "timed_out": True,
                 "out": f"claim guard timed out after {CLAIM_GUARD_TIMEOUT_S}s"}
-    return _guard_result(p, notebook)
+    res = _guard_result(p, notebook)
+    if res["rc"] == 3 and not from_json:
+        feed_occupation(repo, n, lane, notebook, res)
+    return res
 
 
 def claim_reservation_verdict(post: dict, verify: dict) -> str | None:
@@ -930,13 +1118,19 @@ def last_foreign_marker(issue_n: int, lane: str, slug: str = _GH_PIN_REPO) -> st
     return None
 
 
+def midrun_armed(rec: dict) -> bool:
+    """True when the claim was DEFERRED (--claim-late): the only state in which a mid-run
+    probe has anything to guard."""
+    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
+    return cr.get("deferred") == "late"
+
+
 def midrun_claim_abort(args, rec: dict, stage: str) -> bool:
     """True when the run must stop now: the claim was deferred (--claim-late), another
     lane's marker is the issue's last word, and the scoped guard sees a COLLISION on this
     notebook (held by another lane, or an occupying PR that may touch it). A guard that
     times out, is broken, or answers a disjoint occupation never stops the run."""
-    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
-    if cr.get("deferred") != "late":
+    if not midrun_armed(rec):
         return False
     holder = last_foreign_marker(args.issue, args.lane)
     probe: dict = {"stage": stage, "at": utcnow(), "holder": holder}
@@ -1714,9 +1908,13 @@ PORT_CONTENT_RULES = (
     "- ALÉA NUMPY : si le jumeau tire ses DONNÉES d'un générateur numpy (`default_rng`, "
     "PCG64, SeedSequence, `normal`), ne réimplémente pas ce générateur : il ne tirera pas "
     "les mêmes nombres. Reprends les données d'ENTRÉE tirées par le jumeau sous forme de "
-    "tableau littéral, dis-le en prose (« données tirées par le jumeau, reprises telles "
-    "quelles »), puis CALCULE tous les résultats à partir d'elles. Ne recopie jamais une "
-    "SORTIE du jumeau à la place d'un calcul.\n")
+    "tableau littéral COMPLET — jamais tronqué, jamais laissé vide (26/11, o41 : un carnet "
+    "a rejeté « les flux uniformes NumPy cités ne sont pas renseignés ») — dis-le en prose "
+    "(« données tirées par le jumeau, reprises telles quelles »), puis CALCULE tous les "
+    "résultats à partir d'elles ET COMPARE ces résultats recalculés à ceux que le jumeau "
+    "affiche, sous une tolérance déclarée. Ne recopie jamais une SORTIE du jumeau à la "
+    "place d'un calcul, et ne garde jamais la comparaison derrière un test que le tableau "
+    "vide rend faux.\n")
 
 
 def creation_json_prompt(segment_cells: list, n_src_cells: int, conventions: str = "",
@@ -2191,8 +2389,28 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             return "truncated"
         return "timeout" if call_timed_out(env) else ""
 
+    # 26/11 (myia-po-2028:claudish, CoursIA#28707): the mid-run probe ran only at the
+    # stage boundaries, and the creation build is ONE stage of 5+ model calls over ~8
+    # min. The foreign [CLAIMED] landed at 04:02:13Z, between tranche 1 and tranche 2;
+    # the "build" probe fired at 04:08:05Z, after four more calls -- 347 201 prompt
+    # tokens spent building a notebook another lane already held. A probe before every
+    # build call but the FIRST (the "plan" probe covers that one) bounds the exposure
+    # to the call in flight. Inert unless --claim-late deferred the claim.
+    # The one skip is RUN-scoped, not invocation-scoped (review ai-01, 26/11): the stage it
+    # covered is named in the record the one time it is skipped, so an entry into this
+    # function that did not pass the "plan" probe (a second call site added later, a resume
+    # that does not replay plan) finds the name and probes its own first tranche.
+    def claim_stop(stage: str) -> bool:
+        if rec.get("midrun_claim_plan_covered"):
+            return midrun_claim_abort(args, rec, stage)
+        if midrun_armed(rec):
+            rec["midrun_claim_plan_covered"] = stage
+        return False
+
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
+        if claim_stop(f"build+{si}"):
+            return {}
         kept, missing, part, env = await ask_tranche(seg, f"2-build+{si}")
         conv = env.get("conversation_id") or conv
         chars_first = len(env.get("response") or "")
@@ -2209,6 +2427,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             halves = [seg[:max(1, len(seg) // 2)], seg[max(1, len(seg) // 2):]]
             kept, missing, chars_first = [], [], 0
             for hi, half in enumerate(h for h in halves if h):
+                if claim_stop(f"build+{si}+h{hi}"):
+                    return {}
                 hkept, hmiss, hpart, henv = await ask_tranche(half, f"2-build+{si}+h{hi}")
                 conv = henv.get("conversation_id") or conv
                 chars_first += len(henv.get("response") or "")
@@ -2247,6 +2467,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             return {}
         repair = None
         if missing:
+            if claim_stop(f"build+{si}+repair"):
+                return {}
             # one repair round for EXACTLY the omitted cells — same prompt shape,
             # smaller tranche, so the omissions cannot hide in a long answer again
             env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
@@ -4228,8 +4450,26 @@ TWIN_VALUES_RULE = (
     "- VALEURS : chaque valeur affichée par le jumeau (nombre, tableau, verdict, booléen) "
     "doit sortir À L'IDENTIQUE de ton exécution — mêmes instances, mêmes paramètres, même "
     "précision d'affichage. Un écart de valeur avec la sortie de référence est un rejet "
-    "garanti ; si la bibliothèque cible ne peut pas reproduire une valeur, dis-le en prose "
-    "et affiche l'écart mesuré, n'affiche jamais une autre valeur comme si c'était la même.\n")
+    "garanti ; n'affiche jamais une autre valeur comme si c'était la même.\n"
+    # 26/11, CoursIA batch o41: the former tail (« si la bibliothèque cible ne peut pas
+    # reproduire une valeur, dis-le en prose et affiche l'écart mesuré ») is where the
+    # dormant branch was born — the producer "said it in prose" from an `else` that printed
+    # « non mesuré », with the comparison never run; 3 of 4 grains lost. A draw is not a
+    # cited datum, and the comparison is EXECUTED on either route.
+    "- TIRAGES : une valeur que la source obtient par un tirage (`random.seed`, "
+    "`random.Random(graine)`, `random.choice`, `np.random.default_rng`) n'est pas une donnée "
+    "à recopier, et son absence ne dispense d'AUCUNE comparaison. Deux voies, et la "
+    "comparaison est EXÉCUTÉE dans les deux : (a) RECONSTRUIS le générateur de la source "
+    "dans le langage cible (`random.Random(graine)` se rejoue : MT19937, `getrandbits`, "
+    "rejet jusqu'à un indice valide) puis compare à tolérance déclarée ; (b) générateur non "
+    "reconstructible à coût raisonnable (PCG64 de NumPy, module local) : compare les valeurs "
+    "que tu recalculeras à celles que la source AFFICHE, citées comme telles et NON VIDES, "
+    "sous tolérance déclarée, ou asserte un invariant (régime, ordre, signe). INTERDIT : "
+    "garder la comparaison derrière un test qui n'est jamais pris parce que la collection "
+    "de valeurs citées est VIDE, et afficher sinon « non mesuré » / « non attesté » — la "
+    "cellule tourne, la comparaison n'a jamais eu lieu, le vérificateur rejette à chaque "
+    "tour. Un fait réellement hors de portée du jumeau (HTTP réel, tokens Python, durée) se "
+    "dit dans une cellule MARKDOWN, jamais dans la sortie d'une cellule de code.\n")
 
 
 def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: str = "",
@@ -5265,6 +5505,15 @@ def _repo_guard_tool(repo: Path, name: str) -> Path:
     return repo / "scripts" / "notebook_tools" / name
 
 
+def _guard_env() -> dict[str, str]:
+    """UTF-8 mode for a repo-guard subprocess. The guards print a French report holding
+    glyphs outside cp1252 (U+2192 in the exemption rationales): on a Windows seat without
+    UTF-8 mode ``print`` raises UnicodeEncodeError, the process exits 1 with its stdout cut
+    mid-report, and rc 1 reads as « counter found » (measured 26/11, batch o40: #28644 and
+    #28645 were rejected on the tail of an audit their notebooks never entered)."""
+    return {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+
+
 def _unmeasured(gate: str, **why) -> dict:
     """A repo guard that could not run is DECLARED (measured: false), never a silent pass
     and never a build failure: the PR's CI stays the judge of what the harness missed."""
@@ -5292,7 +5541,8 @@ def uncommented_code_gate(repo: Path, built_nb: Path) -> dict:
     try:
         pr = subprocess.run([sys.executable, str(tool), "--file", str(built_nb), "--json"],
                             cwd=str(repo), capture_output=True, text=True, encoding="utf-8",
-                            errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+                            errors="replace", timeout=REPO_GUARD_TIMEOUT_S,
+                            env=_guard_env())
         data = json.loads(pr.stdout or "{}") if pr.returncode in (0, 1) else None
     except (subprocess.TimeoutExpired, ValueError, OSError) as e:
         return _unmeasured("uncommented-code", error=f"{type(e).__name__}: {e}"[:300])
@@ -5328,7 +5578,7 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
             pr = subprocess.run([sys.executable, str(tool), "--all", "--root", root,
                                  "--strict"], cwd=str(repo), capture_output=True, text=True,
                                 encoding="utf-8", errors="replace",
-                                timeout=REPO_GUARD_TIMEOUT_S)
+                                timeout=REPO_GUARD_TIMEOUT_S, env=_guard_env())
     except (subprocess.TimeoutExpired, OSError) as e:
         return _unmeasured("prose-counts", error=f"{type(e).__name__}: {e}"[:300])
     if pr.returncode == 0:
@@ -5337,12 +5587,21 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
         return _unmeasured("prose-counts", rc=pr.returncode,
                            error=(pr.stderr or pr.stdout or "")[-300:])
     snippets: list[str] = []
+    refus_header = False
     for ln in (pr.stdout or "").splitlines():
         if ln.startswith("[ALLOWLIST"):
             break                      # the exemption audit reuses the row format
+        refus_header = refus_header or ln.startswith("[REFUS")
         m = PROSE_COUNT_ROW_RE.match(ln)
         if m:
             snippets += [x.strip() for x in m.group(3).split(", ") if x.strip()]
+    if not snippets:
+        # rc 1 names a counter ONLY through its rows. None before [ALLOWLIST] is the
+        # instrument failing (a report that crashed, a row format that moved), not a
+        # count: the reviser has nothing to act on, and the rounds it burns damage the
+        # notebook (26/11, o40 #28645: two revisions, the bibliography gone).
+        return _unmeasured("prose-counts", rc=pr.returncode, refus_header=refus_header,
+                           error=(pr.stderr or pr.stdout or "")[-300:])
     md = [(i, _text(c.get("source"))) for i, c in enumerate(_cells(built_nb))
           if c.get("cell_type") == "markdown"]
     findings = []
@@ -5351,8 +5610,6 @@ def prose_counts_gate(repo: Path, rel: str, built_nb: Path, scratch: Path) -> di
         findings.append({"cell": where[0] if where else None,
                          "text": f"compteur « {sn} »"
                                  + (f" (cellule {', '.join(map(str, where))})" if where else "")})
-    if not findings:
-        findings = [{"cell": None, "text": (pr.stdout or "")[-600:]}]
     return {"gate": "prose-counts", "ok": False,
             "detail": {"measured": True,
                        "cells": [f["cell"] for f in findings if f["cell"] is not None][:10],
@@ -5368,7 +5625,8 @@ def _anchor_findings(tool: Path, repo: Path, nb: Path) -> list[dict] | None:
     organ did not answer with its JSON (rc 2, timeout, unparsable)."""
     pr = subprocess.run([sys.executable, str(tool), "--json", str(nb)], cwd=str(repo),
                         capture_output=True, text=True, encoding="utf-8",
-                        errors="replace", timeout=REPO_GUARD_TIMEOUT_S)
+                        errors="replace", timeout=REPO_GUARD_TIMEOUT_S,
+                        env=_guard_env())
     if pr.returncode not in (0, 1):
         return None
     try:
@@ -5461,6 +5719,43 @@ def unit_result_hits(built_cells: list, src_cells: list) -> list[int]:
     return [i for i, c in enumerate(built_cells)
             if _shows_unit_result(c)
             and not (i < len(src_cells) and _shows_unit_result(src_cells[i]))]
+
+
+# A twin that SAYS a comparison was not made. Measured 26/11 (CoursIA batch o41): 3 of 4
+# creation grains ended verify-reject on this one major, restated at every round — the
+# producer left its cited-data collection EMPTY and guarded the parity comparison behind
+# it, so the cell ran clean and printed « Parité … non attestée », « NON MESURÉ — aucune
+# comparaison exécutée », « Références citées, non recalculées ». Deterministic on the
+# OUTPUTS: catch it right after execution, before a verifier turn is paid.
+# Deliberately NARROW — a bare « non mesuré » is not charged: the approved twin of the same
+# batch prints « Citations seules, non mesurées ici : … HTTP réelles, tokens … » beside its
+# attestation (facts no twin can measure), and it must pass. Only a phrasing that states a
+# comparison did not happen is; the past participle carries the accent on purpose (`mesuré`
+# ≠ the noun `mesure`, and « pas de mesure » must not match).
+_UNMEASURED_RE = re.compile(
+    r"non\s+attest|aucune\s+comparaison|non\s+recalcul|non\s+ex[éÉ]cut"
+    r"|\bpas\s+(?:été\s+|encore\s+|jamais\s+)?(?:mesur|recalcul|rejou|ex[éÉ]cut|compar)[éÉ]e?s?\b"
+    r"|not\s+measured|unmeasured|not\s+replayed", re.I)
+
+
+def _unmeasured_line(cell: dict) -> str:
+    """First output line of a CODE cell that declares a comparison was not made ('' = none)."""
+    if cell.get("cell_type") != "code":
+        return ""
+    for line in _outputs_text(cell).splitlines():
+        if _UNMEASURED_RE.search(line):
+            return line.strip()[:240]
+    return ""
+
+
+def unmeasured_output_hits(built_cells: list, src_cells: list) -> list[tuple[int, str]]:
+    """(cell index, offending output line) for every built cell that declares a comparison
+    was not made while the twin at the same index does not — the twin's own declaration
+    (a genuinely out-of-scope measure it prints too) is the repo's business, not this
+    build's."""
+    return [(i, line) for i, c in enumerate(built_cells)
+            if (line := _unmeasured_line(c))
+            and not (i < len(src_cells) and _unmeasured_line(src_cells[i]))]
 
 
 def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
@@ -5560,6 +5855,15 @@ def run_gates(src_nb: Path, built_nb: Path, create_mode: bool = False,
                                            "text": f"cellule {i} : affiche « () », que le "
                                                    f"jumeau n'affiche pas"}
                                           for i in unit_hits][:REPO_GUARD_FINDINGS_MAX]}})
+    um_hits = unmeasured_output_hits(built_cells, src_cells)
+    # `measured: True` is explicit here: split_gates() reads an absent key as measured, but a
+    # reader that asks the detail directly would see None (review ai-01, 26/11).
+    gates.append({"gate": "unmeasured-output", "ok": not um_hits,
+                  "detail": {"measured": True, "cells": [i for i, _ in um_hits][:10],
+                             "findings": [{"cell": i,
+                                           "text": f"cellule {i} : la sortie déclare une "
+                                                   f"mesure non faite — « {line} »"}
+                                          for i, line in um_hits][:REPO_GUARD_FINDINGS_MAX]}})
     if create_mode and repo is not None and rel and scratch is not None \
             and (repo / "scripts").is_dir():
         gates += repo_guard_gates(repo, rel, built_nb, scratch)
@@ -5692,7 +5996,8 @@ def strip_dotnet_banner(tool: Path, nb_path: Path) -> dict:
     try:
         p = subprocess.run([sys.executable, str(tool), "--apply", str(nb_path),
                             "--variant", "both"],
-                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=120)
+                           capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", timeout=120, env=_guard_env())
         return {"ok": p.returncode == 0, "rc": p.returncode,
                 "out": (p.stdout or p.stderr or "")[-500:]}
     except subprocess.TimeoutExpired:
@@ -6967,6 +7272,26 @@ _GATE_FIX_TEXT = {
                    "bloc (`for`, `while`, `if` ou `{ … }`) sans point-virgule : termine ce "
                    "dernier bloc par `};` — sous evcxr cela supprime la sortie `()` sans "
                    "avertissement ; ne touche pas au reste de la cellule",
+    # 26/11, CoursIA batch o41: three twins printed « non attestée », « NON MESURÉ — aucune
+    # comparaison exécutée », « non recalculées »; the verifier restated the same major
+    # through seven revision rounds told only what was wrong. The remedy is the shape the
+    # approved twin of the batch used (reconstructed CPython draws, declared tolerance,
+    # « N comparaisons ; écart maximal … »).
+    "unmeasured-output": "la cellule déclare qu'une comparaison n'a pas eu lieu (« non "
+                         "attesté », « NON MESURÉ », « non recalculées ») : la collection de "
+                         "valeurs citées est vide et le test qui la garde n'est jamais pris. "
+                         "Refais la comparaison pour de vrai — (a) RECONSTRUIS le "
+                         "générateur de la source dans le langage cible "
+                         "(`random.Random(graine)` : MT19937, `getrandbits`, rejet jusqu'à un "
+                         "indice valide) et compare à tolérance déclarée ; (b) générateur "
+                         "non reconstructible à coût raisonnable (PCG64 de NumPy, module "
+                         "local) : compare les valeurs que tu recalculeras à celles que la "
+                         "source AFFICHE, citées comme telles et NON VIDES, sous tolérance "
+                         "déclarée, ou asserte un invariant (régime, ordre, signe). Supprime "
+                         "le message « non mesuré » et son garde ; n'affiche jamais une autre "
+                         "valeur comme si c'était la même. Un fait réellement hors de portée "
+                         "du jumeau (HTTP réel, tokens, durée) se dit dans une cellule "
+                         "MARKDOWN, jamais dans la sortie d'une cellule de code",
     "prose-anchor": "la prose (markdown) cite un chiffre que les sorties de CE carnet "
                     "n'affichent pas — souvent recopié du jumeau, dont les mesures "
                     "diffèrent : remplace-le par la valeur imprimée par la cellule de code "
@@ -8003,6 +8328,127 @@ def _keep_prior_trace(out: Path, prefix: str) -> str:
     raise OSError(f"no free snapshot name beside {out}")   # never fall back to overwriting
 
 
+def _seat_credential_gaps(args) -> list[str]:
+    """Model entries whose key cannot resolve in THIS environment (24/11, o34b).
+
+    Measured 24/11 19:13Z (po-2028:claudish, CoursIA#28079): the `nb-*` entries of the
+    seat's config name their key through `api_key_env: ZAI_API_KEY`, nothing defined that
+    variable on the seat, and sk-agent's `resolve_api_key()` fell back to its `no-key`
+    default. The launch paid stage 0 (worktree, claim pre-check, issue read -- 60 s),
+    opened the two MCP sessions, and its first model call answered
+    `401 invalid proxy authentication`: a 125 s corpse, one call, verdict
+    `stage1-auth-failed`. The seat's launcher knew the export; the harness never asked.
+
+    Refuses on NAMES only -- role, agent, model entry, environment variable -- never on a
+    value, and only the certain case: the variable sk-agent will read is empty here AND the
+    entry carries no literal it would fall back to. Everything this cannot read (an
+    unreadable config, an unknown preset, a model entry it cannot find) is left to sk-agent,
+    which refuses those by name. `NBCODER_PREFLIGHT_CREDENTIALS=0` disables the check for a
+    seat whose endpoint serves without a key.
+    """
+    if os.environ.get("NBCODER_PREFLIGHT_CREDENTIALS", "").strip() == "0":
+        return []
+    try:
+        cfg = json.loads(Path(SK_CONFIG).read_text(encoding="utf-8"))
+        agents = {a["id"]: a for a in cfg.get("agents") or [] if isinstance(a, dict) and a.get("id")}
+        models = {m["id"]: m for m in cfg.get("models") or [] if isinstance(m, dict) and m.get("id")}
+    except Exception:
+        return []                 # not this check's question: the path check above already ran
+    roles = [("coder", args.agent, args.coder_model)]
+    if args.max_stage >= 4:       # the verifier is a separate process on the same config + env
+        roles.append(("verifier", args.verifier_agent, args.verifier_model))
+    if args.spec_mode == "run":
+        roles.append(("spec", args.agent, args.spec_model))
+    gaps: list[str] = []
+    judged: set[str] = set()
+    for role, agent_id, override in roles:
+        ref = override or (agents.get(agent_id) or {}).get("model")
+        model = models.get(ref)
+        if not ref or not model or ref in judged:
+            continue
+        judged.add(ref)
+        var = str(model.get("api_key_env") or "").strip()
+        literal = model.get("api_key")
+        usable = isinstance(literal, str) and literal.strip() not in ("", "no-key")
+        if var and not usable and not (os.environ.get(var) or "").strip():
+            gaps.append(f"{role}: agent {agent_id} -> model {ref} reads its key from "
+                        f"${var}, which is not set in this environment")
+    return gaps
+
+
+def _tree_has(repo: Path, rev: str, rel: str) -> str | None:
+    """Is `rel` in `rev`'s tree? "in-tree", "absent" (provably) or None (git cannot answer).
+
+    `git cat-file -e` exits 128 for an absent path and for everything it cannot read (no
+    such rev, not a repository), so the verdict is read from its message: only `does not
+    exist in` is an absence. A path that `exists on disk, but not in` the rev (measured
+    24/11: a spelling that differs by case, on a case-insensitive filesystem) is neither:
+    the main checkout's working tree says nothing about the fresh worktree, so the check
+    stays out of the way.
+    """
+    p = subprocess.run(["git", "-C", str(repo), "cat-file", "-e", f"{rev}:{rel}"],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace",
+                       env={**os.environ, "GIT_TERMINAL_PROMPT": "0"}, timeout=120)
+    if p.returncode == 0:
+        return "in-tree"
+    return "absent" if "does not exist in" in (p.stderr or "") else None
+
+
+def _launch_target_gap(args) -> dict | None:
+    """A launch whose own target, twin or metadata cannot be reached (24/11, o34).
+
+    Measured 24/11 (po-2028:claudish, CoursIA#28079): a creation grain queued without its
+    twin. The driver built the worktree, ran the claim pre-check and read the issue before
+    `run()` found an absent target and no `--source-nb`: 95 s, verdict
+    `notebook-not-found`, nothing on the issue naming what was missing. The answer needed
+    only the ref the worktree is cut from, which was known before any of that was paid.
+
+    The same holds for the three other answers `run()`'s target resolution draws from that
+    ref alone (`target-already-exists`, `meta-from-not-found`, `source-nb-not-found`), so
+    they are asked here too, in `run()`'s own order. Read against a FRESH origin/main -- the
+    fetch `prepare_worktree` makes: on a stale ref the check would refuse a correction
+    whose target merged since the last fetch. A resume (`--revise-from` / `--verify-from`)
+    reads its creation mode from the trace and is not asked. When git cannot answer,
+    nothing is refused.
+    """
+    if args.revise_from or args.verify_from:
+        return None
+    repo = Path(args.repo)
+
+    def norm(s) -> str:
+        return str(s).replace("\\", "/")
+    try:
+        fetched = subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin", "main"],
+                                 capture_output=True, text=True, encoding="utf-8",
+                                 errors="replace", env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                                 timeout=120)
+        if fetched.returncode != 0:
+            return None                # an unreadable or stale ref is never an answer
+        rev = subprocess.run(["git", "-C", str(repo), "rev-parse", "--verify", "--quiet",
+                              "origin/main^{commit}"], capture_output=True, text=True,
+                             encoding="utf-8", errors="replace", timeout=60).stdout.strip()
+        if not rev:
+            return None
+        gap = {"origin_main": rev[:10]}
+        target = _tree_has(repo, rev, norm(args.notebook))
+        creation = bool(args.source_nb or args.from_spec)
+        if target == "in-tree" and creation:
+            return gap | {"reason": "target-already-exists", "target": norm(args.notebook)}
+        if creation and args.meta_from and _tree_has(repo, rev, norm(args.meta_from)) == "absent":
+            return gap | {"reason": "meta-from-not-found", "meta_from": norm(args.meta_from)}
+        if args.source_nb:
+            twin = _tree_has(repo, rev, norm(args.source_nb))
+            if twin == "absent":
+                return gap | {"reason": "source-nb-absent", "source_nb": norm(args.source_nb),
+                              "target": norm(args.notebook)}
+            return None                # the twin resolves (or git cannot say): the creation proceeds
+        if not creation and target == "absent":
+            return gap | {"reason": "creation-grain-without-twin", "target": norm(args.notebook)}
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return None
+
+
 def _preflight(ap, args) -> None:
     """Refuse before any spend when a wired path cannot exist (F3, vllm#441).
 
@@ -8026,6 +8472,11 @@ def _preflight(ap, args) -> None:
     The kept name has only a SECOND of resolution, and a retry loop is precisely the case
     where two refusals land in the same second: the second copy would silently replace the
     first. `_keep_prior_trace` never replaces an existing copy, it adds a suffix instead.
+
+    Three refusals, one per thing a seat gets wrong (24/11): a wired PATH that does not
+    resolve here, a model CREDENTIAL that does not resolve here (`_seat_credential_gaps`), a
+    TARGET the launch cannot reach (`_launch_target_gap`). Each is asked only once the
+    previous one is clean, and each names its own remedy in its own verdict.
     """
     missing = [f"{name}={path}" for name, path, ok in (
         ("sk_agent.py (NBCODER_SK_DIR)", SK_DIR / "sk_agent.py", (SK_DIR / "sk_agent.py").is_file()),
@@ -8034,10 +8485,42 @@ def _preflight(ap, args) -> None:
         ("NBCODER_PM_PY", PM_PY, PM_PY.is_file()),
         ("NBCODER_PM_CWD", PM_CWD, PM_CWD.is_dir()),
     ) if not ok]
-    if not missing:
+    credential = [] if missing else _seat_credential_gaps(args)
+    target_gap = None if (missing or credential) else _launch_target_gap(args)
+    if not missing and not credential and not target_gap:
         return
-    detail = "seat wiring does not resolve here — point the env var at a real path: " \
-             + " | ".join(missing)
+    if missing:
+        verdict = "refused-wiring-unresolved"
+        detail = ("seat wiring does not resolve here — point the env var at a real path: "
+                  + " | ".join(missing))
+    elif credential:
+        verdict = "refused-credential-unresolved"
+        detail = ("a model this launch calls cannot authenticate here — export the named "
+                  "environment variable in the launching shell (never write a key in the "
+                  "config or on a command line); sk-agent sends no usable key and the first "
+                  "call answers 401: " + " | ".join(credential)
+                  + " | NBCODER_PREFLIGHT_CREDENTIALS=0 disables this check")
+    else:
+        verdict = "refused-target-unresolved"
+        gap = target_gap or {}
+        sha = gap.get("origin_main")
+        reason = gap.get("reason")
+        if reason == "source-nb-absent":
+            detail = (f"--source-nb {gap.get('source_nb')} is absent from origin/main ({sha}): "
+                      "a creation grain's twin must exist there")
+        elif reason == "target-already-exists":
+            detail = (f"{gap.get('target')} already exists on origin/main ({sha}) and this "
+                      "launch declares a creation (--source-nb / --from-spec): a correction "
+                      "drops those flags, a creation names a target that does not exist yet")
+        elif reason == "meta-from-not-found":
+            detail = (f"--meta-from {gap.get('meta_from')} is absent from origin/main ({sha}): "
+                      "the created deliverable inherits that notebook's kernelspec and "
+                      "language_info")
+        else:
+            detail = (f"{gap.get('target')} is absent from origin/main ({sha}) and this launch "
+                      "names no twin — a creation grain passes --source-nb <repo-relative twin> "
+                      "(or --from-spec with --meta-from); a correction names a notebook that "
+                      "exists on origin/main")
     out_dir = Path(args.out_dir)
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -8049,15 +8532,21 @@ def _preflight(ap, args) -> None:
             kept = _keep_prior_trace(out, prefix)
         rec = {"issue": args.issue, "notebook": args.notebook, "started": utcnow(),
                "finished": utcnow(), "lane": args.lane, "dry": True, "calls": [],
-               "verdict": "refused-wiring-unresolved",
-               "wiring_missing": missing}
+               "verdict": verdict, "refusal": detail}
+        if missing:
+            rec["wiring_missing"] = missing
+        if credential:
+            rec["credential_missing"] = credential
+        if target_gap:
+            rec["target_gap"] = target_gap
         if kept:
             rec["preserved_prior_trace"] = kept
         out.write_text(json.dumps(rec, ensure_ascii=False, indent=1), encoding="utf-8")
         with open(out_dir / "ledger.jsonl", "a", encoding="utf-8") as fh:
             fh.write(json.dumps({k: rec.get(k) for k in
                                  ("issue", "notebook", "started", "finished", "verdict", "lane")}
-                                | {"calls": 0, "preserved_prior_trace": kept}, ensure_ascii=False) + "\n")
+                                | {"calls": 0, "preserved_prior_trace": kept,
+                                   "refusal": detail[:600]}, ensure_ascii=False) + "\n")
     except OSError:
         pass          # the refusal must not be masked by a failed trace write
     ap.error(detail)

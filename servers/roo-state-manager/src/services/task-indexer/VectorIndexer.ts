@@ -2182,7 +2182,16 @@ export async function countPointsByHostOs(hostOs: string): Promise<number> {
                         }
                     ]
                 },
-                exact: true
+                // #4928: on ai-01 the collection holds 16.3M points and this count runs
+                // once per RSM process start (26 live hosts per seat): an exact per-host
+                // count is a full filtered scan that the caller abandons at 10s (#1199)
+                // while the engine keeps scanning to its own 60s timer — the abandoned
+                // count then opens a 12-15 min read-path block (32 of 49 blocks measured
+                // on ai-01). The result only feeds verifyQdrantConsistency's log, compared
+                // against a 25% tolerance, so a cheap cardinality estimate costs log
+                // precision, not correctness. Kept exact: the wipe guard (resetCollection)
+                // and the cleanup candidate count, whose 0 short-circuits the deletion.
+                exact: false
             });
         }, `Qdrant count pour host_os=${hostOs}`);
 
