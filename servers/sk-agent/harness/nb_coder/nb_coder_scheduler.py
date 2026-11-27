@@ -1276,12 +1276,44 @@ class Scheduler:
                 self._release_worktree(key, entry.get("item"))
             del self.active[key]
 
+    def resumable_trace(self, key: str, item: dict | None, verdict: str) -> Path | None:
+        """The trace a FIRST content failure left, when its grain can be resumed on it.
+
+        None (the claim is released, as before) for anything else: a non-content verdict,
+        a run that left no record, a record that does not parse or carries no
+        `built_notebook` (nothing was paid for), or a launch that was itself a resume —
+        a second content failure on the same draft is terminal."""
+        if getattr(self.args, "release_on_first_content_failure", False):
+            return None
+        if failure_class(verdict) != "content" or not item:
+            return None
+        if item.get("revise_from") or item.get("verify_from"):
+            return None
+        if (self.state.get("grains") or {}).get(key, {}).get("resume_from"):
+            return None
+        trace = self.run_trace(item)
+        if trace is None:
+            return None
+        try:
+            rec = json.loads(trace.read_text(encoding="utf-8", errors="replace"))
+        except Exception:
+            return None
+        return trace if isinstance(rec, dict) and rec.get("built_notebook") else None
+
     def _release_claim(self, key: str, item: dict | None, verdict: str) -> None:
         """Release our [CLAIMED] on a failed grain's issue, when it is the last marker there.
 
         Never released: a foreign holder (late-claim refusals), our own [DELIVERED] or
         [RELEASED], an issue without markers, an issue another active grain of ours still
-        builds (lot issues carry several notebooks), or an unreadable thread."""
+        builds (lot issues carry several notebooks), or an unreadable thread.
+
+        Kept on a first content failure that left a resumable trace (26/11): the claim
+        guard reads ANY [RELEASED] as a full close of the lane on the whole ISSUE and
+        holds it `RELACHEE` 3 days for every lane, whatever its `paths:` clause — one
+        failed path of a lot froze every path of that lot, the lane's own salvage
+        included. A kept [CLAIMED] goes stale after the guard's 48 h; the owning lane
+        resumes the grain in its next batch (--revise-from / --verify-from on the trace
+        named in the grain's `resumable_trace`)."""
         a = self.args
         if self.claims is None or not item or not a.lane \
                 or not item.get("claim", getattr(a, "claim", False)):
@@ -1291,6 +1323,16 @@ class Scheduler:
                for k, e in self.active.items()):
             return self._event("claim-release-skipped", key=key, issue=issue,
                                reason="sibling-grain-active")
+        trace = self.resumable_trace(key, item, verdict)
+        if trace is not None:
+            # the callee tolerates a key with no grain record (`.get(key, {})`); this write
+            # must too -- a KeyError here aborts the release path (review ai-01, 26/11).
+            # The trace is named in the event either way.
+            grain = (self.state.get("grains") or {}).get(key)
+            if grain is not None:
+                grain["resumable_trace"] = str(trace)
+            return self._event("claim-release-skipped", key=key, issue=issue,
+                               reason="resumable-first-content-failure", trace=str(trace))
         try:
             last = self.claims.last_marker(issue)
         except Exception as exc:
@@ -1652,6 +1694,11 @@ def parse_args(argv=None):
                     help="default claim_late for every grain: the driver posts [CLAIMED] "
                          "only once the verifier approved, right before stage 5 (CoursIA "
                          "auto-pick rule 21/11). Needs --claim and --max-stage 5")
+    ap.add_argument("--release-on-first-content-failure", action="store_true",
+                    help="also release our [CLAIMED] on the FIRST content failure of a "
+                         "grain that left a resumable trace (the behavior before 26/11). "
+                         "Default keeps it: the claim guard reads any [RELEASED] as a "
+                         "close of the whole issue (RELACHEE 3 days for every lane)")
     ap.add_argument("--agent", default="notebook-coder")
     ap.add_argument("--conventions", default="")
     ap.add_argument("--intention", default="volet vllm du harnais nb-coder (passe planifiee)")
