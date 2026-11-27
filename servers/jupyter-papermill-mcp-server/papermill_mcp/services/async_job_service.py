@@ -663,10 +663,17 @@ class AsyncJobService:
         """
         Construit un environnement complet dérivé de l'interpréteur résolu.
 
-        Toutes les variables liées à l'env Python/conda (CONDA_*, JUPYTER_*_DIR,
-        entrées PATH, PYTHONPATH) sont reconstruites depuis le préfixe de
-        l'interpréteur résolu par `_resolve_interpreter()` et depuis l'arbre
-        source — plus aucun chemin utilisateur ou machine hardcodé.
+        Toutes les variables liées à l'env Python/conda (CONDA_*, entrées PATH,
+        PYTHONPATH) sont reconstruites depuis le préfixe de l'interpréteur
+        résolu par `_resolve_interpreter()` et depuis l'arbre source — plus
+        aucun chemin utilisateur ou machine hardcodé.
+
+        JUPYTER_DATA_DIR / JUPYTER_CONFIG_DIR ne sont volontairement PAS posés
+        (#1939) : dans jupyter_core, JUPYTER_DATA_DIR *remplace* le répertoire
+        utilisateur (%APPDATA%/jupyter) au lieu de s'y ajouter, tandis que le
+        préfixe de l'interpréteur est déjà sur jupyter_path() via sys.prefix.
+        Les épingler cachait à l'enfant async tous les kernelspecs utilisateur
+        — 21 → 1 visibles, mesurés.
         """
         env = os.environ.copy()
 
@@ -709,11 +716,12 @@ class AsyncJobService:
         }
 
         # Variables pour Jupyter et Python (chemins dérivés, plus de littéral machine)
+        # JUPYTER_DATA_DIR / JUPYTER_CONFIG_DIR : jamais épinglés ici (#1939) —
+        # la valeur héritée de os.environ fait foi, sinon jupyter_core retombe
+        # sur ses défauts (voir la docstring : l'épinglage cachait les kernels).
         server_root = Path(__file__).resolve().parents[2]
         python_vars = {
             "PYTHONPATH": server_root.as_posix(),
-            "JUPYTER_DATA_DIR": (env_prefix / "share" / "jupyter").as_posix(),
-            "JUPYTER_CONFIG_DIR": (env_prefix / "etc" / "jupyter").as_posix(),
             "PYTHONUNBUFFERED": "1",
             "PYTHONDONTWRITEBYTECODE": "1",
         }
