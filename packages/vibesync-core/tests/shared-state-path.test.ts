@@ -23,11 +23,14 @@ vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ warn, info: () => {}, error: () => {}, debug: () => {} }),
 }));
 
-// `fs` is mocked so the probes never touch a real mount: the contract is about
-// what the module does with existsSync/mkdirSync answers, not about the disk.
+// `fs` is mocked with PURE spies so a probe never touches the disk: the contract
+// is about what the module does with existsSync/mkdirSync answers, not about the
+// filesystem. `vi.fn(actual.x)` would delegate to the real function — and
+// `mockReset()` restores that delegation — which is how the CI runner came to
+// refuse a real `mkdir('/trunk/shared-state')` that Windows had silently created.
 vi.mock('fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('fs')>();
-  return { ...actual, existsSync: vi.fn(actual.existsSync), mkdirSync: vi.fn(actual.mkdirSync) };
+  return { ...actual, existsSync: vi.fn(), mkdirSync: vi.fn() };
 });
 
 import {
