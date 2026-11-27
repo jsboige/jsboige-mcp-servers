@@ -1406,7 +1406,9 @@ async function verifyQdrantConsistency(state: ServerState): Promise<void> {
 
         console.log(`📊 Cohérence Qdrant:`);
         console.log(`   - Squelettes locaux indexés: ${localIndexedCount}`);
-        console.log(`   - Points Qdrant (machine ${currentHostId}): ${qdrantCount}`);
+        // #4928: countPointsByHostOs asks Qdrant for a cardinality ESTIMATE (exact: false),
+        // so this number is approximate -- label it instead of implying a full count.
+        console.log(`   - Points Qdrant (machine ${currentHostId}): ${qdrantCount} (estimation)`);
 
         const discrepancy = Math.abs(localIndexedCount - qdrantCount);
         const threshold = Math.max(50, Math.floor(localIndexedCount * 0.25));
