@@ -283,6 +283,15 @@ La conception d'écriture répond aux défauts relevés par la revue indépendan
 {shared}/configs/{machineId}/v{version}-{ts}/claude-settings/canon.json (apply payload explicite)
 ```
 
+**Lecture (`findLatestClaudeSettingsSnapshot`, #3544).** Le standalone et la
+meilleure publication (pointeur `latest.json` s'il est lisible, sinon le paquet
+au `collectedAt` max) sont **candidats** : le plus récent gagne, égalité =>
+standalone (ordre historique). Le pointeur garde sa primauté sur les paquets
+(#4010). Un standalone périmé ne masque donc plus un publish ultérieur — et
+aucun processus n'écrit ce standalone (seul `publish` écrit, sous
+`v{version}-{ts}/` + `latest.json`) : quand il existe, il vient d'un geste
+externe, jamais d'un publish.
+
 ## Tests
 
 - `src/services/__tests__/ClaudeSettingsService.test.ts` (57 tests) — états,

@@ -910,6 +910,99 @@ describe('findLatestClaudeSettingsSnapshot', () => {
     expect(fallback.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://collected-newer');
   });
 
+  // #3544 (observation po-2027 du 25/11) : le standalone n'est PAS un raccourci
+  // inconditionnel. Mesuré po-204 : un standalone du 13/11 masquait tout publish
+  // ultérieur, et aucun writer de ce fichier n'existe dans la source — un publish
+  // ne pouvait donc plus rafraîchir ce que compare/harmonization lisent.
+  // Règle : le standalone est comparé par collectedAt à la meilleure publication
+  // (pointeur latest.json s'il est lisible, sinon max par collectedAt) ; le plus
+  // récent gagne, égalité => standalone (ordre historique). La primauté du
+  // pointeur sur les paquets (#4010) est inchangée.
+  describe('#3544 standalone vs publication — le plus récent gagne', () => {
+    async function writeSnap(dir: string, machineId: string, at: string, url: string): Promise<void> {
+      mkdirSync(dir, { recursive: true });
+      const read = await readClaudeSettingsFileFrom(settingsPath, { env: { ANTHROPIC_BASE_URL: url } });
+      writeFileSync(join(dir, 'claude-settings.json'), JSON.stringify(buildSnapshot(read, machineId, at)), 'utf-8');
+    }
+
+    test('standalone périmé : le paquet pointé par latest.json, plus récent, gagne (témoin po-204)', async () => {
+      const m = 'machine-stale-standalone';
+      const base = join(fakeDir, 'configs', m);
+      await writeSnap(join(base, 'claude-settings'), m, '2026-11-13T20:18:08Z', 'https://standalone-13-11');
+      const pkg = join(base, 'v1.1.1-2026-11-27T20-00-00-000Z');
+      await writeSnap(join(pkg, 'claude-settings'), m, '2026-11-27T20:00:00Z', 'https://published-27-11');
+      writeFileSync(join(base, 'latest.json'), JSON.stringify({ version: '1.1.1', path: pkg }), 'utf-8');
+
+      const lookup = await findLatestClaudeSettingsSnapshot(fakeDir, m);
+      expect(lookup.found).toBe(true);
+      expect(lookup.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://published-27-11');
+      expect(lookup.collectedAt).toBe('2026-11-27T20:00:00Z');
+      expect(lookup.path).toContain('v1.1.1-2026-11-27');
+    });
+
+    test('standalone plus récent que le pointeur : il garde la main (pas de renversement aveugle)', async () => {
+      const m = 'machine-fresh-standalone';
+      const base = join(fakeDir, 'configs', m);
+      await writeSnap(join(base, 'claude-settings'), m, '2026-11-20T10:00:00Z', 'https://standalone-20-11');
+      const pkg = join(base, 'v1.1.1-2026-11-10T10-00-00-000Z');
+      await writeSnap(join(pkg, 'claude-settings'), m, '2026-11-10T10:00:00Z', 'https://published-10-11');
+      writeFileSync(join(base, 'latest.json'), JSON.stringify({ version: '1.1.1', path: pkg }), 'utf-8');
+
+      const lookup = await findLatestClaudeSettingsSnapshot(fakeDir, m);
+      expect(lookup.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://standalone-20-11');
+      expect(lookup.collectedAt).toBe('2026-11-20T10:00:00Z');
+      expect(lookup.path).toContain(join(m, 'claude-settings', 'claude-settings.json'));
+    });
+
+    test('égalité de collectedAt : ordre historique conservé (standalone)', async () => {
+      const m = 'machine-tie';
+      const base = join(fakeDir, 'configs', m);
+      await writeSnap(join(base, 'claude-settings'), m, '2026-11-15T08:00:00Z', 'https://standalone-tie');
+      const pkg = join(base, 'v1.1.1-2026-11-15T08-00-00-000Z');
+      await writeSnap(join(pkg, 'claude-settings'), m, '2026-11-15T08:00:00Z', 'https://pointer-tie');
+      writeFileSync(join(base, 'latest.json'), JSON.stringify({ version: '1.1.1', path: pkg }), 'utf-8');
+
+      const lookup = await findLatestClaudeSettingsSnapshot(fakeDir, m);
+      expect(lookup.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://standalone-tie');
+    });
+
+    test('standalone périmé + pointeur illisible : le paquet le plus récent gagne quand même (observation po-2027)', async () => {
+      const m = 'machine-stale-no-pointer';
+      const base = join(fakeDir, 'configs', m);
+      await writeSnap(join(base, 'claude-settings'), m, '2026-11-13T20:18:08Z', 'https://standalone-13-11');
+      await writeSnap(join(base, 'v1.1.1-2026-11-27T20-00-00-000Z', 'claude-settings'), m, '2026-11-27T20:00:00Z', 'https://published-27-11');
+      writeFileSync(join(base, 'latest.json'), 'corrompu', 'utf-8');
+
+      const lookup = await findLatestClaudeSettingsSnapshot(fakeDir, m);
+      expect(lookup.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://published-27-11');
+      expect(lookup.path).toContain('v1.1.1-2026-11-27');
+    });
+
+    test('collectedAt illisible (NaN) côté standalone : perd contre un pointeur daté', async () => {
+      const m = 'machine-nan-standalone';
+      const base = join(fakeDir, 'configs', m);
+      await writeSnap(join(base, 'claude-settings'), m, 'pas-une-date', 'https://standalone-nan');
+      const pkg = join(base, 'v1.1.1-2026-11-27T20-00-00-000Z');
+      await writeSnap(join(pkg, 'claude-settings'), m, '2026-11-27T20:00:00Z', 'https://published-dated');
+      writeFileSync(join(base, 'latest.json'), JSON.stringify({ version: '1.1.1', path: pkg }), 'utf-8');
+
+      const lookup = await findLatestClaudeSettingsSnapshot(fakeDir, m);
+      expect(lookup.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://published-dated');
+    });
+
+    test('collectedAt illisible des deux côtés : standalone conservé (égalité NaN, ordre historique)', async () => {
+      const m = 'machine-nan-both';
+      const base = join(fakeDir, 'configs', m);
+      await writeSnap(join(base, 'claude-settings'), m, 'pas-une-date', 'https://standalone-nan');
+      const pkg = join(base, 'v1.1.1-legacy-no-date');
+      await writeSnap(join(pkg, 'claude-settings'), m, 'pas-une-date-non-plus', 'https://pointer-nan');
+      writeFileSync(join(base, 'latest.json'), JSON.stringify({ version: '1.1.1', path: pkg }), 'utf-8');
+
+      const lookup = await findLatestClaudeSettingsSnapshot(fakeDir, m);
+      expect(lookup.snapshot?.harmonization['env.ANTHROPIC_BASE_URL']).toBe('https://standalone-nan');
+    });
+  });
+
   test('snapshot corrompu (non JSON) => trouvé mais ignoré, found:false', async () => {
     const dir = join(fakeDir, 'configs', 'machine-z', 'claude-settings');
     mkdirSync(dir, { recursive: true });
