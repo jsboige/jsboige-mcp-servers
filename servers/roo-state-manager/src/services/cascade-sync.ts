@@ -33,6 +33,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import {
     CASCADE_ROLE_NAMES,
     CascadePayload,
+    CascadeStep,
     computeCanonicalHash,
     parseCascadeCanon,
     validateCascadePayload,
@@ -140,6 +141,11 @@ export interface CascadeSourceSnapshot {
     canonicalHash: string | null;
     /** Valeurs d'environnement ATTENDUES, rendues depuis le payload. */
     env: Record<string, string>;
+    /**
+     * Notes du canon qu'aucune variable d'environnement ne fait lire comme le
+     * canon le dit — ABSENT quand il n'y en a aucune (`findUnrepresentableNotes`).
+     */
+    unrepresentableNotes?: CascadeUnrepresentableNote[];
     provenance: {
         source: string;
         readAt: string;
@@ -317,6 +323,10 @@ export function assessCascadePayload(input: AssessCascadePayloadInput): CascadeS
     }
     const payload = input.payload as CascadePayload;
     const canonicalHash = validation.canonicalHash ?? computeCanonicalHash(payload);
+    // Diagnostic ADDITIF : rapporté à chaque lecture d'un canon valide, frais ou
+    // périmé — la note écartée ne dépend pas de la fraîcheur de la lecture.
+    const unrepresentableNotes = findUnrepresentableNotes(payload);
+    const unreadableNotes = unrepresentableNotes.length > 0 ? { unrepresentableNotes } : {};
 
     // La fraîcheur est un CONTRAT fail-closed : une lecture dont l'horodatage
     // est illisible n'est PAS « fraîche par défaut » — elle est INVALIDE, donc
@@ -349,6 +359,7 @@ export function assessCascadePayload(input: AssessCascadePayloadInput): CascadeS
             payload,
             canonicalHash,
             env: {},
+            ...unreadableNotes,
             provenance,
         };
     }
@@ -360,6 +371,7 @@ export function assessCascadePayload(input: AssessCascadePayloadInput): CascadeS
         payload,
         canonicalHash,
         env: renderCascadeEnv(payload),
+        ...unreadableNotes,
         provenance,
     };
 }
@@ -467,9 +479,9 @@ export function renderCascadeEnv(payload: CascadePayload): Record<string, string
         // Le runtime lit les notes avec `splitSteps` (les VIDES sont filtrés) :
         // une note ne peut donc être représentée que comme un PRÉFIXE contigu.
         // Un trou (note au step 2, rien au step 1) n'est pas représentable — on
-        // s'arrête au trou plutôt que de décaler silencieusement les notes.
-        let notePrefix = 0;
-        while (notePrefix < notes.length && notes[notePrefix] !== '') notePrefix += 1;
+        // s'arrête au trou plutôt que de décaler silencieusement les notes. Ce
+        // qui est laissé de côté est RAPPORTÉ (`findUnrepresentableNotes`).
+        const notePrefix = notePrefixLength(steps);
         if (notePrefix > 0) {
             env[`${CASCADE_ENV_PREFIX}${role}_NOTE`] = notes.slice(0, notePrefix).join('>');
         }
@@ -496,6 +508,91 @@ export function renderCascadeEnv(payload: CascadePayload): Record<string, string
     env[`${CASCADE_ENV_PREFIX}AUTO`] = String(payload.auto);
 
     return env;
+}
+
+/**
+ * Longueur du préfixe contigu de notes qu'une variable `_NOTE` peut porter.
+ *
+ * Le runtime lit `_NOTE` avec `splitSteps` (split sur `>` puis FILTRE des
+ * vides) : une note n'atteint son barreau que si tous les barreaux AVANT lui
+ * en portent une. Le premier barreau sans note est un TROU — rien après lui ne
+ * peut être écrit à sa place.
+ */
+function notePrefixLength(steps: CascadeStep[]): number {
+    let prefix = 0;
+    while (prefix < steps.length && (steps[prefix].note ?? '') !== '') prefix += 1;
+    return prefix;
+}
+
+/** Pourquoi une note ne sera pas lue comme le canon la porte. */
+export type CascadeUnrepresentableNoteReason =
+    /** Non écrite : un barreau PRÉCÉDENT n'a pas de note (le runtime filtre les vides). */
+    | 'after-hole'
+    /** Écrite, mais le runtime la COUPE sur `>`. */
+    | 'contains-separator'
+    /**
+     * Écrite, mais un barreau PRÉCÉDENT porte une note BLANCHE (le runtime la
+     * lit comme absente, l'écrivain l'a comptée) ou coupée : elle atterrit sur
+     * un autre barreau, ou nulle part.
+     */
+    | 'shifted';
+
+export interface CascadeUnrepresentableNote {
+    role: string;
+    /** Position du barreau dans sa chaîne (0-based). */
+    index: number;
+    /** Cible du barreau qui porte la note. */
+    target: string;
+    /** La note, trimmée comme le runtime la lit. */
+    note: string;
+    reason: CascadeUnrepresentableNoteReason;
+}
+
+/**
+ * Notes du canon qu'AUCUNE variable d'environnement ne fait lire au runtime
+ * comme le canon le dit.
+ *
+ * Pur et additif : ne change ni la valeur écrite, ni un verdict. La lecture du
+ * runtime est REJOUÉE ici sur ce que `renderCascadeEnv` pose réellement
+ * (`splitSteps` : split sur `>`, trim, filtre des vides — `failover.ts`), puis
+ * confrontée barreau par barreau à la note que le canon porte. Une note est
+ * donc rapportée SI ET SEULEMENT SI le runtime ne la lira pas à sa place.
+ *
+ * Une note absente ou blanche n'est pas une note : le runtime la lit comme
+ * absente, ce qu'elle dit. Elle n'est pas rapportée — mais une note BLANCHE
+ * que l'écrivain a comptée décale toutes celles qui suivent (`shifted`).
+ *
+ * Les cas `contains-separator` et `shifted` par note blanche ne viennent que
+ * d'un payload JSON (le parseur du canon textuel trimme et coupe sur `>`) :
+ * ils sont RAPPORTÉS ici, pas corrigés — l'écrivain pose encore leur valeur.
+ */
+export function findUnrepresentableNotes(payload: CascadePayload): CascadeUnrepresentableNote[] {
+    const env = renderCascadeEnv(payload);
+    const unrepresentable: CascadeUnrepresentableNote[] = [];
+    for (const role of CASCADE_ROLE_NAMES) {
+        const steps = payload.roles[role]?.steps ?? [];
+        // Ce que le runtime lira, barreau par barreau.
+        const read = (env[`${CASCADE_ENV_PREFIX}${role}_NOTE`] ?? '')
+            .split('>')
+            .map((s) => s.trim())
+            .filter((s) => s !== '');
+        const prefix = notePrefixLength(steps);
+        for (const [index, step] of steps.entries()) {
+            const raw = step.note;
+            if (raw === undefined || raw === null) continue;
+            const note = (typeof raw === 'string' ? raw : String(raw)).trim();
+            if (note === '') continue;
+            if (read[index] === note) continue;
+            unrepresentable.push({
+                role,
+                index,
+                target: step.ref,
+                note,
+                reason: index >= prefix ? 'after-hole' : note.includes('>') ? 'contains-separator' : 'shifted',
+            });
+        }
+    }
+    return unrepresentable;
 }
 
 // ---------------------------------------------------------------------------

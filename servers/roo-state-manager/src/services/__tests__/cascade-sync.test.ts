@@ -20,10 +20,12 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
+    assessCascadePayload,
     assessCascadeSource,
     compareCascadeEnv,
     extractCascadeEnv,
     findPreservedKeys,
+    findUnrepresentableNotes,
     parseCascadeEnv,
     planCascadeApply,
     renderCascadeEnv,
@@ -254,6 +256,192 @@ describe('#4427 PR2 — rendu fidèle à la grammaire du runtime (failover.ts)',
         expect(written).not.toContain(`${CASCADE_ENV_PREFIX}SONNET_LABEL`);
         expect(written).not.toContain(`${CASCADE_ENV_PREFIX}SONNET_DIRECTION`);
         expect(plan.applicable).toBe(false);
+    });
+});
+
+/**
+ * #4427 — notes qu'AUCUNE variable d'environnement ne fait lire comme le canon
+ * le dit (rapport po-2025:claudish, 27/11 : une note au 2ᵉ barreau, rien au
+ * 1ᵉʳ, n'arrivait sur aucun siège et rien ne le disait).
+ *
+ * Le diagnostic est EXACT : une note est rapportée si et seulement si le
+ * runtime ne la lira pas à sa place. La lecture du runtime est rejouée ici par
+ * une réplique de `splitSteps` (`failover.ts` : split sur `>`, trim, filtre des
+ * vides) appliquée à la valeur que `renderCascadeEnv` pose réellement.
+ */
+describe('#4427 — notes non représentables (rapportées, jamais inventées)', () => {
+    const FOUR_TEXT = ['SONNET = a@one > b@two > c@three > d@four', 'HAIKU = h@one > h@two', 'AUTO = 1'].join('\n');
+
+    function payloadOf(text: string) {
+        const snap = assessCascadeSource({
+            source: 'test',
+            text,
+            readAt: READ_AT,
+            verifiedAt: READ_AT,
+            maxAgeMs: 24 * 3600 * 1000,
+            now: READ_AT,
+        });
+        if (!snap.payload) throw new Error(snap.detail);
+        return snap.payload;
+    }
+
+    /** Clone le canon à 4 barreaux et pose des notes sur les barreaux SONNET. */
+    function noted(notes: Array<string | undefined>) {
+        const payload = payloadOf(FOUR_TEXT);
+        payload.roles.SONNET.steps.forEach((step, i) => {
+            if (notes[i] !== undefined) step.note = notes[i];
+        });
+        return payload;
+    }
+
+    /** Réplique de `splitSteps` (failover.ts) : split sur `>`, trim, filtre des vides. */
+    const splitSteps = (value: string): string[] => value.split('>').map((s) => s.trim()).filter((s) => s !== '');
+
+    /** Notes réelles que le runtime lira, barreau par barreau (absent = `undefined`). */
+    const runtimeRead = (payload: ReturnType<typeof noted>): Array<string | undefined> => {
+        const written = renderCascadeEnv(payload)[`${CASCADE_ENV_PREFIX}SONNET_NOTE`] ?? '';
+        const read = splitSteps(written);
+        return payload.roles.SONNET.steps.map((_, i) => read[i]?.trim() || undefined);
+    };
+
+    const reported = (payload: ReturnType<typeof noted>) =>
+        findUnrepresentableNotes(payload).map((n) => `${n.role}#${n.index}:${n.reason}`);
+
+    test('aucune note écartée : rien à rapporter, et le snapshot ne porte PAS le champ', () => {
+        // Une note de tête suivie de barreaux sans note est un préfixe contigu.
+        const snap = freshSource();
+        expect(findUnrepresentableNotes(snap.payload!)).toEqual([]);
+        expect('unrepresentableNotes' in snap).toBe(false);
+        expect(findUnrepresentableNotes(noted(['a']))).toEqual([]);
+        expect(findUnrepresentableNotes(noted(['a', 'b', 'c', 'd']))).toEqual([]);
+    });
+
+    test('le trou du rapport : note au 2ᵉ barreau, rien au 1ᵉʳ — rien n’est écrit, la note est rapportée', () => {
+        const payload = noted([undefined, 'luna']);
+        expect(renderCascadeEnv(payload)[`${CASCADE_ENV_PREFIX}SONNET_NOTE`]).toBeUndefined();
+        expect(findUnrepresentableNotes(payload)).toEqual([
+            { role: 'SONNET', index: 1, target: 'b@two', note: 'luna', reason: 'after-hole' },
+        ]);
+    });
+
+    test('MUTANT — `a>>c` ne doit JAMAIS être écrit : le runtime filtre le vide et décale la note', () => {
+        const payload = noted(['a', undefined, 'c']);
+        expect(renderCascadeEnv(payload)[`${CASCADE_ENV_PREFIX}SONNET_NOTE`]).toBe('a');
+        // Ce que le runtime ferait de la valeur « attendue » par le rapport :
+        // la note de c serait lue sur b — un barreau qui n'en porte aucune.
+        expect(splitSteps('a>>c')).toEqual(['a', 'c']);
+        expect(reported(payload)).toEqual(['SONNET#2:after-hole']);
+    });
+
+    test('plusieurs rôles, plusieurs barreaux après le trou — dans l’ordre des rôles', () => {
+        const payload = noted([undefined, 'luna', 'sol', 'terra']);
+        payload.roles.HAIKU.steps[1].note = 'swift';
+        expect(reported(payload)).toEqual([
+            'SONNET#1:after-hole',
+            'SONNET#2:after-hole',
+            'SONNET#3:after-hole',
+            'HAIKU#1:after-hole',
+        ]);
+    });
+
+    test('note BLANCHE : l’écrivain la compte, le runtime l’ignore — la note suivante est décalée', () => {
+        const payload = noted(['a', '   ', 'c']);
+        expect(renderCascadeEnv(payload)[`${CASCADE_ENV_PREFIX}SONNET_NOTE`]).toBe('a>   >c');
+        expect(runtimeRead(payload)).toEqual(['a', 'c', undefined, undefined]);
+        // La note blanche n'est pas une note (le runtime la lit comme absente,
+        // ce qu'elle dit) : elle n'est pas rapportée. La note réelle décalée, si.
+        expect(reported(payload)).toEqual(['SONNET#2:shifted']);
+    });
+
+    test('une note VIDE au milieu est un trou comme un autre — rien n’est inventé', () => {
+        const payload = noted(['a', '', 'c']);
+        expect(renderCascadeEnv(payload)[`${CASCADE_ENV_PREFIX}SONNET_NOTE`]).toBe('a');
+        expect(reported(payload)).toEqual(['SONNET#2:after-hole']);
+    });
+
+    test('note contenant le séparateur : écrite, COUPÉE par le runtime — et tout ce qui suit est décalé', () => {
+        const payload = noted(['a', 'b>c', 'd']);
+        // `a>b>c>d` : « b » et « c » sur les barreaux 1 et 2, « d » sur le barreau 3.
+        expect(renderCascadeEnv(payload)[`${CASCADE_ENV_PREFIX}SONNET_NOTE`]).toBe('a>b>c>d');
+        expect(runtimeRead(payload)).toEqual(['a', 'b', 'c', 'd']);
+        expect(reported(payload)).toEqual(['SONNET#1:contains-separator', 'SONNET#2:shifted']);
+    });
+
+    test('EXACTITUDE — rapportée si et seulement si le runtime ne la lit pas à sa place', () => {
+        const layouts: Array<Array<string | undefined>> = [
+            [],
+            ['a'],
+            ['a', 'b'],
+            [undefined, 'b'],
+            ['a', undefined, 'c'],
+            [undefined, undefined, 'c', 'd'],
+            ['', 'b'],
+            ['a', '', 'c'],
+            [' '],
+            [' ', 'b'],
+            ['a', ' ', 'c', 'd'],
+            ['a>', 'b'],
+            ['a', 'b>c', 'd', 'e'],
+            ['a>b', '', 'c'],
+            [' a ', 'b'],
+        ];
+        for (const notes of layouts) {
+            const payload = noted(notes);
+            // Une note réelle = présente et non blanche, trimmée comme le runtime la lit.
+            const real = payload.roles.SONNET.steps.map((s) => (typeof s.note === 'string' ? s.note.trim() : ''));
+            const read = runtimeRead(payload);
+            const unread = real.flatMap((note, i) => (note === '' || note === read[i] ? [] : [i]));
+            expect(
+                findUnrepresentableNotes(payload).filter((n) => n.role === 'SONNET').map((n) => n.index),
+                `notes=${JSON.stringify(notes)}`,
+            ).toEqual(unread);
+        }
+    });
+
+    test('le snapshot porte le diagnostic sur un canon FRAIS comme sur un canon PÉRIMÉ', () => {
+        const payload = noted([undefined, 'luna']);
+        const fresh = assessCascadePayload({
+            source: 'canon v2',
+            payload,
+            readAt: READ_AT,
+            verifiedAt: READ_AT,
+            now: READ_AT,
+        });
+        expect(fresh.coverage).toBe('ok');
+        expect(fresh.unrepresentableNotes).toEqual([
+            { role: 'SONNET', index: 1, target: 'b@two', note: 'luna', reason: 'after-hole' },
+        ]);
+        // Aucune note écartée ⇒ champ ABSENT (pas un tableau vide qui se balade).
+        const clean = assessCascadePayload({
+            source: 'canon v1',
+            payload: noted(['a']),
+            readAt: READ_AT,
+            verifiedAt: READ_AT,
+            now: READ_AT,
+        });
+        expect('unrepresentableNotes' in clean).toBe(false);
+
+        // La note écartée ne dépend pas de la fraîcheur de la lecture.
+        const stale = assessCascadePayload({
+            source: 'canon v2',
+            payload,
+            readAt: READ_AT,
+            verifiedAt: READ_AT,
+            now: '2026-11-20T04:30:00.000Z',
+        });
+        expect(stale.coverage).toBe('stale');
+        expect(stale.unrepresentableNotes?.length).toBe(1);
+    });
+
+    test('canon INVALIDE : pas de payload, donc pas de diagnostic', () => {
+        const invalid = assessCascadePayload({
+            source: 'canon cassé',
+            payload: { schemaVersion: 1 },
+            readAt: READ_AT,
+            now: READ_AT,
+        });
+        expect(invalid.coverage).toBe('invalid');
+        expect('unrepresentableNotes' in invalid).toBe(false);
     });
 });
 

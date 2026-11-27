@@ -22,7 +22,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { decideConfirmVerdict, roosyncClaudishCascade } from '../claudish-cascade.js';
-import { cascadeStoreRoot } from '../../../services/cascade-store.js';
+import { cascadeStoreRoot, readLatestCascade } from '../../../services/cascade-store.js';
 import { assessCascadeSource } from '../../../services/cascade-sync.js';
 
 const CANON_TEXT = [
@@ -319,5 +319,117 @@ describe('compare / status — trois surfaces, jamais fusionnées', () => {
         writeFileSync(env, SEAT_ENV_TEXT, 'utf8');
         const result = (await roosyncClaudishCascade({ action: 'status', env_path: env, now: T0 })) as Record<string, unknown>;
         expect(result.verdict).toBe('not-covered');
+    });
+});
+
+/**
+ * #4427 — notes qu'AUCUNE variable d'environnement ne fait lire comme le canon
+ * le dit.
+ *
+ * Rapport po-2025:claudish (27/11) : une note au 2ᵉ barreau et rien au 1ᵉʳ
+ * n'arrive sur aucun siège — et rien ne le disait. L'écrivain s'arrête au trou
+ * DÉLIBÉRÉMENT (le runtime lit `_NOTE` avec `splitSteps`, qui FILTRE les vides :
+ * un `a>>c` décalerait la note sur le mauvais barreau). Ce qui manquait n'est
+ * pas l'écriture — c'est la VISIBILITÉ : l'instrument rapporte désormais chaque
+ * note laissée de côté, sans jamais inventer de valeur dans le `.env`.
+ */
+const GAP_NOTE = 'note du 2e barreau';
+
+/** Payload du canon de tête, avec une note au 2ᵉ barreau et rien au 1ᵉʳ. */
+function gappedPayload() {
+    const gapped = structuredClone(PAYLOAD);
+    gapped.roles.SONNET.steps[1].note = GAP_NOTE;
+    return gapped;
+}
+
+async function publishGapped(): Promise<Record<string, unknown>> {
+    const result = (await roosyncClaudishCascade({
+        action: 'publish',
+        payload: gappedPayload(),
+        version: 'v2',
+        now: T0,
+    })) as Record<string, unknown>;
+    expect(result.published).toBe(true);
+    return result;
+}
+
+describe('notes non représentables — rapportées, jamais inventées', () => {
+    test('publish d’un canon à trou RAPPORTE la note laissée de côté', async () => {
+        const published = await publishGapped();
+        expect(published.unrepresentable_notes).toEqual([
+            { role: 'SONNET', index: 1, target: 'kc@k3', note: GAP_NOTE, reason: 'after-hole' },
+        ]);
+        // Le canon publié garde la note à SA place : rien n'est réécrit pour
+        // « réparer » le trou dans le magasin.
+        const latest = readLatestCascade(shared);
+        expect(latest).not.toBeNull();
+        const stored = latest!.payload as { roles: Record<string, { steps: Array<{ note?: string }> }> };
+        expect(stored.roles.SONNET.steps[1].note).toBe(GAP_NOTE);
+    });
+
+    test('publish sans trou ne porte PAS le champ (état normal, résultat inchangé)', async () => {
+        const published = (await roosyncClaudishCascade({
+            action: 'publish',
+            payload: PAYLOAD,
+            version: 'v1',
+            now: T0,
+        })) as Record<string, unknown>;
+        expect(published.idempotent).toBe(true);
+        expect('unrepresentable_notes' in published).toBe(false);
+    });
+
+    test('apply (dry_run) : la note à trou n’est PAS inventée en `>>`, et elle est rapportée', async () => {
+        await publishGapped();
+        const result = (await roosyncClaudishCascade({
+            action: 'apply',
+            env_path: envPath,
+            now: T0,
+        })) as Record<string, unknown>;
+        const keys = (result.would_write as Array<{ key: string }>).map((w) => w.key);
+        expect(keys).not.toContain('CLAUDISH_FAILOVER_SONNET_NOTE');
+        const dropped = result.unrepresentable_notes as Array<Record<string, unknown>>;
+        expect(dropped.map((d) => `${String(d.role)}#${String(d.index)}`)).toEqual(['SONNET#1']);
+    });
+
+    test('contrôle négatif : une note de TÊTE est écrite, et rien n’est rapporté', async () => {
+        const headNoted = structuredClone(PAYLOAD);
+        headNoted.roles.SONNET.steps[0].note = 'raisonne en clair';
+        const published = (await roosyncClaudishCascade({
+            action: 'publish',
+            payload: headNoted,
+            version: 'v3',
+            now: T0,
+        })) as Record<string, unknown>;
+        expect('unrepresentable_notes' in published).toBe(false);
+
+        const result = (await roosyncClaudishCascade({
+            action: 'apply',
+            env_path: envPath,
+            now: T0,
+        })) as Record<string, unknown>;
+        const write = (result.would_write as Array<{ key: string; value: string }>).find(
+            (w) => w.key === 'CLAUDISH_FAILOVER_SONNET_NOTE',
+        );
+        expect(write?.value).toBe('raisonne en clair');
+        expect('unrepresentable_notes' in result).toBe(false);
+    });
+
+    test('compare et confirm rapportent le trou du canon de tête, sans déplacer le verdict', async () => {
+        await publishGapped();
+
+        const compared = (await roosyncClaudishCascade({
+            action: 'compare',
+            env_path: envPath,
+            now: T0,
+        })) as Record<string, unknown>;
+        expect((compared.unrepresentable_notes as unknown[]).length).toBe(1);
+        expect(String(compared.note)).toMatch(/note/);
+        // Le verdict reste celui de la comparaison réelle : le diagnostic ne le
+        // déplace ni vers le vert ni vers le rouge.
+        expect(compared.verdict).toBe('needs-apply');
+
+        const confirmed = (await roosyncClaudishCascade({ action: 'confirm', now: T0 })) as Record<string, unknown>;
+        expect((confirmed.unrepresentable_notes as unknown[]).length).toBe(1);
+        expect(confirmed.verdict).toBe('not-covered');
     });
 });
