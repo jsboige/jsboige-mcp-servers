@@ -11,8 +11,12 @@
  *    takeover gets past, and takeover does NOT cross a model change;
  *  - NEVER BOOTSTRAP: no served collection → refusal, createCollection never called;
  *  - DRY RUN DEFAULT: a dry run writes nothing at all (no sentinel even);
- *  - STALE PURGE BEFORE UPSERT: a modified file ends up owning exactly its new
- *    blocks — old ids gone, points_count delta = new − old, config untouched;
+ *  - WRITE FIRST, COLLECT BY ID (#4938): a modified file ends up owning exactly
+ *    its new blocks — old orphaned ids gone, shared ids never deleted,
+ *    points_count delta = new − old, config untouched;
+ *  - CACHE HIT REQUIRES CONTENT (#4938): a cache entry at the current hash but
+ *    with no content point is replanned (non-exact count, `exact: false`), and
+ *    a failed batch leaves the file its OLD points and no cache;
  *  - INCREMENTAL: a second run over unchanged files embeds nothing (hash cache);
  *  - GC: a managed file deleted from disk has its points AND cache point removed.
  *
@@ -20,7 +24,7 @@
  * hashes; here the stored points are seeded through the same port, which is
  * exactly what the writer replays — the subject is the writer's bookkeeping.
  */
-import { describe, test, expect, afterAll } from 'vitest';
+import { describe, test, expect, afterAll, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, unlinkSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
@@ -55,6 +59,12 @@ class FakeWsQdrant implements QdrantLike {
 	upsertCalls: Array<{ collection: string; points: any[] }> = [];
 	deleteCalls: Array<{ collection: string; ids: string[] }> = [];
 	createCalls: Array<{ collection: string; body: any }> = [];
+	/** #4938 — every write and delete in call order, one entry per point id. */
+	ops: string[] = [];
+	/** #4938 — every count request as received (the tests pin `exact: false`). */
+	countCalls: Array<{ collection: string; body: any }> = [];
+	countInFlight = 0;
+	countMaxInFlight = 0;
 
 	constructor(seed: Record<string, { size?: number; distance?: string }> = {}) {
 		for (const [name, cfg] of Object.entries(seed)) {
@@ -130,14 +140,45 @@ class FakeWsQdrant implements QdrantLike {
 		const c = this.col(name);
 		const points: any[] = body?.points ?? [];
 		this.upsertCalls.push({ collection: name, points });
-		for (const p of points) c.points.set(String(p.id), { vector: p.vector, payload: p.payload });
+		for (const p of points) {
+			c.points.set(String(p.id), { vector: p.vector, payload: p.payload });
+			this.ops.push(`upsert:${p.id}`);
+		}
 	}
 
 	async delete(name: string, body: any) {
 		const c = this.col(name);
 		const ids: string[] = body?.points ?? [];
 		this.deleteCalls.push({ collection: name, ids });
-		for (const id of ids) c.points.delete(id);
+		for (const id of ids) {
+			c.points.delete(id);
+			this.ops.push(`delete:${id}`);
+		}
+	}
+
+	/**
+	 * #4938 — `count` as the pinned SDK returns it (`@qdrant/js-client-rest`
+	 * unwraps the envelope: a bare `{ count }`). The fake answers the true
+	 * number whatever `exact` says — it has no cardinality estimator; what the
+	 * tests pin is the REQUEST (`exact: false`, never `true`: #4928). It yields
+	 * to the event loop so a batch's requests overlap, like real IO does.
+	 */
+	async count(name: string, body: any) {
+		const c = this.col(name);
+		this.countCalls.push({ collection: name, body });
+		this.countInFlight++;
+		this.countMaxInFlight = Math.max(this.countMaxInFlight, this.countInFlight);
+		try {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			const must: any[] = body?.filter?.must ?? [];
+			const mustNot: any[] = body?.filter?.must_not ?? [];
+			const matches = (payload: any) =>
+				must.every((m: any) => String(payload?.[m.key]) === String(m.match?.value))
+				&& mustNot.every((m: any) => String(payload?.[m.key]) !== String(m.match?.value));
+			return { count: [...c.points.values()].filter((p) => matches(p.payload)).length };
+		} finally {
+			this.countInFlight--;
+		}
 	}
 }
 
@@ -402,7 +443,7 @@ describe('runWsIndexWriter (#4736 P3)', () => {
 	test('wrong-dimension vectors are refused per batch (no foreign space in a served collection)', async () => {
 		const ws = makeWorkspace({ 'docs/a.md': DOC_V2 });
 		const fake = new FakeWsQdrant({ [COLLECTION]: { size: 4 } });
-		seedZooPoints(fake, COLLECTION, PREFIX, 'docs/a.md', DOC_V1);
+		const oldIds = seedZooPoints(fake, COLLECTION, PREFIX, 'docs/a.md', DOC_V1);
 		const deps = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
 		const run = {
 			...deps,
@@ -414,9 +455,14 @@ describe('runWsIndexWriter (#4736 P3)', () => {
 		expect(report.batches_failed).toBeGreaterThan(0);
 		expect(report.points_written).toBe(0);
 		expect(report.warnings.some((w) => /wrong dimension/.test(w))).toBe(true);
-		// nothing but the sentinel landed
-		for (const [, p] of fake.collections.get(COLLECTION)!.points) {
-			if (p.payload.type !== 'metadata') throw new Error('a content point was written despite the dimension refusal');
+		// nothing NEW landed: every content point still present belongs to the
+		// generation seeded above. Since #4938 the write comes first and the
+		// collection of the old generation after, so a refused batch leaves the
+		// file its previous points instead of emptying it.
+		expect(oldIds.length).toBeGreaterThan(0);
+		for (const [id, p] of fake.collections.get(COLLECTION)!.points) {
+			if (p.payload.type === 'metadata') continue;
+			if (!oldIds.includes(String(id))) throw new Error('a content point was written despite the dimension refusal');
 		}
 	});
 
@@ -573,6 +619,154 @@ describe('runWsIndexWriter (#4736 P3)', () => {
 		expect(report.files_to_index).toBe(0);
 		expect(report.warnings.some((w) => /over \d+ bytes skipped/.test(w))).toBe(true);
 		expect((deps as any).embedLog).toHaveLength(0);
+	});
+});
+
+// ── #4938 — a cache hit is trusted only while content exists; write, then collect ──
+
+/** Same LINE COUNT as DOC_V1's first section, so the Part Two block keeps its
+ * start/end pair — and therefore its Zoo segmentHash — across the edit. */
+const DOC_V1_BETA_SAME = '# Title (edited)\n\n' + 'alpha line rewritten for the first section\n'.repeat(6)
+	+ '## Part Two\n\n' + 'beta line of content for the second section\n'.repeat(6);
+
+describe('runWsIndexWriter (#4938) — cache hit without content, write-then-collect', () => {
+	afterEach(() => { delete process.env.WS_WRITER_CACHE_CONTENT_CHECK; });
+
+	test('A CACHE HIT WITH NO CONTENT POINT IS REPLANNED — the measured 269-file hole', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1, 'docs/b.md': DOC_V1 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: {} });
+		const first = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		await runWsIndexWriter({ ...first, dryRun: false });
+
+		// Reproduce the measured state on a.md: the cache entry still carries the
+		// hash of the CURRENT file, its content points are gone (the purge-then-
+		// write window, or a filePath purge issued by another seat).
+		const aBlocks = expectedBlocks(PREFIX, 'docs/a.md', DOC_V1);
+		const col = fake.collections.get(COLLECTION)!.points;
+		for (const b of aBlocks) col.delete(zooPointId(b.segmentHash));
+		const bIds = expectedBlocks(PREFIX, 'docs/b.md', DOC_V1).map((b) => zooPointId(b.segmentHash));
+		const sizeBeforeSecond = col.size;
+
+		const second = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		const report = await runWsIndexWriter({ ...second, dryRun: false });
+
+		// the run closes the hole itself, and says so
+		expect(report.cache_hit_without_content).toBe(1);
+		expect(report.warnings.some((w) => /cache_hit_without_content/.test(w))).toBe(true);
+		expect(report.files_to_index).toBe(1);
+		expect(report.files_skipped_unchanged).toBe(1);
+		expect(report.points_written).toBe(aBlocks.length);
+		expect((second as any).embedLog.flat()).toHaveLength(aBlocks.length);
+		for (const b of aBlocks) expect(col.has(zooPointId(b.segmentHash))).toBe(true);
+		for (const id of bIds) expect(col.has(id)).toBe(true);
+		// a.md's cache point was overwritten in place: the net delta is a.md's blocks
+		expect(col.size).toBe(sizeBeforeSecond + aBlocks.length);
+		// the verification is a non-exact count per skipped file — never `exact: true` (#4928)
+		expect(fake.countCalls).toHaveLength(2);
+		for (const call of fake.countCalls) {
+			expect(call.body?.exact).toBe(false);
+			expect(call.body?.filter?.must_not).toEqual([{ key: 'type', match: { value: 'metadata' } }]);
+		}
+
+		// and the journal returns to zero once the content is back
+		const third = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		const after = await runWsIndexWriter({ ...third, dryRun: false });
+		expect(after.cache_hit_without_content).toBe(0);
+		expect(after.files_skipped_unchanged).toBe(2);
+		expect(after.points_written).toBe(0);
+	});
+
+	test('A FAILED EMBEDDING BATCH leaves the file its OLD points and no cache — neither empty nor trusted', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V2 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: { size: 4 } });
+		const oldIds = seedZooPoints(fake, COLLECTION, PREFIX, 'docs/a.md', DOC_V1);
+		const newIds = expectedBlocks(PREFIX, 'docs/a.md', DOC_V2).map((b) => zooPointId(b.segmentHash));
+		expect(oldIds.every((id) => !newIds.includes(id))).toBe(true); // fixture: two disjoint generations
+
+		const deps = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		const report = await runWsIndexWriter({
+			...deps, dryRun: false,
+			embed: async () => { throw new Error('embedding endpoint down'); },
+		});
+
+		expect(report.status).toBe('failed');
+		expect(report.points_written).toBe(0);
+		expect(report.points_deleted).toBe(0);
+		const points = fake.collections.get(COLLECTION)!.points;
+		// not empty: the previous generation is intact (it used to be purged first)
+		for (const id of oldIds) expect(points.has(id)).toBe(true);
+		for (const id of newIds) expect(points.has(id)).toBe(false);
+		// and no cache: the next run RE-PLANS the file instead of skipping it
+		expect(points.has(wsWriterCachePointId('docs/a.md'))).toBe(false);
+		const second = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		const rerun = await runWsIndexWriter({ ...second, dryRun: false });
+		expect(rerun.files_skipped_unchanged).toBe(0);
+		expect(rerun.files_to_index).toBe(1);
+	});
+
+	test('WRITE FIRST, THEN COLLECT BY ID — a shared block is never deleted, an orphaned one always is', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1_BETA_SAME });
+		const fake = new FakeWsQdrant({ [COLLECTION]: { size: 4 } });
+		const oldIds = seedZooPoints(fake, COLLECTION, PREFIX, 'docs/a.md', DOC_V1);
+		const newBlocks = expectedBlocks(PREFIX, 'docs/a.md', DOC_V1_BETA_SAME);
+		const newIds = newBlocks.map((b) => zooPointId(b.segmentHash));
+		const shared = oldIds.filter((id) => newIds.includes(id));
+		const orphaned = oldIds.filter((id) => !newIds.includes(id));
+		// the fixture must exercise both halves, or the test proves nothing
+		expect(shared.length).toBeGreaterThan(0);
+		expect(orphaned.length).toBeGreaterThan(0);
+
+		const deps = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		const report = await runWsIndexWriter({ ...deps, dryRun: false });
+
+		expect(report.status).toBe('success');
+		const points = fake.collections.get(COLLECTION)!.points;
+		for (const id of newIds) expect(points.has(id)).toBe(true);
+		for (const id of orphaned) expect(points.has(id)).toBe(false);
+		for (const id of shared) expect(points.has(id)).toBe(true);
+		expect(report.points_deleted).toBe(orphaned.length);
+		// the shared ids were never in a delete call
+		for (const call of fake.deleteCalls) {
+			for (const id of call.ids) expect(shared).not.toContain(id);
+		}
+		// ORDER: every new block landed before the first old-only id was collected
+		const lastUpsert = Math.max(...newIds.map((id) => fake.ops.lastIndexOf(`upsert:${id}`)));
+		const firstOrphanDelete = Math.min(...orphaned.map((id) => fake.ops.indexOf(`delete:${id}`)));
+		expect(lastUpsert).toBeGreaterThanOrEqual(0);
+		expect(firstOrphanDelete).toBeGreaterThan(lastUpsert);
+	});
+
+	test('KILL-SWITCH =0 — the blind skip is restored and no count is issued', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: {} });
+		const first = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		await runWsIndexWriter({ ...first, dryRun: false });
+		const col = fake.collections.get(COLLECTION)!.points;
+		for (const b of expectedBlocks(PREFIX, 'docs/a.md', DOC_V1)) col.delete(zooPointId(b.segmentHash));
+
+		process.env.WS_WRITER_CACHE_CONTENT_CHECK = '0';
+		const second = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		const report = await runWsIndexWriter({ ...second, dryRun: false });
+		expect(report.files_skipped_unchanged).toBe(1);
+		expect(report.files_to_index).toBe(0);
+		expect(report.cache_hit_without_content).toBe(0);
+		expect(fake.countCalls).toHaveLength(0);
+	});
+
+	test('A COUNT THAT CANNOT ANSWER REFUSES THE RUN — it is not permission to trust the cache', async () => {
+		const ws = makeWorkspace({ 'docs/a.md': DOC_V1 });
+		const fake = new FakeWsQdrant({ [COLLECTION]: {} });
+		const first = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		await runWsIndexWriter({ ...first, dryRun: false });
+		const upsertsBefore = fake.upsertCalls.length;
+		const deletesBefore = fake.deleteCalls.length;
+
+		(fake as any).count = async () => { throw new Error('Request Timeout'); };
+		const second = baseDeps({ client: fake, workspaceRoot: ws.root, listFiles: ws.listFiles });
+		await expect(runWsIndexWriter({ ...second, dryRun: false })).rejects.toThrow(/refusing to trust a cache hit blind/);
+		// the refusal lands before the sentinel claim and before any write
+		expect(fake.upsertCalls).toHaveLength(upsertsBefore);
+		expect(fake.deleteCalls).toHaveLength(deletesBefore);
 	});
 });
 

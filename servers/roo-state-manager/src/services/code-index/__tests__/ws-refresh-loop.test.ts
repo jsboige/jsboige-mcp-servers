@@ -86,6 +86,15 @@ class FakeQdrant implements QdrantLike {
 		this.upsertCalls++;
 		for (const p of body?.points ?? []) this.points.set(String(p.id), { vector: p.vector, payload: p.payload });
 	}
+	/** #4938 — a cache hit is verified against real content (SDK-shaped `{ count }`). */
+	async count(_name: string, body: any) {
+		const must: any[] = body?.filter?.must ?? [];
+		const mustNot: any[] = body?.filter?.must_not ?? [];
+		const matches = (payload: any) =>
+			must.every((m: any) => String(payload?.[m.key]) === String(m.match?.value))
+			&& mustNot.every((m: any) => String(payload?.[m.key]) !== String(m.match?.value));
+		return { count: [...this.points.values()].filter((p) => matches(p.payload)).length };
+	}
 	async delete(_name: string, body: any) {
 		this.deleteCalls++;
 		for (const id of body?.points ?? []) this.points.delete(String(id));
