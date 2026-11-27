@@ -19,7 +19,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { ServicesConfigService, SERVICE_REGISTRY } from '../ServicesConfigService.js';
 
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 

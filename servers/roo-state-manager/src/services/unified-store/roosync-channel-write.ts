@@ -31,7 +31,7 @@ import { getUnifiedStoreWriter } from './writer-factory.js';
 import { mapMessageToRow } from './roosync-channel-dual-write.js';
 import { isPgFlagOn } from './pg-flags.js';
 import { isChannelPgPrimaryEnabled } from './pg-read-gates.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('roosync-channel-write');
 

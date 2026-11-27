@@ -10,7 +10,7 @@
 
 import { promises as fs } from 'fs';
 import { join } from 'path';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('sync-decision-manager');
 import {

@@ -18,7 +18,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { SchtasksConfigService, type SchtaskConfig } from '../SchtasksConfigService';
 
-vi.mock('../../utils/logger', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 

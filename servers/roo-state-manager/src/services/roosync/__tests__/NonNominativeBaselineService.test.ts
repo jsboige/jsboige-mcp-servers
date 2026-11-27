@@ -34,7 +34,7 @@ vi.mock('fs', async () => {
 	};
 });
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
 	createLogger: vi.fn(() => ({
 		info: vi.fn(),
 		warn: vi.fn(),

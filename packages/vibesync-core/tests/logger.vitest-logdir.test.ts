@@ -23,7 +23,7 @@ import { describe, test, expect, vi, afterAll } from 'vitest';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { rmSync } from 'fs';
-import { Logger } from '../logger.js';
+import { Logger } from '../src/utils/logger.js';
 
 vi.mock('os', async (importOriginal) => {
     const actual = await importOriginal<typeof import('os')>();

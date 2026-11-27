@@ -53,7 +53,7 @@ vi.mock('../../../../src/services/unified-store/roosync-channel-write.js', () =>
   updateRooSyncMessagePrimary: mockUpdatePrimary,
 }));
 
-vi.mock('../../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     debug: vi.fn(),

@@ -7,8 +7,8 @@ import { describe, test, expect, vi, beforeEach, afterEach, afterAll } from 'vit
 import { existsSync, mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { Logger, createLogger, getDefaultLogger, resetDefaultLogger } from '../logger.js';
-import type { LogLevel, LoggerOptions } from '../logger.js';
+import { Logger, createLogger, getDefaultLogger, resetDefaultLogger } from '../src/utils/logger.js';
+import type { LogLevel, LoggerOptions } from '../src/utils/logger.js';
 
 describe('logger', () => {
 	// NOTE: MCP stdio transport reserves stdout for JSON-RPC.

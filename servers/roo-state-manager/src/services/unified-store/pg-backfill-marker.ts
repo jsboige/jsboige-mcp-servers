@@ -50,7 +50,7 @@
  * `ensureBackfillMarkersFresh` (the send CLI does, see there).
  */
 
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('pg-backfill-marker');
 

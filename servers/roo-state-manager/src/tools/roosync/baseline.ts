@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { getRooSyncService, RooSyncServiceError } from '../../services/lazy-roosync.js';
 import { existsSync, readFileSync, writeFileSync, copyFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
-import { createLogger, Logger } from '../../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
 import { BaselineService } from '../../services/BaselineService.js';
 import { ConfigService } from '../../services/ConfigService.js';

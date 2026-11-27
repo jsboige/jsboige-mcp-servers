@@ -15,7 +15,7 @@ import { promisify } from 'util';
 import { exec } from 'child_process';
 import { fileURLToPath } from 'url';
 import os from 'os';
-import { createLogger, Logger } from '../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { getGitHelpers, type GitHelpers } from '../utils/git-helpers.js';
 import { getSharedStatePath, ensureStoreSubdir } from '../utils/shared-state-path.js';
 import type { BootResilienceInfo } from '../types/inventory.js';

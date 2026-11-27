@@ -40,7 +40,7 @@ vi.mock('fs', () => ({
   existsSync: h.existsSync,
 }));
 vi.mock('../../utils/shared-state-path.js', () => ({ getSharedStatePath: h.getSharedStatePath }));
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 vi.mock('../roosync/InventoryService.js', () => ({

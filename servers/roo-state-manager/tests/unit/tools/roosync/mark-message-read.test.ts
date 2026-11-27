@@ -60,7 +60,7 @@ describe('roosync_mark_message_read - Validation', () => {
       getSharedStatePath: vi.fn().mockReturnValue('/mock/shared-state')
     }));
 
-    vi.doMock('../../../../src/utils/logger.js', () => ({
+    vi.doMock('@vibesync/core/utils/logger', () => ({
       createLogger: vi.fn().mockReturnValue({
         info: vi.fn(),
         debug: vi.fn(),

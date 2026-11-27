@@ -95,7 +95,7 @@ vi.mock('../../../../src/utils/dashboard-helpers.js', async () => {
     };
 });
 
-vi.mock('../../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
     createLogger: () => ({
         info: vi.fn(),
         debug: vi.fn(),

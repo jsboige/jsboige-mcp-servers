@@ -1,7 +1,7 @@
 import { HierarchyReconstructionEngine } from './utils/hierarchy-reconstruction-engine.js';
 import { RooStorageDetector } from './utils/roo-storage-detector.js';
 import type { StoredConversation } from './services/unified-store/types.js';
-import { createLogger } from './utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 

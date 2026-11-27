@@ -11,7 +11,7 @@
 
 import { existsSync } from 'fs';
 import { resolve, isAbsolute } from 'path';
-import { createLogger } from '../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { parseFleetRoster } from '../services/task-partition.js';
 import { storeMetaUrl } from '../services/unified-store/store-meta.js';
 import { readMachineRegistryFile } from '../utils/machine-registry-file.js';

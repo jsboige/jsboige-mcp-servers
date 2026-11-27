@@ -12,7 +12,7 @@ import { existsSync, promises as fs, readFileSync, writeFileSync, mkdirSync, ren
 import { join, dirname, basename } from 'path';
 import { tmpdir } from 'os';
 import { createHash } from 'crypto';
-import { createLogger } from '../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { ensureStoreSubdir, isSharedPathAccessible, tryGetSharedStatePath, SharedStoreInaccessibleError, type SharedStoreInaccessibleCause } from '../utils/shared-state-path.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
 import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';

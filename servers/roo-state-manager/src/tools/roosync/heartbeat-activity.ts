@@ -9,7 +9,7 @@
 
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { getLocalMachineId } from '../../utils/message-helpers.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import os from 'os';
 
 const logger = createLogger('HeartbeatActivity');

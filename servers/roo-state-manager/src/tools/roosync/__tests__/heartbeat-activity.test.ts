@@ -33,7 +33,7 @@ vi.mock('../../../services/RooSyncService.js', () => ({
 }));
 
 // Mock logger
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
 	createLogger: () => ({
 		debug: vi.fn(),
 		warn: vi.fn(),

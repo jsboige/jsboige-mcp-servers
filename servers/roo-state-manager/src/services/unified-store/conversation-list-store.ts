@@ -43,7 +43,7 @@ import type {
 import type { MessageRow, StoredConversation } from './types.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { isPgFlagOn } from './pg-flags.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 /**
  * Lazy logger.

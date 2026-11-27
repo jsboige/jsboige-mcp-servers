@@ -17,7 +17,7 @@ const mockPool = { on: vi.fn(), connect: mockConnect, query: mockQuery, end: vi.
 
 vi.mock('pg', () => ({ default: { Pool: vi.fn(() => mockPool) } }));
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }),
 }));
 

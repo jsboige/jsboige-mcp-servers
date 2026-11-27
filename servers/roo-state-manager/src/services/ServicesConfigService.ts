@@ -17,7 +17,7 @@
  */
 
 import { PowerShellExecutor } from './PowerShellExecutor.js';
-import { createLogger, Logger } from '../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { hostname } from 'os';
 
 // ──────────────────────────────────────────────────

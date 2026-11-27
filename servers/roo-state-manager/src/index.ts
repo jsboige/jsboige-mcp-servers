@@ -166,7 +166,7 @@ if (problems.length > 0) {
 // registry.ts (and its zod/zod-to-json-schema chain) loads dynamically in run().
 // This cuts static module evaluation from ~5s to <1s.
 import { createMcpServer, SERVER_CONFIG } from './config/server-config.js';
-import { createLogger, getDefaultLogger } from './utils/logger.js';
+import { createLogger, getDefaultLogger } from '@vibesync/core/utils/logger';
 import { recordToolCall } from './utils/tool-call-metrics.js';
 
 // #2267 / #3205: the global guard's tables moved to ./config/tool-timeouts.js,

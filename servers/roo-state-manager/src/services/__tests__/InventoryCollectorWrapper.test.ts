@@ -29,7 +29,7 @@ vi.mock('../../utils/server-helpers.js', () => ({
   getSharedStatePath: vi.fn(() => '/mock/shared-state')
 }));
 
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),

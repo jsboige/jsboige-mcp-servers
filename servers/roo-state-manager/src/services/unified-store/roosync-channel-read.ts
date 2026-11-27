@@ -37,7 +37,7 @@ import { parseMachineWorkspace, matchesRecipient, perReaderStatus, isMachineWide
 import { applyReadTracking } from '../../utils/read-tracking.js';
 import { updateRooSyncMessagePrimary } from './roosync-channel-write.js';
 import { mapMessageToRow } from './roosync-channel-dual-write.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('roosync-channel-read');
 

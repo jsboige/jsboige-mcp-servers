@@ -15,7 +15,7 @@
 import { readFileSync, existsSync, mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { createLogger } from './logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 // Lazily created: `createLogger` probes its log directory at construction
 // (logger.ts ensureLogDirectory → existsSync), which must not fire at module

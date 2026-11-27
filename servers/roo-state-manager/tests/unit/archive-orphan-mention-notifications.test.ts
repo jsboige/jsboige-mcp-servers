@@ -34,7 +34,7 @@ import path from 'path';
 vi.mock('../../src/utils/message-helpers.js', () => ({
 	getLocalMachineId: () => 'myia-po-2027'
 }));
-vi.mock('../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
 	createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
 }));
 vi.mock('../../src/utils/server-helpers.js', () => ({

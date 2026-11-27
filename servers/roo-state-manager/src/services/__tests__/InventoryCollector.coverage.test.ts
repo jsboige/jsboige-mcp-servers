@@ -38,7 +38,7 @@ vi.mock('../../utils/shared-state-path.js', async (importOriginal) => {
   };
 });
 
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 

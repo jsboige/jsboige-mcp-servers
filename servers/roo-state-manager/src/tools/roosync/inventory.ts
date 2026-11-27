@@ -23,7 +23,7 @@ import { InventoryService } from '../../services/roosync/InventoryService.js';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
 import { HeartbeatServiceError } from '../../services/roosync/HeartbeatService.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('Inventory');
 

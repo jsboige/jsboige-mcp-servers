@@ -11,7 +11,7 @@
 
 import { promisify } from 'util';
 import { exec } from 'child_process';
-import { createLogger, Logger } from './logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 
 const execAsync = promisify(exec);
 

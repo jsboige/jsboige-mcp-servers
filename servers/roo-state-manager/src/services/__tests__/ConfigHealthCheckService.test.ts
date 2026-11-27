@@ -9,7 +9,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { ConfigHealthCheckService, ConfigType, HealthCheckType } from '../ConfigHealthCheckService.js';
-import type { Logger } from '../../utils/logger.js';
+import type { Logger } from '@vibesync/core/utils/logger';
 
 describe('ConfigHealthCheckService', () => {
   let healthCheck: ConfigHealthCheckService;

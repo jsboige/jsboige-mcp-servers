@@ -70,7 +70,7 @@ vi.mock('../../unified-store/store-meta.js', () => ({
   deleteStoreMetaValue: vi.fn(),
 }));
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn((...args: unknown[]) => {

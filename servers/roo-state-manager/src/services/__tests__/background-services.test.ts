@@ -106,7 +106,7 @@ import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import type { ServerState } from '../state-manager.service.js';
 import { ANTI_LEAK_CONFIG } from '../../config/server-config.js';
 // #4352 amend1: the loop lines go through the file logger — spy its singleton.
-import { getDefaultLogger } from '../../utils/logger.js';
+import { getDefaultLogger } from '@vibesync/core/utils/logger';
 // TaskIndexer is mocked above, no need to import the actual class
 import type { StoredConversation } from '../unified-store/types.js';
 import { TaskIndexer } from '../task-indexer.js';

@@ -51,7 +51,7 @@ vi.mock('../message-helpers.js', () => ({
 	getLocalMachineId: () => 'myia-po-2025'
 }));
 
-vi.mock('../logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
 	createLogger: () => ({
 		debug: vi.fn(),
 		info: vi.fn(),
@@ -76,7 +76,7 @@ async function getModule() {
 	});
 	vi.doMock('../server-helpers.js', () => ({ getSharedStatePath: () => '/shared-state' }));
 	vi.doMock('../message-helpers.js', () => ({ getLocalMachineId: () => 'myia-po-2025' }));
-	vi.doMock('../logger.js', () => ({
+	vi.doMock('@vibesync/core/utils/logger', () => ({
 		createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
 	}));
 	return import('../dashboard-helpers.js');
@@ -381,7 +381,7 @@ describe('sendStructuredMentionNotificationsAsync', () => {
 		});
 		vi.doMock('../server-helpers.js', () => ({ getSharedStatePath: () => '/shared-state' }));
 		vi.doMock('../message-helpers.js', () => ({ getLocalMachineId: () => 'myia-po-2025' }));
-		vi.doMock('../logger.js', () => ({
+		vi.doMock('@vibesync/core/utils/logger', () => ({
 			createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
 		}));
 
@@ -503,7 +503,7 @@ describe('sendStructuredMentionNotificationsAsync', () => {
 				sendMessage: () => { throw new Error('Network fail'); }
 			})
 		}));
-		vi.doMock('../logger.js', () => ({
+		vi.doMock('@vibesync/core/utils/logger', () => ({
 			createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
 		}));
 		const mod = await import('../dashboard-helpers.js');
@@ -540,7 +540,7 @@ describe('sendStructuredMentionNotificationsAsync', () => {
 		vi.doMock('../../services/MessageManager.js', () => ({
 			getMessageManager: () => { throw new Error('MM init fail'); }
 		}));
-		vi.doMock('../logger.js', () => ({
+		vi.doMock('@vibesync/core/utils/logger', () => ({
 			createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
 		}));
 		const mod = await import('../dashboard-helpers.js');

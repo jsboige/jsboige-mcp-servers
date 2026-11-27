@@ -27,7 +27,7 @@
  *               headers + lazy archive lookup for fully-archived machines)
  */
 
-import { createLogger } from './logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 

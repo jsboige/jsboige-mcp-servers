@@ -42,7 +42,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { ConfigHealthCheckService } from '../ConfigHealthCheckService.js';
-import type { Logger } from '../../utils/logger.js';
+import type { Logger } from '@vibesync/core/utils/logger';
 
 describe('ConfigHealthCheckService — branch coverage (#833 C3, source-grounded)', () => {
   let healthCheck: ConfigHealthCheckService;

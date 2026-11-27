@@ -120,7 +120,7 @@ import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
 import { isPgFlagOn } from './pg-flags.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { isGdriveConflictCopyFile } from '../roosync/DashboardMirrorService.js';
 
 const logger = createLogger('roosync-dashboard-reconcile');

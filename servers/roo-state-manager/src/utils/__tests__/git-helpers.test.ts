@@ -13,7 +13,7 @@ vi.mock('child_process', () => ({
 }));
 
 // Mock logger
-vi.mock('../logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     debug: vi.fn(),

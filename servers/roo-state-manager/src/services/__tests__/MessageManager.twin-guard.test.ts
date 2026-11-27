@@ -30,7 +30,7 @@ import { randomUUID } from 'crypto';
 
 const { mockLoggerError } = vi.hoisted(() => ({ mockLoggerError: vi.fn() }));
 
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),

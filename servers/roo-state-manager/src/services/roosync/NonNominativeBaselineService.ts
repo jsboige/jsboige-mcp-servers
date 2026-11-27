@@ -12,7 +12,7 @@
 import { promises as fs, existsSync } from 'fs';
 import { join, resolve } from 'path';
 import { createHash } from 'crypto';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('NonNominativeBaselineService');
 import {

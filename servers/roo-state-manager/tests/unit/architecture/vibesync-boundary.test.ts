@@ -12,8 +12,9 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../.
 const WORKSPACE_ROOT = path.resolve(ROOT, '..', '..');
 const CORE_PACKAGE_PREFIX = 'packages/vibesync-core/';
 const CORE_MODULE_GROUPS: Record<string, string> = {
-  // Shared logging, with no tool- or conversation-domain state.
-  logger: 'src/utils/logger.ts',
+  // Shared logging, with no tool- or conversation-domain state
+  // (extracted to @vibesync/core in #4886 S2 grain 2).
+  logger: 'packages/vibesync-core/src/utils/logger.ts',
   // Server configuration and per-tool timeout policy.
   'server-config': 'src/config/server-config.ts',
   // Extracted to @vibesync/core (#4886 S2 grain 1).
@@ -164,7 +165,9 @@ describe('#2190 step 1 — VibeSync / Vibe-Conversations module boundary', () =>
     const fixture = path.join(ROOT, 'tests/unit/architecture/vibesync-boundary.fixture.ts');
     expect(importsOf('tests/unit/architecture/vibesync-boundary.fixture.ts')).toEqual([
       { specifier: '../../../src/config/server-config.js', target: 'src/config/server-config.ts', line: 1 },
-      { specifier: '../../../src/utils/logger.js', target: 'src/utils/logger.ts', line: 2 },
+      // A bare package specifier is not a relative edge: it has no target, so it
+      // can never read as a V/C crossing (#4886 S2 grain 2).
+      { specifier: '@vibesync/core/utils/logger', target: null, line: 2 },
       { specifier: '../../../src/services/lazy-roosync.js', target: 'src/services/lazy-roosync.ts', line: 5 },
     ]);
     expect(readFileSync(fixture, 'utf8')).toContain("import('../../../src/services/lazy-roosync.js')");

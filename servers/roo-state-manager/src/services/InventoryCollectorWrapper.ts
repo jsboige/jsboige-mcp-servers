@@ -14,7 +14,7 @@ import { promises as fs } from 'fs';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { getSharedStatePath } from '../utils/shared-state-path.js';
-import { createLogger } from '../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { InventoryCollectorError, InventoryCollectorErrorCode } from '@vibesync/core/types/errors';
 import { InventoryService } from './roosync/InventoryService.js';
 import { inventoryMetaKey, readStoreMetaValue, storeMetaUrl } from './unified-store/store-meta.js';

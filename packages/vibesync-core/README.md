@@ -3,9 +3,9 @@
 Domain-neutral contracts and utilities shared by the VibeSync MCP servers
 (step 2 of the #2190 split plan, issue #4886).
 
-## Scope of this grain
+## Scope
 
-Grain 1 extracts the modules that carry **no RSM-domain state**:
+Grain 1 extracted the modules that carry **no RSM-domain state**:
 
 | Module | Source before |
 |---|---|
@@ -15,9 +15,15 @@ Grain 1 extracts the modules that carry **no RSM-domain state**:
 | `utils/secret-redaction` (+ `utils/known-value-masker`) | `servers/roo-state-manager/src/utils/` |
 | `config/tool-timeouts` | `servers/roo-state-manager/src/config/tool-timeouts.ts` |
 
-The remaining trunk modules (`logger`, `shared-state-path`, `message-helpers`,
-`server-config`, `unified-store/*`, `openai`) stay in the RSM for later grains:
-their fan-in measured 1000+ import sites, which is not reviewable as one change.
+Grain 2 added the shared logger, which only imports `fs`, `path` and `os`:
+
+| Module | Source before |
+|---|---|
+| `utils/logger` | `servers/roo-state-manager/src/utils/logger.ts` |
+
+The remaining trunk modules (`shared-state-path`, `message-helpers`, `server-config`,
+`unified-store/*`, `openai`) stay in the RSM for later grains: their fan-in measured
+1000+ import sites, which is not reviewable as one change.
 
 ## Consuming it
 
@@ -26,6 +32,7 @@ Package subpaths mirror the module layout; the RSM imports them by package name:
 ```ts
 import { StateManagerError } from '@vibesync/core/types/errors';
 import { getToolTimeoutMs } from '@vibesync/core/config/tool-timeouts';
+import { createLogger } from '@vibesync/core/utils/logger';
 ```
 
 The package compiles to `dist/` (`npm run build`, also run by `prepare` on install).

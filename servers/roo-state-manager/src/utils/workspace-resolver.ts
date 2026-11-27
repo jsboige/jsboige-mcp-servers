@@ -14,7 +14,7 @@
  */
 
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { createLogger } from './logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('WorkspaceResolver');
 

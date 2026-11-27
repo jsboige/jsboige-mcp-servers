@@ -96,7 +96,7 @@ const { mockLoggerWarn, mockLoggerInfo } = vi.hoisted(() => ({
   mockLoggerInfo: vi.fn(),
 }));
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ debug: vi.fn(), info: mockLoggerInfo, warn: mockLoggerWarn, error: vi.fn() }),
 }));
 

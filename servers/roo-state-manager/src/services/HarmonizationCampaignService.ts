@@ -72,7 +72,7 @@ import { promises as fs } from 'fs';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
-import { createLogger, Logger } from '../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import {
   CanonPayload,
   validateCanon,

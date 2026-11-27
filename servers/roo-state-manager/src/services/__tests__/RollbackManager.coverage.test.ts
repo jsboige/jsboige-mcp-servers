@@ -58,7 +58,7 @@ vi.mock('fs/promises', async (importActual) => {
 });
 
 import { RollbackManager } from '../RollbackManager.js';
-import type { Logger } from '../../utils/logger.js';
+import type { Logger } from '@vibesync/core/utils/logger';
 
 // ─────────────────── helpers ───────────────────
 

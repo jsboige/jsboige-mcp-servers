@@ -19,7 +19,7 @@ import type { BaselineConfig, MachineInventory, BaselineDifference } from '../..
 import type { ComparisonReport } from '../DiffDetector.js';
 
 // Mock logger
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),

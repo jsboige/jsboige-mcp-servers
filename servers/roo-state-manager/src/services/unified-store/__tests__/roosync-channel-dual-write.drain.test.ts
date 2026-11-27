@@ -17,7 +17,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 // ─── Capture the logger (hoisted before the module under test loads) ──────────
 
 const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 

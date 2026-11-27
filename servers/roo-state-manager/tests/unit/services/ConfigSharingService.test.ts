@@ -112,7 +112,7 @@ vi.mock('../../../src/services/ConfigHealthCheckService.js', () => ({
   })),
 }));
 
-vi.mock('../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: vi.fn(() => ({
     info: vi.fn(),
     warn: vi.fn(),

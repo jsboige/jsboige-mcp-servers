@@ -9,7 +9,7 @@
 
 import { getMessageManager } from '../../services/MessageManager.js';
 import { assertSharedStoreAccessible } from '../../utils/shared-state-path.js';
-import { createLogger, Logger } from '../../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';
 import { getLocalMachineId, getLocalFullId } from '../../utils/message-helpers.js';
 

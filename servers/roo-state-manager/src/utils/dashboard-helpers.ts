@@ -12,7 +12,7 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import { getSharedStatePath } from './shared-state-path.js';
 import { getLocalMachineId } from './message-helpers.js';
-import { createLogger, Logger } from './logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { getMessageManager } from '../services/MessageManager.js';
 import { tryLoadRooSyncConfig } from '../config/roosync-config.js';
 import type { Mention, UserId } from '../tools/roosync/dashboard.js';

@@ -18,7 +18,7 @@ import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { CACHE_CONFIG } from '../config/server-config.js';
-import { createLogger } from '../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { getToolTimeoutMs } from '@vibesync/core/config/tool-timeouts';
 import { formatErrorForLog } from '../utils/error-format.js';
 import { getServerCapabilities, type Capability } from '@vibesync/core/utils/server-capabilities';
