@@ -930,13 +930,19 @@ def last_foreign_marker(issue_n: int, lane: str, slug: str = _GH_PIN_REPO) -> st
     return None
 
 
+def midrun_armed(rec: dict) -> bool:
+    """True when the claim was DEFERRED (--claim-late): the only state in which a mid-run
+    probe has anything to guard."""
+    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
+    return cr.get("deferred") == "late"
+
+
 def midrun_claim_abort(args, rec: dict, stage: str) -> bool:
     """True when the run must stop now: the claim was deferred (--claim-late), another
     lane's marker is the issue's last word, and the scoped guard sees a COLLISION on this
     notebook (held by another lane, or an occupying PR that may touch it). A guard that
     times out, is broken, or answers a disjoint occupation never stops the run."""
-    cr = (rec.get("stages") or {}).get("claim_reservation") or {}
-    if cr.get("deferred") != "late":
+    if not midrun_armed(rec):
         return False
     holder = last_foreign_marker(args.issue, args.lane)
     probe: dict = {"stage": stage, "at": utcnow(), "holder": holder}
@@ -2195,8 +2201,28 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             return "truncated"
         return "timeout" if call_timed_out(env) else ""
 
+    # 26/11 (myia-po-2028:claudish, CoursIA#28707): the mid-run probe ran only at the
+    # stage boundaries, and the creation build is ONE stage of 5+ model calls over ~8
+    # min. The foreign [CLAIMED] landed at 04:02:13Z, between tranche 1 and tranche 2;
+    # the "build" probe fired at 04:08:05Z, after four more calls -- 347 201 prompt
+    # tokens spent building a notebook another lane already held. A probe before every
+    # build call but the FIRST (the "plan" probe covers that one) bounds the exposure
+    # to the call in flight. Inert unless --claim-late deferred the claim.
+    # The one skip is RUN-scoped, not invocation-scoped (review ai-01, 26/11): the stage it
+    # covered is named in the record the one time it is skipped, so an entry into this
+    # function that did not pass the "plan" probe (a second call site added later, a resume
+    # that does not replay plan) finds the name and probes its own first tranche.
+    def claim_stop(stage: str) -> bool:
+        if rec.get("midrun_claim_plan_covered"):
+            return midrun_claim_abort(args, rec, stage)
+        if midrun_armed(rec):
+            rec["midrun_claim_plan_covered"] = stage
+        return False
+
     for si in range(0, len(plan_cells), CREATE_SEGMENT):
         seg = plan_cells[si:si + CREATE_SEGMENT]
+        if claim_stop(f"build+{si}"):
+            return {}
         kept, missing, part, env = await ask_tranche(seg, f"2-build+{si}")
         conv = env.get("conversation_id") or conv
         chars_first = len(env.get("response") or "")
@@ -2213,6 +2239,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             halves = [seg[:max(1, len(seg) // 2)], seg[max(1, len(seg) // 2):]]
             kept, missing, chars_first = [], [], 0
             for hi, half in enumerate(h for h in halves if h):
+                if claim_stop(f"build+{si}+h{hi}"):
+                    return {}
                 hkept, hmiss, hpart, henv = await ask_tranche(half, f"2-build+{si}+h{hi}")
                 conv = henv.get("conversation_id") or conv
                 chars_first += len(henv.get("response") or "")
@@ -2251,6 +2279,8 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             return {}
         repair = None
         if missing:
+            if claim_stop(f"build+{si}+repair"):
+                return {}
             # one repair round for EXACTLY the omitted cells — same prompt shape,
             # smaller tranche, so the omissions cannot hide in a long answer again
             env = await sk_call_retry(session, args, rec, f"2-build+{si}+repair",
