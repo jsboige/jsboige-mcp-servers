@@ -16,7 +16,7 @@ import { HeartbeatService } from './HeartbeatService.js';
 import {
   IdentityManagerError,
   IdentityManagerErrorCode
-} from '../../types/errors.js';
+} from '@vibesync/core/types/errors';
 
 const logger = createLogger('IdentityManager');
 

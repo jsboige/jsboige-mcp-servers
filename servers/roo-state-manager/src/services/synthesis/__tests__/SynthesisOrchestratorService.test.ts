@@ -7,7 +7,7 @@
 
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import path from 'path';
-import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../../types/errors.js';
+import { SynthesisServiceError, SynthesisServiceErrorCode } from '@vibesync/core/types/errors';
 
 // Mock NarrativeContextBuilderService
 const mockBuildNarrativeContext = vi.fn();

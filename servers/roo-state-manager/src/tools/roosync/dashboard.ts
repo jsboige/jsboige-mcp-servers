@@ -41,7 +41,7 @@ import * as os from 'os';
 import { spawnSync } from 'child_process';
 import * as yaml from 'js-yaml';
 import { getSharedStatePath, assertSharedStoreAccessible, ensureStoreSubdir, isSharedPathAccessible } from '../../utils/shared-state-path.js';
-import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER, redactSecrets } from '../../utils/secret-redaction.js';
+import { createKnownValueMasker, maskSecretTextForPublication, FORM_LAYER_MARKER, redactSecrets } from '@vibesync/core/utils/secret-redaction';
 import { getLocalMachineId, getLocalWorkspaceId, assertStampsMachine } from '../../utils/message-helpers.js';
 import { createLogger, Logger } from '../../utils/logger.js';
 import { getChatOpenAIClient, getLLMModelId, getFallbackChatOpenAIClient, getFallbackLLMModelId } from '../../services/openai.js';

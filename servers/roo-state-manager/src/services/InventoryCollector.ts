@@ -22,7 +22,7 @@ import type { BootResilienceInfo } from '../types/inventory.js';
 import { inventoryMetaKey, readStoreMetaValue, storeMetaUrl, upsertStoreMetaValue } from './unified-store/store-meta.js';
 import { isPgFlagExplicitlyOff } from './unified-store/pg-flags.js';
 import { INVENTORY_PG_PRIMARY_ENV } from './roosync/InventoryService.js';
-import { maskSecretTextForPublication } from '../utils/secret-redaction.js';
+import { maskSecretTextForPublication } from '@vibesync/core/utils/secret-redaction';
 import { describeError } from '../utils/error-format.js';
 
 const execAsync = promisify(exec);

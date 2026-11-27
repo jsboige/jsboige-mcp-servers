@@ -29,7 +29,7 @@ interface NarrativeContext {
     [key: string]: any; // Flexible pour l'enrichissement
 }
 import { MessageSkeleton, ActionMetadata } from '../../types/conversation.js';
-import { SynthesisServiceError, SynthesisServiceErrorCode } from '../../types/errors.js';
+import { SynthesisServiceError, SynthesisServiceErrorCode } from '@vibesync/core/types/errors';
 import { TaskNavigator } from '../task-navigator.js';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs/promises';

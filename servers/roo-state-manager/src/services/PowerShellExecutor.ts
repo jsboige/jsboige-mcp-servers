@@ -15,7 +15,7 @@
 import { spawn, ChildProcess } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import { PowerShellExecutorError, PowerShellExecutorErrorCode } from '../types/errors.js';
+import { PowerShellExecutorError, PowerShellExecutorErrorCode } from '@vibesync/core/types/errors';
 
 /**
  * Résultat d'une exécution PowerShell

@@ -7,7 +7,7 @@ import { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { RooStorageDetector } from '../../utils/roo-storage-detector.js';
 import { promises as fs } from 'fs';
 import path from 'path';
-import { GenericError, GenericErrorCode } from '../../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 interface GetRawArgs {
     taskId: string;

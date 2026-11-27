@@ -86,7 +86,7 @@ vi.mock('../../../utils/logger.js', () => ({
 import * as fsPromises from 'fs/promises';
 import { readJSONFileWithoutBOM } from '../../../utils/encoding-helpers.js';
 import { InventoryService, INVENTORY_PG_PRIMARY_ENV } from '../InventoryService.js';
-import { InventoryCollectorError } from '../../../types/errors.js';
+import { InventoryCollectorError } from '@vibesync/core/types/errors';
 
 function inventoryFor(machineId: string): { machineId: string; hostname: string } {
   return { machineId, hostname: `${machineId}-host` };

@@ -23,11 +23,22 @@
  *    mint twin ids for identical content. Before anything else the run
  *    recomputes sampled stored points' segmentHash under the given prefix and
  *    REFUSES unless at least one verifies (the P2 replay is the reference).
- *  - STALE PURGE BY filePath BEFORE the upsert. The corpus holds ≥2 generations
- *    of blocks for some files (P2 finding) — Zoo never garbage-collected
- *    re-chunked files (#2609/#2554). A changed file has every existing point
- *    under its filePath deleted, then its new blocks written: after the run the
- *    file owns exactly its current blocks.
+ *  - A CACHE HIT IS VALID ONLY WHILE THE CONTENT EXISTS (#4938). The cache
+ *    point carries the fileHash; the hash alone says the file did not change,
+ *    never that its blocks are still in the collection. Measured: 269 of 989
+ *    files cached at their current hash while owning zero points (coverage
+ *    0.728). Every hit is therefore verified by a per-file NON-EXACT count of
+ *    its content points (`exact: false` — an exact count timed out at 60 s on
+ *    a 16.3 M-point collection, #4928), batched, fail-closed. A hit with no
+ *    content is replanned and journaled as `cache_hit_without_content`.
+ *    `WS_WRITER_CACHE_CONTENT_CHECK=0` restores the unchecked skip.
+ *  - WRITE FIRST, COLLECT AFTER — BY ID. The corpus holds ≥2 generations of
+ *    blocks for some files (P2 finding): Zoo never garbage-collected re-chunked
+ *    files (#2609/#2554). A changed file's old points are collected AFTER its
+ *    new blocks landed, by id set difference, never by filePath: an id shared
+ *    by both generations is not stale, and deleting it would destroy the block
+ *    just written. A file whose batch failed keeps its previous points — it is
+ *    never emptied, and never cached.
  *  - DRY RUN IS THE DEFAULT, at the service boundary and the tool boundary
  *    alike: the only way to write is an explicit `dryRun: false`.
  *
@@ -88,6 +99,30 @@ export { WS_WRITER_SENTINEL_ID } from './collection-naming.js';
 export function wsWriterCachePointId(relativePath: string): string {
 	return uuidv5(`__rsm_ws_writer_cache__\u0000${relativePath}`, ZOO_CODE_BLOCK_NAMESPACE);
 }
+
+// ── Cache-content check (#4938) ───────────────────────────────────────────────
+
+/**
+ * Kill-switch of the cache-content check. `'0'` restores the pre-#4938 blind
+ * skip: a cache entry whose `fileHash` matches is trusted without asking the
+ * collection whether the file still owns content points. Any other value (or
+ * absent) keeps the check on — the default, because the hole it closes was
+ * measured at 269 empty files out of 989 (coverage 0.728).
+ */
+export const WS_WRITER_CACHE_CONTENT_CHECK_ENV = 'WS_WRITER_CACHE_CONTENT_CHECK';
+
+/** Whether a cache hit must be verified against actual content points. */
+export function isWsWriterCacheContentCheckEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+	return env[WS_WRITER_CACHE_CONTENT_CHECK_ENV] !== '0';
+}
+
+/**
+ * How many per-file content counts one batch carries. The counts of a batch
+ * travel together (bounded concurrency), never the whole corpus at once: each
+ * one is an estimate pass over the shared `ws-*` collection, and this seat is
+ * one of several readers.
+ */
+export const CACHE_CONTENT_CHECK_BATCH = 8;
 
 /**
  * The absolute path Zoo's hash formula embeds: historical writer prefix + the
@@ -358,6 +393,13 @@ export interface WsIndexWriterReport {
 	writer_guard: { ok: boolean; previous_writer: string | null; took_over_from?: string };
 	files_considered: number;
 	files_skipped_unchanged: number;
+	/**
+	 * #4938 — cache hits whose `fileHash` matched but that owned NO content
+	 * point in the collection. They were replanned and re-embedded by this run.
+	 * The journal of the measured hole: > 0 after the first pass that carries
+	 * the check, 0 once the corpus is repaired.
+	 */
+	cache_hit_without_content: number;
 	files_to_index: number;
 	files_indexed: number;
 	/** Whether Zoo's code population was part of this run (#4819 switch, default on). */
@@ -433,6 +475,71 @@ async function contentPointIdsForFile(client: QdrantLike, collection: string, re
 	return ids;
 }
 
+/**
+ * #4938 — the cache hits that still own content points, verified file by file
+ * with a NON-EXACT count.
+ *
+ * Why the check: measured 269 of 989 files cached at the current `fileHash`
+ * while holding zero content points (coverage 0.728). The hash alone says the
+ * file did not change; only the collection says its blocks are still there.
+ *
+ * `exact: false` is not an optimisation, it is the only mode allowed here: an
+ * exact count is the engine's filtered counter, and on a 16.3 M-point
+ * collection it took the HTTP request down at 60 s (#4928). The estimate
+ * (`estimate_cardinality`) has no engine timer and answers in milliseconds —
+ * and a zero answer is unambiguous for our purpose: no block at all.
+ *
+ * Fail-closed: a count that cannot answer refuses the run. Reading it as "the
+ * cache is right" would restore exactly the blind skip this closes; reading it
+ * as "no content" would re-embed the whole corpus on a transient error.
+ */
+async function filesWithContentPoints(
+	client: QdrantLike,
+	collection: string,
+	relNativePaths: string[],
+): Promise<Set<string>> {
+	const withContent = new Set<string>();
+	if (relNativePaths.length === 0) return withContent;
+	if (typeof client.count !== 'function') {
+		throw new Error(
+			`qdrant client exposes no count (${relNativePaths.length} cache hit(s) to verify) — ` +
+			`refusing to trust a cache hit blind (#4938). Run with ${WS_WRITER_CACHE_CONTENT_CHECK_ENV}=0 ` +
+			`to restore the unchecked skip deliberately.`
+		);
+	}
+	for (let i = 0; i < relNativePaths.length; i += CACHE_CONTENT_CHECK_BATCH) {
+		const batch = relNativePaths.slice(i, i + CACHE_CONTENT_CHECK_BATCH);
+		await Promise.all(batch.map(async (relNative) => {
+			let res: any;
+			try {
+				res = await client.count!(collection, {
+					exact: false,
+					filter: {
+						must: [{ key: 'filePath', match: { value: relNative } }],
+						must_not: [{ key: 'type', match: { value: 'metadata' } }],
+					},
+				});
+			} catch (error) {
+				throw new Error(
+					`cannot count the content points of ${relNative} in ${collection} ` +
+					`(${error instanceof Error ? error.message : String(error)}) — refusing to trust a cache hit blind (#4938).`
+				);
+			}
+			// SDK-unwrapped (`{ count }`) first; the raw HTTP envelope tolerated
+			// for the same reason as responsePoints above.
+			const count = Number(res?.count ?? res?.result?.count);
+			if (!Number.isFinite(count)) {
+				throw new Error(
+					`count of ${relNative} in ${collection} answered ${JSON.stringify(res)} — ` +
+					`refusing to trust a cache hit blind (#4938).`
+				);
+			}
+			if (count > 0) withContent.add(relNative);
+		}));
+	}
+	return withContent;
+}
+
 /** Every RSM hash-cache point of the collection (the managed-file set). */
 async function scrollCachePoints(
 	client: QdrantLike,
@@ -481,11 +588,14 @@ async function deleteIds(client: QdrantLike, collection: string, ids: string[]):
  * One guarded incremental run over the served ws- collection.
  *
  * Order of operations is load-bearing: resolve → validate prefix → writer
- * guard → plan (cache skip) → [dry run stops] → claim sentinel → purge stale
- * points of changed/removed files → embed + upsert new blocks → write cache
- * points. A crash between purge and upsert leaves a file unindexed (the next
- * run re-indexes it — the cache was not written); it never leaves stale AND
- * fresh generations coexisting.
+ * guard → plan (cache skip, verified against content since #4938) → [dry run
+ * stops] → claim sentinel → parse + chunk budget → read the old ids → embed +
+ * upsert new blocks → collect the old generation by id → write cache points.
+ * A crash anywhere between the first upsert and the cache write leaves the
+ * file with its new blocks (plus maybe its old ones, never zero of its own —
+ * the cache is what would make the next run skip) and the next run replans it
+ * (no cache was written). It never leaves stale AND fresh generations
+ * consecrated as "unchanged".
  */
 export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndexWriterReport> {
 	const startedAt = Date.now();
@@ -628,8 +738,11 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 	candidates.sort();
 	if (droppedOversize > 0) warnings.push(`${droppedOversize} file(s) over ${MAX_WS_WRITER_FILE_BYTES} bytes skipped (Zoo's scanner cap)`);
 
-	// 5. Cache lookup — batched retrieve by deterministic cache ids.
-	const cacheHits = new Map<string, string>();
+	// 5. Cache lookup — batched retrieve by deterministic cache ids. The record
+	// carries what the point WAS worth: `contentPoints` is how many blocks the
+	// run that wrote it landed (absent on entries from before #4938 → null,
+	// verified by count like any other).
+	const cacheHits = new Map<string, { fileHash: string; contentPoints: number | null }>();
 	if (typeof deps.client.retrieve === 'function') {
 		for (let i = 0; i < candidates.length; i += 500) {
 			const batch = candidates.slice(i, i + 500);
@@ -640,18 +753,31 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 			});
 			for (const pt of responsePoints(res)) {
 				if (pt?.payload?.source === 'rsm-ws-writer-cache' && typeof pt.payload.filePath === 'string') {
-					cacheHits.set(String(pt.payload.filePath), String(pt.payload.fileHash ?? ''));
+					cacheHits.set(String(pt.payload.filePath), {
+						fileHash: String(pt.payload.fileHash ?? ''),
+						contentPoints: typeof pt.payload.contentPoints === 'number' ? pt.payload.contentPoints : null,
+					});
 				}
 			}
 		}
 	}
 
-	// 6. Plan: skip unchanged, read the rest.
-	const toIndex: { relPath: string; relNative: string; content: string; fileHash: string }[] = [];
-	let skippedUnchanged = 0;
-	let truncated = false;
+	// 6. Plan: read + hash every candidate, then verify the cache hits.
+	//
+	// #4938 — the hash alone is NOT a valid cache: measured 269 files cached at
+	// their current hash while owning zero content points (purge-then-write
+	// window, or a filePath purge issued elsewhere). A hit is trusted only once
+	// the collection confirms the file still has content; otherwise it is
+	// replanned like any miss and the report journals it.
+	const cacheCheckEnabled = isWsWriterCacheContentCheckEnabled();
+	const read: {
+		relPath: string;
+		relNative: string;
+		content: string;
+		fileHash: string;
+		hit: { fileHash: string; contentPoints: number | null } | null;
+	}[] = [];
 	for (const relPath of candidates) {
-		if (toIndex.length >= maxFiles) { truncated = true; break; }
 		let content: string;
 		try {
 			content = readFileSync(join(deps.workspaceRoot, relPath), 'utf8');
@@ -660,8 +786,52 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 			continue;
 		}
 		const fileHash = fileHashOf(content);
-		if (cacheHits.get(relPath) === fileHash) { skippedUnchanged++; continue; }
-		toIndex.push({ relPath, relNative: toNativeRel(relPath), content, fileHash });
+		const entry = cacheHits.get(relPath);
+		read.push({
+			relPath,
+			relNative: toNativeRel(relPath),
+			content,
+			fileHash,
+			hit: entry && entry.fileHash === fileHash ? entry : null,
+		});
+	}
+
+	// 6b. Content check — only for the hits it can decide, batched, fail-closed.
+	// A hit whose cache says `contentPoints === 0` needs no count: the file was
+	// legitimately empty at write time and is unchanged since, so re-asking
+	// would replan it forever and the journal would never return to 0.
+	const hitsToVerify = cacheCheckEnabled
+		? read.filter((r) => r.hit !== null && r.hit.contentPoints !== 0).map((r) => r.relNative)
+		: [];
+	const hitsWithContent = await filesWithContentPoints(deps.client, collection, hitsToVerify);
+	let cacheHitWithoutContent = 0;
+
+	// 6c. Budget in candidate order: a verified hit costs no budget, an orphaned
+	// hit does (it is replanned).
+	const toIndex: { relPath: string; relNative: string; content: string; fileHash: string }[] = [];
+	let skippedUnchanged = 0;
+	let truncated = false;
+	for (const r of read) {
+		if (toIndex.length >= maxFiles) { truncated = true; break; }
+		if (r.hit !== null && !hitsWithContent.has(r.relNative)) {
+			if (cacheCheckEnabled && r.hit.contentPoints !== 0) {
+				cacheHitWithoutContent++;
+			} else {
+				skippedUnchanged++;
+				continue;
+			}
+		} else if (r.hit !== null) {
+			skippedUnchanged++;
+			continue;
+		}
+		toIndex.push({ relPath: r.relPath, relNative: r.relNative, content: r.content, fileHash: r.fileHash });
+	}
+
+	if (cacheHitWithoutContent > 0) {
+		warnings.push(
+			`${cacheHitWithoutContent} file(s) carried the current fileHash in the writer cache with NO content ` +
+			`point in ${collection} — replanned and re-embedded (cache_hit_without_content, #4938)`
+		);
 	}
 
 	// 7. Deleted-file GC over the MANAGED set only (our cache points). Zoo-era
@@ -687,6 +857,7 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 		},
 		files_considered: candidates.length,
 		files_skipped_unchanged: skippedUnchanged,
+		cache_hit_without_content: cacheHitWithoutContent,
 		files_to_index: toIndex.length,
 		files_indexed: 0,
 		code_indexing_enabled: codeEnabled,
@@ -756,23 +927,21 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 		planned.push({ item, blocks });
 	}
 
-	// 9. Purge stale points BEFORE any upsert (the P2 ≥2-generations finding),
-	// over the files this run fully rewrites.
-	let pointsDeleted = 0;
+	// 9. READ the old generation of every file this run fully rewrites — the
+	// deletion itself waits for the write (#4938). Purging first is what left a
+	// file with ZERO points when its embedding batch failed: until its
+	// replacement lands, the old generation is the file's only content.
+	// A read that cannot answer still refuses (same class as the prefix guard):
+	// an empty id list would leave the old generation beside the new one.
+	const oldIdsByFile = new Map<string, string[]>();
 	for (const { item } of planned) {
-		const ids = await contentPointIdsForFile(deps.client, collection, item.relNative);
-		await deleteIds(deps.client, collection, ids);
-		pointsDeleted += ids.length;
+		oldIdsByFile.set(item.relPath, await contentPointIdsForFile(deps.client, collection, item.relNative));
 	}
-	const removedCacheIds: string[] = [];
+	const oldIdsByRemoved = new Map<string, string[]>();
 	for (const filePath of removed) {
-		const ids = await contentPointIdsForFile(deps.client, collection, toNativeRel(filePath));
-		await deleteIds(deps.client, collection, ids);
-		pointsDeleted += ids.length;
-		removedCacheIds.push(wsWriterCachePointId(filePath));
+		oldIdsByRemoved.set(filePath, await contentPointIdsForFile(deps.client, collection, toNativeRel(filePath)));
 	}
-	await deleteIds(deps.client, collection, removedCacheIds);
-	report.points_deleted = pointsDeleted;
+	let pointsDeleted = 0;
 
 	// 10. Embed and upsert — Zoo ids, Zoo payload, nothing else. Every file in
 	// `planned` fits whole: the budget above already excluded the rest.
@@ -787,6 +956,8 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 
 	let written = 0;
 	const writtenByFile = new Map<string, number>();
+	/** #4938 — the ids this run actually landed, per file (the GC's keep-set). */
+	const landedIdsByFile = new Map<string, Set<string>>();
 	const batchTotal = Math.ceil(pending.length / batchSize);
 	for (let i = 0; i < pending.length; i += batchSize) {
 		const batch = pending.slice(i, i + batchSize);
@@ -817,7 +988,12 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 			report.batches++;
 			report.chunks_embedded += batch.length;
 			written += batch.length;
-			for (const b of batch) writtenByFile.set(b.relPath, (writtenByFile.get(b.relPath) ?? 0) + 1);
+			for (const b of batch) {
+				writtenByFile.set(b.relPath, (writtenByFile.get(b.relPath) ?? 0) + 1);
+				let landed = landedIdsByFile.get(b.relPath);
+				if (!landed) { landed = new Set<string>(); landedIdsByFile.set(b.relPath, landed); }
+				landed.add(b.id);
+			}
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			report.batches_failed++;
@@ -835,6 +1011,29 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 		([relPath, total]) => total > 0 && (writtenByFile.get(relPath) ?? 0) === total,
 	).length;
 
+	// 10b. Collect the old generation AFTER the write (#4938) — by ID, never by
+	// filePath. An id the new generation shares with the old one is NOT stale:
+	// deleting it would destroy the block just written, which is how a rewrite
+	// that shared a chunk silently lost it. Only a file whose blocks ALL landed
+	// is collected; a failed batch leaves the file its previous points instead
+	// of emptying it, and the next run replans it (no cache was written).
+	const collectIds: string[] = [];
+	for (const { item } of planned) {
+		const total = plannedByFile.get(item.relPath) ?? 0;
+		if ((writtenByFile.get(item.relPath) ?? 0) !== total) continue;
+		const landed = landedIdsByFile.get(item.relPath) ?? new Set<string>();
+		for (const id of oldIdsByFile.get(item.relPath) ?? []) {
+			if (!landed.has(id)) collectIds.push(id);
+		}
+	}
+	for (const filePath of removed) {
+		for (const id of oldIdsByRemoved.get(filePath) ?? []) collectIds.push(id);
+	}
+	await deleteIds(deps.client, collection, collectIds);
+	pointsDeleted = collectIds.length;
+	await deleteIds(deps.client, collection, removed.map((filePath) => wsWriterCachePointId(filePath)));
+	report.points_deleted = pointsDeleted;
+
 	// 11. Cache points for every file whose blocks ALL landed — the incremental
 	// skip key for the next run. A file spanning several batches that lost one
 	// of them is NEVER cached (#4736 P3 review CRITICAL: it used to be, and the
@@ -847,7 +1046,7 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 		cacheUids.push(wsWriterCachePointId(item.relPath));
 	}
 	if (cacheUids.length > 0 && typeof deps.client.upsert === 'function') {
-		const byPath = new Map(planned.map(({ item }) => [wsWriterCachePointId(item.relPath), item]));
+		const byPath = new Map(planned.map(({ item, blocks }) => [wsWriterCachePointId(item.relPath), { item, blocks }]));
 		for (let i = 0; i < cacheUids.length; i += 500) {
 			const slice = cacheUids.slice(i, i + 500);
 			await deps.client.upsert(collection, {
@@ -858,8 +1057,12 @@ export async function runWsIndexWriter(deps: WsIndexWriterDeps): Promise<WsIndex
 					payload: {
 						type: 'metadata',
 						source: 'rsm-ws-writer-cache',
-						filePath: byPath.get(id)!.relPath,
-						fileHash: byPath.get(id)!.fileHash,
+						filePath: byPath.get(id)!.item.relPath,
+						fileHash: byPath.get(id)!.item.fileHash,
+						// #4938 — how many blocks this write landed. It is what lets
+						// the next run trust a legitimately empty file (0) without a
+						// count, and verify everyone else against the collection.
+						contentPoints: byPath.get(id)!.blocks.length,
 						writer: deps.writer,
 						since: now(),
 					},

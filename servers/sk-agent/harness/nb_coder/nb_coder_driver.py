@@ -2440,9 +2440,9 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
                     elif call_timed_out(henv):
                         rec["verdict"] = f"stage2-timeout:{si}+h{hi}"
                     else:
-                        # scheduler defer contract: a provider 429 stays unprefixed
+                        # scheduler defer contract: a 429 or a cut transport stays unprefixed
                         rec["verdict"] = (
-                            provider_rate_refusal(henv)
+                            defer_refusal(henv)
                             or f"stage2-{call_failure(henv) or 'unparsed'}:{si}+h{hi}")
                     rec["stage2_raw_tail"] = (henv.get("response") or "")[-3000:]
                     return {}
@@ -2456,10 +2456,11 @@ async def create_segments(session, args, rec: dict, conv: str | None, plan_cells
             if gate_refusal(env):
                 rec["verdict"] = gate_refusal(env)   # scheduler defer contract
             elif not part:
-                # scheduler defer contract: a provider 429 stays unprefixed (23/11: four
-                # builds walled mid-flight were failed and released as stage2-call-failed)
+                # scheduler defer contract: a 429 or a cut transport stays unprefixed
+                # (23/11: four builds walled mid-flight were failed and released as
+                # stage2-call-failed; 26/11: a Docker restart cut #28664 the same way)
                 rec["verdict"] = (
-                    provider_rate_refusal(env)
+                    defer_refusal(env)
                     or f"stage2-{call_failure(env) or 'unparsed'}:{si}")
             else:
                 rec["verdict"] = f"stage2-empty-segment:{si}"
@@ -4792,7 +4793,7 @@ async def spec_stage(sk, args, rec: dict, issue: dict, kernel: dict, ctx: str, v
                    "chars": len(spec_text), "elapsed_s": round(time.time() - tspec, 1)}
     if not spec_text:
         rec["spec"]["failed"] = True
-        rec["verdict"] = (provider_rate_refusal(env_s)   # scheduler defer contract
+        rec["verdict"] = (defer_refusal(env_s)   # scheduler defer contract
                           or f"spec-{call_failure(env_s) or 'no-answer'}")
         return None
     spec_body = _cut(spec_text, SPEC_BODY_CAP, "spec")
@@ -4940,6 +4941,67 @@ def provider_rate_refusal(env: dict) -> str:
     return f"{PROVIDER_RATE_LIMIT_VERDICT}{wall}: {_excerpt(err, hit)}"
 
 
+# A TRANSPORT CUT says as little about the grain as the refusal above: measured 26/11 01:27Z
+# (po-2028:claudish, batch o42, CoursIA#28664 ANALYSE-09-Tuilage-Aperiodique). The Docker
+# engine of that host restarted (not by the lane: the daemon's event log BEGINS at
+# 01:28:11Z with both containers starting; `claudish-proxy` finishedAt 01:28:09Z, startedAt
+# 01:28:11Z, restartCount 0, created 11/16 — no earlier event survives); the cut itself was
+# observed from 01:27:06Z (the openai client's own retry) to 01:27:33Z, and the build call
+# "2-build+0" died after 63.8 s with 0 char:
+#   ("<class 'semantic_kernel.connectors.ai.open_ai.services.open_ai_chat_completion.
+#    OpenAIChatCompletion'> service failed to complete the prompt",
+#    APIConnectionError('Connection error.'))
+# chained httpcore2.ReadError -> httpx2.ReadError -> openai.APIConnectionError. The
+# scheduler classed it a run failure and spent the grain's first launch — but the endpoint
+# was the thing that was down, not the grain. The client's exception CLASS NAMES are the
+# markers (they name the transport, whatever the wire); a client-side TIME BUDGET keeps its
+# own cure and is excluded even when wrapped in a connection error; a 401/403/404 stays a
+# wiring failure — that endpoint answered. The bare words 'connection error' are NOT a
+# marker: a dead kernel or MCP server reports itself that way, and that one IS the harness's
+# to repair.
+_ENDPOINT_UNREACHABLE_MARKERS = ("apiconnectionerror", "error code: 502", "error code: 503",
+                                 "error code: 504", "bad gateway", "service unavailable",
+                                 "gateway timeout")
+# The httpx class names are generic: `tarfile.ReadError` is not a cut transport. They count
+# only when the transport MODULE names them (`httpcore2.ReadError`, `httpx2.WriteError`),
+# which is how Python reprs them in a chained cause (review ai-01, 26/11 — the measured
+# chain httpcore2.ReadError -> httpx2.ReadError -> APIConnectionError keeps matching on the
+# qualified form or on `apiconnectionerror` alone).
+_QUALIFIED_TRANSPORT_RE = re.compile(
+    r"\b(?:httpx|httpcore)\w*\.(?:readerror|writeerror|connecterror|remoteprotocolerror)\b",
+    re.I)
+ENDPOINT_UNREACHABLE_VERDICT = "deferred-by-endpoint-unreachable"
+
+
+def endpoint_unreachable(env: dict) -> str:
+    """The bare scheduler deferral for a call that died on a CUT transport, or "".
+
+    Read at every site that assembles a verdict from a call that never answered, through
+    `defer_refusal`, exactly where the provider 429 is read. The verdict must stay
+    unprefixed like every other deferral: the scheduler matches its prefixes from the first
+    character."""
+    err = (env.get("error") or "").strip()
+    if not err:
+        return ""
+    low = err.lower()
+    hit = next((m for m in _ENDPOINT_UNREACHABLE_MARKERS if m in low), "")
+    if not hit:
+        q = _QUALIFIED_TRANSPORT_RE.search(err)
+        # the excerpt is centred on the CLASS name, as it is for the bare markers
+        hit = q.group(0).rsplit(".", 1)[-1].lower() if q else ""
+    if not hit or _TIMEOUT_RE.search(err):
+        return ""
+    return f"{ENDPOINT_UNREACHABLE_VERDICT}: {_excerpt(err, hit)}"
+
+
+def defer_refusal(env: dict) -> str:
+    """Every refusal that says RETRY rather than FAIL, read once: gate, provider 429, cut
+    transport. The verdict sites call this single helper so a new deferrable class is wired
+    everywhere at once, not into six of the seven places a verdict is minted."""
+    return (gate_refusal(env) or provider_rate_refusal(env)
+            or endpoint_unreachable(env))
+
+
 def looks_truncated(env: dict) -> bool:
     """An answer cut by max_tokens ends inside the JSON, not on its fence or brace. Asking
     the model to re-emit it under the same budget would cut it again: that case is the
@@ -4980,11 +5042,11 @@ async def parse_or_repair(session: ClientSession, args, rec: dict, stage: str, e
         {"stage": stage, "error": err[:400], "ok": obj2 is not None,
          "error_after": err2[:400] if obj2 is None else "",
          "failure": call_failure(env2) or gate_refusal(env2)})
-    # A gate refusal or a provider 429 on the repair call is a deferral, and the caller
-    # reads it from env: handing back the ORIGINAL (unparsed, error-less) answer would name
-    # the grain `unparsed` — a failure — for a refusal that says retry.
-    return ((obj2, env2) if obj2 is not None or gate_refusal(env2)
-            or provider_rate_refusal(env2) else (None, env))
+    # A gate refusal, a provider 429 or a cut transport on the repair call is a deferral,
+    # and the caller reads it from env: handing back the ORIGINAL (unparsed, error-less)
+    # answer would name the grain `unparsed` — a failure — for a refusal that says retry.
+    return ((obj2, env2) if obj2 is not None or defer_refusal(env2)
+            else (None, env))
 
 
 PM_READ_TIMEOUT_S = 300
@@ -7560,7 +7622,7 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
             if not part:
                 entry["result"] = (gate_refusal(env) or call_failure(env) or "unparsed")
                 entry["raw_tail"] = (env.get("response") or "")[-1500:]
-                refusal = gate_refusal(env) or provider_rate_refusal(env)
+                refusal = defer_refusal(env)
                 if refusal:
                     # scheduler defer contract: the round was never held, so the reject it
                     # would have answered is not this run's last word either. Measured 23/11
@@ -8141,15 +8203,15 @@ async def run(args, rec: dict) -> dict:
             rec["stage1_s"] = round(time.time() - t1, 1)
             if args.max_stage < 2:
                 rec["verdict"] = ("stage1-only" if plan
-                                  else gate_refusal(env) or provider_rate_refusal(env)
+                                  else defer_refusal(env)
                                   or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             if not plan:
                 # a mid-flight gate refusal defers (scheduler retries with backoff),
                 # everything else that killed the plan call stays terminal — 18/11
                 # wave-1c #27103 burned terminally on exactly this distinction. A provider
-                # 429 defers for the same reason (23/11).
-                rec["verdict"] = (gate_refusal(env) or provider_rate_refusal(env)
+                # 429 defers for the same reason (23/11), and so does a cut transport (26/11).
+                rec["verdict"] = (defer_refusal(env)
                                   or f"stage1-{call_failure(env) or 'unparsed'}")
                 return rec
             exec_idx = plan.get("execute_cells") or []
@@ -8222,7 +8284,7 @@ async def run(args, rec: dict) -> dict:
             if not exists:
                 rec["verdict"] = "build-no-notebook"
             elif not rec["built_notebook"]["changed"]:
-                rec["verdict"] = (provider_rate_refusal(env2)   # scheduler defer contract
+                rec["verdict"] = (defer_refusal(env2)   # scheduler defer contract
                                   or f"build-{call_failure(env2) or 'no-change'}")
             else:
                 rec["structure"] = (verify_structure_create(src_nb, scratch) if create_mode

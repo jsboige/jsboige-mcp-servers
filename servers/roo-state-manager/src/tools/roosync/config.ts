@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { getRooSyncService } from '../../services/lazy-roosync.js';
-import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../types/errors.js';
+import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '@vibesync/core/types/errors';
 import type { ConfigTarget } from '../../types/config-sharing.js';
 import { EnvRotationService } from '../../services/EnvRotationService.js';
 import { collectMachineConfig } from '../../services/MachineConfigCollector.js';
@@ -8,7 +8,7 @@ import { machineConfigApplyBindings } from '../../services/MachineConfigAppliers
 import { hostname } from 'os';
 import { promises as fs } from 'fs';
 import { basename, join } from 'path';
-import { isValidDottedVersion } from '../../utils/int-validator.js';
+import { isValidDottedVersion } from '@vibesync/core/utils/int-validator';
 
 /**
  * Claude Code scope pour les configurations MCP

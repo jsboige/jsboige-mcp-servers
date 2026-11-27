@@ -11,7 +11,7 @@ import { toUnifiedTask } from '../../types/unified-task.js';
 import { ContentClassifier, ClassifiedContent } from './ContentClassifier.js';
 import { SummaryGenerator } from './SummaryGenerator.js';
 import type { StoredConversation } from '../unified-store/types.js';
-import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '../../types/errors.js';
+import { TraceSummaryServiceError, TraceSummaryServiceErrorCode } from '@vibesync/core/types/errors';
 
 /**
  * Structure d'organisation des tâches dans une grappe.

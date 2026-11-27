@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import { Schemas } from '@qdrant/js-client-rest';
 import { getQdrantClient } from './qdrant.js';
-import { StateManagerError } from '../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 // Import des nouveaux modules
 import { validateVectorGlobal } from './task-indexer/EmbeddingValidator.js';

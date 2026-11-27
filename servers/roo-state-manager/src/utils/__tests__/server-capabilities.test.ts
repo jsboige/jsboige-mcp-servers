@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { ServerCapabilities, getServerCapabilities } from '../server-capabilities.js';
+import { ServerCapabilities, getServerCapabilities } from '@vibesync/core/utils/server-capabilities';
 
 describe('ServerCapabilities', () => {
 	let caps: ServerCapabilities;

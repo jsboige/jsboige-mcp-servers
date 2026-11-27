@@ -58,7 +58,7 @@ interface CacheEntry<T> {
 // Import + re-export RooSyncServiceError from types/errors.ts to maintain backward compat.
 // Moved there to break circular dependency:
 // RooSyncService → SyncDecisionManager/ConfigComparator/BaselineManager → RooSyncServiceError → RooSyncService
-import { RooSyncServiceError } from '../types/errors.js';
+import { RooSyncServiceError } from '@vibesync/core/types/errors';
 export { RooSyncServiceError };
 
 /**

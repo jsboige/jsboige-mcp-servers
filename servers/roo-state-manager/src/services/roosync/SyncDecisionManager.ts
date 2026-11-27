@@ -22,7 +22,7 @@ import {
 } from '../../utils/roosync-parsers.js';
 import { PowerShellExecutor } from '../PowerShellExecutor.js';
 import { RooSyncConfig } from '../../config/roosync-config.js';
-import { RooSyncServiceError } from '../../types/errors.js';
+import { RooSyncServiceError } from '@vibesync/core/types/errors';
 
 /**
  * Résultat d'exécution de décision

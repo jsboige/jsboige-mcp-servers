@@ -9,7 +9,7 @@
 
 import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
 import { createLogger, Logger } from '../../utils/logger.js';
-import { MessageManagerError, MessageManagerErrorCode } from '../../types/errors.js';
+import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 // #4731 W3 — the cleanup action must not render a degraded "0" as a result:
 // the breaker state deltas tell deferred (nothing scanned) from a real 0.

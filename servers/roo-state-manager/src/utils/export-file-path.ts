@@ -6,7 +6,7 @@
  * Centralizing avoids silent divergence of the two implementations.
  */
 
-import { StateManagerError } from '../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 
 /** Maximum allowed file-path length (Windows MAX_PATH) */
 export const MAX_EXPORT_FILE_PATH_LENGTH = 260;

@@ -15,10 +15,10 @@ import { createHash } from 'crypto';
 import { createLogger } from '../utils/logger.js';
 import { ensureStoreSubdir, isSharedPathAccessible, tryGetSharedStatePath, SharedStoreInaccessibleError, type SharedStoreInaccessibleCause } from '../utils/shared-state-path.js';
 import { withReadTimeout } from '../utils/with-read-timeout.js';
-import { MessageManagerError, MessageManagerErrorCode } from '../types/errors.js';
+import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';
 import { parseMachineWorkspace, matchesRecipient, matchesMachineTarget, getLocalMachineId, getLocalWorkspaceId, normalizeWorkspaceId, canonicalizeFullId, isMachineWideTarget, perReaderStatus } from '../utils/message-helpers.js';
 import { applyReadTracking } from '../utils/read-tracking.js';
-import { maskSecretTextForPublication } from '../utils/secret-redaction.js';
+import { maskSecretTextForPublication } from '@vibesync/core/utils/secret-redaction';
 // Safe as a static import: AttachmentManager pulls fs/path/crypto/logger plus the
 // unified-store gate modules (#3151 §7.5.2), whose MessageManager references are
 // type-only — it cannot re-enter the cycle documented below.
@@ -84,7 +84,7 @@ import { acquireGdriveScanLock } from './gdrive-scan-lock.js';
 import type { RooSyncMessageUpdate } from './unified-store/types.js';
 // #1110 FIX: Dynamic import to break ESM circular dependency.
 // server-helpers → tools/index → roosync/* → MessageManager → server-helpers
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 
 const logger = createLogger('MessageManager');
 

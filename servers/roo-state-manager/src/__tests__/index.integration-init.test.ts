@@ -86,7 +86,7 @@ vi.mock('../utils/logger.js', () => ({
     }),
 }));
 
-vi.mock('../utils/server-capabilities.js', () => ({
+vi.mock('@vibesync/core/utils/server-capabilities', () => ({
     getServerCapabilities: () => ({
         markDegraded: vi.fn(),
         isAvailable: () => true,

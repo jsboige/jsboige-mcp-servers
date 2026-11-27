@@ -3,7 +3,7 @@ import { randomBytes } from 'crypto';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { GenericError, GenericErrorCode } from '../types/errors.js';
+import { GenericError, GenericErrorCode } from '@vibesync/core/types/errors';
 import { getActiveMcpSettingsPath as getExtensionMcpSettingsPath } from '../utils/extension-paths.js';
 
 interface McpServer {

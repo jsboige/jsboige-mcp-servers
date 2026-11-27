@@ -16,7 +16,7 @@ import type {
   ApplyConfigOptions,
   ApplyProfileOptions,
 } from '../../../src/types/config-sharing.js';
-import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '../../../src/types/errors.js';
+import { ConfigSharingServiceError, ConfigSharingServiceErrorCode } from '@vibesync/core/types/errors';
 
 // --- Module-level mocks ---
 

@@ -10,7 +10,7 @@
 import { promises as fs, existsSync, constants } from 'fs';
 import { join } from 'path';
 import { RooSyncConfig } from '../../config/roosync-config.js';
-import { RooSyncServiceError } from '../../types/errors.js';
+import { RooSyncServiceError } from '@vibesync/core/types/errors';
 import type { RooSyncDashboard } from '../../utils/roosync-parsers.js';
 import { createLogger } from '../../utils/logger.js';
 import { ensureStoreSubdir } from '../../utils/shared-state-path.js';

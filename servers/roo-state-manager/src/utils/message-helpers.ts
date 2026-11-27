@@ -7,7 +7,7 @@
 
 import os from 'os';
 import path from 'path';
-import { StateManagerError } from '../types/errors.js';
+import { StateManagerError } from '@vibesync/core/types/errors';
 import { getCallerContext } from '../transport/caller-context.js';
 
 /** Provenance de la machine résolue (#4707) — ordre de précédence de `resolveMachineIdentity`. */

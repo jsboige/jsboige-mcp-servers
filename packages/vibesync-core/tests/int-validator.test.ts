@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { sanitizeInt, isValidDottedVersion } from '../int-validator.js';
+import { sanitizeInt, isValidDottedVersion } from '../src/utils/int-validator.js';
 
 describe('sanitizeInt', () => {
     it('accepts a valid integer within range', () => {

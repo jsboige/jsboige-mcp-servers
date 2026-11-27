@@ -6,9 +6,9 @@ import { promisify } from 'util';
 import { FullInventory, InventoryData, McpServerInfo, RooModeInfo, ScriptInfo, ClaudeConfigInfo, BootResilienceInfo } from '../../types/inventory';
 import { PowerShellExecutor } from '../PowerShellExecutor';
 import { readJSONFileWithoutBOM } from '../../utils/encoding-helpers.js';
-import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
+import { InventoryCollectorError, InventoryCollectorErrorCode } from '@vibesync/core/types/errors';
 import { getSharedStatePath, ensureStoreSubdir } from '../../utils/shared-state-path.js';
-import { maskSecretTextForPublication } from '../../utils/secret-redaction.js';
+import { maskSecretTextForPublication } from '@vibesync/core/utils/secret-redaction';
 import { getActiveMcpSettingsPath } from '../../utils/extension-paths.js';
 import { findRooExtensionsRoot as findRepoRoot } from '../../utils/repo-root.js';
 // #4131 Phase D — inventaires PG-premier (roosync_store_meta, migrations/012)

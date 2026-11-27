@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { InventoryCollectorWrapper } from '../InventoryCollectorWrapper.js';
 import { InventoryCollector, type MachineInventory } from '../InventoryCollector.js';
-import { InventoryCollectorError, InventoryCollectorErrorCode } from '../../types/errors.js';
+import { InventoryCollectorError, InventoryCollectorErrorCode } from '@vibesync/core/types/errors';
 
 // Mock des modules
 vi.mock('fs', () => ({

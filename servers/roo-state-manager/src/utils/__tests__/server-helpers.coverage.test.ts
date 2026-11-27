@@ -74,8 +74,8 @@ vi.mock('../extension-paths.js', () => ({
 }));
 
 // Mock fs to capture readFileSync for env var resolution
-vi.mock('../../types/errors.js', async () => {
-    const actual = await vi.importActual('../../types/errors.js');
+vi.mock('@vibesync/core/types/errors', async () => {
+    const actual = await vi.importActual('@vibesync/core/types/errors');
     return actual;
 });
 
