@@ -269,7 +269,7 @@ describe('VectorIndexer — B2 contentHash preflight acks + fence (#4352)', () =
 	test('the [#4352-loop] phase lines go through the file logger (readable on ai-01)', async () => {
 		vi.resetModules();
 		const { indexTask, resetCircuitBreakerForTest } = await import('../VectorIndexer.js');
-		const { getDefaultLogger } = await import('../../../utils/logger.js');
+		const { getDefaultLogger } = await import('@vibesync/core/utils/logger');
 		resetCircuitBreakerForTest();
 
 		mockExtractTask.mockResolvedValue(Array.from({ length: 250 }, (_, i) => chunkOf(i)));

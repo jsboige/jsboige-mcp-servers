@@ -7,7 +7,7 @@ import {
 import type { PowerShellExecutionResult } from '../PowerShellExecutor.js';
 
 // Mock logger (Service instantiates createLogger in its constructor)
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),

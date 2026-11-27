@@ -13,7 +13,7 @@
 import { readFile, access } from 'fs/promises';
 import { existsSync } from 'fs';
 import { join } from 'path';
-import type { Logger } from '../utils/logger.js';
+import type { Logger } from '@vibesync/core/utils/logger';
 
 export type HealthCheckType = 'json_valid' | 'required_fields' | 'mcp_loadable' | 'file_readable';
 export type ConfigType = 'mcp_config' | 'mode_definition' | 'profile_settings' | 'roomodes_config' | 'model_config' | 'rules_config' | 'settings_config';

@@ -4,7 +4,7 @@ import { ConfigNormalizationService, type MachineContext } from '../ConfigNormal
 import type { PowerShellExecutionResult } from '../PowerShellExecutor';
 
 // Mock logger (same shape as SchtasksConfigService.test.ts)
-vi.mock('../../utils/logger', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn(),

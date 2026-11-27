@@ -26,7 +26,7 @@ vi.mock('util', () => ({
   promisify: () => mockExec,
 }));
 
-vi.mock('../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: mockInfo,
     error: mockError,

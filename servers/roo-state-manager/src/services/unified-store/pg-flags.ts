@@ -39,7 +39,7 @@
  * URL alone is not proof that the store was imported.
  */
 
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 /**
  * The logger is built LAZILY, on the first warning.

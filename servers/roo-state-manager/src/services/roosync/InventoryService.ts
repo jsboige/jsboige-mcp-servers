@@ -20,7 +20,7 @@ import {
 } from '../unified-store/store-meta.js';
 import { isPgFlagExplicitlyOff } from '../unified-store/pg-flags.js';
 import { describeError } from '../../utils/error-format.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 /**
  * #4131 Phase D (fin du double-écriture, 03/11) — kill-switch du miroir GDrive

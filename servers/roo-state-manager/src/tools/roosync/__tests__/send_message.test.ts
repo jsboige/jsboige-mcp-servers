@@ -45,7 +45,7 @@ vi.mock('os', async () => {
 	return { ...actual, default: { ...actual, hostname: mockHostname }, hostname: mockHostname };
 });
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
 	createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
 	Logger: class {}
 }));

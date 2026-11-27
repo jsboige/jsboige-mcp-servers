@@ -7,7 +7,7 @@ vi.mock('../../../src/services/PowerShellExecutor.js', () => ({
 }));
 
 // Mock logger
-vi.mock('../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     error: vi.fn(),

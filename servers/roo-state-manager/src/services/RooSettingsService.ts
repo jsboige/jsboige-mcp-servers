@@ -16,7 +16,7 @@ import { existsSync, copyFileSync, mkdtempSync } from 'fs';
 import { join } from 'path';
 import { homedir, tmpdir } from 'os';
 import sqlite3 from 'sqlite3';
-import { createLogger, Logger } from '../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { resolveActiveVscdbKey, ZOO_CODE_VSCDB_KEY } from '../utils/extension-paths.js';
 
 const VSCDB_RELATIVE_PATH = join('AppData', 'Roaming', 'Code', 'User', 'globalStorage', 'state.vscdb');

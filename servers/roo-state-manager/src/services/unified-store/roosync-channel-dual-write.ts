@@ -48,7 +48,7 @@ import { getUnifiedStoreWriter } from './writer-factory.js';
 import { parseMachineWorkspace } from '../../utils/message-helpers.js';
 import { createHash } from 'crypto';
 import { readFile } from 'fs/promises';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('roosync-channel-dual-write');
 

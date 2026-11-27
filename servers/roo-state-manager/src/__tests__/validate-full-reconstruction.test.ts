@@ -6,7 +6,7 @@ import { HierarchyReconstructionEngine } from '../utils/hierarchy-reconstruction
 // Mock dependencies
 vi.mock('../utils/hierarchy-reconstruction-engine');
 vi.mock('../utils/roo-storage-detector');
-vi.mock('../utils/logger', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
     createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })
 }));
 vi.mock('fs/promises', () => ({ default: { readFile: vi.fn(), writeFile: vi.fn(), mkdir: vi.fn(), stat: vi.fn() } }));

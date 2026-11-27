@@ -28,7 +28,7 @@ vi.mock('../message-helpers.js', () => ({
 	getLocalMachineId: () => 'myia-po-2025'
 }));
 
-vi.mock('../logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
 	createLogger: () => ({ debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() })
 }));
 

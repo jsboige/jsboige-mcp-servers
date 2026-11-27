@@ -11,7 +11,7 @@
 
 import { z } from 'zod';
 import { getServerCapabilities } from '@vibesync/core/utils/server-capabilities';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { existsSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';

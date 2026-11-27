@@ -51,7 +51,7 @@ import { mapMessageToRow } from './roosync-channel-dual-write.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { isPgFlagOn } from './pg-flags.js';
 import { acquireGdriveScanLock } from '../gdrive-scan-lock.js';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('roosync-channel-reconcile');
 

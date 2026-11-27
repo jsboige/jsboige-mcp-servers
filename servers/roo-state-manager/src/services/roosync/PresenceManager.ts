@@ -9,7 +9,7 @@
  * @version 3.0.0 (#2121 Phase 2.1: dashboard-derived presence)
  */
 
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { RooSyncConfig } from '../../config/roosync-config.js';
 import type { HeartbeatService } from './HeartbeatService.js';
 

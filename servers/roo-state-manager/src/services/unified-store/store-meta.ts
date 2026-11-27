@@ -27,7 +27,7 @@
  * apart by grepping one line each.
  */
 
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { isPgFlagOn } from './pg-flags.js';
 
 /**

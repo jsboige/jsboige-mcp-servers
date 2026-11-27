@@ -57,7 +57,7 @@ vi.mock('../../../../src/utils/encoding-helpers.js', () => ({
 }));
 
 // Mock logger
-vi.mock('../../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     debug: vi.fn(),
@@ -397,7 +397,7 @@ describe('roosync_init - roosyncInit function', () => {
         readFileSync: vi.fn(),
         unlinkSync: vi.fn()
       }));
-      vi.doMock('../../../../src/utils/logger.js', () => ({
+      vi.doMock('@vibesync/core/utils/logger', () => ({
         createLogger: () => ({
           info: vi.fn(),
           debug: vi.fn(),
@@ -432,7 +432,7 @@ describe('roosync_init - roosyncInit function', () => {
         readFileSync: vi.fn(),
         unlinkSync: vi.fn()
       }));
-      vi.doMock('../../../../src/utils/logger.js', () => ({
+      vi.doMock('@vibesync/core/utils/logger', () => ({
         createLogger: () => ({
           info: vi.fn(),
           debug: vi.fn(),

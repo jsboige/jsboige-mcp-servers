@@ -42,7 +42,7 @@ vi.mock('../../services/PowerShellExecutor.js', () => ({
   PowerShellExecutor: MockPowerShellExecutor,
 }));
 
-vi.mock('../logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: (...args: any[]) => mockCreateLogger(...args),
 }));
 

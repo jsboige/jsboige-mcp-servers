@@ -88,7 +88,7 @@ vi.mock('../../../../src/tools/roosync/heartbeat-activity.js', () => ({
     recordRooSyncActivityAsync: vi.fn(),
 }));
 
-vi.mock('../../../../src/utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
     createLogger: () => ({
         info: vi.fn(),
         debug: vi.fn(),

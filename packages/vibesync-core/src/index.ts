@@ -10,3 +10,4 @@ export * from './utils/int-validator.js';
 export * from './utils/server-capabilities.js';
 export * from './utils/secret-redaction.js';
 export * from './config/tool-timeouts.js';
+export * from './utils/logger.js';

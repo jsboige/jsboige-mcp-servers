@@ -33,7 +33,7 @@ vi.mock('fs', async (importActual) => {
 });
 
 import { existsSync, mkdirSync, appendFileSync, readdirSync, statSync, unlinkSync } from 'fs';
-import { Logger } from '../logger.js';
+import { Logger } from '../src/utils/logger.js';
 
 const mockExistsSync = vi.mocked(existsSync);
 const mockMkdirSync = vi.mocked(mkdirSync);

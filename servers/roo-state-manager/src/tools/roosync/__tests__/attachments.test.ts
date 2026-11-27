@@ -41,7 +41,7 @@ vi.mock('../../../utils/server-helpers.js', () => ({
   getSharedStatePath: vi.fn().mockReturnValue('/mock/shared')
 }));
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
   Logger: class {}
 }));

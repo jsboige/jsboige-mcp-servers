@@ -10,7 +10,7 @@
 import { MessageManager, getMessageManager } from '../../services/MessageManager.js';
 import { AttachmentManager } from '../../services/roosync/AttachmentManager.js';
 import { getSharedStatePath } from '../../utils/shared-state-path.js';
-import { createLogger, Logger } from '../../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 import { recordRooSyncActivityAsync } from './heartbeat-activity.js';
 import { MessageManagerError, MessageManagerErrorCode } from '@vibesync/core/types/errors';
 import {

@@ -20,7 +20,7 @@
 import { copyFile, unlink, access, readFile, writeFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import { basename, dirname } from 'path';
-import type { Logger } from '../utils/logger.js';
+import type { Logger } from '@vibesync/core/utils/logger';
 
 export interface RollbackEntry {
   originalPath: string;

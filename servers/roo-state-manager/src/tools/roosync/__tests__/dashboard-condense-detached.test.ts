@@ -73,7 +73,7 @@ vi.mock('../condense-health.js', () => condenseHealthMocks);
 // `createLogger()` tourne à l'éval de dashboard.ts, avant le corps de ce
 // module — un `const` nu serait en TDZ.
 const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: vi.fn(() => ({ info: vi.fn(), warn, error: vi.fn(), debug: vi.fn() })),
 }));
 

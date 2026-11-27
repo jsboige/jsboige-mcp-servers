@@ -1,5 +1,5 @@
 import { SERVER_CONFIG } from '../../../src/config/server-config.js';
-export { createLogger } from '../../../src/utils/logger.js';
+export { createLogger } from '@vibesync/core/utils/logger';
 
 export async function loadService() {
   return import('../../../src/services/lazy-roosync.js');

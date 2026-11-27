@@ -23,7 +23,7 @@ const logged: { message: string; meta: unknown }[] = [];
 
 // The logger is mocked so the "logged ONCE, value NEVER printed" contract of
 // the ignored-PG-URL warning can be asserted (review NanoClaw, C2).
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     warn: (message: string, meta?: unknown) => {
       logged.push({ message, meta });

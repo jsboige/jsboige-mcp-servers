@@ -9,7 +9,7 @@
  */
 
 import { PowerShellExecutor, type PowerShellExecutionResult } from '../services/PowerShellExecutor.js';
-import { createLogger, type Logger } from './logger.js';
+import { createLogger, type Logger } from '@vibesync/core/utils/logger';
 import { join } from 'path';
 
 /**

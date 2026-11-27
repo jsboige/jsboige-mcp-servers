@@ -20,7 +20,7 @@ import { describe, test, expect, beforeEach, vi } from 'vitest';
 
 // vi.mock is hoisted above every const — the sibling suite hit the same TDZ.
 const { warn } = vi.hoisted(() => ({ warn: vi.fn() }));
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ warn, info: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 

@@ -20,7 +20,7 @@ vi.unmock('fs/promises');
 
 // Unmock MessageManager and its dependencies to use real implementation
 vi.unmock('../../../services/MessageManager.js');
-vi.unmock('../../../utils/logger.js');
+vi.unmock('@vibesync/core/utils/logger');
 vi.unmock('../../../types/errors.js');
 
 import { existsSync, rmSync, mkdirSync } from 'fs';

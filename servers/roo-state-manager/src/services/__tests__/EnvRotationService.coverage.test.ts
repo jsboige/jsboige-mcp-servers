@@ -81,7 +81,7 @@ vi.mock('fs', async () => {
   };
 });
 
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: vi.fn(() => ({
     info: vi.fn(),
     warn: vi.fn(),
@@ -201,7 +201,7 @@ describe('EnvRotationService — branch coverage (#833 C3, source-grounded)', ()
     test.skipIf(process.platform !== 'win32')(
       'on win32, publish logs the mode:0o600-ignored warning (L256-258)', async () => {
         // The logger is mocked fresh per createLogger; capture via the factory spy.
-        const { createLogger } = await import('../../utils/logger.js');
+        const { createLogger } = await import('@vibesync/core/utils/logger');
         const inst = (createLogger as unknown as vi.Mock).mock.results.at(-1)?.value;
         mockExistsSync.mockReturnValue(true);
         mockReadFile.mockResolvedValue('API_KEY=val\n');
@@ -357,7 +357,7 @@ describe('EnvRotationService — branch coverage (#833 C3, source-grounded)', ()
   describe('apply — win32 mode-warn (L388-390)', () => {
     test.skipIf(process.platform !== 'win32')(
       'on win32, apply logs the mode:0o600-ignored warning for the target (L388-390)', async () => {
-        const { createLogger } = await import('../../utils/logger.js');
+        const { createLogger } = await import('@vibesync/core/utils/logger');
         const inst = (createLogger as unknown as vi.Mock).mock.results.at(-1)?.value;
         const plaintext = Buffer.from('API_KEY=secret\n', 'utf-8');
         const wire = service.serializeEncrypted(service.encrypt(plaintext));

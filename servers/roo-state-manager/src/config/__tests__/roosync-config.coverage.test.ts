@@ -75,7 +75,7 @@ vi.mock('fs', async (importOriginal) => {
 // Mock the logger to spy warn/info/error calls without polluting real output.
 // KEY-STABLE: returns the same instance per logger name so roosync-config.ts's module-load
 // capture (const logger = createLogger('RooSyncConfig')) sees the SAME object as the test.
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
 	createLogger: (name: string) => {
 		if (!loggerStore[name]) {
 			loggerStore[name] = { warn: vi.fn(), info: vi.fn(), error: vi.fn() };
@@ -399,7 +399,7 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 
 	test('L237-L238: tryLoad RE-THROWS non-RooSyncConfigError (does not swallow)', async () => {
 		// Mock logger to avoid noise
-		vi.doMock('../../utils/logger.js', () => ({
+		vi.doMock('@vibesync/core/utils/logger', () => ({
 			createLogger: () => ({ warn: vi.fn(), info: vi.fn(), error: vi.fn() }),
 		}));
 
@@ -433,7 +433,7 @@ describe('roosync-config.ts branch coverage (c.36)', () => {
 		expect(() => mod.tryLoadRooSyncConfig()).toThrow('boom — generic Error');
 		// Reset doMock cleanup so subsequent tests see the real module
 		vi.doUnmock('../roosync-config.js');
-		vi.doUnmock('../../utils/logger.js');
+		vi.doUnmock('@vibesync/core/utils/logger');
 	});
 
 	// ─── L277-278 dynamic fs import in validateMachineIdUniqueness (already covered by base) ─

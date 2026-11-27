@@ -21,7 +21,7 @@ import { createHash } from 'crypto';
 import { homedir } from 'os';
 import { join, dirname } from 'path';
 import { readFileWithoutBOM } from '../utils/encoding-helpers.js';
-import { createLogger, Logger } from '../utils/logger.js';
+import { createLogger, Logger } from '@vibesync/core/utils/logger';
 
 const logger: Logger = createLogger('ClaudeSettingsService');
 

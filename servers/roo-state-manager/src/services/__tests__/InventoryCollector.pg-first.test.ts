@@ -47,7 +47,7 @@ vi.mock('os', async (importOriginal) => {
   };
 });
 
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({
     info: vi.fn(),
     warn: vi.fn((...args: unknown[]) => {

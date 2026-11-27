@@ -17,7 +17,7 @@
 import { existsSync, promises as fs } from 'fs';
 import { join, basename } from 'path';
 import { randomUUID } from 'crypto';
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 import { ensureStoreSubdir } from '../../utils/shared-state-path.js';
 // #3151 Phase A — attachment payload dual-write to PG (bytea, env-gated, never throws)
 import { dualWriteRooSyncAttachmentToStore } from '../unified-store/roosync-channel-dual-write.js';

@@ -35,7 +35,7 @@ const mocks = vi.hoisted(() => ({
   sharedPath: '',
 }));
 
-vi.mock('../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
   createLogger: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() }),
 }));
 

@@ -88,7 +88,7 @@ vi.mock('../../../utils/roo-storage-detector.js', () => ({
 	}
 }));
 
-vi.mock('../../../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
 	createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
 	Logger: class {}
 }));

@@ -77,7 +77,7 @@ vi.mock('../config/server-config.js', () => ({
     SERVER_CONFIG: { name: 'test-server', version: '0.0.0' },
 }));
 
-vi.mock('../utils/logger.js', () => ({
+vi.mock('@vibesync/core/utils/logger', () => ({
     createLogger: () => ({
         info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn(),
     }),

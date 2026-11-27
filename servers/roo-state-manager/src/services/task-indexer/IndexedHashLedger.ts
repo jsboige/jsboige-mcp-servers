@@ -2,7 +2,7 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import * as crypto from 'crypto';
-import { getDefaultLogger } from '../../utils/logger.js';
+import { getDefaultLogger } from '@vibesync/core/utils/logger';
 
 /**
  * #4861 — local ledger of already-indexed contentHashes, per task_id.

@@ -4,7 +4,7 @@
  * Ce module gère la lecture, le parsing et la transformation
  * des fichiers de configuration baseline.
  */
-import { createLogger } from '../../utils/logger.js';
+import { createLogger } from '@vibesync/core/utils/logger';
 
 const logger = createLogger('baseline-loader');
 
