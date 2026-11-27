@@ -116,6 +116,9 @@ ITEM_FIELDS = {
 # answered, met the same refusal one call later. The driver names the refusal bare; `:wall`
 # marks a window wall, probed hourly (PROVIDER_WALL_WAIT_S) rather than waited out on its
 # announced clock.
+# ... the same verdict also carries a KEY's credit wall (27/11), which a provider answers
+# with a 403 (`Key limit exceeded (total limit). … does not reset`) instead of a 429: same
+# deferral, never `:wall` — a dead cascade leg announces no reset to wait on.
 # deferred-by-endpoint-unreachable (26/11): the transport to the model endpoint was CUT.
 # Measured 01:27Z on po-2028:claudish (batch o42, CoursIA#28664): the Docker engine of the
 # host restarted mid-run, the proxy came back at 01:28:11Z, and a build call died on

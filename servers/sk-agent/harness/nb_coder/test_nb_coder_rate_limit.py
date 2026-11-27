@@ -19,6 +19,7 @@ The same contract for a MODEL provider's 429 (23/11, section at the end of this 
 import asyncio
 import importlib.util
 import json
+import re
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -131,6 +132,35 @@ WALL = ('("<class \'semantic_kernel.connectors.ai.open_ai.services.open_ai_chat_
 # a harness verdict. Named by the same markers, without the wall marker.
 TRANSIENT = ("Error code: 429 - {'error': {'code': '1302', "
              "'message': 'Rate limit reached for requests'}}")
+# The same class as a 403, when what ran dry is a KEY's CREDIT rather than a usage window.
+# Verbatim from the 27/11 run records (`driver.log` of batches o57b and o58b, po-2028:claudish):
+# CoursIA#28880 at 15:26:11Z, then MGS-27 at 16:09:59Z — the request reached the seat proxy
+# and a cascade leg answered 403. The key URL carries an identifier in the record: here it is
+# replaced by an id of the same SHAPE (64 hex), and the mask test below proves the verdict
+# never carries one.
+KEY_LIMIT = ('("<class \'semantic_kernel.connectors.ai.open_ai.services.open_ai_chat_completion.'
+             'OpenAIChatCompletion\'> service failed to complete the prompt", PermissionDeniedError("'
+             'Error code: 403 - {\'error\': {\'message\': \'Key limit exceeded (total limit). '
+             'Manage it using https://openrouter.ai/workspaces/default/keys/'
+             + "0123456789abcdef" * 4 +
+             ' $20.58 of $20.00 used; does not reset.\', \'type\': \'permission_error\', '
+             '\'code\': None}}"))')
+
+
+def test_a_key_credit_wall_defers_and_never_takes_the_wall_marker():
+    """27/11: two launches were spent on `does not reset` for grains that had done nothing.
+    A dead cascade leg is not a clock to wait on, so this takes the ordinary backoff."""
+    v = d.provider_rate_refusal({"error": KEY_LIMIT})
+    assert v.startswith("deferred-by-provider-rate-limit: ")
+    assert ":wall" not in v and "Key limit exceeded" in v
+
+
+def test_the_key_identifier_never_rides_the_verdict():
+    """The message carries the provider's key URL; the verdict is copied into run records,
+    dashboards and reports. The identifier is masked there."""
+    v = d.provider_rate_refusal({"error": KEY_LIMIT})
+    assert "keys/<masque>" in v
+    assert not re.search(r"[0-9a-f]{16,}", v)
 
 
 def test_the_real_wall_is_a_bare_deferral_marked_wall():
@@ -154,6 +184,11 @@ def test_nothing_else_is_deferred_by_it():
     assert d.provider_rate_refusal(
         {"error": "claudish: unknown model nb-luna — not found in any provider catalog"}) == ""
     assert d.provider_rate_refusal({"error": "TimeoutError: read timed out"}) == ""
+    # a 403 that names no key wall is not ours either: a wrong key is a wiring bug, not a
+    # wall, and deferring it would hide the bug behind a plausible retry
+    assert d.provider_rate_refusal(
+        {"error": "Error code: 403 - {'error': {'message': 'Forbidden: this key may not "
+                  "use this model', 'type': 'permission_error', 'code': None}}"}) == ""
     # GitHub's bucket is the OTHER rate limit: it keeps its own verdict and reset epoch
     assert d.provider_rate_refusal({"error": REAL}) == ""
     assert d.provider_rate_refusal({}) == ""
@@ -169,7 +204,7 @@ def test_the_driver_verdict_is_one_the_scheduler_defers_on():
     FIRST character, so the verdict must be bare — `stage2-` + deferral still failed."""
     assert S.PROVIDER_RATE_LIMIT_VERDICT == d.PROVIDER_RATE_LIMIT_VERDICT
     assert S.PROVIDER_RATE_LIMIT_VERDICT in S.DEFERRED_VERDICT_PREFIXES
-    for env in ({"error": WALL}, {"error": TRANSIENT}):
+    for env in ({"error": WALL}, {"error": TRANSIENT}, {"error": KEY_LIMIT}):
         assert d.provider_rate_refusal(env).startswith(S.DEFERRED_VERDICT_PREFIXES)
 
 
