@@ -1,7 +1,7 @@
 /**
  * Unit tests for the PG cutover flag resolver (#4131).
  *
- * THE CONTRACT (services/unified-store/pg-flags.ts):
+ * THE CONTRACT (packages/vibesync-core/src/services/unified-store/pg-flags.ts):
  *   - '1' / 'true'  → ON   (explicit, backward compatible)
  *   - '0' / 'false' → OFF  (EMERGENCY KILL-SWITCH)
  *   - unset / other → ON iff UNIFIED_STORE_PG_URL is set, else OFF
@@ -41,7 +41,7 @@ import {
   isPgFlagExplicitlyOn,
   isPgFlagExplicitlyOff,
   resetIgnoredPgUrlWarning,
-} from '../pg-flags.js';
+} from '../src/services/unified-store/pg-flags.js';
 
 const FLAG = 'UNIFIED_STORE_DUAL_WRITE';
 

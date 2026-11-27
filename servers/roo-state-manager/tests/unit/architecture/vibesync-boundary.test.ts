@@ -32,9 +32,10 @@ const CORE_MODULE_GROUPS: Record<string, string> = {
   'diagnose-registry': 'src/services/diagnose-registry.ts',
   // PostgreSQL primitives shared by both future servers.
   'store-types': 'src/services/unified-store/types.ts',
-  'pg-flags': 'src/services/unified-store/pg-flags.ts',
-  'pg-backfill-marker': 'src/services/unified-store/pg-backfill-marker.ts',
-  'pg-read-gates': 'src/services/unified-store/pg-read-gates.ts',
+  // Extracted to @vibesync/core (#4886 S2 grain 3).
+  'pg-flags': 'packages/vibesync-core/src/services/unified-store/pg-flags.ts',
+  'pg-backfill-marker': 'packages/vibesync-core/src/services/unified-store/pg-backfill-marker.ts',
+  'pg-read-gates': 'packages/vibesync-core/src/services/unified-store/pg-read-gates.ts',
   // Chat and embedding clients share their provider and credential lifecycle (G5).
   openai: 'src/services/openai.ts',
 };

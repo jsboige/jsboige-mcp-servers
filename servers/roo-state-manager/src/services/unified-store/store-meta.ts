@@ -28,7 +28,7 @@
  */
 
 import { createLogger } from '@vibesync/core/utils/logger';
-import { isPgFlagOn } from './pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 
 /**
  * Lazy logger — same reason as conversation-list-store.ts: this module is

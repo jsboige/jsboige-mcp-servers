@@ -134,7 +134,7 @@ import type { IUnifiedStoreWriter, RooSyncLockAcquireStatus } from './UnifiedSto
 import type { IUnifiedStoreReader } from './UnifiedStoreReader.js';
 import { getUnifiedStoreWriter } from './writer-factory.js';
 import { getUnifiedStoreReader } from './reader-factory.js';
-import { isPgFlagOn } from './pg-flags.js';
+import { isPgFlagOn } from '@vibesync/core/services/unified-store/pg-flags';
 import { isDesignatedMirrorWriter, reconcileLockMachineId } from './dashboard-mirror-writer.js';
 import { createLogger } from '@vibesync/core/utils/logger';
 import { isGdriveConflictCopyFile } from '../roosync/DashboardMirrorService.js';

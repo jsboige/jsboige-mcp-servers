@@ -23,7 +23,7 @@ import { getToolTimeoutMs } from '@vibesync/core/config/tool-timeouts';
 import { formatErrorForLog } from '../utils/error-format.js';
 import { getServerCapabilities, type Capability } from '@vibesync/core/utils/server-capabilities';
 import { resolveFullConversationSkeleton, hydrateTier3SkeletonFromCache } from '../utils/server-helpers.js';
-import { ensureBackfillMarkersFresh } from '../services/unified-store/pg-backfill-marker.js';
+import { ensureBackfillMarkersFresh } from '@vibesync/core/services/unified-store/pg-backfill-marker';
 
 // 511396f0: Lazy-loaded heavy modules — these pull deep ESM dependency chains
 // (roo-storage-detector → glob, cache-manager, skeleton-*; background-services → task-indexer, etc.)

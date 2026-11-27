@@ -18,7 +18,7 @@ import {
   upsertStoreMetaValue,
   storeMetaUrl
 } from '../unified-store/store-meta.js';
-import { isPgFlagExplicitlyOff } from '../unified-store/pg-flags.js';
+import { isPgFlagExplicitlyOff } from '@vibesync/core/services/unified-store/pg-flags';
 import { describeError } from '../../utils/error-format.js';
 import { createLogger } from '@vibesync/core/utils/logger';
 

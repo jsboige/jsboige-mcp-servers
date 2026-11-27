@@ -4377,26 +4377,90 @@ REVISION_OUT_CAP = 1_500
 REVISION_VIEW_CAP = 90_000
 
 
+def _revision_block(i: int, cell: dict, out_cap: int) -> str:
+    """One cell as the reviser reads it: its whole source and, for code cells, the execution
+    count and the text really displayed (a per-cell output cut is declared)."""
+    ct = cell.get("cell_type")
+    block = f"=== cellule {i} | {ct} ===\n{_text(cell.get('source'))}"
+    if ct == "code":
+        out = _outputs_text(cell)
+        shown = out[:out_cap]
+        if len(out) > out_cap:
+            shown += f"\n…[sortie tronquée : {len(out) - out_cap} caractères non affichés]"
+        witness = nontext_witness(cell)   # outside the cut: a figure is never starved
+        block += (f"\n--- sortie réelle (execution_count={cell.get('execution_count')}) ---\n"
+                  f"{shown if (shown or witness) else '(aucune sortie)'}"
+                  + "".join(f"\n{line}" for line in witness))
+    return block
+
+
+def cited_cells(findings) -> list[int]:
+    """Every cell a finding names, ascending, without duplicates. The verifier and the gates
+    both write `cell`; a gate detail also carries `cells` (its own list is capped at 10, the
+    `findings` list is not). Anything that is not a non-negative integer is ignored, never
+    guessed."""
+    found: set[int] = set()
+    for f in findings or []:
+        if not isinstance(f, dict):
+            continue
+        raw = [f.get("cell")]
+        extra = f.get("cells")
+        if isinstance(extra, (list, tuple)):
+            raw.extend(extra)
+        for v in raw:
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, str) and v.strip().isdigit():
+                v = int(v.strip())
+            if isinstance(v, int) and v >= 0:
+                found.add(v)
+    return sorted(found)
+
+
 def revision_view(nb_path: Path, out_cap: int = REVISION_OUT_CAP,
-                  max_chars: int = REVISION_VIEW_CAP) -> str:
+                  max_chars: int = REVISION_VIEW_CAP, cited=()) -> str:
     """The notebook as the REVISER must see it: every cell's source AND, for code cells, the
     execution count and the text really displayed. build_view shows sources only — enough to
-    plan a build, not to answer a reviewer who judges displayed values. Cuts are declared."""
-    parts = []
-    for i, c in enumerate(_cells(nb_path)):
-        ct = c.get("cell_type")
-        block = f"=== cellule {i} | {ct} ===\n{_text(c.get('source'))}"
-        if ct == "code":
-            out = _outputs_text(c)
-            shown = out[:out_cap]
-            if len(out) > out_cap:
-                shown += f"\n…[sortie tronquée : {len(out) - out_cap} caractères non affichés]"
-            witness = nontext_witness(c)      # outside the cut: a figure is never starved
-            block += (f"\n--- sortie réelle (execution_count={c.get('execution_count')}) ---\n"
-                      f"{shown if (shown or witness) else '(aucune sortie)'}"
-                      + "".join(f"\n{line}" for line in witness))
-        parts.append(block)
-    return _cut("\n\n".join(parts), max_chars, "vue du carnet")
+    plan a build, not to answer a reviewer who judges displayed values. Cuts are declared.
+
+    `cited` — the cells the findings name — come FIRST, whole, and are never cut, because the
+    reviser must return each one's COMPLETE replacement source. The other cells fill what is
+    left of `max_chars`, in notebook order; the ones that do not fit are NAMED, never
+    silently dropped. Measured on CoursIA#28880 (27/11, 75 cells): the plain view made
+    199 554 characters, was cut at 90 000, showed 28 cells, the cut falling inside cell 27's
+    source; the reviser answered « la source actuelle de cette cellule est tronquée dans le
+    message », rewrote nothing, and the grain was released after a second content failure.
+    Without `cited` the output is exactly the old one."""
+    blocks = [_revision_block(i, c, out_cap) for i, c in enumerate(_cells(nb_path))]
+    first: list[int] = []
+    for i in cited:
+        if (isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(blocks)
+                and i not in first):
+            first.append(i)
+    if not first:
+        return _cut("\n\n".join(blocks), max_chars, "vue du carnet")
+    head = [blocks[i] for i in first]
+    rest_ids = [i for i in range(len(blocks)) if i not in set(first)]
+    lead = "\n\n".join(head)
+    shown_ids: list[int] = []
+    used = len(lead)
+    for i in rest_ids:
+        if used + 2 + len(blocks[i]) > max_chars:
+            break
+        used += 2 + len(blocks[i])
+        shown_ids.append(i)
+    hidden = rest_ids[len(shown_ids):]
+    listed = ", ".join(str(i) for i in first)
+    note = (f"[Ordre de lecture — les cellules citées par les constats ({listed}) sont "
+            f"affichées EN TÊTE et EN ENTIER : ce sont leurs sources complètes qu'il faut "
+            f"renvoyer. Les autres suivent dans l'ordre du carnet.")
+    if hidden:
+        named = ", ".join(str(i) for i in hidden[:30]) + (", …" if len(hidden) > 30 else "")
+        note += (f" Budget de {max_chars} caractères épuisé : NON affichées ({len(hidden)}) — "
+                 f"{named}.]")
+    else:
+        note += "]"
+    return note + "\n\n" + "\n\n".join(head + [blocks[i] for i in shown_ids])
 
 
 # 22/11 (w3w+w3x, 105 verify-reject findings read): the FIRST reject cause (25/105) was a
@@ -4514,7 +4578,10 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         '{"cells":[{"idx":<index inchangé>,"cell_type":"code|markdown",'
         '"source":"<source COMPLET>"}],"addressed":[{"cell":<index>,"how":"..."}],'
         '"contested":[{"cell":<index>,"why":"..."}]}\n'
-        "Seules les cellules que tu modifies figurent dans `cells`, chacune avec son source COMPLET."
+        "Seules les cellules que tu modifies figurent dans `cells`, chacune avec son source "
+        "COMPLET. Une cellule citée par un constat garde le numéro EXACT de son en-tête "
+        "« === cellule N === » : `cells` et `addressed` nomment ce numéro-là, jamais un "
+        "autre — une réponse portant sur une cellule non citée ne corrige aucun constat."
     )
 
 
@@ -4912,9 +4979,22 @@ def gate_refusal(env: dict) -> str:
 # 'code': '1302', 'message': 'Rate limit reached for requests'}}') is measured in this
 # fleet's notebook outputs, not yet in a harness verdict: the same markers name it, and it
 # takes the ordinary backoff — only the wall waits.
+#
+# The same class wears a 403 when what ran dry is a KEY's credit rather than a usage window.
+# Measured 27/11 on po-2028:claudish, two grains of one batch: `Error code: 403 - {'error':
+# {'message': 'Key limit exceeded (total limit). … $20.58 of $20.00 used; does not reset.',
+# 'type': 'permission_error', 'code': None}}` — a cascade step served by OpenRouter, hit at
+# 15:26:11Z (CoursIA#28880) then 16:09:59Z (MGS-27). Nothing in it says 429 and nothing says
+# "will reset at", so both launches were classed run failures and [RELEASED]; the grain had
+# done nothing. "does not reset" must NOT take the wall marker: a dead leg is not a clock to
+# wait on, and the ordinary backoff is what the grain needs.
 _PROVIDER_RATE_LIMIT_MARKERS = ("rate_limit_error", "ratelimiterror", "error code: 429",
-                                "rate limit reached", "too many requests")
+                                "rate limit reached", "too many requests",
+                                "key limit exceeded")
 _PROVIDER_WALL_RE = re.compile(r"usage limit reached|will reset at", re.I)
+# This class's message carries the provider's key URL. A verdict is copied into run records,
+# dashboards and reports: the identifier must not travel with it (never propagate a key id).
+_PROVIDER_KEY_ID_RE = re.compile(r"keys/[0-9a-f]{16,}", re.I)
 PROVIDER_RATE_LIMIT_VERDICT = "deferred-by-provider-rate-limit"
 
 
@@ -4929,7 +5009,10 @@ def provider_rate_refusal(env: dict) -> str:
     `:wall` marks a window wall. Its announced clock is NOT waited on: read as UTC, the
     measured sample (reset at 08:48:53 for a wall hit at 00:09Z) outlasts the five-hour
     window the same message names, so its offset is unknown. The scheduler probes hourly
-    instead (PROVIDER_WALL_WAIT_S, there); the other form takes the ordinary backoff."""
+    instead (PROVIDER_WALL_WAIT_S, there); the other form takes the ordinary backoff.
+
+    A KEY's credit wall arrives as a 403 rather than a 429 and is named by its own marker;
+    its message carries the provider's key URL, which the verdict masks before it travels."""
     err = (env.get("error") or "").strip()
     if not err:
         return ""
@@ -4938,7 +5021,8 @@ def provider_rate_refusal(env: dict) -> str:
     if not hit:
         return ""
     wall = ":wall" if _PROVIDER_WALL_RE.search(err) else ""
-    return f"{PROVIDER_RATE_LIMIT_VERDICT}{wall}: {_excerpt(err, hit)}"
+    excerpt = _PROVIDER_KEY_ID_RE.sub("keys/<masque>", _excerpt(err, hit))
+    return f"{PROVIDER_RATE_LIMIT_VERDICT}{wall}: {excerpt}"
 
 
 # A TRANSPORT CUT says as little about the grain as the refusal above: measured 26/11 01:27Z
@@ -7609,7 +7693,8 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                                                       entry)
             env = await sk_call_retry(
                 sk, args, rec, f"6-revise+{rnd}",
-                revision_prompt(issue, revision_view(built_path), findings, conventions,
+                revision_prompt(issue, revision_view(built_path, cited=cited_cells(findings)),
+                                findings, conventions,
                                 spec=bool(getattr(args, "from_spec", False)),
                                 twin_view=(twin_reference_view(src_nb)
                                            if src_nb and Path(src_nb) != Path(built_path)

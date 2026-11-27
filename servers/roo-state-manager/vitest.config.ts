@@ -2,6 +2,7 @@ import { defineConfig } from 'vitest/config'
 import path from 'path'
 import { fileURLToPath } from 'url'
 import { pinnedTestEnvEmpty } from './tests/setup/test-env-pins.js'
+import { serverPgEntry } from './tests/setup/vitest-pg-alias.js'
 
 // Obtenir le chemin du fichier courant (ESM)
 const __filename = fileURLToPath(import.meta.url)
@@ -214,6 +215,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // #4886 grain 3 — résoudre `pg` comme un vintage (tests/setup/vitest-pg-alias.js)
+      pg: serverPgEntry,
     },
     // Permettre l'import de .js qui résolvent vers .ts (compatibilité ESM)
     extensions: ['.ts', '.tsx', '.js', '.jsx', '.json']

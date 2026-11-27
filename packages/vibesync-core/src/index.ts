@@ -11,3 +11,6 @@ export * from './utils/server-capabilities.js';
 export * from './utils/secret-redaction.js';
 export * from './config/tool-timeouts.js';
 export * from './utils/logger.js';
+export * from './services/unified-store/pg-flags.js';
+export * from './services/unified-store/pg-backfill-marker.js';
+export * from './services/unified-store/pg-read-gates.js';

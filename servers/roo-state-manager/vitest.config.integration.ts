@@ -10,6 +10,7 @@
 import { defineConfig } from 'vitest/config'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { serverPgEntry } from './tests/setup/vitest-pg-alias.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -57,6 +58,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
+      // #4886 grain 3 — résoudre `pg` comme un vintage (tests/setup/vitest-pg-alias.js)
+      pg: serverPgEntry,
     },
     extensions: ['.ts', '.tsx', '.js', '.jsx', '.json']
   }

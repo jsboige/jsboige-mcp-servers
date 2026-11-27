@@ -242,6 +242,133 @@ async def test_summarise_uses_fallback_when_no_client():
     assert len(new_text) < len(big)
 
 
+@pytest.mark.asyncio
+async def test_summarise_condenses_oversized_call_arguments_keep_pairs():
+    """The nb_coder shape: the per-round CALL arguments are the bulk (#4816).
+
+    Pre-fix, the pass collapsed TextContent and *appended* a summary to a
+    call-only message, leaving its ~10 KB of arguments verbatim: it grew
+    the history instead of shrinking it (measured +69 691 estimated
+    tokens over a 70-round turn on the deployed condenser). Oversized
+    arguments must now be condensed — the issue asks for call parameters
+    to be condensed more aggressively — and the call must keep the id its
+    result answers.
+    """
+    call = ChatMessageContent(
+        role=AuthorRole.ASSISTANT,
+        items=[
+            FunctionCallContent(
+                id="call-1",
+                function_name="nb-update_cell",
+                arguments={"n": 1, "source": "x" * 10_000},
+            )
+        ],
+    )
+    result = ChatMessageContent(
+        role=AuthorRole.TOOL,
+        items=[
+            FunctionResultContent(
+                id="call-1", function_name="nb-update_cell", result="ok"
+            )
+        ],
+    )
+    cfg = CondensationConfig(
+        enabled=True, recent_message_window=0, max_tool_chars=1000
+    )
+    condenser = ContextCondenser(config=cfg, summariser=_FallbackSummariser())
+    out, m = await condenser._pass_summarise([call, result], cfg)
+
+    assert m.tokens_out < m.tokens_in
+    kept_call = next(i for i in out[0].items if isinstance(i, FunctionCallContent))
+    assert kept_call.id == "call-1"
+    assert kept_call.function_name == "nb-update_cell"
+    assert len(str(kept_call.arguments)) < 10_000
+    kept_result = next(i for i in out[1].items if isinstance(i, FunctionResultContent))
+    assert kept_result.id == "call-1"
+
+
+@pytest.mark.asyncio
+async def test_summarise_never_grows_a_message():
+    """A summary larger than the payload leaves the message untouched."""
+    msg = ChatMessageContent(
+        role=AuthorRole.ASSISTANT,
+        items=[FunctionCallContent(id="c", function_name="f", arguments={"q": "x"})],
+    )
+    cfg = CondensationConfig(
+        enabled=True, recent_message_window=0, max_tool_chars=1
+    )
+
+    class _Verbose:
+        async def summarise(self, text: str, *, max_tokens: int) -> str:
+            return "y" * 500
+
+    condenser = ContextCondenser(config=cfg, summariser=_Verbose())
+    out, m = await condenser._pass_summarise([msg], cfg)
+    assert m.tokens_out <= m.tokens_in
+    assert out[0] is msg
+
+
+@pytest.mark.asyncio
+async def test_nbcoder_shape_summarise_shrinks_and_no_orphan():
+    """Twelve nb_coder rounds: the summarise pass must shrink, not grow.
+
+    BALANCED preset (the nb_coder seat contract): 10 KB of call arguments
+    per round against an 8 000-char cap. Pre-fix the pass added ~4 KB per
+    call message; the four passes must now come out smaller, and every
+    result must still name the call it answers.
+    """
+    msgs = [
+        _text_msg(AuthorRole.SYSTEM, "sys"),
+        _text_msg(AuthorRole.USER, "mission"),
+    ]
+    for r in range(1, 13):
+        msgs.append(
+            ChatMessageContent(
+                role=AuthorRole.ASSISTANT,
+                items=[
+                    FunctionCallContent(
+                        id=f"call-{r}",
+                        function_name="nb-update_cell",
+                        arguments={"n": r, "source": "s" * 10_000},
+                    )
+                ],
+            )
+        )
+        msgs.append(
+            ChatMessageContent(
+                role=AuthorRole.TOOL,
+                items=[
+                    FunctionResultContent(
+                        id=f"call-{r}",
+                        function_name="nb-update_cell",
+                        result="o" * 6_000,
+                    )
+                ],
+            )
+        )
+    condenser = ContextCondenser(
+        config=CondensationConfig(enabled=True, preset="balanced")
+    )
+    working, passes = await condenser._run_passes(msgs, 262_144)
+    by_name = {p.name: p for p in passes}
+    assert by_name["summarise"].tokens_out < by_name["summarise"].tokens_in
+
+    call_ids = {
+        i.id
+        for msg in working
+        for i in msg.items
+        if isinstance(i, FunctionCallContent)
+    }
+    result_ids = {
+        i.id
+        for msg in working
+        for i in msg.items
+        if isinstance(i, FunctionResultContent)
+    }
+    assert result_ids <= call_ids, "a tool result lost the call it answers"
+    assert sum(_message_tokens(m) for m in working) < 262_144
+
+
 # ---------------------------------------------------------------------------
 # Pass 4 — threshold
 # ---------------------------------------------------------------------------
