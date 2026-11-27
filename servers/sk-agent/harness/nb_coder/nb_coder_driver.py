@@ -4377,26 +4377,90 @@ REVISION_OUT_CAP = 1_500
 REVISION_VIEW_CAP = 90_000
 
 
+def _revision_block(i: int, cell: dict, out_cap: int) -> str:
+    """One cell as the reviser reads it: its whole source and, for code cells, the execution
+    count and the text really displayed (a per-cell output cut is declared)."""
+    ct = cell.get("cell_type")
+    block = f"=== cellule {i} | {ct} ===\n{_text(cell.get('source'))}"
+    if ct == "code":
+        out = _outputs_text(cell)
+        shown = out[:out_cap]
+        if len(out) > out_cap:
+            shown += f"\n…[sortie tronquée : {len(out) - out_cap} caractères non affichés]"
+        witness = nontext_witness(cell)   # outside the cut: a figure is never starved
+        block += (f"\n--- sortie réelle (execution_count={cell.get('execution_count')}) ---\n"
+                  f"{shown if (shown or witness) else '(aucune sortie)'}"
+                  + "".join(f"\n{line}" for line in witness))
+    return block
+
+
+def cited_cells(findings) -> list[int]:
+    """Every cell a finding names, ascending, without duplicates. The verifier and the gates
+    both write `cell`; a gate detail also carries `cells` (its own list is capped at 10, the
+    `findings` list is not). Anything that is not a non-negative integer is ignored, never
+    guessed."""
+    found: set[int] = set()
+    for f in findings or []:
+        if not isinstance(f, dict):
+            continue
+        raw = [f.get("cell")]
+        extra = f.get("cells")
+        if isinstance(extra, (list, tuple)):
+            raw.extend(extra)
+        for v in raw:
+            if isinstance(v, bool):
+                continue
+            if isinstance(v, str) and v.strip().isdigit():
+                v = int(v.strip())
+            if isinstance(v, int) and v >= 0:
+                found.add(v)
+    return sorted(found)
+
+
 def revision_view(nb_path: Path, out_cap: int = REVISION_OUT_CAP,
-                  max_chars: int = REVISION_VIEW_CAP) -> str:
+                  max_chars: int = REVISION_VIEW_CAP, cited=()) -> str:
     """The notebook as the REVISER must see it: every cell's source AND, for code cells, the
     execution count and the text really displayed. build_view shows sources only — enough to
-    plan a build, not to answer a reviewer who judges displayed values. Cuts are declared."""
-    parts = []
-    for i, c in enumerate(_cells(nb_path)):
-        ct = c.get("cell_type")
-        block = f"=== cellule {i} | {ct} ===\n{_text(c.get('source'))}"
-        if ct == "code":
-            out = _outputs_text(c)
-            shown = out[:out_cap]
-            if len(out) > out_cap:
-                shown += f"\n…[sortie tronquée : {len(out) - out_cap} caractères non affichés]"
-            witness = nontext_witness(c)      # outside the cut: a figure is never starved
-            block += (f"\n--- sortie réelle (execution_count={c.get('execution_count')}) ---\n"
-                      f"{shown if (shown or witness) else '(aucune sortie)'}"
-                      + "".join(f"\n{line}" for line in witness))
-        parts.append(block)
-    return _cut("\n\n".join(parts), max_chars, "vue du carnet")
+    plan a build, not to answer a reviewer who judges displayed values. Cuts are declared.
+
+    `cited` — the cells the findings name — come FIRST, whole, and are never cut, because the
+    reviser must return each one's COMPLETE replacement source. The other cells fill what is
+    left of `max_chars`, in notebook order; the ones that do not fit are NAMED, never
+    silently dropped. Measured on CoursIA#28880 (27/11, 75 cells): the plain view made
+    199 554 characters, was cut at 90 000, showed 28 cells, the cut falling inside cell 27's
+    source; the reviser answered « la source actuelle de cette cellule est tronquée dans le
+    message », rewrote nothing, and the grain was released after a second content failure.
+    Without `cited` the output is exactly the old one."""
+    blocks = [_revision_block(i, c, out_cap) for i, c in enumerate(_cells(nb_path))]
+    first: list[int] = []
+    for i in cited:
+        if (isinstance(i, int) and not isinstance(i, bool) and 0 <= i < len(blocks)
+                and i not in first):
+            first.append(i)
+    if not first:
+        return _cut("\n\n".join(blocks), max_chars, "vue du carnet")
+    head = [blocks[i] for i in first]
+    rest_ids = [i for i in range(len(blocks)) if i not in set(first)]
+    lead = "\n\n".join(head)
+    shown_ids: list[int] = []
+    used = len(lead)
+    for i in rest_ids:
+        if used + 2 + len(blocks[i]) > max_chars:
+            break
+        used += 2 + len(blocks[i])
+        shown_ids.append(i)
+    hidden = rest_ids[len(shown_ids):]
+    listed = ", ".join(str(i) for i in first)
+    note = (f"[Ordre de lecture — les cellules citées par les constats ({listed}) sont "
+            f"affichées EN TÊTE et EN ENTIER : ce sont leurs sources complètes qu'il faut "
+            f"renvoyer. Les autres suivent dans l'ordre du carnet.")
+    if hidden:
+        named = ", ".join(str(i) for i in hidden[:30]) + (", …" if len(hidden) > 30 else "")
+        note += (f" Budget de {max_chars} caractères épuisé : NON affichées ({len(hidden)}) — "
+                 f"{named}.]")
+    else:
+        note += "]"
+    return note + "\n\n" + "\n\n".join(head + [blocks[i] for i in shown_ids])
 
 
 # 22/11 (w3w+w3x, 105 verify-reject findings read): the FIRST reject cause (25/105) was a
@@ -4514,7 +4578,10 @@ def revision_prompt(issue: dict, view: str, findings: list[dict], conventions: s
         '{"cells":[{"idx":<index inchangé>,"cell_type":"code|markdown",'
         '"source":"<source COMPLET>"}],"addressed":[{"cell":<index>,"how":"..."}],'
         '"contested":[{"cell":<index>,"why":"..."}]}\n'
-        "Seules les cellules que tu modifies figurent dans `cells`, chacune avec son source COMPLET."
+        "Seules les cellules que tu modifies figurent dans `cells`, chacune avec son source "
+        "COMPLET. Une cellule citée par un constat garde le numéro EXACT de son en-tête "
+        "« === cellule N === » : `cells` et `addressed` nomment ce numéro-là, jamais un "
+        "autre — une réponse portant sur une cellule non citée ne corrige aucun constat."
     )
 
 
@@ -7609,7 +7676,8 @@ async def revise_loop(args, rec: dict, *, issue: dict, src_nb: Path, built_path:
                                                       entry)
             env = await sk_call_retry(
                 sk, args, rec, f"6-revise+{rnd}",
-                revision_prompt(issue, revision_view(built_path), findings, conventions,
+                revision_prompt(issue, revision_view(built_path, cited=cited_cells(findings)),
+                                findings, conventions,
                                 spec=bool(getattr(args, "from_spec", False)),
                                 twin_view=(twin_reference_view(src_nb)
                                            if src_nb and Path(src_nb) != Path(built_path)
